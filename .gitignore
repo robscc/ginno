@@ -39,3 +39,6 @@ apps/desktop/Cargo.lock
 .env
 .env.local
 .env.*.local
+
+# Playwright artifacts
+.playwright-mcp/
