@@ -40,7 +40,9 @@ export function ChatPanel() {
         if (!s) {
           const created = await createSession({
             project_slug: "default",
-            workspace: `${process.env.NEXT_PUBLIC_HOME ?? ""}/workspace/default`,
+            workspace:
+              (process.env.NEXT_PUBLIC_WORKSPACE as string | undefined) ??
+              "/tmp/gw",
           });
           if ((created as { ok?: boolean }).ok === false) {
             setSessionError((created as { error?: string }).error ?? "failed to create session");

@@ -9,6 +9,8 @@ session. Supports time-travel resume by checkpoint_id.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import os
 import tempfile
@@ -27,6 +29,22 @@ from langgraph.checkpoint.base import (
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from . import paths
+
+
+def _dump_typed(typed: tuple[str, bytes]) -> dict:
+    """Serialize serde's (type_tag, bytes) tuple into JSON-safe dict."""
+    type_tag, data = typed
+    if isinstance(data, (bytes, bytearray)):
+        data = base64.b64encode(data).decode("ascii")
+    return {"type": type_tag, "data": data}
+
+
+def _load_typed(stored: dict) -> tuple[str, bytes]:
+    """Reconstruct serde's (type_tag, bytes) tuple from JSON-loaded dict."""
+    raw = stored["data"]
+    if isinstance(raw, str):
+        raw = base64.b64decode(raw)
+    return (stored["type"], raw)
 
 
 def _session_path(project_slug: str, session_id: str) -> Path:
@@ -78,8 +96,8 @@ class FileCheckpointer(BaseCheckpointSaver):
             {
                 "checkpoint_id": cid,
                 "parent_id": checkpoint.get("parent_config", {}).get("checkpoint_id"),
-                "checkpoint": self.serde.dumps_typed(checkpoint),
-                "metadata": self.serde.dumps_typed(metadata),
+                "checkpoint": _dump_typed(self.serde.dumps_typed(checkpoint)),
+                "metadata": _dump_typed(self.serde.dumps_typed(metadata)),
                 "channel_versions": new_versions,
                 "ts": time.time(),
             }
@@ -100,8 +118,8 @@ class FileCheckpointer(BaseCheckpointSaver):
             entry = cps[-1]
         if not entry:
             return None
-        checkpoint = self.serde.loads_typed(entry["checkpoint"])
-        metadata = self.serde.loads_typed(entry["metadata"])
+        checkpoint = self.serde.loads_typed(_load_typed(entry["checkpoint"]))
+        metadata = self.serde.loads_typed(_load_typed(entry["metadata"]))
         return CheckpointTuple(
             config={"configurable": {"thread_id": session_id, "checkpoint_id": entry["checkpoint_id"]}},
             checkpoint=checkpoint,
@@ -117,3 +135,32 @@ class FileCheckpointer(BaseCheckpointSaver):
         # P0: no pending writes — rely on put() for full snapshots per step.
         # P1 will implement incremental writes for resumable tasks.
         pass
+
+    # ---- LangGraph BaseCheckpointSaver API (async) ----
+    async def aget_tuple(self, config: dict) -> Any:
+        return await asyncio.to_thread(self.get_tuple, config)
+
+    async def aput(
+        self,
+        config: dict,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> Any:
+        return await asyncio.to_thread(
+            self.put, config, checkpoint, metadata, new_versions
+        )
+
+    async def aput_writes(self, config: dict, writes: list, task_id: str) -> None:
+        return await asyncio.to_thread(self.put_writes, config, writes, task_id)
+
+    def list(
+        self, config: dict, *, filter: dict | None = None, before: Any = None, limit: int | None = None
+    ) -> Any:
+        # P0: minimal — no listing. P1 will iterate session files.
+        return iter([])
+
+    async def alist(
+        self, config: dict, *, filter: dict | None = None, before: Any = None, limit: int | None = None
+    ) -> Any:
+        return iter([])

@@ -1,0 +1,15 @@
+- generic [ref=f4e1]:
+  - main [ref=f4e2]:
+    - generic [ref=f4e3]: Ginno
+    - generic [ref=f4e4]:
+      - generic [ref=f4e5]:
+        - generic [ref=f4e6]: "session: 1335fb3d"
+        - generic [ref=f4e7]: ● connected
+      - generic [ref=f4e15]:
+        - generic [ref=f4e16]: "user:"
+        - text: 用 Bash 工具执行 ls /tmp/gw，告诉我目录内容
+      - generic [ref=f4e10]:
+        - textbox "Message Ginno… (use /<skill> for skills)" [ref=f4e11]:
+          - /placeholder: Message Ginno…  (use /<skill> for skills)
+        - button "Send" [active] [ref=f4e12] [cursor=pointer]
+  - alert [ref=f4e13]

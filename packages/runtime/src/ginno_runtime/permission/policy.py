@@ -34,9 +34,9 @@ class PermissionRule:
     arg_pattern: str  # glob
 
     def matches(self, tool_name: str, args_repr: str) -> bool:
-        if not fnmatch.fnmatch(tool_name, self.tool):
+        if not fnmatch.fnmatch(tool_name.lower(), self.tool.lower()):
             return False
-        return fnmatch.fnmatch(args_repr, self.arg_pattern)
+        return fnmatch.fnmatch(args_repr.lower(), self.arg_pattern.lower())
 
 
 def _parse_rule(spec: str) -> PermissionRule:

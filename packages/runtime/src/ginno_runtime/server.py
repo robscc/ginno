@@ -43,12 +43,29 @@ app.add_middleware(
 class CreateSessionRequest(BaseModel):
     project_slug: str
     workspace: str
-    model_provider: str = "anthropic"
-    model_name: str = "claude-sonnet-4-6"
+    model_provider: str | None = None
+    model_name: str | None = None
 
 
 # Session registry: holds the compiled graph + metadata.
 _SESSIONS: dict[str, dict[str, Any]] = {}
+
+
+def _resolve_model_config(req: CreateSessionRequest) -> tuple[str, str]:
+    """Use request fields if set; otherwise fall back to settings.json."""
+    if req.model_provider and req.model_name:
+        return req.model_provider, req.model_name
+    p = paths.settings_path()
+    if p.exists():
+        try:
+            s = json.loads(p.read_text() or "{}")
+            block = s.get("model", {}) or {}
+            provider = req.model_provider or block.get("provider", "anthropic")
+            name = req.model_name or block.get("name", "claude-sonnet-4-6")
+            return provider, name
+        except json.JSONDecodeError:
+            pass
+    return req.model_provider or "anthropic", req.model_name or "claude-sonnet-4-6"
 
 
 @app.get("/health")
@@ -58,8 +75,9 @@ async def health() -> dict:
 
 @app.post("/sessions")
 async def create_session(req: CreateSessionRequest) -> dict:
+    provider, name = _resolve_model_config(req)
     try:
-        model = build_model(req.model_provider, req.model_name)
+        model = build_model(provider, name)
     except ValueError as e:
         return {"error": str(e), "ok": False}
 
@@ -73,8 +91,8 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "session_id": session_id,
         "project_slug": req.project_slug,
         "workspace": req.workspace,
-        "model_provider": req.model_provider,
-        "model_name": req.model_name,
+        "model_provider": provider,
+        "model_name": name,
         "graph": graph,
     }
     info = {k: v for k, v in _SESSIONS[session_id].items() if k != "graph"}
@@ -203,7 +221,8 @@ async def _stream_graph(
         else:
             stream = graph.astream(input_state, config=config, stream_mode=["messages", "updates"])
 
-        async for mode, payload, metadata in stream:
+        saw_interrupt = False
+        async for mode, payload in stream:
             if mode == "messages":
                 chunk, msg_meta = payload
                 content = getattr(chunk, "content", "")
@@ -217,9 +236,21 @@ async def _stream_graph(
                                 _ev("tool.start", {"name": tc["name"], "id": tc.get("id")})
                             )
             elif mode == "updates":
-                # payload is {node_name: state_delta}
+                # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
                 for node_name, delta in (payload or {}).items():
-                    if node_name == "tools":
+                    if node_name == "__interrupt__":
+                        items = delta if isinstance(delta, (list, tuple)) else [delta]
+                        for intr in items:
+                            value = getattr(intr, "value", None) or intr
+                            if isinstance(value, dict) and value.get("kind") == "permission_request":
+                                saw_interrupt = True
+                                await ws.send_text(
+                                    _ev("permission.request", {
+                                        "tool": value.get("tool"),
+                                        "args": value.get("args"),
+                                    })
+                                )
+                    elif node_name == "tools":
                         msgs = (delta or {}).get("messages", [])
                         for m in msgs:
                             tc_results = getattr(m, "tool_call_id", None)
@@ -230,22 +261,8 @@ async def _stream_graph(
                                         "content": getattr(m, "content", "")[:500],
                                     })
                                 )
-        # stream ended — check for pending interrupt (permission ask)
-        state = await graph.aget_state(config)
-        if state and state.tasks:
-            for task in state.tasks:
-                interrupts = getattr(task, "interrupts", None) or []
-                for intr in interrupts:
-                    payload = getattr(intr, "value", None) or {}
-                    if isinstance(payload, dict) and payload.get("kind") == "permission_request":
-                        await ws.send_text(
-                            _ev("permission.request", {
-                                "tool": payload.get("tool"),
-                                "args": payload.get("args"),
-                            })
-                        )
-                        return
-        await ws.send_text(_ev("message.end", {}))
+        if not saw_interrupt:
+            await ws.send_text(_ev("message.end", {}))
     except Exception as e:
         await ws.send_text(_ev("error", {"message": f"{type(e).__name__}: {e}"}))
 

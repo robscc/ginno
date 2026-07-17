@@ -1,0 +1,20 @@
+- generic [active] [ref=f5e1]:
+  - main [ref=f5e2]:
+    - generic [ref=f5e3]: Ginno
+    - generic [ref=f5e4]:
+      - generic [ref=f5e5]:
+        - generic [ref=f5e6]: "session: 001e1a34"
+        - generic [ref=f5e7]: ● connected
+      - generic [ref=f5e8]:
+        - generic [ref=f5e15]:
+          - generic [ref=f5e16]: "user:"
+          - text: 用 Bash 工具执行 ls /tmp/gw，告诉我目录内容
+        - generic [ref=f5e18]:
+          - generic [ref=f5e19]: "tool: bash ✓"
+          - generic [ref=f5e20]: "[exit 0] --- stderr ---"
+        - generic [ref=f5e29]: assistant:[exit 0] --- stderr ---
+      - generic [ref=f5e10]:
+        - textbox "Message Ginno… (use /<skill> for skills)" [ref=f5e11]:
+          - /placeholder: Message Ginno…  (use /<skill> for skills)
+        - button "Send" [ref=f5e12] [cursor=pointer]
+  - alert [ref=f5e13]

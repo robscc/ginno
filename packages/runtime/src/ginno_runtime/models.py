@@ -63,7 +63,12 @@ def build_model(provider: str, name: str):
             )
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=name, api_key=key, streaming=True)
+        return ChatOpenAI(
+            model=name,
+            api_key=key,
+            base_url=env.get("OPENAI_BASE_URL") or None,
+            streaming=True,
+        )
 
     if provider == "ollama":
         try:

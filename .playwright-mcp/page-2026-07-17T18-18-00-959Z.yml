@@ -1,0 +1,19 @@
+- generic [ref=f2e1]:
+  - main [ref=f2e2]:
+    - generic [ref=f2e3]: Ginno
+    - generic [ref=f2e4]:
+      - generic [ref=f2e5]:
+        - generic [ref=f2e6]: "session: 3bdeef42"
+        - generic [ref=f2e7]: ● connected
+      - generic [ref=f2e8]:
+        - generic [ref=f2e15]:
+          - generic [ref=f2e16]: "user:"
+          - text: 用 Bash 工具列出 /tmp/gw 目录里的文件，然后告诉我你看到了什么
+        - generic [ref=f2e18]:
+          - generic [ref=f2e19]: "system:"
+          - text: "[error] NotImplementedError:"
+      - generic [ref=f2e10]:
+        - textbox "Message Ginno… (use /<skill> for skills)" [ref=f2e11]:
+          - /placeholder: Message Ginno…  (use /<skill> for skills)
+        - button "Send" [active] [ref=f2e12] [cursor=pointer]
+  - alert [ref=f2e13]

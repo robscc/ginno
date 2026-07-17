@@ -1,0 +1,13 @@
+- generic [active] [ref=f4e1]:
+  - main [ref=f4e2]:
+    - generic [ref=f4e3]: Ginno
+    - generic [ref=f4e4]:
+      - generic [ref=f4e5]:
+        - generic [ref=f4e6]: no session
+        - generic [ref=f4e7]: ○ disconnected
+      - generic [ref=f4e8]: Send a message to start. The agent will call tools and may ask for permission on destructive operations.
+      - generic [ref=f4e10]:
+        - textbox "Message Ginno… (use /<skill> for skills)" [ref=f4e11]:
+          - /placeholder: Message Ginno…  (use /<skill> for skills)
+        - button "Send" [disabled] [ref=f4e12]
+  - alert [ref=f4e13]

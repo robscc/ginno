@@ -1,0 +1,15 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e3]: Ginno
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - text: no session
+          - generic [ref=e7]: "— ANTHROPIC_API_KEY not set. Put it in ~/.ginno/settings.json under `env.ANTHROPIC_API_KEY` or export it."
+        - generic [ref=e8]: ○ disconnected
+      - generic [ref=e9]: Send a message to start. The agent will call tools and may ask for permission on destructive operations.
+      - generic [ref=e11]:
+        - textbox "Message Ginno… (use /<skill> for skills)" [ref=e12]:
+          - /placeholder: Message Ginno…  (use /<skill> for skills)
+        - button "Send" [disabled] [ref=e13]
+  - alert [ref=e14]
