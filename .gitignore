@@ -1,0 +1,41 @@
+# deps
+node_modules/
+.pnp/
+.pnp.js
+
+# build outputs
+dist/
+build/
+out/
+.next/
+.turbo/
+target/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# desktop packaging
+apps/desktop/target/
+apps/desktop/gen/
+apps/desktop/Cargo.lock
+
+# local runtime state (never commit user data)
+.ginno/
+*.log
+
+# editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# env
+.env
+.env.local
+.env.*.local
