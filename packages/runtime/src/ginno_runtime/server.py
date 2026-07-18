@@ -20,14 +20,28 @@ from pydantic import BaseModel
 
 from . import paths
 from .graph import build_graph
+from .hooks.dispatcher import HookDispatcher
 from .models import build_model
+from .mcp.registry import MCPRegistry
 from .skills.loader import SkillLoader
+
+
+# Process-wide MCP registry — spawned at startup.
+_mcp: MCPRegistry | None = None
+_hooks: HookDispatcher | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _mcp, _hooks
     paths.ensure_layout()
+    _mcp = MCPRegistry()
+    _mcp.load()
+    await _mcp.connect_all()
+    _hooks = HookDispatcher.from_settings()
     yield
+    if _mcp:
+        await _mcp.close_all()
 
 
 app = FastAPI(title="Ginno Runtime", version="0.1.0", lifespan=lifespan)
@@ -81,11 +95,14 @@ async def create_session(req: CreateSessionRequest) -> dict:
     except ValueError as e:
         return {"error": str(e), "ok": False}
 
+    mcp_tools = _mcp.all_langchain_tools() if _mcp else []
     session_id = uuid.uuid4().hex
     graph = build_graph(
         model=model,
         project_slug=req.project_slug,
         workspace=req.workspace,
+        mcp_tools=mcp_tools,
+        hook_dispatcher=_hooks,
     )
     _SESSIONS[session_id] = {
         "session_id": session_id,
@@ -132,9 +149,12 @@ async def list_skills(project_slug: str | None = None) -> list[dict]:
 
 @app.get("/mcp")
 async def list_mcp() -> dict:
-    from .mcp.registry import MCPRegistry
-
-    return {"servers": list(MCPRegistry().load().keys())}
+    if not _mcp:
+        return {"servers": [], "tools": []}
+    return {
+        "servers": list(_mcp.ensure_loaded().keys()),
+        "tools": _mcp.list_tools(),
+    }
 
 
 @app.get("/settings")
@@ -172,7 +192,9 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
 
             kind = msg.get("type")
             if kind == "invoke":
-                await _run_stream(ws, graph, config, msg.get("message", ""), session)
+                user_text = msg.get("message", "")
+                user_text = _maybe_substitute_skill(user_text, session["project_slug"])
+                await _run_stream(ws, graph, config, user_text, session)
             elif kind == "permission_response":
                 decision = msg.get("decision", "deny")
                 await _run_resume(ws, graph, config, {"decision": decision})
@@ -200,6 +222,34 @@ async def _run_stream(
         "pending_tool_calls": [],
     }
     await _stream_graph(ws, graph, config, input_state=input_state)
+
+
+def _maybe_substitute_skill(user_text: str, project_slug: str) -> str:
+    """If user_text starts with `/<skill-name>`, replace with SKILL.md body +
+    the trailing question. Otherwise return as-is."""
+    stripped = user_text.lstrip()
+    if not stripped.startswith("/"):
+        return user_text
+    # Parse `/skill-name rest of message`
+    rest = stripped[1:]
+    parts = rest.split(maxsplit=1)
+    if not parts or not parts[0]:
+        return user_text
+    skill_name = parts[0]
+    tail = parts[1] if len(parts) > 1 else ""
+    skill = SkillLoader(project_slug=project_slug).get(skill_name)
+    if not skill or not skill.body:
+        return user_text  # unknown skill — leave the message alone
+    blocks = [
+        f"<skill name=\"{skill_name}\">",
+        skill.body.strip(),
+        "</skill>",
+    ]
+    if tail:
+        blocks.append(f"\n\nUser request: {tail}")
+    else:
+        blocks.append("\n\n(Follow the skill instructions above.)")
+    return "\n".join(blocks)
 
 
 async def _run_resume(ws: WebSocket, graph, config: dict, resume_value: dict) -> None:

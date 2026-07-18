@@ -59,19 +59,42 @@ def agent_node_factory(model, tools):
     return agent_node
 
 
-def permission_node_factory(policy: PermissionPolicy):
+def permission_node_factory(policy: PermissionPolicy, hook_dispatcher=None):
     async def permission_node(state: AgentState) -> Command:
+        from .hooks.dispatcher import HookDispatcher, HookEvent
+
         pending = state.get("pending_tool_calls") or []
         for tc in pending:
             name = tc.get("name", "")
-            args_repr = repr(tc.get("args", {}))
-            decision = policy.decide(name, args_repr)
+            args = tc.get("args", {})
+
+            # 1) PreToolUse hook dispatch (Claude Code style)
+            if hook_dispatcher:
+                results = await hook_dispatcher.dispatch(
+                    HookEvent(name="PreToolUse", context={"tool": name, "args": args}),
+                    matcher=name,
+                )
+                for r in results:
+                    if r.block:
+                        return Command(
+                            goto="agent",
+                            update={
+                                "messages": [
+                                    AIMessage(
+                                        content=f"[hook blocked tool {name}: {r.reason}]"
+                                    )
+                                ],
+                            },
+                        )
+
+            # 2) Permission policy
+            decision = policy.decide(name, repr(args))
             if decision == "ask":
                 answer = interrupt(
                     {
                         "kind": "permission_request",
                         "tool": name,
-                        "args": tc.get("args", {}),
+                        "args": args,
                     }
                 )
                 if answer.get("decision") == "deny":
@@ -81,7 +104,6 @@ def permission_node_factory(policy: PermissionPolicy):
                             "messages": [
                                 AIMessage(content=f"[user denied tool: {name}]")
                             ],
-                            "pending_tool_calls": [],
                         },
                     )
             elif decision == "deny":
@@ -89,7 +111,6 @@ def permission_node_factory(policy: PermissionPolicy):
                     goto="agent",
                     update={
                         "messages": [AIMessage(content=f"[policy blocked tool: {name}]")],
-                        "pending_tool_calls": [],
                     },
                 )
         # all allowed — fall through to tools
@@ -104,7 +125,13 @@ def route_after_agent(state: AgentState) -> Literal["permission", "__end__"]:
     return END
 
 
-def build_graph(model, project_slug: str, workspace: str, mcp_tools: list | None = None):
+def build_graph(
+    model,
+    project_slug: str,
+    workspace: str,
+    mcp_tools: list | None = None,
+    hook_dispatcher=None,
+):
     """Compose the main agent graph. Returns a compiled CompiledStateGraph."""
     tools = build_builtin_tools() + (mcp_tools or [])
     policy = PermissionPolicy.from_settings()
@@ -112,7 +139,7 @@ def build_graph(model, project_slug: str, workspace: str, mcp_tools: list | None
     g = StateGraph(AgentState)
     g.add_node("load_context", load_context_node)
     g.add_node("agent", agent_node_factory(model, tools))
-    g.add_node("permission", permission_node_factory(policy))
+    g.add_node("permission", permission_node_factory(policy, hook_dispatcher))
     g.add_node("tools", ToolNode(tools))
 
     g.add_edge(START, "load_context")

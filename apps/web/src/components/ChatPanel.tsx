@@ -12,6 +12,7 @@ interface ChatMsg {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   toolName?: string;
+  toolCallId?: string;
   pending?: boolean;
 }
 
@@ -89,17 +90,34 @@ export function ChatPanel() {
         flushStreaming();
         setMessages((m) => [
           ...m,
-          { role: "tool", content: "…", toolName: ev.name as string, pending: true },
+          {
+            role: "tool",
+            content: "…",
+            toolName: ev.name as string,
+            toolCallId: ev.id as string | undefined,
+            pending: true,
+          },
         ]);
         break;
       case "tool.end":
-        setMessages((m) =>
-          m.map((msg, i) =>
-            i === m.length - 1 && msg.role === "tool" && msg.pending
-              ? { ...msg, content: ev.content as string, pending: false }
-              : msg,
-          ),
-        );
+        setMessages((m) => {
+          const id = ev.id as string | undefined;
+          // Mark the first pending tool message whose toolCallId matches.
+          // Fall back to last pending tool if no id match (older server).
+          let found = false;
+          return m.map((msg) => {
+            if (!found && msg.role === "tool" && msg.pending) {
+              if (id && msg.toolCallId && msg.toolCallId !== id) return msg;
+              found = true;
+              return {
+                ...msg,
+                content: ev.content as string,
+                pending: false,
+              };
+            }
+            return msg;
+          });
+        });
         break;
       case "permission.request":
         setPermission({ tool: ev.tool as string, args: ev.args });
@@ -116,11 +134,17 @@ export function ChatPanel() {
     }
   }
 
+  const streamingRef = useRef("");
+  useEffect(() => {
+    streamingRef.current = streamingText;
+  }, [streamingText]);
+
   function flushStreaming() {
-    setStreamingText((t) => {
-      if (t) setMessages((m) => [...m, { role: "assistant", content: t }]);
-      return "";
-    });
+    const text = streamingRef.current;
+    if (!text) return;
+    streamingRef.current = "";
+    setStreamingText("");
+    setMessages((m) => [...m, { role: "assistant", content: text }]);
   }
 
   function send() {
