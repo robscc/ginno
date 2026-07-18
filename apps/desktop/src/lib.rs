@@ -1,18 +1,16 @@
 //! Tauri shell for Ginno.
 //!
 //! Responsibilities:
-//!   1. Spawn the Python sidecar (`ginno-runtime`) on startup.
+//!   1. Spawn the Python sidecar (`ginno-runtime`) on startup in release builds.
 //!   2. Expose the sidecar port to the frontend via a Tauri command.
 //!   3. Forward sidecar stdout/stderr to a log file under ~/.ginno/logs/.
 //!
-//! In dev (`tauri dev`), the sidecar can be started manually via
-//! `pnpm dev:runtime`. In release builds, Tauri bundles the sidecar
-//! binary as an `externalBin` resource and spawns it here.
+//! In dev (`tauri dev`), the user runs `pnpm dev:runtime` in a separate
+//! terminal; this file only spawns the sidecar in release builds.
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use tauri::Manager;
-use tauri_plugin_shell::process::Command;
 use tauri_plugin_shell::ShellExt;
 
 const SIDECAR_PORT: u16 = 8787;
@@ -22,14 +20,15 @@ fn sidecar_port() -> u16 {
     SIDECAR_PORT
 }
 
-fn open_log_file(app: &tauri::App) -> std::io::Result<std::fs::File> {
+fn open_log_file(app: &tauri::App) -> Option<std::fs::File> {
     let home = dirs_home(app);
     let logs = home.join("logs");
-    std::fs::create_dir_all(&logs)?;
+    std::fs::create_dir_all(&logs).ok()?;
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(logs.join("sidecar.log"))
+        .ok()
 }
 
 fn dirs_home(app: &tauri::App) -> std::path::PathBuf {
@@ -58,12 +57,12 @@ pub fn run() {
                     .expect("ginno-runtime sidecar binary not bundled");
                 let (mut rx, _child) = sidecar.spawn().expect("failed to spawn sidecar");
 
-                let mut log = open_log_file(app).ok();
+                let mut log = open_log_file(app);
                 tauri::async_runtime::spawn(async move {
-                    use tauri_plugin_shell::process::ProcessEvent;
+                    use tauri_plugin_shell::process::CommandEvent;
                     while let Some(ev) = rx.recv().await {
                         match ev {
-                            ProcessEvent::Stdout(line) | ProcessEvent::Stderr(line) => {
+                            CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
                                 if let Some(ref mut f) = log.as_mut() {
                                     let _ = f.write_all(&line);
                                     let _ = writeln!(f);

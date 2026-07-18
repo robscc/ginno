@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,10 +121,14 @@ class _LiveServer:
             if self.config.transport == "stdio":
                 if not self.config.command:
                     raise ValueError(f"mcp server {self.config.name}: stdio requires command")
+                # Inherit parent env (esp. PATH) so bundled binaries can find node/npx.
+                env = dict(os.environ)
+                if self.config.env:
+                    env.update(self.config.env)
                 params = StdioServerParameters(
                     command=self.config.command,
                     args=self.config.args or [],
-                    env=self.config.env,
+                    env=env,
                 )
                 ctx_res = await stack.enter_async_context(stdio_client(params))
                 read, write = _unpack_rw(ctx_res)

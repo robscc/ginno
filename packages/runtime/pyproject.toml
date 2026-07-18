@@ -16,6 +16,7 @@ dependencies = [
     "websockets>=12",
     "anyio>=4",
     "tomli; python_version < '3.11'",
+    "typer>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -39,3 +40,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.21.0",
+]

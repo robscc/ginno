@@ -490,6 +490,7 @@ dependencies = [
     { name = "langgraph" },
     { name = "mcp" },
     { name = "pydantic" },
+    { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
 ]
@@ -506,6 +507,11 @@ local = [
 rag = [
     { name = "lancedb" },
     { name = "sentence-transformers" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pyinstaller" },
 ]
 
 [package.metadata]
@@ -525,10 +531,14 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "sentence-transformers", marker = "extra == 'rag'", specifier = ">=3" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "typer", specifier = ">=0.27.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
     { name = "websockets", specifier = ">=12" },
 ]
 provides-extras = ["local", "rag", "dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pyinstaller", specifier = ">=6.21.0" }]
 
 [[package]]
 name = "h11"
