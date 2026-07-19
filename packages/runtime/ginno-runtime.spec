@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('/Users/chenchuansong/workspace/ginno/apps/web/out', 'web_out')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('langchain_openai')

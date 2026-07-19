@@ -68,6 +68,32 @@ app.add_middleware(
 )
 
 
+# ---- serve the web UI from the sidecar (same origin as the API) ----
+# In the packaged app the Tauri webview loads http://127.0.0.1:8787 directly,
+# which avoids the tauri:// -> http cross-origin / mixed-content block and the
+# startup race. The Next static export is bundled into the binary (web_out/) by
+# PyInstaller; in dev we fall back to the repo's apps/web/out.
+import sys as _sys
+from pathlib import Path as _Path
+
+
+def _web_out_dir() -> _Path | None:
+    meipass = getattr(_sys, "_MEIPASS", None)
+    if meipass:
+        p = _Path(meipass) / "web_out"
+    else:
+        p = _Path(__file__).resolve().parents[4] / "apps" / "web" / "out"
+    return p if p.exists() else None
+
+
+WEB_OUT = _web_out_dir()
+
+if WEB_OUT is not None and (WEB_OUT / "_next").exists():
+    from starlette.staticfiles import StaticFiles as _StaticFiles
+
+    app.mount("/_next", _StaticFiles(directory=str(WEB_OUT / "_next")), name="next-static")
+
+
 class CreateSessionRequest(BaseModel):
     project_slug: str
     workspace: str
@@ -872,6 +898,25 @@ async def _stream_graph(
 
 def _ev(event: str, data: dict) -> str:
     return json.dumps({"event": event, **data}, ensure_ascii=False, default=str)
+
+
+@app.get("/{full_path:path}")
+async def _serve_web(full_path: str):
+    """Serve the bundled Next static export (same origin as the API)."""
+    from fastapi.responses import FileResponse, HTMLResponse
+
+    if WEB_OUT is None:
+        return HTMLResponse("frontend not bundled", status_code=404)
+    p = full_path.strip("/")
+    if p == "":
+        return FileResponse(WEB_OUT / "index.html")
+    cand = WEB_OUT / (p + ".html")
+    if cand.exists():
+        return FileResponse(cand)
+    idx = WEB_OUT / p / "index.html"
+    if idx.exists():
+        return FileResponse(idx)
+    return FileResponse(WEB_OUT / "index.html")  # SPA fallback
 
 
 def main() -> None:

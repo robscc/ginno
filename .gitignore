@@ -42,3 +42,8 @@ apps/desktop/Cargo.lock
 
 # Playwright artifacts
 .playwright-mcp/
+
+# pyinstaller
+packages/runtime/ginno-runtime.spec
+packages/runtime/build/
+packages/runtime/dist/

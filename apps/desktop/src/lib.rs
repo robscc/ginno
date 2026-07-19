@@ -10,6 +10,8 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::net::{SocketAddr, TcpStream};
+use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_shell::ShellExt;
 
@@ -72,6 +74,16 @@ pub fn run() {
                         }
                     }
                 });
+
+                // Block until the sidecar accepts connections so the webview
+                // (which loads http://127.0.0.1:8787) doesn't race it.
+                let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
+                for _ in 0..100 {
+                    if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
             }
             Ok(())
         })

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "io.ginno.desktop",
   "build": {
-    "frontendDist": "../web/out",
+    "frontendDist": "http://127.0.0.1:8787",
     "devUrl": "http://localhost:3000",
     "beforeDevCommand": "pnpm --filter @ginno/web dev",
     "beforeBuildCommand": "pnpm --filter @ginno/web build"

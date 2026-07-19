@@ -2,73 +2,67 @@
 
 ## Build artifacts
 
-- `apps/desktop/target/release/bundle/macos/Ginno.app` — 48MB, Tauri shell + bundled `ginno-runtime` sidecar
-- `apps/desktop/target/release/bundle/dmg/Ginno_0.1.0_aarch64.dmg` — 40MB installer
+- `apps/desktop/target/release/bundle/macos/Ginno.app` — Tauri shell + bundled `ginno-runtime` sidecar (which also serves the web UI)
+- `apps/desktop/target/release/bundle/dmg/Ginno_0.1.0_aarch64.dmg` — installer
 
 ## Reproduce
 
 ```bash
-# 1. Build Python sidecar
+# 1. Build the web static export (the sidecar bundles + serves it)
+pnpm --filter @ginno/web build
+
+# 2. Build the Python sidecar, bundling the web export as web_out/
 cd packages/runtime
+OUT=$PWD/../apps/web/out          # NOTE: quote as "${OUT}:web_out" in zsh,
+                                  # else `$OUT:web_out` is parsed as a zsh
+                                  # variable modifier and silently breaks.
 uv run pyinstaller --onefile --paths src --name ginno-runtime \
   --collect-all langchain_openai --collect-all langchain_anthropic \
   --collect-all langgraph --collect-all mcp --collect-all pydantic \
+  --add-data "${OUT}:web_out" \
   bin/ginno-runtime.py
-# → dist/ginno-runtime (35MB Mach-O arm64)
+# → dist/ginno-runtime (~37MB Mach-O arm64)
 
-# 2. Place as Tauri sidecar with target-triple suffix
+# 3. Place as Tauri sidecar with target-triple suffix
 TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
-cp packages/runtime/dist/ginno-runtime apps/desktop/binaries/ginno-runtime-$TRIPLE
+cp dist/ginno-runtime ../apps/desktop/binaries/ginno-runtime-$TRIPLE
 
-# 3. Build Tauri app (needs Rust toolchain)
-cd apps/desktop
+# 4. Build Tauri app (needs Rust toolchain; beforeBuildCommand rebuilds web)
+cd ../apps/desktop
 pnpm tauri build
 # → target/release/bundle/{macos/Ginno.app, dmg/Ginno_0.1.0_aarch64.dmg}
 ```
 
-## What works in the packaged app
+## How the packaged app serves the UI (same-origin)
 
-- Tauri shell launches and renders the embedded Next.js static export.
-- Tauri spawns the `ginno-runtime` sidecar via `externalBin` — confirmed in
-  `~/.ginno/logs/sidecar.log` and `ps -p` showing the binary running.
-- Sidecar connects to MCP stdio servers (env inherited from parent so
-  `npx` is found).
-- All REST endpoints (`/health`, `/sessions`, `/mcp`, `/skills`) respond.
+The Tauri webview loads `http://127.0.0.1:8787` directly (Tauri `build.frontendDist`
+is that URL). The sidecar serves the bundled Next export from the same origin:
 
-## Known limitation (P4)
+- `server.py` resolves the web dir from `sys._MEIPASS/web_out` (frozen) or the
+  repo's `apps/web/out` (dev), mounts `/_next` as `StaticFiles`, and a catch-all
+  `GET /{path}` maps clean URLs to the exported `*.html` (with an `index.html`
+  SPA fallback).
+- This avoids the `tauri://localhost` → `http://...` cross-protocol / mixed-content
+  block entirely, because the webview and the API share one origin.
 
-The Tauri webview runs at the `tauri://localhost` origin. Fetching
-`http://127.0.0.1:8787/...` from that origin is blocked by the macOS
-WKWebView cross-protocol restriction — even with `connect-src` whitelisted
-in `app.security.csp`. Symptom: webview's `listSessions()` (GET) reaches
-the sidecar (200 OK), but `createSession()` (POST with JSON body) never
-fires.
+### Startup race
 
-### Workarounds (pick one for P4)
+Tauri creates the webview before `setup()` runs, so the webview could try
+`http://127.0.0.1:8787` before the sidecar is listening. `apps/desktop/src/lib.rs`
+spawns the sidecar in `setup()` and then **blocks on a `TcpStream::connect_timeout`
+poll** (up to ~20s) until the port accepts, so the sidecar is ready by the time the
+webview navigates. Verified in `~/.ginno/logs/sidecar.log`: after `startup complete`
+the webview issues `GET /` + every `/_next/*` chunk (200), then the store init
+(`/health /agents /sessions /todos /providers /workflows /workflow_runs /artifacts`),
+Next RSC prefetches (`/kb.txt?_rsc`, `/settings/model-api.txt?_rsc`), and finally
+`WebSocket /ws/sessions/<id> [accepted]` — i.e. the packaged UI hydrates and the
+chat socket connects.
 
-1. **Serve the static export from the sidecar itself** — set Tauri's
-   `frontendDist` to `http://127.0.0.1:8787` and have FastAPI mount
-   `apps/web/out/` as StaticFiles. Same-origin, no CSP issue. The webview
-   shows a brief "loading" while the sidecar boots.
+## Verified flow
 
-2. **Tauri command bridge** — instead of HTTP, route sidecar calls
-   through Tauri's `invoke()` Rust bridge. The Rust side proxies to the
-   sidecar's localhost port. Bypasses WKWebView entirely.
+Packaged `.app`: webview loads the UI same-origin and the chat WebSocket connects
+(see sidecar log excerpt above). The same code path is shown visually in dev via
+`docs/smoke/ui-*.png` (workspace, settings/agents, workflow tab, KB).
 
-3. **Use `tauri-plugin-http`** — official plugin that allows fetch from
-   the webview to arbitrary origins including localhost.
-
-Option 1 is the simplest. Option 2 matches AgentScope 2.0's app/
-architecture. Option 3 is the least code.
-
-## Verified flow (without Tauri webview)
-
-Serving `apps/web/out/index.html` via `python3 -m http.server 5173` and
-the runtime via `uvicorn ... :8787`, the full ReAct round-trip works:
-chat → qwen3.7-plus streams tokens → calls MCP `read_text_file` →
-permission prompt → Allow → tool executes → assistant summarizes. See
-`docs/smoke/ginno-smoke-p3-static-frontend.png`.
-
-The packaged `.app` launches and spawns the sidecar correctly; only the
-webview ↔ sidecar HTTP bridge is blocked by the cross-protocol
-limitation noted above.
+Dev (`pnpm dev`): web on `:3000`, sidecar on `:8787`; full ReAct + multi-agent +
+widget + TODO + workflow flows verified end-to-end (see `docs/smoke/`).
