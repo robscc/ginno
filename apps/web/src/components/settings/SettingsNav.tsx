@@ -3,30 +3,34 @@
 import { useRouter } from "next/navigation";
 import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell } from "lucide-react";
 
-const MAIN = [
-  { id: "model-api", label: "模型 API", icon: Cpu },
-  { id: "skills", label: "Skills", icon: Sparkles },
-  { id: "mcp", label: "MCP 工具", icon: Plug },
-  { id: "agents", label: "Agent 管理", icon: Users },
-  { id: "workflows", label: "Workflows", icon: Workflow },
+type Item = { id: string; label: string; icon: typeof Cpu; color: string };
+
+const MAIN: Item[] = [
+  { id: "model-api", label: "模型 API", icon: Cpu, color: "#a78bfa" },
+  { id: "skills", label: "Skills", icon: Sparkles, color: "#c084fc" },
+  { id: "mcp", label: "MCP 工具", icon: Plug, color: "#34d399" },
+  { id: "agents", label: "Agent 管理", icon: Users, color: "#fb923c" },
+  { id: "workflows", label: "Workflows", icon: Workflow, color: "#4ade80" },
 ];
-const SYSTEM = [
-  { id: "general", label: "通用设置", icon: SlidersHorizontal },
-  { id: "notifications", label: "通知", icon: Bell },
+const SYSTEM: Item[] = [
+  { id: "general", label: "通用设置", icon: SlidersHorizontal, color: "#9ca3af" },
+  { id: "notifications", label: "通知", icon: Bell, color: "#fbbf24" },
 ];
 
 export function SettingsNav({ active }: { active: string }) {
   const router = useRouter();
-  const Item = ({ id, label, icon: Ic }: { id: string; label: string; icon: typeof Cpu }) => {
+  const Row = ({ id, label, icon: Ic, color }: Item) => {
     const sel = active === id;
     return (
       <button
         onClick={() => router.push(`/settings/${id}`)}
-        className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
-          sel ? "bg-card2 text-txt" : "text-muted hover:bg-card hover:text-txt"
-        }`}
+        className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors"
+        style={{
+          background: sel ? color + "1f" : "transparent",
+          color: sel ? "#fff" : "#9a9aa6",
+        }}
       >
-        <Ic className="h-4 w-4" style={sel ? { color: "#a78bfa" } : undefined} />
+        <Ic className="h-4 w-4" style={{ color }} />
         {label}
       </button>
     );
@@ -36,7 +40,7 @@ export function SettingsNav({ active }: { active: string }) {
       <div className="mb-3 px-3 text-sm font-semibold text-txt">Settings</div>
       <div className="space-y-0.5">
         {MAIN.map((m) => (
-          <Item key={m.id} {...m} />
+          <Row key={m.id} {...m} />
         ))}
       </div>
       <div className="mb-1.5 mt-4 px-3 text-[11px] font-semibold uppercase tracking-wider text-faint">
@@ -44,7 +48,7 @@ export function SettingsNav({ active }: { active: string }) {
       </div>
       <div className="space-y-0.5">
         {SYSTEM.map((m) => (
-          <Item key={m.id} {...m} />
+          <Row key={m.id} {...m} />
         ))}
       </div>
     </nav>

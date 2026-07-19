@@ -268,7 +268,7 @@ export function ChatStream({
                 }
               }}
               rows={2}
-              placeholder={`Ask ${targetAgent ? targetAgent.name : "any Agent"} …`}
+              placeholder="Ask any Agent …"
               className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-txt outline-none placeholder:text-faint"
             />
             <div className="flex items-center justify-between px-1 pt-1">

@@ -9,7 +9,7 @@ import { Icon } from "@/components/icons";
 
 function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }) {
   return (
-    <div className="mb-1.5 flex items-center gap-1.5 px-2.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+    <div className="mb-1.5 flex items-center gap-1.5 px-2.5 text-xs font-medium text-faint">
       {icon}
       <span>{label}</span>
       <ChevronDown className="ml-auto h-3.5 w-3.5" />
@@ -48,6 +48,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
             {g.sessions.map((s) => {
               const sel = onWorkspace && s.id === g.activeSessionId;
+              const hex = agentHex(g.agents.find((a) => a.id === s.agent_id)?.color);
               return (
                 <button
                   key={s.id}
@@ -55,9 +56,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     g.setActiveSession(s.id);
                     if (!onWorkspace) router.push("/");
                   }}
-                  className={`nav-item ${sel ? "nav-item-active" : ""}`}
+                  className={`nav-item ${sel ? "text-txt" : ""}`}
+                  style={sel ? { background: "rgba(99,102,241,0.14)" } : undefined}
                 >
-                  <Icon name={s.icon || "message-square"} className="h-4 w-4 text-indigo" />
+                  <Icon name={s.icon || "message-square"} className="h-4 w-4" style={{ color: hex }} />
                   <span className="truncate">{s.title || "Untitled"}</span>
                 </button>
               );
@@ -80,12 +82,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <Icon name={a.icon} className="h-3.5 w-3.5" />
                   </span>
                   <span className="truncate text-txt">{a.name}</span>
-                  <span className="ml-auto flex items-center gap-1 text-[11px] text-faint">
+                  <span className="ml-auto flex items-center gap-1 text-[11px]">
                     <span
                       className="h-1.5 w-1.5 rounded-full"
                       style={{ background: isActive ? "#22c55e" : "#52525b" }}
                     />
-                    {isActive ? "Active" : "Idle"}
+                    <span style={{ color: isActive ? "#4ade80" : "#71717a" }}>
+                      {isActive ? "Active" : "Idle"}
+                    </span>
                   </span>
                 </div>
               );

@@ -20,6 +20,7 @@ interface GinnoState {
   defaultProvider: string;
   activeSessionId: string | null;
   connected: boolean;
+  ready: boolean;
   setConnected: (v: boolean) => void;
   setActiveSession: (id: string | null) => void;
   reloadAgents: () => Promise<void>;
@@ -47,6 +48,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const [defaultProvider, setDefaultProvider] = useState("custom");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [ready, setReady] = useState(false);
 
   const reloadAgents = useCallback(async () => {
     try {
@@ -80,10 +82,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    reloadAgents();
-    reloadSessions();
-    reloadTodos();
-    reloadProviders();
+    (async () => {
+      await Promise.all([reloadAgents(), reloadSessions(), reloadTodos(), reloadProviders()]);
+      setReady(true);
+    })();
   }, [reloadAgents, reloadSessions, reloadTodos, reloadProviders]);
 
   const creatingRef = useRef(false);
@@ -147,6 +149,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     defaultProvider,
     activeSessionId,
     connected,
+    ready,
     setConnected,
     setActiveSession: setActiveSessionId,
     reloadAgents,

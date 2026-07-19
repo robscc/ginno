@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { MoreVertical } from "lucide-react";
+import { MoreVertical, Globe } from "lucide-react";
 import type { AgentConfig, SessionMeta } from "@/lib/types";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
@@ -55,7 +55,7 @@ export function TopBar({
           className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted hover:bg-card hover:text-txt"
           title="Model settings"
         >
-          <span className="h-1.5 w-1.5 rounded-full bg-violet" />
+          <Globe className="h-3.5 w-3.5 text-muted" />
           {modelLabel || "model"}
         </button>
         <button className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt">

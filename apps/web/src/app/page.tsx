@@ -14,7 +14,7 @@ export default function WorkspacePage() {
   // pick / create an active session once data is loaded
   useEffect(() => {
     if (didInit.current) return;
-    if (!g.agents.length) return; // wait for agents (needed for newSession default title)
+    if (!g.ready) return; // wait until the first fetch of sessions+agents settled
     if (g.sessions.length) {
       if (!g.activeSessionId) g.setActiveSession(g.sessions[0].id);
       didInit.current = true;
@@ -22,7 +22,7 @@ export default function WorkspacePage() {
       didInit.current = true;
       g.newSession(g.agents[0]?.id);
     }
-  }, [g.sessions, g.agents, g.activeSessionId, g]);
+  }, [g.ready, g.sessions, g.agents, g.activeSessionId, g]);
 
   const session =
     g.sessions.find((s) => s.id === g.activeSessionId) ?? g.sessions[0] ?? null;
