@@ -22,7 +22,8 @@ from pydantic import BaseModel
 from . import agents as agents_reg
 from . import paths
 from . import providers as prov_mod
-from .graph import build_graph
+from .agents.memory import ensure_agent_memory
+from .graph import BLOCK_PREFIX, build_graph
 from .hooks.dispatcher import HookDispatcher
 from .models import build_model
 from .mcp.registry import MCPRegistry
@@ -166,6 +167,9 @@ async def create_session(req: CreateSessionRequest) -> dict:
         mcp_tools=mcp_tools,
         hook_dispatcher=_hooks,
     )
+    ag = _agent_lookup(agent_id)
+    if ag:
+        ensure_agent_memory(ag.id, ag.name)
     title = req.title or _default_title(agent_id)
     icon = req.icon or _agent_icon(agent_id)
     meta = {
@@ -450,10 +454,28 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             if kind == "invoke":
                 user_text = msg.get("message", "")
                 user_text = _maybe_substitute_skill(user_text, session["project_slug"])
-                await _run_stream(ws, graph, config, user_text, session)
+                turn_agent = msg.get("agent_id") or session.get("agent_id")
+                if turn_agent and turn_agent != session.get("agent_id"):
+                    session["agent_id"] = turn_agent
+                    _session_meta_patch(
+                        session["project_slug"], session_id, {"agent_id": turn_agent}
+                    )
+                turn_config = {
+                    **config,
+                    "configurable": {**config["configurable"], "agent_id": turn_agent},
+                }
+                await _run_stream(ws, graph, turn_config, user_text, session, turn_agent)
             elif kind == "permission_response":
                 decision = msg.get("decision", "deny")
-                await _run_resume(ws, graph, config, {"decision": decision})
+                # resume under the agent that was active when the interrupt fired
+                resume_config = {
+                    **config,
+                    "configurable": {
+                        **config["configurable"],
+                        "agent_id": session.get("agent_id"),
+                    },
+                }
+                await _run_resume(ws, graph, resume_config, {"decision": decision})
             elif kind == "ping":
                 await ws.send_text(_ev("pong", {}))
             else:
@@ -468,12 +490,14 @@ async def _run_stream(
     config: dict,
     user_text: str,
     session: dict,
+    agent_id: str | None = None,
 ) -> None:
     """Append a HumanMessage and stream the agent loop until end or interrupt."""
     input_state = {
         "messages": [HumanMessage(content=user_text)],
         "workspace": session["workspace"],
         "project_slug": session["project_slug"],
+        "agent_id": agent_id or session.get("agent_id") or "",
         "active_skills": [],
         "pending_tool_calls": [],
     }
@@ -565,6 +589,20 @@ async def _stream_graph(
                                     _ev("tool.end", {
                                         "id": tc_results,
                                         "content": getattr(m, "content", "")[:500],
+                                    })
+                                )
+                    elif node_name == "permission":
+                        # resolve "running" tool bubbles that were denied by
+                        # tools_allow / hooks / policy / user (not streamed)
+                        for m in (delta or {}).get("messages", []):
+                            c = getattr(m, "content", "")
+                            if isinstance(c, str) and c.startswith(BLOCK_PREFIX):
+                                rest = c[len(BLOCK_PREFIX):]
+                                name, _, reason = rest.partition("]")
+                                await ws.send_text(
+                                    _ev("tool.end", {
+                                        "name": name.strip(),
+                                        "content": reason.strip() or c,
                                     })
                                 )
         if not saw_interrupt:

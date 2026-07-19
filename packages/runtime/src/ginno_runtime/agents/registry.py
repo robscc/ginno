@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
+from .memory import ensure_agent_memory
 
 
 @dataclass
@@ -109,6 +110,15 @@ def _write(cfg: AgentConfig) -> None:
     p.write_text(json.dumps(cfg.to_dict(), indent=2, ensure_ascii=False))
 
 
+# Distinct seed memory so each persona's prompt (and thus behaviour) differs
+# out of the box — demonstrates independent per-agent memory.
+_MEMORY_SEED: dict[str, str] = {
+    "dev": "Focus: code, PRs, debugging, repo ops. Prefer concrete tool actions.",
+    "research": "Focus: gather & synthesize information, read docs/notes, cite sources. Avoid mutating files.",
+    "writer": "Focus: draft & polish documents and messages with a clear voice.",
+}
+
+
 def ensure_seeded() -> None:
     """Create default agent files if the registry is empty."""
     paths.agents_dir().mkdir(parents=True, exist_ok=True)
@@ -116,6 +126,7 @@ def ensure_seeded() -> None:
         return
     for cfg in _SEED:
         _write(cfg)
+        ensure_agent_memory(cfg.id, cfg.name, _MEMORY_SEED.get(cfg.id, ""))
 
 
 def list_agents() -> list[AgentConfig]:

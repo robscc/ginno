@@ -141,10 +141,15 @@ export function ChatStream({
         break;
       case "tool.end": {
         const id = ev.id as string | undefined;
+        const name = ev.name as string | undefined;
         setMessages((m) => {
           let found = false;
           return m.map((msg) => {
-            if (!found && msg.role === "tool" && msg.pending && (!id || msg.toolCallId === id)) {
+            const matches =
+              msg.role === "tool" &&
+              msg.pending &&
+              (id ? msg.toolCallId === id : name ? msg.toolName === name : true);
+            if (!found && matches) {
               found = true;
               return { ...msg, content: ev.content as string, pending: false };
             }
@@ -172,10 +177,12 @@ export function ChatStream({
     const ws = wsRef.current;
     if (!text || !ws || !session) return;
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
+    if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     setMessages((m) => [...m, { id: mid(), role: "user", content: text }]);
     setStreamAgent(agentId);
     ws.send(JSON.stringify({ type: "invoke", message: text, agent_id: agentId }));
     setInput("");
+    setTarget(null);
   }
 
   function respond(decision: "allow" | "deny") {

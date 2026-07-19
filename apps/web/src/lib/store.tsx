@@ -28,6 +28,7 @@ interface GinnoState {
   reloadTodos: () => Promise<void>;
   reloadProviders: () => Promise<void>;
   newSession: (agent_id?: string) => Promise<SessionMeta | null>;
+  setSessionAgent: (id: string, agentId: string) => void;
   patchTodo: (id: string, patch: Partial<Todo>) => Promise<void>;
   addTodo: (data: Partial<Todo>) => Promise<void>;
 }
@@ -151,6 +152,13 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const setSessionAgent = useCallback((id: string, agentId: string) => {
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, agent_id: agentId } : s)));
+    api.patchSession(id, { agent_id: agentId }).catch(() => {
+      /* ignore */
+    });
+  }, []);
+
   const addTodo = useCallback(async (data: Partial<Todo>) => {
     try {
       const r = await api.createTodo(data);
@@ -176,6 +184,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     reloadTodos,
     reloadProviders,
     newSession,
+    setSessionAgent,
     patchTodo,
     addTodo,
   };

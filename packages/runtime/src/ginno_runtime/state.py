@@ -12,5 +12,6 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     workspace: str
     project_slug: str
+    agent_id: str
     active_skills: list[str]
     pending_tool_calls: list[dict]
