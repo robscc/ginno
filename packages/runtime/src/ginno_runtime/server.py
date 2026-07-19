@@ -24,6 +24,7 @@ from . import paths
 from . import providers as prov_mod
 from .agents.memory import ensure_agent_memory
 from .graph import BLOCK_PREFIX, build_graph
+from .tools.render_tools import RENDER_TOOL_NAMES
 from .hooks.dispatcher import HookDispatcher
 from .models import build_model
 from .mcp.registry import MCPRegistry
@@ -556,19 +557,55 @@ async def _stream_graph(
             if mode == "messages":
                 chunk, msg_meta = payload
                 content = getattr(chunk, "content", "")
-                if isinstance(content, str) and content:
+                if isinstance(content, list):
+                    for b in content:
+                        btype = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+                        if btype == "thinking":
+                            txt = b.get("thinking") or b.get("text") or ""
+                            if txt:
+                                await ws.send_text(_ev("thinking.delta", {"content": txt}))
+                        elif btype == "text":
+                            txt = b.get("text") or ""
+                            if txt:
+                                await ws.send_text(_ev("token.delta", {"content": txt}))
+                elif isinstance(content, str) and content:
                     await ws.send_text(_ev("token.delta", {"content": content}))
+                rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
+                if rk:
+                    await ws.send_text(_ev("thinking.delta", {"content": rk}))
                 tool_calls = getattr(chunk, "tool_call_chunks", None)
                 if tool_calls:
                     for tc in tool_calls:
                         if tc.get("name") and not tc.get("index") and not tc.get("args", "").strip():
+                            if tc["name"] in RENDER_TOOL_NAMES:
+                                continue  # surfaced as widget/ref block, not a tool bubble
                             await ws.send_text(
                                 _ev("tool.start", {"name": tc["name"], "id": tc.get("id")})
                             )
             elif mode == "updates":
                 # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
                 for node_name, delta in (payload or {}).items():
-                    if node_name == "__interrupt__":
+                    if node_name == "agent":
+                        for m in (delta or {}).get("messages", []):
+                            for tc in getattr(m, "tool_calls", []) or []:
+                                nm = tc.get("name")
+                                args = tc.get("args") or {}
+                                if nm == "render_widget":
+                                    await ws.send_text(
+                                        _ev("widget.emit", {
+                                            "kind": args.get("kind", "widget"),
+                                            "data": args.get("data"),
+                                        })
+                                    )
+                                elif nm == "attach_ref":
+                                    await ws.send_text(
+                                        _ev("ref.emit", {
+                                            "kind": args.get("kind", "file"),
+                                            "name": args.get("name", ""),
+                                            "ref_id": args.get("ref_id", ""),
+                                        })
+                                    )
+                    elif node_name == "__interrupt__":
                         items = delta if isinstance(delta, (list, tuple)) else [delta]
                         for intr in items:
                             value = getattr(intr, "value", None) or intr

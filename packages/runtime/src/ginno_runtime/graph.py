@@ -26,6 +26,7 @@ from .permission.policy import PermissionPolicy
 from .skills.loader import SkillLoader
 from .state import AgentState
 from .tools.builtin import build_builtin_tools
+from .tools.render_tools import RENDER_TOOL_NAMES, attach_ref, render_widget
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -42,6 +43,8 @@ def _resolve_agent(agent_id: str | None):
 
 
 def tool_allowed(agent, tool_name: str) -> bool:
+    if tool_name in RENDER_TOOL_NAMES:
+        return True  # structured-output tools are available to every agent
     if not agent:
         return True
     allow = agent.tools_allow or ["*"]
@@ -67,6 +70,15 @@ def build_agent_system_prompt(agent, project_slug: str, all_tools) -> str:
         "Tools available to you in this role: "
         + (", ".join(allowed) or "(none — answer from knowledge only)")
         + ". Never call a tool outside this list."
+    )
+    parts.append(
+        "Structured output: when a breakdown/status list is clearer than prose, call "
+        "render_widget(kind='stat_list', data={'title': <str>, 'items': [{'label': <str>, "
+        "'value': <str>, 'status': 'done'|'running'|'pending'|'ok'|'error'}]}) and follow it "
+        "with a one-line summary. To attach a reference chip (file/workflow/doc) below your "
+        "answer, call attach_ref(kind, name). Prefer these over long plain-text lists. "
+        "These two tools render silently on the user's screen — do NOT quote or repeat "
+        "their return values; just add a brief human summary."
     )
     skills = SkillLoader(project_slug=project_slug).build_index_prompt()
     if skills:
@@ -113,6 +125,10 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
         for tc in pending:
             name = tc.get("name", "")
             args = tc.get("args", {})
+
+            # structured-output tools never need permission / hooks
+            if name in RENDER_TOOL_NAMES:
+                continue
 
             # 0) per-agent tools_allow enforcement
             if not tool_allowed(agent, name):
@@ -183,7 +199,7 @@ def build_graph(
     hook_dispatcher=None,
 ):
     """Compose the main agent graph (single graph, union toolset)."""
-    all_tools = build_builtin_tools() + (mcp_tools or [])
+    all_tools = build_builtin_tools() + (mcp_tools or []) + [render_widget, attach_ref]
     policy = PermissionPolicy.from_settings()
 
     g = StateGraph(AgentState)

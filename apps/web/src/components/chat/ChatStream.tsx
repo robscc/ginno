@@ -6,16 +6,14 @@ import { useGinno } from "@/lib/store";
 import { openSessionSocket } from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
+import { InnerBlocks, RefBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
 import type { AgentConfig, SessionMeta } from "@/lib/types";
 
 interface ChatMsg {
   id: string;
-  role: "user" | "assistant" | "tool";
-  content: string;
+  role: "user" | "assistant";
+  blocks: Block[];
   agentId?: string | null;
-  toolName?: string;
-  toolCallId?: string;
-  pending?: boolean;
 }
 
 interface PermissionPrompt {
@@ -26,6 +24,55 @@ interface PermissionPrompt {
 let _mid = 0;
 const mid = () => `m${++_mid}`;
 
+function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }): Block[] {
+  const last = blocks[blocks.length - 1];
+  switch (ev.event) {
+    case "token.delta": {
+      const t = (ev.content as string) || "";
+      if (last && last.kind === "text") {
+        const next = blocks.slice();
+        next[next.length - 1] = { kind: "text", text: last.text + t };
+        return next;
+      }
+      return [...blocks, { kind: "text", text: t }];
+    }
+    case "thinking.delta": {
+      const t = (ev.content as string) || "";
+      if (last && last.kind === "thinking") {
+        const next = blocks.slice();
+        next[next.length - 1] = { kind: "thinking", text: last.text + t };
+        return next;
+      }
+      return [...blocks, { kind: "thinking", text: t }];
+    }
+    case "tool.start":
+      return [...blocks, { kind: "tool", id: ev.id as string | undefined, name: ev.name as string, content: "…", pending: true }];
+    case "tool.end": {
+      const id = ev.id as string | undefined;
+      const name = ev.name as string | undefined;
+      let found = false;
+      return blocks.map((b) => {
+        if (b.kind !== "tool") return b;
+        const matches = !found && (id ? b.id === id : name ? b.name === name : b.pending);
+        if (matches) {
+          found = true;
+          return { ...b, content: ev.content as string, pending: false };
+        }
+        return b;
+      });
+    }
+    case "widget.emit":
+      return [...blocks, { kind: "widget", widgetKind: ev.kind as string, data: ev.data }];
+    case "ref.emit":
+      return [
+        ...blocks,
+        { kind: "ref", refKind: ev.kind as string, name: ev.name as string, refId: ev.ref_id as string | undefined },
+      ];
+    default:
+      return blocks;
+  }
+}
+
 export function ChatStream({
   session,
   onRunningChange,
@@ -35,38 +82,31 @@ export function ChatStream({
 }) {
   const g = useGinno();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
-  const [stream, setStream] = useState("");
+  const [liveId, setLiveId] = useState<string | null>(null);
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [target, setTarget] = useState<string | null>(null);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const streamRef = useRef("");
-  const streamAgentRef = useRef<string | null>(null);
+  const liveIdRef = useRef<string | null>(null);
   useEffect(() => {
-    streamRef.current = stream;
-  }, [stream]);
-  useEffect(() => {
-    streamAgentRef.current = streamAgent;
-  }, [streamAgent]);
+    liveIdRef.current = liveId;
+  }, [liveId]);
 
-  // reset on session change
   useEffect(() => {
     setMessages([]);
-    setStream("");
+    setLiveId(null);
     setStreamAgent(null);
     setPermission(null);
   }, [session?.id]);
 
-  // websocket with auto-reconnect (so a sidecar restart or the packaged
-  // app's startup race doesn't leave the chat permanently disconnected)
+  // websocket with auto-reconnect
   useEffect(() => {
     if (!session) return;
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let sock: WebSocket | null = null;
-
     const connect = () => {
       sock = openSessionSocket(session.id);
       wsRef.current = sock;
@@ -90,7 +130,6 @@ export function ChatStream({
         if (!closed) timer = setTimeout(connect, 1500);
       };
     };
-
     connect();
     return () => {
       closed = true;
@@ -104,70 +143,55 @@ export function ChatStream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
 
-  const running = !!stream || !!permission || messages.some((m) => m.pending);
+  const running =
+    liveId !== null || !!permission || messages.some((m) => hasPendingTool(m.blocks));
   useEffect(() => {
     onRunningChange?.(running);
   }, [running, onRunningChange]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, stream]);
+  }, [messages]);
 
-  function flushStream() {
-    const text = streamRef.current;
-    const ag = streamAgentRef.current;
-    setStream("");
-    if (text) setMessages((m) => [...m, { id: mid(), role: "assistant", content: text, agentId: ag }]);
+  function ensureLive(): string {
+    if (liveIdRef.current) return liveIdRef.current;
+    const id = mid();
+    setMessages((m) => [...m, { id, role: "assistant", blocks: [], agentId: streamAgent }]);
+    setLiveId(id);
+    liveIdRef.current = id;
+    return id;
+  }
+
+  function mutateLive(ev: { event: string; [k: string]: unknown }) {
+    const id = ensureLive();
+    setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, blocks: applyBlock(msg.blocks, ev) } : msg)));
   }
 
   function handle(ev: { event: string; [k: string]: unknown }) {
     switch (ev.event) {
       case "token.delta":
-        setStream((t) => t + (ev.content as string));
-        break;
+      case "thinking.delta":
       case "tool.start":
-        flushStream();
-        setMessages((m) => [
-          ...m,
-          {
-            id: mid(),
-            role: "tool",
-            content: "…",
-            toolName: ev.name as string,
-            toolCallId: ev.id as string | undefined,
-            pending: true,
-          },
-        ]);
+      case "tool.end":
+      case "widget.emit":
+      case "ref.emit":
+        mutateLive(ev);
         break;
-      case "tool.end": {
-        const id = ev.id as string | undefined;
-        const name = ev.name as string | undefined;
-        setMessages((m) => {
-          let found = false;
-          return m.map((msg) => {
-            const matches =
-              msg.role === "tool" &&
-              msg.pending &&
-              (id ? msg.toolCallId === id : name ? msg.toolName === name : true);
-            if (!found && matches) {
-              found = true;
-              return { ...msg, content: ev.content as string, pending: false };
-            }
-            return msg;
-          });
-        });
-        break;
-      }
       case "permission.request":
         setPermission({ tool: ev.tool as string, args: ev.args });
         break;
       case "message.end":
-        flushStream();
+        setLiveId(null);
+        liveIdRef.current = null;
         setStreamAgent(null);
         break;
       case "error":
-        flushStream();
-        setMessages((m) => [...m, { id: mid(), role: "assistant", content: `[error] ${ev.message}` }]);
+        setLiveId(null);
+        liveIdRef.current = null;
+        setMessages((m) => [
+          ...m,
+          { id: mid(), role: "assistant", blocks: [{ kind: "text", text: `[error] ${ev.message}` }] },
+        ]);
         break;
     }
   }
@@ -178,7 +202,14 @@ export function ChatStream({
     if (!text || !ws || !session) return;
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
-    setMessages((m) => [...m, { id: mid(), role: "user", content: text }]);
+    const live = mid();
+    setMessages((m) => [
+      ...m,
+      { id: mid(), role: "user", blocks: [{ kind: "text", text }] },
+      { id: live, role: "assistant", blocks: [], agentId: agentId },
+    ]);
+    setLiveId(live);
+    liveIdRef.current = live;
     setStreamAgent(agentId);
     ws.send(JSON.stringify({ type: "invoke", message: text, agent_id: agentId }));
     setInput("");
@@ -191,13 +222,12 @@ export function ChatStream({
   }
 
   const agentById = (id?: string | null) => g.agents.find((a) => a.id === id) ?? null;
-  const targetAgent = agentById(target ?? session?.agent_id);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="mx-auto flex max-w-3xl flex-col gap-5">
-          {messages.length === 0 && !stream && (
+          {messages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
               Start a conversation. The agent will use tools and may ask for permission.
             </div>
@@ -207,25 +237,17 @@ export function ChatStream({
             m.role === "user" ? (
               <div key={m.id} className="flex justify-end">
                 <div className="max-w-[78%] rounded-2xl bg-card2 px-4 py-2.5 text-sm leading-relaxed text-txt">
-                  {m.content}
-                </div>
-              </div>
-            ) : m.role === "tool" ? (
-              <div key={m.id} className="flex">
-                <div className="w-full rounded-xl border border-line bg-card/60 px-3 py-2 font-mono text-xs text-muted">
-                  <span className="text-faint">tool · {m.toolName}</span>{" "}
-                  {m.pending ? <span className="text-yellow">running…</span> : <span className="text-green">✓</span>}
-                  {!m.pending && <pre className="mt-1 whitespace-pre-wrap text-faint">{m.content}</pre>}
+                  {(m.blocks[0] as Extract<Block, { kind: "text" }>)?.text}
                 </div>
               </div>
             ) : (
-              <AssistantBubble key={m.id} agent={agentById(m.agentId)} text={m.content} />
+              <AssistantBubble
+                key={m.id}
+                agent={agentById(m.agentId)}
+                blocks={m.blocks}
+                streaming={m.id === liveId}
+              />
             ),
-          )}
-
-          {stream && <AssistantBubble agent={agentById(streamAgent)} text={stream} streaming />}
-          {!stream && running && messages[messages.length - 1]?.role === "user" && (
-            <AssistantBubble agent={targetAgent} text="" streaming />
           )}
 
           <div ref={bottomRef} />
@@ -302,7 +324,7 @@ export function ChatStream({
                 }
               }}
               rows={2}
-              placeholder="Ask any Agent …"
+              placeholder="Ask any Agent …  (try: 用 stat_list 卡片展示 PR 状态)"
               className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-txt outline-none placeholder:text-faint"
             />
             <div className="flex items-center justify-between px-1 pt-1">
@@ -332,14 +354,15 @@ export function ChatStream({
 
 function AssistantBubble({
   agent,
-  text,
+  blocks,
   streaming,
 }: {
   agent: AgentConfig | null;
-  text: string;
+  blocks: Block[];
   streaming?: boolean;
 }) {
   const hex = agentHex(agent?.color);
+  const hasInner = blocks.some((b) => b.kind !== "ref");
   return (
     <div className="flex gap-3">
       <div
@@ -354,11 +377,8 @@ function AssistantBubble({
           <span className="text-xs text-faint">{streaming ? "thinking…" : "just now"}</span>
         </div>
         <div className="rounded-xl border border-line bg-card px-4 py-3 text-sm leading-relaxed text-txt">
-          {text ? (
-            <span className="whitespace-pre-wrap">
-              {text}
-              {streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse bg-violet" />}
-            </span>
+          {hasInner ? (
+            <InnerBlocks blocks={blocks} streaming={streaming} />
           ) : (
             <span className="inline-flex items-center gap-1 text-muted">
               <span className="flex gap-0.5">
@@ -368,6 +388,7 @@ function AssistantBubble({
             </span>
           )}
         </div>
+        <RefBlocks blocks={blocks} />
       </div>
     </div>
   );
