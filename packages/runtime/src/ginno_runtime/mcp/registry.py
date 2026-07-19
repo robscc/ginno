@@ -245,17 +245,27 @@ class MCPRegistry:
         return self.servers
 
     async def connect_all(self) -> dict[str, _LiveServer]:
-        """Spawn/connect all configured servers. Idempotent."""
+        """Spawn/connect all configured servers. Idempotent.
+
+        Each server is given a connect timeout so a hung spawn (e.g. `npx`
+        stalling on first-run install or a missing binary) cannot block
+        sidecar startup — the HTTP/WS server must come up regardless so the
+        UI can connect and chat even when an MCP server is misbehaving.
+        """
         self.ensure_loaded()
         for name, cfg in self.servers.items():
             if name in self._live:
                 continue
+            live = _LiveServer(cfg)
             try:
-                live = _LiveServer(cfg)
-                await live.connect()
+                await asyncio.wait_for(live.connect(), timeout=15)
                 self._live[name] = live
             except Exception:
-                log.exception("mcp[%s] failed to connect", name)
+                log.exception("mcp[%s] failed to connect (skipped)", name)
+                try:
+                    await live.close()
+                except Exception:
+                    pass
         return self._live
 
     async def close_all(self) -> None:

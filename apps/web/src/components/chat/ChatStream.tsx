@@ -59,21 +59,48 @@ export function ChatStream({
     setPermission(null);
   }, [session?.id]);
 
-  // websocket
+  // websocket with auto-reconnect (so a sidecar restart or the packaged
+  // app's startup race doesn't leave the chat permanently disconnected)
   useEffect(() => {
     if (!session) return;
-    const sock = openSessionSocket(session.id);
-    sock.onopen = () => g.setConnected(true);
-    sock.onclose = () => g.setConnected(false);
-    sock.onmessage = (e) => {
+    let closed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let sock: WebSocket | null = null;
+
+    const connect = () => {
+      sock = openSessionSocket(session.id);
+      wsRef.current = sock;
+      sock.onopen = () => g.setConnected(true);
+      sock.onmessage = (e) => {
+        try {
+          handle(JSON.parse(e.data));
+        } catch {
+          /* ignore */
+        }
+      };
+      sock.onerror = () => {
+        try {
+          sock?.close();
+        } catch {
+          /* ignore */
+        }
+      };
+      sock.onclose = () => {
+        g.setConnected(false);
+        if (!closed) timer = setTimeout(connect, 1500);
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      if (timer) clearTimeout(timer);
       try {
-        handle(JSON.parse(e.data));
+        sock?.close();
       } catch {
         /* ignore */
       }
     };
-    wsRef.current = sock;
-    return () => sock.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
 

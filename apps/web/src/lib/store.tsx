@@ -82,10 +82,29 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    let alive = true;
     (async () => {
+      // Wait for the sidecar before loading data. This matters for the
+      // packaged desktop app, where the webview can boot before the
+      // sidecar has finished starting, and for any tab that opened while
+      // the sidecar was restarting.
+      for (let i = 0; i < 60; i++) {
+        try {
+          const h = await api.health();
+          if (h?.ok) break;
+        } catch {
+          /* sidecar not up yet */
+        }
+        await new Promise((r) => setTimeout(r, 500));
+        if (!alive) return;
+      }
+      if (!alive) return;
       await Promise.all([reloadAgents(), reloadSessions(), reloadTodos(), reloadProviders()]);
-      setReady(true);
+      if (alive) setReady(true);
     })();
+    return () => {
+      alive = false;
+    };
   }, [reloadAgents, reloadSessions, reloadTodos, reloadProviders]);
 
   const creatingRef = useRef(false);
