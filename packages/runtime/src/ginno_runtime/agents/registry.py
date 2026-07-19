@@ -72,7 +72,7 @@ _SEED: list[AgentConfig] = [
             "modify files unless asked."
         ),
         provider="custom",
-        tools_allow=["read_file", "glob_files", "grep_files", "mcp_*"],
+        tools_allow=["read_file", "glob_files", "grep_files", "mcp_*", "todo_list"],
     ),
     AgentConfig(
         id="writer",
@@ -84,7 +84,7 @@ _SEED: list[AgentConfig] = [
             "communications with a clear, polished voice."
         ),
         provider="custom",
-        tools_allow=["read_file", "write_file", "edit_file", "glob_files", "mcp_*"],
+        tools_allow=["read_file", "write_file", "edit_file", "glob_files", "mcp_*", "todo_*"],
     ),
 ]
 
@@ -127,6 +127,28 @@ def ensure_seeded() -> None:
     for cfg in _SEED:
         _write(cfg)
         ensure_agent_memory(cfg.id, cfg.name, _MEMORY_SEED.get(cfg.id, ""))
+
+
+# TODO tool patterns each persona should have (read-only for research).
+_TODO_PATTERNS: dict[str, list[str]] = {
+    "dev": ["todo_*"],
+    "research": ["todo_list"],
+    "writer": ["todo_*"],
+}
+
+
+def ensure_todo_tools() -> None:
+    """Merge the TODO tool patterns into existing agents (idempotent migration)."""
+    for cfg in list_agents():
+        needed = _TODO_PATTERNS.get(cfg.id)
+        if not needed:
+            continue
+        allow = list(cfg.tools_allow or ["*"])
+        if "*" in allow:
+            continue  # already all-inclusive
+        added = [p for p in needed if p not in allow]
+        if added:
+            update_agent(cfg.id, {"tools_allow": allow + added})
 
 
 def list_agents() -> list[AgentConfig]:

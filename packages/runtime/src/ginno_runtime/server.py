@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
     await _mcp.connect_all()
     _hooks = HookDispatcher.from_settings()
     todo_store.ensure_seeded()
+    agents_reg.ensure_todo_tools()
     yield
     if _mcp:
         await _mcp.close_all()
@@ -642,6 +643,10 @@ async def _stream_graph(
                                         "content": reason.strip() or c,
                                     })
                                 )
+        # refresh the right-panel TODO list after every turn (the agent may
+        # have mutated it via the todo_* tools); the checkbox path is optimistic
+        # and doesn't need this.
+        await ws.send_text(_ev("todos.changed", {}))
         if not saw_interrupt:
             await ws.send_text(_ev("message.end", {}))
     except Exception as e:

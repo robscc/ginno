@@ -27,6 +27,7 @@ from .skills.loader import SkillLoader
 from .state import AgentState
 from .tools.builtin import build_builtin_tools
 from .tools.render_tools import RENDER_TOOL_NAMES, attach_ref, render_widget
+from .tools.todo_tools import ALL_TODO_TOOLS, TODO_TOOL_NAMES
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -80,6 +81,13 @@ def build_agent_system_prompt(agent, project_slug: str, all_tools) -> str:
         "These two tools render silently on the user's screen — do NOT quote or repeat "
         "their return values; just add a brief human summary."
     )
+    if any(n.startswith("todo_") for n in allowed):
+        parts.append(
+            "The user's daily TODO list is shown in the right panel. Use todo_list to read "
+            "it (each line starts with the item id), and todo_create / todo_update / "
+            "todo_done / todo_delete to change it. When you add or complete items, say so "
+            "briefly. If you only have todo_list, you may read but not modify it."
+        )
     skills = SkillLoader(project_slug=project_slug).build_index_prompt()
     if skills:
         parts.append("\n" + skills)
@@ -147,6 +155,10 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                     },
                 )
 
+            # TODO tools: an agent that has them (per tools_allow) never needs a prompt
+            if name in TODO_TOOL_NAMES:
+                continue
+
             # 1) PreToolUse hooks
             if hook_dispatcher:
                 results = await hook_dispatcher.dispatch(
@@ -199,7 +211,9 @@ def build_graph(
     hook_dispatcher=None,
 ):
     """Compose the main agent graph (single graph, union toolset)."""
-    all_tools = build_builtin_tools() + (mcp_tools or []) + [render_widget, attach_ref]
+    all_tools = (
+        build_builtin_tools() + (mcp_tools or []) + [render_widget, attach_ref] + ALL_TODO_TOOLS
+    )
     policy = PermissionPolicy.from_settings()
 
     g = StateGraph(AgentState)

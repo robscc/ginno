@@ -180,6 +180,9 @@ export function ChatStream({
       case "permission.request":
         setPermission({ tool: ev.tool as string, args: ev.args });
         break;
+      case "todos.changed":
+        g.reloadTodos();
+        break;
       case "message.end":
         setLiveId(null);
         liveIdRef.current = null;
