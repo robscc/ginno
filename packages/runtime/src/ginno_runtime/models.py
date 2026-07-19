@@ -1,82 +1,71 @@
-"""Model factory — bind provider configs to LangChain chat models.
+"""Model factory — build a LangChain chat model from a provider id.
 
-Reads API keys from env first, then from ~/.ginno/settings.json's `env`
-block (Claude Code pattern). Supports anthropic / openai / ollama.
+Reads provider config from settings.json `providers` (see providers.py).
+Sampling params: temperature as a top-level kwarg; max_tokens via
+model_kwargs (robust across langchain versions). base_url + api_key as
+top-level kwargs (verified present on ChatAnthropic + ChatOpenAI).
 """
 
 from __future__ import annotations
 
-import json
-import os
 from typing import Any
 
-from . import paths
+from . import providers as prov_mod
 
 
-def _load_settings() -> dict[str, Any]:
-    p = paths.settings_path()
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text() or "{}")
-    except json.JSONDecodeError:
-        return {}
+def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
+    temperature = cfg.get("temperature")
+    model_kwargs: dict[str, Any] = {}
+    mt = cfg.get("max_tokens")
+    if mt:
+        model_kwargs["max_tokens"] = int(mt)
+    return (float(temperature) if temperature is not None else None, model_kwargs)
 
 
-def _resolve_env(provider: str) -> dict[str, str]:
-    """Pull env vars from settings.json `env` block; do not override os.environ."""
-    settings = _load_settings()
-    block = settings.get("env", {}) or {}
-    out: dict[str, str] = {}
-    # Apply all env vars from settings, then current os.environ takes precedence.
-    for k, v in block.items():
-        out[k] = str(v)
-    for k, v in os.environ.items():
-        out[k] = v
-    return out
+def build_model(provider_id: str, model_name: str | None = None):
+    """Return a LangChain chat model for the given provider id.
 
-
-def build_model(provider: str, name: str):
-    """Return a LangChain chat model for the given provider/name.
-
-    Raises ValueError if the provider is unknown or no API key is set.
+    `model_name` overrides the provider's configured default/model.
+    Raises ValueError if the provider is unknown, disabled, or missing a key.
     """
-    env = _resolve_env(provider)
+    all_prov = prov_mod.load_providers()
+    cfg = all_prov.get(provider_id)
+    if not cfg:
+        raise ValueError(f"unknown provider: {provider_id}")
+    if not cfg.get("enabled"):
+        raise ValueError(f"provider {provider_id} is disabled (enable it in Settings)")
 
-    if provider == "anthropic":
-        key = env.get("ANTHROPIC_API_KEY")
+    proto = cfg.get("protocol")
+    model = model_name or prov_mod.model_for_provider(all_prov, provider_id)
+    temperature, model_kwargs = _sampling(cfg)
+    base_url = cfg.get("base_url") or None
+
+    if proto == "anthropic":
+        key = cfg.get("api_key")
         if not key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY not set. Put it in ~/.ginno/settings.json under "
-                "`env.ANTHROPIC_API_KEY` or export it."
-            )
+            raise ValueError("Anthropic API Key 为空 — 在 设置 → 模型 API 填写")
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=name, api_key=key, streaming=True)
-
-    if provider == "openai":
-        key = env.get("OPENAI_API_KEY")
-        if not key:
-            raise ValueError(
-                "OPENAI_API_KEY not set. Put it in ~/.ginno/settings.json under "
-                "`env.OPENAI_API_KEY` or export it."
-            )
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(
-            model=name,
+        return ChatAnthropic(
+            model=model or "claude-3-7-sonnet-20250219",
             api_key=key,
-            base_url=env.get("OPENAI_BASE_URL") or None,
+            base_url=base_url,
+            temperature=temperature if temperature is not None else 0.7,
+            model_kwargs=model_kwargs or {"max_tokens": 4096},
             streaming=True,
         )
 
-    if provider == "ollama":
-        try:
-            from langchain_ollama import ChatOllama
-        except ImportError as e:
-            raise ValueError(
-                "Ollama support requires `pip install langchain-ollama`"
-            ) from e
-        return ChatOllama(model=name, base_url=env.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+    # openai / openai-compatible
+    key = cfg.get("api_key") or ""
+    if proto == "openai" and not base_url:
+        base_url = "https://api.openai.com/v1"
+    from langchain_openai import ChatOpenAI
 
-    raise ValueError(f"unknown provider: {provider}")
+    return ChatOpenAI(
+        model=model or "gpt-4o",
+        api_key=key or "not-needed",
+        base_url=base_url,
+        temperature=temperature if temperature is not None else 0.7,
+        model_kwargs=model_kwargs or {"max_tokens": 8192},
+        streaming=True,
+    )
