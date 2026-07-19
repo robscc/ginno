@@ -63,6 +63,8 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
     }
     case "widget.emit":
       return [...blocks, { kind: "widget", widgetKind: ev.kind as string, data: ev.data }];
+    case "workflow.emit":
+      return [...blocks, { kind: "workflow", run: ev.run as import("@/lib/types").WorkflowRun }];
     case "ref.emit":
       return [
         ...blocks,
@@ -175,6 +177,7 @@ export function ChatStream({
       case "tool.end":
       case "widget.emit":
       case "ref.emit":
+      case "workflow.emit":
         mutateLive(ev);
         break;
       case "permission.request":
@@ -182,6 +185,13 @@ export function ChatStream({
         break;
       case "todos.changed":
         g.reloadTodos();
+        break;
+      case "workflows.changed":
+        g.reloadWorkflows();
+        g.reloadWorkflowRuns();
+        break;
+      case "artifacts.changed":
+        g.reloadArtifacts();
         break;
       case "message.end":
         setLiveId(null);

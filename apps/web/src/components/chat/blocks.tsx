@@ -1,13 +1,15 @@
 "use client";
 
 import { Flag, Check, Loader2, Circle, FileText, Workflow, Link2 } from "lucide-react";
+import type { WorkflowRun } from "@/lib/types";
 
 export type Block =
   | { kind: "text"; text: string }
   | { kind: "widget"; widgetKind: string; data: unknown }
   | { kind: "ref"; refKind: string; name: string; refId?: string }
   | { kind: "tool"; id?: string; name: string; content: string; pending: boolean }
-  | { kind: "thinking"; text: string };
+  | { kind: "thinking"; text: string }
+  | { kind: "workflow"; run: WorkflowRun };
 
 const STATUS_COLOR: Record<string, string> = {
   done: "#22c55e",
@@ -65,6 +67,32 @@ function WidgetBlock({ kind, data }: { kind: string; data: unknown }) {
   );
 }
 
+function WorkflowBlock({ run }: { run: WorkflowRun }) {
+  const done = run.steps.filter((s) => s.status === "done").length;
+  const total = run.steps.length;
+  return (
+    <div className="my-2 rounded-lg border border-line bg-base/50 p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-txt">
+        <Workflow className="h-3.5 w-3.5 text-violet" />
+        {run.name || "Workflow"}
+        <span className="ml-auto text-xs font-normal text-faint">
+          {run.status} · {done}/{total}
+        </span>
+      </div>
+      <div className="space-y-1">
+        {run.steps.map((s) => (
+          <div key={s.id} className="flex items-center gap-2 text-xs">
+            <StatusGlyph status={s.status} />
+            <span className={s.status === "done" ? "text-muted line-through" : "text-txt"}>
+              {s.title}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RefChip({ refKind, name }: { refKind: string; name: string }) {
   const Ic = refKind === "workflow" ? Workflow : refKind === "link" ? Link2 : FileText;
   return (
@@ -110,6 +138,7 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
             </span>
           );
         if (b.kind === "widget") return <WidgetBlock key={i} kind={b.widgetKind} data={b.data} />;
+        if (b.kind === "workflow") return <WorkflowBlock key={i} run={b.run} />;
         if (b.kind === "tool")
           return <ToolBlock key={i} name={b.name} content={b.content} pending={b.pending} />;
         if (b.kind === "thinking")

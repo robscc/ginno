@@ -130,3 +130,69 @@ export async function listSkills(project_slug?: string) {
 export function openSessionSocket(session_id: string): WebSocket {
   return new WebSocket(`ws://127.0.0.1:${PORT}/ws/sessions/${session_id}`);
 }
+
+// ---- workflows ----
+export async function listWorkflows() {
+  return json<import("./types").WorkflowDef[]>(`${BASE}/workflows`);
+}
+export async function listWorkflowRuns() {
+  return json<import("./types").WorkflowRun[]>(`${BASE}/workflow_runs`);
+}
+export async function createWorkflow(data: Partial<import("./types").WorkflowDef>) {
+  return json<{ ok: boolean; workflow?: import("./types").WorkflowDef }>(`${BASE}/workflows`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(data),
+  });
+}
+export async function deleteWorkflow(id: string) {
+  return json<{ ok: boolean }>(`${BASE}/workflows/${id}`, { method: "DELETE" });
+}
+
+// ---- artifacts ----
+export async function listArtifacts(project_slug = "default") {
+  return json<import("./types").Artifact[]>(`${BASE}/artifacts?project_slug=${project_slug}`);
+}
+
+// ---- settings / mcp / skills / kb ----
+export async function getSettings() {
+  return json<Record<string, unknown>>(`${BASE}/settings`);
+}
+export async function putSettings(data: Record<string, unknown>) {
+  return json<{ ok: boolean }>(`${BASE}/settings`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify(data),
+  });
+}
+export async function getMcp() {
+  return json<{ servers: string[]; tools: string[] }>(`${BASE}/mcp`);
+}
+export async function getMcpConfig() {
+  return json<{ mcpServers: Record<string, unknown> }>(`${BASE}/mcp/config`);
+}
+export async function putMcp(data: unknown) {
+  return json<{ ok: boolean }>(`${BASE}/mcp`, { method: "PUT", headers: H, body: JSON.stringify(data) });
+}
+export async function reloadMcp() {
+  return json<{ ok: boolean; servers: string[] }>(`${BASE}/mcp/reload`, { method: "POST" });
+}
+export async function createSkill(data: { name: string; body: string }) {
+  return json<{ ok: boolean; error?: string }>(`${BASE}/skills`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(data),
+  });
+}
+export async function deleteSkill(name: string) {
+  return json<{ ok: boolean }>(`${BASE}/skills/${name}`, { method: "DELETE" });
+}
+export async function kbServers() {
+  return json<Array<{ name: string; tools: string[] }>>(`${BASE}/kb/servers`);
+}
+export async function kbSearch(q: string) {
+  return json<{ q: string; results: string[] }>(`${BASE}/kb/search?q=${encodeURIComponent(q)}`);
+}
+export async function kbList(path = "") {
+  return json<{ path: string; results: string[] }>(`${BASE}/kb/list?path=${encodeURIComponent(path)}`);
+}

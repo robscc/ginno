@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ChevronDown, BookOpen, Settings as SettingsIcon, LogOut } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
+import { applyTheme } from "@/components/settings/GeneralSettings";
 
 function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }) {
   return (
@@ -22,6 +24,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const active = g.sessions.find((s) => s.id === g.activeSessionId) ?? null;
+
+  // apply persisted theme as early as the shell mounts
+  useEffect(() => {
+    let t = "dark";
+    try {
+      t = localStorage.getItem("ginno-theme") || "dark";
+    } catch {
+      /* ignore */
+    }
+    applyTheme(t);
+  }, []);
 
   const onWorkspace = pathname === "/";
   const onSettings = pathname.startsWith("/settings");

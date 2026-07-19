@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -30,6 +31,10 @@ from .models import build_model
 from .mcp.registry import MCPRegistry
 from .skills.loader import SkillLoader
 from .todos import store as todo_store
+from . import artifacts as art_store
+from . import workflows as wf_store
+from .tools.artifact_tools import ARTIFACT_TOOL_NAMES
+from .tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 
 
 # Process-wide MCP registry — spawned at startup.
@@ -47,6 +52,7 @@ async def lifespan(app: FastAPI):
     _hooks = HookDispatcher.from_settings()
     todo_store.ensure_seeded()
     agents_reg.ensure_todo_tools()
+    wf_store.ensure_seeded()
     yield
     if _mcp:
         await _mcp.close_all()
@@ -380,6 +386,180 @@ async def delete_todo_endpoint(todo_id: str) -> dict:
     return {"ok": todo_store.delete_todo(todo_id)}
 
 
+# ---- settings (general) ----
+@app.put("/settings")
+async def put_settings(data: dict) -> dict:
+    paths.settings_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    return {"ok": True}
+
+
+# ---- workflows ----
+@app.get("/workflows")
+async def list_workflows_endpoint() -> list[dict]:
+    return wf_store.list_defs()
+
+
+@app.post("/workflows")
+async def create_workflow_endpoint(data: dict) -> dict:
+    return {"ok": True, "workflow": wf_store.create_def(data)}
+
+
+@app.put("/workflows/{wf_id}")
+async def update_workflow_endpoint(wf_id: str, data: dict) -> dict:
+    wf = wf_store.update_def(wf_id, data)
+    return {"ok": bool(wf), "workflow": wf}
+
+
+@app.delete("/workflows/{wf_id}")
+async def delete_workflow_endpoint(wf_id: str) -> dict:
+    return {"ok": wf_store.delete_def(wf_id)}
+
+
+@app.get("/workflow_runs")
+async def list_workflow_runs_endpoint() -> list[dict]:
+    return wf_store.list_runs()
+
+
+# ---- artifacts ----
+@app.get("/artifacts")
+async def list_artifacts_endpoint(project_slug: str = "default") -> list[dict]:
+    return art_store.list_artifacts(project_slug)
+
+
+# ---- mcp settings ----
+@app.get("/mcp/config")
+async def get_mcp_config_endpoint() -> dict:
+    p = paths.mcp_config_path()
+    if not p.exists():
+        return {"mcpServers": {}}
+    try:
+        return json.loads(p.read_text() or '{"mcpServers": {}}')
+    except json.JSONDecodeError:
+        return {"mcpServers": {}}
+
+
+@app.put("/mcp")
+async def put_mcp_endpoint(data: dict) -> dict:
+    paths.mcp_config_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    return {"ok": True}
+
+
+@app.post("/mcp/reload")
+async def reload_mcp_endpoint() -> dict:
+    global _mcp
+    if _mcp:
+        await _mcp.close_all()
+    _mcp = MCPRegistry()
+    _mcp.load()
+    await _mcp.connect_all()
+    return {"ok": True, "servers": list(_mcp.ensure_loaded().keys())}
+
+
+# ---- skills settings ----
+@app.get("/skills/{name}/body")
+async def get_skill_body(name: str, project_slug: str | None = None) -> dict:
+    s = SkillLoader(project_slug=project_slug).get(name)
+    return {"ok": bool(s), "body": s.body if s else ""}
+
+
+@app.post("/skills")
+async def create_skill_endpoint(data: dict) -> dict:
+    name = (data.get("name") or "").strip()
+    body = data.get("body") or ""
+    if not name:
+        return {"ok": False, "error": "name required"}
+    d = paths.global_skills_dir() / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(body, encoding="utf-8")
+    return {"ok": True}
+
+
+@app.delete("/skills/{name}")
+async def delete_skill_endpoint(name: str) -> dict:
+    import shutil
+
+    d = paths.global_skills_dir() / name
+    if d.exists():
+        shutil.rmtree(d)
+        return {"ok": True}
+    return {"ok": False}
+
+
+# ---- knowledge base (via MCP vault servers) ----
+@app.get("/kb/servers")
+async def kb_servers_endpoint() -> list[dict]:
+    if not _mcp:
+        return []
+    return [
+        {"name": n, "tools": [t.name for t in live.tools]}
+        for n, live in _mcp._live.items()
+    ]
+
+
+def _server_roots(name: str) -> list[str]:
+    """Best-effort root path(s) for a server, read from mcp.json (the filesystem
+    server takes its allowed directory as a positional arg)."""
+    p = paths.mcp_config_path()
+    if not p.exists():
+        return []
+    try:
+        cfg = json.loads(p.read_text() or "{}")
+    except json.JSONDecodeError:
+        return []
+    srv = (cfg.get("mcpServers") or {}).get(name, {}) or {}
+    return [a for a in (srv.get("args") or []) if isinstance(a, str) and a.startswith("/")]
+
+
+async def _kb_call_one(live, tool_name: str, args: dict) -> list[str]:
+    out: list[str] = []
+    if not live.session or not any(t.name == tool_name for t in live.tools):
+        return out
+    try:
+        res = await live.session.call_tool(tool_name, args)
+        for c in getattr(res, "content", []) or []:
+            t = getattr(c, "text", None)
+            if t:
+                out.append(t)
+    except Exception:
+        pass
+    return out
+
+
+async def _kb_call(tool_name: str, args: dict) -> list[str]:
+    out: list[str] = []
+    if not _mcp:
+        return out
+    for live in _mcp._live.values():
+        out.extend(await _kb_call_one(live, tool_name, args))
+    return out
+
+
+@app.get("/kb/search")
+async def kb_search_endpoint(q: str = "") -> dict:
+    if not q or not _mcp:
+        return {"q": q, "results": []}
+    results: list[str] = []
+    for name, live in _mcp._live.items():
+        for root in _server_roots(name) or [""]:
+            results.extend(await _kb_call_one(live, "search_files", {"path": root, "pattern": q}))
+    return {"q": q, "results": results}
+
+
+@app.get("/kb/list")
+async def kb_list_endpoint(path: str = "") -> dict:
+    if not _mcp:
+        return {"path": path, "results": []}
+    results: list[str] = []
+    for name, live in _mcp._live.items():
+        roots = [path] if path else (_server_roots(name) or [""])
+        for root in roots:
+            r = await _kb_call_one(live, "list_directory", {"path": root}) or await _kb_call_one(
+                live, "directory_tree", {"path": root}
+            )
+            results.extend(r)
+    return {"path": path, "results": results}
+
+
 def _find_meta(session_id: str) -> tuple[dict, str] | None:
     for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
         slug = slug_dir.parent.parent.name
@@ -554,6 +734,8 @@ async def _stream_graph(
             stream = graph.astream(input_state, config=config, stream_mode=["messages", "updates"])
 
         saw_interrupt = False
+        special_ids: dict[str, str] = {}  # tool_call id -> special tool name (no bubble)
+        slug = (config.get("configurable") or {}).get("project_slug", "default")
         async for mode, payload in stream:
             if mode == "messages":
                 chunk, msg_meta = payload
@@ -578,8 +760,13 @@ async def _stream_graph(
                 if tool_calls:
                     for tc in tool_calls:
                         if tc.get("name") and not tc.get("index") and not tc.get("args", "").strip():
-                            if tc["name"] in RENDER_TOOL_NAMES:
-                                continue  # surfaced as widget/ref block, not a tool bubble
+                            if (
+                                tc["name"] in RENDER_TOOL_NAMES
+                                or tc["name"] in WORKFLOW_TOOL_NAMES
+                                or tc["name"] in ARTIFACT_TOOL_NAMES
+                            ):
+                                special_ids[tc.get("id")] = tc["name"]
+                                continue  # surfaced as widget/ref/workflow block, not a tool bubble
                             await ws.send_text(
                                 _ev("tool.start", {"name": tc["name"], "id": tc.get("id")})
                             )
@@ -591,6 +778,12 @@ async def _stream_graph(
                             for tc in getattr(m, "tool_calls", []) or []:
                                 nm = tc.get("name")
                                 args = tc.get("args") or {}
+                                if (
+                                    nm in RENDER_TOOL_NAMES
+                                    or nm in WORKFLOW_TOOL_NAMES
+                                    or nm in ARTIFACT_TOOL_NAMES
+                                ):
+                                    special_ids[tc.get("id")] = nm
                                 if nm == "render_widget":
                                     await ws.send_text(
                                         _ev("widget.emit", {
@@ -599,12 +792,24 @@ async def _stream_graph(
                                         })
                                     )
                                 elif nm == "attach_ref":
+                                    kind = args.get("kind", "file")
                                     await ws.send_text(
                                         _ev("ref.emit", {
-                                            "kind": args.get("kind", "file"),
+                                            "kind": kind,
                                             "name": args.get("name", ""),
                                             "ref_id": args.get("ref_id", ""),
                                         })
+                                    )
+                                    if kind in ("file", "doc", "workflow", "link"):
+                                        art_store.add_artifact(
+                                            slug, kind, args.get("name", ""), args.get("ref_id", "")
+                                        )
+                                elif nm == "artifact_register":
+                                    art_store.add_artifact(
+                                        slug,
+                                        args.get("kind", "file"),
+                                        args.get("name", ""),
+                                        args.get("ref", ""),
                                     )
                     elif node_name == "__interrupt__":
                         items = delta if isinstance(delta, (list, tuple)) else [delta]
@@ -621,13 +826,23 @@ async def _stream_graph(
                     elif node_name == "tools":
                         msgs = (delta or {}).get("messages", [])
                         for m in msgs:
-                            tc_results = getattr(m, "tool_call_id", None)
-                            if tc_results:
+                            tc_id = getattr(m, "tool_call_id", None)
+                            raw = getattr(m, "content", "") or ""
+                            nm = special_ids.get(tc_id)
+                            if nm in WORKFLOW_TOOL_NAMES:
+                                mm = re.search(r"run_id=([0-9a-f]{6,})", raw)
+                                rid = mm.group(1) if mm else None
+                                run = (RUN_CACHE.get(rid) if rid else None) or (
+                                    wf_store.get_run(rid) if rid else None
+                                )
+                                if run:
+                                    await ws.send_text(_ev("workflow.emit", {"run": run}))
+                                # no ordinary tool bubble for workflow tools
+                            elif nm in RENDER_TOOL_NAMES or nm in ARTIFACT_TOOL_NAMES:
+                                pass  # widget/ref emitted at agent-update; no bubble
+                            elif tc_id:
                                 await ws.send_text(
-                                    _ev("tool.end", {
-                                        "id": tc_results,
-                                        "content": getattr(m, "content", "")[:500],
-                                    })
+                                    _ev("tool.end", {"id": tc_id, "content": raw[:500]})
                                 )
                     elif node_name == "permission":
                         # resolve "running" tool bubbles that were denied by
@@ -647,6 +862,8 @@ async def _stream_graph(
         # have mutated it via the todo_* tools); the checkbox path is optimistic
         # and doesn't need this.
         await ws.send_text(_ev("todos.changed", {}))
+        await ws.send_text(_ev("workflows.changed", {}))
+        await ws.send_text(_ev("artifacts.changed", {}))
         if not saw_interrupt:
             await ws.send_text(_ev("message.end", {}))
     except Exception as e:

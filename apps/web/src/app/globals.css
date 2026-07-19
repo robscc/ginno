@@ -4,26 +4,50 @@
 
 :root {
   color-scheme: dark;
+  --base: 10 10 15;
+  --panel: 14 14 21;
+  --card: 21 21 29;
+  --card2: 27 27 37;
+  --line: 38 38 50;
+  --line2: 52 52 63;
+  --txt: 233 233 240;
+  --muted: 154 154 166;
+  --faint: 98 98 110;
+  --scroll: 44 44 56;
+}
+
+html.light {
+  color-scheme: light;
+  --base: 248 248 250;
+  --panel: 255 255 255;
+  --card: 255 255 255;
+  --card2: 243 243 247;
+  --line: 226 226 234;
+  --line2: 212 212 222;
+  --txt: 23 23 30;
+  --muted: 90 90 102;
+  --faint: 130 130 142;
+  --scroll: 212 212 220;
 }
 
 html,
 body {
-  background: #0a0a0f;
-  color: #e9e9f0;
+  background: rgb(var(--base));
+  color: rgb(var(--txt));
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #2c2c38 transparent;
+  scrollbar-color: rgb(var(--scroll)) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #2c2c38;
+  background: rgb(var(--scroll));
   border-radius: 8px;
 }
 *::-webkit-scrollbar-track {

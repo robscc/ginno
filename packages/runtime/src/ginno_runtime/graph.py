@@ -28,6 +28,8 @@ from .state import AgentState
 from .tools.builtin import build_builtin_tools
 from .tools.render_tools import RENDER_TOOL_NAMES, attach_ref, render_widget
 from .tools.todo_tools import ALL_TODO_TOOLS, TODO_TOOL_NAMES
+from .tools.workflow_tools import ALL_WORKFLOW_TOOLS, WORKFLOW_TOOL_NAMES
+from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -46,6 +48,8 @@ def _resolve_agent(agent_id: str | None):
 def tool_allowed(agent, tool_name: str) -> bool:
     if tool_name in RENDER_TOOL_NAMES:
         return True  # structured-output tools are available to every agent
+    if tool_name in WORKFLOW_TOOL_NAMES or tool_name in ARTIFACT_TOOL_NAMES:
+        return True
     if not agent:
         return True
     allow = agent.tools_allow or ["*"]
@@ -87,6 +91,13 @@ def build_agent_system_prompt(agent, project_slug: str, all_tools) -> str:
             "it (each line starts with the item id), and todo_create / todo_update / "
             "todo_done / todo_delete to change it. When you add or complete items, say so "
             "briefly. If you only have todo_list, you may read but not modify it."
+        )
+    if any(n.startswith("workflow_") for n in allowed):
+        parts.append(
+            "To run a tracked multi-step process, use workflow_list / workflow_run / "
+            "workflow_step; the right-panel Workflow tab shows live progress. After "
+            "workflow_run (note the run_id and step ids it returns), mark each step with "
+            "workflow_step(run_id, step_id, 'done') as you complete it."
         )
     skills = SkillLoader(project_slug=project_slug).build_index_prompt()
     if skills:
@@ -158,6 +169,9 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
             # TODO tools: an agent that has them (per tools_allow) never needs a prompt
             if name in TODO_TOOL_NAMES:
                 continue
+            # workflow / artifact tools never need a prompt either
+            if name in WORKFLOW_TOOL_NAMES or name in ARTIFACT_TOOL_NAMES:
+                continue
 
             # 1) PreToolUse hooks
             if hook_dispatcher:
@@ -212,7 +226,12 @@ def build_graph(
 ):
     """Compose the main agent graph (single graph, union toolset)."""
     all_tools = (
-        build_builtin_tools() + (mcp_tools or []) + [render_widget, attach_ref] + ALL_TODO_TOOLS
+        build_builtin_tools()
+        + (mcp_tools or [])
+        + [render_widget, attach_ref]
+        + ALL_TODO_TOOLS
+        + ALL_WORKFLOW_TOOLS
+        + ALL_ARTIFACT_TOOLS
     )
     policy = PermissionPolicy.from_settings()
 

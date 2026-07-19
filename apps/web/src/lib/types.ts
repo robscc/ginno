@@ -57,3 +57,37 @@ export interface VerifyResult {
   error?: string;
   latency_ms?: number;
 }
+
+export interface WorkflowStep {
+  id: string;
+  title: string;
+  status: string;
+  output?: string;
+  agent_id?: string | null;
+}
+
+export interface WorkflowDef {
+  id: string;
+  name: string;
+  description: string;
+  steps: WorkflowStep[];
+}
+
+export interface WorkflowRun {
+  id: string;
+  workflow_id: string;
+  name: string;
+  status: string;
+  steps: WorkflowStep[];
+  started: number;
+  updated: number;
+}
+
+export interface Artifact {
+  id: string;
+  kind: string;
+  name: string;
+  ref: string;
+  session_id?: string | null;
+  created: number;
+}

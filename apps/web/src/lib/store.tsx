@@ -10,12 +10,15 @@ import {
   type ReactNode,
 } from "react";
 import * as api from "./runtime";
-import type { AgentConfig, Providers, SessionMeta, Todo } from "./types";
+import type { AgentConfig, Artifact, Providers, SessionMeta, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 interface GinnoState {
   agents: AgentConfig[];
   sessions: SessionMeta[];
   todos: Todo[];
+  workflows: WorkflowDef[];
+  workflowRuns: WorkflowRun[];
+  artifacts: Artifact[];
   providers: Providers;
   defaultProvider: string;
   activeSessionId: string | null;
@@ -27,6 +30,9 @@ interface GinnoState {
   reloadSessions: () => Promise<void>;
   reloadTodos: () => Promise<void>;
   reloadProviders: () => Promise<void>;
+  reloadWorkflows: () => Promise<void>;
+  reloadWorkflowRuns: () => Promise<void>;
+  reloadArtifacts: () => Promise<void>;
   newSession: (agent_id?: string) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
   patchTodo: (id: string, patch: Partial<Todo>) => Promise<void>;
@@ -45,6 +51,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
+  const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [providers, setProviders] = useState<Providers>({});
   const [defaultProvider, setDefaultProvider] = useState("custom");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -81,6 +90,27 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
   }, []);
+  const reloadWorkflows = useCallback(async () => {
+    try {
+      setWorkflows(await api.listWorkflows());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const reloadWorkflowRuns = useCallback(async () => {
+    try {
+      setWorkflowRuns(await api.listWorkflowRuns());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const reloadArtifacts = useCallback(async () => {
+    try {
+      setArtifacts(await api.listArtifacts());
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -100,13 +130,29 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         if (!alive) return;
       }
       if (!alive) return;
-      await Promise.all([reloadAgents(), reloadSessions(), reloadTodos(), reloadProviders()]);
+      await Promise.all([
+        reloadAgents(),
+        reloadSessions(),
+        reloadTodos(),
+        reloadProviders(),
+        reloadWorkflows(),
+        reloadWorkflowRuns(),
+        reloadArtifacts(),
+      ]);
       if (alive) setReady(true);
     })();
     return () => {
       alive = false;
     };
-  }, [reloadAgents, reloadSessions, reloadTodos, reloadProviders]);
+  }, [
+    reloadAgents,
+    reloadSessions,
+    reloadTodos,
+    reloadProviders,
+    reloadWorkflows,
+    reloadWorkflowRuns,
+    reloadArtifacts,
+  ]);
 
   const creatingRef = useRef(false);
   const newSession = useCallback(
@@ -172,6 +218,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     agents,
     sessions,
     todos,
+    workflows,
+    workflowRuns,
+    artifacts,
     providers,
     defaultProvider,
     activeSessionId,
@@ -183,6 +232,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     reloadSessions,
     reloadTodos,
     reloadProviders,
+    reloadWorkflows,
+    reloadWorkflowRuns,
+    reloadArtifacts,
     newSession,
     setSessionAgent,
     patchTodo,
