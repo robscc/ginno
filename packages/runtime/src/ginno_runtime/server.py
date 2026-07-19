@@ -586,6 +586,11 @@ async def kb_list_endpoint(path: str = "") -> dict:
     return {"path": path, "results": results}
 
 
+def _first_agent_id() -> str | None:
+    lst = agents_reg.list_agents()
+    return lst[0].id if lst else None
+
+
 def _find_meta(session_id: str) -> tuple[dict, str] | None:
     for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
         slug = slug_dir.parent.parent.name
@@ -662,8 +667,10 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             if kind == "invoke":
                 user_text = msg.get("message", "")
                 user_text = _maybe_substitute_skill(user_text, session["project_slug"])
-                turn_agent = msg.get("agent_id") or session.get("agent_id")
-                if turn_agent and turn_agent != session.get("agent_id"):
+                turn_agent = (
+                    msg.get("agent_id") or session.get("agent_id") or _first_agent_id()
+                )
+                if turn_agent != session.get("agent_id"):
                     session["agent_id"] = turn_agent
                     _session_meta_patch(
                         session["project_slug"], session_id, {"agent_id": turn_agent}
@@ -676,11 +683,12 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             elif kind == "permission_response":
                 decision = msg.get("decision", "deny")
                 # resume under the agent that was active when the interrupt fired
+                resume_agent = session.get("agent_id") or _first_agent_id()
                 resume_config = {
                     **config,
                     "configurable": {
                         **config["configurable"],
-                        "agent_id": session.get("agent_id"),
+                        "agent_id": resume_agent,
                     },
                 }
                 await _run_resume(ws, graph, resume_config, {"decision": decision})
@@ -762,6 +770,15 @@ async def _stream_graph(
         saw_interrupt = False
         special_ids: dict[str, str] = {}  # tool_call id -> special tool name (no bubble)
         slug = (config.get("configurable") or {}).get("project_slug", "default")
+        # Fresh turn (not a permission resume): announce the resolved agent so the
+        # UI can label the assistant bubble authoritatively (never the generic
+        # "Agent" fallback).
+        if command is None:
+            _aid = (config.get("configurable") or {}).get("agent_id")
+            _ag = agents_reg.get_agent(_aid) if _aid else None
+            await ws.send_text(
+                _ev("turn.start", {"agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
+            )
         async for mode, payload in stream:
             if mode == "messages":
                 chunk, msg_meta = payload

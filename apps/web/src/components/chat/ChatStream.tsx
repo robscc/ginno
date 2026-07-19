@@ -14,6 +14,7 @@ interface ChatMsg {
   role: "user" | "assistant";
   blocks: Block[];
   agentId?: string | null;
+  agentName?: string;
 }
 
 interface PermissionPrompt {
@@ -92,6 +93,7 @@ export function ChatStream({
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const liveIdRef = useRef<string | null>(null);
+  const busyRef = useRef(false); // send lock: one turn at a time
   useEffect(() => {
     liveIdRef.current = liveId;
   }, [liveId]);
@@ -101,6 +103,7 @@ export function ChatStream({
     setLiveId(null);
     setStreamAgent(null);
     setPermission(null);
+    busyRef.current = false;
   }, [session?.id]);
 
   // websocket with auto-reconnect
@@ -129,6 +132,7 @@ export function ChatStream({
       };
       sock.onclose = () => {
         g.setConnected(false);
+        busyRef.current = false;
         if (!closed) timer = setTimeout(connect, 1500);
       };
     };
@@ -180,6 +184,20 @@ export function ChatStream({
       case "workflow.emit":
         mutateLive(ev);
         break;
+      case "turn.start": {
+        // authoritative agent for this turn (server-resolved, never null)
+        const id = liveIdRef.current;
+        if (id) {
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === id
+                ? { ...msg, agentId: (ev.agent_id as string) || null, agentName: ev.name as string }
+                : msg,
+            ),
+          );
+        }
+        break;
+      }
       case "permission.request":
         setPermission({ tool: ev.tool as string, args: ev.args });
         break;
@@ -197,10 +215,12 @@ export function ChatStream({
         setLiveId(null);
         liveIdRef.current = null;
         setStreamAgent(null);
+        busyRef.current = false;
         break;
       case "error":
         setLiveId(null);
         liveIdRef.current = null;
+        busyRef.current = false;
         setMessages((m) => [
           ...m,
           { id: mid(), role: "assistant", blocks: [{ kind: "text", text: `[error] ${ev.message}` }] },
@@ -210,16 +230,19 @@ export function ChatStream({
   }
 
   function send() {
+    if (busyRef.current) return; // one turn at a time
     const text = input.trim();
     const ws = wsRef.current;
-    if (!text || !ws || !session) return;
+    if (!text || !ws || !session || !g.connected) return;
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     const live = mid();
+    const guessName = agentById(agentId)?.name ?? "Agent";
+    busyRef.current = true;
     setMessages((m) => [
       ...m,
       { id: mid(), role: "user", blocks: [{ kind: "text", text }] },
-      { id: live, role: "assistant", blocks: [], agentId: agentId },
+      { id: live, role: "assistant", blocks: [], agentId: agentId, agentName: guessName },
     ]);
     setLiveId(live);
     liveIdRef.current = live;
@@ -257,6 +280,7 @@ export function ChatStream({
               <AssistantBubble
                 key={m.id}
                 agent={agentById(m.agentId)}
+                agentName={m.agentName}
                 blocks={m.blocks}
                 streaming={m.id === liveId}
               />
@@ -352,7 +376,7 @@ export function ChatStream({
               </div>
               <button
                 onClick={send}
-                disabled={!g.connected || !!permission || !input.trim()}
+                disabled={!g.connected || !!permission || running || !input.trim()}
                 className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 <ArrowUp className="h-4 w-4" />
@@ -367,14 +391,17 @@ export function ChatStream({
 
 function AssistantBubble({
   agent,
+  agentName,
   blocks,
   streaming,
 }: {
   agent: AgentConfig | null;
+  agentName?: string;
   blocks: Block[];
   streaming?: boolean;
 }) {
   const hex = agentHex(agent?.color);
+  const displayName = agent?.name || agentName || "Agent";
   const hasInner = blocks.some((b) => b.kind !== "ref");
   return (
     <div className="flex gap-3">
@@ -386,7 +413,7 @@ function AssistantBubble({
       </div>
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex items-center gap-2 text-sm">
-          <span className="font-medium text-txt">{agent?.name || "Agent"}</span>
+          <span className="font-medium text-txt">{displayName}</span>
           <span className="text-xs text-faint">{streaming ? "thinking…" : "just now"}</span>
         </div>
         <div className="rounded-xl border border-line bg-card px-4 py-3 text-sm leading-relaxed text-txt">
