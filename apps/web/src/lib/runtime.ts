@@ -60,6 +60,18 @@ export async function patchSession(id: string, patch: Partial<SessionMeta>) {
   });
 }
 
+export async function getSessionHistory(id: string) {
+  return json<{
+    ok: boolean;
+    messages: Array<{
+      id?: string;
+      role: "user" | "assistant";
+      agentId?: string | null;
+      blocks: any[];
+    }>;
+  }>(`${BASE}/sessions/${id}/history`);
+}
+
 // ---- providers ----
 export async function getProviders() {
   return json<{ default_provider: string; providers: Providers }>(`${BASE}/providers`);
@@ -195,4 +207,76 @@ export async function kbSearch(q: string) {
 }
 export async function kbList(path = "") {
   return json<{ path: string; results: string[] }>(`${BASE}/kb/list?path=${encodeURIComponent(path)}`);
+}
+
+// ---- knowledge base / LLMWiki (in-memory vault index) ----
+export async function kbWikiSearch(q: string) {
+  return json<{ ok: boolean; error?: string; results: import("./types").WikiSearchResult[] }>(
+    `${BASE}/kb/wiki/search?q=${encodeURIComponent(q)}`,
+  );
+}
+export async function kbWikiSearchByTag(tag: string) {
+  return json<{ ok: boolean; results: import("./types").WikiSearchResult[] }>(
+    `${BASE}/kb/wiki/search?tag=${encodeURIComponent(tag)}`,
+  );
+}
+export async function kbWikiList() {
+  return json<{ ok: boolean; error?: string; pages: import("./types").WikiPage[] }>(`${BASE}/kb/wiki/list`);
+}
+export async function kbWikiStats() {
+  return json<import("./types").WikiStats>(`${BASE}/kb/wiki/stats`);
+}
+export async function kbWikiReindex() {
+  return json<{ ok: boolean; indexed: number; tags: string[] }>(`${BASE}/kb/wiki/index`, {
+    method: "POST",
+  });
+}
+export async function kbWikiBuild() {
+  return json<{
+    ok: boolean;
+    error?: string;
+    scanned?: number;
+    created?: string[];
+    updated?: string[];
+    new_links?: unknown[];
+    discovered?: unknown[];
+    duration_ms?: number;
+  }>(`${BASE}/kb/wiki/build`, { method: "POST" });
+}
+export async function kbWikiDiscover() {
+  return json<import("./types").WikiDiscover>(`${BASE}/kb/wiki/discover`);
+}
+export async function kbWikiRelated(title: string, top_k = 10) {
+  return json<{ ok: boolean; related: import("./types").WikiRelatedItem[]; clusters: unknown[] }>(
+    `${BASE}/kb/wiki/related?title=${encodeURIComponent(title)}&top_k=${top_k}`,
+  );
+}
+export async function kbWikiOrphans() {
+  return json<{ ok: boolean; pages: import("./types").WikiPage[] }>(`${BASE}/kb/wiki/orphans`);
+}
+export async function kbWikiProbe(path: string) {
+  return json<{
+    ok: boolean;
+    error?: string;
+    vault_path?: string;
+    detected?: {
+      namespace: string;
+      wiki_dir: string;
+      raw_dir: string;
+      research_dir: string;
+      memory_dir: string;
+      todo_dir: string;
+    };
+    wiki_pages?: number;
+    raw_pages?: number;
+    has_index?: boolean;
+    total_md?: number;
+  }>(`${BASE}/kb/wiki/probe?path=${encodeURIComponent(path)}`);
+}
+export async function kbWikiPutConfig(data: object) {
+  return json<{ ok: boolean }>(`${BASE}/kb/wiki/config`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify(data),
+  });
 }

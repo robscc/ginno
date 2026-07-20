@@ -14,7 +14,7 @@ from __future__ import annotations
 import fnmatch
 from typing import Literal
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command, interrupt
@@ -62,7 +62,7 @@ def _allowed_tool_names(agent, all_tools) -> list[str]:
     return [t.name for t in all_tools if tool_allowed(agent, t.name)]
 
 
-def build_agent_system_prompt(agent, project_slug: str, all_tools) -> str:
+def build_agent_system_prompt(agent, project_slug: str, all_tools, query: str = "") -> str:
     name = agent.name if agent else "Agent"
     persona = (
         agent.system_prompt
@@ -105,7 +105,24 @@ def build_agent_system_prompt(agent, project_slug: str, all_tools) -> str:
     mem = read_agent_memory(agent.id) if agent else ""
     if mem:
         parts.append("\nYour persistent memory (private to this agent):\n" + mem)
+    # LLMWiki: retrieve vault entries relevant to the current query and inject
+    # them as data (wrapped in <injected_wiki>). No-op unless knowledge is enabled.
+    if query:
+        from .knowledge.injection import build_wiki_context, wrap_context_section
+
+        wiki_ctx = build_wiki_context(query)
+        if wiki_ctx:
+            parts.append("\n" + wrap_context_section("injected_wiki", wiki_ctx))
     return "\n".join(parts)
+
+
+def _latest_human_text(messages) -> str:
+    """The most recent user message text — used as the wiki retrieval query."""
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            c = getattr(m, "content", "")
+            return c if isinstance(c, str) else ""
+    return ""
 
 
 def _turn_agent_id(state: AgentState, config) -> str | None:
@@ -125,7 +142,12 @@ def agent_node_factory(model, all_tools):
             else model
         )
         sys_msg = SystemMessage(
-            content=build_agent_system_prompt(agent, state.get("project_slug", ""), all_tools)
+            content=build_agent_system_prompt(
+                agent,
+                state.get("project_slug", ""),
+                all_tools,
+                query=_latest_human_text(state.get("messages", [])),
+            )
         )
         history = [m for m in state.get("messages", []) if not isinstance(m, SystemMessage)]
         response = await bound.ainvoke([sys_msg] + history)

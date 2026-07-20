@@ -1,83 +1,493 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "@/lib/runtime";
-import { BookOpen, FileText, Folder } from "lucide-react";
+import type {
+  WikiDiscover,
+  WikiPage,
+  WikiRelatedItem,
+  WikiSearchResult,
+  WikiStats,
+} from "@/lib/types";
+import { BookOpen, FileText, Hammer, RefreshCw, Search, Sparkles, Tag } from "lucide-react";
 
-interface Entry {
-  kind: "file" | "dir";
-  name: string;
+type View = "search" | "all" | "discover";
+
+function timeAgo(ts?: number): string {
+  if (!ts) return "never";
+  const s = Math.floor(Date.now() / 1000 - ts);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 
-function parse(results: string[]): Entry[] {
-  const out: Entry[] = [];
-  for (const blob of results) {
-    for (const line of blob.split("\n")) {
-      const m = line.match(/^\[(FILE|DIR)\]\s*(.+?)\s*$/);
-      if (m) out.push({ kind: m[1] === "DIR" ? "dir" : "file", name: m[2] });
-    }
-  }
-  return out;
+function TagPills({ tags }: { tags: string[] }) {
+  if (!tags.length) return null;
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {tags.map((t) => (
+        <span key={t} className="pill border border-line2 text-faint">
+          <Tag className="mr-0.5 inline h-2.5 w-2.5" />
+          {t}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-line bg-card p-4">
+      <div className="mb-2 text-sm font-medium text-txt">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function PairRow({ a, b, score, type }: { a: string; b: string; score: number; type?: string }) {
+  return (
+    <div className="flex items-center gap-2 py-1 text-sm">
+      <span className="text-txt">{a}</span>
+      <span className="text-faint">↔</span>
+      <span className="text-txt">{b}</span>
+      <span className="ml-auto text-xs font-semibold text-violet">{Math.round(score * 100)}%</span>
+      {type && <span className="pill border border-line2 text-faint">{type}</span>}
+    </div>
+  );
 }
 
 export default function KnowledgeBasePage() {
-  const [filter, setFilter] = useState("");
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [servers, setServers] = useState<{ name: string; tools: string[] }[]>([]);
+  const [stats, setStats] = useState<WikiStats | null>(null);
+  const [pages, setPages] = useState<WikiPage[]>([]);
+  const [results, setResults] = useState<WikiSearchResult[]>([]);
+  const [query, setQuery] = useState("");
+  const [searched, setSearched] = useState(false);
+  const [view, setView] = useState<View>("all");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string>("");
+  const [discover, setDiscover] = useState<WikiDiscover | null>(null);
+  const [relatedQuery, setRelatedQuery] = useState("");
+  const [related, setRelated] = useState<WikiRelatedItem[] | null>(null);
+  const [importPath, setImportPath] = useState("");
+  const [importProbe, setImportProbe] = useState<string>("");
+  const [importBusy, setImportBusy] = useState(false);
 
-  useEffect(() => {
-    api.kbServers().then(setServers).catch(() => {});
-    api
-      .kbList()
-      .then((r) => setEntries(parse(r.results || [])))
-      .catch(() => {});
+  const configured = !!stats?.ok;
+
+  const loadAll = useCallback(async () => {
+    const [st, pg] = await Promise.all([api.kbWikiStats(), api.kbWikiList()]);
+    setStats(st);
+    if (pg.ok) setPages(pg.pages);
   }, []);
 
-  const filtered = useMemo(
-    () =>
-      filter
-        ? entries.filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()))
-        : entries,
-    [entries, filter],
-  );
+  useEffect(() => {
+    loadAll().catch(() => {});
+  }, [loadAll]);
+
+  useEffect(() => {
+    if (view === "discover" && configured) {
+      api.kbWikiDiscover().then((d) => d.ok && setDiscover(d)).catch(() => {});
+      setRelated(null);
+    }
+  }, [view, configured]);
+
+  async function onSearch() {
+    if (!query.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api.kbWikiSearch(query.trim());
+      if (r.ok) {
+        setResults(r.results);
+        setSearched(true);
+        setView("search");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onReindex() {
+    setBusy(true);
+    setNote("");
+    try {
+      await api.kbWikiReindex();
+      await loadAll();
+      setNote("索引已重建。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onBuild() {
+    setBusy(true);
+    setNote("");
+    try {
+      const r = await api.kbWikiBuild();
+      if (r.ok) {
+        setNote(
+          `编译完成：扫描 ${r.scanned ?? 0} 篇，新建 ${(r.created || []).length}，更新 ${(r.updated || []).length}，自动关联 ${(r.new_links || []).length}，用时 ${r.duration_ms ?? 0}ms`,
+        );
+        await loadAll();
+      } else {
+        setNote(r.error || "编译失败");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRelated() {
+    if (!relatedQuery.trim()) return;
+    const r = await api.kbWikiRelated(relatedQuery.trim());
+    setRelated(r.ok ? r.related : []);
+  }
+
+  async function onDetectImport() {
+    setImportProbe("");
+    if (!importPath.trim()) {
+      setImportProbe("请填写 vault 路径");
+      return;
+    }
+    const r = await api.kbWikiProbe(importPath.trim());
+    setImportProbe(
+      r.ok
+        ? r.detected?.namespace
+          ? `检测到命名空间「${r.detected.namespace}」：Wiki ${r.wiki_pages} 页 / Raw ${r.raw_pages} 篇${r.has_index ? "（含 INDEX）" : ""}`
+          : `未检测到 */Wiki 目录，将把整个 vault 作为知识库索引（共 ${r.total_md} 篇）`
+        : r.error || "检测失败",
+    );
+  }
+
+  async function onImport() {
+    if (!importPath.trim()) {
+      setImportProbe("请填写 vault 路径");
+      return;
+    }
+    setImportBusy(true);
+    setImportProbe("");
+    try {
+      const probe = await api.kbWikiProbe(importPath.trim());
+      const d = probe.ok ? probe.detected : undefined;
+      const saved = await api.kbWikiPutConfig({
+        enabled: true,
+        vault_path: importPath.trim(),
+        wiki_dir: d?.wiki_dir || "",
+        raw_dir: d?.raw_dir || "",
+        auto_inject: true,
+        inject_top_k: 5,
+        inject_min_score: 0.3,
+        rescan_interval_s: 60,
+      });
+      if (!saved.ok) {
+        setImportProbe("保存配置失败");
+        return;
+      }
+      const ix = await api.kbWikiReindex();
+      setImportProbe(ix.ok ? `已导入并索引 ${ix.indexed} 页` : "已保存配置，但索引失败");
+      await loadAll();
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  const tabs: { id: View; label: string }[] = [
+    { id: "search", label: `搜索结果${searched ? ` (${results.length})` : ""}` },
+    { id: "all", label: `全部页面 (${pages.length})` },
+    { id: "discover", label: "发现" },
+  ];
 
   return (
     <div className="flex min-w-0 flex-1 flex-col px-8 py-7">
+      {/* header */}
       <div className="flex items-center gap-2">
         <BookOpen className="h-5 w-5 text-violet" />
         <h2 className="text-lg font-semibold text-txt">Knowledge Base</h2>
-      </div>
-      <p className="mt-1 text-sm text-muted">通过 MCP vault 索引的 Obsidian 知识库浏览 / 过滤。</p>
-      <div className="mt-3 flex flex-wrap gap-2 text-xs text-faint">
-        {servers.length === 0 ? (
-          <span>无已连接的 vault server（在 Settings → MCP 工具 配置）。</span>
-        ) : (
-          servers.map((s) => (
-            <span key={s.name} className="pill border border-line2 text-muted">
-              {s.name} · {s.tools.length} tools
-            </span>
-          ))
+        {configured && (
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={onBuild}
+              disabled={busy}
+              className="flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+            >
+              <Hammer className={`h-3.5 w-3.5 ${busy ? "animate-pulse" : ""}`} />
+              Build wiki
+            </button>
+            <button
+              onClick={onReindex}
+              disabled={busy}
+              className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-3 py-1.5 text-xs text-muted hover:text-txt disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
+              Rebuild index
+            </button>
+          </div>
         )}
       </div>
-      <input
-        className="field mt-4 max-w-xl"
-        placeholder="filter files…"
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-      />
-      <div className="mt-4 max-w-xl space-y-1">
-        {filtered.length === 0 && <div className="text-xs text-faint">No files.</div>}
-        {filtered.map((e, i) => (
-          <div key={i} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-card/50">
-            {e.kind === "dir" ? (
-              <Folder className="h-4 w-4 text-violet" />
-            ) : (
-              <FileText className="h-4 w-4 text-muted" />
-            )}
-            <span className="text-txt">{e.name}</span>
+      <p className="mt-1 text-sm text-muted">
+        Obsidian 知识库：把 Raw 编译成 Wiki、按相关性检索并在对话中自动注入（LLMWiki）。
+      </p>
+      {note && <div className="mt-2 text-xs text-violet">{note}</div>}
+
+      {/* not configured → import panel */}
+      {!configured && (
+        <div className="mt-6 max-w-2xl rounded-xl border border-line bg-card p-4">
+          <div className="mb-2 flex items-center gap-2 text-sm font-medium text-txt">
+            <BookOpen className="h-4 w-4 text-violet" /> 导入已有的 LLM Wiki 知识库
           </div>
-        ))}
-      </div>
+          <p className="mb-3 text-xs text-muted">
+            指向你的 Obsidian vault。若已编译好 Wiki（如 <code className="text-txt">Molly/Wiki</code>），会被直接索引、无需重新编译。
+          </p>
+          <div className="flex gap-2">
+            <input
+              className="field flex-1"
+              placeholder="/Users/…/Documents/Obsidian Vault"
+              value={importPath}
+              onChange={(e) => setImportPath(e.target.value)}
+            />
+            <button
+              onClick={onDetectImport}
+              disabled={importBusy}
+              className="flex items-center gap-1.5 rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt disabled:opacity-50"
+            >
+              <Search className="h-3.5 w-3.5" /> 检测
+            </button>
+            <button
+              onClick={onImport}
+              disabled={importBusy}
+              className="flex items-center gap-1.5 rounded-lg bg-violet px-3 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+            >
+              <Hammer className="h-3.5 w-3.5" /> 导入并索引
+            </button>
+          </div>
+          {importProbe && <div className="mt-2 text-xs text-violet">{importProbe}</div>}
+          <div className="mt-3 text-xs text-faint">
+            需要细调（top-K / 自动注入 / 目录）？去{" "}
+            <Link href="/settings/knowledge" className="text-violet hover:underline">
+              设置 → 知识库
+            </Link>
+            。
+            {stats?.error ? <span className="ml-1">{stats.error}</span> : null}
+          </div>
+        </div>
+      )}
+
+      {configured && (
+        <>
+          {/* stats bar */}
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-faint">
+            <span className="pill border border-line2 text-muted">{stats?.total_pages ?? 0} pages</span>
+            <span className="pill border border-line2 text-muted">{stats?.total_links ?? 0} links</span>
+            <span className="pill border border-line2 text-muted">{stats?.total_tags ?? 0} tags</span>
+            <span className="pill border border-line2 text-muted">indexed {timeAgo(stats?.last_indexed)}</span>
+            <span className="pill border border-line2 text-faint">{stats?.vault_path}</span>
+          </div>
+
+          {/* search */}
+          <div className="mt-4 flex max-w-2xl gap-2">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
+              <input
+                className="field w-full pl-9"
+                placeholder="搜索知识…（支持中英文）"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && onSearch()}
+              />
+            </div>
+            <button
+              onClick={onSearch}
+              disabled={busy || !query.trim()}
+              className="rounded-lg bg-violet px-4 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
+            >
+              Search
+            </button>
+          </div>
+
+          {/* tag cloud */}
+          {!!stats?.unique_tags?.length && (
+            <div className="mt-3 flex max-w-2xl flex-wrap gap-1.5">
+              {stats.unique_tags.slice(0, 20).map((t) => (
+                <button
+                  key={t}
+                  onClick={async () => {
+                    const r = await api.kbWikiSearchByTag(t);
+                    if (r.ok) {
+                      setResults(r.results);
+                      setSearched(true);
+                      setView("search");
+                      setQuery(`tag:${t}`);
+                    }
+                  }}
+                  className="pill border border-line text-faint hover:border-line2 hover:text-muted"
+                >
+                  #{t}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* tabs */}
+          <div className="mt-5 flex gap-1 border-b border-line">
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setView(t.id)}
+                className={`px-3 py-2 text-sm font-medium transition-colors ${
+                  view === t.id ? "border-b-2 border-violet text-txt" : "text-muted hover:text-txt"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {/* content */}
+          <div className="mt-4 max-w-2xl space-y-3">
+            {view === "search" &&
+              (searched ? (
+                results.length === 0 ? (
+                  <div className="text-sm text-faint">没有匹配的条目。</div>
+                ) : (
+                  results.map((r, i) => (
+                    <div key={i} className="rounded-xl border border-line bg-card p-4">
+                      <div className="flex items-center gap-2">
+                        <FileText className="h-4 w-4 shrink-0 text-violet" />
+                        <span className="font-medium text-txt">{r.title}</span>
+                        <span className="ml-auto text-xs font-semibold text-violet">
+                          {Math.round(r.score * 100)}%
+                        </span>
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <TagPills tags={r.tags} />
+                      </div>
+                      <div className="mt-2 text-xs text-faint">来源: {r.path}</div>
+                      {r.matched_terms.length > 0 && (
+                        <div className="mt-1 text-[11px] text-faint">
+                          命中: {r.matched_terms.slice(0, 8).join(" · ")}
+                        </div>
+                      )}
+                      {r.summary && <p className="mt-2 text-sm leading-relaxed text-muted">{r.summary}</p>}
+                    </div>
+                  ))
+                )
+              ) : (
+                <div className="text-sm text-faint">输入关键词开始检索。</div>
+              ))}
+
+            {view === "all" &&
+              (pages.length === 0 ? (
+                <div className="text-sm text-faint">还没有索引到任何页面（先点 Build wiki 编译 Raw）。</div>
+              ) : (
+                pages.map((p, i) => (
+                  <div key={i} className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-card/50">
+                    <FileText className="h-4 w-4 shrink-0 text-muted" />
+                    <span className="text-sm text-txt">{p.title}</span>
+                    <TagPills tags={p.tags} />
+                    <span className="ml-auto truncate text-[11px] text-faint">{p.path}</span>
+                  </div>
+                ))
+              ))}
+
+            {view === "discover" &&
+              (discover ? (
+                <>
+                  <div className="flex items-center gap-2 text-xs text-faint">
+                    <Sparkles className="h-3.5 w-3.5 text-violet" />
+                    {discover.stats?.pages ?? 0} 页 · {discover.stats?.edges ?? 0} 条关联边
+                  </div>
+
+                  {/* related lookup */}
+                  <Section title="查看某页的相关">
+                    <div className="flex gap-2">
+                      <input
+                        className="field flex-1"
+                        placeholder="页面标题，如 权限节点"
+                        value={relatedQuery}
+                        onChange={(e) => setRelatedQuery(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && onRelated()}
+                      />
+                      <button
+                        onClick={onRelated}
+                        className="rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt"
+                      >
+                        相关
+                      </button>
+                    </div>
+                    {related &&
+                      (related.length === 0 ? (
+                        <div className="mt-2 text-xs text-faint">没有相关页（或标题不匹配）。</div>
+                      ) : (
+                        <div className="mt-2">
+                          {related.map((r, i) => (
+                            <PairRow key={i} a={relatedQuery} b={r.title} score={r.score} type={r.type} />
+                          ))}
+                        </div>
+                      ))}
+                  </Section>
+
+                  <Section title={`强关联 (≥80%) · ${discover.strong.length}`}>
+                    {discover.strong.length === 0 ? (
+                      <div className="text-xs text-faint">无。</div>
+                    ) : (
+                      discover.strong.map((p, i) => (
+                        <PairRow key={i} a={p.a} b={p.b} score={p.score} type={p.type} />
+                      ))
+                    )}
+                  </Section>
+
+                  <Section title={`聚类 · ${discover.clusters.length}`}>
+                    {discover.clusters.length === 0 ? (
+                      <div className="text-xs text-faint">无显著聚类。</div>
+                    ) : (
+                      discover.clusters.map((c, i) => (
+                        <div key={i} className="py-1">
+                          <div className="text-sm text-txt">
+                            {c.label} <span className="text-faint">· 密度 {c.density}</span>
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap gap-1">
+                            {c.members.map((m) => (
+                              <span key={m} className="pill border border-line2 text-faint">
+                                {m}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </Section>
+
+                  <Section title={`可合并候选 · ${discover.merge_candidates.length}`}>
+                    {discover.merge_candidates.length === 0 ? (
+                      <div className="text-xs text-faint">无。</div>
+                    ) : (
+                      discover.merge_candidates.map((p, i) => (
+                        <PairRow key={i} a={p.a} b={p.b} score={p.score} />
+                      ))
+                    )}
+                  </Section>
+
+                  <Section title={`孤立页（无入链）· ${discover.isolated.length}`}>
+                    {discover.isolated.length === 0 ? (
+                      <div className="text-xs text-faint">无。</div>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {discover.isolated.map((t) => (
+                          <span key={t} className="pill border border-line2 text-faint">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </Section>
+                </>
+              ) : (
+                <div className="text-sm text-faint">加载发现结果中…</div>
+              ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

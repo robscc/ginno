@@ -13,7 +13,10 @@
     "build:runtime": "cd packages/runtime && uv run pyinstaller --onefile src/ginno_runtime/__main__.py --name ginno-runtime",
     "build:desktop": "pnpm --filter @ginno/desktop tauri build",
     "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "bash packages/runtime/scripts/test.sh",
+    "test:unit": "bash packages/runtime/scripts/test.sh -m unit",
+    "test:e2e": "bash packages/runtime/scripts/test.sh -m e2e"
   },
   "devDependencies": {
     "typescript": "^5.6.0"

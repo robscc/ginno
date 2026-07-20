@@ -45,3 +45,21 @@ select = ["E", "F", "I", "B", "UP"]
 dev = [
     "pyinstaller>=6.21.0",
 ]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "unit: pure unit tests (no FastAPI, no graph)",
+    "api: HTTP API integration tests (FastAPI TestClient)",
+    "e2e: full LangGraph + WebSocket end-to-end tests",
+]
+# Starlette's TestClient prints an httpx deprecation notice; keep it a non-fatal warning.
+filterwarnings = [
+    "ignore:Using .httpx. with .starlette.testclient. is deprecated",
+]

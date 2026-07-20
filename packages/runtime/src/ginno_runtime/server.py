@@ -16,7 +16,7 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel
 
@@ -24,6 +24,7 @@ from . import agents as agents_reg
 from . import paths
 from . import providers as prov_mod
 from .agents.memory import ensure_agent_memory
+from .checkpointer import FileCheckpointer
 from .graph import BLOCK_PREFIX, build_graph
 from .tools.render_tools import RENDER_TOOL_NAMES
 from .hooks.dispatcher import HookDispatcher
@@ -154,11 +155,22 @@ def _agent_lookup(agent_id: str | None):
 def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | None]:
     agent = _agent_lookup(req.agent_id)
     providers = prov_mod.load_providers()
-    provider = (
-        req.provider
-        or req.model_provider
-        or (agent.provider if agent else None)
-        or prov_mod.get_default_provider()
+
+    def _enabled(pid: str | None) -> bool:
+        return bool(pid) and bool((providers.get(pid) or {}).get("enabled"))
+
+    # Prefer an *enabled* provider. The seed agents default to provider "custom",
+    # which is disabled until configured; that must NOT block session creation —
+    # fall through to the enabled global default so "enable a provider and use it"
+    # just works without editing every agent.
+    candidates = [
+        req.provider,
+        req.model_provider,
+        agent.provider if agent else None,
+        prov_mod.get_default_provider(providers),
+    ]
+    provider = next((c for c in candidates if _enabled(c)), None) or prov_mod.get_default_provider(
+        providers
     )
     model = (
         req.model
@@ -296,6 +308,129 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
         "ok": True,
         "session": updated or (s and {k: v for k, v in s.items() if k != "graph"}),
     }
+
+
+# ---- session history (rebuild the chat UI's block layout from checkpoints) ----
+def _ai_content_blocks(content: Any) -> list[dict]:
+    """AIMessage.content (str or list of provider blocks) -> UI text/thinking blocks."""
+    blocks: list[dict] = []
+    if isinstance(content, str):
+        if content:
+            blocks.append({"kind": "text", "text": content})
+    elif isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict):
+                bt = b.get("type")
+                if bt == "thinking":
+                    t = b.get("thinking") or b.get("text") or ""
+                    if t:
+                        blocks.append({"kind": "thinking", "text": t})
+                elif bt == "text":
+                    t = b.get("text") or ""
+                    if t:
+                        blocks.append({"kind": "text", "text": t})
+            elif isinstance(b, str) and b:
+                blocks.append({"kind": "text", "text": b})
+    return blocks
+
+
+def _run_id_in(text: str) -> str | None:
+    m = re.search(r"run_id=([0-9a-f]{6,})", text or "")
+    return m.group(1) if m else None
+
+
+def _messages_to_ui(messages: list[Any], agent_id: str | None) -> list[dict]:
+    """Convert stored LangChain messages into the chat UI's {role, blocks} shape.
+
+    Consecutive assistant steps between two human messages are merged into a
+    single assistant bubble, matching how a live turn renders (one bubble/turn).
+    Special tools (render_widget/attach_ref/workflow_*) reproduce their visual
+    blocks; ordinary tools fold their ToolMessage result into a tool block.
+    """
+    results: dict[str, str] = {}
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            results[getattr(m, "tool_call_id", None)] = getattr(m, "content", "") or ""
+
+    ui: list[dict] = []
+    acc: list[dict] | None = None
+    acc_id: str | None = None
+
+    def flush_assistant() -> None:
+        nonlocal acc, acc_id
+        if acc:
+            ui.append({"id": acc_id, "role": "assistant", "agentId": agent_id, "blocks": acc})
+        acc = None
+        acc_id = None
+
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            flush_assistant()
+            c = getattr(m, "content", "")
+            text = c if isinstance(c, str) else json.dumps(c, ensure_ascii=False, default=str)
+            if text.strip():
+                ui.append({"id": getattr(m, "id", None), "role": "user", "blocks": [{"kind": "text", "text": text}]})
+        elif isinstance(m, AIMessage):
+            if acc is None:
+                acc = []
+                acc_id = getattr(m, "id", None)
+            step = list(_ai_content_blocks(getattr(m, "content", "")))
+            rk = (getattr(m, "additional_kwargs", None) or {}).get("reasoning_content")
+            if rk:
+                step.insert(0, {"kind": "thinking", "text": rk})
+            for tc in getattr(m, "tool_calls", None) or []:
+                nm = tc.get("name")
+                args = tc.get("args") or {}
+                tid = tc.get("id")
+                res = results.get(tid, "")
+                if nm == "render_widget":
+                    step.append({"kind": "widget", "widgetKind": args.get("kind", "widget"), "data": args.get("data")})
+                elif nm == "attach_ref":
+                    step.append({
+                        "kind": "ref",
+                        "refKind": args.get("kind", "file"),
+                        "name": args.get("name", ""),
+                        "refId": args.get("ref_id", ""),
+                    })
+                elif nm in WORKFLOW_TOOL_NAMES:
+                    rid = _run_id_in(res)
+                    run = (RUN_CACHE.get(rid) if rid else None) or (wf_store.get_run(rid) if rid else None)
+                    if run:
+                        step.append({"kind": "workflow", "run": run})
+                    else:
+                        step.append({"kind": "tool", "id": tid, "name": nm, "content": res, "pending": False})
+                elif nm in ARTIFACT_TOOL_NAMES or nm in RENDER_TOOL_NAMES:
+                    pass  # silent / already handled above
+                else:
+                    step.append({"kind": "tool", "id": tid, "name": nm, "content": res, "pending": False})
+            acc.extend(step)
+        # ToolMessage: folded into the tool blocks above
+    flush_assistant()
+    return ui
+
+
+def _session_slug(session_id: str) -> str | None:
+    s = _SESSIONS.get(session_id)
+    if s:
+        return s["project_slug"]
+    found = _find_meta(session_id)
+    return found[1] if found else None
+
+
+@app.get("/sessions/{session_id}/history")
+async def get_session_history(session_id: str) -> dict:
+    """Return the persisted chat history for a session, in the UI block format."""
+    slug = _session_slug(session_id)
+    if not slug:
+        return {"ok": True, "messages": []}
+    cfg = {"configurable": {"thread_id": session_id}}
+    tup = await FileCheckpointer(slug).aget_tuple(cfg)
+    if not tup or not tup.checkpoint:
+        return {"ok": True, "messages": []}
+    messages = (tup.checkpoint.get("channel_values") or {}).get("messages") or []
+    meta, _ = (_find_meta(session_id) or ({}, None))
+    agent_id = meta.get("agent_id") if isinstance(meta, dict) else None
+    return {"ok": True, "messages": _messages_to_ui(messages, agent_id)}
 
 
 @app.get("/skills")
@@ -602,6 +737,272 @@ async def kb_list_endpoint(path: str = "") -> dict:
             )
             results.extend(r)
     return {"path": path, "results": results}
+
+
+# ---- knowledge base / LLMWiki (in-memory vault index + retrieval) ----
+from .knowledge.config import load_knowledge_config as _load_kb_cfg
+from .knowledge.indexer import get_indexer as _get_kb_indexer
+from .knowledge.retriever import WikiRetriever as _WikiRetriever
+from .knowledge import compiler as _kb_compiler
+from .knowledge.association import get_engine as _get_kb_engine, reset_engines as _reset_kb_engines
+
+
+def _kb_not_configured(extra: dict | None = None) -> dict:
+    return {"ok": False, "error": "knowledge not configured", **(extra or {})}
+
+
+def _kb_indexer(cfg):
+    """Shared indexer scoped to the compiled wiki: only ``wiki_dir`` is the
+    searchable knowledge corpus (raw/research/loose notes stay out). An empty
+    ``wiki_dir`` falls back to indexing the whole vault."""
+    return _get_kb_indexer(cfg.vault_path, cfg.rescan_interval_s, include_dirs=[cfg.wiki_dir])
+
+
+def _count_md(root) -> int:
+    import os
+
+    from pathlib import Path as _P
+
+    from .knowledge.indexer import SKIP_DIRS, INDEX_EXTENSIONS
+
+    if not root.exists():
+        return 0
+    n = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        for fn in filenames:
+            if _P(fn).suffix.lower() in INDEX_EXTENSIONS:
+                n += 1
+    return n
+
+
+def _detect_wiki_layout(vault) -> dict:
+    """Find a `<namespace>/Wiki` (or a root `Wiki`) layout in *vault*."""
+    from pathlib import Path as _P
+
+    def _sister(ns_dir, name):
+        d = (ns_dir / name) if ns_dir else (vault / name)
+        return d.relative_to(vault).as_posix() if d.is_dir() else ""
+
+    root_wiki = vault / "Wiki"
+    if root_wiki.is_dir():
+        ns_dir = None
+        namespace = ""
+    else:
+        ns_dir = None
+        namespace = ""
+        for child in sorted(vault.iterdir()):
+            if child.is_dir() and not child.name.startswith("."):
+                if (child / "Wiki").is_dir():
+                    ns_dir = child
+                    namespace = child.name
+                    break
+    wiki_dir = _sister(ns_dir, "Wiki")
+    return {
+        "namespace": namespace,
+        "wiki_dir": wiki_dir,
+        "raw_dir": _sister(ns_dir, "Raw"),
+        "research_dir": _sister(ns_dir, "Research"),
+        "memory_dir": _sister(ns_dir, "Memory"),
+        "todo_dir": _sister(ns_dir, "Todo"),
+    }
+
+
+@app.get("/kb/wiki/probe")
+async def kb_wiki_probe(path: str = "") -> dict:
+    """Read-only: detect an existing LLM-Wiki layout under *path* and count pages.
+
+    Does NOT write the vault. Used by the import UI to pre-fill config and show
+    how many compiled wiki pages / raw docs a vault contains.
+    """
+    from pathlib import Path as _P
+
+    if not path:
+        return {"ok": False, "error": "path required"}
+    vault = _P(path).expanduser().resolve()
+    if not vault.is_dir():
+        return {"ok": False, "error": f"not a directory: {path}"}
+    layout = _detect_wiki_layout(vault)
+    wiki_abs = (vault / layout["wiki_dir"]) if layout["wiki_dir"] else vault
+    raw_abs = (vault / layout["raw_dir"]) if layout["raw_dir"] else None
+    return {
+        "ok": True,
+        "vault_path": str(vault),
+        "detected": layout,
+        "wiki_pages": _count_md(wiki_abs),
+        "raw_pages": _count_md(raw_abs) if raw_abs else 0,
+        "has_index": (wiki_abs / "INDEX.md").is_file() if layout["wiki_dir"] else False,
+        "total_md": _count_md(vault),
+    }
+
+
+@app.get("/kb/wiki/search")
+async def kb_wiki_search(q: str = "", tag: str = "") -> dict:
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured({"results": []})
+    idx = _kb_indexer(cfg)
+    ret = _WikiRetriever(idx.get_entries())
+    results = ret.search_by_tag(tag) if tag else ret.retrieve(q, top_k=10, min_score=0.2)
+    return {"ok": True, "q": q, "tag": tag, "results": [r.to_dict() for r in results]}
+
+
+@app.get("/kb/wiki/list")
+async def kb_wiki_list() -> dict:
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured({"pages": []})
+    idx = _kb_indexer(cfg)
+    pages = [
+        {"title": e.title, "path": e.relative_path, "tags": e.tags, "modified": e.modified}
+        for e in idx.get_entries()
+    ]
+    return {"ok": True, "pages": pages}
+
+
+@app.get("/kb/wiki/stats")
+async def kb_wiki_stats() -> dict:
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    idx = _kb_indexer(cfg)
+    entries = idx.get_entries()
+    by_dir: dict[str, int] = {}
+    for e in entries:
+        top = e.relative_path.split("/", 1)[0] if "/" in e.relative_path else "(root)"
+        by_dir[top] = by_dir.get(top, 0) + 1
+    tag_counts: dict[str, int] = {}
+    for e in entries:
+        for t in e.tags:
+            tag_counts[t] = tag_counts.get(t, 0) + 1
+    unique_tags = sorted(tag_counts, key=lambda t: (-tag_counts[t], t))[:30]
+    return {
+        "ok": True,
+        "vault_path": cfg.vault_path,
+        "total_pages": len(entries),
+        "pages_by_dir": by_dir,
+        "total_links": sum(len(e.links) for e in entries),
+        "total_tags": len(tag_counts),
+        "unique_tags": unique_tags,
+        "last_indexed": idx.last_full_scan,
+    }
+
+
+@app.post("/kb/wiki/index")
+async def kb_wiki_index() -> dict:
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    idx = _kb_indexer(cfg)
+    n = idx.scan()
+    return {"ok": True, "indexed": n, "tags": idx.get_all_tags()}
+
+
+def _kb_refresh(cfg) -> None:
+    """Force the shared indexer to rescan and drop the cached association graph."""
+    _kb_indexer(cfg).scan()
+    _reset_kb_engines()
+
+
+def _compile_to_dict(res) -> dict:
+    return {
+        "created": res.created,
+        "updated": res.updated,
+        "new_links": res.new_links,
+        "discovered": res.discovered,
+    }
+
+
+@app.post("/kb/wiki/ingest")
+async def kb_wiki_ingest(data: dict) -> dict:
+    """Compile a single raw file (path absolute or relative to the vault)."""
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    from pathlib import Path as _P
+
+    vault = _P(cfg.vault_path).resolve()
+    raw = (data or {}).get("path", "")
+    p = _P(raw) if _P(raw).is_absolute() else (vault / raw).resolve()
+    try:
+        p.relative_to(vault)
+    except ValueError:
+        return {"ok": False, "error": "path outside vault"}
+    comp = _kb_compiler.WikiCompiler(vault, cfg.wiki_dir, cfg.raw_dir)
+    res = comp.compile(p)
+    comp.update_index()
+    _kb_refresh(cfg)
+    return {"ok": True, **_compile_to_dict(res)}
+
+
+@app.post("/kb/wiki/build")
+async def kb_wiki_build() -> dict:
+    """Compile every raw file in the vault (raw→wiki) and rebuild the index."""
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    from pathlib import Path as _P
+
+    comp = _kb_compiler.WikiCompiler(_P(cfg.vault_path), cfg.wiki_dir, cfg.raw_dir)
+    result = comp.build_all()
+    _kb_refresh(cfg)
+    return {"ok": True, **result}
+
+
+@app.get("/kb/wiki/related")
+async def kb_wiki_related(title: str = "", top_k: int = 10) -> dict:
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured({"related": [], "clusters": []})
+    idx = _kb_indexer(cfg)
+    return {"ok": True, **_get_kb_engine(idx).find_related(title, top_k=top_k)}
+
+
+@app.get("/kb/wiki/discover")
+async def kb_wiki_discover() -> dict:
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    idx = _kb_indexer(cfg)
+    return {"ok": True, **_get_kb_engine(idx).discover()}
+
+
+@app.get("/kb/wiki/orphans")
+async def kb_wiki_orphans() -> dict:
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured({"pages": []})
+    idx = _kb_indexer(cfg)
+    pages = [{"title": e.title, "path": e.relative_path, "tags": e.tags} for e in idx.get_orphans()]
+    return {"ok": True, "pages": pages}
+
+
+@app.get("/kb/wiki/backlinks")
+async def kb_wiki_backlinks(title: str = "") -> dict:
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured({"backlinks": []})
+    idx = _kb_indexer(cfg)
+    bl = idx.get_backlinks(title)
+    return {"ok": True, "title": title, "backlinks": bl, "count": len(bl)}
+
+
+@app.put("/kb/wiki/config")
+async def kb_wiki_put_config(data: dict) -> dict:
+    from dataclasses import fields as _fields
+
+    from .knowledge.config import save_knowledge_config as _save_kb_cfg
+    from .knowledge.types import KnowledgeConfig as _KC
+
+    current = _load_kb_cfg()
+    known = {f.name for f in _fields(_KC)}
+    merged = {**current.__dict__, **{k: v for k, v in data.items() if k in known}}
+    cfg = _KC(**merged)
+    _save_kb_cfg(cfg)
+    from .knowledge.indexer import reset_indexers as _reset_kb
+
+    _reset_kb()  # pick up a changed vault_path on the next call
+    return {"ok": True, "config": merged}
 
 
 def _first_agent_id() -> str | None:
