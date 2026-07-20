@@ -1,20 +1,39 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ChevronDown, BookOpen, Settings as SettingsIcon, LogOut } from "lucide-react";
+import { ChevronDown, BookOpen, Settings as SettingsIcon, Plus } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { applyTheme } from "@/components/settings/GeneralSettings";
 
-function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }) {
+function SectionHeader({
+  icon,
+  label,
+  onAdd,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onAdd?: () => void;
+}) {
   return (
     <div className="mb-1.5 flex items-center gap-1.5 px-2.5 text-xs font-medium text-faint">
       {icon}
       <span>{label}</span>
-      <ChevronDown className="ml-auto h-3.5 w-3.5" />
+      <span className="ml-auto flex items-center gap-1">
+        {onAdd && (
+          <button
+            onClick={onAdd}
+            title="新建会话"
+            className="rounded p-0.5 text-faint transition-colors hover:bg-card hover:text-txt"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        )}
+        <ChevronDown className="h-3.5 w-3.5" />
+      </span>
     </div>
   );
 }
@@ -24,6 +43,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const active = g.sessions.find((s) => s.id === g.activeSessionId) ?? null;
+
+  const onNewSession = async () => {
+    const s = await g.newSession(g.agents[0]?.id);
+    if (s) router.push("/"); // success -> show the new session (error, if any, is in g.sessionError)
+  };
 
   // apply persisted theme as early as the shell mounts
   useEffect(() => {
@@ -54,7 +78,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <div className="flex-1 overflow-y-auto px-2.5 pb-2">
           {/* sessions */}
-          <SectionHeader icon={<Icon name="message-square" className="h-3.5 w-3.5" />} label="Sessions" />
+          <SectionHeader
+            icon={<Icon name="message-square" className="h-3.5 w-3.5" />}
+            label="Sessions"
+            onAdd={onNewSession}
+          />
           <div className="mb-4 space-y-0.5">
             {g.sessions.length === 0 && (
               <div className="px-2.5 py-1 text-xs text-faint">No sessions yet</div>
@@ -78,6 +106,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               );
             })}
           </div>
+
+          {g.sessionError && (
+            <button
+              onClick={() => router.push("/settings/model-api")}
+              title="点击前往 设置 → 模型 API 配置"
+              className="mx-1 mb-3 block rounded-md border border-yellow/40 bg-yellow/10 px-2 py-1.5 text-left text-[11px] leading-snug text-yellow hover:bg-yellow/15"
+            >
+              {g.sessionError}
+            </button>
+          )}
 
           {/* agents */}
           <SectionHeader icon={<Icon name="boxes" className="h-3.5 w-3.5" />} label="Agents" />
@@ -121,19 +159,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span>Settings</span>
           </Link>
 
-          <div className="mt-2 flex items-center gap-2.5 rounded-lg px-2.5 py-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo to-violet text-xs font-semibold text-white">
-              DC
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-medium text-txt">David Chen</div>
-              <div className="text-[11px] text-faint">Pro Plan</div>
-            </div>
-            <button className="text-faint hover:text-txt" title="Sign out">
-              <LogOut className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="px-2.5 pt-1 text-[10px] text-faint">© 2025 GinnoWork Inc.</div>
+          <div className="px-2.5 pt-2 text-[10px] text-faint">© 2025 GinnoWork</div>
         </div>
       </aside>
 

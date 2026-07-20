@@ -24,6 +24,7 @@ interface GinnoState {
   activeSessionId: string | null;
   connected: boolean;
   ready: boolean;
+  sessionError: string | null;
   setConnected: (v: boolean) => void;
   setActiveSession: (id: string | null) => void;
   reloadAgents: () => Promise<void>;
@@ -59,6 +60,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [ready, setReady] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
   const reloadAgents = useCallback(async () => {
     try {
@@ -159,6 +161,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     async (agent_id?: string) => {
       if (creatingRef.current) return null;
       creatingRef.current = true;
+      setSessionError(null);
       try {
         const s = await api.createSession({
           workspace: process.env.NEXT_PUBLIC_WORKSPACE ?? "/tmp/gw",
@@ -167,10 +170,13 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         if (s && s.ok !== false && s.id) {
           setSessions((prev) => [s, ...prev.filter((x) => x.id !== s.id)]);
           setActiveSessionId(s.id);
+          setSessionError(null);
           return s;
         }
+        // server returned ok:false (e.g. no provider enabled / missing key)
+        setSessionError(s?.error || "新建会话失败：请在 设置 → 模型 API 启用一个模型提供商");
       } catch {
-        /* ignore */
+        setSessionError("新建会话失败：无法连接运行时（sidecar 未启动？）");
       } finally {
         creatingRef.current = false;
       }
@@ -234,6 +240,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     activeSessionId,
     connected,
     ready,
+    sessionError,
     setConnected,
     setActiveSession: setActiveSessionId,
     reloadAgents,

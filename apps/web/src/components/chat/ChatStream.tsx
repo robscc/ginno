@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Paperclip, Keyboard, ArrowUp } from "lucide-react";
 import { useGinno } from "@/lib/store";
-import { openSessionSocket } from "@/lib/runtime";
+import { openSessionSocket, getSessionHistory } from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { InnerBlocks, RefBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
@@ -98,20 +98,19 @@ export function ChatStream({
     liveIdRef.current = liveId;
   }, [liveId]);
 
-  useEffect(() => {
-    setMessages([]);
-    setLiveId(null);
-    setStreamAgent(null);
-    setPermission(null);
-    busyRef.current = false;
-  }, [session?.id]);
-
-  // websocket with auto-reconnect
+  // On session change: reset UI, load persisted history, then open the socket.
   useEffect(() => {
     if (!session) return;
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let sock: WebSocket | null = null;
+
+    setMessages([]);
+    setLiveId(null);
+    setStreamAgent(null);
+    setPermission(null);
+    busyRef.current = false;
+
     const connect = () => {
       sock = openSessionSocket(session.id);
       wsRef.current = sock;
@@ -136,7 +135,35 @@ export function ChatStream({
         if (!closed) timer = setTimeout(connect, 1500);
       };
     };
-    connect();
+
+    // Load history FIRST, then connect — so events from a (re)connecting socket
+    // can't arrive before the history set and get clobbered by it. Live events
+    // after connect append on top of the loaded history as usual.
+    (async () => {
+      try {
+        const h = await getSessionHistory(session.id);
+        const list: Array<{
+          id?: string;
+          role: "user" | "assistant";
+          agentId?: string | null;
+          blocks: Block[];
+        }> = (h && h.messages) || [];
+        if (!closed && list.length) {
+          setMessages(
+            list.map((m) => ({
+              id: m.id ?? mid(),
+              role: m.role,
+              agentId: m.agentId ?? null,
+              blocks: m.blocks || [],
+            })),
+          );
+        }
+      } catch {
+        /* ignore */
+      }
+      if (!closed) connect();
+    })();
+
     return () => {
       closed = true;
       if (timer) clearTimeout(timer);
