@@ -8,6 +8,7 @@ import { AgentsSettings } from "./AgentsSettings";
 import { WorkflowsSettings } from "./WorkflowsSettings";
 import { GeneralSettings } from "./GeneralSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
+import { KnowledgeSettings } from "./KnowledgeSettings";
 
 export function SettingsView({ tab }: { tab: string }) {
   return (
@@ -19,9 +20,10 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "mcp" && <McpSettings />}
         {tab === "agents" && <AgentsSettings />}
         {tab === "workflows" && <WorkflowsSettings />}
+        {tab === "knowledge" && <KnowledgeSettings />}
         {tab === "general" && <GeneralSettings />}
         {tab === "notifications" && <NotificationsSettings />}
-        {!["model-api", "skills", "mcp", "agents", "workflows", "general", "notifications"].includes(tab) && (
+        {!["model-api", "skills", "mcp", "agents", "workflows", "knowledge", "general", "notifications"].includes(tab) && (
           <div className="px-8 py-10 text-sm text-faint">Unknown tab: {tab}</div>
         )}
       </div>

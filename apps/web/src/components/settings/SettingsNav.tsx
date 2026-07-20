@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell } from "lucide-react";
+import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen } from "lucide-react";
 
 type Item = { id: string; label: string; icon: typeof Cpu; color: string };
 
@@ -11,6 +11,7 @@ const MAIN: Item[] = [
   { id: "mcp", label: "MCP 工具", icon: Plug, color: "#34d399" },
   { id: "agents", label: "Agent 管理", icon: Users, color: "#fb923c" },
   { id: "workflows", label: "Workflows", icon: Workflow, color: "#4ade80" },
+  { id: "knowledge", label: "知识库", icon: BookOpen, color: "#60a5fa" },
 ];
 const SYSTEM: Item[] = [
   { id: "general", label: "通用设置", icon: SlidersHorizontal, color: "#9ca3af" },
