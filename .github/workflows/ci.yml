@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  runtime-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/runtime
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies (incl. test group)
+        run: uv sync --group test
+
+      # The suite is hermetic: no network, no API key, no MCP servers spawn
+      # (empty mcp.json), so no extra services are required.
+      - name: Run tests
+        run: uv run --group test pytest -q
