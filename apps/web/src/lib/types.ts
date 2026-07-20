@@ -44,6 +44,7 @@ export type Providers = Record<string, ProviderConfig>;
 export interface SessionMeta {
   id: string;
   title: string;
+  title_auto?: boolean;
   icon: string;
   agent_id: string | null;
   provider: string;

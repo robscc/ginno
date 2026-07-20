@@ -343,7 +343,7 @@ export function ChatStream({
               );
             })}
             <button
-              onClick={() => g.newSession()}
+              onClick={() => g.newSession(g.agents[0]?.id)}
               className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted hover:text-txt"
             >
               + New Session

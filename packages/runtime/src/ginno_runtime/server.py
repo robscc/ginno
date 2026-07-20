@@ -205,10 +205,12 @@ async def create_session(req: CreateSessionRequest) -> dict:
     if ag:
         ensure_agent_memory(ag.id, ag.name)
     title = req.title or _default_title(agent_id)
+    title_auto = not bool(req.title)  # auto title follows the active agent
     icon = req.icon or _agent_icon(agent_id)
     meta = {
         "id": session_id,
         "title": title,
+        "title_auto": title_auto,
         "icon": icon,
         "agent_id": agent_id,
         "provider": provider,
@@ -224,6 +226,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "workspace": req.workspace,
         "agent_id": agent_id,
         "title": title,
+        "title_auto": title_auto,
         "icon": icon,
         "model_provider": provider,
         "model_name": model_name,
@@ -269,11 +272,26 @@ class PatchSessionRequest(BaseModel):
 async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     s = _SESSIONS.get(session_id)
     slug = s["project_slug"] if s else "default"
-    updated = _session_meta_patch(slug, session_id, req.model_dump())
+    patch = req.model_dump()
+
+    # Inspect the stored meta to honour the title_auto flag: an auto-generated
+    # title ("X session") follows the active agent; a manually-set title sticks.
+    cur = next((m for m in _session_meta_list(slug) if m.get("id") == session_id), None)
+    title_auto = (cur or {}).get("title_auto", True)
+    if patch.get("title") is not None:
+        title_auto = False  # explicit rename → stop auto-following
+    if patch.get("agent_id") is not None and title_auto:
+        ag = _agent_lookup(patch["agent_id"])
+        if ag:
+            patch["title"] = f"{ag.name} session"
+    patch["title_auto"] = title_auto
+
+    updated = _session_meta_patch(slug, session_id, patch)
     if s:
-        for k, v in req.model_dump().items():
+        for k, v in patch.items():
             if v is not None:
                 s[k] = v
+        s["title_auto"] = title_auto
     return {
         "ok": True,
         "session": updated or (s and {k: v for k, v in s.items() if k != "graph"}),

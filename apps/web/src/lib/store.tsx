@@ -200,9 +200,17 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
 
   const setSessionAgent = useCallback((id: string, agentId: string) => {
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, agent_id: agentId } : s)));
-    api.patchSession(id, { agent_id: agentId }).catch(() => {
-      /* ignore */
-    });
+    api
+      .patchSession(id, { agent_id: agentId })
+      .then((r) => {
+        // reconcile with the server-computed title (auto titles follow the agent)
+        if (r?.session) {
+          setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...r.session } : s)));
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
   }, []);
 
   const addTodo = useCallback(async (data: Partial<Todo>) => {
