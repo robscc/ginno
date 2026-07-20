@@ -146,11 +146,15 @@ def verify(provider_id: str) -> dict[str, Any]:
                 return {"ok": False, "error": "API Key 为空", "latency_ms": _latency()}
             import anthropic
 
-            client = anthropic.Anthropic(
-                api_key=cfg["api_key"],
-                base_url=cfg.get("base_url") or None,
-                timeout=timeout,
-            )
+            client_kw: dict[str, Any] = {
+                "base_url": cfg.get("base_url") or None,
+                "timeout": timeout,
+            }
+            if cfg.get("bearer_auth"):
+                client_kw["auth_token"] = cfg["api_key"]  # Authorization: Bearer
+            else:
+                client_kw["api_key"] = cfg["api_key"]  # x-api-key
+            client = anthropic.Anthropic(**client_kw)
             client.messages.create(
                 model=model_for_provider(providers, provider_id) or "claude-3-7-sonnet-20250219",
                 max_tokens=1,

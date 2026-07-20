@@ -8,6 +8,7 @@ top-level kwargs (verified present on ChatAnthropic + ChatOpenAI).
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from . import providers as prov_mod
@@ -27,7 +28,22 @@ def build_model(provider_id: str, model_name: str | None = None):
 
     `model_name` overrides the provider's configured default/model.
     Raises ValueError if the provider is unknown, disabled, or missing a key.
+
+    Test seam: when ``GINNO_FAKE_LLM`` is set, return a deterministic
+    ScriptedChatModel (script from ``GINNO_FAKE_LLM_SCRIPTS``) instead of a real
+    provider. Off by default; has zero effect on the normal production path.
     """
+    if os.environ.get("GINNO_FAKE_LLM"):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "GINNO_FAKE_LLM is set — using a deterministic ScriptedChatModel "
+            "instead of a real provider"
+        )
+        from .testing.fake_model import build_fake_model
+
+        return build_fake_model()
+
     all_prov = prov_mod.load_providers()
     cfg = all_prov.get(provider_id)
     if not cfg:
@@ -46,7 +62,7 @@ def build_model(provider_id: str, model_name: str | None = None):
             raise ValueError("Anthropic API Key 为空 — 在 设置 → 模型 API 填写")
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
+        chat_kwargs: dict[str, Any] = dict(
             model=model or "claude-3-7-sonnet-20250219",
             api_key=key,
             base_url=base_url,
@@ -54,6 +70,12 @@ def build_model(provider_id: str, model_name: str | None = None):
             model_kwargs=model_kwargs or {"max_tokens": 4096},
             streaming=True,
         )
+        # Some Anthropic-compatible gateways (corporate model hubs / proxies) expect
+        # the token in `Authorization: Bearer ...` instead of `x-api-key`. The official
+        # Anthropic API uses x-api-key, so this is opt-in via `bearer_auth`.
+        if cfg.get("bearer_auth"):
+            chat_kwargs["default_headers"] = {"Authorization": f"Bearer {key}"}
+        return ChatAnthropic(**chat_kwargs)
 
     # openai / openai-compatible
     key = cfg.get("api_key") or ""
