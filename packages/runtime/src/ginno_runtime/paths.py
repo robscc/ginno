@@ -60,6 +60,23 @@ _DEFAULT_SETTINGS = {
         "ask": ["Bash(*)", "bash(*)", "Write(*)", "Edit(*)", "write_file", "edit_file", "mcp_vault_write_*", "mcp_vault_edit_*", "mcp_vault_create_*", "mcp_vault_move_*"],
     },
     "hooks": {},
+    "knowledge": {
+        "enabled": False,
+        "vault_path": "",
+        "raw_dir": "Ginno/Raw",
+        "wiki_dir": "Ginno/Wiki",
+        "research_dir": "Ginno/Research",
+        "auto_inject": True,
+        "inject_top_k": 5,
+        "inject_min_score": 0.3,
+        "rescan_interval_s": 60,
+        "use_semantic": False,
+        "capture": True,
+        "auto_summarize": True,
+        "pool_flush_threshold": 30,
+        "summarize_model": "",
+        "memory_budget_chars": 3000,
+    },
 }
 
 _DEFAULT_MCP = {"mcpServers": {}}
@@ -133,6 +150,7 @@ def ensure_layout() -> None:
         "cache",
         "agents",
         "workflows",
+        "knowledge",
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
@@ -227,3 +245,28 @@ def artifacts_path(slug: str) -> Path:
 
 def session_index_path(slug: str) -> Path:
     return project_sessions_dir(slug) / "_index.json"
+
+
+# ---- knowledge / LLMWiki + memory refinery ----
+def knowledge_dir() -> Path:
+    return home() / "knowledge"
+
+
+def knowledge_index_path() -> Path:
+    return knowledge_dir() / "index.json"
+
+
+def knowledge_assoc_cache_path() -> Path:
+    return knowledge_dir() / "assoc_cache.json"
+
+
+def memory_pool_dir() -> Path:
+    return home() / "memory" / "pool"
+
+
+def experiences_path() -> Path:
+    return home() / "experiences.jsonl"
+
+
+def watermarks_path() -> Path:
+    return home() / "watermarks.json"
