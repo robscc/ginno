@@ -25,6 +25,13 @@ interface PermissionPrompt {
 let _mid = 0;
 const mid = () => `m${++_mid}`;
 
+// Patterns that indicate a tool returned "no results" — hide these blocks to reduce noise.
+const EMPTY_TOOL_RESULT_RE = /^\s*(\(no matches\)|\(no files found\)|\(empty\)|no results|no files matched)\s*$/i;
+
+function isEmptyToolResult(content: string): boolean {
+  return EMPTY_TOOL_RESULT_RE.test(content);
+}
+
 function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }): Block[] {
   const last = blocks[blocks.length - 1];
   switch (ev.event) {
@@ -51,13 +58,22 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
     case "tool.end": {
       const id = ev.id as string | undefined;
       const name = ev.name as string | undefined;
+      const content = ev.content as string;
+      // Hide tool blocks that returned "no results" to reduce noise
+      if (isEmptyToolResult(content)) {
+        return blocks.filter((b) => {
+          if (b.kind !== "tool") return true;
+          const matches = id ? b.id === id : name ? b.name === name : b.pending;
+          return !matches;
+        });
+      }
       let found = false;
       return blocks.map((b) => {
         if (b.kind !== "tool") return b;
         const matches = !found && (id ? b.id === id : name ? b.name === name : b.pending);
         if (matches) {
           found = true;
-          return { ...b, content: ev.content as string, pending: false };
+          return { ...b, content, pending: false };
         }
         return b;
       });

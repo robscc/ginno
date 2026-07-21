@@ -11,6 +11,14 @@ export type Block =
   | { kind: "thinking"; text: string }
   | { kind: "workflow"; run: WorkflowRun };
 
+// Strip "[attached <kind>: <name>]" patterns that the LLM sometimes repeats in its text
+// (violating the "don't repeat tool results" instruction). These are shown as ref chips instead.
+const ATTACHED_REF_RE = /\[attached\s+\w+:\s*[^\]]+\]/g;
+
+function cleanAgentText(text: string): string {
+  return text.replace(ATTACHED_REF_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 const STATUS_COLOR: Record<string, string> = {
   done: "#22c55e",
   ok: "#22c55e",
@@ -131,7 +139,7 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
         if (b.kind === "text")
           return (
             <span key={i} className="whitespace-pre-wrap">
-              {b.text}
+              {cleanAgentText(b.text)}
               {streaming && last && (
                 <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse bg-violet" />
               )}
