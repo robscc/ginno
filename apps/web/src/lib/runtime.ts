@@ -199,6 +199,20 @@ export async function createSkill(data: { name: string; body: string }) {
 export async function deleteSkill(name: string) {
   return json<{ ok: boolean }>(`${BASE}/skills/${name}`, { method: "DELETE" });
 }
+export async function importSkillsDir(path: string, overwrite = false) {
+  return json<{
+    ok: boolean;
+    error?: string;
+    scanned?: number;
+    imported?: { name: string; description: string; from: string }[];
+    skipped?: { name: string; reason: string }[];
+    errors?: { name: string; error: string }[];
+  }>(`${BASE}/skills/import-dir`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ path, overwrite }),
+  });
+}
 export async function kbServers() {
   return json<Array<{ name: string; tools: string[] }>>(`${BASE}/kb/servers`);
 }

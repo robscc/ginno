@@ -664,6 +664,93 @@ async def delete_skill_endpoint(name: str) -> dict:
     return {"ok": False}
 
 
+@app.post("/skills/import-dir")
+async def import_skills_dir(data: dict) -> dict:
+    """Import skills from a local directory (e.g. another agent's skills folder).
+
+    Each sub-directory containing a ``SKILL.md`` (or lowercase ``skill.md``) is
+    imported as one skill; the whole sub-directory (scripts, reference docs,
+    mcp-config, etc.) is copied so script-backed skills keep working. If *path*
+    itself is a single skill directory, only that one is imported. Existing
+    skills are skipped unless ``overwrite`` is true.
+    """
+    import re
+    import shutil
+    from pathlib import Path
+
+    from .skills.loader import _parse_skill_file
+
+    raw = (data or {}).get("path", "")
+    overwrite = bool((data or {}).get("overwrite", False))
+    if not raw:
+        return {"ok": False, "error": "path required"}
+    src = Path(raw).expanduser().resolve()
+    if not src.is_dir():
+        return {"ok": False, "error": f"not a directory: {raw}"}
+
+    def _skill_md(d: Path) -> Path | None:
+        for f in d.iterdir():
+            if f.is_file() and f.name.lower() == "skill.md":
+                return f
+        return None
+
+    def _sanitize_name(n: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]", "-", (n or "").strip()).strip("-") or "skill"
+
+    candidates = [src] if _skill_md(src) else sorted(
+        c for c in src.iterdir()
+        if c.is_dir() and not c.name.startswith(".") and _skill_md(c)
+    )
+
+    imported: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+    dest_root = paths.global_skills_dir()
+    dest_root.mkdir(parents=True, exist_ok=True)
+
+    for c in candidates:
+        smd = _skill_md(c)
+        if not smd:
+            continue
+        parsed = _parse_skill_file(smd)
+        name = _sanitize_name(parsed.name if parsed and parsed.name else c.name)
+        target = dest_root / name
+        if target.exists() and not overwrite:
+            skipped.append({"name": name, "reason": "exists"})
+            continue
+        try:
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(c, target, ignore=shutil.ignore_patterns(".DS_Store", "__pycache__"))
+            # Ginno's loader expects SKILL.md (its glob is case-sensitive), but the
+            # source may use lowercase skill.md. On case-insensitive filesystems
+            # (macOS APFS) a direct rename is a no-op, so go via a temp name to
+            # force the case change; detect the real on-disk name via iterdir.
+            actual = next(
+                (f for f in target.iterdir() if f.is_file() and f.name.lower() == "skill.md"),
+                None,
+            )
+            if actual is not None and actual.name != "SKILL.md":
+                tmp = target / f".skill_md_rename_{uuid.uuid4().hex}"
+                actual.rename(tmp)
+                tmp.rename(target / "SKILL.md")
+            imported.append({
+                "name": name,
+                "description": (parsed.description if parsed else "") or "",
+                "from": str(c),
+            })
+        except Exception as e:  # noqa: BLE001
+            errors.append({"name": c.name, "error": f"{type(e).__name__}: {e}"})
+
+    return {
+        "ok": True,
+        "scanned": len(candidates),
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
 # ---- knowledge base (via MCP vault servers) ----
 @app.get("/kb/servers")
 async def kb_servers_endpoint() -> list[dict]:
