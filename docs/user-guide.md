@@ -142,6 +142,7 @@ pnpm build:desktop   # Tauri 产出 .dmg / .msi / .AppImage
 - **Deny**：拒绝，工具返回“被拒”，Agent 据此改口/换工具。
 - 何时会弹：见第 10.2 节权限策略（默认：`Bash`/`Write`/`Edit` 及“写 vault”的 MCP 工具会询问；`read/glob/grep` 及只读 vault 工具放行；`rm -rf *`/`sudo *`/写 `~/.ssh`、`~/.gnupg` 直接拒绝）。
 - 注：`todo_*` / `workflow_*` / `artifact_*` / `render_*` 这些“产品内”工具**从不弹权限**。
+- ⚠️ **特权模式默认开启**（见 9.6）：开启时**不会弹任何确认**，所有工具直接执行。要看到 Allow/Deny 弹窗，需先在 设置 → 通用 关闭特权模式。
 
 ### 5.4 路由到指定 Agent ✅
 输入区上方的 **Ask Dev / Ask Research / Ask Writer** 按钮：点选后本轮由该 Agent 回答（再次点取消选择，回退到会话默认 Agent）。切换会同步更新会话的 Agent 与（自动标题时的）标题。
@@ -303,6 +304,8 @@ pnpm build:desktop   # Tauri 产出 .dmg / .msi / .AppImage
 - **主题**：`dark` / `light` 切换，立即生效并记忆在本地（`localStorage`）；
 - **工作目录**：只读说明行。
   > 实际工具读写的工作目录由启动时的环境变量 `NEXT_PUBLIC_WORKSPACE` 决定（开发默认 `/tmp/gw`）；**设计约定**是 `~/workspace/<project>`，Agent 元数据在 `~/.ginno/projects/<slug>/`。界面此行展示的是约定，非当前生效值的回显。
+- **特权模式** ✅（`bypass_permissions`，**默认开启**）：开启后 Agent 调用任何工具都**不再询问、不被权限策略拦截**（含 Bash/Write 等危险操作），即“允许执行一切命令”。关闭后恢复按权限策略询问/拦截（见 10.2）。
+  > 注意：你配置的 `PreToolUse` Hook **仍会执行**——Hook 是自定义规则，始终生效；特权模式只跳过 `tools_allow` 越权检查与权限策略。默认无 Hook，故默认即“全放行”。该开关**实时生效**（下一次工具调用即按新值判定，无需重启/新建会话）。
 
 ### 9.7 通知 🚧（仅本地偏好）
 一个“启用桌面提醒”复选框，**只写本地 `localStorage`**（`ginno-notify`）。
@@ -341,7 +344,7 @@ pnpm build:desktop   # Tauri 产出 .dmg / .msi / .AppImage
   "ask":   ["Bash(*)", "write_file", "edit_file", "mcp_vault_write_*", "mcp_vault_create_*"]
 }
 ```
-运行时实际判定顺序：**① 该 Agent 的 `tools_allow`（越权直接拦，不弹框）→ ② `PreToolUse` Hooks（可 block）→ ③ 上面的 permissions 策略**（ask 时弹 UI 确认）。
+运行时实际判定顺序：**① 该 Agent 的 `tools_allow`（越权直接拦，不弹框）→ ② `PreToolUse` Hooks（可 block）→ ③ 上面的 permissions 策略**（ask 时弹 UI 确认）。**特权模式开启时（默认）跳过 ① 和 ③，仅 ② 仍执行**——即除你自定义 Hook 外，一切工具直接放行。
 
 ### 10.3 Hooks（🧩，编辑 `settings.json` 的 `hooks`）
 事件：`SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`。每个事件可配 `[{matcher, command}]`，运行时把上下文 JSON 喂给 `command` 的 stdin，读 stdout 的 `{"block":true,"reason":"..."} / {"inject":"..."} / {"rewrite":"..."}` 来拦截/注入/改写。
