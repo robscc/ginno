@@ -14,7 +14,7 @@ const META: Record<string, { name: string; subtitle: string; icon: React.ReactNo
     subtitle: "Claude 3.5 / 3.7 Sonnet, Haiku, Opus",
     icon: (
       <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange/15 text-orange">
-        <Zap className="h-4.5 w-4.5 fill-orange" />
+        <Zap className="h-[18px] w-[18px] fill-orange" />
       </div>
     ),
   },
@@ -32,7 +32,7 @@ const META: Record<string, { name: string; subtitle: string; icon: React.ReactNo
     subtitle: "Ollama, DeepSeek, Qwen, Groq, LM Studio 等",
     icon: (
       <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet/15 text-violet">
-        <Server className="h-4.5 w-4.5" />
+        <Server className="h-[18px] w-[18px]" />
       </div>
     ),
   },
@@ -42,6 +42,7 @@ export function ModelApiSettings() {
   const g = useGinno();
   const [draft, setDraft] = useState<Providers>({});
   const [status, setStatus] = useState<Record<string, VerifyState>>({});
+  const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const loaded = useRef(false);
 
   useEffect(() => {
@@ -57,45 +58,74 @@ export function ModelApiSettings() {
   const setField = (id: string, key: keyof ProviderConfig, value: unknown) =>
     setDraft((d) => ({ ...d, [id]: { ...d[id], [key]: value } }));
 
-  const save = async (next: Providers) => {
+  // PUT replaces the whole providers block server-side, so always send every
+  // provider. Refresh the global store afterwards — other pages (the Agents
+  // provider dropdown, session creation) read providers/defaultProvider from it.
+  const save = async (next: Providers, defaultProvider?: string): Promise<boolean> => {
     try {
-      await api.putProviders(next);
+      const r = await api.putProviders(next, defaultProvider);
+      if (r?.ok !== false) {
+        setSaveMsg({ ok: true, text: "已保存" });
+        g.reloadProviders();
+        return true;
+      }
+      setSaveMsg({ ok: false, text: "保存失败" });
     } catch {
-      /* ignore */
+      setSaveMsg({ ok: false, text: "保存失败：无法连接运行时" });
     }
+    return false;
   };
 
-  const onBlurSave = () => save(draft);
+  const onBlurSave = () => void save(draft);
 
   const onToggle = (id: string) => {
     const next = { ...draft, [id]: { ...draft[id], enabled: !draft[id].enabled } };
     setDraft(next);
-    save(next);
+    void save(next);
   };
 
+  const onSetDefault = (id: string) => void save(draft, id);
+
   const onVerify = async (id: string) => {
-    await save(draft);
+    // verify runs against the *saved* config server-side, so persist first.
+    const saved = await save(draft);
+    if (!saved) {
+      setStatus((s) => ({ ...s, [id]: { state: "fail", msg: "配置未保存，无法验证" } }));
+      return;
+    }
     setStatus((s) => ({ ...s, [id]: { state: "checking" } }));
-    const r = await api.verifyProvider(id);
-    setStatus((s) => ({
-      ...s,
-      [id]: r.ok ? { state: "ok" } : { state: "fail", msg: r.error },
-    }));
+    try {
+      const r = await api.verifyProvider(id);
+      setStatus((s) => ({
+        ...s,
+        [id]: r.ok ? { state: "ok", latency: r.latency_ms } : { state: "fail", msg: r.error },
+      }));
+    } catch {
+      setStatus((s) => ({ ...s, [id]: { state: "fail", msg: "无法连接运行时" } }));
+    }
   };
 
   return (
     <div className="mx-auto max-w-3xl px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">模型 API 配置</h2>
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-lg font-semibold text-txt">模型 API 配置</h2>
+        {saveMsg && (
+          <span className={`text-xs ${saveMsg.ok ? "text-faint" : "text-red"}`}>{saveMsg.text}</span>
+        )}
+      </div>
       <p className="mt-1 text-sm text-muted">
         配置 Anthropic、OpenAI 等模型提供商的 API Key，用于驱动 Agent 推理能力。
       </p>
 
-      <div className="mt-4 flex gap-2">
-        <span className="pill border border-orange/40 text-orange">
-          <Zap className="h-3 w-3 fill-orange" /> Anthropic Protocol
+      <div className="mt-4 flex items-center gap-4 text-[11px] text-muted">
+        <span className="flex items-center gap-1.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-orange" /> Anthropic 协议
         </span>
-        <span className="pill border border-green/40 text-green">
-          <span className="h-1.5 w-1.5 rounded-full bg-green" /> OpenAI Protocol
+        <span className="flex items-center gap-1.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-green" /> OpenAI 协议
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-violet" /> OpenAI Compatible
         </span>
       </div>
 
@@ -108,10 +138,12 @@ export function ModelApiSettings() {
             name={META[id]?.name || id}
             subtitle={META[id]?.subtitle || ""}
             status={status[id] || { state: "idle" }}
+            isDefault={g.defaultProvider === id}
             setField={(k, v) => setField(id, k, v)}
             onBlurSave={onBlurSave}
             onToggle={() => onToggle(id)}
             onVerify={() => onVerify(id)}
+            onSetDefault={() => onSetDefault(id)}
           />
         ))}
       </div>
