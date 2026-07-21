@@ -280,3 +280,14 @@ export async function kbWikiPutConfig(data: object) {
     body: JSON.stringify(data),
   });
 }
+
+// ---- memory (P2) ----
+export async function getMemory() {
+  return json<{ ok: boolean; content: string; pool_count: number }>(`${BASE}/memory`);
+}
+export async function summarizeMemory(provider?: string) {
+  return json<{ ok: boolean; summarized_chars?: number; pool_entries?: number; error?: string; message?: string }>(
+    `${BASE}/memory/summarize`,
+    { method: "POST", headers: H, body: JSON.stringify(provider ? { provider } : {}) },
+  );
+}

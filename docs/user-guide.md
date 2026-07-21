@@ -200,6 +200,12 @@ pnpm build:desktop   # Tauri 产出 .dmg / .msi / .AppImage
 ### 7.3 Artifacts ✅（只读）
 自动登记的产物列表：你在对话里 `attach_ref` / `artifact_register`、或 Agent 写/引用文件时，会出现在这里（按 file/doc/workflow/link 显示图标）。当前为**只读展示**。
 
+### 7.4 Memory ✅（全局记忆）
+显示 `~/.ginno/MEMORY.md` 的内容（由自动总结提炼而来）+ 当前 pool 计数（待总结的对话轮数）+ **总结**按钮。
+- **自动捕获**：每轮 Agent 回复结束后，其文本（经 sanitize 去除注入标记）自动追加到 `memory/pool/*.jsonl`；
+- **手动总结**：点「总结」按钮（或调 `POST /memory/summarize`），用 LLM 把 pool 摘录与现有 MEMORY.md 合并、提炼可复用知识，写回 MEMORY.md 并清空 pool；
+- **自动注入**：MEMORY.md 内容在每轮注入所有 Agent 的 system prompt（`<injected_memory>` 包裹），与 Agent 私有记忆并存。
+
 ---
 
 ## 8. 知识库 Knowledge Base ✅（页面） / 🧩（配置）
@@ -343,9 +349,9 @@ pnpm build:desktop   # Tauri 产出 .dmg / .msi / .AppImage
 "hooks": { "PreToolUse": [ { "matcher": "bash", "command": "python3 ~/.ginno/hooks/guard_bash.py" } ] }
 ```
 
-### 10.4 记忆机制（现状）
+### 10.4 记忆机制 ✅
 - **每 Agent 私有记忆**：`agents/<id>/MEMORY.md`，回答时自动注入（✅）；
-- **全局记忆 / 自动总结**：🔮 设计为“对话自动捕获 → LLM 提炼 → 写 `MEMORY.md` → 注入所有 Agent”（P2，见第 13 节），**当前未实装**；目前也没有 `memory.save/recall` 这类记忆工具。
+- **全局记忆 / 自动总结**：每轮 Agent 回复自动捕获到 `memory/pool/`；点右栏 Memory 标签的「总结」按钮（或 `POST /memory/summarize`）用 LLM 提炼合并到 `MEMORY.md`，并清空 pool；MEMORY.md 在每轮注入所有 Agent（`<injected_memory>`）。
 
 ### 10.5 Skills / MCP / Hooks 的关系
 - **Skills** = 可复用的“指令模板”（注入 prompt / 由 `/<name>` 触发）；
@@ -401,7 +407,7 @@ pnpm build:desktop   # Tauri 产出 .dmg / .msi / .AppImage
 | 工作目录回显 | 🚧 | 通用设置该行展示约定值，非生效值回显 |
 | 知识库 Settings 标签 | 🚧 | KB 页空态的跳转是预留；现用 settings.json 配置 |
 | 权限 / Hooks 编辑 UI | 🧩 | 后端完整，需手编 settings.json |
-| 记忆自动总结 / 全局注入 / 记忆工具 | 🔮 | P2 设计已就绪，未实现 |
+| 记忆自动总结 / 全局注入 / 记忆工具 | ✅ | 每轮自动捕获；右栏 Memory 标签「总结」按钮 / `POST /memory/summarize` 提炼；MEMORY.md 每轮注入 |
 | 知识库编译器 raw→wiki / 关联图 / `/kb build` | 🔮 | P1 路线 |
 | 经验循环（co-copilot 式抽取→晋升） | 🔮 | P3 路线 |
 | 语义检索（LanceDB / embedding） | 🔮 | P4 路线，`use_semantic` 暂无效 |

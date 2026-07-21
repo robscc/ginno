@@ -4,13 +4,15 @@ import { useState } from "react";
 import { TodoPanel } from "./TodoPanel";
 import { WorkflowPanel } from "./WorkflowPanel";
 import { ArtifactsPanel } from "./ArtifactsPanel";
+import { MemoryPanel } from "./MemoryPanel";
 
-type Tab = "todo" | "workflow" | "artifacts";
+type Tab = "todo" | "workflow" | "artifacts" | "memory";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "todo", label: "TODO" },
   { id: "workflow", label: "Workflow" },
   { id: "artifacts", label: "Artifacts" },
+  { id: "memory", label: "Memory" },
 ];
 
 export function RightPanel() {
@@ -34,6 +36,7 @@ export function RightPanel() {
         {tab === "todo" && <TodoPanel />}
         {tab === "workflow" && <WorkflowPanel />}
         {tab === "artifacts" && <ArtifactsPanel />}
+        {tab === "memory" && <MemoryPanel />}
       </div>
     </aside>
   );
