@@ -836,6 +836,26 @@ async def kb_wiki_probe(path: str = "") -> dict:
     }
 
 
+# ---- memory summarization (P2) ----
+@app.get("/memory")
+async def get_memory() -> dict:
+    """Return MEMORY.md content + pool count."""
+    from .memory import pool_count
+
+    p = paths.memory_index_path()
+    content = p.read_text(encoding="utf-8") if p.exists() else ""
+    return {"ok": True, "content": content, "pool_count": pool_count()}
+
+
+@app.post("/memory/summarize")
+async def post_memory_summarize(data: dict | None = None) -> dict:
+    """Trigger memory summarization (pool → MEMORY.md via LLM)."""
+    from .memory import summarize_pool
+
+    provider = (data or {}).get("provider")
+    return await summarize_pool(model_provider=provider)
+
+
 @app.get("/kb/wiki/search")
 async def kb_wiki_search(q: str = "", tag: str = "") -> dict:
     cfg = _load_kb_cfg()
@@ -1189,6 +1209,9 @@ async def _stream_graph(
         saw_interrupt = False
         special_ids: dict[str, str] = {}  # tool_call id -> special tool name (no bubble)
         slug = (config.get("configurable") or {}).get("project_slug", "default")
+        session_id = (config.get("configurable") or {}).get("thread_id", "")
+        agent_id = (config.get("configurable") or {}).get("agent_id", "")
+        turn_text: list[str] = []  # accumulate assistant text for memory capture
         # Fresh turn (not a permission resume): announce the resolved agent so the
         # UI can label the assistant bubble authoritatively (never the generic
         # "Agent" fallback).
@@ -1212,8 +1235,10 @@ async def _stream_graph(
                         elif btype == "text":
                             txt = b.get("text") or ""
                             if txt:
+                                turn_text.append(txt)
                                 await ws.send_text(_ev("token.delta", {"content": txt}))
                 elif isinstance(content, str) and content:
+                    turn_text.append(content)
                     await ws.send_text(_ev("token.delta", {"content": content}))
                 rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
                 if rk:
@@ -1327,6 +1352,11 @@ async def _stream_graph(
         await ws.send_text(_ev("workflows.changed", {}))
         await ws.send_text(_ev("artifacts.changed", {}))
         if not saw_interrupt:
+            # Capture sanitized assistant text for memory summarization (P2)
+            if turn_text:
+                from .memory import append_to_pool
+
+                append_to_pool(session_id, agent_id, "".join(turn_text))
             await ws.send_text(_ev("message.end", {}))
     except Exception as e:
         await ws.send_text(_ev("error", {"message": f"{type(e).__name__}: {e}"}))

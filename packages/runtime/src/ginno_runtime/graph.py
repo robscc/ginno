@@ -105,6 +105,12 @@ def build_agent_system_prompt(agent, project_slug: str, all_tools, query: str = 
     mem = read_agent_memory(agent.id) if agent else ""
     if mem:
         parts.append("\nYour persistent memory (private to this agent):\n" + mem)
+    # Global memory (MEMORY.md) distilled from past conversations (P2)
+    from .knowledge.injection import wrap_context_section
+
+    global_mem = _read_global_memory()
+    if global_mem:
+        parts.append("\n" + wrap_context_section("injected_memory", global_mem))
     # LLMWiki: retrieve vault entries relevant to the current query and inject
     # them as data (wrapped in <injected_wiki>). No-op unless knowledge is enabled.
     if query:
@@ -123,6 +129,20 @@ def _latest_human_text(messages) -> str:
             c = getattr(m, "content", "")
             return c if isinstance(c, str) else ""
     return ""
+
+
+def _read_global_memory() -> str:
+    """Read global MEMORY.md (distilled from past conversations)."""
+    from . import paths
+
+    p = paths.memory_index_path()
+    if not p.exists():
+        return ""
+    text = p.read_text(encoding="utf-8").strip()
+    # Skip default boilerplate
+    if text.startswith("# Ginno Memory"):
+        return ""
+    return text
 
 
 def _turn_agent_id(state: AgentState, config) -> str | None:
