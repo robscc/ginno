@@ -102,8 +102,8 @@ class ScriptedChatModel(BaseChatModel):
                 question = c if isinstance(c, str) else str(c)
                 break
         q = question.strip() or "（空）"
-        # NOTE: the chat bubble renders plain text (no markdown), so keep this
-        # free of ** / > / ` markers so it reads cleanly in the UI.
+        # NOTE: the chat bubble renders markdown now, but keep this free of
+        # ** / > / ` markers anyway so it reads cleanly as plain instructions.
         text = (
             "[ GINNO 测试 / 演示模型 ]\n\n"
             "当前运行时启用了环境变量 GINNO_FAKE_LLM，且没有通过 GINNO_FAKE_LLM_SCRIPTS "

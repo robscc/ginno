@@ -122,12 +122,34 @@ def build_agent_system_prompt(agent, project_slug: str, all_tools, query: str = 
     return "\n".join(parts)
 
 
+def text_of_content(content) -> str:
+    """Concatenated text of a message ``content`` (str or multimodal list).
+
+    Multimodal content (e.g. a HumanMessage carrying text + image blocks) is a
+    list of provider blocks; join the text parts so downstream consumers (wiki
+    retrieval, skill detection) keep working for image-first messages.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for b in content:
+            if isinstance(b, str):
+                if b:
+                    parts.append(b)
+            elif isinstance(b, dict) and b.get("type") == "text":
+                t = b.get("text") or ""
+                if t:
+                    parts.append(t)
+        return "\n".join(parts)
+    return ""
+
+
 def _latest_human_text(messages) -> str:
     """The most recent user message text — used as the wiki retrieval query."""
     for m in reversed(messages):
         if isinstance(m, HumanMessage):
-            c = getattr(m, "content", "")
-            return c if isinstance(c, str) else ""
+            return text_of_content(getattr(m, "content", ""))
     return ""
 
 

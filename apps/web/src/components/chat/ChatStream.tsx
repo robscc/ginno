@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Paperclip, Keyboard, ArrowUp } from "lucide-react";
+import { Paperclip, Keyboard, ArrowUp, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { openSessionSocket, getSessionHistory } from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
-import { InnerBlocks, RefBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
+import { InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
 import type { AgentConfig, SessionMeta } from "@/lib/types";
 
 interface ChatMsg {
@@ -24,6 +24,50 @@ interface PermissionPrompt {
 
 let _mid = 0;
 const mid = () => `m${++_mid}`;
+
+interface Attachment {
+  data: string; // base64 payload (no data-url prefix)
+  mediaType: string;
+  preview: string; // full data URL for local display
+  name: string;
+}
+
+/**
+ * Read an image file as a data URL. Files over ~400KB are re-encoded through a
+ * canvas (max 1600px, JPEG 0.85) — the checkpointer rewrites the whole session
+ * file on every step, so keeping embedded images small matters.
+ */
+function readImage(file: File): Promise<Attachment | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = String(reader.result || "");
+      const finish = (url: string) => {
+        const m = /^data:([^;]+);base64,(.*)$/.exec(url);
+        resolve(m ? { data: m[2], mediaType: m[1], preview: url, name: file.name } : null);
+      };
+      if (file.size <= 400_000) return finish(src);
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1600;
+        const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return finish(src);
+        ctx.drawImage(img, 0, 0, w, h);
+        finish(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.onerror = () => finish(src);
+      img.src = src;
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
 
 // Patterns that indicate a tool returned "no results" — hide these blocks to reduce noise.
 const EMPTY_TOOL_RESULT_RE = /^\s*(\(no matches\)|\(no files found\)|\(empty\)|no results|no files matched)\s*$/i;
@@ -104,11 +148,14 @@ export function ChatStream({
   const [liveId, setLiveId] = useState<string | null>(null);
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [dragOver, setDragOver] = useState(false);
   const [target, setTarget] = useState<string | null>(null);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const liveIdRef = useRef<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const busyRef = useRef(false); // send lock: one turn at a time
   useEffect(() => {
     liveIdRef.current = liveId;
@@ -272,26 +319,50 @@ export function ChatStream({
     }
   }
 
+  async function addFiles(files: FileList | File[] | null) {
+    if (!files?.length) return;
+    const items = await Promise.all(
+      Array.from(files)
+        .filter((f) => f.type.startsWith("image/"))
+        .map(readImage),
+    );
+    const ok = items.filter((x): x is Attachment => !!x);
+    if (ok.length) setAttachments((a) => [...a, ...ok]);
+  }
+
   function send() {
     if (busyRef.current) return; // one turn at a time
     const text = input.trim();
     const ws = wsRef.current;
-    if (!text || !ws || !session || !g.connected) return;
+    if ((!text && attachments.length === 0) || !ws || !session || !g.connected) return;
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     const live = mid();
     const guessName = agentById(agentId)?.name ?? "Agent";
+    const imgs = attachments;
+    const userBlocks: Block[] = [
+      ...imgs.map((a) => ({ kind: "image" as const, url: a.preview })),
+      ...(text ? [{ kind: "text" as const, text }] : []),
+    ];
     busyRef.current = true;
     setMessages((m) => [
       ...m,
-      { id: mid(), role: "user", blocks: [{ kind: "text", text }] },
+      { id: mid(), role: "user", blocks: userBlocks },
       { id: live, role: "assistant", blocks: [], agentId: agentId, agentName: guessName },
     ]);
     setLiveId(live);
     liveIdRef.current = live;
     setStreamAgent(agentId);
-    ws.send(JSON.stringify({ type: "invoke", message: text, agent_id: agentId }));
+    ws.send(
+      JSON.stringify({
+        type: "invoke",
+        message: text,
+        agent_id: agentId,
+        images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
+      }),
+    );
     setInput("");
+    setAttachments([]);
     setTarget(null);
   }
 
@@ -316,7 +387,7 @@ export function ChatStream({
             m.role === "user" ? (
               <div key={m.id} className="flex justify-end">
                 <div className="max-w-[78%] rounded-2xl bg-card2 px-4 py-2.5 text-sm leading-relaxed text-txt">
-                  {(m.blocks[0] as Extract<Block, { kind: "text" }>)?.text}
+                  <UserBlocks blocks={m.blocks} />
                 </div>
               </div>
             ) : (
@@ -393,10 +464,51 @@ export function ChatStream({
             </button>
           </div>
 
-          <div className="rounded-2xl border border-line bg-card p-2.5 focus-within:border-line2">
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              void addFiles(e.dataTransfer.files);
+            }}
+            className={`rounded-2xl border bg-card p-2.5 transition-colors focus-within:border-line2 ${
+              dragOver ? "border-violet/70 ring-2 ring-violet/30" : "border-line"
+            }`}
+          >
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachments.map((a, i) => (
+                  <div key={i} className="group relative">
+                    <img
+                      src={a.preview}
+                      alt={a.name}
+                      title={a.name}
+                      className="h-14 w-14 rounded-lg border border-line object-cover"
+                    />
+                    <button
+                      onClick={() => setAttachments((l) => l.filter((_, j) => j !== i))}
+                      aria-label={`移除 ${a.name}`}
+                      className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
+              onPaste={(e) => {
+                if (e.clipboardData?.files?.length) {
+                  e.preventDefault();
+                  void addFiles(e.clipboardData.files);
+                }
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -404,12 +516,27 @@ export function ChatStream({
                 }
               }}
               rows={2}
-              placeholder="Ask any Agent …  (try: 用 stat_list 卡片展示 PR 状态)"
+              placeholder="Ask any Agent …  可粘贴 / 拖入截图  (try: 用 stat_list 卡片展示 PR 状态)"
               className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-txt outline-none placeholder:text-faint"
             />
             <div className="flex items-center justify-between px-1 pt-1">
               <div className="flex items-center gap-1 text-faint">
-                <button className="rounded-md p-1.5 hover:bg-card2 hover:text-muted" title="Attach">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    void addFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  className="rounded-md p-1.5 transition-colors hover:bg-card2 hover:text-muted"
+                  title="添加图片（也可直接粘贴 / 拖拽）"
+                >
                   <Paperclip className="h-4 w-4" />
                 </button>
                 <button className="rounded-md p-1.5 hover:bg-card2 hover:text-muted" title="Shortcuts">
@@ -419,7 +546,7 @@ export function ChatStream({
               </div>
               <button
                 onClick={send}
-                disabled={!g.connected || !!permission || running || !input.trim()}
+                disabled={!g.connected || !!permission || running || (!input.trim() && attachments.length === 0)}
                 className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 <ArrowUp className="h-4 w-4" />
