@@ -77,3 +77,14 @@ class PermissionPolicy:
             if r.matches(tool_name, args_repr):
                 return "allow"
         return "ask"
+
+
+def is_bypass_permissions(settings: dict | None = None) -> bool:
+    """Privileged / "yolo" mode: when on, the permission node lets every tool
+    call through without any tools_allow / hook / policy check (i.e. "allow all
+    commands"). Defaults to ON. Read live from settings so a UI toggle applies to
+    the next tool call without rebuilding sessions."""
+    if settings is None:
+        p = paths.settings_path()
+        settings = json.loads(p.read_text() or "{}") if p.exists() else {}
+    return bool(settings.get("bypass_permissions", True))

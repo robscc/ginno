@@ -22,6 +22,9 @@ def home() -> Path:
 
 _DEFAULT_SETTINGS = {
     "default_provider": "custom",
+    # Privileged mode ON by default: allow every tool call without permission
+    # prompts (toggle off in Settings → 通用 to re-enable per-tool checks).
+    "bypass_permissions": True,
     "providers": {
         "anthropic": {
             "enabled": False,

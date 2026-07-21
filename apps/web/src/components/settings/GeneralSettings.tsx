@@ -18,6 +18,7 @@ export function GeneralSettings() {
   const g = useGinno();
   const [theme, setTheme] = useState<string>("dark");
   const [msg, setMsg] = useState("");
+  const [bypass, setBypass] = useState(true);
 
   useEffect(() => {
     let t = "dark";
@@ -28,6 +29,10 @@ export function GeneralSettings() {
     }
     setTheme(t);
     applyTheme(t);
+    api
+      .getSettings()
+      .then((s) => setBypass((s as Record<string, unknown>).bypass_permissions !== false))
+      .catch(() => {});
   }, []);
 
   function setThemeAndApply(t: string) {
@@ -38,6 +43,17 @@ export function GeneralSettings() {
     await api.putProviders(g.providers, p);
     g.reloadProviders();
     setMsg("default provider → " + p);
+  }
+  async function toggleBypass(v: boolean) {
+    try {
+      const s = (await api.getSettings()) as Record<string, unknown>;
+      s.bypass_permissions = v;
+      await api.putSettings(s);
+      setBypass(v);
+      setMsg(v ? "特权模式已开启：所有工具直接执行，不再询问" : "特权模式已关闭：按权限策略询问 / 拦截");
+    } catch {
+      setMsg("保存失败");
+    }
   }
 
   return (
@@ -71,6 +87,15 @@ export function GeneralSettings() {
               </button>
             ))}
           </div>
+        </div>
+        <div>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input type="checkbox" checked={bypass} onChange={(e) => toggleBypass(e.target.checked)} />
+            特权模式（跳过所有权限确认，允许执行一切命令）
+          </label>
+          <p className="mt-1 text-xs text-faint">
+            开启后 Agent 调用任何工具都不再询问、不被权限策略拦截（含 Bash/Write 等危险操作）。默认开启；关闭后按权限策略询问/拦截。注意：你配置的 PreToolUse hook 仍会执行（hook 是自定义规则，始终生效）。
+          </p>
         </div>
         <div>
           <label className="field-label">工作目录</label>

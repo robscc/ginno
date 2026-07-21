@@ -22,7 +22,7 @@ from langgraph.types import Command, interrupt
 from . import agents as agents_reg
 from .agents.memory import read_agent_memory
 from .checkpointer import FileCheckpointer
-from .permission.policy import PermissionPolicy
+from .permission.policy import PermissionPolicy, is_bypass_permissions
 from .skills.loader import SkillLoader
 from .state import AgentState
 from .tools.builtin import build_builtin_tools
@@ -181,6 +181,10 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
     async def permission_node(state: AgentState, config=None) -> Command:
         from .hooks.dispatcher import HookEvent
 
+        # Privileged mode skips per-agent tools_allow + the permission policy, but
+        # PreToolUse hooks still run (they are user-authored rules, authoritative).
+        # With no hooks configured (the default) this means every tool runs freely.
+        bypass = is_bypass_permissions()
         agent = _resolve_agent(_turn_agent_id(state, config))
         pending = state.get("pending_tool_calls") or []
         for tc in pending:
@@ -191,8 +195,8 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
             if name in RENDER_TOOL_NAMES:
                 continue
 
-            # 0) per-agent tools_allow enforcement
-            if not tool_allowed(agent, name):
+            # 0) per-agent tools_allow enforcement (skipped under bypass)
+            if not bypass and not tool_allowed(agent, name):
                 return Command(
                     goto="agent",
                     update={
@@ -232,24 +236,25 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                             },
                         )
 
-            # 2) permission policy
-            decision = policy.decide(name, repr(args))
-            if decision == "ask":
-                answer = interrupt({"kind": "permission_request", "tool": name, "args": args})
-                if answer.get("decision") == "deny":
+            # 2) permission policy (skipped under bypass)
+            if not bypass:
+                decision = policy.decide(name, repr(args))
+                if decision == "ask":
+                    answer = interrupt({"kind": "permission_request", "tool": name, "args": args})
+                    if answer.get("decision") == "deny":
+                        return Command(
+                            goto="agent",
+                            update={
+                                "messages": [AIMessage(content=f"{BLOCK_PREFIX}{name}] user denied")]
+                            },
+                        )
+                elif decision == "deny":
                     return Command(
                         goto="agent",
                         update={
-                            "messages": [AIMessage(content=f"{BLOCK_PREFIX}{name}] user denied")]
+                            "messages": [AIMessage(content=f"{BLOCK_PREFIX}{name}] policy denied")]
                         },
                     )
-            elif decision == "deny":
-                return Command(
-                    goto="agent",
-                    update={
-                        "messages": [AIMessage(content=f"{BLOCK_PREFIX}{name}] policy denied")]
-                    },
-                )
         return Command(goto="tools")
 
     return permission_node

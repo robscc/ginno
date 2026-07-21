@@ -98,6 +98,13 @@ def patch_build_model(monkeypatch: pytest.MonkeyPatch) -> Callable[[Any], Any]:
 def client(isolated_home: Path) -> TestClient:
     """FastAPI TestClient with lifespan run (seeds the isolated home)."""
     with TestClient(server.app) as c:
+        # Tests default privileged mode OFF so permission ask/deny is observable;
+        # production defaults to ON. permission_node reads this live from settings.
+        sp = isolated_home / "settings.json"
+        if sp.exists():
+            s = json.loads(sp.read_text())
+            s["bypass_permissions"] = False
+            sp.write_text(json.dumps(s))
         yield c
 
 
