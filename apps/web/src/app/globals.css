@@ -14,6 +14,8 @@
   --muted: 154 154 166;
   --faint: 98 98 110;
   --scroll: 44 44 56;
+  --code-bg: 14 14 20;
+  --inline-code: 233 170 200;
 }
 
 html.light {
@@ -28,6 +30,8 @@ html.light {
   --muted: 90 90 102;
   --faint: 130 130 142;
   --scroll: 212 212 220;
+  --code-bg: 245 245 249;
+  --inline-code: 170 60 105;
 }
 
 html,
@@ -74,4 +78,133 @@ body {
   .pill {
     @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
   }
+}
+
+/* ---- code highlighting (hljs) — theme-aware token palette ---- */
+.hljs {
+  color: rgb(var(--txt));
+  background: transparent;
+}
+.hljs-comment,
+.hljs-quote {
+  color: rgb(var(--faint));
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-deletion {
+  color: #bb9af7;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: #9ece6a;
+}
+.hljs-number,
+.hljs-literal,
+.hljs-selector-class {
+  color: #ff9e64;
+}
+.hljs-title,
+.hljs-section,
+.hljs-selector-id {
+  color: #7aa2f7;
+}
+.hljs-title.class_,
+.hljs-class .hljs-title,
+.hljs-type {
+  color: #e0af68;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-property {
+  color: #73daca;
+}
+.hljs-meta,
+.hljs-doctag {
+  color: #565f89;
+}
+.hljs-tag,
+.hljs-name {
+  color: #f7768e;
+}
+.hljs-params {
+  color: rgb(var(--muted));
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+html.light .hljs-keyword,
+html.light .hljs-selector-tag,
+html.light .hljs-built_in,
+html.light .hljs-deletion {
+  color: #8956d6;
+}
+html.light .hljs-string,
+html.light .hljs-regexp,
+html.light .hljs-addition {
+  color: #4e8a3c;
+}
+html.light .hljs-number,
+html.light .hljs-literal,
+html.light .hljs-selector-class {
+  color: #b0622a;
+}
+html.light .hljs-title,
+html.light .hljs-section,
+html.light .hljs-selector-id {
+  color: #2f6fd0;
+}
+html.light .hljs-title.class_,
+html.light .hljs-class .hljs-title,
+html.light .hljs-type {
+  color: #9a7422;
+}
+html.light .hljs-attr,
+html.light .hljs-attribute,
+html.light .hljs-variable,
+html.light .hljs-template-variable,
+html.light .hljs-property {
+  color: #1f8a80;
+}
+html.light .hljs-meta,
+html.light .hljs-doctag {
+  color: #8a8fa3;
+}
+html.light .hljs-tag,
+html.light .hljs-name {
+  color: #c24858;
+}
+
+/* ---- lightbox entrance ---- */
+@keyframes ginno-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ginno-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.lightbox-in {
+  animation: ginno-fade-in 0.15s ease-out;
+}
+.lightbox-img {
+  animation: ginno-zoom-in 0.18s ease-out;
 }

@@ -311,8 +311,84 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
 
 
 # ---- session history (rebuild the chat UI's block layout from checkpoints) ----
+def _image_block_url(b: dict) -> str | None:
+    """Normalize a provider image block (OpenAI ``image_url`` / Anthropic
+    ``image``) to a displayable URL (data URL for base64 sources)."""
+    if b.get("type") == "image_url":
+        iu = b.get("image_url") or {}
+        u = iu.get("url") if isinstance(iu, dict) else None
+        return u or None
+    src = b.get("source") or {}
+    if isinstance(src, dict):
+        if src.get("type") == "url":
+            return src.get("url") or None
+        if src.get("data"):
+            return f"data:{src.get('media_type') or 'image/png'};base64,{src['data']}"
+    return None
+
+
+def _content_ui_blocks(content: Any) -> list[dict]:
+    """Message content (str or multimodal list) -> UI text/image blocks."""
+    blocks: list[dict] = []
+    if isinstance(content, str):
+        if content.strip():
+            blocks.append({"kind": "text", "text": content})
+    elif isinstance(content, list):
+        for b in content:
+            if isinstance(b, str):
+                if b.strip():
+                    blocks.append({"kind": "text", "text": b})
+            elif isinstance(b, dict):
+                bt = b.get("type")
+                if bt == "text":
+                    t = b.get("text") or ""
+                    if t.strip():
+                        blocks.append({"kind": "text", "text": t})
+                elif bt in ("image", "image_url"):
+                    url = _image_block_url(b)
+                    if url:
+                        blocks.append({"kind": "image", "url": url})
+    return blocks
+
+
+def _tool_content_str(content: Any) -> str:
+    """ToolMessage.content (str or list of provider blocks) -> plain text for
+    the UI tool bubble. Image parts become an ``[image]`` marker."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for b in content:
+            if isinstance(b, str):
+                parts.append(b)
+            elif isinstance(b, dict):
+                bt = b.get("type")
+                if bt == "text":
+                    parts.append(b.get("text") or "")
+                elif bt in ("image", "image_url"):
+                    parts.append("[image]")
+                else:
+                    parts.append(json.dumps(b, ensure_ascii=False, default=str))
+        return "\n".join(p for p in parts if p)
+    if content is None:
+        return ""
+    return json.dumps(content, ensure_ascii=False, default=str)
+
+
+# Live WS tool outputs are capped to keep frames small; the history endpoint
+# returns the full untruncated result, so expanding a bubble after reload can
+# show more than what streamed live.
+TOOL_OUTPUT_WS_LIMIT = 4000
+
+
+def _truncate_for_ws(text: str) -> str:
+    if len(text) <= TOOL_OUTPUT_WS_LIMIT:
+        return text
+    return text[:TOOL_OUTPUT_WS_LIMIT] + f"\n…（已截断，完整 {len(text)} 字符）"
+
+
 def _ai_content_blocks(content: Any) -> list[dict]:
-    """AIMessage.content (str or list of provider blocks) -> UI text/thinking blocks."""
+    """AIMessage.content (str or list of provider blocks) -> UI text/thinking/image blocks."""
     blocks: list[dict] = []
     if isinstance(content, str):
         if content:
@@ -329,6 +405,10 @@ def _ai_content_blocks(content: Any) -> list[dict]:
                     t = b.get("text") or ""
                     if t:
                         blocks.append({"kind": "text", "text": t})
+                elif bt in ("image", "image_url"):
+                    url = _image_block_url(b)
+                    if url:
+                        blocks.append({"kind": "image", "url": url})
             elif isinstance(b, str) and b:
                 blocks.append({"kind": "text", "text": b})
     return blocks
@@ -350,7 +430,7 @@ def _messages_to_ui(messages: list[Any], agent_id: str | None) -> list[dict]:
     results: dict[str, str] = {}
     for m in messages:
         if isinstance(m, ToolMessage):
-            results[getattr(m, "tool_call_id", None)] = getattr(m, "content", "") or ""
+            results[getattr(m, "tool_call_id", None)] = _tool_content_str(getattr(m, "content", ""))
 
     ui: list[dict] = []
     acc: list[dict] | None = None
@@ -366,10 +446,9 @@ def _messages_to_ui(messages: list[Any], agent_id: str | None) -> list[dict]:
     for m in messages:
         if isinstance(m, HumanMessage):
             flush_assistant()
-            c = getattr(m, "content", "")
-            text = c if isinstance(c, str) else json.dumps(c, ensure_ascii=False, default=str)
-            if text.strip():
-                ui.append({"id": getattr(m, "id", None), "role": "user", "blocks": [{"kind": "text", "text": text}]})
+            blocks = _content_ui_blocks(getattr(m, "content", ""))
+            if blocks:
+                ui.append({"id": getattr(m, "id", None), "role": "user", "blocks": blocks})
         elif isinstance(m, AIMessage):
             if acc is None:
                 acc = []
@@ -1205,7 +1284,15 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     **config,
                     "configurable": {**config["configurable"], "agent_id": turn_agent},
                 }
-                await _run_stream(ws, graph, turn_config, user_text, session, turn_agent)
+                await _run_stream(
+                    ws,
+                    graph,
+                    turn_config,
+                    user_text,
+                    session,
+                    turn_agent,
+                    images=msg.get("images"),
+                )
             elif kind == "permission_response":
                 decision = msg.get("decision", "deny")
                 # resume under the agent that was active when the interrupt fired
@@ -1233,10 +1320,29 @@ async def _run_stream(
     user_text: str,
     session: dict,
     agent_id: str | None = None,
+    images: list | None = None,
 ) -> None:
-    """Append a HumanMessage and stream the agent loop until end or interrupt."""
+    """Append a HumanMessage and stream the agent loop until end or interrupt.
+
+    ``images`` carries ``{"data": <base64>, "media_type": "image/png"}`` items
+    from the composer; when present the HumanMessage becomes a multimodal
+    content list (OpenAI-style image_url data URLs, which both ChatOpenAI and
+    ChatAnthropic accept).
+    """
+    content: Any = user_text
+    imgs = [i for i in (images or []) if isinstance(i, dict) and i.get("data")]
+    if imgs:
+        parts: list[dict] = []
+        if user_text:
+            parts.append({"type": "text", "text": user_text})
+        for img in imgs:
+            media = img.get("media_type") or "image/png"
+            parts.append(
+                {"type": "image_url", "image_url": {"url": f"data:{media};base64,{img['data']}"}}
+            )
+        content = parts
     input_state = {
-        "messages": [HumanMessage(content=user_text)],
+        "messages": [HumanMessage(content=content)],
         "workspace": session["workspace"],
         "project_slug": session["project_slug"],
         "agent_id": agent_id or session.get("agent_id") or "",
@@ -1311,6 +1417,16 @@ async def _stream_graph(
         async for mode, payload in stream:
             if mode == "messages":
                 chunk, msg_meta = payload
+                # Only AI message chunks carry streaming text / thinking /
+                # tool-call chunks. ToolMessage chunks (the result emitted by
+                # the tools node, type "tool") must NOT be streamed as
+                # token.delta — that would leak the tool output into the
+                # assistant's text bubble (and into the memory-capture buffer).
+                # Tool results reach the UI via the `updates` mode -> tool.end.
+                # Streamed AI chunks report type "AIMessageChunk"; a final
+                # non-streamed AIMessage reports "ai" — allow both.
+                if getattr(chunk, "type", None) not in ("ai", "AIMessageChunk"):
+                    continue
                 content = getattr(chunk, "content", "")
                 if isinstance(content, list):
                     for b in content:
@@ -1416,7 +1532,7 @@ async def _stream_graph(
                                 pass  # widget/ref emitted at agent-update; no bubble
                             elif tc_id:
                                 await ws.send_text(
-                                    _ev("tool.end", {"id": tc_id, "content": raw[:500]})
+                                    _ev("tool.end", {"id": tc_id, "content": _truncate_for_ws(_tool_content_str(raw))})
                                 )
                     elif node_name == "permission":
                         # resolve "running" tool bubbles that were denied by
