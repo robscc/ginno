@@ -1263,6 +1263,28 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     graph = session["graph"]
     config = {"configurable": {"thread_id": session_id, "project_slug": session["project_slug"]}}
 
+    # Re-emit any permission interrupt left pending from a previous connection:
+    # the graph pauses at permission_node awaiting a resume, so a reconnect or a
+    # session switch mid-permission would otherwise orphan the turn (the prompt
+    # is gone and there is no way to resume). The payload mirrors the
+    # __interrupt__ handling in _run_stream below, so the client's existing
+    # permission.request handler applies unchanged.
+    try:
+        snap = await graph.aget_state(config)
+        for task in getattr(snap, "tasks", []) or []:
+            for intr in getattr(task, "interrupts", []) or []:
+                value = getattr(intr, "value", None) or intr
+                if isinstance(value, dict) and value.get("kind") == "permission_request":
+                    await ws.send_text(
+                        _ev(
+                            "permission.request",
+                            {"tool": value.get("tool"), "args": value.get("args")},
+                        )
+                    )
+    except Exception:
+        # introspecting resume state must never stop the socket from opening
+        pass
+
     try:
         while True:
             raw = await ws.receive_text()

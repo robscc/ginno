@@ -255,14 +255,6 @@ def knowledge_dir() -> Path:
     return home() / "knowledge"
 
 
-def knowledge_index_path() -> Path:
-    return knowledge_dir() / "index.json"
-
-
-def knowledge_assoc_cache_path() -> Path:
-    return knowledge_dir() / "assoc_cache.json"
-
-
 def memory_pool_dir() -> Path:
     return home() / "memory" / "pool"
 

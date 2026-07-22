@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen } from "lucide-react";
+import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, ShieldCheck, Webhook } from "lucide-react";
 
 type Item = { id: string; label: string; icon: typeof Cpu; color: string };
 
@@ -12,6 +12,10 @@ const MAIN: Item[] = [
   { id: "agents", label: "Agent 管理", icon: Users, color: "#fb923c" },
   { id: "workflows", label: "Workflows", icon: Workflow, color: "#4ade80" },
   { id: "knowledge", label: "知识库", icon: BookOpen, color: "#60a5fa" },
+];
+const SAFE: Item[] = [
+  { id: "permissions", label: "权限策略", icon: ShieldCheck, color: "#f87171" },
+  { id: "hooks", label: "Hooks", icon: Webhook, color: "#f59e0b" },
 ];
 const SYSTEM: Item[] = [
   { id: "general", label: "通用设置", icon: SlidersHorizontal, color: "#9ca3af" },
@@ -41,6 +45,14 @@ export function SettingsNav({ active }: { active: string }) {
       <div className="mb-3 px-3 text-sm font-semibold text-txt">Settings</div>
       <div className="space-y-0.5">
         {MAIN.map((m) => (
+          <Row key={m.id} {...m} />
+        ))}
+      </div>
+      <div className="mb-1.5 mt-4 px-3 text-[11px] font-semibold uppercase tracking-wider text-faint">
+        安全
+      </div>
+      <div className="space-y-0.5">
+        {SAFE.map((m) => (
           <Row key={m.id} {...m} />
         ))}
       </div>

@@ -8,6 +8,8 @@ export function generateStaticParams() {
     { tab: "agents" },
     { tab: "workflows" },
     { tab: "knowledge" },
+    { tab: "permissions" },
+    { tab: "hooks" },
     { tab: "general" },
     { tab: "notifications" },
   ];
