@@ -275,6 +275,26 @@ export async function kbWikiRelated(title: string, top_k = 10) {
 export async function kbWikiOrphans() {
   return json<{ ok: boolean; pages: import("./types").WikiPage[] }>(`${BASE}/kb/wiki/orphans`);
 }
+export async function kbWikiPage(path = "", title = "") {
+  const q = new URLSearchParams();
+  if (path) q.set("path", path);
+  if (title) q.set("title", title);
+  return json<import("./types").WikiPageDoc>(`${BASE}/kb/wiki/page?${q.toString()}`);
+}
+export async function kbWikiPutPage(path: string, raw: string) {
+  return json<{ ok: boolean; error?: string; path?: string }>(`${BASE}/kb/wiki/page`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify({ path, raw }),
+  });
+}
+export async function kbWikiCreatePage(path: string, raw: string) {
+  return json<{ ok: boolean; error?: string; path?: string }>(`${BASE}/kb/wiki/page`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ path, raw }),
+  });
+}
 export async function kbWikiProbe(path: string) {
   return json<{
     ok: boolean;

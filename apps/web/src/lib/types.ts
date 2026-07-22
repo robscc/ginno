@@ -112,7 +112,19 @@ export interface WikiPage {
   title: string;
   path: string;
   tags: string[];
+  links: string[];
   modified: number;
+}
+
+export interface WikiPageDoc {
+  ok: boolean;
+  exists?: boolean;
+  error?: string;
+  path: string;
+  title: string;
+  tags: string[];
+  links: string[];
+  raw: string;
 }
 
 export interface WikiStats {

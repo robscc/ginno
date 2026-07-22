@@ -11,6 +11,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 
+// Obsidian-style [[target]] / [[target|alias]] / [[target#heading]]. Turned into
+// in-page fragment links (#wl:<encoded>) so any URL transform keeps them; the
+// `a` renderer below intercepts the prefix when `onWikilink` is provided.
+const WIKILINK_RE = /\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]+?))?\]\]/g;
+
 /** Recursively extract plain text from rendered children (for the copy button). */
 function nodeText(n: ReactNode): string {
   if (n == null || typeof n === "boolean") return "";
@@ -59,7 +64,19 @@ function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {
  * globals.css so it follows the light/dark theme). Task lists render as
  * checkbox rows, visually distinct from plain bullet/numbered lists.
  */
-export function Markdown({ text }: { text: string }) {
+export function Markdown({
+  text,
+  onWikilink,
+}: {
+  text: string;
+  onWikilink?: (target: string) => void;
+}) {
+  const src = onWikilink
+    ? text.replace(WIKILINK_RE, (_, target: string, alias?: string) => {
+        const label = (alias || target).trim();
+        return `[${label}](#wl:${encodeURIComponent(target.trim())})`;
+      })
+    : text;
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -86,6 +103,19 @@ export function Markdown({ text }: { text: string }) {
           return <p className="my-2 leading-relaxed first:mt-0 last:mb-0">{children}</p>;
         },
         a({ href, children }) {
+          if (onWikilink && href && href.startsWith("#wl:")) {
+            const target = decodeURIComponent(href.slice(4));
+            return (
+              <button
+                type="button"
+                onClick={() => onWikilink(target)}
+                title={`打开 ${target}`}
+                className="rounded bg-violet/15 px-1 py-0.5 text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:bg-violet/25 hover:decoration-violet"
+              >
+                {children}
+              </button>
+            );
+          }
           return (
             <a
               href={href}
@@ -184,7 +214,7 @@ export function Markdown({ text }: { text: string }) {
         },
       }}
     >
-      {text}
+      {src}
     </ReactMarkdown>
   );
 }

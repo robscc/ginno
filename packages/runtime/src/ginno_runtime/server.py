@@ -1068,7 +1068,13 @@ async def kb_wiki_list() -> dict:
         return _kb_not_configured({"pages": []})
     idx = _kb_indexer(cfg)
     pages = [
-        {"title": e.title, "path": e.relative_path, "tags": e.tags, "modified": e.modified}
+        {
+            "title": e.title,
+            "path": e.relative_path,
+            "tags": e.tags,
+            "links": e.links,
+            "modified": e.modified,
+        }
         for e in idx.get_entries()
     ]
     return {"ok": True, "pages": pages}
@@ -1100,6 +1106,118 @@ async def kb_wiki_stats() -> dict:
         "unique_tags": unique_tags,
         "last_indexed": idx.last_full_scan,
     }
+
+
+def _vault_resolve(cfg, rel: str):
+    """Resolve a vault-relative (or absolute) path and ensure it stays inside the
+    vault. Returns the resolved Path or None when it escapes the vault."""
+    from pathlib import Path as _P
+
+    vault = _P(cfg.vault_path).expanduser().resolve()
+    p = _P(rel)
+    p = (vault / p).resolve() if not p.is_absolute() else p.resolve()
+    try:
+        p.relative_to(vault)
+    except ValueError:
+        return None
+    return p
+
+
+@app.get("/kb/wiki/page")
+def kb_wiki_page(path: str = "", title: str = "") -> dict:
+    """Read one vault note in full (raw text incl. frontmatter) for the preview /
+    editor. Resolves by ``path`` (vault-relative) or, failing that, by ``title``
+    via the index. A note that doesn't exist yet returns ``exists:false`` so the
+    UI can offer to create it (Obsidian-style click-on-dangling-wikilink)."""
+    from .knowledge import frontmatter as _fm
+
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    vault = _Path(cfg.vault_path).expanduser().resolve()
+    p = _vault_resolve(cfg, path) if path else None
+    if p is None or not p.exists():
+        # fall back to title → indexed page
+        if title:
+            ent = _kb_indexer(cfg).find_by_title(title)
+            if ent:
+                p = _Path(ent.path)
+    if p is None or not p.exists():
+        # dangling link: surface a create-able stub
+        stub_title = title or (_Path(path).stem if path else "")
+        return {
+            "ok": True,
+            "exists": False,
+            "path": path,
+            "title": stub_title,
+            "tags": [],
+            "links": [],
+            "raw": "",
+        }
+    try:
+        raw = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    meta, body = _fm.split_frontmatter(raw)
+    rel = p.resolve().relative_to(vault).as_posix()
+    return {
+        "ok": True,
+        "exists": True,
+        "path": rel,
+        "title": (meta.get("title") or "").strip() or _fm.extract_title(body) or p.stem,
+        "tags": _fm._as_list(meta.get("tags")),
+        "links": _fm.extract_wikilinks(body),
+        "raw": raw,
+    }
+
+
+@app.put("/kb/wiki/page")
+def kb_wiki_page_put(data: dict) -> dict:
+    """Write a note's full raw text back to the vault (path must stay in-vault and
+    end in .md), then refresh the index so the preview/list/graph update."""
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    rel = (data or {}).get("path", "")
+    raw = (data or {}).get("raw", "")
+    if not rel or not str(rel).lower().endswith((".md", ".markdown")):
+        return {"ok": False, "error": "path must be a .md file"}
+    p = _vault_resolve(cfg, rel)
+    if p is None:
+        return {"ok": False, "error": "path outside vault"}
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(raw if isinstance(raw, str) else "", encoding="utf-8")
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    _kb_refresh(cfg)
+    _maybe_build_semantic(cfg)
+    return {"ok": True, "path": rel}
+
+
+@app.post("/kb/wiki/page")
+def kb_wiki_page_post(data: dict) -> dict:
+    """Create a new note (fails if it already exists — use PUT to overwrite)."""
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    rel = (data or {}).get("path", "")
+    raw = (data or {}).get("raw", "")
+    if not rel or not str(rel).lower().endswith((".md", ".markdown")):
+        return {"ok": False, "error": "path must be a .md file"}
+    p = _vault_resolve(cfg, rel)
+    if p is None:
+        return {"ok": False, "error": "path outside vault"}
+    if p.exists():
+        return {"ok": False, "error": "already exists"}
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(raw if isinstance(raw, str) else "", encoding="utf-8")
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    _kb_refresh(cfg)
+    _maybe_build_semantic(cfg)
+    return {"ok": True, "path": rel}
 
 
 @app.post("/kb/wiki/index")

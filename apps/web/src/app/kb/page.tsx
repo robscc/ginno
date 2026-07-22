@@ -10,9 +10,11 @@ import type {
   WikiSearchResult,
   WikiStats,
 } from "@/lib/types";
-import { BookOpen, FileText, Hammer, RefreshCw, Search, Sparkles, Tag } from "lucide-react";
+import { BookOpen, FileText, Hammer, RefreshCw, Search, Sparkles, Tag, Network } from "lucide-react";
+import { GraphView } from "@/components/kb/GraphView";
+import { PageViewer, type ViewTarget } from "@/components/kb/PageViewer";
 
-type View = "search" | "all" | "discover";
+type View = "search" | "all" | "discover" | "graph";
 
 function timeAgo(ts?: number): string {
   if (!ts) return "never";
@@ -67,14 +69,15 @@ export default function KnowledgeBasePage() {
   const [view, setView] = useState<View>("all");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string>("");
+  const [connError, setConnError] = useState<string>("");
   const [discover, setDiscover] = useState<WikiDiscover | null>(null);
+  const [discoverError, setDiscoverError] = useState<string>("");
   const [relatedQuery, setRelatedQuery] = useState("");
   const [related, setRelated] = useState<WikiRelatedItem[] | null>(null);
   const [importPath, setImportPath] = useState("");
   const [importProbe, setImportProbe] = useState<string>("");
   const [importBusy, setImportBusy] = useState(false);
-  const [connError, setConnError] = useState("");
-  const [discoverError, setDiscoverError] = useState("");
+  const [openTarget, setOpenTarget] = useState<ViewTarget | null>(null);
 
   const configured = !!stats?.ok;
 
@@ -85,7 +88,6 @@ export default function KnowledgeBasePage() {
       if (pg.ok) setPages(pg.pages);
       setConnError("");
     } catch {
-      // sidecar down was silently swallowed → looked identical to "not configured"
       setConnError("运行时未连接：请确认 sidecar 已启动（dev: pnpm dev:runtime）。");
     }
   }, []);
@@ -115,8 +117,6 @@ export default function KnowledgeBasePage() {
     setBusy(true);
     setNote("");
     try {
-      // a "tag:foo" in the box (e.g. after clicking a tag pill) must run a tag
-      // filter, not a literal text search for the string "tag:foo".
       const tag = q.startsWith("tag:") ? q.slice(4).trim() : "";
       const r = tag ? await api.kbWikiSearchByTag(tag) : await api.kbWikiSearch(q);
       if (r.ok) {
@@ -212,7 +212,6 @@ export default function KnowledgeBasePage() {
     try {
       const probe = await api.kbWikiProbe(importPath.trim());
       if (!probe.ok) {
-        // don't persist config for a mistyped / nonexistent vault path
         setImportProbe(probe.error || "检测失败：路径无效");
         return;
       }
@@ -241,10 +240,19 @@ export default function KnowledgeBasePage() {
     }
   }
 
-  const tabs: { id: View; label: string }[] = [
+  // Open a wikilink target: resolve to an existing page (by path or title) or
+  // fall back to a create-stub when the note doesn't exist yet.
+  function openByRef(t: string) {
+    const lp = t.toLowerCase();
+    const hit = pages.find((p) => p.path.toLowerCase() === lp) || pages.find((p) => p.title.toLowerCase() === lp);
+    setOpenTarget(hit ? { path: hit.path } : { title: t });
+  }
+
+  const tabs: { id: View; label: string; icon?: typeof Network }[] = [
     { id: "search", label: `搜索结果${searched ? ` (${results.length})` : ""}` },
     { id: "all", label: `全部页面 (${pages.length})` },
     { id: "discover", label: "发现" },
+    { id: "graph", label: `图谱 (${pages.length})`, icon: Network },
   ];
 
   return (
@@ -275,13 +283,11 @@ export default function KnowledgeBasePage() {
         )}
       </div>
       <p className="mt-1 text-sm text-muted">
-        Obsidian 知识库：把 Raw 编译成 Wiki、按相关性检索并在对话中自动注入（LLMWiki）。
+        Obsidian 知识库：把 Raw 编译成 Wiki、按相关性检索并在对话中自动注入（LLMWiki）。支持页面预览、wikilink 跳转/创建与图谱。
       </p>
       {note && <div className="mt-2 text-xs text-violet">{note}</div>}
       {connError && (
-        <div className="mt-2 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">
-          {connError}
-        </div>
+        <div className="mt-2 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">{connError}</div>
       )}
 
       {/* not configured → import panel */}
@@ -384,163 +390,185 @@ export default function KnowledgeBasePage() {
 
           {/* tabs */}
           <div className="mt-5 flex gap-1 border-b border-line">
-            {tabs.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setView(t.id)}
-                className={`px-3 py-2 text-sm font-medium transition-colors ${
-                  view === t.id ? "border-b-2 border-violet text-txt" : "text-muted hover:text-txt"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
+            {tabs.map((t) => {
+              const Ic = t.icon;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setView(t.id)}
+                  className={`flex items-center gap-1 px-3 py-2 text-sm font-medium transition-colors ${
+                    view === t.id ? "border-b-2 border-violet text-txt" : "text-muted hover:text-txt"
+                  }`}
+                >
+                  {Ic && <Ic className="h-3.5 w-3.5" />}
+                  {t.label}
+                </button>
+              );
+            })}
           </div>
 
-          {/* content */}
-          <div className="mt-4 max-w-2xl space-y-3">
-            {view === "search" &&
-              (searched ? (
-                results.length === 0 ? (
-                  <div className="text-sm text-faint">没有匹配的条目。</div>
-                ) : (
-                  results.map((r, i) => (
-                    <div key={i} className="rounded-xl border border-line bg-card p-4">
-                      <div className="flex items-center gap-2">
-                        <FileText className="h-4 w-4 shrink-0 text-violet" />
-                        <span className="font-medium text-txt">{r.title}</span>
-                        <span className="ml-auto text-xs font-semibold text-violet">
-                          {Math.round(r.score * 100)}%
-                        </span>
-                      </div>
-                      <div className="mt-1.5 flex items-center gap-2">
-                        <TagPills tags={r.tags} />
-                      </div>
-                      <div className="mt-2 text-xs text-faint">来源: {r.path}</div>
-                      {r.matched_terms.length > 0 && (
-                        <div className="mt-1 text-[11px] text-faint">
-                          命中: {r.matched_terms.slice(0, 8).join(" · ")}
-                        </div>
-                      )}
-                      {r.summary && <p className="mt-2 text-sm leading-relaxed text-muted">{r.summary}</p>}
-                    </div>
-                  ))
-                )
-              ) : (
-                <div className="text-sm text-faint">输入关键词开始检索。</div>
-              ))}
+          {/* two-pane: list/graph on the left, page inspector on the right */}
+          <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_460px]">
+            <div className="min-w-0 space-y-3">
+              {view === "graph" && (
+                <GraphView pages={pages} selected={openTarget?.path ?? null} onSelect={(p) => setOpenTarget({ path: p })} />
+              )}
 
-            {view === "all" &&
-              (pages.length === 0 ? (
-                <div className="text-sm text-faint">还没有索引到任何页面（先点 Build wiki 编译 Raw）。</div>
-              ) : (
-                pages.map((p, i) => (
-                  <div key={i} className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-card/50">
-                    <FileText className="h-4 w-4 shrink-0 text-muted" />
-                    <span className="text-sm text-txt">{p.title}</span>
-                    <TagPills tags={p.tags} />
-                    <span className="ml-auto truncate text-[11px] text-faint">{p.path}</span>
-                  </div>
-                ))
-              ))}
-
-            {view === "discover" &&
-              (discover ? (
-                <>
-                  <div className="flex items-center gap-2 text-xs text-faint">
-                    <Sparkles className="h-3.5 w-3.5 text-violet" />
-                    {discover.stats?.pages ?? 0} 页 · {discover.stats?.edges ?? 0} 条关联边
-                  </div>
-
-                  {/* related lookup */}
-                  <Section title="查看某页的相关">
-                    <div className="flex gap-2">
-                      <input
-                        className="field flex-1"
-                        placeholder="页面标题，如 权限节点"
-                        value={relatedQuery}
-                        onChange={(e) => setRelatedQuery(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && onRelated()}
-                      />
+              {view === "search" &&
+                (searched ? (
+                  results.length === 0 ? (
+                    <div className="text-sm text-faint">没有匹配的条目。</div>
+                  ) : (
+                    results.map((r, i) => (
                       <button
-                        onClick={onRelated}
-                        className="rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt"
+                        key={i}
+                        onClick={() => setOpenTarget({ path: r.path })}
+                        className="block w-full rounded-xl border border-line bg-card p-4 text-left transition-colors hover:border-line2"
                       >
-                        相关
-                      </button>
-                    </div>
-                    {related &&
-                      (related.length === 0 ? (
-                        <div className="mt-2 text-xs text-faint">没有相关页（或标题不匹配）。</div>
-                      ) : (
-                        <div className="mt-2">
-                          {related.map((r, i) => (
-                            <PairRow key={i} a={relatedQuery} b={r.title} score={r.score} type={r.type} />
-                          ))}
+                        <div className="flex items-center gap-2">
+                          <FileText className="h-4 w-4 shrink-0 text-violet" />
+                          <span className="font-medium text-txt">{r.title}</span>
+                          <span className="ml-auto text-xs font-semibold text-violet">{Math.round(r.score * 100)}%</span>
                         </div>
-                      ))}
-                  </Section>
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <TagPills tags={r.tags} />
+                        </div>
+                        <div className="mt-2 text-xs text-faint">来源: {r.path}</div>
+                        {r.matched_terms.length > 0 && (
+                          <div className="mt-1 text-[11px] text-faint">命中: {r.matched_terms.slice(0, 8).join(" · ")}</div>
+                        )}
+                        {r.summary && <p className="mt-2 text-sm leading-relaxed text-muted">{r.summary}</p>}
+                      </button>
+                    ))
+                  )
+                ) : (
+                  <div className="text-sm text-faint">输入关键词开始检索。</div>
+                ))}
 
-                  <Section title={`强关联 (≥80%) · ${discover.strong.length}`}>
-                    {discover.strong.length === 0 ? (
-                      <div className="text-xs text-faint">无。</div>
-                    ) : (
-                      discover.strong.map((p, i) => (
-                        <PairRow key={i} a={p.a} b={p.b} score={p.score} type={p.type} />
-                      ))
-                    )}
-                  </Section>
+              {view === "all" &&
+                (pages.length === 0 ? (
+                  <div className="text-sm text-faint">还没有索引到任何页面（先点 Build wiki 编译 Raw）。</div>
+                ) : (
+                  <div className="overflow-hidden rounded-xl border border-line">
+                    {pages.map((p, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setOpenTarget({ path: p.path })}
+                        className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-all hover:translate-x-0.5 hover:bg-card2/50 ${
+                          openTarget?.path === p.path ? "bg-card2/60 shadow-[inset_2px_0_0_0_#8b5cf6]" : ""
+                        }`}
+                      >
+                        <FileText className="h-4 w-4 shrink-0 text-muted" />
+                        <span className="truncate text-sm text-txt">{p.title}</span>
+                        <TagPills tags={p.tags} />
+                        <span className="ml-auto truncate text-[11px] text-faint">{p.path}</span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
 
-                  <Section title={`聚类 · ${discover.clusters.length}`}>
-                    {discover.clusters.length === 0 ? (
-                      <div className="text-xs text-faint">无显著聚类。</div>
-                    ) : (
-                      discover.clusters.map((c, i) => (
-                        <div key={i} className="py-1">
-                          <div className="text-sm text-txt">
-                            {c.label} <span className="text-faint">· 密度 {c.density}</span>
-                          </div>
-                          <div className="mt-0.5 flex flex-wrap gap-1">
-                            {c.members.map((m) => (
-                              <span key={m} className="pill border border-line2 text-faint">
-                                {m}
-                              </span>
+              {view === "discover" &&
+                (discover ? (
+                  <>
+                    <div className="flex items-center gap-2 text-xs text-faint">
+                      <Sparkles className="h-3.5 w-3.5 text-violet" />
+                      {discover.stats?.pages ?? 0} 页 · {discover.stats?.edges ?? 0} 条关联边
+                    </div>
+                    <Section title="查看某页的相关">
+                      <div className="flex gap-2">
+                        <input
+                          className="field flex-1"
+                          placeholder="页面标题，如 权限节点"
+                          value={relatedQuery}
+                          onChange={(e) => setRelatedQuery(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && onRelated()}
+                        />
+                        <button
+                          onClick={onRelated}
+                          className="rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt"
+                        >
+                          相关
+                        </button>
+                      </div>
+                      {related &&
+                        (related.length === 0 ? (
+                          <div className="mt-2 text-xs text-faint">没有相关页（或标题不匹配）。</div>
+                        ) : (
+                          <div className="mt-2">
+                            {related.map((r, i) => (
+                              <PairRow key={i} a={relatedQuery} b={r.title} score={r.score} type={r.type} />
                             ))}
                           </div>
-                        </div>
-                      ))
-                    )}
-                  </Section>
-
-                  <Section title={`可合并候选 · ${discover.merge_candidates.length}`}>
-                    {discover.merge_candidates.length === 0 ? (
-                      <div className="text-xs text-faint">无。</div>
-                    ) : (
-                      discover.merge_candidates.map((p, i) => (
-                        <PairRow key={i} a={p.a} b={p.b} score={p.score} />
-                      ))
-                    )}
-                  </Section>
-
-                  <Section title={`孤立页（无入链）· ${discover.isolated.length}`}>
-                    {discover.isolated.length === 0 ? (
-                      <div className="text-xs text-faint">无。</div>
-                    ) : (
-                      <div className="flex flex-wrap gap-1">
-                        {discover.isolated.map((t) => (
-                          <span key={t} className="pill border border-line2 text-faint">
-                            {t}
-                          </span>
                         ))}
-                      </div>
-                    )}
-                  </Section>
-                </>
-              ) : discoverError ? (
-                <div className="text-sm text-red">{discoverError}</div>
-              ) : (
-                <div className="text-sm text-faint">加载发现结果中…</div>
-              ))}
+                    </Section>
+                    <Section title={`强关联 (≥80%) · ${discover.strong.length}`}>
+                      {discover.strong.length === 0 ? (
+                        <div className="text-xs text-faint">无。</div>
+                      ) : (
+                        discover.strong.map((p, i) => <PairRow key={i} a={p.a} b={p.b} score={p.score} type={p.type} />)
+                      )}
+                    </Section>
+                    <Section title={`聚类 · ${discover.clusters.length}`}>
+                      {discover.clusters.length === 0 ? (
+                        <div className="text-xs text-faint">无显著聚类。</div>
+                      ) : (
+                        discover.clusters.map((c, i) => (
+                          <div key={i} className="py-1">
+                            <div className="text-sm text-txt">
+                              {c.label} <span className="text-faint">· 密度 {c.density}</span>
+                            </div>
+                            <div className="mt-0.5 flex flex-wrap gap-1">
+                              {c.members.map((m) => (
+                                <span key={m} className="pill border border-line2 text-faint">
+                                  {m}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </Section>
+                    <Section title={`可合并候选 · ${discover.merge_candidates.length}`}>
+                      {discover.merge_candidates.length === 0 ? (
+                        <div className="text-xs text-faint">无。</div>
+                      ) : (
+                        discover.merge_candidates.map((p, i) => <PairRow key={i} a={p.a} b={p.b} score={p.score} />)
+                      )}
+                    </Section>
+                    <Section title={`孤立页（无入链）· ${discover.isolated.length}`}>
+                      {discover.isolated.length === 0 ? (
+                        <div className="text-xs text-faint">无。</div>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {discover.isolated.map((t) => (
+                            <button
+                              key={t}
+                              onClick={() => openByRef(t)}
+                              className="pill border border-line2 text-faint hover:border-line2 hover:text-muted"
+                            >
+                              {t}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </Section>
+                  </>
+                ) : discoverError ? (
+                  <div className="text-sm text-red">{discoverError}</div>
+                ) : (
+                  <div className="text-sm text-faint">加载发现结果中…</div>
+                ))}
+            </div>
+
+            {/* right inspector: preview / edit / create */}
+            <div className="lg:sticky lg:top-2 h-[78vh]">
+              <PageViewer
+                target={openTarget}
+                onNavigate={openByRef}
+                onSaved={() => loadAll()}
+                onClose={() => setOpenTarget(null)}
+              />
+            </div>
           </div>
         </>
       )}
