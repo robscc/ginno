@@ -129,6 +129,9 @@ export function ProviderCard({
   onToggle,
   onVerify,
   onSetDefault,
+  onToggleSearch,
+  onTestSearch,
+  searchStatus,
 }: {
   cfg: ProviderConfig;
   icon: ReactNode;
@@ -141,6 +144,9 @@ export function ProviderCard({
   onToggle: () => void;
   onVerify: () => void;
   onSetDefault?: () => void;
+  onToggleSearch?: () => void;
+  onTestSearch?: () => void;
+  searchStatus?: { state: "idle" | "checking" | "ok" | "fail"; text?: string };
 }) {
   const [showKey, setShowKey] = useState(false);
   const isCompat = cfg.protocol === "openai-compatible";
@@ -354,6 +360,40 @@ export function ProviderCard({
                 />
               </Field>
             </div>
+          )}
+        </div>
+      )}
+
+      {cfg.protocol !== "anthropic" && (
+        <div className="mt-4 border-t border-line pt-3">
+          <label className="flex items-start gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={!!cfg.enable_search}
+              onChange={() => onToggleSearch?.()}
+            />
+            <span>
+              联网搜索 — 开启后模型会在需要时自动联网（需端点支持，如通义千问 compatible-mode 的{" "}
+              <code className="font-mono text-xs">enable_search</code>）。
+            </span>
+          </label>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={onTestSearch}
+              disabled={!cfg.enabled || searchStatus?.state === "checking"}
+              className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt disabled:opacity-50"
+            >
+              {searchStatus?.state === "checking" ? "测试中…" : "测试联网"}
+            </button>
+            {searchStatus?.state === "fail" && (
+              <span className="text-xs text-red">失败：{searchStatus.text}</span>
+            )}
+          </div>
+          {searchStatus?.state === "ok" && searchStatus?.text && (
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-base/60 p-2 text-[11px] text-muted">
+              {searchStatus.text}
+            </pre>
           )}
         </div>
       )}

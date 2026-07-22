@@ -591,6 +591,16 @@ async def verify_provider(provider_id: str) -> dict:
 
 
 # ---- agents ----
+@app.post("/providers/{provider_id}/search_probe")
+def provider_search_probe(provider_id: str) -> dict:
+    """User-triggered (the 测试联网 button) probe of the model's built-in web
+    search. Sync so the network round-trip runs in the threadpool, not on the
+    event loop."""
+    from . import providers as _prov
+
+    return _prov.search_probe(provider_id)
+
+
 @app.get("/agents")
 async def list_agents_endpoint() -> list[dict]:
     return [a.to_dict() for a in agents_reg.list_agents()]

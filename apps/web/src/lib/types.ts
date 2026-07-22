@@ -39,6 +39,9 @@ export interface ProviderConfig {
   org_id?: string;
   // Anthropic-compatible gateways that expect `Authorization: Bearer` instead of x-api-key.
   bearer_auth?: boolean;
+  // Ask OpenAI-compatible gateways (e.g. Qwen / DashScope) to use the model's
+  // built-in web search (request body `enable_search: true`).
+  enable_search?: boolean;
 }
 
 export type Providers = Record<string, ProviderConfig>;

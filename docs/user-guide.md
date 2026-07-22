@@ -302,8 +302,9 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 - **自定义端点 (OpenAI Compatible)**：`端点名称`、`Base URL*`、`Model Name`、`API Key(可选)` —— 适配 Ollama / DeepSeek / Qwen / Groq / LM Studio 等。
 每张卡有 **启用开关** 与 **验证** 按钮（真实发起一次最廉价调用，返回 未配置/验证中/已连接/失败）。编辑**失焦自动保存**。
 > 至少启用并验证通过一个提供商，聊天才能跑通真实模型。
-> **中转 / 自建网关用 Bearer 鉴权**：有些 Anthropic 协议网关（企业模型中转等）要求把 token 放在 `Authorization: Bearer …` 而不是 `x-api-key`（否则会 `401 缺少Authorization头`）。Ginno 的 Anthropic 卡暂无该开关，需在 `~/.ginno/settings.json` 对应 provider 块里加 `"bearer_auth": true`（token 仍填在 `api_key`）。
+> **中转 / 自建网关用 Bearer 鉴权**：有些 Anthropic 协议网关（企业模型中转等）要求把 token 放在 `Authorization: Bearer …` 而不是 `x-api-key`（否则会 `401 缺少Authorization头`）。在 Anthropic 卡勾选 **Bearer 认证** 即可（旧配置仍兼容 `settings.json` 的 `bearer_auth`）。
 > **Agent 绑到“未启用”的提供商会自动回退**：内置 Agent 默认 `provider` 为 `custom`；若它未启用，Ginno 会自动改用它**已启用的默认提供商**，避免“明明启用了模型却建不出会话”。想让某 Agent 固定用某提供商，在 **Agent 管理** 把它的 `provider` 改成对应 id 即可。顶栏的模型标签显示的是**本轮实际解析到的模型**，可据此核对。
+> **联网搜索（模型自带）**：OpenAI / 自定义端点卡有 **联网搜索** 开关 —— 开启后 Ginno 会在请求体带 `enable_search: true`，让模型在需要时自动联网（典型如通义千问 compatible-mode）。点 **测试联网** 会发一个时效性问题并回显模型回答，便于确认你的端点是否真的支持；不支持的端点该字段会被忽略，不影响普通对话。Anthropic 协议无此参数，故不显示该开关。
 
 ### 9.2 Skills ✅
 “一次性指令模板”，存于 `~/.ginno/skills/<name>/SKILL.md`：

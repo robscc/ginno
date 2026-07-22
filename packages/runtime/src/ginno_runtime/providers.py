@@ -40,6 +40,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_tokens": 4096,
         "temperature": 0.7,
         "timeout_s": 60,
+        "enable_search": False,
     },
     "openai": {
         "enabled": False,
@@ -49,6 +50,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
         "base_url": "https://api.openai.com/v1",
         "org_id": "",
         "max_tokens": 8192,
+        "enable_search": False,
     },
     "custom": {
         "enabled": False,
@@ -60,6 +62,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_tokens": 8192,
         "temperature": 0.7,
         "timeout_s": 60,
+        "enable_search": False,
     },
 }
 
@@ -183,5 +186,45 @@ def verify(provider_id: str) -> dict[str, Any]:
                 messages=[{"role": "user", "content": "ping"}],
             )
         return {"ok": True, "latency_ms": _latency()}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "latency_ms": _latency()}
+
+
+def search_probe(provider_id: str) -> dict[str, Any]:
+    """Send one time-sensitive question with ``enable_search`` forced on and
+    return the model's reply, so the user can see whether the provider's model
+    actually searches the web. Never raises. Only meaningful for protocols that
+    honour ``enable_search`` (OpenAI / OpenAI-compatible); on others the model
+    simply answers from its own knowledge (which the user can eyeball)."""
+    providers = load_providers()
+    cfg = providers.get(provider_id)
+    if not cfg:
+        return {"ok": False, "error": f"unknown provider: {provider_id}"}
+    if not cfg.get("enabled"):
+        return {"ok": False, "error": "provider 未启用"}
+    t0 = time.time()
+
+    def _latency() -> int:
+        return int((time.time() - t0) * 1000)
+
+    try:
+        from .models import build_model  # local: models imports this module
+
+        model = build_model(provider_id, enable_search=True)
+        res = model.invoke(
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "请联网检索后，用一两句话回答：今天有哪些重要新闻？"
+                        "如果你无法联网，请明确说“我无法联网”。"
+                    ),
+                }
+            ]
+        )
+        text = getattr(res, "content", "") or ""
+        if isinstance(text, list):  # multimodal content blocks
+            text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+        return {"ok": True, "latency_ms": _latency(), "text": str(text).strip()[:400]}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "latency_ms": _latency()}

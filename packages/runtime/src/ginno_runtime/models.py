@@ -23,7 +23,7 @@ def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     return (float(temperature) if temperature is not None else None, model_kwargs)
 
 
-def build_model(provider_id: str, model_name: str | None = None):
+def build_model(provider_id: str, model_name: str | None = None, enable_search: bool | None = None):
     """Return a LangChain chat model for the given provider id.
 
     `model_name` overrides the provider's configured default/model.
@@ -83,7 +83,7 @@ def build_model(provider_id: str, model_name: str | None = None):
         base_url = "https://api.openai.com/v1"
     from langchain_openai import ChatOpenAI
 
-    return ChatOpenAI(
+    chat_kw: dict[str, Any] = dict(
         model=model or "gpt-4o",
         api_key=key or "not-needed",
         base_url=base_url,
@@ -91,3 +91,11 @@ def build_model(provider_id: str, model_name: str | None = None):
         model_kwargs=model_kwargs or {"max_tokens": 8192},
         streaming=True,
     )
+    # `enable_search` (None = follow the provider config) lets OpenAI-compatible
+    # gateways such as Qwen / DashScope compatible-mode run the model's built-in
+    # web search. langchain-openai forwards `extra_body` verbatim into the
+    # request body, so the agent can search the web on its own when it needs to.
+    es = cfg.get("enable_search") if enable_search is None else enable_search
+    if es:
+        chat_kw["extra_body"] = {"enable_search": True}
+    return ChatOpenAI(**chat_kw)

@@ -88,6 +88,13 @@ export async function verifyProvider(id: string) {
   return json<VerifyResult>(`${BASE}/providers/${id}/verify`, { method: "POST" });
 }
 
+export async function searchProbeProvider(id: string) {
+  return json<{ ok: boolean; error?: string; latency_ms?: number; text?: string }>(
+    `${BASE}/providers/${id}/search_probe`,
+    { method: "POST" },
+  );
+}
+
 // ---- agents ----
 export async function listAgents() {
   return json<AgentConfig[]>(`${BASE}/agents`);

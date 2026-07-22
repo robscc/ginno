@@ -43,6 +43,9 @@ export function ModelApiSettings() {
   const [draft, setDraft] = useState<Providers>({});
   const [status, setStatus] = useState<Record<string, VerifyState>>({});
   const [saveMsg, setSaveMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [searchMsg, setSearchMsg] = useState<
+    Record<string, { state: "idle" | "checking" | "ok" | "fail"; text?: string }>
+  >({});
   const loaded = useRef(false);
 
   useEffect(() => {
@@ -105,6 +108,32 @@ export function ModelApiSettings() {
     }
   };
 
+  const onToggleSearch = (id: string) => {
+    const next = { ...draft, [id]: { ...draft[id], enable_search: !draft[id].enable_search } };
+    setDraft(next);
+    void save(next);
+  };
+
+  const onTestSearch = async (id: string) => {
+    const saved = await save(draft);
+    if (!saved) {
+      setSearchMsg((s) => ({ ...s, [id]: { state: "fail", text: "配置未保存，无法测试" } }));
+      return;
+    }
+    setSearchMsg((s) => ({ ...s, [id]: { state: "checking" } }));
+    try {
+      const r = await api.searchProbeProvider(id);
+      setSearchMsg((s) => ({
+        ...s,
+        [id]: r.ok
+          ? { state: "ok", text: r.text }
+          : { state: "fail", text: r.error || "未知错误" },
+      }));
+    } catch {
+      setSearchMsg((s) => ({ ...s, [id]: { state: "fail", text: "无法连接运行时" } }));
+    }
+  };
+
   return (
     <div className="mx-auto max-w-3xl px-8 py-7">
       <div className="flex items-baseline justify-between">
@@ -144,6 +173,9 @@ export function ModelApiSettings() {
             onToggle={() => onToggle(id)}
             onVerify={() => onVerify(id)}
             onSetDefault={() => onSetDefault(id)}
+            onToggleSearch={() => onToggleSearch(id)}
+            onTestSearch={() => onTestSearch(id)}
+            searchStatus={searchMsg[id] || { state: "idle" }}
           />
         ))}
       </div>
