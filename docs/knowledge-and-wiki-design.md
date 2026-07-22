@@ -491,7 +491,7 @@ clear_pool()
 | **P1 · 编译 + 关联 + 发现** | `compiler`（确定性基线）+ `association` + `POST /kb/wiki/{index,ingest,build}` + `GET /kb/wiki/{related,discover,orphans}` + KB 页「Build/发现」 | KB 页 **Build wiki** / `POST /kb/wiki/build` 生成 concept 页与 INDEX（无 `/kb build` 命令）；发现页展示关联/聚类 |
 | **P2 · 自动总结记忆** | `memory_pool/summarize` + `server` 捕获改造 + `tools/memory_tools` + `GET/POST /knowledge/memory*` + 右侧 Memory tab + Settings 知识 tab | 对话自动入池；达阈值/点按钮总结成 MEMORY.md 并回注所有 agent |
 | **P3 · 经验循环（可选）** | `analyzer/experience_store/promote` + `/knowledge/experiences*` + Memory tab 审核区 | LLM 抽取经验→人工 promote→并入记忆 |
-| **P4 · 语义增强（可选）** | LanceDB 向量库（用既有 `rag` extra）+ `use_semantic` 开关 + `memory.recall/obsidian.recall` 语义版 | 检索/召回支持语义相似度，与词法融合排序 |
+| **P4 · 语义增强（可选）** | LanceDB 向量库（用既有 `rag` extra）+ `use_semantic` 开关（**KB 检索语义已实现**：本地 sentence-transformers + LanceDB 缓存 + 词法余弦融合，缺依赖自动退回词法）+ `memory.recall/obsidian.recall` 语义版（待做） | 检索/召回支持语义相似度，与词法融合排序 |
 
 > 建议从 **P0 → P2** 作为 MVP（读路径 + 写路径闭环），P1/P3/P4 增量迭代。
 

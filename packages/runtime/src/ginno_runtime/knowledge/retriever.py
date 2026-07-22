@@ -11,6 +11,7 @@ from high-scoring hits. Mirrors Molly's WikiRetriever.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 from .tokenize import tokenize_query
 from .types import RetrievalResult, WikiEntry
@@ -72,14 +73,30 @@ class WikiRetriever:
     def __init__(self, entries: list[WikiEntry]) -> None:
         self.entries = entries
 
-    def retrieve(self, query: str, top_k: int = 5, min_score: float = 0.3) -> list[RetrievalResult]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        min_score: float = 0.3,
+        semantic: Any = None,
+        semantic_weight: float = 0.5,
+    ) -> list[RetrievalResult]:
         tokens = tokenize_query(query)
-        if not tokens or not self.entries:
+        # cosine similarity per page from the (optional) semantic index; degrades
+        # to {} when semantic is None / not ready / errors, i.e. lexical-only.
+        sem_scores: dict[str, float] = {}
+        if semantic is not None and getattr(semantic, "ready", False):
+            try:
+                sem_scores = semantic.scores(query) or {}
+            except Exception:  # noqa: BLE001
+                sem_scores = {}
+
+        if (not tokens and not sem_scores) or not self.entries:
             return []
 
         scored = [score_entry(e, tokens) + (e,) for e in self.entries]  # (score, matched, entry)
 
-        # collect link targets surfaced by strong hits
+        # collect link targets surfaced by strong lexical hits
         linked: set[str] = set()
         for s, _matched, e in scored:
             if s >= BOOST_TRIGGER_SCORE:
@@ -90,11 +107,15 @@ class WikiRetriever:
             if s < BOOST_TRIGGER_SCORE and e.title.lower() in linked:
                 s = min(s + WIKILINK_BOOST, 1.0)
                 matched = [*matched, "wikilink"]
-            if s >= min_score:
+            ss = sem_scores.get(e.relative_path, 0.0)
+            combined = min(s + (semantic_weight * ss if ss else 0.0), 1.0)
+            if ss >= 0.3:
+                matched = [*matched, f"semantic:{round(ss, 2)}"]
+            if combined >= min_score:
                 results.append(
                     RetrievalResult(
                         entry=e,
-                        score=s,
+                        score=combined,
                         matched_terms=matched,
                         snippet=(e.summary or "")[:300],
                     )

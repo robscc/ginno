@@ -17,6 +17,7 @@ from .. import paths as _paths
 from .config import load_knowledge_config
 from .indexer import get_indexer
 from .retriever import WikiRetriever
+from .semantic import get_semantic_index
 from .types import KnowledgeConfig, RetrievalResult
 
 # instruction-like wrappers an attacker could smuggle into vault/memory content
@@ -82,8 +83,16 @@ def build_wiki_context(query: str, cfg: KnowledgeConfig | None = None) -> str:
     parts = [get_wiki_guidelines(cfg)]
     try:
         idx = get_indexer(cfg.vault_path, cfg.rescan_interval_s, include_dirs=[cfg.wiki_dir])
-        results = WikiRetriever(idx.get_entries()).retrieve(
-            query, top_k=cfg.inject_top_k, min_score=cfg.inject_min_score
+        entries = idx.get_entries()
+        # build=False: never block injection on a full re-encode; if no cached
+        # semantic index exists yet, sem is None and retrieval stays lexical.
+        sem = get_semantic_index(cfg, entries)
+        results = WikiRetriever(entries).retrieve(
+            query,
+            top_k=cfg.inject_top_k,
+            min_score=cfg.inject_min_score,
+            semantic=sem,
+            semantic_weight=cfg.semantic_weight,
         )
     except Exception:
         results = []

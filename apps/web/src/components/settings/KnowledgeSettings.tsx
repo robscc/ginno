@@ -13,6 +13,9 @@ interface KBForm {
   inject_top_k: number;
   inject_min_score: number;
   rescan_interval_s: number;
+  use_semantic: boolean;
+  embedding_model: string;
+  semantic_weight: number;
 }
 
 const DEFAULTS: KBForm = {
@@ -24,6 +27,9 @@ const DEFAULTS: KBForm = {
   inject_top_k: 5,
   inject_min_score: 0.3,
   rescan_interval_s: 60,
+  use_semantic: false,
+  embedding_model: "",
+  semantic_weight: 0.5,
 };
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -172,6 +178,40 @@ export function KnowledgeSettings() {
             />
           </Field>
         </div>
+
+        <label className="flex items-center gap-2 text-sm text-txt">
+          <input
+            type="checkbox"
+            checked={form.use_semantic}
+            onChange={(e) => set("use_semantic", e.target.checked)}
+          />
+          语义检索（本地 embedding，需 <code className="font-mono text-xs">uv sync --extra rag</code>）
+        </label>
+        {form.use_semantic && (
+          <div className="grid grid-cols-2 gap-3 rounded-lg border border-line bg-base/30 p-3">
+            <Field label="Embedding 模型（sentence-transformers，留空=多语默认）">
+              <input
+                className="field font-mono text-xs"
+                placeholder="…paraphrase-multilingual-MiniLM-L12-v2"
+                value={form.embedding_model}
+                onChange={(e) => set("embedding_model", e.target.value)}
+              />
+            </Field>
+            <Field label="语义权重（叠加到词法分）">
+              <input
+                type="number"
+                step="0.1"
+                className="field"
+                value={form.semantic_weight}
+                onChange={(e) => set("semantic_weight", Number(e.target.value) || 0)}
+              />
+            </Field>
+            <p className="col-span-2 text-xs text-faint">
+              开启后，点「保存并索引」/ Build wiki 会对 Wiki 页编码（首次会下载模型）。未装 rag
+              依赖、模型下载或编码失败时自动退回纯词法检索，不会报错。
+            </p>
+          </div>
+        )}
 
         <div className="flex items-center gap-2 pt-1">
           <button

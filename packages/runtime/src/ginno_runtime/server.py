@@ -911,6 +911,7 @@ from .knowledge.indexer import get_indexer as _get_kb_indexer
 from .knowledge.retriever import WikiRetriever as _WikiRetriever
 from .knowledge import compiler as _kb_compiler
 from .knowledge.association import get_engine as _get_kb_engine, reset_engines as _reset_kb_engines
+from .knowledge.semantic import get_semantic_index as _get_kb_semantic, reset_semantic as _reset_kb_semantic
 
 
 def _kb_not_configured(extra: dict | None = None) -> dict:
@@ -1028,8 +1029,18 @@ async def kb_wiki_search(q: str = "", tag: str = "") -> dict:
     if not cfg.usable:
         return _kb_not_configured({"results": []})
     idx = _kb_indexer(cfg)
-    ret = _WikiRetriever(idx.get_entries())
-    results = ret.search_by_tag(tag) if tag else ret.retrieve(q, top_k=10, min_score=0.2)
+    entries = idx.get_entries()
+    ret = _WikiRetriever(entries)
+    if tag:
+        results = ret.search_by_tag(tag)
+    else:
+        results = ret.retrieve(
+            q,
+            top_k=10,
+            min_score=0.2,
+            semantic=_get_kb_semantic(cfg, entries),
+            semantic_weight=cfg.semantic_weight,
+        )
     return {"ok": True, "q": q, "tag": tag, "results": [r.to_dict() for r in results]}
 
 
@@ -1081,6 +1092,7 @@ def kb_wiki_index() -> dict:
         return _kb_not_configured()
     idx = _kb_indexer(cfg)
     n = idx.scan()
+    _maybe_build_semantic(cfg)
     return {"ok": True, "indexed": n, "tags": idx.get_all_tags()}
 
 
@@ -1088,6 +1100,17 @@ def _kb_refresh(cfg) -> None:
     """Force the shared indexer to rescan and drop the cached association graph."""
     _kb_indexer(cfg).scan()
     _reset_kb_engines()
+
+
+def _maybe_build_semantic(cfg) -> None:
+    """Encode wiki pages into the semantic index after a build/reindex (no-op
+    unless ``use_semantic`` is on). Failures are swallowed → lexical fallback."""
+    if not getattr(cfg, "use_semantic", False):
+        return
+    try:
+        _get_kb_semantic(cfg, _kb_indexer(cfg).get_entries(), build=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _compile_to_dict(res) -> dict:
@@ -1136,6 +1159,7 @@ def kb_wiki_build() -> dict:
     comp = _kb_compiler.WikiCompiler(_P(cfg.vault_path), cfg.wiki_dir, cfg.raw_dir)
     result = comp.build_all()
     _kb_refresh(cfg)
+    _maybe_build_semantic(cfg)
     return {"ok": True, **result}
 
 
@@ -1192,6 +1216,7 @@ async def kb_wiki_put_config(data: dict) -> dict:
     from .knowledge.indexer import reset_indexers as _reset_kb
 
     _reset_kb()  # pick up a changed vault_path on the next call
+    _reset_kb_semantic()  # embeddings are keyed by vault path
     return {"ok": True, "config": merged}
 
 

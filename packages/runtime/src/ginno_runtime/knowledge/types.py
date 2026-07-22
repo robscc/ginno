@@ -76,6 +76,8 @@ class KnowledgeConfig:
     inject_min_score: float = 0.3
     rescan_interval_s: int = 60
     use_semantic: bool = False
+    embedding_model: str = ""        # sentence-transformers model; "" = multilingual default
+    semantic_weight: float = 0.5     # added to the lexical score per unit of cosine similarity
     # memory refinery
     capture: bool = True
     auto_summarize: bool = True

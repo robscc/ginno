@@ -262,7 +262,9 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
   "inject_top_k": 5,
   "inject_min_score": 0.3,
   "rescan_interval_s": 60,
-  "use_semantic": false,                  // 语义检索=路线中(🔮)，默认关
+  "use_semantic": false,                  // 语义检索开关，默认关；开启需 uv sync --extra rag
+  "embedding_model": "",                  // sentence-transformers 模型（空=多语默认）
+  "semantic_weight": 0.5,                 // 余弦相似度叠加到词法分的权重
   "capture": true,                        // 每轮把 assistant 文本捕获入 pool
   "auto_summarize": true,                 // pool 达阈值自动总结
   "pool_flush_threshold": 30,             // 触发自动总结的 pool 条数
@@ -271,6 +273,8 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 }
 ```
 导入**已编译**的 Wiki（如 Molly）时，`wiki_dir` 填检测到的命名空间目录（如 `Molly/Wiki`），`raw_dir` 填 `Molly/Raw`（没有就留空）；「保存并索引」后即可在 `/kb` 搜索、在对话中自动注入，**无需 Build**。只有当你新增原始文档、想把它编译进 Wiki 时才点 **Build wiki**。
+
+**语义检索（可选）**：在 设置 → 知识库 勾选「语义检索」并「保存并索引」/ Build wiki 后，运行时会用本地 `sentence-transformers` 对 Wiki 页编码、把向量缓存到 `~/.ginno/vectorstore`（LanceDB），检索时按 **词法 + 余弦相似度** 融合排序（`semantic_weight` 控制语义占比）。该能力依赖 `uv sync --extra rag`；未装依赖、模型下载或编码失败时**自动退回纯词法检索**，不报错，也不影响 `use_semantic=false` 的默认路径。
 
 ### 8.4 自动注入行为
 - 启用后，每轮把**最近一条用户消息**作为 query 检索；
@@ -353,7 +357,7 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 ├── workflows/<id>.json    # workflow 配方
 ├── knowledge/             # 知识库配置（索引/关联图在内存，不落盘）
 ├── cache/                 # 通用缓存
-├── vectorstore/           # （🔮 语义检索 P4 预留）
+├── vectorstore/           # 语义向量缓存（LanceDB；use_semantic 开启后写入）
 └── logs/
 ```
 
@@ -431,14 +435,14 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 | 多项目（project slug） | 🚧 | 界面固定 `default` |
 | 工作目录回显 | 🚧 | 通用设置该行展示约定值，非生效值回显 |
 | 知识库 Settings 标签 | ✅ | 设置 → 知识库 已实现（检测 / 保存 / 重建索引） |
-| 权限 / Hooks 编辑 UI | 🧩 | 后端完整，需手编 settings.json |
+| 权限 / Hooks 编辑 UI | ✅ | 设置 → 权限策略 / Hooks 可视化编辑（读写 settings.json） |
 | 记忆自动总结 / 全局注入 / 记忆工具 | ✅ | 每轮自动捕获；右栏 Memory 标签「总结」按钮 / `POST /memory/summarize` 提炼；MEMORY.md 每轮注入 |
 | 知识库编译器 raw→wiki / 关联图 / Build wiki | ✅ | KB 页 **Build wiki** / `POST /kb/wiki/build`（无 `/kb build` 命令）；关联图 + 发现页已实现 |
 | 经验循环（co-copilot 式抽取→晋升） | 🔮 | P3 路线 |
-| 语义检索（LanceDB / embedding） | 🔮 | P4 路线，`use_semantic` 暂无效 |
+| 语义检索（LanceDB / embedding） | ✅ | 已接通：`use_semantic` + 本地 sentence-transformers + LanceDB 缓存，词法+余弦融合；需 `uv sync --extra rag`，否则自动退回词法 |
 | Artifacts / Workflow 的 UI 操作（增删改/手动运行） | 🚧/✅ | Artifacts 只读；Workflow 运行靠 Agent、配方在设置增删 |
 
 ---
 
 ### 一句话总结
-Ginno 现已可用：**多 Agent 对话 + 工具/权限/技能/MCP + TODO/Workflow/Artifacts 右栏 + 知识库检索注入 + 知识库编译/关联 + 全套设置（含知识库标签）**，全部本地、文件化、无账号（账号占位已移除，见第 11 节）。仍为占位/待接通的：**桌面通知真实推送、权限/Hooks 编辑 UI、多项目、语义检索**——以本文图例为准。需要我把任意 🔮/🧩 项（例如语义检索、权限/Hooks 编辑 UI、或账号登录骨架）落到代码里，告诉我即可。
+Ginno 现已可用：**多 Agent 对话 + 工具/权限/技能/MCP + TODO/Workflow/Artifacts 右栏 + 知识库检索注入 + 知识库编译/关联 + 全套设置（含知识库标签）**，全部本地、文件化、无账号（账号占位已移除，见第 11 节）。仍为占位/待接通的：**桌面通知真实推送、多项目（project slug）**——以本文图例为准。需要我把任意 🔮/🧩 项（例如语义召回 `memory.recall`、多项目、或账号登录骨架）落到代码里，告诉我即可。
