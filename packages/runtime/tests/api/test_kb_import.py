@@ -59,7 +59,7 @@ def test_probe_invalid_paths(client):
     assert client.get("/kb/wiki/probe?path=/no/such/dir/here").json()["ok"] is False
 
 
-def test_import_indexes_wiki_only(client, molly_vault):
+def test_import_indexes_vault_minus_raw(client, molly_vault):
     cfg = {
         "enabled": True,
         "vault_path": str(molly_vault),
@@ -75,8 +75,11 @@ def test_import_indexes_wiki_only(client, molly_vault):
     titles = {p["title"] for p in client.get("/kb/wiki/list").json()["pages"]}
     # compiled wiki is indexed ...
     assert {"权限节点", "interrupt"} <= titles
-    # ... but raw / research / memory / loose notes are NOT
-    assert titles.isdisjoint({"RAWDOC", "RESEARCHDOC", "MEMORYDOC", "LOOSEDOC"})
+    # ... and so are finished notes anywhere else in the vault (research /
+    # memory / loose) — the whole vault is the knowledge corpus now ...
+    assert {"RESEARCHDOC", "MEMORYDOC", "LOOSEDOC"} <= titles
+    # ... only the raw compile-sources dir is excluded (it surfaces via wiki).
+    assert "RAWDOC" not in titles
 
     sr = client.get("/kb/wiki/search?q=权限").json()
     assert any("权限节点" in x["title"] for x in sr["results"])

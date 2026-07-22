@@ -299,7 +299,7 @@ class WikiIndexer:
 **增强（可选·LLM，让它真正「LLMWiki」）**：`compile_with_llm(raw_path)` 用 `build_model(默认 provider)` 生成更准的 `summary`、概念列表与标签（提示词约束「只输出 JSON」），替换第 1–2 步的正则抽取。用 `knowledge.compiler_llm: bool` 开关，默认关闭以保证离线可用。
 
 - **ingest**（单文件）vs **build**（全 vault，过滤掉 `wiki/`、`.obsidian/` 等）。
-- **索引范围（实现细化）**：检索/关联索引**只索引 `wiki_dir` 子树**（`WikiIndexer(include_dirs=[wiki_dir])`；编译后的 Wiki 页才是“知识”，`raw_dir`/`research`/`memory`/根零散笔记都不进索引）。因此**导入已编译好的 LLM Wiki（如 `Molly/Wiki`）无需重新编译**，直接索引即可。编译器内部的自动关联同样只看 `wiki_dir`，**绝不改写原始文档**；`_raw_files` 也只编译 `raw_dir`（避免对 Molly 这类 vault 误编译 Research/Todo/Memory）。同源文档产出的概念互为“兄弟”，由 skip 规则刻意跳过、不互相关联。
+- **索引范围（实现细化）**：**检索 / 列表 / 注入**索引**整个 vault，仅排除 `raw_dir` 与系统目录**（`WikiIndexer(exclude_dirs=[raw_dir])`）——vault 任意目录的成品笔记（如 `股市/`、根散记）都可被搜到/注入；`raw_dir` 是编译源，经 **Build wiki** 编成 wiki 页后才进检索。**编译器内部的自动关联与 INDEX 仍只看 `wiki_dir`**（`WikiIndexer(include_dirs=[wiki_dir])`），**绝不改写原始文档**；`_raw_files` 也只编译 `raw_dir`（避免对 Molly 这类 vault 误编译 Research/Todo/Memory）。同源文档产出的概念互为“兄弟”，由 skip 规则刻意跳过、不互相关联。因此**导入已编译好的 LLM Wiki（如 `Molly/Wiki`）无需重新编译**，直接索引即可（其 wiki 页本就在全 vault 索引内）。
 - **导入已存在的 Wiki**：新增只读 `GET /kb/wiki/probe?path=`，自动识别 `<命名空间>/Wiki`（或根 `Wiki`）布局并返回 `wiki_pages/raw_pages/has_index/total_md`；UI（KB 页导入面板 + 设置→知识库）据此预填 `wiki_dir/raw_dir` 并「保存并索引」（`PUT /kb/wiki/config` + `POST /kb/wiki/index`），不触发 build。
 
 ### 4.6 注入（`injection.py` + 改 `graph.py`）

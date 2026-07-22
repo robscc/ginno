@@ -82,7 +82,13 @@ def build_wiki_context(query: str, cfg: KnowledgeConfig | None = None) -> str:
         return ""
     parts = [get_wiki_guidelines(cfg)]
     try:
-        idx = get_indexer(cfg.vault_path, cfg.rescan_interval_s, include_dirs=[cfg.wiki_dir])
+        # Index the whole vault minus the raw sources dir, so finished notes
+        # anywhere (e.g. 股市/) are injectable, not just compiled wiki pages.
+        idx = get_indexer(
+            cfg.vault_path,
+            cfg.rescan_interval_s,
+            exclude_dirs=[cfg.raw_dir] if cfg.raw_dir else None,
+        )
         entries = idx.get_entries()
         # build=False: never block injection on a full re-encode; if no cached
         # semantic index exists yet, sem is None and retrieval stays lexical.

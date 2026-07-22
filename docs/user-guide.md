@@ -277,6 +277,7 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 **语义检索（可选）**：在 设置 → 知识库 勾选「语义检索」并「保存并索引」/ Build wiki 后，运行时会用本地 `sentence-transformers` 对 Wiki 页编码、把向量缓存到 `~/.ginno/vectorstore`（LanceDB），检索时按 **词法 + 余弦相似度** 融合排序（`semantic_weight` 控制语义占比）。该能力依赖 `uv sync --extra rag`；未装依赖、模型下载或编码失败时**自动退回纯词法检索**，不报错，也不影响 `use_semantic=false` 的默认路径。
 
 ### 8.4 自动注入行为
+- **索引范围 = 整个 vault（除 `raw_dir` 与 `.obsidian` 等系统目录）**：所以你在 vault 任意目录写的成品笔记（如 `股市/`、根目录散记）都能被 `/kb` 搜到、列入“全部页面”、并在对话中注入；`raw_dir` 仅作为编译源，经 **Build wiki** 编成 wiki 页后才被检索。`wiki_dir` 只用于编译产物归类与 INDEX/关联图，**不再限制检索范围**。
 - 启用后，每轮把**最近一条用户消息**作为 query 检索；
 - 命中条目以 `## 相关知识` 注入（含相关度%、命中信号、摘要），并用 `<injected_wiki>` 包裹，**提示模型把它当“数据/参考”，而非指令**；
 - **无关内容不会被注入**（低于 `inject_min_score` 的不出现）；

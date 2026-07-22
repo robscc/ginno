@@ -929,10 +929,17 @@ def _kb_not_configured(extra: dict | None = None) -> dict:
 
 
 def _kb_indexer(cfg):
-    """Shared indexer scoped to the compiled wiki: only ``wiki_dir`` is the
-    searchable knowledge corpus (raw/research/loose notes stay out). An empty
-    ``wiki_dir`` falls back to indexing the whole vault."""
-    return _get_kb_indexer(cfg.vault_path, cfg.rescan_interval_s, include_dirs=[cfg.wiki_dir])
+    """Shared indexer over the whole vault minus the raw sources dir and system
+    dirs (``SKIP_DIRS`` such as ``.obsidian``). Finished notes anywhere in the
+    vault (e.g. a ``股市/`` folder) are searchable and visible; ``raw_dir`` holds
+    compile-sources that surface through their compiled wiki pages instead. An
+    empty ``raw_dir`` excludes nothing extra. (The compiler's INDEX/association
+    graph deliberately stays scoped to ``wiki_dir`` — see compiler.py.)"""
+    return _get_kb_indexer(
+        cfg.vault_path,
+        cfg.rescan_interval_s,
+        exclude_dirs=[cfg.raw_dir] if cfg.raw_dir else None,
+    )
 
 
 def _count_md(root) -> int:
