@@ -37,6 +37,10 @@ export function MemoryPanel() {
       } else {
         setMsg(r.error || "总结失败");
       }
+    } catch (e) {
+      // try/finally had no catch — a rejected summarize (sidecar down / network)
+      // was an unhandled Promise rejection with zero user feedback.
+      setMsg(e instanceof Error ? `总结失败：${e.message}` : "总结失败：无法连接运行时");
     } finally {
       setBusy(false);
     }

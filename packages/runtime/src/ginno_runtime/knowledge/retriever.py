@@ -25,10 +25,17 @@ BOOST_TRIGGER_SCORE = 0.3
 
 
 def score_entry(entry: WikiEntry, tokens: list[str]) -> tuple[float, list[str]]:
-    """Return (score capped at 1.0, matched_terms like 'tag:x'/'title:y')."""
+    """Return (score capped at 1.0, matched_terms like 'tag:x'/'title:y').
+
+    Each FIELD contributes its weight at most once per query. The old per-token
+    sum let a CJK query — which tokenizes into many overlapping uni/bi/trigrams —
+    saturate every page that shared a single character to ~100%, collapsing the
+    ranking (the UI showed long lists of tied "100%" hits).
+    """
     title = entry.title.lower()
     summary = entry.summary.lower()
     tags = [t.lower() for t in entry.tags if t]
+    toks = [t.lower() for t in tokens if t]
     score = 0.0
     matched: list[str] = []
     seen: set[str] = set()
@@ -38,20 +45,21 @@ def score_entry(entry: WikiEntry, tokens: list[str]) -> tuple[float, list[str]]:
             seen.add(term)
             matched.append(term)
 
-    for tok in tokens:
-        tok_l = tok.lower()
-        if not tok_l:
-            continue
-        hit_tag = next((t for t in tags if (tok_l in t or t in tok_l)), None)
-        if hit_tag is not None:
-            score += W_TAG
-            _add(f"tag:{hit_tag}")
-        if tok_l in title:
-            score += W_TITLE
-            _add(f"title:{tok_l}")
-        if tok_l in summary:
-            score += W_SUMMARY
-            _add(f"summary:{tok_l}")
+    tag_hits = [t for t in tags if any(tok in t or t in tok for tok in toks)]
+    if tag_hits:
+        score += W_TAG
+        for t in tag_hits:
+            _add(f"tag:{t}")
+    title_hits = [tok for tok in toks if tok in title]
+    if title_hits:
+        score += W_TITLE
+        for tok in title_hits:
+            _add(f"title:{tok}")
+    summary_hits = [tok for tok in toks if tok in summary]
+    if summary_hits:
+        score += W_SUMMARY
+        for tok in summary_hits:
+            _add(f"summary:{tok}")
 
     if score > 0 and entry.modified:
         days = (time.time() - entry.modified) / 86400.0

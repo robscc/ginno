@@ -121,30 +121,50 @@ class WikiIndexer:
         return len(entries)
 
     def incremental_scan(self) -> dict[str, int]:
-        """Diff against the current index using mtime then checksum."""
+        """Diff against the current index using mtime, only hashing changed files.
+
+        The previous implementation read + SHA-256-hashed *every* file before
+        comparing mtime, so there was no fast path — each request paid a full
+        vault read. Now an unchanged mtime reuses the cached entry (stat only).
+        """
         if not self.vault_root.is_dir():
             self.scan()
             return {"added": 0, "updated": 0, "removed": 0}
 
         current: dict[str, WikiEntry] = {}
-        for f in _iter_markdown_files(self.vault_root, self.exclude_roots, self.include_roots):
-            e = parse_file(f, self.vault_root)
-            if e:
-                current[e.path] = e
-
         added = updated = 0
-        for path, e in current.items():
-            old = self._by_path.get(path)
+        mtime_only = False
+        for f in _iter_markdown_files(self.vault_root, self.exclude_roots, self.include_roots):
+            key = str(f)
+            try:
+                mtime = f.stat().st_mtime
+            except OSError:
+                continue
+            old = self._by_path.get(key)
+            if old is not None and old.modified == mtime:
+                current[key] = old  # fast path: no read / no hash
+                continue
+            e = parse_file(f, self.vault_root)
+            if e is None:
+                continue
             if old is None:
                 added += 1
-            elif old.modified != e.modified and old.checksum != e.checksum:
+            elif old.checksum != e.checksum:
                 updated += 1
+            else:
+                mtime_only = True  # touched mtime, identical content
+            current[key] = e
+
         removed = sum(1 for path in self._by_path if path not in current)
 
         if added or updated or removed:
             self.entries = list(current.values())
             self._by_path = current
             self._build_backlinks()
+        elif mtime_only:
+            # refresh the entry map (fresh mtimes) without a backlink rebuild
+            self.entries = list(current.values())
+            self._by_path = current
         return {"added": added, "updated": updated, "removed": removed}
 
     def refresh(self, interval_s: int) -> None:

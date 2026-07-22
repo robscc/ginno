@@ -186,8 +186,13 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   );
 
   const patchTodo = useCallback(async (id: string, patch: Partial<Todo>) => {
-    setTodos((prev) =>
-      prev.map((t) =>
+    // Optimistic toggle, but roll back if the server rejects or is unreachable
+    // so the UI never silently diverges from disk (the old `catch {}` swallowed
+    // the failure with no rollback and no feedback).
+    let snapshot: Todo[] | null = null;
+    setTodos((prev) => {
+      snapshot = prev;
+      return prev.map((t) =>
         t.id === id
           ? {
               ...t,
@@ -195,12 +200,13 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
               completed_at: patch.done ? Date.now() / 1000 : patch.done === false ? null : t.completed_at,
             }
           : t,
-      ),
-    );
+      );
+    });
     try {
-      await api.updateTodo(id, patch);
+      const r = await api.updateTodo(id, patch);
+      if (!r.ok) throw new Error(r.error || "update failed");
     } catch {
-      /* ignore */
+      if (snapshot) setTodos(snapshot);
     }
   }, []);
 

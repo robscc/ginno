@@ -70,7 +70,11 @@ function readImage(file: File): Promise<Attachment | null> {
 }
 
 // Patterns that indicate a tool returned "no results" — hide these blocks to reduce noise.
-const EMPTY_TOOL_RESULT_RE = /^\s*(\(no matches\)|\(no files found\)|\(empty\)|no results|no files matched)\s*$/i;
+// Covers both the builtin tool phrasing ("(no matches)") and the MCP filesystem
+// server's phrasing ("No matches found"), so empty search results don't pile up
+// as collapsed panels the agent already explains in prose.
+const EMPTY_TOOL_RESULT_RE =
+  /^\s*(\(no matches\)|\(no files found\)|\(empty\)|no results|no files matched|no matches found|no files found|\(nothing found\))\s*$/i;
 
 function isEmptyToolResult(content: string): boolean {
   return EMPTY_TOOL_RESULT_RE.test(content);
@@ -154,6 +158,8 @@ export function ChatStream({
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const liveIdRef = useRef<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const busyRef = useRef(false); // send lock: one turn at a time
@@ -166,6 +172,9 @@ export function ChatStream({
     if (!session) return;
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let pingTimer: ReturnType<typeof setInterval> | null = null;
+    let watchTimer: ReturnType<typeof setInterval> | null = null;
+    let lastSeen = Date.now();
     let sock: WebSocket | null = null;
 
     setMessages([]);
@@ -177,8 +186,41 @@ export function ChatStream({
     const connect = () => {
       sock = openSessionSocket(session.id);
       wsRef.current = sock;
-      sock.onopen = () => g.setConnected(true);
+      // Every callback is guarded by `closed` (set by this effect's cleanup on
+      // session switch). Without this, a stale socket from the previous session
+      // could inject a phantom bubble into the new chat, clobber `connected`,
+      // or reset the send-lock mid-turn and allow a concurrent double-send.
+      sock.onopen = () => {
+        if (closed) return;
+        g.setConnected(true);
+        lastSeen = Date.now();
+        // Heartbeat: detect a half-open socket. The server answers `ping` with a
+        // `pong` frame (which resets lastSeen via onmessage). A send into a dead
+        // TCP connection buffers silently and never errors, so without this the
+        // chat would freeze with no reconnect; if no frame arrives for 45s we
+        // close and let the existing reconnect path take over.
+        pingTimer = setInterval(() => {
+          if (sock && sock.readyState === WebSocket.OPEN) {
+            try {
+              sock.send(JSON.stringify({ type: "ping" }));
+            } catch {
+              /* ignore */
+            }
+          }
+        }, 20000);
+        watchTimer = setInterval(() => {
+          if (!closed && Date.now() - lastSeen > 45000) {
+            try {
+              sock?.close();
+            } catch {
+              /* ignore */
+            }
+          }
+        }, 10000);
+      };
       sock.onmessage = (e) => {
+        if (closed) return;
+        lastSeen = Date.now();
         try {
           handle(JSON.parse(e.data));
         } catch {
@@ -186,6 +228,7 @@ export function ChatStream({
         }
       };
       sock.onerror = () => {
+        if (closed) return;
         try {
           sock?.close();
         } catch {
@@ -193,9 +236,13 @@ export function ChatStream({
         }
       };
       sock.onclose = () => {
+        if (pingTimer) clearInterval(pingTimer);
+        if (watchTimer) clearInterval(watchTimer);
+        pingTimer = watchTimer = null;
+        if (closed) return; // stale socket — the new session owns state now
         g.setConnected(false);
         busyRef.current = false;
-        if (!closed) timer = setTimeout(connect, 1500);
+        timer = setTimeout(connect, 1500);
       };
     };
 
@@ -230,6 +277,8 @@ export function ChatStream({
     return () => {
       closed = true;
       if (timer) clearTimeout(timer);
+      if (pingTimer) clearInterval(pingTimer);
+      if (watchTimer) clearInterval(watchTimer);
       try {
         sock?.close();
       } catch {
@@ -245,8 +294,12 @@ export function ChatStream({
     onRunningChange?.(running);
   }, [running, onRunningChange]);
 
+  // Auto-scroll only while the user is parked near the bottom; otherwise a
+  // streaming token (or a history load) yanks them back down mid-read.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (stickRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
   }, [messages]);
 
   function ensureLive(): string {
@@ -307,15 +360,30 @@ export function ChatStream({
         setStreamAgent(null);
         busyRef.current = false;
         break;
-      case "error":
+      case "error": {
         setLiveId(null);
         liveIdRef.current = null;
         busyRef.current = false;
         setMessages((m) => [
-          ...m,
+          // A mid-turn/tool exception would otherwise leave a `pending` tool
+          // block forever → `running` stuck true and the send button disabled.
+          // Close out any in-flight tool blocks as interrupted.
+          ...m.map((msg) =>
+            hasPendingTool(msg.blocks)
+              ? {
+                  ...msg,
+                  blocks: msg.blocks.map((b) =>
+                    b.kind === "tool" && b.pending
+                      ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
+                      : b,
+                  ),
+                }
+              : msg,
+          ),
           { id: mid(), role: "assistant", blocks: [{ kind: "text", text: `[error] ${ev.message}` }] },
         ]);
         break;
+      }
     }
   }
 
@@ -353,14 +421,32 @@ export function ChatStream({
     setLiveId(live);
     liveIdRef.current = live;
     setStreamAgent(agentId);
-    ws.send(
-      JSON.stringify({
-        type: "invoke",
-        message: text,
-        agent_id: agentId,
-        images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
-      }),
-    );
+    try {
+      ws.send(
+        JSON.stringify({
+          type: "invoke",
+          message: text,
+          agent_id: agentId,
+          images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
+        }),
+      );
+    } catch {
+      // ws.send throws InvalidStateError when the socket is CLOSING/CLOSED (and
+      // the `g.connected` guard lags the real readyState). Without this the
+      // exception escapes the handler, busyRef stays locked, and the optimistic
+      // "Thinking…" bubble never resolves → chat frozen. Unlock + mark the bubble.
+      busyRef.current = false;
+      setLiveId(null);
+      liveIdRef.current = null;
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === live
+            ? { ...msg, blocks: [{ kind: "text", text: "[error] 发送失败：连接未就绪，请稍后重试" }] }
+            : msg,
+        ),
+      );
+      return;
+    }
     setInput("");
     setAttachments([]);
     setTarget(null);
@@ -375,7 +461,14 @@ export function ChatStream({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        }}
+        className="flex-1 overflow-y-auto px-6 py-6"
+      >
         <div className="mx-auto flex max-w-3xl flex-col gap-5">
           {messages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
@@ -510,7 +603,10 @@ export function ChatStream({
                 }
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                // Guard IME composition: without this, pressing Enter to commit a
+                // CJK candidate (e.g. Chinese) fires send() mid-composition and
+                // posts partial/garbled text. isComposing + keyCode 229 cover it.
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                   e.preventDefault();
                   send();
                 }
@@ -539,7 +635,12 @@ export function ChatStream({
                 >
                   <Paperclip className="h-4 w-4" />
                 </button>
-                <button className="rounded-md p-1.5 hover:bg-card2 hover:text-muted" title="Shortcuts">
+                <button
+                  onClick={() => setInput((v) => v + "/")}
+                  className="rounded-md p-1.5 hover:bg-card2 hover:text-muted"
+                  title="插入斜杠命令 /"
+                  aria-label="插入斜杠命令"
+                >
                   <Keyboard className="h-4 w-4" />
                 </button>
                 <span className="px-1 text-xs">/</span>
@@ -589,13 +690,17 @@ function AssistantBubble({
         <div className="rounded-xl border border-line bg-card px-4 py-3 text-sm leading-relaxed text-txt">
           {hasInner ? (
             <InnerBlocks blocks={blocks} streaming={streaming} />
-          ) : (
+          ) : streaming ? (
             <span className="inline-flex items-center gap-1 text-muted">
               <span className="flex gap-0.5">
                 <Dot /> <Dot d={150} /> <Dot d={300} />
               </span>
               <span className="ml-1 text-xs">Thinking…</span>
             </span>
+          ) : (
+            // A finished turn with no inner content (e.g. refs-only) must NOT keep
+            // pulsing "Thinking…" — that read as a permanently-stuck indicator.
+            <span className="text-xs text-faint">（空回复）</span>
           )}
         </div>
         <RefBlocks blocks={blocks} />

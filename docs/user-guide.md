@@ -168,11 +168,11 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 ### 5.9 顶栏 ✅ / 🚧
 - 标题、当前 Agent 胶囊、`Running/Idle` 状态点；
 - 右侧 **model 按钮**：显示当前模型标签，点击跳到 **Settings → 模型 API**；
-- 右侧 **⋮** 按钮：🚧 **暂无功能**（占位）。
+- 右侧 **⋮** 按钮：✅ 打开会话菜单——**重命名会话**（写回标题，之后不再随 Agent 自动改名）与**复制会话 ID**。
 
 ### 5.10 输入区按钮 ✅ / 🚧
 - **📎（附件）**：选择图片附加到本轮（等同粘贴 / 拖拽，详见 5.5）。
-- **⌨（快捷键）**：🚧 目前为占位，暂无功能。
+- **⌨（斜杠）**：✅ 在输入框插入 `/` 以触发斜杠命令（见 5.8）。
 
 ---
 
@@ -262,7 +262,12 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
   "inject_top_k": 5,
   "inject_min_score": 0.3,
   "rescan_interval_s": 60,
-  "use_semantic": false                   // 语义检索=路线中(🔮)，默认关
+  "use_semantic": false,                  // 语义检索=路线中(🔮)，默认关
+  "capture": true,                        // 每轮把 assistant 文本捕获入 pool
+  "auto_summarize": true,                 // pool 达阈值自动总结
+  "pool_flush_threshold": 30,             // 触发自动总结的 pool 条数
+  "summarize_model": "",                  // 总结用 provider（空=默认 provider）
+  "memory_budget_chars": 3000             // 注入 MEMORY.md 的字符预算
 }
 ```
 导入**已编译**的 Wiki（如 Molly）时，`wiki_dir` 填检测到的命名空间目录（如 `Molly/Wiki`），`raw_dir` 填 `Molly/Raw`（没有就留空）；「保存并索引」后即可在 `/kb` 搜索、在对话中自动注入，**无需 Build**。只有当你新增原始文档、想把它编译进 Wiki 时才点 **Build wiki**。
@@ -336,17 +341,18 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 ~/.ginno/
 ├── settings.json          # providers / permissions / hooks / knowledge（部分无 UI，见下）
 ├── config.json            # 主题等
-├── MEMORY.md              # 全局记忆索引（🔮 自动总结 P2 将写入这里）
-├── memory/                # 全局记忆条目
+├── MEMORY.md              # 全局记忆索引（✅ 自动总结 POST /memory/summarize 写入；每轮注入）
+├── memory/                # 全局记忆条目（含 pool/ 待总结摘录）
 ├── agents/<id>.json       # 每个 Agent 的 persona/tools/model
 │   └── <id>/MEMORY.md     # 该 Agent 的私有记忆（自动注入其 prompt）
 ├── projects/<slug>/sessions/   # 会话历史（文件 checkpointer，按 thread_id）
+├── projects/<slug>/workflow_runs/  # workflow 运行实例（按项目）
 ├── skills/<name>/SKILL.md # 全局技能
 ├── mcp/mcp.json           # MCP 注册表
 ├── hooks/                 # hook 脚本（在 settings.json 引用）
 ├── workflows/<id>.json    # workflow 配方
-├── workflow_runs/         # workflow 运行实例
-├── knowledge/             # 知识库索引/关联缓存
+├── knowledge/             # 知识库配置（索引/关联图在内存，不落盘）
+├── cache/                 # 通用缓存
 ├── vectorstore/           # （🔮 语义检索 P4 预留）
 └── logs/
 ```
@@ -407,7 +413,7 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 - **发消息没反应 / 报错**：多半是**没有启用并验证通过任何模型提供商**（Settings → 模型 API）。先用“验证”确认“已连接”。
 - **点“新建会话”没反应**：现在不会静默失败了——若因未配置模型而失败，左导航 Sessions 下会出现**琥珀色提示**，点击直达 设置 → 模型 API（见第 4 节）。若提示是 `401`/“缺少 Authorization 头”，按 9.1 给 provider 加 `bearer_auth: true`。
 - **工具一直弹权限 / 被拒绝**：检查 `settings.json` 的 `permissions`（10.2）与该 Agent 的 `tools_allow`（越权工具会被直接拦，不弹框）。
-- **Knowledge Base 显示“未启用”**：按 8.3 编辑 `settings.json` 的 `knowledge.enabled` + `vault_path` 并重启/重建索引。
+- **Knowledge Base 显示“未启用”**：用 **设置 → 知识库** 或 KB 页导入面板保存配置会**立即生效**（`PUT /kb/wiki/config` 会刷新索引缓存，无需重启）；若直接手改 `settings.json` 文件，则需点 **Rebuild index** 或重启运行时以刷新缓存。
 - **主题/通知设置“没存住”**：主题存 `localStorage`（换浏览器/清缓存会丢）；通知开关目前只是本地偏好、无实际效果（9.7）。
 - **重启后历史还在吗**：在。会话历史走文件 checkpointer；但**内存里的会话对象**重启后会在你下次打开该会话时从磁盘重建。
 - **我改了 MCP / Skills 没生效**：MCP 需 **Save & Reload**；Skills 新建/删除后列表会刷新，运行时会重新加载。
@@ -420,14 +426,14 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 |---|---|---|
 | 账号 / 登录 / Sign out / 订阅 | — | **界面无账号元素**（占位已移除）；登录/鉴权本身未实现，见第 11 节 |
 | 桌面通知真实推送 | 🚧 | 仅有本地偏好开关 |
-| 附件📎 / 快捷键⌨ / 顶栏⋮ |  | 占位，无行为 |
-| 会话重命名 UI | 🚧 | 标题随 Agent 自动生成；改名需走 API |
+| 附件📎 / 快捷键⌨ / 顶栏⋮ | ✅ | 📎 附加图片；⌨ 插入 `/` 触发斜杠命令；⋮ 会话菜单（重命名 / 复制 ID） |
+| 会话重命名 UI | ✅ | 顶栏 ⋮ → 重命名会话（写回后标题不再自动跟随 Agent） |
 | 多项目（project slug） | 🚧 | 界面固定 `default` |
 | 工作目录回显 | 🚧 | 通用设置该行展示约定值，非生效值回显 |
-| 知识库 Settings 标签 | 🚧 | KB 页空态的跳转是预留；现用 settings.json 配置 |
+| 知识库 Settings 标签 | ✅ | 设置 → 知识库 已实现（检测 / 保存 / 重建索引） |
 | 权限 / Hooks 编辑 UI | 🧩 | 后端完整，需手编 settings.json |
 | 记忆自动总结 / 全局注入 / 记忆工具 | ✅ | 每轮自动捕获；右栏 Memory 标签「总结」按钮 / `POST /memory/summarize` 提炼；MEMORY.md 每轮注入 |
-| 知识库编译器 raw→wiki / 关联图 / `/kb build` | 🔮 | P1 路线 |
+| 知识库编译器 raw→wiki / 关联图 / Build wiki | ✅ | KB 页 **Build wiki** / `POST /kb/wiki/build`（无 `/kb build` 命令）；关联图 + 发现页已实现 |
 | 经验循环（co-copilot 式抽取→晋升） | 🔮 | P3 路线 |
 | 语义检索（LanceDB / embedding） | 🔮 | P4 路线，`use_semantic` 暂无效 |
 | Artifacts / Workflow 的 UI 操作（增删改/手动运行） | 🚧/✅ | Artifacts 只读；Workflow 运行靠 Agent、配方在设置增删 |
@@ -435,4 +441,4 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 ---
 
 ### 一句话总结
-Ginno 现已可用：**多 Agent 对话 + 工具/权限/技能/MCP + TODO/Workflow/Artifacts 右栏 + 知识库检索注入 + 全套设置**，全部本地、文件化、无账号（账号占位已移除，见第 11 节）。界面上**通知推送、附件/快捷键/⋮、KB 设置标签**等是占位或待接通——以本文图例为准。需要我把任意 🔮/🧩 项（例如 P1 知识库编译、补一个真正的“知识库设置标签”、或账号登录骨架）落到代码里，告诉我即可。
+Ginno 现已可用：**多 Agent 对话 + 工具/权限/技能/MCP + TODO/Workflow/Artifacts 右栏 + 知识库检索注入 + 知识库编译/关联 + 全套设置（含知识库标签）**，全部本地、文件化、无账号（账号占位已移除，见第 11 节）。仍为占位/待接通的：**桌面通知真实推送、权限/Hooks 编辑 UI、多项目、语义检索**——以本文图例为准。需要我把任意 🔮/🧩 项（例如语义检索、权限/Hooks 编辑 UI、或账号登录骨架）落到代码里，告诉我即可。

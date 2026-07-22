@@ -975,7 +975,7 @@ def _detect_wiki_layout(vault) -> dict:
 
 
 @app.get("/kb/wiki/probe")
-async def kb_wiki_probe(path: str = "") -> dict:
+def kb_wiki_probe(path: str = "") -> dict:
     """Read-only: detect an existing LLM-Wiki layout under *path* and count pages.
 
     Does NOT write the vault. Used by the import UI to pre-fill config and show
@@ -1075,7 +1075,7 @@ async def kb_wiki_stats() -> dict:
 
 
 @app.post("/kb/wiki/index")
-async def kb_wiki_index() -> dict:
+def kb_wiki_index() -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
         return _kb_not_configured()
@@ -1100,7 +1100,7 @@ def _compile_to_dict(res) -> dict:
 
 
 @app.post("/kb/wiki/ingest")
-async def kb_wiki_ingest(data: dict) -> dict:
+def kb_wiki_ingest(data: dict) -> dict:
     """Compile a single raw file (path absolute or relative to the vault)."""
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1114,6 +1114,10 @@ async def kb_wiki_ingest(data: dict) -> dict:
         p.relative_to(vault)
     except ValueError:
         return {"ok": False, "error": "path outside vault"}
+    if not p.is_file():
+        # compile() silently no-ops on a missing path and returned ok:True with
+        # empty created/updated — callers couldn't tell failure from empty.
+        return {"ok": False, "error": "file not found"}
     comp = _kb_compiler.WikiCompiler(vault, cfg.wiki_dir, cfg.raw_dir)
     res = comp.compile(p)
     comp.update_index()
@@ -1122,7 +1126,7 @@ async def kb_wiki_ingest(data: dict) -> dict:
 
 
 @app.post("/kb/wiki/build")
-async def kb_wiki_build() -> dict:
+def kb_wiki_build() -> dict:
     """Compile every raw file in the vault (raw→wiki) and rebuild the index."""
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1136,7 +1140,7 @@ async def kb_wiki_build() -> dict:
 
 
 @app.get("/kb/wiki/related")
-async def kb_wiki_related(title: str = "", top_k: int = 10) -> dict:
+def kb_wiki_related(title: str = "", top_k: int = 10) -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
         return _kb_not_configured({"related": [], "clusters": []})
@@ -1145,7 +1149,7 @@ async def kb_wiki_related(title: str = "", top_k: int = 10) -> dict:
 
 
 @app.get("/kb/wiki/discover")
-async def kb_wiki_discover() -> dict:
+def kb_wiki_discover() -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
         return _kb_not_configured()
@@ -1154,7 +1158,7 @@ async def kb_wiki_discover() -> dict:
 
 
 @app.get("/kb/wiki/orphans")
-async def kb_wiki_orphans() -> dict:
+def kb_wiki_orphans() -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
         return _kb_not_configured({"pages": []})
@@ -1164,7 +1168,7 @@ async def kb_wiki_orphans() -> dict:
 
 
 @app.get("/kb/wiki/backlinks")
-async def kb_wiki_backlinks(title: str = "") -> dict:
+def kb_wiki_backlinks(title: str = "") -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
         return _kb_not_configured({"backlinks": []})

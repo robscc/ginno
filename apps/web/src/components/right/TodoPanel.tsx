@@ -86,6 +86,13 @@ export function TodoPanel() {
 
       {/* list */}
       <div className="flex-1 px-2">
+        {visible.length === 0 && (
+          <div className="px-2 py-8 text-center text-xs text-faint">
+            {total === 0
+              ? "暂无 TODO。点 + New 添加，或让 Agent 用 todo 工具创建。"
+              : "该优先级下暂无任务。"}
+          </div>
+        )}
         {visible.map((t) => {
           const cs = categoryStyle(t.category);
           return (

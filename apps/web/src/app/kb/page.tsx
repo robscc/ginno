@@ -73,36 +73,61 @@ export default function KnowledgeBasePage() {
   const [importPath, setImportPath] = useState("");
   const [importProbe, setImportProbe] = useState<string>("");
   const [importBusy, setImportBusy] = useState(false);
+  const [connError, setConnError] = useState("");
+  const [discoverError, setDiscoverError] = useState("");
 
   const configured = !!stats?.ok;
 
   const loadAll = useCallback(async () => {
-    const [st, pg] = await Promise.all([api.kbWikiStats(), api.kbWikiList()]);
-    setStats(st);
-    if (pg.ok) setPages(pg.pages);
+    try {
+      const [st, pg] = await Promise.all([api.kbWikiStats(), api.kbWikiList()]);
+      setStats(st);
+      if (pg.ok) setPages(pg.pages);
+      setConnError("");
+    } catch {
+      // sidecar down was silently swallowed → looked identical to "not configured"
+      setConnError("运行时未连接：请确认 sidecar 已启动（dev: pnpm dev:runtime）。");
+    }
   }, []);
 
   useEffect(() => {
-    loadAll().catch(() => {});
+    loadAll();
   }, [loadAll]);
 
   useEffect(() => {
     if (view === "discover" && configured) {
-      api.kbWikiDiscover().then((d) => d.ok && setDiscover(d)).catch(() => {});
+      setDiscover(null);
+      setDiscoverError("");
       setRelated(null);
+      api
+        .kbWikiDiscover()
+        .then((d) => {
+          if (d.ok) setDiscover(d);
+          else setDiscoverError("加载发现结果失败");
+        })
+        .catch(() => setDiscoverError("运行时未连接，无法加载发现结果。"));
     }
   }, [view, configured]);
 
   async function onSearch() {
-    if (!query.trim()) return;
+    const q = query.trim();
+    if (!q) return;
     setBusy(true);
+    setNote("");
     try {
-      const r = await api.kbWikiSearch(query.trim());
+      // a "tag:foo" in the box (e.g. after clicking a tag pill) must run a tag
+      // filter, not a literal text search for the string "tag:foo".
+      const tag = q.startsWith("tag:") ? q.slice(4).trim() : "";
+      const r = tag ? await api.kbWikiSearchByTag(tag) : await api.kbWikiSearch(q);
       if (r.ok) {
         setResults(r.results);
         setSearched(true);
         setView("search");
+      } else {
+        setNote(r.error || "检索失败");
       }
+    } catch {
+      setNote("检索失败：无法连接运行时");
     } finally {
       setBusy(false);
     }
@@ -112,9 +137,15 @@ export default function KnowledgeBasePage() {
     setBusy(true);
     setNote("");
     try {
-      await api.kbWikiReindex();
-      await loadAll();
-      setNote("索引已重建。");
+      const r = await api.kbWikiReindex();
+      if (r.ok) {
+        await loadAll();
+        setNote(`索引已重建（${r.indexed} 页）。`);
+      } else {
+        setNote("重建索引失败");
+      }
+    } catch {
+      setNote("重建索引失败：无法连接运行时");
     } finally {
       setBusy(false);
     }
@@ -133,6 +164,8 @@ export default function KnowledgeBasePage() {
       } else {
         setNote(r.error || "编译失败");
       }
+    } catch {
+      setNote("编译失败：无法连接运行时");
     } finally {
       setBusy(false);
     }
@@ -140,8 +173,13 @@ export default function KnowledgeBasePage() {
 
   async function onRelated() {
     if (!relatedQuery.trim()) return;
-    const r = await api.kbWikiRelated(relatedQuery.trim());
-    setRelated(r.ok ? r.related : []);
+    try {
+      const r = await api.kbWikiRelated(relatedQuery.trim());
+      setRelated(r.ok ? r.related : []);
+    } catch {
+      setRelated([]);
+      setNote("相关查询失败：无法连接运行时");
+    }
   }
 
   async function onDetectImport() {
@@ -150,14 +188,18 @@ export default function KnowledgeBasePage() {
       setImportProbe("请填写 vault 路径");
       return;
     }
-    const r = await api.kbWikiProbe(importPath.trim());
-    setImportProbe(
-      r.ok
-        ? r.detected?.namespace
-          ? `检测到命名空间「${r.detected.namespace}」：Wiki ${r.wiki_pages} 页 / Raw ${r.raw_pages} 篇${r.has_index ? "（含 INDEX）" : ""}`
-          : `未检测到 */Wiki 目录，将把整个 vault 作为知识库索引（共 ${r.total_md} 篇）`
-        : r.error || "检测失败",
-    );
+    try {
+      const r = await api.kbWikiProbe(importPath.trim());
+      setImportProbe(
+        r.ok
+          ? r.detected?.namespace
+            ? `检测到命名空间「${r.detected.namespace}」：Wiki ${r.wiki_pages} 页 / Raw ${r.raw_pages} 篇${r.has_index ? "（含 INDEX）" : ""}`
+            : `未检测到 */Wiki 目录，将把整个 vault 作为知识库索引（共 ${r.total_md} 篇）`
+          : r.error || "检测失败",
+      );
+    } catch {
+      setImportProbe("检测失败：无法连接运行时");
+    }
   }
 
   async function onImport() {
@@ -169,7 +211,12 @@ export default function KnowledgeBasePage() {
     setImportProbe("");
     try {
       const probe = await api.kbWikiProbe(importPath.trim());
-      const d = probe.ok ? probe.detected : undefined;
+      if (!probe.ok) {
+        // don't persist config for a mistyped / nonexistent vault path
+        setImportProbe(probe.error || "检测失败：路径无效");
+        return;
+      }
+      const d = probe.detected;
       const saved = await api.kbWikiPutConfig({
         enabled: true,
         vault_path: importPath.trim(),
@@ -187,6 +234,8 @@ export default function KnowledgeBasePage() {
       const ix = await api.kbWikiReindex();
       setImportProbe(ix.ok ? `已导入并索引 ${ix.indexed} 页` : "已保存配置，但索引失败");
       await loadAll();
+    } catch {
+      setImportProbe("导入失败：无法连接运行时");
     } finally {
       setImportBusy(false);
     }
@@ -229,6 +278,11 @@ export default function KnowledgeBasePage() {
         Obsidian 知识库：把 Raw 编译成 Wiki、按相关性检索并在对话中自动注入（LLMWiki）。
       </p>
       {note && <div className="mt-2 text-xs text-violet">{note}</div>}
+      {connError && (
+        <div className="mt-2 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">
+          {connError}
+        </div>
+      )}
 
       {/* not configured → import panel */}
       {!configured && (
@@ -482,6 +536,8 @@ export default function KnowledgeBasePage() {
                     )}
                   </Section>
                 </>
+              ) : discoverError ? (
+                <div className="text-sm text-red">{discoverError}</div>
               ) : (
                 <div className="text-sm text-faint">加载发现结果中…</div>
               ))}

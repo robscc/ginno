@@ -19,10 +19,12 @@ export function RightPanel() {
   const [tab, setTab] = useState<Tab>("todo");
   return (
     <aside className="flex w-[380px] shrink-0 flex-col border-l border-line bg-panel">
-      <div className="flex gap-1 border-b border-line px-3 py-3">
+      <div role="tablist" aria-label="右栏面板" className="flex gap-1 border-b border-line px-3 py-3">
         {TABS.map((t) => (
           <button
             key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
             className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
               tab === t.id ? "bg-card2 text-txt" : "text-muted hover:text-txt"

@@ -51,9 +51,9 @@ def get_wiki_guidelines(cfg: KnowledgeConfig) -> str:
         "|------|------|----------|\n"
         f"| `{cfg.raw_dir}/` | 原始文档、笔记、报告 | ✅ 新文档写这里 |\n"
         f"| `{cfg.research_dir}/` | 深度研究报告 | ✅ 研究报告写这里 |\n"
-        f"| `{cfg.wiki_dir}/` | 自动编译的 wiki 页（/kb build 产物） | ❌ 勿直接写入 |\n\n"
+        f"| `{cfg.wiki_dir}/` | 自动编译的 wiki 页（KB 页 “Build wiki” / POST /kb/wiki/build 产物） | ❌ 勿直接写入 |\n\n"
         f"规则：新文档/报告/总结一律存到 `{cfg.raw_dir}/`；"
-        f"`{cfg.wiki_dir}/` 由 /kb build 从 Raw/ 自动生成，不要手写。"
+        f"`{cfg.wiki_dir}/` 由 KB 页 “Build wiki”（POST /kb/wiki/build）从 Raw/ 自动生成，不要手写（没有 /kb build 命令）。"
     )
 
 

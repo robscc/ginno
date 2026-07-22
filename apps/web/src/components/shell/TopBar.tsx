@@ -1,7 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { MoreVertical, Globe } from "lucide-react";
+import * as api from "@/lib/runtime";
+import { useGinno } from "@/lib/store";
 import type { AgentConfig, SessionMeta } from "@/lib/types";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
@@ -18,6 +21,8 @@ export function TopBar({
   modelLabel: string;
 }) {
   const router = useRouter();
+  const g = useGinno();
+  const [menu, setMenu] = useState(false);
   const hex = agentHex(agent?.color);
 
   return (
@@ -58,9 +63,52 @@ export function TopBar({
           <Globe className="h-3.5 w-3.5 text-muted" />
           {modelLabel || "model"}
         </button>
-        <button className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt">
-          <MoreVertical className="h-4 w-4" />
-        </button>
+        <div className="relative">
+          <button
+            onClick={() => setMenu((m) => !m)}
+            aria-label="会话操作"
+            aria-haspopup="menu"
+            aria-expanded={menu}
+            className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt"
+          >
+            <MoreVertical className="h-4 w-4" />
+          </button>
+          {menu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setMenu(false)} />
+              <div
+                role="menu"
+                className="absolute right-0 z-50 mt-1 w-40 overflow-hidden rounded-lg border border-line bg-card py-1 text-sm shadow-xl"
+              >
+                <button
+                  role="menuitem"
+                  onClick={async () => {
+                    setMenu(false);
+                    if (!session) return;
+                    const name = window.prompt("会话标题", session.title || "");
+                    if (name != null && name.trim()) {
+                      await api.patchSession(session.id, { title: name.trim() });
+                      await g.reloadSessions();
+                    }
+                  }}
+                  className="block w-full px-3 py-1.5 text-left text-muted hover:bg-card2 hover:text-txt"
+                >
+                  重命名会话
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setMenu(false);
+                    if (session) void navigator.clipboard?.writeText(session.id);
+                  }}
+                  className="block w-full px-3 py-1.5 text-left text-muted hover:bg-card2 hover:text-txt"
+                >
+                  复制会话 ID
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </header>
   );

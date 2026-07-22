@@ -230,7 +230,7 @@ export async function kbWikiSearch(q: string) {
   );
 }
 export async function kbWikiSearchByTag(tag: string) {
-  return json<{ ok: boolean; results: import("./types").WikiSearchResult[] }>(
+  return json<{ ok: boolean; error?: string; results: import("./types").WikiSearchResult[] }>(
     `${BASE}/kb/wiki/search?tag=${encodeURIComponent(tag)}`,
   );
 }

@@ -86,7 +86,7 @@ Persistence: every node write triggers `FileCheckpointer.put(...)`, atomic JSON 
 
 ## 9. Memory
 
-- **Structured**: `~/.ginno/MEMORY.md` index + `memory/*.md` entries. Tools: `memory.save`, `memory.read`, `memory.forget`.
+- **Structured**: `~/.ginno/MEMORY.md` index + `memory/*.md` entries；由自动捕获 + `POST /memory/summarize` 提炼写入（**无** `memory.save/read/forget` 工具，路线中）。
 - **Session**: file checkpointer.
 - **Semantic** (optional): LanceDB over `memory/*.md` and Obsidian vault; tools: `memory.recall`, `obsidian.recall`.
 

@@ -357,7 +357,7 @@ out = await model.ainvoke([SystemMessage(SUMMARIZE_PROMPT),
 write_global_memory(sanitize_memory_output(out.content))   # 覆写 ~/.ginno/MEMORY.md
 clear_pool()
 ```
-**触发点**：① UI「立即总结」按钮 → `POST /knowledge/memory/summarize`；② pool 达阈值自动；③ `/summarize` 技能；④（可选）会话结束。**不做定时器**（桌面单机，按需即可）。
+**触发点**：① UI「立即总结」按钮 → `POST /memory/summarize`；② pool 达阈值自动；③ `/summarize` 技能；④（可选）会话结束。**不做定时器**（桌面单机，按需即可）。
 
 > 全局 `MEMORY.md` 与「每 agent MEMORY.md」并存：`build_agent_system_prompt` 同时注入全局记忆（共享）与 `read_agent_memory(agent.id)`（私有）。
 
@@ -393,7 +393,7 @@ clear_pool()
 | POST | `/kb/wiki/ingest` `{path}` | 编译单文件 | `{created[],updated[],new_links,associations[]}` |
 | POST | `/kb/wiki/build` | 全 vault 编译 | `{scanned,created[],updated[],duration_ms}` |
 | GET | `/kb/wiki/related?title=&top_k=` | 相关页 | `RelatedPagesResult` |
-| GET | `/kb/wiki/discover` | 发现报告 | `{strong[],clusters[],merge_candidates[],orphans[]}` |
+| GET | `/kb/wiki/discover` | 发现报告 | `{strong[],clusters[],merge_candidates[],isolated[],orphan_bridges[]}` |
 | GET | `/kb/wiki/orphans` / `/kb/wiki/backlinks?title=` | 孤儿/反链 | … |
 
 > 现有 `/kb/servers`、`/kb/search`、`/kb/list`（MCP）保留不动，作为实时单点查询。
@@ -401,10 +401,8 @@ clear_pool()
 ### 5.2 Memory
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/knowledge/memory` | 读全局 `MEMORY.md` + pool 计数 + last_summarized |
-| POST | `/knowledge/memory/summarize` | 立即总结（同步或后台，返回 `{ok,summarized_chars}`） |
-| GET | `/knowledge/memory/pool` | 预览 pool 摘录（调试/展示用） |
-| POST | `/knowledge/memory/clear` | 清空 pool |
+| GET | `/memory` | 读全局 `MEMORY.md` + pool 计数 |
+| POST | `/memory/summarize` | 立即总结（返回 `{ok,summarized_chars,pool_entries,message}`） |
 
 ### 5.3 Experiences（G3）
 `GET /knowledge/experiences?status=`、`POST /knowledge/experiences/analyze`、`POST /knowledge/experiences/{id}/promote|dismiss|done`。
@@ -462,7 +460,7 @@ clear_pool()
   [ 立即总结 (7) ]  [ 查看 pool ]  [ 清空 ]
 ```
 - Knowledge tab：展示**当前会话最近一轮**注入的条目（需要 server 在 WS 事件里附带 `wiki.injected` 事件，或前端按最近 query 调 `/kb/wiki/search`）。
-- Memory tab：展示 `MEMORY.md` 摘要 + pool 待总结轮数 + 「立即总结」按钮（`POST /knowledge/memory/summarize`）。
+- Memory tab：展示 `MEMORY.md` 摘要 + pool 待总结轮数 + 「立即总结」按钮（`POST /memory/summarize`）。
 
 ### 6.3 Settings 新增「知识」tab
 
@@ -490,7 +488,7 @@ clear_pool()
 | 阶段 | 范围 | 完成标准 |
 |---|---|---|
 | **P0 · Wiki 只读检索 + 注入** | `config/frontmatter/tokenize/indexer/retriever/injection` + `graph.py` 注入改造 + `GET /kb/wiki/{search,list,stats}` + KB 页搜索/统计 | 配好 vault 后，提问能在 prompt 注入 top-K 相关条目，KB 页可搜索 |
-| **P1 · 编译 + 关联 + 发现** | `compiler`（确定性基线）+ `association` + `POST /kb/wiki/{index,ingest,build}` + `GET /kb/wiki/{related,discover,orphans}` + KB 页「Build/发现」 | `/kb build` 生成 concept 页与 INDEX；发现页展示关联/聚类 |
+| **P1 · 编译 + 关联 + 发现** | `compiler`（确定性基线）+ `association` + `POST /kb/wiki/{index,ingest,build}` + `GET /kb/wiki/{related,discover,orphans}` + KB 页「Build/发现」 | KB 页 **Build wiki** / `POST /kb/wiki/build` 生成 concept 页与 INDEX（无 `/kb build` 命令）；发现页展示关联/聚类 |
 | **P2 · 自动总结记忆** | `memory_pool/summarize` + `server` 捕获改造 + `tools/memory_tools` + `GET/POST /knowledge/memory*` + 右侧 Memory tab + Settings 知识 tab | 对话自动入池；达阈值/点按钮总结成 MEMORY.md 并回注所有 agent |
 | **P3 · 经验循环（可选）** | `analyzer/experience_store/promote` + `/knowledge/experiences*` + Memory tab 审核区 | LLM 抽取经验→人工 promote→并入记忆 |
 | **P4 · 语义增强（可选）** | LanceDB 向量库（用既有 `rag` extra）+ `use_semantic` 开关 + `memory.recall/obsidian.recall` 语义版 | 检索/召回支持语义相似度，与词法融合排序 |

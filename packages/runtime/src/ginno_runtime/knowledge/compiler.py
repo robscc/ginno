@@ -166,11 +166,16 @@ class WikiCompiler:
         return p.resolve().relative_to(self.vault_root).as_posix()
 
     # ---- compile one raw file ----
-    def compile(self, raw_path: str | Path) -> CompileResult:
+    def _compile_one(self, raw_path: str | Path) -> tuple[CompileResult, list[str]]:
+        """Compile one raw file → (result, produced titles) WITHOUT associating.
+
+        Association is split out so ``build_all`` can run a single graph pass over
+        every produced page instead of one O(N²) rescan+rebuild *per raw file*.
+        """
         res = CompileResult()
         rp = Path(raw_path)
         if not rp.exists():
-            return res
+            return res, []
         raw = rp.read_text(encoding="utf-8", errors="replace")
         meta, body = fm.split_frontmatter(raw)
         source_rel = self._rel(rp)
@@ -222,8 +227,12 @@ class WikiCompiler:
             _write(spath, summary_page)
             res.created.append(self._rel(spath))
 
-        # auto-associate over the freshly-written pages
-        res.merge(self._auto_associate(concept_titles + [file_title]))
+        return res, concept_titles + [file_title]
+
+    def compile(self, raw_path: str | Path) -> CompileResult:
+        """Compile one raw file and auto-associate its pages (single-file API)."""
+        res, titles = self._compile_one(raw_path)
+        res.merge(self._auto_associate(titles))
         return res
 
     def _rewrite_sources(self, text: str, sources: list[str]) -> str:
@@ -322,9 +331,15 @@ class WikiCompiler:
         t0 = time.time()
         agg = CompileResult()
         scanned = 0
+        all_titles: list[str] = []
         for f in self._raw_files():
             scanned += 1
-            agg.merge(self.compile(f))
+            res, titles = self._compile_one(f)
+            agg.merge(res)
+            all_titles.extend(titles)
+        # One association pass over every produced page. The old per-file pass
+        # did R full vault rescans + R O(N²) graph rebuilds → minutes on a vault.
+        agg.merge(self._auto_associate(all_titles))
         self.update_index()
         return {
             "scanned": scanned,
