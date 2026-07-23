@@ -28,7 +28,12 @@ from .state import AgentState
 from .tools.builtin import build_builtin_tools
 from .tools.render_tools import RENDER_TOOL_NAMES, attach_ref, render_widget
 from .tools.todo_tools import ALL_TODO_TOOLS, TODO_TOOL_NAMES
-from .tools.workflow_tools import ALL_WORKFLOW_TOOLS, WORKFLOW_TOOL_NAMES
+from .tools.workflow_tools import (
+    ALL_WORKFLOW_DEV_TOOLS,
+    ALL_WORKFLOW_TOOLS,
+    WORKFLOW_DEV_TOOL_NAMES,
+    WORKFLOW_TOOL_NAMES,
+)
 from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 
 # permission-node deny messages are tagged so the WS layer can resolve the
@@ -237,8 +242,15 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
             # TODO tools: an agent that has them (per tools_allow) never needs a prompt
             if name in TODO_TOOL_NAMES:
                 continue
-            # workflow / artifact tools never need a prompt either
-            if name in WORKFLOW_TOOL_NAMES or name in ARTIFACT_TOOL_NAMES:
+            # workflow / artifact tools never need a prompt either. workflow-dev
+            # editing tools carry their OWN diff confirmation (interrupt), so they
+            # must bypass the permission policy too — otherwise the policy's "ask"
+            # would fire a permission.request before the tool's version_propose.
+            if (
+                name in WORKFLOW_TOOL_NAMES
+                or name in ARTIFACT_TOOL_NAMES
+                or name in WORKFLOW_DEV_TOOL_NAMES
+            ):
                 continue
 
             # 1) PreToolUse hooks
@@ -286,6 +298,19 @@ def route_after_agent(state: AgentState) -> Literal["permission", "__end__"]:
     return "permission" if state.get("pending_tool_calls") else END
 
 
+def build_all_tools(mcp_tools: list | None = None) -> list:
+    """The union toolset shared by the main chat graph and the workflow engine."""
+    return (
+        build_builtin_tools()
+        + (mcp_tools or [])
+        + [render_widget, attach_ref]
+        + ALL_TODO_TOOLS
+        + ALL_WORKFLOW_TOOLS
+        + ALL_WORKFLOW_DEV_TOOLS
+        + ALL_ARTIFACT_TOOLS
+    )
+
+
 def build_graph(
     model,
     project_slug: str,
@@ -294,14 +319,7 @@ def build_graph(
     hook_dispatcher=None,
 ):
     """Compose the main agent graph (single graph, union toolset)."""
-    all_tools = (
-        build_builtin_tools()
-        + (mcp_tools or [])
-        + [render_widget, attach_ref]
-        + ALL_TODO_TOOLS
-        + ALL_WORKFLOW_TOOLS
-        + ALL_ARTIFACT_TOOLS
-    )
+    all_tools = build_all_tools(mcp_tools)
     policy = PermissionPolicy.from_settings()
 
     g = StateGraph(AgentState)

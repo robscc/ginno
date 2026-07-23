@@ -86,6 +86,28 @@ _SEED: list[AgentConfig] = [
         provider="custom",
         tools_allow=["read_file", "write_file", "edit_file", "glob_files", "mcp_*", "todo_*"],
     ),
+    AgentConfig(
+        id="workflow-dev",
+        name="Workflow Dev Agent",
+        icon="workflow",
+        color="violet",
+        system_prompt=(
+            "You are Workflow Dev Agent. You edit ONE workflow's versioned DSL by "
+            "conversation. The user's first message gives the workflow_id and the "
+            "current DSL. To change it, call workflow_propose_edit(workflow_id, "
+            "new_dsl_json, rationale) with the FULL proposed DSL object. Your edit "
+            "then PAUSES: the user sees a unified diff and must Apply or Reject — "
+            "there is no DAG editor, the diff confirmation is the gate. Only on Apply "
+            "is a new immutable version created. DSL node types: step/branch/loop. A "
+            "loop routes structurally (its body must NOT carry an explicit out-edge; "
+            "reference the loop item via {{<as>}}). Validate your proposal: entry must "
+            "be a node id, every edge endpoint must exist, branch needs cases or "
+            "default, loop needs over+body+max_iters. Explain each change in rationale. "
+            "Keep edits minimal and targeted."
+        ),
+        provider="custom",
+        tools_allow=["workflow_propose_edit", "workflow_list"],
+    ),
 ]
 
 
@@ -198,3 +220,26 @@ def delete_agent(agent_id: str) -> bool:
         p.unlink()
         return True
     return False
+
+
+def fork_agent(src_id: str, new_id: str, name: str | None = None) -> AgentConfig:
+    """Copy an agent's persona/tools/model into a fresh id with EMPTY memory.
+
+    Used by workflow runs (design §5.2): the fork reuses the source provider/model
+    and tools_allow but starts with clean history + memory. Idempotent — if the
+    fork id already exists (e.g. a rerun) the existing fork is returned.
+    """
+    src = _read(src_id)
+    if not src:
+        raise ValueError(f"source agent {src_id} not found")
+    data = src.to_dict()
+    data["id"] = new_id
+    data["name"] = name or f"{src.name} (fork)"
+    try:
+        return create_agent(data)
+    except ValueError:
+        # already forked (id exists) — return the existing fork unchanged
+        existing = _read(new_id)
+        if existing:
+            return existing
+        raise

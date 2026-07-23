@@ -14,7 +14,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
@@ -25,7 +25,7 @@ from . import paths
 from . import providers as prov_mod
 from .agents.memory import ensure_agent_memory
 from .checkpointer import FileCheckpointer
-from .graph import BLOCK_PREFIX, build_graph
+from .graph import BLOCK_PREFIX, build_all_tools, build_graph
 from .tools.render_tools import RENDER_TOOL_NAMES
 from .hooks.dispatcher import HookDispatcher
 from .models import build_model
@@ -34,6 +34,8 @@ from .skills.loader import SkillLoader
 from .todos import store as todo_store
 from . import artifacts as art_store
 from . import workflows as wf_store
+from .workflows import events as wf_events
+from .workflows import dsl as wf_dsl
 from .tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from .tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 
@@ -111,6 +113,10 @@ class CreateSessionRequest(BaseModel):
 # Session registry: holds the compiled graph + metadata (in-memory; the
 # on-disk source of truth for the list is the per-slug session index).
 _SESSIONS: dict[str, dict[str, Any]] = {}
+
+# Background workflow-run tasks (run_id -> asyncio.Task); kept alive + awaitable
+# so the run trigger can be fire-and-forget in prod yet deterministic in tests.
+_WF_RUN_TASKS: dict[str, Any] = {}
 
 
 def _session_meta_list(slug: str) -> list[dict]:
@@ -686,6 +692,267 @@ async def delete_workflow_endpoint(wf_id: str) -> dict:
 @app.get("/workflow_runs")
 async def list_workflow_runs_endpoint() -> list[dict]:
     return wf_store.list_runs()
+
+
+@app.get("/workflows/{wf_id}")
+async def get_workflow_endpoint(wf_id: str) -> dict:
+    """Full definition view: current DSL + version + legacy steps projection."""
+    wf = wf_store.get_def(wf_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    return {"ok": True, "workflow": wf}
+
+
+@app.get("/workflows/{wf_id}/versions")
+async def list_workflow_versions_endpoint(wf_id: str) -> dict:
+    return {"ok": True, "versions": wf_store.list_versions(wf_id)}
+
+
+@app.get("/workflows/{wf_id}/versions/diff")
+async def diff_workflow_versions_endpoint(wf_id: str, a: int, b: int) -> dict:
+    diff = wf_store.diff_versions(wf_id, a, b)
+    if diff is None:
+        raise HTTPException(status_code=404, detail="version not found")
+    return {"ok": True, "a": a, "b": b, "diff": diff}
+
+
+@app.get("/workflows/{wf_id}/versions/{n}")
+async def get_workflow_version_endpoint(wf_id: str, n: int) -> dict:
+    v = wf_store.get_version(wf_id, n)
+    if v is None:
+        raise HTTPException(status_code=404, detail="version not found")
+    return {"ok": True, "version": n, "dsl": v}
+
+
+@app.post("/workflows/{wf_id}/rollback")
+async def rollback_workflow_endpoint(wf_id: str, data: dict) -> dict:
+    to = (data or {}).get("to")
+    if not isinstance(to, int):
+        raise HTTPException(status_code=400, detail="integer 'to' required")
+    wf = wf_store.rollback(wf_id, to, commit=(data or {}).get("commit", ""))
+    if not wf:
+        raise HTTPException(status_code=404, detail="workflow/version not found")
+    return {"ok": True, "workflow": wf}
+
+
+# ---- P6: synthesize a workflow DSL draft from a session's conversation ----
+_SYNTHESIZE_PROMPT = (
+    "You are a workflow synthesizer. Given a conversation trace between a user and "
+    "an agent (including tool calls), produce a reusable workflow DSL that captures "
+    "the repeatable process as a directed graph.\n\n"
+    "DSL object shape:\n"
+    '{\n  "name": "<short imperative name>",\n  "description": "<one line>",\n'
+    '  "entry": "<first node id>",\n'
+    '  "context": {"schema": {"type":"object","properties":{...}}, "initial": {...}},\n'
+    '  "nodes": [ {"id","type","agent","goal", ...} ],\n'
+    '  "edges": [ {"from","to"} ]\n}\n\n'
+    "Node types:\n"
+    '- step: {"id","type":"step","agent":"dev|research|writer","goal":"<instruction>"}\n'
+    '- branch: {"id","type":"branch","cases":[{"when":"<expr>","then":"<id>"}],"default":"<id>"}\n'
+    '- loop: {"id","type":"loop","over":"<expr e.g. context.items>","as":"<var>","body":"<body id>","max_iters":<int>}\n\n'
+    "Rules:\n"
+    "- `entry` MUST be an existing node id; every edge endpoint MUST exist.\n"
+    "- A loop's body returns to the loop head automatically: do NOT add an edge FROM the body; reference the loop item via {{<as>}}.\n"
+    "- A branch routes via cases/default: do NOT add plain edges from a branch.\n"
+    "- Put any per-run inputs the conversation revealed into context.schema + context.initial.\n"
+    "- Default to a simple linear step chain; only add branch/loop when the trace clearly shows conditionals or repetition.\n"
+    "- Agents: dev (code/actions), research (read/summarise), writer (draft text).\n\n"
+    "Reply with ONLY the JSON object, no prose, no markdown fences."
+)
+
+
+def _trace_text(messages) -> str:
+    """Compact readable trace of a session for the synthesizer."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    lines: list[str] = []
+    for m in messages or []:
+        if isinstance(m, HumanMessage):
+            c = m.content if isinstance(m.content, str) else str(m.content)
+            lines.append(f"USER: {c[:500]}")
+        elif isinstance(m, AIMessage):
+            c = m.content if isinstance(m.content, str) else str(m.content)
+            if c.strip():
+                lines.append(f"AGENT: {c[:500]}")
+            for tc in getattr(m, "tool_calls", None) or []:
+                lines.append(f"  -> tool {tc.get('name')}({json.dumps(tc.get('args') or {}, ensure_ascii=False)[:200]})")
+        elif isinstance(m, ToolMessage):
+            c = m.content if isinstance(m.content, str) else str(m.content)
+            lines.append(f"  <= {getattr(m, 'name', 'tool')}: {c[:200]}")
+    return "\n".join(lines)
+
+
+def _extract_json_obj(text: str) -> dict | None:
+    import re
+
+    text = (text or "").strip()
+    # strip markdown fences if the model added them despite instructions
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        v = json.loads(text)
+        return v if isinstance(v, dict) else None
+    except json.JSONDecodeError:
+        pass
+    # fallback: first balanced {...}
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            v = json.loads(text[start : end + 1])
+            return v if isinstance(v, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+@app.post("/workflows/summarize-from-session")
+async def summarize_session_to_dsl(data: dict) -> dict:
+    """Distill a session's conversation into a workflow DSL *draft* (not saved).
+    The UI then creates a workflow from it (version 1) or opens the dev agent."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    session_id = (data or {}).get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    slug = _session_slug(session_id)
+    if not slug:
+        raise HTTPException(status_code=404, detail="session not found")
+    tup = await FileCheckpointer(slug).aget_tuple({"configurable": {"thread_id": session_id}})
+    messages = (tup.checkpoint.get("channel_values") or {}).get("messages") if tup and tup.checkpoint else []
+    if not messages:
+        raise HTTPException(status_code=400, detail="session has no messages")
+    trace = _trace_text(messages)
+    provider = (data or {}).get("provider") or prov_mod.get_default_provider()
+    try:
+        model = build_model(provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"model unavailable: {e}")
+    resp = await model.ainvoke(
+        [SystemMessage(content=_SYNTHESIZE_PROMPT), HumanMessage(content=trace)]
+    )
+    raw = resp.content if isinstance(resp.content, str) else str(resp.content)
+    dsl = _extract_json_obj(raw)
+    if not isinstance(dsl, dict):
+        return {"ok": False, "error": "model did not return a JSON DSL object", "raw": raw[:1000]}
+    dsl = wf_dsl.normalize_dsl(dsl)
+    errs = wf_dsl.validate_dsl(dsl)
+    if errs:
+        return {"ok": False, "error": "synthesized DSL invalid: " + "; ".join(errs), "dsl": dsl}
+    return {"ok": True, "dsl": dsl, "source_session_id": session_id}
+
+
+# ---- workflow execution (P2 engine) ----
+def _wf_mcp_tools() -> list:
+    try:
+        return _mcp.all_langchain_tools() if _mcp else []
+    except Exception:
+        return []
+
+
+async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict | None) -> None:
+    """Background driver: fork agent, build model+tools, stream the engine,
+    persist events + run step status. Errors are recorded on the run, never raised."""
+    from .workflows import engine as wf_engine
+
+    try:
+        wf = wf_store.get_def(workflow_id)
+        if not wf:
+            return
+        dsl = wf["dsl"]
+        version = wf.get("version", 0)
+        # resolve the source agent from the first step that names one (else default)
+        src_agent_id = None
+        for n in dsl.get("nodes") or []:
+            if n.get("agent"):
+                src_agent_id = n["agent"]
+                break
+        src_agent_id = src_agent_id or (wf_store.get_def(workflow_id) or {}).get("agent_id") or "dev"
+        fork = agents_reg.fork_agent(src_agent_id, f"wf-{run_id[:8]}-{src_agent_id}")
+        model = build_model(fork.provider, fork.model or None)
+        tools = build_all_tools(_wf_mcp_tools())
+
+        node_to_step = {s["id"]: s["id"] for s in wf.get("steps", [])}
+        async for ev in wf_engine.run_workflow(
+            dsl,
+            run_id=run_id,
+            model=model,
+            tools=tools,
+            context_override=context_override,
+        ):
+            wf_events.append_event(run_id, ev.get("kind", ""), **{
+                k: v for k, v in ev.items() if k not in ("kind", "run_id")
+            })
+            kind = ev.get("kind")
+            nid = ev.get("node_id")
+            if kind == "node_enter" and nid in node_to_step:
+                wf_store.update_step(run_id, node_to_step[nid], "running")
+            elif kind == "node_exit" and nid in node_to_step:
+                wf_store.update_step(
+                    run_id,
+                    node_to_step[nid],
+                    "done" if ev.get("status") != "failed" else "failed",
+                )
+            elif kind == "done":
+                run = wf_store.get_run(run_id)
+                if run and run.get("status") == "running":
+                    run["status"] = "done"
+                    run["updated"] = time.time()
+                    wf_store._write_json(wf_store._run_path(run_id), run)
+            elif kind == "error":
+                run = wf_store.get_run(run_id)
+                if run:
+                    run["status"] = "failed"
+                    run["updated"] = time.time()
+                    wf_store._write_json(wf_store._run_path(run_id), run)
+    except Exception as exc:  # pragma: no cover - defensive
+        wf_events.append_event(run_id, "error", error=f"{type(exc).__name__}: {exc}")
+        run = wf_store.get_run(run_id)
+        if run:
+            run["status"] = "failed"
+            run["updated"] = time.time()
+            wf_store._write_json(wf_store._run_path(run_id), run)
+
+
+@app.post("/workflow_runs")
+async def create_workflow_run_endpoint(data: dict) -> dict:
+    """Trigger a workflow run: creates the run, forks the agent, executes in the
+    background. Returns immediately with the run id; poll /workflow_runs/{id}/events."""
+    import asyncio
+
+    workflow_id = (data or {}).get("workflow_id")
+    if not workflow_id:
+        raise HTTPException(status_code=400, detail="workflow_id required")
+    wf = wf_store.get_def(workflow_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    run = wf_store.create_run(wf)
+    task = asyncio.create_task(
+        _run_workflow_bg(run["id"], workflow_id, (data or {}).get("context_override"))
+    )
+    _WF_RUN_TASKS[run["id"]] = task
+    return {"ok": True, "run": run}
+
+
+@app.get("/workflow_runs/{run_id}/events")
+async def workflow_run_events_endpoint(
+    run_id: str, node_id: str | None = None, kind: str | None = None
+) -> dict:
+    return {"ok": True, "events": wf_events.read_events(run_id, node_id=node_id, kind=kind)}
+
+
+@app.post("/workflow_runs/{run_id}/_await")
+async def await_workflow_run_endpoint(run_id: str) -> dict:
+    """Test/ops helper: await the background run task so callers can observe the
+    terminal state deterministically. Not required by the UI (which polls events)."""
+    task = _WF_RUN_TASKS.get(run_id)
+    err: str | None = None
+    if task is not None:
+        try:
+            await task
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+    return {"ok": True, "run": wf_store.get_run(run_id), "error": err}
 
 
 # ---- artifacts ----
@@ -1697,6 +1964,19 @@ async def _stream_graph(
                                     _ev("permission.request", {
                                         "tool": value.get("tool"),
                                         "args": value.get("args"),
+                                    })
+                                )
+                            elif isinstance(value, dict) and value.get("kind") == "version_propose":
+                                # P5: workflow edit awaiting diff confirmation.
+                                # Independent of the permission system; resumed via
+                                # the same permission_response WS message.
+                                saw_interrupt = True
+                                await ws.send_text(
+                                    _ev("version.propose", {
+                                        "workflow_id": value.get("workflow_id"),
+                                        "from_version": value.get("from_version"),
+                                        "diff": value.get("diff", ""),
+                                        "rationale": value.get("rationale", ""),
                                     })
                                 )
                     elif node_name == "tools":

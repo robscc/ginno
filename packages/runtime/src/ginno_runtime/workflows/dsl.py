@@ -1,0 +1,211 @@
+"""Workflow DSL schema + validation + projections (design doc §3).
+
+The DSL is the single source of truth for a workflow and compiles 1:1 to a
+LangGraph graph (compiler lives in P2). This module is pure data + validation
+so it can be unit-tested without the graph or the store.
+
+v1 node types (decided Q1): step / branch / loop / human. `subflow` is parsed
+but rejected by validate_dsl until v2. `loop.parallel` is accepted but ignored
+in v1 (decided Q1).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+NODE_TYPES_V1 = {"step", "branch", "loop", "human"}
+NODE_TYPES_ALL = NODE_TYPES_V1 | {"subflow"}
+
+
+def _as_list(v: Any) -> list:
+    return v if isinstance(v, list) else []
+
+
+def validate_dsl(dsl: dict) -> list[str]:
+    """Return a list of human-readable error strings (empty == valid).
+
+    Checks: structure, entry exists & is a node, node ids unique, edges reference
+    existing nodes, branch has default or >=1 case, loop has body + max_iters,
+    step has goal, context.schema/initial are well-formed. Expression safety is
+    enforced at compile/eval time (P2), not here.
+    """
+    errs: list[str] = []
+    if not isinstance(dsl, dict):
+        return ["dsl must be an object"]
+
+    nodes = _as_list(dsl.get("nodes"))
+    edges = _as_list(dsl.get("edges"))
+    if not nodes:
+        errs.append("at least one node is required")
+    ids = [n.get("id") for n in nodes if isinstance(n, dict)]
+    by_type = {n.get("id"): n.get("type") for n in nodes if isinstance(n, dict)}
+    for i, n in enumerate(nodes):
+        if not isinstance(n, dict):
+            errs.append(f"nodes[{i}] must be an object")
+            continue
+        nid = n.get("id")
+        if not nid:
+            errs.append(f"nodes[{i}] missing id")
+        nt = n.get("type")
+        if nt not in NODE_TYPES_ALL:
+            errs.append(f"node '{nid}' unknown type '{nt}'")
+        elif nt == "subflow":
+            errs.append(f"node '{nid}' type 'subflow' is not supported until v2")
+    if len(ids) != len(set(ids)):
+        errs.append("duplicate node id")
+    idset = set(ids)
+    # a loop's body returns to the loop head structurally; it must not carry its
+    # own explicit out-edge (that would create an ambiguous second out-edge).
+    loop_bodies = {n.get("body") for n in nodes if isinstance(n, dict) and n.get("type") == "loop"}
+
+    entry = dsl.get("entry")
+    if not entry:
+        errs.append("entry is required")
+    elif entry not in idset:
+        errs.append(f"entry '{entry}' is not a node id")
+
+    for i, e in enumerate(edges):
+        if not isinstance(e, dict):
+            errs.append(f"edges[{i}] must be an object")
+            continue
+        f, t = e.get("from"), e.get("to")
+        if f not in idset:
+            errs.append(f"edges[{i}].from '{f}' unknown")
+        if t not in idset:
+            errs.append(f"edges[{i}].to '{t}' unknown")
+        # loop/branch routing is structural (body back-edge / cases), never an
+        # explicit edge — an explicit one would create an ambiguous second out-edge.
+        if by_type.get(f) in ("loop", "branch"):
+            errs.append(f"edge from '{f}' not allowed ({by_type.get(f)} routes structurally)")
+        if f in loop_bodies:
+            errs.append(f"edge from '{f}' not allowed (loop body returns to loop head)")
+
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        nid, nt = n.get("id"), n.get("type")
+        if nt == "step" and not (n.get("goal") or n.get("title")):
+            errs.append(f"step '{nid}' needs a goal (or title)")
+        if nt == "branch":
+            cases = _as_list(n.get("cases"))
+            if not cases and not n.get("default"):
+                errs.append(f"branch '{nid}' needs cases or default")
+            for j, c in enumerate(cases):
+                if not isinstance(c, dict) or not c.get("when") or not c.get("then"):
+                    errs.append(f"branch '{nid}' case[{j}] needs when+then")
+                elif c.get("then") not in idset:
+                    errs.append(f"branch '{nid}' case[{j}].then '{c.get('then')}' unknown")
+            if n.get("default") and n["default"] not in idset:
+                errs.append(f"branch '{nid}' default '{n.get('default')}' unknown")
+        if nt == "loop":
+            if not n.get("body"):
+                errs.append(f"loop '{nid}' needs body")
+            elif n["body"] not in idset:
+                errs.append(f"loop '{nid}' body '{n.get('body')}' unknown")
+            if not n.get("over"):
+                errs.append(f"loop '{nid}' needs over")
+            if not isinstance(n.get("max_iters"), int) or n.get("max_iters", 0) < 1:
+                errs.append(f"loop '{nid}' needs max_iters >= 1")
+
+    ctx = dsl.get("context")
+    if ctx is not None:
+        if not isinstance(ctx, dict):
+            errs.append("context must be an object")
+        else:
+            schema = ctx.get("schema")
+            if schema is not None and not isinstance(schema, dict):
+                errs.append("context.schema must be an object")
+            initial = ctx.get("initial")
+            if initial is not None and not isinstance(initial, dict):
+                errs.append("context.initial must be an object")
+    sup = dsl.get("supervisor")
+    if sup is not None:
+        if not isinstance(sup, dict):
+            errs.append("supervisor must be an object")
+        elif sup.get("enabled") and sup.get("mode") not in ("auto", "human"):
+            errs.append("supervisor.mode must be 'auto' or 'human' when enabled")
+    return errs
+
+
+def steps_from_dsl(dsl: dict) -> list[dict]:
+    """Project nodes -> legacy `steps` view [{id,title,agent_id}] so existing
+    consumers (workflow_* tools, right panel, chat WorkflowBlock) keep working
+    until the P2 executor replaces them. Title falls back goal -> title -> id."""
+    out: list[dict] = []
+    for n in _as_list(dsl.get("nodes")):
+        if not isinstance(n, dict):
+            continue
+        out.append(
+            {
+                "id": n.get("id") or "",
+                "title": n.get("title") or n.get("goal") or n.get("id") or "",
+                "agent_id": n.get("agent") or n.get("agent_id"),
+            }
+        )
+    return out
+
+
+def legacy_steps_to_dsl(steps: list, name: str = "", description: str = "") -> dict:
+    """Wrap an old {title,agent_id} steps array into a minimal linear DSL
+    (one step node per entry, chained by edges) so legacy create/seed keep working."""
+    steps = [s for s in _as_list(steps) if isinstance(s, dict)]
+    nodes, edges = [], []
+    for i, s in enumerate(steps):
+        nid = s.get("id") or f"s{i + 1}"
+        nodes.append(
+            {
+                "id": nid,
+                "type": "step",
+                "agent": s.get("agent_id") or s.get("agent"),
+                "goal": s.get("goal") or s.get("title") or "",
+                "title": s.get("title") or "",
+            }
+        )
+        if i > 0:
+            edges.append({"from": nodes[i - 1]["id"], "to": nid})
+    return normalize_dsl(
+        {
+            "name": name,
+            "description": description,
+            "entry": nodes[0]["id"] if nodes else "",
+            "nodes": nodes,
+            "edges": edges,
+        }
+    )
+
+
+def normalize_dsl(dsl: dict) -> dict:
+    """Fill defaults so stored DSL is always well-shaped (id per node, dsl_version,
+    context object). Does NOT validate — call validate_dsl separately."""
+    d = dict(dsl or {})
+    d.setdefault("dsl_version", "1")
+    d.setdefault("name", "")
+    d.setdefault("description", "")
+    nodes = []
+    for i, n in enumerate(_as_list(d.get("nodes"))):
+        if not isinstance(n, dict):
+            continue
+        nn = dict(n)
+        nn.setdefault("id", f"n{i + 1}")
+        nn.setdefault("type", "step")
+        nodes.append(nn)
+    d["nodes"] = nodes
+    d["edges"] = [dict(e) for e in _as_list(d.get("edges")) if isinstance(e, dict)]
+    d.setdefault("entry", nodes[0]["id"] if nodes else "")
+    ctx = d.get("context")
+    if ctx is None:
+        d["context"] = {"schema": {"type": "object", "properties": {}}, "initial": {}}
+    else:
+        ctx = dict(ctx)
+        ctx.setdefault("schema", {"type": "object", "properties": {}})
+        ctx.setdefault("initial", {})
+        d["context"] = ctx
+    d.setdefault("supervisor", {"enabled": False, "mode": "human"})
+    return d
+
+
+def canonical_dsl(dsl: dict) -> str:
+    """Stable pretty JSON for diffing/versioning (sorted keys, no trailing noise)."""
+    import json
+
+    return json.dumps(normalize_dsl(dsl), indent=2, ensure_ascii=False, sort_keys=True)
