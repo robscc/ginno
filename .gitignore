@@ -47,3 +47,6 @@ apps/desktop/Cargo.lock
 packages/runtime/ginno-runtime.spec
 packages/runtime/build/
 packages/runtime/dist/
+
+# typescript incremental build cache
+*.tsbuildinfo
