@@ -13,13 +13,13 @@ pytestmark = pytest.mark.e2e
 
 def test_history_empty_for_brand_new_session(client, create_session):
     sid = create_session([script(text="hi")])
-    r = client.get(f"/sessions/{sid}/history").json()
+    r = client.get(f"/api/sessions/{sid}/history").json()
     assert r["ok"] is True
     assert r["messages"] == []
 
 
 def test_history_unknown_session_returns_empty(client):
-    assert client.get("/sessions/does-not-exist/history").json() == {"ok": True, "messages": []}
+    assert client.get("/api/sessions/does-not-exist/history").json() == {"ok": True, "messages": []}
 
 
 def test_history_after_text_turn(client, create_session, ws_conv):
@@ -28,7 +28,7 @@ def test_history_after_text_turn(client, create_session, ws_conv):
         conv.invoke("what is ginno?")
         conv.recv_until("message.end", "error")
 
-    msgs = client.get(f"/sessions/{sid}/history").json()["messages"]
+    msgs = client.get(f"/api/sessions/{sid}/history").json()["messages"]
     assert [m["role"] for m in msgs] == ["user", "assistant"]
     assert "what is ginno?" in msgs[0]["blocks"][0]["text"]
     assert any(b["kind"] == "text" and "the answer" in b["text"] for b in msgs[1]["blocks"])
@@ -51,7 +51,7 @@ def test_history_folds_tool_call_into_one_bubble(client, create_session, ws_conv
         conv.invoke("read the file")
         conv.recv_until("message.end", "error")
 
-    msgs = client.get(f"/sessions/{sid}/history").json()["messages"]
+    msgs = client.get(f"/api/sessions/{sid}/history").json()["messages"]
     assert msgs[0]["role"] == "user"
     asst = msgs[1]
     kinds = [b["kind"] for b in asst["blocks"]]

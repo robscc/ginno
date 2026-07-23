@@ -17,6 +17,6 @@ def test_capture_after_turn(client, create_session, ws_conv):
         conv.recv_until("message.end", "error")
 
     # pool should have 1 entry (the captured assistant text)
-    mem = client.get("/memory").json()
+    mem = client.get("/api/memory").json()
     assert mem["ok"] is True
     assert mem["pool_count"] >= 1

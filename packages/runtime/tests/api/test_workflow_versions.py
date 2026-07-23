@@ -133,7 +133,7 @@ def test_workflow_list_tool_sees_steps_after_refactor(isolated_home):
 
 # ---- HTTP endpoints ----
 def test_get_workflow_endpoint_returns_dsl_and_steps(client):
-    r = client.get("/workflows/pr-triage")
+    r = client.get("/api/workflows/pr-triage")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -143,35 +143,35 @@ def test_get_workflow_endpoint_returns_dsl_and_steps(client):
 
 
 def test_get_workflow_endpoint_404(client):
-    assert client.get("/workflows/does-not-exist").status_code == 404
+    assert client.get("/api/workflows/does-not-exist").status_code == 404
 
 
 def test_versions_diff_and_rollback_endpoints(client):
     wid = "pr-triage"
-    wf = client.get(f"/workflows/{wid}").json()["workflow"]
+    wf = client.get(f"/api/workflows/{wid}").json()["workflow"]
     d2 = dict(wf["dsl"])
     d2["nodes"] = d2["nodes"] + [{"id": "s4", "type": "step", "goal": "extra"}]
     d2["edges"] = d2["edges"] + [{"from": "s3", "to": "s4"}]
     # update via store (no PUT-dsl endpoint in P1; version endpoints are read+rollback)
     store.update_def(wid, {"dsl": d2})
 
-    vlist = client.get(f"/workflows/{wid}/versions").json()
+    vlist = client.get(f"/api/workflows/{wid}/versions").json()
     assert [v["version"] for v in vlist["versions"]] == [1, 2]
 
-    diff = client.get(f"/workflows/{wid}/versions/diff", params={"a": 1, "b": 2}).json()
+    diff = client.get(f"/api/workflows/{wid}/versions/diff", params={"a": 1, "b": 2}).json()
     assert diff["ok"] is True
     assert "extra" in diff["diff"]
 
-    v1 = client.get(f"/workflows/{wid}/versions/1").json()
+    v1 = client.get(f"/api/workflows/{wid}/versions/1").json()
     assert len(v1["dsl"]["nodes"]) == 3
 
-    rb = client.post(f"/workflows/{wid}/rollback", json={"to": 1}).json()
+    rb = client.post(f"/api/workflows/{wid}/rollback", json={"to": 1}).json()
     assert rb["ok"] is True
     assert rb["workflow"]["version"] == 3
     assert len(rb["workflow"]["dsl"]["nodes"]) == 3
 
-    assert client.get(f"/workflows/{wid}/versions/99").status_code == 404
+    assert client.get(f"/api/workflows/{wid}/versions/99").status_code == 404
     assert (
-        client.get(f"/workflows/{wid}/versions/diff", params={"a": 1, "b": 99}).status_code
+        client.get(f"/api/workflows/{wid}/versions/diff", params={"a": 1, "b": 99}).status_code
         == 404
     )

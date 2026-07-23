@@ -22,13 +22,13 @@ def test_agent_todo_create_reflects_in_api(create_session, ws_conv, client):
 
     # the panel-refresh event fires, and the item is now in the store
     assert "todos.changed" in event_names(events)
-    titles = [t["title"] for t in client.get("/todos").json()]
+    titles = [t["title"] for t in client.get("/api/todos").json()]
     assert "Ship the thing" in titles
 
 
 def test_agent_todo_done(create_session, ws_conv, client):
     # seed one todo via the API, then have the agent mark it done
-    todo = client.post("/todos", json={"title": "Finish report"}).json()["todo"]
+    todo = client.post("/api/todos", json={"title": "Finish report"}).json()["todo"]
     model = [
         script(tool_calls=[script_tool_call("todo_done", {"todo_id": todo["id"]})]),
         script(text="marked done"),
@@ -38,7 +38,7 @@ def test_agent_todo_done(create_session, ws_conv, client):
         conv.invoke("finish the report")
         conv.recv_until("message.end", "error")
 
-    updated = next(t for t in client.get("/todos").json() if t["id"] == todo["id"])
+    updated = next(t for t in client.get("/api/todos").json() if t["id"] == todo["id"])
     assert updated["done"] is True
     assert updated["completed_at"] is not None
 
@@ -54,5 +54,5 @@ def test_research_agent_read_only_todo(create_session, ws_conv, client):
         conv.invoke("add todo")
         events = conv.recv_until("message.end", "error")
     assert "permission.request" not in event_names(events)
-    titles = [t["title"] for t in client.get("/todos").json()]
+    titles = [t["title"] for t in client.get("/api/todos").json()]
     assert "should not appear" not in titles

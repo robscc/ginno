@@ -135,7 +135,7 @@ def create_session(client: TestClient, patch_build_model: Callable) -> Callable:
             body["agent_id"] = agent_id
         if title is not None:
             body["title"] = title
-        r = client.post("/sessions", json=body)
+        r = client.post("/api/sessions", json=body)
         data = r.json()
         assert r.status_code == 200 and data.get("ok") is not False, data
         return data["id"]
@@ -160,7 +160,7 @@ class WSConversation:
         self.ws = None
 
     def __enter__(self) -> "WSConversation":
-        self._cm = self._client.websocket_connect(f"/ws/sessions/{self.session_id}")
+        self._cm = self._client.websocket_connect(f"/api/ws/sessions/{self.session_id}")
         self.ws = self._cm.__enter__()
         return self
 

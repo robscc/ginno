@@ -62,7 +62,7 @@ def test_summarize_returns_valid_dsl_draft(client, monkeypatch):
     sm = ScriptedChatModel(scripts=[script(text=dsl_json)])
     monkeypatch.setattr(server, "build_model", lambda *a, **k: sm)
 
-    r = client.post("/workflows/summarize-from-session", json={"session_id": sid})
+    r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True, body
@@ -70,7 +70,7 @@ def test_summarize_returns_valid_dsl_draft(client, monkeypatch):
     assert len(body["dsl"]["nodes"]) == 2
     assert body["source_session_id"] == sid
     # a draft is NOT persisted as a workflow definition
-    assert all(w.get("name") != "PR Review" for w in client.get("/workflows").json())
+    assert all(w.get("name") != "PR Review" for w in client.get("/api/workflows").json())
 
 
 def test_summarize_rejects_invalid_model_output(client, monkeypatch):
@@ -80,7 +80,7 @@ def test_summarize_rejects_invalid_model_output(client, monkeypatch):
     _seed_session("default", sid)
     sm = ScriptedChatModel(scripts=[script(text="sorry, I cannot produce a DSL right now")])
     monkeypatch.setattr(server, "build_model", lambda *a, **k: sm)
-    r = client.post("/workflows/summarize-from-session", json={"session_id": sid})
+    r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False
@@ -88,4 +88,4 @@ def test_summarize_rejects_invalid_model_output(client, monkeypatch):
 
 
 def test_summarize_404_for_unknown_session(client):
-    assert client.post("/workflows/summarize-from-session", json={"session_id": "nope"}).status_code == 404
+    assert client.post("/api/workflows/summarize-from-session", json={"session_id": "nope"}).status_code == 404

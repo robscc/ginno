@@ -10,7 +10,7 @@ pytestmark = pytest.mark.api
 
 
 def test_get_memory_empty(isolated_home, client):
-    r = client.get("/memory").json()
+    r = client.get("/api/memory").json()
     assert r["ok"] is True
     assert r["pool_count"] == 0
     # default boilerplate or empty
@@ -19,12 +19,12 @@ def test_get_memory_empty(isolated_home, client):
 
 def test_get_memory_with_pool(isolated_home, client):
     append_to_pool("s", "dev", "some content")
-    r = client.get("/memory").json()
+    r = client.get("/api/memory").json()
     assert r["pool_count"] == 1
 
 
 def test_summarize_empty_pool(isolated_home, client):
-    r = client.post("/memory/summarize", json={}).json()
+    r = client.post("/api/memory/summarize", json={}).json()
     assert r["ok"] is True
     assert r["pool_entries"] == 0
 
@@ -39,11 +39,11 @@ def test_summarize_with_pool_and_fake_model(isolated_home, client, monkeypatch):
     fake_model = ScriptedChatModel(scripts=[script(text=fake_summary)])
     monkeypatch.setattr("ginno_runtime.memory.summarize.build_model", lambda *a, **k: fake_model)
 
-    r = client.post("/memory/summarize", json={}).json()
+    r = client.post("/api/memory/summarize", json={}).json()
     assert r["ok"] is True
     assert r["pool_entries"] == 2
     assert pool_count() == 0  # cleared after summarize
 
     # MEMORY.md should now have the summary
-    mem = client.get("/memory").json()
+    mem = client.get("/api/memory").json()
     assert "TypeScript" in mem["content"]

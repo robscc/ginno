@@ -35,7 +35,7 @@ def test_invoke_with_images_round_trips_through_history(client, create_session, 
         events = conv.recv_until("message.end", "error")
     assert "error" not in [e["event"] for e in events]
 
-    msgs = client.get(f"/sessions/{sid}/history").json()["messages"]
+    msgs = client.get(f"/api/sessions/{sid}/history").json()["messages"]
     user = msgs[0]
     assert user["role"] == "user"
     assert user["blocks"][0] == {"kind": "text", "text": "what is this?"}
@@ -50,7 +50,7 @@ def test_invoke_images_only_message_has_image_block(client, create_session, ws_c
         conv.send({"type": "invoke", "message": "", "images": [{"data": B64}]})
         conv.recv_until("message.end", "error")
 
-    msgs = client.get(f"/sessions/{sid}/history").json()["messages"]
+    msgs = client.get(f"/api/sessions/{sid}/history").json()["messages"]
     assert msgs[0]["role"] == "user"
     assert any(b["kind"] == "image" for b in msgs[0]["blocks"])
     assert not any(b["kind"] == "text" for b in msgs[0]["blocks"])

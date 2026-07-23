@@ -50,7 +50,7 @@ def test_attach_ref_emits_ref_and_registers_artifact(create_session, ws_conv, cl
     assert refs[0]["kind"] == "file"
     assert refs[0]["name"] == "notes.md"
     # the file ref is auto-registered as an artifact
-    arts = client.get("/artifacts?project_slug=default").json()
+    arts = client.get("/api/artifacts?project_slug=default").json()
     assert any(a["name"] == "notes.md" and a["kind"] == "file" for a in arts)
 
 

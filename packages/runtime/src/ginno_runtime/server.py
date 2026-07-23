@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
@@ -38,6 +39,35 @@ from .workflows import events as wf_events
 from .workflows import dsl as wf_dsl
 from .tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from .tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
+
+_log = logging.getLogger("ginno.turn")
+_log.setLevel(logging.INFO)
+_log.propagate = False
+
+
+def _ensure_turn_log() -> None:
+    """Attach a rotating file handler under the *current* paths.home()/logs.
+
+    Done lazily (called per turn) because paths.home() may not be final at import
+    time — e.g. tests redirect GINNO_HOME after importing this module. If the home
+    moves, the stale handler is swapped so traces always land in the active home
+    (the real ~/.ginno in production, the isolated tmp dir in tests)."""
+    try:
+        from logging.handlers import RotatingFileHandler
+
+        target = (paths.home() / "logs" / "sidecar.log").resolve()
+        for h in list(_log.handlers):
+            if isinstance(h, RotatingFileHandler):
+                if _Path(getattr(h, "baseFilename", "")).resolve() == target:
+                    return  # already pointing at the right file
+                _log.removeHandler(h)
+                h.close()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(target, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        _log.addHandler(fh)
+    except Exception:  # never let logging setup break a turn
+        pass
 
 
 # Process-wide MCP registry — spawned at startup.
@@ -154,6 +184,17 @@ def _session_meta_patch(slug: str, session_id: str, patch: dict) -> dict | None:
     return target
 
 
+def _session_meta_remove(slug: str, session_id: str) -> bool:
+    items = _session_meta_list(slug)
+    kept = [m for m in items if m.get("id") != session_id]
+    if len(kept) == len(items):
+        return False
+    paths.session_index_path(slug).write_text(
+        json.dumps(kept, indent=2, ensure_ascii=False)
+    )
+    return True
+
+
 def _agent_lookup(agent_id: str | None):
     return agents_reg.get_agent(agent_id) if agent_id else None
 
@@ -197,12 +238,12 @@ def _agent_icon(agent_id: str | None) -> str:
     return a.icon if a else "message-square"
 
 
-@app.get("/health")
+@app.get("/api/health")
 async def health() -> dict:
     return {"ok": True, "version": "0.1.0"}
 
 
-@app.post("/sessions")
+@app.post("/api/sessions")
 async def create_session(req: CreateSessionRequest) -> dict:
     provider, model_name, agent_id = _resolve_provider_model(req)
     try:
@@ -254,7 +295,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
     return {**meta, "ok": True}
 
 
-@app.get("/sessions")
+@app.get("/api/sessions")
 async def list_sessions(project_slug: str | None = None) -> list[dict]:
     slug = project_slug or "default"
     on_disk = _session_meta_list(slug)
@@ -267,7 +308,7 @@ async def list_sessions(project_slug: str | None = None) -> list[dict]:
     ]
 
 
-@app.get("/sessions/{session_id}")
+@app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str) -> dict | None:
     s = _SESSIONS.get(session_id)
     if s:
@@ -286,7 +327,7 @@ class PatchSessionRequest(BaseModel):
     agent_id: str | None = None
 
 
-@app.patch("/sessions/{session_id}")
+@app.patch("/api/sessions/{session_id}")
 async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     s = _SESSIONS.get(session_id)
     slug = s["project_slug"] if s else "default"
@@ -314,6 +355,31 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
         "ok": True,
         "session": updated or (s and {k: v for k, v in s.items() if k != "graph"}),
     }
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str) -> dict:
+    """Delete a session: its index entry, on-disk checkpoint history, and any
+    in-memory graph cache. Returns ok=True even if the id was already gone."""
+    s = _SESSIONS.pop(session_id, None)
+    slug = s["project_slug"] if s else None
+    removed = False
+    # find the slug from the on-disk index if not known from memory
+    for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
+        cand = slug_dir.parent.parent.name
+        if _session_meta_remove(cand, session_id):
+            removed = True
+            slug = slug or cand
+    # drop the checkpoint file (the full conversation history)
+    if slug:
+        cp = paths.project_sessions_dir(slug) / f"{session_id}.json"
+        if cp.exists():
+            try:
+                cp.unlink()
+                removed = True
+            except OSError:
+                pass
+    return {"ok": True, "removed": removed}
 
 
 # ---- session history (rebuild the chat UI's block layout from checkpoints) ----
@@ -502,7 +568,7 @@ def _session_slug(session_id: str) -> str | None:
     return found[1] if found else None
 
 
-@app.get("/sessions/{session_id}/history")
+@app.get("/api/sessions/{session_id}/history")
 async def get_session_history(session_id: str) -> dict:
     """Return the persisted chat history for a session, in the UI block format."""
     slug = _session_slug(session_id)
@@ -518,7 +584,7 @@ async def get_session_history(session_id: str) -> dict:
     return {"ok": True, "messages": _messages_to_ui(messages, agent_id)}
 
 
-@app.get("/skills")
+@app.get("/api/skills")
 async def list_skills(project_slug: str | None = None) -> list[dict]:
     skills = SkillLoader(project_slug=project_slug).load()
     return [
@@ -532,7 +598,7 @@ async def list_skills(project_slug: str | None = None) -> list[dict]:
     ]
 
 
-@app.get("/mcp")
+@app.get("/api/mcp")
 async def list_mcp() -> dict:
     if not _mcp:
         return {"servers": [], "tools": []}
@@ -542,7 +608,7 @@ async def list_mcp() -> dict:
     }
 
 
-@app.get("/settings")
+@app.get("/api/settings")
 async def get_settings() -> dict:
     p = paths.settings_path()
     if not p.exists():
@@ -554,7 +620,7 @@ async def get_settings() -> dict:
 
 
 # ---- providers (Settings → 模型 API) ----
-@app.get("/providers")
+@app.get("/api/providers")
 async def get_providers() -> dict:
     settings = (
         json.loads(paths.settings_path().read_text() or "{}")
@@ -572,7 +638,7 @@ class PutProvidersRequest(BaseModel):
     default_provider: str | None = None
 
 
-@app.put("/providers")
+@app.put("/api/providers")
 async def put_providers(req: PutProvidersRequest) -> dict:
     saved = prov_mod.save_providers(req.providers)
     default = req.default_provider
@@ -591,13 +657,13 @@ async def put_providers(req: PutProvidersRequest) -> dict:
     return {"ok": True, "providers": saved, "default_provider": default}
 
 
-@app.post("/providers/{provider_id}/verify")
+@app.post("/api/providers/{provider_id}/verify")
 async def verify_provider(provider_id: str) -> dict:
     return prov_mod.verify(provider_id)
 
 
 # ---- agents ----
-@app.post("/providers/{provider_id}/search_probe")
+@app.post("/api/providers/{provider_id}/search_probe")
 def provider_search_probe(provider_id: str) -> dict:
     """User-triggered (the 测试联网 button) probe of the model's built-in web
     search. Sync so the network round-trip runs in the threadpool, not on the
@@ -607,12 +673,12 @@ def provider_search_probe(provider_id: str) -> dict:
     return _prov.search_probe(provider_id)
 
 
-@app.get("/agents")
+@app.get("/api/agents")
 async def list_agents_endpoint() -> list[dict]:
     return [a.to_dict() for a in agents_reg.list_agents()]
 
 
-@app.post("/agents")
+@app.post("/api/agents")
 async def create_agent_endpoint(data: dict) -> dict:
     try:
         return {"ok": True, "agent": agents_reg.create_agent(data).to_dict()}
@@ -620,7 +686,7 @@ async def create_agent_endpoint(data: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-@app.put("/agents/{agent_id}")
+@app.put("/api/agents/{agent_id}")
 async def update_agent_endpoint(agent_id: str, data: dict) -> dict:
     try:
         return {"ok": True, "agent": agents_reg.update_agent(agent_id, data).to_dict()}
@@ -628,18 +694,18 @@ async def update_agent_endpoint(agent_id: str, data: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-@app.delete("/agents/{agent_id}")
+@app.delete("/api/agents/{agent_id}")
 async def delete_agent_endpoint(agent_id: str) -> dict:
     return {"ok": agents_reg.delete_agent(agent_id)}
 
 
 # ---- todos (global daily) ----
-@app.get("/todos")
+@app.get("/api/todos")
 async def list_todos_endpoint() -> list[dict]:
     return todo_store.list_todos()
 
 
-@app.post("/todos")
+@app.post("/api/todos")
 async def create_todo_endpoint(data: dict) -> dict:
     try:
         return {"ok": True, "todo": todo_store.create_todo(data)}
@@ -647,7 +713,7 @@ async def create_todo_endpoint(data: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-@app.patch("/todos/{todo_id}")
+@app.patch("/api/todos/{todo_id}")
 async def update_todo_endpoint(todo_id: str, data: dict) -> dict:
     updated = todo_store.update_todo(todo_id, data)
     if updated is None:
@@ -655,46 +721,46 @@ async def update_todo_endpoint(todo_id: str, data: dict) -> dict:
     return {"ok": True, "todo": updated}
 
 
-@app.delete("/todos/{todo_id}")
+@app.delete("/api/todos/{todo_id}")
 async def delete_todo_endpoint(todo_id: str) -> dict:
     return {"ok": todo_store.delete_todo(todo_id)}
 
 
 # ---- settings (general) ----
-@app.put("/settings")
+@app.put("/api/settings")
 async def put_settings(data: dict) -> dict:
     paths.settings_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
     return {"ok": True}
 
 
 # ---- workflows ----
-@app.get("/workflows")
+@app.get("/api/workflows")
 async def list_workflows_endpoint() -> list[dict]:
     return wf_store.list_defs()
 
 
-@app.post("/workflows")
+@app.post("/api/workflows")
 async def create_workflow_endpoint(data: dict) -> dict:
     return {"ok": True, "workflow": wf_store.create_def(data)}
 
 
-@app.put("/workflows/{wf_id}")
+@app.put("/api/workflows/{wf_id}")
 async def update_workflow_endpoint(wf_id: str, data: dict) -> dict:
     wf = wf_store.update_def(wf_id, data)
     return {"ok": bool(wf), "workflow": wf}
 
 
-@app.delete("/workflows/{wf_id}")
+@app.delete("/api/workflows/{wf_id}")
 async def delete_workflow_endpoint(wf_id: str) -> dict:
     return {"ok": wf_store.delete_def(wf_id)}
 
 
-@app.get("/workflow_runs")
+@app.get("/api/workflow_runs")
 async def list_workflow_runs_endpoint() -> list[dict]:
     return wf_store.list_runs()
 
 
-@app.get("/workflows/{wf_id}")
+@app.get("/api/workflows/{wf_id}")
 async def get_workflow_endpoint(wf_id: str) -> dict:
     """Full definition view: current DSL + version + legacy steps projection."""
     wf = wf_store.get_def(wf_id)
@@ -703,12 +769,12 @@ async def get_workflow_endpoint(wf_id: str) -> dict:
     return {"ok": True, "workflow": wf}
 
 
-@app.get("/workflows/{wf_id}/versions")
+@app.get("/api/workflows/{wf_id}/versions")
 async def list_workflow_versions_endpoint(wf_id: str) -> dict:
     return {"ok": True, "versions": wf_store.list_versions(wf_id)}
 
 
-@app.get("/workflows/{wf_id}/versions/diff")
+@app.get("/api/workflows/{wf_id}/versions/diff")
 async def diff_workflow_versions_endpoint(wf_id: str, a: int, b: int) -> dict:
     diff = wf_store.diff_versions(wf_id, a, b)
     if diff is None:
@@ -716,7 +782,7 @@ async def diff_workflow_versions_endpoint(wf_id: str, a: int, b: int) -> dict:
     return {"ok": True, "a": a, "b": b, "diff": diff}
 
 
-@app.get("/workflows/{wf_id}/versions/{n}")
+@app.get("/api/workflows/{wf_id}/versions/{n}")
 async def get_workflow_version_endpoint(wf_id: str, n: int) -> dict:
     v = wf_store.get_version(wf_id, n)
     if v is None:
@@ -724,7 +790,7 @@ async def get_workflow_version_endpoint(wf_id: str, n: int) -> dict:
     return {"ok": True, "version": n, "dsl": v}
 
 
-@app.post("/workflows/{wf_id}/rollback")
+@app.post("/api/workflows/{wf_id}/rollback")
 async def rollback_workflow_endpoint(wf_id: str, data: dict) -> dict:
     to = (data or {}).get("to")
     if not isinstance(to, int):
@@ -806,7 +872,7 @@ def _extract_json_obj(text: str) -> dict | None:
     return None
 
 
-@app.post("/workflows/summarize-from-session")
+@app.post("/api/workflows/summarize-from-session")
 async def summarize_session_to_dsl(data: dict) -> dict:
     """Distill a session's conversation into a workflow DSL *draft* (not saved).
     The UI then creates a workflow from it (version 1) or opens the dev agent."""
@@ -914,7 +980,7 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
             wf_store._write_json(wf_store._run_path(run_id), run)
 
 
-@app.post("/workflow_runs")
+@app.post("/api/workflow_runs")
 async def create_workflow_run_endpoint(data: dict) -> dict:
     """Trigger a workflow run: creates the run, forks the agent, executes in the
     background. Returns immediately with the run id; poll /workflow_runs/{id}/events."""
@@ -934,14 +1000,14 @@ async def create_workflow_run_endpoint(data: dict) -> dict:
     return {"ok": True, "run": run}
 
 
-@app.get("/workflow_runs/{run_id}/events")
+@app.get("/api/workflow_runs/{run_id}/events")
 async def workflow_run_events_endpoint(
     run_id: str, node_id: str | None = None, kind: str | None = None
 ) -> dict:
     return {"ok": True, "events": wf_events.read_events(run_id, node_id=node_id, kind=kind)}
 
 
-@app.post("/workflow_runs/{run_id}/_await")
+@app.post("/api/workflow_runs/{run_id}/_await")
 async def await_workflow_run_endpoint(run_id: str) -> dict:
     """Test/ops helper: await the background run task so callers can observe the
     terminal state deterministically. Not required by the UI (which polls events)."""
@@ -956,13 +1022,13 @@ async def await_workflow_run_endpoint(run_id: str) -> dict:
 
 
 # ---- artifacts ----
-@app.get("/artifacts")
+@app.get("/api/artifacts")
 async def list_artifacts_endpoint(project_slug: str = "default") -> list[dict]:
     return art_store.list_artifacts(project_slug)
 
 
 # ---- mcp settings ----
-@app.get("/mcp/config")
+@app.get("/api/mcp/config")
 async def get_mcp_config_endpoint() -> dict:
     p = paths.mcp_config_path()
     if not p.exists():
@@ -973,13 +1039,13 @@ async def get_mcp_config_endpoint() -> dict:
         return {"mcpServers": {}}
 
 
-@app.put("/mcp")
+@app.put("/api/mcp")
 async def put_mcp_endpoint(data: dict) -> dict:
     paths.mcp_config_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
     return {"ok": True}
 
 
-@app.post("/mcp/reload")
+@app.post("/api/mcp/reload")
 async def reload_mcp_endpoint() -> dict:
     global _mcp
     if _mcp:
@@ -991,13 +1057,13 @@ async def reload_mcp_endpoint() -> dict:
 
 
 # ---- skills settings ----
-@app.get("/skills/{name}/body")
+@app.get("/api/skills/{name}/body")
 async def get_skill_body(name: str, project_slug: str | None = None) -> dict:
     s = SkillLoader(project_slug=project_slug).get(name)
     return {"ok": bool(s), "body": s.body if s else ""}
 
 
-@app.post("/skills")
+@app.post("/api/skills")
 async def create_skill_endpoint(data: dict) -> dict:
     name = (data.get("name") or "").strip()
     body = data.get("body") or ""
@@ -1009,7 +1075,7 @@ async def create_skill_endpoint(data: dict) -> dict:
     return {"ok": True}
 
 
-@app.delete("/skills/{name}")
+@app.delete("/api/skills/{name}")
 async def delete_skill_endpoint(name: str) -> dict:
     import shutil
 
@@ -1020,7 +1086,7 @@ async def delete_skill_endpoint(name: str) -> dict:
     return {"ok": False}
 
 
-@app.post("/skills/import-dir")
+@app.post("/api/skills/import-dir")
 async def import_skills_dir(data: dict) -> dict:
     """Import skills from a local directory (e.g. another agent's skills folder).
 
@@ -1108,7 +1174,7 @@ async def import_skills_dir(data: dict) -> dict:
 
 
 # ---- knowledge base (via MCP vault servers) ----
-@app.get("/kb/servers")
+@app.get("/api/kb/servers")
 async def kb_servers_endpoint() -> list[dict]:
     if not _mcp:
         return []
@@ -1156,7 +1222,7 @@ async def _kb_call(tool_name: str, args: dict) -> list[str]:
     return out
 
 
-@app.get("/kb/search")
+@app.get("/api/kb/search")
 async def kb_search_endpoint(q: str = "") -> dict:
     if not q or not _mcp:
         return {"q": q, "results": []}
@@ -1167,7 +1233,7 @@ async def kb_search_endpoint(q: str = "") -> dict:
     return {"q": q, "results": results}
 
 
-@app.get("/kb/list")
+@app.get("/api/kb/list")
 async def kb_list_endpoint(path: str = "") -> dict:
     if not _mcp:
         return {"path": path, "results": []}
@@ -1259,7 +1325,7 @@ def _detect_wiki_layout(vault) -> dict:
     }
 
 
-@app.get("/kb/wiki/probe")
+@app.get("/api/kb/wiki/probe")
 def kb_wiki_probe(path: str = "") -> dict:
     """Read-only: detect an existing LLM-Wiki layout under *path* and count pages.
 
@@ -1288,7 +1354,7 @@ def kb_wiki_probe(path: str = "") -> dict:
 
 
 # ---- memory summarization (P2) ----
-@app.get("/memory")
+@app.get("/api/memory")
 async def get_memory() -> dict:
     """Return MEMORY.md content + pool count."""
     from .memory import pool_count
@@ -1298,7 +1364,7 @@ async def get_memory() -> dict:
     return {"ok": True, "content": content, "pool_count": pool_count()}
 
 
-@app.post("/memory/summarize")
+@app.post("/api/memory/summarize")
 async def post_memory_summarize(data: dict | None = None) -> dict:
     """Trigger memory summarization (pool → MEMORY.md via LLM)."""
     from .memory import summarize_pool
@@ -1307,7 +1373,7 @@ async def post_memory_summarize(data: dict | None = None) -> dict:
     return await summarize_pool(model_provider=provider)
 
 
-@app.get("/kb/wiki/search")
+@app.get("/api/kb/wiki/search")
 async def kb_wiki_search(q: str = "", tag: str = "") -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1328,7 +1394,7 @@ async def kb_wiki_search(q: str = "", tag: str = "") -> dict:
     return {"ok": True, "q": q, "tag": tag, "results": [r.to_dict() for r in results]}
 
 
-@app.get("/kb/wiki/list")
+@app.get("/api/kb/wiki/list")
 async def kb_wiki_list() -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1347,7 +1413,7 @@ async def kb_wiki_list() -> dict:
     return {"ok": True, "pages": pages}
 
 
-@app.get("/kb/wiki/stats")
+@app.get("/api/kb/wiki/stats")
 async def kb_wiki_stats() -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1390,7 +1456,7 @@ def _vault_resolve(cfg, rel: str):
     return p
 
 
-@app.get("/kb/wiki/page")
+@app.get("/api/kb/wiki/page")
 def kb_wiki_page(path: str = "", title: str = "") -> dict:
     """Read one vault note in full (raw text incl. frontmatter) for the preview /
     editor. Resolves by ``path`` (vault-relative) or, failing that, by ``title``
@@ -1438,7 +1504,7 @@ def kb_wiki_page(path: str = "", title: str = "") -> dict:
     }
 
 
-@app.put("/kb/wiki/page")
+@app.put("/api/kb/wiki/page")
 def kb_wiki_page_put(data: dict) -> dict:
     """Write a note's full raw text back to the vault (path must stay in-vault and
     end in .md), then refresh the index so the preview/list/graph update."""
@@ -1462,7 +1528,7 @@ def kb_wiki_page_put(data: dict) -> dict:
     return {"ok": True, "path": rel}
 
 
-@app.post("/kb/wiki/page")
+@app.post("/api/kb/wiki/page")
 def kb_wiki_page_post(data: dict) -> dict:
     """Create a new note (fails if it already exists — use PUT to overwrite)."""
     cfg = _load_kb_cfg()
@@ -1487,7 +1553,7 @@ def kb_wiki_page_post(data: dict) -> dict:
     return {"ok": True, "path": rel}
 
 
-@app.post("/kb/wiki/index")
+@app.post("/api/kb/wiki/index")
 def kb_wiki_index() -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1524,7 +1590,7 @@ def _compile_to_dict(res) -> dict:
     }
 
 
-@app.post("/kb/wiki/ingest")
+@app.post("/api/kb/wiki/ingest")
 def kb_wiki_ingest(data: dict) -> dict:
     """Compile a single raw file (path absolute or relative to the vault)."""
     cfg = _load_kb_cfg()
@@ -1550,7 +1616,7 @@ def kb_wiki_ingest(data: dict) -> dict:
     return {"ok": True, **_compile_to_dict(res)}
 
 
-@app.post("/kb/wiki/build")
+@app.post("/api/kb/wiki/build")
 def kb_wiki_build() -> dict:
     """Compile every raw file in the vault (raw→wiki) and rebuild the index."""
     cfg = _load_kb_cfg()
@@ -1565,7 +1631,7 @@ def kb_wiki_build() -> dict:
     return {"ok": True, **result}
 
 
-@app.get("/kb/wiki/related")
+@app.get("/api/kb/wiki/related")
 def kb_wiki_related(title: str = "", top_k: int = 10) -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1574,7 +1640,7 @@ def kb_wiki_related(title: str = "", top_k: int = 10) -> dict:
     return {"ok": True, **_get_kb_engine(idx).find_related(title, top_k=top_k)}
 
 
-@app.get("/kb/wiki/discover")
+@app.get("/api/kb/wiki/discover")
 def kb_wiki_discover() -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1583,7 +1649,7 @@ def kb_wiki_discover() -> dict:
     return {"ok": True, **_get_kb_engine(idx).discover()}
 
 
-@app.get("/kb/wiki/orphans")
+@app.get("/api/kb/wiki/orphans")
 def kb_wiki_orphans() -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1593,7 +1659,7 @@ def kb_wiki_orphans() -> dict:
     return {"ok": True, "pages": pages}
 
 
-@app.get("/kb/wiki/backlinks")
+@app.get("/api/kb/wiki/backlinks")
 def kb_wiki_backlinks(title: str = "") -> dict:
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -1603,7 +1669,7 @@ def kb_wiki_backlinks(title: str = "") -> dict:
     return {"ok": True, "title": title, "backlinks": bl, "count": len(bl)}
 
 
-@app.put("/kb/wiki/config")
+@app.put("/api/kb/wiki/config")
 async def kb_wiki_put_config(data: dict) -> dict:
     from dataclasses import fields as _fields
 
@@ -1677,7 +1743,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     return s
 
 
-@app.websocket("/ws/sessions/{session_id}")
+@app.websocket("/api/ws/sessions/{session_id}")
 async def session_ws(ws: WebSocket, session_id: str) -> None:
     session = _ensure_session(session_id)
     if not session:
@@ -1724,6 +1790,20 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             kind = msg.get("type")
             if kind == "invoke":
                 user_text = msg.get("message", "")
+                # Per-turn trace id: prefer the client-supplied one (so the UUID
+                # shown on the user bubble matches the one we log + put on every
+                # event), else mint one. Forward it via config so _stream_graph
+                # tags every emitted event + log line with it.
+                turn_id = msg.get("turn_id") or str(uuid.uuid4())
+                _imgs = msg.get("images") or []
+                _log.info(
+                    "invoke session=%s turn=%s agent=%s imgs=%d text=%r",
+                    session_id,
+                    turn_id,
+                    msg.get("agent_id") or session.get("agent_id"),
+                    len([i for i in _imgs if isinstance(i, dict) and i.get("data")]),
+                    (user_text or "")[:120],
+                )
                 user_text = _maybe_substitute_skill(user_text, session["project_slug"])
                 turn_agent = (
                     msg.get("agent_id") or session.get("agent_id") or _first_agent_id()
@@ -1735,7 +1815,12 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                 turn_config = {
                     **config,
-                    "configurable": {**config["configurable"], "agent_id": turn_agent},
+                    "configurable": {
+                        **config["configurable"],
+                        "agent_id": turn_agent,
+                        "turn_id": turn_id,
+                        "user_text": user_text or "",
+                    },
                 }
                 await _run_stream(
                     ws,
@@ -1847,6 +1932,36 @@ async def _stream_graph(
 ) -> None:
     """Drive the graph and emit token / tool / permission events."""
     try:
+        # Per-turn trace id (from invoke, or fresh on a bare resume). `emit`
+        # wraps _ev so EVERY event of this turn carries it — the frontend shows
+        # it on the bubble and we log it, so a user-supplied UUID greps the logs.
+        _cfg_conf = config.get("configurable") or {}
+        turn_id = _cfg_conf.get("turn_id") or str(uuid.uuid4())
+        _cfg_conf["turn_id"] = turn_id
+        config["configurable"] = _cfg_conf
+
+        def emit(event: str, data: dict) -> str:
+            return _ev(event, data, turn_id)
+
+        _ensure_turn_log()  # (re)point the trace file handler at the active home
+
+        # The client (app webview / browser tab) can close the socket mid-turn
+        # (refresh, navigate, sleep). Sending to a closed WS raises and would
+        # otherwise crash this coroutine BEFORE message.end is emitted — leaving
+        # the frontend's `running` lock stuck forever ("the turn froze"). So every
+        # send goes through safe_send, which swallows disconnect errors and flips
+        # ws_closed; the loop then drains the graph quietly and still checkpoints.
+        ws_closed = False
+
+        async def safe_send(data: str) -> None:
+            nonlocal ws_closed
+            if ws_closed:
+                return
+            try:
+                await ws.send_text(data)
+            except Exception:
+                ws_closed = True
+
         if command is not None:
             stream = graph.astream(command, config=config, stream_mode=["messages", "updates"])
         else:
@@ -1864,9 +1979,16 @@ async def _stream_graph(
         if command is None:
             _aid = (config.get("configurable") or {}).get("agent_id")
             _ag = agents_reg.get_agent(_aid) if _aid else None
-            await ws.send_text(
-                _ev("turn.start", {"agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
+            _log.info(
+                "turn_start session=%s turn=%s agent=%s text=%r",
+                session_id, turn_id, _aid,
+                ((config.get("configurable") or {}).get("user_text") or "")[:120],
             )
+            await ws.send_text(
+                emit("turn.start", {"turn_id": turn_id, "agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
+            )
+        else:
+            _log.info("turn_resume session=%s turn=%s agent=%s", session_id, turn_id, agent_id)
         async for mode, payload in stream:
             if mode == "messages":
                 chunk, msg_meta = payload
@@ -1887,18 +2009,18 @@ async def _stream_graph(
                         if btype == "thinking":
                             txt = b.get("thinking") or b.get("text") or ""
                             if txt:
-                                await ws.send_text(_ev("thinking.delta", {"content": txt}))
+                                await safe_send(emit("thinking.delta", {"content": txt}))
                         elif btype == "text":
                             txt = b.get("text") or ""
                             if txt:
                                 turn_text.append(txt)
-                                await ws.send_text(_ev("token.delta", {"content": txt}))
+                                await safe_send(emit("token.delta", {"content": txt}))
                 elif isinstance(content, str) and content:
                     turn_text.append(content)
-                    await ws.send_text(_ev("token.delta", {"content": content}))
+                    await safe_send(emit("token.delta", {"content": content}))
                 rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
                 if rk:
-                    await ws.send_text(_ev("thinking.delta", {"content": rk}))
+                    await safe_send(emit("thinking.delta", {"content": rk}))
                 tool_calls = getattr(chunk, "tool_call_chunks", None)
                 if tool_calls:
                     for tc in tool_calls:
@@ -1911,7 +2033,7 @@ async def _stream_graph(
                                 special_ids[tc.get("id")] = tc["name"]
                                 continue  # surfaced as widget/ref/workflow block, not a tool bubble
                             await ws.send_text(
-                                _ev("tool.start", {"name": tc["name"], "id": tc.get("id")})
+                                emit("tool.start", {"name": tc["name"], "id": tc.get("id")})
                             )
             elif mode == "updates":
                 # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
@@ -1929,7 +2051,7 @@ async def _stream_graph(
                                     special_ids[tc.get("id")] = nm
                                 if nm == "render_widget":
                                     await ws.send_text(
-                                        _ev("widget.emit", {
+                                        emit("widget.emit", {
                                             "kind": args.get("kind", "widget"),
                                             "data": args.get("data"),
                                         })
@@ -1937,7 +2059,7 @@ async def _stream_graph(
                                 elif nm == "attach_ref":
                                     kind = args.get("kind", "file")
                                     await ws.send_text(
-                                        _ev("ref.emit", {
+                                        emit("ref.emit", {
                                             "kind": kind,
                                             "name": args.get("name", ""),
                                             "ref_id": args.get("ref_id", ""),
@@ -1960,8 +2082,12 @@ async def _stream_graph(
                             value = getattr(intr, "value", None) or intr
                             if isinstance(value, dict) and value.get("kind") == "permission_request":
                                 saw_interrupt = True
+                                _log.info(
+                                    "turn_interrupt session=%s turn=%s kind=%s",
+                                    session_id, turn_id, value.get("kind"),
+                                )
                                 await ws.send_text(
-                                    _ev("permission.request", {
+                                    emit("permission.request", {
                                         "tool": value.get("tool"),
                                         "args": value.get("args"),
                                     })
@@ -1971,8 +2097,12 @@ async def _stream_graph(
                                 # Independent of the permission system; resumed via
                                 # the same permission_response WS message.
                                 saw_interrupt = True
+                                _log.info(
+                                    "turn_interrupt session=%s turn=%s kind=%s",
+                                    session_id, turn_id, value.get("kind"),
+                                )
                                 await ws.send_text(
-                                    _ev("version.propose", {
+                                    emit("version.propose", {
                                         "workflow_id": value.get("workflow_id"),
                                         "from_version": value.get("from_version"),
                                         "diff": value.get("diff", ""),
@@ -1992,13 +2122,13 @@ async def _stream_graph(
                                     wf_store.get_run(rid) if rid else None
                                 )
                                 if run:
-                                    await ws.send_text(_ev("workflow.emit", {"run": run}))
+                                    await safe_send(emit("workflow.emit", {"run": run}))
                                 # no ordinary tool bubble for workflow tools
                             elif nm in RENDER_TOOL_NAMES or nm in ARTIFACT_TOOL_NAMES:
                                 pass  # widget/ref emitted at agent-update; no bubble
                             elif tc_id:
                                 await ws.send_text(
-                                    _ev("tool.end", {"id": tc_id, "content": _truncate_for_ws(_tool_content_str(raw))})
+                                    emit("tool.end", {"id": tc_id, "content": _truncate_for_ws(_tool_content_str(raw))})
                                 )
                     elif node_name == "permission":
                         # resolve "running" tool bubbles that were denied by
@@ -2009,7 +2139,7 @@ async def _stream_graph(
                                 rest = c[len(BLOCK_PREFIX):]
                                 name, _, reason = rest.partition("]")
                                 await ws.send_text(
-                                    _ev("tool.end", {
+                                    emit("tool.end", {
                                         "name": name.strip(),
                                         "content": reason.strip() or c,
                                     })
@@ -2017,21 +2147,41 @@ async def _stream_graph(
         # refresh the right-panel TODO list after every turn (the agent may
         # have mutated it via the todo_* tools); the checkbox path is optimistic
         # and doesn't need this.
-        await ws.send_text(_ev("todos.changed", {}))
-        await ws.send_text(_ev("workflows.changed", {}))
-        await ws.send_text(_ev("artifacts.changed", {}))
+        await safe_send(emit("todos.changed", {}))
+        await safe_send(emit("workflows.changed", {}))
+        await safe_send(emit("artifacts.changed", {}))
         if not saw_interrupt:
             # Capture sanitized assistant text for memory summarization (P2)
             if turn_text:
                 from .memory import append_to_pool
 
                 append_to_pool(session_id, agent_id, "".join(turn_text))
-            await ws.send_text(_ev("message.end", {}))
+            _log.info(
+                "turn_done session=%s turn=%s status=completed text_len=%d",
+                session_id, turn_id, len("".join(turn_text)),
+            )
+            await safe_send(emit("message.end", {}))
+        else:
+            _log.info(
+                "turn_done session=%s turn=%s status=paused_at_interrupt",
+                session_id, turn_id,
+            )
     except Exception as e:
-        await ws.send_text(_ev("error", {"message": f"{type(e).__name__}: {e}"}))
+        _log.exception("turn_error session=%s turn=%s", session_id, turn_id)
+        await safe_send(emit("error", {"message": f"{type(e).__name__}: {e}"}))
+    finally:
+        if ws_closed:
+            _log.info(
+                "turn_client_gone session=%s turn=%s (client disconnected mid-turn; "
+                "turn drained without further sends)",
+                session_id,
+                turn_id,
+            )
 
 
-def _ev(event: str, data: dict) -> str:
+def _ev(event: str, data: dict, turn_id: str | None = None) -> str:
+    if turn_id:
+        data = {"turn_id": turn_id, **data}
     return json.dumps({"event": event, **data}, ensure_ascii=False, default=str)
 
 

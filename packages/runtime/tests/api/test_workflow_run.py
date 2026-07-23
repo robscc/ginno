@@ -37,12 +37,12 @@ def test_trigger_run_executes_and_writes_context(client, monkeypatch):
         ),
     )
 
-    r = client.post("/workflow_runs", json={"workflow_id": wid})
+    r = client.post("/api/workflow_runs", json={"workflow_id": wid})
     assert r.status_code == 200
     run_id = r.json()["run"]["id"]
 
-    aw = client.post(f"/workflow_runs/{run_id}/_await").json()
-    evs = client.get(f"/workflow_runs/{run_id}/events").json()["events"]
+    aw = client.post(f"/api/workflow_runs/{run_id}/_await").json()
+    evs = client.get(f"/api/workflow_runs/{run_id}/events").json()["events"]
     assert aw["run"]["status"] == "done", {"await": aw, "events": evs}
     run_id = run_id  # keep
 
@@ -54,4 +54,4 @@ def test_trigger_run_executes_and_writes_context(client, monkeypatch):
 
 
 def test_trigger_run_404_for_unknown_workflow(client):
-    assert client.post("/workflow_runs", json={"workflow_id": "nope"}).status_code == 404
+    assert client.post("/api/workflow_runs", json={"workflow_id": "nope"}).status_code == 404

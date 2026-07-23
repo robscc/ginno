@@ -29,7 +29,7 @@ def test_routing_updates_session_agent(create_session, ws_conv, client):
         conv.invoke("hello", agent_id="writer")
         conv.recv_until("message.end", "error")
     # the session's agent was switched server-side
-    meta = client.get(f"/sessions/{sid}").json()
+    meta = client.get(f"/api/sessions/{sid}").json()
     assert meta["agent_id"] == "writer"
 
 

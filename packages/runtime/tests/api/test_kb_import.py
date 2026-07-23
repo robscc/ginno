@@ -40,7 +40,7 @@ def molly_vault(client, isolated_home):
 
 
 def test_probe_detects_molly_layout(client, molly_vault):
-    r = client.get(f"/kb/wiki/probe?path={molly_vault}").json()
+    r = client.get(f"/api/kb/wiki/probe?path={molly_vault}").json()
     assert r["ok"] is True
     d = r["detected"]
     assert d["namespace"] == "Molly"
@@ -55,8 +55,8 @@ def test_probe_detects_molly_layout(client, molly_vault):
 
 
 def test_probe_invalid_paths(client):
-    assert client.get("/kb/wiki/probe?path=").json()["ok"] is False
-    assert client.get("/kb/wiki/probe?path=/no/such/dir/here").json()["ok"] is False
+    assert client.get("/api/kb/wiki/probe?path=").json()["ok"] is False
+    assert client.get("/api/kb/wiki/probe?path=/no/such/dir/here").json()["ok"] is False
 
 
 def test_import_indexes_vault_minus_raw(client, molly_vault):
@@ -69,10 +69,10 @@ def test_import_indexes_vault_minus_raw(client, molly_vault):
         "inject_top_k": 5,
         "inject_min_score": 0.3,
     }
-    assert client.put("/kb/wiki/config", json=cfg).json()["ok"] is True
-    assert client.post("/kb/wiki/index").json()["ok"] is True
+    assert client.put("/api/kb/wiki/config", json=cfg).json()["ok"] is True
+    assert client.post("/api/kb/wiki/index").json()["ok"] is True
 
-    titles = {p["title"] for p in client.get("/kb/wiki/list").json()["pages"]}
+    titles = {p["title"] for p in client.get("/api/kb/wiki/list").json()["pages"]}
     # compiled wiki is indexed ...
     assert {"权限节点", "interrupt"} <= titles
     # ... and so are finished notes anywhere else in the vault (research /
@@ -81,5 +81,5 @@ def test_import_indexes_vault_minus_raw(client, molly_vault):
     # ... only the raw compile-sources dir is excluded (it surfaces via wiki).
     assert "RAWDOC" not in titles
 
-    sr = client.get("/kb/wiki/search?q=权限").json()
+    sr = client.get("/api/kb/wiki/search?q=权限").json()
     assert any("权限节点" in x["title"] for x in sr["results"])

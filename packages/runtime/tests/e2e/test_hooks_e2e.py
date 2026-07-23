@@ -55,7 +55,7 @@ def test_prettooluse_hook_blocks_tool(hook_client, monkeypatch):
     )
     monkeypatch.setattr(server, "build_model", lambda *a, **k: model)
 
-    r = hook_client.post("/sessions", json={"project_slug": "default", "workspace": ws, "agent_id": "dev"})
+    r = hook_client.post("/api/sessions", json={"project_slug": "default", "workspace": ws, "agent_id": "dev"})
     sid = r.json()["id"]
 
     with WSConversation(hook_client, sid) as conv:
