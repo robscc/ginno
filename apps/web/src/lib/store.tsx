@@ -36,6 +36,8 @@ interface GinnoState {
   reloadArtifacts: () => Promise<void>;
   newSession: (agent_id?: string) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
+  removeSession: (id: string) => Promise<void>;
+  renameSession: (id: string, title: string) => Promise<void>;
   patchTodo: (id: string, patch: Partial<Todo>) => Promise<void>;
   addTodo: (data: Partial<Todo>) => Promise<void>;
 }
@@ -225,6 +227,39 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
+  const removeSession = useCallback(async (id: string) => {
+    // optimistic remove; if it was active, fall to another session (or none)
+    setSessions((prev) => {
+      const next = prev.filter((s) => s.id !== id);
+      setActiveSessionId((cur) => {
+        if (cur !== id) return cur;
+        return next[0]?.id ?? null;
+      });
+      return next;
+    });
+    try {
+      await api.deleteSession(id);
+    } catch {
+      /* ignore — reconcile on next reload */
+    }
+  }, []);
+
+  const renameSession = useCallback(async (id: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, title: trimmed, title_auto: false } : s)),
+    );
+    try {
+      const r = await api.patchSession(id, { title: trimmed });
+      if (r?.session) {
+        setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...r.session } : s)));
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const addTodo = useCallback(async (data: Partial<Todo>) => {
     try {
       const r = await api.createTodo(data);
@@ -258,6 +293,8 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     reloadArtifacts,
     newSession,
     setSessionAgent,
+    removeSession,
+    renameSession,
     patchTodo,
     addTodo,
   };

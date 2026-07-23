@@ -3,11 +3,20 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ChevronDown, BookOpen, Settings as SettingsIcon, Plus, Workflow as WorkflowIcon } from "lucide-react";
+import {
+  ChevronDown,
+  BookOpen,
+  Settings as SettingsIcon,
+  Plus,
+  Workflow as WorkflowIcon,
+  Pencil,
+  Trash2,
+} from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { applyTheme } from "@/components/settings/GeneralSettings";
+import type { SessionMeta } from "@/lib/types";
 
 function SectionHeader({
   icon,
@@ -38,11 +47,70 @@ function SectionHeader({
   );
 }
 
+/** In-app confirmation modal. Used instead of window.confirm because the native
+ *  dialog is unreliable in the Tauri webview; being React-rendered, this works
+ *  identically in Tauri and the browser. */
+function ConfirmModal({
+  title,
+  message,
+  confirmLabel = "删除",
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onMouseDown={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div
+        className="w-full max-w-sm rounded-xl border border-line bg-card p-4 shadow-2xl"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="text-sm font-semibold text-txt">{title}</div>
+        <div className="mt-2 text-xs leading-relaxed text-muted">{message}</div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
+          >
+            取消
+          </button>
+          <button
+            onClick={onConfirm}
+            className="rounded-lg bg-red px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const g = useGinno();
   const pathname = usePathname();
   const router = useRouter();
   const active = g.sessions.find((s) => s.id === g.activeSessionId) ?? null;
+  // inline session rename (double-click title or pencil icon)
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  // custom in-app delete confirmation (window.confirm is unreliable in the Tauri
+  // webview; a React-rendered modal works in both Tauri and the browser)
+  const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
+  const confirmDelete = () => {
+    if (deleteTarget) g.removeSession(deleteTarget.id);
+    setDeleteTarget(null);
+  };
 
   const onNewSession = async () => {
     const s = await g.newSession(g.agents[0]?.id);
@@ -91,19 +159,84 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {g.sessions.map((s) => {
               const sel = onWorkspace && s.id === g.activeSessionId;
               const hex = agentHex(g.agents.find((a) => a.id === s.agent_id)?.color);
+              const editing = editingId === s.id;
               return (
-                <button
+                <div
                   key={s.id}
-                  onClick={() => {
-                    g.setActiveSession(s.id);
-                    if (!onWorkspace) router.push("/");
-                  }}
-                  className={`nav-item ${sel ? "text-txt" : ""}`}
+                  className={`nav-item group ${sel ? "text-txt" : ""}`}
                   style={sel ? { background: "rgba(99,102,241,0.14)" } : undefined}
                 >
-                  <Icon name={s.icon || "message-square"} className="h-4 w-4" style={{ color: hex }} />
-                  <span className="truncate">{s.title || "Untitled"}</span>
-                </button>
+                  {editing ? (
+                    <input
+                      autoFocus
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      onBlur={() => {
+                        g.renameSession(s.id, editTitle);
+                        setEditingId(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          g.renameSession(s.id, editTitle);
+                          setEditingId(null);
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          setEditingId(null);
+                        }
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="min-w-0 flex-1 rounded border border-line2 bg-base/60 px-1 text-sm text-txt outline-none focus:border-violet"
+                    />
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => {
+                          g.setActiveSession(s.id);
+                          if (!onWorkspace) router.push("/");
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          setEditTitle(s.title || "");
+                          setEditingId(s.id);
+                        }}
+                        className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                      >
+                        <Icon
+                          name={s.icon || "message-square"}
+                          className="h-4 w-4 shrink-0"
+                          style={{ color: hex }}
+                        />
+                        <span className="truncate">{s.title || "Untitled"}</span>
+                      </button>
+                      <span className="flex shrink-0 items-center gap-0.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditTitle(s.title || "");
+                            setEditingId(s.id);
+                          }}
+                          aria-label="重命名会话"
+                          title="重命名（也可双击标题）"
+                          className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTarget(s);
+                          }}
+                          aria-label="删除会话"
+                          title="删除会话"
+                          className="rounded p-1 text-muted hover:bg-card2 hover:text-red"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    </>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -170,6 +303,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* main */}
       <main className="flex min-w-0 flex-1">{children}</main>
+
+      {deleteTarget && (
+        <ConfirmModal
+          title="删除会话"
+          message={`确定删除会话「${deleteTarget.title || "Untitled"}」？其对话历史将一并删除，且无法恢复。`}
+          confirmLabel="删除"
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }

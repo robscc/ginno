@@ -16,6 +16,55 @@ interface ChatMsg {
   blocks: Block[];
   agentId?: string | null;
   agentName?: string;
+  turnId?: string; // per-turn trace UUID (shown on the bubble, greppable in sidecar logs)
+}
+
+const newTurnId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+async function copyText(t: string) {
+  try {
+    await navigator.clipboard.writeText(t);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = t;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Click-to-copy per-turn trace UUID. The full id is what you grep the sidecar
+ *  logs for (`turn=...`); we show a short prefix to keep the bubble tidy. */
+function TurnIdChip({ turnId }: { turnId?: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!turnId) return null;
+  const short = turnId.slice(0, 8);
+  return (
+    <button
+      onClick={async () => {
+        if (await copyText(turnId)) {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        }
+      }}
+      title={`turn ${turnId}（点击复制，用于日志定位）`}
+      className="rounded border border-line2 px-1 py-px font-mono text-[9px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
+    >
+      {copied ? "copied" : `#${short}`}
+    </button>
+  );
 }
 
 interface PermissionPrompt {
@@ -172,6 +221,10 @@ export function ChatStream({
   const liveIdRef = useRef<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const busyRef = useRef(false); // send lock: one turn at a time
+  // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
+  const [composerH, setComposerH] = useState<number | undefined>(undefined);
+  const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   useEffect(() => {
     liveIdRef.current = liveId;
   }, [liveId]);
@@ -204,6 +257,18 @@ export function ChatStream({
         if (closed) return;
         g.setConnected(true);
         lastSeen = Date.now();
+        // Self-heal a "stuck" turn: if a turn was in-flight when the socket
+        // dropped, its message.end never arrived (server send hit the closed
+        // socket) so liveId stayed set and the UI kept spinning. On reconnect
+        // the server has no active turn for this session, so clear the live
+        // state to unlock the composer. The completed turn shows on reload
+        // (it was checkpointed server-side).
+        if (liveIdRef.current) {
+          setLiveId(null);
+          liveIdRef.current = null;
+          setStreamAgent(null);
+          busyRef.current = false;
+        }
         // Heartbeat: detect a half-open socket. The server answers `ping` with a
         // `pong` frame (which resets lastSeen via onmessage). A send into a dead
         // TCP connection buffers silently and never errors, so without this the
@@ -315,7 +380,10 @@ export function ChatStream({
   function ensureLive(): string {
     if (liveIdRef.current) return liveIdRef.current;
     const id = mid();
-    setMessages((m) => [...m, { id, role: "assistant", blocks: [], agentId: streamAgent }]);
+    setMessages((m) => [
+      ...m,
+      { id, role: "assistant", blocks: [], agentId: streamAgent, turnId: newTurnId() },
+    ]);
     setLiveId(id);
     liveIdRef.current = id;
     return id;
@@ -338,16 +406,34 @@ export function ChatStream({
         mutateLive(ev);
         break;
       case "turn.start": {
-        // authoritative agent for this turn (server-resolved, never null)
+        // authoritative agent for this turn (server-resolved, never null).
+        // The server echoes the turn_id we sent (or mints one); adopt it as the
+        // bubble's trace UUID so it matches the sidecar logs exactly.
         const id = liveIdRef.current;
         if (id) {
+          const srvTurn = ev.turn_id as string | undefined;
           setMessages((m) =>
             m.map((msg) =>
               msg.id === id
-                ? { ...msg, agentId: (ev.agent_id as string) || null, agentName: ev.name as string }
+                ? {
+                    ...msg,
+                    agentId: (ev.agent_id as string) || null,
+                    agentName: ev.name as string,
+                    turnId: srvTurn || msg.turnId,
+                  }
                 : msg,
             ),
           );
+          // keep the user bubble's UUID in sync with the server's authoritative one
+          if (srvTurn) {
+            setMessages((m) =>
+              m.map((msg, i, arr) =>
+                msg.role === "user" && !msg.turnId && i === arr.length - 2
+                  ? { ...msg, turnId: srvTurn }
+                  : msg,
+              ),
+            );
+          }
         }
         break;
       }
@@ -424,6 +510,7 @@ export function ChatStream({
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     const live = mid();
+    const turnId = newTurnId();
     const guessName = agentById(agentId)?.name ?? "Agent";
     const imgs = attachments;
     const userBlocks: Block[] = [
@@ -433,8 +520,8 @@ export function ChatStream({
     busyRef.current = true;
     setMessages((m) => [
       ...m,
-      { id: mid(), role: "user", blocks: userBlocks },
-      { id: live, role: "assistant", blocks: [], agentId: agentId, agentName: guessName },
+      { id: mid(), role: "user", blocks: userBlocks, turnId },
+      { id: live, role: "assistant", blocks: [], agentId: agentId, agentName: guessName, turnId },
     ]);
     setLiveId(live);
     liveIdRef.current = live;
@@ -445,6 +532,7 @@ export function ChatStream({
           type: "invoke",
           message: text,
           agent_id: agentId,
+          turn_id: turnId,
           images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
         }),
       );
@@ -482,6 +570,31 @@ export function ChatStream({
     setPropose(null);
   }
 
+  // Drag the composer's top handle to resize the input area. Auto-grow (capped)
+  // still applies while composerH is undefined; dragging switches to a fixed,
+  // scrollable height. The flex layout (message list = flex-1) keeps the overall
+  // experience intact — the list simply takes the remaining space.
+  function onResizeStart(e: React.PointerEvent) {
+    const box = composerBoxRef.current;
+    if (!box) return;
+    dragRef.current = { startY: e.clientY, startH: box.offsetHeight };
+    const minH = 96;
+    const maxH = Math.max(160, Math.floor(window.innerHeight * 0.7));
+    const move = (ev: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const h = Math.min(maxH, Math.max(minH, d.startH + (d.startY - ev.clientY)));
+      setComposerH(h);
+    };
+    const up = () => {
+      dragRef.current = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
   const agentById = (id?: string | null) => g.agents.find((a) => a.id === id) ?? null;
 
   return (
@@ -503,7 +616,8 @@ export function ChatStream({
 
           {messages.map((m) =>
             m.role === "user" ? (
-              <div key={m.id} className="flex justify-end">
+              <div key={m.id} className="flex flex-col items-end gap-1">
+                <TurnIdChip turnId={m.turnId} />
                 <div className="max-w-[78%] rounded-2xl bg-card2 px-4 py-2.5 text-sm leading-relaxed text-txt">
                   <UserBlocks blocks={m.blocks} />
                 </div>
@@ -515,6 +629,7 @@ export function ChatStream({
                 agentName={m.agentName}
                 blocks={m.blocks}
                 streaming={m.id === liveId}
+                turnId={m.turnId}
               />
             ),
           )}
@@ -614,6 +729,7 @@ export function ChatStream({
           </div>
 
           <div
+            ref={composerBoxRef}
             onDragOver={(e) => {
               e.preventDefault();
               setDragOver(true);
@@ -624,10 +740,19 @@ export function ChatStream({
               setDragOver(false);
               void addFiles(e.dataTransfer.files);
             }}
-            className={`rounded-2xl border bg-card p-2.5 transition-colors focus-within:border-line2 ${
+            className={`relative rounded-2xl border bg-card p-2.5 transition-colors focus-within:border-line2 ${
               dragOver ? "border-violet/70 ring-2 ring-violet/30" : "border-line"
             }`}
           >
+            <div
+              onPointerDown={onResizeStart}
+              title="拖拽调整输入框高度（双击还原自动高度）"
+              onDoubleClick={() => setComposerH(undefined)}
+              className="absolute -top-1 left-1/2 z-10 flex h-2 w-12 -translate-x-1/2 cursor-ns-resize items-center justify-center rounded-full hover:bg-line2/60"
+              aria-label="调整输入框高度"
+            >
+              <span className="h-0.5 w-6 rounded-full bg-line2" />
+            </div>
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {attachments.map((a, i) => (
@@ -669,6 +794,11 @@ export function ChatStream({
               }}
               rows={2}
               placeholder="Ask any Agent …  可粘贴 / 拖入截图  (try: 用 stat_list 卡片展示 PR 状态)"
+              style={
+                composerH != null
+                  ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
+                  : { maxHeight: 240 }
+              }
               className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-txt outline-none placeholder:text-faint"
             />
             <div className="flex items-center justify-between px-1 pt-1">
@@ -721,11 +851,13 @@ function AssistantBubble({
   agentName,
   blocks,
   streaming,
+  turnId,
 }: {
   agent: AgentConfig | null;
   agentName?: string;
   blocks: Block[];
   streaming?: boolean;
+  turnId?: string;
 }) {
   const hex = agentHex(agent?.color);
   const displayName = agent?.name || agentName || "Agent";
@@ -742,6 +874,9 @@ function AssistantBubble({
         <div className="mb-1 flex items-center gap-2 text-sm">
           <span className="font-medium text-txt">{displayName}</span>
           <span className="text-xs text-faint">{streaming ? "thinking…" : "just now"}</span>
+          <span className="ml-auto">
+            <TurnIdChip turnId={turnId} />
+          </span>
         </div>
         <div className="rounded-xl border border-line bg-card px-4 py-3 text-sm leading-relaxed text-txt">
           {hasInner ? (

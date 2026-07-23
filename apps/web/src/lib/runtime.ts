@@ -11,14 +11,36 @@ import type {
   VerifyResult,
 } from "./types";
 
-const PORT =
-  typeof window !== "undefined" &&
-  // @ts-ignore — Tauri injects __TAURI__
-  window.__TAURI__?.core?.invoke
-    ? 8787
-    : Number(process.env.NEXT_PUBLIC_RUNTIME_PORT ?? 8787);
+// The sidecar serves the static pages AND the JSON API from ONE origin (the API
+// is namespaced under /api). So the client must call back to whatever origin
+// served the page — never a baked-in port — otherwise a page opened on a
+// non-default port (e.g. a dev sidecar on 8797) would fetch the wrong sidecar.
+// NEXT_PUBLIC_RUNTIME_PORT remains an opt-in override for the rare split-origin
+// dev setup (web :3000 talking to a sidecar elsewhere).
+const OVERRIDE_PORT =
+  typeof process !== "undefined" ? process.env.NEXT_PUBLIC_RUNTIME_PORT : undefined;
 
-export const BASE = `http://127.0.0.1:${PORT}`;
+function sameOriginBase(): string {
+  if (typeof window !== "undefined") {
+    return OVERRIDE_PORT
+      ? `${window.location.protocol}//${window.location.hostname}:${OVERRIDE_PORT}/api`
+      : `${window.location.origin}/api`;
+  }
+  return `http://127.0.0.1:${OVERRIDE_PORT ?? 8787}/api`; // SSR/build fallback
+}
+
+export const BASE = sameOriginBase();
+
+function wsBase(): string {
+  if (typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = OVERRIDE_PORT
+      ? `${window.location.hostname}:${OVERRIDE_PORT}`
+      : window.location.host;
+    return `${proto}//${host}/api/ws/sessions`;
+  }
+  return `ws://127.0.0.1:${OVERRIDE_PORT ?? 8787}/api/ws/sessions`;
+}
 
 async function json<T>(input: string | URL | Request, init?: RequestInit): Promise<T> {
   const r = await fetch(input, init);
@@ -57,6 +79,12 @@ export async function patchSession(id: string, patch: Partial<SessionMeta>) {
     method: "PATCH",
     headers: H,
     body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteSession(id: string) {
+  return json<{ ok: boolean; removed: boolean }>(`${BASE}/sessions/${id}`, {
+    method: "DELETE",
   });
 }
 
@@ -147,7 +175,7 @@ export async function listSkills(project_slug?: string) {
 }
 
 export function openSessionSocket(session_id: string): WebSocket {
-  return new WebSocket(`ws://127.0.0.1:${PORT}/ws/sessions/${session_id}`);
+  return new WebSocket(`${wsBase()}/${session_id}`);
 }
 
 // ---- workflows ----
