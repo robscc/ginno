@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ChevronDown, BookOpen, Settings as SettingsIcon, Plus } from "lucide-react";
+import { ChevronDown, BookOpen, Settings as SettingsIcon, Plus, Workflow as WorkflowIcon } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
@@ -63,6 +63,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onWorkspace = pathname === "/";
   const onSettings = pathname.startsWith("/settings");
   const onKb = pathname.startsWith("/kb");
+  const onWorkflows = pathname.startsWith("/workflows");
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-base text-txt">
@@ -153,6 +154,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Link href="/kb" className={`nav-item ${onKb ? "nav-item-active" : ""}`}>
             <BookOpen className="h-4 w-4" />
             <span>Knowledge Base</span>
+          </Link>
+          <Link href="/workflows" className={`nav-item ${onWorkflows ? "nav-item-active" : ""}`}>
+            <WorkflowIcon className="h-4 w-4" />
+            <span>Workflows</span>
           </Link>
           <Link href="/settings/model-api" className={`nav-item ${onSettings ? "nav-item-active" : ""}`}>
             <SettingsIcon className="h-4 w-4" />

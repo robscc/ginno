@@ -7,6 +7,7 @@ import { openSessionSocket, getSessionHistory } from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
+import { DiffView } from "@/components/workflow/DiffView";
 import type { AgentConfig, SessionMeta } from "@/lib/types";
 
 interface ChatMsg {
@@ -20,6 +21,13 @@ interface ChatMsg {
 interface PermissionPrompt {
   tool: string;
   args: unknown;
+}
+
+interface VersionPropose {
+  workflow_id: string;
+  from_version: number;
+  diff: string;
+  rationale: string;
 }
 
 let _mid = 0;
@@ -156,6 +164,7 @@ export function ChatStream({
   const [dragOver, setDragOver] = useState(false);
   const [target, setTarget] = useState<string | null>(null);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
+  const [propose, setPropose] = useState<VersionPropose | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -181,6 +190,7 @@ export function ChatStream({
     setLiveId(null);
     setStreamAgent(null);
     setPermission(null);
+    setPropose(null);
     busyRef.current = false;
 
     const connect = () => {
@@ -289,7 +299,7 @@ export function ChatStream({
   }, [session?.id]);
 
   const running =
-    liveId !== null || !!permission || messages.some((m) => hasPendingTool(m.blocks));
+    liveId !== null || !!permission || !!propose || messages.some((m) => hasPendingTool(m.blocks));
   useEffect(() => {
     onRunningChange?.(running);
   }, [running, onRunningChange]);
@@ -343,6 +353,14 @@ export function ChatStream({
       }
       case "permission.request":
         setPermission({ tool: ev.tool as string, args: ev.args });
+        break;
+      case "version.propose":
+        setPropose({
+          workflow_id: ev.workflow_id as string,
+          from_version: (ev.from_version as number) ?? 0,
+          diff: (ev.diff as string) ?? "",
+          rationale: (ev.rationale as string) ?? "",
+        });
         break;
       case "todos.changed":
         g.reloadTodos();
@@ -457,6 +475,13 @@ export function ChatStream({
     setPermission(null);
   }
 
+  function respondPropose(decision: "allow" | "deny") {
+    // Reuses the permission_response channel; the server resumes the proposal
+    // interrupt with {decision}, and the propose_edit tool applies on allow.
+    wsRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
+    setPropose(null);
+  }
+
   const agentById = (id?: string | null) => g.agents.find((a) => a.id === id) ?? null;
 
   return (
@@ -520,6 +545,37 @@ export function ChatStream({
                 className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
               >
                 Deny
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {propose && (
+        <div className="mx-auto w-full max-w-3xl px-6">
+          <div className="mb-2 rounded-xl border border-violet/40 bg-violet/10 p-3">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium text-violet">
+              工作流修改待确认
+              <span className="rounded border border-violet/40 px-1.5 py-0.5 text-[10px] font-normal">
+                {propose.workflow_id} · v{propose.from_version} → 新版本
+              </span>
+            </div>
+            {propose.rationale && (
+              <div className="mb-2 text-xs text-muted">理由：{propose.rationale}</div>
+            )}
+            <DiffView diff={propose.diff} />
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={() => respondPropose("allow")}
+                className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+              >
+                应用（创建新版本）
+              </button>
+              <button
+                onClick={() => respondPropose("deny")}
+                className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
+              >
+                拒绝
               </button>
             </div>
           </div>

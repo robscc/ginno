@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Check,
   ChevronDown,
@@ -92,11 +93,16 @@ function WidgetBlock({ kind, data }: { kind: string; data: unknown }) {
 }
 
 function WorkflowBlock({ run }: { run: WorkflowRun }) {
+  const router = useRouter();
   const done = run.steps.filter((s) => s.status === "done").length;
   const total = run.steps.length;
   return (
     <div className="my-2 rounded-lg border border-line bg-base/50 p-3">
-      <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-txt">
+      <div
+        onClick={() => router.push("/workflows")}
+        title="打开工作流详情"
+        className="mb-2 flex cursor-pointer items-center gap-1.5 text-sm font-medium text-txt hover:text-violet"
+      >
         <Workflow className="h-3.5 w-3.5 text-violet" />
         {run.name || "Workflow"}
         <span className="ml-auto text-xs font-normal text-faint">

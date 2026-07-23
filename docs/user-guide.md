@@ -158,6 +158,7 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 - 何时会弹：见第 10.2 节权限策略（默认：`Bash`/`Write`/`Edit` 及“写 vault”的 MCP 工具会询问；`read/glob/grep` 及只读 vault 工具放行；`rm -rf *`/`sudo *`/写 `~/.ssh`、`~/.gnupg` 直接拒绝）。
 - 注：`todo_*` / `workflow_*` / `artifact_*` / `render_*` 这些“产品内”工具**从不弹权限**。
 - ⚠️ **特权模式默认开启**（见 9.6）：开启时**不会弹任何确认**，所有工具直接执行。要看到 Allow/Deny 弹窗，需先在 设置 → 通用 关闭特权模式。
+- 注：**工作流编辑的 diff 确认**（violet 卡片，见 9.5）复用同一通道但**不受权限/特权模式影响**——它由 `workflow_propose_edit` 的暂停触发，独立于权限策略。
 
 ### 5.7 路由到指定 Agent ✅
 输入区上方的 **Ask Dev / Ask Research / Ask Writer** 按钮：点选后本轮由该 Agent 回答（再次点取消选择，回退到会话默认 Agent）。切换会同步更新会话的 Agent 与（自动标题时的）标题。
@@ -178,12 +179,13 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 
 ## 6. Agent ✅
 
-### 6.1 三个内置 Agent 的差异
+### 6.1 内置 Agent 的差异
 | Agent | 定位 | 工具范围（`tools_allow`） |
 |---|---|---|
 | **Dev** | 代码 / PR / 调试 / 仓库操作 | `*`（全部） |
 | **Research** | 搜集与综合信息、读文档/笔记、给来源；**不改文件** | `read_file, glob_files, grep_files, mcp_*, todo_list`（只读 TODO） |
 | **Writer** | 起草/润色文档与沟通 | `read_file, write_file, edit_file, glob_files, mcp_*, todo_*` |
+| **Workflow Dev** | 用对话编辑某个 workflow 的版本化 DSL | `workflow_propose_edit, workflow_list`（改动经 diff 确认，见 9.5） |
 
 > `tools_allow` 支持 fnmatch 通配（如 `mcp_*`、`todo_*`、`*`）。**越权工具会被直接拦截**（不弹权限，直接告诉模型“该工具不可用”）。
 
@@ -208,11 +210,17 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 - **Agent 也能改**：对拥有 `todo_*` 的 Agent 说“加个待办/把 X 标记完成”，它会调用工具修改，右栏与聊天都会刷新。
 - 首次启动种子了 7 条示例。
 
-### 7.2 Workflow ✅（查看） / 运行靠 Agent
-- 显示**实时运行**的进度树（每个 run 的步骤状态：pending/running/done/failed + 进度条）；
-- 空态提示：“让 Agent 跑一个 workflow（例如 ‘run the PR Triage workflow’）”；
-- 底部列出已有**配方（definition）**名称。
-- **运行**：在对话里让 Agent 用 `workflow_run` / `workflow_step` 驱动；**配方的增删**在 **Settings → Workflows**（见 9.5）。
+### 7.2 Workflow ✅
+- **右栏 Workflow 标签**：显示**实时运行**的进度树（每个 run 的步骤状态：pending/running/done/failed + 进度条）；空态提示；底部列出已有配方名称。聊天里点 `workflow` 块的标题可跳到工作流页。
+- **工作流页（左导航 Workflows）**：左侧配方列表，右侧**详情检查器**——
+  - **执行图**：DSL 编译出的 DAG（拓扑分层），节点按运行状态着色；**点节点**可把下方执行日志过滤到该节点；
+  - **上下文**：按 `context.schema` 渲染的表单（运行前可改初始值，作为本次运行的 `context_override`）；
+  - **运行**按钮：触发一次执行，运行中每 1.5s 轮询事件，图/步骤/日志实时刷新；
+  - **步骤清单**、**执行日志**时间线；
+  - **开发会话**按钮：打开一个绑定 `workflow-dev` Agent 的会话，用**对话**改 DSL（见 9.5）；
+  - **Supervisor** 区：显示启用/模式，自动策略待深入讨论（占位）。
+- **从会话总结**（工作流页右上）：把**最近一次会话**的对话轨迹用 LLM 提炼成 DSL 草稿并直接创建为 v1（不经过编辑器，符合“所有调整走对话”的原则）。
+- 运行靠 LangGraph 图执行（`step`/`branch`/`loop` 节点），不再是 LLM 自报进度。
 
 ### 7.3 Artifacts ✅（只读）
 自动登记的产物列表：你在对话里 `attach_ref` / `artifact_register`、或 Agent 写/引用文件时，会出现在这里（按 file/doc/workflow/link 显示图标）。当前为**只读展示**。
@@ -323,10 +331,14 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 ### 9.4 Agent 管理 ✅
 见第 6.3 节。
 
-### 9.5 Workflows ✅（配方管理）
-- 列表显示配方（name / id / 描述 / 步骤）；可 `delete`；
-- **New workflow**：`name` + `description` + `steps`（JSON 数组，如 `[{"title":"Step 1"}]`），`Create`。
-- 运行进度看右栏 Workflow（由 Agent 触发，见 7.2）。
+### 9.5 Workflows ✅（配方管理 + 版本化 DSL）
+- 配方现在是**版本化的 DSL**（`step`/`branch`/`loop` 节点 + 边 + `context` schema/初始值），存于 `~/.ginno/workflows/<id>/`（`meta.json` + `versions/<n>.json`，每次改动生成不可变新版本）。旧的 `workflows/<id>.json` 单文件会在首次读取时**自动迁移**为 v1。
+- 列表显示配方（name / id / 描述 / 步骤 / 版本徽标）；可 `delete`；**查看 DSL** 折叠预览原始 DSL；**详情**展开内嵌检查器（同工作流页）。
+- **New workflow**：`name` + `description` + `steps`（JSON 数组，如 `[{"title":"Step 1"}]`）会被包成最小线性 DSL 的 v1，`Create`。
+- **对话式编辑（无 DAG 拖拽编辑器）**：在工作流页/详情点**开发会话**，或直接向 `workflow-dev` Agent 描述改动。它调用 `workflow_propose_edit` 后**暂停**，聊天里弹出 **violet 的 diff 确认卡**（unified diff + 理由 + 「应用/拒绝」）——**应用**才创建新版本，**拒绝**则不变。该确认**独立于权限系统**（`workflow-dev` 的编辑工具不走权限策略，避免与权限弹窗冲突）。
+- **版本/回滚**：`GET /workflows/{id}/versions`、`.../versions/diff?a=&b=`、`POST .../rollback`（回滚=用旧快照建新版本，历史不丢）。
+- **从会话生成**：`POST /workflows/summarize-from-session {session_id}` 返回 DSL **草稿**（不保存），工作流页的「从会话总结」按钮已接通。
+- 运行进度看右栏 Workflow 与工作流页详情（由 LangGraph 图执行，见 7.2）。
 
 ### 9.6 通用设置 ✅ / 部分说明
 - **默认模型提供商**：下拉选择（disabled 的会标注），实时写回；

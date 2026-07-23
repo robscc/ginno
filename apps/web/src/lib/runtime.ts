@@ -167,6 +167,54 @@ export async function createWorkflow(data: Partial<import("./types").WorkflowDef
 export async function deleteWorkflow(id: string) {
   return json<{ ok: boolean }>(`${BASE}/workflows/${id}`, { method: "DELETE" });
 }
+export async function getWorkflow(id: string) {
+  return json<{ ok: boolean; workflow: import("./types").WorkflowDef }>(`${BASE}/workflows/${id}`);
+}
+export async function listWorkflowVersions(id: string) {
+  return json<{ ok: boolean; versions: Array<{ version: number; current: boolean }> }>(
+    `${BASE}/workflows/${id}/versions`,
+  );
+}
+export async function diffWorkflowVersions(id: string, a: number, b: number) {
+  return json<{ ok: boolean; a: number; b: number; diff: string }>(
+    `${BASE}/workflows/${id}/versions/diff?a=${a}&b=${b}`,
+  );
+}
+export async function rollbackWorkflow(id: string, to: number, commit = "") {
+  return json<{ ok: boolean; workflow: import("./types").WorkflowDef }>(
+    `${BASE}/workflows/${id}/rollback`,
+    { method: "POST", headers: H, body: JSON.stringify({ to, commit }) },
+  );
+}
+export async function triggerWorkflowRun(workflow_id: string, context_override?: Record<string, unknown>) {
+  return json<{ ok: boolean; run: import("./types").WorkflowRun }>(`${BASE}/workflow_runs`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ workflow_id, context_override }),
+  });
+}
+export async function getWorkflowRunEvents(
+  run_id: string,
+  opts: { node_id?: string; kind?: string } = {},
+) {
+  const q = new URLSearchParams();
+  if (opts.node_id) q.set("node_id", opts.node_id);
+  if (opts.kind) q.set("kind", opts.kind);
+  const qs = q.toString();
+  return json<{ ok: boolean; events: Array<Record<string, unknown>> }>(
+    `${BASE}/workflow_runs/${run_id}/events${qs ? `?${qs}` : ""}`,
+  );
+}
+export async function summarizeSessionToDsl(session_id: string, provider?: string) {
+  return json<
+    | { ok: true; dsl: Record<string, unknown>; source_session_id: string }
+    | { ok: false; error: string; raw?: string; dsl?: Record<string, unknown> }
+  >(`${BASE}/workflows/summarize-from-session`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ session_id, provider }),
+  });
+}
 
 // ---- artifacts ----
 export async function listArtifacts(project_slug = "default") {

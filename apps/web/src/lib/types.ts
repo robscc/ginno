@@ -77,6 +77,8 @@ export interface WorkflowDef {
   name: string;
   description: string;
   steps: WorkflowStep[];
+  version?: number; // current DSL version (P1+)
+  dsl?: Record<string, unknown>; // compiled DSL (P1+); absent on legacy payloads
 }
 
 export interface WorkflowRun {
@@ -87,6 +89,7 @@ export interface WorkflowRun {
   steps: WorkflowStep[];
   started: number;
   updated: number;
+  dsl_version?: number; // DSL version this run executed (P2+)
 }
 
 export interface Artifact {
