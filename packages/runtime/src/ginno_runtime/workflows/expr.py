@@ -145,9 +145,22 @@ def _eval(node: ast.AST, context: dict) -> Any:
     raise ValueError(f"unsupported expression: {type(node).__name__}")
 
 
+# Belt-and-suspenders: the walker is already a tight sandbox, but DSL
+# expressions can originate from an LLM (`propose_edit`), so cap size/complexity
+# to rule out a stack-blowing pathological expression (recursion depth in _eval
+# is bounded by the AST node count).
+_EXPR_CHAR_CAP = 4000
+_EXPR_NODE_CAP = 300
+
+
 def eval_expr(expr: str, context: dict) -> Any:
     """Evaluate a sandboxed expression against ``context`` (the WorkflowContext)."""
-    tree = ast.parse(expr.strip(), mode="eval")
+    src = (expr or "").strip()
+    if len(src) > _EXPR_CHAR_CAP:
+        raise ValueError("expression too long")
+    tree = ast.parse(src, mode="eval")
+    if sum(1 for _ in ast.walk(tree)) > _EXPR_NODE_CAP:
+        raise ValueError("expression too complex")
     return _eval(tree, context or {})
 
 
