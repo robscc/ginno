@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   ChevronDown,
@@ -104,6 +104,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // inline session rename (double-click title or pencil icon)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
+  // Escape cancels the rename, but the input's onBlur (which commits) can fire on
+  // unmount in some browsers (Firefox); this ref lets onBlur skip the commit.
+  const cancelRename = useRef(false);
   // custom in-app delete confirmation (window.confirm is unreliable in the Tauri
   // webview; a React-rendered modal works in both Tauri and the browser)
   const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
@@ -172,6 +175,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       value={editTitle}
                       onChange={(e) => setEditTitle(e.target.value)}
                       onBlur={() => {
+                        if (cancelRename.current) {
+                          cancelRename.current = false;
+                          setEditingId(null);
+                          return;
+                        }
                         g.renameSession(s.id, editTitle);
                         setEditingId(null);
                       }}
@@ -182,6 +190,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           setEditingId(null);
                         } else if (e.key === "Escape") {
                           e.preventDefault();
+                          cancelRename.current = true; // suppress the onBlur commit
                           setEditingId(null);
                         }
                       }}

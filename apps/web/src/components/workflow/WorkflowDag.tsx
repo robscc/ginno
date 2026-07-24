@@ -39,14 +39,20 @@ function layerOrder(dsl: Dsl): Map<string, number> {
   }
   const layer = new Map<string, number>();
   const queue: string[] = [];
+  // A branch back-edge (retry/loop) makes longest-path layering diverge; clamp
+  // the layer and cap iterations so a cycle can never spin this BFS forever and
+  // freeze the tab.
+  const maxLayer = Math.max(1, nodes.length);
+  const cap = nodes.length * nodes.length + 16;
+  let guard = 0;
   if (dsl.entry) {
     layer.set(dsl.entry, 0);
     queue.push(dsl.entry);
   }
-  while (queue.length) {
+  while (queue.length && guard++ < cap) {
     const cur = queue.shift()!;
     for (const nx of adj.get(cur) || []) {
-      const cand = (layer.get(cur) ?? 0) + 1;
+      const cand = Math.min((layer.get(cur) ?? 0) + 1, maxLayer);
       if (!layer.has(nx) || layer.get(nx)! < cand) {
         layer.set(nx, cand);
         queue.push(nx);

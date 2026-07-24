@@ -317,6 +317,11 @@ export function ChatStream({
         if (closed) return; // stale socket — the new session owns state now
         g.setConnected(false);
         busyRef.current = false;
+        // A banner can't be answered on a dead socket; clear it so the composer's
+        // `running` lock doesn't stick. On reconnect the server re-emits any
+        // still-pending permission / version_propose interrupt.
+        setPermission(null);
+        setPropose(null);
         timer = setTimeout(connect, 1500);
       };
     };
@@ -559,14 +564,22 @@ export function ChatStream({
   }
 
   function respond(decision: "allow" | "deny") {
-    wsRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
+    try {
+      wsRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
+    } catch {
+      /* socket gone — reconnect re-emits the prompt if still pending */
+    }
     setPermission(null);
   }
 
   function respondPropose(decision: "allow" | "deny") {
     // Reuses the permission_response channel; the server resumes the proposal
     // interrupt with {decision}, and the propose_edit tool applies on allow.
-    wsRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
+    try {
+      wsRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
+    } catch {
+      /* socket gone — reconnect re-emits version.propose if still pending */
+    }
     setPropose(null);
   }
 

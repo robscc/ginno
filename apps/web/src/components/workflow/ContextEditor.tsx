@@ -79,9 +79,14 @@ export function ContextEditor({
   const initial = dsl?.context?.initial || {};
   const props = schema?.properties || {};
   const [form, setForm] = useState<Record<string, unknown>>(initial);
+  // Separate raw-text state for the schema-less JSON editor so the user can type
+  // an intermediate (temporarily invalid) value without the input snapping back
+  // to the last valid object on every keystroke.
+  const [rawJson, setRawJson] = useState(() => JSON.stringify(initial, null, 2));
 
   useEffect(() => {
     setForm(initial);
+    setRawJson(JSON.stringify(initial, null, 2));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dsl]);
 
@@ -110,6 +115,7 @@ export function ContextEditor({
         <button
           onClick={() => {
             setForm(initial);
+            setRawJson(JSON.stringify(initial, null, 2));
             onChange(initial);
           }}
           className="ml-auto text-[10px] text-faint hover:text-muted"
@@ -126,8 +132,9 @@ export function ContextEditor({
         <textarea
           className="field font-mono text-[11px]"
           rows={3}
-          value={JSON.stringify(form, null, 2)}
+          value={rawJson}
           onChange={(e) => {
+            setRawJson(e.target.value);
             try {
               const v = JSON.parse(e.target.value);
               if (typeof v === "object" && v) {
@@ -135,7 +142,7 @@ export function ContextEditor({
                 onChange(v);
               }
             } catch {
-              /* ignore */
+              /* invalid intermediate — keep the caret, update once it parses */
             }
           }}
         />

@@ -36,6 +36,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
       return;
     }
     let alive = true;
+    let t: ReturnType<typeof setInterval> | undefined;
     const load = async () => {
       try {
         const [ev, allRuns] = await Promise.all([
@@ -47,17 +48,20 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         const cur = allRuns.find((r) => r.id === activeId);
         if (cur) {
           setRun(cur);
-          if (cur.status !== "running") setBusy(false);
+          if (cur.status !== "running") {
+            setBusy(false);
+            if (t) clearInterval(t); // terminal → stop polling (don't tick forever)
+          }
         }
       } catch {
         /* sidecar down */
       }
     };
     void load();
-    const t = setInterval(load, 1500);
+    t = setInterval(load, 1500);
     return () => {
       alive = false;
-      clearInterval(t);
+      if (t) clearInterval(t);
     };
   }, [activeId]);
 
@@ -71,8 +75,9 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         Object.keys(ctxOverride).length ? ctxOverride : undefined,
       );
       if (r.ok && r.run) setRun(r.run);
-    } finally {
-      /* busy cleared by poll when status != running */
+      else setBusy(false); // no run to poll → unlock the button now
+    } catch {
+      setBusy(false); // sidecar down → don't leave the button dead
     }
   };
 

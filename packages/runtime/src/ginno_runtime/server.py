@@ -1774,6 +1774,20 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             {"tool": value.get("tool"), "args": value.get("args")},
                         )
                     )
+                elif isinstance(value, dict) and value.get("kind") == "version_propose":
+                    # a workflow-dev diff proposal pending at disconnect: re-show it
+                    # so the turn isn't orphaned (same resume channel as permission).
+                    await ws.send_text(
+                        _ev(
+                            "version.propose",
+                            {
+                                "workflow_id": value.get("workflow_id"),
+                                "from_version": value.get("from_version"),
+                                "diff": value.get("diff"),
+                                "rationale": value.get("rationale"),
+                            },
+                        )
+                    )
     except Exception:
         # introspecting resume state must never stop the socket from opening
         pass
@@ -1984,7 +1998,7 @@ async def _stream_graph(
                 session_id, turn_id, _aid,
                 ((config.get("configurable") or {}).get("user_text") or "")[:120],
             )
-            await ws.send_text(
+            await safe_send(
                 emit("turn.start", {"turn_id": turn_id, "agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
             )
         else:
@@ -2032,7 +2046,7 @@ async def _stream_graph(
                             ):
                                 special_ids[tc.get("id")] = tc["name"]
                                 continue  # surfaced as widget/ref/workflow block, not a tool bubble
-                            await ws.send_text(
+                            await safe_send(
                                 emit("tool.start", {"name": tc["name"], "id": tc.get("id")})
                             )
             elif mode == "updates":
@@ -2050,7 +2064,7 @@ async def _stream_graph(
                                 ):
                                     special_ids[tc.get("id")] = nm
                                 if nm == "render_widget":
-                                    await ws.send_text(
+                                    await safe_send(
                                         emit("widget.emit", {
                                             "kind": args.get("kind", "widget"),
                                             "data": args.get("data"),
@@ -2058,7 +2072,7 @@ async def _stream_graph(
                                     )
                                 elif nm == "attach_ref":
                                     kind = args.get("kind", "file")
-                                    await ws.send_text(
+                                    await safe_send(
                                         emit("ref.emit", {
                                             "kind": kind,
                                             "name": args.get("name", ""),
@@ -2086,7 +2100,7 @@ async def _stream_graph(
                                     "turn_interrupt session=%s turn=%s kind=%s",
                                     session_id, turn_id, value.get("kind"),
                                 )
-                                await ws.send_text(
+                                await safe_send(
                                     emit("permission.request", {
                                         "tool": value.get("tool"),
                                         "args": value.get("args"),
@@ -2101,7 +2115,7 @@ async def _stream_graph(
                                     "turn_interrupt session=%s turn=%s kind=%s",
                                     session_id, turn_id, value.get("kind"),
                                 )
-                                await ws.send_text(
+                                await safe_send(
                                     emit("version.propose", {
                                         "workflow_id": value.get("workflow_id"),
                                         "from_version": value.get("from_version"),
@@ -2127,7 +2141,7 @@ async def _stream_graph(
                             elif nm in RENDER_TOOL_NAMES or nm in ARTIFACT_TOOL_NAMES:
                                 pass  # widget/ref emitted at agent-update; no bubble
                             elif tc_id:
-                                await ws.send_text(
+                                await safe_send(
                                     emit("tool.end", {"id": tc_id, "content": _truncate_for_ws(_tool_content_str(raw))})
                                 )
                     elif node_name == "permission":
@@ -2138,7 +2152,7 @@ async def _stream_graph(
                             if isinstance(c, str) and c.startswith(BLOCK_PREFIX):
                                 rest = c[len(BLOCK_PREFIX):]
                                 name, _, reason = rest.partition("]")
-                                await ws.send_text(
+                                await safe_send(
                                     emit("tool.end", {
                                         "name": name.strip(),
                                         "content": reason.strip() or c,

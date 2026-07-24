@@ -197,6 +197,11 @@ def get_def(wf_id: str) -> dict[str, Any] | None:
 
 def create_def(data: dict[str, Any]) -> dict[str, Any]:
     wf_id = data.get("id") or _new_id()
+    # A caller-supplied id flows straight into file paths below; reject anything
+    # that isn't a flat slug so "../" can't escape the workflows dir (path
+    # traversal → arbitrary file/dir write).
+    if data.get("id") and not wf_id.replace("-", "").replace("_", "").isalnum():
+        raise ValueError("workflow id must match [A-Za-z0-9_-]+")
     if _is_new_layout(wf_id) or _is_legacy(wf_id):
         raise ValueError(f"workflow {wf_id} already exists")
     raw = data.get("dsl")
@@ -374,12 +379,12 @@ def update_step(run_id: str, step_id: str, status: str, output: str = "") -> dic
     run = get_run(run_id)
     if not run:
         return None
-    for s in run["steps"]:
+    for s in run.get("steps", []):
         if s["id"] == step_id:
             s["status"] = status
             if output:
                 s["output"] = output
-    done = all(s["status"] in ("done", "failed") for s in run["steps"])
+    done = all(s["status"] in ("done", "failed") for s in run.get("steps", []))
     run["status"] = "done" if done else "running"
     run["updated"] = time.time()
     _write_json(_run_path(run_id), run)

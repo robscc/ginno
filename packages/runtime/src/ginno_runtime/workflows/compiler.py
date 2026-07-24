@@ -61,14 +61,52 @@ def _build_system(goal: str, context: dict, agent) -> str:
     )
 
 
+def _extract_write_json(text: str) -> str | None:
+    """Return the first brace-balanced JSON object following WRITE_OPEN.
+
+    The old greedy regex spanned to the *last* ``}`` in the reply, so a normal
+    answer like ``WRITE_JSON {"x":1}\\n\\nDone, config was {...}`` produced invalid
+    JSON and silently dropped the step's context write-back (the core write path).
+    A string-aware brace-balance scan fixes that.
+    """
+    i = text.find(WRITE_OPEN)
+    if i < 0:
+        return None
+    j = text.find("{", i + len(WRITE_OPEN))
+    if j < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for k in range(j, len(text)):
+        c = text[k]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[j : k + 1]
+    return None
+
+
 def _parse_writes(text: str) -> dict:
     if not text:
         return {}
-    m = _WRITE_RE.search(text)
-    if not m:
+    frag = _extract_write_json(text)
+    if not frag:
         return {}
     try:
-        data = json.loads(m.group(1))
+        data = json.loads(frag)
         return data if isinstance(data, dict) else {}
     except json.JSONDecodeError:
         return {}
@@ -144,7 +182,16 @@ def _step_node_factory(node: dict, model, tools: list, run_ctx: dict):
 
     async def step(state: WorkflowState, config=None) -> dict:
         agent = agents_reg.get_agent(node.get("agent"))
-        allowed = [t for t in tools if tool_allowed(agent, t.name)]
+        # Strip workflow-management tools from a step's toolset: a step has no
+        # legitimate need for them, and leaving workflow_propose_edit /
+        # workflow_run in would let the step model fire an interrupt (orphaned
+        # inside the engine → run silently reports "done" with lost output) or
+        # spawn an orphan nested run.
+        allowed = [
+            t
+            for t in tools
+            if tool_allowed(agent, t.name) and not t.name.startswith("workflow_")
+        ]
         bound = model.bind_tools(allowed) if allowed and hasattr(model, "bind_tools") else model
         tool_node = ToolNode(allowed) if allowed else None
         context = dict(state.get("context") or {})

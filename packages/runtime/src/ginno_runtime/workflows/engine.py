@@ -65,4 +65,25 @@ async def run_workflow(
     while yielded < len(evs):
         yield evs[yielded]
         yielded += 1
+    # Defence in depth: workflow_* tools are now stripped from steps, but if the
+    # graph is nonetheless paused on an interrupt, astream ends *normally* while
+    # the step is incomplete — report an error instead of falsely marking the run
+    # done (which would lose the step's output with no resume path).
+    paused = False
+    try:
+        snap = await graph.aget_state(config)
+        paused = bool(getattr(snap, "next", None)) or any(
+            getattr(t, "interrupts", None) for t in (getattr(snap, "tasks", ()) or ())
+        )
+    except Exception:
+        paused = False
+    if paused:
+        ev = {
+            "run_id": run_id,
+            "kind": "error",
+            "error": "workflow paused mid-step (unsupported interrupt); run aborted",
+        }
+        run_ctx["events"].append(ev)
+        yield ev
+        return
     yield {"run_id": run_id, "kind": "done"}
