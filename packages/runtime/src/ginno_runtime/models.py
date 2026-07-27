@@ -13,6 +13,20 @@ from typing import Any
 
 from . import providers as prov_mod
 
+# Per-request timeout (seconds) for chat calls. Without this the SDK falls back
+# to its ~600s default and a stalled gateway makes a turn hang for minutes (the
+# 7m49s "stuck at 'now creating doc'" symptom). A finite value fails fast on a
+# network stall while still allowing a long, steadily-streaming answer. NOTE:
+# ChatAnthropic's pydantic config only accepts a *number* here (not an
+# httpx.Timeout object), so we pass seconds. The *generator-level* stall (model
+# stuck mid-generation, not a network read) is handled separately by the
+# per-chunk stall watchdog in server._stream_graph (CHUNK_TIMEOUT_S).
+# Module-level so tests can monkeypatch a short value.
+CHAT_TIMEOUT_S = 180.0
+
+
+def _chat_timeout() -> float:
+    return CHAT_TIMEOUT_S
 
 def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     temperature = cfg.get("temperature")
@@ -69,6 +83,7 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
             temperature=temperature if temperature is not None else 0.7,
             model_kwargs=model_kwargs or {"max_tokens": 4096},
             streaming=True,
+            timeout=_chat_timeout(),
         )
         # Some Anthropic-compatible gateways (corporate model hubs / proxies) expect
         # the token in `Authorization: Bearer ...` instead of `x-api-key`. The official
@@ -90,6 +105,7 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         temperature=temperature if temperature is not None else 0.7,
         model_kwargs=model_kwargs or {"max_tokens": 8192},
         streaming=True,
+        timeout=_chat_timeout(),
     )
     # `enable_search` (None = follow the provider config) lets OpenAI-compatible
     # gateways such as Qwen / DashScope compatible-mode run the model's built-in

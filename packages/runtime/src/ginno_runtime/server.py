@@ -1937,6 +1937,11 @@ async def _run_resume(ws: WebSocket, graph, config: dict, resume_value: dict) ->
     await _stream_graph(ws, graph, config, command=Command(resume=resume_value))
 
 
+# Max seconds between stream chunks before the stall watchdog aborts the turn
+# (see chunked_stream in _stream_graph). Module-level so tests can shrink it.
+CHUNK_TIMEOUT_S = 180.0
+
+
 async def _stream_graph(
     ws: WebSocket,
     graph,
@@ -1976,11 +1981,29 @@ async def _stream_graph(
             except Exception:
                 ws_closed = True
 
+        async def keepalive() -> None:
+            # The WS receive loop is sequential, so it can't answer the client's
+            # app-level pings while a turn runs. If a tool/LLM step goes silent
+            # for >45s the frontend's watchdog closes the socket (the "stuck at
+            # 'now creating doc'" symptom). Send a harmless keepalive frame well
+            # under that window so the client's lastSeen keeps resetting.
+            try:
+                while not ws_closed:
+                    await asyncio.sleep(15)
+                    if ws_closed:
+                        break
+                    await safe_send(emit("keepalive", {}))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+
+        _ka = asyncio.create_task(keepalive())
+
         if command is not None:
             stream = graph.astream(command, config=config, stream_mode=["messages", "updates"])
         else:
             stream = graph.astream(input_state, config=config, stream_mode=["messages", "updates"])
-
         saw_interrupt = False
         special_ids: dict[str, str] = {}  # tool_call id -> special tool name (no bubble)
         slug = (config.get("configurable") or {}).get("project_slug", "default")
@@ -2003,7 +2026,27 @@ async def _stream_graph(
             )
         else:
             _log.info("turn_resume session=%s turn=%s agent=%s", session_id, turn_id, agent_id)
-        async for mode, payload in stream:
+
+        # Wall-clock stall watchdog: the SDK httpx read-timeout only covers
+        # *network* reads, NOT a stall inside the model generator or graph (the
+        # 7m49s "stuck at 'now creating doc'" case). Wrap the stream iterator so
+        # any chunk that takes longer than CHUNK_TIMEOUT_S cancels that __anext__
+        # and ends the stream -> the except below surfaces a fast `error` event
+        # instead of hanging. A legitimately long tool call is fine because its
+        # tool-result `updates` chunk resets the per-chunk clock.
+        async def chunked_stream():
+            it = stream.__aiter__()
+            while True:
+                try:
+                    yield await asyncio.wait_for(it.__anext__(), timeout=CHUNK_TIMEOUT_S)
+                except StopAsyncIteration:
+                    return
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        f"model/stream stall: no chunk for {CHUNK_TIMEOUT_S:.0f}s"
+                    )
+
+        async for mode, payload in chunked_stream():
             if mode == "messages":
                 chunk, msg_meta = payload
                 # Only AI message chunks carry streaming text / thinking /
@@ -2184,6 +2227,10 @@ async def _stream_graph(
         _log.exception("turn_error session=%s turn=%s", session_id, turn_id)
         await safe_send(emit("error", {"message": f"{type(e).__name__}: {e}"}))
     finally:
+        try:
+            _ka.cancel()
+        except Exception:
+            pass
         if ws_closed:
             _log.info(
                 "turn_client_gone session=%s turn=%s (client disconnected mid-turn; "
