@@ -225,9 +225,35 @@ export function ChatStream({
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+  // WebSocket liveness, surfaced in the composer so a dropped/stalled link is
+  // visible (and clickable to force a reconnect) instead of silently freezing.
+  const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">(
+    "connecting",
+  );
+  const connectRef = useRef<() => void>(() => {});
+  // Per-session cache: unsent composer draft + attachments + last-seen message
+  // snapshot, so switching sessions preserves each session's state (and the
+  // draft) with no empty-flash. On revisit we ALSO re-fetch the server's
+  // authoritative history in the background, so a turn that completed while you
+  // were on another session shows up in full (fixes "switch mid-reply -> reply
+  // lost / empty reply").
+  const sessionCacheRef = useRef<
+    Record<string, { messages: ChatMsg[]; input: string; attachments: Attachment[] }>
+  >({});
+  const curSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     liveIdRef.current = liveId;
   }, [liveId]);
+
+  // Drop cache entries for sessions that no longer exist (e.g. after delete) so
+  // they don't leak memory or resurrect a deleted conversation.
+  useEffect(() => {
+    const live = new Set(g.sessions.map((s) => s.id));
+    const cache = sessionCacheRef.current;
+    for (const id of Object.keys(cache)) {
+      if (!live.has(id)) delete cache[id];
+    }
+  }, [g.sessions]);
 
   // On session change: reset UI, load persisted history, then open the socket.
   useEffect(() => {
@@ -239,14 +265,38 @@ export function ChatStream({
     let lastSeen = Date.now();
     let sock: WebSocket | null = null;
 
-    setMessages([]);
+    // Save the session we're leaving so its latest in-memory conversation and
+    // unsent draft survive the switch (instead of being wiped).
+    const prev = curSessionIdRef.current;
+    if (prev && prev !== session.id) {
+      sessionCacheRef.current[prev] = { messages, input, attachments };
+    }
+    curSessionIdRef.current = session.id;
+
+    // Always clear transient per-turn UI state on switch.
     setLiveId(null);
+    liveIdRef.current = null;
     setStreamAgent(null);
     setPermission(null);
     setPropose(null);
     busyRef.current = false;
 
+    const cached = sessionCacheRef.current[session.id];
+    if (cached) {
+      // Revisit: restore synchronously (no empty-flash, keeps latest in-memory
+      // state incl. the unsent draft), then just (re)open the socket.
+      setMessages(cached.messages);
+      setInput(cached.input);
+      setAttachments(cached.attachments);
+    } else {
+      // First visit this session: clear + load persisted history below.
+      setMessages([]);
+      setInput("");
+      setAttachments([]);
+    }
+
     const connect = () => {
+      setWsStatus((s) => (s === "live" ? s : "connecting"));
       sock = openSessionSocket(session.id);
       wsRef.current = sock;
       // Every callback is guarded by `closed` (set by this effect's cleanup on
@@ -256,6 +306,7 @@ export function ChatStream({
       sock.onopen = () => {
         if (closed) return;
         g.setConnected(true);
+        setWsStatus("live");
         lastSeen = Date.now();
         // Self-heal a "stuck" turn: if a turn was in-flight when the socket
         // dropped, its message.end never arrived (server send hit the closed
@@ -316,38 +367,83 @@ export function ChatStream({
         pingTimer = watchTimer = null;
         if (closed) return; // stale socket — the new session owns state now
         g.setConnected(false);
+        setWsStatus("reconnecting");
         busyRef.current = false;
         timer = setTimeout(connect, 1500);
       };
+      connectRef.current = connect;
     };
 
-    // Load history FIRST, then connect — so events from a (re)connecting socket
-    // can't arrive before the history set and get clobbered by it. Live events
-    // after connect append on top of the loaded history as usual.
-    (async () => {
-      try {
-        const h = await getSessionHistory(session.id);
-        const list: Array<{
-          id?: string;
-          role: "user" | "assistant";
-          agentId?: string | null;
-          blocks: Block[];
-        }> = (h && h.messages) || [];
-        if (!closed && list.length) {
-          setMessages(
-            list.map((m) => ({
+    // Load history FIRST (only on first visit — a cached revisit already has the
+    // latest in-memory messages), then connect — so events from a (re)connecting
+    // socket can't arrive before the history set and get clobbered by it.
+    if (!cached) {
+      setWsStatus("connecting");
+      (async () => {
+        try {
+          const h = await getSessionHistory(session.id);
+          const list: Array<{
+            id?: string;
+            role: "user" | "assistant";
+            agentId?: string | null;
+            blocks: Block[];
+          }> = (h && h.messages) || [];
+          if (!closed && list.length) {
+            setMessages(
+              list.map((m) => ({
+                id: m.id ?? mid(),
+                role: m.role,
+                agentId: m.agentId ?? null,
+                blocks: m.blocks || [],
+              })),
+            );
+          }
+        } catch {
+          /* ignore */
+        }
+        if (!closed) connect();
+      })();
+    } else {
+      // Revisit: we already restored the cached snapshot synchronously (no
+      // flash). Re-fetch the server's authoritative history in the background
+      // so a turn that finished while we were on another session is shown in
+      // full. Only apply it if we're not mid-stream (liveId null) and the
+      // server actually has at least as many messages as our snapshot — this
+      // avoids clobbering an in-flight optimistic bubble or a live reconnect.
+      (async () => {
+        try {
+          const h = await getSessionHistory(session.id);
+          const list: Array<{
+            id?: string;
+            role: "user" | "assistant";
+            agentId?: string | null;
+            blocks: Block[];
+          }> = (h && h.messages) || [];
+          if (
+            !closed &&
+            curSessionIdRef.current === session.id &&
+            !liveIdRef.current &&
+            list.length >= (cached?.messages.length ?? 0)
+          ) {
+            const fresh = list.map((m) => ({
               id: m.id ?? mid(),
               role: m.role,
               agentId: m.agentId ?? null,
               blocks: m.blocks || [],
-            })),
-          );
+            }));
+            setMessages(fresh);
+            sessionCacheRef.current[session.id] = {
+              messages: fresh,
+              input: sessionCacheRef.current[session.id]?.input ?? "",
+              attachments: sessionCacheRef.current[session.id]?.attachments ?? [],
+            };
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
-      }
-      if (!closed) connect();
-    })();
+      })();
+      connect();
+    }
 
     return () => {
       closed = true;
@@ -830,6 +926,52 @@ export function ChatStream({
                   <Keyboard className="h-4 w-4" />
                 </button>
                 <span className="px-1 text-xs">/</span>
+                {(() => {
+                  const live = wsStatus === "live";
+                  const dot =
+                    wsStatus === "live"
+                      ? "#22c55e"
+                      : wsStatus === "offline"
+                        ? "#ef4444"
+                        : "#eab308";
+                  const label =
+                    wsStatus === "live"
+                      ? "已连接"
+                      : wsStatus === "reconnecting"
+                        ? "重连中"
+                        : wsStatus === "offline"
+                          ? "离线"
+                          : "连接中";
+                  const tip = live
+                    ? "实时连接正常"
+                    : wsStatus === "reconnecting"
+                      ? "连接中断，正在自动重连…（点击立即重试）"
+                      : wsStatus === "offline"
+                        ? "未连接到运行时（点击重试）"
+                        : "正在连接…";
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!live) connectRef.current();
+                      }}
+                      title={tip}
+                      aria-label={`连接状态：${label}${live ? "" : "，点击重连"}`}
+                      className={`ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
+                        live ? "cursor-default" : "cursor-pointer hover:bg-card2"
+                      }`}
+                      style={{ color: dot }}
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${
+                          live || wsStatus === "offline" ? "" : "animate-pulse"
+                        }`}
+                        style={{ background: dot }}
+                      />
+                      {label}
+                    </button>
+                  );
+                })()}
               </div>
               <button
                 onClick={send}
