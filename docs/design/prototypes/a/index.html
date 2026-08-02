@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>方案 A · 会话优先 — 设计原型</title>
+<style>
+  :root{
+    --bg:#0c0c10; --panel:#15151c; --panel2:#1b1b24; --panel3:#22222d;
+    --line:#2a2a36; --line2:#34343f;
+    --txt:#e8e8ee; --muted:#9a9aa8; --muted2:#6f6f7e;
+    --accent:#a855f7; --accent2:#c026d3; --accent-soft:rgba(168,85,247,.16);
+    --green:#22c55e; --blue:#3b82f6; --amber:#f59e0b; --red:#ef4444; --violet:#8b5cf6;
+    --radius:12px; --radius-sm:9px;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,"PingFang SC","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .banner{height:26px;display:flex;align-items:center;gap:8px;padding:0 14px;background:linear-gradient(90deg,rgba(168,85,247,.18),rgba(192,38,211,.10));border-bottom:1px solid var(--line);font-size:11px;color:#e9d5ff}
+  .banner b{color:#fff}
+  .banner .tag{margin-left:auto;color:var(--muted);font-family:var(--mono)}
+  .tabs{display:flex;gap:2px;padding:6px 12px 0;background:var(--panel);border-bottom:1px solid var(--line)}
+  .tab{padding:7px 12px;border-radius:8px 8px 0 0;color:var(--muted);cursor:pointer;font-size:12px;border:1px solid transparent;border-bottom:none}
+  .tab:hover{color:var(--txt);background:var(--panel2)}
+  .tab.on{color:#fff;background:var(--bg);border-color:var(--line)}
+  .tab .n{display:inline-block;width:15px;height:15px;line-height:15px;text-align:center;border-radius:5px;background:var(--panel3);color:var(--muted);font-size:10px;margin-right:6px}
+  .tab.on .n{background:var(--accent-soft);color:#e9d5ff}
+
+  .app{display:grid;grid-template-columns:248px 1fr 320px;height:calc(100vh - 26px - 38px);min-height:640px}
+  .app.narrow-right{grid-template-columns:248px 1fr 360px}
+
+  /* sidebar */
+  .side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+  .brand{display:flex;align-items:center;gap:9px;padding:14px 16px;border:1px dashed var(--line2);margin:10px;border-radius:10px;font-weight:700;font-size:14px}
+  .brand .star{color:var(--accent)}
+  .grp{padding:6px 12px}
+  .grp-h{display:flex;align-items:center;justify-content:space-between;color:var(--muted2);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:8px 6px 4px}
+  .grp-h .plus{cursor:pointer;color:var(--muted);font-size:14px;line-height:1}
+  .item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;color:var(--txt);cursor:pointer;position:relative}
+  .item:hover{background:var(--panel2)}
+  .item.on{background:var(--panel3)}
+  .item.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:3px;border-radius:3px;background:var(--accent)}
+  .ic{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:11px;flex:none}
+  .ic.b{background:rgba(59,130,246,.18);color:#93c5fd}
+  .ic.v{background:var(--accent-soft);color:#d8b4fe}
+  .ic.o{background:rgba(245,158,11,.18);color:#fcd34d}
+  .ic.g{background:rgba(34,197,94,.18);color:#86efac}
+  .item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .badge{font-size:9px;color:var(--violet);background:rgba(139,92,246,.16);border:1px solid rgba(139,92,246,.3);padding:1px 5px;border-radius:20px}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .dot.on{background:var(--green);box-shadow:0 0 0 3px rgba(34,197,94,.15)}
+  .dot.idle{background:var(--muted2)}
+  .side-foot{margin-top:auto;border-top:1px solid var(--line);padding:8px 12px}
+  .foot-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;color:var(--muted);cursor:pointer}
+  .foot-item:hover{background:var(--panel2);color:var(--txt)}
+  .me{display:flex;align-items:center;gap:9px;padding:10px;border-top:1px solid var(--line)}
+  .av{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#f472b6,#a855f7);flex:none}
+
+  /* main */
+  .main{display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+  .topbar{display:flex;align-items:center;gap:10px;padding:11px 18px;border-bottom:1px solid var(--line)}
+  .topbar .title{font-weight:600;font-size:14px}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;border:1px solid var(--line2);background:var(--panel2);color:var(--muted)}
+  .chip.run{color:#86efac;border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.10)}
+  .chip.run .dot{background:var(--green)}
+  .chip.model{margin-left:auto}
+  .topbar .kebab{color:var(--muted);cursor:pointer}
+
+  .chat{flex:1;overflow:auto;padding:22px 28px;display:flex;flex-direction:column;gap:18px}
+  .msg{max-width:760px;display:flex;gap:11px}
+  .msg.user{align-self:flex-end;flex-direction:row-reverse}
+  .bubble{padding:11px 14px;border-radius:14px;background:var(--panel2);border:1px solid var(--line)}
+  .msg.user .bubble{background:rgba(168,85,247,.14);border-color:rgba(168,85,247,.3)}
+  .msg .av2{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;flex:none;font-size:12px;background:rgba(59,130,246,.18);color:#93c5fd}
+  .who{font-size:11px;color:var(--muted);margin:0 0 5px 1px;display:flex;align-items:center;gap:8px}
+  .who .nm{color:var(--txt);font-weight:600}
+  .turn-node{margin-left:auto;font-size:9.5px;color:var(--violet);background:rgba(139,92,246,.14);border:1px solid rgba(139,92,246,.28);padding:1px 7px;border-radius:20px;cursor:help}
+  .card{margin-top:10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+  .card-h{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);font-weight:600;font-size:12px}
+  .card-row{display:flex;align-items:center;gap:9px;padding:8px 12px;font-size:12px}
+  .card-row + .card-row{border-top:1px solid var(--line)}
+  .card-row .st{margin-left:auto}
+  .refs{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .ref{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);font-size:11px;color:var(--muted);cursor:pointer}
+  .ref.wf{color:#d8b4fe;border-color:rgba(139,92,246,.35)}
+  .think{color:var(--muted);font-style:italic}
+  .dots{display:inline-flex;gap:3px}.dots i{width:5px;height:5px;border-radius:50%;background:var(--muted);animation:b 1s infinite}.dots i:nth-child(2){animation-delay:.2s}.dots i:nth-child(3){animation-delay:.4s}@keyframes b{0%,80%{opacity:.3}40%{opacity:1}}
+
+  /* derived-process run block inside chat (screen a3) */
+  .runblock{margin-top:6px;border:1px solid rgba(139,92,246,.4);border-radius:12px;background:linear-gradient(180deg,rgba(139,92,246,.10),var(--panel));overflow:hidden}
+  .runblock-h{display:flex;align-items:center;gap:9px;padding:10px 13px;border-bottom:1px solid var(--line)}
+  .runblock-h .nm{font-weight:600}
+  .runblock-h .live{margin-left:auto;display:flex;align-items:center;gap:6px;color:#86efac;font-size:11px}
+  .steps{padding:6px 6px 10px}
+  .step{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:9px}
+  .step:hover{background:var(--panel2)}
+  .step .sd{width:16px;height:16px;border-radius:50%;flex:none;margin-top:1px;display:grid;place-items:center;font-size:10px}
+  .step.done .sd{background:rgba(34,197,94,.2);color:#86efac}
+  .step.run .sd{background:rgba(59,130,246,.2);color:#93c5fd}
+  .step.run{background:rgba(59,130,246,.08);box-shadow:inset 2px 0 0 var(--blue)}
+  .step.wait .sd{background:var(--panel3);color:var(--muted2)}
+  .step .stxt{flex:1}
+  .step .stxt .h{font-size:12px;font-weight:600}
+  .step .stxt .s{font-size:11px;color:var(--muted)}
+  .step .meta{font-size:10px;color:var(--muted2);font-family:var(--mono)}
+  .runblock-foot{display:flex;gap:8px;padding:9px 13px;border-top:1px solid var(--line)}
+  .btn{padding:6px 12px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);color:var(--txt);font-size:11.5px;cursor:pointer}
+  .btn:hover{background:var(--panel3)}
+  .btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff;font-weight:600}
+  .btn.ghost{background:transparent}
+  .btn.danger{color:#fca5a5;border-color:rgba(239,68,68,.35)}
+
+  /* composer */
+  .composer{padding:12px 28px 18px;border-top:1px solid var(--line)}
+  .ctargets{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .ctarget{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);font-size:11.5px;color:var(--muted);cursor:pointer}
+  .ctarget.on{color:#fff;border-color:var(--accent);background:var(--accent-soft)}
+  .cbox{border:1px solid var(--line2);border-radius:12px;background:var(--panel2);padding:11px 13px}
+  .cbox .ph{color:var(--muted2)}
+  .cbox .crow{display:flex;align-items:center;margin-top:8px}
+  .cbox .crow .l{color:var(--muted2);font-size:12px}
+  .send{margin-left:auto;width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;color:#fff}
+
+  /* right panel */
+  .right{background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+  .rtabs{display:flex;gap:2px;padding:8px 10px 0;border-bottom:1px solid var(--line)}
+  .rtab{padding:7px 11px;border-radius:8px 8px 0 0;color:var(--muted);cursor:pointer;font-size:12px}
+  .rtab.on{color:#fff;background:var(--panel3)}
+  .rbody{flex:1;overflow:auto;padding:14px}
+  .r-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .r-h .t{font-weight:600;font-size:12.5px}
+  .sec-t{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted2);margin:14px 0 7px}
+
+  /* mini DAG (right) */
+  .dag{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .dagnode{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;border:1px solid var(--line);background:var(--panel);font-size:11.5px;margin:0 auto;width:fit-content;min-width:150px}
+  .dagnode + .dagnode{margin-top:0}
+  .dagnode.cur{border-color:var(--blue);box-shadow:0 0 0 2px rgba(59,130,246,.2)}
+  .dagnode.done{border-color:rgba(34,197,94,.4)}
+  .dagnode .d{width:8px;height:8px;border-radius:50%}
+  .dagnode .d.done{background:var(--green)} .dagnode .d.run{background:var(--blue);box-shadow:0 0 0 3px rgba(59,130,246,.2)} .dagnode .d.wait{background:var(--muted2)}
+  .edge{width:2px;height:12px;background:var(--line2);margin:0 auto}
+
+  .ctxrow{display:flex;justify-content:space-between;padding:6px 0;font-size:11.5px;border-bottom:1px solid var(--line)}
+  .ctxrow .k{color:var(--muted)} .ctxrow .v{font-family:var(--mono);color:#d8b4fe}
+
+  /* recipe library (a4) */
+  .lib{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:20px 28px;overflow:auto}
+  .recipecard{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:14px}
+  .recipecard .h{display:flex;align-items:center;gap:8px;font-weight:600}
+  .recipecard .desc{color:var(--muted);font-size:11.5px;margin:8px 0 10px;min-height:30px}
+  .recipecard .meta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .mini{font-size:10px;color:var(--muted);border:1px solid var(--line2);border-radius:20px;padding:1px 7px}
+
+  /* modal (a2) */
+  .modal-mask{position:absolute;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;z-index:5}
+  .modal{width:680px;max-width:92%;background:var(--panel);border:1px solid var(--line2);border-radius:14px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .modal-h{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;font-weight:600}
+  .modal-b{padding:16px 18px;max-height:62vh;overflow:auto}
+  .modal-f{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+  .range{display:flex;gap:8px;align-items:center;margin-bottom:14px}
+  .range select,.range input{background:var(--panel2);border:1px solid var(--line2);color:var(--txt);border-radius:8px;padding:6px 9px;font-size:12px}
+  .dslprev{font-family:var(--mono);font-size:11px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;white-space:pre;overflow:auto;color:#c4b5fd}
+  .diffcard{border:1px solid rgba(139,92,246,.45);border-radius:12px;overflow:hidden;margin-top:6px}
+  .diffcard-h{padding:10px 13px;background:rgba(139,92,246,.12);display:flex;align-items:center;gap:8px;font-weight:600;font-size:12px;color:#ddd6fe}
+  .diffcard-h .why{margin-left:0;color:var(--muted);font-weight:400;font-size:11px}
+  .dline{font-family:var(--mono);font-size:11px;padding:3px 13px;white-space:pre}
+  .dline.add{background:rgba(34,197,94,.12);color:#bbf7d0}
+  .dline.ctx{color:var(--muted)}
+  .dline.h{background:rgba(139,92,246,.10);color:#c4b5fd}
+
+  .note{font-size:11px;color:var(--muted);background:var(--panel2);border:1px dashed var(--line2);border-radius:9px;padding:9px 11px;margin:10px 0}
+  .note b{color:#fcd34d}
+  .hide{display:none!important}
+  .wrap{position:relative;height:100%}
+</style>
+</head>
+<body>
+<div class="banner"> 设计原型 · <b>方案 A · 会话优先</b>（Conversation-First：流程是对话的投影，主交互始终在聊天页）<span class="tag">design/session-workflow-a</span></div>
+<div class="tabs" id="tabs">
+  <div class="tab" data-s="a1"><span class="n">1</span>聊天主视图</div>
+  <div class="tab" data-s="a2"><span class="n">2</span>提炼为流程</div>
+  <div class="tab" data-s="a3"><span class="n">3</span>对话内运行</div>
+  <div class="tab" data-s="a4"><span class="n">4</span>配方库（次级）</div>
+</div>
+
+<div class="wrap">
+<!-- ============ SCREEN a1 : chat main ============ -->
+<div class="app narrow-right screen" data-s="a1">
+  <aside class="side">
+    <div class="brand"><span class="star">★</span> GinnoWork</div>
+    <div class="grp">
+      <div class="grp-h">Sessions <span class="plus">＋</span></div>
+      <div class="item on"><span class="ic b">⌘</span><span class="t">Morning Standup</span><span class="badge">流程</span></div>
+      <div class="item"><span class="ic v">&lt;/&gt;</span><span class="t">Code Review</span></div>
+      <div class="item"><span class="ic o">🔍</span><span class="t">Market Research</span></div>
+      <div class="item"><span class="ic g">▦</span><span class="t">Weekly Plan</span></div>
+    </div>
+    <div class="grp">
+      <div class="grp-h">Agents</div>
+      <div class="item"><span class="ic b">⌘</span><span class="t">Dev Agent</span><span class="dot on"></span></div>
+      <div class="item"><span class="ic o">🔍</span><span class="t">Research Agent</span><span class="dot idle"></span></div>
+      <div class="item"><span class="ic g">✎</span><span class="t">Writer Agent</span><span class="dot on"></span></div>
+    </div>
+    <div class="side-foot">
+      <div class="foot-item">📖 Knowledge Base</div>
+      <div class="foot-item">⚙ Settings</div>
+    </div>
+    <div class="me"><div class="av"></div><div><div style="font-weight:600">David Chen</div><div style="color:var(--muted2);font-size:11px">Pro Plan</div></div></div>
+  </aside>
+
+  <section class="main">
+    <div class="topbar">
+      <span class="title">Morning Standup</span>
+      <span class="chip"><span class="ic b" style="width:14px;height:14px;font-size:9px">⌘</span> Dev Agent</span>
+      <span class="chip run"><span class="dot"></span>派生流程运行中</span>
+      <span class="chip model">⚙ claude-3-7-sonnet</span>
+      <span class="kebab">⋮</span>
+    </div>
+    <div class="chat">
+      <div class="msg user"><div class="bubble">Hi Dev Agent，我有哪些待审 PR？</div></div>
+      <div class="msg">
+        <div class="av2">⌘</div>
+        <div style="flex:1">
+          <div class="who"><span class="nm">Dev Agent</span> · just now <span class="turn-node" title="该轮对话 = 派生流程节点①">↳ 流程节点 ①</span></div>
+          <div class="bubble">
+            这是你 5 个待审 PR 的实时分布：
+            <div class="card">
+              <div class="card-h">🚩 Open Pull Requests</div>
+              <div class="card-row">🟢 Merged — 12 PR<span class="st">✅</span></div>
+              <div class="card-row">🔵 In Progress — 3<span class="st"><span class="dots"><i></i><i></i><i></i></span></span></div>
+              <div class="card-row">⏳ Pending Review — 5<span class="st">○</span></div>
+            </div>
+            <div class="refs"><span class="ref">📄 CHANGELOG.md</span><span class="ref wf">⌁ 派生流程：PR Triage · v1</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg user"><div class="bubble">很好——把它固化成可重跑的流程，下次直接跑。</div></div>
+      <div class="msg">
+        <div class="av2">⌘</div>
+        <div style="flex:1">
+          <div class="who"><span class="nm">Dev Agent</span> <span class="turn-node" title="该轮触发提炼">↳ 触发提炼</span></div>
+          <div class="bubble"><span class="think">正在把这段对话提炼为流程草稿…</span> 已生成 4 节点草稿，<b>右栏「过程」</b>可预览并确认固化 →</div>
+        </div>
+      </div>
+    </div>
+    <div class="composer">
+      <div class="ctargets"><span class="ctarget on">⌘ Ask Dev</span><span class="ctarget">🔍 Ask Research</span><span class="ctarget">✎ Ask Writer</span><span class="ctarget">＋ New Session</span></div>
+      <div class="cbox"><div class="ph">向当前会话提问，或说“运行 PR Triage”…</div><div class="crow"><span class="l">📎  /</span><div class="send">↑</div></div></div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="rtabs"><span class="rtab">TODO</span><span class="rtab on">过程</span><span class="rtab">Artifacts</span></div>
+    <div class="rbody">
+      <div class="r-h"><span class="t">本会话派生流程 · PR Triage</span><span class="mini">v1</span></div>
+      <div class="note"><b>会话优先：</b>流程不是独立页面，而是<b>本会话的结构化投影</b>——每个对话轮对应一个节点（见消息上的「↳ 流程节点」标记）。</div>
+      <div class="dag">
+        <div class="dagnode done"><span class="d done"></span>① 拉取待审 PR</div><div class="edge"></div>
+        <div class="dagnode cur"><span class="d run"></span>② 逐个审查 (loop)</div><div class="edge"></div>
+        <div class="dagnode wait"><span class="d wait"></span>③ 高优先级？</div><div class="edge"></div>
+        <div class="dagnode wait"><span class="d wait"></span>④ 汇总通知</div>
+      </div>
+      <div class="sec-t">运行上下文</div>
+      <div class="ctxrow"><span class="k">repo</span><span class="v">robscc/ginno</span></div>
+      <div class="ctxrow"><span class="k">prs (in)</span><span class="v">5 items</span></div>
+      <div class="ctxrow"><span class="k">drafts (out)</span><span class="v">2 / 5</span></div>
+      <div style="margin-top:14px;display:flex;gap:8px"><button class="btn primary">▶ 在对话内运行</button><button class="btn">✎ 改流程</button></div>
+    </div>
+  </aside>
+</div>
+
+<!-- ============ SCREEN a2 : refine to workflow ============ -->
+<div class="app narrow-right screen hide" data-s="a2">
+  <aside class="side">
+    <div class="brand"><span class="star">★</span> GinnoWork</div>
+    <div class="grp"><div class="grp-h">Sessions <span class="plus">＋</span></div>
+      <div class="item on"><span class="ic b">⌘</span><span class="t">Morning Standup</span></div>
+      <div class="item"><span class="ic v">&lt;/&gt;</span><span class="t">Code Review</span></div></div>
+    <div class="side-foot"><div class="foot-item">⚙ Settings</div></div>
+    <div class="me"><div class="av"></div><div><div style="font-weight:600">David Chen</div></div></div>
+  </aside>
+  <section class="main" style="filter:saturate(.6) brightness(.7)">
+    <div class="topbar"><span class="title">Morning Standup</span><span class="chip"><span class="ic b" style="width:14px;height:14px;font-size:9px">⌘</span> Dev Agent</span></div>
+    <div class="chat"><div class="msg user"><div class="bubble">把它固化成可重跑的流程。</div></div></div>
+  </section>
+  <aside class="right" style="filter:saturate(.6) brightness(.7)"></aside>
+
+  <div class="modal-mask">
+    <div class="modal">
+      <div class="modal-h">⌁ 提炼为流程 · 从当前会话 <span class="mini" style="margin-left:auto">summarize-from-session</span></div>
+      <div class="modal-b">
+        <div class="range">
+          <span style="color:var(--muted)">提炼范围</span>
+          <select><option>全部 8 轮</option><option selected>第 1–4 轮（PR 拉取→审查）</option><option>手动框选…</option></select>
+          <span style="color:var(--muted2);font-size:11px">— 区别于现状“只取最近会话全部”，可选会话/区间</span>
+        </div>
+        <div class="diffcard">
+          <div class="diffcard-h">📐 DSL 草稿 v1 <span class="why">— 从所选 4 轮提炼，含 context 建议值，确认后才落版本</span></div>
+          <div class="dline h">@@ 新建 workflow "PR Triage" @@</div>
+          <div class="dline add">+ entry: fetch</div>
+          <div class="dline add">+ context.schema: { repo:string*, prs:array, drafts:array }</div>
+          <div class="dline add">+ context.initial: { repo:"robscc/ginno" }</div>
+          <div class="dline add">+ nodes: fetch(step) → each(loop over prs) → gate(branch) → notify(step)</div>
+          <div class="dline ctx">  // 识别到“对每个 PR 审查”→ loop；“有高优先级则通知”→ branch</div>
+        </div>
+        <div class="note">确认 = 创建为该会话的<b>派生配方 v1</b>（不覆盖任何已有配方）；并在会话内嵌一张「派生流程卡」。之后随时可在右栏「过程」查看/运行。</div>
+      </div>
+      <div class="modal-f"><button class="btn ghost">取消</button><button class="btn">改范围</button><button class="btn primary">✓ 应用并固化</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCREEN a3 : run inside chat ============ -->
+<div class="app narrow-right screen hide" data-s="a3">
+  <aside class="side">
+    <div class="brand"><span class="star">★</span> GinnoWork</div>
+    <div class="grp"><div class="grp-h">Sessions <span class="plus">＋</span></div>
+      <div class="item on"><span class="ic b">⌘</span><span class="t">Morning Standup</span><span class="badge">运行中</span></div>
+      <div class="item"><span class="ic v">&lt;/&gt;</span><span class="t">Code Review</span></div></div>
+    <div class="grp"><div class="grp-h">Agents</div>
+      <div class="item"><span class="ic b">⌘</span><span class="t">wf-a3f1·dev</span><span class="dot on"></span></div></div>
+    <div class="side-foot"><div class="foot-item">⚙ Settings</div></div>
+    <div class="me"><div class="av"></div><div><div style="font-weight:600">David Chen</div></div></div>
+  </aside>
+
+  <section class="main">
+    <div class="topbar"><span class="title">Morning Standup</span><span class="chip run"><span class="dot"></span>PR Triage · 运行 #12 进行中</span><span class="chip model">⚙ sonnet</span></div>
+    <div class="chat">
+      <div class="msg user"><div class="bubble">运行 PR Triage，repo 用 robscc/ginno。</div></div>
+      <div class="msg">
+        <div class="av2">⌘</div>
+        <div style="flex:1;max-width:760px">
+          <div class="who"><span class="nm">Dev Agent</span> · 在隔离 run-thread 执行，结果回流本会话</div>
+          <div class="runblock">
+            <div class="runblock-h"><span style="color:var(--violet)">⌁</span><span class="nm">PR Triage · run #12</span><span class="mini">v1</span><span class="live"><span class="dot on"></span>实时</span></div>
+            <div class="steps">
+              <div class="step done"><span class="sd">✓</span><div class="stxt"><div class="h">① 拉取待审 PR</div><div class="s">写入 context.prs = 5 items</div></div><span class="meta">4.2s</span></div>
+              <div class="step run"><span class="sd">●</span><div class="stxt"><div class="h">② 逐个审查 (loop 2/5)</div><div class="s">正在审查 PR #234 · 调 read_file / gh…</div></div><span class="meta"><span class="dots"><i></i><i></i><i></i></span></span></div>
+              <div class="step wait"><span class="sd">○</span><div class="stxt"><div class="h">③ 高优先级？(branch)</div></div></div>
+              <div class="step wait"><span class="sd">○</span><div class="stxt"><div class="h">④ 汇总通知</div></div></div>
+            </div>
+            <div class="runblock-foot">
+              <button class="btn">⏸ 暂停 / 改 context</button>
+              <button class="btn">⟲ 从本步重跑</button>
+              <button class="btn danger">■ 取消</button>
+              <button class="btn ghost" style="margin-left:auto">查看完整日志 →</button>
+            </div>
+          </div>
+          <div class="note" style="margin-top:8px"><b>关键差异：</b>运行<b>不再只跳走</b>——以可展开运行块留在对话流里，含暂停/取消/从本步重跑；右栏同步高亮。隔离靠独立 run-thread（fork agent <code>wf-a3f1·dev</code>，干净历史）。</div>
+        </div>
+      </div>
+    </div>
+    <div class="composer"><div class="cbox"><div class="ph">运行中也可继续对话：例如“把 #234 标成跳过”…</div><div class="crow"><span class="l">📎 ⌨ /</span><div class="send">↑</div></div></div></div>
+  </section>
+
+  <aside class="right">
+    <div class="rtabs"><span class="rtab">TODO</span><span class="rtab on">过程</span><span class="rtab">Artifacts</span></div>
+    <div class="rbody">
+      <div class="r-h"><span class="t">运行 #12 · 实时</span><span class="mini">2 / 4</span></div>
+      <div class="dag">
+        <div class="dagnode done"><span class="d done"></span>① 拉取 PR</div><div class="edge"></div>
+        <div class="dagnode cur"><span class="d run"></span>② 审查 loop 2/5</div><div class="edge"></div>
+        <div class="dagnode wait"><span class="d wait"></span>③ branch</div><div class="edge"></div>
+        <div class="dagnode wait"><span class="d wait"></span>④ notify</div>
+      </div>
+      <div class="sec-t">context（实时值，运行中只读）</div>
+      <div class="ctxrow"><span class="k">repo</span><span class="v">robscc/ginno</span></div>
+      <div class="ctxrow"><span class="k">drafts</span><span class="v">["#231…","#233…"]</span></div>
+      <div class="sec-t">来源 meta</div>
+      <div class="ctxrow"><span class="k">repo</span><span class="v">human</span></div>
+      <div class="ctxrow"><span class="k">drafts</span><span class="v">step:review</span></div>
+    </div>
+  </aside>
+</div>
+
+<!-- ============ SCREEN a4 : recipe library (secondary) ============ -->
+<div class="app screen hide" data-s="a4" style="grid-template-columns:248px 1fr">
+  <aside class="side">
+    <div class="brand"><span class="star">★</span> GinnoWork</div>
+    <div class="grp"><div class="grp-h">Sessions <span class="plus">＋</span></div>
+      <div class="item"><span class="ic b">⌘</span><span class="t">Morning Standup</span></div></div>
+    <div class="grp"><div class="grp-h" style="color:var(--violet)">配方库 · 次级</div>
+      <div class="item on"><span class="ic v">⌁</span><span class="t">PR Triage</span></div>
+      <div class="item"><span class="ic v">⌁</span><span class="t">Weekly Digest</span></div>
+      <div class="item"><span class="ic v">⌁</span><span class="t">Release Notes</span></div>
+    </div>
+    <div class="side-foot"><div class="foot-item">⚙ Settings → Workflows（原始 DSL）</div></div>
+    <div class="me"><div class="av"></div><div><div style="font-weight:600">David Chen</div></div></div>
+  </aside>
+  <section class="main">
+    <div class="topbar"><span class="title">配方库</span><span class="chip">可复用模板 · 套用即新建会话</span><span class="chip model">＋ 新建空配方</span></div>
+    <div class="lib">
+      <div class="recipecard">
+        <div class="h"><span class="ic v">⌁</span> PR Triage <span class="mini" style="margin-left:auto">v1</span></div>
+        <div class="desc">拉取待审 PR → 逐个审查 → 高优先级通知。来源：从 “Morning Standup” 会话提炼。</div>
+        <div class="meta"><span class="mini">4 节点</span><span class="mini">含 loop</span><span class="mini">context×3</span><span class="mini">派生自会话</span></div>
+        <div style="display:flex;gap:8px"><button class="btn primary">＋ 套用 → 新建会话</button><button class="btn">在本页运行</button></div>
+        <div class="note" style="margin-top:10px"><b>套用 = 新建一个会话</b>并注入流程骨架 + 预填 context，用户在该会话里运行/观察——回到方案 A 的主战场。</div>
+      </div>
+      <div class="recipecard">
+        <div class="h"><span class="ic v">⌁</span> Weekly Digest</div>
+        <div class="desc">汇总本周 commits/PR/TODO，生成周报草稿。</div>
+        <div class="meta"><span class="mini">3 节点</span><span class="mini">context×2</span></div>
+        <div style="display:flex;gap:8px"><button class="btn primary">＋ 套用 → 新建会话</button><button class="btn">运行</button></div>
+      </div>
+      <div class="recipecard">
+        <div class="h"><span class="ic v">⌁</span> Release Notes</div>
+        <div class="desc">按 tag 区间收集变更，起草 release notes。</div>
+        <div class="meta"><span class="mini">3 节点</span><span class="mini">branch</span></div>
+        <div style="display:flex;gap:8px"><button class="btn primary">＋ 套用 → 新建会话</button><button class="btn">运行</button></div>
+      </div>
+      <div class="recipecard" style="border-style:dashed;display:grid;place-items:center;color:var(--muted);min-height:120px;cursor:pointer">＋ 从某会话提炼新配方…</div>
+    </div>
+  </section>
+</div>
+</div>
+
+<script>
+  (function(){
+    var params=new URLSearchParams(location.search);
+    var s=params.get('screen')||'a1';
+    function show(id){
+      document.querySelectorAll('.screen').forEach(function(e){e.classList.toggle('hide',e.getAttribute('data-s')!==id)});
+      document.querySelectorAll('.tab').forEach(function(e){e.classList.toggle('on',e.getAttribute('data-s')===id)});
+    }
+    show(s);
+    document.getElementById('tabs').addEventListener('click',function(e){
+      var t=e.target.closest('.tab'); if(!t)return; show(t.getAttribute('data-s'));
+    });
+  })();
+</script>
+</body>
+</html>
