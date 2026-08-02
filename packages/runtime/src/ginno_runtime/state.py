@@ -15,3 +15,7 @@ class AgentState(TypedDict):
     agent_id: str
     active_skills: list[str]
     pending_tool_calls: list[dict]
+    # Files attached to the current turn (uploaded or path-referenced). Each
+    # item: {id, name, path, kind, schema?}. Injected into the system prompt
+    # and surfaced as file blocks in the UI history.
+    attached_files: list[dict]

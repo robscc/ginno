@@ -23,6 +23,14 @@ dependencies = [
 local = ["ollama>=0.3", "langchain-ollama>=0.1"]
 rag = ["lancedb>=0.10", "sentence-transformers>=3"]
 dev = ["ruff>=0.5", "pyinstaller>=6"]
+docs = [
+    "openpyxl>=3.1",
+    "pandas>=2.2",
+    "pypdf>=4",
+    "python-calamine>=0.2",
+    "python-docx>=1.1",
+    "python-pptx>=0.6",
+]
 
 [project.scripts]
 ginno-runtime = "ginno_runtime.server:main"

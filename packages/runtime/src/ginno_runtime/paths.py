@@ -58,9 +58,9 @@ _DEFAULT_SETTINGS = {
         },
     },
     "permissions": {
-        "allow": ["Read(*)", "Glob(*)", "Grep(*)", "read_file", "glob_files", "grep_files", "mcp_vault_read_*", "mcp_vault_list_*", "mcp_vault_search_*", "mcp_vault_directory_*", "mcp_vault_get_*"],
+        "allow": ["Read(*)", "Glob(*)", "Grep(*)", "read_file", "glob_files", "grep_files", "parse_document", "mcp_vault_read_*", "mcp_vault_list_*", "mcp_vault_search_*", "mcp_vault_directory_*", "mcp_vault_get_*"],
         "deny": ["Bash(rm -rf *)", "bash(rm -rf *)", "Bash(sudo *)", "bash(sudo *)", "Write(~/.ssh/**)", "Write(~/.gnupg/**)"],
-        "ask": ["Bash(*)", "bash(*)", "Write(*)", "Edit(*)", "write_file", "edit_file", "mcp_vault_write_*", "mcp_vault_edit_*", "mcp_vault_create_*", "mcp_vault_move_*"],
+        "ask": ["Bash(*)", "bash(*)", "Write(*)", "Edit(*)", "write_file", "edit_file", "analyze_table", "mcp_vault_write_*", "mcp_vault_edit_*", "mcp_vault_create_*", "mcp_vault_move_*"],
     },
     "hooks": {},
     "knowledge": {
@@ -244,6 +244,10 @@ def workflow_runs_dir(slug: str) -> Path:
 
 def artifacts_path(slug: str) -> Path:
     return project_dir(slug) / "artifacts.json"
+
+
+def files_index_path(slug: str) -> Path:
+    return project_dir(slug) / "files.json"
 
 
 def session_index_path(slug: str) -> Path:

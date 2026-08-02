@@ -17,16 +17,52 @@ import {
   X,
 } from "lucide-react";
 import type { WorkflowRun } from "@/lib/types";
+import { useGinno } from "@/lib/store";
 import { Markdown } from "./Markdown";
 
 export type Block =
   | { kind: "text"; text: string }
   | { kind: "image"; url: string }
+  | { kind: "file"; fileId?: string; name: string; path?: string; fileKind?: string }
   | { kind: "widget"; widgetKind: string; data: unknown }
   | { kind: "ref"; refKind: string; name: string; refId?: string }
   | { kind: "tool"; id?: string; name: string; content: string; pending: boolean }
   | { kind: "thinking"; text: string }
   | { kind: "workflow"; run: WorkflowRun };
+
+type FileBlock = Extract<Block, { kind: "file" }>;
+
+const TABLE_KINDS = new Set(["spreadsheet", "table"]);
+
+/** Clickable file chips (user bubble + replayed history). Opens the preview. */
+export function FileChips({ files }: { files: FileBlock[] }) {
+  const g = useGinno();
+  if (!files.length) return null;
+  return (
+    <div className="mb-1 flex flex-wrap gap-1.5">
+      {files.map((f, i) => {
+        const clickable = !!f.fileId;
+        return (
+          <button
+            key={f.fileId ?? `${f.name}-${i}`}
+            disabled={!clickable}
+            onClick={() =>
+              clickable &&
+              g.openPreview({ id: f.fileId!, name: f.name, path: f.path ?? "", kind: f.fileKind })
+            }
+            title={clickable ? "点击预览" : f.path}
+            className={`flex items-center gap-1.5 rounded-lg border border-line bg-card2 px-2 py-1 text-xs text-txt ${
+              clickable ? "cursor-pointer hover:border-violet/50" : "cursor-default"
+            }`}
+          >
+            <span>{TABLE_KINDS.has(f.fileKind ?? "") ? "📊" : "📄"}</span>
+            <span className="max-w-[220px] truncate">{f.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 // Strip "[attached <kind>: <name>]" patterns that the LLM sometimes repeats in its text
 // (violating the "don't repeat tool results" instruction). These are shown as ref chips instead.
@@ -366,6 +402,8 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
       out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} />);
     } else if (b.kind === "thinking") {
       out.push(<ThinkingBlock key={key++} text={b.text} live={!!streaming && last} />);
+    } else if (b.kind === "file") {
+      out.push(<FileChips key={key++} files={[b]} />);
     }
     // refs rendered outside
     i++;
@@ -375,6 +413,7 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
 
 /** User bubble content: attached images as a gallery, text kept verbatim. */
 export function UserBlocks({ blocks }: { blocks: Block[] }) {
+  const files = blocks.filter((b): b is FileBlock => b.kind === "file");
   const imgs = blocks
     .filter((b): b is Extract<Block, { kind: "image" }> => b.kind === "image")
     .map((b) => b.url);
@@ -383,6 +422,7 @@ export function UserBlocks({ blocks }: { blocks: Block[] }) {
     .map((b) => b.text);
   return (
     <>
+      <FileChips files={files} />
       {imgs.length > 0 && <ImageGallery urls={imgs} />}
       {texts.map((t, i) => (
         <div key={i} className="whitespace-pre-wrap">

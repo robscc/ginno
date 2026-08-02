@@ -102,3 +102,47 @@ def test_artifact_list_sorted_desc(isolated_home):
     items = art_store.list_artifacts("default")
     assert items[0]["created"] >= items[-1]["created"]
     assert len(items) == 2
+
+
+def test_artifact_delete(isolated_home):
+    a = art_store.add_artifact("default", "file", "notes.md", "/v/notes.md")
+    b = art_store.add_artifact("default", "doc", "plan.md", "/v/plan.md")
+    assert art_store.delete_artifact("default", a["id"]) is True
+    # foolproof: re-deleting, empty ids, and unknown ids never touch anything
+    assert art_store.delete_artifact("default", a["id"]) is False
+    assert art_store.delete_artifact("default", "") is False
+    assert art_store.delete_artifact("default", "nope") is False
+    assert [it["id"] for it in art_store.list_artifacts("default")] == [b["id"]]
+    assert art_store.delete_artifact("default", b["id"]) is True
+    assert art_store.list_artifacts("default") == []
+
+
+def test_artifact_delete_scoped_to_slug(isolated_home):
+    a = art_store.add_artifact("default", "file", "x.md", "/v/x.md")
+    assert art_store.delete_artifact("other", a["id"]) is False
+    assert len(art_store.list_artifacts("default")) == 1
+
+
+def test_artifact_get_and_update(isolated_home):
+    a = art_store.add_artifact("default", "file", "report.xlsx", "/v/report.xlsx")
+    assert art_store.get_artifact("default", a["id"])["name"] == "report.xlsx"
+    assert art_store.get_artifact("default", "") is None
+    assert art_store.get_artifact("default", "nope") is None
+
+    # whitelist applies; system fields are immune
+    upd = art_store.update_artifact(
+        "default",
+        a["id"],
+        {"name": "Q3 Report", "schema": "[Sheet1] 3行×2列", "id": "hax", "created": 0},
+    )
+    assert upd["name"] == "Q3 Report"
+    assert upd["schema"] == "[Sheet1] 3行×2列"
+    assert upd["id"] == a["id"] and upd["created"] == a["created"]
+
+    # blank name rejects the WHOLE patch (nothing half-applied)
+    assert art_store.update_artifact("default", a["id"], {"name": "  ", "kind": "link"}) is None
+    assert art_store.get_artifact("default", a["id"])["kind"] == "file"
+
+    assert art_store.update_artifact("default", "nope", {"name": "x"}) is None
+    # edits are persisted (file-backed, re-read from disk)
+    assert art_store.get_artifact("default", a["id"])["name"] == "Q3 Report"

@@ -133,3 +133,19 @@ def test_kb_servers_empty(client):
 # ---------------------------- artifacts ---------------------------- #
 def test_artifacts_initially_empty(client):
     assert client.get("/api/artifacts?project_slug=default").json() == []
+
+
+def test_artifact_delete_endpoint(client):
+    from ginno_runtime import artifacts as art_store
+
+    a = art_store.add_artifact("default", "file", "notes.md", "/v/notes.md")
+    listed = client.get("/api/artifacts?project_slug=default").json()
+    assert any(it["id"] == a["id"] for it in listed)
+    assert client.delete(f"/api/artifacts/{a['id']}?project_slug=default").json() == {"ok": True}
+    assert client.get("/api/artifacts?project_slug=default").json() == []
+    # re-deleting an already-deleted id reports ok:false (idempotent, no side effects)
+    assert client.delete(f"/api/artifacts/{a['id']}").json() == {"ok": False}
+
+
+def test_artifact_delete_unknown_id(client):
+    assert client.delete("/api/artifacts/nope").json() == {"ok": False}

@@ -249,6 +249,148 @@ export async function listArtifacts(project_slug = "default") {
   return json<import("./types").Artifact[]>(`${BASE}/artifacts?project_slug=${project_slug}`);
 }
 
+// Reference-only delete: removes the panel entry, never the file on disk.
+export async function deleteArtifact(id: string, project_slug = "default") {
+  return json<{ ok: boolean }>(
+    `${BASE}/artifacts/${id}?project_slug=${project_slug}`,
+    { method: "DELETE" },
+  );
+}
+
+// Inspector payload: panel record + file facts + the exact injectable schema.
+export async function getArtifactMetadata(id: string, project_slug = "default") {
+  return json<import("./types").ArtifactMeta>(
+    `${BASE}/artifacts/${id}/metadata?project_slug=${project_slug}`,
+  );
+}
+
+// User corrections from the inspector. schema → injection override;
+// file_kind → registry classification fix (steers analyze_table vs parse_document).
+export async function updateArtifact(
+  id: string,
+  patch: import("./types").ArtifactPatch,
+  project_slug = "default",
+) {
+  return json<{ ok: boolean; error?: string; artifact?: import("./types").Artifact }>(
+    `${BASE}/artifacts/${id}?project_slug=${project_slug}`,
+    { method: "PUT", headers: H, body: JSON.stringify(patch) },
+  );
+}
+
+// ---- files (upload / preview — docs/file-parsing-research.md §7) ----
+export async function uploadFile(sessionId: string, file: File) {
+  const fd = new FormData();
+  fd.append("session_id", sessionId);
+  fd.append("file", file);
+  // NOTE: no Content-Type header — the browser sets the multipart boundary.
+  return json<{ ok: boolean; error?: string; file?: import("./types").FileEntry }>(
+    `${BASE}/files`,
+    { method: "POST", body: fd },
+  );
+}
+
+export async function listFiles(project_slug = "default", session_id?: string) {
+  const q = session_id ? `&session_id=${encodeURIComponent(session_id)}` : "";
+  return json<import("./types").FileEntry[]>(`${BASE}/files?project_slug=${project_slug}${q}`);
+}
+
+// Attach an OS file by native path (Tauri desktop drag & drop — WKWebView can't
+// expose dropped files to JS, so the shell forwards the path and the sidecar
+// copies + registers it). Returns the same shape as uploadFile.
+export async function attachFilePath(sessionId: string, path: string) {
+  return json<{ ok: boolean; error?: string; file?: import("./types").FileEntry }>(
+    `${BASE}/files/attach-path`,
+    { method: "POST", headers: H, body: JSON.stringify({ session_id: sessionId, path }) },
+  );
+}
+
+// Temporary telemetry for diagnosing WKWebView drag & drop (see ChatStream.addFiles).
+export async function debugLog(payload: unknown) {
+  try {
+    await fetch(`${BASE}/debug-log`, {
+      method: "POST",
+      headers: H,
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+export async function getFilePreview(
+  fileId: string,
+  opts: { sheet?: string; offset?: number; limit?: number } = {},
+) {
+  const p = new URLSearchParams();
+  if (opts.sheet) p.set("sheet", opts.sheet);
+  p.set("offset", String(opts.offset ?? 0));
+  p.set("limit", String(opts.limit ?? 100));
+  return json<import("./types").FilePreview>(`${BASE}/files/${fileId}/preview?${p.toString()}`);
+}
+
+// Download the original file (fmt=raw) or export one sheet as CSV (fmt=csv).
+export function fileDownloadUrl(
+  fileId: string,
+  opts: { fmt?: "raw" | "csv"; sheet?: string } = {},
+) {
+  const p = new URLSearchParams();
+  if (opts.fmt && opts.fmt !== "raw") p.set("fmt", opts.fmt);
+  if (opts.sheet) p.set("sheet", opts.sheet);
+  const q = p.toString();
+  return `${BASE}/files/${fileId}/download${q ? `?${q}` : ""}`;
+}
+
+// Browser-side save: fetch as blob → object URL → anchor click. Used in dev /
+// plain browsers; the Tauri webview can't trigger downloads this way, so the
+// desktop UI calls saveFileToDownloads instead.
+export async function downloadFile(
+  fileId: string,
+  fallbackName: string,
+  opts: { fmt?: "raw" | "csv"; sheet?: string } = {},
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(fileDownloadUrl(fileId, opts));
+    if (!res.ok) {
+      let msg = `下载失败（HTTP ${res.status}）`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) msg = j.detail;
+      } catch {
+        /* response wasn't JSON — keep the generic message */
+      }
+      return { ok: false, error: msg };
+    }
+    const cd = res.headers.get("content-disposition") || "";
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    const plain = /filename="([^"]+)"/i.exec(cd);
+    const name = star ? decodeURIComponent(star[1]) : (plain?.[1] ?? fallbackName);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "无法连接运行时" };
+  }
+}
+
+// Desktop-side save: the sidecar copies the file (or its CSV export) into the
+// OS Downloads folder and reports the destination path.
+export async function saveFileToDownloads(
+  fileId: string,
+  opts: { fmt?: "raw" | "csv"; sheet?: string } = {},
+) {
+  return json<{ ok: boolean; error?: string; path?: string; name?: string }>(
+    `${BASE}/files/${fileId}/save-to-downloads`,
+    { method: "POST", headers: H, body: JSON.stringify(opts) },
+  );
+}
+
 // ---- settings / mcp / skills / kb ----
 export async function getSettings() {
   return json<Record<string, unknown>>(`${BASE}/settings`);

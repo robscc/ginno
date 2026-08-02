@@ -99,6 +99,70 @@ export interface Artifact {
   ref: string;
   session_id?: string | null;
   created: number;
+  schema?: string; // user-corrected schema summary (prompt-injection override)
+}
+
+// Metadata inspector payload for one artifact (GET /api/artifacts/{id}/metadata).
+export interface ArtifactMeta {
+  ok: boolean;
+  error?: string;
+  artifact?: Artifact;
+  file?: FileEntry | null;
+  exists?: boolean;
+  schema?: string;
+  schema_source?: "override" | "computed" | "";
+}
+
+// Inspector edits (PUT /api/artifacts/{id}). schema = injection override;
+// file_kind = registry classification correction.
+export interface ArtifactPatch {
+  name?: string;
+  kind?: string;
+  schema?: string;
+  file_kind?: string;
+}
+
+// ---- files (upload / preview) ----
+export interface FileEntry {
+  id: string;
+  name: string;
+  path: string;
+  kind: string; // spreadsheet | table | document | presentation | pdf | data | text
+  mime?: string;
+  size?: number;
+  session_id?: string;
+  artifact_id?: string | null;
+  stale?: boolean;
+}
+
+export interface FilePreviewSheet {
+  name: string;
+  rows: number;
+  cols: number;
+}
+
+export interface FilePreviewColumn {
+  name: string;
+  dtype: string;
+}
+
+// Tables → paginated grid; documents → markdown. Discriminated by `kind`.
+export interface FilePreview {
+  ok: boolean;
+  error?: string;
+  file?: FileEntry;
+  kind: string;
+  // table kinds:
+  sheets?: FilePreviewSheet[];
+  sheet?: string;
+  columns?: FilePreviewColumn[];
+  rows?: string[][];
+  total_rows?: number;
+  offset?: number;
+  limit?: number;
+  // document kinds:
+  markdown?: string;
+  metadata?: Record<string, unknown>;
 }
 
 // ---- knowledge base / LLMWiki ----

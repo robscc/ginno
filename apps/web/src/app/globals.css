@@ -208,3 +208,18 @@ html.light .hljs-name {
 .lightbox-img {
   animation: ginno-zoom-in 0.18s ease-out;
 }
+
+/* artifact metadata inspector popover */
+@keyframes ginno-pop-left {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.meta-pop-in {
+  animation: ginno-pop-left 0.16s ease-out;
+}

@@ -12,7 +12,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
-use tauri::Manager;
+use tauri::{DragDropEvent, Manager, WindowEvent};
 use tauri_plugin_shell::ShellExt;
 
 const SIDECAR_PORT: u16 = 8787;
@@ -45,14 +45,91 @@ fn dirs_home(app: &tauri::App) -> std::path::PathBuf {
     home.join(".ginno")
 }
 
+/// Reclaim the sidecar port from a stale `ginno-runtime`, if one holds it.
+///
+/// The packaged sidecar is rebuilt *in place*: if a previous app instance's
+/// sidecar is still alive when a new build replaces its binary, the old
+/// process keeps the port but can no longer load anything — its next lazy
+/// module import reads the replaced archive and dies with a zlib error
+/// (`Error -3 while decompressing data`), surfacing as broken chat turns.
+/// Such a process is unrecoverable; kill it (and only it — verified by
+/// process name) so the fresh sidecar can bind.
+#[cfg(not(debug_assertions))]
+fn kill_stale_sidecar() {
+    use std::process::Command;
+
+    let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
+    if TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_err() {
+        return; // port already free
+    }
+    let Ok(list) = Command::new("lsof")
+        .args(["-t", &format!("-iTCP:{SIDECAR_PORT}"), "-sTCP:LISTEN"])
+        .output()
+    else {
+        return;
+    };
+    for pid in String::from_utf8_lossy(&list.stdout).split_whitespace() {
+        // Never kill a stranger on the port — only a ginno-runtime of ours.
+        let is_ours = Command::new("ps")
+            .args(["-p", pid, "-o", "comm="])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("ginno-runtime"))
+            .unwrap_or(false);
+        if is_ours {
+            let _ = Command::new("kill").arg(pid).status();
+        }
+    }
+    // Wait for the port to free up; escalate to SIGKILL once if it lingers.
+    let mut escalated = false;
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(100));
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_err() {
+            return;
+        }
+        if !escalated {
+            escalated = true;
+            if let Ok(list) = Command::new("lsof")
+                .args(["-t", &format!("-iTCP:{SIDECAR_PORT}"), "-sTCP:LISTEN"])
+                .output()
+            {
+                for pid in String::from_utf8_lossy(&list.stdout).split_whitespace() {
+                    let _ = Command::new("kill").arg("-9").arg(pid).status();
+                }
+            }
+        }
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        // WKWebView never fires the HTML5 `ondrop` for files dragged from the
+        // Finder, so the composer's JS drop handler can't see them. Handle the
+        // OS-level drop natively and forward the file paths to the page via
+        // `window.__ginnoFileDrop` (defined in ChatStream), which attaches them
+        // through the sidecar's /api/files/attach-path endpoint.
+        .on_window_event(|window, event| {
+            if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
+                if paths.is_empty() {
+                    return;
+                }
+                if let Some(webview) = window.get_webview_window("main") {
+                    let paths_json =
+                        serde_json::to_string(paths).unwrap_or_else(|_| "[]".to_string());
+                    let _ = webview.eval(&format!(
+                        "window.__ginnoFileDrop && window.__ginnoFileDrop({paths_json});"
+                    ));
+                }
+            }
+        })
         .setup(|app| {
             // Spawn the bundled sidecar in release builds.
             // In dev, the user runs `pnpm dev:runtime` manually.
             #[cfg(not(debug_assertions))]
             {
+                // A previous instance's sidecar may still hold the port (its
+                // binary replaced by a rebuild → unusable); reclaim it first.
+                kill_stale_sidecar();
                 let sidecar = app
                     .shell()
                     .sidecar("ginno-runtime")

@@ -13,15 +13,26 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel
 
 from . import agents as agents_reg
+from . import files as files_mod
 from . import paths
 from . import providers as prov_mod
 from .agents.memory import ensure_agent_memory
@@ -308,17 +319,25 @@ async def list_sessions(project_slug: str | None = None) -> list[dict]:
     ]
 
 
-@app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str) -> dict | None:
+def _resolve_session_meta(session_id: str) -> dict | None:
+    """Find a session's meta (with project_slug/workspace) in memory or on disk."""
     s = _SESSIONS.get(session_id)
     if s:
-        return {k: v for k, v in s.items() if k != "graph"}
+        return s
     for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
         slug = slug_dir.parent.parent.name
         for m in _session_meta_list(slug):
             if m.get("id") == session_id:
                 return m
     return None
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str) -> dict | None:
+    m = _resolve_session_meta(session_id)
+    if m is None:
+        return None
+    return {k: v for k, v in m.items() if k != "graph"}
 
 
 class PatchSessionRequest(BaseModel):
@@ -491,7 +510,9 @@ def _run_id_in(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _messages_to_ui(messages: list[Any], agent_id: str | None) -> list[dict]:
+def _messages_to_ui(
+    messages: list[Any], agent_id: str | None, attached_files: list[dict] | None = None
+) -> list[dict]:
     """Convert stored LangChain messages into the chat UI's {role, blocks} shape.
 
     Consecutive assistant steps between two human messages are merged into a
@@ -519,6 +540,19 @@ def _messages_to_ui(messages: list[Any], agent_id: str | None) -> list[dict]:
         if isinstance(m, HumanMessage):
             flush_assistant()
             blocks = _content_ui_blocks(getattr(m, "content", ""))
+            if attached_files and not ui:
+                # first user bubble carries the turn's file chips
+                file_blocks = [
+                    {
+                        "kind": "file",
+                        "fileId": f.get("id"),
+                        "name": f.get("name"),
+                        "path": f.get("path"),
+                        "fileKind": f.get("kind"),
+                    }
+                    for f in attached_files
+                ]
+                blocks = file_blocks + blocks
             if blocks:
                 ui.append({"id": getattr(m, "id", None), "role": "user", "blocks": blocks})
         elif isinstance(m, AIMessage):
@@ -579,9 +613,10 @@ async def get_session_history(session_id: str) -> dict:
     if not tup or not tup.checkpoint:
         return {"ok": True, "messages": []}
     messages = (tup.checkpoint.get("channel_values") or {}).get("messages") or []
+    attached = (tup.checkpoint.get("channel_values") or {}).get("attached_files") or []
     meta, _ = (_find_meta(session_id) or ({}, None))
     agent_id = meta.get("agent_id") if isinstance(meta, dict) else None
-    return {"ok": True, "messages": _messages_to_ui(messages, agent_id)}
+    return {"ok": True, "messages": _messages_to_ui(messages, agent_id, attached)}
 
 
 @app.get("/api/skills")
@@ -1025,6 +1060,343 @@ async def await_workflow_run_endpoint(run_id: str) -> dict:
 @app.get("/api/artifacts")
 async def list_artifacts_endpoint(project_slug: str = "default") -> list[dict]:
     return art_store.list_artifacts(project_slug)
+
+
+@app.delete("/api/artifacts/{artifact_id}")
+async def delete_artifact_endpoint(artifact_id: str, project_slug: str = "default") -> dict:
+    """Remove an artifact entry from the panel. The underlying file (if any)
+    is NOT touched on disk — deletion is reference-only and recoverable."""
+    return {"ok": art_store.delete_artifact(project_slug, artifact_id)}
+
+
+@app.get("/api/artifacts/{artifact_id}/metadata")
+async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "default") -> dict:
+    """Full inspector payload for one artifact: the panel record, its file
+    registry entry (size/mtime/kind), whether the file still exists on disk,
+    and the EXACT schema summary that prompt injection would use — with its
+    provenance (user override vs auto-computed) so the UI can show both."""
+    from .files import extractors as files_ex
+
+    art = art_store.get_artifact(project_slug, artifact_id)
+    if art is None:
+        return {"ok": False, "error": "not found"}
+    file_entry = None
+    exists = False
+    schema = ""
+    schema_source = ""
+    ref = art.get("ref") or ""
+    if art.get("kind") == "file" and ref:
+        reg = files_mod.get_registry(project_slug)
+        file_entry = reg.find_by_path(ref)
+        path = (file_entry or {}).get("path") or ref
+        exists = Path(path).is_file()
+        override = (art.get("schema") or "").strip()
+        effective_kind = (file_entry or {}).get("kind") or files_ex.classify(path)
+        if override:
+            schema, schema_source = override, "override"
+        elif effective_kind in ("spreadsheet", "table"):
+            schema = _compact_schema(path)
+            schema_source = "computed" if schema else ""
+    return {
+        "ok": True,
+        "artifact": art,
+        "file": file_entry,
+        "exists": exists,
+        "schema": schema,
+        "schema_source": schema_source,
+    }
+
+
+@app.put("/api/artifacts/{artifact_id}")
+async def update_artifact_endpoint(
+    artifact_id: str, data: dict, project_slug: str = "default"
+) -> dict:
+    """User corrections from the metadata inspector. ``name/kind/ref/schema``
+    land on the artifact record (``schema`` becomes the injection override);
+    ``file_kind`` corrects the registry's classification, which steers the
+    prompt's tool guidance (analyze_table vs parse_document)."""
+    if art_store.get_artifact(project_slug, artifact_id) is None:
+        return {"ok": False, "error": "not found"}
+    patch = {k: data[k] for k in ("name", "kind", "ref", "schema") if data.get(k) is not None}
+    updated = art_store.update_artifact(project_slug, artifact_id, patch)
+    if updated is None:
+        return {"ok": False, "error": "名称不能为空"}
+    file_kind = (data.get("file_kind") or "").strip()
+    if file_kind and updated.get("kind") == "file" and updated.get("ref"):
+        files_mod.get_registry(project_slug).set_kind(updated["ref"], file_kind)
+    return {"ok": True, "artifact": updated}
+
+
+# ---- files (upload / preview — see docs/file-parsing-research.md §7) ----
+UPLOAD_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+_UNSAFE_NAME_RE = re.compile(r"[^\w一-鿿.\-]+", re.UNICODE)
+
+
+def _safe_upload_name(name: str) -> str:
+    base = Path(name).name
+    cleaned = _UNSAFE_NAME_RE.sub("_", base).strip("._")
+    return cleaned or "file"
+
+
+@app.post("/api/files")
+async def upload_file_endpoint(
+    session_id: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+) -> dict:
+    """Upload a file attached in the composer; lands in the session workspace
+    under ``uploads/<session_id>/`` and becomes a ``kind=file`` artifact."""
+    meta = _resolve_session_meta(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+    slug = meta.get("project_slug") or "default"
+    workspace = meta.get("workspace") or str(paths.home() / "ws")
+    name = _safe_upload_name(file.filename or "file")
+    data = await file.read()
+    if len(data) > UPLOAD_MAX_BYTES:
+        return {
+            "ok": False,
+            "error": f"文件过大（上限 {UPLOAD_MAX_BYTES // 1024 // 1024}MB）",
+        }
+    dest_dir = Path(workspace).expanduser() / "uploads" / session_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{uuid.uuid4().hex[:8]}-{name}"
+    dest.write_bytes(data)
+    # ref must match the registry's normalized path (symlink-safe), or the
+    # UI's artifact → preview/download lookup by path misses (macOS /tmp).
+    art = art_store.add_artifact(slug, "file", name, files_mod.norm_path(dest), session_id)
+    entry = files_mod.get_registry(slug).register(
+        name,
+        dest,
+        mime=file.content_type or "",
+        size=len(data),
+        session_id=session_id,
+        artifact_id=art.get("id"),
+    )
+    return {"ok": True, "file": entry}
+
+
+@app.get("/api/files")
+async def list_files_endpoint(
+    project_slug: str = "default", session_id: str | None = None
+) -> list[dict]:
+    reg = files_mod.get_registry(project_slug)
+    return reg.list_session(session_id) if session_id else reg.list_all()
+
+
+@app.post("/api/files/attach-path")
+async def attach_file_by_path_endpoint(req: dict) -> dict:
+    """Attach an OS file the user dragged into the desktop app.
+
+    WKWebView can't expose dropped files to JS, so the Tauri shell forwards the
+    native path here; the sidecar (same filesystem) copies it into the session
+    workspace and registers it like an upload.
+    """
+    import shutil
+
+    from .files import extractors as files_ex
+
+    session_id = req.get("session_id") or ""
+    src = req.get("path") or ""
+    meta = _resolve_session_meta(session_id)
+    if meta is None:
+        return {"ok": False, "error": f"session not found: {session_id}"}
+    slug = meta.get("project_slug") or "default"
+    p = Path(src).expanduser()
+    if not p.is_file():
+        return {"ok": False, "error": f"文件不存在: {src}"}
+    workspace = meta.get("workspace") or str(paths.home() / "ws")
+    name = p.name
+    dest_dir = Path(workspace).expanduser() / "uploads" / session_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{uuid.uuid4().hex[:8]}-{name}"
+    try:
+        shutil.copyfile(p, dest)
+    except OSError as e:
+        return {"ok": False, "error": f"无法读取文件: {e}"}
+    kind = files_ex.classify(dest)
+    art = art_store.add_artifact(slug, "file", name, files_mod.norm_path(dest), session_id)
+    entry = files_mod.get_registry(slug).register(
+        name,
+        dest,
+        kind=kind,
+        size=dest.stat().st_size,
+        session_id=session_id,
+        artifact_id=art.get("id"),
+    )
+    return {"ok": True, "file": entry}
+
+
+@app.post("/api/debug-log")
+async def debug_log_endpoint(data: dict) -> dict:
+    """Temporary: frontend drop/upload telemetry for diagnosing WKWebView DnD."""
+    # print (not _log) — stdout is forwarded to sidecar.log by the Tauri shell;
+    # the Python logger isn't wired to a visible sink in the frozen build.
+    print("DEBUG-DROP " + json.dumps(data, ensure_ascii=False, default=str), flush=True)
+    return {"ok": True}
+
+
+@app.get("/api/files/{file_id}/preview")
+async def file_preview_endpoint(
+    file_id: str,
+    sheet: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> dict:
+    """Paginated grid for spreadsheets/tables; extracted markdown for docs."""
+    from .files import extractors as files_ex
+    from .files import preview as files_preview
+
+    entry = files_mod.get_by_id(file_id)
+    if entry is None:
+        return {"ok": False, "error": f"file not found: {file_id}"}
+    try:
+        payload = files_preview.build_preview(
+            entry["path"], sheet=sheet, offset=offset, limit=limit
+        )
+    except (files_ex.UnsupportedFormat, files_ex.ExtractorUnavailable) as e:
+        return {"ok": False, "error": str(e)}
+    except FileNotFoundError:
+        return {"ok": False, "error": "文件已被移动或删除"}
+    except Exception as e:  # parse failure → actionable error, not 500
+        return {"ok": False, "error": f"预览失败: {type(e).__name__}: {e}"}
+    # a fresh preview counts as "seen": clear the stale badge + sync mtime
+    try:
+        entry["mtime"] = Path(entry["path"]).stat().st_mtime
+    except OSError:
+        pass
+    entry["stale"] = False
+    return {
+        "ok": True,
+        "file": {
+            "id": entry["id"],
+            "name": entry["name"],
+            "kind": entry.get("kind", ""),
+            "path": entry["path"],
+            "stale": entry.get("stale", False),
+        },
+        **payload,
+    }
+
+
+def _attachment_headers(filename: str) -> dict[str, str]:
+    """Content-Disposition for downloads; RFC 5987 filename* for UTF-8 names."""
+    from urllib.parse import quote
+
+    fallback = filename.encode("ascii", "replace").decode().replace('"', "_")
+    return {
+        "Content-Disposition": (
+            f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename)}'
+        )
+    }
+
+
+@app.get("/api/files/{file_id}/download")
+async def file_download_endpoint(
+    file_id: str,
+    fmt: str = "raw",
+    sheet: str | None = None,
+) -> Any:
+    """Download the original file (fmt=raw) or export one sheet as CSV
+    (fmt=csv — spreadsheet/table kinds only; ``sheet`` selects which)."""
+    from starlette.responses import Response
+
+    from .files import extractors as files_ex
+    from .files import preview as files_preview
+
+    entry = files_mod.get_by_id(file_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"file not found: {file_id}")
+    p = Path(entry["path"])
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="文件已被移动或删除")
+    if fmt == "raw":
+        from starlette.responses import FileResponse
+
+        return FileResponse(
+            p,
+            filename=entry.get("name") or p.name,
+            headers=_attachment_headers(entry.get("name") or p.name),
+        )
+    if fmt == "csv":
+        try:
+            name, data = files_preview.build_csv_export(
+                p, sheet=sheet, name=entry.get("name")
+            )
+        except files_ex.UnsupportedFormat as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except files_ex.ExtractorUnavailable as e:
+            raise HTTPException(status_code=501, detail=str(e)) from e
+        except Exception as e:  # parse failure → actionable error, not bare 500
+            raise HTTPException(
+                status_code=500, detail=f"导出失败: {type(e).__name__}: {e}"
+            ) from e
+        return Response(
+            content=data,
+            media_type="text/csv; charset=utf-8",
+            headers=_attachment_headers(name),
+        )
+    raise HTTPException(status_code=400, detail=f"unsupported fmt: {fmt}")
+
+
+@app.post("/api/files/{file_id}/save-to-downloads")
+async def save_file_to_downloads_endpoint(
+    file_id: str, req: dict | None = None
+) -> dict:
+    """Copy the file (or a CSV export of it) into the OS Downloads folder.
+
+    WKWebView can't trigger browser downloads, so the desktop UI calls this
+    instead: the sidecar (same filesystem, same user) writes the copy and
+    reports the destination path. Body: ``{"fmt": "raw"|"csv", "sheet"?}``.
+    """
+    import os
+    import shutil
+
+    from .files import extractors as files_ex
+    from .files import preview as files_preview
+
+    req = req or {}
+    fmt = req.get("fmt") or "raw"
+    sheet = req.get("sheet")
+    entry = files_mod.get_by_id(file_id)
+    if entry is None:
+        return {"ok": False, "error": f"file not found: {file_id}"}
+    p = Path(entry["path"])
+    if not p.is_file():
+        return {"ok": False, "error": "文件已被移动或删除"}
+    downloads = Path(os.environ.get("GINNO_DOWNLOADS") or (Path.home() / "Downloads"))
+    try:
+        downloads.mkdir(parents=True, exist_ok=True)
+        if fmt == "raw":
+            name = entry.get("name") or p.name
+            dest = _unique_dest(downloads / name)
+            shutil.copyfile(p, dest)
+        elif fmt == "csv":
+            name, data = files_preview.build_csv_export(
+                p, sheet=sheet, name=entry.get("name")
+            )
+            dest = _unique_dest(downloads / name)
+            dest.write_bytes(data)
+        else:
+            return {"ok": False, "error": f"unsupported fmt: {fmt}"}
+    except files_ex.UnsupportedFormat as e:
+        return {"ok": False, "error": str(e)}
+    except files_ex.ExtractorUnavailable as e:
+        return {"ok": False, "error": str(e)}
+    except OSError as e:
+        return {"ok": False, "error": f"写入 Downloads 失败: {e}"}
+    return {"ok": True, "path": str(dest), "name": dest.name}
+
+
+def _unique_dest(candidate: Path) -> Path:
+    """foo.csv → foo (1).csv → foo (2).csv … so saves never clobber."""
+    if not candidate.exists():
+        return candidate
+    stem, suffix = candidate.stem, candidate.suffix
+    for i in range(1, 1000):
+        alt = candidate.with_name(f"{stem} ({i}){suffix}")
+        if not alt.exists():
+            return alt
+    return candidate.with_name(f"{stem}-{uuid.uuid4().hex[:6]}{suffix}")
 
 
 # ---- mcp settings ----
@@ -1756,6 +2128,50 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     graph = session["graph"]
     config = {"configurable": {"thread_id": session_id, "project_slug": session["project_slug"]}}
 
+    # File watcher (docs §7.5): stat the session's registered files every 5s.
+    # A changed mtime → preview.invalidate (the UI refreshes if that file is
+    # open) + a stale badge on the artifact (cleared on next preview fetch).
+    # Sends share _ws_lock so watcher frames never interleave with turn frames.
+    _ws_lock = asyncio.Lock()
+    _watch_stop = asyncio.Event()
+
+    async def _file_watcher() -> None:
+        reg = files_mod.get_registry(session["project_slug"])
+        while not _watch_stop.is_set():
+            try:
+                await asyncio.wait_for(_watch_stop.wait(), timeout=5)
+                break  # stop set
+            except TimeoutError:
+                pass
+            except asyncio.CancelledError:
+                raise
+            artifacts_dirty = False
+            try:
+                for e in reg.list_session(session_id):
+                    try:
+                        m = Path(e["path"]).stat().st_mtime
+                    except OSError:
+                        continue
+                    if m != e.get("mtime", 0):
+                        e["mtime"] = m
+                        if not e.get("stale"):
+                            reg.mark_stale(e["id"], True)
+                            artifacts_dirty = True
+                        async with _ws_lock:
+                            await ws.send_text(
+                                _ev(
+                                    "preview.invalidate",
+                                    {"file_id": e["id"], "reason": "mtime"},
+                                )
+                            )
+                if artifacts_dirty:
+                    async with _ws_lock:
+                        await ws.send_text(_ev("artifacts.changed", {}))
+            except Exception:
+                continue
+
+    _watcher_task = asyncio.create_task(_file_watcher())
+
     # Re-emit any permission interrupt left pending from a previous connection:
     # the graph pauses at permission_node awaiting a resume, so a reconnect or a
     # session switch mid-permission would otherwise orphan the turn (the prompt
@@ -1844,6 +2260,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     session,
                     turn_agent,
                     images=msg.get("images"),
+                    files=msg.get("files"),
                 )
             elif kind == "permission_response":
                 decision = msg.get("decision", "deny")
@@ -1863,6 +2280,145 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 await ws.send_text(_ev("error", {"message": f"unknown type: {kind}"}))
     except WebSocketDisconnect:
         return
+    finally:
+        _watch_stop.set()
+        _watcher_task.cancel()
+
+
+def _compact_schema(path: str) -> str:
+    """One-line schema summary for prompt injection (tables only, best-effort)."""
+    try:
+        from .files import extractors as _ex
+
+        s = _ex.schema_summary(path, sample_rows=2)
+        bits = []
+        for sh in s.get("sheets", [])[:3]:
+            cols = ", ".join(
+                f"{c['name']}({c['dtype']})" for c in sh.get("columns", [])[:12]
+            )
+            bits.append(
+                f"[{sh['name']}] {sh['rows']}行×{sh['cols']}列, 列: {cols}"
+                + (f", 样例: {sh['sample']}" if sh.get("sample") else "")
+            )
+        return "; ".join(bits)[:500]
+    except Exception:
+        return ""
+
+
+def _resolve_attached_files(
+    files: list | None, slug: str, session_id: str
+) -> list[dict]:
+    """Turn invoke ``files`` items ({id} or {name, path}) into registry-backed
+    entries carrying a compact schema for table kinds."""
+    from .files import extractors as _ex
+
+    reg = files_mod.get_registry(slug)
+    out: list[dict] = []
+    for f in files or []:
+        if not isinstance(f, dict):
+            continue
+        entry = None
+        if f.get("id"):
+            entry = files_mod.get_by_id(f["id"])
+        if entry is None and f.get("path"):
+            p = Path(f["path"]).expanduser()
+            if p.is_file():
+                art = art_store.add_artifact(
+                    slug, "file", f.get("name") or p.name, str(p), session_id
+                )
+                entry = reg.register(
+                    f.get("name") or p.name, p, session_id=session_id, artifact_id=art.get("id")
+                )
+        if entry is None:
+            continue
+        item = {
+            "id": entry["id"],
+            "name": entry["name"],
+            "path": entry["path"],
+            "kind": entry.get("kind") or _ex.classify(entry["path"]),
+        }
+        # A user-corrected schema (set via the metadata inspector) wins over
+        # the auto-computed one — that's the whole point of allowing edits.
+        override = ""
+        aid = entry.get("artifact_id")
+        if aid:
+            art = art_store.get_artifact(slug, aid)
+            override = ((art.get("schema") or "") if art else "").strip()
+        if override:
+            item["schema"] = override
+        elif item["kind"] in ("spreadsheet", "table"):
+            item["schema"] = _compact_schema(entry["path"])
+        out.append(item)
+    return out
+
+
+async def _tool_file_effects(
+    safe_send, emit, slug: str, session_id: str, name_args: tuple[str, dict] | None, content: str
+) -> None:
+    """After a tool finishes, keep file previews live (docs §7.5):
+
+    1. Structured tools declare their path arg → ``registry.touch`` → the UI
+       gets ``preview.invalidate`` for that file.
+    2. Opaque tools (bash / MCP) → best-effort: any registered path appearing
+       in the tool args is touched.
+    3. ``analyze_table`` table results → register the derived CSV as an
+       artifact and emit ``preview.emit {open: true}`` so the result sheet
+       opens automatically in the UI.
+    """
+    if not slug or not name_args:
+        return
+    name, args = name_args
+    reg = files_mod.get_registry(slug)
+    touched: list[str] = []
+
+    if name in ("write_file", "edit_file", "read_file", "parse_document", "analyze_table"):
+        p = (args or {}).get("path")
+        if p:
+            touched.append(str(Path(p).expanduser().resolve()))
+    elif args:
+        try:
+            blob = json.dumps(args, ensure_ascii=False, default=str)
+        except Exception:
+            blob = str(args)
+        for e in reg.list_session(session_id) or reg.list_all():
+            if e.get("path") and e["path"] in blob:
+                touched.append(e["path"])
+
+    if name == "analyze_table" and content:
+        try:
+            d = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            d = None
+        dp = d.get("derived_path") if isinstance(d, dict) and d.get("ok") else None
+        if dp and Path(dp).is_file():
+            art = art_store.add_artifact(slug, "file", Path(dp).name, dp, session_id)
+            entry = reg.register(
+                Path(dp).name, dp, kind="table", session_id=session_id, artifact_id=art.get("id")
+            )
+            await safe_send(
+                emit(
+                    "preview.emit",
+                    {
+                        "file_id": entry["id"],
+                        "name": entry["name"],
+                        "path": entry["path"],
+                        "kind": "table",
+                        "open": True,
+                    },
+                )
+            )
+            await safe_send(emit("artifacts.changed", {}))
+            touched.append(str(Path(dp).resolve()))
+
+    seen: set[str] = set()
+    for p in touched:
+        if p in seen:
+            continue
+        seen.add(p)
+        for e in files_mod.touch(p, reason=f"tool:{name}"):
+            await safe_send(
+                emit("preview.invalidate", {"file_id": e["id"], "reason": f"tool:{name}"})
+            )
 
 
 async def _run_stream(
@@ -1873,13 +2429,16 @@ async def _run_stream(
     session: dict,
     agent_id: str | None = None,
     images: list | None = None,
+    files: list | None = None,
 ) -> None:
     """Append a HumanMessage and stream the agent loop until end or interrupt.
 
     ``images`` carries ``{"data": <base64>, "media_type": "image/png"}`` items
     from the composer; when present the HumanMessage becomes a multimodal
     content list (OpenAI-style image_url data URLs, which both ChatOpenAI and
-    ChatAnthropic accept).
+    ChatAnthropic accept). ``files`` carries uploaded file refs ({id} or
+    {name, path}) resolved via the file registry and injected into the system
+    prompt through ``state["attached_files"]``.
     """
     content: Any = user_text
     imgs = [i for i in (images or []) if isinstance(i, dict) and i.get("data")]
@@ -1893,6 +2452,12 @@ async def _run_stream(
                 {"type": "image_url", "image_url": {"url": f"data:{media};base64,{img['data']}"}}
             )
         content = parts
+    attached = _resolve_attached_files(
+        files, session["project_slug"], session.get("session_id", "")
+    )
+    if attached and not (user_text or "").strip():
+        # Drop with no text: synthesize a default intent so the turn still runs.
+        content = "请概览我附加的文件：结构、数据质量与关键指标，并给出简短结论。"
     input_state = {
         "messages": [HumanMessage(content=content)],
         "workspace": session["workspace"],
@@ -1900,6 +2465,7 @@ async def _run_stream(
         "agent_id": agent_id or session.get("agent_id") or "",
         "active_skills": [],
         "pending_tool_calls": [],
+        "attached_files": attached,
     }
     await _stream_graph(ws, graph, config, input_state=input_state)
 
@@ -2006,6 +2572,7 @@ async def _stream_graph(
             stream = graph.astream(input_state, config=config, stream_mode=["messages", "updates"])
         saw_interrupt = False
         special_ids: dict[str, str] = {}  # tool_call id -> special tool name (no bubble)
+        tool_args_by_id: dict[str, tuple[str, dict]] = {}  # id -> (name, args)
         slug = (config.get("configurable") or {}).get("project_slug", "default")
         session_id = (config.get("configurable") or {}).get("thread_id", "")
         agent_id = (config.get("configurable") or {}).get("agent_id", "")
@@ -2100,6 +2667,7 @@ async def _stream_graph(
                             for tc in getattr(m, "tool_calls", []) or []:
                                 nm = tc.get("name")
                                 args = tc.get("args") or {}
+                                tool_args_by_id[tc.get("id")] = (nm, args)
                                 if (
                                     nm in RENDER_TOOL_NAMES
                                     or nm in WORKFLOW_TOOL_NAMES
@@ -2124,7 +2692,8 @@ async def _stream_graph(
                                     )
                                     if kind in ("file", "doc", "workflow", "link"):
                                         art_store.add_artifact(
-                                            slug, kind, args.get("name", ""), args.get("ref_id", "")
+                                            slug, kind, args.get("name", ""), args.get("ref_id", ""),
+                                            session_id,
                                         )
                                 elif nm == "artifact_register":
                                     art_store.add_artifact(
@@ -2132,6 +2701,7 @@ async def _stream_graph(
                                         args.get("kind", "file"),
                                         args.get("name", ""),
                                         args.get("ref", ""),
+                                        session_id,
                                     )
                     elif node_name == "__interrupt__":
                         items = delta if isinstance(delta, (list, tuple)) else [delta]
@@ -2186,6 +2756,13 @@ async def _stream_graph(
                             elif tc_id:
                                 await safe_send(
                                     emit("tool.end", {"id": tc_id, "content": _truncate_for_ws(_tool_content_str(raw))})
+                                )
+                                # File-reactive side effects (docs §7.5): invalidate
+                                # previews of files this tool touched; auto-register
+                                # + open derived analysis results.
+                                await _tool_file_effects(
+                                    safe_send, emit, slug, session_id,
+                                    tool_args_by_id.get(tc_id), _tool_content_str(raw),
                                 )
                     elif node_name == "permission":
                         # resolve "running" tool bubbles that were denied by
@@ -2266,6 +2843,9 @@ async def _serve_web(full_path: str):
 
 
 def main() -> None:
+    import os
+
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8787, log_level="info")
+    port = int(os.environ.get("GINNO_RUNTIME_PORT", "8787"))
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")

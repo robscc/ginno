@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useGinno } from "@/lib/store";
 import { TopBar } from "@/components/shell/TopBar";
 import { ChatStream } from "@/components/chat/ChatStream";
+import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
 
 export default function WorkspacePage() {
@@ -36,6 +37,7 @@ export default function WorkspacePage() {
         <ChatStream session={session} onRunningChange={setRunning} />
       </div>
       <RightPanel />
+      <SheetViewer />
     </div>
   );
 }

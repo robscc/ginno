@@ -10,7 +10,16 @@ import {
   type ReactNode,
 } from "react";
 import * as api from "./runtime";
-import type { AgentConfig, Artifact, Providers, SessionMeta, Todo, WorkflowDef, WorkflowRun } from "./types";
+import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Providers, SessionMeta, Todo, WorkflowDef, WorkflowRun } from "./types";
+
+export type RightTab = "todo" | "workflow" | "artifacts" | "memory";
+
+export interface PreviewFile {
+  id: string;
+  name: string;
+  path: string;
+  kind?: string;
+}
 
 interface GinnoState {
   agents: AgentConfig[];
@@ -25,8 +34,17 @@ interface GinnoState {
   connected: boolean;
   ready: boolean;
   sessionError: string | null;
+  rightTab: RightTab;
+  artifactsFollow: boolean;
+  flashArtifactIds: string[];
+  previewFile: PreviewFile | null;
+  previewNonce: number;
   setConnected: (v: boolean) => void;
   setActiveSession: (id: string | null) => void;
+  setRightTab: (tab: RightTab, opts?: { manual?: boolean }) => void;
+  openPreview: (f: PreviewFile) => void;
+  closePreview: () => void;
+  notifyPreviewInvalidate: (fileId: string) => void;
   reloadAgents: () => Promise<void>;
   reloadSessions: () => Promise<void>;
   reloadTodos: () => Promise<void>;
@@ -34,6 +52,8 @@ interface GinnoState {
   reloadWorkflows: () => Promise<void>;
   reloadWorkflowRuns: () => Promise<void>;
   reloadArtifacts: () => Promise<void>;
+  removeArtifact: (id: string) => Promise<void>;
+  patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
   newSession: (agent_id?: string) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
   removeSession: (id: string) => Promise<void>;
@@ -63,6 +83,42 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [ready, setReady] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
+
+  // Right panel: tab is store-owned so chat events can auto-switch to
+  // Artifacts when the active session gains one (docs §7.6). Manual clicks
+  // turn autoFollow off (sticky) so the agent can't yank focus repeatedly;
+  // visiting Artifacts manually or starting fresh re-enables it.
+  const [rightTab, setRightTabState] = useState<RightTab>("todo");
+  const [artifactsFollow, setArtifactsFollow] = useState(true);
+  const [flashArtifactIds, setFlashArtifactIds] = useState<string[]>([]);
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
+  const [previewNonce, setPreviewNonce] = useState(0);
+
+  const activeSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeSessionRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  const setRightTab = useCallback((tab: RightTab, opts?: { manual?: boolean }) => {
+    if (opts?.manual) {
+      // explicit user choice: stop auto-following unless they picked Artifacts
+      setArtifactsFollow(tab === "artifacts");
+    }
+    setRightTabState(tab);
+  }, []);
+
+  const openPreview = useCallback((f: PreviewFile) => {
+    setPreviewFile(f);
+    setPreviewNonce((n) => n + 1);
+  }, []);
+  const closePreview = useCallback(() => setPreviewFile(null), []);
+  // Only refetch when the invalidated file is the one being viewed.
+  const notifyPreviewInvalidate = useCallback((fileId: string) => {
+    setPreviewFile((cur) => {
+      if (cur && cur.id === fileId) setPreviewNonce((n) => n + 1);
+      return cur;
+    });
+  }, []);
 
   const reloadAgents = useCallback(async () => {
     try {
@@ -110,9 +166,73 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   }, []);
   const reloadArtifacts = useCallback(async () => {
     try {
-      setArtifacts(await api.listArtifacts());
+      const next = await api.listArtifacts();
+      setArtifacts((prev) => {
+        // §7.6 auto-follow: new artifact for the ACTIVE session → switch to
+        // the Artifacts tab (if follow is on) and pulse-highlight the rows.
+        const prevIds = new Set(prev.map((a) => a.id));
+        const fresh = next.filter((a) => !prevIds.has(a.id));
+        const mine = fresh.filter(
+          (a) => !a.session_id || a.session_id === activeSessionRef.current,
+        );
+        if (mine.length) {
+          setArtifactsFollow((follow) => {
+            if (follow) {
+              setRightTabState("artifacts");
+              setFlashArtifactIds(mine.map((a) => a.id));
+              window.setTimeout(() => setFlashArtifactIds([]), 2500);
+            }
+            return follow;
+          });
+        }
+        return next;
+      });
     } catch {
       /* ignore */
+    }
+  }, []);
+
+  // Reference-only delete: the file on disk is untouched, so a mistaken
+  // delete is recoverable. Optimistic remove with rollback if the sidecar
+  // rejects or is unreachable, so the panel never diverges from disk.
+  const removeArtifact = useCallback(async (id: string) => {
+    let snapshot: Artifact[] | null = null;
+    setArtifacts((prev) => {
+      snapshot = prev;
+      return prev.filter((a) => a.id !== id);
+    });
+    try {
+      const r = await api.deleteArtifact(id);
+      if (!r.ok) throw new Error("delete failed");
+    } catch {
+      if (snapshot) setArtifacts(snapshot);
+    }
+  }, []);
+
+  // Inspector edits: optimistic update, server round-trip, rollback on
+  // rejection (e.g. blank name) — and reconcile with the canonical record
+  // the server returns (whitelisted + trimmed).
+  const patchArtifact = useCallback(async (id: string, patch: ArtifactPatch) => {
+    const artPatch: Partial<Artifact> = {};
+    if (patch.name !== undefined) artPatch.name = patch.name;
+    if (patch.kind !== undefined) artPatch.kind = patch.kind;
+    if (patch.schema !== undefined) artPatch.schema = patch.schema;
+    let snapshot: Artifact[] | null = null;
+    setArtifacts((prev) => {
+      snapshot = prev;
+      return prev.map((a) => (a.id === id ? { ...a, ...artPatch } : a));
+    });
+    try {
+      const r = await api.updateArtifact(id, patch);
+      if (!r.ok) throw new Error(r.error || "update failed");
+      if (r.artifact) {
+        const canonical = r.artifact;
+        setArtifacts((prev) => prev.map((a) => (a.id === id ? { ...a, ...canonical } : a)));
+      }
+      return { ok: true };
+    } catch (e) {
+      if (snapshot) setArtifacts(snapshot);
+      return { ok: false, error: e instanceof Error ? e.message : "更新失败" };
     }
   }, []);
 
@@ -282,8 +402,17 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     connected,
     ready,
     sessionError,
+    rightTab,
+    artifactsFollow,
+    flashArtifactIds,
+    previewFile,
+    previewNonce,
     setConnected,
     setActiveSession: setActiveSessionId,
+    setRightTab,
+    openPreview,
+    closePreview,
+    notifyPreviewInvalidate,
     reloadAgents,
     reloadSessions,
     reloadTodos,
@@ -291,6 +420,8 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     reloadWorkflows,
     reloadWorkflowRuns,
     reloadArtifacts,
+    removeArtifact,
+    patchArtifact,
     newSession,
     setSessionAgent,
     removeSession,

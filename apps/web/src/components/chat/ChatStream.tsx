@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Paperclip, Keyboard, ArrowUp, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
-import { openSessionSocket, getSessionHistory } from "@/lib/runtime";
+import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
@@ -88,6 +88,17 @@ interface Attachment {
   preview: string; // full data URL for local display
   name: string;
 }
+
+/** Non-image attachment: uploaded to the sidecar, referenced by registry id. */
+interface FileAttachment {
+  id: string;
+  name: string;
+  path: string;
+  kind: string; // spreadsheet | table | document | presentation | pdf | …
+  uploading?: boolean;
+}
+
+const TABLE_KINDS = new Set(["spreadsheet", "table"]);
 
 /**
  * Read an image file as a data URL. Files over ~400KB are re-encoded through a
@@ -210,258 +221,192 @@ export function ChatStream({
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [target, setTarget] = useState<string | null>(null);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [propose, setPropose] = useState<VersionPropose | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
+  // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
+  const [composerH, setComposerH] = useState<number | undefined>(undefined);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
-  const liveIdRef = useRef<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const busyRef = useRef(false); // send lock: one turn at a time
-  // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
-  const [composerH, setComposerH] = useState<number | undefined>(undefined);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
-  // WebSocket liveness, surfaced in the composer so a dropped/stalled link is
-  // visible (and clickable to force a reconnect) instead of silently freezing.
-  const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">(
-    "connecting",
-  );
+  // liveIdRef mirrors liveId state for use inside callbacks without closure staleness
+  const liveIdRef = useRef<string | null>(null);
+  // connectRef: the reconnect button always calls this; updated on each session switch
   const connectRef = useRef<() => void>(() => {});
-  // Per-session cache: unsent composer draft + attachments + last-seen message
-  // snapshot, so switching sessions preserves each session's state (and the
-  // draft) with no empty-flash. On revisit we ALSO re-fetch the server's
-  // authoritative history in the background, so a turn that completed while you
-  // were on another session shows up in full (fixes "switch mid-reply -> reply
-  // lost / empty reply").
-  const sessionCacheRef = useRef<
-    Record<string, { messages: ChatMsg[]; input: string; attachments: Attachment[] }>
-  >({});
+  // Which session is currently shown; used by syncDisplay to skip background updates
   const curSessionIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    liveIdRef.current = liveId;
-  }, [liveId]);
+  // ─── Per-session persistent stores ─────────────────────────────────────────
+  // Sockets stay open across session switches; only closed on unmount or delete.
+  // Background sockets keep feeding their session's store; syncDisplay() mirrors
+  // that into React state only when the session is currently displayed — so
+  // switching back mid-reply shows the stream continuing live.
+  const storeRef         = useRef<Record<string, ChatMsg[]>>({});
+  const liveBySessionRef = useRef<Record<string, string | null>>({});
+  const socketsRef       = useRef<Record<string, WebSocket>>({});
+  const statusRef        = useRef<Record<string, "connecting" | "live" | "reconnecting" | "offline">>({});
+  const permsRef         = useRef<Record<string, PermissionPrompt | null>>({});
+  const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
+  const busyBySessionRef = useRef<Record<string, boolean>>({});
+  const streamAgentRef   = useRef<Record<string, string | null>>({});
+  const pingTimerRef     = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
+  const watchTimerRef    = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
+  const reconnTimerRef   = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
+  const lastSeenRef      = useRef<Record<string, number>>({});
+  // Unsent input + attachments saved per session on switch
+  const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[] }>>({});
 
-  // Drop cache entries for sessions that no longer exist (e.g. after delete) so
-  // they don't leak memory or resurrect a deleted conversation.
+  // Push the given session's ref state into React display state.
+  // No-op when sid is not the currently displayed session (background socket).
+  const syncDisplay = (sid: string) => {
+    if (sid !== curSessionIdRef.current) return;
+    const lid = liveBySessionRef.current[sid] ?? null;
+    setMessages([...(storeRef.current[sid] ?? [])]);
+    setLiveId(lid);
+    liveIdRef.current = lid;
+    setWsStatus(statusRef.current[sid] ?? "connecting");
+    setPermission(permsRef.current[sid] ?? null);
+    setPropose(proposeRef.current[sid] ?? null);
+    setStreamAgent(streamAgentRef.current[sid] ?? null);
+  };
+
+  // Drop per-session state for deleted sessions to prevent memory leaks.
   useEffect(() => {
     const live = new Set(g.sessions.map((s) => s.id));
-    const cache = sessionCacheRef.current;
-    for (const id of Object.keys(cache)) {
-      if (!live.has(id)) delete cache[id];
+    for (const id of Object.keys(storeRef.current)) {
+      if (!live.has(id)) {
+        if (reconnTimerRef.current[id]) clearTimeout(reconnTimerRef.current[id]!);
+        if (pingTimerRef.current[id])   clearInterval(pingTimerRef.current[id]!);
+        if (watchTimerRef.current[id])  clearInterval(watchTimerRef.current[id]!);
+        try { socketsRef.current[id]?.close(); } catch { /* ignore */ }
+        delete socketsRef.current[id];    delete storeRef.current[id];
+        delete liveBySessionRef.current[id]; delete statusRef.current[id];
+        delete permsRef.current[id];      delete proposeRef.current[id];
+        delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
+        delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
+        delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
+        delete lastSeenRef.current[id];
+      }
     }
   }, [g.sessions]);
 
-  // On session change: reset UI, load persisted history, then open the socket.
+  // Close all persistent sockets on component unmount.
   useEffect(() => {
-    if (!session) return;
-    let closed = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let pingTimer: ReturnType<typeof setInterval> | null = null;
-    let watchTimer: ReturnType<typeof setInterval> | null = null;
-    let lastSeen = Date.now();
-    let sock: WebSocket | null = null;
-
-    // Save the session we're leaving so its latest in-memory conversation and
-    // unsent draft survive the switch (instead of being wiped).
-    const prev = curSessionIdRef.current;
-    if (prev && prev !== session.id) {
-      sessionCacheRef.current[prev] = { messages, input, attachments };
-    }
-    curSessionIdRef.current = session.id;
-
-    // Always clear transient per-turn UI state on switch.
-    setLiveId(null);
-    liveIdRef.current = null;
-    setStreamAgent(null);
-    setPermission(null);
-    setPropose(null);
-    busyRef.current = false;
-
-    const cached = sessionCacheRef.current[session.id];
-    if (cached) {
-      // Revisit: restore synchronously (no empty-flash, keeps latest in-memory
-      // state incl. the unsent draft), then just (re)open the socket.
-      setMessages(cached.messages);
-      setInput(cached.input);
-      setAttachments(cached.attachments);
-    } else {
-      // First visit this session: clear + load persisted history below.
-      setMessages([]);
-      setInput("");
-      setAttachments([]);
-    }
-
-    const connect = () => {
-      setWsStatus((s) => (s === "live" ? s : "connecting"));
-      sock = openSessionSocket(session.id);
-      wsRef.current = sock;
-      // Every callback is guarded by `closed` (set by this effect's cleanup on
-      // session switch). Without this, a stale socket from the previous session
-      // could inject a phantom bubble into the new chat, clobber `connected`,
-      // or reset the send-lock mid-turn and allow a concurrent double-send.
-      sock.onopen = () => {
-        if (closed) return;
-        g.setConnected(true);
-        setWsStatus("live");
-        lastSeen = Date.now();
-        // Self-heal a "stuck" turn: if a turn was in-flight when the socket
-        // dropped, its message.end never arrived (server send hit the closed
-        // socket) so liveId stayed set and the UI kept spinning. On reconnect
-        // the server has no active turn for this session, so clear the live
-        // state to unlock the composer. The completed turn shows on reload
-        // (it was checkpointed server-side).
-        if (liveIdRef.current) {
-          setLiveId(null);
-          liveIdRef.current = null;
-          setStreamAgent(null);
-          busyRef.current = false;
-        }
-        // Heartbeat: detect a half-open socket. The server answers `ping` with a
-        // `pong` frame (which resets lastSeen via onmessage). A send into a dead
-        // TCP connection buffers silently and never errors, so without this the
-        // chat would freeze with no reconnect; if no frame arrives for 45s we
-        // close and let the existing reconnect path take over.
-        pingTimer = setInterval(() => {
-          if (sock && sock.readyState === WebSocket.OPEN) {
-            try {
-              sock.send(JSON.stringify({ type: "ping" }));
-            } catch {
-              /* ignore */
-            }
-          }
-        }, 20000);
-        watchTimer = setInterval(() => {
-          if (!closed && Date.now() - lastSeen > 45000) {
-            try {
-              sock?.close();
-            } catch {
-              /* ignore */
-            }
-          }
-        }, 10000);
-      };
-      sock.onmessage = (e) => {
-        if (closed) return;
-        lastSeen = Date.now();
-        try {
-          handle(JSON.parse(e.data));
-        } catch {
-          /* ignore */
-        }
-      };
-      sock.onerror = () => {
-        if (closed) return;
-        try {
-          sock?.close();
-        } catch {
-          /* ignore */
-        }
-      };
-      sock.onclose = () => {
-        if (pingTimer) clearInterval(pingTimer);
-        if (watchTimer) clearInterval(watchTimer);
-        pingTimer = watchTimer = null;
-        if (closed) return; // stale socket — the new session owns state now
-        g.setConnected(false);
-        setWsStatus("reconnecting");
-        busyRef.current = false;
-        // A banner can't be answered on a dead socket; clear it so the composer's
-        // `running` lock doesn't stick. On reconnect the server re-emits any
-        // still-pending permission / version_propose interrupt.
-        setPermission(null);
-        setPropose(null);
-        timer = setTimeout(connect, 1500);
-      };
-      connectRef.current = connect;
-    };
-
-    // Load history FIRST (only on first visit — a cached revisit already has the
-    // latest in-memory messages), then connect — so events from a (re)connecting
-    // socket can't arrive before the history set and get clobbered by it.
-    if (!cached) {
-      setWsStatus("connecting");
-      (async () => {
-        try {
-          const h = await getSessionHistory(session.id);
-          const list: Array<{
-            id?: string;
-            role: "user" | "assistant";
-            agentId?: string | null;
-            blocks: Block[];
-          }> = (h && h.messages) || [];
-          if (!closed && list.length) {
-            setMessages(
-              list.map((m) => ({
-                id: m.id ?? mid(),
-                role: m.role,
-                agentId: m.agentId ?? null,
-                blocks: m.blocks || [],
-              })),
-            );
-          }
-        } catch {
-          /* ignore */
-        }
-        if (!closed) connect();
-      })();
-    } else {
-      // Revisit: we already restored the cached snapshot synchronously (no
-      // flash). Re-fetch the server's authoritative history in the background
-      // so a turn that finished while we were on another session is shown in
-      // full. Only apply it if we're not mid-stream (liveId null) and the
-      // server actually has at least as many messages as our snapshot — this
-      // avoids clobbering an in-flight optimistic bubble or a live reconnect.
-      (async () => {
-        try {
-          const h = await getSessionHistory(session.id);
-          const list: Array<{
-            id?: string;
-            role: "user" | "assistant";
-            agentId?: string | null;
-            blocks: Block[];
-          }> = (h && h.messages) || [];
-          if (
-            !closed &&
-            curSessionIdRef.current === session.id &&
-            !liveIdRef.current &&
-            list.length >= (cached?.messages.length ?? 0)
-          ) {
-            const fresh = list.map((m) => ({
-              id: m.id ?? mid(),
-              role: m.role,
-              agentId: m.agentId ?? null,
-              blocks: m.blocks || [],
-            }));
-            setMessages(fresh);
-            sessionCacheRef.current[session.id] = {
-              messages: fresh,
-              input: sessionCacheRef.current[session.id]?.input ?? "",
-              attachments: sessionCacheRef.current[session.id]?.attachments ?? [],
-            };
-          }
-        } catch {
-          /* ignore */
-        }
-      })();
-      connect();
-    }
-
     return () => {
-      closed = true;
-      if (timer) clearTimeout(timer);
-      if (pingTimer) clearInterval(pingTimer);
-      if (watchTimer) clearInterval(watchTimer);
-      try {
-        sock?.close();
-      } catch {
-        /* ignore */
+      for (const sid of Object.keys(socketsRef.current)) {
+        if (reconnTimerRef.current[sid]) clearTimeout(reconnTimerRef.current[sid]!);
+        if (pingTimerRef.current[sid])   clearInterval(pingTimerRef.current[sid]!);
+        if (watchTimerRef.current[sid])  clearInterval(watchTimerRef.current[sid]!);
+        try { socketsRef.current[sid].close(); } catch { /* ignore */ }
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Open (or reuse) a per-session WebSocket. Sockets stay open when the user
+  // switches sessions; they are only closed on unmount or session delete.
+  function connectSession(sid: string) {
+    const existing = socketsRef.current[sid];
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return;
+    if (reconnTimerRef.current[sid]) { clearTimeout(reconnTimerRef.current[sid]!); reconnTimerRef.current[sid] = null; }
+    statusRef.current[sid] = "connecting";
+    syncDisplay(sid);
+    const sock = openSessionSocket(sid);
+    socketsRef.current[sid] = sock;
+    sock.onopen = () => {
+      if (socketsRef.current[sid] !== sock) return;
+      g.setConnected(true);
+      statusRef.current[sid] = "live";
+      lastSeenRef.current[sid] = Date.now();
+      if (liveBySessionRef.current[sid]) {
+        liveBySessionRef.current[sid] = null;
+        streamAgentRef.current[sid] = null;
+        busyBySessionRef.current[sid] = false;
+      }
+      syncDisplay(sid);
+      pingTimerRef.current[sid] = setInterval(() => {
+        const s = socketsRef.current[sid];
+        if (s?.readyState === WebSocket.OPEN) {
+          try { s.send(JSON.stringify({ type: "ping" })); } catch { /* ignore */ }
+        }
+      }, 20000);
+      watchTimerRef.current[sid] = setInterval(() => {
+        if (Date.now() - (lastSeenRef.current[sid] ?? Date.now()) > 45000) {
+          try { socketsRef.current[sid]?.close(); } catch { /* ignore */ }
+        }
+      }, 10000);
+    };
+    sock.onmessage = (e) => {
+      if (socketsRef.current[sid] !== sock) return;
+      lastSeenRef.current[sid] = Date.now();
+      try { handle(sid, JSON.parse(e.data)); } catch { /* ignore */ }
+    };
+    sock.onerror = () => {
+      if (socketsRef.current[sid] !== sock) return;
+      try { sock.close(); } catch { /* ignore */ }
+    };
+    sock.onclose = () => {
+      if (pingTimerRef.current[sid]) { clearInterval(pingTimerRef.current[sid]!); pingTimerRef.current[sid] = null; }
+      if (watchTimerRef.current[sid]) { clearInterval(watchTimerRef.current[sid]!); watchTimerRef.current[sid] = null; }
+      if (socketsRef.current[sid] !== sock) return;
+      delete socketsRef.current[sid];
+      statusRef.current[sid] = "reconnecting";
+      syncDisplay(sid);
+      reconnTimerRef.current[sid] = setTimeout(() => {
+        reconnTimerRef.current[sid] = null;
+        connectSession(sid);
+      }, 3000);
+    };
+  }
+
+  // When the active session changes: save draft, restore draft, connect socket,
+  // load history, and sync display state from refs → React state.
+  useEffect(() => {
+    if (!session) return;
+    const sid = session.id;
+    const prev = curSessionIdRef.current;
+
+    // Save outgoing draft
+    if (prev && prev !== sid) {
+      draftCacheRef.current[prev] = { input, attachments };
+      setInput("");
+      setAttachments([]);
+      setTarget(null);
+    }
+
+    curSessionIdRef.current = sid;
+    connectRef.current = () => connectSession(sid);
+
+    connectSession(sid);
+
+    // Load history if this session has no messages yet
+    if (!storeRef.current[sid]) {
+      storeRef.current[sid] = [];
+      getSessionHistory(sid).then((res) => {
+        if (!res?.messages?.length) return;
+        storeRef.current[sid] = res.messages.map((m) => ({
+          id: m.id ?? mid(),
+          role: m.role,
+          blocks: m.blocks,
+          agentId: m.agentId,
+        }));
+        syncDisplay(sid);
+      });
+    }
+
+    // Restore draft if any
+    const draft = draftCacheRef.current[sid];
+    if (draft) {
+      setInput(draft.input);
+      setAttachments(draft.attachments);
+    }
+
+    syncDisplay(sid);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
 
   const running =
@@ -478,24 +423,26 @@ export function ChatStream({
     }
   }, [messages]);
 
-  function ensureLive(): string {
-    if (liveIdRef.current) return liveIdRef.current;
+  function ensureLive(sid: string): string {
+    const existing = liveBySessionRef.current[sid];
+    if (existing) return existing;
     const id = mid();
-    setMessages((m) => [
-      ...m,
-      { id, role: "assistant", blocks: [], agentId: streamAgent, turnId: newTurnId() },
-    ]);
-    setLiveId(id);
-    liveIdRef.current = id;
+    storeRef.current[sid] = [
+      ...(storeRef.current[sid] ?? []),
+      { id, role: "assistant", blocks: [], agentId: streamAgentRef.current[sid], turnId: newTurnId() },
+    ];
+    liveBySessionRef.current[sid] = id;
     return id;
   }
 
-  function mutateLive(ev: { event: string; [k: string]: unknown }) {
-    const id = ensureLive();
-    setMessages((m) => m.map((msg) => (msg.id === id ? { ...msg, blocks: applyBlock(msg.blocks, ev) } : msg)));
+  function mutateLive(sid: string, ev: { event: string; [k: string]: unknown }) {
+    const id = ensureLive(sid);
+    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
+      msg.id === id ? { ...msg, blocks: applyBlock(msg.blocks, ev) } : msg,
+    );
   }
 
-  function handle(ev: { event: string; [k: string]: unknown }) {
+  function handle(sid: string, ev: { event: string; [k: string]: unknown }) {
     switch (ev.event) {
       case "token.delta":
       case "thinking.delta":
@@ -504,50 +451,46 @@ export function ChatStream({
       case "widget.emit":
       case "ref.emit":
       case "workflow.emit":
-        mutateLive(ev);
+        mutateLive(sid, ev);
         break;
       case "turn.start": {
         // authoritative agent for this turn (server-resolved, never null).
         // The server echoes the turn_id we sent (or mints one); adopt it as the
         // bubble's trace UUID so it matches the sidecar logs exactly.
-        const id = liveIdRef.current;
+        const id = liveBySessionRef.current[sid];
         if (id) {
           const srvTurn = ev.turn_id as string | undefined;
-          setMessages((m) =>
-            m.map((msg) =>
-              msg.id === id
-                ? {
-                    ...msg,
-                    agentId: (ev.agent_id as string) || null,
-                    agentName: ev.name as string,
-                    turnId: srvTurn || msg.turnId,
-                  }
-                : msg,
-            ),
+          storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
+            msg.id === id
+              ? {
+                  ...msg,
+                  agentId: (ev.agent_id as string) || null,
+                  agentName: ev.name as string,
+                  turnId: srvTurn || msg.turnId,
+                }
+              : msg,
           );
           // keep the user bubble's UUID in sync with the server's authoritative one
           if (srvTurn) {
-            setMessages((m) =>
-              m.map((msg, i, arr) =>
-                msg.role === "user" && !msg.turnId && i === arr.length - 2
-                  ? { ...msg, turnId: srvTurn }
-                  : msg,
-              ),
+            storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg, i, arr) =>
+              msg.role === "user" && !msg.turnId && i === arr.length - 2
+                ? { ...msg, turnId: srvTurn }
+                : msg,
             );
           }
         }
         break;
       }
       case "permission.request":
-        setPermission({ tool: ev.tool as string, args: ev.args });
+        permsRef.current[sid] = { tool: ev.tool as string, args: ev.args };
         break;
       case "version.propose":
-        setPropose({
+        proposeRef.current[sid] = {
           workflow_id: ev.workflow_id as string,
           from_version: (ev.from_version as number) ?? 0,
           diff: (ev.diff as string) ?? "",
           rationale: (ev.rationale as string) ?? "",
-        });
+        };
         break;
       case "todos.changed":
         g.reloadTodos();
@@ -559,21 +502,34 @@ export function ChatStream({
       case "artifacts.changed":
         g.reloadArtifacts();
         break;
+      case "preview.emit":
+        // Agent produced a previewable file (e.g. analysis result) → open it.
+        if (ev.open && ev.file_id) {
+          g.openPreview({
+            id: ev.file_id as string,
+            name: (ev.name as string) || "result",
+            path: (ev.path as string) || "",
+            kind: ev.kind as string | undefined,
+          });
+        }
+        g.reloadArtifacts();
+        break;
+      case "preview.invalidate":
+        // A tracked file changed (tool wrote it / mtime watcher) → the
+        // SheetViewer refetches if that file is the one being viewed.
+        if (ev.file_id) g.notifyPreviewInvalidate(ev.file_id as string);
+        break;
       case "message.end":
-        setLiveId(null);
-        liveIdRef.current = null;
-        setStreamAgent(null);
-        busyRef.current = false;
+        liveBySessionRef.current[sid] = null;
+        streamAgentRef.current[sid] = null;
+        busyBySessionRef.current[sid] = false;
         break;
       case "error": {
-        setLiveId(null);
-        liveIdRef.current = null;
-        busyRef.current = false;
-        setMessages((m) => [
-          // A mid-turn/tool exception would otherwise leave a `pending` tool
-          // block forever → `running` stuck true and the send button disabled.
-          // Close out any in-flight tool blocks as interrupted.
-          ...m.map((msg) =>
+        liveBySessionRef.current[sid] = null;
+        busyBySessionRef.current[sid] = false;
+        // Close out any in-flight tool blocks as interrupted so `running` unsticks.
+        storeRef.current[sid] = [
+          ...(storeRef.current[sid] ?? []).map((msg) =>
             hasPendingTool(msg.blocks)
               ? {
                   ...msg,
@@ -586,28 +542,124 @@ export function ChatStream({
               : msg,
           ),
           { id: mid(), role: "assistant", blocks: [{ kind: "text", text: `[error] ${ev.message}` }] },
-        ]);
+        ];
         break;
+      }
+    }
+    syncDisplay(sid);
+  }
+
+  async function addFiles(files: FileList | File[] | null) {
+    // [DEBUG] telemetry for WKWebView drag & drop diagnosis
+    void debugLog({
+      where: "addFiles:enter",
+      hasSession: !!session,
+      count: files?.length ?? 0,
+      files: Array.from(files ?? []).map((f) => ({ name: f.name, type: f.type, size: f.size })),
+    });
+    if (!files?.length || !session) return;
+    const sid = session.id;
+    const list = Array.from(files);
+    // Images keep the base64 → multimodal path; everything else is uploaded
+    // to the sidecar and attached by registry ref (docs §7.2).
+    const images = list.filter((f) => f.type.startsWith("image/"));
+    const docs = list.filter((f) => !f.type.startsWith("image/"));
+    void debugLog({ where: "addFiles:split", images: images.length, docs: docs.length });
+    if (images.length) {
+      const items = await Promise.all(images.map(readImage));
+      const ok = items.filter((x): x is Attachment => !!x);
+      if (ok.length) setAttachments((a) => [...a, ...ok]);
+    }
+    for (const f of docs) {
+      // optimistic chip (uploading state) so the user gets instant feedback
+      const tmpId = `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      setFileAttachments((a) => [
+        ...a,
+        { id: tmpId, name: f.name, path: "", kind: "", uploading: true },
+      ]);
+      try {
+        const r = await uploadFile(sid, f);
+        void debugLog({ where: "addFiles:upload-resp", name: f.name, ok: r?.ok, hasFile: !!r?.file, error: r?.error });
+        if (r.ok && r.file) {
+          const entry = r.file;
+          setFileAttachments((a) =>
+            a.map((x) =>
+              x.id === tmpId
+                ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
+                : x,
+            ),
+          );
+          // spreadsheets/tables auto-open the preview on drop
+          if (TABLE_KINDS.has(entry.kind)) {
+            g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
+          }
+          g.reloadArtifacts();
+        } else {
+          setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+        }
+      } catch (e) {
+        void debugLog({ where: "addFiles:upload-error", name: f.name, error: String(e) });
+        setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
       }
     }
   }
 
-  async function addFiles(files: FileList | File[] | null) {
-    if (!files?.length) return;
-    const items = await Promise.all(
-      Array.from(files)
-        .filter((f) => f.type.startsWith("image/"))
-        .map(readImage),
-    );
-    const ok = items.filter((x): x is Attachment => !!x);
-    if (ok.length) setAttachments((a) => [...a, ...ok]);
+  // Native OS file-drop bridge for the desktop app. WKWebView never fires the
+  // HTML5 onDrop for Finder drags, so the Tauri shell handles the drop and
+  // forwards the native paths here (lib.rs → window.eval). Browsers use the
+  // HTML5 path above instead; this is a no-op there (nothing calls it).
+  useEffect(() => {
+    (window as unknown as { __ginnoFileDrop?: (p: string[]) => void }).__ginnoFileDrop = (
+      paths: string[],
+    ) => void attachPaths(paths);
+    return () => {
+      delete (window as unknown as { __ginnoFileDrop?: unknown }).__ginnoFileDrop;
+    };
+  });
+
+  async function attachPaths(paths: string[]) {
+    void debugLog({ where: "attachPaths", paths });
+    if (!session || !paths?.length) return;
+    const sid = session.id;
+    for (const p of paths) {
+      const name = p.split("/").pop() || p;
+      const tmpId = `path-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      setFileAttachments((a) => [...a, { id: tmpId, name, path: p, kind: "", uploading: true }]);
+      try {
+        const r = await attachFilePath(sid, p);
+        void debugLog({ where: "attachPaths:resp", name, ok: r?.ok, error: r?.error });
+        if (r.ok && r.file) {
+          const entry = r.file;
+          setFileAttachments((a) =>
+            a.map((x) =>
+              x.id === tmpId
+                ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
+                : x,
+            ),
+          );
+          if (TABLE_KINDS.has(entry.kind)) {
+            g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
+          }
+          g.reloadArtifacts();
+        } else {
+          setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+        }
+      } catch (e) {
+        void debugLog({ where: "attachPaths:error", name, error: String(e) });
+        setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      }
+    }
   }
 
   function send() {
-    if (busyRef.current) return; // one turn at a time
+    if (!session) return;
+    const sid = session.id;
+    if (busyBySessionRef.current[sid]) return; // one turn at a time
     const text = input.trim();
-    const ws = wsRef.current;
-    if ((!text && attachments.length === 0) || !ws || !session || !g.connected) return;
+    const sock = socketsRef.current[sid];
+    const readyFiles = fileAttachments.filter((f) => !f.uploading);
+    if ((!text && attachments.length === 0 && readyFiles.length === 0) || !sock || !g.connected) return;
+    if (readyFiles.length !== fileAttachments.length) return; // upload in flight
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     const live = mid();
@@ -615,67 +667,78 @@ export function ChatStream({
     const guessName = agentById(agentId)?.name ?? "Agent";
     const imgs = attachments;
     const userBlocks: Block[] = [
+      ...readyFiles.map((f) => ({
+        kind: "file" as const,
+        fileId: f.id,
+        name: f.name,
+        path: f.path,
+        fileKind: f.kind,
+      })),
       ...imgs.map((a) => ({ kind: "image" as const, url: a.preview })),
       ...(text ? [{ kind: "text" as const, text }] : []),
     ];
-    busyRef.current = true;
-    setMessages((m) => [
-      ...m,
+    busyBySessionRef.current[sid] = true;
+    streamAgentRef.current[sid] = agentId;
+    storeRef.current[sid] = [
+      ...(storeRef.current[sid] ?? []),
       { id: mid(), role: "user", blocks: userBlocks, turnId },
-      { id: live, role: "assistant", blocks: [], agentId: agentId, agentName: guessName, turnId },
-    ]);
-    setLiveId(live);
-    liveIdRef.current = live;
-    setStreamAgent(agentId);
+      { id: live, role: "assistant", blocks: [], agentId, agentName: guessName, turnId },
+    ];
+    liveBySessionRef.current[sid] = live;
+    syncDisplay(sid);
     try {
-      ws.send(
+      sock.send(
         JSON.stringify({
           type: "invoke",
           message: text,
           agent_id: agentId,
           turn_id: turnId,
           images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
+          files: readyFiles.map((f) => ({ id: f.id, name: f.name, path: f.path })),
         }),
       );
     } catch {
-      // ws.send throws InvalidStateError when the socket is CLOSING/CLOSED (and
-      // the `g.connected` guard lags the real readyState). Without this the
-      // exception escapes the handler, busyRef stays locked, and the optimistic
-      // "Thinking…" bubble never resolves → chat frozen. Unlock + mark the bubble.
-      busyRef.current = false;
-      setLiveId(null);
-      liveIdRef.current = null;
-      setMessages((m) =>
-        m.map((msg) =>
-          msg.id === live
-            ? { ...msg, blocks: [{ kind: "text", text: "[error] 发送失败：连接未就绪，请稍后重试" }] }
-            : msg,
-        ),
+      // sock.send throws InvalidStateError when the socket is CLOSING/CLOSED and
+      // the `g.connected` guard lags the real readyState. Unlock + mark the bubble.
+      busyBySessionRef.current[sid] = false;
+      liveBySessionRef.current[sid] = null;
+      storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
+        msg.id === live
+          ? { ...msg, blocks: [{ kind: "text", text: "[error] 发送失败：连接未就绪，请稍后重试" }] }
+          : msg,
       );
+      syncDisplay(sid);
       return;
     }
     setInput("");
     setAttachments([]);
+    setFileAttachments([]);
     setTarget(null);
   }
 
   function respond(decision: "allow" | "deny") {
+    const sid = curSessionIdRef.current;
+    if (!sid) return;
     try {
-      wsRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
+      socketsRef.current[sid]?.send(JSON.stringify({ type: "permission_response", decision }));
     } catch {
       /* socket gone — reconnect re-emits the prompt if still pending */
     }
+    permsRef.current[sid] = null;
     setPermission(null);
   }
 
   function respondPropose(decision: "allow" | "deny") {
+    const sid = curSessionIdRef.current;
+    if (!sid) return;
     // Reuses the permission_response channel; the server resumes the proposal
     // interrupt with {decision}, and the propose_edit tool applies on allow.
     try {
-      wsRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
+      socketsRef.current[sid]?.send(JSON.stringify({ type: "permission_response", decision }));
     } catch {
       /* socket gone — reconnect re-emits version.propose if still pending */
     }
+    proposeRef.current[sid] = null;
     setPropose(null);
   }
 
@@ -883,6 +946,29 @@ export function ChatStream({
                 ))}
               </div>
             )}
+            {fileAttachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {fileAttachments.map((f, i) => (
+                  <div
+                    key={f.id}
+                    className="group relative flex items-center gap-1.5 rounded-lg border border-line bg-card2 px-2.5 py-1.5 text-xs text-txt"
+                  >
+                    <span>{TABLE_KINDS.has(f.kind) ? "📊" : "📄"}</span>
+                    <span className="max-w-[180px] truncate" title={f.name}>
+                      {f.name}
+                    </span>
+                    {f.uploading && <span className="text-faint">上传中…</span>}
+                    <button
+                      onClick={() => setFileAttachments((l) => l.filter((_, j) => j !== i))}
+                      aria-label={`移除 ${f.name}`}
+                      className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -902,7 +988,7 @@ export function ChatStream({
                 }
               }}
               rows={2}
-              placeholder="Ask any Agent …  可粘贴 / 拖入截图  (try: 用 stat_list 卡片展示 PR 状态)"
+              placeholder="Ask any Agent …  可拖入图片 / Excel / Word / PPT / PDF 一起提问"
               style={
                 composerH != null
                   ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
@@ -915,7 +1001,7 @@ export function ChatStream({
                 <input
                   ref={fileRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,.xlsx,.xls,.xlsm,.csv,.tsv,.docx,.pptx,.pdf,.json,.xml,.txt,.md"
                   multiple
                   className="hidden"
                   onChange={(e) => {
@@ -926,7 +1012,7 @@ export function ChatStream({
                 <button
                   onClick={() => fileRef.current?.click()}
                   className="rounded-md p-1.5 transition-colors hover:bg-card2 hover:text-muted"
-                  title="添加图片（也可直接粘贴 / 拖拽）"
+                  title="添加附件（图片 / Excel / Word / PPT / PDF，也可直接粘贴 / 拖拽）"
                 >
                   <Paperclip className="h-4 w-4" />
                 </button>
@@ -988,7 +1074,13 @@ export function ChatStream({
               </div>
               <button
                 onClick={send}
-                disabled={!g.connected || !!permission || running || (!input.trim() && attachments.length === 0)}
+                disabled={
+                  !g.connected ||
+                  !!permission ||
+                  running ||
+                  fileAttachments.some((f) => f.uploading) ||
+                  (!input.trim() && attachments.length === 0 && fileAttachments.length === 0)
+                }
                 className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 <ArrowUp className="h-4 w-4" />

@@ -16,12 +16,21 @@ cd packages/runtime
 OUT=$PWD/../apps/web/out          # NOTE: quote as "${OUT}:web_out" in zsh,
                                   # else `$OUT:web_out` is parsed as a zsh
                                   # variable modifier and silently breaks.
-uv run pyinstaller --onefile --paths src --name ginno-runtime \
+uv run --extra docs pyinstaller --onefile --paths src --name ginno-runtime \
   --collect-all langchain_openai --collect-all langchain_anthropic \
   --collect-all langgraph --collect-all mcp --collect-all pydantic \
+  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
+  --collect-all docx --collect-all pptx --collect-all pypdf \
   --add-data "${OUT}:web_out" \
   bin/ginno-runtime.py
-# → dist/ginno-runtime (~37MB Mach-O arm64)
+# → dist/ginno-runtime (~Mach-O arm64)
+#
+# `--extra docs` installs the file-parsing deps (pandas/python-docx/python-pptx/
+# pypdf/openpyxl/calamine) into the build env. They are imported lazily in
+# files/extractors.py, so `src/ginno_runtime/_frozen_imports.py` (imported by the
+# entry script) re-imports them eagerly for PyInstaller's static analysis — the
+# `--collect-all <lib>` flags above additionally grab their data files/templates.
+# Without this, the frozen binary raises ExtractorUnavailable on every parse.
 
 # 3. Place as Tauri sidecar with target-triple suffix
 TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
@@ -32,6 +41,16 @@ cd ../apps/desktop
 pnpm tauri build
 # → target/release/bundle/{macos/Ginno.app, dmg/Ginno_0.1.0_aarch64.dmg}
 ```
+
+## File drag & drop into the chat (desktop)
+
+The composer uses the **HTML5** drag-and-drop API (`onDrop` → `dataTransfer.files`).
+Tauri's default `dragDropEnabled: true` means *"Tauri's internal DnD is on and DOM
+DnD is off"* — the webview swallows OS file drops and `dataTransfer.files` is always
+empty ([tauri#3558](https://github.com/tauri-apps/tauri/issues/3558), [docs](https://v2.tauri.app/reference/config/)).
+`apps/desktop/tauri.conf.json` therefore sets the window's `dragDropEnabled: false`
+so drops reach the JS handler. Without this, dragging a file into the packaged app
+silently does nothing (it works in dev/browser where the flag doesn't apply).
 
 ## How the packaged app serves the UI (same-origin)
 
