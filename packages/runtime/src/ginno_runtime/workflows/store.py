@@ -353,7 +353,11 @@ def _wf_dsl_and_version(wf: dict[str, Any]) -> tuple[dict, int]:
     return wf_dsl.legacy_steps_to_dsl(wf.get("steps") or []), 0
 
 
-def create_run(wf: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
+def create_run(
+    wf: dict[str, Any],
+    session_id: str | None = None,
+    present_in_session_id: str | None = None,
+) -> dict[str, Any]:
     now = time.time()
     d, ver = _wf_dsl_and_version(wf)
     steps = wf_dsl.steps_from_dsl(d)
@@ -362,6 +366,8 @@ def create_run(wf: dict[str, Any], session_id: str | None = None) -> dict[str, A
         "workflow_id": wf.get("id", ""),
         "name": wf.get("name", ""),
         "session_id": session_id,
+        # where the run block should render in-chat (design A: run 回到对话)
+        "present_in_session_id": present_in_session_id or session_id,
         "dsl_version": ver,
         "status": "running",
         "steps": [

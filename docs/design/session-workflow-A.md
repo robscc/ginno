@@ -220,3 +220,15 @@
 **重构**：`compiler.py` 委托注册表构建节点+边、`WorkflowState` 增 `inputs/outputs` 通道；`dsl.py` `validate_dsl` 委托按节点参数校验（保持既有错误文案）+ 边 transform 校验；`engine.py` 初始状态补 `inputs/outputs`。既有契约（`compile_workflow`/`run_workflow`/事件种类）不变。
 
 **完整性校验**：新增 `tests/unit/test_nodes_{registry,transform,supervisor}.py`；`pytest -m unit` **274 过**、workflow API 集成 **8 过**，全绿。
+
+---
+
+## 12. 深化 A2 · 对话内运行 / 运行控制 / WS 推送（已提交于本分支）
+
+把"运行回到对话、可观察可干预"落成后端基建（§6.3/§3 共用基建的第 1–3 项）：
+
+- **run↔session 强关联**：`store.create_run(..., session_id, present_in_session_id)` 持久化绑定；`POST /api/workflow_runs` 接收并下发，run 块据此渲染到对应会话（移除"正则匹配 run_id"的依赖）。
+- **run 级推送替代轮询**：server 维护 `_SESSION_WS`（会话→活 socket，发送失败自清理）；`_run_workflow_bg`/`_resume_workflow_bg` 经 `_drive_run_events` 推 `run.bind` / `run.event` / `run.status` 到绑定会话；保留 `GET .../events` 轮询作 fallback。
+- **human 可暂停/恢复**：`HumanNode` 用 LangGraph `interrupt` 暂停；`engine.run_workflow` 遇暂停 yield `paused`（非 error）；新增 `engine.resume_workflow`（`Command(resume=…)` 续跑）与 `engine.run_state`（查暂停）。
+- **运行控制端点**：`POST .../cancel`（停 background task，status=cancelled）、`POST .../resume {value}`（仅 paused 可，409 否则）、`POST .../decide {decision,context_patch}`（supervisor/human 决策=resume）。
+- **校验**：`tests/unit/test_workflow_human_resume.py`、`tests/api/test_workflow_run_control.py`；`-m unit` **276 过**、`-m api` **91 过**，全绿。

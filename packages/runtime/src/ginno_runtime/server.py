@@ -48,6 +48,7 @@ from . import artifacts as art_store
 from . import workflows as wf_store
 from .workflows import events as wf_events
 from .workflows import dsl as wf_dsl
+from .workflows import store as wf_storemod
 from .tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from .tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 
@@ -158,6 +159,26 @@ _SESSIONS: dict[str, dict[str, Any]] = {}
 # Background workflow-run tasks (run_id -> asyncio.Task); kept alive + awaitable
 # so the run trigger can be fire-and-forget in prod yet deterministic in tests.
 _WF_RUN_TASKS: dict[str, Any] = {}
+
+# Live session WebSockets (session_id -> [WebSocket]); used to push run.* events
+# into the conversation that a run is bound to (design A: run 回到对话). Self-cleans
+# on send failure (disconnected sockets are dropped).
+_SESSION_WS: dict[str, list[Any]] = {}
+
+
+async def _push_session_event(session_id: str | None, event: str, data: dict) -> None:
+    """Best-effort push of a WS event to every live socket of ``session_id``."""
+    if not session_id:
+        return
+    socks = _SESSION_WS.get(session_id) or []
+    alive: list[Any] = []
+    for w in socks:
+        try:
+            await w.send_text(_ev(event, data))
+            alive.append(w)
+        except Exception:
+            continue
+    _SESSION_WS[session_id] = alive
 
 
 def _session_meta_list(slug: str) -> list[dict]:
@@ -951,88 +972,147 @@ def _wf_mcp_tools() -> list:
         return []
 
 
-async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict | None) -> None:
-    """Background driver: fork agent, build model+tools, stream the engine,
-    persist events + run step status. Errors are recorded on the run, never raised."""
+def _wf_build_deps(run_id: str, workflow_id: str):
+    """Resolve (wf, dsl, model, tools) for a run by forking its source agent."""
+    wf = wf_store.get_def(workflow_id)
+    if not wf:
+        return None, None, None, None
+    dsl = wf["dsl"]
+    src_agent_id = None
+    for n in dsl.get("nodes") or []:
+        if n.get("agent"):
+            src_agent_id = n["agent"]
+            break
+    src_agent_id = src_agent_id or wf.get("agent_id") or "dev"
+    fork = agents_reg.fork_agent(src_agent_id, f"wf-{run_id[:8]}-{src_agent_id}")
+    model = build_model(fork.provider, fork.model or None)
+    tools = build_all_tools(_wf_mcp_tools())
+    return wf, dsl, model, tools
+
+
+def _set_run_status(run_id: str, status: str) -> None:
+    run = wf_store.get_run(run_id)
+    if run:
+        run["status"] = status
+        run["updated"] = time.time()
+        wf_storemod._write_json(wf_storemod._run_path(run_id), run)
+
+
+async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen) -> None:
+    """Persist + push each engine event; keep run step status + terminal state in sync."""
+    node_to_step = {s["id"]: s["id"] for s in wf.get("steps", [])}
+    async for ev in agen:
+        wf_events.append_event(run_id, ev.get("kind", ""), **{
+            k: v for k, v in ev.items() if k not in ("kind", "run_id")
+        })
+        await _push_session_event(present_in, "run.event", {"run_id": run_id, "event": ev})
+        kind = ev.get("kind")
+        nid = ev.get("node_id")
+        if kind == "node_enter" and nid in node_to_step:
+            wf_store.update_step(run_id, node_to_step[nid], "running")
+        elif kind == "node_exit" and nid in node_to_step:
+            wf_store.update_step(run_id, node_to_step[nid], "done" if ev.get("status") != "failed" else "failed")
+        elif kind == "done":
+            _set_run_status(run_id, "done")
+            await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "done"})
+        elif kind == "paused":
+            _set_run_status(run_id, "paused")
+            await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "paused"})
+        elif kind == "error":
+            _set_run_status(run_id, "failed")
+            await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "failed"})
+
+
+async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict | None, present_in: str | None = None) -> None:
+    """Background driver: fork agent, stream the engine, persist + push events."""
     from .workflows import engine as wf_engine
 
     try:
-        wf = wf_store.get_def(workflow_id)
+        wf, dsl, model, tools = _wf_build_deps(run_id, workflow_id)
         if not wf:
             return
-        dsl = wf["dsl"]
-        version = wf.get("version", 0)
-        # resolve the source agent from the first step that names one (else default)
-        src_agent_id = None
-        for n in dsl.get("nodes") or []:
-            if n.get("agent"):
-                src_agent_id = n["agent"]
-                break
-        src_agent_id = src_agent_id or (wf_store.get_def(workflow_id) or {}).get("agent_id") or "dev"
-        fork = agents_reg.fork_agent(src_agent_id, f"wf-{run_id[:8]}-{src_agent_id}")
-        model = build_model(fork.provider, fork.model or None)
-        tools = build_all_tools(_wf_mcp_tools())
-
-        node_to_step = {s["id"]: s["id"] for s in wf.get("steps", [])}
-        async for ev in wf_engine.run_workflow(
-            dsl,
-            run_id=run_id,
-            model=model,
-            tools=tools,
-            context_override=context_override,
-        ):
-            wf_events.append_event(run_id, ev.get("kind", ""), **{
-                k: v for k, v in ev.items() if k not in ("kind", "run_id")
-            })
-            kind = ev.get("kind")
-            nid = ev.get("node_id")
-            if kind == "node_enter" and nid in node_to_step:
-                wf_store.update_step(run_id, node_to_step[nid], "running")
-            elif kind == "node_exit" and nid in node_to_step:
-                wf_store.update_step(
-                    run_id,
-                    node_to_step[nid],
-                    "done" if ev.get("status") != "failed" else "failed",
-                )
-            elif kind == "done":
-                run = wf_store.get_run(run_id)
-                if run and run.get("status") == "running":
-                    run["status"] = "done"
-                    run["updated"] = time.time()
-                    wf_store._write_json(wf_store._run_path(run_id), run)
-            elif kind == "error":
-                run = wf_store.get_run(run_id)
-                if run:
-                    run["status"] = "failed"
-                    run["updated"] = time.time()
-                    wf_store._write_json(wf_store._run_path(run_id), run)
+        await _push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
+        agen = wf_engine.run_workflow(dsl, run_id=run_id, model=model, tools=tools, context_override=context_override)
+        await _drive_run_events(run_id, present_in, wf, agen)
     except Exception as exc:  # pragma: no cover - defensive
         wf_events.append_event(run_id, "error", error=f"{type(exc).__name__}: {exc}")
-        run = wf_store.get_run(run_id)
-        if run:
-            run["status"] = "failed"
-            run["updated"] = time.time()
-            wf_store._write_json(wf_store._run_path(run_id), run)
+        _set_run_status(run_id, "failed")
+        await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "failed"})
+
+
+async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict, present_in: str | None = None) -> None:
+    """Background driver to continue a paused run (human/supervisor decision)."""
+    from .workflows import engine as wf_engine
+
+    try:
+        wf, dsl, model, tools = _wf_build_deps(run_id, workflow_id)
+        if not wf:
+            return
+        _set_run_status(run_id, "running")
+        agen = wf_engine.resume_workflow(dsl, run_id=run_id, model=model, tools=tools, resume_value=resume_value)
+        await _drive_run_events(run_id, present_in, wf, agen)
+    except Exception as exc:  # pragma: no cover
+        wf_events.append_event(run_id, "error", error=f"{type(exc).__name__}: {exc}")
+        _set_run_status(run_id, "failed")
+        await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "failed"})
 
 
 @app.post("/api/workflow_runs")
 async def create_workflow_run_endpoint(data: dict) -> dict:
-    """Trigger a workflow run: creates the run, forks the agent, executes in the
-    background. Returns immediately with the run id; poll /workflow_runs/{id}/events."""
+    """Trigger a workflow run: creates the run (bound to a session for in-chat
+    rendering), forks the agent, executes in the background. Returns immediately."""
     import asyncio
 
-    workflow_id = (data or {}).get("workflow_id")
+    data = data or {}
+    workflow_id = data.get("workflow_id")
     if not workflow_id:
         raise HTTPException(status_code=400, detail="workflow_id required")
     wf = wf_store.get_def(workflow_id)
     if not wf:
         raise HTTPException(status_code=404, detail="workflow not found")
-    run = wf_store.create_run(wf)
-    task = asyncio.create_task(
-        _run_workflow_bg(run["id"], workflow_id, (data or {}).get("context_override"))
-    )
+    session_id = data.get("session_id")
+    present_in = data.get("present_in_session_id") or session_id
+    run = wf_store.create_run(wf, session_id=session_id, present_in_session_id=present_in)
+    task = asyncio.create_task(_run_workflow_bg(run["id"], workflow_id, data.get("context_override"), present_in))
     _WF_RUN_TASKS[run["id"]] = task
     return {"ok": True, "run": run}
+
+
+@app.post("/api/workflow_runs/{run_id}/cancel")
+async def cancel_workflow_run_endpoint(run_id: str) -> dict:
+    """Cancel a running workflow run (stops the background task)."""
+    run = wf_store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    task = _WF_RUN_TASKS.get(run_id)
+    if task is not None and not task.done():
+        task.cancel()
+    _set_run_status(run_id, "cancelled")
+    await _push_session_event(run.get("present_in_session_id"), "run.status", {"run_id": run_id, "status": "cancelled"})
+    return {"ok": True, "status": "cancelled"}
+
+
+@app.post("/api/workflow_runs/{run_id}/resume")
+async def resume_workflow_run_endpoint(run_id: str, data: dict) -> dict:
+    """Resume a paused run with a value (e.g. {"decision":..., "context_patch":{...}})."""
+    import asyncio
+
+    run = wf_store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.get("status") != "paused":
+        raise HTTPException(status_code=409, detail=f"run not paused (status={run.get('status')})")
+    task = asyncio.create_task(_resume_workflow_bg(run_id, run["workflow_id"], data or {}, run.get("present_in_session_id")))
+    _WF_RUN_TASKS[run_id] = task
+    return {"ok": True, "status": "resuming"}
+
+
+@app.post("/api/workflow_runs/{run_id}/decide")
+async def decide_workflow_run_endpoint(run_id: str, data: dict) -> dict:
+    """Supervisor/human decision = resume with {"decision","context_patch"}."""
+    data = data or {}
+    value = {"decision": data.get("decision"), "context_patch": data.get("context_patch") or {}}
+    return await resume_workflow_run_endpoint(run_id, value)
 
 
 @app.get("/api/workflow_runs/{run_id}/events")
@@ -2125,6 +2205,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         return
 
     await ws.accept()
+    _SESSION_WS.setdefault(session_id, []).append(ws)
     graph = session["graph"]
     config = {"configurable": {"thread_id": session_id, "project_slug": session["project_slug"]}}
 

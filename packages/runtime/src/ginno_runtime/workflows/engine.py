@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
+from langgraph.types import Command
+
 from ..checkpointer import FileCheckpointer
 from . import compiler as wf_compiler
 from . import dsl as wf_dsl
@@ -80,12 +82,68 @@ async def run_workflow(
     except Exception:
         paused = False
     if paused:
-        ev = {
-            "run_id": run_id,
-            "kind": "error",
-            "error": "workflow paused mid-step (unsupported interrupt); run aborted",
-        }
+        # A human/supervisor node suspended the graph — this is a *pause*, not an
+        # error. The checkpoint is persisted; resume via resume_workflow().
+        ev = {"run_id": run_id, "kind": "paused"}
         run_ctx["events"].append(ev)
         yield ev
         return
     yield {"run_id": run_id, "kind": "done"}
+
+
+async def run_state(run_id: str, dsl: dict, model, tools: list, project_slug: str = "default"):
+    """Introspect whether a run is currently paused at an interrupt (for UI/status)."""
+    d = wf_dsl.normalize_dsl(dsl)
+    run_ctx: dict[str, Any] = {"run_id": run_id, "events": []}
+    graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug))
+    config = {"configurable": {"thread_id": run_id}}
+    try:
+        snap = await graph.aget_state(config)
+    except Exception:
+        return {"paused": False}
+    paused = bool(getattr(snap, "next", None)) or any(
+        getattr(t, "interrupts", None) for t in (getattr(snap, "tasks", ()) or ())
+    )
+    return {"paused": paused, "next": list(getattr(snap, "next", ()) or ())}
+
+
+async def resume_workflow(
+    dsl: dict,
+    *,
+    run_id: str,
+    model,
+    tools: list,
+    resume_value: dict,
+    project_slug: str = "default",
+) -> AsyncIterator[dict]:
+    """Continue a paused run by resuming the persisted interrupt on its thread."""
+    d = wf_dsl.normalize_dsl(dsl)
+    run_ctx: dict[str, Any] = {"run_id": run_id, "events": []}
+    graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug))
+    config = {"configurable": {"thread_id": run_id}}
+    yielded = 0
+    try:
+        async for _mode, _payload in graph.astream(
+            Command(resume=resume_value), config=config, stream_mode=["updates"]
+        ):
+            evs = run_ctx["events"]
+            while yielded < len(evs):
+                yield evs[yielded]
+                yielded += 1
+    except Exception as exc:
+        ev = {"run_id": run_id, "kind": "error", "error": f"{type(exc).__name__}: {exc}"}
+        run_ctx["events"].append(ev)
+        while yielded < len(run_ctx["events"]):
+            yield run_ctx["events"][yielded]
+            yielded += 1
+        return
+    evs = run_ctx["events"]
+    while yielded < len(evs):
+        yield evs[yielded]
+        yielded += 1
+    # After resuming, the graph may reach another interrupt (pause again) or finish.
+    paused = (await run_state(run_id, d, model, tools, project_slug))["paused"]
+    if paused:
+        yield {"run_id": run_id, "kind": "paused"}
+    else:
+        yield {"run_id": run_id, "kind": "done"}

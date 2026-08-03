@@ -235,13 +235,29 @@ class LoopNode(BaseNode):
 
 @register_node
 class HumanNode(BaseNode):
-    """Human-in-the-loop checkpoint. Not compiled in v1 (matches prior compiler behaviour)."""
+    """Human-in-the-loop checkpoint: suspends via ``interrupt`` and resumes with the
+    provided value (e.g. ``{"decision": "continue", "context_patch": {...}}``)."""
 
     type = "human"
+    params_schema = {"type": "object", "properties": {"question": {"type": "string"}}}
 
-    @classmethod
-    def make_node(cls, node, cctx):
-        raise ValueError(f"node type 'human' not compiled in v1")
+    @staticmethod
+    async def execute(node, cctx, state, config, eff) -> dict:
+        from langgraph.types import interrupt
+
+        run_ctx = cctx["run_ctx"]
+        run_ctx["events"].append(
+            {"run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "interrupt", "question": node.get("question")}
+        )
+        value = interrupt({"kind": "human", "node": node["id"], "question": node.get("question")})
+        run_ctx["events"].append({"run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "resume"})
+        update: dict = {"events": []}
+        # a context_patch in the resume value merges into context
+        if isinstance(value, dict) and isinstance(value.get("context_patch"), dict):
+            ctx = dict(state.get("context") or {})
+            update["context"] = {**ctx, **value["context_patch"]}
+        update["__output__"] = value if isinstance(value, dict) else {"resume": value}
+        return update
 
 
 @register_node
