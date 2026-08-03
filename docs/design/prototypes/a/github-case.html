@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>方案 A · 真实案例：GitHub Trending → 分析报告（聊天→workflow→调试）</title>
+<style>
+  :root{--bg:#0c0c10;--panel:#15151c;--panel2:#1b1b24;--panel3:#22222d;--line:#2a2a36;--line2:#34343f;--txt:#e8e8ee;--muted:#9a9aa8;--muted2:#6f6f7e;--accent:#a855f7;--teal:#2dd4bf;--green:#22c55e;--blue:#3b82f6;--amber:#f59e0b;--red:#ef4444;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,"PingFang SC","Microsoft YaHei",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  *{box-sizing:border-box}html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.55}
+  .banner{height:28px;display:flex;align-items:center;gap:8px;padding:0 14px;background:linear-gradient(90deg,rgba(168,85,247,.18),rgba(45,212,191,.10));border-bottom:1px solid var(--line);font-size:11px;color:#e9d5ff}
+  .banner b{color:#fff}.banner .tag{margin-left:auto;color:var(--muted);font-family:var(--mono)}
+  .tabs{display:flex;gap:2px;padding:6px 12px 0;background:var(--panel);border-bottom:1px solid var(--line)}
+  .tab{padding:8px 14px;border-radius:9px 9px 0 0;color:var(--muted);cursor:pointer;font-size:12.5px;border:1px solid transparent;border-bottom:none}
+  .tab.on{color:#fff;background:var(--bg);border-color:var(--line)}
+  .tab .n{display:inline-block;width:16px;height:16px;line-height:16px;text-align:center;border-radius:5px;background:var(--panel3);color:var(--muted);font-size:10px;margin-right:6px}
+  .tab.on .n{background:var(--accent-soft);color:#e9d5ff}
+  .wrap{max-width:1060px;margin:0 auto;padding:22px 20px 40px}
+  .step-h{display:flex;align-items:center;gap:10px;margin:4px 0 14px}
+  .step-h .big{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--teal));color:#fff}
+  .step-h h2{font-size:16px;margin:0}
+  .step-h .sub{color:var(--muted);font-size:12px}
+  .card{border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden;margin-bottom:16px}
+  .card-h{padding:11px 15px;border-bottom:1px solid var(--line);font-weight:600;font-size:12.5px;display:flex;gap:8px;align-items:center}
+  .card-b{padding:15px}
+  .msg{display:flex;gap:10px;margin-bottom:12px}
+  .msg .av{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;flex:none;font-size:12px}
+  .msg .av.u{background:rgba(45,212,191,.16);color:#99f6e4}.msg .av.a{background:rgba(59,130,246,.16);color:#93c5fd}
+  .msg .b{padding:10px 13px;border-radius:12px;background:var(--panel2);border:1px solid var(--line);max-width:760px}
+  .msg.u{flex-direction:row-reverse}.msg.u .b{background:rgba(45,212,191,.10);border-color:rgba(45,212,191,.3)}
+  .msg .who{font-size:10.5px;color:var(--muted);margin-bottom:4px}
+  code.dsl{font-family:var(--mono);font-size:11.5px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;display:block;white-space:pre;overflow:auto;color:#c4b5fd}
+  .dline{font-family:var(--mono);font-size:11.5px;padding:3px 10px;white-space:pre}
+  .dline.del{background:rgba(239,68,68,.12);color:#fecaca}
+  .dline.add{background:rgba(34,197,94,.12);color:#bbf7d0}
+  .runcmp{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .run{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .run-h{padding:9px 13px;font-weight:600;font-size:12px;display:flex;align-items:center;gap:8px}
+  .run.fail .run-h{background:rgba(239,68,68,.12);color:#fecaca}
+  .run.ok .run-h{background:rgba(34,197,94,.12);color:#bbf7d0}
+  .run-b{padding:12px 13px;font-size:12px}
+  .kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:11.5px}
+  .kv .k{color:var(--muted)}.kv .v{font-family:var(--mono)}
+  .note{font-size:11.5px;color:var(--muted);background:var(--panel2);border:1px dashed var(--line2);border-radius:10px;padding:10px 12px;margin-top:12px}.note b{color:#fcd34d}
+  .pill{font-size:10px;padding:2px 8px;border-radius:20px}
+  .pill.g{color:#86efac;background:rgba(34,197,94,.16)}.pill.r{color:#fca5a5;background:rgba(239,68,68,.16)}.pill.b{color:#93c5fd;background:rgba(59,130,246,.16)}
+  .hide{display:none!important}
+</style>
+</head>
+<body>
+<div class="banner"> 方案 A · <b>真实案例</b>：GitHub Trending → 选 repo → 学习 → 分析报告（①聊天 ②总结成 workflow ③调试到稳定）<span class="tag">tests/api/test_github_trending_case.py</span></div>
+<div class="tabs" id="tabs">
+  <div class="tab on" data-s="s1"><span class="n">1</span> 聊天完成流程</div>
+  <div class="tab" data-s="s2"><span class="n">2</span> 总结成 workflow</div>
+  <div class="tab" data-s="s3"><span class="n">3</span> 调试到稳定运行</div>
+</div>
+
+<div class="wrap">
+  <!-- s1 -->
+  <div class="screen" data-s="s1">
+    <div class="step-h"><div class="big">1</div><div><h2>在 Ginno 聊天里完成一遍流程</h2><div class="sub">WS 会话（真实聊天路径）· scripted agent 演示</div></div></div>
+    <div class="card"><div class="card-h">💬 Session · Morning Tech-Learning</div><div class="card-b">
+      <div class="msg u"><div class="av u">我</div><div><div class="who">user</div><div class="b">看看今天 github trending 有什么好玩的 repo</div></div></div>
+      <div class="msg"><div class="av a">⌘</div><div><div class="who">Dev Agent</div><div class="b">今日 GitHub Trending: langgraph(★12k), marimo(★8k), reflex(★6k)。</div></div></div>
+      <div class="msg u"><div class="av u">我</div><div><div class="who">user</div><div class="b">选 langgraph，学习一下它的核心模块</div></div></div>
+      <div class="msg"><div class="av a">⌘</div><div><div class="who">Dev Agent</div><div class="b">已选 langgraph：阅读 README/核心 state-graph 与 checkpointer 模块。</div></div></div>
+      <div class="msg u"><div class="av u">我</div><div><div class="who">user</div><div class="b">给它写一份分析报告</div></div></div>
+      <div class="msg"><div class="av a">⌘</div><div><div class="who">Dev Agent</div><div class="b">分析报告(langgraph)：图状态机+可恢复检查点是其核心；适合智能体编排。</div></div></div>
+    </div></div>
+    <div class="note"><b>第①步完成</b>：对话轨迹（trending→选 repo→学习→报告）已写入 session，可供总结。</div>
+  </div>
+
+  <!-- s2 -->
+  <div class="screen hide" data-s="s2">
+    <div class="step-h"><div class="big">2</div><div><h2>总结 session → workflow（v1）</h2><div class="sub">POST /api/workflows/summarize-from-session · 返回 DSL 草稿并创建 v1</div></div></div>
+    <div class="card"><div class="card-h">⌁ 生成的 DSL（识别出 loop + branch）</div><div class="card-b">
+<code class="dsl">{ "name": "Trending Repo 分析", "entry": "fetch",
+  "nodes": [
+    { "id":"fetch",  "type":"step", "goal":"拉取 GitHub Trending 列表" },
+    { "id":"loop",   "type":"loop", "over":"context.repos", "as":"repo", "body":"analyze", "max_iters":5 },
+    { "id":"analyze","type":"step", "goal":"分析 {{repo}} 并写分析报告" },
+    { "id":"gate",   "type":"branch", "cases":[{ "when":"len(context.reports)>0", "then":"notify" }], "default":"done" },
+    { "id":"notify", "type":"llm",  "prompt":"汇总 {{n}} 份报告" },
+    { "id":"done",   "type":"pass" } ],
+  "edges": [ {"from":"fetch","to":"loop"}, {"from":"loop","to":"gate"} ] }</code>
+      <div class="note">把"对每个 repo 分析"识别为 <b>loop</b>；"有报告则汇总"识别为 <b>branch</b>；loop→gate 为串联续跑边。</div>
+    </div></div>
+  </div>
+
+  <!-- s3 -->
+  <div class="screen hide" data-s="s3">
+    <div class="step-h"><div class="big">3</div><div><h2>调试 workflow 到稳定运行</h2><div class="sub">run#1 暴露取错键 → PUT 修 DSL(v2) → run#2 稳定 done</div></div></div>
+    <div class="runcmp">
+      <div class="run fail"><div class="run-h">run#1 · v1 <span class="pill r">0 迭代</span></div><div class="run-b">
+        <div class="kv"><span class="k">loop.over</span><span class="v">context.repos</span></div>
+        <div class="kv"><span class="k">fetch 实际写入</span><span class="v">repositories</span></div>
+        <div class="kv"><span class="k">loop_iter</span><span class="v">0（没跑分析）</span></div>
+        <div class="kv"><span class="k">status</span><span class="v">done 但无报告</span></div>
+        <div class="note" style="margin-top:10px"><b>问题暴露</b>：事件流里 review/analyze 从未进入 → 键不匹配。</div>
+      </div></div>
+      <div class="run ok"><div class="run-h">run#2 · v2 <span class="pill g">稳定</span></div><div class="run-b">
+        <div class="kv"><span class="k">loop.over</span><span class="v">context.repositories</span></div>
+        <div class="kv"><span class="k">loop_iter</span><span class="v">2（每 repo 都分析）</span></div>
+        <div class="kv"><span class="k">notify</span><span class="v">reached · summary 写入</span></div>
+        <div class="kv"><span class="k">status</span><span class="v">done</span></div>
+      </div></div>
+    </div>
+    <div class="card" style="margin-top:16px"><div class="card-h">🔧 v1 → v2 的修改（PUT /workflows/{id}）</div><div class="card-b">
+      <div class="dline del">- "over": "context.repos"</div>
+      <div class="dline add">+ "over": "context.repositories"</div>
+      <div class="note"><b>第③步完成</b>：通过事件流定位问题、改 DSL 产生 v2、重跑稳定——即"调试到能稳定运行"。</div>
+    </div></div>
+  </div>
+</div>
+
+<script>
+  (function(){
+    var p=new URLSearchParams(location.search);var s=p.get('screen')||'s1';
+    function show(id){document.querySelectorAll('.screen').forEach(function(e){e.classList.toggle('hide',e.getAttribute('data-s')!==id)});document.querySelectorAll('.tab').forEach(function(e){e.classList.toggle('on',e.getAttribute('data-s')===id)});}
+    show(s);
+    document.getElementById('tabs').addEventListener('click',function(e){var t=e.target.closest('.tab');if(!t)return;show(t.getAttribute('data-s'));});
+  })();
+</script>
+</body>
+</html>

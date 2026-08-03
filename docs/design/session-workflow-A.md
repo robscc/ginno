@@ -245,3 +245,15 @@
 修复后复杂 case 全链路通过：`supervisor coerce(prep)→fetch→loop×2(review)→gate→notify→done`，`-m unit` **277 过**、`-m api` **91 过**。
 
 **页面回放**：`docs/design/prototypes/a/complex-case.html` 内嵌真实引擎导出的事件流，可播放/步进/`?t=N` 直达；左 DAG 按回放高亮、中时间线、右上下文+Supervisor 卡。截图 `screenshots/a/cx_t02_supervisor.png` / `cx_t10_loop.png` / `cx_t20_done.png`。
+
+---
+
+## 14. 真实案例 e2e：GitHub Trending → 分析报告（三步闭环，已提交）
+
+按你给的流程用**真实端点**跑通（`tests/api/test_github_trending_case.py`，一次通过）：
+
+1. **聊天完成流程**：WS 会话三轮（看 trending → 选 langgraph 学习 → 写分析报告），轨迹落 session。
+2. **总结成 workflow**：`POST /workflows/summarize-from-session` 从该 session 提炼 DSL（识别 loop+branch+串联边）→ 创建 v1。
+3. **调试到稳定**：run#1 暴露 `loop.over=context.repos` 与 fetch 实写 `repositories` 不匹配（0 迭代、无报告）→ `PUT /workflows/{id}` 修 DSL 出 v2 → run#2 每 repo 都分析、notify 汇总、稳定 `done`。
+
+页面版：`docs/design/prototypes/a/github-case.html`（①聊天 ②总结 ③调试 三屏），截图 `screenshots/a/gh_s1..s3.png`。
