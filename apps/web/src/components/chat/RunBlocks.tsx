@@ -74,7 +74,7 @@ export function LiveRunBlock({
           {run.status === "paused" && onContinue && (
             <button
               onClick={() => onContinue(run.id)}
-              className="flex items-center gap-1 rounded-md border border-amber/40 px-2 py-1 text-xs text-amber hover:bg-amber/10"
+              className="flex items-center gap-1 rounded-md border border-yellow/40 px-2 py-1 text-xs text-yellow hover:bg-yellow/10"
             >
               <Check className="h-3 w-3" /> 继续（human/supervisor）
             </button>
