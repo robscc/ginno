@@ -62,6 +62,23 @@
 
 ---
 
+## 3.5 Supervisor 统一设计（第二轮补充）
+
+> 你指出的缺口已补齐：三个方案均新增 Supervisor 产品设计。统一概念 + 各方案落点 + 独立原型/截图如下。
+
+**统一概念**：Supervisor 是挂在执行上的治理层，在检查点（每步后/指定节点/出错时）发出控制决策 `继续/重试本步/跳过/改context/暂停/中止`。**auto**=独立 LLM 按策略+预算结构化裁决（默认仅异常干预、pass-through 不刷屏；不确定/超预算**回退 human**）；**human**=检查点 interrupt 推裁决卡。**安全阀**：每步 retry_limit、单 run 干预上限、token 预算、confidence 回退阈值。**配置三层**：蓝图/DSL 默认 → 运行前 override → 运行中切模式。所有裁决记 `supervisor_decision` 事件，可审计/回放。
+
+**各方案落点（差异在呈现与聚合）**：
+| | Supervisor 呈现 | 原型/截图 |
+|---|---|---|
+| A 会话优先 | human 裁决卡**留在对话流**（与运行块一体）；auto 为小字注释；右栏「过程/Supervisor」三层配置+监督日志 | `a/supervisor.html`（a5 human / a6 auto） |
+| B 工作室优先 | Supervisor 为 Studio **一等公民**：控制台 tab（mini-DAG 画 sup 门+auto 时间线+预算条+配置检查器）+ 左栏**跨运行决策收件箱**（多无头运行同时等人的盯盘刚需） | `b/supervisor.html`（b5）+ `b_b2`（观察台裁决卡） |
+| C 双模混合 | **双视图同源**：流程视图把 supervisor 画成节点间的"门"，对话视图把同一 interrupt 渲染为内联卡，任一视图决策另一视图同步消解；配置随蓝图/实例携带 | `c/supervisor.html`（c5 门 / c6 内联卡） |
+
+**技术增量（共用）**：DSL `supervisor` 扩展 `{enabled,mode,checkpoints,retry_limit,strategy,model?}`；compiler 插门节点（现状为桩）；engine 实装 auto 结构化裁决 + human 可恢复 + 应用决策；WS `supervisor.event/decision/pending`；REST `POST /workflow_runs/{id}/decide`、`PUT /workflows/{id}/supervisor`、run 创建 `supervisor_override`；收件箱=`GET /workflow_runs?supervisor_pending=true`。
+
+---
+
 ## 4. 推荐与组合策略
 
 - **若产品主叙事是"对话型个人 AI 助手"** → 选 **A**（成本最低、最贴合现有体验，运行回到对话的闭环已能解决最大痛点）。
