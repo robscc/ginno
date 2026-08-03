@@ -12,6 +12,7 @@ treated as data, not commands.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from .. import paths as _paths
 from .config import load_knowledge_config
@@ -50,16 +51,23 @@ sanitize_memory_output = sanitize_for_memory
 
 
 def get_wiki_guidelines(cfg: KnowledgeConfig) -> str:
+    # Present ABSOLUTE vault paths so the agent writes into the real vault even
+    # when the session workspace differs. Relative dirs previously made the agent
+    # emit paths like "/Ginno/Raw/…" (base lost) and crash write_file.
+    vault = Path(str(cfg.vault_path)).expanduser()
+    raw = vault / cfg.raw_dir
+    research = vault / cfg.research_dir
+    wiki = vault / cfg.wiki_dir
     return (
         "## Obsidian Wiki 使用规范\n\n"
-        "向 Obsidian vault 写入新文档时，请遵循以下目录结构：\n\n"
+        "向 Obsidian vault 写入新文档时，请遵循以下目录结构（**绝对路径**）：\n\n"
         "| 目录 | 用途 | 是否可写 |\n"
         "|------|------|----------|\n"
-        f"| `{cfg.raw_dir}/` | 原始文档、笔记、报告 | ✅ 新文档写这里 |\n"
-        f"| `{cfg.research_dir}/` | 深度研究报告 | ✅ 研究报告写这里 |\n"
-        f"| `{cfg.wiki_dir}/` | 自动编译的 wiki 页（KB 页 “Build wiki” / POST /kb/wiki/build 产物） | ❌ 勿直接写入 |\n\n"
-        f"规则：新文档/报告/总结一律存到 `{cfg.raw_dir}/`；"
-        f"`{cfg.wiki_dir}/` 由 KB 页 “Build wiki”（POST /kb/wiki/build）从 Raw/ 自动生成，不要手写（没有 /kb build 命令）。"
+        f"| `{raw}/` | 原始文档、笔记、报告 | ✅ 新文档写这里 |\n"
+        f"| `{research}/` | 深度研究报告 | ✅ 研究报告写这里 |\n"
+        f"| `{wiki}/` | 自动编译的 wiki 页（KB 页 “Build wiki” / POST /kb/wiki/build 产物） | ❌ 勿直接写入 |\n\n"
+        f"规则：新文档/报告/总结一律存到 `{raw}/`；"
+        f"`{wiki}/` 由 KB 页 “Build wiki”（POST /kb/wiki/build）从 Raw/ 自动生成，不要手写（没有 /kb build 命令）。"
     )
 
 

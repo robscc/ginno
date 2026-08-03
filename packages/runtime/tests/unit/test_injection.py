@@ -18,6 +18,17 @@ from ginno_runtime.knowledge.injection import (
 )
 from ginno_runtime.knowledge.types import KnowledgeConfig, RetrievalResult, WikiEntry
 
+
+def test_wiki_guidelines_use_absolute_vault_paths():
+    from ginno_runtime.knowledge.injection import get_wiki_guidelines
+
+    cfg = KnowledgeConfig(
+        vault_path="/tmp/vault", raw_dir="Ginno/Raw", wiki_dir="Ginno/Wiki", research_dir="Ginno/Research"
+    )
+    g = get_wiki_guidelines(cfg)
+    assert "/tmp/vault/Ginno/Raw" in g
+    assert "/tmp/vault/Ginno/Wiki" in g
+
 pytestmark = pytest.mark.unit
 
 
