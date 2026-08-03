@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>方案 A · 复杂 case 全流程回放 — 运行观察页</title>
+<style>
+  :root{--bg:#0c0c10;--panel:#15151c;--panel2:#1b1b24;--panel3:#22222d;--line:#2a2a36;--line2:#34343f;--txt:#e8e8ee;--muted:#9a9aa8;--muted2:#6f6f7e;--accent:#a855f7;--green:#22c55e;--blue:#3b82f6;--amber:#f59e0b;--violet:#8b5cf6;--teal:#2dd4bf;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,"PingFang SC","Microsoft YaHei",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  *{box-sizing:border-box}html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.5}
+  .banner{height:28px;display:flex;align-items:center;gap:8px;padding:0 14px;background:linear-gradient(90deg,rgba(168,85,247,.18),rgba(45,212,191,.10));border-bottom:1px solid var(--line);font-size:11px;color:#e9d5ff}
+  .banner b{color:#fff}.banner .tag{margin-left:auto;color:var(--muted);font-family:var(--mono)}
+  .app{display:grid;grid-template-columns:300px 1fr 320px;height:calc(100vh - 28px);min-height:620px}
+  /* DAG */
+  .dagcol{background:var(--panel);border-right:1px solid var(--line);overflow:auto;padding:16px}
+  .dtitle{font-weight:600;font-size:12.5px;margin-bottom:12px}
+  .node{width:200px;margin:0 auto;background:var(--panel2);border:1.5px solid var(--line2);border-radius:11px;padding:9px 12px;position:relative;transition:all .2s}
+  .node .nh{display:flex;align-items:center;gap:7px;font-weight:600;font-size:12px}
+  .node .ty{font-size:9px;color:var(--muted);font-family:var(--mono);text-transform:uppercase}
+  .node .st{position:absolute;right:9px;top:9px;font-size:10px}
+  .node.active{border-color:var(--blue);box-shadow:0 0 0 3px rgba(59,130,246,.18)}
+  .node.done{border-color:rgba(34,197,94,.5)}
+  .node.sup{border-color:rgba(245,158,11,.6)}
+  .edgev{width:2px;height:14px;background:var(--line2);margin:0 auto}
+  .loopwrap{border:1.5px dashed var(--line2);border-radius:14px;padding:10px 6px 12px;margin:0 auto;width:240px;position:relative}
+  .loopwrap .lab{position:absolute;top:-9px;left:12px;background:var(--panel);padding:0 7px;font-size:9.5px;color:var(--muted);border-radius:10px}
+  .loopwrap .node{width:190px}
+  .branchrow{display:flex;gap:14px;justify-content:center;margin-top:0}
+  .branchrow .node{width:120px}
+  .node .d{width:8px;height:8px;border-radius:50%;flex:none}
+  .d.wait{background:var(--muted2)}.d.run{background:var(--blue)}.d.done{background:var(--green)}
+  /* center: timeline */
+  .mid{display:flex;flex-direction:column;overflow:hidden}
+  .controls{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .btn{padding:6px 12px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);color:var(--txt);font-size:12px;cursor:pointer}
+  .btn:hover{background:var(--panel3)}.btn.primary{background:linear-gradient(135deg,var(--accent),var(--teal));border:none;color:#fff;font-weight:600}
+  .counter{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .timeline{flex:1;overflow:auto;padding:14px 16px;font-family:var(--mono);font-size:11.5px}
+  .ev{display:flex;gap:9px;padding:4px 6px;border-radius:7px;align-items:baseline}
+  .ev.cur{background:var(--panel3);box-shadow:inset 2px 0 0 var(--blue)}
+  .ev .k{width:130px;flex:none}
+  .ev .n{width:60px;flex:none;color:var(--muted)}
+  .ev .d{color:var(--muted)}
+  .k.supervisor_intervene{color:#fde68a}.k.node_enter{color:#93c5fd}.k.node_exit{color:#86efac}.k.context_write{color:#d8b4fe}.k.loop_iter{color:#99f6e4}.k.done{color:#86efac}.k.prep{color:#c4b5fd}
+  /* right: context + supervisor */
+  .right{background:var(--panel);border-left:1px solid var(--line);overflow:auto;padding:14px}
+  .r-h{font-weight:600;font-size:12.5px;margin:0 0 10px}
+  .ctxrow{display:flex;justify-content:space-between;gap:8px;padding:6px 0;font-size:11.5px;border-bottom:1px solid var(--line)}
+  .ctxrow .k{color:var(--muted)}.ctxrow .v{font-family:var(--mono);color:#d8b4fe;text-align:right}
+  .supcard{margin-top:12px;border:1px solid rgba(245,158,11,.5);border-radius:12px;overflow:hidden}
+  .supcard-h{padding:9px 12px;background:rgba(245,158,11,.14);font-weight:600;font-size:12px;color:#fde68a}
+  .supcard-b{padding:10px 12px;font-size:11.5px}
+  .hidden{display:none}
+  .sec-t{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted2);margin:14px 0 7px}
+  .note{font-size:11px;color:var(--muted);background:var(--panel2);border:1px dashed var(--line2);border-radius:9px;padding:9px 11px;margin-top:12px}.note b{color:#fcd34d}
+</style>
+</head>
+<body>
+<div class="banner"> 方案 A · <b>复杂 case 全流程回放</b>（真实引擎事件流：supervisor coerce → loop×2 → branch case-transform → llm）<span class="tag">design/session-workflow-a</span></div>
+
+<div class="app">
+  <!-- DAG -->
+  <div class="dagcol">
+    <div class="dtitle">执行图 · complex（按回放高亮）</div>
+    <div class="node" id="n-prep"><span class="st" id="s-prep">○</span><div class="nh"><span class="d wait" id="d-prep"></span>prep <span class="ty">自定义/校验</span></div></div>
+    <div class="edgev"></div>
+    <div class="node" id="n-fetch"><span class="st" id="s-fetch">○</span><div class="nh"><span class="d wait" id="d-fetch"></span>fetch <span class="ty">step/agent</span></div></div>
+    <div class="edgev"></div>
+    <div class="loopwrap"><span class="lab">loop · over prs ×2</span>
+      <div class="node" id="n-loop"><span class="st" id="s-loop">○</span><div class="nh"><span class="d wait" id="d-loop"></span>loop <span class="ty">loop</span></div></div>
+      <div class="edgev"></div>
+      <div class="node" id="n-review"><span class="st" id="s-review">○</span><div class="nh"><span class="d wait" id="d-review"></span>review <span class="ty">body/step</span></div></div>
+    </div>
+    <div class="edgev"></div>
+    <div class="node" id="n-gate"><span class="st" id="s-gate">○</span><div class="nh"><span class="d wait" id="d-gate"></span>gate <span class="ty">branch</span></div></div>
+    <div class="edgev"></div>
+    <div class="branchrow">
+      <div class="node" id="n-notify"><span class="st" id="s-notify">○</span><div class="nh"><span class="d wait" id="d-notify"></span>notify <span class="ty">llm</span></div></div>
+      <div class="node" id="n-done"><span class="st" id="s-done">○</span><div class="nh"><span class="d wait" id="d-done"></span>done <span class="ty">pass</span></div></div>
+    </div>
+    <div class="note"><b>loop 串联修复</b>后 loop done→gate；<b>branch transform</b> 在 case 上（gate→notify 带 expr n=len(prs)）。</div>
+  </div>
+
+  <!-- timeline -->
+  <div class="mid">
+    <div class="controls">
+      <button class="btn" id="first">⏮</button>
+      <button class="btn" id="prev">◀</button>
+      <button class="btn primary" id="play">▶ 播放</button>
+      <button class="btn" id="next">▶|</button>
+      <button class="btn" id="last">⏭</button>
+      <span class="counter" id="counter">0 / 0</span>
+    </div>
+    <div class="timeline" id="timeline"></div>
+  </div>
+
+  <!-- context + supervisor -->
+  <div class="right">
+    <div class="r-h">运行上下文（随回放累积）</div>
+    <div id="ctx"></div>
+    <div class="supcard hidden" id="supcard">
+      <div class="supcard-h">⚠ Supervisor 介入 · <span id="sup-action"></span></div>
+      <div class="supcard-b"><div id="sup-reason"></div><div style="margin-top:6px;color:var(--muted)" id="sup-errors"></div></div>
+    </div>
+    <div class="sec-t">说明</div>
+    <div class="note">事件来自真实引擎（<code>engine.run_workflow</code>）导出的 JSON。prep 缺 <code>repo</code> → supervisor <b>coerce</b> 补默认；loop 迭代 2 次；gate 命中 → notify。</div>
+  </div>
+</div>
+
+<script>
+const DATA = {"dsl": {"name": "complex", "entry": "prep", "nodes": [{"id": "prep", "type": "prep"}, {"id": "fetch", "type": "step", "agent": "dev", "goal": "list prs"}, {"id": "loop", "type": "loop", "over": "context.prs", "as": "pr", "body": "review", "max_iters": 5}, {"id": "review", "type": "step", "agent": "dev", "goal": "review {{pr}}"}, {"id": "gate", "type": "branch", "cases": [{"when": "len(context.prs) > 0", "then": "notify", "transform": {"expr": {"n": "len(context.prs)"}}}], "default": "done"}, {"id": "notify", "type": "llm", "prompt": "summarize {{n}}", "output": "summary"}, {"id": "done", "type": "pass"}], "edges": [{"from": "prep", "to": "fetch"}, {"from": "fetch", "to": "loop"}, {"from": "loop", "to": "gate"}]}, "events": [{"run_id": "demo", "node_id": "prep", "kind": "supervisor_intervene", "action": "coerce", "errors": ["<root>: missing required 'repo'"], "reason": "supervisor filled defaults / cast types: <root>: missing required 'repo'"}, {"run_id": "demo", "node_id": "prep", "kind": "prep", "data": {"repo": "robscc/ginno"}}, {"run_id": "demo", "node_id": "fetch", "kind": "node_enter", "node_type": "step"}, {"run_id": "demo", "node_id": "fetch", "kind": "node_exit", "status": "done"}, {"run_id": "demo", "node_id": "fetch", "kind": "context_write", "keys": ["prs"]}, {"run_id": "demo", "node_id": "loop", "kind": "loop_iter", "index": 0, "of": 2}, {"run_id": "demo", "node_id": "loop", "kind": "node_enter", "node_type": "loop"}, {"run_id": "demo", "node_id": "review", "kind": "node_enter", "node_type": "step"}, {"run_id": "demo", "node_id": "review", "kind": "node_exit", "status": "done"}, {"run_id": "demo", "node_id": "review", "kind": "context_write", "keys": ["seen"]}, {"run_id": "demo", "node_id": "loop", "kind": "loop_iter", "index": 1, "of": 2}, {"run_id": "demo", "node_id": "loop", "kind": "node_enter", "node_type": "loop"}, {"run_id": "demo", "node_id": "review", "kind": "node_enter", "node_type": "step"}, {"run_id": "demo", "node_id": "review", "kind": "node_exit", "status": "done"}, {"run_id": "demo", "node_id": "review", "kind": "context_write", "keys": ["seen"]}, {"run_id": "demo", "node_id": "loop", "kind": "node_enter", "node_type": "loop"}, {"run_id": "demo", "node_id": "notify", "kind": "node_enter", "node_type": "llm"}, {"run_id": "demo", "node_id": "notify", "kind": "context_write", "keys": ["summary"]}, {"run_id": "demo", "node_id": "notify", "kind": "node_exit", "status": "done"}, {"run_id": "demo", "kind": "done"}]};
+const EV = DATA.events;
+const NODES = ["prep","fetch","loop","review","gate","notify","done"];
+const CTX_VAL = {repo:"robscc/ginno", prs:'["a","b"]', seen:'"b"', summary:'"notified"'};
+let t = 0, timer = null;
+const params = new URLSearchParams(location.search);
+if (params.get('t')) t = Math.min(parseInt(params.get('t'),10)||0, EV.length);
+
+function desc(e){
+  switch(e.kind){
+    case 'supervisor_intervene': return 'action='+e.action+' · '+ (e.reason||'');
+    case 'node_enter': return (e.node_type||'')+' 进入';
+    case 'node_exit': return '退出 · '+e.status;
+    case 'context_write': return '写 '+ (e.keys||[]).join(',');
+    case 'loop_iter': return '迭代 '+(e.index+1)+'/'+e.of;
+    case 'prep': return 'repo='+ (e.data&&e.data.repo);
+    case 'done': return '运行完成';
+    default: return JSON.stringify(e);
+  }
+}
+function applyState(){
+  const done=new Set(); let active=null; const ctx={}; let sup=null; let loopIter='';
+  for(let i=0;i<t;i++){
+    const e=EV[i];
+    if(e.kind==='node_enter'){active=e.node_id;}
+    if(e.kind==='node_exit'){done.add(e.node_id); if(active===e.node_id)active=null;}
+    if(e.kind==='context_write'){(e.keys||[]).forEach(k=>ctx[k]=CTX_VAL[k]||'✓');}
+    if(e.kind==='prep'){ctx.repo=e.data.repo;}
+    if(e.kind==='supervisor_intervene'){sup=e;}
+    if(e.kind==='loop_iter'){loopIter='迭代 '+(e.index+1)+'/'+e.of; active='loop';}
+    if(e.kind==='done'){active=null;}
+  }
+  NODES.forEach(id=>{
+    const el=document.getElementById('n-'+id), d=document.getElementById('d-'+id), s=document.getElementById('s-'+id);
+    el.classList.toggle('done',done.has(id));
+    el.classList.toggle('active',active===id);
+    el.classList.toggle('sup',!!sup&&sup.node_id===id&&!done.has(id));
+    d.className='d '+(done.has(id)?'done':(active===id?'run':'wait'));
+    s.textContent=done.has(id)?'✓':(active===id?'●':'○');
+    if(id==='loop'&&loopIter) s.textContent='✓?'.includes(s.textContent)?s.textContent:s.textContent;
+  });
+  if(loopIter) document.getElementById('s-loop').textContent=loopIter;
+  // context panel
+  const c=document.getElementById('ctx');
+  const keys=Object.keys(ctx);
+  c.innerHTML = keys.length? keys.map(k=>'<div class="ctxrow"><span class="k">'+k+'</span><span class="v">'+ctx[k]+'</span></div>').join('') : '<div class="ctxrow"><span class="k">(空)</span></div>';
+  // supervisor card
+  const sc=document.getElementById('supcard');
+  sc.classList.toggle('hidden',!sup);
+  if(sup){document.getElementById('sup-action').textContent=sup.action;document.getElementById('sup-reason').textContent=sup.reason||'';document.getElementById('sup-errors').textContent=(sup.errors||[]).join(' | ');}
+  // timeline
+  const tl=document.getElementById('timeline');
+  tl.innerHTML=EV.map((e,i)=>'<div class="ev'+(i===t-1?' cur':'')+(i<t?'':' hidden')+'"><span class="k '+e.kind+'">'+e.kind+'</span><span class="n">'+(e.node_id||'-')+'</span><span class="d">'+desc(e)+'</span></div>').join('');
+  document.getElementById('counter').textContent=t+' / '+EV.length;
+}
+function setT(v){t=Math.max(0,Math.min(EV.length,v));applyState();}
+document.getElementById('first').onclick=()=>{stop();setT(0)};
+document.getElementById('prev').onclick=()=>{stop();setT(t-1)};
+document.getElementById('next').onclick=()=>{stop();setT(t+1)};
+document.getElementById('last').onclick=()=>{stop();setT(EV.length)};
+function stop(){if(timer){clearInterval(timer);timer=null;document.getElementById('play').textContent='▶ 播放';}}
+document.getElementById('play').onclick=()=>{
+  if(timer){stop();return;}
+  document.getElementById('play').textContent='⏸ 暂停';
+  if(t>=EV.length)setT(0);
+  timer=setInterval(()=>{ if(t>=EV.length){stop();return;} setT(t+1); },450);
+};
+applyState();
+</script>
+</body>
+</html>

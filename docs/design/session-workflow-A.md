@@ -243,3 +243,5 @@
 2. **branch 的 transform 无处安放**：branch 出边走 cases/default（禁止显式边），边级 transform 无效。**修复**：transform 下沉到 `case.transform` / `default_transform`；`BranchNode.execute` 按命中分支对目标节点输入做适配；`BaseNode.make_node` 合并节点返回的 `inputs`（路由期输入适配）。
 
 修复后复杂 case 全链路通过：`supervisor coerce(prep)→fetch→loop×2(review)→gate→notify→done`，`-m unit` **277 过**、`-m api` **91 过**。
+
+**页面回放**：`docs/design/prototypes/a/complex-case.html` 内嵌真实引擎导出的事件流，可播放/步进/`?t=N` 直达；左 DAG 按回放高亮、中时间线、右上下文+Supervisor 卡。截图 `screenshots/a/cx_t02_supervisor.png` / `cx_t10_loop.png` / `cx_t20_done.png`。
