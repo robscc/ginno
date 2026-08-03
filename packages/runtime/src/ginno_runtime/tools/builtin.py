@@ -30,10 +30,18 @@ def read_file(path: str, workspace: str | None = None) -> str:
 
 @tool
 def write_file(path: str, content: str, workspace: str | None = None) -> str:
-    """Write text content to a file (overwrite)."""
+    """Write text content to a file (overwrite).
+
+    Never raises into the graph: an unwritable path (e.g. the knowledge raw dir
+    resolving outside the workspace, or a read-only parent) returns an ``[error]``
+    tool result so the agent can react, instead of crashing the whole turn.
+    """
     p = _ws(workspace, path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    except OSError as e:
+        return f"[error] cannot write {p}: {type(e).__name__}: {e}"
     return f"wrote {len(content)} bytes to {p}"
 
 

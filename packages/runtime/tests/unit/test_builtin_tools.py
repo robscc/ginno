@@ -22,6 +22,16 @@ def ws(tmp_path):
     return str(tmp_path)
 
 
+def test_write_to_unwritable_path_returns_error_not_raise(ws, tmp_path):
+    # parent is a FILE -> mkdir must fail; write_file should return [error], not raise.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    res = write_file.invoke(
+        {"path": str(blocker / "sub" / "x.md"), "content": "hi", "workspace": ws}
+    )
+    assert res.startswith("[error]")
+
+
 def test_write_then_read_roundtrip(ws):
     write_file.invoke({"path": "a.txt", "content": "hello", "workspace": ws})
     assert read_file.invoke({"path": "a.txt", "workspace": ws}) == "hello"
