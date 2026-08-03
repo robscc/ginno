@@ -82,7 +82,23 @@ _DEFAULT_SETTINGS = {
     },
 }
 
-_DEFAULT_MCP = {"mcpServers": {}}
+# Default MCP servers shipped with Ginno. Playwright gives every agent the ability
+# to operate a real (headless) browser — navigate / screenshot / snapshot — which
+# powers web end-to-end flows (e.g. open GitHub Trending, screenshot, analyze).
+# `--browser chrome` reuses an installed Google Chrome so no Chromium download is
+# needed; falls back gracefully (server skipped) when no browser is available.
+_DEFAULT_MCP = {
+    "mcpServers": {
+        "playwright": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@playwright/mcp@latest", "--headless", "--browser", "chrome"],
+            # first-run `npx` install + headless Chrome launch can exceed the
+            # default 15s; give the default browser MCP room to come up.
+            "connect_timeout": 60,
+        }
+    }
+}
 
 _DEFAULT_MEMORY_INDEX = "# Ginno Memory\n\nLong-term memory entries. See [memory/](./memory/).\n"
 

@@ -280,3 +280,19 @@
 - **修改**：workflow-dev 会话里 `workflow_propose_edit` 触发 `version.propose` diff 卡 → 会话内 Apply → 定义升 v2（e2e 断言 `version==2`）。
 
 **玩法细化**：聊天触发的 run 不再走 legacy 自报，而是引擎真跑+session 绑定+实时推送，使"唤起"与"总结/修改"在同一会话内闭环。
+
+---
+
+## 17. 默认 Playwright MCP：让 Ginno 操作网页（e2e 验证，已提交）
+
+**默认新增**：`paths._DEFAULT_MCP` 内置 `playwright`（`npx -y @playwright/mcp@latest --headless --browser chrome`，`connect_timeout:60`）。复用已装 Chrome，免下载 Chromium；无浏览器时 server 照常启动（该 MCP 被 skip）。`mcp/registry.py` 的连接超时改为**按服务可配**（`connect_timeout`），避免首次 npx+Chrome 启动被 15s 误杀。
+
+**端到端**（`tests/e2e/test_playwright_mcp_trending.py`，真实 Playwright+Chrome）：Session 里 agent
+`browser_navigate`→`https://github.com/trending`、`browser_screenshot` 截图、再输出排行分析。断言
+`tool.start` 含 `mcp_playwright_browser_navigate/_screenshot`、两次 `tool.end`、最终文本含 Trending/排行。
+
+**演示**：`screenshots/a/trending_demo.png`（真实 Trending 页截图）；当日排行（star today）：
+airllm(1,081) > reverse-skill(2,442) > pdf-inspector(1,769) > AI-For-Beginners(1,902) > TencentDB-Agent-Memory(1,091) …
+分析：AI 智能体/推理引擎与"beginners"教程类占主导，Rust/Go 基础设施类上升快。
+
+**隔离**：conftest `isolated_home` 预写空 `mcp.json`，避免其余测试每次拉起浏览器；Playwright e2e 自行注入配置。

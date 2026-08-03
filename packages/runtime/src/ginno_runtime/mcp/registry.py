@@ -60,6 +60,7 @@ class MCPServerConfig:
     args: list[str] | None = None
     env: dict[str, str] | None = None
     url: str | None = None
+    connect_timeout: float = 15.0
 
     @classmethod
     def from_dict(cls, name: str, cfg: dict[str, Any]) -> "MCPServerConfig":
@@ -70,6 +71,7 @@ class MCPServerConfig:
             args=cfg.get("args", []),
             env=cfg.get("env"),
             url=cfg.get("url"),
+            connect_timeout=float(cfg.get("connect_timeout", 15.0)),
         )
 
 
@@ -258,7 +260,7 @@ class MCPRegistry:
                 continue
             live = _LiveServer(cfg)
             try:
-                await asyncio.wait_for(live.connect(), timeout=15)
+                await asyncio.wait_for(live.connect(), timeout=cfg.connect_timeout)
                 self._live[name] = live
             except Exception:
                 log.exception("mcp[%s] failed to connect (skipped)", name)

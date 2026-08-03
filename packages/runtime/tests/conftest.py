@@ -57,6 +57,12 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     server._SESSIONS.clear()
     server._mcp = None
     server._hooks = None
+    # Keep the default Playwright MCP out of unrelated tests (it would spawn a
+    # headless browser on every server start). ensure_layout only re-seeds the
+    # default when mcp.json is missing/empty, so a non-empty stub opts us out.
+    mcp_dir = tmp_path / "mcp"
+    mcp_dir.mkdir(parents=True, exist_ok=True)
+    (mcp_dir / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
     return tmp_path
 
 
