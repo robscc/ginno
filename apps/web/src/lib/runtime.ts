@@ -214,11 +214,58 @@ export async function rollbackWorkflow(id: string, to: number, commit = "") {
     { method: "POST", headers: H, body: JSON.stringify({ to, commit }) },
   );
 }
-export async function triggerWorkflowRun(workflow_id: string, context_override?: Record<string, unknown>) {
+export async function triggerWorkflowRun(
+  workflow_id: string,
+  context_override?: Record<string, unknown>,
+  session_id?: string,
+) {
   return json<{ ok: boolean; run: import("./types").WorkflowRun }>(`${BASE}/workflow_runs`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ workflow_id, context_override }),
+    body: JSON.stringify({
+      workflow_id,
+      context_override,
+      // bind the run to the conversation so run.* events render in-chat (design A)
+      session_id,
+      present_in_session_id: session_id,
+    }),
+  });
+}
+export async function getWorkflowRun(run_id: string) {
+  return json<{ ok: boolean; run: import("./types").WorkflowRun | null }>(
+    `${BASE}/workflow_runs/${run_id}`,
+  );
+}
+export async function cancelWorkflowRun(run_id: string) {
+  return json<{ ok: boolean; status: string }>(`${BASE}/workflow_runs/${run_id}/cancel`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({}),
+  });
+}
+export async function resumeWorkflowRun(run_id: string, value: Record<string, unknown> = {}) {
+  return json<{ ok: boolean; status: string }>(`${BASE}/workflow_runs/${run_id}/resume`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(value),
+  });
+}
+export async function decideWorkflowRun(
+  run_id: string,
+  decision: string,
+  context_patch?: Record<string, unknown>,
+) {
+  return json<{ ok: boolean; status: string }>(`${BASE}/workflow_runs/${run_id}/decide`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ decision, context_patch }),
+  });
+}
+export async function updateWorkflow(id: string, data: Partial<import("./types").WorkflowDef>) {
+  return json<{ ok: boolean; workflow?: import("./types").WorkflowDef }>(`${BASE}/workflows/${id}`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify(data),
   });
 }
 export async function getWorkflowRunEvents(

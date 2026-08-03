@@ -1005,7 +1005,7 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
         wf_events.append_event(run_id, ev.get("kind", ""), **{
             k: v for k, v in ev.items() if k not in ("kind", "run_id")
         })
-        await _push_session_event(present_in, "run.event", {"run_id": run_id, "event": ev})
+        await _push_session_event(present_in, "run.event", {"run_id": run_id, "payload": ev})
         kind = ev.get("kind")
         nid = ev.get("node_id")
         if kind == "node_enter" and nid in node_to_step:
@@ -1113,6 +1113,11 @@ async def decide_workflow_run_endpoint(run_id: str, data: dict) -> dict:
     data = data or {}
     value = {"decision": data.get("decision"), "context_patch": data.get("context_patch") or {}}
     return await resume_workflow_run_endpoint(run_id, value)
+
+
+@app.get("/api/workflow_runs/{run_id}")
+async def get_workflow_run_endpoint(run_id: str) -> dict:
+    return {"ok": True, "run": wf_store.get_run(run_id)}
 
 
 @app.get("/api/workflow_runs/{run_id}/events")

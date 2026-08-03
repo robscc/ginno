@@ -256,4 +256,15 @@
 2. **总结成 workflow**：`POST /workflows/summarize-from-session` 从该 session 提炼 DSL（识别 loop+branch+串联边）→ 创建 v1。
 3. **调试到稳定**：run#1 暴露 `loop.over=context.repos` 与 fetch 实写 `repositories` 不匹配（0 迭代、无报告）→ `PUT /workflows/{id}` 修 DSL 出 v2 → run#2 每 repo 都分析、notify 汇总、稳定 `done`。
 
-页面版：`docs/design/prototypes/a/github-case.html`（①聊天 ②总结 ③调试 三屏），截图 `screenshots/a/gh_s1..s3.png`。
+页面版：`docs/design/prototypes/a/github-case.html`（①聊天 总结 ③调试 三屏），截图 `screenshots/a/gh_s1..s3.png`。
+
+---
+
+## 15. 闭环接入前端（聊天页"总结成流程"按钮 + 对话内运行块，已提交）
+
+把①→②→③的闭环真正接进 `apps/web`（typecheck + `next build` 通过，并用临时 sidecar 截图确认真实渲染 `screenshots/a/fe_chat_button.png`）：
+
+- **"总结成流程"按钮**（composer 上排，violet）：`openSummarize()` → `summarizeSessionToDsl(当前会话)` → `SummarizeModal`（DSL 草稿预览）→「创建并运行 / 仅创建 / 取消」。创建走 `createWorkflow({dsl})`；运行走 `triggerWorkflowRun(id, ctx, session_id)`（带 session 绑定）。
+- **对话内运行块**：`ChatStream` 处理 `run.bind / run.event / run.status` 推送——`run.bind` 拉取 run 并插入 `LiveRunBlock`；`run.event` 按 `node_enter/node_exit` 更新步骤状态；`run.status` 更新总状态。运行块含实时步骤、状态色、**取消（running）/ 继续（paused，human/supervisor）**控制与详情跳转。新组件 `RunBlocks.tsx`、`SummarizeModal.tsx`。
+- **runtime.ts** 增：`getWorkflowRun / cancelWorkflowRun / resumeWorkflowRun / decideWorkflowRun / updateWorkflow`；`triggerWorkflowRun` 携带 `session_id/present_in_session_id`。
+- **server** 增 `GET /api/workflow_runs/{id}`；`run.event` 推送内层改 `payload` 键（避免覆盖帧 `event`）。

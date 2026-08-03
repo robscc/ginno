@@ -8,6 +8,17 @@ import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
 import { DiffView } from "@/components/workflow/DiffView";
+import { LiveRunBlock } from "./RunBlocks";
+import { SummarizeModal } from "./SummarizeModal";
+import {
+  cancelWorkflowRun,
+  createWorkflow,
+  decideWorkflowRun,
+  getWorkflowRun,
+  summarizeSessionToDsl,
+  triggerWorkflowRun,
+} from "@/lib/runtime";
+import type { WorkflowRun } from "@/lib/types";
 import type { AgentConfig, SessionMeta } from "@/lib/types";
 
 interface ChatMsg {
@@ -260,6 +271,12 @@ export function ChatStream({
   const lastSeenRef      = useRef<Record<string, number>>({});
   // Unsent input + attachments saved per session on switch
   const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[] }>>({});
+  // In-chat live workflow runs bound to each session (design A: run 回到对话)
+  const runsBySessionRef = useRef<Record<string, WorkflowRun[]>>({});
+  const [runs, setRuns]   = useState<WorkflowRun[]>([]);
+  // 「总结成流程」draft + busy state
+  const [summarize, setSummarize] = useState<Record<string, unknown> | null>(null);
+  const [sumBusy, setSumBusy]     = useState<"create" | "run" | null>(null);
 
   // Push the given session's ref state into React display state.
   // No-op when sid is not the currently displayed session (background socket).
@@ -267,6 +284,7 @@ export function ChatStream({
     if (sid !== curSessionIdRef.current) return;
     const lid = liveBySessionRef.current[sid] ?? null;
     setMessages([...(storeRef.current[sid] ?? [])]);
+    setRuns([...(runsBySessionRef.current[sid] ?? [])]);
     setLiveId(lid);
     liveIdRef.current = lid;
     setWsStatus(statusRef.current[sid] ?? "connecting");
@@ -499,6 +517,48 @@ export function ChatStream({
         g.reloadWorkflows();
         g.reloadWorkflowRuns();
         break;
+      case "run.bind": {
+        const runId = ev.run_id as string;
+        getWorkflowRun(runId).then((r) => {
+          if (!r?.run) return;
+          const list = runsBySessionRef.current[sid] ?? [];
+          if (!list.some((x) => x.id === runId)) list.push(r.run);
+          runsBySessionRef.current[sid] = [...list];
+          syncDisplay(sid);
+        });
+        break;
+      }
+      case "run.event": {
+        const runId = ev.run_id as string;
+        const inner = (ev.payload ?? {}) as Record<string, unknown>;
+        const list = runsBySessionRef.current[sid] ?? [];
+        const run = list.find((x) => x.id === runId);
+        if (run) {
+          const nid = inner.node_id as string | undefined;
+          const kind = inner.kind as string | undefined;
+          if (nid && (kind === "node_enter" || kind === "node_exit")) {
+            run.steps = run.steps.map((s) =>
+              s.id === nid ? { ...s, status: kind === "node_enter" ? "running" : "done" } : s,
+            );
+            runsBySessionRef.current[sid] = [...list];
+          }
+          syncDisplay(sid);
+        }
+        break;
+      }
+      case "run.status": {
+        const runId = ev.run_id as string;
+        const status = ev.status as string;
+        const list = runsBySessionRef.current[sid] ?? [];
+        const run = list.find((x) => x.id === runId);
+        if (run) {
+          run.status = status;
+          runsBySessionRef.current[sid] = [...list];
+        }
+        syncDisplay(sid);
+        g.reloadWorkflowRuns();
+        break;
+      }
       case "artifacts.changed":
         g.reloadArtifacts();
         break;
@@ -649,6 +709,47 @@ export function ChatStream({
         setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
       }
     }
+  }
+
+  // ─── 闭环 (design A): 总结成流程 + 对话内运行块控制 ─────────────────────────
+  async function openSummarize() {
+    if (!session) return;
+    const r = await summarizeSessionToDsl(session.id);
+    setSummarize(r.ok ? r.dsl : null);
+    if (!r.ok) alert(`总结失败：${(r as { error?: string }).error ?? "unknown"}`);
+  }
+
+  async function createFromSummarize(run: boolean) {
+    if (!summarize || !session) return;
+    setSumBusy(run ? "run" : "create");
+    try {
+      const cw = await createWorkflow({
+        name: (summarize.name as string) || "新流程",
+        dsl: summarize,
+      });
+      if (cw.workflow) {
+        g.reloadWorkflows();
+        if (run) {
+          const tr = await triggerWorkflowRun(cw.workflow.id, undefined, session.id);
+          if (tr.run) {
+            const list = runsBySessionRef.current[session.id] ?? [];
+            if (!list.some((x) => x.id === tr.run.id)) list.push(tr.run);
+            runsBySessionRef.current[session.id] = [...list];
+            syncDisplay(session.id);
+          }
+        }
+      }
+    } finally {
+      setSumBusy(null);
+      setSummarize(null);
+    }
+  }
+
+  function cancelRun(runId: string) {
+    cancelWorkflowRun(runId);
+  }
+  function continueRun(runId: string) {
+    decideWorkflowRun(runId, "continue");
   }
 
   function send() {
@@ -806,6 +907,10 @@ export function ChatStream({
             ),
           )}
 
+          {runs.map((r) => (
+            <LiveRunBlock key={r.id} run={r} onCancel={cancelRun} onContinue={continueRun} />
+          ))}
+
           <div ref={bottomRef} />
         </div>
       </div>
@@ -869,6 +974,15 @@ export function ChatStream({
         </div>
       )}
 
+      {summarize && (
+        <SummarizeModal
+          dsl={summarize}
+          busy={sumBusy}
+          onClose={() => setSummarize(null)}
+          onCreate={createFromSummarize}
+        />
+      )}
+
       {/* composer */}
       <div className="px-6 pb-5 pt-2">
         <div className="mx-auto max-w-3xl">
@@ -897,6 +1011,13 @@ export function ChatStream({
               className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted hover:text-txt"
             >
               + New Session
+            </button>
+            <button
+              onClick={openSummarize}
+              title="把当前会话总结成 workflow"
+              className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-2.5 py-1 text-xs text-violet hover:bg-violet/20"
+            >
+              ⌁ 总结成流程
             </button>
           </div>
 
