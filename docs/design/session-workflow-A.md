@@ -268,3 +268,15 @@
 - **对话内运行块**：`ChatStream` 处理 `run.bind / run.event / run.status` 推送——`run.bind` 拉取 run 并插入 `LiveRunBlock`；`run.event` 按 `node_enter/node_exit` 更新步骤状态；`run.status` 更新总状态。运行块含实时步骤、状态色、**取消（running）/ 继续（paused，human/supervisor）**控制与详情跳转。新组件 `RunBlocks.tsx`、`SummarizeModal.tsx`。
 - **runtime.ts** 增：`getWorkflowRun / cancelWorkflowRun / resumeWorkflowRun / decideWorkflowRun / updateWorkflow`；`triggerWorkflowRun` 携带 `session_id/present_in_session_id`。
 - **server** 增 `GET /api/workflow_runs/{id}`；`run.event` 推送内层改 `payload` 键（避免覆盖帧 `event`）。
+
+---
+
+## 16. Session 内闭环三动词：总结 / 唤起 / 修改（e2e 验证，已提交）
+
+目标"在 session 里总结、唤起、修改"全部落地并由 `tests/e2e/test_session_workflow_lifecycle.py` 端到端验证（unit 302 / api 92 / e2e 59 全绿）：
+
+- **总结**：聊天走完流程 → `summarize-from-session` 提炼 DSL → 创建 v1（按钮/弹层见 §15）。
+- **唤起**：`POST /workflow_runs {workflow_id, session_id}` 或在聊天里让 agent 调 `workflow_run`——server 在 WS 关联处把 run **绑定到该 session**（写 `present_in_session_id`）+ 推 `run.bind` + **启动真实引擎驱动**；会话 WS 收到 `run.bind/run.event/run.status`，聊天/右栏出现实时运行块。e2e 断言收到 `run.bind` 且 `run.status=done`、run 记录 `present_in_session_id==session`。
+- **修改**：workflow-dev 会话里 `workflow_propose_edit` 触发 `version.propose` diff 卡 → 会话内 Apply → 定义升 v2（e2e 断言 `version==2`）。
+
+**玩法细化**：聊天触发的 run 不再走 legacy 自报，而是引擎真跑+session 绑定+实时推送，使"唤起"与"总结/修改"在同一会话内闭环。

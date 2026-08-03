@@ -2846,6 +2846,27 @@ async def _stream_graph(
                                     wf_store.get_run(rid) if rid else None
                                 )
                                 if run:
+                                    # 唤起 in-session (design A): bind the chat-triggered
+                                    # run to this session and drive it with the real engine.
+                                    if not run.get("present_in_session_id"):
+                                        run["session_id"] = session_id
+                                        run["present_in_session_id"] = session_id
+                                        run["updated"] = time.time()
+                                        wf_storemod._write_json(wf_storemod._run_path(run["id"]), run)
+                                    await safe_send(
+                                        emit("run.bind", {
+                                            "run_id": run["id"],
+                                            "workflow_id": run["workflow_id"],
+                                            "present_in_session_id": session_id,
+                                        })
+                                    )
+                                    import asyncio as _aio
+
+                                    t = _WF_RUN_TASKS.get(run["id"])
+                                    if (t is None or t.done()) and run.get("status") == "running":
+                                        _WF_RUN_TASKS[run["id"]] = _aio.create_task(
+                                            _run_workflow_bg(run["id"], run["workflow_id"], None, session_id)
+                                        )
                                     await safe_send(emit("workflow.emit", {"run": run}))
                                 # no ordinary tool bubble for workflow tools
                             elif nm in RENDER_TOOL_NAMES or nm in ARTIFACT_TOOL_NAMES:
