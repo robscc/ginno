@@ -42,6 +42,45 @@ pnpm tauri build
 # → target/release/bundle/{macos/Ginno.app, dmg/Ginno_0.1.0_aarch64.dmg}
 ```
 
+## macOS code signing (required — the white-screen trap)
+
+A build that isn't properly code-signed produces a very confusing failure: the
+sidecar starts fine (`curl http://127.0.0.1:8787/` → 200, `~/.ginno/logs/sidecar.log`
+shows `Uvicorn running`), yet the window is **blank** and the sidecar log has
+**zero** requests from the webview. Cause: an unsigned / only *linker-signed*
+bundle fails the signature check that WKWebView's `com.apple.WebKit.Networking`
+helper performs on its parent process, so it refuses to issue *any* request on
+the webview's behalf — the page never loads `http://127.0.0.1:8787`. The sidecar
+is a separate process that doesn't go through WebKit networking, so it keeps
+looking healthy. (Confirmed via `sample`/`log stream`: app run-loop idle,
+WebCore alive, but no navigation; system log spams
+`failed to fetch .../_CodeSignature/CodeRequirements-1 error=-10`.)
+
+`tauri build` only signs if it has an identity; with none configured **and** none
+in the keychain it silently leaves the linker signature → white screen. Fix is in
+`apps/desktop/tauri.conf.json` (`bundle.macOS`):
+
+- `signingIdentity: "-"` — ad-hoc sign every binary (sidecar, main, `.app`) as
+  part of the bundle step, *before* the dmg is built, so the dmg is correct too.
+  Override with a real identity via the `APPLE_SIGNING_IDENTITY` env var for
+  distribution / notarization.
+- `hardenedRuntime: true` + `entitlements: "entitlements.plist"` — the PyInstaller
+  sidecar `dlopen`s `libpython3.11.dylib` (and bundled `.so`s) extracted to a temp
+  `_MEI*` dir; under the hardened runtime that needs
+  `com.apple.security.cs.disable-library-validation` (else
+  `[PYI-16724:ERROR] ... different Team IDs` and the sidecar never binds → a
+  *second* white-screen mode). `allow-unsigned-executable-memory` / `allow-jit`
+  cover Python and the webview's `unsafe-eval`. The plist is non-sandboxed, so no
+  network/sandbox keys are needed.
+
+`make app` asserts the produced `.app` is **not** linker-signed and fails loudly
+otherwise, so this can't silently regress.
+
+Troubleshooting a `[PYI-16724:ERROR]` on launch after a previously-bad build: a
+stale `_MEI*` extraction can outlive its process; clear it
+(`rm -rf $TMPDIR/_MEI*`) and any lingering `ginno-runtime` (`pkill -9 -f
+ginno-runtime`) before relaunching.
+
 ## File drag & drop into the chat (desktop)
 
 The composer uses the **HTML5** drag-and-drop API (`onDrop` → `dataTransfer.files`).

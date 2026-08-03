@@ -152,15 +152,42 @@ pub fn run() {
                     }
                 });
 
-                // Block until the sidecar accepts connections so the webview
-                // (which loads http://127.0.0.1:8787) doesn't race it.
-                let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
-                for _ in 0..100 {
-                    if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-                        break;
+                // The window is created hidden (see tauri.conf.json) so a slow
+                // sidecar never paints a white / "can't connect" page. Wait for
+                // the port off the main thread (a cold PyInstaller start can take
+                // 30s+, which would beachball the UI if we blocked here), then
+                // navigate + reveal on the main thread. navigate() also covers the
+                // race where the hidden webview's implicit initial load fired
+                // before the sidecar was up and got connection-refused.
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
+                    for _ in 0..240 {
+                        // ~60s budget; connect_timeout bounds each iteration.
+                        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
                     }
-                    std::thread::sleep(Duration::from_millis(200));
-                }
+                    let url = tauri::Url::parse("http://127.0.0.1:8787/")
+                        .expect("sidecar url");
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        if let Some(w) = h.get_webview_window("main") {
+                            let _ = w.navigate(url);
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    });
+                });
+            }
+            // In dev the sidecar is run by the user; just reveal the window
+            // (it loads `devUrl`). The release path reveals it once the
+            // sidecar is ready (above).
+            #[cfg(debug_assertions)]
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
             }
             Ok(())
         })

@@ -17,7 +17,8 @@
         "height": 820,
         "minWidth": 900,
         "minHeight": 600,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "visible": false
       }
     ],
     "security": {
@@ -29,6 +30,11 @@
     "targets": ["app", "dmg"],
     "icon": ["icons/icon.png"],
     "externalBin": ["binaries/ginno-runtime"],
-    "resources": []
+    "resources": [],
+    "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
+    }
   }
 }
