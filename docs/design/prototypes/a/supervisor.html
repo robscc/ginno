@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>方案 A · Supervisor 补充设计 — 原型</title>
+<style>
+  :root{--bg:#0c0c10;--panel:#15151c;--panel2:#1b1b24;--panel3:#22222d;--line:#2a2a36;--line2:#34343f;--txt:#e8e8ee;--muted:#9a9aa8;--muted2:#6f6f7e;--accent:#a855f7;--accent2:#c026d3;--accent-soft:rgba(168,85,247,.16);--green:#22c55e;--blue:#3b82f6;--amber:#f59e0b;--red:#ef4444;--violet:#8b5cf6;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,"PingFang SC","Microsoft YaHei",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  *{box-sizing:border-box}html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--txt);font-family:var(--font);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .banner{height:26px;display:flex;align-items:center;gap:8px;padding:0 14px;background:linear-gradient(90deg,rgba(245,158,11,.16),rgba(168,85,247,.10));border-bottom:1px solid var(--line);font-size:11px;color:#fde68a}
+  .banner b{color:#fff}.banner .tag{margin-left:auto;color:var(--muted);font-family:var(--mono)}
+  .tabs{display:flex;gap:2px;padding:6px 12px 0;background:var(--panel);border-bottom:1px solid var(--line)}
+  .tab{padding:7px 12px;border-radius:8px 8px 0 0;color:var(--muted);cursor:pointer;font-size:12px;border:1px solid transparent;border-bottom:none}
+  .tab:hover{color:var(--txt);background:var(--panel2)}.tab.on{color:#fff;background:var(--bg);border-color:var(--line)}
+  .app{display:grid;grid-template-columns:248px 1fr 340px;height:calc(100vh - 26px - 38px);min-height:640px}
+  .side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+  .brand{display:flex;align-items:center;gap:9px;padding:13px 16px;border:1px dashed var(--line2);margin:10px;border-radius:10px;font-weight:700}.brand .star{color:var(--accent)}
+  .grp-h{color:var(--muted2);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:10px 14px 5px}
+  .item{display:flex;align-items:center;gap:9px;padding:8px 12px;cursor:pointer}
+  .item.on{background:var(--panel3);box-shadow:inset 3px 0 0 var(--accent)}
+  .ic{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:11px;flex:none}
+  .ic.b{background:rgba(59,130,246,.18);color:#93c5fd}
+  .item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .badge{font-size:9px;color:var(--amber);background:rgba(245,158,11,.16);border:1px solid rgba(245,158,11,.3);padding:1px 6px;border-radius:20px}
+  .side-foot{margin-top:auto;border-top:1px solid var(--line);padding:8px 12px}
+  .foot-item{padding:8px 10px;border-radius:9px;color:var(--muted)}
+  .me{display:flex;gap:9px;align-items:center;padding:10px;border-top:1px solid var(--line)}.av{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#f472b6,#a855f7)}
+  .main{display:flex;flex-direction:column;overflow:hidden}
+  .topbar{display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:1px solid var(--line)}
+  .topbar .title{font-weight:600}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;border:1px solid var(--line2);background:var(--panel2);color:var(--muted)}
+  .chip.warn{color:#fde68a;border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.10)}
+  .chat{flex:1;overflow:auto;padding:20px 26px;display:flex;flex-direction:column;gap:16px}
+  .msg{max-width:760px;display:flex;gap:11px}.msg.user{align-self:flex-end;flex-direction:row-reverse}
+  .bubble{padding:11px 14px;border-radius:14px;background:var(--panel2);border:1px solid var(--line)}
+  .msg.user .bubble{background:rgba(168,85,247,.14);border-color:rgba(168,85,247,.3)}
+  .msg .av2{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;flex:none;background:rgba(59,130,246,.18);color:#93c5fd}
+  .who{font-size:11px;color:var(--muted);margin:0 0 5px 1px}.who .nm{color:var(--txt);font-weight:600}
+  .runblock{margin-top:6px;border:1px solid rgba(139,92,246,.4);border-radius:12px;background:linear-gradient(180deg,rgba(139,92,246,.10),var(--panel));overflow:hidden}
+  .runblock-h{display:flex;align-items:center;gap:9px;padding:10px 13px;border-bottom:1px solid var(--line)}.runblock-h .nm{font-weight:600}
+  .steps{padding:6px 6px 10px}
+  .step{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:9px}
+  .step .sd{width:16px;height:16px;border-radius:50%;flex:none;margin-top:1px;display:grid;place-items:center;font-size:10px}
+  .step.done .sd{background:rgba(34,197,94,.2);color:#86efac}.step.run .sd{background:rgba(59,130,246,.2);color:#93c5fd}.step.wait .sd{background:var(--panel3);color:var(--muted2)}
+  .step .stxt{flex:1}.step .h{font-size:12px;font-weight:600}.step .s{font-size:11px;color:var(--muted)}
+  .supline{display:flex;gap:8px;align-items:flex-start;margin:2px 10px 6px 36px;font-size:11px;color:#c4b5fd;background:rgba(139,92,246,.10);border:1px dashed rgba(139,92,246,.3);border-radius:8px;padding:6px 9px}
+  .supline.amber{color:#fde68a;background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.3)}
+  .supcard{margin:8px 10px;border:1px solid rgba(245,158,11,.5);border-radius:12px;overflow:hidden}
+  .supcard-h{padding:10px 13px;background:rgba(245,158,11,.14);font-weight:600;font-size:12px;color:#fde68a;display:flex;gap:8px;align-items:center}
+  .supcard-b{padding:12px 13px}
+  .supcard-b .q{font-size:12px;margin-bottom:10px}
+  .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}
+  .btn{padding:6px 12px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);color:var(--txt);font-size:11.5px;cursor:pointer}
+  .btn:hover{background:var(--panel3)}.btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff;font-weight:600}.btn.danger{color:#fca5a5;border-color:rgba(239,68,68,.35)}
+  .right{background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+  .rtabs{display:flex;gap:2px;padding:8px 10px 0;border-bottom:1px solid var(--line)}
+  .rtab{padding:7px 11px;border-radius:8px 8px 0 0;color:var(--muted);font-size:12px}.rtab.on{color:#fff;background:var(--panel3)}
+  .rbody{flex:1;overflow:auto;padding:14px}
+  .r-h{font-weight:600;font-size:12.5px;margin-bottom:10px}
+  .sec-t{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted2);margin:14px 0 7px}
+  .field{margin-bottom:11px}.field label{display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted2);margin-bottom:5px}
+  .field .inp{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:7px 10px;font-size:12px}
+  .seg{display:flex;background:var(--panel2);border:1px solid var(--line2);border-radius:9px;padding:2px}
+  .seg button{flex:1;border:none;background:transparent;color:var(--muted);padding:5px 0;border-radius:7px;font-size:11.5px}
+  .seg button.on{background:var(--panel3);color:#fff}
+  .log{font-family:var(--mono);font-size:11px}
+  .log .l{display:flex;gap:8px;padding:4px 0;align-items:baseline}
+  .log .k{width:110px;flex:none}
+  .log .auto .k{color:#c4b5fd}.log .hum .k{color:#fde68a}.log .err .k{color:#fca5a5}
+  .note{font-size:11px;color:var(--muted);background:var(--panel2);border:1px dashed var(--line2);border-radius:9px;padding:9px 11px;margin:10px 0}.note b{color:#fcd34d}
+  .hide{display:none!important}.wrap{position:relative;height:100%}
+</style>
+</head>
+<body>
+<div class="banner"> 方案 A · <b>Supervisor 补充设计</b>（治理层：auto/human 两态，检查点裁决 继续/重试/跳过/改context/暂停/中止）<span class="tag">design/session-workflow-a</span></div>
+<div class="tabs" id="tabs">
+  <div class="tab on" data-s="a5"><span>1</span>&nbsp; human · 对话内决策</div>
+  <div class="tab" data-s="a6"><span>2</span>&nbsp; auto · 监督日志</div>
+</div>
+
+<div class="wrap">
+<!-- a5 human decision in chat -->
+<div class="app screen" data-s="a5">
+  <aside class="side">
+    <div class="brand"><span class="star">★</span> GinnoWork</div>
+    <div class="grp-h">Sessions</div>
+    <div class="item on"><span class="ic b">⌘</span><span class="t">Morning Standup</span><span class="badge">待裁决</span></div>
+    <div class="item"><span class="ic b">&lt;/&gt;</span><span class="t">Code Review</span></div>
+    <div class="side-foot"><div class="foot-item">⚙ Settings</div></div>
+    <div class="me"><div class="av"></div><div><div style="font-weight:600">David Chen</div></div></div>
+  </aside>
+
+  <section class="main">
+    <div class="topbar"><span class="title">Morning Standup</span><span class="chip warn">⚠ Supervisor=human · 运行 #12 在 ② 暂停待裁决</span></div>
+    <div class="chat">
+      <div class="msg user"><div class="bubble">运行 PR Triage，这次关键步骤我要人工盯。</div></div>
+      <div class="msg"><div class="av2">⌘</div><div style="flex:1;max-width:760px">
+        <div class="who"><span class="nm">Dev Agent</span> · run #12 · supervisor=human</div>
+        <div class="runblock">
+          <div class="runblock-h"><span style="color:var(--violet)">⌁</span><span class="nm">PR Triage · run #12</span><span class="chip warn" style="margin-left:auto">⚠ 待裁决</span></div>
+          <div class="steps">
+            <div class="step done"><span class="sd">✓</span><div class="stxt"><div class="h">① 拉取待审 PR</div><div class="s">context.prs=5</div></div></div>
+            <div class="step run"><span class="sd">●</span><div class="stxt"><div class="h">② 逐个审查 (loop 5/5)</div><div class="s">产出 drafts=5，其中 1 条高优先级</div></div></div>
+          </div>
+          <div class="supcard">
+            <div class="supcard-h">⚠ Supervisor（human）在检查点「② 之后」暂停 · 需要你裁决</div>
+            <div class="supcard-b">
+              <div class="q">检测到高优先级 PR 且 drafts 将触发对外通知。是否放行？或先调整？</div>
+              <div class="grid">
+                <button class="btn primary">▶ 继续</button>
+                <button class="btn">⟲ 重试本步</button>
+                <button class="btn">⤳ 跳过</button>
+                <button class="btn">✎ 改 context</button>
+                <button class="btn">⏸ 保持暂停</button>
+                <button class="btn danger">■ 中止</button>
+              </div>
+            </div>
+          </div>
+          <div class="note" style="margin:8px 10px"><b>会话优先下的 Supervisor：</b>human 裁决卡<b>留在对话流里</b>（与运行块一体），不跳页；决策经 <code>run_control/decide</code> 回传并记 <code>supervisor_decision</code> 事件。</div>
+        </div>
+      </div></div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="rtabs"><span class="rtab on">过程</span><span class="rtab">Supervisor</span></div>
+    <div class="rbody">
+      <div class="r-h">Supervisor 配置（本会话派生流程）</div>
+      <div class="field"><label>模式</label><div class="seg"><button>auto</button><button class="on">human</button></div></div>
+      <div class="field"><label>检查点</label><div class="inp">每步之后（after_each_step）</div></div>
+      <div class="field"><label>每步重试上限</label><div class="inp">2</div></div>
+      <div class="field"><label>策略（注入裁决 prompt）</label><div class="inp">对外通知前必须人工确认；高优先级 PR 一律放行到 notify。</div></div>
+      <div class="note"><b>三层配置：</b>派生配方 DSL 默认 → 运行前 override → 运行中此处切模式（auto⇄human）即时生效。</div>
+    </div>
+  </aside>
+</div>
+
+<!-- a6 auto mode + log -->
+<div class="app screen hide" data-s="a6">
+  <aside class="side">
+    <div class="brand"><span class="star">★</span> GinnoWork</div>
+    <div class="grp-h">Sessions</div>
+    <div class="item on"><span class="ic b">⌘</span><span class="t">Morning Standup</span></div>
+    <div class="side-foot"><div class="foot-item">⚙ Settings</div></div>
+    <div class="me"><div class="av"></div><div><div style="font-weight:600">David Chen</div></div></div>
+  </aside>
+
+  <section class="main">
+    <div class="topbar"><span class="title">Morning Standup</span><span class="chip">Supervisor=auto · 仅异常时干预</span></div>
+    <div class="chat">
+      <div class="msg user"><div class="bubble">用 auto 跑，出问题你自己看着办，办不了再叫我。</div></div>
+      <div class="msg"><div class="av2">⌘</div><div style="flex:1;max-width:760px">
+        <div class="who"><span class="nm">Dev Agent</span> · run #13 · supervisor=auto</div>
+        <div class="runblock">
+          <div class="runblock-h"><span style="color:var(--violet)">⌁</span><span class="nm">PR Triage · run #13</span><span class="chip" style="margin-left:auto">实时</span></div>
+          <div class="steps">
+            <div class="step done"><span class="sd">✓</span><div class="stxt"><div class="h">① 拉取 PR</div></div></div>
+            <div class="step done"><span class="sd">✓</span><div class="stxt"><div class="h">② 逐个审查</div></div></div>
+            <div class="supline">⚙ Supervisor(auto)：② 首次 tool_error(gh rate-limit) → 决策=<b>重试本步</b>（1/2），原因：transient</div>
+            <div class="supline">⚙ Supervisor(auto)：② 重试成功 → 决策=<b>继续</b>（pass-through，未打扰用户）</div>
+            <div class="step run"><span class="sd">●</span><div class="stxt"><div class="h">③ 高优先级？(branch)</div></div></div>
+            <div class="supline amber">⚠ Supervisor(auto)：预算内无法确信是否对外通知 → <b>回退 human</b>，已推决策卡到本会话</div>
+          </div>
+          <div class="note" style="margin:8px 10px"><b>auto 的呈现：</b>常规 pass-through 折叠为小字注释（不刷屏）；仅"干预/回退 human"高亮。全部裁决入右栏监督日志，可审计。</div>
+        </div>
+      </div></div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <div class="rtabs"><span class="rtab">过程</span><span class="rtab on">Supervisor</span></div>
+    <div class="rbody">
+      <div class="r-h">监督日志 · run #13</div>
+      <div class="log">
+        <div class="l auto"><span class="k">sup_decision</span><span>② retry · reason=transient_rate_limit · budget 1/2</span></div>
+        <div class="l auto"><span class="k">sup_decision</span><span>② continue · pass-through</span></div>
+        <div class="l auto"><span class="k">sup_eval</span><span>③ gate · confidence=0.41 &lt; 阈值0.7</span></div>
+        <div class="l hum"><span class="k">sup_fallback</span><span>③ → human · 推决策卡（auto 不确定时回退）</span></div>
+      </div>
+      <div class="sec-t">auto 安全阀</div>
+      <div class="field"><label>单 run 干预上限</label><div class="inp">5 次（超出→暂停 human）</div></div>
+      <div class="field"><label>token 预算</label><div class="inp">20k / run</div></div>
+      <div class="field"><label>裁决模型</label><div class="inp">继承默认 provider（可指定更小模型降本）</div></div>
+      <div class="note"><b>可审计：</b>auto 每次裁决都记 <code>supervisor_decision</code> 事件（含 reason/预算），与 run 事件流同存 events.jsonl，详情页/日志可过滤。</div>
+    </div>
+  </aside>
+</div>
+</div>
+
+<script>
+  (function(){
+    var p=new URLSearchParams(location.search);var s=p.get('screen')||'a5';
+    function show(id){document.querySelectorAll('.screen').forEach(function(e){e.classList.toggle('hide',e.getAttribute('data-s')!==id)});document.querySelectorAll('.tab').forEach(function(e){e.classList.toggle('on',e.getAttribute('data-s')===id)});}
+    show(s);
+    document.getElementById('tabs').addEventListener('click',function(e){var t=e.target.closest('.tab');if(!t)return;show(t.getAttribute('data-s'));});
+  })();
+</script>
+</body>
+</html>

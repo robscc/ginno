@@ -162,6 +162,24 @@
 
 ---
 
+## 8.5 Supervisor 设计（第二轮补充）
+
+> 原型：`docs/design/prototypes/a/supervisor.html` ｜ 截图：`screenshots/a/a_sup_a5.png`（human）、`a_sup_a6.png`（auto）。
+
+**统一概念**（三方案共用）：Supervisor 是挂在执行上的治理层，在检查点（每步后 / 指定节点 / 出错时）发出控制决策：`继续 / 重试本步 / 跳过 / 改context / 暂停 / 中止`。**auto**=独立 LLM 按策略+预算结构化裁决（默认"仅异常时干预"，pass-through 不刷屏；不确定/超预算**回退 human**）；**human**=检查点 interrupt 推裁决卡。安全阀：每步 retry_limit、单 run 干预上限、token 预算。配置三层：配方 DSL 默认 → 运行前 override → 运行中切模式。
+
+**方案 A 的落点（会话优先）**：
+- **human 裁决卡留在对话流里**，与运行块一体（`a_sup_a5`）：六键（继续/重试/跳过/改context/保持暂停/中止），不跳页；决策经 `run_control/decide` 回传并记 `supervisor_decision` 事件。
+- **auto 呈现为小字注释**（`a_sup_a6`）：常规 pass-through 折叠，仅"干预/回退 human"高亮；右栏 **Supervisor tab** 给可审计监督日志（reason/预算/置信度）。
+- 右栏「过程/Supervisor」承载**三层配置**：模式段控（auto⇄human 运行中即时切换）、检查点、retry 上限、策略文本。
+- 与 A 信条一致：监督不打断"对话为主"——auto 静默自愈，human 才浮到对话里。
+
+**技术增量**（与 §6 叠加）：DSL `supervisor` 扩展 `{enabled,mode,checkpoints,retry_limit,strategy,model?}`；compiler 在检查点插 supervisor 节点（现状为桩）；engine 实装 auto 结构化裁决 + human interrupt 可恢复 + 应用决策（retry 回边计数/skip 走下一节点/patch 合并 context/abort→END）；WS `supervisor.event/decision/pending`；REST `POST /workflow_runs/{id}/decide`、`PUT /workflows/{id}/supervisor`、run 创建 `supervisor_override`。事件落 `events.jsonl` 可过滤。
+
+**落地相位**：并入原 P3（human resume）后加 P3.5：auto 裁决 + 监督日志 + 三层配置 UI。
+
+---
+
 ## 9. 开放问题
 - Q-A1：一个会话是否允许多个派生配方？倾向"一个 current + 历史版本"，避免右栏歧义。
 - Q-A2：无头/定时运行在 A 里放哪？倾向仍生成一个"运行会话"承载运行块（与 C 的 run-scoped session 思路合流）。
