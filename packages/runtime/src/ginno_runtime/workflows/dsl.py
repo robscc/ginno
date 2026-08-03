@@ -39,6 +39,9 @@ def validate_dsl(dsl: dict) -> list[str]:
         errs.append("at least one node is required")
     ids = [n.get("id") for n in nodes if isinstance(n, dict)]
     by_type = {n.get("id"): n.get("type") for n in nodes if isinstance(n, dict)}
+    from . import nodes as wf_nodes  # lazy: dsl is imported by store at package init
+
+    wf_nodes.load_plugins()
     for i, n in enumerate(nodes):
         if not isinstance(n, dict):
             errs.append(f"nodes[{i}] must be an object")
@@ -47,10 +50,10 @@ def validate_dsl(dsl: dict) -> list[str]:
         if not nid:
             errs.append(f"nodes[{i}] missing id")
         nt = n.get("type")
-        if nt not in NODE_TYPES_ALL:
-            errs.append(f"node '{nid}' unknown type '{nt}'")
-        elif nt == "subflow":
+        if nt == "subflow":
             errs.append(f"node '{nid}' type 'subflow' is not supported until v2")
+        elif wf_nodes.get_node(nt) is None:
+            errs.append(f"node '{nid}' unknown type '{nt}'")
     if len(ids) != len(set(ids)):
         errs.append("duplicate node id")
     idset = set(ids)
@@ -79,33 +82,29 @@ def validate_dsl(dsl: dict) -> list[str]:
             errs.append(f"edge from '{f}' not allowed ({by_type.get(f)} routes structurally)")
         if f in loop_bodies:
             errs.append(f"edge from '{f}' not allowed (loop body returns to loop head)")
+        tr = e.get("transform")
+        if tr is not None and not isinstance(tr, dict):
+            errs.append(f"edges[{i}].transform must be an object")
+        elif isinstance(tr, dict) and "fn" in tr and not isinstance(tr.get("fn"), str):
+            errs.append(f"edges[{i}].transform.fn must be a string")
 
     for n in nodes:
         if not isinstance(n, dict):
             continue
         nid, nt = n.get("id"), n.get("type")
-        if nt == "step" and not (n.get("goal") or n.get("title")):
-            errs.append(f"step '{nid}' needs a goal (or title)")
+        cls = wf_nodes.get_node(nt)
+        if cls is not None:
+            errs.extend(cls.validate_params(n))
+        # cross-node reference checks (need the full id set)
         if nt == "branch":
-            cases = _as_list(n.get("cases"))
-            if not cases and not n.get("default"):
-                errs.append(f"branch '{nid}' needs cases or default")
-            for j, c in enumerate(cases):
-                if not isinstance(c, dict) or not c.get("when") or not c.get("then"):
-                    errs.append(f"branch '{nid}' case[{j}] needs when+then")
-                elif c.get("then") not in idset:
+            for j, c in enumerate(_as_list(n.get("cases"))):
+                if isinstance(c, dict) and c.get("then") and c["then"] not in idset:
                     errs.append(f"branch '{nid}' case[{j}].then '{c.get('then')}' unknown")
-            if n.get("default") and n["default"] not in idset:
+            if n.get("default") and n.get("default") not in idset:
                 errs.append(f"branch '{nid}' default '{n.get('default')}' unknown")
         if nt == "loop":
-            if not n.get("body"):
-                errs.append(f"loop '{nid}' needs body")
-            elif n["body"] not in idset:
+            if n.get("body") and n["body"] not in idset:
                 errs.append(f"loop '{nid}' body '{n.get('body')}' unknown")
-            if not n.get("over"):
-                errs.append(f"loop '{nid}' needs over")
-            if not isinstance(n.get("max_iters"), int) or n.get("max_iters", 0) < 1:
-                errs.append(f"loop '{nid}' needs max_iters >= 1")
 
     ctx = dsl.get("context")
     if ctx is not None:

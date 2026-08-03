@@ -44,6 +44,8 @@ async def run_workflow(
         "loop_iters": {},
         "loop_vars": {},
         "events": [],
+        "inputs": {},
+        "outputs": {},
     }
     config = {"configurable": {"thread_id": run_id}}
     yielded = 0

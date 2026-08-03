@@ -203,3 +203,20 @@
 | 一句话 | 聊着沉淀，跑回对话 | 像 n8n/Dify 搭流程 | 一个任务，对话/流程随便切 |
 
 **推荐场景**：若产品主叙事是"个人 AI 协作伙伴、对话为主"，选 **A**；若主打"可复用自动化流水线"，选 **B**；若想两者通吃且愿承担模型重构，选 **C**。
+
+---
+
+## 11. 实现落地（round 3 · 已提交于本分支 `design/session-workflow-a`）
+
+按"节点可复用/可插件化、带类型、参数校验、边 transform、参数不满足时 Supervisor 介入、内置通用 Agent 节点"的要求，已在 `packages/runtime` 实现并测试（**未动 main**）：
+
+**新增**（`workflows/nodes/` + `workflows/supervisor.py`）：
+- `nodes/base.py` `BaseNode`：`type/aliases` + `params_schema/inputs_schema/outputs_schema` + `validate_params/validate_input/coerce_input`；通用 `make_node` 包装＝输入解析→参数/输入校验→**Supervisor 介入**→`execute`→输出记录→**边 transform 传播**；`add_edges` 自布线。
+- `nodes/registry.py`：`@register_node`/`get_node`/别名/`load_plugins`（entry-points 组 `ginno_runtime.workflow_nodes` + `GINNO_NODE_PLUGINS`）。**新增节点＝写一个类＋装饰器，核心零改动**（解耦）。
+- `nodes/transforms.py`：边 `transform`（`map`/`expr`/`pick`/`defaults`/`fn` 注册）；默认＝上下文+上游输出浅合并。
+- `nodes/builtin.py`：内置通用节点 `agent`(别名`step`)/`llm`/`branch`/`loop`/`human`/`pass`。
+- `supervisor.py`：参数/输入不满足时 `intervene`；默认 decider＝强转/补默认（coerce）否则 abort；可 `set_decider` 注入 LLM/策略 decider 返回 `patch_dsl/patch_node/retry/skip/abort`（即"由 supervisor 决定改 DSL 或改节点逻辑"）；全程记 `supervisor_intervene` 事件。
+
+**重构**：`compiler.py` 委托注册表构建节点+边、`WorkflowState` 增 `inputs/outputs` 通道；`dsl.py` `validate_dsl` 委托按节点参数校验（保持既有错误文案）+ 边 transform 校验；`engine.py` 初始状态补 `inputs/outputs`。既有契约（`compile_workflow`/`run_workflow`/事件种类）不变。
+
+**完整性校验**：新增 `tests/unit/test_nodes_{registry,transform,supervisor}.py`；`pytest -m unit` **274 过**、workflow API 集成 **8 过**，全绿。

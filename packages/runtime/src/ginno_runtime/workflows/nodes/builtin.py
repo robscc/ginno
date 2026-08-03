@@ -1,0 +1,258 @@
+"""Built-in workflow node types (design A · round 3).
+
+These are the *general-purpose* nodes shipped with Ginno; more can be added as
+plugins without touching core (see :mod:`registry`). ``step`` is kept as an alias
+of ``agent`` so existing DSLs and tests keep working.
+"""
+
+from __future__ import annotations
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import END
+from langgraph.prebuilt import ToolNode
+
+from ... import agents as agents_reg
+from ...graph import tool_allowed
+from .. import expr as wf_expr
+from . import agent_helpers as ah
+from .base import BaseNode
+from .registry import register_node
+
+
+@register_node
+class AgentNode(BaseNode):
+    """General-purpose autonomous agent step: pursue a goal with tools, write context."""
+
+    type = "agent"
+    aliases = ("step",)
+    params_schema = {"type": "object", "properties": {"goal": {"type": "string"}, "agent": {"type": "string"}}}
+    inputs_schema = {"type": "object"}
+    outputs_schema = {"type": "object"}
+
+    @classmethod
+    def validate_params(cls, node: dict) -> list[str]:
+        if node.get("goal") or node.get("title"):
+            return []
+        return [f"step '{node.get('id')}' needs a goal (or title)"]
+
+    @staticmethod
+    async def execute(node, cctx, state, config, eff) -> dict:
+        run_ctx = cctx["run_ctx"]
+        model = cctx["model"]
+        tools = cctx["tools"]
+        node_id = node["id"]
+        max_iters = int(node.get("max_tool_iters") or 8)
+        agent = agents_reg.get_agent(node.get("agent"))
+        allowed = [t for t in tools if tool_allowed(agent, t.name) and not t.name.startswith("workflow_")]
+        bound = model.bind_tools(allowed) if allowed and hasattr(model, "bind_tools") else model
+        tool_node = ToolNode(allowed) if allowed else None
+        context = dict(state.get("context") or {})
+        loop_vars = dict(state.get("loop_vars") or {})
+        render_ctx = {**context, **loop_vars, **(eff or {})}
+        goal = wf_expr.render(node.get("goal") or node.get("title") or "", render_ctx)
+        events = [{"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "step"}]
+
+        msgs = [SystemMessage(content=ah.build_system(goal, context, agent)), HumanMessage(content=goal)]
+        result_text = ""
+        for _ in range(max_iters):
+            resp = await bound.ainvoke(msgs)
+            msgs.append(resp)
+            result_text = resp.content if isinstance(resp.content, str) else str(resp.content)
+            calls = getattr(resp, "tool_calls", None) or []
+            if not calls:
+                break
+            events.append(
+                {
+                    "run_id": run_ctx["run_id"],
+                    "node_id": node_id,
+                    "kind": "tool_call",
+                    "calls": [{"name": c.get("name"), "args": c.get("args")} for c in calls],
+                }
+            )
+            if tool_node is None:
+                break
+            tres = await tool_node.ainvoke({"messages": [resp]})
+            tmsgs = tres["messages"] if isinstance(tres, dict) else tres
+            for tm in tmsgs:
+                c = tm.content if isinstance(tm.content, str) else str(tm.content)
+                events.append(
+                    {
+                        "run_id": run_ctx["run_id"],
+                        "node_id": node_id,
+                        "kind": "tool_result",
+                        "name": getattr(tm, "name", ""),
+                        "content": c[:2000],
+                    }
+                )
+            msgs.extend(tmsgs)
+
+        writes = ah.parse_writes(result_text)
+        meta = dict(state.get("context_meta") or {})
+        for k in writes:
+            meta[k] = f"step:{node_id}"
+        events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
+        if writes:
+            events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write", "keys": list(writes.keys())})
+        run_ctx["events"].extend(events)
+        return {
+            "context": {**context, **writes},
+            "context_meta": meta,
+            "results": {**state.get("results", {}), node_id: result_text},
+            "events": events,
+            "__output__": writes,
+        }
+
+
+@register_node
+class LLMNode(BaseNode):
+    """Pure generation node (no tools): render a prompt, optionally store to context."""
+
+    type = "llm"
+    params_schema = {"type": "object", "required": ["prompt"], "properties": {"prompt": {"type": "string"}, "output": {"type": "string"}}}
+
+    @staticmethod
+    async def execute(node, cctx, state, config, eff) -> dict:
+        run_ctx = cctx["run_ctx"]
+        model = cctx["model"]
+        node_id = node["id"]
+        context = dict(state.get("context") or {})
+        prompt = wf_expr.render(node.get("prompt") or "", {**context, **(eff or {})})
+        events = [{"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "llm"}]
+        resp = await model.ainvoke([HumanMessage(content=prompt)])
+        text = resp.content if isinstance(resp.content, str) else str(resp.content)
+        out = {"text": text}
+        update = {"events": events, "__output__": out}
+        key = node.get("output")
+        if key:
+            update["context"] = {**context, key: text}
+            events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write", "keys": [key]})
+        events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
+        run_ctx["events"].extend(events)
+        return update
+
+
+@register_node
+class BranchNode(BaseNode):
+    """Conditional router: evaluate cases against context, first match wins, else default."""
+
+    type = "branch"
+
+    @classmethod
+    def validate_params(cls, node: dict) -> list[str]:
+        errs = []
+        nid = node.get("id")
+        cases = node.get("cases") or []
+        if not cases and not node.get("default"):
+            errs.append(f"branch '{nid}' needs cases or default")
+        for j, c in enumerate(cases):
+            if not isinstance(c, dict) or not c.get("when") or not c.get("then"):
+                errs.append(f"branch '{nid}' case[{j}] needs when+then")
+        return errs
+
+    @staticmethod
+    async def execute(node, cctx, state, config, eff) -> dict:
+        return {"events": []}
+
+    @classmethod
+    def add_edges(cls, g, node, d) -> None:
+        nid = node["id"]
+        targets = {c["then"] for c in (node.get("cases") or []) if c.get("then")}
+        if node.get("default"):
+            targets.add(node["default"])
+
+        def route(state, config=None) -> str:
+            return wf_expr.eval_branch(node, state.get("context") or {}) or END
+
+        g.add_conditional_edges(nid, route, {t: t for t in targets} | {END: END})
+
+
+@register_node
+class LoopNode(BaseNode):
+    """Iterate ``over`` (context list / int); each pass runs ``body``, back-edge to head."""
+
+    type = "loop"
+
+    @classmethod
+    def validate_params(cls, node: dict) -> list[str]:
+        errs = []
+        nid = node.get("id")
+        if not node.get("body"):
+            errs.append(f"loop '{nid}' needs body")
+        if not node.get("over"):
+            errs.append(f"loop '{nid}' needs over")
+        if not isinstance(node.get("max_iters"), int) or node.get("max_iters", 0) < 1:
+            errs.append(f"loop '{nid}' needs max_iters >= 1")
+        return errs
+
+    @staticmethod
+    async def execute(node, cctx, state, config, eff) -> dict:
+        run_ctx = cctx["run_ctx"]
+        node_id = node["id"]
+        as_var = node.get("as") or "item"
+        max_iters = int(node.get("max_iters") or 100)
+        iters = dict(state.get("loop_iters") or {})
+        st = dict(iters.get(node_id) or {"index": 0, "items": None, "done": False})
+        context = dict(state.get("context") or {})
+        loop_vars = dict(state.get("loop_vars") or {})
+        if st["items"] is None:
+            over = node.get("over")
+            try:
+                val = wf_expr.eval_expr(over, context) if isinstance(over, str) else over
+            except Exception:
+                val = []
+            if isinstance(val, int):
+                val = list(range(val))
+            st["items"] = val if isinstance(val, list) else []
+        idx = st["index"]
+        items = st["items"]
+        events = []
+        if idx < len(items) and idx < max_iters:
+            loop_vars[as_var] = items[idx]
+            events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_iter", "index": idx, "of": len(items)})
+            st["index"] = idx + 1
+            st["done"] = False
+        else:
+            st["done"] = True
+        iters[node_id] = st
+        events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "loop"})
+        run_ctx["events"].extend(events)
+        return {"loop_iters": iters, "loop_vars": loop_vars, "events": events}
+
+    @classmethod
+    def add_edges(cls, g, node, d) -> None:
+        nid = node["id"]
+        body = node.get("body")
+
+        def route(state, config=None) -> str:
+            st = ((state.get("loop_iters") or {}).get(nid)) or {}
+            return END if st.get("done") else body or END
+
+        routes = {body: body} if body else {}
+        g.add_conditional_edges(nid, route, routes | {END: END})
+        if body:
+            g.add_edge(body, nid)
+
+
+@register_node
+class HumanNode(BaseNode):
+    """Human-in-the-loop checkpoint. Not compiled in v1 (matches prior compiler behaviour)."""
+
+    type = "human"
+
+    @classmethod
+    def make_node(cls, node, cctx):
+        raise ValueError(f"node type 'human' not compiled in v1")
+
+
+@register_node
+class PassNode(BaseNode):
+    """No-op passthrough (useful for wiring/placeholder)."""
+
+    type = "pass"
+    aliases = ("noop",)
+
+    @staticmethod
+    async def execute(node, cctx, state, config, eff) -> dict:
+        run_ctx = cctx["run_ctx"]
+        run_ctx["events"].append({"run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "node_enter", "node_type": "pass"})
+        return {"events": [], "__output__": {}}
