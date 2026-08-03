@@ -37,6 +37,7 @@ from . import paths
 from . import providers as prov_mod
 from .agents.memory import ensure_agent_memory
 from .checkpointer import FileCheckpointer
+from . import commands as _commands
 from .graph import BLOCK_PREFIX, build_all_tools, build_graph
 from .tools.render_tools import RENDER_TOOL_NAMES
 from .hooks.dispatcher import HookDispatcher
@@ -2320,9 +2321,22 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     len([i for i in _imgs if isinstance(i, dict) and i.get("data")]),
                     (user_text or "")[:120],
                 )
-                user_text = _maybe_substitute_skill(user_text, session["project_slug"])
+                # Slash commands + @mentions → TurnPlan (docs §commands).
+                plan = _commands.resolve_turn(msg, session)
+                if plan.builtin_reply is not None:
+                    # Built-in command: reply directly, no graph turn, no agent
+                    # persistence, no checkpoint write (ephemeral by design).
+                    await ws.send_text(
+                        _ev("notice", {"message": plan.builtin_reply}, turn_id)
+                    )
+                    await ws.send_text(_ev("message.end", {}, turn_id))
+                    continue
+                user_text = plan.text
                 turn_agent = (
-                    msg.get("agent_id") or session.get("agent_id") or _first_agent_id()
+                    plan.agent_override
+                    or msg.get("agent_id")
+                    or session.get("agent_id")
+                    or _first_agent_id()
                 )
                 if turn_agent != session.get("agent_id"):
                     session["agent_id"] = turn_agent
@@ -2346,7 +2360,9 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     session,
                     turn_agent,
                     images=msg.get("images"),
-                    files=msg.get("files"),
+                    files=(msg.get("files") or []) + plan.files_extra,
+                    mention_context=plan.mention_ctx,
+                    skill_name=plan.skill_name,
                 )
             elif kind == "permission_response":
                 decision = msg.get("decision", "deny")
@@ -2394,8 +2410,8 @@ def _compact_schema(path: str) -> str:
 def _resolve_attached_files(
     files: list | None, slug: str, session_id: str
 ) -> list[dict]:
-    """Turn invoke ``files`` items ({id} or {name, path}) into registry-backed
-    entries carrying a compact schema for table kinds."""
+    """Turn invoke ``files`` items ({id} or {artifact_id} or {name, path})
+    into registry-backed entries carrying a compact schema for table kinds."""
     from .files import extractors as _ex
 
     reg = files_mod.get_registry(slug)
@@ -2406,6 +2422,21 @@ def _resolve_attached_files(
         entry = None
         if f.get("id"):
             entry = files_mod.get_by_id(f["id"])
+        # @artifact mention: resolve the artifact's own file ref. Never call
+        # add_artifact here — the artifact already exists, and re-adding under
+        # a hardcoded kind would duplicate its right-panel row.
+        if entry is None and f.get("artifact_id"):
+            art = art_store.get_artifact(slug, f["artifact_id"])
+            ref = (art.get("ref") or "").strip() if art else ""
+            if art and ref:
+                p = Path(ref).expanduser()
+                if p.is_file():
+                    entry = reg.find_by_path(str(p)) or reg.register(
+                        art.get("name") or p.name,
+                        p,
+                        session_id=session_id,
+                        artifact_id=art.get("id"),
+                    )
         if entry is None and f.get("path"):
             p = Path(f["path"]).expanduser()
             if p.is_file():
@@ -2516,6 +2547,8 @@ async def _run_stream(
     agent_id: str | None = None,
     images: list | None = None,
     files: list | None = None,
+    mention_context: list | None = None,
+    skill_name: str | None = None,
 ) -> None:
     """Append a HumanMessage and stream the agent loop until end or interrupt.
 
@@ -2524,7 +2557,9 @@ async def _run_stream(
     content list (OpenAI-style image_url data URLs, which both ChatOpenAI and
     ChatAnthropic accept). ``files`` carries uploaded file refs ({id} or
     {name, path}) resolved via the file registry and injected into the system
-    prompt through ``state["attached_files"]``.
+    prompt through ``state["attached_files"]``. ``mention_context`` carries
+    resolved @mention sections (workflow/memory/non-file artifact) injected
+    into the system prompt; ``skill_name`` marks an invoked slash-skill turn.
     """
     content: Any = user_text
     imgs = [i for i in (images or []) if isinstance(i, dict) and i.get("data")]
@@ -2549,39 +2584,15 @@ async def _run_stream(
         "workspace": session["workspace"],
         "project_slug": session["project_slug"],
         "agent_id": agent_id or session.get("agent_id") or "",
-        "active_skills": [],
+        "active_skills": [skill_name] if skill_name else [],
         "pending_tool_calls": [],
         "attached_files": attached,
+        # Always present (even []) so the channel resets per turn — mentions
+        # must not leak into the next turn (same last-value-wins semantics as
+        # attached_files; there is no reducer on this key).
+        "mention_context": mention_context or [],
     }
     await _stream_graph(ws, graph, config, input_state=input_state)
-
-
-def _maybe_substitute_skill(user_text: str, project_slug: str) -> str:
-    """If user_text starts with `/<skill-name>`, replace with SKILL.md body +
-    the trailing question. Otherwise return as-is."""
-    stripped = user_text.lstrip()
-    if not stripped.startswith("/"):
-        return user_text
-    # Parse `/skill-name rest of message`
-    rest = stripped[1:]
-    parts = rest.split(maxsplit=1)
-    if not parts or not parts[0]:
-        return user_text
-    skill_name = parts[0]
-    tail = parts[1] if len(parts) > 1 else ""
-    skill = SkillLoader(project_slug=project_slug).get(skill_name)
-    if not skill or not skill.body:
-        return user_text  # unknown skill — leave the message alone
-    blocks = [
-        f"<skill name=\"{skill_name}\">",
-        skill.body.strip(),
-        "</skill>",
-    ]
-    if tail:
-        blocks.append(f"\n\nUser request: {tail}")
-    else:
-        blocks.append("\n\n(Follow the skill instructions above.)")
-    return "\n".join(blocks)
 
 
 async def _run_resume(ws: WebSocket, graph, config: dict, resume_value: dict) -> None:

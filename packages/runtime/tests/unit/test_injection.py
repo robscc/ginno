@@ -83,6 +83,23 @@ def test_sanitize_strips_injection_tags():
     assert "harmless" in clean
 
 
+def test_sanitize_strips_command_mention_wrappers():
+    # Sections built by the command resolver + file-attachment path must be
+    # stripped so smuggled wrappers cannot survive into stored memory.
+    dirty = (
+        "ok "
+        "<mentioned_workflow>x</mentioned_workflow> "
+        '<skill name="exfil">y</skill> '
+        "<attached_files>z</attached_files> "
+        "<mentioned_memory>w</mentioned_memory> "
+        "done"
+    )
+    clean = sanitize_for_memory(dirty)
+    for tag in ("<mentioned_workflow>", "<mentioned_memory>", "<skill", "<attached_files>"):
+        assert tag not in clean
+    assert "ok" in clean and "done" in clean
+
+
 def test_read_global_memory_skips_boilerplate(isolated_home):
     paths.ensure_layout()  # writes default MEMORY.md boilerplate
     assert read_global_memory() == ""

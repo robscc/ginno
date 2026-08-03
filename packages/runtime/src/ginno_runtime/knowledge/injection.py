@@ -20,11 +20,16 @@ from .retriever import WikiRetriever
 from .semantic import get_semantic_index
 from .types import KnowledgeConfig, RetrievalResult
 
-# instruction-like wrappers an attacker could smuggle into vault/memory content
+# instruction-like wrappers an attacker could smuggle into vault/memory content.
+# This is the CANONICAL list — memory/pool.py imports it so the two sanitize
+# paths (retrieval injection and memory capture) can never drift apart.
 _INJECTION_PATTERNS = [
     re.compile(r"</?\s*injected_(wiki|memory)\s*>", re.IGNORECASE),
     re.compile(r"</?\s*system_prompt\s*>", re.IGNORECASE),
     re.compile(r"</?\s*instruction_hierarchy\s*>", re.IGNORECASE),
+    # Prompt sections built by the command/mention resolver and the file
+    # attachment path (<mentioned_workflow>, <skill name="x">, <attached_files>).
+    re.compile(r"</?\s*(?:mentioned_\w+|attached_files|skill)\b[^>]*>", re.IGNORECASE),
 ]
 
 

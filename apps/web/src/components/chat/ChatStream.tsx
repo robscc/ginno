@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Paperclip, Keyboard, ArrowUp, X } from "lucide-react";
+import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2 } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
@@ -10,6 +10,17 @@ import { InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "
 import { DiffView } from "@/components/workflow/DiffView";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
+import { ComposerMenu } from "@/components/chat/ComposerMenu";
+import {
+  applySelection,
+  buildMenuItems,
+  dedupeMentions,
+  detectTrigger,
+  pruneMentions,
+  type MenuItem,
+  type ResolvedMention,
+  type Trigger,
+} from "@/components/chat/commandMenu";
 import {
   cancelWorkflowRun,
   createWorkflow,
@@ -28,6 +39,29 @@ interface ChatMsg {
   agentId?: string | null;
   agentName?: string;
   turnId?: string; // per-turn trace UUID (shown on the bubble, greppable in sidecar logs)
+  // Delivery state — user bubbles only. "sending" = in flight to the sidecar;
+  // "failed" = never delivered (red ❗, click to retry). Successful delivery
+  // clears it back to undefined.
+  status?: "sending" | "failed";
+  failReason?: string;
+  // Immutable snapshot of everything the turn carries, kept on the bubble so
+  // a failed send can be retried or re-edited without losing content.
+  sendPayload?: SendPayload;
+  // Assistant turn-error card: the input WAS delivered but the run errored
+  // (model/provider failure etc.). blocks[0] holds the error text;
+  // sendPayload carries the originating user turn for the retry button.
+  error?: boolean;
+  // Error cards only: id of the originating user bubble. Retry operates on
+  // THAT bubble in place — no duplicate message is appended.
+  sourceMsgId?: string;
+}
+
+interface SendPayload {
+  text: string;
+  images: Attachment[];
+  files: FileAttachment[];
+  mentions: ResolvedMention[];
+  agentId: string | null;
 }
 
 const newTurnId = () =>
@@ -240,11 +274,14 @@ export function ChatStream({
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
+  // Command/mention autocomplete: open menu (items + active index + trigger).
+  const [menu, setMenu] = useState<{ items: MenuItem[]; active: number; trigger: Trigger } | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   // liveIdRef mirrors liveId state for use inside callbacks without closure staleness
   const liveIdRef = useRef<string | null>(null);
@@ -269,8 +306,12 @@ export function ChatStream({
   const watchTimerRef    = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
   const reconnTimerRef   = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const lastSeenRef      = useRef<Record<string, number>>({});
-  // Unsent input + attachments saved per session on switch
-  const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[] }>>({});
+  // Unsent input + attachments + resolved mentions saved per session on switch
+  const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[]; mentions?: ResolvedMention[] }>>({});
+  // Resolved @mentions picked from the autocomplete menu, keyed by session id.
+  // Pruned on every input change (edited-away token → dropped mention) and
+  // sent along with the invoke payload as the authoritative structured list.
+  const mentionsRef      = useRef<Record<string, ResolvedMention[]>>({});
   // In-chat live workflow runs bound to each session (design A: run 回到对话)
   const runsBySessionRef = useRef<Record<string, WorkflowRun[]>>({});
   const [runs, setRuns]   = useState<WorkflowRun[]>([]);
@@ -344,6 +385,13 @@ export function ChatStream({
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
+        // An in-flight turn does not survive a socket drop: any user bubble
+        // still "sending" is marked failed so it gets the retry affordance.
+        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
+          m.role === "user" && m.status === "sending"
+            ? { ...m, status: "failed" as const, failReason: "连接中断，未送达" }
+            : m,
+        );
       }
       syncDisplay(sid);
       pingTimerRef.current[sid] = setInterval(() => {
@@ -390,10 +438,15 @@ export function ChatStream({
 
     // Save outgoing draft
     if (prev && prev !== sid) {
-      draftCacheRef.current[prev] = { input, attachments };
+      draftCacheRef.current[prev] = {
+        input,
+        attachments,
+        mentions: pruneMentions(mentionsRef.current[prev] ?? [], input),
+      };
       setInput("");
       setAttachments([]);
       setTarget(null);
+      setMenu(null); // menu is composer-global state; never leak across sessions
     }
 
     curSessionIdRef.current = sid;
@@ -416,11 +469,13 @@ export function ChatStream({
       });
     }
 
-    // Restore draft if any
+    // Restore draft if any (mentions re-pruned against the restored text so a
+    // token the user deleted before switching stays deleted)
     const draft = draftCacheRef.current[sid];
     if (draft) {
       setInput(draft.input);
       setAttachments(draft.attachments);
+      mentionsRef.current[sid] = pruneMentions(draft.mentions ?? [], draft.input);
     }
 
     syncDisplay(sid);
@@ -440,6 +495,16 @@ export function ChatStream({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Delivery confirmed (the server started or finished the turn) → clear the
+  // "sending" marker off user bubbles.
+  function markDelivered(sid: string) {
+    const list = storeRef.current[sid];
+    if (!list?.some((m) => m.status === "sending")) return;
+    storeRef.current[sid] = list.map((m) =>
+      m.status === "sending" ? { ...m, status: undefined, failReason: undefined } : m,
+    );
+  }
 
   function ensureLive(sid: string): string {
     const existing = liveBySessionRef.current[sid];
@@ -472,6 +537,7 @@ export function ChatStream({
         mutateLive(sid, ev);
         break;
       case "turn.start": {
+        markDelivered(sid);
         // authoritative agent for this turn (server-resolved, never null).
         // The server echoes the turn_id we sent (or mints one); adopt it as the
         // bubble's trace UUID so it matches the sidecar logs exactly.
@@ -579,29 +645,59 @@ export function ChatStream({
         // SheetViewer refetches if that file is the one being viewed.
         if (ev.file_id) g.notifyPreviewInvalidate(ev.file_id as string);
         break;
+      case "notice":
+        // Built-in command reply (e.g. /help): no graph turn ran, so the server
+        // pushes the rendered text directly into the live bubble as one delta.
+        markDelivered(sid);
+        mutateLive(sid, { event: "token.delta", content: (ev.message as string) || "" });
+        break;
       case "message.end":
+        markDelivered(sid);
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
         break;
       case "error": {
+        // The turn reached the server (it is the run, not the delivery, that
+        // failed) → the user bubble counts as delivered; the failure becomes
+        // a dedicated error card with a retry action.
+        markDelivered(sid);
+        const liveMsgId = liveBySessionRef.current[sid];
         liveBySessionRef.current[sid] = null;
+        streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
-        // Close out any in-flight tool blocks as interrupted so `running` unsticks.
+        const list = storeRef.current[sid] ?? [];
+        const liveBubble = list.find((m) => m.id === liveMsgId);
+        // Retry payload: the originating user turn's snapshot (live turns
+        // always carry one). Absent → the card renders without a retry button.
+        const lastUser = [...list].reverse().find((m) => m.role === "user" && m.sendPayload);
         storeRef.current[sid] = [
-          ...(storeRef.current[sid] ?? []).map((msg) =>
-            hasPendingTool(msg.blocks)
-              ? {
-                  ...msg,
-                  blocks: msg.blocks.map((b) =>
-                    b.kind === "tool" && b.pending
-                      ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
-                      : b,
-                  ),
-                }
-              : msg,
-          ),
-          { id: mid(), role: "assistant", blocks: [{ kind: "text", text: `[error] ${ev.message}` }] },
+          ...list
+            // An empty live bubble (error before any token) would render as a
+            // confusing "（空回复）" right above the error card — drop it.
+            .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
+            // Close out any in-flight tool blocks as interrupted so `running` unsticks.
+            .map((msg) =>
+              hasPendingTool(msg.blocks)
+                ? {
+                    ...msg,
+                    blocks: msg.blocks.map((b) =>
+                      b.kind === "tool" && b.pending
+                        ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
+                        : b,
+                    ),
+                  }
+                : msg,
+            ),
+          {
+            id: mid(),
+            role: "assistant" as const,
+            blocks: [{ kind: "text", text: String(ev.message || "") || "未知错误" }],
+            turnId: liveBubble?.turnId,
+            error: true,
+            sendPayload: lastUser?.sendPayload,
+            sourceMsgId: lastUser?.id,
+          },
         ];
         break;
       }
@@ -752,69 +848,254 @@ export function ChatStream({
     decideWorkflowRun(runId, "continue");
   }
 
+  // ─── Command / mention autocomplete ────────────────────────────────────────
+  // Re-evaluate whether the composer's current text+caret opens a menu. Called
+  // on every input change and after programmatic edits (the "/" button).
+  function recomputeMenu(text: string) {
+    const caret = textareaRef.current?.selectionStart ?? text.length;
+    const trigger = detectTrigger(text, caret);
+    if (!trigger) {
+      setMenu(null);
+      return;
+    }
+    const items = buildMenuItems(trigger, {
+      skills: g.skills,
+      agents: g.agents,
+      workflows: g.workflows,
+      artifacts: g.artifacts,
+    });
+    setMenu(items.length ? { items, active: 0, trigger } : null);
+  }
+
+  // Insert the picked item, record its resolved mention, and refocus the caret
+  // right after the inserted token (ready to type the prompt).
+  function pickItem(item: MenuItem) {
+    if (!menu) return;
+    const caret = textareaRef.current?.selectionStart ?? input.length;
+    const r = applySelection(input, caret, menu.trigger, item);
+    setInput(r.text);
+    setMenu(null);
+    if (r.mention && session) {
+      const sid = session.id;
+      const rest = (mentionsRef.current[sid] ?? []).filter(
+        (m) => !(m.kind === r.mention!.kind && m.id === r.mention!.id),
+      );
+      mentionsRef.current[sid] = [...rest, r.mention];
+    }
+    // @agent also retargets the turn — same code path as the "Ask X" chips, so
+    // the structured mention and agent_id never disagree from the UI.
+    if (item.kind === "agent") setTarget(item.id);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(r.caret, r.caret);
+      }
+    });
+  }
+
   function send() {
     if (!session) return;
     const sid = session.id;
     if (busyBySessionRef.current[sid]) return; // one turn at a time
     const text = input.trim();
-    const sock = socketsRef.current[sid];
     const readyFiles = fileAttachments.filter((f) => !f.uploading);
-    if ((!text && attachments.length === 0 && readyFiles.length === 0) || !sock || !g.connected) return;
+    if (!text && attachments.length === 0 && readyFiles.length === 0) return;
     if (readyFiles.length !== fileAttachments.length) return; // upload in flight
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
-    const live = mid();
+    // Final prune against the raw (untrimmed) input, deduped — only mentions
+    // whose @kind:label token is still present are sent. The server treats this
+    // structured list as authoritative (text tokens are its raw-client fallback).
+    const mentions = dedupeMentions(pruneMentions(mentionsRef.current[sid] ?? [], input));
+    // Not connected? No silent no-op — the bubble is still created and lands
+    // in the failed state (red ❗) so the send attempt always has a visible
+    // outcome and can be retried.
+    attemptSend(sid, { text, images: attachments, files: readyFiles, mentions, agentId });
+    setInput("");
+    setAttachments([]);
+    setFileAttachments([]);
+    setTarget(null);
+    setMenu(null);
+    mentionsRef.current[sid] = [];
+  }
+
+  /**
+   * Post one user turn. The user bubble is created up-front and carries the
+   * full send payload, so a failed delivery shows a red ❗ and can be retried
+   * (or re-edited) without losing content. Passing `userMsgId` reuses an
+   * existing failed bubble in place (retry); otherwise a new one is appended.
+   */
+  function attemptSend(sid: string, payload: SendPayload, userMsgId?: string) {
     const turnId = newTurnId();
-    const guessName = agentById(agentId)?.name ?? "Agent";
-    const imgs = attachments;
+    const guessName = agentById(payload.agentId)?.name ?? "Agent";
     const userBlocks: Block[] = [
-      ...readyFiles.map((f) => ({
+      ...payload.files.map((f) => ({
         kind: "file" as const,
         fileId: f.id,
         name: f.name,
         path: f.path,
         fileKind: f.kind,
       })),
-      ...imgs.map((a) => ({ kind: "image" as const, url: a.preview })),
-      ...(text ? [{ kind: "text" as const, text }] : []),
+      ...payload.images.map((a) => ({ kind: "image" as const, url: a.preview })),
+      ...(payload.text ? [{ kind: "text" as const, text: payload.text }] : []),
     ];
-    busyBySessionRef.current[sid] = true;
-    streamAgentRef.current[sid] = agentId;
-    storeRef.current[sid] = [
-      ...(storeRef.current[sid] ?? []),
-      { id: mid(), role: "user", blocks: userBlocks, turnId },
-      { id: live, role: "assistant", blocks: [], agentId, agentName: guessName, turnId },
-    ];
-    liveBySessionRef.current[sid] = live;
-    syncDisplay(sid);
-    try {
-      sock.send(
-        JSON.stringify({
-          type: "invoke",
-          message: text,
-          agent_id: agentId,
-          turn_id: turnId,
-          images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
-          files: readyFiles.map((f) => ({ id: f.id, name: f.name, path: f.path })),
-        }),
-      );
-    } catch {
-      // sock.send throws InvalidStateError when the socket is CLOSING/CLOSED and
-      // the `g.connected` guard lags the real readyState. Unlock + mark the bubble.
-      busyBySessionRef.current[sid] = false;
-      liveBySessionRef.current[sid] = null;
-      storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
-        msg.id === live
-          ? { ...msg, blocks: [{ kind: "text", text: "[error] 发送失败：连接未就绪，请稍后重试" }] }
-          : msg,
-      );
+    const uid = userMsgId ?? mid();
+    const sock = socketsRef.current[sid];
+    const sockReady = !!sock && sock.readyState === WebSocket.OPEN;
+
+    if (!sockReady) {
+      // Not delivered: the bubble lands in the failed state. No assistant
+      // placeholder, no busy lock — retry becomes available once the socket
+      // reconnects.
+      storeRef.current[sid] = userMsgId
+        ? (storeRef.current[sid] ?? []).map((m) =>
+            m.id === userMsgId
+              ? { ...m, turnId, status: "failed" as const, failReason: "连接未就绪" }
+              : m,
+          )
+        : [
+            ...(storeRef.current[sid] ?? []),
+            {
+              id: uid,
+              role: "user" as const,
+              blocks: userBlocks,
+              turnId,
+              agentId: payload.agentId,
+              status: "failed" as const,
+              failReason: "连接未就绪",
+              sendPayload: payload,
+            },
+          ];
       syncDisplay(sid);
       return;
     }
-    setInput("");
-    setAttachments([]);
-    setFileAttachments([]);
-    setTarget(null);
+
+    const live = mid();
+    busyBySessionRef.current[sid] = true;
+    streamAgentRef.current[sid] = payload.agentId;
+    const liveBubble: ChatMsg = {
+      id: live,
+      role: "assistant",
+      blocks: [],
+      agentId: payload.agentId,
+      agentName: guessName,
+      turnId,
+    };
+    storeRef.current[sid] = userMsgId
+      ? // In-place retry: refresh the original bubble and insert the response
+        // placeholder immediately after it — never duplicate the message.
+        (storeRef.current[sid] ?? []).flatMap((m) =>
+          m.id === userMsgId
+            ? [{ ...m, turnId, status: "sending" as const, failReason: undefined }, liveBubble]
+            : [m],
+        )
+      : [
+          ...(storeRef.current[sid] ?? []),
+          {
+            id: uid,
+            role: "user" as const,
+            blocks: userBlocks,
+            turnId,
+            agentId: payload.agentId,
+            status: "sending" as const,
+            sendPayload: payload,
+          },
+          liveBubble,
+        ];
+    liveBySessionRef.current[sid] = live;
+    syncDisplay(sid);
+    try {
+      sock!.send(
+        JSON.stringify({
+          type: "invoke",
+          message: payload.text,
+          agent_id: payload.agentId,
+          turn_id: turnId,
+          images: payload.images.map((a) => ({ data: a.data, media_type: a.mediaType })),
+          files: payload.files.map((f) => ({ id: f.id, name: f.name, path: f.path })),
+          ...(payload.mentions.length
+            ? { mentions: payload.mentions.map(({ kind, id }) => ({ kind, id })) }
+            : {}),
+        }),
+      );
+    } catch {
+      // sock.send throws when the socket flipped to CLOSING/CLOSED between the
+      // readyState check and here. Drop the assistant placeholder and mark the
+      // user bubble failed — the payload on it keeps retry/re-edit lossless.
+      busyBySessionRef.current[sid] = false;
+      liveBySessionRef.current[sid] = null;
+      storeRef.current[sid] = (storeRef.current[sid] ?? [])
+        .filter((m) => m.id !== live)
+        .map((m) =>
+          m.id === uid ? { ...m, status: "failed" as const, failReason: "连接中断，未送达" } : m,
+        );
+      syncDisplay(sid);
+    }
+  }
+
+  /** Click on the red ❗: resend the exact payload with a fresh turn id (a
+   * retry is a genuinely new turn). Operates on the failed bubble IN PLACE —
+   * the bubble flips back to "sending" and the response slots in right after
+   * it; no duplicate message is appended. */
+  function retryFailed(msgId: string) {
+    const sid = curSessionIdRef.current;
+    if (!sid || busyBySessionRef.current[sid]) return; // one turn at a time
+    const list = storeRef.current[sid] ?? [];
+    const msg = list.find((m) => m.id === msgId);
+    if (!msg || msg.role !== "user" || msg.status !== "failed" || !msg.sendPayload) return;
+    attemptSend(sid, msg.sendPayload, msg.id);
+  }
+
+  /** Pull the failed payload back into the composer (text, images, files,
+   * mentions, target agent) and drop the bubble — content is never lost. */
+  function editResend(msgId: string) {
+    const sid = curSessionIdRef.current;
+    if (!sid) return;
+    const msg = (storeRef.current[sid] ?? []).find((m) => m.id === msgId);
+    if (!msg || msg.status !== "failed" || !msg.sendPayload) return;
+    const p = msg.sendPayload;
+    storeRef.current[sid] = (storeRef.current[sid] ?? []).filter((m) => m.id !== msgId);
+    setInput(p.text);
+    setAttachments(p.images);
+    setFileAttachments(p.files);
+    setTarget(p.agentId);
+    mentionsRef.current[sid] = p.mentions;
+    syncDisplay(sid);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(p.text.length, p.text.length);
+      }
+      recomputeMenu(p.text);
+    });
+  }
+
+  function dismissFailed(msgId: string) {
+    const sid = curSessionIdRef.current;
+    if (!sid) return;
+    storeRef.current[sid] = (storeRef.current[sid] ?? []).filter(
+      (m) => !(m.id === msgId && m.status === "failed"),
+    );
+    syncDisplay(sid);
+  }
+
+  /** Retry on a turn-error card: drop the card and re-invoke the originating
+   * payload ON THE ORIGINAL user bubble in place (it flips back to "sending",
+   * the response slots in right after it) — no duplicate message. Only if the
+   * original bubble is somehow gone do we fall back to appending a fresh one. */
+  function retryError(msgId: string) {
+    const sid = curSessionIdRef.current;
+    if (!sid || busyBySessionRef.current[sid]) return; // one turn at a time
+    const list = storeRef.current[sid] ?? [];
+    const card = list.find((m) => m.id === msgId);
+    if (!card?.error || !card.sendPayload) return;
+    storeRef.current[sid] = list.filter((m) => m.id !== msgId);
+    const source = card.sourceMsgId
+      ? (storeRef.current[sid] ?? []).find((m) => m.id === card.sourceMsgId && m.role === "user")
+      : undefined;
+    attemptSend(sid, card.sendPayload, source?.id);
   }
 
   function respond(decision: "allow" | "deny") {
@@ -891,10 +1172,63 @@ export function ChatStream({
             m.role === "user" ? (
               <div key={m.id} className="flex flex-col items-end gap-1">
                 <TurnIdChip turnId={m.turnId} />
-                <div className="max-w-[78%] rounded-2xl bg-card2 px-4 py-2.5 text-sm leading-relaxed text-txt">
-                  <UserBlocks blocks={m.blocks} />
+                {/* w-full (not max-w-full): the row width must be definite so the
+                    bubble's max-w-[78%] resolves against the column, not against
+                    the row's own shrink-to-fit width — otherwise the percentage
+                    collapses the bubble and the text overflows to the right. */}
+                <div className="group flex w-full items-center justify-end gap-2">
+                  {m.status === "failed" && (
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        onClick={() => editResend(m.id)}
+                        className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-txt group-hover:opacity-100"
+                      >
+                        编辑重发
+                      </button>
+                      <button
+                        onClick={() => dismissFailed(m.id)}
+                        className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
+                      >
+                        删除
+                      </button>
+                      <button
+                        onClick={() => retryFailed(m.id)}
+                        title={`发送失败：${m.failReason ?? "未知原因"}（点击重试）`}
+                        aria-label="发送失败，点击重试"
+                        className="shrink-0 transition-transform hover:scale-110"
+                      >
+                        <AlertCircle className="h-[18px] w-[18px] text-red" />
+                      </button>
+                    </div>
+                  )}
+                  {m.status === "sending" && (
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-faint" aria-label="发送中" />
+                  )}
+                  <div
+                    className={`max-w-[78%] rounded-2xl rounded-tr-md border px-4 py-2.5 text-sm leading-relaxed ${
+                      m.status === "failed"
+                        ? "border-red/40 bg-card2/60 text-muted"
+                        : "border-line bg-card2 text-txt"
+                    }`}
+                  >
+                    <UserBlocks blocks={m.blocks} />
+                  </div>
                 </div>
+                {m.status === "failed" && (
+                  <div className="text-[10px] text-red/80">
+                    发送失败{m.failReason ? `：${m.failReason}` : ""} · 点击红色感叹号重试
+                  </div>
+                )}
               </div>
+            ) : m.error ? (
+              <ErrorCard
+                key={m.id}
+                message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
+                turnId={m.turnId}
+                canRetry={!!m.sendPayload}
+                busy={running}
+                onRetry={() => retryError(m.id)}
+              />
             ) : (
               <AssistantBubble
                 key={m.id}
@@ -1046,6 +1380,14 @@ export function ChatStream({
             >
               <span className="h-0.5 w-6 rounded-full bg-line2" />
             </div>
+            {menu && (
+              <ComposerMenu
+                items={menu.items}
+                active={menu.active}
+                onPick={pickItem}
+                onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
+              />
+            )}
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {attachments.map((a, i) => (
@@ -1091,8 +1433,20 @@ export function ChatStream({
               </div>
             )}
             <textarea
+              ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setInput(v);
+                recomputeMenu(v);
+                // Keep the resolved mentions in sync with the visible tokens.
+                if (session) {
+                  mentionsRef.current[session.id] = pruneMentions(
+                    mentionsRef.current[session.id] ?? [],
+                    v,
+                  );
+                }
+              }}
               onPaste={(e) => {
                 if (e.clipboardData?.files?.length) {
                   e.preventDefault();
@@ -1103,13 +1457,38 @@ export function ChatStream({
                 // Guard IME composition: without this, pressing Enter to commit a
                 // CJK candidate (e.g. Chinese) fires send() mid-composition and
                 // posts partial/garbled text. isComposing + keyCode 229 cover it.
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+                // While the autocomplete menu is open, navigate/confirm it
+                // instead of sending. (IME guard first — same as send.)
+                if (menu && !composing) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setMenu((m) => m && { ...m, active: (m.active + 1) % m.items.length });
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setMenu((m) => m && { ...m, active: (m.active - 1 + m.items.length) % m.items.length });
+                    return;
+                  }
+                  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                    e.preventDefault();
+                    pickItem(menu.items[menu.active]);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMenu(null);
+                    return;
+                  }
+                }
+                if (e.key === "Enter" && !e.shiftKey && !composing) {
                   e.preventDefault();
                   send();
                 }
               }}
               rows={2}
-              placeholder="Ask any Agent …  可拖入图片 / Excel / Word / PPT / PDF 一起提问"
+              placeholder="Ask any Agent …  / 调用技能 · @ 提及产物/智能体/工作流/记忆 · 可拖入图片 / Excel / Word / PPT / PDF"
               style={
                 composerH != null
                   ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
@@ -1138,9 +1517,26 @@ export function ChatStream({
                   <Paperclip className="h-4 w-4" />
                 </button>
                 <button
-                  onClick={() => setInput((v) => v + "/")}
+                  onClick={() => {
+                    // Start a slash command — only valid as the FIRST token, so
+                    // this only makes sense on an empty composer. With existing
+                    // text we just focus the textarea instead of mangling it.
+                    if (!input.trim()) {
+                      setInput("/");
+                      requestAnimationFrame(() => {
+                        const el = textareaRef.current;
+                        if (el) {
+                          el.focus();
+                          el.setSelectionRange(1, 1);
+                        }
+                        recomputeMenu("/");
+                      });
+                    } else {
+                      textareaRef.current?.focus();
+                    }
+                  }}
                   className="rounded-md p-1.5 hover:bg-card2 hover:text-muted"
-                  title="插入斜杠命令 /"
+                  title="斜杠命令 / @ 提及（输入 / 或 @ 触发补全）"
                   aria-label="插入斜杠命令"
                 >
                   <Keyboard className="h-4 w-4" />
@@ -1196,7 +1592,6 @@ export function ChatStream({
               <button
                 onClick={send}
                 disabled={
-                  !g.connected ||
                   !!permission ||
                   running ||
                   fileAttachments.some((f) => f.uploading) ||
@@ -1210,6 +1605,48 @@ export function ChatStream({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Turn failed at runtime: the input was delivered, the run errored (model /
+ * provider failure, stall watchdog, …). Rendered as a dedicated red card with
+ * a retry action instead of a plain "[error]" text bubble. */
+function ErrorCard({
+  message,
+  turnId,
+  canRetry,
+  busy,
+  onRetry,
+}: {
+  message: string;
+  turnId?: string;
+  canRetry: boolean;
+  busy?: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-red/40 bg-red/10 px-4 py-3">
+      <div className="mb-1.5 flex items-center gap-2">
+        <AlertCircle className="h-4 w-4 shrink-0 text-red" />
+        <span className="text-sm font-medium text-red">请求失败</span>
+        <span className="ml-auto">
+          <TurnIdChip turnId={turnId} />
+        </span>
+      </div>
+      <pre className="mb-3 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-muted">
+        {message}
+      </pre>
+      {canRetry && (
+        <button
+          onClick={onRetry}
+          disabled={busy}
+          title="用原输入重新发起一次回合"
+          className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+        >
+          重试
+        </button>
+      )}
     </div>
   );
 }

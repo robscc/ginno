@@ -19,3 +19,8 @@ class AgentState(TypedDict):
     # item: {id, name, path, kind, schema?}. Injected into the system prompt
     # and surfaced as file blocks in the UI history.
     attached_files: list[dict]
+    # Resolved @mention context for the current turn (workflow / memory /
+    # non-file artifact). Each item: {kind, id, name, summary}. Injected into
+    # the system prompt as <mentioned_*> sections. Reset to [] every turn by
+    # the WS layer (no reducer — last value wins, like attached_files).
+    mention_context: list[dict]

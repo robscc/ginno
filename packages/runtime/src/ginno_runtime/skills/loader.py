@@ -92,7 +92,10 @@ class SkillLoader:
         skills = self.load()
         if not skills:
             return ""
-        lines = ["Available skills (use /<name> or invoke via use_skill tool):"]
+        lines = [
+            "Available skills (the user can invoke one by starting a message with"
+            " /<name>; listed here for your awareness):"
+        ]
         lines += [s.system_prompt_snippet() for s in skills]
         return "\n".join(lines)
 

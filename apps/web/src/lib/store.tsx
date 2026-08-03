@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import * as api from "./runtime";
-import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Providers, SessionMeta, Todo, WorkflowDef, WorkflowRun } from "./types";
+import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Providers, SessionMeta, SkillSummary, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory";
 
@@ -23,6 +23,7 @@ export interface PreviewFile {
 
 interface GinnoState {
   agents: AgentConfig[];
+  skills: SkillSummary[];
   sessions: SessionMeta[];
   todos: Todo[];
   workflows: WorkflowDef[];
@@ -46,6 +47,7 @@ interface GinnoState {
   closePreview: () => void;
   notifyPreviewInvalidate: (fileId: string) => void;
   reloadAgents: () => Promise<void>;
+  reloadSkills: () => Promise<void>;
   reloadSessions: () => Promise<void>;
   reloadTodos: () => Promise<void>;
   reloadProviders: () => Promise<void>;
@@ -72,6 +74,7 @@ export function useGinno(): GinnoState {
 
 export function GinnoProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
@@ -123,6 +126,15 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const reloadAgents = useCallback(async () => {
     try {
       setAgents(await api.listAgents());
+    } catch {
+      /* sidecar down */
+    }
+  }, []);
+  const reloadSkills = useCallback(async () => {
+    try {
+      // The web app is single-project ("default") — same convention as
+      // listArtifacts. The server still merges project-scoped overrides.
+      setSkills(await api.listSkills("default"));
     } catch {
       /* sidecar down */
     }
@@ -256,6 +268,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       if (!alive) return;
       await Promise.all([
         reloadAgents(),
+        reloadSkills(),
         reloadSessions(),
         reloadTodos(),
         reloadProviders(),
@@ -270,6 +283,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     };
   }, [
     reloadAgents,
+    reloadSkills,
     reloadSessions,
     reloadTodos,
     reloadProviders,
@@ -391,6 +405,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
 
   const value: GinnoState = {
     agents,
+    skills,
     sessions,
     todos,
     workflows,
@@ -414,6 +429,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     closePreview,
     notifyPreviewInvalidate,
     reloadAgents,
+    reloadSkills,
     reloadSessions,
     reloadTodos,
     reloadProviders,
