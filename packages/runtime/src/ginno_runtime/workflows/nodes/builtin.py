@@ -151,7 +151,26 @@ class BranchNode(BaseNode):
 
     @staticmethod
     async def execute(node, cctx, state, config, eff) -> dict:
-        return {"events": []}
+        from . import transforms as wf_transforms
+
+        ctx = dict(state.get("context") or {})
+        target = None
+        transform = None
+        for c in node.get("cases") or []:
+            try:
+                if wf_expr.eval_expr(c.get("when", ""), ctx):
+                    target = c.get("then")
+                    transform = c.get("transform")
+                    break
+            except Exception:
+                continue
+        if target is None:
+            target = node.get("default")
+            transform = node.get("default_transform")
+        inputs = {}
+        if target:
+            inputs[target] = wf_transforms.apply_transform(transform, {}, ctx)
+        return {"events": [], "inputs": inputs, "__output__": {}}
 
     @classmethod
     def add_edges(cls, g, node, d) -> None:
@@ -222,12 +241,19 @@ class LoopNode(BaseNode):
     def add_edges(cls, g, node, d) -> None:
         nid = node["id"]
         body = node.get("body")
+        nxt = cls._outgoing(d, nid)  # the single "done/next" edge (validated)
 
         def route(state, config=None) -> str:
             st = ((state.get("loop_iters") or {}).get(nid)) or {}
-            return END if st.get("done") else body or END
+            if st.get("done"):
+                return nxt or END
+            return body or END
 
-        routes = {body: body} if body else {}
+        routes = {}
+        if body:
+            routes[body] = body
+        if nxt:
+            routes[nxt] = nxt
         g.add_conditional_edges(nid, route, routes | {END: END})
         if body:
             g.add_edge(body, nid)

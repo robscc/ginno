@@ -48,13 +48,23 @@ def test_compile_loop_with_structural_routing():
     assert g is not None
 
 
-def test_validate_rejects_explicit_edge_from_loop():
+def test_validate_loop_explicit_edge_rules():
     from ginno_runtime.workflows import dsl as wf_dsl
 
     d = _dsl()
     d["nodes"].append({"id": "lp", "type": "loop", "over": "context.items", "body": "a", "max_iters": 5})
-    d["edges"].append({"from": "lp", "to": "b"})  # illegal: loop routes structurally
-    assert any("lp" in e and "structurally" in e for e in wf_dsl.validate_dsl(d))
+    d["nodes"].append({"id": "c", "type": "step", "goal": "x"})
+    # a single explicit "done/next" out-edge is allowed (loop chaining)
+    d["edges"].append({"from": "lp", "to": "b"})
+    assert wf_dsl.validate_dsl(d) == []
+    # an edge from the loop to its own body is structural -> rejected
+    d2 = dict(d)
+    d2["edges"] = d["edges"] + [{"from": "lp", "to": "a"}]
+    assert any("body" in e for e in wf_dsl.validate_dsl(d2))
+    # more than one explicit out-edge is rejected
+    d3 = dict(d)
+    d3["edges"] = d["edges"] + [{"from": "lp", "to": "c"}]
+    assert any("at most one" in e for e in wf_dsl.validate_dsl(d3))
 
 
 @pytest.mark.asyncio

@@ -60,6 +60,8 @@ def validate_dsl(dsl: dict) -> list[str]:
     # a loop's body returns to the loop head structurally; it must not carry its
     # own explicit out-edge (that would create an ambiguous second out-edge).
     loop_bodies = {n.get("body") for n in nodes if isinstance(n, dict) and n.get("type") == "loop"}
+    loop_body_of = {n.get("id"): n.get("body") for n in nodes if isinstance(n, dict) and n.get("type") == "loop"}
+    loop_out_count: dict[str, int] = {}
 
     entry = dsl.get("entry")
     if not entry:
@@ -76,10 +78,18 @@ def validate_dsl(dsl: dict) -> list[str]:
             errs.append(f"edges[{i}].from '{f}' unknown")
         if t not in idset:
             errs.append(f"edges[{i}].to '{t}' unknown")
-        # loop/branch routing is structural (body back-edge / cases), never an
-        # explicit edge — an explicit one would create an ambiguous second out-edge.
-        if by_type.get(f) in ("loop", "branch"):
-            errs.append(f"edge from '{f}' not allowed ({by_type.get(f)} routes structurally)")
+        # branch routes structurally via cases/default — never an explicit edge.
+        if by_type.get(f) == "branch":
+            errs.append(f"edge from '{f}' not allowed (branch routes via cases/default; put a transform on a case)")
+        # a loop's body back-edge is structural; but a loop MAY carry exactly ONE
+        # explicit out-edge = its "done/next" continuation (so fetch→loop→gate works).
+        if by_type.get(f) == "loop":
+            if t == (loop_body_of.get(f)):
+                errs.append(f"edge from '{f}' to its body not allowed (body returns to loop head)")
+            else:
+                loop_out_count[f] = loop_out_count.get(f, 0) + 1
+                if loop_out_count[f] > 1:
+                    errs.append(f"loop '{f}' may have at most one explicit out-edge (the done/next edge)")
         if f in loop_bodies:
             errs.append(f"edge from '{f}' not allowed (loop body returns to loop head)")
         tr = e.get("transform")

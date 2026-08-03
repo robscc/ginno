@@ -232,3 +232,14 @@
 - **human 可暂停/恢复**：`HumanNode` 用 LangGraph `interrupt` 暂停；`engine.run_workflow` 遇暂停 yield `paused`（非 error）；新增 `engine.resume_workflow`（`Command(resume=…)` 续跑）与 `engine.run_state`（查暂停）。
 - **运行控制端点**：`POST .../cancel`（停 background task，status=cancelled）、`POST .../resume {value}`（仅 paused 可，409 否则）、`POST .../decide {decision,context_patch}`（supervisor/human 决策=resume）。
 - **校验**：`tests/unit/test_workflow_human_resume.py`、`tests/api/test_workflow_run_control.py`；`-m unit` **276 过**、`-m api` **91 过**，全绿。
+
+---
+
+## 13. 复杂 case 全流程模拟 · 发现与修复（round 3.5）
+
+用覆盖 `supervisor coerce + loop 串联 + branch case-transform + llm/pass` 的复杂 DSL 真实跑引擎（`tests/unit/test_workflow_complex_case.py`），暴露并修复两个**设计缺陷**：
+
+1. **loop 无法串联到下一节点**：原 `LoopNode` 路由仅 `body|END`，done 后直去 END，`fetch→loop→gate` 的后续节点永不执行；且 `validate_dsl` 一律禁止 loop 显式出边。**修复**：允许 loop 恰好一条显式出边＝done/next 续跑边（指向 body 或超过一条仍报错）；`LoopNode.add_edges` done 时路由到该 next。
+2. **branch 的 transform 无处安放**：branch 出边走 cases/default（禁止显式边），边级 transform 无效。**修复**：transform 下沉到 `case.transform` / `default_transform`；`BranchNode.execute` 按命中分支对目标节点输入做适配；`BaseNode.make_node` 合并节点返回的 `inputs`（路由期输入适配）。
+
+修复后复杂 case 全链路通过：`supervisor coerce(prep)→fetch→loop×2(review)→gate→notify→done`，`-m unit` **277 过**、`-m api` **91 过**。

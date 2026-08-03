@@ -153,7 +153,11 @@ class BaseNode:
                 eff = decision.get("input", eff)
             update = await cls.execute(node, cctx, state, config, eff)
             output = update.pop("__output__", None) or {}
-            return {**update, **cls._post(state, node, cctx, output)}
+            node_inputs = update.pop("inputs", None)  # routing-time input adaptation (branch)
+            post = cls._post(state, node, cctx, output)
+            if node_inputs:
+                post = {**post, "inputs": {**post["inputs"], **node_inputs}}
+            return {**update, **post}
 
         return wrapped
 
