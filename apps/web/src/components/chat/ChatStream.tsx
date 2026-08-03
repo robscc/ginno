@@ -8,6 +8,17 @@ import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
 import { DiffView } from "@/components/workflow/DiffView";
+import { ComposerMenu } from "@/components/chat/ComposerMenu";
+import {
+  applySelection,
+  buildMenuItems,
+  dedupeMentions,
+  detectTrigger,
+  pruneMentions,
+  type MenuItem,
+  type ResolvedMention,
+  type Trigger,
+} from "@/components/chat/commandMenu";
 import type { AgentConfig, SessionMeta } from "@/lib/types";
 
 interface ChatMsg {
@@ -229,11 +240,14 @@ export function ChatStream({
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
+  // Command/mention autocomplete: open menu (items + active index + trigger).
+  const [menu, setMenu] = useState<{ items: MenuItem[]; active: number; trigger: Trigger } | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   // liveIdRef mirrors liveId state for use inside callbacks without closure staleness
   const liveIdRef = useRef<string | null>(null);
@@ -258,8 +272,12 @@ export function ChatStream({
   const watchTimerRef    = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
   const reconnTimerRef   = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const lastSeenRef      = useRef<Record<string, number>>({});
-  // Unsent input + attachments saved per session on switch
-  const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[] }>>({});
+  // Unsent input + attachments + resolved mentions saved per session on switch
+  const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[]; mentions?: ResolvedMention[] }>>({});
+  // Resolved @mentions picked from the autocomplete menu, keyed by session id.
+  // Pruned on every input change (edited-away token → dropped mention) and
+  // sent along with the invoke payload as the authoritative structured list.
+  const mentionsRef      = useRef<Record<string, ResolvedMention[]>>({});
 
   // Push the given session's ref state into React display state.
   // No-op when sid is not the currently displayed session (background socket).
@@ -372,10 +390,15 @@ export function ChatStream({
 
     // Save outgoing draft
     if (prev && prev !== sid) {
-      draftCacheRef.current[prev] = { input, attachments };
+      draftCacheRef.current[prev] = {
+        input,
+        attachments,
+        mentions: pruneMentions(mentionsRef.current[prev] ?? [], input),
+      };
       setInput("");
       setAttachments([]);
       setTarget(null);
+      setMenu(null); // menu is composer-global state; never leak across sessions
     }
 
     curSessionIdRef.current = sid;
@@ -398,11 +421,13 @@ export function ChatStream({
       });
     }
 
-    // Restore draft if any
+    // Restore draft if any (mentions re-pruned against the restored text so a
+    // token the user deleted before switching stays deleted)
     const draft = draftCacheRef.current[sid];
     if (draft) {
       setInput(draft.input);
       setAttachments(draft.attachments);
+      mentionsRef.current[sid] = pruneMentions(draft.mentions ?? [], draft.input);
     }
 
     syncDisplay(sid);
@@ -518,6 +543,11 @@ export function ChatStream({
         // A tracked file changed (tool wrote it / mtime watcher) → the
         // SheetViewer refetches if that file is the one being viewed.
         if (ev.file_id) g.notifyPreviewInvalidate(ev.file_id as string);
+        break;
+      case "notice":
+        // Built-in command reply (e.g. /help): no graph turn ran, so the server
+        // pushes the rendered text directly into the live bubble as one delta.
+        mutateLive(sid, { event: "token.delta", content: (ev.message as string) || "" });
         break;
       case "message.end":
         liveBySessionRef.current[sid] = null;
@@ -651,6 +681,52 @@ export function ChatStream({
     }
   }
 
+  // ─── Command / mention autocomplete ────────────────────────────────────────
+  // Re-evaluate whether the composer's current text+caret opens a menu. Called
+  // on every input change and after programmatic edits (the "/" button).
+  function recomputeMenu(text: string) {
+    const caret = textareaRef.current?.selectionStart ?? text.length;
+    const trigger = detectTrigger(text, caret);
+    if (!trigger) {
+      setMenu(null);
+      return;
+    }
+    const items = buildMenuItems(trigger, {
+      skills: g.skills,
+      agents: g.agents,
+      workflows: g.workflows,
+      artifacts: g.artifacts,
+    });
+    setMenu(items.length ? { items, active: 0, trigger } : null);
+  }
+
+  // Insert the picked item, record its resolved mention, and refocus the caret
+  // right after the inserted token (ready to type the prompt).
+  function pickItem(item: MenuItem) {
+    if (!menu) return;
+    const caret = textareaRef.current?.selectionStart ?? input.length;
+    const r = applySelection(input, caret, menu.trigger, item);
+    setInput(r.text);
+    setMenu(null);
+    if (r.mention && session) {
+      const sid = session.id;
+      const rest = (mentionsRef.current[sid] ?? []).filter(
+        (m) => !(m.kind === r.mention!.kind && m.id === r.mention!.id),
+      );
+      mentionsRef.current[sid] = [...rest, r.mention];
+    }
+    // @agent also retargets the turn — same code path as the "Ask X" chips, so
+    // the structured mention and agent_id never disagree from the UI.
+    if (item.kind === "agent") setTarget(item.id);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(r.caret, r.caret);
+      }
+    });
+  }
+
   function send() {
     if (!session) return;
     const sid = session.id;
@@ -677,6 +753,10 @@ export function ChatStream({
       ...imgs.map((a) => ({ kind: "image" as const, url: a.preview })),
       ...(text ? [{ kind: "text" as const, text }] : []),
     ];
+    // Final prune against the raw (untrimmed) input, deduped — only mentions
+    // whose @kind:label token is still present are sent. The server treats this
+    // structured list as authoritative (text tokens are its raw-client fallback).
+    const mentions = dedupeMentions(pruneMentions(mentionsRef.current[sid] ?? [], input));
     busyBySessionRef.current[sid] = true;
     streamAgentRef.current[sid] = agentId;
     storeRef.current[sid] = [
@@ -695,6 +775,9 @@ export function ChatStream({
           turn_id: turnId,
           images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
           files: readyFiles.map((f) => ({ id: f.id, name: f.name, path: f.path })),
+          ...(mentions.length
+            ? { mentions: mentions.map(({ kind, id }) => ({ kind, id })) }
+            : {}),
         }),
       );
     } catch {
@@ -714,6 +797,8 @@ export function ChatStream({
     setAttachments([]);
     setFileAttachments([]);
     setTarget(null);
+    setMenu(null);
+    mentionsRef.current[sid] = [];
   }
 
   function respond(decision: "allow" | "deny") {
@@ -925,6 +1010,14 @@ export function ChatStream({
             >
               <span className="h-0.5 w-6 rounded-full bg-line2" />
             </div>
+            {menu && (
+              <ComposerMenu
+                items={menu.items}
+                active={menu.active}
+                onPick={pickItem}
+                onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
+              />
+            )}
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {attachments.map((a, i) => (
@@ -970,8 +1063,20 @@ export function ChatStream({
               </div>
             )}
             <textarea
+              ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setInput(v);
+                recomputeMenu(v);
+                // Keep the resolved mentions in sync with the visible tokens.
+                if (session) {
+                  mentionsRef.current[session.id] = pruneMentions(
+                    mentionsRef.current[session.id] ?? [],
+                    v,
+                  );
+                }
+              }}
               onPaste={(e) => {
                 if (e.clipboardData?.files?.length) {
                   e.preventDefault();
@@ -982,13 +1087,38 @@ export function ChatStream({
                 // Guard IME composition: without this, pressing Enter to commit a
                 // CJK candidate (e.g. Chinese) fires send() mid-composition and
                 // posts partial/garbled text. isComposing + keyCode 229 cover it.
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+                // While the autocomplete menu is open, navigate/confirm it
+                // instead of sending. (IME guard first — same as send.)
+                if (menu && !composing) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setMenu((m) => m && { ...m, active: (m.active + 1) % m.items.length });
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setMenu((m) => m && { ...m, active: (m.active - 1 + m.items.length) % m.items.length });
+                    return;
+                  }
+                  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                    e.preventDefault();
+                    pickItem(menu.items[menu.active]);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMenu(null);
+                    return;
+                  }
+                }
+                if (e.key === "Enter" && !e.shiftKey && !composing) {
                   e.preventDefault();
                   send();
                 }
               }}
               rows={2}
-              placeholder="Ask any Agent …  可拖入图片 / Excel / Word / PPT / PDF 一起提问"
+              placeholder="Ask any Agent …  / 调用技能 · @ 提及产物/智能体/工作流/记忆 · 可拖入图片 / Excel / Word / PPT / PDF"
               style={
                 composerH != null
                   ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
@@ -1017,9 +1147,26 @@ export function ChatStream({
                   <Paperclip className="h-4 w-4" />
                 </button>
                 <button
-                  onClick={() => setInput((v) => v + "/")}
+                  onClick={() => {
+                    // Start a slash command — only valid as the FIRST token, so
+                    // this only makes sense on an empty composer. With existing
+                    // text we just focus the textarea instead of mangling it.
+                    if (!input.trim()) {
+                      setInput("/");
+                      requestAnimationFrame(() => {
+                        const el = textareaRef.current;
+                        if (el) {
+                          el.focus();
+                          el.setSelectionRange(1, 1);
+                        }
+                        recomputeMenu("/");
+                      });
+                    } else {
+                      textareaRef.current?.focus();
+                    }
+                  }}
                   className="rounded-md p-1.5 hover:bg-card2 hover:text-muted"
-                  title="插入斜杠命令 /"
+                  title="斜杠命令 / @ 提及（输入 / 或 @ 触发补全）"
                   aria-label="插入斜杠命令"
                 >
                   <Keyboard className="h-4 w-4" />

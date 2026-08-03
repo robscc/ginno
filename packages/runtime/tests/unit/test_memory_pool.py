@@ -31,6 +31,20 @@ def test_sanitize_strips_ignore_instructions():
     assert "ignore previous instructions" not in cleaned.lower()
 
 
+def test_pool_sanitize_shares_canonical_wrapper_patterns():
+    # The capture path (this module) must strip the same wrappers as the
+    # retrieval path (knowledge/injection.py) — guards the two-copy fix.
+    text = (
+        "ok <mentioned_workflow>x</mentioned_workflow> "
+        '<skill name="a">y</skill> <attached_files>z</attached_files> done'
+    )
+    cleaned = sanitize_for_memory(text)
+    assert "<mentioned_workflow>" not in cleaned
+    assert "<skill" not in cleaned
+    assert "<attached_files>" not in cleaned
+    assert "ok" in cleaned and "done" in cleaned
+
+
 def test_append_and_read_pool(isolated_home):
     append_to_pool("sess1", "dev", "first turn content")
     append_to_pool("sess1", "dev", "second turn content")

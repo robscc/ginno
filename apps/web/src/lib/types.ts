@@ -123,6 +123,14 @@ export interface ArtifactPatch {
 }
 
 // ---- files (upload / preview) ----
+// Summary row returned by GET /api/skills — feeds the composer's / command menu.
+export interface SkillSummary {
+  name: string;
+  description: string;
+  trigger: string; // user-invocable | model-invocable | both
+  tools: string[];
+}
+
 export interface FileEntry {
   id: string;
   name: string;

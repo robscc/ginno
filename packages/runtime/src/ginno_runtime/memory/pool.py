@@ -14,12 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
+from ..knowledge.injection import _INJECTION_PATTERNS as _CANONICAL_PATTERNS
 
-# Patterns to strip from captured text (injection defense)
-_INJECTION_PATTERNS = [
-    re.compile(r"</?\s*injected_(wiki|memory)\s*>", re.IGNORECASE),
-    re.compile(r"</?\s*system_prompt\s*>", re.IGNORECASE),
-    re.compile(r"</?\s*instruction_hierarchy\s*>", re.IGNORECASE),
+# Patterns to strip from captured text (injection defense). Start from the
+# canonical wrapper list (shared with knowledge/injection.py so the retrieval
+# and capture sanitize paths never drift), then add the prose phrasing that
+# only matters on the capture path.
+_INJECTION_PATTERNS = list(_CANONICAL_PATTERNS) + [
     re.compile(r"ignore\s+(previous|all)\s+instructions", re.IGNORECASE),
 ]
 

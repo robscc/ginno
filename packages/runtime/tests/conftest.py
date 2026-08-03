@@ -173,10 +173,24 @@ class WSConversation:
     def recv(self) -> dict:
         return self.ws.receive_json()
 
-    def invoke(self, message: str, agent_id: str | None = None) -> None:
+    def invoke(
+        self,
+        message: str,
+        agent_id: str | None = None,
+        *,
+        mentions: list | None = None,
+        files: list | None = None,
+        images: list | None = None,
+    ) -> None:
         payload: dict[str, Any] = {"type": "invoke", "message": message}
         if agent_id is not None:
             payload["agent_id"] = agent_id
+        if mentions is not None:
+            payload["mentions"] = mentions
+        if files is not None:
+            payload["files"] = files
+        if images is not None:
+            payload["images"] = images
         self.send(payload)
 
     def respond_permission(self, decision: str) -> None:

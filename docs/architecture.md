@@ -55,12 +55,15 @@ Persistence: every node write triggers `FileCheckpointer.put(...)`, atomic JSON 
 - Atomic write (temp + rename).
 - Supports `aget`, `aput`, `alist`, time-travel resume.
 
-## 5. Skills
+## 5. Skills & Commands
 
 - Format: `SKILL.md` with frontmatter (`name`, `description`, `trigger: user-invocable | model-invocable | both`, `tools: [...]`, optional scripts).
-- Loaded at `load_context` node: skill names + descriptions injected into system prompt.
-- User-invocable: `/<skill-name>` slash command in UI → injects SKILL.md body as user message.
-- Model-invocable: `use_skill(name)` tool returns SKILL.md body.
+- Skill index (names + descriptions) injected into the system prompt for awareness.
+- **Slash commands** (`ginno_runtime/commands/`): a message starting with `/<name>` is resolved server-side per turn.
+  - Built-in registry (`commands/registry.py`): extensible; V1 ships `/help` (renders a reply directly — no LLM turn, no checkpoint write; surfaced via the `notice` WS event).
+  - Skills: `/<skill-name> [prompt]` substitutes the SKILL.md body into the user message (`<skill name=…>` wrapper + `User request:` tail). Only `user-invocable`/`both` skills are slash-addressable (trigger-gated).
+  - Membership-gated parsing: an unknown first token (e.g. `/tmp/foo`) passes through untouched.
+- **@mentions**: invoke carries an optional structured `mentions: [{kind, id}]` list — authoritative. `@artifact` (file-backed rides `attached_files`), `@agent` (routing override), `@workflow` / `@memory` (system-prompt `<mentioned_*>` sections). Text tokens `@kind:label` are a best-effort fallback for raw API clients. See `docs/commands-and-mentions-design.md`.
 - Scripts in skill directory auto-registered as scoped tools.
 
 ## 6. MCP

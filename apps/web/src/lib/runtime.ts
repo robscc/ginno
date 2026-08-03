@@ -171,7 +171,7 @@ export async function deleteTodo(id: string) {
 export async function listSkills(project_slug?: string) {
   const url = new URL(`${BASE}/skills`);
   if (project_slug) url.searchParams.set("project_slug", project_slug);
-  return json<Array<{ name: string; description: string; trigger: string; tools: string[] }>>(url);
+  return json<import("./types").SkillSummary[]>(url);
 }
 
 export function openSessionSocket(session_id: string): WebSocket {
