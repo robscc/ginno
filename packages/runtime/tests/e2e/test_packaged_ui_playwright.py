@@ -38,6 +38,18 @@ def _port_open(port: int) -> bool:
         s.close()
 
 
+def _launch_chromium(pw):
+    """Launch Chromium; if the browser binary isn't installed yet, install it once
+    (self-heal so the e2e works on a fresh checkout without manual setup)."""
+    try:
+        return pw.chromium.launch()
+    except Exception:
+        import sys
+
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+        return pw.chromium.launch()
+
+
 def _wait_health(port: int, timeout: float = 40) -> None:
     import urllib.request
 
@@ -86,7 +98,7 @@ def test_packaged_ui_shows_lists_and_adds_session(tmp_path):
     try:
         _wait_health(PORT)
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
+            browser = _launch_chromium(pw)
             page = browser.new_page()
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
             page.wait_for_timeout(2000)
