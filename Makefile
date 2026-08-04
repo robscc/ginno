@@ -3,13 +3,19 @@
 # Reproduces the full packaged-app pipeline documented in
 # docs/p3-packaging-notes.md:
 #
-#     web (Next static export)  →  runtime (PyInstaller sidecar bundling
-#     web_out + all deps)  →  sidecar (copied with target-triple suffix)
-#     →  Tauri app + dmg.
+#     web (Next static export)  →  runtime (PyInstaller --onedir bundle with
+#     web_out + all deps)  →  staged as a Tauri resource  →  Tauri app + dmg.
+#
+# The runtime is a PyInstaller *onedir* bundle (executable + _internal/), not
+# --onefile: onefile re-extracts ~3000 files into a fresh temp dir on every
+# launch, and macOS endpoint-security scanning of each freshly-written library
+# made every start take 15-25s. With onedir the files live at a stable, signed
+# path inside Ginno.app, so they are scanned once and cached — subsequent
+# starts drop to ~1-2s.
 #
 # Usage:
 #     make app        # full rebuild → apps/desktop/target/release/bundle/...
-#     make runtime    # just the PyInstaller sidecar (dist/ginno-runtime)
+#     make runtime    # just the PyInstaller bundle (dist/ginno-runtime/)
 #     make web        # just the web static export
 #     make clean      # remove build artifacts
 #
@@ -22,21 +28,17 @@ SHELL   := /bin/bash
 # TRIPLE resolves to empty and the tauri build can't find its sidecar.
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 ROOT    := $(CURDIR)
-# macOS ships GNU make 3.81, where `export PATH` above does not reach
-# parse-time $(shell) calls — so put the cargo shims on PATH inline here.
-TRIPLE  := $(shell PATH="$(HOME)/.cargo/bin:$$PATH" rustc -vV 2>/dev/null | grep host | awk '{print $$2}')
-ifeq ($(TRIPLE),)
-$(error rustc not found — install the Rust toolchain via rustup; shims expected in ~/.cargo/bin)
-endif
 WEB_OUT := $(ROOT)/apps/web/out
 RUNTIME := $(ROOT)/packages/runtime
-SIDECAR := $(ROOT)/apps/desktop/binaries/ginno-runtime-$(TRIPLE)
+# Where the onedir bundle is staged; tauri.conf.json bundles it into
+# Contents/Resources/resources/runtime/ and lib.rs launches the executable.
+RUNTIME_RES := $(ROOT)/apps/desktop/resources/runtime
 
 .PHONY: all app sidecar runtime web clean help e2e-ui
 
 all: app
 
-## app: full rebuild — web + runtime sidecar + Tauri desktop app (+ dmg)
+## app: full rebuild — web + runtime bundle + Tauri desktop app (+ dmg)
 app: sidecar
 	cd $(ROOT)/apps/desktop && pnpm tauri build
 	@# Regression guard: an only-linker-signed .app makes WKWebView's
@@ -55,26 +57,29 @@ app: sidecar
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/dmg/"
 
-## sidecar: build the runtime and place it as the Tauri sidecar (triple suffix)
+## sidecar: stage the runtime onedir bundle as a Tauri resource
 sidecar: runtime
-	cp $(RUNTIME)/dist/ginno-runtime $(SIDECAR)
-	@echo "✅ Sidecar → $(SIDECAR)"
+	rm -rf $(RUNTIME_RES)
+	mkdir -p $(RUNTIME_RES)
+	cp -R $(RUNTIME)/dist/ginno-runtime/ $(RUNTIME_RES)/
+	@find $(RUNTIME_RES) -name .DS_Store -delete
+	@echo "✅ Runtime bundle → $(RUNTIME_RES)"
 
-## runtime: PyInstaller sidecar bundling web_out + all deps (incl. docs extra)
-# `--extra docs` installs the file-parsing deps; files/extractors.py imports
-# them lazily, so _frozen_imports.py (imported by the entry script) re-imports
-# them for PyInstaller, and the --collect-all flags grab their data files.
+## runtime: PyInstaller onedir bundle with web_out + all deps (incl. docs extra)
+# `--extra docs` installs the file-parsing deps. files/extractors.py imports
+# them lazily (keeps startup light); the --collect-all flags bundle them
+# regardless, so no eager import at startup is needed (see _frozen_imports.py).
 runtime: web
-	cd $(RUNTIME) && uv run --extra docs pyinstaller --onefile --paths src --name ginno-runtime \
+	cd $(RUNTIME) && uv run --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
 	  --collect-all langchain_openai --collect-all langchain_anthropic \
 	  --collect-all langgraph --collect-all mcp --collect-all pydantic \
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
 	  --collect-all docx --collect-all pptx --collect-all pypdf \
 	  --add-data "$(WEB_OUT):web_out" \
 	  bin/ginno-runtime.py
-	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime"
+	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 
-## web: build the Next.js static export (bundled into the sidecar as web_out/)
+## web: build the Next.js static export (bundled into the runtime as web_out/)
 web:
 	cd $(ROOT) && pnpm --filter @ginno/web build
 
@@ -82,11 +87,12 @@ web:
 e2e-ui:
 	cd $(RUNTIME) && uv sync --group test && uv run --group test pytest tests/e2e/test_packaged_ui_playwright.py -q
 
-## clean: remove build artifacts (web export + PyInstaller output)
+## clean: remove build artifacts (web export, PyInstaller output, staged bundle)
 clean:
 	rm -rf $(WEB_OUT)
 	rm -rf $(RUNTIME)/dist $(RUNTIME)/build $(RUNTIME)/ginno-runtime.spec
+	rm -rf $(RUNTIME_RES) $(ROOT)/apps/desktop/binaries
 
 ## help: list targets
 help:
-	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## /  /'
+	@grep -E '^## ' $(MAKEFILE) | sed 's/## /  /'

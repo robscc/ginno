@@ -96,7 +96,11 @@ export async function getSessionHistory(id: string) {
       role: "user" | "assistant";
       agentId?: string | null;
       blocks: any[];
+      turnId?: string;
     }>;
+    // Persisted turn failure (server-side); the client re-surfaces it as an
+    // error card so the retry affordance survives reloads / switches.
+    last_error?: { turn_id?: string; message?: string } | null;
   }>(`${BASE}/sessions/${id}/history`);
 }
 
@@ -292,8 +296,13 @@ export async function summarizeSessionToDsl(session_id: string, provider?: strin
 }
 
 // ---- artifacts ----
-export async function listArtifacts(project_slug = "default") {
-  return json<import("./types").Artifact[]>(`${BASE}/artifacts?project_slug=${project_slug}`);
+// Artifacts belong to a session: pass session_id to scope the list (the
+// Artifacts panel does this); omit for all artifacts (back-compat).
+export async function listArtifacts(project_slug = "default", session_id?: string) {
+  const q = session_id ? `&session_id=${encodeURIComponent(session_id)}` : "";
+  return json<import("./types").Artifact[]>(
+    `${BASE}/artifacts?project_slug=${project_slug}${q}`,
+  );
 }
 
 // Reference-only delete: removes the panel entry, never the file on disk.
@@ -436,6 +445,42 @@ export async function saveFileToDownloads(
     `${BASE}/files/${fileId}/save-to-downloads`,
     { method: "POST", headers: H, body: JSON.stringify(opts) },
   );
+}
+
+// ---- session files (Settings → 会话文件) ----
+export async function listSessionFileDirs() {
+  return json<{ ok: boolean; sessions: import("./types").SessionDirSummary[] }>(
+    `${BASE}/session-files/dirs`,
+  );
+}
+export async function listSessionDirFiles(
+  project_slug: string,
+  session_id: string,
+  sub?: string,
+) {
+  const q = sub ? `&sub=${encodeURIComponent(sub)}` : "";
+  return json<{ ok: boolean; path: string; entries: import("./types").SessionDirEntry[] }>(
+    `${BASE}/session-files/list?project_slug=${project_slug}&session_id=${session_id}${q}`,
+  );
+}
+export async function deleteSessionFile(project_slug: string, session_id: string, path: string) {
+  return json<{ ok: boolean; error?: string; unregistered?: boolean }>(
+    `${BASE}/session-files/file`,
+    { method: "DELETE", headers: H, body: JSON.stringify({ project_slug, session_id, path }) },
+  );
+}
+export async function deleteSessionDir(project_slug: string, session_id: string, path?: string) {
+  return json<{ ok: boolean; error?: string; files_removed?: number }>(
+    `${BASE}/session-files/dir`,
+    { method: "DELETE", headers: H, body: JSON.stringify({ project_slug, session_id, path }) },
+  );
+}
+export async function revealSessionFile(project_slug: string, session_id: string, path: string) {
+  return json<{ ok: boolean; error?: string }>(`${BASE}/session-files/reveal`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ project_slug, session_id, path }),
+  });
 }
 
 // ---- settings / mcp / skills / kb ----

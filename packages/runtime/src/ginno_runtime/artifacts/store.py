@@ -33,10 +33,17 @@ def _write(slug: str, items: list[dict[str, Any]]) -> None:
     p.write_text(json.dumps(items, indent=2, ensure_ascii=False))
 
 
-def list_artifacts(slug: str) -> list[dict[str, Any]]:
+def list_artifacts(slug: str, session_id: str | None = None) -> list[dict[str, Any]]:
+    """List artifacts for a project, newest first.
+
+    ``session_id=None`` returns everything (back-compat). Passing a session id
+    scopes the Artifacts panel to that session's artifacts.
+    """
     items = _read(slug)
     items.sort(key=lambda a: a.get("created", 0), reverse=True)
-    return items
+    if session_id is None:
+        return items
+    return [a for a in items if a.get("session_id") == session_id]
 
 
 def add_artifact(
@@ -82,6 +89,24 @@ def get_artifact(slug: str, artifact_id: str) -> dict[str, Any] | None:
         return None
     for it in _read(slug):
         if it.get("id") == artifact_id:
+            return it
+    return None
+
+
+def set_ref(slug: str, artifact_id: str, new_ref: str) -> dict[str, Any] | None:
+    """Rewrite an artifact's ``ref`` in place (e.g. after its file moved).
+
+    Must be an in-place edit rather than ``add_artifact`` under the new path:
+    ``add_artifact`` de-dupes by ``(kind, ref or name)``, so re-adding with a
+    changed ref would create a duplicate record instead of updating this one.
+    """
+    if not artifact_id:
+        return None
+    items = _read(slug)
+    for it in items:
+        if it.get("id") == artifact_id:
+            it["ref"] = new_ref
+            _write(slug, items)
             return it
     return None
 

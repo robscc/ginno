@@ -92,16 +92,44 @@ _hooks: HookDispatcher | None = None
 async def lifespan(app: FastAPI):
     global _mcp, _hooks
     paths.ensure_layout()
-    _mcp = MCPRegistry()
-    _mcp.load()
-    await _mcp.connect_all()
+    # Best-effort, idempotent move of legacy session files into their per-session
+    # dirs. Runs before `yield`, so nothing (uploads/previews/watchers) can race
+    # it. Must never block startup on failure.
+    try:
+        from . import migration as _migration
+
+        _migration.migrate_session_files()
+    except Exception:
+        log.exception("session-files migration failed (continuing)")
     _hooks = HookDispatcher.from_settings()
     todo_store.ensure_seeded()
     agents_reg.ensure_todo_tools()
     wf_store.ensure_seeded()
-    yield
-    if _mcp:
-        await _mcp.close_all()
+    # Heal session metas frozen with a provider/model by older builds (or a
+    # config edited outside the UI) so topbar + rebuilt graphs use current config.
+    _refresh_session_metas()
+    _mcp = MCPRegistry()
+    _mcp.load()
+    # Do NOT block port bind on MCP connections. A slow/hung MCP server can
+    # take up to its per-server timeout, and the HTTP/WS server (and thus the
+    # UI) must come up regardless. Connect in the background; a session created
+    # before connections finish simply starts without those tools (the
+    # /api/mcp/reload endpoint or a new session picks them up once ready).
+    mcp_connect_task = asyncio.create_task(_connect_mcp_background())
+    try:
+        yield
+    finally:
+        if not mcp_connect_task.done():
+            mcp_connect_task.cancel()
+        if _mcp:
+            await _mcp.close_all()
+
+
+async def _connect_mcp_background() -> None:
+    try:
+        await _mcp.connect_all()
+    except Exception:
+        log.exception("background MCP connect_all failed")
 
 
 app = FastAPI(title="Ginno Runtime", version="0.1.0", lifespan=lifespan)
@@ -286,10 +314,16 @@ async def create_session(req: CreateSessionRequest) -> dict:
 
     mcp_tools = _mcp.all_langchain_tools() if _mcp else []
     session_id = uuid.uuid4().hex
+    # Every session gets its own files directory, created now and PRESERVED on
+    # delete. It supersedes the client-supplied `workspace` (a shared, non-
+    # session-scoped path) as the authoritative home for this session's files.
+    session_dir = paths.session_files_dir(req.project_slug, session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    workspace = str(session_dir)
     graph = build_graph(
         model=model,
         project_slug=req.project_slug,
-        workspace=req.workspace,
+        workspace=workspace,
         mcp_tools=mcp_tools,
         hook_dispatcher=_hooks,
     )
@@ -307,7 +341,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "agent_id": agent_id,
         "provider": provider,
         "model": model_name,
-        "workspace": req.workspace,
+        "workspace": workspace,
         "created": time.time(),
         "updated": time.time(),
     }
@@ -315,7 +349,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
     _SESSIONS[session_id] = {
         "session_id": session_id,
         "project_slug": req.project_slug,
-        "workspace": req.workspace,
+        "workspace": workspace,
         "agent_id": agent_id,
         "title": title,
         "title_auto": title_auto,
@@ -401,7 +435,14 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str) -> dict:
     """Delete a session: its index entry, on-disk checkpoint history, and any
-    in-memory graph cache. Returns ok=True even if the id was already gone."""
+    in-memory graph cache. Returns ok=True even if the id was already gone.
+
+    The session's files directory (`sessions/<session_id>/`) is intentionally
+    PRESERVED — only the conversation (checkpoint + index row) is removed. The
+    files stay browsable/cleanable via Settings → 会话文件. Note the checkpoint
+    is the *file* `sessions/<session_id>.json`; the preserved dir is
+    `sessions/<session_id>/` — never glob `<session_id>*` here.
+    """
     s = _SESSIONS.pop(session_id, None)
     slug = s["project_slug"] if s else None
     removed = False
@@ -412,6 +453,7 @@ async def delete_session(session_id: str) -> dict:
             removed = True
             slug = slug or cand
     # drop the checkpoint file (the full conversation history)
+    files_dir = None
     if slug:
         cp = paths.project_sessions_dir(slug) / f"{session_id}.json"
         if cp.exists():
@@ -420,7 +462,11 @@ async def delete_session(session_id: str) -> dict:
                 removed = True
             except OSError:
                 pass
-    return {"ok": True, "removed": removed}
+        # preserved files dir (may not exist for legacy sessions)
+        fd = paths.session_files_dir(slug, session_id)
+        if fd.is_dir():
+            files_dir = str(fd)
+    return {"ok": True, "removed": removed, "files_dir": files_dir}
 
 
 # ---- session history (rebuild the chat UI's block layout from checkpoints) ----
@@ -576,7 +622,7 @@ def _messages_to_ui(
                 ]
                 blocks = file_blocks + blocks
             if blocks:
-                ui.append({"id": getattr(m, "id", None), "role": "user", "blocks": blocks})
+                ui.append({"id": getattr(m, "id", None), "role": "user", "blocks": blocks, "turnId": getattr(m, "id", None)})
         elif isinstance(m, AIMessage):
             if acc is None:
                 acc = []
@@ -638,7 +684,12 @@ async def get_session_history(session_id: str) -> dict:
     attached = (tup.checkpoint.get("channel_values") or {}).get("attached_files") or []
     meta, _ = (_find_meta(session_id) or ({}, None))
     agent_id = meta.get("agent_id") if isinstance(meta, dict) else None
-    return {"ok": True, "messages": _messages_to_ui(messages, agent_id, attached)}
+    last_error = (meta.get("last_error") or None) if isinstance(meta, dict) else None
+    return {
+        "ok": True,
+        "messages": _messages_to_ui(messages, agent_id, attached),
+        "last_error": last_error or None,
+    }
 
 
 @app.get("/api/skills")
@@ -695,6 +746,58 @@ class PutProvidersRequest(BaseModel):
     default_provider: str | None = None
 
 
+def _refresh_session_metas() -> None:
+    """Re-resolve every session meta's provider/model against current config.
+
+    Session metas persist provider/model from creation time; the topbar label
+    and rebuilt graphs (``_ensure_session``) read them, so after a provider
+    config change — or on startup, to heal metas frozen by older builds — they
+    must be re-resolved. Precedence mirrors ``_resolve_provider_model`` minus
+    explicit request overrides: an enabled agent provider, else the enabled
+    global default.
+    """
+    providers = prov_mod.load_providers()
+
+    def _enabled(pid: str | None) -> bool:
+        return bool(pid) and bool((providers.get(pid) or {}).get("enabled"))
+
+    projects_root = paths.home() / "projects"
+    if not projects_root.is_dir():
+        return
+    for slug_dir in sorted(projects_root.iterdir()):
+        if not slug_dir.is_dir():
+            continue
+        slug = slug_dir.name
+        metas = _session_meta_list(slug)
+        if not metas:
+            continue
+        changed = False
+        for m in metas:
+            ag = _agent_lookup(m.get("agent_id"))
+            provider = next(
+                (
+                    c
+                    for c in [
+                        ag.provider if ag else None,
+                        prov_mod.get_default_provider(providers),
+                    ]
+                    if _enabled(c)
+                ),
+                None,
+            ) or prov_mod.get_default_provider(providers)
+            model = (ag.model if ag and ag.model else None) or prov_mod.model_for_provider(
+                providers, provider
+            )
+            if m.get("provider") != provider or m.get("model") != model:
+                m["provider"] = provider
+                m["model"] = model
+                changed = True
+        if changed:
+            paths.session_index_path(slug).write_text(
+                json.dumps(metas, indent=2, ensure_ascii=False)
+            )
+
+
 @app.put("/api/providers")
 async def put_providers(req: PutProvidersRequest) -> dict:
     saved = prov_mod.save_providers(req.providers)
@@ -711,6 +814,14 @@ async def put_providers(req: PutProvidersRequest) -> dict:
         )
     else:
         default = prov_mod.get_default_provider()
+    # Evict all cached session graphs so the next WS connection rebuilds
+    # with the freshly saved model/provider — otherwise existing sessions
+    # keep using the LLM client that was frozen at session creation.
+    _SESSIONS.clear()
+    # Session metas persist provider/model from creation time; the topbar and
+    # rebuilt graphs read them, so re-resolve them against the just-saved
+    # config.
+    _refresh_session_metas()
     return {"ok": True, "providers": saved, "default_provider": default}
 
 
@@ -1144,8 +1255,12 @@ async def await_workflow_run_endpoint(run_id: str) -> dict:
 
 # ---- artifacts ----
 @app.get("/api/artifacts")
-async def list_artifacts_endpoint(project_slug: str = "default") -> list[dict]:
-    return art_store.list_artifacts(project_slug)
+async def list_artifacts_endpoint(
+    project_slug: str = "default", session_id: str | None = None
+) -> list[dict]:
+    """Artifacts belong to a session: pass ``session_id`` to scope the list to
+    that session (the Artifacts panel does this). Omit for all (back-compat)."""
+    return art_store.list_artifacts(project_slug, session_id)
 
 
 @app.delete("/api/artifacts/{artifact_id}")
@@ -1229,13 +1344,12 @@ async def upload_file_endpoint(
     session_id: Annotated[str, Form()],
     file: Annotated[UploadFile, File()],
 ) -> dict:
-    """Upload a file attached in the composer; lands in the session workspace
-    under ``uploads/<session_id>/`` and becomes a ``kind=file`` artifact."""
+    """Upload a file attached in the composer; lands in the session's files dir
+    under ``uploads/`` and becomes a ``kind=file`` artifact (session-scoped)."""
     meta = _resolve_session_meta(session_id)
     if meta is None:
         raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
     slug = meta.get("project_slug") or "default"
-    workspace = meta.get("workspace") or str(paths.home() / "ws")
     name = _safe_upload_name(file.filename or "file")
     data = await file.read()
     if len(data) > UPLOAD_MAX_BYTES:
@@ -1243,7 +1357,7 @@ async def upload_file_endpoint(
             "ok": False,
             "error": f"文件过大（上限 {UPLOAD_MAX_BYTES // 1024 // 1024}MB）",
         }
-    dest_dir = Path(workspace).expanduser() / "uploads" / session_id
+    dest_dir = paths.session_uploads_dir(slug, session_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{uuid.uuid4().hex[:8]}-{name}"
     dest.write_bytes(data)
@@ -1274,8 +1388,8 @@ async def attach_file_by_path_endpoint(req: dict) -> dict:
     """Attach an OS file the user dragged into the desktop app.
 
     WKWebView can't expose dropped files to JS, so the Tauri shell forwards the
-    native path here; the sidecar (same filesystem) copies it into the session
-    workspace and registers it like an upload.
+    native path here; the sidecar (same filesystem) copies it into the session's
+    files dir and registers it like an upload.
     """
     import shutil
 
@@ -1290,9 +1404,8 @@ async def attach_file_by_path_endpoint(req: dict) -> dict:
     p = Path(src).expanduser()
     if not p.is_file():
         return {"ok": False, "error": f"文件不存在: {src}"}
-    workspace = meta.get("workspace") or str(paths.home() / "ws")
     name = p.name
-    dest_dir = Path(workspace).expanduser() / "uploads" / session_id
+    dest_dir = paths.session_uploads_dir(slug, session_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{uuid.uuid4().hex[:8]}-{name}"
     try:
@@ -1473,16 +1586,228 @@ async def save_file_to_downloads_endpoint(
     return {"ok": True, "path": str(dest), "name": dest.name}
 
 
-def _unique_dest(candidate: Path) -> Path:
-    """foo.csv → foo (1).csv → foo (2).csv … so saves never clobber."""
-    if not candidate.exists():
-        return candidate
-    stem, suffix = candidate.stem, candidate.suffix
-    for i in range(1, 1000):
-        alt = candidate.with_name(f"{stem} ({i}){suffix}")
-        if not alt.exists():
-            return alt
-    return candidate.with_name(f"{stem}-{uuid.uuid4().hex[:6]}{suffix}")
+# Collision-free destination naming lives in files.registry (shared with the
+# session-files relocation / migration paths).
+_unique_dest = files_mod.unique_dest
+
+
+# ---- session files management (Settings → 会话文件) ----
+def _session_file_guard(slug: str, session_id: str, sub: str | None) -> Path | None:
+    """Resolve ``sub`` (a path relative to the session dir) and require it to
+    stay inside ``sessions/<session_id>/``. Returns the resolved Path, or None
+    if the session_id/sub is malformed or escapes the dir (path traversal)."""
+    if not session_id or "/" in session_id or "\\" in session_id or ".." in session_id:
+        return None
+    base = paths.session_files_dir(slug, session_id).resolve()
+    if not sub:
+        return base
+    target = (base / sub).resolve()
+    try:
+        if not target.is_relative_to(base):
+            return None
+    except ValueError:
+        return None
+    return target
+
+
+def _is_orphaned_session(slug: str, session_id: str) -> bool:
+    """True when the session no longer exists in the project's session index.
+
+    Deletion of session files is restricted to orphaned sessions: an active
+    session's files are "live" (in use by the conversation), so they can be
+    browsed/revealed but not removed from Settings. Only once the session itself
+    is deleted do its preserved files become cleanable.
+    """
+    if not session_id:
+        return False
+    return not any(m.get("id") == session_id for m in _session_meta_list(slug))
+
+
+def _dir_stats(d: Path) -> tuple[int, int, float]:
+    """(file_count, total_bytes, newest mtime) for a directory tree."""
+    n = 0
+    size = 0
+    mtime = 0.0
+    try:
+        for f in d.rglob("*"):
+            if f.is_file():
+                n += 1
+                try:
+                    st = f.stat()
+                    size += st.st_size
+                    mtime = max(mtime, st.st_mtime)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return n, size, mtime
+
+
+@app.get("/api/session-files/dirs")
+async def list_session_file_dirs_endpoint() -> dict:
+    """List every per-session files directory across all projects, including
+    orphaned ones (session deleted but its files preserved)."""
+    out: list[dict] = []
+    projects_root = paths.home() / "projects"
+    if projects_root.is_dir():
+        for proj in sorted(projects_root.iterdir()):
+            if not proj.is_dir():
+                continue
+            slug = proj.name
+            sessions_root = paths.project_sessions_dir(slug)
+            if not sessions_root.is_dir():
+                continue
+            metas = {m.get("id"): m for m in _session_meta_list(slug)}
+            for d in sorted(sessions_root.iterdir()):
+                if not d.is_dir():  # skips _index.json and <sid>.json checkpoints
+                    continue
+                sid = d.name
+                meta = metas.get(sid)
+                n, size, mtime = _dir_stats(d)
+                out.append(
+                    {
+                        "project_slug": slug,
+                        "session_id": sid,
+                        "title": (meta or {}).get("title"),
+                        "orphaned": meta is None,
+                        "dir": str(d),
+                        "file_count": n,
+                        "total_bytes": size,
+                        "mtime": mtime,
+                    }
+                )
+    out.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+    return {"ok": True, "sessions": out}
+
+
+@app.get("/api/session-files/list")
+async def list_session_files_endpoint(
+    project_slug: str = "default", session_id: str = "", sub: str | None = None
+) -> dict:
+    target = _session_file_guard(project_slug, session_id, sub)
+    if target is None:
+        return {"ok": False, "error": "invalid session or path"}
+    if not target.is_dir():
+        return {"ok": True, "path": str(target), "entries": []}
+    entries = []
+    for child in target.iterdir():
+        if child.name.startswith("."):
+            continue
+        try:
+            st = child.stat()
+        except OSError:
+            continue
+        entries.append(
+            {
+                "name": child.name,
+                "type": "dir" if child.is_dir() else "file",
+                "size": st.st_size if child.is_file() else 0,
+                "mtime": st.st_mtime,
+            }
+        )
+    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+    base = paths.session_files_dir(project_slug, session_id).resolve()
+    rel = str(target.relative_to(base)) if target != base else ""
+    return {"ok": True, "path": rel, "entries": entries}
+
+
+@app.post("/api/session-files/reveal")
+async def reveal_session_file_endpoint(req: dict) -> dict:
+    """Reveal a session file/dir in the OS file manager (Finder on macOS)."""
+    import subprocess
+    import sys
+
+    slug = (req or {}).get("project_slug") or "default"
+    sid = (req or {}).get("session_id") or ""
+    sub = (req or {}).get("path") or ""
+    target = _session_file_guard(slug, sid, sub)
+    if target is None or not target.exists():
+        return {"ok": False, "error": "文件不存在"}
+    try:
+        if sys.platform == "darwin":
+            if target.is_dir():
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["open", "-R", str(target)])
+        elif sys.platform.startswith("win"):
+            subprocess.Popen(["explorer", f"/select,{target}"])
+        else:
+            subprocess.Popen(["xdg-open", str(target.parent)])
+    except OSError as e:
+        return {"ok": False, "error": f"无法打开文件管理器: {e}"}
+    return {"ok": True}
+
+
+@app.delete("/api/session-files/file")
+async def delete_session_file_endpoint(req: dict) -> dict:
+    """Delete one file inside a session dir; also drops its registry entry and
+    artifact panel row so the UI reflects the removal.
+
+    Only files of an ORPHANED session (already deleted) can be removed — an
+    active session's files are live and protected.
+    """
+    slug = (req or {}).get("project_slug") or "default"
+    sid = (req or {}).get("session_id") or ""
+    sub = (req or {}).get("path") or ""
+    if not _is_orphaned_session(slug, sid):
+        return {"ok": False, "error": "仅支持删除已删除会话的文件；请先删除该会话"}
+    target = _session_file_guard(slug, sid, sub)
+    if target is None:
+        return {"ok": False, "error": "invalid session or path"}
+    if not target.is_file():
+        return {"ok": False, "error": "文件不存在"}
+    reg = files_mod.get_registry(slug)
+    entry = reg.find_by_path(target)
+    unregistered = False
+    if entry is not None:
+        art_id = entry.get("artifact_id")
+        reg.unregister(entry["id"])
+        if art_id:
+            art_store.delete_artifact(slug, art_id)
+        unregistered = True
+    try:
+        target.unlink()
+    except OSError as e:
+        return {"ok": False, "error": f"删除失败: {e}"}
+    return {"ok": True, "unregistered": unregistered}
+
+
+@app.delete("/api/session-files/dir")
+async def delete_session_dir_endpoint(req: dict) -> dict:
+    """Delete a subdirectory (or the whole session dir when ``path`` is omitted).
+    Purges registry + artifact rows for the files inside first.
+
+    Only an ORPHANED session's directory can be removed — an active session's
+    files are live and protected.
+    """
+    import shutil
+
+    slug = (req or {}).get("project_slug") or "default"
+    sid = (req or {}).get("session_id") or ""
+    sub = (req or {}).get("path") or ""
+    if not _is_orphaned_session(slug, sid):
+        return {"ok": False, "error": "仅支持删除已删除会话的文件；请先删除该会话"}
+    target = _session_file_guard(slug, sid, sub)
+    if target is None:
+        return {"ok": False, "error": "invalid session or path"}
+    if not target.is_dir():
+        return {"ok": False, "error": "目录不存在"}
+    reg = files_mod.get_registry(slug)
+    removed = 0
+    prefix = str(target.resolve())
+    for e in reg.list_all():
+        p = e.get("path") or ""
+        if p == prefix or p.startswith(prefix + "/") or p.startswith(prefix + "\\"):
+            art_id = e.get("artifact_id")
+            reg.unregister(e["id"])
+            if art_id:
+                art_store.delete_artifact(slug, art_id)
+            removed += 1
+    try:
+        shutil.rmtree(target)
+    except OSError as e:
+        return {"ok": False, "error": f"删除失败: {e}"}
+    return {"ok": True, "files_removed": removed}
 
 
 # ---- mcp settings ----
@@ -2179,17 +2504,21 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         model = build_model(provider, model_name)
     except ValueError:
         return None
+    # Derive the workspace from paths (not meta) so legacy sessions whose meta
+    # still holds the shared "/tmp/gw" converge on the per-session dir without
+    # rewriting the index.
+    workspace = str(paths.session_files_dir(slug, session_id))
     graph = build_graph(
         model=model,
         project_slug=slug,
-        workspace=meta.get("workspace") or "/tmp/gw",
+        workspace=workspace,
         mcp_tools=_mcp.all_langchain_tools() if _mcp else [],
         hook_dispatcher=_hooks,
     )
     s = {
         "session_id": session_id,
         "project_slug": slug,
-        "workspace": meta.get("workspace") or "/tmp/gw",
+        "workspace": workspace,
         "agent_id": meta.get("agent_id"),
         "title": meta.get("title"),
         "icon": meta.get("icon"),
@@ -2508,7 +2837,23 @@ async def _tool_file_effects(
             d = None
         dp = d.get("derived_path") if isinstance(d, dict) and d.get("ok") else None
         if dp and Path(dp).is_file():
-            art = art_store.add_artifact(slug, "file", Path(dp).name, dp, session_id)
+            # Relocate the derived CSV into the session's results/ dir so every
+            # session artifact lives under sessions/<sid>/ — the tool writes it
+            # next to the source file, which may sit outside the session dir
+            # (e.g. an external path the user analyzed). Happens in-turn, before
+            # registration, so the artifact is stored at its final path.
+            import shutil
+
+            results_dir = paths.session_results_dir(slug, session_id)
+            try:
+                results_dir.mkdir(parents=True, exist_ok=True)
+                final = files_mod.unique_dest(results_dir / Path(dp).name)
+                shutil.move(str(dp), str(final))
+                dp = str(final)
+            except OSError:
+                pass  # keep the tool's original location if the move fails
+            norm_ref = files_mod.norm_path(dp)
+            art = art_store.add_artifact(slug, "file", Path(dp).name, norm_ref, session_id)
             entry = reg.register(
                 Path(dp).name, dp, kind="table", session_id=session_id, artifact_id=art.get("id")
             )
@@ -2525,7 +2870,7 @@ async def _tool_file_effects(
                 )
             )
             await safe_send(emit("artifacts.changed", {}))
-            touched.append(str(Path(dp).resolve()))
+            touched.append(norm_ref)
 
     seen: set[str] = set()
     for p in touched:
@@ -2579,8 +2924,9 @@ async def _run_stream(
     if attached and not (user_text or "").strip():
         # Drop with no text: synthesize a default intent so the turn still runs.
         content = "请概览我附加的文件：结构、数据质量与关键指标，并给出简短结论。"
+    _turn_id = (config.get("configurable") or {}).get("turn_id")
     input_state = {
-        "messages": [HumanMessage(content=content)],
+        "messages": [HumanMessage(content=content, **({ "id": _turn_id } if _turn_id else {}))],
         "workspace": session["workspace"],
         "project_slug": session["project_slug"],
         "agent_id": agent_id or session.get("agent_id") or "",
@@ -2678,6 +3024,9 @@ async def _stream_graph(
         # UI can label the assistant bubble authoritatively (never the generic
         # "Agent" fallback).
         if command is None:
+            # A new attempt supersedes any persisted last_error (empty dict =
+            # cleared; _session_meta_patch skips None values).
+            _session_meta_patch(slug, session_id, {"last_error": {}})
             _aid = (config.get("configurable") or {}).get("agent_id")
             _ag = agents_reg.get_agent(_aid) if _aid else None
             _log.info(
@@ -2920,7 +3269,16 @@ async def _stream_graph(
             )
     except Exception as e:
         _log.exception("turn_error session=%s turn=%s", session_id, turn_id)
-        await safe_send(emit("error", {"message": f"{type(e).__name__}: {e}"}))
+        err_msg = f"{type(e).__name__}: {e}"
+        # Persist the failure on the session meta so the error card (with its
+        # retry action) survives webview reloads and route/session switches —
+        # the history endpoint re-surfaces it as the last message.
+        _session_meta_patch(
+            slug,
+            session_id,
+            {"last_error": {"turn_id": turn_id, "message": err_msg, "at": time.time()}},
+        )
+        await safe_send(emit("error", {"message": err_msg}))
     finally:
         try:
             _ka.cancel()
@@ -2948,16 +3306,21 @@ async def _serve_web(full_path: str):
 
     if WEB_OUT is None:
         return HTMLResponse("frontend not bundled", status_code=404)
+    # HTML entry points must never be cached: they reference content-hashed
+    # /_next chunks, and a heuristically-cached stale page (WKWebView) would
+    # keep the webview on an old frontend build after a rebuild. The chunks
+    # themselves are immutable (hashed names) and cache freely.
+    no_store = {"Cache-Control": "no-store"}
     p = full_path.strip("/")
     if p == "":
-        return FileResponse(WEB_OUT / "index.html")
+        return FileResponse(WEB_OUT / "index.html", headers=no_store)
     cand = WEB_OUT / (p + ".html")
     if cand.exists():
-        return FileResponse(cand)
+        return FileResponse(cand, headers=no_store)
     idx = WEB_OUT / p / "index.html"
     if idx.exists():
-        return FileResponse(idx)
-    return FileResponse(WEB_OUT / "index.html")  # SPA fallback
+        return FileResponse(idx, headers=no_store)
+    return FileResponse(WEB_OUT / "index.html", headers=no_store)  # SPA fallback
 
 
 def main() -> None:

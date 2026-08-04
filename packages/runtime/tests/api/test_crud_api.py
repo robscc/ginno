@@ -149,3 +149,17 @@ def test_artifact_delete_endpoint(client):
 
 def test_artifact_delete_unknown_id(client):
     assert client.delete("/api/artifacts/nope").json() == {"ok": False}
+
+
+def test_artifacts_session_filter_endpoint(client):
+    from ginno_runtime import artifacts as art_store
+
+    art_store.add_artifact("default", "file", "s1.csv", "/v/s1.csv", session_id="s1")
+    art_store.add_artifact("default", "file", "s2.csv", "/v/s2.csv", session_id="s2")
+    # unscoped (back-compat) returns both
+    all_items = client.get("/api/artifacts?project_slug=default").json()
+    assert {a["name"] for a in all_items} == {"s1.csv", "s2.csv"}
+    # scoped returns only that session's artifacts
+    s1 = client.get("/api/artifacts?project_slug=default&session_id=s1").json()
+    assert [a["name"] for a in s1] == ["s1.csv"]
+    assert client.get("/api/artifacts?project_slug=default&session_id=zz").json() == []

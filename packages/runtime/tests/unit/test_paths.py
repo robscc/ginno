@@ -87,3 +87,25 @@ def test_existing_providers_not_clobbered(seeded_home):
     paths.ensure_layout()
     after = json.loads(settings_file.read_text())
     assert after["providers"]["custom"]["api_key"] == "keep-me"
+
+
+def test_session_dirs_layout(isolated_home):
+    d = paths.session_files_dir("default", "sid123")
+    assert d == paths.project_sessions_dir("default") / "sid123"
+    assert paths.session_uploads_dir("default", "sid123") == d / "uploads"
+    assert paths.session_results_dir("default", "sid123") == d / "results"
+
+
+def test_session_dir_coexists_with_checkpoint_file(isolated_home):
+    # checkpoint is sessions/<sid>.json (file); session files are sessions/<sid>/ (dir)
+    sess_dir = paths.project_sessions_dir("default")
+    sess_dir.mkdir(parents=True, exist_ok=True)
+    (sess_dir / "sid123.json").write_text("[]")  # checkpoint file
+    fdir = paths.session_files_dir("default", "sid123")
+    fdir.mkdir(parents=True, exist_ok=True)  # same base name, different type
+    assert (sess_dir / "sid123.json").is_file()
+    assert fdir.is_dir()
+    # a glob cleanup like `sessions/sid123*` would hit BOTH — the accessor targets
+    # the exact .json instead, so deleting the checkpoint leaves the dir intact
+    (sess_dir / "sid123.json").unlink()
+    assert fdir.is_dir()

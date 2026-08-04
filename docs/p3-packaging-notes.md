@@ -2,39 +2,54 @@
 
 ## Build artifacts
 
-- `apps/desktop/target/release/bundle/macos/Ginno.app` — Tauri shell + bundled `ginno-runtime` sidecar (which also serves the web UI)
+- `apps/desktop/target/release/bundle/macos/Ginno.app` — Tauri shell + bundled `ginno-runtime` (a PyInstaller **onedir** bundle, which also serves the web UI)
 - `apps/desktop/target/release/bundle/dmg/Ginno_0.1.0_aarch64.dmg` — installer
+
+`make app` runs the whole pipeline; the steps below are what it does.
 
 ## Reproduce
 
 ```bash
-# 1. Build the web static export (the sidecar bundles + serves it)
+# 1. Build the web static export (the runtime bundles + serves it)
 pnpm --filter @ginno/web build
 
-# 2. Build the Python sidecar, bundling the web export as web_out/
+# 2. Build the Python runtime as a PyInstaller ONEDIR bundle, with the web
+#    export embedded as web_out/
 cd packages/runtime
 OUT=$PWD/../apps/web/out          # NOTE: quote as "${OUT}:web_out" in zsh,
                                   # else `$OUT:web_out` is parsed as a zsh
                                   # variable modifier and silently breaks.
-uv run --extra docs pyinstaller --onefile --paths src --name ginno-runtime \
+uv run --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
   --collect-all langchain_openai --collect-all langchain_anthropic \
   --collect-all langgraph --collect-all mcp --collect-all pydantic \
   --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
   --collect-all docx --collect-all pptx --collect-all pypdf \
   --add-data "${OUT}:web_out" \
   bin/ginno-runtime.py
-# → dist/ginno-runtime (~Mach-O arm64)
+# → dist/ginno-runtime/ (executable + _internal/ with the .so/.pyc payload)
+#
+# Why ONEDIR instead of ONEFILE: --onefile re-extracts ~3000 files to a fresh
+# $TMPDIR/_MEIxxxxxx on every launch, and macOS endpoint-security scanning of
+# each freshly-written library made cold starts take 15-25s *every time*. The
+# onedir layout lives at a stable, signed path inside Ginno.app, so the OS/EDR
+# validates the libraries once and caches the verdict — repeat starts drop to
+# ~1-2s. (Measured on this machine: onefile heavy-import test 10.5s/run vs
+# onedir 0.34s/run after the first.)
 #
 # `--extra docs` installs the file-parsing deps (pandas/python-docx/python-pptx/
-# pypdf/openpyxl/calamine) into the build env. They are imported lazily in
-# files/extractors.py, so `src/ginno_runtime/_frozen_imports.py` (imported by the
-# entry script) re-imports them eagerly for PyInstaller's static analysis — the
-# `--collect-all <lib>` flags above additionally grab their data files/templates.
-# Without this, the frozen binary raises ExtractorUnavailable on every parse.
+# pypdf/openpyxl/calamine) into the build env. files/extractors.py imports them
+# lazily (only when a file is actually parsed), and the `--collect-all <lib>`
+# flags bundle them anyway, so nothing heavy needs importing at startup
+# (`src/ginno_runtime/_frozen_imports.py` is now an intentional no-op).
 
-# 3. Place as Tauri sidecar with target-triple suffix
-TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
-cp dist/ginno-runtime ../apps/desktop/binaries/ginno-runtime-$TRIPLE
+# 3. Stage the onedir bundle as a Tauri resource
+rm -rf ../apps/desktop/resources/runtime
+mkdir -p ../apps/desktop/resources/runtime
+cp -R dist/ginno-runtime/ ../apps/desktop/resources/runtime/
+# tauri.conf.json lists "resources/runtime/**" under bundle.resources, so the
+# folder lands in Ginno.app/Contents/Resources/resources/runtime/ and lib.rs
+# launches Contents/Resources/resources/runtime/ginno-runtime directly
+# (std::process::Command — no tauri-plugin-shell sidecar).
 
 # 4. Build Tauri app (needs Rust toolchain; beforeBuildCommand rebuilds web)
 cd ../apps/desktop
@@ -103,18 +118,38 @@ is that URL). The sidecar serves the bundled Next export from the same origin:
 - This avoids the `tauri://localhost` → `http://...` cross-protocol / mixed-content
   block entirely, because the webview and the API share one origin.
 
-### Startup race
+### Startup race & splash
 
 Tauri creates the webview before `setup()` runs, so the webview could try
-`http://127.0.0.1:8787` before the sidecar is listening. `apps/desktop/src/lib.rs`
-spawns the sidecar in `setup()` and then **blocks on a `TcpStream::connect_timeout`
-poll** (up to ~20s) until the port accepts, so the sidecar is ready by the time the
-webview navigates. Verified in `~/.ginno/logs/sidecar.log`: after `startup complete`
-the webview issues `GET /` + every `/_next/*` chunk (200), then the store init
+`http://127.0.0.1:8787` before the runtime is listening. `apps/desktop/src/lib.rs`
+spawns the runtime in `setup()`, then polls the port for a short grace period
+(~3s). Warm starts are ready inside that window, so the webview's initial
+navigation succeeds and nothing else happens.
+
+On a cold start (first launch after install/update, while the OS/EDR is still
+validating the freshly bundled libraries) the runtime isn't up in time, so
+`lib.rs` **navigates the webview to a self-contained splash page** (a `data:`
+URL — it needs no server) instead of letting it hit the dead port. The splash
+shows a spinner + elapsed time and polls `/api/health` every 300ms; the moment
+the runtime responds it does `location.replace("http://127.0.0.1:8787/")` and
+the normal UI loads. The Rust side never blocks waiting for readiness, so the
+window stays responsive throughout.
+
+Verified in `~/.ginno/logs/sidecar.log`: after `startup complete` the webview
+issues `GET /` + every `/_next/*` chunk (200), then the store init
 (`/health /agents /sessions /todos /providers /workflows /workflow_runs /artifacts`),
 Next RSC prefetches (`/kb.txt?_rsc`, `/settings/model-api.txt?_rsc`), and finally
 `WebSocket /ws/sessions/<id> [accepted]` — i.e. the packaged UI hydrates and the
 chat socket connects.
+
+### MCP servers connect in the background
+
+`server.py`'s lifespan binds the HTTP port before connecting configured MCP
+servers (`connect_all` runs as a background task). A slow or broken MCP server
+therefore can't delay the UI; a session created before connections finish just
+starts without those tools (`/api/mcp/reload` or a new session picks them up).
+`MCPServerConfig.from_dict` also accepts the Claude-style `"type"` key as an
+alias for `"transport"`.
 
 ## Verified flow
 

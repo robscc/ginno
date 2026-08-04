@@ -94,6 +94,28 @@ def _read_spreadsheet(path: Path, sheet: str | None = None):
     return pd, pd.read_excel(path, **kwargs)
 
 
+def read_table(path: str | Path, sep: str | None = None) -> "object":
+    """Read a CSV/TSV into a DataFrame, robustly.
+
+    More tolerant than a bare ``pd.read_csv``:
+    - ``encoding="utf-8-sig"`` strips a BOM (Excel-saved CSVs carry one, which
+      would otherwise corrupt the first column name);
+    - ``on_bad_lines="skip"`` skips rows whose field count doesn't match the
+      header instead of raising ``ParserError`` (a stray extra comma in one row
+      shouldn't kill the whole preview/analysis);
+    - falls back to ``latin-1`` for files that aren't valid UTF-8.
+    ``sep`` defaults from the extension (.tsv → tab, else comma).
+    """
+    pd = _require("pandas", "CSV")
+    if sep is None:
+        sep = "\t" if Path(path).suffix.lower() == ".tsv" else ","
+    common = {"sep": sep, "on_bad_lines": "skip"}
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig", **common)
+    except UnicodeDecodeError:
+        return pd.read_csv(path, encoding="latin-1", **common)
+
+
 def _cell(v) -> str:
     """Stringify a cell value for markdown/JSON (NaN/NaT → '')."""
     try:
@@ -156,15 +178,10 @@ def _extract_spreadsheet(path: Path, max_rows: int) -> Extracted:
 
 def _extract_table(path: Path, max_rows: int) -> Extracted:
     pd = _require("pandas", "CSV")
-    sep = "\t" if path.suffix.lower() == ".tsv" else ","
     try:
-        df = pd.read_csv(path, sep=sep)
+        df = read_table(path)
     except Exception as e:
-        # fall back to latin-1 / no-header best effort
-        try:
-            df = pd.read_csv(path, sep=sep, encoding="latin-1")
-        except Exception:
-            raise UnsupportedFormat(f"无法解析 CSV/TSV: {e}") from e
+        raise UnsupportedFormat(f"无法解析 CSV/TSV: {e}") from e
     md = f"## {path.name}（{len(df)} 行 × {len(df.columns)} 列）\n\n" + df_to_markdown(
         df, max_rows=max_rows
     )
@@ -351,9 +368,7 @@ def schema_summary(path: str | Path, sample_rows: int = 5) -> dict:
         ex = _extract_table(p, max_rows=sample_rows)
         sheets = ex.metadata.get("sheets", [])
         if sheets:
-            pd = _require("pandas", "CSV")
-            sep = "\t" if p.suffix.lower() == ".tsv" else ","
-            df = pd.read_csv(p, sep=sep)
+            df = read_table(p)
             sheets[0]["sample"] = [
                 [_cell(v) for v in row] for _, row in df.head(sample_rows).iterrows()
             ]

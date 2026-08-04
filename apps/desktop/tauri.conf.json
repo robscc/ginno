@@ -29,12 +29,9 @@
     "active": true,
     "targets": ["app", "dmg"],
     "icon": ["icons/icon.png"],
-    "externalBin": ["binaries/ginno-runtime"],
-    "resources": [],
+    "resources": ["resources/runtime"],
     "macOS": {
-      "signingIdentity": "-",
-      "hardenedRuntime": true,
-      "entitlements": "entitlements.plist"
+      "signingIdentity": "-"
     }
   }
 }

@@ -64,9 +64,14 @@ class MCPServerConfig:
 
     @classmethod
     def from_dict(cls, name: str, cfg: dict[str, Any]) -> "MCPServerConfig":
+        # Accept both "transport" (our schema) and "type" (the Claude-style
+        # mcpServers schema many configs in the wild use) — a streamable-http
+        # server declared with "type" would otherwise fall back to stdio and
+        # fail startup with "stdio requires command".
+        transport = cfg.get("transport") or cfg.get("type") or "stdio"
         return cls(
             name=name,
-            transport=cfg.get("transport", "stdio"),
+            transport=transport,
             command=cfg.get("command"),
             args=cfg.get("args", []),
             env=cfg.get("env"),
@@ -247,17 +252,18 @@ class MCPRegistry:
         return self.servers
 
     async def connect_all(self) -> dict[str, _LiveServer]:
-        """Spawn/connect all configured servers. Idempotent.
+        """Spawn/connect all configured servers concurrently. Idempotent.
 
         Each server is given a connect timeout so a hung spawn (e.g. `npx`
-        stalling on first-run install or a missing binary) cannot block
-        sidecar startup — the HTTP/WS server must come up regardless so the
-        UI can connect and chat even when an MCP server is misbehaving.
+        stalling on first-run install or a missing binary) cannot block the
+        caller — the HTTP/WS server must come up regardless so the UI can
+        connect and chat even when an MCP server is misbehaving. Connections
+        are started concurrently so N servers cost ~max(latency), not sum.
         """
         self.ensure_loaded()
-        for name, cfg in self.servers.items():
-            if name in self._live:
-                continue
+        pending = {n: c for n, c in self.servers.items() if n not in self._live}
+
+        async def _connect_one(name: str, cfg: MCPServerConfig) -> None:
             live = _LiveServer(cfg)
             try:
                 await asyncio.wait_for(live.connect(), timeout=cfg.connect_timeout)
@@ -268,6 +274,9 @@ class MCPRegistry:
                     await live.close()
                 except Exception:
                     pass
+
+        if pending:
+            await asyncio.gather(*(_connect_one(n, c) for n, c in pending.items()))
         return self._live
 
     async def close_all(self) -> None:

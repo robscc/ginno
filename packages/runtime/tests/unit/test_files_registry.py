@@ -125,3 +125,56 @@ def test_set_kind(tmp_path):
     # unknown path / empty kind are safe no-ops
     assert reg.set_kind(tmp_path / "missing.csv", "x") is None
     assert reg.set_kind(f, "")["kind"] == "spreadsheet"
+
+
+def test_relocate_rekeys_path_index(tmp_path):
+    src = _touch(tmp_path / "old.csv")
+    reg = get_registry("default")
+    e = reg.register("old.csv", src, session_id="s1")
+    fid = e["id"]
+    dst = tmp_path / "moved" / "old.csv"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dst)
+    upd = reg.relocate(fid, dst)
+    assert upd is not None
+    assert reg.get(fid)["path"] == str(dst.resolve())
+    # old path no longer resolves; new path does
+    assert reg.find_by_path(src) is None
+    assert reg.find_by_path(dst)["id"] == fid
+    assert reg.get(fid)["stale"] is False
+
+
+def test_relocate_normalizes_symlinked_tmp(tmp_path):
+    # /tmp ↔ /private/tmp style: register via one spelling, relocate via another
+    src = _touch(tmp_path / "a.csv")
+    reg = get_registry("default")
+    e = reg.register("a.csv", src)
+    fid = e["id"]
+    dst = tmp_path / "b.csv"
+    src.rename(dst)
+    reg.relocate(fid, str(dst))
+    assert reg.find_by_path(dst)["id"] == fid
+
+
+def test_unregister_removes_entry_not_file(tmp_path):
+    f = _touch(tmp_path / "gone.csv")
+    reg = get_registry("default")
+    e = reg.register("gone.csv", f, session_id="s1")
+    fid = e["id"]
+    assert reg.unregister(fid) is True
+    assert reg.get(fid) is None
+    assert reg.find_by_path(f) is None
+    assert f.exists()  # the file itself is untouched
+    assert reg.unregister(fid) is False  # idempotent / unknown id
+
+
+def test_unique_dest_no_clobber(tmp_path):
+    from ginno_runtime.files import unique_dest
+
+    cand = tmp_path / "r.csv"
+    assert unique_dest(cand) == cand  # free name passes through
+    cand.write_text("x")
+    alt = unique_dest(cand)
+    assert alt == tmp_path / "r (1).csv"
+    alt.write_text("y")
+    assert unique_dest(cand) == tmp_path / "r (2).csv"

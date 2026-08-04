@@ -70,6 +70,9 @@ export function ModelApiSettings() {
       if (r?.ok !== false) {
         setSaveMsg({ ok: true, text: "已保存" });
         g.reloadProviders();
+        // Server re-resolves every session meta's provider/model against the
+        // saved config — refresh the store so the TopBar label updates at once.
+        g.reloadSessions();
         return true;
       }
       setSaveMsg({ ok: false, text: "保存失败" });

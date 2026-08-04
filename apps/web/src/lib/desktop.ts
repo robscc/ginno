@@ -9,5 +9,12 @@
  */
 
 export function isDesktop(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (typeof window === "undefined") return false;
+  if ("__TAURI_INTERNALS__" in window) return true;
+  // Release-build fallback: the packaged webview may arrive at this origin via
+  // the splash page's location.replace (see apps/desktop/src/lib.rs), in which
+  // case the Tauri bridge may not be present. Detect WKWebView directly — its
+  // user agent contains AppleWebKit but neither a Safari nor a Chrome token.
+  const ua = navigator.userAgent;
+  return ua.includes("AppleWebKit") && !ua.includes("Safari") && !ua.includes("Chrome");
 }
