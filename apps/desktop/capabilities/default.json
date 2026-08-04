@@ -4,9 +4,6 @@
   "description": "Default capability for the Ginno desktop shell",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "shell:allow-execute",
-    "shell:allow-spawn",
-    "shell:allow-stdin-write"
+    "core:default"
   ]
 }

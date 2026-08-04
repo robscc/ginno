@@ -17,6 +17,7 @@ from .registry import (
     reset_registries,
     subscribe,
     touch,
+    unique_dest,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "reset_registries",
     "subscribe",
     "touch",
+    "unique_dest",
 ]

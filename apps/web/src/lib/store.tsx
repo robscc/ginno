@@ -102,6 +102,12 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     activeSessionRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  // The session scope artifacts were last loaded for. When the scope changes
+  // (session switch/create/delete) the whole list swaps, which must NOT trigger
+  // the fresh-artifact auto-follow/pulse (that's only for genuinely new rows
+  // arriving within the same session).
+  const artifactScopeRef = useRef<string | null | undefined>(undefined);
+
   const setRightTab = useCallback((tab: RightTab, opts?: { manual?: boolean }) => {
     if (opts?.manual) {
       // explicit user choice: stop auto-following unless they picked Artifacts
@@ -178,16 +184,24 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   }, []);
   const reloadArtifacts = useCallback(async () => {
     try {
-      const next = await api.listArtifacts();
+      // Artifacts belong to the session: scope the fetch to the active session
+      // (null → unscoped, which only happens in the boot gap before a session
+      // is selected).
+      const scope = activeSessionRef.current;
+      const next = await api.listArtifacts("default", scope ?? undefined);
+      const scopeChanged = artifactScopeRef.current !== scope;
+      artifactScopeRef.current = scope;
       setArtifacts((prev) => {
         // §7.6 auto-follow: new artifact for the ACTIVE session → switch to
         // the Artifacts tab (if follow is on) and pulse-highlight the rows.
+        // Skip on a scope change (session switch) — that swaps the whole list,
+        // it isn't a fresh arrival.
         const prevIds = new Set(prev.map((a) => a.id));
         const fresh = next.filter((a) => !prevIds.has(a.id));
         const mine = fresh.filter(
           (a) => !a.session_id || a.session_id === activeSessionRef.current,
         );
-        if (mine.length) {
+        if (!scopeChanged && mine.length) {
           setArtifactsFollow((follow) => {
             if (follow) {
               setRightTabState("artifacts");
@@ -203,6 +217,12 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
   }, []);
+
+  // Rescope the artifacts panel whenever the active session changes (switch /
+  // create / delete), so it always shows the current session's artifacts.
+  useEffect(() => {
+    reloadArtifacts();
+  }, [activeSessionId, reloadArtifacts]);
 
   // Reference-only delete: the file on disk is untouched, so a mistaken
   // delete is recoverable. Optimistic remove with rollback if the sidecar

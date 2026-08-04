@@ -160,6 +160,25 @@ export interface FileEntry {
   stale?: boolean;
 }
 
+// Settings → 会话文件: one row per per-session files directory.
+export interface SessionDirSummary {
+  project_slug: string;
+  session_id: string;
+  title?: string | null; // null → session deleted (dir preserved, orphaned)
+  orphaned: boolean;
+  dir: string;
+  file_count: number;
+  total_bytes: number;
+  mtime: number;
+}
+
+export interface SessionDirEntry {
+  name: string;
+  type: "file" | "dir";
+  size: number;
+  mtime: number;
+}
+
 export interface FilePreviewSheet {
   name: string;
   rows: number;

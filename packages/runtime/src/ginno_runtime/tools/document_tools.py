@@ -130,13 +130,28 @@ def _run_analysis(path: str, code: str, sheet: str, timeout: int) -> dict:
     script = _ANALYZE_TEMPLATE.format(
         path=path, sheet=sheet or "", code=textwrap.dedent(code)
     )
+    frozen = getattr(sys, "frozen", False)
     try:
-        proc = subprocess.run(
-            [sys.executable, "-I", "-c", script],  # -I: isolated (no env/site)
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        if frozen:
+            # In packaged builds sys.executable is the ginno-runtime binary, not
+            # a Python interpreter. Its hidden `--analyze` mode execs the script
+            # on stdin WITHOUT starting the HTTP server. Using `-c` here would
+            # instead spawn a second server that collides with the running
+            # sidecar on its port ("address already in use").
+            proc = subprocess.run(
+                [sys.executable, "--analyze"],
+                input=script,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        else:
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", script],  # -I: isolated (no env/site)
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f"执行超时（>{timeout}s）"}
     out = (proc.stdout or "").strip()

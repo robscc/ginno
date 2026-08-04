@@ -45,6 +45,18 @@ def _norm(p: str | Path) -> str:
 norm_path = _norm
 
 
+def unique_dest(candidate: Path) -> Path:
+    """foo.csv → foo (1).csv → foo (2).csv … so moves/saves never clobber."""
+    if not candidate.exists():
+        return candidate
+    stem, suffix = candidate.stem, candidate.suffix
+    for i in range(1, 1000):
+        alt = candidate.with_name(f"{stem} ({i}){suffix}")
+        if not alt.exists():
+            return alt
+    return candidate.with_name(f"{stem}-{uuid.uuid4().hex[:6]}{suffix}")
+
+
 def _ensure_loaded() -> None:
     global _LOADED
     if _LOADED:
@@ -148,6 +160,40 @@ class FileRegistry:
             e["kind"] = kind
             _persist(self.slug)
         return e
+
+    def relocate(self, file_id: str, new_path: str | Path) -> FileEntry | None:
+        """Point an existing entry at a new on-disk path (e.g. after a move).
+
+        Re-keys the module-global ``_BY_PATH`` index (editing ``path`` in place
+        would desync lookups) and re-stats size/mtime.
+        """
+        e = _BY_ID.get(file_id)
+        if e is None:
+            return None
+        old_norm = _norm(e["path"])
+        new_norm = _norm(new_path)
+        _BY_PATH.pop(old_norm, None)
+        e["path"] = new_norm
+        try:
+            st = Path(new_norm).stat()
+            e["size"] = st.st_size
+            e["mtime"] = st.st_mtime
+        except OSError:
+            e["mtime"] = 0.0
+        e["stale"] = False
+        _BY_PATH[new_norm] = e
+        _persist(self.slug)
+        return e
+
+    def unregister(self, file_id: str) -> bool:
+        """Remove an entry from the ledger (does NOT delete the file)."""
+        e = _BY_ID.pop(file_id, None)
+        if e is None:
+            return False
+        _BY_PATH.pop(_norm(e["path"]), None)
+        _SUBSCRIBERS.pop(_norm(e["path"]), None)
+        _persist(self.slug)
+        return True
 
     # ---- reads ----
     def get(self, file_id: str) -> FileEntry | None:

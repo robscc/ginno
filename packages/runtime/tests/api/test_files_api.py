@@ -68,8 +68,8 @@ def test_upload_xlsx_registers_file_and_artifact(client, sid, tmp_path):
     assert f["kind"] == "spreadsheet"
     assert f["session_id"] == sid
     assert f["artifact_id"]
-    # landed under workspace/uploads/<session>/
-    assert f"/uploads/{sid}/" in f["path"]
+    # landed under the session files dir: projects/<slug>/sessions/<sid>/uploads/
+    assert f"/sessions/{sid}/uploads/" in f["path"]
     assert Path(f["path"]).is_file()
     # artifact created WITH session attribution (the §7.6 fix)
     arts = client.get("/api/artifacts?project_slug=default").json()

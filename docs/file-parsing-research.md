@@ -24,7 +24,7 @@ aliases: [文件解析方案, office 文件分析, document parsing]
 
 | 维度 | 现状 |
 |---|---|
-| 架构 | Tauri 壳 + Next.js UI + **Python sidecar**（FastAPI + LangGraph），PyInstaller `--onefile` 打包 |
+| 架构 | Tauri 壳 + Next.js UI + **Python sidecar**（FastAPI + LangGraph），PyInstaller `--onedir` 打包 |
 | 知识库 | `knowledge/` 包：`indexer` 扫描 Obsidian vault → 内存索引（无 DB）→ `retriever` 词法多信号打分 + TF-IDF → `injection` 注入 system prompt |
 | 索引范围 | **仅 `.md/.markdown`**（`indexer.py:19`），跳过 `.obsidian/.git/node_modules` 等 |
 | 文件工具 | `tools/builtin.py` 的 `read_file` 只读 UTF-8 文本；`grep/glob/bash` |
@@ -271,7 +271,7 @@ aliases: [文件解析方案, office 文件分析, document parsing]
 ```
 ① 拖入 sales.xlsx 到聊天框
    ├─ UI 按扩展名分类:图片→既有 images 通道;表格(xlsx/csv)→上传+预览;文档(docx/pptx/pdf)→上传
-   ├─ POST /api/files (multipart) → sidecar 落盘 workspace/uploads/<session>/<uuid>-<name>
+   ├─ POST /api/files (multipart) → sidecar 落盘 sessions/<session>/uploads/<uuid>-<name>（会话目录）
    │    返回 {id, name, path, kind, size}
    ├─ 表格类:立即 GET /api/files/{id}/preview → 打开 SheetViewer 弹窗
    │    (sheet 标签页 + 虚拟滚动网格 + 粘性表头 + dtype 标记 + 「1-100 / 12,408 行」)
@@ -404,7 +404,7 @@ Artifact(kind=file) = {id, name, ref: 规范路径, session_id, mtime, stale?}
 |---|---|
 | runtime | `POST /api/files`、`GET /api/files/{id}/preview`(新建 `files/` 模块:upload 落盘 + calamine 分页预览);`_run_stream` 接受 `files` 并注入附件上下文;`tools/document_tools.py`(parse_document / analyze_table);`knowledge/extractors.py` |
 | web | `ChatStream.addFiles` 放开非图片 + 走上传;composer 文件 chip 组件;`SheetViewer` 弹窗(sheet 标签/虚拟网格/分页,参照 PageViewer);`lib/runtime.ts` 增加 uploadFile/getFilePreview;消息块增加 `{kind:"file"}` 渲染 |
-| 存储 | `workspace/uploads/<session_id>/<uuid>-<name>`(会话级,随项目);预览不落盘 |
+| 存储 | `sessions/<session_id>/uploads/<uuid>-<name>`(会话级目录,随项目);派生结果在 `sessions/<session_id>/results/`;预览不落盘 |
 | 权限 | 上传/预览 allow;`analyze_table` 代码执行走 ask(同 bash) |
 
 ## 8. 风险与注意点
@@ -479,7 +479,7 @@ Artifact(kind=file) = {id, name, ref: 规范路径, session_id, mtime, stale?}
 2. **PDF 用 pypdf 而非 PyMuPDF**：pypdf 为 BSD 许可，PyMuPDF 为 AGPL；桌面包许可更干净。复杂表格/扫描件的高保真（§5 P3）仍可再引入 pdfplumber/OCR。
 3. **取消 `preview.open/close` 订阅协议**（§7.5 原设计）。原因：WS recv 循环在一轮对话运行期间被 `_run_stream` 阻塞，无法及时处理中途的订阅消息。改为**服务端直接向会话连接广播 `preview.invalidate`**，由 UI 判断当前是否打开该文件再决定是否重取——协议更简、无中途间隙。
 4. **watcher 简化为单级 5s 扫描**（§7.5 原为热 2s/温 10s 两级）。会话内注册文件通常 <20 个，单级扫描足够；命中变化即发 invalidate + 打 stale 红点（取预览时自动清除）。
-5. **`analyze_table` 结果自动弹出**经 `preview.emit {open:true}`（§7.5），派生 CSV 落 `uploads/<sid>/results/`，同时注册 artifact（带 session_id）。
+5. **`analyze_table` 结果自动弹出**经 `preview.emit {open:true}`（§7.5），派生 CSV 由服务端 relocate 到会话目录 `sessions/<sid>/results/`，同时注册 artifact（带 session_id）。
 
 ### 11.3 测试覆盖（全部通过）
 

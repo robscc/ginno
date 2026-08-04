@@ -65,6 +65,25 @@ def test_csv_preview(tmp_path):
     assert pv["total_rows"] == 1
 
 
+def test_csv_preview_tolerates_bom_and_ragged_rows(tmp_path):
+    # Real-world Excel CSV: UTF-8 BOM + a row with one extra comma. Previously
+    # raised ParserError ("Expected N fields … saw N+1") and the whole preview
+    # failed, while xlsx (calamine) was fine.
+    f = tmp_path / "数据分析.csv"
+    f.write_bytes("cnt,from,sum\n1,a,10\n2,b,20,EXTRA\n3,c,30\n".encode("utf-8-sig"))
+    pv = build_preview(f)
+    assert pv["kind"] == "table"
+    # BOM stripped from the first column name
+    assert [c["name"] for c in pv["columns"]] == ["cnt", "from", "sum"]
+    # the ragged row is skipped, the rest survive
+    assert pv["total_rows"] == 2
+    assert pv["rows"] == [["1", "a", "10"], ["3", "c", "30"]]
+    # extract (parse_document) and csv export are equally tolerant
+    assert ex.read_table(f).shape == (2, 3)
+    _, data = build_csv_export(f)
+    assert data.decode("utf-8-sig").splitlines()[0] == "cnt,from,sum"
+
+
 def test_document_preview_markdown(tmp_path):
     from docx import Document
 

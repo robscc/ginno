@@ -96,7 +96,7 @@ Persistence: every node write triggers `FileCheckpointer.put(...)`, atomic JSON 
 ## 10. Packaging
 
 1. `uv sync` in `packages/runtime` → install Python deps.
-2. `pyinstaller --onefile` → `ginno-runtime` binary (bundled as Tauri sidecar resource).
+2. `pyinstaller --onedir` → `ginno-runtime` bundle (staged into `Contents/Resources` and launched directly; see `docs/p3-packaging-notes.md`).
 3. `next build && next export` → `apps/web/out/`.
 4. `tauri build` → `.dmg` / `.msi` / `.AppImage`.
 

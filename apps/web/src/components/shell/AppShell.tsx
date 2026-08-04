@@ -17,7 +17,11 @@ import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { applyTheme } from "@/components/settings/GeneralSettings";
-import type { SessionMeta } from "@/lib/types";
+import { TopBar } from "@/components/shell/TopBar";
+import { ChatStream } from "@/components/chat/ChatStream";
+import { SheetViewer } from "@/components/chat/SheetViewer";
+import { RightPanel } from "@/components/right/RightPanel";
+import type { SessionMeta, SessionUsage } from "@/lib/types";
 
 function SectionHeader({
   icon,
@@ -56,16 +60,48 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // inline session rename (double-click title or pencil icon)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
-  // Escape cancels the rename, but the input's onBlur (which commits) can fire on
-  // unmount in some browsers (Firefox); this ref lets onBlur skip the commit.
   const cancelRename = useRef(false);
-  // custom in-app delete confirmation (window.confirm is unreliable in the Tauri
-  // webview; a React-rendered modal works in both Tauri and the browser)
   const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
   const confirmDelete = () => {
     if (deleteTarget) g.removeSession(deleteTarget.id);
     setDeleteTarget(null);
   };
+
+  // ── Workspace state lifted here so ChatStream is always mounted ──────────
+  // ChatStream holds per-session WebSocket connections, message store, error
+  // cards, and draft text in useRef. If it lived inside the "/" page it would
+  // unmount whenever the user navigates to /settings or /kb, wiping all that
+  // state (including the in-flight retry affordance on error cards). By keeping
+  // the workspace here and toggling visibility with `hidden`, ChatStream's refs
+  // survive any route change.
+  const [running, setRunning] = useState(false);
+  // Session-cumulative model usage (world-state-plan D2/D3), pushed up from
+  // the chat socket and rendered as a small counter in the TopBar.
+  const [usage, setUsage] = useState<SessionUsage | null>(null);
+  const didInit = useRef(false);
+
+  // Usage counters are per runtime-session; reset the display on session
+  // switch (the next `usage` event re-populates from the server accumulator).
+  useEffect(() => {
+    setUsage(null);
+  }, [g.activeSessionId]);
+
+  useEffect(() => {
+    if (didInit.current) return;
+    if (!g.ready) return;
+    if (g.sessions.length) {
+      if (!g.activeSessionId) g.setActiveSession(g.sessions[0].id);
+      didInit.current = true;
+    } else {
+      didInit.current = true;
+      g.newSession(g.agents[0]?.id);
+    }
+  }, [g.ready, g.sessions, g.agents, g.activeSessionId, g]);
+
+  const session = g.sessions.find((s) => s.id === g.activeSessionId) ?? g.sessions[0] ?? null;
+  const agent = session ? g.agents.find((a) => a.id === session.agent_id) ?? null : null;
+  const modelLabel = session?.model || session?.provider || g.defaultProvider || "model";
+  // ─────────────────────────────────────────────────────────────────────────
 
   const onNewSession = async () => {
     const s = await g.newSession(g.agents[0]?.id);
@@ -263,12 +299,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* main */}
-      <main className="flex min-w-0 flex-1">{children}</main>
+      <main className="flex min-w-0 flex-1">
+        {/* Workspace: always mounted so ChatStream refs (WS, store, error cards)
+            survive navigating to /settings or /kb and back. Hidden off-route. */}
+        <div className={`flex min-w-0 flex-1 ${onWorkspace ? "" : "hidden"}`}>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <TopBar session={session} agent={agent} running={running} modelLabel={modelLabel} usage={usage} />
+            <ChatStream session={session} onRunningChange={setRunning} onUsageChange={setUsage} />
+          </div>
+          <RightPanel />
+          <SheetViewer />
+        </div>
+        {/* Non-workspace routes (settings, kb, workflows) */}
+        {!onWorkspace && <div className="flex min-w-0 flex-1">{children}</div>}
+      </main>
 
       {deleteTarget && (
         <ConfirmModal
           title="删除会话"
-          message={`确定删除会话「${deleteTarget.title || "Untitled"}」？其对话历史将一并删除，且无法恢复。`}
+          message={`确定删除会话「${deleteTarget.title || "Untitled"}」？其对话历史将被删除且无法恢复；会话产生的文件会保留，可在 设置 → 会话文件 中查看或清理。`}
           confirmLabel="删除"
           onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}

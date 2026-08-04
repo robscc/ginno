@@ -194,6 +194,29 @@ function isEmptyToolResult(content: string): boolean {
   return EMPTY_TOOL_RESULT_RE.test(content);
 }
 
+/** Rebuild a retry payload from a history user bubble's blocks — used to
+ * re-surface a persisted turn-error card (with working retry) after a reload
+ * or route/session switch. Image data URLs round-trip through the checkpoint. */
+function payloadFromBlocks(blocks: Block[], agentId: string | null): SendPayload {
+  const payload: SendPayload = { text: "", images: [], files: [], mentions: [], agentId };
+  for (const b of blocks) {
+    if (b.kind === "text") {
+      payload.text = payload.text ? `${payload.text}\n${b.text}` : b.text;
+    } else if (b.kind === "file") {
+      payload.files.push({
+        id: b.fileId ?? "",
+        name: b.name,
+        path: b.path ?? "",
+        kind: b.fileKind ?? "",
+      });
+    } else if (b.kind === "image") {
+      const m = /^data:([^;]+);base64,(.*)$/.exec(b.url);
+      if (m) payload.images.push({ data: m[2], mediaType: m[1], preview: b.url, name: "image" });
+    }
+  }
+  return payload;
+}
+
 function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }): Block[] {
   const last = blocks[blocks.length - 1];
   switch (ev.event) {
@@ -462,12 +485,39 @@ export function ChatStream({
       storeRef.current[sid] = [];
       getSessionHistory(sid).then((res) => {
         if (!res?.messages?.length) return;
-        storeRef.current[sid] = res.messages.map((m) => ({
+        const mapped: ChatMsg[] = res.messages.map((m) => ({
           id: m.id ?? mid(),
           role: m.role,
           blocks: m.blocks,
           agentId: m.agentId,
+          turnId: m.turnId ?? (m.role === "user" ? m.id : undefined),
+          // Rebuild the retry payload for history user bubbles too — without
+          // it, a retry that fails again would produce an error card with no
+          // payload (no retry button), and the error handler's "last user with
+          // payload" lookup would come up empty.
+          sendPayload:
+            m.role === "user"
+              ? payloadFromBlocks(m.blocks, m.agentId ?? session?.agent_id ?? null)
+              : undefined,
         }));
+        // Re-surface a persisted turn failure as an error card (with retry)
+        // so the last error survives reloads and route/session switches.
+        const err = res.last_error;
+        if (err?.message) {
+          const lastUser = [...mapped].reverse().find((m) => m.role === "user");
+          mapped.push({
+            id: mid(),
+            role: "assistant",
+            blocks: [{ kind: "text", text: err.message }],
+            turnId: err.turn_id ?? lastUser?.turnId,
+            error: true,
+            sendPayload: lastUser
+              ? payloadFromBlocks(lastUser.blocks, lastUser.agentId ?? session?.agent_id ?? null)
+              : undefined,
+            sourceMsgId: lastUser?.id,
+          });
+        }
+        storeRef.current[sid] = mapped;
         syncDisplay(sid);
       });
     }
@@ -970,7 +1020,13 @@ export function ChatStream({
    * existing failed bubble in place (retry); otherwise a new one is appended.
    */
   function attemptSend(sid: string, payload: SendPayload, userMsgId?: string) {
-    const turnId = newTurnId();
+    // On retry reuse the original turnId — the server sets HumanMessage.id = turn_id,
+    // so resending the same id lets LangGraph's add_messages deduplicate the user
+    // message in the checkpoint (update-in-place rather than append).
+    const existingTurn = userMsgId
+      ? (storeRef.current[sid] ?? []).find((m) => m.id === userMsgId)?.turnId
+      : undefined;
+    const turnId = existingTurn ?? newTurnId();
     const guessName = agentById(payload.agentId)?.name ?? "Agent";
     const userBlocks: Block[] = [
       ...payload.files.map((f) => ({
@@ -1193,6 +1249,12 @@ export function ChatStream({
   }
 
   const agentById = (id?: string | null) => g.agents.find((a) => a.id === id) ?? null;
+  // Only the LAST failed/error bubble is retryable — re-invoking earlier ones
+  // would re-insert stale user messages out of order in the server history.
+  const lastRetryableId = messages.reduce<string | null>(
+    (last, m) => ((m.status === "failed" || m.error) && m.sendPayload ? m.id : last),
+    null,
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1227,26 +1289,36 @@ export function ChatStream({
                 <div className="group flex w-full items-center justify-end gap-2">
                   {m.status === "failed" && (
                     <div className="flex shrink-0 items-center gap-1.5">
-                      <button
-                        onClick={() => editResend(m.id)}
-                        className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-txt group-hover:opacity-100"
-                      >
-                        编辑重发
-                      </button>
-                      <button
-                        onClick={() => dismissFailed(m.id)}
-                        className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
-                      >
-                        删除
-                      </button>
-                      <button
-                        onClick={() => retryFailed(m.id)}
-                        title={`发送失败：${m.failReason ?? "未知原因"}（点击重试）`}
-                        aria-label="发送失败，点击重试"
-                        className="shrink-0 transition-transform hover:scale-110"
-                      >
-                        <AlertCircle className="h-[18px] w-[18px] text-red" />
-                      </button>
+                      {m.id === lastRetryableId && (
+                        <>
+                          <button
+                            onClick={() => editResend(m.id)}
+                            className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-txt group-hover:opacity-100"
+                          >
+                            编辑重发
+                          </button>
+                          <button
+                            onClick={() => dismissFailed(m.id)}
+                            className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
+                          >
+                            删除
+                          </button>
+                        </>
+                      )}
+                      {m.id === lastRetryableId ? (
+                        <button
+                          onClick={() => retryFailed(m.id)}
+                          title={`发送失败：${m.failReason ?? "未知原因"}（点击重试）`}
+                          aria-label="发送失败，点击重试"
+                          className="shrink-0 transition-transform hover:scale-110"
+                        >
+                          <AlertCircle className="h-[18px] w-[18px] text-red" />
+                        </button>
+                      ) : (
+                        <span title={`发送失败：${m.failReason ?? "未知原因"}`}>
+                          <AlertCircle className="h-[18px] w-[18px] shrink-0 text-red/50" />
+                        </span>
+                      )}
                     </div>
                   )}
                   {m.status === "sending" && (
@@ -1264,7 +1336,8 @@ export function ChatStream({
                 </div>
                 {m.status === "failed" && (
                   <div className="text-[10px] text-red/80">
-                    发送失败{m.failReason ? `：${m.failReason}` : ""} · 点击红色感叹号重试
+                    发送失败{m.failReason ? `：${m.failReason}` : ""}
+                    {m.id === lastRetryableId && " · 点击红色感叹号重试"}
                   </div>
                 )}
               </div>
@@ -1273,7 +1346,7 @@ export function ChatStream({
                 key={m.id}
                 message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
                 turnId={m.turnId}
-                canRetry={!!m.sendPayload}
+                canRetry={!!m.sendPayload && m.id === lastRetryableId}
                 busy={running}
                 onRetry={() => retryError(m.id)}
               />

@@ -289,6 +289,28 @@ def session_index_path(slug: str) -> Path:
     return project_sessions_dir(slug) / "_index.json"
 
 
+def session_files_dir(slug: str, session_id: str) -> Path:
+    """Per-session directory for user/agent files (uploads + analysis results).
+
+    Created when a session is created; deliberately PRESERVED when the session
+    is deleted (only the conversation checkpoint + index row are removed).
+    Note: this is a *directory* `sessions/<session_id>/` and coexists with the
+    checkpoint *file* `sessions/<session_id>.json` — the names differ, so never
+    glob `sessions/<session_id>*` in cleanup code; target the exact `.json`.
+    """
+    return project_sessions_dir(slug) / session_id
+
+
+def session_uploads_dir(slug: str, session_id: str) -> Path:
+    """Where uploaded / drag-attached files for the session live."""
+    return session_files_dir(slug, session_id) / "uploads"
+
+
+def session_results_dir(slug: str, session_id: str) -> Path:
+    """Where analyze_table derived CSVs for the session live."""
+    return session_files_dir(slug, session_id) / "results"
+
+
 # ---- knowledge / LLMWiki + memory refinery ----
 def knowledge_dir() -> Path:
     return home() / "knowledge"

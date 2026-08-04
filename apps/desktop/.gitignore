@@ -1,5 +1,6 @@
 /target
 /gen
 /dist
+/resources
 Cargo.lock
 binaries/ginno-runtime-*

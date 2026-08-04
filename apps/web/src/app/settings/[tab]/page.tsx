@@ -10,6 +10,7 @@ export function generateStaticParams() {
     { tab: "knowledge" },
     { tab: "permissions" },
     { tab: "hooks" },
+    { tab: "session-files" },
     { tab: "general" },
     { tab: "notifications" },
   ];

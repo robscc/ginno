@@ -146,3 +146,29 @@ def test_artifact_get_and_update(isolated_home):
     assert art_store.update_artifact("default", "nope", {"name": "x"}) is None
     # edits are persisted (file-backed, re-read from disk)
     assert art_store.get_artifact("default", a["id"])["name"] == "Q3 Report"
+
+
+def test_artifact_list_session_filter(isolated_home):
+    art_store.add_artifact("default", "file", "s1.xlsx", "/v/s1.xlsx", session_id="s1")
+    art_store.add_artifact("default", "file", "s2.xlsx", "/v/s2.xlsx", session_id="s2")
+    art_store.add_artifact("default", "link", "naked", "https://x")  # no session_id
+
+    all_items = art_store.list_artifacts("default")
+    assert len(all_items) == 3  # None → unscoped (back-compat)
+    s1 = art_store.list_artifacts("default", session_id="s1")
+    assert [a["name"] for a in s1] == ["s1.xlsx"]
+    s2 = art_store.list_artifacts("default", session_id="s2")
+    assert [a["name"] for a in s2] == ["s2.xlsx"]
+    # the session_id=None row is invisible to any scoped query
+    assert art_store.list_artifacts("default", session_id="s3") == []
+
+
+def test_artifact_set_ref_in_place(isolated_home):
+    a = art_store.add_artifact("default", "file", "r.csv", "/old/r.csv", session_id="s1")
+    upd = art_store.set_ref("default", a["id"], "/new/r.csv")
+    assert upd["ref"] == "/new/r.csv"
+    assert art_store.get_artifact("default", a["id"])["ref"] == "/new/r.csv"
+    # in-place: still exactly one record (no dedupe-key duplicate)
+    assert len(art_store.list_artifacts("default")) == 1
+    assert art_store.set_ref("default", "nope", "/x") is None
+    assert art_store.set_ref("default", "", "/x") is None

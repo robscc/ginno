@@ -183,13 +183,25 @@ def test_analyze_table_derived_result_emits_preview_open(client, create_session,
     pv = client.get(f"/api/files/{emits[0]['file_id']}/preview").json()
     assert pv["ok"] is True
     assert pv["rows"]  # has data
-    # and registered as a session artifact
+    # and registered as a session artifact, relocated into the session's
+    # results/ dir (not left next to the source file)
     arts = client.get("/api/artifacts?project_slug=default").json()
-    assert any(
-        a.get("ref", "").endswith(".csv") and "results" in a.get("ref", "")
-        and a.get("session_id") == sid
+    derived = [
+        a
         for a in arts
-    )
+        if a.get("ref", "").endswith(".csv")
+        and a.get("session_id") == sid
+        and "results" in a.get("ref", "")
+    ]
+    assert derived, f"no derived artifact in {arts}"
+    assert f"/sessions/{sid}/results/" in derived[0]["ref"], derived[0]["ref"]
+    # physical file actually lives there
+    from pathlib import Path
+
+    assert Path(derived[0]["ref"]).is_file()
+    # scoped artifacts query returns it too
+    scoped = client.get(f"/api/artifacts?project_slug=default&session_id={sid}").json()
+    assert any(a["id"] == derived[0]["id"] for a in scoped)
 
 
 def test_write_file_touch_emits_invalidate(client, create_session, ws_conv, ws_dir):

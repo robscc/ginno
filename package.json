@@ -10,7 +10,7 @@
     "dev:runtime": "cd packages/runtime && uv run uvicorn ginno_runtime.server:app --reload --port 8787",
     "dev:desktop": "pnpm --filter @ginno/desktop tauri dev",
     "build:web": "pnpm --filter @ginno/web build",
-    "build:runtime": "cd packages/runtime && uv run pyinstaller --onefile src/ginno_runtime/__main__.py --name ginno-runtime",
+    "build:runtime": "cd packages/runtime && uv run pyinstaller --noconfirm --onedir src/ginno_runtime/__main__.py --name ginno-runtime",
     "build:desktop": "pnpm --filter @ginno/desktop tauri build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",

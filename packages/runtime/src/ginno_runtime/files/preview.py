@@ -21,9 +21,7 @@ def _table_payload(path: Path, kind: str, sheet: str | None, offset: int, limit:
         if not isinstance(frames, dict):
             frames = {path.stem: frames}
     elif kind == "table":
-        pd = ex._require("pandas", "CSV")
-        sep = "\t" if path.suffix.lower() == ".tsv" else ","
-        frames = {path.stem: pd.read_csv(path, sep=sep)}
+        frames = {path.stem: ex.read_table(path)}
     else:  # pragma: no cover - guarded by caller
         raise ValueError(f"not a table kind: {kind}")
 
@@ -102,9 +100,7 @@ def build_csv_export(
         df = frames[active]
         out_name = f"{stem}-{active}.csv" if len(names) > 1 else f"{stem}.csv"
     elif kind == "table":
-        pd = ex._require("pandas", "CSV")
-        sep = "\t" if p.suffix.lower() == ".tsv" else ","
-        df = pd.read_csv(p, sep=sep)
+        df = ex.read_table(p)
         out_name = f"{stem}.csv"
     else:
         raise ex.UnsupportedFormat(f"CSV 导出仅支持表格类文件: {p.suffix}")
