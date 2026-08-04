@@ -9,9 +9,7 @@ immediately on an empty home).
 from __future__ import annotations
 
 import json
-import os
 import sys
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,20 +41,19 @@ def hook_client(isolated_home):
 
 
 def test_prettooluse_hook_blocks_tool(hook_client, monkeypatch):
-    ws = str(Path(os.environ["GINNO_HOME"]) / "ws")
-    Path(ws).mkdir(parents=True, exist_ok=True)
-    marker = Path(ws) / "marker.txt"
-
     model = ScriptedChatModel(
         scripts=[
-            script(tool_calls=[script_tool_call("bash", {"command": "touch marker.txt", "workspace": ws})]),
+            script(tool_calls=[script_tool_call("bash", {"command": "touch marker.txt"})]),
             script(text="blocked, sorry."),
         ]
     )
     monkeypatch.setattr(server, "build_model", lambda *a, **k: model)
 
-    r = hook_client.post("/api/sessions", json={"project_slug": "default", "workspace": ws, "agent_id": "dev"})
+    r = hook_client.post("/api/sessions", json={"project_slug": "default", "workspace": "/unused", "agent_id": "dev"})
     sid = r.json()["id"]
+    # the tools run in the session workspace (plan F1) — that's where the
+    # marker would appear if the blocked bash ever executed
+    marker = paths.session_files_dir("default", sid) / "marker.txt"
 
     with WSConversation(hook_client, sid) as conv:
         conv.invoke("run a shell command")

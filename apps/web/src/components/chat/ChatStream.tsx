@@ -313,6 +313,96 @@ export function ChatStream({
   const liveIdRef = useRef<string | null>(null);
   // connectRef: the reconnect button always calls this; updated on each session switch
   const connectRef = useRef<() => void>(() => {});
+
+  // Abandon an in-flight turn after a socket drop that the server cannot
+  // answer for (legacy fallback): the user bubble keeps its retry payload.
+  function abandonLiveTurn(sid: string) {
+    liveBySessionRef.current[sid] = null;
+    streamAgentRef.current[sid] = null;
+    busyBySessionRef.current[sid] = false;
+    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
+      m.role === "user" && m.status === "sending"
+        ? { ...m, status: "failed" as const, failReason: "连接中断，未送达" }
+        : m,
+    );
+    syncDisplay(sid);
+  }
+
+  // Map a /history response into chat bubbles (shared by the initial load and
+  // the post-reconnect reconciliation).
+  function mapHistory(res: {
+    messages?: Array<{
+      id?: string;
+      role: ChatMsg["role"];
+      blocks: Block[];
+      agentId?: string | null;
+      turnId?: string;
+    }>;
+    last_error?: { message?: string; turn_id?: string } | null;
+  }): ChatMsg[] {
+    const mapped: ChatMsg[] = (res.messages ?? []).map((m) => ({
+      id: m.id ?? mid(),
+      role: m.role,
+      blocks: m.blocks,
+      agentId: m.agentId,
+      turnId: m.turnId ?? (m.role === "user" ? m.id : undefined),
+      // Rebuild the retry payload for history user bubbles too — without
+      // it, a retry that fails again would produce an error card with no
+      // payload (no retry button), and the error handler's "last user with
+      // payload" lookup would come up empty.
+      sendPayload:
+        m.role === "user"
+          ? payloadFromBlocks(m.blocks, m.agentId ?? session?.agent_id ?? null)
+          : undefined,
+    }));
+    // Re-surface a persisted turn failure as an error card (with retry)
+    // so the last error survives reloads and route/session switches.
+    const err = res.last_error;
+    if (err?.message) {
+      const lastUser = [...mapped].reverse().find((m) => m.role === "user");
+      mapped.push({
+        id: mid(),
+        role: "assistant",
+        blocks: [{ kind: "text", text: err.message }],
+        turnId: err.turn_id ?? lastUser?.turnId,
+        error: true,
+        sendPayload: lastUser
+          ? payloadFromBlocks(lastUser.blocks, lastUser.agentId ?? session?.agent_id ?? null)
+          : undefined,
+        sourceMsgId: lastUser?.id,
+      });
+    }
+    return mapped;
+  }
+
+  // The server says no turn is running for this session (post-reconnect
+  // turn_state probe): the stream will not resume. Reload persisted history —
+  // a turn that FINISHED while we were disconnected is fully restored from
+  // the checkpoint. A user bubble still "sending" that never reached the
+  // graph survives as a failed bubble with its retry payload.
+  function reconcileTurnFromHistory(sid: string) {
+    getSessionHistory(sid).then((res) => {
+      const textOf = (m: ChatMsg) =>
+        m.blocks.map((b) => (b.kind === "text" ? b.text : "")).join("\n");
+      const pending = (storeRef.current[sid] ?? []).filter(
+        (m) => m.role === "user" && m.status === "sending",
+      );
+      const mapped = mapHistory(res ?? {});
+      for (const p of pending) {
+        const delivered = mapped.some(
+          (m) => m.role === "user" && textOf(m) === textOf(p),
+        );
+        if (!delivered) {
+          mapped.push({ ...p, status: "failed" as const, failReason: "连接中断，未送达" });
+        }
+      }
+      storeRef.current[sid] = mapped;
+      liveBySessionRef.current[sid] = null;
+      streamAgentRef.current[sid] = null;
+      busyBySessionRef.current[sid] = false;
+      syncDisplay(sid);
+    });
+  }
   // Which session is currently shown; used by syncDisplay to skip background updates
   const curSessionIdRef = useRef<string | null>(null);
   // ─── Per-session persistent stores ─────────────────────────────────────────
@@ -330,6 +420,9 @@ export function ChatStream({
   const streamAgentRef   = useRef<Record<string, string | null>>({});
   const pingTimerRef     = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
   const watchTimerRef    = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
+  // Post-reconnect turn_state fallback: if the server never answers (older
+  // runtime), the in-flight turn is abandoned after a grace period.
+  const reconcileTimerRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const reconnTimerRef   = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const lastSeenRef      = useRef<Record<string, number>>({});
   // Unsent input + attachments + resolved mentions saved per session on switch
@@ -368,6 +461,7 @@ export function ChatStream({
         if (reconnTimerRef.current[id]) clearTimeout(reconnTimerRef.current[id]!);
         if (pingTimerRef.current[id])   clearInterval(pingTimerRef.current[id]!);
         if (watchTimerRef.current[id])  clearInterval(watchTimerRef.current[id]!);
+        if (reconcileTimerRef.current[id]) clearTimeout(reconcileTimerRef.current[id]!);
         try { socketsRef.current[id]?.close(); } catch { /* ignore */ }
         delete socketsRef.current[id];    delete storeRef.current[id];
         delete liveBySessionRef.current[id]; delete statusRef.current[id];
@@ -375,7 +469,7 @@ export function ChatStream({
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
         delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
-        delete lastSeenRef.current[id];
+        delete lastSeenRef.current[id];   delete reconcileTimerRef.current[id];
       }
     }
   }, [g.sessions]);
@@ -387,6 +481,7 @@ export function ChatStream({
         if (reconnTimerRef.current[sid]) clearTimeout(reconnTimerRef.current[sid]!);
         if (pingTimerRef.current[sid])   clearInterval(pingTimerRef.current[sid]!);
         if (watchTimerRef.current[sid])  clearInterval(watchTimerRef.current[sid]!);
+        if (reconcileTimerRef.current[sid]) clearTimeout(reconcileTimerRef.current[sid]!);
         try { socketsRef.current[sid].close(); } catch { /* ignore */ }
       }
     };
@@ -407,17 +502,19 @@ export function ChatStream({
       g.setConnected(true);
       statusRef.current[sid] = "live";
       lastSeenRef.current[sid] = Date.now();
-      if (liveBySessionRef.current[sid]) {
-        liveBySessionRef.current[sid] = null;
-        streamAgentRef.current[sid] = null;
-        busyBySessionRef.current[sid] = false;
-        // An in-flight turn does not survive a socket drop: any user bubble
-        // still "sending" is marked failed so it gets the retry affordance.
-        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
-          m.role === "user" && m.status === "sending"
-            ? { ...m, status: "failed" as const, failReason: "连接中断，未送达" }
-            : m,
-        );
+      if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
+        // A turn was in flight when this socket's predecessor dropped. Turn
+        // events broadcast to EVERY socket of the session, so the running
+        // stream resumes into the same live bubble automatically. Ask the
+        // server whether the turn still exists; if not (it finished while we
+        // were gone, or the runtime restarted), reconcile from history.
+        try { sock.send(JSON.stringify({ type: "turn_state" })); } catch { /* ignore */ }
+        if (reconcileTimerRef.current[sid]) clearTimeout(reconcileTimerRef.current[sid]!);
+        reconcileTimerRef.current[sid] = setTimeout(() => {
+          reconcileTimerRef.current[sid] = null;
+          // No turn.state answer (older runtime): legacy abandon path.
+          if (liveBySessionRef.current[sid]) abandonLiveTurn(sid);
+        }, 6000);
       }
       syncDisplay(sid);
       pingTimerRef.current[sid] = setInterval(() => {
@@ -485,39 +582,7 @@ export function ChatStream({
       storeRef.current[sid] = [];
       getSessionHistory(sid).then((res) => {
         if (!res?.messages?.length) return;
-        const mapped: ChatMsg[] = res.messages.map((m) => ({
-          id: m.id ?? mid(),
-          role: m.role,
-          blocks: m.blocks,
-          agentId: m.agentId,
-          turnId: m.turnId ?? (m.role === "user" ? m.id : undefined),
-          // Rebuild the retry payload for history user bubbles too — without
-          // it, a retry that fails again would produce an error card with no
-          // payload (no retry button), and the error handler's "last user with
-          // payload" lookup would come up empty.
-          sendPayload:
-            m.role === "user"
-              ? payloadFromBlocks(m.blocks, m.agentId ?? session?.agent_id ?? null)
-              : undefined,
-        }));
-        // Re-surface a persisted turn failure as an error card (with retry)
-        // so the last error survives reloads and route/session switches.
-        const err = res.last_error;
-        if (err?.message) {
-          const lastUser = [...mapped].reverse().find((m) => m.role === "user");
-          mapped.push({
-            id: mid(),
-            role: "assistant",
-            blocks: [{ kind: "text", text: err.message }],
-            turnId: err.turn_id ?? lastUser?.turnId,
-            error: true,
-            sendPayload: lastUser
-              ? payloadFromBlocks(lastUser.blocks, lastUser.agentId ?? session?.agent_id ?? null)
-              : undefined,
-            sourceMsgId: lastUser?.id,
-          });
-        }
-        storeRef.current[sid] = mapped;
+        storeRef.current[sid] = mapHistory(res);
         syncDisplay(sid);
       });
     }
@@ -632,6 +697,15 @@ export function ChatStream({
       case "todos.changed":
         g.reloadTodos();
         break;
+      case "skills.changed":
+        // A turn (install_skills tool, bash) or the Settings page mutated
+        // ~/.ginno/skills — refresh the slash menu's skill list live.
+        g.reloadSkills();
+        break;
+      case "agents.changed":
+        // Agent CRUD in Settings — keep the picker/mention list in sync.
+        g.reloadAgents();
+        break;
       case "workflows.changed":
         g.reloadWorkflows();
         g.reloadWorkflowRuns();
@@ -742,6 +816,17 @@ export function ChatStream({
         // Session-cumulative model usage (D2) → TopBar counter via callback.
         const s = ev.session as SessionUsage | undefined;
         if (s && typeof s.input_tokens === "number") onUsageChange?.(s);
+        break;
+      }
+      case "turn.state": {
+        // Answer to the post-reconnect probe: is a turn still running (or
+        // parked at an interrupt) for this session?
+        if (reconcileTimerRef.current[sid]) {
+          clearTimeout(reconcileTimerRef.current[sid]!);
+          reconcileTimerRef.current[sid] = null;
+        }
+        if (ev.running) break; // the broadcast stream resumes on this socket
+        reconcileTurnFromHistory(sid);
         break;
       }
       case "message.end":

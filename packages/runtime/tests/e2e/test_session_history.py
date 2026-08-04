@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -37,15 +36,17 @@ def test_history_after_text_turn(client, create_session, ws_conv):
 
 
 def test_history_folds_tool_call_into_one_bubble(client, create_session, ws_conv, isolated_home):
-    ws = str(isolated_home / "ws")
-    Path(ws).mkdir(parents=True, exist_ok=True)
-    (Path(ws) / "a.txt").write_text("HELLO_HISTORY", encoding="utf-8")
     sid = create_session(
         [
-            script(tool_calls=[script_tool_call("read_file", {"path": "a.txt", "workspace": ws})]),
+            script(tool_calls=[script_tool_call("read_file", {"path": "a.txt"})]),
             script(text="done reading"),
-        ],
-        workspace=ws,
+        ]
+    )
+    # fixture lives in the session workspace (the tools' bound cwd, plan F1)
+    from ginno_runtime import paths
+
+    (paths.session_files_dir("default", sid) / "a.txt").write_text(
+        "HELLO_HISTORY", encoding="utf-8"
     )
     with ws_conv(sid) as conv:
         conv.invoke("read the file")

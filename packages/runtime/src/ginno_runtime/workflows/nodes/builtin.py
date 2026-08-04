@@ -45,7 +45,10 @@ class AgentNode(BaseNode):
         agent = agents_reg.get_agent(node.get("agent"))
         allowed = [t for t in tools if tool_allowed(agent, t.name) and not t.name.startswith("workflow_")]
         bound = model.bind_tools(allowed) if allowed and hasattr(model, "bind_tools") else model
-        tool_node = ToolNode(allowed) if allowed else None
+        # handle_tool_errors=True: a raising tool must degrade to an error
+        # ToolMessage the step can react to, never kill the whole workflow run
+        # (same discipline as the main chat graph).
+        tool_node = ToolNode(allowed, handle_tool_errors=True) if allowed else None
         context = dict(state.get("context") or {})
         loop_vars = dict(state.get("loop_vars") or {})
         render_ctx = {**context, **loop_vars, **(eff or {})}

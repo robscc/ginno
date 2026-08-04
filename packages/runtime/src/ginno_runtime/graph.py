@@ -36,6 +36,7 @@ from .tools.workflow_tools import (
 )
 from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 from .tools.document_tools import ALL_DOCUMENT_TOOLS
+from .tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -75,6 +76,7 @@ def build_stable_system(
     agent_id: str | None = None,
     mcp_tool_names: list[str] | None = None,
     session_id: str = "",
+    workspace: str = "",
 ) -> str:
     """The STABLE system layer (plan B2): persona + WorldState sections +
     tool guidance. Contains nothing that changes per turn (no clock time, no
@@ -96,6 +98,7 @@ def build_stable_system(
         mcp_tool_names=list(mcp_tool_names or []),
         all_tool_names=[t.name for t in all_tools],
         agent=agent,
+        workspace=workspace,
     )
     world = WorldState(ctx)
     parts = [persona, world.render_system()]
@@ -326,6 +329,7 @@ def agent_node_factory(model, all_tools):
                 agent_id=_turn_agent_id(state, config),
                 mcp_tool_names=state.get("mcp_tool_names") or [],
                 session_id=((config or {}).get("configurable") or {}).get("thread_id", ""),
+                workspace=state.get("workspace", "") or "",
             ),
             model,
         )
@@ -382,10 +386,13 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
             # editing tools carry their OWN diff confirmation (interrupt), so they
             # must bypass the permission policy too — otherwise the policy's "ask"
             # would fire a permission.request before the tool's version_propose.
+            # Skill tools are the same class: they only manage Ginno's own
+            # storage (~/.ginno/skills), never the user's files or shell.
             if (
                 name in WORKFLOW_TOOL_NAMES
                 or name in ARTIFACT_TOOL_NAMES
                 or name in WORKFLOW_DEV_TOOL_NAMES
+                or name in SKILL_TOOL_NAMES
             ):
                 continue
 
@@ -434,10 +441,21 @@ def route_after_agent(state: AgentState) -> Literal["permission", "__end__"]:
     return "permission" if state.get("pending_tool_calls") else END
 
 
-def build_all_tools(mcp_tools: list | None = None) -> list:
-    """The union toolset shared by the main chat graph and the workflow engine."""
+def build_all_tools(
+    mcp_tools: list | None = None,
+    workspace: str | None = None,
+    project_slug: str | None = None,
+) -> list:
+    """The union toolset shared by the main chat graph and the workflow engine.
+
+    ``workspace`` / ``project_slug`` are bound into the file and skill tools
+    at construction (plan F1) — sessions pass their own values; callers
+    without a session context (workflow runs, listing endpoints) pass none
+    and those tools keep the process-cwd fallback.
+    """
     return (
-        build_builtin_tools()
+        build_builtin_tools(workspace)
+        + build_skill_tools(project_slug)
         + (mcp_tools or [])
         + [render_widget, attach_ref]
         + ALL_TODO_TOOLS
@@ -455,8 +473,15 @@ def _tools_node_factory(all_tools):
     enter the message history, so one huge read_file/bash can't bloat every
     subsequent request. The persisted history and the model view stay
     identical — truncation is part of the record, marked explicitly.
+
+    ``handle_tool_errors=True``: langgraph's DEFAULT handler only converts
+    ToolInvocationError and re-raises everything else — a tool that raises
+    (e.g. an OSError from a bad path) killed the entire turn as a 500 (the
+    2026-08 skill-install incident). With True, ANY exception becomes an
+    error ToolMessage the agent can read and recover from. Builtin tools
+    already never raise; this is the safety net for MCP/third-party tools.
     """
-    node = ToolNode(all_tools)
+    node = ToolNode(all_tools, handle_tool_errors=True)
 
     async def tools_node(state: AgentState, config=None) -> dict:
         out = await node.ainvoke(state, config)
@@ -495,7 +520,7 @@ def build_graph(
     the exact tool names for WorldState sections (mcp/agent snapshots).
     """
     if all_tools is None:
-        all_tools = build_all_tools(mcp_tools)
+        all_tools = build_all_tools(mcp_tools, workspace=workspace, project_slug=project_slug)
     policy = PermissionPolicy.from_settings()
 
     g = StateGraph(AgentState)

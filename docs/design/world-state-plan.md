@@ -1,6 +1,6 @@
 # WorldState · 上下文工程方案
 
-> 状态:**已实施**(维度 A/B/C/D/E 全部落地,含 chip 显示级别表与 token 用量展示;按产品决策暂缓 workspace(A1)与记忆预算(A5)/自动蒸馏(A5b),GINNO.md 由 Agent prompt 承载) ｜ 参考:OpenAI Codex harness 源码分析(2026-08 快照) ｜ 涉及:`packages/runtime`(主)、`apps/web`(chip 与用量展示)
+> 状态:**已实施**(维度 A/B/C/D/E 全部落地,含 chip 显示级别表与 token 用量展示;workspace 注入与 F1 已于 2026-08-05 解冻落地,见 §9;按产品决策暂缓记忆预算(A5)/自动蒸馏(A5b),GINNO.md 由 Agent prompt 承载) ｜ 参考:OpenAI Codex harness 源码分析(2026-08 快照) ｜ 涉及:`packages/runtime`(主)、`apps/web`(chip 与用量展示)
 > 一句话定位:**把"模型该知道的世界"结构化、可对比、变更显式化,让 Ginno 的每一次模型调用既正确又便宜。**
 
 ---
@@ -12,7 +12,7 @@
 | C1 引擎(section/快照/diff/基线持久化) | ✅ | `world_state.py`;基线存 `sessions/<id>.world.json` |
 | C2 增量更新消息 | ✅ | `[world state update]` 置于本轮用户消息前(`server._run_stream`) |
 | C3 `context.updated` WS 事件 + chip 显示级别表 | ✅ | server 发事件;前端 `ChatStream` 按表过滤(纯 environment=静默),渲染为居中 system 行 |
-| A1 environment(无 workspace) | ✅ | `EnvironmentSection`(日期/星期/时区/OS/ginno_home/project) |
+| A1 environment(含 workspace) | ✅ | `EnvironmentSection`(日期/星期/时区/OS/ginno_home/workspace/project);workspace 于 2026-08-05 解冻加入 |
 | A3 permissions 可见 | ✅ | `PermissionsSection` |
 | A4 Agent 切换/prompt 编辑感知 | ✅ | `AgentSection`(GINNO.md 的角色由 Agent prompt 承载,不再新增文件) |
 | A6 skills 索引预算 | ✅ | `SkillsSection._budget_index`(`skills_index_max_chars`) |
@@ -27,7 +27,8 @@
 | E2 工具输出截断 | ✅ | `truncation.py` + `graph._tools_node_factory` |
 | E3 历史压缩 + E4 压缩后重注入 | ✅ | `compaction.py` + `context.compacted` 事件 |
 | E5 checkpoint 增量快照 | ✅ | `checkpointer.py`(delta 模式 + 写锁;`put_writes` 持久化但暂不暴露) |
-| workspace 注入 / F1 / F2 | ⏸ 冻结 | 与 artifacts 方向冲突,待其定案 |
+| workspace 注入 / F1 | ✅(2026-08-05 解冻) | A1 增 `<workspace>`;文件/bash 工具经 `build_builtin_tools(workspace)` 绑定会话工作目录,模型不再看到 workspace 参数(见 §9) |
+| F2 占位值回退(/tmp/gw) | ✅ 已过时 | `_ensure_session` 从 paths 重建 workspace,旧的共享 `/tmp/gw` meta 自动收敛到会话目录 |
 | 测试 | ✅ | 单元 + API + WS e2e + 打包 UI Playwright(真浏览器 chip/usage),`552 passed` |
 
 **新增配置(`settings.context`)**:`world_state`、`cache_control`、`tool_output_max_chars`、`compaction_enabled`、`compact_threshold_tokens`、`compact_keep_turns`、`checkpoint_mode`、`skills_index_max_chars`。默认值见 `world_state._CONTEXT_DEFAULTS`。
@@ -257,13 +258,21 @@ E3 是全项目最大单项,建议阶段 3 一开始立项,不等 WorldState 全
 
 ## 9. 冻结与预留
 
-**冻结(与 artifacts 方向有冲突,待产品定案)**:
+**已解冻(2026-08-05,skill 安装事故驱动)**:
 
-| 条目 | 说明 |
+2026-08-04 用户要求"安装某仓库里的所有 skill",模型既不知道会话工作目录、
+也不知道 skills 安装目录(两者都在冻结期内),靠 `pwd`/`$HOME` 摸索后从
+sidecar cwd `/` 起 glob,撞上异常目录项,`OSError` 直接杀死整轮。事后确认
+workspace 语义已随 artifacts/per-session files dir 稳定,冻结理由不复存在:
+
+| 条目 | 落地方式 |
 |---|---|
-| workspace 注入 | A1 不含 workspace/uploads_dir 字段;artifacts 体系演进可能重定义 workspace 语义,现在注入会制造返工 |
-| F1 工具 workspace 默认值(不传时落会话 workspace 而非 sidecar cwd) | 与上同源,一并冻结;冻结期间文件类工具继续依赖模型显式传参 |
-| F2 占位值回退(/tmp/gw → ~/workspace) | 同上 |
+| workspace 注入 | A1 快照增 `workspace` 字段并渲染 `<workspace>` 标签(会话内恒定,前缀缓存安全);`_world_ctx` 同步传入 |
+| F1 工具 workspace 绑定 | `build_builtin_tools(workspace)` 逐会话构造,模型 schema 中不再有 workspace 参数;相对路径落会话目录,绝对路径透传;工具全部改为绝不抛异常(`[error]` 返回),`ToolNode(handle_tool_errors=True)` 兜底 |
+| F2 占位值回退 | 无需专门处理——`_ensure_session` 已从 paths 重建 workspace,旧 `/tmp/gw` meta 自动收敛 |
+| skills 安装上下文 | A6 section 恒存在(零 skill 时也渲染),给出全局/项目 skills 目录与 frontmatter 约定;新增 `list_skills`/`install_skills`/`uninstall_skill` 工具(与 `/api/skills/import-dir` 共享 `skills/installer.py`) |
+
+**冻结(无)**:原三条已全部解冻落地。
 
 **预留(按触发条件启动,不预做)**:
 

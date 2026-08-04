@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
@@ -35,12 +34,11 @@ def test_routing_updates_session_agent(create_session, ws_conv, client):
 
 def test_agent_tools_allow_blocks_disallowed_tool(create_session, ws_conv, isolated_home):
     # research's tools_allow excludes write_file -> blocked before any permission prompt
-    ws = str(Path(isolated_home) / "ws")
     model = [
-        script(tool_calls=[script_tool_call("write_file", {"path": "x.txt", "content": "y", "workspace": ws})]),
+        script(tool_calls=[script_tool_call("write_file", {"path": "x.txt", "content": "y"})]),
         script(text="sorry, I can't write."),
     ]
-    sid = create_session(model, agent_id="research", workspace=ws)
+    sid = create_session(model, agent_id="research")
     with ws_conv(sid) as conv:
         conv.invoke("write something")
         events = conv.recv_until("message.end", "error")
@@ -50,18 +48,19 @@ def test_agent_tools_allow_blocks_disallowed_tool(create_session, ws_conv, isola
     assert "permission.request" not in names
     tool_ends = events_of(events, "tool.end")
     assert any("不可用" in (e.get("content", "")) for e in tool_ends)
-    assert not (Path(ws) / "x.txt").exists()
+    from ginno_runtime import paths
+
+    assert not (paths.session_files_dir("default", sid) / "x.txt").exists()
     assert "message.end" in names
 
 
 def test_dev_agent_can_use_write_with_permission(create_session, ws_conv, isolated_home):
     # dev has "*" tools -> write_file reaches the permission gate (ask), not a hard block
-    ws = str(Path(isolated_home) / "ws")
     model = [
-        script(tool_calls=[script_tool_call("write_file", {"path": "x.txt", "content": "y", "workspace": ws})]),
+        script(tool_calls=[script_tool_call("write_file", {"path": "x.txt", "content": "y"})]),
         script(text="done"),
     ]
-    sid = create_session(model, agent_id="dev", workspace=ws)
+    sid = create_session(model, agent_id="dev")
     with ws_conv(sid) as conv:
         conv.invoke("write")
         events = conv.recv_until("permission.request", "message.end", "error")

@@ -202,8 +202,36 @@ _WF_RUN_TASKS: dict[str, Any] = {}
 
 # Live session WebSockets (session_id -> [WebSocket]); used to push run.* events
 # into the conversation that a run is bound to (design A: run 回到对话). Self-cleans
-# on send failure (disconnected sockets are dropped).
+# on send failure (disconnected sockets are dropped). Since 2026-08-05 the
+# per-turn stream also broadcasts through this registry (see _stream_graph):
+# turn events are no longer tied to the one socket that sent the invoke, so a
+# mid-turn reconnect keeps receiving the running stream.
 _SESSION_WS: dict[str, list[Any]] = {}
+
+# Sessions with a turn currently streaming (session_id -> turn_id). Answers the
+# client's `turn_state` query after a reconnect so the UI can distinguish
+# "stream will resume" from "turn is gone — reconcile from history".
+_RUNNING_TURNS: dict[str, str] = {}
+
+# Sessions paused at a permission/version-propose interrupt awaiting a resume.
+# Turn events broadcast to EVERY socket, so two open tabs both show the prompt;
+# this flag lets the second permission_response be ignored instead of resuming
+# an already-resumed graph.
+_PENDING_RESUME: set[str] = set()
+
+
+# One frame may sit in a stuck/suspended client's buffer; never let it stall
+# delivery to the session's OTHER sockets (or the turn loop itself). A client
+# that can't keep up is pruned here and recovers via its reconnect path.
+_WS_SEND_TIMEOUT_S = 5.0
+
+
+async def _try_send(w: Any, data: str) -> bool:
+    try:
+        await asyncio.wait_for(w.send_text(data), timeout=_WS_SEND_TIMEOUT_S)
+        return True
+    except Exception:
+        return False
 
 
 async def _push_session_event(session_id: str | None, event: str, data: dict) -> None:
@@ -213,12 +241,20 @@ async def _push_session_event(session_id: str | None, event: str, data: dict) ->
     socks = _SESSION_WS.get(session_id) or []
     alive: list[Any] = []
     for w in socks:
-        try:
-            await w.send_text(_ev(event, data))
+        if await _try_send(w, _ev(event, data)):
             alive.append(w)
-        except Exception:
-            continue
     _SESSION_WS[session_id] = alive
+
+
+async def _push_global_event(event: str, data: dict) -> None:
+    """Push an event to every live socket of EVERY session.
+
+    For global state changes (skills live in ~/.ginno/skills, shared by all
+    sessions) — e.g. ``skills.changed`` so each open chat's slash menu and
+    the WorldState-aware UI reload without a manual refresh.
+    """
+    for sid in list(_SESSION_WS.keys()):
+        await _push_session_event(sid, event, data)
 
 
 def _session_meta_list(slug: str) -> list[dict]:
@@ -331,7 +367,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
     session_dir = paths.session_files_dir(req.project_slug, session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
     workspace = str(session_dir)
-    all_tools = build_all_tools(mcp_tools)
+    all_tools = build_all_tools(mcp_tools, workspace=workspace, project_slug=req.project_slug)
     graph = build_graph(
         model=model,
         project_slug=req.project_slug,
@@ -884,22 +920,29 @@ async def list_agents_endpoint() -> list[dict]:
 @app.post("/api/agents")
 async def create_agent_endpoint(data: dict) -> dict:
     try:
-        return {"ok": True, "agent": agents_reg.create_agent(data).to_dict()}
+        agent = agents_reg.create_agent(data).to_dict()
     except ValueError as e:
         return {"ok": False, "error": str(e)}
+    await _push_global_event("agents.changed", {})
+    return {"ok": True, "agent": agent}
 
 
 @app.put("/api/agents/{agent_id}")
 async def update_agent_endpoint(agent_id: str, data: dict) -> dict:
     try:
-        return {"ok": True, "agent": agents_reg.update_agent(agent_id, data).to_dict()}
+        agent = agents_reg.update_agent(agent_id, data).to_dict()
     except ValueError as e:
         return {"ok": False, "error": str(e)}
+    await _push_global_event("agents.changed", {})
+    return {"ok": True, "agent": agent}
 
 
 @app.delete("/api/agents/{agent_id}")
 async def delete_agent_endpoint(agent_id: str) -> dict:
-    return {"ok": agents_reg.delete_agent(agent_id)}
+    ok = agents_reg.delete_agent(agent_id)
+    if ok:
+        await _push_global_event("agents.changed", {})
+    return {"ok": ok}
 
 
 # ---- todos (global daily) ----
@@ -911,9 +954,11 @@ async def list_todos_endpoint() -> list[dict]:
 @app.post("/api/todos")
 async def create_todo_endpoint(data: dict) -> dict:
     try:
-        return {"ok": True, "todo": todo_store.create_todo(data)}
+        todo = todo_store.create_todo(data)
     except ValueError as e:
         return {"ok": False, "error": str(e)}
+    await _push_global_event("todos.changed", {})
+    return {"ok": True, "todo": todo}
 
 
 @app.patch("/api/todos/{todo_id}")
@@ -921,12 +966,16 @@ async def update_todo_endpoint(todo_id: str, data: dict) -> dict:
     updated = todo_store.update_todo(todo_id, data)
     if updated is None:
         return {"ok": False, "error": "not found"}
+    await _push_global_event("todos.changed", {})
     return {"ok": True, "todo": updated}
 
 
 @app.delete("/api/todos/{todo_id}")
 async def delete_todo_endpoint(todo_id: str) -> dict:
-    return {"ok": todo_store.delete_todo(todo_id)}
+    ok = todo_store.delete_todo(todo_id)
+    if ok:
+        await _push_global_event("todos.changed", {})
+    return {"ok": ok}
 
 
 # ---- settings (general) ----
@@ -944,18 +993,25 @@ async def list_workflows_endpoint() -> list[dict]:
 
 @app.post("/api/workflows")
 async def create_workflow_endpoint(data: dict) -> dict:
-    return {"ok": True, "workflow": wf_store.create_def(data)}
+    wf = wf_store.create_def(data)
+    await _push_global_event("workflows.changed", {})
+    return {"ok": True, "workflow": wf}
 
 
 @app.put("/api/workflows/{wf_id}")
 async def update_workflow_endpoint(wf_id: str, data: dict) -> dict:
     wf = wf_store.update_def(wf_id, data)
+    if wf:
+        await _push_global_event("workflows.changed", {})
     return {"ok": bool(wf), "workflow": wf}
 
 
 @app.delete("/api/workflows/{wf_id}")
 async def delete_workflow_endpoint(wf_id: str) -> dict:
-    return {"ok": wf_store.delete_def(wf_id)}
+    ok = wf_store.delete_def(wf_id)
+    if ok:
+        await _push_global_event("workflows.changed", {})
+    return {"ok": ok}
 
 
 @app.get("/api/workflow_runs")
@@ -1890,6 +1946,7 @@ async def create_skill_endpoint(data: dict) -> dict:
     d = paths.global_skills_dir() / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text(body, encoding="utf-8")
+    await _push_global_event("skills.changed", {})
     return {"ok": True}
 
 
@@ -1900,6 +1957,7 @@ async def delete_skill_endpoint(name: str) -> dict:
     d = paths.global_skills_dir() / name
     if d.exists():
         shutil.rmtree(d)
+        await _push_global_event("skills.changed", {})
         return {"ok": True}
     return {"ok": False}
 
@@ -1913,82 +1971,19 @@ async def import_skills_dir(data: dict) -> dict:
     mcp-config, etc.) is copied so script-backed skills keep working. If *path*
     itself is a single skill directory, only that one is imported. Existing
     skills are skipped unless ``overwrite`` is true.
+
+    Shares its implementation with the agent-side ``install_skills`` tool
+    (:mod:`ginno_runtime.skills.installer`).
     """
-    import re
-    import shutil
-    from pathlib import Path
+    from .skills.installer import import_skills_from_dir
 
-    from .skills.loader import _parse_skill_file
-
-    raw = (data or {}).get("path", "")
-    overwrite = bool((data or {}).get("overwrite", False))
-    if not raw:
-        return {"ok": False, "error": "path required"}
-    src = Path(raw).expanduser().resolve()
-    if not src.is_dir():
-        return {"ok": False, "error": f"not a directory: {raw}"}
-
-    def _skill_md(d: Path) -> Path | None:
-        for f in d.iterdir():
-            if f.is_file() and f.name.lower() == "skill.md":
-                return f
-        return None
-
-    def _sanitize_name(n: str) -> str:
-        return re.sub(r"[^A-Za-z0-9._-]", "-", (n or "").strip()).strip("-") or "skill"
-
-    candidates = [src] if _skill_md(src) else sorted(
-        c for c in src.iterdir()
-        if c.is_dir() and not c.name.startswith(".") and _skill_md(c)
+    result = import_skills_from_dir(
+        (data or {}).get("path", ""),
+        overwrite=bool((data or {}).get("overwrite", False)),
     )
-
-    imported: list[dict] = []
-    skipped: list[dict] = []
-    errors: list[dict] = []
-    dest_root = paths.global_skills_dir()
-    dest_root.mkdir(parents=True, exist_ok=True)
-
-    for c in candidates:
-        smd = _skill_md(c)
-        if not smd:
-            continue
-        parsed = _parse_skill_file(smd)
-        name = _sanitize_name(parsed.name if parsed and parsed.name else c.name)
-        target = dest_root / name
-        if target.exists() and not overwrite:
-            skipped.append({"name": name, "reason": "exists"})
-            continue
-        try:
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(c, target, ignore=shutil.ignore_patterns(".DS_Store", "__pycache__"))
-            # Ginno's loader expects SKILL.md (its glob is case-sensitive), but the
-            # source may use lowercase skill.md. On case-insensitive filesystems
-            # (macOS APFS) a direct rename is a no-op, so go via a temp name to
-            # force the case change; detect the real on-disk name via iterdir.
-            actual = next(
-                (f for f in target.iterdir() if f.is_file() and f.name.lower() == "skill.md"),
-                None,
-            )
-            if actual is not None and actual.name != "SKILL.md":
-                tmp = target / f".skill_md_rename_{uuid.uuid4().hex}"
-                actual.rename(tmp)
-                tmp.rename(target / "SKILL.md")
-            imported.append({
-                "name": name,
-                "description": (parsed.description if parsed else "") or "",
-                "from": str(c),
-            })
-        except Exception as e:  # noqa: BLE001
-            errors.append({"name": c.name, "error": f"{type(e).__name__}: {e}"})
-
-    return {
-        "ok": True,
-        "scanned": len(candidates),
-        "imported": imported,
-        "skipped": skipped,
-        "errors": errors,
-    }
+    if result.get("ok") and result.get("imported"):
+        await _push_global_event("skills.changed", {})
+    return result
 
 
 # ---- knowledge base (via MCP vault servers) ----
@@ -2544,7 +2539,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     # rewriting the index.
     workspace = str(paths.session_files_dir(slug, session_id))
     mcp_tools = _mcp.all_langchain_tools() if _mcp else []
-    all_tools = build_all_tools(mcp_tools)
+    all_tools = build_all_tools(mcp_tools, workspace=workspace, project_slug=slug)
     graph = build_graph(
         model=model,
         project_slug=slug,
@@ -2641,6 +2636,10 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             for intr in getattr(task, "interrupts", []) or []:
                 value = getattr(intr, "value", None) or intr
                 if isinstance(value, dict) and value.get("kind") == "permission_request":
+                    # Re-arm the resume guard: after a runtime restart the
+                    # in-memory flag is gone even though the interrupt persists.
+                    _PENDING_RESUME.add(session_id)
+                    _RUNNING_TURNS.setdefault(session_id, "")
                     await ws.send_text(
                         _ev(
                             "permission.request",
@@ -2650,6 +2649,8 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 elif isinstance(value, dict) and value.get("kind") == "version_propose":
                     # a workflow-dev diff proposal pending at disconnect: re-show it
                     # so the turn isn't orphaned (same resume channel as permission).
+                    _PENDING_RESUME.add(session_id)
+                    _RUNNING_TURNS.setdefault(session_id, "")
                     await ws.send_text(
                         _ev(
                             "version.propose",
@@ -2735,6 +2736,12 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     skill_name=plan.skill_name,
                 )
             elif kind == "permission_response":
+                # The prompt broadcasts to every socket of the session (tabs),
+                # so a second response can arrive after the first already
+                # resumed the graph — ignore it instead of double-resuming.
+                if session_id not in _PENDING_RESUME:
+                    continue
+                _PENDING_RESUME.discard(session_id)
                 decision = msg.get("decision", "deny")
                 # resume under the agent that was active when the interrupt fired
                 resume_agent = session.get("agent_id") or _first_agent_id()
@@ -2746,15 +2753,43 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     },
                 }
                 await _run_resume(ws, graph, resume_config, {"decision": decision})
+            elif kind == "turn_state":
+                # Post-reconnect probe (frontend ChatStream): is a turn still
+                # streaming (or parked at an interrupt) for this session? If
+                # not, the client reconciles against /history instead of
+                # waiting on a stream that will never resume.
+                try:
+                    await ws.send_text(
+                        _ev(
+                            "turn.state",
+                            {
+                                "running": session_id in _RUNNING_TURNS,
+                                "turn_id": _RUNNING_TURNS.get(session_id, ""),
+                            },
+                        )
+                    )
+                except Exception:
+                    return  # socket died between recv and send
             elif kind == "ping":
-                await ws.send_text(_ev("pong", {}))
+                try:
+                    await ws.send_text(_ev("pong", {}))
+                except Exception:
+                    return  # socket died between recv and send
             else:
-                await ws.send_text(_ev("error", {"message": f"unknown type: {kind}"}))
+                try:
+                    await ws.send_text(_ev("error", {"message": f"unknown type: {kind}"}))
+                except Exception:
+                    return
     except WebSocketDisconnect:
         return
     finally:
         _watch_stop.set()
         _watcher_task.cancel()
+        # Drop this socket from the broadcast registry (a dead entry would
+        # otherwise linger until the next send attempt pruned it).
+        _SESSION_WS[session_id] = [
+            w for w in (_SESSION_WS.get(session_id) or []) if w is not ws
+        ]
 
 
 def _compact_schema(path: str) -> str:
@@ -2978,6 +3013,7 @@ async def _run_stream(
             agent_id=effective_agent or None,
             mcp_tool_names=list(session.get("mcp_tool_names") or []),
             all_tool_names=list(session.get("all_tool_names") or []),
+            workspace=str(session.get("workspace") or ""),
         )
 
     # E3 — history compaction, checked BEFORE this turn's messages land.
@@ -3071,6 +3107,11 @@ async def _stream_graph(
     command: Command | None = None,
 ) -> None:
     """Drive the graph and emit token / tool / permission events."""
+    # Pre-initialized so the finally-block bookkeeping below can never raise a
+    # NameError that masks the original failure.
+    saw_interrupt = False
+    ws_closed = False
+    session_id = (config.get("configurable") or {}).get("thread_id", "")
     try:
         # Per-turn trace id (from invoke, or fresh on a bare resume). `emit`
         # wraps _ev so EVERY event of this turn carries it — the frontend shows
@@ -3085,34 +3126,44 @@ async def _stream_graph(
 
         _ensure_turn_log()  # (re)point the trace file handler at the active home
 
+        slug = (config.get("configurable") or {}).get("project_slug", "default")
+        session_id = (config.get("configurable") or {}).get("thread_id", "")
+        agent_id = (config.get("configurable") or {}).get("agent_id", "")
+        _RUNNING_TURNS[session_id] = turn_id
+
         # The client (app webview / browser tab) can close the socket mid-turn
-        # (refresh, navigate, sleep). Sending to a closed WS raises and would
-        # otherwise crash this coroutine BEFORE message.end is emitted — leaving
-        # the frontend's `running` lock stuck forever ("the turn froze"). So every
-        # send goes through safe_send, which swallows disconnect errors and flips
-        # ws_closed; the loop then drains the graph quietly and still checkpoints.
+        # (refresh, navigate, sleep). Turn events therefore broadcast to EVERY
+        # live socket of the session instead of only the invoking one: when the
+        # invoke socket dies the client reconnects a fresh socket and keeps
+        # receiving the running stream (2026-08-05 incident: the turn completed
+        # server-side but its second half went nowhere because delivery was
+        # tied to the dead socket). safe_send swallows per-socket send errors
+        # and prunes dead sockets; ws_closed records whether the most recent
+        # attempt found ANY live socket (diagnostic only — never latches, so a
+        # reconnect mid-turn resumes delivery).
         ws_closed = False
 
         async def safe_send(data: str) -> None:
             nonlocal ws_closed
-            if ws_closed:
-                return
-            try:
-                await ws.send_text(data)
-            except Exception:
-                ws_closed = True
+            socks = _SESSION_WS.get(session_id) or []
+            alive: list[Any] = []
+            for w in socks:
+                if await _try_send(w, data):
+                    alive.append(w)
+            _SESSION_WS[session_id] = alive
+            ws_closed = not alive
 
         async def keepalive() -> None:
             # The WS receive loop is sequential, so it can't answer the client's
             # app-level pings while a turn runs. If a tool/LLM step goes silent
             # for >45s the frontend's watchdog closes the socket (the "stuck at
             # 'now creating doc'" symptom). Send a harmless keepalive frame well
-            # under that window so the client's lastSeen keeps resetting.
+            # under that window so the client's lastSeen keeps resetting — even
+            # while no socket is connected, so a reconnecting client never lands
+            # in a >45s silent gap during a long tool step.
             try:
-                while not ws_closed:
+                while True:
                     await asyncio.sleep(15)
-                    if ws_closed:
-                        break
                     await safe_send(emit("keepalive", {}))
             except asyncio.CancelledError:
                 raise
@@ -3128,9 +3179,6 @@ async def _stream_graph(
         saw_interrupt = False
         special_ids: dict[str, str] = {}  # tool_call id -> special tool name (no bubble)
         tool_args_by_id: dict[str, tuple[str, dict]] = {}  # id -> (name, args)
-        slug = (config.get("configurable") or {}).get("project_slug", "default")
-        session_id = (config.get("configurable") or {}).get("thread_id", "")
-        agent_id = (config.get("configurable") or {}).get("agent_id", "")
         turn_text: list[str] = []  # accumulate assistant text for memory capture
         # Fresh turn (not a permission resume): announce the resolved agent so the
         # UI can label the assistant bubble authoritatively (never the generic
@@ -3284,6 +3332,7 @@ async def _stream_graph(
                             value = getattr(intr, "value", None) or intr
                             if isinstance(value, dict) and value.get("kind") == "permission_request":
                                 saw_interrupt = True
+                                _PENDING_RESUME.add(session_id)
                                 _log.info(
                                     "turn_interrupt session=%s turn=%s kind=%s",
                                     session_id, turn_id, value.get("kind"),
@@ -3299,6 +3348,7 @@ async def _stream_graph(
                                 # Independent of the permission system; resumed via
                                 # the same permission_response WS message.
                                 saw_interrupt = True
+                                _PENDING_RESUME.add(session_id)
                                 _log.info(
                                     "turn_interrupt session=%s turn=%s kind=%s",
                                     session_id, turn_id, value.get("kind"),
@@ -3380,6 +3430,10 @@ async def _stream_graph(
         await safe_send(emit("todos.changed", {}))
         await safe_send(emit("workflows.changed", {}))
         await safe_send(emit("artifacts.changed", {}))
+        # skills too: a turn may have installed/uninstalled skills (the
+        # install_skills tool — or even bash), and the slash menu / next
+        # turn's skills index must reflect it without a manual refresh.
+        await safe_send(emit("skills.changed", {}))
         if not saw_interrupt:
             # Capture sanitized assistant text for memory summarization (P2)
             if turn_text:
@@ -3413,10 +3467,17 @@ async def _stream_graph(
             _ka.cancel()
         except Exception:
             pass
+        # Ended or errored (not paused at an interrupt): unregister so a client
+        # `turn_state` query reports "not running". A turn parked at a
+        # permission/version-propose interrupt stays registered — its resume
+        # hasn't happened yet.
+        if not saw_interrupt:
+            _RUNNING_TURNS.pop(session_id, None)
+            _PENDING_RESUME.discard(session_id)
         if ws_closed:
             _log.info(
-                "turn_client_gone session=%s turn=%s (client disconnected mid-turn; "
-                "turn drained without further sends)",
+                "turn_client_gone session=%s turn=%s (no live client socket at the "
+                "last send; turn completed server-side)",
                 session_id,
                 turn_id,
             )

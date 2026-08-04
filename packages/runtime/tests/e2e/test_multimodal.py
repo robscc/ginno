@@ -9,8 +9,6 @@ visible truncation marker.
 from __future__ import annotations
 
 import base64
-import os
-from pathlib import Path
 
 import pytest
 
@@ -57,19 +55,15 @@ def test_invoke_images_only_message_has_image_block(client, create_session, ws_c
 
 
 def test_tool_end_truncates_long_output_with_marker(create_session, ws_conv):
-    ws = Path(os.environ["GINNO_HOME"]) / "ws"
-    ws.mkdir(parents=True, exist_ok=True)
-    (ws / "big.txt").write_text("y" * 6000)
     sid = create_session(
         [
-            script(
-                tool_calls=[
-                    script_tool_call("read_file", {"path": "big.txt", "workspace": str(ws)})
-                ]
-            ),
+            script(tool_calls=[script_tool_call("read_file", {"path": "big.txt"})]),
             script(text="done"),
         ]
     )
+    from ginno_runtime import paths
+
+    (paths.session_files_dir("default", sid) / "big.txt").write_text("y" * 6000)
     with ws_conv(sid) as conv:
         conv.invoke("read it")
         events = conv.recv_until("message.end", "error")
@@ -81,19 +75,15 @@ def test_tool_end_truncates_long_output_with_marker(create_session, ws_conv):
 def test_tool_output_does_not_leak_into_text_deltas(create_session, ws_conv):
     # Regression: ToolMessage results must reach the UI only via tool.end, never
     # as token.delta (which would render the tool output as assistant text).
-    ws = Path(os.environ["GINNO_HOME"]) / "ws"
-    ws.mkdir(parents=True, exist_ok=True)
-    (ws / "leak.txt").write_text("LEAK_MARKER_TOKEN\n")
     sid = create_session(
         [
-            script(
-                tool_calls=[
-                    script_tool_call("read_file", {"path": "leak.txt", "workspace": str(ws)})
-                ]
-            ),
+            script(tool_calls=[script_tool_call("read_file", {"path": "leak.txt"})]),
             script(text="FINAL_ANSWER_TEXT"),
         ]
     )
+    from ginno_runtime import paths
+
+    (paths.session_files_dir("default", sid) / "leak.txt").write_text("LEAK_MARKER_TOKEN\n")
     with ws_conv(sid) as conv:
         conv.invoke("read it")
         events = conv.recv_until("message.end", "error")

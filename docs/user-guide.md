@@ -346,10 +346,11 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 > **联网搜索（模型自带）**：OpenAI / 自定义端点卡有 **联网搜索** 开关 —— 开启后 Ginno 会在请求体带 `enable_search: true`，让模型在需要时自动联网（典型如通义千问 compatible-mode）。点 **测试联网** 会发一个时效性问题并回显模型回答，便于确认你的端点是否真的支持；不支持的端点该字段会被忽略，不影响普通对话。Anthropic 协议无此参数，故不显示该开关。
 
 ### 9.2 Skills ✅
-“一次性指令模板”，存于 `~/.ginno/skills/<name>/SKILL.md`：
+“一次性指令模板”，存于 `~/.ginno/skills/<name>/SKILL.md`（项目级覆盖在 `~/.ginno/projects/<slug>/skills/`）：
 - 列表显示 `/<name>`、`trigger`（user-invocable / model-invocable / both）、描述、`tools`；可 `delete`；
 - **New skill**：填 `name`(kebab-case) + 带 frontmatter 的正文，`Create`。
 - 触发：在聊天输入 `/<name>`（见 5.8）。
+- **让 Agent 安装**：直接说“安装 <仓库/目录> 里的 skill”。有工具权限的 Agent（如 Dev）会用 `install_skills(path)` 把含 `<skill>/SKILL.md` 的目录装进全局 skills 目录（远端仓库会先 `git clone` 到会话工作目录再安装）；`list_skills()` / `uninstall_skill(name)` 查看与卸载。UI 的 `import-dir` 接口与其共享同一实现。
 
 ### 9.3 MCP 工具 ✅
 - 顶部显示“已连接 N server(s)，M tool(s)”；

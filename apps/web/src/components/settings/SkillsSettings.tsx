@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import * as api from "@/lib/runtime";
+import { useGinno } from "@/lib/store";
 
 interface Skill {
   name: string;
@@ -11,6 +12,7 @@ interface Skill {
 }
 
 export function SkillsSettings() {
+  const g = useGinno();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [name, setName] = useState("");
   const [body, setBody] = useState("");
@@ -34,11 +36,13 @@ export function SkillsSettings() {
       setName("");
       setBody("");
       load();
+      g.reloadSkills(); // slash menu of any open chat picks it up immediately
     }
   }
   async function del(n: string) {
     await api.deleteSkill(n);
     load();
+    g.reloadSkills();
   }
 
   async function onImport() {
@@ -63,7 +67,10 @@ export function SkillsSettings() {
           (sk ? `，跳过 ${sk}` : "") +
           (er ? `，失败 ${er}` : ""),
       );
-      if (n > 0) load();
+      if (n > 0) {
+        load();
+        g.reloadSkills();
+      }
     } finally {
       setImportBusy(false);
     }

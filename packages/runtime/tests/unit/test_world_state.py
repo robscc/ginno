@@ -43,6 +43,18 @@ def test_environment_snapshot_fields():
     assert snap["os"]
     assert snap["ginno_home"] == str(paths.home())
     assert snap["project_slug"] == "default"
+    assert snap["workspace"] == ""  # absent until the session supplies one
+
+
+def test_environment_workspace_carried_and_rendered():
+    """F1 unfreeze (2026-08 incident): the model must see its workspace."""
+    sec = EnvironmentSection()
+    snap = sec.snapshot(ctx(workspace="/tmp/gw/projects/default/sessions/abc"))
+    assert snap["workspace"] == "/tmp/gw/projects/default/sessions/abc"
+    out = sec.render(snap)
+    assert "<workspace>" in out and "/tmp/gw/projects/default/sessions/abc" in out
+    # without a workspace the tag is omitted (legacy/workflow contexts)
+    assert "<workspace>" not in sec.render(sec.snapshot(ctx()))
 
 
 def test_environment_render_shape():
@@ -152,7 +164,11 @@ def test_skills_budget_truncates(isolated_home):
 
 def test_skills_change_detection(isolated_home):
     sec = SkillsSection()
-    assert sec.snapshot(ctx()) is None  # no skills
+    # Since the 2026-08 incident the snapshot exists even with ZERO skills —
+    # the install-dir context is most needed exactly then.
+    before = sec.snapshot(ctx())
+    assert before is not None and before["names"] == []
+    assert "尚未安装" in before["index"]
     d = isolated_home / "skills" / "hello"
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text(
@@ -160,8 +176,38 @@ def test_skills_change_detection(isolated_home):
     )
     after = sec.snapshot(ctx())
     assert after["names"] == ["hello"]
-    text = sec.update_text({}, after)
+    text = sec.update_text(before, after)
     assert text and "hello" in text
+    # unchanged names stay silent even though dirs/can_manage are in the snap
+    assert sec.update_text(after, dict(after)) is None
+
+
+def test_skills_render_carries_install_context(isolated_home):
+    """The model must know WHERE skills live and HOW to install them."""
+    paths.ensure_layout()
+    sec = SkillsSection()
+    out = sec.render(sec.snapshot(ctx(project_slug="default")))
+    assert str(paths.global_skills_dir()) in out
+    assert str(paths.project_skills_dir("default")) in out
+    assert "SKILL.md" in out and "frontmatter" in out
+    # agent None → tools_allow ["*"] → management guidance present
+    assert "install_skills" in out
+
+
+def test_skills_management_gated_by_tools_allow(isolated_home):
+    from ginno_runtime.agents.registry import AgentConfig
+
+    paths.ensure_layout()
+    from ginno_runtime import agents as agents_reg
+
+    # register an agent whose allowlist excludes the skill tools
+    agents_reg.create_agent(
+        AgentConfig(id="narrow", name="Narrow", tools_allow=["read_file"]).to_dict()
+    )
+    sec = SkillsSection()
+    out = sec.render(sec.snapshot(ctx(agent_id="narrow")))
+    assert "install_skills" not in out  # no guidance for a tool it can't call
+    assert str(paths.global_skills_dir()) in out  # dirs stay visible (harmless)
 
 
 # --------------------------------------------------------------------------- #

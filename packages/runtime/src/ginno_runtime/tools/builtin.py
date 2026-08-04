@@ -1,9 +1,16 @@
 """Built-in tools: Read / Grep / Glob / Write / Edit / Bash.
 
-P0 scaffold: thin wrappers around simple operations, scoped to the
-active workspace cwd. P1 will harden with permission checks, sandbox
-backends (matching AgentScope's workspace model), and richer arg
-validation.
+The session workspace is BOUND into the tools at construction time
+(``build_builtin_tools(workspace)`` — plan F1, unfrozen 2026-08 after the
+skill-install incident: the model had no way to know the workspace, omitted
+the param, and the tools fell back to the sidecar cwd ``/``). The model
+never sees a ``workspace`` parameter: relative paths resolve against the
+session workspace, absolute paths pass through unchanged.
+
+Every tool returns an ``[error] ...`` string instead of raising, so a bad
+path degrades to a tool result the agent can react to — never a dead turn
+(the 2026-08 incident ended in ``OSError: [Errno 22]`` from a whole-disk
+glob and killed the whole turn).
 """
 
 from __future__ import annotations
@@ -13,98 +20,167 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
+# A runaway glob (e.g. ``**`` under a huge tree) used to stream the entire
+# filesystem listing into the context; cap it like grep_files does.
+GLOB_MAX_HITS = 500
 
-def _ws(workspace: str | None, p: str) -> Path:
-    base = Path(workspace or Path.cwd()).expanduser()
+
+def _base(workspace: str | None) -> Path:
+    return Path(workspace).expanduser() if workspace else Path.cwd()
+
+
+def _ws(base: Path, p: str) -> Path:
     return (base / p).resolve() if not Path(p).is_absolute() else Path(p)
 
 
-@tool
-def read_file(path: str, workspace: str | None = None) -> str:
-    """Read a UTF-8 text file. Returns contents or error string."""
-    try:
-        return _ws(workspace, path).read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
-        return f"[error] file not found: {path}"
+def build_builtin_tools(workspace: str | None = None) -> list:
+    """Build the six file/shell tools with ``workspace`` bound in.
 
-
-@tool
-def write_file(path: str, content: str, workspace: str | None = None) -> str:
-    """Write text content to a file (overwrite).
-
-    Never raises into the graph: an unwritable path (e.g. the knowledge raw dir
-    resolving outside the workspace, or a read-only parent) returns an ``[error]``
-    tool result so the agent can react, instead of crashing the whole turn.
+    Called per session (create_session / _ensure_session) so each session's
+    graph carries tools scoped to its own files dir. Callers without a
+    workspace (workflow engine, unit tests) get the process cwd fallback —
+    the pre-F1 behaviour.
     """
-    p = _ws(workspace, path)
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-    except OSError as e:
-        return f"[error] cannot write {p}: {type(e).__name__}: {e}"
-    return f"wrote {len(content)} bytes to {p}"
+    base_dir = _base(workspace)
 
-
-@tool
-def glob_files(pattern: str, workspace: str | None = None) -> str:
-    """Glob files under workspace. Returns newline-joined list."""
-    base = Path(workspace or Path.cwd()).expanduser()
-    hits = sorted(str(p.relative_to(base)) for p in base.rglob(pattern) if p.is_file())
-    return "\n".join(hits) or "(no matches)"
-
-
-@tool
-def grep_files(pattern: str, workspace: str | None = None, max_hits: int = 50) -> str:
-    """Grep files under workspace (recursive). Returns file:line:match."""
-    import re
-
-    rx = re.compile(pattern)
-    base = Path(workspace or Path.cwd()).expanduser()
-    out: list[str] = []
-    for f in base.rglob("*"):
-        if not f.is_file():
-            continue
+    @tool
+    def read_file(path: str) -> str:
+        """Read a UTF-8 text file. Relative paths resolve against the session
+        workspace. Returns contents or an ``[error]`` string."""
         try:
-            for i, line in enumerate(f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
-                if rx.search(line):
-                    out.append(f"{f.relative_to(base)}:{i}:{line}")
-                    if len(out) >= max_hits:
-                        out.append("... (truncated)")
-                        return "\n".join(out)
-        except Exception:
-            continue
-    return "\n".join(out) or "(no matches)"
+            return _ws(base_dir, path).read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return f"[error] file not found: {path}"
+        except OSError as e:
+            return f"[error] cannot read {path}: {type(e).__name__}: {e}"
 
+    @tool
+    def write_file(path: str, content: str) -> str:
+        """Write text content to a file (overwrite). Relative paths resolve
+        against the session workspace.
 
-@tool
-def edit_file(path: str, old: str, new: str, workspace: str | None = None) -> str:
-    """Replace a unique occurrence of `old` with `new` in a file."""
-    p = _ws(workspace, path)
-    text = p.read_text(encoding="utf-8")
-    if text.count(old) > 1:
-        return "[error] multiple matches"
-    if text.count(old) == 0:
-        return "[error] not found"
-    p.write_text(text.replace(old, new, 1), encoding="utf-8")
-    return "ok"
+        Never raises into the graph: an unwritable path (e.g. the knowledge raw dir
+        resolving outside the workspace, or a read-only parent) returns an ``[error]``
+        tool result so the agent can react, instead of crashing the whole turn.
+        """
+        p = _ws(base_dir, path)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+        except OSError as e:
+            return f"[error] cannot write {p}: {type(e).__name__}: {e}"
+        return f"wrote {len(content)} bytes to {p}"
 
+    @tool
+    def glob_files(pattern: str) -> str:
+        """Glob files under the session workspace (recursive). Returns a
+        newline-joined list of workspace-relative paths, capped at 500
+        matches. Never raises — a bad base dir or pattern yields an
+        ``[error]`` string."""
+        try:
+            if not base_dir.is_dir():
+                return f"[error] workspace is not a directory: {base_dir}"
+            hits: list[str] = []
+            truncated = False
+            try:
+                for p in base_dir.rglob(pattern):
+                    try:
+                        if not p.is_file():
+                            continue
+                    except OSError:
+                        # Weird filesystem entries (broken firmlinks, permission
+                        # holes) must not kill the scan — skip and move on. This
+                        # is exactly what killed the 2026-08 skill-install turn.
+                        continue
+                    hits.append(str(p.relative_to(base_dir)))
+                    if len(hits) >= GLOB_MAX_HITS:
+                        truncated = True
+                        break
+            except (OSError, ValueError) as e:
+                if not hits:
+                    return f"[error] glob failed: {type(e).__name__}: {e}"
+            hits.sort()
+            out = "\n".join(hits)
+            if truncated:
+                out += f"\n... (truncated at {GLOB_MAX_HITS} matches)"
+            return out or "(no matches)"
+        except Exception as e:  # noqa: BLE001 — last-resort guard: never raise
+            return f"[error] glob failed: {type(e).__name__}: {e}"
 
-@tool
-def bash(command: str, workspace: str | None = None, timeout: int = 30) -> str:
-    """Run a shell command in workspace cwd. Returns stdout+stderr."""
-    try:
-        r = subprocess.run(
-            command,
-            shell=True,
-            cwd=workspace or None,
-            timeout=timeout,
-            capture_output=True,
-            text=True,
-        )
-        return f"[exit {r.returncode}]\n{r.stdout}\n--- stderr ---\n{r.stderr}"
-    except subprocess.TimeoutExpired:
-        return f"[timeout after {timeout}s]"
+    @tool
+    def grep_files(pattern: str, max_hits: int = 50) -> str:
+        """Grep files under the session workspace (recursive). Returns
+        file:line:match. Never raises — a bad pattern or base dir yields an
+        ``[error]`` string."""
+        import re
 
+        try:
+            rx = re.compile(pattern)
+        except re.error as e:
+            return f"[error] invalid regex {pattern!r}: {e}"
+        try:
+            if not base_dir.is_dir():
+                return f"[error] workspace is not a directory: {base_dir}"
+            out: list[str] = []
+            for f in base_dir.rglob("*"):
+                try:
+                    if not f.is_file():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    for i, line in enumerate(
+                        f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1
+                    ):
+                        if rx.search(line):
+                            out.append(f"{f.relative_to(base_dir)}:{i}:{line}")
+                            if len(out) >= max_hits:
+                                out.append("... (truncated)")
+                                return "\n".join(out)
+                except Exception:
+                    continue
+            return "\n".join(out) or "(no matches)"
+        except Exception as e:  # noqa: BLE001 — last-resort guard: never raise
+            return f"[error] grep failed: {type(e).__name__}: {e}"
 
-def build_builtin_tools() -> list:
+    @tool
+    def edit_file(path: str, old: str, new: str) -> str:
+        """Replace a unique occurrence of `old` with `new` in a file."""
+        p = _ws(base_dir, path)
+        try:
+            text = p.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return f"[error] file not found: {path}"
+        except OSError as e:
+            return f"[error] cannot read {path}: {type(e).__name__}: {e}"
+        if text.count(old) > 1:
+            return "[error] multiple matches"
+        if text.count(old) == 0:
+            return "[error] not found"
+        try:
+            p.write_text(text.replace(old, new, 1), encoding="utf-8")
+        except OSError as e:
+            return f"[error] cannot write {path}: {type(e).__name__}: {e}"
+        return "ok"
+
+    @tool
+    def bash(command: str, timeout: int = 30) -> str:
+        """Run a shell command with the session workspace as cwd. Returns
+        stdout+stderr. Never raises."""
+        cwd = str(base_dir) if base_dir.is_dir() else None
+        try:
+            r = subprocess.run(
+                command,
+                shell=True,
+                cwd=cwd,
+                timeout=timeout,
+                capture_output=True,
+                text=True,
+            )
+            return f"[exit {r.returncode}]\n{r.stdout}\n--- stderr ---\n{r.stderr}"
+        except subprocess.TimeoutExpired:
+            return f"[timeout after {timeout}s]"
+        except OSError as e:
+            return f"[error] cannot execute: {type(e).__name__}: {e}"
+
     return [read_file, write_file, glob_files, grep_files, edit_file, bash]

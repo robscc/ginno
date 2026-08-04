@@ -109,15 +109,23 @@ class SessionCtx:
     mcp_tool_names: list[str] = field(default_factory=list)
     all_tool_names: list[str] = field(default_factory=list)
     agent: Any = None
+    # Session workspace (the session files dir). Constant within a session, so
+    # it belongs in the STABLE system layer (prefix-cache safe). Was frozen
+    # with F1/F2 until the 2026-08 skill-install incident proved the model
+    # cannot improvise file operations without knowing where it is.
+    workspace: str = ""
 
 
 # --------------------------------------------------------------------------- #
 # Sections
 # --------------------------------------------------------------------------- #
 class EnvironmentSection:
-    """A1 — date/weekday/timezone/OS/ginno_home/project. No workspace (frozen,
-    conflicts with the artifacts direction) and deliberately no clock time:
-    hour/minute churn would break prefix stability; the model can `date`."""
+    """A1 — date/weekday/timezone/OS/ginno_home/workspace/project. Deliberately
+    no clock time: hour/minute churn would break prefix stability; the model
+    can `date`. Workspace was a frozen item (plan §9) until the 2026-08
+    skill-install incident: without it the model probed `pwd`/`$HOME` and
+    eventually globbed from the sidecar cwd ``/`` until the turn crashed. It
+    is constant within a session, so prefix stability is preserved."""
 
     id = "environment"
 
@@ -129,19 +137,26 @@ class EnvironmentSection:
             "tz": f"{now.tzname()} (UTC{now.strftime('%z')})",
             "os": _platform_desc(),
             "ginno_home": str(paths.home()),
+            "workspace": ctx.workspace or "",
             "project_slug": ctx.project_slug or "default",
         }
 
     def render(self, snap: dict) -> str:
-        return (
-            "<environment>\n"
-            f"<date>{snap['date']} ({snap['weekday']})</date>\n"
-            f"<timezone>{snap['tz']}</timezone>\n"
-            f"<os>{snap['os']}</os>\n"
-            f"<ginno_home>{snap['ginno_home']} — 记忆、skills、settings 所在目录</ginno_home>\n"
-            f"<project>{snap['project_slug']}</project>\n"
-            "</environment>"
-        )
+        lines = [
+            "<environment>",
+            f"<date>{snap['date']} ({snap['weekday']})</date>",
+            f"<timezone>{snap['tz']}</timezone>",
+            f"<os>{snap['os']}</os>",
+            f"<ginno_home>{snap['ginno_home']} — 记忆、skills、settings 所在目录</ginno_home>",
+        ]
+        if snap.get("workspace"):
+            lines.append(
+                f"<workspace>{snap['workspace']} — 本会话工作目录：bash 的 cwd、"
+                "文件工具相对路径的默认位置；产物文件也写在这里</workspace>"
+            )
+        lines.append(f"<project>{snap['project_slug']}</project>")
+        lines.append("</environment>")
+        return "\n".join(lines)
 
     def update_text(self, old: dict, new: dict) -> str | None:
         if old.get("date") != new.get("date"):
@@ -258,18 +273,31 @@ class AgentSection:
 
 class SkillsSection:
     """A6 — one-line skill index with a char budget (descriptions dropped
-    first, then whole entries, with a tail note so the model knows)."""
+    first, then whole entries, with a tail note so the model knows), PLUS the
+    skills directories and how to install/uninstall (2026-08 incident: the
+    model was asked to install a skill but knew neither where skills live nor
+    that install_skills exists). The snapshot therefore exists even with ZERO
+    skills installed — the install context is most needed exactly then."""
 
     id = "skills"
 
     def snapshot(self, ctx: SessionCtx) -> dict | None:
+        from .graph import tool_allowed  # local import: avoid cycle
+
         skills = SkillLoader(project_slug=ctx.project_slug).load()
-        if not skills:
-            return None
         names = sorted(s.name for s in skills)
-        return {"names": names, "index": self._budget_index(skills)}
+        agent = ctx.agent or _agent_by_id(ctx.agent_id)
+        return {
+            "names": names,
+            "index": self._budget_index(skills),
+            "global_dir": str(paths.global_skills_dir()),
+            "project_dir": str(paths.project_skills_dir(ctx.project_slug or "default")),
+            "can_manage": bool(tool_allowed(agent, "install_skills")),
+        }
 
     def _budget_index(self, skills) -> str:
+        if not skills:
+            return "(尚未安装任何 skill。)"
         budget = int(
             context_settings().get("skills_index_max_chars", DEFAULT_SKILLS_INDEX_MAX_CHARS)
         )
@@ -293,7 +321,22 @@ class SkillsSection:
         return out
 
     def render(self, snap: dict) -> str:
-        return snap.get("index", "")
+        lines = [
+            snap.get("index", ""),
+            "<skills_management>",
+            f"全局 skills 目录: {snap['global_dir']}/<name>/SKILL.md",
+            f"项目 skills 目录: {snap['project_dir']}/<name>/SKILL.md（同名时覆盖全局）",
+            "SKILL.md 需包含 YAML frontmatter（至少 name、description）。",
+        ]
+        if snap.get("can_manage"):
+            lines.append(
+                "安装 skill：先把源码取到本地（如用 bash git clone 仓库到工作目录），"
+                "再调用 install_skills(path) —— path 是含一个或多个 <skill>/SKILL.md "
+                "子目录的目录，或单个 skill 目录；list_skills() 查看已安装，"
+                "uninstall_skill(name) 卸载。不要手写或猜测 skills 目录之外的安装位置。"
+            )
+        lines.append("</skills_management>")
+        return "\n".join(p for p in lines if p)
 
     def update_text(self, old: dict, new: dict) -> str | None:
         old_names = set(old.get("names") or [])

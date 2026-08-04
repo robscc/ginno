@@ -92,3 +92,60 @@ async def test_graph_drives_no_tool_reply(isolated_home):
         config=cfg,
     )
     assert result["messages"][-1].content == "hi back"
+
+
+def test_system_prompt_carries_workspace_and_skill_dirs(isolated_home):
+    """F1/A1+A6 unfreeze: the stable layer must tell the model where it is
+    and where skills live (2026-08 skill-install incident)."""
+    from ginno_runtime.graph import build_stable_system
+
+    ws_dir = str(paths.home() / "projects" / "p" / "sessions" / "s1")
+    prompt = build_stable_system(
+        _agent(["*"]), "p", build_builtin_tools(ws_dir), workspace=ws_dir
+    )
+    assert f"<workspace>{ws_dir}" in prompt
+    assert str(paths.global_skills_dir()) in prompt
+    assert "install_skills" in prompt  # guidance present for a ["*"] agent
+
+
+async def test_raising_tool_is_contained_not_fatal(isolated_home):
+    """The 2026-08 incident shape: a tool raises OSError mid-call. The turn
+    must survive — the exception becomes an error ToolMessage the agent reads,
+    not a 500 that kills the conversation."""
+    from langchain_core.messages import ToolMessage
+    from langchain_core.tools import tool
+
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import script_tool_call
+
+    @tool
+    def boom(x: str) -> str:
+        """Always raises — like the old glob_files on a bad path."""
+        raise OSError(22, "Invalid argument", "/.resolve/skills")
+
+    model = ScriptedChatModel(
+        scripts=[
+            script(tool_calls=[script_tool_call("boom", {"x": "1"})]),
+            script(text="recovered"),
+        ]
+    )
+    graph = build_graph(
+        model=model, project_slug="p", workspace="/tmp", mcp_tools=[], all_tools=[boom]
+    )
+    cfg = {"configurable": {"thread_id": "t2", "project_slug": "p", "agent_id": "dev"}}
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="do it")],
+            "workspace": "/tmp",
+            "project_slug": "p",
+            "agent_id": "dev",
+            "active_skills": [],
+            "pending_tool_calls": [],
+        },
+        config=cfg,
+    )
+    msgs = result["messages"]
+    assert msgs[-1].content == "recovered"  # the loop continued past the error
+    tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
+    assert tool_msgs and tool_msgs[0].status == "error"
+    assert "Invalid argument" in tool_msgs[0].content

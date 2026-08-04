@@ -57,10 +57,15 @@ Build turns with the helpers:
 from ginno_runtime.testing.fake_model import script, script_tool_call
 
 model = [
-    script(tool_calls=[script_tool_call("write_file", {"path": "a.txt", "content": "hi", "workspace": ws})]),
+    script(tool_calls=[script_tool_call("write_file", {"path": "a.txt", "content": "hi"})]),
     script(text="done"),
 ]
 ```
+
+Note: file/shell tools take NO `workspace` argument — the session workspace
+(the per-session files dir) is bound into them at construction (plan F1).
+Fixture files a scripted tool should read/write belong under
+`paths.session_files_dir(slug, session_id)`.
 
 ## Test tiers
 
