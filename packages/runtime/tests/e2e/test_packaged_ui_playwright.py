@@ -22,7 +22,11 @@ import pytest
 
 pytestmark = pytest.mark.e2e
 
-RUNTIME_BIN = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime"
+_RUNTIME_DIST = Path(__file__).resolve().parents[2] / "dist" / "ginno-runtime"
+# Two packaging layouts coexist: --onefile makes dist/ginno-runtime the
+# executable itself; the current Makefile's --onedir makes it a bundle
+# directory whose executable lives inside. Resolve whichever is present.
+RUNTIME_BIN = _RUNTIME_DIST / "ginno-runtime" if _RUNTIME_DIST.is_dir() else _RUNTIME_DIST
 PORT = 8899
 PORT2 = 8898  # second test gets its own port so a slow teardown of the
 # first test's sidecar can't cause a spurious "port in use" skip
