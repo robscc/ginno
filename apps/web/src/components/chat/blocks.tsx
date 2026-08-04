@@ -28,7 +28,27 @@ export type Block =
   | { kind: "ref"; refKind: string; name: string; refId?: string }
   | { kind: "tool"; id?: string; name: string; content: string; pending: boolean }
   | { kind: "thinking"; text: string }
-  | { kind: "workflow"; run: WorkflowRun };
+  | { kind: "workflow"; run: WorkflowRun }
+  // WorldState change announcements (docs/design/world-state-plan.md §7):
+  // centered system rows in the transcript ("context chips").
+  | { kind: "context"; text: string };
+
+/** Centered, de-emphasized system row for context chips. */
+export function ContextBlocks({ blocks }: { blocks: Extract<Block, { kind: "context" }>[] }) {
+  if (!blocks.length) return null;
+  return (
+    <div className="flex flex-col items-center gap-1">
+      {blocks.map((b, i) => (
+        <div
+          key={i}
+          className="max-w-[85%] whitespace-pre-wrap rounded-lg border border-line/60 bg-card/40 px-3 py-1.5 text-center text-xs leading-relaxed text-muted"
+        >
+          {b.text}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 type FileBlock = Extract<Block, { kind: "file" }>;
 

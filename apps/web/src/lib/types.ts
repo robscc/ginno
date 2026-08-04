@@ -64,6 +64,23 @@ export interface VerifyResult {
   latency_ms?: number;
 }
 
+// Cumulative model usage for one session, pushed by the runtime `usage` WS
+// event (docs/design/world-state-plan.md D2/D4). Tokens are provider-reported;
+// cache_read is the prompt-cache hit portion billed at cache rates.
+export interface SessionUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  calls: number;
+}
+
+// One WorldState change announced via the `context.updated` WS event (C3).
+export interface ContextChange {
+  section: string; // environment | permissions | agent | skills | memory | mcp
+  summary: string;
+}
+
 export interface WorkflowStep {
   id: string;
   title: string;

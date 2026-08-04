@@ -6,7 +6,7 @@ import { useGinno } from "@/lib/store";
 import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
-import { InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
+import { ContextBlocks, InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
 import { DiffView } from "@/components/workflow/DiffView";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
@@ -30,11 +30,12 @@ import {
   triggerWorkflowRun,
 } from "@/lib/runtime";
 import type { WorkflowRun } from "@/lib/types";
-import type { AgentConfig, SessionMeta } from "@/lib/types";
+import type { AgentConfig, ContextChange, SessionMeta, SessionUsage } from "@/lib/types";
 
 interface ChatMsg {
   id: string;
-  role: "user" | "assistant";
+  // "system" = WorldState context chip rows (centered, not a bubble)
+  role: "user" | "assistant" | "system";
   blocks: Block[];
   agentId?: string | null;
   agentName?: string;
@@ -256,9 +257,11 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
 export function ChatStream({
   session,
   onRunningChange,
+  onUsageChange,
 }: {
   session: SessionMeta | null;
   onRunningChange?: (b: boolean) => void;
+  onUsageChange?: (u: SessionUsage) => void;
 }) {
   const g = useGinno();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -651,6 +654,46 @@ export function ChatStream({
         markDelivered(sid);
         mutateLive(sid, { event: "token.delta", content: (ev.message as string) || "" });
         break;
+      case "context.updated": {
+        // WorldState change announcement (world-state-plan §7). Chip display
+        // level table: environment-only changes (date rollover) stay SILENT in
+        // the UI; everything else gets a centered context row.
+        const changes = ((ev.changes as ContextChange[]) || []).filter(Boolean);
+        const visible = changes.filter((c) => c.section !== "environment");
+        if (!visible.length) break; // environment-only (date rollover) = silent
+        const rows = visible.map((c): Block => ({ kind: "context", text: c.summary }));
+        storeRef.current[sid] = [
+          ...(storeRef.current[sid] ?? []),
+          { id: mid(), role: "system" as const, blocks: rows },
+        ];
+        syncDisplay(sid);
+        break;
+      }
+      case "context.compacted": {
+        // History compaction announcement (E3) — always visible.
+        const n = Number(ev.compacted_messages ?? 0);
+        storeRef.current[sid] = [
+          ...(storeRef.current[sid] ?? []),
+          {
+            id: mid(),
+            role: "system" as const,
+            blocks: [
+              {
+                kind: "context",
+                text: `对话已压缩：${n} 条较早的消息被摘要替代，最近的对话原样保留。`,
+              },
+            ],
+          },
+        ];
+        syncDisplay(sid);
+        break;
+      }
+      case "usage": {
+        // Session-cumulative model usage (D2) → TopBar counter via callback.
+        const s = ev.session as SessionUsage | undefined;
+        if (s && typeof s.input_tokens === "number") onUsageChange?.(s);
+        break;
+      }
       case "message.end":
         markDelivered(sid);
         liveBySessionRef.current[sid] = null;
@@ -1169,7 +1212,12 @@ export function ChatStream({
           )}
 
           {messages.map((m) =>
-            m.role === "user" ? (
+            m.role === "system" ? (
+              <ContextBlocks
+                key={m.id}
+                blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
+              />
+            ) : m.role === "user" ? (
               <div key={m.id} className="flex flex-col items-end gap-1">
                 <TurnIdChip turnId={m.turnId} />
                 {/* w-full (not max-w-full): the row width must be definite so the

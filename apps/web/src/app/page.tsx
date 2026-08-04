@@ -6,10 +6,14 @@ import { TopBar } from "@/components/shell/TopBar";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
+import type { SessionUsage } from "@/lib/types";
 
 export default function WorkspacePage() {
   const g = useGinno();
   const [running, setRunning] = useState(false);
+  // Session-cumulative model usage (world-state-plan D2/D3), pushed up from
+  // the chat socket and rendered as a small counter in the TopBar.
+  const [usage, setUsage] = useState<SessionUsage | null>(null);
   const didInit = useRef(false);
 
   // pick / create an active session once data is loaded
@@ -30,11 +34,17 @@ export default function WorkspacePage() {
   const agent = session ? g.agents.find((a) => a.id === session.agent_id) ?? null : null;
   const modelLabel = session?.model || session?.provider || g.defaultProvider || "model";
 
+  // Usage counters are per runtime-session; reset the display on session switch
+  // (the next `usage` event re-populates it from the server's accumulator).
+  useEffect(() => {
+    setUsage(null);
+  }, [g.activeSessionId]);
+
   return (
     <div className="flex min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar session={session} agent={agent} running={running} modelLabel={modelLabel} />
-        <ChatStream session={session} onRunningChange={setRunning} />
+        <TopBar session={session} agent={agent} running={running} modelLabel={modelLabel} usage={usage} />
+        <ChatStream session={session} onRunningChange={setRunning} onUsageChange={setUsage} />
       </div>
       <RightPanel />
       <SheetViewer />

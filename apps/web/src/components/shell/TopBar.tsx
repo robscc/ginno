@@ -5,20 +5,28 @@ import { useState } from "react";
 import { MoreVertical, Globe } from "lucide-react";
 import * as api from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
-import type { AgentConfig, SessionMeta } from "@/lib/types";
+import type { AgentConfig, SessionMeta, SessionUsage } from "@/lib/types";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
 
 export function TopBar({
   session,
   agent,
   running,
   modelLabel,
+  usage,
 }: {
   session: SessionMeta | null;
   agent: AgentConfig | null;
   running: boolean;
   modelLabel: string;
+  usage?: SessionUsage | null;
 }) {
   const router = useRouter();
   const g = useGinno();
@@ -55,6 +63,18 @@ export function TopBar({
       </span>
 
       <div className="ml-auto flex items-center gap-2">
+        {usage && usage.calls > 0 && (
+          <span
+            className="pill font-mono text-[11px]"
+            style={{ background: "#3b82f61a", color: "#93c5fd" }}
+            title={`本次运行累计：输入 ${usage.input_tokens} tokens（其中缓存命中 ${usage.cache_read_tokens}），输出 ${usage.output_tokens} tokens，模型调用 ${usage.calls} 次`}
+          >
+            ↑{fmtTokens(usage.input_tokens)} ↓{fmtTokens(usage.output_tokens)}
+            {usage.cache_read_tokens > 0 && (
+              <span style={{ color: "#4ade80" }}> ⚡{Math.round((usage.cache_read_tokens / Math.max(1, usage.input_tokens)) * 100)}%</span>
+            )}
+          </span>
+        )}
         <button
           onClick={() => router.push("/settings/model-api")}
           className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted hover:bg-card hover:text-txt"
