@@ -63,6 +63,25 @@ _DEFAULT_SETTINGS = {
         "ask": ["Bash(*)", "bash(*)", "Write(*)", "Edit(*)", "write_file", "edit_file", "analyze_table", "mcp_vault_write_*", "mcp_vault_edit_*", "mcp_vault_create_*", "mcp_vault_move_*"],
     },
     "hooks": {},
+    # Context engineering (docs/design/world-state-plan.md). All keys have
+    # safe defaults in world_state.context_settings(); values here override.
+    "context": {
+        # Master switch for WorldState sections + change announcements (C1-C3)
+        "world_state": True,
+        # Anthropic cache_control breakpoint on the stable system layer (B3)
+        "cache_control": True,
+        # E2: middle-truncate tool outputs beyond this size before history
+        "tool_output_max_chars": 20000,
+        # E3: local history summarization when estimated tokens exceed threshold
+        "compaction_enabled": True,
+        "compact_threshold_tokens": 100000,
+        "compact_keep_turns": 3,
+        # E5: "delta" stores append-only message increments per checkpoint;
+        # "full" restores the legacy every-step full snapshot
+        "checkpoint_mode": "delta",
+        # A6: skills index budget (chars) inside the stable system layer
+        "skills_index_max_chars": 1500,
+    },
     "knowledge": {
         "enabled": False,
         "vault_path": "",

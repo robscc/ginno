@@ -50,12 +50,18 @@ def script(
     text: str = "",
     tool_calls: list[dict] | None = None,
     msg_id: str | None = None,
+    usage: dict | None = None,
 ) -> AIMessage:
-    """Build one scripted assistant turn — plain text and/or tool calls."""
+    """Build one scripted assistant turn — plain text and/or tool calls.
+
+    ``usage`` attaches ``usage_metadata`` (provider token counters) so tests
+    can exercise usage telemetry (plan D1/D2) end to end.
+    """
     return AIMessage(
         content=text,
         tool_calls=tool_calls or [],
         id=msg_id or f"fake_{uuid.uuid4().hex[:8]}",
+        **({"usage_metadata": usage} if usage else {}),
     )
 
 
@@ -131,10 +137,17 @@ class ScriptedChatModel(BaseChatModel):
 
     @staticmethod
     def _iter_chunks(msg: AIMessage):
-        """Yield ChatGenerationChunks for the messages stream mode."""
+        """Yield ChatGenerationChunks for the messages stream mode.
+
+        The LAST chunk carries the scripted message's ``usage_metadata`` (when
+        set), mirroring real providers that report usage on the final chunk —
+        this drives the server's usage telemetry (plan D1/D2) in tests.
+        """
         cid = msg.id or f"fake_{uuid.uuid4().hex[:8]}"
+        usage = getattr(msg, "usage_metadata", None)
         if msg.tool_calls:
-            for tc in msg.tool_calls:
+            last = len(msg.tool_calls) - 1
+            for i, tc in enumerate(msg.tool_calls):
                 # 1) name-first chunk with empty args → fires server "tool.start"
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(
@@ -145,7 +158,7 @@ class ScriptedChatModel(BaseChatModel):
                         ],
                     )
                 )
-                # 2) args chunk
+                # 2) args chunk (final one carries usage)
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(
                         content="",
@@ -153,11 +166,18 @@ class ScriptedChatModel(BaseChatModel):
                         tool_call_chunks=[
                             {"name": None, "id": None, "args": json.dumps(tc.get("args") or {}), "index": 0}
                         ],
+                        **({"usage_metadata": usage} if i == last and usage else {}),
                     )
                 )
         else:
             content = msg.content if isinstance(msg.content, str) else ""
-            yield ChatGenerationChunk(message=AIMessageChunk(content=content, id=cid))
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content=content,
+                    id=cid,
+                    **({"usage_metadata": usage} if usage else {}),
+                )
+            )
 
 
 def _scripts_from_env() -> list[AIMessage]:
@@ -187,7 +207,13 @@ def _scripts_from_env() -> list[AIMessage]:
             script_tool_call(tc.get("name", ""), tc.get("args") or {})
             for tc in (item.get("tool_calls") or [])
         ]
-        turns.append(script(text=item.get("content", ""), tool_calls=calls))
+        turns.append(
+            script(
+                text=item.get("content", ""),
+                tool_calls=calls,
+                usage=item.get("usage"),  # optional per-turn token counters
+            )
+        )
     return turns
 
 

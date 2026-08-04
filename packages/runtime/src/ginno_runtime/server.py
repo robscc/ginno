@@ -38,7 +38,15 @@ from . import providers as prov_mod
 from .agents.memory import ensure_agent_memory
 from .checkpointer import FileCheckpointer
 from . import commands as _commands
-from .graph import BLOCK_PREFIX, build_all_tools, build_graph
+from .graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context
+from .usage import add_usage, cache_hit_ratio, empty_usage, extract_usage
+from .world_state import (
+    TURN_CONTEXT_PREFIX,
+    ALL_CONTEXT_PREFIXES,
+    SessionCtx,
+    context_settings,
+    sync_world_state,
+)
 from .tools.render_tools import RENDER_TOOL_NAMES
 from .hooks.dispatcher import HookDispatcher
 from .models import build_model
@@ -156,6 +164,9 @@ class CreateSessionRequest(BaseModel):
 # Session registry: holds the compiled graph + metadata (in-memory; the
 # on-disk source of truth for the list is the per-slug session index).
 _SESSIONS: dict[str, dict[str, Any]] = {}
+# Per-session cumulative model usage (plan D2/D4). In-memory only — resets on
+# runtime restart, matching the "this app session" meaning users expect.
+_USAGE_BY_SESSION: dict[str, dict[str, int]] = {}
 
 # Background workflow-run tasks (run_id -> asyncio.Task); kept alive + awaitable
 # so the run trigger can be fire-and-forget in prod yet deterministic in tests.
@@ -286,12 +297,14 @@ async def create_session(req: CreateSessionRequest) -> dict:
 
     mcp_tools = _mcp.all_langchain_tools() if _mcp else []
     session_id = uuid.uuid4().hex
+    all_tools = build_all_tools(mcp_tools)
     graph = build_graph(
         model=model,
         project_slug=req.project_slug,
         workspace=req.workspace,
         mcp_tools=mcp_tools,
         hook_dispatcher=_hooks,
+        all_tools=all_tools,
     )
     ag = _agent_lookup(agent_id)
     if ag:
@@ -323,6 +336,11 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "model_provider": provider,
         "model_name": model_name,
         "graph": graph,
+        # WorldState inputs (plan C1): the model for compaction summaries and
+        # tool-name rosters for the agent/mcp sections' snapshots.
+        "model": model,
+        "all_tool_names": [t.name for t in all_tools],
+        "mcp_tool_names": [t.name for t in mcp_tools],
     }
     # return the meta shape (with `id`) so the frontend SessionMeta matches
     return {**meta, "ok": True}
@@ -560,8 +578,25 @@ def _messages_to_ui(
 
     for m in messages:
         if isinstance(m, HumanMessage):
+            content_raw = getattr(m, "content", "")
+            # WorldState scaffolding messages (plan C2/E3/E4/B1): render the
+            # user-facing ones as centered "context" rows (chips in the
+            # transcript); hide the per-turn context bundle entirely — it is
+            # model scaffolding, not conversation.
+            if isinstance(content_raw, str) and content_raw.startswith(ALL_CONTEXT_PREFIXES):
+                if content_raw.startswith(TURN_CONTEXT_PREFIX):
+                    continue
+                flush_assistant()
+                ui.append(
+                    {
+                        "id": getattr(m, "id", None),
+                        "role": "system",
+                        "blocks": [{"kind": "context", "text": content_raw}],
+                    }
+                )
+                continue
             flush_assistant()
-            blocks = _content_ui_blocks(getattr(m, "content", ""))
+            blocks = _content_ui_blocks(content_raw)
             if attached_files and not ui:
                 # first user bubble carries the turn's file chips
                 file_blocks = [
@@ -2179,12 +2214,15 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         model = build_model(provider, model_name)
     except ValueError:
         return None
+    mcp_tools = _mcp.all_langchain_tools() if _mcp else []
+    all_tools = build_all_tools(mcp_tools)
     graph = build_graph(
         model=model,
         project_slug=slug,
         workspace=meta.get("workspace") or "/tmp/gw",
-        mcp_tools=_mcp.all_langchain_tools() if _mcp else [],
+        mcp_tools=mcp_tools,
         hook_dispatcher=_hooks,
+        all_tools=all_tools,
     )
     s = {
         "session_id": session_id,
@@ -2196,6 +2234,9 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "model_provider": provider,
         "model_name": model_name,
         "graph": graph,
+        "model": model,
+        "all_tool_names": [t.name for t in all_tools],
+        "mcp_tool_names": [t.name for t in mcp_tools],
     }
     _SESSIONS[session_id] = s
     return s
@@ -2579,11 +2620,78 @@ async def _run_stream(
     if attached and not (user_text or "").strip():
         # Drop with no text: synthesize a default intent so the turn still runs.
         content = "请概览我附加的文件：结构、数据质量与关键指标，并给出简短结论。"
+
+    session_id = session.get("session_id", "")
+    slug = session["project_slug"]
+    turn_id = ((config or {}).get("configurable") or {}).get("turn_id")
+    effective_agent = agent_id or session.get("agent_id") or ""
+
+    def _world_ctx() -> SessionCtx:
+        return SessionCtx(
+            session_id=session_id,
+            project_slug=slug,
+            agent_id=effective_agent or None,
+            mcp_tool_names=list(session.get("mcp_tool_names") or []),
+            all_tool_names=list(session.get("all_tool_names") or []),
+        )
+
+    # E3 — history compaction, checked BEFORE this turn's messages land.
+    # Never fires while an interrupt is pending (guarded inside). Failures are
+    # logged and swallowed: compaction is an optimization, never a blocker.
+    compaction_stats = None
+    try:
+        from .compaction import maybe_compact_history
+
+        compaction_stats = await maybe_compact_history(session, config, ctx_factory=_world_ctx)
+    except Exception:
+        _log.exception("compaction_failed session=%s", session_id)
+    if compaction_stats:
+        await ws.send_text(
+            _ev(
+                "context.compacted",
+                {
+                    "compacted_messages": compaction_stats["compacted_messages"],
+                    "kept_messages": compaction_stats["kept_messages"],
+                },
+                turn_id,
+            )
+        )
+
+    # C1/C2 — WorldState diff against the session baseline. First sync only
+    # records the baseline (the initial system prompt already carries the
+    # world); later syncs may yield ONE merged update message + chip event.
+    update_text = None
+    if context_settings().get("world_state", True):
+        try:
+            update_text, chip_changes = sync_world_state(_world_ctx())
+        except Exception:
+            _log.exception("world_state_sync_failed session=%s", session_id)
+            update_text, chip_changes = None, []
+        if chip_changes:
+            await ws.send_text(_ev("context.updated", {"changes": chip_changes}, turn_id))
+
+    # B1 — per-turn volatile context (wiki retrieval / attached files /
+    # @mentions) rides a tail message instead of the stable system prompt.
+    turn_ctx_text = build_turn_context(
+        query=user_text or "",
+        attached_files=attached,
+        mention_context=mention_context,
+    )
+
+    messages: list = []
+    if compaction_stats and compaction_stats.get("reinject"):
+        messages.append(HumanMessage(content=compaction_stats["reinject"]))  # E4
+    if update_text:
+        messages.append(HumanMessage(content=update_text))
+    if turn_ctx_text:
+        messages.append(HumanMessage(content=f"{TURN_CONTEXT_PREFIX}\n{turn_ctx_text}"))
+    messages.append(HumanMessage(content=content))
+
     input_state = {
-        "messages": [HumanMessage(content=content)],
+        "messages": messages,
         "workspace": session["workspace"],
         "project_slug": session["project_slug"],
-        "agent_id": agent_id or session.get("agent_id") or "",
+        "agent_id": effective_agent,
         "active_skills": [skill_name] if skill_name else [],
         "pending_tool_calls": [],
         "attached_files": attached,
@@ -2591,6 +2699,9 @@ async def _run_stream(
         # must not leak into the next turn (same last-value-wins semantics as
         # attached_files; there is no reducer on this key).
         "mention_context": mention_context or [],
+        # WorldState mcp section input (A7); persists across steps like the
+        # other channels, refreshed on every invoke.
+        "mcp_tool_names": list(session.get("mcp_tool_names") or []),
     }
     await _stream_graph(ws, graph, config, input_state=input_state)
 
@@ -2761,6 +2872,23 @@ async def _stream_graph(
                 for node_name, delta in (payload or {}).items():
                     if node_name == "agent":
                         for m in (delta or {}).get("messages", []):
+                            # D2 — per-call usage + session accumulator. Only
+                            # complete AIMessages carry usage_metadata (never
+                            # streamed chunks), so this fires once per LLM call.
+                            u = extract_usage(m)
+                            if u:
+                                acc = _USAGE_BY_SESSION.setdefault(session_id, empty_usage())
+                                add_usage(acc, u)
+                                await safe_send(
+                                    emit(
+                                        "usage",
+                                        {
+                                            "turn": u,
+                                            "session": dict(acc),
+                                            "cache_hit_ratio": cache_hit_ratio(acc),
+                                        },
+                                    )
+                                )
                             for tc in getattr(m, "tool_calls", []) or []:
                                 nm = tc.get("name")
                                 args = tc.get("args") or {}
