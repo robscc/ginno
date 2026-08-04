@@ -79,8 +79,11 @@ web:
 	cd $(ROOT) && pnpm --filter @ginno/web build
 
 ## e2e-ui: packaged-UI Playwright e2e — 真浏览器验证列表/添加session（缺 chromium 自动安装）
+# Sync with --extra docs too: a bare `--group test` sync would UNINSTALL the
+# docs extras (pandas/openpyxl/…), silently breaking the files-preview unit
+# tests afterward.
 e2e-ui:
-	cd $(RUNTIME) && uv sync --group test && uv run --group test pytest tests/e2e/test_packaged_ui_playwright.py -q
+	cd $(RUNTIME) && uv sync --group test --extra docs && uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_playwright.py -q
 
 ## clean: remove build artifacts (web export + PyInstaller output)
 clean:
