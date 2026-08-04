@@ -55,6 +55,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("GINNO_HOME", str(tmp_path))
     # Process-wide state that the lifespan does NOT reset between tests.
     server._SESSIONS.clear()
+    server._USAGE_BY_SESSION.clear()
     server._mcp = None
     server._hooks = None
     # Keep the default Playwright MCP out of unrelated tests (it would spawn a

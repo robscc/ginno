@@ -22,8 +22,17 @@ from ginno_runtime import artifacts as art_store
 from ginno_runtime import paths
 from ginno_runtime import workflows as wf_store
 from ginno_runtime.files import reset_registries
+from ginno_runtime.world_state import TURN_CONTEXT_PREFIX
 
 pytestmark = pytest.mark.e2e
+
+
+def turn_context_of(model) -> str:
+    """The last per-turn context message (plan B1) the model received."""
+    for h in reversed(model._humans):
+        if isinstance(h, str) and h.startswith(TURN_CONTEXT_PREFIX):
+            return h
+    return ""
 
 
 @pytest.fixture(autouse=True)
@@ -147,9 +156,10 @@ def test_artifact_mention_attaches_file_without_dup_row(
     with ws_conv(sid) as conv:
         conv.invoke("帮我看看这个数据", mentions=[{"kind": "artifact", "id": art["id"]}])
         conv.recv_until("message.end", "error")
-    sys_prompt = model._captured[-1]
-    assert "<attached_files>" in sys_prompt
-    assert "sales.csv" in sys_prompt
+    # plan B1: attached files ride the turn-context message, not the system
+    turn_ctx = turn_context_of(model)
+    assert "<attached_files>" in turn_ctx
+    assert "sales.csv" in turn_ctx
     # no duplicate artifact row was created by the resolution path
     rows = [a for a in art_store.list_artifacts("default") if a.get("name") == "sales.csv"]
     assert len(rows) == 1
@@ -169,10 +179,10 @@ def test_workflow_mention_injects_context(create_session, ws_conv):
     with ws_conv(sid) as conv:
         conv.invoke("跑一下", mentions=[{"kind": "workflow", "id": wf_id}])
         conv.recv_until("message.end", "error")
-    sys_prompt = model._captured[-1]
-    assert "<mentioned_workflow>" in sys_prompt
-    assert "PR triage flow" in sys_prompt
-    assert "Fetch PRs" in sys_prompt
+    turn_ctx = turn_context_of(model)
+    assert "<mentioned_workflow>" in turn_ctx
+    assert "PR triage flow" in turn_ctx
+    assert "Fetch PRs" in turn_ctx
 
 
 def test_memory_mention_injects_memory(create_session, ws_conv, isolated_home):
@@ -182,9 +192,9 @@ def test_memory_mention_injects_memory(create_session, ws_conv, isolated_home):
     with ws_conv(sid) as conv:
         conv.invoke("hi", mentions=[{"kind": "memory"}])
         conv.recv_until("message.end", "error")
-    sys_prompt = model._captured[-1]
-    assert "<mentioned_memory>" in sys_prompt
-    assert "先给结论再给细节" in sys_prompt
+    turn_ctx = turn_context_of(model)
+    assert "<mentioned_memory>" in turn_ctx
+    assert "先给结论再给细节" in turn_ctx
 
 
 def test_memory_mention_empty_skipped(create_session, ws_conv):
@@ -221,6 +231,6 @@ def test_mention_token_fallback_without_structured_list(create_session, ws_conv)
         # raw API style: token in text, no structured mentions key
         conv.send({"type": "invoke", "message": "@workflow:deploy run it"})
         conv.recv_until("message.end", "error")
-    sys_prompt = model._captured[-1]
-    assert "<mentioned_workflow>" in sys_prompt
-    assert "Ship it" in sys_prompt
+    turn_ctx = turn_context_of(model)
+    assert "<mentioned_workflow>" in turn_ctx
+    assert "Ship it" in turn_ctx

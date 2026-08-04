@@ -59,21 +59,25 @@ def _upload(client, sid: str, name: str, data: bytes, mime="text/csv") -> dict:
 
 
 def test_invoke_files_inject_attachment_context(client, create_session, ws_conv, ws_dir):
-    """The model sees the attached file (path + schema) in its system prompt."""
+    """The model sees the attached file (path + schema) in the turn-context
+    message (plan B1 — volatile content no longer rides the system prompt)."""
     seen_prompts: list[str] = []
+    seen_humans: list[str] = []
 
     class EchoModel:
-        """Captures the system prompt, answers plainly."""
+        """Captures the system prompt + human messages, answers plainly."""
 
         def bind_tools(self, tools):
             return self
 
         async def ainvoke(self, messages, **kw):
-            from langchain_core.messages import AIMessage, SystemMessage
+            from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
             for m in messages:
                 if isinstance(m, SystemMessage):
                     seen_prompts.append(str(m.content))
+                elif isinstance(m, HumanMessage):
+                    seen_humans.append(str(m.content))
             return AIMessage(content="已收到文件。")
 
     sid = create_session(EchoModel(), workspace=str(ws_dir))
@@ -91,12 +95,19 @@ def test_invoke_files_inject_attachment_context(client, create_session, ws_conv,
         conv.recv_until("message.end", "error")
 
     assert seen_prompts, "model was not invoked"
-    prompt = seen_prompts[0]
-    assert "attached_files" in prompt
-    assert "data.csv" in prompt
-    assert up["path"] in prompt  # the uploaded (registry-canonical) path
-    assert "analyze_table" in prompt  # steering guidance
-    assert "a(object)" in prompt or "a(" in prompt  # schema summary present
+    from ginno_runtime.world_state import TURN_CONTEXT_PREFIX
+
+    turn_ctx = next(
+        (h for h in reversed(seen_humans) if h.startswith(TURN_CONTEXT_PREFIX)), ""
+    )
+    assert turn_ctx, "no turn-context message reached the model"
+    assert "attached_files" in turn_ctx
+    assert "data.csv" in turn_ctx
+    assert up["path"] in turn_ctx  # the uploaded (registry-canonical) path
+    assert "analyze_table" in turn_ctx  # steering guidance
+    assert "a(object)" in turn_ctx or "a(" in turn_ctx  # schema summary present
+    # stable system layer stays free of per-turn attachments (B2)
+    assert "attached_files" not in seen_prompts[0]
 
 
 def test_invoke_files_default_intent_when_no_text(client, create_session, ws_conv, ws_dir):
