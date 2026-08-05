@@ -78,6 +78,15 @@ export default function WorkflowsPage() {
             >
               <div className="flex items-center gap-2">
                 <span className="truncate text-sm font-medium text-txt">{w.name}</span>
+                {w.system && (
+                  <span
+                    className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                    style={{ color: "#8b5cf6", background: "#8b5cf61a" }}
+                    title="内置 workflow：随应用提供，不可删除"
+                  >
+                    内置
+                  </span>
+                )}
                 {w.version != null && (
                   <span className="rounded border border-line2 px-1 text-[10px] text-faint">
                     v{w.version}

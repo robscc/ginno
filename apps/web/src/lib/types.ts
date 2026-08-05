@@ -128,6 +128,7 @@ export interface WorkflowDef {
   steps: WorkflowStep[];
   version?: number; // current DSL version (P1+)
   dsl?: Record<string, unknown>; // compiled DSL (P1+); absent on legacy payloads
+  system?: boolean; // built-in seed: listed but not deletable
 }
 
 export interface WorkflowRun {

@@ -7,6 +7,8 @@ registry.ensure_todo_tools): e.g. research gets only `todo_list`
 
 from __future__ import annotations
 
+from typing import Any
+
 from .. import todos as todo_store
 
 TODO_TOOL_NAMES = {"todo_list", "todo_create", "todo_update", "todo_done", "todo_delete"}
@@ -19,6 +21,9 @@ def _fmt(t: dict) -> str:
     cat = t.get("category") or ""
     due = t.get("due") or ""
     tail = " | ".join(x for x in (cat, due) if x)
+    for x in t.get("ext") or []:
+        if x.get("provider"):
+            tail = " | ".join(x for x in (tail, f"ext:{x.get('provider')}:{x.get('id')}") if x)
     return f"[{t['id']}] [{mark}] ({pri}) {t['title']}" + (f"  | {tail}" if tail else "")
 
 
@@ -30,19 +35,39 @@ def todo_list() -> str:
     return "\n".join(_fmt(t) for t in items)
 
 
-def todo_create(title: str, priority: str = "medium", category: str = "", due: str = "") -> str:
-    """Add a TODO item. priority in {high,medium,low}. Returns the new item incl. id."""
+def todo_create(
+    title: str,
+    priority: str = "medium",
+    category: str = "",
+    due: str = "",
+    ext: Any = None,
+) -> str:
+    """Add a TODO item. priority in {high,medium,low}. `ext` links the item to
+    external TODO-platform twins for bidirectional sync, e.g.
+    [{"provider": "dingtalk", "id": "<platform todo id>"}]. Returns the new item."""
     if priority not in ("high", "medium", "low"):
         priority = "medium"
-    t = todo_store.create_todo({"title": title, "priority": priority, "category": category, "due": due})
+    t = todo_store.create_todo(
+        {"title": title, "priority": priority, "category": category, "due": due, "ext": ext or []}
+    )
     return "created " + _fmt(t)
 
 
-def todo_update(todo_id: str, title: str = "", priority: str = "", category: str = "", due: str = "") -> str:
-    """Edit fields of a TODO item. Empty string = leave unchanged."""
+def todo_update(
+    todo_id: str,
+    title: str = "",
+    priority: str = "",
+    category: str = "",
+    due: str = "",
+    ext: Any = None,
+) -> str:
+    """Edit fields of a TODO item. Empty string = leave unchanged. `ext` replaces
+    the external ref list (e.g. attach [{"provider": "dingtalk", "id": ...}])."""
     patch = {k: v for k, v in {"title": title, "priority": priority, "category": category, "due": due}.items() if v}
     if priority and priority not in ("high", "medium", "low"):
         patch.pop("priority", None)
+    if ext is not None:
+        patch["ext"] = ext
     t = todo_store.update_todo(todo_id, patch)
     return ("updated " + _fmt(t)) if t else f"not found: {todo_id}"
 

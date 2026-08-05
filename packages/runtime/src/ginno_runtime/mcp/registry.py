@@ -188,6 +188,22 @@ class _LiveServer:
 
         async def _arun(**kwargs: Any) -> str:
             payload = {k: v for k, v in kwargs.items() if v is not None}
+            # LLMs serialize array/object MCP args inconsistently (some drop the
+            # space in '["a","b"]'), and certain gateways string-split on ", " —
+            # so a space-less string OR a real array both come back empty.
+            # Canonicalize any JSON-looking arg to json.dumps form (', ' joined)
+            # so every spelling reaches the server identically.
+            for k, v in list(payload.items()):
+                s = v.strip() if isinstance(v, str) else None
+                if s and s[:1] in ("[", "{"):
+                    try:
+                        parsed = json.loads(s)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, (list, dict)):
+                        payload[k] = json.dumps(parsed, ensure_ascii=False)
+                elif isinstance(v, (list, dict)):
+                    payload[k] = json.dumps(v, ensure_ascii=False)
             result = await self.session.call_tool(tool_name, payload)
             # MCP returns CallToolResult with .content list
             contents = getattr(result, "content", None) or []

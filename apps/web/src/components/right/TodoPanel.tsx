@@ -23,6 +23,8 @@ export function TodoPanel() {
   const [providers, setProviders] = useState<TodoProvider[]>([]);
   const [sync, setSync] = useState<TodoSyncEntry[]>([]);
   const [menu, setMenu] = useState(false);
+  const [syncBusy, setSyncBusy] = useState<string | null>(null);
+  const [syncMsg, setSyncMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   const refreshSync = useCallback(() => {
     api
@@ -50,6 +52,47 @@ export function TodoPanel() {
     return undefined;
   }
 
+  // Pull with visible progress + outcome. The run is background; poll its
+  // status and then report how many items were mirrored, so "sync" never
+  // looks like a no-op (previously a silent button when the platform had
+  // nothing new).
+  async function pull(p: TodoProvider) {
+    if (syncBusy) return;
+    setMenu(false);
+    setSyncBusy(p.id);
+    setSyncMsg(null);
+    const before = new Set(g.todos.map((t) => t.id));
+    const flash = (text: string, ok: boolean) => {
+      setSyncMsg({ text, ok });
+      window.setTimeout(() => setSyncMsg(null), 8000);
+    };
+    try {
+      const r = await api.pullTodos(p.id);
+      if (!r?.ok || !r.run) {
+        flash(`同步失败：${r?.error || "触发失败"}`, false);
+        return;
+      }
+      let status = "running";
+      for (let i = 0; i < 40; i++) {
+        await new Promise((res) => setTimeout(res, 4000));
+        const run = await api.getWorkflowRun(r.run.id);
+        status = run?.run?.status ?? status;
+        if (status === "done" || status === "failed") break;
+      }
+      const after = await api.listTodos();
+      const added = after.filter((t) => !before.has(t.id)).length;
+      await g.reloadTodos();
+      refreshSync();
+      if (status === "failed") flash("同步失败（详见 Workflow 面板）", false);
+      else if (added > 0) flash(`同步完成：新增 ${added} 条`, true);
+      else flash("同步完成：平台无新的未完成待办", true);
+    } catch {
+      flash("同步失败：无法连接运行时", false);
+    } finally {
+      setSyncBusy(null);
+    }
+  }
+
   const visible = g.todos.filter((t) => filter === "all" || t.priority === filter);
   const total = g.todos.length;
   const done = g.todos.filter((t) => t.done).length;
@@ -72,10 +115,12 @@ export function TodoPanel() {
         <div className="relative ml-auto">
           <button
             onClick={() => setMenu((m) => !m)}
+            disabled={!!syncBusy}
             title="与外部 TODO 平台同步（settings → todo_providers 配置）"
-            className="flex items-center gap-1 text-xs text-muted hover:text-txt"
+            className="flex items-center gap-1 text-xs text-muted hover:text-txt disabled:opacity-50"
           >
-            <RefreshCw className="h-3.5 w-3.5" /> 同步
+            <RefreshCw className={`h-3.5 w-3.5 ${syncBusy ? "animate-spin" : ""}`} />
+            {syncBusy ? "同步中" : "同步"}
           </button>
           {menu && (
             <>
@@ -89,13 +134,7 @@ export function TodoPanel() {
                 {providers.map((p) => (
                   <button
                     key={p.id}
-                    onClick={() => {
-                      setMenu(false);
-                      void api.pullTodos(p.id).then(() => {
-                        g.reloadTodos();
-                        refreshSync();
-                      });
-                    }}
+                    onClick={() => void pull(p)}
                     className="block w-full px-3 py-1.5 text-left text-muted hover:bg-card2 hover:text-txt"
                   >
                     拉取 {p.label}
@@ -112,6 +151,12 @@ export function TodoPanel() {
           <Plus className="h-3.5 w-3.5" /> New
         </button>
       </div>
+
+      {syncMsg && (
+        <div className={`px-4 pb-1 text-[11px] ${syncMsg.ok ? "text-muted" : "text-red"}`}>
+          {syncMsg.text}
+        </div>
+      )}
 
       {/* filters */}
       <div className="flex gap-1.5 px-4 pb-2">

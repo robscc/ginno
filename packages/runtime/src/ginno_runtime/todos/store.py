@@ -42,10 +42,16 @@ def _new_id() -> str:
 
 
 def norm_ext(v: Any) -> list[dict[str, Any]]:
-    """Normalize ext to a list of ref dicts (dict or list accepted; unknown
-    keys preserved). Dedup key for callers is (provider, id)."""
+    """Normalize ext to a list of ref dicts (dict / list / JSON-string accepted;
+    unknown keys preserved). Models often stringify the list, so parse it.
+    Dedup key for callers is (provider, id)."""
     if not v:
         return []
+    if isinstance(v, str):
+        try:
+            v = json.loads(v.strip())
+        except json.JSONDecodeError:
+            return []
     if isinstance(v, dict):
         v = [v]
     if not isinstance(v, list):

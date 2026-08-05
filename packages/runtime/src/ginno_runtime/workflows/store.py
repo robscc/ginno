@@ -84,6 +84,12 @@ def _is_new_layout(wf_id: str) -> bool:
     return _meta_path(wf_id).exists()
 
 
+def is_system_def(wf_id: str) -> bool:
+    """Built-in (seeded) workflow defs are protected from deletion but stay
+    listed like any other workflow."""
+    return bool((_read_json(_meta_path(wf_id), None) or {}).get("system"))
+
+
 def _is_legacy(wf_id: str) -> bool:
     return _legacy_path(wf_id).exists()
 
@@ -162,6 +168,7 @@ def _build_view(wf_id: str, d: dict, current: int, meta: dict | None = None) -> 
         "version": current,
         "dsl": d,
         "steps": wf_dsl.steps_from_dsl(d),
+        "system": bool((meta or {}).get("system")),
     }
 
 
@@ -227,6 +234,7 @@ def create_def(data: dict[str, Any]) -> dict[str, Any]:
             "description": d["description"],
             "current": 1,
             "versions": [1],
+            "system": bool(data.get("system")),
         },
     )
     return get_def(wf_id)
@@ -451,12 +459,15 @@ _SEED = [
                     "skills": ["{{skill}}"],
                     "goal": (
                         "拉取我在外部 TODO 平台 {{provider}} 上【未完成】的待办。"
-                        "优先使用注入的 skill；若没有注入 skill，则直接调用 {{mcp}} 服务的 MCP 工具"
-                        "（工具名以 mcp_{{mcp}}_ 开头，先列出可用工具再选）。"
+                        "调用列表工具时参数必须严格为："
+                        '{"pageNum": "1", "pageSize": "20", "roleTypes": ["creator", "executor"], '
+                        '"todoStatus": "false"}（roleTypes 必填且是数组、pageSize 用 20——该网关对 50 返回空；缺字段会报错）。'
                         "对每一条：先 todo_list 查本地；若已存在相同 ext（provider={{provider}} 且 id 相同）"
-                        "则用 todo_update 同步标题/截止时间；否则 todo_create 创建，并传 "
-                        'ext={"provider": "{{provider}}", "id": "<平台待办id>", "title": "<标题>"}'
-                        "（有链接时加 url）。不要创建重复条目；最后 todo_list 确认。"
+                        "或标题相同的条目，则用 todo_update 同步标题/截止时间并补上 ext；"
+                        "否则 todo_create 创建，且必须传 "
+                        'ext=[{"provider": "{{provider}}", "id": "<平台待办id>"}]'
+                        "（id 只放 ext，禁止塞进 category；ext 是唯一关联字段）。"
+                        "不要创建重复条目；最后 todo_list 确认。"
                     ),
                 }
             ],
@@ -486,3 +497,8 @@ def ensure_seeded() -> None:
                     _write_version(wf["id"], seed_d, commit="system seed update")
                 except Exception:
                     pass
+            # existing installs: stamp the protection flag onto old metas
+            meta = _read_json(_meta_path(wf["id"]), None)
+            if isinstance(meta, dict) and not meta.get("system"):
+                meta["system"] = True
+                _write_json(_meta_path(wf["id"]), meta)

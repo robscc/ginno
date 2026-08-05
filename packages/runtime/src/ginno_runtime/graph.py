@@ -124,6 +124,20 @@ def build_stable_system(
             "todo_done / todo_delete to change it. When you add or complete items, say so "
             "briefly. If you only have todo_list, you may read but not modify it."
         )
+        from .todos import providers as todo_providers
+
+        provs = todo_providers.list_todo_providers(project_slug)
+        if provs:
+            names = "、".join(str(p.get("label") or p["id"]) for p in provs)
+            parts.append(
+                f"External TODO platforms ({names}) mirror the local list via ext refs. "
+                "When you CREATE a todo on an external platform (via its MCP/skill tools), "
+                "ALSO call todo_create locally with ext=[{\"provider\": \"<provider id>\", "
+                "\"id\": \"<platform todo id>\", \"title\": <same title>}] so the two stay "
+                "linked (badge in the panel). When you complete a todo on the platform, "
+                "mirror it with todo_done on the local item whose ext matches. Completing a "
+                "local ext item auto-syncs back to the platform — no manual platform call."
+            )
     if any(n.startswith("workflow_") for n in allowed):
         parts.append(
             "To run a tracked multi-step process, use workflow_list / workflow_run / "

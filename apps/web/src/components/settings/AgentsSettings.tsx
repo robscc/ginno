@@ -5,6 +5,7 @@ import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { AGENT_HEX, agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import type { AgentConfig } from "@/lib/types";
 
 // Agent id doubles as the filename ~/.ginno/agents/<id>.json and the memory
@@ -44,6 +45,7 @@ export function AgentsSettings() {
   const [newName, setNewName] = useState("");
   const [createMsg, setCreateMsg] = useState<Feedback | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const get = (id: string, field: string, fallback: string): string =>
     draft[id]?.[field] ?? fallback;
@@ -112,15 +114,12 @@ export function AgentsSettings() {
     }
   }
   async function del(id: string) {
-    const lastOne = g.agents.length <= 1;
-    if (
-      !confirm(
-        `删除 Agent「${id}」？\n` +
-          `其记忆目录 ~/.ginno/agents/${id}/ 不会被删除。` +
-          (lastOne ? "\n这是最后一个 Agent，删除后会自动恢复默认的 dev / research / writer。" : ""),
-      )
-    )
-      return;
+    // Native confirm() is blocked in the Tauri WKWebView (always cancels),
+    // which made delete a no-op in the packaged app — use the app modal.
+    setDeleteTarget(id);
+  }
+
+  async function doDelete(id: string) {
     try {
       const r = await api.deleteAgent(id);
       if (r.ok) {
@@ -380,6 +379,26 @@ export function AgentsSettings() {
         </div>
         {idError && <div className="mt-1 text-xs text-red">{idError}</div>}
       </div>
+
+      {deleteTarget && (
+        <ConfirmModal
+          title="删除 Agent"
+          message={
+            `删除 Agent「${deleteTarget}」？\n` +
+            `其记忆目录 ~/.ginno/agents/${deleteTarget}/ 不会被删除。` +
+            (g.agents.length <= 1
+              ? "\n这是最后一个 Agent，删除后会自动恢复默认的 dev / research / writer。"
+              : "")
+          }
+          confirmLabel="删除"
+          onConfirm={() => {
+            const id = deleteTarget;
+            setDeleteTarget(null);
+            void doDelete(id);
+          }}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }

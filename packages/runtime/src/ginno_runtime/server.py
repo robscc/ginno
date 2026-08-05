@@ -1171,6 +1171,8 @@ async def update_workflow_endpoint(wf_id: str, data: dict) -> dict:
 
 @app.delete("/api/workflows/{wf_id}")
 async def delete_workflow_endpoint(wf_id: str) -> dict:
+    if wf_storemod.is_system_def(wf_id):
+        return {"ok": False, "error": "内置 workflow，不可删除"}
     ok = wf_store.delete_def(wf_id)
     if ok:
         await _push_global_event("workflows.changed", {})
@@ -1353,7 +1355,7 @@ def _wf_build_deps(run_id: str, workflow_id: str):
     fork = agents_reg.fork_agent(src_agent_id, f"wf-{run_id[:8]}-{src_agent_id}")
     model = build_model(fork.provider, fork.model or None)
     tools = build_all_tools(_wf_mcp_tools())
-    return wf, dsl, model, tools
+    return wf, dsl, model, tools, fork.id
 
 
 def _set_run_status(run_id: str, status: str) -> None:
@@ -1393,10 +1395,10 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
     """Background driver: fork agent, stream the engine, persist + push events."""
     from .workflows import engine as wf_engine
 
+    wf, dsl, model, tools, fork_id = _wf_build_deps(run_id, workflow_id)
+    if not wf:
+        return
     try:
-        wf, dsl, model, tools = _wf_build_deps(run_id, workflow_id)
-        if not wf:
-            return
         await _push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
         agen = wf_engine.run_workflow(dsl, run_id=run_id, model=model, tools=tools, context_override=context_override)
         await _drive_run_events(run_id, present_in, wf, agen)
@@ -1406,16 +1408,26 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
         _set_run_status(run_id, "failed")
         sync_ledger.set_status(run_id, "failed", f"{type(exc).__name__}: {exc}")
         await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "failed"})
+    finally:
+        # The fork is a per-run scratch agent; drop it so the Agents list
+        # doesn't accumulate wf-* clutter (reruns/resumes re-fork idempotently).
+        try:
+            agents_reg.delete_agent(fork_id)
+        except Exception:
+            pass
+        # Headless runs (todo sync et al.) have no present_in session; push
+        # globally so the Workflow panel lists them without a manual refresh.
+        await _push_global_event("workflows.changed", {})
 
 
 async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict, present_in: str | None = None) -> None:
     """Background driver to continue a paused run (human/supervisor decision)."""
     from .workflows import engine as wf_engine
 
+    wf, dsl, model, tools, fork_id = _wf_build_deps(run_id, workflow_id)
+    if not wf:
+        return
     try:
-        wf, dsl, model, tools = _wf_build_deps(run_id, workflow_id)
-        if not wf:
-            return
         _set_run_status(run_id, "running")
         agen = wf_engine.resume_workflow(dsl, run_id=run_id, model=model, tools=tools, resume_value=resume_value)
         await _drive_run_events(run_id, present_in, wf, agen)
@@ -1423,6 +1435,12 @@ async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict,
         wf_events.append_event(run_id, "error", error=f"{type(exc).__name__}: {exc}")
         _set_run_status(run_id, "failed")
         await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "failed"})
+    finally:
+        # paused-at-interrupt runs re-fork idempotently on next resume
+        try:
+            agents_reg.delete_agent(fork_id)
+        except Exception:
+            pass
 
 
 @app.post("/api/workflow_runs")
