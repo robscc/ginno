@@ -295,3 +295,9 @@ class MCPRegistry:
 
     def list_tools(self) -> list[str]:
         return [t.name for live in self._live.values() for t in live.tools]
+
+    def server_tools(self, server_name: str) -> list[str]:
+        """Raw tool names of one connected server ([] when not connected) —
+        used by todo-provider readiness checks (mcp link)."""
+        live = self._live.get(server_name)
+        return [t.name for t in live.tools] if live else []

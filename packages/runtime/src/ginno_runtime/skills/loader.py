@@ -34,6 +34,9 @@ class Skill:
     description: str
     trigger: str = "both"  # user-invocable | model-invocable | both
     allowed_tools: list[str] = field(default_factory=list)
+    # Declares this skill as the sync adapter for an external TODO platform
+    # (todo-provider design); makes it show up in todo provider discovery.
+    todo_provider: str = ""
     body: str = ""
     path: Path | None = None
 
@@ -54,6 +57,7 @@ def _parse_skill_file(p: Path) -> Skill | None:
         description=meta.get("description", ""),
         trigger=meta.get("trigger", "both"),
         allowed_tools=meta.get("tools", []) or [],
+        todo_provider=str(meta.get("todo_provider") or ""),
         body=body,
         path=p,
     )

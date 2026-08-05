@@ -7,6 +7,7 @@ import type {
   AgentConfig,
   Providers,
   SessionMeta,
+  SessionUsage,
   Todo,
   VerifyResult,
 } from "./types";
@@ -102,6 +103,15 @@ export async function getSessionHistory(id: string) {
     // error card so the retry affordance survives reloads / switches.
     last_error?: { turn_id?: string; message?: string } | null;
   }>(`${BASE}/sessions/${id}/history`);
+}
+
+// Per-session cumulative model usage (TopBar counter). The live `usage` WS
+// event only fires on turns; this fetch shows a session's accumulated stats
+// right after switching to it.
+export async function getSessionUsage(id: string) {
+  return json<{ ok: boolean; usage: (SessionUsage & { cache_hit_ratio?: number }) | null }>(
+    `${BASE}/sessions/${id}/usage`,
+  );
 }
 
 // ---- providers ----
@@ -445,6 +455,28 @@ export async function saveFileToDownloads(
     `${BASE}/files/${fileId}/save-to-downloads`,
     { method: "POST", headers: H, body: JSON.stringify(opts) },
   );
+}
+
+// ---- todo providers / sync (external TODO platforms) ----
+export async function listTodoProviders() {
+  return json<{ ok: boolean; providers: import("./types").TodoProvider[] }>(`${BASE}/todo-providers`);
+}
+export async function pullTodos(provider: string) {
+  return json<{ ok: boolean; error?: string; run?: { id: string } }>(`${BASE}/todos/pull`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ provider }),
+  });
+}
+export async function pushTodo(todoId: string, provider: string) {
+  return json<{ ok: boolean; error?: string; run?: { id: string } }>(`${BASE}/todos/${todoId}/push`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ provider }),
+  });
+}
+export async function todoSyncStatus() {
+  return json<{ ok: boolean; entries: import("./types").TodoSyncEntry[] }>(`${BASE}/todos/sync-status`);
 }
 
 // ---- session files (Settings → 会话文件) ----

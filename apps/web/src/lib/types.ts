@@ -8,8 +8,40 @@ export interface Todo {
   due: string;
   done: boolean;
   links: { session_id?: string; workflow_id?: string };
+  // Loose external refs — one entry per attached TODO platform. Unknown keys
+  // preserved; see runtime todo-providers for the provider registry.
+  ext?: TodoExtRef[];
   created: number;
   completed_at: number | null;
+}
+
+export interface TodoExtRef {
+  provider?: string;
+  id?: string;
+  url?: string;
+  title?: string;
+  due?: string;
+  [k: string]: unknown;
+}
+
+export interface TodoProvider {
+  id: string;
+  label: string;
+  skill?: string | null;
+  mcp?: string | null;
+  auto_push?: boolean;
+  source?: string;
+}
+
+export interface TodoSyncEntry {
+  todo_id: string;
+  provider: string;
+  ext_id: string;
+  direction: string;
+  run_id: string;
+  status: "running" | "ok" | "failed" | string;
+  error?: string;
+  at: number;
 }
 
 export interface AgentConfig {

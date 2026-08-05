@@ -345,7 +345,7 @@ class SkillsSection:
             return None
         added = sorted(new_names - old_names)
         removed = sorted(old_names - new_names)
-        parts = []
+        parts = [f"数量 {len(old_names)} → {len(new_names)}"]
         if added:
             parts.append("新增 " + ", ".join(added))
         if removed:
@@ -485,6 +485,8 @@ def render_update(changes: list[tuple[str, dict, dict]]) -> tuple[str, list[dict
             chip.append({"section": sid, "summary": text})
     if not lines:
         return "", []
+    # The prefix is a machine marker: _messages_to_ui uses it to map this
+    # message to a centered context row and strips it before display.
     return UPDATE_MSG_PREFIX + "\n" + "\n".join(lines), chip
 
 

@@ -15,6 +15,32 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+/** Click-to-copy session uuid chip — same shape as the per-turn trace chip on
+ * chat bubbles. The full id is what you grep the sidecar logs for
+ * (`session=...`); we show a short prefix to keep the bar tidy. */
+function SessionIdChip({ sessionId }: { sessionId?: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!sessionId) return null;
+  const short = sessionId.slice(0, 8);
+  return (
+    <button
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(sessionId);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        } catch {
+          /* clipboard unavailable */
+        }
+      }}
+      title={`session ${sessionId}（点击复制，用于日志定位）`}
+      className="rounded border border-line2 px-1 py-px font-mono text-[9px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
+    >
+      {copied ? "copied" : `#${short}`}
+    </button>
+  );
+}
+
 export function TopBar({
   session,
   agent,
@@ -38,6 +64,7 @@ export function TopBar({
       <h1 className="text-[15px] font-semibold tracking-tight text-txt">
         {session?.title || "New Session"}
       </h1>
+      <SessionIdChip sessionId={session?.id} />
 
       {agent && (
         <span className="pill border border-line2 bg-card text-txt">

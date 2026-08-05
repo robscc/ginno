@@ -36,16 +36,26 @@ from . import files as files_mod
 from . import paths
 from . import providers as prov_mod
 from .agents.memory import ensure_agent_memory
-from .checkpointer import FileCheckpointer
+from .checkpointer import ABANDONED_TURNS, FileCheckpointer
 from . import commands as _commands
 from .graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context
 from .usage import add_usage, cache_hit_ratio, empty_usage, extract_usage
 from .world_state import (
     TURN_CONTEXT_PREFIX,
+    UPDATE_MSG_PREFIX,
     ALL_CONTEXT_PREFIXES,
     SessionCtx,
     context_settings,
     sync_world_state,
+)
+
+# Bullets a world-state update message can start with when it was checkpointed
+# by a build that dropped the machine prefix — healed into context rows too.
+LEGACY_WS_UPDATE_MARKERS = (
+    "- 你在当前角色下的可用工具数量变化",
+    "- MCP 工具已更新",
+    "- Skills 已更新",
+    "Skills 已更新",
 )
 from .tools.render_tools import RENDER_TOOL_NAMES
 from .hooks.dispatcher import HookDispatcher
@@ -53,6 +63,8 @@ from .models import build_model
 from .mcp.registry import MCPRegistry
 from .skills.loader import SkillLoader
 from .todos import store as todo_store
+from .todos import providers as todo_providers
+from .todos import sync_ledger
 from . import artifacts as art_store
 from . import workflows as wf_store
 from .workflows import events as wf_events
@@ -100,6 +112,9 @@ _hooks: HookDispatcher | None = None
 async def lifespan(app: FastAPI):
     global _mcp, _hooks
     paths.ensure_layout()
+    # Attach the trace-file handler up front so pre-turn lifecycle lines
+    # (session_create / ws_open / ws_close) land in the log, not just turn lines.
+    _ensure_turn_log()
     # Best-effort, idempotent move of legacy session files into their per-session
     # dirs. Runs before `yield`, so nothing (uploads/previews/watchers) can race
     # it. Must never block startup on failure.
@@ -322,11 +337,9 @@ def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | 
         req.provider,
         req.model_provider,
         agent.provider if agent else None,
-        prov_mod.get_default_provider(providers),
+        prov_mod.get_default_provider(),
     ]
-    provider = next((c for c in candidates if _enabled(c)), None) or prov_mod.get_default_provider(
-        providers
-    )
+    provider = next((c for c in candidates if _enabled(c)), None) or prov_mod.get_default_provider()
     model = (
         req.model
         or req.model_name
@@ -349,6 +362,17 @@ def _agent_icon(agent_id: str | None) -> str:
 @app.get("/api/health")
 async def health() -> dict:
     return {"ok": True, "version": "0.1.0"}
+
+
+@app.get("/api/sessions/{session_id}/usage")
+async def get_session_usage(session_id: str) -> dict:
+    """Per-session cumulative model usage (the TopBar counter). The live
+    `usage` WS event only fires on turns; this lets the UI show a session's
+    accumulated stats immediately after a session switch."""
+    acc = _USAGE_BY_SESSION.get(session_id)
+    if not acc:
+        return {"ok": True, "usage": None}
+    return {"ok": True, "usage": {**acc, "cache_hit_ratio": cache_hit_ratio(acc)}}
 
 
 @app.post("/api/sessions")
@@ -395,6 +419,14 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "updated": time.time(),
     }
     _session_meta_upsert(req.project_slug, meta)
+    _log.info(
+        "session_create session=%s agent=%s provider=%s model=%s title=%r",
+        session_id,
+        agent_id,
+        provider,
+        model_name,
+        title,
+    )
     _SESSIONS[session_id] = {
         "session_id": session_id,
         "project_slug": req.project_slug,
@@ -665,15 +697,22 @@ def _messages_to_ui(
             # user-facing ones as centered "context" rows (chips in the
             # transcript); hide the per-turn context bundle entirely — it is
             # model scaffolding, not conversation.
-            if isinstance(content_raw, str) and content_raw.startswith(ALL_CONTEXT_PREFIXES):
+            if isinstance(content_raw, str) and (
+                content_raw.startswith(ALL_CONTEXT_PREFIXES)
+                or content_raw.startswith(LEGACY_WS_UPDATE_MARKERS)
+            ):
                 if content_raw.startswith(TURN_CONTEXT_PREFIX):
                     continue
                 flush_assistant()
+                # The update prefix is a machine marker — never show it.
+                display = content_raw
+                if display.startswith(UPDATE_MSG_PREFIX):
+                    display = display[len(UPDATE_MSG_PREFIX):].lstrip("\n")
                 ui.append(
                     {
                         "id": getattr(m, "id", None),
                         "role": "system",
-                        "blocks": [{"kind": "context", "text": content_raw}],
+                        "blocks": [{"kind": "context", "text": display}],
                     }
                 )
                 continue
@@ -850,12 +889,12 @@ def _refresh_session_metas() -> None:
                     c
                     for c in [
                         ag.provider if ag else None,
-                        prov_mod.get_default_provider(providers),
+                        prov_mod.get_default_provider(),
                     ]
                     if _enabled(c)
                 ),
                 None,
-            ) or prov_mod.get_default_provider(providers)
+            ) or prov_mod.get_default_provider()
             model = (ag.model if ag and ag.model else None) or prov_mod.model_for_provider(
                 providers, provider
             )
@@ -963,11 +1002,135 @@ async def create_todo_endpoint(data: dict) -> dict:
 
 @app.patch("/api/todos/{todo_id}")
 async def update_todo_endpoint(todo_id: str, data: dict) -> dict:
+    before = next((t for t in todo_store.list_todos() if t["id"] == todo_id), None)
     updated = todo_store.update_todo(todo_id, data)
     if updated is None:
         return {"ok": False, "error": "not found"}
+    # Local done → platform: for every ext ref whose provider has auto_push,
+    # trigger a todo-push workflow run (fully automatic; the checkbox IS the
+    # confirmation). Failures never roll back the local state — the ledger
+    # records them and the panel offers retry.
+    if data.get("done") and before is not None and not before.get("done"):
+        last_run = None
+        for item in updated.get("ext") or []:
+            pid = item.get("provider") or ""
+            if not item.get("id"):
+                continue
+            prov = todo_providers.get_todo_provider(pid)
+            if not prov or not prov.get("auto_push", True):
+                continue
+            ready, why = _provider_ready(prov)
+            if not ready:
+                _log.warning("todo_push_skipped todo=%s provider=%s reason=%s", todo_id, pid, why)
+                continue
+            run = _trigger_todo_workflow(
+                "todo-push",
+                prov,
+                {
+                    "ext_id": str(item["id"]),
+                    "title": updated["title"],
+                    "url": str(item.get("url") or ""),
+                },
+            )
+            if run:
+                sync_ledger.append(todo_id, pid, str(item["id"]), "push", run["id"])
+                last_run = run
+        if last_run:
+            updated = (
+                todo_store.update_todo(todo_id, {"links": {"workflow_id": last_run["id"]}})
+                or updated
+            )
     await _push_global_event("todos.changed", {})
     return {"ok": True, "todo": updated}
+
+
+def _trigger_todo_workflow(wf_id: str, prov: dict, ctx: dict) -> dict | None:
+    """Start a todo-pull/todo-push run with the provider's skill/mcp resolved
+    into context (the generic agent node injects the skill and unlocks the
+    provider's MCP server tools via {{mcp}})."""
+    import asyncio
+
+    wf = wf_store.get_def(wf_id)
+    if not wf:
+        return None
+    skill = todo_providers.resolve_skill_for(prov["id"], prov)
+    run = wf_store.create_run(wf)
+    override = {
+        **ctx,
+        "provider": prov["id"],
+        "skill": skill or prov["id"],
+        "mcp": str(prov.get("mcp") or ""),
+    }
+    task = asyncio.create_task(_run_workflow_bg(run["id"], wf_id, override, None))
+    _WF_RUN_TASKS[run["id"]] = task
+    return run
+
+
+def _provider_ready(prov: dict) -> tuple[bool, str]:
+    """A provider can sync iff it has an injectable skill OR its MCP server is
+    connected with tools. Gives actionable errors instead of pointless runs."""
+    if todo_providers.resolve_skill_for(prov["id"], prov):
+        return True, ""
+    srv = prov.get("mcp")
+    if srv:
+        if _mcp and _mcp.server_tools(srv):
+            return True, ""
+        return False, f"MCP 服务未连接或无工具: {srv}"
+    return False, f"provider {prov['id']} 既无 skill 也无可用 MCP（settings → todo_providers）"
+
+
+@app.get("/api/todo-providers")
+async def list_todo_providers_endpoint() -> dict:
+    """Discovered external TODO platforms (skill declarations + settings)."""
+    return {"ok": True, "providers": todo_providers.list_todo_providers()}
+
+
+@app.get("/api/todos/sync-status")
+async def todo_sync_status_endpoint() -> dict:
+    """Recent todo<->platform sync events (panel badges / retry affordance)."""
+    return {"ok": True, "entries": sync_ledger.latest(100)}
+
+
+@app.post("/api/todos/pull")
+async def todo_pull_endpoint(data: dict) -> dict:
+    """Pull direction: mirror a provider's open todos into the local list."""
+    pid = (data or {}).get("provider") or ""
+    prov = todo_providers.get_todo_provider(pid)
+    if not prov:
+        return {"ok": False, "error": f"unknown todo provider: {pid}"}
+    ready, why = _provider_ready(prov)
+    if not ready:
+        return {"ok": False, "error": why}
+    run = _trigger_todo_workflow("todo-pull", prov, {})
+    if not run:
+        return {"ok": False, "error": "todo-pull workflow missing"}
+    sync_ledger.append("", pid, "", "pull", run["id"])
+    return {"ok": True, "run": run}
+
+
+@app.post("/api/todos/{todo_id}/push")
+async def todo_push_endpoint(todo_id: str, data: dict) -> dict:
+    """Manual push / retry: re-trigger todo-push for one ext ref."""
+    todo = next((t for t in todo_store.list_todos() if t["id"] == todo_id), None)
+    if todo is None:
+        return {"ok": False, "error": "not found"}
+    pid = (data or {}).get("provider") or ""
+    item = next((x for x in (todo.get("ext") or []) if x.get("provider") == pid), None)
+    prov = todo_providers.get_todo_provider(pid)
+    if not item or not prov:
+        return {"ok": False, "error": f"no ext ref for provider: {pid}"}
+    ready, why = _provider_ready(prov)
+    if not ready:
+        return {"ok": False, "error": why}
+    run = _trigger_todo_workflow(
+        "todo-push",
+        prov,
+        {"ext_id": str(item["id"]), "title": todo["title"], "url": str(item.get("url") or "")},
+    )
+    if not run:
+        return {"ok": False, "error": "todo-push workflow missing"}
+    sync_ledger.append(todo_id, pid, str(item["id"]), "push", run["id"])
+    return {"ok": True, "run": run}
 
 
 @app.delete("/api/todos/{todo_id}")
@@ -1237,9 +1400,11 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
         await _push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
         agen = wf_engine.run_workflow(dsl, run_id=run_id, model=model, tools=tools, context_override=context_override)
         await _drive_run_events(run_id, present_in, wf, agen)
+        sync_ledger.set_status(run_id, "ok")
     except Exception as exc:  # pragma: no cover - defensive
         wf_events.append_event(run_id, "error", error=f"{type(exc).__name__}: {exc}")
         _set_run_status(run_id, "failed")
+        sync_ledger.set_status(run_id, "failed", f"{type(exc).__name__}: {exc}")
         await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "failed"})
 
 
@@ -1361,6 +1526,45 @@ async def delete_artifact_endpoint(artifact_id: str, project_slug: str = "defaul
     return {"ok": art_store.delete_artifact(project_slug, artifact_id)}
 
 
+def _heal_artifact_ref(art: dict, project_slug: str) -> str | None:
+    """Re-point an artifact whose file was moved — typical case: generated
+    markdown later moved/copied into the knowledge vault — so artifact links
+    and previews keep working from the new home instead of showing "file
+    missing". Searches the vault by basename/stem; on hit, rewrites the
+    artifact ref and relocates (or registers) the file-registry entry.
+    Returns the new path, or None when nothing was found."""
+    ref = art.get("ref") or ""
+    if not ref or Path(ref).is_file():
+        return None
+    try:
+        from .knowledge.config import load_knowledge_config
+
+        vault = Path(str(load_knowledge_config().vault_path)).expanduser()
+        if not vault.is_dir():
+            return None
+        name, stem = Path(ref).name, Path(ref).stem
+        hit = next(
+            (c for c in sorted(vault.rglob("*.md")) if c.name == name or c.stem == stem),
+            None,
+        )
+        if hit is None:
+            return None
+        new = str(hit)
+        art_store.set_ref(project_slug, art["id"], new)
+        reg = files_mod.get_registry(project_slug)
+        old_entry = reg.find_by_path(ref)
+        if old_entry:
+            reg.relocate(old_entry["id"], new)
+        else:
+            reg.register(
+                hit.name, new, session_id=art.get("session_id"), artifact_id=art["id"]
+            )
+        return new
+    except Exception:
+        _log.exception("artifact_ref_heal_failed artifact=%s", art.get("id"))
+        return None
+
+
 @app.get("/api/artifacts/{artifact_id}/metadata")
 async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "default") -> dict:
     """Full inspector payload for one artifact: the panel record, its file
@@ -1379,6 +1583,11 @@ async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "defa
     ref = art.get("ref") or ""
     if art.get("kind") == "file" and ref:
         reg = files_mod.get_registry(project_slug)
+        if not Path(ref).is_file():
+            # The file may have been moved into the knowledge vault —
+            # re-point ref + registry so the link heals instead of breaking.
+            if _heal_artifact_ref(art, project_slug):
+                ref = art.get("ref") or ref
         file_entry = reg.find_by_path(ref)
         path = (file_entry or {}).get("path") or ref
         exists = Path(path).is_file()
@@ -1539,6 +1748,13 @@ async def file_preview_endpoint(
     entry = files_mod.get_by_id(file_id)
     if entry is None:
         return {"ok": False, "error": f"file not found: {file_id}"}
+    if not Path(entry["path"]).is_file() and entry.get("artifact_id"):
+        # File may have been moved into the knowledge vault — heal the
+        # registry entry (via its artifact) and retry from the new path.
+        slug = entry.get("project_slug") or "default"
+        art = art_store.get_artifact(slug, entry["artifact_id"])
+        if art is not None and _heal_artifact_ref(art, slug):
+            entry = files_mod.get_by_id(file_id) or entry
     try:
         payload = files_preview.build_preview(
             entry["path"], sheet=sheet, offset=offset, limit=limit
@@ -2577,6 +2793,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
 
     await ws.accept()
     _SESSION_WS.setdefault(session_id, []).append(ws)
+    _log.info("ws_open session=%s agent=%s", session_id, session.get("agent_id"))
     graph = session["graph"]
     config = {"configurable": {"thread_id": session_id, "project_slug": session["project_slug"]}}
 
@@ -2677,64 +2894,77 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
 
             kind = msg.get("type")
             if kind == "invoke":
-                user_text = msg.get("message", "")
-                # Per-turn trace id: prefer the client-supplied one (so the UUID
-                # shown on the user bubble matches the one we log + put on every
-                # event), else mint one. Forward it via config so _stream_graph
-                # tags every emitted event + log line with it.
-                turn_id = msg.get("turn_id") or str(uuid.uuid4())
-                _imgs = msg.get("images") or []
-                _log.info(
-                    "invoke session=%s turn=%s agent=%s imgs=%d text=%r",
-                    session_id,
-                    turn_id,
-                    msg.get("agent_id") or session.get("agent_id"),
-                    len([i for i in _imgs if isinstance(i, dict) and i.get("data")]),
-                    (user_text or "")[:120],
-                )
-                # Slash commands + @mentions → TurnPlan (docs §commands).
-                plan = _commands.resolve_turn(msg, session)
-                if plan.builtin_reply is not None:
-                    # Built-in command: reply directly, no graph turn, no agent
-                    # persistence, no checkpoint write (ephemeral by design).
-                    await ws.send_text(
-                        _ev("notice", {"message": plan.builtin_reply}, turn_id)
+                try:
+                    user_text = msg.get("message", "")
+                    # Per-turn trace id: prefer the client-supplied one (so the UUID
+                    # shown on the user bubble matches the one we log + put on every
+                    # event), else mint one. Forward it via config so _stream_graph
+                    # tags every emitted event + log line with it.
+                    turn_id = msg.get("turn_id") or str(uuid.uuid4())
+                    _imgs = msg.get("images") or []
+                    _log.info(
+                        "invoke session=%s turn=%s agent=%s imgs=%d text=%r",
+                        session_id,
+                        turn_id,
+                        msg.get("agent_id") or session.get("agent_id"),
+                        len([i for i in _imgs if isinstance(i, dict) and i.get("data")]),
+                        (user_text or "")[:120],
                     )
-                    await ws.send_text(_ev("message.end", {}, turn_id))
-                    continue
-                user_text = plan.text
-                turn_agent = (
-                    plan.agent_override
-                    or msg.get("agent_id")
-                    or session.get("agent_id")
-                    or _first_agent_id()
-                )
-                if turn_agent != session.get("agent_id"):
-                    session["agent_id"] = turn_agent
-                    _session_meta_patch(
-                        session["project_slug"], session_id, {"agent_id": turn_agent}
+                    # Slash commands + @mentions → TurnPlan (docs §commands).
+                    plan = _commands.resolve_turn(msg, session)
+                    if plan.builtin_reply is not None:
+                        # Built-in command: reply directly, no graph turn, no agent
+                        # persistence, no checkpoint write (ephemeral by design).
+                        await ws.send_text(
+                            _ev("notice", {"message": plan.builtin_reply}, turn_id)
+                        )
+                        await ws.send_text(_ev("message.end", {}, turn_id))
+                        continue
+                    user_text = plan.text
+                    turn_agent = (
+                        plan.agent_override
+                        or msg.get("agent_id")
+                        or session.get("agent_id")
+                        or _first_agent_id()
                     )
-                turn_config = {
-                    **config,
-                    "configurable": {
-                        **config["configurable"],
-                        "agent_id": turn_agent,
-                        "turn_id": turn_id,
-                        "user_text": user_text or "",
-                    },
-                }
-                await _run_stream(
-                    ws,
-                    graph,
-                    turn_config,
-                    user_text,
-                    session,
-                    turn_agent,
-                    images=msg.get("images"),
-                    files=(msg.get("files") or []) + plan.files_extra,
-                    mention_context=plan.mention_ctx,
-                    skill_name=plan.skill_name,
-                )
+                    if turn_agent != session.get("agent_id"):
+                        session["agent_id"] = turn_agent
+                        _session_meta_patch(
+                            session["project_slug"], session_id, {"agent_id": turn_agent}
+                        )
+                    turn_config = {
+                        **config,
+                        "configurable": {
+                            **config["configurable"],
+                            "agent_id": turn_agent,
+                            "turn_id": turn_id,
+                            "user_text": user_text or "",
+                        },
+                    }
+                    await _run_stream(
+                        ws,
+                        graph,
+                        turn_config,
+                        user_text,
+                        session,
+                        turn_agent,
+                        images=msg.get("images"),
+                        files=(msg.get("files") or []) + plan.files_extra,
+                        mention_context=plan.mention_ctx,
+                        skill_name=plan.skill_name,
+                    )
+                except Exception as e:
+                    # Any lower-layer failure on the invoke path (command /
+                    # mention resolution, stream setup, graph run leaking past
+                    # its own handler) surfaces as an in-chat error card instead
+                    # of a silently dropped socket.
+                    _log.exception("invoke_error session=%s", session_id)
+                    try:
+                        await ws.send_text(
+                            _ev("error", {"message": f"{type(e).__name__}: {e}"})
+                        )
+                    except Exception:
+                        return  # socket died while reporting; nothing to do
             elif kind == "permission_response":
                 # The prompt broadcasts to every socket of the session (tabs),
                 # so a second response can arrive after the first already
@@ -2783,6 +3013,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     except WebSocketDisconnect:
         return
     finally:
+        _log.info("ws_close session=%s", session_id)
         _watch_stop.set()
         _watcher_task.cancel()
         # Drop this socket from the broadcast registry (a dead entry would
@@ -3006,13 +3237,31 @@ async def _run_stream(
     turn_id = ((config or {}).get("configurable") or {}).get("turn_id")
     effective_agent = agent_id or session.get("agent_id") or ""
 
+    _live_names: dict[str, list[str]] = {}
+
     def _world_ctx() -> SessionCtx:
+        # Live tool/MCP name lists. The session dict freezes these at graph
+        # build time — when MCP may still be connecting — which made the world
+        # diff oscillate (24→64 / 0→40) and announce phantom changes on every
+        # turn. Recompute from the live registries instead (cheap: object
+        # construction only, memoized per invoke).
+        if not _live_names:
+            mcp_tools = _mcp.all_langchain_tools() if _mcp else []
+            _live_names["mcp"] = [t.name for t in mcp_tools]
+            _live_names["all"] = [
+                t.name
+                for t in build_all_tools(
+                    mcp_tools,
+                    workspace=str(session.get("workspace") or ""),
+                    project_slug=slug,
+                )
+            ]
         return SessionCtx(
             session_id=session_id,
             project_slug=slug,
             agent_id=effective_agent or None,
-            mcp_tool_names=list(session.get("mcp_tool_names") or []),
-            all_tool_names=list(session.get("all_tool_names") or []),
+            mcp_tool_names=list(_live_names["mcp"]),
+            all_tool_names=list(_live_names["all"]),
             workspace=str(session.get("workspace") or ""),
         )
 
@@ -3083,8 +3332,9 @@ async def _run_stream(
         # attached_files; there is no reducer on this key).
         "mention_context": mention_context or [],
         # WorldState mcp section input (A7); persists across steps like the
-        # other channels, refreshed on every invoke.
-        "mcp_tool_names": list(session.get("mcp_tool_names") or []),
+        # other channels, refreshed on every invoke. Live value (not the
+        # session-dict freeze) so the snapshot converges with reality.
+        "mcp_tool_names": list(_world_ctx().mcp_tool_names),
     }
     await _stream_graph(ws, graph, config, input_state=input_state)
 
@@ -3203,21 +3453,36 @@ async def _stream_graph(
         # Wall-clock stall watchdog: the SDK httpx read-timeout only covers
         # *network* reads, NOT a stall inside the model generator or graph (the
         # 7m49s "stuck at 'now creating doc'" case). Wrap the stream iterator so
-        # any chunk that takes longer than CHUNK_TIMEOUT_S cancels that __anext__
-        # and ends the stream -> the except below surfaces a fast `error` event
-        # instead of hanging. A legitimately long tool call is fine because its
-        # tool-result `updates` chunk resets the per-chunk clock.
+        # any chunk that takes longer than CHUNK_TIMEOUT_S ends the stream ->
+        # the except below surfaces a fast `error` event instead of hanging.
+        # A legitimately long tool call is fine because its tool-result
+        # `updates` chunk resets the per-chunk clock.
+        # NOTE: asyncio.wait_for is NOT used here — cancellation of the stuck
+        # __anext__ can be swallowed by retry layers (they catch CancelledError
+        # and keep retrying), which makes wait_for wait forever and the
+        # watchdog never fires. Instead await with asyncio.wait and ABANDON the
+        # stuck task on timeout (fire-and-forget cancel); at most one stuck
+        # task leaks per stall, and the turn still errors out fast.
         async def chunked_stream():
             it = stream.__aiter__()
             while True:
-                try:
-                    yield await asyncio.wait_for(it.__anext__(), timeout=CHUNK_TIMEOUT_S)
-                except StopAsyncIteration:
-                    return
-                except asyncio.TimeoutError:
+                nxt = asyncio.ensure_future(it.__anext__())
+                nxt.add_done_callback(
+                    lambda t: None if t.cancelled() else t.exception()
+                )  # mark result retrieved, silence "never retrieved" warnings
+                done, _ = await asyncio.wait({nxt}, timeout=CHUNK_TIMEOUT_S)
+                if not done:
+                    nxt.cancel()
+                    # Block any late checkpoint writes from this detached run
+                    # (see ABANDONED_TURNS) so it can't roll back a retry.
+                    ABANDONED_TURNS.add(turn_id)
                     raise RuntimeError(
                         f"model/stream stall: no chunk for {CHUNK_TIMEOUT_S:.0f}s"
                     )
+                try:
+                    yield nxt.result()
+                except StopAsyncIteration:
+                    return
 
         async for mode, payload in chunked_stream():
             if mode == "messages":

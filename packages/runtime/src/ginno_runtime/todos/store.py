@@ -2,8 +2,11 @@
 
 Schema per item:
     { id, title, priority: high|medium|low, category, due, done,
-      links: {session_id?, workflow_id?}, created, completed_at? }
+      links: {session_id?, workflow_id?}, ext: [{provider, id, url?, …}],
+      created, completed_at? }
 
+`ext` is the (loose) external-ref list: one entry per attached TODO platform
+(DingTalk, TODO-list, …); unknown keys are preserved for forward compat.
 `progress` is derived by the client (done / visible total).
 """
 
@@ -38,6 +41,18 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:10]
 
 
+def norm_ext(v: Any) -> list[dict[str, Any]]:
+    """Normalize ext to a list of ref dicts (dict or list accepted; unknown
+    keys preserved). Dedup key for callers is (provider, id)."""
+    if not v:
+        return []
+    if isinstance(v, dict):
+        v = [v]
+    if not isinstance(v, list):
+        return []
+    return [x for x in v if isinstance(x, dict) and (x.get("provider") or x.get("id"))]
+
+
 def list_todos() -> list[dict[str, Any]]:
     return _read()
 
@@ -52,6 +67,7 @@ def create_todo(data: dict[str, Any]) -> dict[str, Any]:
         "due": data.get("due") or "",
         "done": bool(data.get("done", False)),
         "links": data.get("links") or {},
+        "ext": norm_ext(data.get("ext")),
         "created": time.time(),
         "completed_at": time.time() if data.get("done") else None,
     }
@@ -67,10 +83,16 @@ def update_todo(todo_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     target = None
     for it in items:
         if it.get("id") == todo_id:
-            allowed = {"title", "priority", "category", "due", "done", "links"}
+            allowed = {"title", "priority", "category", "due", "done", "links", "ext"}
             for k, v in patch.items():
                 if k in allowed and v is not None:
-                    it[k] = v
+                    if k == "links" and isinstance(v, dict):
+                        # merge so partial stamps never wipe sibling keys
+                        it.setdefault(k, {}).update(v)
+                    elif k == "ext":
+                        it[k] = norm_ext(v)
+                    else:
+                        it[k] = v
             # maintain completed_at
             if "done" in patch:
                 it["completed_at"] = time.time() if patch["done"] else None

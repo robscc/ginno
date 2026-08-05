@@ -70,6 +70,14 @@ def _session_path(project_slug: str, session_id: str) -> Path:
     return paths.project_sessions_dir(project_slug) / f"{session_id}.json"
 
 
+# Turn ids abandoned by the stall watchdog (server.py). A detached graph run
+# can "revive" later (a hung gateway eventually answering) and would then write
+# checkpoints that race — and possibly roll back — any retry turn that ran in
+# the meantime. The watchdog registers abandoned turn ids here; aput /
+# aput_writes refuse to persist them.
+ABANDONED_TURNS: set[str] = set()
+
+
 def _checkpoint_mode() -> str:
     try:
         from .world_state import context_settings
@@ -314,11 +322,15 @@ class FileCheckpointer(BaseCheckpointSaver):
         metadata: CheckpointMetadata,
         new_versions: ChannelVersions,
     ) -> Any:
+        if (config.get("configurable") or {}).get("turn_id") in ABANDONED_TURNS:
+            return config  # abandoned run: never persist, can't roll back retries
         return await asyncio.to_thread(
             self.put, config, checkpoint, metadata, new_versions
         )
 
     async def aput_writes(self, config: dict, writes: list, task_id: str) -> None:
+        if (config.get("configurable") or {}).get("turn_id") in ABANDONED_TURNS:
+            return
         return await asyncio.to_thread(self.put_writes, config, writes, task_id)
 
     def list(

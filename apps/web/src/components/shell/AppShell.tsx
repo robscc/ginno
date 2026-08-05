@@ -13,6 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useGinno } from "@/lib/store";
+import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
@@ -80,10 +81,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [usage, setUsage] = useState<SessionUsage | null>(null);
   const didInit = useRef(false);
 
-  // Usage counters are per runtime-session; reset the display on session
-  // switch (the next `usage` event re-populates from the server accumulator).
+  // Usage counters are per session: pull the session's accumulated stats on
+  // switch so the TopBar counter is correct immediately (live `usage` WS
+  // events keep updating it during turns).
   useEffect(() => {
+    let alive = true;
     setUsage(null);
+    if (g.activeSessionId) {
+      api
+        .getSessionUsage(g.activeSessionId)
+        .then((r) => {
+          if (alive) setUsage(r?.usage ?? null);
+        })
+        .catch(() => {
+          /* sidecar down — live events will populate later */
+        });
+    }
+    return () => {
+      alive = false;
+    };
   }, [g.activeSessionId]);
 
   useEffect(() => {

@@ -31,7 +31,7 @@
     "icon": ["icons/icon.png"],
     "resources": ["resources/runtime"],
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "Ginno Local Code Signing"
     }
   }
 }

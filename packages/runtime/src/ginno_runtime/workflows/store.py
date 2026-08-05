@@ -408,7 +408,61 @@ _SEED = [
             {"id": "s2", "title": "Review each PR"},
             {"id": "s3", "title": "Summarise findings"},
         ],
-    }
+    },
+    # Generic TODO-provider sync pair (todo-provider design). `skills` is a
+    # {{template}} resolved per run from context_override ({skill, provider,
+    # ext_id, title, url}) so ONE definition serves every platform.
+    {
+        "id": "todo-push",
+        "name": "🔄 TODO 回同步",
+        "description": "把本地完成的 TODO 同步回 ext ref 指向的外部 TODO 平台。",
+        "system": True,
+        "dsl": {
+            "entry": "push",
+            "nodes": [
+                {
+                    "id": "push",
+                    "type": "agent",
+                    "agent": "dev",
+                    "skills": ["{{skill}}"],
+                    "goal": (
+                        "把外部 TODO 平台 {{provider}} 上 id={{ext_id}} 的待办「{{title}}」标记为已完成。"
+                        "优先使用注入的 skill；若没有注入 skill，则直接调用 {{mcp}} 服务的 MCP 工具"
+                        "（工具名以 mcp_{{mcp}}_ 开头，先列出可用工具再选）。"
+                        "若它不存在或已完成则直接说明。完成后简要回复结果。"
+                    ),
+                }
+            ],
+            "edges": [],
+        },
+    },
+    {
+        "id": "todo-pull",
+        "name": "🔄 TODO 拉取",
+        "description": "拉取外部 TODO 平台未完成待办，镜像到本地 Daily TODO（带 ext ref）。",
+        "system": True,
+        "dsl": {
+            "entry": "pull",
+            "nodes": [
+                {
+                    "id": "pull",
+                    "type": "agent",
+                    "agent": "dev",
+                    "skills": ["{{skill}}"],
+                    "goal": (
+                        "拉取我在外部 TODO 平台 {{provider}} 上【未完成】的待办。"
+                        "优先使用注入的 skill；若没有注入 skill，则直接调用 {{mcp}} 服务的 MCP 工具"
+                        "（工具名以 mcp_{{mcp}}_ 开头，先列出可用工具再选）。"
+                        "对每一条：先 todo_list 查本地；若已存在相同 ext（provider={{provider}} 且 id 相同）"
+                        "则用 todo_update 同步标题/截止时间；否则 todo_create 创建，并传 "
+                        'ext={"provider": "{{provider}}", "id": "<平台待办id>", "title": "<标题>"}'
+                        "（有链接时加 url）。不要创建重复条目；最后 todo_list 确认。"
+                    ),
+                }
+            ],
+            "edges": [],
+        },
+    },
 ]
 
 
@@ -420,3 +474,15 @@ def ensure_seeded() -> None:
     for wf in _SEED:
         if not _is_new_layout(wf["id"]):
             create_def(wf)
+        elif wf.get("system") and isinstance(wf.get("dsl"), dict):
+            # System seeds track the shipped definition: push a new immutable
+            # version when stored nodes drift (e.g. goal wording upgraded).
+            cur = get_def(wf["id"])
+            seed_d = wf_dsl.normalize_dsl(dict(wf["dsl"]))
+            seed_d["name"] = wf.get("name") or seed_d.get("name") or "Untitled workflow"
+            seed_d["description"] = wf.get("description") or seed_d.get("description") or ""
+            if cur and (cur["dsl"].get("nodes") or []) != (seed_d.get("nodes") or []):
+                try:
+                    _write_version(wf["id"], seed_d, commit="system seed update")
+                except Exception:
+                    pass

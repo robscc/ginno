@@ -40,6 +40,11 @@ all: app
 
 ## app: full rebuild — web + runtime bundle + Tauri desktop app (+ dmg)
 app: sidecar
+	@# Unlock the dedicated codesign keychain (locked after sleep/reboot). It
+	@# holds the self-signed "Ginno Local Code Signing" identity that keeps a
+	@# stable designated requirement across rebuilds, so macOS TCC grants
+	@# (Desktop/Documents access prompts) persist instead of resetting.
+	@security unlock-keychain -p ginno $(HOME)/Library/Keychains/ginno-codesign.keychain-db 2>/dev/null || true
 	cd $(ROOT)/apps/desktop && pnpm tauri build
 	@# Regression guard: an only-linker-signed .app makes WKWebView's
 	@# Networking helper reject every request -> the webview white-screens

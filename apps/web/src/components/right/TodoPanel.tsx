@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { ListChecks, Plus, Clock, Check } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ListChecks, Plus, Clock, Check, RefreshCw } from "lucide-react";
 import { useGinno } from "@/lib/store";
+import * as api from "@/lib/runtime";
 import { PRIORITY_HEX, categoryStyle } from "@/lib/theme";
-import type { Priority } from "@/lib/types";
+import type { Priority, TodoProvider, TodoSyncEntry } from "@/lib/types";
 
 type Filter = "all" | Priority;
 const FILTERS: { id: Filter; label: string; color?: string }[] = [
@@ -19,6 +20,35 @@ export function TodoPanel() {
   const [filter, setFilter] = useState<Filter>("all");
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const [providers, setProviders] = useState<TodoProvider[]>([]);
+  const [sync, setSync] = useState<TodoSyncEntry[]>([]);
+  const [menu, setMenu] = useState(false);
+
+  const refreshSync = useCallback(() => {
+    api
+      .todoSyncStatus()
+      .then((r) => r?.entries && setSync(r.entries))
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    api
+      .listTodoProviders()
+      .then((r) => r?.providers && setProviders(r.providers))
+      .catch(() => {});
+    refreshSync();
+  }, [refreshSync]);
+  // sync ledger advances whenever todos change (auto push on done flip)
+  useEffect(() => {
+    refreshSync();
+  }, [g.todos, refreshSync]);
+
+  function latestSync(todoId: string, provider: string) {
+    for (let i = sync.length - 1; i >= 0; i--) {
+      const e = sync[i];
+      if (e.todo_id === todoId && e.provider === provider) return e;
+    }
+    return undefined;
+  }
 
   const visible = g.todos.filter((t) => filter === "all" || t.priority === filter);
   const total = g.todos.length;
@@ -39,9 +69,45 @@ export function TodoPanel() {
         <ListChecks className="mr-2 h-4 w-4 text-muted" />
         <span className="text-sm font-semibold text-txt">Daily TODO</span>
         <span className="ml-2 rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{total}</span>
+        <div className="relative ml-auto">
+          <button
+            onClick={() => setMenu((m) => !m)}
+            title="与外部 TODO 平台同步（settings → todo_providers 配置）"
+            className="flex items-center gap-1 text-xs text-muted hover:text-txt"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> 同步
+          </button>
+          {menu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setMenu(false)} />
+              <div className="absolute right-0 z-50 mt-1 w-48 overflow-hidden rounded-lg border border-line bg-card py-1 text-xs shadow-xl">
+                {providers.length === 0 && (
+                  <div className="px-3 py-1.5 text-faint">
+                    未配置 provider（settings → todo_providers）
+                  </div>
+                )}
+                {providers.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      setMenu(false);
+                      void api.pullTodos(p.id).then(() => {
+                        g.reloadTodos();
+                        refreshSync();
+                      });
+                    }}
+                    className="block w-full px-3 py-1.5 text-left text-muted hover:bg-card2 hover:text-txt"
+                  >
+                    拉取 {p.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         <button
           onClick={() => setAdding((v) => !v)}
-          className="ml-auto flex items-center gap-1 text-xs text-muted hover:text-txt"
+          className="ml-2 flex items-center gap-1 text-xs text-muted hover:text-txt"
         >
           <Plus className="h-3.5 w-3.5" /> New
         </button>
@@ -136,6 +202,40 @@ export function TodoPanel() {
                       {t.due}
                     </span>
                   )}
+                  {(t.ext || []).map((x, i) => {
+                    const prov = providers.find((p) => p.id === x.provider);
+                    const st = latestSync(t.id, x.provider || "");
+                    const label = prov?.label || x.provider || "ext";
+                    return (
+                      <span
+                        key={i}
+                        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                        style={{ color: "#3b82f6", background: "#3b82f61a" }}
+                        title={`外部待办 ${x.provider}:${x.id ?? ""}`}
+                      >
+                        {x.url ? (
+                          <a href={x.url} target="_blank" rel="noreferrer" className="hover:underline">
+                            {label}
+                          </a>
+                        ) : (
+                          label
+                        )}
+                        {st?.status === "running" && <span className="text-faint">同步中</span>}
+                        {st?.status === "ok" && <span className="text-green">✓</span>}
+                        {st?.status === "failed" && (
+                          <button
+                            onClick={() => {
+                              void api.pushTodo(t.id, x.provider || "").then(refreshSync);
+                            }}
+                            className="text-red hover:underline"
+                            title={`同步失败：${st.error || "未知错误"}（点击重试）`}
+                          >
+                            重试
+                          </button>
+                        )}
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             </div>

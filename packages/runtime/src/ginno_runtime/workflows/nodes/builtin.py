@@ -25,7 +25,17 @@ class AgentNode(BaseNode):
 
     type = "agent"
     aliases = ("step",)
-    params_schema = {"type": "object", "properties": {"goal": {"type": "string"}, "agent": {"type": "string"}}}
+    params_schema = {
+        "type": "object",
+        "properties": {
+            "goal": {"type": "string"},
+            "agent": {"type": "string"},
+            # Optional skill names injected into the system prompt (chat-style
+            # <skill> wrappers) — lets a step carry platform know-how (e.g. the
+            # dws skill for todo-provider sync). Entries may be {{templates}}.
+            "skills": {"type": "array", "items": {"type": "string"}},
+        },
+    }
     inputs_schema = {"type": "object"}
     outputs_schema = {"type": "object"}
 
@@ -43,19 +53,57 @@ class AgentNode(BaseNode):
         node_id = node["id"]
         max_iters = int(node.get("max_tool_iters") or 8)
         agent = agents_reg.get_agent(node.get("agent"))
-        allowed = [t for t in tools if tool_allowed(agent, t.name) and not t.name.startswith("workflow_")]
-        bound = model.bind_tools(allowed) if allowed and hasattr(model, "bind_tools") else model
-        # handle_tool_errors=True: a raising tool must degrade to an error
-        # ToolMessage the step can react to, never kill the whole workflow run
-        # (same discipline as the main chat graph).
-        tool_node = ToolNode(allowed, handle_tool_errors=True) if allowed else None
         context = dict(state.get("context") or {})
         loop_vars = dict(state.get("loop_vars") or {})
         render_ctx = {**context, **loop_vars, **(eff or {})}
         goal = wf_expr.render(node.get("goal") or node.get("title") or "", render_ctx)
         events = [{"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "step"}]
 
-        msgs = [SystemMessage(content=ah.build_system(goal, context, agent)), HumanMessage(content=goal)]
+        # Provider sync runs (todo-pull/push et al.): unlock the provider's
+        # MCP server tools even when the forked agent's tools_allow doesn't
+        # list them — the provider config (settings → todo_providers.mcp) is
+        # the capability declaration for MCP-based platforms.
+        mcp_prefix = ""
+        prov_id = str(render_ctx.get("provider") or "")
+        if prov_id:
+            from ...todos import providers as todo_providers
+
+            _prov = todo_providers.get_todo_provider(prov_id)
+            if _prov and _prov.get("mcp"):
+                mcp_prefix = f"mcp_{_prov['mcp']}_"
+        allowed = [
+            t
+            for t in tools
+            if (tool_allowed(agent, t.name) or (mcp_prefix and t.name.startswith(mcp_prefix)))
+            and not t.name.startswith("workflow_")
+        ]
+        bound = model.bind_tools(allowed) if allowed and hasattr(model, "bind_tools") else model
+        # handle_tool_errors=True: a raising tool must degrade to an error
+        # ToolMessage the step can react to, never kill the whole workflow run
+        # (same discipline as the main chat graph).
+        tool_node = ToolNode(allowed, handle_tool_errors=True) if allowed else None
+
+        sys_text = ah.build_system(goal, context, agent)
+        # Configurable skill injection (todo-provider sync et al.): entries are
+        # template-rendered so a single generic workflow can serve any provider
+        # (the trigger passes the resolved skill via context_override).
+        skill_names = [
+            wf_expr.render(s, render_ctx)
+            for s in (node.get("skills") or [])
+            if isinstance(s, str) and s.strip()
+        ]
+        if skill_names:
+            from ...skills.loader import SkillLoader
+
+            loader = SkillLoader(project_slug="default")
+            secs = []
+            for nm in skill_names:
+                sk = loader.get(nm)
+                if sk and sk.body:
+                    secs.append(f'<skill name="{sk.name}">\n{sk.body.strip()}\n</skill>')
+            if secs:
+                sys_text += "\n\n## Injected skills\n" + "\n\n".join(secs)
+        msgs = [SystemMessage(content=sys_text), HumanMessage(content=goal)]
         result_text = ""
         for _ in range(max_iters):
             resp = await bound.ainvoke(msgs)
