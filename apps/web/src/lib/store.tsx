@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import * as api from "./runtime";
-import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Providers, SessionMeta, SkillSummary, Todo, WorkflowDef, WorkflowRun } from "./types";
+import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory";
 
@@ -56,12 +56,26 @@ interface GinnoState {
   reloadArtifacts: () => Promise<void>;
   removeArtifact: (id: string) => Promise<void>;
   patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
-  newSession: (agent_id?: string) => Promise<SessionMeta | null>;
+  newSession: (agent_id?: string, opts?: { title?: string }) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
   removeSession: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
   patchTodo: (id: string, patch: Partial<Todo>) => Promise<void>;
   addTodo: (data: Partial<Todo>) => Promise<void>;
+  removeTodo: (id: string) => Promise<void>;
+  // Pulse-highlight artifacts (e.g. after jumping to a session from a TODO).
+  flashArtifacts: (ids: string[]) => void;
+  // ---- session goal (goal-design.md) ----
+  goalBySession: Record<string, Goal | null>;
+  notifyGoal: (sessionId: string, goal: Goal | null) => void;
+  loadGoal: (sessionId: string) => Promise<void>;
+  setGoalObjective: (
+    sessionId: string,
+    objective: string,
+    confirm?: boolean,
+  ) => Promise<{ ok: boolean; needs_confirm?: boolean; error?: string }>;
+  setGoalStatus: (sessionId: string, status: GoalStatus) => Promise<{ ok: boolean; error?: string }>;
+  clearGoal: (sessionId: string) => Promise<void>;
 }
 
 const Ctx = createContext<GinnoState | null>(null);
@@ -314,7 +328,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
 
   const creatingRef = useRef(false);
   const newSession = useCallback(
-    async (agent_id?: string) => {
+    async (agent_id?: string, opts?: { title?: string }) => {
       if (creatingRef.current) return null;
       creatingRef.current = true;
       setSessionError(null);
@@ -322,6 +336,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         const s = await api.createSession({
           workspace: process.env.NEXT_PUBLIC_WORKSPACE ?? "/tmp/gw",
           agent_id,
+          title: opts?.title,
         });
         if (s && s.ok !== false && s.id) {
           setSessions((prev) => [s, ...prev.filter((x) => x.id !== s.id)]);
@@ -423,6 +438,78 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Optimistic remove with rollback (same contract as patchTodo / removeArtifact).
+  const removeTodo = useCallback(async (id: string) => {
+    let snapshot: Todo[] | null = null;
+    setTodos((prev) => {
+      snapshot = prev;
+      return prev.filter((t) => t.id !== id);
+    });
+    try {
+      const r = await api.deleteTodo(id);
+      if (!r.ok) throw new Error("delete failed");
+    } catch {
+      if (snapshot) setTodos(snapshot);
+    }
+  }, []);
+
+  const flashArtifacts = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    setFlashArtifactIds(ids);
+    window.setTimeout(() => setFlashArtifactIds([]), 2500);
+  }, []);
+
+  // ---- session goal (goal-design.md) ----
+  // Per-session goal snapshot. Fed by (a) an explicit fetch when a session is
+  // opened and (b) the live `goal.updated` / `goal.cleared` WS events handled
+  // in ChatStream. The TopBar chip + popover read from here.
+  const [goalBySession, setGoalBySession] = useState<Record<string, Goal | null>>({});
+
+  const notifyGoal = useCallback((sessionId: string, goal: Goal | null) => {
+    setGoalBySession((prev) => ({ ...prev, [sessionId]: goal }));
+  }, []);
+
+  const loadGoal = useCallback(async (sessionId: string) => {
+    try {
+      const r = await api.getSessionGoal(sessionId);
+      setGoalBySession((prev) => ({ ...prev, [sessionId]: r?.goal ?? null }));
+    } catch {
+      /* sidecar down */
+    }
+  }, []);
+
+  const setGoalObjective = useCallback(
+    async (sessionId: string, objective: string, confirm?: boolean) => {
+      try {
+        const r = await api.setSessionGoal(sessionId, { objective, confirm });
+        if (r?.ok && r.goal) setGoalBySession((prev) => ({ ...prev, [sessionId]: r.goal! }));
+        return { ok: !!r?.ok, needs_confirm: !!r?.needs_confirm, error: r?.error };
+      } catch {
+        return { ok: false, error: "无法连接运行时" };
+      }
+    },
+    [],
+  );
+
+  const setGoalStatus = useCallback(async (sessionId: string, status: GoalStatus) => {
+    try {
+      const r = await api.setSessionGoal(sessionId, { status });
+      if (r?.ok && r.goal) setGoalBySession((prev) => ({ ...prev, [sessionId]: r.goal! }));
+      return { ok: !!r?.ok, error: r?.error };
+    } catch {
+      return { ok: false, error: "无法连接运行时" };
+    }
+  }, []);
+
+  const clearGoal = useCallback(async (sessionId: string) => {
+    try {
+      await api.clearSessionGoal(sessionId);
+    } catch {
+      /* ignore */
+    }
+    setGoalBySession((prev) => ({ ...prev, [sessionId]: null }));
+  }, []);
+
   const value: GinnoState = {
     agents,
     skills,
@@ -464,6 +551,14 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     renameSession,
     patchTodo,
     addTodo,
+    removeTodo,
+    flashArtifacts,
+    goalBySession,
+    notifyGoal,
+    loadGoal,
+    setGoalObjective,
+    setGoalStatus,
+    clearGoal,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

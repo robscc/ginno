@@ -42,11 +42,14 @@ UPDATE_MSG_PREFIX = "[world state update]"
 REINJECT_MSG_PREFIX = "[world state re-injection]"
 TURN_CONTEXT_PREFIX = "[turn context]"
 SUMMARY_MSG_PREFIX = "[conversation summary]"
+from .goals.templates import GOAL_CONTEXT_PREFIX  # noqa: E402
+
 ALL_CONTEXT_PREFIXES = (
     UPDATE_MSG_PREFIX,
     REINJECT_MSG_PREFIX,
     TURN_CONTEXT_PREFIX,
     SUMMARY_MSG_PREFIX,
+    GOAL_CONTEXT_PREFIX,
 )
 
 WEEKDAYS_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
@@ -59,7 +62,7 @@ _CONTEXT_DEFAULTS = {
     "cache_control": True,
     "tool_output_max_chars": 20000,
     "compaction_enabled": True,
-    "compact_threshold_tokens": 100000,
+    "compact_threshold_tokens": 500000,
     "compact_keep_turns": 3,
     "checkpoint_mode": "delta",
     "skills_index_max_chars": DEFAULT_SKILLS_INDEX_MAX_CHARS,
@@ -414,8 +417,79 @@ class McpSection:
         return f"MCP 工具已更新：{old_count} → {new.get('count', 0)} 个。"
 
 
+class GoalSection:
+    """Goal awareness (goal-design.md §4.3.2): the active long-running goal is
+    part of the STABLE system layer so EVERY turn (user-interactive or
+    autonomous continuation) knows it — not only continuation turns, which
+    carry the full continuation prompt. Changes (objective edit, pause/resume,
+    completion) announce via the normal context.updated diff path."""
+
+    id = "goal"
+
+    def snapshot(self, ctx: SessionCtx) -> dict | None:
+        from .goals import store as goal_store
+
+        goal = goal_store.get_goal(ctx.project_slug, ctx.session_id)
+        if not goal:
+            return None
+        return {
+            "goal_id": goal.get("goal_id"),
+            "status": goal.get("status"),
+            "objective": goal.get("objective"),
+            "turns_used": goal.get("turns_used", 0),
+        }
+
+    def render(self, snap: dict) -> str:
+        status = snap.get("status")
+        lines = [
+            "<goal>",
+            f"<status>{status}</status>",
+            f"<objective>{snap.get('objective')}</objective>",
+        ]
+        if status == "active":
+            lines.append(
+                "<guidance>本会话有一个自主推进中的长程目标。普通用户消息是该目标"
+                "过程中的临时输入：优先结合目标来理解和处理；目标真正达成且无遗留"
+                "工作时调用 goal_update(status=\"complete\")，同一阻塞连续 3 个 goal "
+                "轮无法推进时调用 goal_update(status=\"blocked\")。暂停/恢复/清除由"
+                "用户控制，你不要自行暂停。</guidance>"
+            )
+        elif status == "paused":
+            lines.append(
+                "<guidance>目标当前被用户暂停，不会自主续跑；像普通会话一样处理用户"
+                "消息，除非用户恢复目标，不要主动推进目标或调用 goal_update。</guidance>"
+            )
+        else:
+            lines.append(
+                "<guidance>目标处于终止态（blocked/usage_limited/complete），等待用户"
+                "处置；不要主动推进，除非用户恢复或设定新目标。</guidance>"
+            )
+        lines.append("</goal>")
+        return "\n".join(lines)
+
+    def update_text(self, old: dict, new: dict) -> str | None:
+        if not old and new:
+            return f"长程目标已设定：{new.get('objective')}"
+        if old and not new:
+            return "长程目标已清除。"
+        lines = []
+        if old.get("objective") != new.get("objective"):
+            lines.append(f"长程目标已更新为：{new.get('objective')}")
+        if old.get("status") != new.get("status"):
+            label = {
+                "active": "目标已恢复自主推进。",
+                "paused": "目标已暂停。",
+                "blocked": "目标标记为受阻，等待你的指示。",
+                "usage_limited": "目标因用量受限停止。",
+                "complete": "目标已达成。",
+            }.get(new.get("status"), "")
+            lines.append(label)
+        return " ".join(l for l in lines if l) or None
+
+
 SECTIONS: list[Any] = [
     AgentSection(),
+    GoalSection(),
     EnvironmentSection(),
     PermissionsSection(),
     SkillsSection(),

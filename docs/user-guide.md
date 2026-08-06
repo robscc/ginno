@@ -231,11 +231,16 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 
 ### 7.1 TODO ✅
 “Daily TODO”——全局每日清单：
-- **筛选**：All / High / Medium / Low；
-- **勾选**：点方框切换完成（乐观更新 + 写回后端）；
-- **+ New**：行内新增（默认 priority=medium、category=Dev）；
-- 每条显示优先级点、分类 chip、`due`；底部 **Today's progress** 进度条。
-- **Agent 也能改**：对拥有 `todo_*` 的 Agent 说“加个待办/把 X 标记完成”，它会调用工具修改，右栏与聊天都会刷新。
+- **筛选**：All / High / Medium / Low + **标签筛选**（顶部 `#tag` chip，点行内标签也可筛选）+ 搜索（条目 >5 时出现）；
+- **勾选**：点方框切换完成（乐观更新 + 写回后端）；排序为「未完成在前 → 优先级 → 创建时间」；
+- **+ New**：行内编辑器——标题、**emoji 图标**（标题前显示，可从内置表情盘选择或自定义）、优先级、分类、截止时间、**标签**（回车/空格/逗号分隔，最多 8 个）；
+- **行内编辑/删除**：hover 条目出现 ✏️ / 🗑️（删除有确认弹窗）；底部 **Today's progress** 进度条 + **清除已完成**；
+- **点条目展开关联**：
+  - **相关会话**：TODO 在哪些会话里被提到/处理过——会话在对话中调用 `todo_*` 工具时**自动关联**；点会话行直接跳转该会话，可单条取消关联；
+  - **相关产物**：TODO 对应的交付物（由 Agent 用 `todo_link` 关联）；点产物行跳转到产物所在会话并自动切到 Artifacts 标签、高亮该产物；**hover 产物行**弹出与 Artifacts 面板一致的元数据卡片（路径/大小/Schema 摘要）；
+  - 行上的 💬/📦 角标提示关联数量；
+- **内置 `/todo` 技能**：聊天输入 `/todo` 即可让 Agent 快速增删改查/完成待办（见 9. 技能）；
+- **Agent 也能改**：对拥有 `todo_*` 的 Agent 说“加个待办/把 X 标记完成”，它会调用工具修改，右栏与聊天都会刷新；支持 `todo_link` 关联产物、`emoji`/`tags` 参数；
 - 首次启动种子了 7 条示例。
 
 ### 7.2 Workflow ✅
@@ -346,11 +351,15 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 > **联网搜索（模型自带）**：OpenAI / 自定义端点卡有 **联网搜索** 开关 —— 开启后 Ginno 会在请求体带 `enable_search: true`，让模型在需要时自动联网（典型如通义千问 compatible-mode）。点 **测试联网** 会发一个时效性问题并回显模型回答，便于确认你的端点是否真的支持；不支持的端点该字段会被忽略，不影响普通对话。Anthropic 协议无此参数，故不显示该开关。
 
 ### 9.2 Skills ✅
-“一次性指令模板”，存于 `~/.ginno/skills/<name>/SKILL.md`（项目级覆盖在 `~/.ginno/projects/<slug>/skills/`）：
-- 列表显示 `/<name>`、`trigger`（user-invocable / model-invocable / both）、描述、`tools`；可 `delete`；
+“一次性指令模板”，三层存放，同名时 **内置 < 全局 < 项目**（用户副本可覆盖内置）：
+- **内置技能**：随 Ginno 打包发布（如 `/todo`——快速管理每日待办），列表带「内置」标记，**不可删除**；
+- **全局技能**：`~/.ginno/skills/<name>/SKILL.md`；
+- **项目级覆盖**：`~/.ginno/projects/<slug>/skills/`。
+
+列表显示 `/<name>`、`trigger`（user-invocable / model-invocable / both）、描述、`tools`；非内置可 `delete`。
 - **New skill**：填 `name`(kebab-case) + 带 frontmatter 的正文，`Create`。
 - 触发：在聊天输入 `/<name>`（见 5.8）。
-- **让 Agent 安装**：直接说“安装 <仓库/目录> 里的 skill”。有工具权限的 Agent（如 Dev）会用 `install_skills(path)` 把含 `<skill>/SKILL.md` 的目录装进全局 skills 目录（远端仓库会先 `git clone` 到会话工作目录再安装）；`list_skills()` / `uninstall_skill(name)` 查看与卸载。UI 的 `import-dir` 接口与其共享同一实现。
+- **让 Agent 安装**：直接说“安装 <仓库/目录> 里的 skill”。有工具权限的 Agent（如 Dev）会用 `install_skills(path)` 把含 `<skill>/SKILL.md` 的目录装进全局 skills 目录（远端仓库会先 `git clone` 到会话工作目录再安装）；`list_skills()` / `uninstall_skill(name)` 查看与卸载（内置技能不可卸载）。UI 的 `import-dir` 接口与其共享同一实现。
 
 ### 9.3 MCP 工具 ✅
 - 顶部显示“已连接 N server(s)，M tool(s)”；

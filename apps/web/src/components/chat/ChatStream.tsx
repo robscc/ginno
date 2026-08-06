@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2 } from "lucide-react";
+import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
@@ -30,7 +30,7 @@ import {
   triggerWorkflowRun,
 } from "@/lib/runtime";
 import type { WorkflowRun } from "@/lib/types";
-import type { AgentConfig, ContextChange, SessionMeta, SessionUsage } from "@/lib/types";
+import type { AgentConfig, ContextChange, Goal, SessionMeta, SessionUsage } from "@/lib/types";
 
 interface ChatMsg {
   id: string;
@@ -418,6 +418,13 @@ export function ChatStream({
   const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
   const busyBySessionRef = useRef<Record<string, boolean>>({});
   const streamAgentRef   = useRef<Record<string, string | null>>({});
+  // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
+  // (remount mid-turn — the user navigated to another page while a reply was
+  // streaming). Its turn.start is never seen, so the live bubble ensureLive
+  // creates would render as a SECOND section next to the history-rendered
+  // partial bubble; message.end heals the split by reconciling from history.
+  const orphanStreamRef  = useRef<Record<string, boolean>>({});
+  const seenTurnStartRef = useRef<Record<string, boolean>>({});
   const pingTimerRef     = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
   const watchTimerRef    = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
   // Post-reconnect turn_state fallback: if the server never answers (older
@@ -587,6 +594,10 @@ export function ChatStream({
       });
     }
 
+    // Load the session's goal snapshot for the TopBar chip (goal-design.md).
+    // Live updates then arrive via goal.updated / goal.cleared WS events.
+    g.loadGoal(sid);
+
     // Restore draft if any (mentions re-pruned against the restored text so a
     // token the user deleted before switching stays deleted)
     const draft = draftCacheRef.current[sid];
@@ -606,6 +617,18 @@ export function ChatStream({
     onRunningChange?.(running);
   }, [running, onRunningChange]);
 
+  // Session goal (goal-design.md) — drives the stop=pause button and the
+  // paused/blocked resume banner.
+  const goal = session ? g.goalBySession[session.id] ?? null : null;
+  const goalActive = goal?.status === "active";
+  const goalStalled =
+    goal?.status === "paused" || goal?.status === "blocked" || goal?.status === "usage_limited";
+  // Dismiss the resume banner per mount; reappears when the session is reopened.
+  const [resumeDismissed, setResumeDismissed] = useState(false);
+  useEffect(() => {
+    setResumeDismissed(false);
+  }, [session?.id, goal?.status]);
+
   // Auto-scroll only while the user is parked near the bottom; otherwise a
   // streaming token (or a history load) yanks them back down mid-read.
   useEffect(() => {
@@ -622,6 +645,17 @@ export function ChatStream({
     storeRef.current[sid] = list.map((m) =>
       m.status === "sending" ? { ...m, status: undefined, failReason: undefined } : m,
     );
+  }
+
+  // The server is streaming a turn this component instance never saw start
+  // (remount mid-turn after navigating away). Mark the stream orphaned so the
+  // split self-heals on message.end, and backfill the session's agent so the
+  // continuation bubble's header shows the right name instead of "Agent".
+  function adoptOrphanStream(sid: string) {
+    if (seenTurnStartRef.current[sid] || orphanStreamRef.current[sid]) return;
+    orphanStreamRef.current[sid] = true;
+    busyBySessionRef.current[sid] = true;
+    if (!streamAgentRef.current[sid]) streamAgentRef.current[sid] = session?.agent_id ?? null;
   }
 
   function ensureLive(sid: string): string {
@@ -652,10 +686,12 @@ export function ChatStream({
       case "widget.emit":
       case "ref.emit":
       case "workflow.emit":
+        adoptOrphanStream(sid);
         mutateLive(sid, ev);
         break;
       case "turn.start": {
         markDelivered(sid);
+        seenTurnStartRef.current[sid] = true;
         // authoritative agent for this turn (server-resolved, never null).
         // The server echoes the turn_id we sent (or mints one); adopt it as the
         // bubble's trace UUID so it matches the sidecar logs exactly.
@@ -778,6 +814,13 @@ export function ChatStream({
         markDelivered(sid);
         mutateLive(sid, { event: "token.delta", content: (ev.message as string) || "" });
         break;
+      case "goal.updated":
+        // Live goal snapshot (created/status/accounting) → TopBar chip.
+        g.notifyGoal(sid, (ev.goal as Goal) ?? null);
+        break;
+      case "goal.cleared":
+        g.notifyGoal(sid, null);
+        break;
       case "context.updated": {
         // WorldState change announcement (world-state-plan §7). Chip display
         // level table: environment-only changes (date rollover) stay SILENT in
@@ -829,12 +872,20 @@ export function ChatStream({
         reconcileTurnFromHistory(sid);
         break;
       }
-      case "message.end":
+      case "message.end": {
         markDelivered(sid);
+        const wasOrphan = !!orphanStreamRef.current[sid];
+        orphanStreamRef.current[sid] = false;
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
+        // Orphaned continuation (remount mid-turn): the visible store holds a
+        // history-rendered partial bubble PLUS a second live section. The
+        // persisted history renders the whole turn as ONE merged bubble (with
+        // the right agent name) — rebuild from it to heal the split.
+        if (wasOrphan) reconcileTurnFromHistory(sid);
         break;
+      }
       case "error": {
         // The turn reached the server (it is the run, not the delivery, that
         // failed) → the user bubble counts as delivered; the failure becomes
@@ -844,6 +895,14 @@ export function ChatStream({
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
+        // Orphaned turn that failed: reconcile from history instead of
+        // building a card on the split store — mapHistory re-surfaces the
+        // persisted last_error as a proper error card with retry.
+        if (orphanStreamRef.current[sid]) {
+          orphanStreamRef.current[sid] = false;
+          reconcileTurnFromHistory(sid);
+          break;
+        }
         const list = storeRef.current[sid] ?? [];
         const liveBubble = list.find((m) => m.id === liveMsgId);
         // Retry payload: the originating user turn's snapshot (live turns
@@ -1157,6 +1216,7 @@ export function ChatStream({
 
     const live = mid();
     busyBySessionRef.current[sid] = true;
+    seenTurnStartRef.current[sid] = true;
     streamAgentRef.current[sid] = payload.agentId;
     const liveBubble: ChatMsg = {
       id: live,
@@ -1343,6 +1403,28 @@ export function ChatStream({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {goal && goalStalled && !resumeDismissed && (
+        <div className="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />
+          <span className="flex-1 text-muted">
+            目标已{goal.status === "paused" ? "暂停" : goal.status === "blocked" ? "受阻" : "用量受限"}：
+            <span className="text-txt">{goal.objective}</span>
+          </span>
+          <button
+            onClick={() => void g.setGoalStatus(session!.id, "active")}
+            className="rounded-md bg-violet px-2 py-1 text-[11px] font-medium text-white hover:opacity-90"
+          >
+            恢复
+          </button>
+          <button
+            onClick={() => setResumeDismissed(true)}
+            aria-label="关闭提示"
+            className="rounded-md p-1 text-faint hover:text-txt"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
       <div
         ref={scrollRef}
         onScroll={(e) => {
@@ -1795,6 +1877,16 @@ export function ChatStream({
                   );
                 })()}
               </div>
+              {running && goalActive && (
+                <button
+                  onClick={() => void g.setGoalStatus(session!.id, "paused")}
+                  title="暂停目标（当前轮跑完后停止自主续跑）"
+                  aria-label="暂停目标"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-line2 text-muted hover:text-txt"
+                >
+                  <Square className="h-3.5 w-3.5" />
+                </button>
+              )}
               <button
                 onClick={send}
                 disabled={

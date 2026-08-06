@@ -52,19 +52,26 @@ def test_validate_loop_explicit_edge_rules():
     from ginno_runtime.workflows import dsl as wf_dsl
 
     d = _dsl()
-    d["nodes"].append({"id": "lp", "type": "loop", "over": "context.items", "body": "a", "max_iters": 5})
+    # A dedicated body node with NO out-edge of its own (the body->head return
+    # is structural). "a" keeps its a->b edge, so it must not be the body.
+    d["nodes"].append({"id": "bd", "type": "step", "goal": "per-item"})
+    d["nodes"].append({"id": "lp", "type": "loop", "over": "context.items", "body": "bd", "max_iters": 5})
     d["nodes"].append({"id": "c", "type": "step", "goal": "x"})
     # a single explicit "done/next" out-edge is allowed (loop chaining)
     d["edges"].append({"from": "lp", "to": "b"})
     assert wf_dsl.validate_dsl(d) == []
     # an edge from the loop to its own body is structural -> rejected
     d2 = dict(d)
-    d2["edges"] = d["edges"] + [{"from": "lp", "to": "a"}]
+    d2["edges"] = d["edges"] + [{"from": "lp", "to": "bd"}]
     assert any("body" in e for e in wf_dsl.validate_dsl(d2))
     # more than one explicit out-edge is rejected
     d3 = dict(d)
     d3["edges"] = d["edges"] + [{"from": "lp", "to": "c"}]
     assert any("at most one" in e for e in wf_dsl.validate_dsl(d3))
+    # a body node carrying its own out-edge is rejected (return is structural)
+    d4 = dict(d)
+    d4["edges"] = d["edges"] + [{"from": "bd", "to": "c"}]
+    assert any("loop body returns" in e for e in wf_dsl.validate_dsl(d4))
 
 
 @pytest.mark.asyncio

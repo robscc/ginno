@@ -110,17 +110,24 @@ def import_skills_from_dir(
 
 def uninstall_skill(name: str, project_slug: str | None = None) -> dict:
     """Remove an installed skill by name. The project-scoped copy goes first
-    (it is the effective one), then the global copy. ``{ok, removed: [scope]}``."""
-    removed: list[str] = []
-    if project_slug:
-        proj = paths.project_skills_dir(project_slug) / name
-        if proj.is_dir():
-            shutil.rmtree(proj)
-            removed.append("project")
+    (it is the effective one), then the global copy. ``{ok, removed: [scope]}``.
+
+    Built-in skills (shipped with the runtime) are never removable — if the
+    only copy on disk is a built-in, report it as not found."""
+    proj = paths.project_skills_dir(project_slug) / name if project_slug else None
     glob = paths.global_skills_dir() / name
+    removed: list[str] = []
+    if proj is not None and proj.is_dir():
+        shutil.rmtree(proj)
+        removed.append("project")
     if glob.is_dir():
         shutil.rmtree(glob)
         removed.append("global")
     if not removed:
+        from .loader import SkillLoader
+
+        s = SkillLoader(project_slug=project_slug).get(name)
+        if s and s.builtin:
+            return {"ok": False, "error": f"builtin skill cannot be uninstalled: {name}"}
         return {"ok": False, "error": f"skill not found: {name}"}
     return {"ok": True, "removed": removed}

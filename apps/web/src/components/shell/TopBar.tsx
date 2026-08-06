@@ -8,6 +8,7 @@ import { useGinno } from "@/lib/store";
 import type { AgentConfig, SessionMeta, SessionUsage } from "@/lib/types";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
+import { GoalChip } from "./GoalChip";
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -88,6 +89,8 @@ export function TopBar({
         />
         {running ? "Running" : "Idle"}
       </span>
+
+      <GoalChip sessionId={session?.id ?? null} />
 
       <div className="ml-auto flex items-center gap-2">
         {usage && usage.calls > 0 && (

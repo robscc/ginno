@@ -5,6 +5,8 @@
 
 import type {
   AgentConfig,
+  Goal,
+  GoalStatus,
   Providers,
   SessionMeta,
   SessionUsage,
@@ -112,6 +114,27 @@ export async function getSessionUsage(id: string) {
   return json<{ ok: boolean; usage: (SessionUsage & { cache_hit_ratio?: number }) | null }>(
     `${BASE}/sessions/${id}/usage`,
   );
+}
+
+// ---- session goal (goal-design.md §4.4) ----
+export async function getSessionGoal(id: string) {
+  return json<{ ok: boolean; goal: Goal | null; error?: string }>(`${BASE}/sessions/${id}/goal`);
+}
+
+export async function setSessionGoal(
+  id: string,
+  body: { objective?: string; status?: GoalStatus; confirm?: boolean },
+) {
+  return json<{ ok: boolean; goal?: Goal; needs_confirm?: boolean; error?: string }>(
+    `${BASE}/sessions/${id}/goal`,
+    { method: "PUT", headers: H, body: JSON.stringify(body) },
+  );
+}
+
+export async function clearSessionGoal(id: string) {
+  return json<{ ok: boolean; cleared: boolean; error?: string }>(`${BASE}/sessions/${id}/goal`, {
+    method: "DELETE",
+  });
 }
 
 // ---- providers ----

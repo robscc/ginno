@@ -242,9 +242,11 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
     # 1) Built-in commands short-circuit (no agent resolution, no persistence).
     cmd = parse_slash(text, slug)
     if cmd and cmd[0] in BUILTINS:
-        name, _tail = cmd
+        name, tail = cmd
         _log.info("builtin_cmd name=%s slug=%s", name, slug)
-        return TurnPlan(text=text, builtin_reply=BUILTINS[name].handler(slug))
+        return TurnPlan(
+            text=text, builtin_reply=BUILTINS[name].handler(slug, session, tail)
+        )
 
     # 2) Mentions (structured authoritative + text fallback).
     resolved, agent_override = resolve_mentions(msg.get("mentions"), text, slug)

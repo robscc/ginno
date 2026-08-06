@@ -28,6 +28,7 @@ from .world_state import SessionCtx, WorldState, context_settings
 from .tools.builtin import build_builtin_tools
 from .tools.render_tools import RENDER_TOOL_NAMES, attach_ref, render_widget
 from .tools.todo_tools import ALL_TODO_TOOLS, TODO_TOOL_NAMES
+from .tools.goal_tools import GOAL_TOOL_NAMES
 from .tools.workflow_tools import (
     ALL_WORKFLOW_DEV_TOOLS,
     ALL_WORKFLOW_TOOLS,
@@ -121,8 +122,11 @@ def build_stable_system(
         parts.append(
             "The user's daily TODO list is shown in the right panel. Use todo_list to read "
             "it (each line starts with the item id), and todo_create / todo_update / "
-            "todo_done / todo_delete to change it. When you add or complete items, say so "
-            "briefly. If you only have todo_list, you may read but not modify it."
+            "todo_done / todo_delete to change it. New items look better with an emoji icon "
+            "and 1-3 tags (todo_create/todo_update accept emoji and tags). If a TODO has a "
+            "deliverable you produced, link it with todo_link(todo_id, artifact_id=...) so "
+            "the user can jump to it. When you add or complete items, say so briefly. If you "
+            "only have todo_list, you may read but not modify it."
         )
         from .todos import providers as todo_providers
 
@@ -396,6 +400,11 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
             # TODO tools: an agent that has them (per tools_allow) never needs a prompt
             if name in TODO_TOOL_NAMES:
                 continue
+            # Goal tools are the same class: they only manage Ginno's own goal
+            # store and must never interrupt autonomous continuation with an
+            # approval prompt (goal-design.md §4.2).
+            if name in GOAL_TOOL_NAMES:
+                continue
             # workflow / artifact tools never need a prompt either. workflow-dev
             # editing tools carry their OWN diff confirmation (interrupt), so they
             # must bypass the permission policy too — otherwise the policy's "ask"
@@ -459,6 +468,7 @@ def build_all_tools(
     mcp_tools: list | None = None,
     workspace: str | None = None,
     project_slug: str | None = None,
+    session_id: str | None = None,
 ) -> list:
     """The union toolset shared by the main chat graph and the workflow engine.
 
@@ -466,13 +476,24 @@ def build_all_tools(
     at construction (plan F1) — sessions pass their own values; callers
     without a session context (workflow runs, listing endpoints) pass none
     and those tools keep the process-cwd fallback.
+
+    ``session_id`` (with ``project_slug``) additionally binds the per-session
+    goal tools (goal-design.md §4.2); callers without a session omit them.
     """
+    from .tools.goal_tools import build_goal_tools
+
+    goal_tools = (
+        build_goal_tools(project_slug, session_id)
+        if (project_slug and session_id)
+        else []
+    )
     return (
         build_builtin_tools(workspace)
         + build_skill_tools(project_slug)
         + (mcp_tools or [])
         + [render_widget, attach_ref]
         + ALL_TODO_TOOLS
+        + goal_tools
         + ALL_WORKFLOW_TOOLS
         + ALL_WORKFLOW_DEV_TOOLS
         + ALL_ARTIFACT_TOOLS

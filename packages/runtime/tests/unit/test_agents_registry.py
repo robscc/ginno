@@ -67,3 +67,47 @@ def test_ensure_todo_tools_migration(isolated_home):
     assert "todo_list" in research.tools_allow
     # dev already has "*" -> left untouched
     assert registry.get_agent("dev").tools_allow == ["*"]
+
+
+def test_seed_research_has_discipline_prompt(isolated_home):
+    registry.ensure_seeded()
+    prompt = registry.get_agent("research").system_prompt
+    assert "Research discipline:" in prompt
+    assert "Verify before you claim" in prompt
+    assert "Cite as you go" in prompt
+
+
+def test_research_discipline_migration_upgrades_legacy_seed(isolated_home):
+    registry.ensure_seeded()
+    # Simulate an old install still carrying the one-liner seed prompt.
+    registry.update_agent("research", {"system_prompt": registry._LEGACY_RESEARCH_PROMPT})
+    registry.ensure_research_discipline()
+    assert registry.get_agent("research").system_prompt == registry._RESEARCH_PROMPT
+
+
+def test_research_discipline_migration_preserves_user_prompt(isolated_home):
+    registry.ensure_seeded()
+    custom = "You are my hand-tuned research persona. Behave differently."
+    registry.update_agent("research", {"system_prompt": custom})
+    registry.ensure_research_discipline()
+    assert registry.get_agent("research").system_prompt == custom
+
+
+def test_research_discipline_migration_is_idempotent(isolated_home):
+    registry.ensure_seeded()
+    registry.ensure_research_discipline()
+    registry.ensure_research_discipline()
+    assert registry.get_agent("research").system_prompt == registry._RESEARCH_PROMPT
+
+
+def test_ensure_goal_tools_migration(isolated_home):
+    registry.ensure_seeded()
+    registry.ensure_goal_tools()
+    # research / writer are non-"*" so they gain the goal pattern
+    assert "goal_*" in registry.get_agent("research").tools_allow
+    assert "goal_*" in registry.get_agent("writer").tools_allow
+    # dev already has "*" -> left untouched
+    assert registry.get_agent("dev").tools_allow == ["*"]
+    # idempotent: running again does not duplicate the pattern
+    registry.ensure_goal_tools()
+    assert registry.get_agent("research").tools_allow.count("goal_*") == 1

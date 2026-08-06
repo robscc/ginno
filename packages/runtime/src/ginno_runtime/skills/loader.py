@@ -2,8 +2,12 @@
 
 Skill format (Claude-Code-inspired):
 
-    ~/.ginno/skills/<name>/SKILL.md
+    <package>/skills/builtin/<name>/SKILL.md         (built-in, ships with Ginno)
+    ~/.ginno/skills/<name>/SKILL.md                  (global, user-installed)
     ~/.ginno/projects/<slug>/skills/<name>/SKILL.md  (project-scoped override)
+
+Precedence on name conflict: builtin < global < project (a user copy
+overrides a built-in without breaking it; built-ins can't be deleted).
 
     ---
     name: summarize-notes
@@ -39,13 +43,14 @@ class Skill:
     todo_provider: str = ""
     body: str = ""
     path: Path | None = None
+    builtin: bool = False  # shipped with Ginno; not deletable via the API
 
     def system_prompt_snippet(self) -> str:
         """One-line summary for injection into system prompt index."""
         return f"- {self.name}: {self.description}"
 
 
-def _parse_skill_file(p: Path) -> Skill | None:
+def _parse_skill_file(p: Path, builtin: bool = False) -> Skill | None:
     raw = p.read_text(encoding="utf-8")
     m = _FRONTMATTER_RE.match(raw)
     if not m:
@@ -60,27 +65,28 @@ def _parse_skill_file(p: Path) -> Skill | None:
         todo_provider=str(meta.get("todo_provider") or ""),
         body=body,
         path=p,
+        builtin=builtin,
     )
 
 
+def _scan_dir(root: Path, builtin: bool, into: dict[str, Skill]) -> None:
+    if not root.exists():
+        return
+    for p in root.glob("*/SKILL.md"):
+        s = _parse_skill_file(p, builtin=builtin)
+        if s:
+            into[s.name] = s
+
+
 def load_all_skills(project_slug: str | None = None) -> list[Skill]:
-    """Load global skills + project-scoped overrides. Project wins on conflict."""
+    """Load builtin + global + project skills. Later tiers win on conflict
+    (builtin < global < project), so a user copy overrides a built-in."""
     skills: dict[str, Skill] = {}
 
-    global_dir = paths.global_skills_dir()
-    if global_dir.exists():
-        for p in global_dir.glob("*/SKILL.md"):
-            s = _parse_skill_file(p)
-            if s:
-                skills[s.name] = s
-
+    _scan_dir(paths.builtin_skills_dir(), builtin=True, into=skills)
+    _scan_dir(paths.global_skills_dir(), builtin=False, into=skills)
     if project_slug:
-        proj_dir = paths.project_skills_dir(project_slug)
-        if proj_dir.exists():
-            for p in proj_dir.glob("*/SKILL.md"):
-                s = _parse_skill_file(p)
-                if s:
-                    skills[s.name] = s
+        _scan_dir(paths.project_skills_dir(project_slug), builtin=False, into=skills)
 
     return list(skills.values())
 

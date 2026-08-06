@@ -33,6 +33,31 @@ def test_todo_create_invalid_priority_defaults_medium(isolated_home):
     assert "(medium)" in todo_tools.todo_list.invoke({})
 
 
+def test_todo_create_with_emoji_and_tags(isolated_home):
+    out = todo_tools.todo_create.invoke(
+        {"title": "Ship it", "emoji": "🚀", "tags": "release, q3 hot"}
+    )
+    assert "created" in out and "🚀 Ship it" in out
+    listing = todo_tools.todo_list.invoke({})
+    assert "#release" in listing and "#q3" in listing and "#hot" in listing
+
+
+def test_todo_link_artifact_and_session(isolated_home):
+    todo_tools.todo_create.invoke({"title": "Linked"})
+    item_id = todo_tools.todo_list.invoke({}).split("]")[0].lstrip("[")
+    out = todo_tools.todo_link.invoke({"todo_id": item_id, "artifact_id": "abc123"})
+    assert "linked" in out and "1 artifact" in out
+    out = todo_tools.todo_link.invoke({"todo_id": item_id, "session_id": "sess1"})
+    assert "1 session" in out and "1 artifact" in out
+    # unlink the artifact again
+    out = todo_tools.todo_link.invoke({"todo_id": item_id, "artifact_id": "abc123", "unlink": True})
+    assert "unlinked" in out and "artifact" not in out.split("linked")[-1]
+    # unknown id
+    assert "not found" in todo_tools.todo_link.invoke({"todo_id": "zzz", "session_id": "s"})
+    # nothing to link
+    assert "nothing to link" in todo_tools.todo_link.invoke({"todo_id": item_id})
+
+
 # ---------------------------- workflow ---------------------------- #
 def test_workflow_create_and_list(isolated_home):
     out = workflow_tools.workflow_create.invoke(
@@ -90,6 +115,6 @@ def test_artifact_register_returns_confirmation(isolated_home):
 
 def test_tool_name_sets():
     assert todo_tools.TODO_TOOL_NAMES == {
-        "todo_list", "todo_create", "todo_update", "todo_done", "todo_delete"
+        "todo_list", "todo_create", "todo_update", "todo_done", "todo_delete", "todo_link"
     }
     assert render_tools.RENDER_TOOL_NAMES == {"render_widget", "attach_ref"}

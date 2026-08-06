@@ -22,14 +22,14 @@ import { isDesktop } from "@/lib/desktop";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import type { Artifact, ArtifactMeta, FileEntry } from "@/lib/types";
 
-const ICON: Record<string, typeof FileText> = {
+export const ICON: Record<string, typeof FileText> = {
   workflow: Workflow,
   link: Link2,
   doc: FileText,
   file: FileSpreadsheet,
 };
 
-const KIND_LABEL: Record<string, string> = {
+export const KIND_LABEL: Record<string, string> = {
   file: "文件",
   doc: "文档",
   link: "链接",
@@ -86,7 +86,7 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-interface Rect {
+export interface Rect {
   top: number;
   bottom: number;
   left: number;
@@ -94,8 +94,9 @@ interface Rect {
 
 /** Hover inspector for one artifact. Shows exactly what prompt injection
  *  would use (schema summary + provenance), and lets the user correct
- *  name / kinds / the summary — corrections persist and win over recomputation. */
-function ArtifactMetaCard({
+ *  name / kinds / the summary — corrections persist and win over recomputation.
+ *  Exported so other panels (e.g. TODO associations) can reuse the same card. */
+export function ArtifactMetaCard({
   artifact,
   rect,
   editing,

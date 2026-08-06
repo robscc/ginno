@@ -5,7 +5,7 @@ never trimmed it, so long sessions grew without bound. This module ports the
 "local" branch of Codex's compaction ladder:
 
 * Trigger: at turn entry, estimated history tokens exceed
-  ``settings.context.compact_threshold_tokens`` (default 100k).
+  ``settings.context.compact_threshold_tokens`` (default 500k).
 * Split: at a user-turn boundary, keeping the most recent
   ``compact_keep_turns`` user turns verbatim.
 * Summarize the prefix with the session's own model (no tools bound).
@@ -126,7 +126,7 @@ async def maybe_compact_history(
     if state is None or getattr(state, "next", None):
         return None  # nothing stored, or paused at an interrupt — leave alone
     messages = list((state.values or {}).get("messages", []))
-    threshold = int(settings.get("compact_threshold_tokens", 100000))
+    threshold = int(settings.get("compact_threshold_tokens", 500000))
     if estimate_messages_tokens(messages) < threshold:
         return None
 

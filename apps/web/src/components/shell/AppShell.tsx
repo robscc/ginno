@@ -8,10 +8,12 @@ import {
   BookOpen,
   Settings as SettingsIcon,
   Plus,
+  Target,
   Workflow as WorkflowIcon,
   Pencil,
   Trash2,
 } from "lucide-react";
+import { GoalEditor } from "@/components/shell/GoalChip";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
@@ -28,16 +30,27 @@ function SectionHeader({
   icon,
   label,
   onAdd,
+  onGoal,
 }: {
   icon: React.ReactNode;
   label: string;
   onAdd?: () => void;
+  onGoal?: () => void;
 }) {
   return (
     <div className="mb-1.5 flex items-center gap-1.5 px-2.5 text-xs font-medium text-faint">
       {icon}
       <span>{label}</span>
       <span className="ml-auto flex items-center gap-1">
+        {onGoal && (
+          <button
+            onClick={onGoal}
+            title="目标会话（Agent 自主多轮推进）"
+            className="rounded p-0.5 text-faint transition-colors hover:bg-card hover:text-violet"
+          >
+            <Target className="h-3.5 w-3.5" />
+          </button>
+        )}
         {onAdd && (
           <button
             onClick={onAdd}
@@ -66,6 +79,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const confirmDelete = () => {
     if (deleteTarget) g.removeSession(deleteTarget.id);
     setDeleteTarget(null);
+  };
+
+  // Goal-first session (goal-design.md P2): create a session titled by the
+  // objective and immediately set it as the active goal so the driver starts.
+  const [goalSessionModal, setGoalSessionModal] = useState(false);
+  const onGoalSession = async (objective: string) => {
+    const title = objective.length > 40 ? objective.slice(0, 40) + "…" : objective;
+    const s = await g.newSession(g.agents[0]?.id, { title });
+    if (s) {
+      await g.setGoalObjective(s.id, objective);
+      setGoalSessionModal(false);
+      router.push("/");
+    }
   };
 
   // ── Workspace state lifted here so ChatStream is always mounted ──────────
@@ -158,6 +184,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             icon={<Icon name="message-square" className="h-3.5 w-3.5" />}
             label="Sessions"
             onAdd={onNewSession}
+            onGoal={() => setGoalSessionModal(true)}
           />
           <div className="mb-4 space-y-0.5">
             {g.sessions.length === 0 && (
@@ -329,6 +356,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {/* Non-workspace routes (settings, kb, workflows) */}
         {!onWorkspace && <div className="flex min-w-0 flex-1">{children}</div>}
       </main>
+
+      {goalSessionModal && (
+        <GoalEditor
+          initial=""
+          title="目标会话 — 设定长程目标"
+          onClose={() => setGoalSessionModal(false)}
+          onSubmit={onGoalSession}
+        />
+      )}
 
       {deleteTarget && (
         <ConfirmModal

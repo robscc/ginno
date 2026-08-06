@@ -72,9 +72,10 @@ def test_agent_prompt_edit_announced(create_session, ws_conv, client):
     assert len(ups) == 1
     assert {c["section"] for c in ups[0]["changes"]} == {"agent"}
     assert "角色设定" in ups[0]["changes"][0]["summary"]
-    # the update message landed in history as a system context block (chip row)
+    # the update message landed in history as a system context block (chip row);
+    # the renderer strips the machine prefix ("never show it"), the summary stays
     blocks = _history_context_blocks(client, sid)
-    assert any(b.startswith(UPDATE_MSG_PREFIX) and "角色设定" in b for b in blocks)
+    assert any("角色设定" in b and not b.startswith(UPDATE_MSG_PREFIX) for b in blocks)
 
 
 def test_agent_switch_announced(create_session, ws_conv, client):

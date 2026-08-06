@@ -157,25 +157,27 @@ def test_skills_budget_truncates(isolated_home):
 
     sec = SkillsSection()
     snap = sec.snapshot(ctx(project_slug="default"))
-    assert snap is not None and len(snap["names"]) == 30
+    # 30 user skills + the always-present builtin "todo" skill.
+    assert snap is not None and len(snap["names"]) == 31
+    assert "todo" in snap["names"]
     assert len(snap["index"]) <= 300 + 100  # budget + tail note slack
     assert "未列出" in snap["index"]  # tail note about dropped skills
 
 
 def test_skills_change_detection(isolated_home):
     sec = SkillsSection()
-    # Since the 2026-08 incident the snapshot exists even with ZERO skills —
-    # the install-dir context is most needed exactly then.
+    # Since the 2026-08 incident the snapshot exists even with ZERO user
+    # skills — the install-dir context is most needed exactly then. The
+    # builtin tier (todo) is always present, so names is never empty.
     before = sec.snapshot(ctx())
-    assert before is not None and before["names"] == []
-    assert "尚未安装" in before["index"]
+    assert before is not None and before["names"] == ["todo"]
     d = isolated_home / "skills" / "hello"
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text(
         "---\nname: hello\ndescription: hi\ntrigger: both\n---\n\nB.\n", encoding="utf-8"
     )
     after = sec.snapshot(ctx())
-    assert after["names"] == ["hello"]
+    assert sorted(after["names"]) == ["hello", "todo"]
     text = sec.update_text(before, after)
     assert text and "hello" in text
     # unchanged names stay silent even though dirs/can_manage are in the snap
@@ -281,10 +283,65 @@ def test_sync_world_state_baseline_flow(isolated_home):
     assert chip and chip[0]["section"] == "environment"
 
 
+def test_goal_section_renders_and_announces(isolated_home):
+    from ginno_runtime.goals import store as goal_store
+    from ginno_runtime.world_state import GoalSection
+
+    sec = GoalSection()
+    # no goal -> section absent
+    assert sec.snapshot(ctx()) is None
+
+    goal_store.create_goal("default", "s1", "Write the report", agent_id="dev")
+    snap = sec.snapshot(ctx())
+    assert snap is not None and snap["status"] == "active"
+    rendered = sec.render(snap)
+    assert "<goal>" in rendered and "Write the report" in rendered
+    assert "complete" in rendered  # guidance mentions completion discipline
+
+    # creation + status transitions announce via update_text
+    assert sec.update_text(None, snap) == "长程目标已设定：Write the report"
+    paused = dict(snap, status="paused")
+    assert "已暂停" in sec.update_text(snap, paused)
+    done = dict(snap, status="complete")
+    assert "已达成" in sec.update_text(snap, done)
+    # accounting churn (turns_used) must NOT announce
+    churn = dict(snap, turns_used=5)
+    assert sec.update_text(snap, churn) is None
+
+
+def test_goal_in_stable_system_prompt(isolated_home):
+    """An active goal reaches the model in the STABLE system layer on every
+    turn (goal-design.md §4.3.2), not just continuation turns."""
+    from ginno_runtime import agents as agents_reg
+    from ginno_runtime.goals import store as goal_store
+    from ginno_runtime.graph import build_stable_system
+
+    goal_store.create_goal("default", "s1", "Research Pop Mart stock", agent_id="dev")
+    system = build_stable_system(
+        agents_reg.get_agent("dev"),
+        project_slug="default",
+        all_tools=[],
+        agent_id="dev",
+        session_id="s1",
+    )
+    assert "<goal>" in system and "Research Pop Mart stock" in system
+
+    # paused goal no longer instructs autonomous pursuit
+    goal_store.update_status("default", "s1", "paused")
+    system_paused = build_stable_system(
+        agents_reg.get_agent("dev"),
+        project_slug="default",
+        all_tools=[],
+        agent_id="dev",
+        session_id="s1",
+    )
+    assert "已暂停" in system_paused or "paused" in system_paused
+
+
 def test_context_settings_defaults_and_override(isolated_home):
     s = context_settings()
     assert s["world_state"] is True
-    assert s["compact_threshold_tokens"] == 100000
+    assert s["compact_threshold_tokens"] == 500000
     paths.settings_path().write_text(
         json.dumps({"context": {"compact_threshold_tokens": 123, "bogus_key": 1}})
     )

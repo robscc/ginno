@@ -74,7 +74,7 @@ _DEFAULT_SETTINGS = {
         "tool_output_max_chars": 20000,
         # E3: local history summarization when estimated tokens exceed threshold
         "compaction_enabled": True,
-        "compact_threshold_tokens": 100000,
+        "compact_threshold_tokens": 500000,
         "compact_keep_turns": 3,
         # E5: "delta" stores append-only message increments per checkpoint;
         # "full" restores the legacy every-step full snapshot
@@ -237,12 +237,32 @@ def project_sessions_dir(slug: str) -> Path:
     return project_dir(slug) / "sessions"
 
 
+def project_goals_path(slug: str) -> Path:
+    """Per-project goal store: {session_id: goal} (at most one goal per session)."""
+    return project_dir(slug) / "goals.json"
+
+
 def project_skills_dir(slug: str) -> Path:
     return project_dir(slug) / "skills"
 
 
 def global_skills_dir() -> Path:
     return home() / "skills"
+
+
+def builtin_skills_dir() -> Path:
+    """Skills shipped inside the runtime package (lowest precedence tier).
+
+    Resolves against ``sys._MEIPASS`` in PyInstaller builds — ``.md`` data
+    files are collected via the spec's ``datas`` entry, mirroring how the
+    packaged web bundle is located (see server._web_out_dir).
+    """
+    import sys
+
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return Path(base) / "ginno_runtime" / "skills" / "builtin"
+    return Path(__file__).resolve().parent / "skills" / "builtin"
 
 
 def mcp_config_path() -> Path:

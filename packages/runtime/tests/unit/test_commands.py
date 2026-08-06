@@ -74,6 +74,15 @@ def test_parse_slash_matches_user_invocable_skill(isolated_home):
     assert parse_slash("/model-only x", "default") is None
 
 
+def test_builtin_todo_skill_is_slash_addressable(isolated_home):
+    # The builtin tier ships a `todo` skill with no seeding required.
+    assert parse_slash("/todo list my tasks", "default") == ("todo", "list my tasks")
+    text, name = substitute_skill("/todo 看看今天有什么", "default")
+    assert name == "todo"
+    assert '<skill name="todo">' in text
+    assert "todo_list" in text
+
+
 # --------------------------------------------------------------------------- #
 # substitute_skill — body format + trigger gating (D3)
 # --------------------------------------------------------------------------- #

@@ -1,5 +1,19 @@
 export type Priority = "high" | "medium" | "low";
 
+// Long-running per-session goal (goal-design.md). One goal per session.
+export type GoalStatus = "active" | "paused" | "blocked" | "usage_limited" | "complete";
+
+export interface Goal {
+  goal_id: string;
+  objective: string;
+  status: GoalStatus;
+  time_used_seconds: number;
+  turns_used: number;
+  agent_id?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface Todo {
   id: string;
   title: string;
@@ -7,6 +21,10 @@ export interface Todo {
   category: string;
   due: string;
   done: boolean;
+  emoji?: string; // optional icon rendered before the title
+  tags?: string[]; // free-form labels
+  session_ids?: string[]; // sessions where the item was mentioned/worked on
+  artifact_ids?: string[]; // deliverables linked to the item
   links: { session_id?: string; workflow_id?: string };
   // Loose external refs — one entry per attached TODO platform. Unknown keys
   // preserved; see runtime todo-providers for the provider registry.
@@ -179,6 +197,7 @@ export interface SkillSummary {
   description: string;
   trigger: string; // user-invocable | model-invocable | both
   tools: string[];
+  builtin?: boolean; // shipped with Ginno; cannot be deleted
 }
 
 export interface FileEntry {

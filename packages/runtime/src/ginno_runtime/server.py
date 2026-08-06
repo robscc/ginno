@@ -44,10 +44,12 @@ from .world_state import (
     TURN_CONTEXT_PREFIX,
     UPDATE_MSG_PREFIX,
     ALL_CONTEXT_PREFIXES,
+    GOAL_CONTEXT_PREFIX,
     SessionCtx,
     context_settings,
     sync_world_state,
 )
+from .goals.templates import context_row_text as goal_context_row
 
 # Bullets a world-state update message can start with when it was checkpointed
 # by a build that dropped the machine prefix — healed into context rows too.
@@ -67,6 +69,9 @@ from .todos import providers as todo_providers
 from .todos import sync_ledger
 from . import artifacts as art_store
 from . import workflows as wf_store
+from .goals import store as goal_store
+from .goals import events as goal_events
+from .goals import templates as goal_templates
 from .workflows import events as wf_events
 from .workflows import dsl as wf_dsl
 from .workflows import store as wf_storemod
@@ -127,6 +132,8 @@ async def lifespan(app: FastAPI):
     _hooks = HookDispatcher.from_settings()
     todo_store.ensure_seeded()
     agents_reg.ensure_todo_tools()
+    agents_reg.ensure_research_discipline()
+    agents_reg.ensure_goal_tools()
     wf_store.ensure_seeded()
     # Heal session metas frozen with a provider/model by older builds (or a
     # config edited outside the UI) so topbar + rebuilt graphs use current config.
@@ -249,14 +256,20 @@ async def _try_send(w: Any, data: str) -> bool:
         return False
 
 
-async def _push_session_event(session_id: str | None, event: str, data: dict) -> None:
-    """Best-effort push of a WS event to every live socket of ``session_id``."""
+async def _push_session_event(
+    session_id: str | None, event: str, data: dict, turn_id: str | None = None
+) -> None:
+    """Best-effort push of a WS event to every live socket of ``session_id``.
+
+    Broadcast (not single-socket) by design: headless turns (goal
+    continuation) have no invoking socket, and user turns must survive
+    reconnects mid-stream."""
     if not session_id:
         return
     socks = _SESSION_WS.get(session_id) or []
     alive: list[Any] = []
     for w in socks:
-        if await _try_send(w, _ev(event, data)):
+        if await _try_send(w, _ev(event, data, turn_id)):
             alive.append(w)
     _SESSION_WS[session_id] = alive
 
@@ -270,6 +283,259 @@ async def _push_global_event(event: str, data: dict) -> None:
     """
     for sid in list(_SESSION_WS.keys()):
         await _push_session_event(sid, event, data)
+
+
+# ---- Goal continuation driver (goal-design.md §4.3.3) ---------------------
+# One asyncio task per session with an active goal. After every turn ends and
+# the session goes idle, it injects a continuation message and starts the next
+# turn HEADLESSLY (no client socket required — the user may have closed the
+# window). Guards: user turns always win (turn lock + idle waits), pending
+# permission interrupts stall continuation, a goal does not follow an agent
+# switch (auto-pause). There is deliberately NO turn-count cap: context size
+# is managed by the existing auto-compaction (E3).
+
+GOAL_GRACE_S = 3.0  # pause between turns so the user can interject
+
+_TURN_LOCKS: dict[str, asyncio.Lock] = {}
+_GOAL_DRIVERS: dict[str, asyncio.Task] = {}
+
+
+def _turn_lock(session_id: str) -> asyncio.Lock:
+    lk = _TURN_LOCKS.get(session_id)
+    if lk is None:
+        lk = asyncio.Lock()
+        _TURN_LOCKS[session_id] = lk
+    return lk
+
+
+async def _emit_goal_event(
+    slug: str, session_id: str, goal: dict | None, turn_id: str | None = None
+) -> None:
+    if goal is None:
+        await _push_session_event(session_id, "goal.cleared", {})
+    else:
+        await _push_session_event(session_id, "goal.updated", {"goal": goal}, turn_id)
+
+
+def _stop_goal_driver(session_id: str) -> None:
+    task = _GOAL_DRIVERS.pop(session_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+def _start_goal_driver(session_id: str) -> None:
+    """Ensure a driver loop runs for the session when its goal is active."""
+    try:
+        s = _SESSIONS.get(session_id)
+        if not s:
+            return
+        goal = goal_store.get_goal(s["project_slug"], session_id)
+        if not goal or goal.get("status") != goal_store.STATUS_ACTIVE:
+            _stop_goal_driver(session_id)
+            return
+        task = _GOAL_DRIVERS.get(session_id)
+        if task and not task.done():
+            return
+        _GOAL_DRIVERS[session_id] = asyncio.get_running_loop().create_task(
+            _goal_driver_loop(session_id)
+        )
+    except RuntimeError:
+        # called from a sync context without a running loop (shouldn't happen
+        # in the sidecar, but never let goal bookkeeping break the caller)
+        pass
+
+
+def _goal_listener(slug: str, session_id: str, goal: dict | None) -> None:
+    """Sync bridge from goal tools: broadcast the change + reconcile driver."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_emit_goal_event(slug, session_id, goal))
+    if goal and goal.get("status") == goal_store.STATUS_ACTIVE:
+        _start_goal_driver(session_id)
+    else:
+        _stop_goal_driver(session_id)
+
+
+goal_events.register_goal_listener(_goal_listener)
+
+
+_USAGE_LIMITED_MARKERS = (
+    "rate limit", "rate_limit", "ratelimit", "429", "quota",
+    "insufficient_quota", "usage limit", "usage_limited", "overloaded",
+    "billing", "credit",
+)
+
+
+def _goal_error_status(err_msg: str) -> str:
+    """Map a failed continuation turn's error to the goal stop-status.
+
+    Provider rate-limit / quota / billing failures are external capacity
+    problems the agent cannot work around → ``usage_limited``; anything else
+    (model/tool crash) → ``blocked``. Prevents the driver from error-looping.
+    """
+    low = (err_msg or "").lower()
+    if any(m in low for m in _USAGE_LIMITED_MARKERS):
+        return goal_store.STATUS_USAGE_LIMITED
+    return goal_store.STATUS_BLOCKED
+
+
+def _turn_last_error(session_id: str, turn_id: str) -> str | None:
+    """The error message if ``turn_id`` ended in a persisted failure, else None."""
+    found = _find_meta(session_id)
+    if not found:
+        return None
+    meta, _ = found
+    err = meta.get("last_error") or None
+    if isinstance(err, dict) and err.get("turn_id") == turn_id:
+        return str(err.get("message") or "")
+    return None
+
+
+async def _run_goal_turn(session: dict, goal: dict, turn_id: str) -> None:
+    """Run ONE headless continuation turn for the session's goal."""
+    session_id = session["session_id"]
+    slug = session["project_slug"]
+    agent_id = goal.get("agent_id") or session.get("agent_id") or _first_agent_id()
+    text = goal_templates.render_continuation(goal)
+    config = {
+        "configurable": {
+            "thread_id": session_id,
+            "project_slug": slug,
+            "agent_id": agent_id,
+            "turn_id": turn_id,
+            "user_text": text,
+        }
+    }
+    _log.info(
+        "goal_continuation session=%s turn=%s goal_turn=%d",
+        session_id,
+        turn_id,
+        int(goal.get("turns_used", 0)) + 1,
+    )
+    await _run_stream(None, session["graph"], config, text, session, agent_id)
+
+
+def _goal_interrupted(session_id: str) -> bool:
+    """True while continuation must not start: a user turn runs, a permission
+    interrupt is pending, or the session vanished."""
+    return (
+        session_id in _RUNNING_TURNS
+        or session_id in _PENDING_RESUME
+        or session_id not in _SESSIONS
+    )
+
+
+async def _goal_driver_loop(session_id: str) -> None:
+    slug: str | None = None
+    try:
+        while True:
+            session = _SESSIONS.get(session_id) or _ensure_session(session_id)
+            if not session:
+                return
+            slug = session["project_slug"]
+            goal = goal_store.get_goal(slug, session_id)
+            if not goal or goal.get("status") != goal_store.STATUS_ACTIVE:
+                return
+            # Goal does not follow an agent switch (review decision 5): the
+            # driver auto-pauses instead of continuing under the new agent.
+            if (
+                goal.get("agent_id")
+                and session.get("agent_id")
+                and session["agent_id"] != goal["agent_id"]
+            ):
+                paused = goal_store.update_status(
+                    slug, session_id, goal_store.STATUS_PAUSED,
+                    expected_goal_id=goal["goal_id"],
+                )
+                if paused:
+                    await _emit_goal_event(slug, session_id, paused)
+                return
+            goal_id = goal["goal_id"]
+
+            # Wait until the session is idle (user turn / permission interrupt
+            # in flight). Re-check the goal every lap: a pause/clear/replace
+            # while waiting must stop this loop.
+            while _goal_interrupted(session_id):
+                await asyncio.sleep(0.4)
+                cur = goal_store.get_goal(slug, session_id)
+                if (
+                    not cur
+                    or cur.get("goal_id") != goal_id
+                    or cur.get("status") != goal_store.STATUS_ACTIVE
+                ):
+                    return
+
+            # Grace period — the user can interject; the invoke path takes the
+            # turn lock immediately, and the re-checks below notice the turn.
+            waited = 0.0
+            step = 0.5
+            while waited < GOAL_GRACE_S:
+                await asyncio.sleep(step)
+                waited += step
+                cur = goal_store.get_goal(slug, session_id)
+                if (
+                    not cur
+                    or cur.get("goal_id") != goal_id
+                    or cur.get("status") != goal_store.STATUS_ACTIVE
+                ):
+                    return
+                if _goal_interrupted(session_id):
+                    break  # back to the idle-wait loop above
+
+            started = time.time()
+            turn_id = str(uuid.uuid4())
+            async with _turn_lock(session_id):
+                # Final guards under the lock — a user turn may have raced in.
+                if _goal_interrupted(session_id):
+                    continue
+                cur = goal_store.get_goal(slug, session_id)
+                if (
+                    not cur
+                    or cur.get("goal_id") != goal_id
+                    or cur.get("status") != goal_store.STATUS_ACTIVE
+                ):
+                    return
+                session = _SESSIONS.get(session_id)
+                if not session:
+                    return
+                await _run_goal_turn(session, cur, turn_id)
+
+            # A failed continuation turn must STOP the loop (no error-looping):
+            # map the persisted failure to usage_limited / blocked (P2-11).
+            err_msg = _turn_last_error(session_id, turn_id)
+            if err_msg is not None:
+                stopped = goal_store.update_status(
+                    slug, session_id, _goal_error_status(err_msg),
+                    expected_goal_id=goal_id,
+                )
+                if stopped:
+                    await _emit_goal_event(slug, session_id, stopped)
+                return
+
+            # Light accounting (design §4.3.4) + usage-visible event.
+            accounted = goal_store.account_turn(
+                slug, session_id, time.time() - started, expected_goal_id=goal_id
+            )
+            if accounted:
+                await _emit_goal_event(slug, session_id, accounted)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        _log.exception("goal_driver_error session=%s", session_id)
+        # A crashing driver must not leave the goal silently "running": mark
+        # it blocked so the user sees state instead of an invisible loop.
+        if slug:
+            try:
+                stopped = goal_store.update_status(slug, session_id, goal_store.STATUS_BLOCKED)
+                if stopped:
+                    await _emit_goal_event(slug, session_id, stopped)
+            except Exception:
+                pass
+    finally:
+        if _GOAL_DRIVERS.get(session_id) is asyncio.current_task():
+            _GOAL_DRIVERS.pop(session_id, None)
 
 
 def _session_meta_list(slug: str) -> list[dict]:
@@ -375,6 +641,104 @@ async def get_session_usage(session_id: str) -> dict:
     return {"ok": True, "usage": {**acc, "cache_hit_ratio": cache_hit_ratio(acc)}}
 
 
+# ---- session goal (goal-design.md §4.4) -----------------------------------
+
+def _goal_slug(session_id: str) -> str | None:
+    """Resolve the project slug for a session without building its graph."""
+    s = _SESSIONS.get(session_id)
+    if s:
+        return s["project_slug"]
+    found = _find_meta(session_id)
+    return found[1] if found else None
+
+
+def _goal_agent(session_id: str, slug: str) -> str | None:
+    s = _SESSIONS.get(session_id)
+    if s:
+        return s.get("agent_id")
+    meta, _ = _find_meta(session_id) or ({}, slug)
+    return (meta or {}).get("agent_id")
+
+
+@app.get("/api/sessions/{session_id}/goal")
+async def get_session_goal(session_id: str) -> dict:
+    slug = _goal_slug(session_id)
+    if not slug:
+        return {"ok": False, "error": "unknown session"}
+    return {"ok": True, "goal": goal_store.get_goal(slug, session_id)}
+
+
+@app.put("/api/sessions/{session_id}/goal")
+async def set_session_goal(session_id: str, req: dict) -> dict:
+    """Create / replace the objective and/or change status.
+
+    body: {objective?, status?, confirm?}
+    * objective + existing UNFINISHED goal + no confirm → 409 needs_confirm.
+    * status accepts only user actions: "active" (resume) | "paused".
+    """
+    slug = _goal_slug(session_id)
+    if not slug:
+        return {"ok": False, "error": "unknown session"}
+    objective = req.get("objective")
+    status = req.get("status")
+    confirm = bool(req.get("confirm"))
+    existing = goal_store.get_goal(slug, session_id)
+
+    if objective is not None:
+        try:
+            if goal_store.is_open(existing) and not confirm:
+                return {
+                    "ok": False,
+                    "needs_confirm": True,
+                    "goal": existing,
+                    "error": "session has an unfinished goal",
+                }
+            goal = goal_store.replace_goal(
+                slug, session_id, objective, agent_id=_goal_agent(session_id, slug)
+            )
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        await _emit_goal_event(slug, session_id, goal)
+        _start_goal_driver(session_id)
+        return {"ok": True, "goal": goal}
+
+    if status is not None:
+        if status not in (goal_store.STATUS_ACTIVE, goal_store.STATUS_PAUSED):
+            return {
+                "ok": False,
+                "error": "status must be 'active' or 'paused' (complete/blocked are model-set)",
+            }
+        if not existing:
+            return {"ok": False, "error": "no goal set"}
+        if status == goal_store.STATUS_ACTIVE and existing["status"] == goal_store.STATUS_COMPLETE:
+            return {"ok": False, "error": "completed goal cannot be resumed; set a new objective"}
+        goal = goal_store.update_status(
+            slug, session_id, status, expected_goal_id=existing["goal_id"]
+        )
+        if not goal:
+            return {"ok": False, "error": "goal changed concurrently; refresh"}
+        await _emit_goal_event(slug, session_id, goal)
+        if status == goal_store.STATUS_ACTIVE:
+            _start_goal_driver(session_id)
+        else:
+            _stop_goal_driver(session_id)
+        return {"ok": True, "goal": goal}
+
+    return {"ok": False, "error": "nothing to do: pass objective and/or status"}
+
+
+@app.delete("/api/sessions/{session_id}/goal")
+async def clear_session_goal(session_id: str) -> dict:
+    slug = _goal_slug(session_id)
+    if not slug:
+        return {"ok": False, "error": "unknown session"}
+    cleared = goal_store.clear_goal(slug, session_id)
+    if cleared:
+        _stop_goal_driver(session_id)
+        await _emit_goal_event(slug, session_id, None)
+    return {"ok": True, "cleared": cleared}
+
+
 @app.post("/api/sessions")
 async def create_session(req: CreateSessionRequest) -> dict:
     provider, model_name, agent_id = _resolve_provider_model(req)
@@ -391,7 +755,9 @@ async def create_session(req: CreateSessionRequest) -> dict:
     session_dir = paths.session_files_dir(req.project_slug, session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
     workspace = str(session_dir)
-    all_tools = build_all_tools(mcp_tools, workspace=workspace, project_slug=req.project_slug)
+    all_tools = build_all_tools(
+        mcp_tools, workspace=workspace, project_slug=req.project_slug, session_id=session_id
+    )
     graph = build_graph(
         model=model,
         project_slug=req.project_slug,
@@ -552,6 +918,13 @@ async def delete_session(session_id: str) -> dict:
         fd = paths.session_files_dir(slug, session_id)
         if fd.is_dir():
             files_dir = str(fd)
+        # cascade: drop the session's goal (goal-design.md §4.1) and stop any
+        # continuation driver still looping for it.
+        try:
+            goal_store.clear_goal(slug, session_id)
+        except Exception:
+            _log.exception("goal_cascade_delete_failed session=%s", session_id)
+        _stop_goal_driver(session_id)
     return {"ok": True, "removed": removed, "files_dir": files_dir}
 
 
@@ -704,10 +1077,16 @@ def _messages_to_ui(
                 if content_raw.startswith(TURN_CONTEXT_PREFIX):
                     continue
                 flush_assistant()
-                # The update prefix is a machine marker — never show it.
-                display = content_raw
-                if display.startswith(UPDATE_MSG_PREFIX):
-                    display = display[len(UPDATE_MSG_PREFIX):].lstrip("\n")
+                # Goal steering messages (continuation / objective-updated) fold
+                # into a SHORT centered row — the full prompt is model
+                # scaffolding, not conversation (goal-design.md §4.3.2).
+                if content_raw.startswith(GOAL_CONTEXT_PREFIX):
+                    display = goal_context_row(content_raw)
+                else:
+                    # The update prefix is a machine marker — never show it.
+                    display = content_raw
+                    if display.startswith(UPDATE_MSG_PREFIX):
+                        display = display[len(UPDATE_MSG_PREFIX):].lstrip("\n")
                 ui.append(
                     {
                         "id": getattr(m, "id", None),
@@ -811,6 +1190,7 @@ async def list_skills(project_slug: str | None = None) -> list[dict]:
             "description": s.description,
             "trigger": s.trigger,
             "tools": s.allowed_tools,
+            "builtin": s.builtin,
         }
         for s in skills
     ]
@@ -2193,6 +2573,9 @@ async def delete_skill_endpoint(name: str) -> dict:
         shutil.rmtree(d)
         await _push_global_event("skills.changed", {})
         return {"ok": True}
+    s = SkillLoader().get(name)
+    if s and s.builtin:
+        return {"ok": False, "error": "builtin skill cannot be deleted"}
     return {"ok": False}
 
 
@@ -2773,7 +3156,9 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     # rewriting the index.
     workspace = str(paths.session_files_dir(slug, session_id))
     mcp_tools = _mcp.all_langchain_tools() if _mcp else []
-    all_tools = build_all_tools(mcp_tools, workspace=workspace, project_slug=slug)
+    all_tools = build_all_tools(
+        mcp_tools, workspace=workspace, project_slug=slug, session_id=session_id
+    )
     graph = build_graph(
         model=model,
         project_slug=slug,
@@ -2901,6 +3286,10 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         # introspecting resume state must never stop the socket from opening
         pass
 
+    # Cross-restart goal resume (design §4.3.3): an active goal re-arms its
+    # continuation driver as soon as the session is loaded again.
+    _start_goal_driver(session_id)
+
     try:
         while True:
             raw = await ws.receive_text()
@@ -2959,18 +3348,22 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             "user_text": user_text or "",
                         },
                     }
-                    await _run_stream(
-                        ws,
-                        graph,
-                        turn_config,
-                        user_text,
-                        session,
-                        turn_agent,
-                        images=msg.get("images"),
-                        files=(msg.get("files") or []) + plan.files_extra,
-                        mention_context=plan.mention_ctx,
-                        skill_name=plan.skill_name,
-                    )
+                    async with _turn_lock(session_id):
+                        await _run_stream(
+                            ws,
+                            graph,
+                            turn_config,
+                            user_text,
+                            session,
+                            turn_agent,
+                            images=msg.get("images"),
+                            files=(msg.get("files") or []) + plan.files_extra,
+                            mention_context=plan.mention_ctx,
+                            skill_name=plan.skill_name,
+                        )
+                    # The turn may have created/resumed a goal (goal tools) —
+                    # (re)arm the continuation driver now that we're idle.
+                    _start_goal_driver(session_id)
                 except Exception as e:
                     # Any lower-layer failure on the invoke path (command /
                     # mention resolution, stream setup, graph run leaking past
@@ -3272,6 +3665,7 @@ async def _run_stream(
                     mcp_tools,
                     workspace=str(session.get("workspace") or ""),
                     project_slug=slug,
+                    session_id=session_id,
                 )
             ]
         return SessionCtx(
@@ -3294,15 +3688,14 @@ async def _run_stream(
     except Exception:
         _log.exception("compaction_failed session=%s", session_id)
     if compaction_stats:
-        await ws.send_text(
-            _ev(
-                "context.compacted",
-                {
-                    "compacted_messages": compaction_stats["compacted_messages"],
-                    "kept_messages": compaction_stats["kept_messages"],
-                },
-                turn_id,
-            )
+        await _push_session_event(
+            session_id,
+            "context.compacted",
+            {
+                "compacted_messages": compaction_stats["compacted_messages"],
+                "kept_messages": compaction_stats["kept_messages"],
+            },
+            turn_id,
         )
 
     # C1/C2 — WorldState diff against the session baseline. First sync only
@@ -3316,7 +3709,9 @@ async def _run_stream(
             _log.exception("world_state_sync_failed session=%s", session_id)
             update_text, chip_changes = None, []
         if chip_changes:
-            await ws.send_text(_ev("context.updated", {"changes": chip_changes}, turn_id))
+            await _push_session_event(
+                session_id, "context.updated", {"changes": chip_changes}, turn_id
+            )
 
     # B1 — per-turn volatile context (wiki retrieval / attached files /
     # @mentions) rides a tail message instead of the stable system prompt.
@@ -3439,6 +3834,11 @@ async def _stream_graph(
                 pass
 
         _ka = asyncio.create_task(keepalive())
+
+        # Snapshot the global TODO list before the turn: afterwards we diff it
+        # to find the items the agent created/touched, and auto-link THIS
+        # session to them (TODO panel → sessions association, docs "TODO 特性").
+        _pre_turn_todos = todo_store.list_todos()
 
         if command is not None:
             stream = graph.astream(command, config=config, stream_mode=["messages", "updates"])
@@ -3707,6 +4107,15 @@ async def _stream_graph(
                                         "content": reason.strip() or c,
                                     })
                                 )
+        # Auto-associate this session with every TODO the turn created or
+        # touched — the TODO panel surfaces these sessions as jump targets.
+        # Gated on an actual todo_* tool call so unrelated edits don't count.
+        if session_id and any(
+            (nm or "").startswith("todo_") for nm, _args in tool_args_by_id.values()
+        ):
+            for t in todo_store.touched_since(_pre_turn_todos):
+                if t.get("id") and session_id not in (t.get("session_ids") or []):
+                    todo_store.link_session(t["id"], session_id)
         # refresh the right-panel TODO list after every turn (the agent may
         # have mutated it via the todo_* tools); the checkbox path is optimistic
         # and doesn't need this.

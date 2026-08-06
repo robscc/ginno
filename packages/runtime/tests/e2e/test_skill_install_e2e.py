@@ -114,8 +114,9 @@ def test_system_prompt_carries_workspace_and_skills_context(create_session, ws_c
     assert str(paths.project_skills_dir("default")) in prompt
     # install guidance names the real tool
     assert "install_skills" in prompt
-    # zero skills installed yet — the section must still be present
-    assert "尚未安装" in prompt
+    # the builtin tier always ships the `todo` skill, so the index is never
+    # empty; the section must be present and list it
+    assert "- todo:" in prompt
 
 
 def test_research_agent_gets_dirs_but_not_install_guidance(create_session, ws_conv):

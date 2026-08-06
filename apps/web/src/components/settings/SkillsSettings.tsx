@@ -9,6 +9,7 @@ interface Skill {
   description: string;
   trigger: string;
   tools: string[];
+  builtin?: boolean;
 }
 
 export function SkillsSettings() {
@@ -85,10 +86,17 @@ export function SkillsSettings() {
           <div key={s.name} className="rounded-xl border border-line bg-card p-3">
             <div className="flex items-center gap-2">
               <span className="font-mono text-sm text-violet">/{s.name}</span>
+              {s.builtin && (
+                <span className="pill border border-violet/40 bg-violet/10 text-violet">内置</span>
+              )}
               <span className="pill border border-line2 text-muted">{s.trigger}</span>
-              <button onClick={() => del(s.name)} className="ml-auto text-xs text-faint hover:text-red">
-                delete
-              </button>
+              {s.builtin ? (
+                <span className="ml-auto text-xs text-faint" title="内置技能不可删除">built-in</span>
+              ) : (
+                <button onClick={() => del(s.name)} className="ml-auto text-xs text-faint hover:text-red">
+                  delete
+                </button>
+              )}
             </div>
             <div className="mt-1 text-xs text-muted">{s.description}</div>
             {s.tools.length > 0 && (

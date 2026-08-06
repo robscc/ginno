@@ -4,6 +4,8 @@ from .registry import (
     AgentConfig,
     create_agent,
     delete_agent,
+    ensure_goal_tools,
+    ensure_research_discipline,
     ensure_todo_tools,
     fork_agent,
     get_agent,
@@ -20,4 +22,6 @@ __all__ = [
     "delete_agent",
     "fork_agent",
     "ensure_todo_tools",
+    "ensure_research_discipline",
+    "ensure_goal_tools",
 ]

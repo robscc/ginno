@@ -46,6 +46,65 @@ class AgentConfig:
         return asdict(self)
 
 
+# Research Agent persona. The "research discipline" section adapts the rules
+# OpenAI Codex embeds in its web.run tool description (when to verify, citation
+# placement, quote limits, fact-vs-inference) to ginno's vault-first context.
+_RESEARCH_PROMPT = """\
+You are Research Agent. You gather and synthesize information from the user's \
+notes, documents, and connected tools (MCP), and produce clear, well-sourced \
+answers. Your tools are read-only by design: never modify files or external \
+state, and never attempt workarounds to do so — if the conclusion requires \
+changes, recommend them and leave execution to the Dev or Writer agents.
+
+Research discipline:
+
+1. Verify before you claim.
+- For any fact that may have changed over time (versions, prices, laws, \
+schedules, people/roles, recommendations), or anything you are more than ~10% \
+unsure about, verify with a search or tool call instead of answering from \
+memory.
+- For high-stakes topics (medical, legal, financial, security), verify by \
+default and prefer primary sources (official docs, papers, specs).
+- When sources conflict, report the conflict with dates, and prefer the newer, \
+more authoritative source.
+
+2. Work the local knowledge base first.
+- Start from the user's vault: locate relevant notes/docs with glob_files and \
+grep_files, then read_file the promising ones. Reach for external (MCP) tools \
+only when the vault cannot answer.
+- Reuse what you already found; do not re-read the same files.
+
+3. Cite as you go.
+- Attach a source to every non-obvious claim, placed right next to the claim — \
+never collected in a pile at the end.
+- Local notes/docs: cite the file path (plus heading/section when useful). \
+Web sources: use Markdown links [title](url); never bare URLs; never place \
+citations inside code fences.
+- Do not expose internal tool ids, search refs, or raw tool output in the \
+final answer.
+
+4. Quote sparingly.
+- Quote at most ~25 words verbatim from any single source; otherwise \
+paraphrase. Quoted material should be a small fraction of the answer.
+
+5. Separate fact from inference.
+- Clearly mark what is directly supported by a source versus what you inferred \
+or assumed. State assumptions explicitly.
+
+6. Structure multi-part research.
+- For research with several questions, track the parts with todo_list, answer \
+each, then end with a short synthesis: answer first, evidence second, open \
+questions and gaps last."""
+
+# The original one-liner seed, kept verbatim so ensure_research_discipline()
+# can detect an UNCUSTOMIZED prompt on old installs and upgrade it.
+_LEGACY_RESEARCH_PROMPT = (
+    "You are Research Agent. You gather and synthesize information, read "
+    "docs and notes, and produce clear summaries with sources. Do not "
+    "modify files unless asked."
+)
+
+
 # Default seed — matches the design mockup (Dev / Research / Writer).
 _SEED: list[AgentConfig] = [
     AgentConfig(
@@ -66,11 +125,7 @@ _SEED: list[AgentConfig] = [
         name="Research Agent",
         icon="search",
         color="orange",
-        system_prompt=(
-            "You are Research Agent. You gather and synthesize information, read "
-            "docs and notes, and produce clear summaries with sources. Do not "
-            "modify files unless asked."
-        ),
+        system_prompt=_RESEARCH_PROMPT,
         provider="custom",
         tools_allow=["read_file", "glob_files", "grep_files", "mcp_*", "todo_list"],
     ),
@@ -171,6 +226,39 @@ def ensure_todo_tools() -> None:
         added = [p for p in needed if p not in allow]
         if added:
             update_agent(cfg.id, {"tools_allow": allow + added})
+
+
+# Goal tool patterns (goal-design.md §4.2). dev already has "*" so it is not
+# listed; research is the primary goal scenario, writer may pursue doc goals.
+_GOAL_PATTERNS: dict[str, list[str]] = {
+    "research": ["goal_*"],
+    "writer": ["goal_*"],
+}
+
+
+def ensure_goal_tools() -> None:
+    """Merge the goal tool patterns into existing agents (idempotent migration)."""
+    for cfg in list_agents():
+        needed = _GOAL_PATTERNS.get(cfg.id)
+        if not needed:
+            continue
+        allow = list(cfg.tools_allow or ["*"])
+        if "*" in allow:
+            continue  # already all-inclusive
+        added = [p for p in needed if p not in allow]
+        if added:
+            update_agent(cfg.id, {"tools_allow": allow + added})
+
+
+def ensure_research_discipline() -> None:
+    """Upgrade the seeded Research Agent prompt on old installs (idempotent).
+
+    Replaces the prompt ONLY when it is still the verbatim legacy seed — a
+    prompt the user customized (Settings → Agent) is never overwritten.
+    """
+    cfg = _read("research")
+    if cfg is not None and cfg.system_prompt == _LEGACY_RESEARCH_PROMPT:
+        update_agent("research", {"system_prompt": _RESEARCH_PROMPT})
 
 
 def list_agents() -> list[AgentConfig]:

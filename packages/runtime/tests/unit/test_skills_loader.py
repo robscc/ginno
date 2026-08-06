@@ -27,9 +27,14 @@ def _write_skill(base, name, body=_SKILL):
     return d
 
 
+def _user_skills() -> list:
+    """Skills excluding the builtin tier (shipped with the runtime)."""
+    return [s for s in load_all_skills() if not s.builtin]
+
+
 def test_parse_frontmatter_and_body(isolated_home):
     _write_skill(paths.global_skills_dir(), "summarize-notes")
-    skills = load_all_skills()
+    skills = _user_skills()
     assert len(skills) == 1
     s = skills[0]
     assert s.name == "summarize-notes"
@@ -43,7 +48,8 @@ def test_skill_without_frontmatter_is_skipped(isolated_home):
     d = paths.global_skills_dir() / "broken"
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text("no frontmatter here\n", encoding="utf-8")
-    assert load_all_skills() == []
+    assert _user_skills() == []
+    assert all(s.name != "broken" for s in load_all_skills())
 
 
 def test_project_skill_overrides_global(isolated_home):
@@ -64,9 +70,34 @@ def test_build_index_prompt_lists_skills(isolated_home):
     assert "Summarize a set of notes" in prompt
 
 
-def test_build_index_prompt_empty_when_no_skills(isolated_home):
-    assert SkillLoader().build_index_prompt() == ""
+def test_build_index_prompt_lists_only_builtin_when_no_user_skills(isolated_home):
+    # No user-installed skills, but the builtin tier always ships with Ginno.
+    prompt = SkillLoader().build_index_prompt()
+    assert "todo" in prompt  # builtin TODO skill is always present
 
 
 def test_get_unknown_returns_none(isolated_home):
     assert SkillLoader().get("nope") is None
+
+
+# ------------------------------ builtin tier ------------------------------ #
+def test_builtin_todo_skill_always_present(isolated_home):
+    s = SkillLoader().get("todo")
+    assert s is not None and s.builtin is True
+    assert "todo_list" in (s.allowed_tools or []) or "todo" in s.body
+
+
+def test_global_copy_overrides_builtin(isolated_home):
+    _write_skill(
+        paths.global_skills_dir(),
+        "todo",
+        "---\nname: todo\ndescription: CUSTOM\ntrigger: both\n---\ncustom body\n",
+    )
+    s = SkillLoader().get("todo")
+    assert s.builtin is False and s.description == "CUSTOM"
+    assert s.body == "custom body"
+
+
+def test_builtin_skill_dir_resolves(isolated_home):
+    d = paths.builtin_skills_dir()
+    assert (d / "todo" / "SKILL.md").exists()
