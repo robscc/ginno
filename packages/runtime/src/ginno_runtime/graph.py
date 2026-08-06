@@ -118,6 +118,20 @@ def build_stable_system(
         "These two tools render silently on the user's screen — do NOT quote or repeat "
         "their return values; just add a brief human summary."
     )
+    parts.append(
+        "Charts: when a trend (line/area), comparison (bar), or composition (pie) is "
+        "clearer than prose, call render_widget(kind='chart', data={'type': "
+        "'bar'|'line'|'area'|'pie', 'title': <short str>, 'x': <key>, 'y': <key>, "
+        "'data': [{...}, ...], 'format': 'number'|'percent'|'currency' (optional)}). "
+        "'data' is a flat array of objects carrying the x/y keys, e.g. "
+        "[{'month': 'Jan', 'count': 12}, {'month': 'Feb', 'count': 19}]. Rules: use ONLY "
+        "numbers you actually computed from real data — never invent or extrapolate; "
+        "aggregate/downsample to <=30 points before charting; one measure per chart (never "
+        "a dual axis); >5 categories -> fold the tail into an 'Other' row. Pick the display "
+        "by size: 1-2 numbers -> prose; <=5 KPIs -> stat_list; series/comparison/"
+        "composition -> chart. After the chart state the one-line takeaway (e.g. the peak "
+        "and the trend) — do not repeat the raw numbers."
+    )
     if any(n.startswith("todo_") for n in allowed):
         parts.append(
             "The user's daily TODO list is shown in the right panel. Use todo_list to read "
