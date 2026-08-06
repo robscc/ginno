@@ -16,6 +16,13 @@
   --scroll: 44 44 56;
   --code-bg: 14 14 20;
   --inline-code: 233 170 200;
+  /* Chart categorical series slots — fixed CVD-validated order, dark steps.
+     Assign in order, never cycle; >5 series fold into "Other". */
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
 }
 
 html.light {
@@ -32,6 +39,12 @@ html.light {
   --scroll: 212 212 220;
   --code-bg: 245 245 249;
   --inline-code: 170 60 105;
+  /* Same categorical order, light-surface steps. */
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-5: #e87ba4;
 }
 
 html,

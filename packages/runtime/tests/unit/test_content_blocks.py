@@ -195,3 +195,28 @@ def test_messages_to_ui_tool_message_list_content_is_stringified():
     tool = next(b for b in ui[0]["blocks"] if b["kind"] == "tool")
     assert tool["content"] == "captured\n[image]"
     assert tool["name"] == "screenshot"
+
+
+def test_messages_to_ui_replays_chart_widget():
+    chart_data = {
+        "type": "line",
+        "title": "visits",
+        "x": "day",
+        "y": "n",
+        "data": [{"day": "Mon", "n": 3}, {"day": "Tue", "n": 7}],
+    }
+    ai = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "render_widget", "args": {"kind": "chart", "data": chart_data}, "id": "t1", "type": "tool_call"}
+        ],
+        id="a1",
+    )
+    tm = ToolMessage(content="[rendered widget: chart]", tool_call_id="t1")
+    ui = _messages_to_ui([ai, tm], None)
+    widgets = [b for b in ui[0]["blocks"] if b["kind"] == "widget"]
+    assert len(widgets) == 1
+    assert widgets[0]["widgetKind"] == "chart"
+    assert widgets[0]["data"] == chart_data
+    # render_widget is silent on replay too: no ordinary tool bubble
+    assert not [b for b in ui[0]["blocks"] if b["kind"] == "tool"]

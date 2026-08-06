@@ -2,9 +2,9 @@
 
 `render_widget` and `attach_ref` are no-op tools whose only effect is
 visual: the WS layer intercepts their calls and emits `widget.emit` /
-`ref.emit` events (the frontend renders a stat_list card / a reference
-chip). They are always allowed for every agent and are NOT shown as
-ordinary tool bubbles.
+`ref.emit` events (the frontend renders a stat_list card / a d3 chart /
+a reference chip). They are always allowed for every agent and are NOT
+shown as ordinary tool bubbles.
 """
 
 from __future__ import annotations
@@ -19,9 +19,14 @@ def render_widget(kind: str, data: dict, summary: str = "") -> str:
     """Render a rich widget card in the chat instead of plain text.
 
     Use this when a structured view is clearer than prose (status lists,
-    metrics, breakdowns). Supported kind:
+    metrics, breakdowns, trends). Supported kinds:
       - "stat_list": data = {"title": str, "items": [{"label": str,
         "value"?: str, "status"?: "done"|"running"|"pending"|"ok"|"error"}]}
+      - "chart": data = {"type": "bar"|"line"|"area"|"pie", "title": str,
+        "x": <key>, "y": <key>, "data": [{"<x>": ..., "<y>": <number>}, ...],
+        "format"?: "number"|"percent"|"currency"}
+        data must be a flat array of <=30 objects with real computed numbers
+        (never invented), aggregated before charting; one measure per chart.
     After rendering, also give a one-line textual summary.
     """
     return summary or f"[rendered widget: {kind}]"

@@ -35,6 +35,35 @@ def test_render_widget_emits_widget_not_tool_bubble(create_session, ws_conv):
     assert all(t.get("name") != "render_widget" for t in tool_starts)
 
 
+def test_render_chart_widget_emits_spec(create_session, ws_conv):
+    chart = {
+        "kind": "chart",
+        "data": {
+            "type": "bar",
+            "title": "commits",
+            "x": "month",
+            "y": "count",
+            "data": [{"month": "Jan", "count": 12}, {"month": "Feb", "count": 19}],
+        },
+    }
+    model = [
+        script(tool_calls=[script_tool_call("render_widget", chart)]),
+        script(text="Feb is the peak"),
+    ]
+    sid = create_session(model)
+    with ws_conv(sid) as conv:
+        conv.invoke("chart the commits")
+        events = conv.recv_until("message.end", "error")
+
+    widgets = events_of(events, "widget.emit")
+    assert len(widgets) == 1
+    assert widgets[0]["kind"] == "chart"
+    assert widgets[0]["data"]["type"] == "bar"
+    assert widgets[0]["data"]["data"][1] == {"month": "Feb", "count": 19}
+    tool_starts = events_of(events, "tool.start")
+    assert all(t.get("name") != "render_widget" for t in tool_starts)
+
+
 def test_attach_ref_emits_ref_and_registers_artifact(create_session, ws_conv, client):
     model = [
         script(tool_calls=[script_tool_call("attach_ref", {"kind": "file", "name": "notes.md", "ref_id": "/v/notes.md"})]),
