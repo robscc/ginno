@@ -116,20 +116,15 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
   const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
   const goal: Goal | null = sessionId ? g.goalBySession[sessionId] ?? null : null;
 
-  // Live-tick elapsed time while active: the server only accounts time at turn
-  // boundaries, so add the time since the last snapshot.
+  // Live-tick elapsed time while active. Derived from the SERVER updated_at so
+  // it is monotonic and identical across session switches / reloads (a
+  // client-side "seenAt" would reset the timer on every switch — bug). The
+  // server accounts time at turn boundaries; between boundaries we add the wall
+  // time since the last goal mutation.
   const [, force] = useState(0);
-  const seenAtRef = useRef(Date.now());
-  const prevGoalRef = useRef<Goal | null>(null);
-  useEffect(() => {
-    if (prevGoalRef.current !== goal) {
-      prevGoalRef.current = goal;
-      seenAtRef.current = Date.now();
-    }
-  }, [goal]);
   useEffect(() => {
     if (goal?.status !== "active") return;
-    const t = setInterval(() => force((n) => n + 1), 5000);
+    const t = setInterval(() => force((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, [goal?.status]);
 
@@ -137,7 +132,9 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
 
   const elapsed = goal
     ? goal.time_used_seconds +
-      (goal.status === "active" ? Math.max(0, (Date.now() - seenAtRef.current) / 1000) : 0)
+      (goal.status === "active"
+        ? Math.max(0, Date.now() / 1000 - (goal.updated_at || Date.now() / 1000))
+        : 0)
     : 0;
 
   // No goal yet → a subtle affordance to set one.
@@ -205,7 +202,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
               {goal.objective}
             </div>
             <div className="mt-2 text-[11px] text-faint">
-              自主推进 {goal.turns_used} 轮 · 已用 {fmtElapsed(goal.time_used_seconds)}
+              自主推进 {goal.turns_used} 轮 · 已用 {fmtElapsed(elapsed)}
             </div>
             <div className="mt-3 flex flex-wrap gap-1.5">
               {goal.status === "active" && (

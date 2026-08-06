@@ -695,27 +695,31 @@ export function ChatStream({
         // authoritative agent for this turn (server-resolved, never null).
         // The server echoes the turn_id we sent (or mints one); adopt it as the
         // bubble's trace UUID so it matches the sidecar logs exactly.
-        const id = liveBySessionRef.current[sid];
-        if (id) {
-          const srvTurn = ev.turn_id as string | undefined;
-          storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
-            msg.id === id
-              ? {
-                  ...msg,
-                  agentId: (ev.agent_id as string) || null,
-                  agentName: ev.name as string,
-                  turnId: srvTurn || msg.turnId,
-                }
+        const srvTurn = ev.turn_id as string | undefined;
+        const evAgent = (ev.agent_id as string) || null;
+        // Headless (goal continuation) turns have NO client bubble yet — the
+        // first token.delta would otherwise create one with a null agent and
+        // render the generic "Agent". Prime the bubble here so the
+        // server-provided agent name is kept (bug: continuation showed "Agent").
+        if (evAgent) streamAgentRef.current[sid] = evAgent;
+        const id = liveBySessionRef.current[sid] ?? ensureLive(sid);
+        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
+          msg.id === id
+            ? {
+                ...msg,
+                agentId: evAgent,
+                agentName: (ev.name as string) || undefined,
+                turnId: srvTurn || msg.turnId,
+              }
+            : msg,
+        );
+        // keep the user bubble's UUID in sync with the server's authoritative one
+        if (srvTurn) {
+          storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg, i, arr) =>
+            msg.role === "user" && !msg.turnId && i === arr.length - 2
+              ? { ...msg, turnId: srvTurn }
               : msg,
           );
-          // keep the user bubble's UUID in sync with the server's authoritative one
-          if (srvTurn) {
-            storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg, i, arr) =>
-              msg.role === "user" && !msg.turnId && i === arr.length - 2
-                ? { ...msg, turnId: srvTurn }
-                : msg,
-            );
-          }
         }
         break;
       }
