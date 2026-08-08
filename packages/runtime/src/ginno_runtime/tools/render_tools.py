@@ -37,5 +37,7 @@ def attach_ref(kind: str, name: str, ref_id: str = "") -> str:
     """Attach a clickable reference chip below the message.
 
     kind in {"file", "workflow", "doc", "link"}. name is the display label.
+    For kind="file", ref_id should be the file's absolute path; a relative
+    ref_id is resolved against the session workspace.
     """
     return f"[attached {kind}: {name}]"

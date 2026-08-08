@@ -2084,6 +2084,78 @@ def _heal_artifact_ref(art: dict, project_slug: str) -> str | None:
         return None
 
 
+def _session_workspace(slug: str, session_id: str) -> Path:
+    """The session's authoritative files dir — where write_file's relative
+    paths land. Prefers the recorded meta workspace; falls back to the
+    standard layout for sessions whose meta is stale."""
+    meta = _resolve_session_meta(session_id)
+    ws = str((meta or {}).get("workspace") or "")
+    return Path(ws) if ws else paths.session_files_dir(slug, session_id)
+
+
+def _normalize_file_ref(slug: str, session_id: str, ref: str) -> str:
+    """Resolve a model-supplied file ref to an absolute path when possible.
+
+    Models echo back the same (often relative) path they passed write_file;
+    those resolve against the session workspace, not the sidecar cwd. Only
+    refs that point at an existing file are rewritten — anything else (link
+    URLs, docs, missing files) passes through untouched.
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        return ref
+    p = Path(ref).expanduser()
+    if not p.is_absolute():
+        p = Path(str(_session_workspace(slug, session_id) / ref)).expanduser()
+    if p.is_file():
+        return files_mod.norm_path(str(p))
+    return ref
+
+
+def _register_artifact_file(slug: str, session_id: str, art: dict, ref: str) -> None:
+    """Give an artifact's on-disk file a registry entry (idempotent) so
+    preview / download / injection can find it by path. Without this the
+    panel row exists but clicking it resolves nothing (files.json miss)."""
+    if not art or not ref or not Path(ref).is_file():
+        return
+    files_mod.get_registry(slug).register(
+        art.get("name") or Path(ref).name,
+        ref,
+        session_id=session_id,
+        artifact_id=art.get("id"),
+    )
+
+
+def _heal_workspace_ref(art: dict, project_slug: str) -> str | None:
+    """Heal refs stored relative to the session workspace (models echo the
+    relative path they passed write_file — see 2026-08 us_stock_report). On
+    hit, rewrites the artifact ref to the absolute path and registers the
+    file-registry entry — same shape as _heal_artifact_ref, and covers
+    records persisted before registration-side normalization existed."""
+    ref = (art.get("ref") or "").strip()
+    if not ref or Path(ref).is_file():
+        return None
+    sid = art.get("session_id") or ""
+    if not sid:
+        return None
+    try:
+        # Path join with an absolute `ref` yields `ref` itself, which is
+        # already known missing — so broken absolute refs heal to nothing
+        # here and fall through to the vault healer unchanged.
+        candidate = Path(str(_session_workspace(project_slug, sid) / ref)).expanduser()
+        if not candidate.is_file():
+            return None
+        new = files_mod.norm_path(str(candidate))
+        art_store.set_ref(project_slug, art["id"], new)
+        files_mod.get_registry(project_slug).register(
+            art.get("name") or candidate.name, new, session_id=sid, artifact_id=art["id"]
+        )
+        return new
+    except Exception:
+        _log.exception("artifact_workspace_heal_failed artifact=%s", art.get("id"))
+        return None
+
+
 @app.get("/api/artifacts/{artifact_id}/metadata")
 async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "default") -> dict:
     """Full inspector payload for one artifact: the panel record, its file
@@ -2103,10 +2175,15 @@ async def artifact_metadata_endpoint(artifact_id: str, project_slug: str = "defa
     if art.get("kind") == "file" and ref:
         reg = files_mod.get_registry(project_slug)
         if not Path(ref).is_file():
-            # The file may have been moved into the knowledge vault —
-            # re-point ref + registry so the link heals instead of breaking.
-            if _heal_artifact_ref(art, project_slug):
-                ref = art.get("ref") or ref
+            # The ref may be workspace-relative (models echo write_file's
+            # relative path) or the file may have moved into the knowledge
+            # vault — re-point ref + registry so the link heals instead of
+            # breaking. Workspace heal first: it's cheaper and the common case.
+            healed = _heal_workspace_ref(art, project_slug) or _heal_artifact_ref(
+                art, project_slug
+            )
+            if healed:
+                ref = healed
         file_entry = reg.find_by_path(ref)
         path = (file_entry or {}).get("path") or ref
         exists = Path(path).is_file()
@@ -3598,6 +3675,12 @@ def _resolve_attached_files(
             ref = (art.get("ref") or "").strip() if art else ""
             if art and ref:
                 p = Path(ref).expanduser()
+                if not p.is_file():
+                    # Legacy relative ref (workspace-relative) — heal it
+                    # before injection, same as the metadata endpoint does.
+                    healed = _heal_workspace_ref(art, slug)
+                    if healed:
+                        ref, p = healed, Path(healed)
                 if p.is_file():
                     entry = reg.find_by_path(str(p)) or reg.register(
                         art.get("name") or p.name,
@@ -3659,7 +3742,13 @@ async def _tool_file_effects(
     if name in ("write_file", "edit_file", "read_file", "parse_document", "analyze_table"):
         p = (args or {}).get("path")
         if p:
-            touched.append(str(Path(p).expanduser().resolve()))
+            pp = Path(p).expanduser()
+            if not pp.is_absolute():
+                # The builtin tools bind relative paths to the session
+                # workspace (builtin._ws), not the sidecar cwd — resolve
+                # identically, or touch never matches the registered entry.
+                pp = Path(str(_session_workspace(slug, session_id) / p)).expanduser()
+            touched.append(files_mod.norm_path(str(pp)))
     elif args:
         try:
             blob = json.dumps(args, ensure_ascii=False, default=str)
@@ -4153,26 +4242,40 @@ async def _stream_graph(
                                     )
                                 elif nm == "attach_ref":
                                     kind = args.get("kind", "file")
+                                    ref_id = args.get("ref_id", "")
+                                    if kind == "file":
+                                        # Models echo write_file's relative path;
+                                        # pin it to the session workspace so
+                                        # exists/preview/injection resolve later.
+                                        ref_id = _normalize_file_ref(slug, session_id, ref_id)
                                     await safe_send(
                                         emit("ref.emit", {
                                             "kind": kind,
                                             "name": args.get("name", ""),
-                                            "ref_id": args.get("ref_id", ""),
+                                            "ref_id": ref_id,
                                         })
                                     )
                                     if kind in ("file", "doc", "workflow", "link"):
-                                        art_store.add_artifact(
-                                            slug, kind, args.get("name", ""), args.get("ref_id", ""),
+                                        art = art_store.add_artifact(
+                                            slug, kind, args.get("name", ""), ref_id,
                                             session_id,
                                         )
+                                        if kind == "file":
+                                            _register_artifact_file(slug, session_id, art, ref_id)
                                 elif nm == "artifact_register":
-                                    art_store.add_artifact(
+                                    kind = args.get("kind", "file")
+                                    ref = args.get("ref", "")
+                                    if kind == "file":
+                                        ref = _normalize_file_ref(slug, session_id, ref)
+                                    art = art_store.add_artifact(
                                         slug,
-                                        args.get("kind", "file"),
+                                        kind,
                                         args.get("name", ""),
-                                        args.get("ref", ""),
+                                        ref,
                                         session_id,
                                     )
+                                    if kind == "file":
+                                        _register_artifact_file(slug, session_id, art, ref)
                     elif node_name == "__interrupt__":
                         items = delta if isinstance(delta, (list, tuple)) else [delta]
                         for intr in items:

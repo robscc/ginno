@@ -9,7 +9,12 @@ ARTIFACT_TOOL_NAMES = {"artifact_register", "artifact_list"}
 
 @tool
 def artifact_register(kind: str, name: str, ref: str = "") -> str:
-    """Register an artifact (file/doc/workflow/link) in the Artifacts panel."""
+    """Register an artifact (file/doc/workflow/link) in the Artifacts panel.
+
+    For kind="file", ref must be the file's absolute path (the one reported
+    by write_file's result); a relative ref is resolved against the session
+    workspace, so prefer the absolute form.
+    """
     # The actual store write happens server-side (it knows the project slug);
     # this tool's return just confirms intent. The WS layer persists it.
     return f"[registered {kind}: {name}]"
