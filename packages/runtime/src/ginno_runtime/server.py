@@ -3677,6 +3677,27 @@ async def _run_stream(
             workspace=str(session.get("workspace") or ""),
         )
 
+    # Microcompact — clear stale tool outputs (rung below E3) BEFORE E3
+    # measures tokens: if clearing frees enough, the full summary never fires.
+    # Pure state rewrite, no LLM call. Same never-a-blocker contract.
+    microcompact_stats = None
+    try:
+        from .microcompact import maybe_microcompact_history
+
+        microcompact_stats = await maybe_microcompact_history(session, config)
+    except Exception:
+        _log.exception("microcompact_failed session=%s", session_id)
+    if microcompact_stats:
+        await _push_session_event(
+            session_id,
+            "context.microcompacted",
+            {
+                "cleared_tool_outputs": microcompact_stats["cleared_tool_outputs"],
+                "chars_freed": microcompact_stats["chars_freed"],
+            },
+            turn_id,
+        )
+
     # E3 — history compaction, checked BEFORE this turn's messages land.
     # Never fires while an interrupt is pending (guarded inside). Failures are
     # logged and swallowed: compaction is an optimization, never a blocker.

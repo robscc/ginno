@@ -203,6 +203,75 @@ def test_full_mode_setting(isolated_home):
     assert [m.id for m in msgs] == ["m1", "m2"]
 
 
+async def test_delta_engages_in_real_graph_flow(isolated_home):
+    """Regression: langgraph >= 1.x stopped embedding ``parent_config`` in the
+    checkpoint dict, which silently forced every superstep to a full snapshot.
+    Drive the REAL graph (no hand-injected parent_config) and assert deltas are
+    stored + reconstruction is correct."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    settings = {"context": {"checkpoint_mode": "delta"}}
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+
+    model = ScriptedChatModel(scripts=[script(text=f"r{i}") for i in range(4)])
+    graph = build_graph(
+        model=model, project_slug="p", workspace="/tmp/ws", mcp_tools=[], all_tools=[]
+    )
+    cfg = {"configurable": {"thread_id": "real", "project_slug": "p"}}
+    for i in range(4):
+        await graph.ainvoke({"messages": [HumanMessage(content=f"q{i}")], "project_slug": "p"}, cfg)
+
+    raw = json.loads(
+        (isolated_home / "projects" / "p" / "sessions" / "real.json").read_text()
+    )
+    modes = [c.get("mode") for c in raw["checkpoints"]]
+    # First checkpoint is full; subsequent supersteps must be deltas now that
+    # the parent falls back to the last stored checkpoint.
+    assert modes[0] == "full"
+    assert "delta" in modes, f"delta mode never engaged: {modes}"
+
+    # Reconstruction through the delta chain yields the full history.
+    msgs = (await graph.aget_state(cfg)).values["messages"]
+    humans = [m.content for m in msgs if isinstance(m, HumanMessage)]
+    assert humans == ["q0", "q1", "q2", "q3"]
+    assert any(isinstance(m, AIMessage) for m in msgs)
+    assert not any(isinstance(m, ToolMessage) for m in msgs)
+
+
+def test_delta_branch_degrades_to_full_not_corrupt(isolated_home):
+    """Fallback assumes parent = last stored. On a branch/rewind the true
+    parent is older, so the new history does NOT extend the last checkpoint —
+    the pure-append check must reject the delta and store full (never link a
+    delta onto a base it doesn't extend)."""
+    settings = {"context": {"checkpoint_mode": "delta"}}
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+    cp = FileCheckpointer(project_slug="p")
+
+    m1 = HumanMessage(content="one", id="m1")
+    m2 = HumanMessage(content="two", id="m2")
+    m3 = HumanMessage(content="branch", id="m3")
+
+    c1 = _checkpoint_with_messages(None, [m1])
+    cp.put(_cfg(), c1, {"source": "input", "step": 0, "writes": {}}, {})
+    c2 = _checkpoint_with_messages(None, [m1, m2])  # no parent_config at all
+    cp.put(_cfg(), c2, {"source": "loop", "step": 1, "writes": {}}, {})
+
+    # Branch off c1 ([m1, m3]) AFTER c2 was stored — does not extend [m1, m2].
+    c3 = _checkpoint_with_messages(None, [m1, m3])
+    cp.put(_cfg(), c3, {"source": "loop", "step": 2, "writes": {}}, {})
+
+    raw = json.loads(
+        (isolated_home / "projects" / "p" / "sessions" / "s1.json").read_text()
+    )
+    assert [c.get("mode") for c in raw["checkpoints"]] == ["full", "delta", "full"]
+    # Latest reconstructs to the branch, not the abandoned linear path.
+    msgs = cp.get_tuple(_cfg()).checkpoint["channel_values"]["messages"]
+    assert [m.id for m in msgs] == ["m1", "m3"]
+
+
 def test_put_writes_stored_without_exposing(isolated_home):
     cp = FileCheckpointer(project_slug="p")
     cp.put(_cfg(), empty_checkpoint(), {"source": "input", "step": 0, "writes": {}}, {})

@@ -72,6 +72,10 @@ _DEFAULT_SETTINGS = {
         "cache_control": True,
         # E2: middle-truncate tool outputs beyond this size before history
         "tool_output_max_chars": 20000,
+        # Microcompact: at turn entry, replace stale tool outputs outside the
+        # keep window with a placeholder (only outputs above min_chars)
+        "microcompact_enabled": True,
+        "microcompact_min_chars": 500,
         # E3: local history summarization when estimated tokens exceed threshold
         "compaction_enabled": True,
         "compact_threshold_tokens": 500000,

@@ -157,11 +157,20 @@ class FileCheckpointer(BaseCheckpointSaver):
 
     def _apply_delta(self, base: Checkpoint, delta_entry: dict) -> Checkpoint:
         static = self.serde.loads_typed(_load_typed(delta_entry["static"]))
-        values = dict(base.get("channel_values") or {})
+        base_values = base.get("channel_values") or {}
+        # channel_values is rebuilt ONLY from this delta's channels — it must
+        # NOT be seeded from ``base``. A delta records exactly the channels
+        # present in its own checkpoint's ``channel_values`` (messages as an
+        # append diff, everything else full). Langgraph drops consumed trigger
+        # channels (``__start__``, ``branch:to:*``) from ``channel_values`` in
+        # later checkpoints; inheriting them from the anchor would resurrect
+        # stale triggers and corrupt ``StateSnapshot.next`` (the stale
+        # ``branch:to:*`` re-fires the agent node on every read).
+        values: dict[str, Any] = {}
         for channel, payload in (delta_entry.get("channels") or {}).items():
             if payload.get("mode") == "append":
                 extra = self.serde.loads_typed(_load_typed(payload["items"]))
-                values[channel] = list(values.get(channel) or []) + list(extra)
+                values[channel] = list(base_values.get(channel) or []) + list(extra)
             else:
                 values[channel] = self.serde.loads_typed(_load_typed(payload["value"]))
         static["channel_values"] = values
@@ -188,6 +197,13 @@ class FileCheckpointer(BaseCheckpointSaver):
         new_msgs = list(new_values.get(_MESSAGES_CHANNEL) or [])
         if len(new_msgs) < len(parent_msgs):
             return None
+        # Rewrite detection is by message ID only (content is not diffed — that
+        # would cost an O(prefix) serialize per put, the very quadratic blow-up
+        # delta mode exists to avoid). INVARIANT: any writer that edits an
+        # existing message's content MUST give it a new id so the mismatch here
+        # forces a full snapshot. Compaction and microcompact both honor this
+        # (they re-add every message with a fresh id); a same-id in-place edit
+        # would be silently lost when the delta chain is reconstructed.
         for a, b in zip(parent_msgs, new_msgs):
             if _msg_id(a) != _msg_id(b):
                 return None  # history rewritten (compaction/rollback) → full
@@ -220,14 +236,31 @@ class FileCheckpointer(BaseCheckpointSaver):
     ) -> RunnableConfig:  # type: ignore[override]
         session_id = config["configurable"]["thread_id"]
         cid = str(checkpoint.get("id") or uuid.uuid4().hex)
-        parent_cfg = checkpoint.get("parent_config") or {}
-        # parent_config is a RunnableConfig ({"configurable": {...}}); tolerate
-        # a flat shape too.
-        parent_id = (parent_cfg.get("configurable") or {}).get(
-            "checkpoint_id"
-        ) or parent_cfg.get("checkpoint_id")
+        # langgraph >= 1.x passes the PARENT checkpoint id in ``config``
+        # itself and no longer embeds ``parent_config`` in the checkpoint dict
+        # (verified empirically: config["configurable"]["checkpoint_id"] of
+        # put N+1 == checkpoint id written by put N). Reading the parent only
+        # from parent_config silently disabled delta mode — every superstep
+        # stored a full snapshot and session files grew quadratically.
+        parent_id = (config.get("configurable") or {}).get("checkpoint_id")
+        if not parent_id:
+            parent_cfg = checkpoint.get("parent_config") or {}
+            # parent_config is a RunnableConfig ({"configurable": {...}});
+            # tolerate a flat shape too (older langgraph / direct puts).
+            parent_id = (parent_cfg.get("configurable") or {}).get(
+                "checkpoint_id"
+            ) or parent_cfg.get("checkpoint_id")
         with self._write_lock:
             record = self._read(session_id)
+
+            if not parent_id and record.get("checkpoints"):
+                # Last resort (direct put() calls carrying no parent info):
+                # in a linear flow the parent is the last checkpoint stored.
+                # Safe even when the guess is wrong (branch/rewind):
+                # ``_try_messages_delta`` re-validates the pure-append
+                # invariant and degrades to a full snapshot instead of
+                # corrupting the chain.
+                parent_id = record["checkpoints"][-1]["checkpoint_id"]
 
             entry: dict[str, Any] = {
                 "checkpoint_id": cid,

@@ -840,6 +840,25 @@ export function ChatStream({
         syncDisplay(sid);
         break;
       }
+      case "context.microcompacted": {
+        // Stale tool outputs cleared to placeholders (E2.5) — always visible.
+        const n = Number(ev.cleared_tool_outputs ?? 0);
+        storeRef.current[sid] = [
+          ...(storeRef.current[sid] ?? []),
+          {
+            id: mid(),
+            role: "system" as const,
+            blocks: [
+              {
+                kind: "context",
+                text: `已清理 ${n} 条较早的工具输出以节省上下文，需要时可重新调用工具获取。`,
+              },
+            ],
+          },
+        ];
+        syncDisplay(sid);
+        break;
+      }
       case "context.compacted": {
         // History compaction announcement (E3) — always visible.
         const n = Number(ev.compacted_messages ?? 0);

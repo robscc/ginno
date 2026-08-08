@@ -61,6 +61,8 @@ _CONTEXT_DEFAULTS = {
     "world_state": True,
     "cache_control": True,
     "tool_output_max_chars": 20000,
+    "microcompact_enabled": True,
+    "microcompact_min_chars": 500,
     "compaction_enabled": True,
     "compact_threshold_tokens": 500000,
     "compact_keep_turns": 3,
