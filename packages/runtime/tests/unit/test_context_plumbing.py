@@ -69,14 +69,37 @@ def test_extract_usage_basic():
     }
 
 
-def test_extract_usage_cache_details():
+def test_extract_usage_cache_details_anthropic_normalizes_input():
+    # Anthropic reports input_tokens EXCLUDING cache; extraction rebuilds the
+    # whole-prompt count (usage-stats-design.md §3.5): 100 + 60 + 10 = 170.
     u = extract_usage(_ai_with_usage(cache_read=60, cache_creation=10))
+    assert u["input_tokens"] == 170
     assert u["cache_read_tokens"] == 60
     assert u["cache_creation_tokens"] == 10
 
 
+def test_extract_usage_openai_cached_tokens():
+    # OpenAI's prompt_tokens ALREADY include the cached part; cached_tokens
+    # maps onto cache_read and input passes through unchanged.
+    meta = {"input_tokens": 200, "output_tokens": 30, "total_tokens": 230,
+            "input_token_details": {"cached_tokens": 80}}
+    u = extract_usage(AIMessage(content="x", usage_metadata=meta))
+    assert u["input_tokens"] == 200
+    assert u["cache_read_tokens"] == 80
+    assert u["cache_creation_tokens"] == 0
+
+
 def test_extract_usage_none_without_metadata():
     assert extract_usage(AIMessage(content="x")) is None
+
+
+def test_hit_ratio_never_exceeds_one():
+    # Whole-prompt denominator keeps the ratio in [0, 1] even for an
+    # almost-fully-cached call (the pre-normalization >100% bug).
+    acc = empty_usage()
+    add_usage(acc, {"input_tokens": 1000, "output_tokens": 10,
+                    "cache_read_tokens": 990, "cache_creation_tokens": 0})
+    assert cache_hit_ratio(acc) == 0.99
 
 
 def test_accumulator_and_hit_ratio():

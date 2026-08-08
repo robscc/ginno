@@ -327,3 +327,87 @@ export interface WikiDiscover {
   merge_candidates: { a: string; b: string; score: number }[];
   stats: { pages: number; edges: number };
 }
+
+// ---- usage telemetry (usage-stats-design.md) ----
+// Canonical token counters: input_tokens is the WHOLE prompt (cache portions
+// included), so cache_hit_ratio = cache_read / input is always in [0, 1].
+export interface UsageCounters {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  calls: number;
+  cache_hit_ratio: number;
+}
+export interface UsageDailyPoint extends UsageCounters {
+  date: string; // YYYY-MM-DD
+}
+export interface UsageProviderAgg extends UsageCounters {
+  provider: string;
+}
+export interface UsageModelAgg extends UsageCounters {
+  provider: string;
+  model: string;
+}
+export interface UsageOverview {
+  ok: boolean;
+  window: { days: number; from: string; to: string };
+  today: UsageCounters;
+  totals: UsageCounters;
+  sessions_active: number;
+  daily: UsageDailyPoint[];
+  providers: UsageProviderAgg[];
+  models: UsageModelAgg[];
+}
+export interface UsageHourPoint {
+  hour: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  calls: number;
+}
+export interface UsageHourly {
+  ok: boolean;
+  date: string;
+  hours: UsageHourPoint[];
+}
+export interface UsageSessionRow extends UsageCounters {
+  session_id: string;
+  project_slug: string | null;
+  agent_id: string | null;
+  last_active: number;
+  title: string;
+  icon: string;
+  provider: string;
+  model: string;
+  deleted: boolean;
+}
+export interface UsageSessions {
+  ok: boolean;
+  sessions: UsageSessionRow[];
+}
+export interface UsageRequest {
+  ts: number;
+  session_id: string | null;
+  project_slug: string | null;
+  agent_id: string | null;
+  turn_id: string | null;
+  source: string;
+  provider: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  latency_ms: number | null;
+  ok: boolean;
+  error: string | null;
+}
+export interface UsageRequests {
+  ok: boolean;
+  date: string;
+  total: number;
+  page: number;
+  page_size: number;
+  rows: UsageRequest[];
+}

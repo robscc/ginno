@@ -11,6 +11,10 @@ import type {
   SessionMeta,
   SessionUsage,
   Todo,
+  UsageHourly,
+  UsageOverview,
+  UsageRequests,
+  UsageSessions,
   VerifyResult,
 } from "./types";
 
@@ -109,11 +113,52 @@ export async function getSessionHistory(id: string) {
 
 // Per-session cumulative model usage (TopBar counter). The live `usage` WS
 // event only fires on turns; this fetch shows a session's accumulated stats
-// right after switching to it.
+// right after switching to it. Backed by the persistent usage log, so totals
+// survive runtime restarts (usage-stats-design.md §5).
 export async function getSessionUsage(id: string) {
   return json<{ ok: boolean; usage: (SessionUsage & { cache_hit_ratio?: number }) | null }>(
     `${BASE}/sessions/${id}/usage`,
   );
+}
+
+// ---- usage telemetry (usage-stats-design.md §5) ----
+export async function getUsageOverview(days = 30) {
+  return json<UsageOverview>(`${BASE}/usage/overview?days=${days}`);
+}
+
+export async function getUsageHourly(date?: string) {
+  return json<UsageHourly>(`${BASE}/usage/hourly${date ? `?date=${date}` : ""}`);
+}
+
+export async function getUsageSessions(opts?: { from?: string; to?: string; sort?: string; limit?: number }) {
+  const q = new URLSearchParams();
+  if (opts?.from) q.set("from", opts.from);
+  if (opts?.to) q.set("to", opts.to);
+  if (opts?.sort) q.set("sort", opts.sort);
+  if (opts?.limit) q.set("limit", String(opts.limit));
+  const s = q.toString();
+  return json<UsageSessions>(`${BASE}/usage/sessions${s ? `?${s}` : ""}`);
+}
+
+export async function getUsageRequests(opts?: {
+  date?: string;
+  provider?: string;
+  model?: string;
+  source?: string;
+  session_id?: string;
+  page?: number;
+  page_size?: number;
+}) {
+  const q = new URLSearchParams();
+  if (opts?.date) q.set("date", opts.date);
+  if (opts?.provider) q.set("provider", opts.provider);
+  if (opts?.model) q.set("model", opts.model);
+  if (opts?.source) q.set("source", opts.source);
+  if (opts?.session_id) q.set("session_id", opts.session_id);
+  if (opts?.page) q.set("page", String(opts.page));
+  if (opts?.page_size) q.set("page_size", String(opts.page_size));
+  const s = q.toString();
+  return json<UsageRequests>(`${BASE}/usage/requests${s ? `?${s}` : ""}`);
 }
 
 // ---- session goal (goal-design.md §4.4) ----

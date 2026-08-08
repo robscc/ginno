@@ -42,6 +42,7 @@ ginno/
 ├── mcp/mcp.json           # MCP server registry
 ├── hooks/                 # hook scripts
 ├── vectorstore/           # LanceDB (Obsidian index)
+├── usage/                 # token-usage logs (requests-YYYY-MM-DD.jsonl)
 └── logs/
 ```
 
