@@ -14,6 +14,8 @@ import json
 import pytest
 
 from ginno_runtime import server
+from ginno_runtime.api import sessions as _sessions_api
+from ginno_runtime.api import workflows as _wf_api
 from ginno_runtime.testing.fake_model import script, script_tool_call
 from ginno_runtime.workflows import store as wf_store
 
@@ -22,6 +24,8 @@ pytestmark = pytest.mark.e2e
 
 def _patch(model):
     server.build_model = lambda *a, **k: model
+    _sessions_api.build_model = lambda *a, **k: model
+    _wf_api.build_model = lambda *a, **k: model
 
 
 def _v1_dsl() -> dict:

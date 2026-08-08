@@ -84,6 +84,8 @@ def _run_propose_flow(client, create_session, ws_conv, monkeypatch, decision: st
         ]
     )
     monkeypatch.setattr(server, "build_model", lambda *a, **k: sm)
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: sm)
+    monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: sm)
     sid = create_session(sm, agent_id="workflow-dev")
 
     with ws_conv(sid) as conv:

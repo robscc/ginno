@@ -60,7 +60,7 @@ def test_summarize_returns_valid_dsl_draft(client, monkeypatch):
         }
     )
     sm = ScriptedChatModel(scripts=[script(text=dsl_json)])
-    monkeypatch.setattr(server, "build_model", lambda *a, **k: sm)
+    monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: sm)
 
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     assert r.status_code == 200, r.text
@@ -79,7 +79,7 @@ def test_summarize_rejects_invalid_model_output(client, monkeypatch):
     sid = "sess-synth-2"
     _seed_session("default", sid)
     sm = ScriptedChatModel(scripts=[script(text="sorry, I cannot produce a DSL right now")])
-    monkeypatch.setattr(server, "build_model", lambda *a, **k: sm)
+    monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: sm)
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     assert r.status_code == 200
     body = r.json()

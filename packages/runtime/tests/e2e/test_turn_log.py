@@ -18,7 +18,7 @@ TURN = "trace-uuid-logcheck-7777"
 
 def test_turn_trace_logged_to_file_with_turn_id(client, create_session, ws_conv, monkeypatch):
     sm = ScriptedChatModel(scripts=[script(text="traced reply")])
-    monkeypatch.setattr(server, "build_model", lambda *a, **k: sm)
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: sm)
     sid = create_session(sm, agent_id="dev")
 
     with ws_conv(sid) as conv:

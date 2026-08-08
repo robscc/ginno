@@ -23,7 +23,10 @@ src/ginno_runtime/
 ├── state.py            # AgentState TypedDict
 ├── checkpointer.py     # FileCheckpointer (JSON-on-disk, no DB)
 ├── graph.py            # main LangGraph: load_context → agent → permission → tools
-├── server.py           # FastAPI app + WebSocket
+├── server.py           # FastAPI app shell + router wiring (+ compat facade)
+├── server_shared.py    # process-wide mutable state + WS event push helpers
+├── session_meta.py     # per-project session index helpers
+├── api/                # domain routers: sessions/stream/workflows/files/…
 ├── __main__.py         # PyInstaller entry
 ├── skills/loader.py    # SKILL.md loader
 ├── mcp/registry.py    # MCP server registry + tool bridge

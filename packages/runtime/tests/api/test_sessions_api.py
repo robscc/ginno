@@ -50,7 +50,7 @@ def test_create_session_model_error_returns_ok_false(client, monkeypatch):
     def boom(*a, **k):
         raise ValueError("provider disabled")
 
-    monkeypatch.setattr(server, "build_model", boom)
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", boom)
     data = _post_session(client).json()
     assert data["ok"] is False
     assert "provider disabled" in data["error"]

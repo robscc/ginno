@@ -110,7 +110,7 @@ def test_keepalive_flows_during_stall(client, patch_build_model, monkeypatch):
     keepalive frames MUST flow during the silent stall, so the client's 45s
     watchdog would NOT fire."""
     patch_build_model(StallModel())
-    monkeypatch.setattr(server_mod, "CHUNK_TIMEOUT_S", STALL_S + 30)  # watchdog off
+    monkeypatch.setattr("ginno_runtime.api.stream.CHUNK_TIMEOUT_S", STALL_S + 30)  # watchdog off
     sid = client.post(
         "/api/sessions", json={"project_slug": "default", "workspace": "/tmp/wf-ws"}
     ).json()["id"]
@@ -130,7 +130,7 @@ def test_stall_watchdog_fails_fast(client, patch_build_model, monkeypatch):
     """Mode-B fix: the per-chunk stall watchdog aborts a silent stall FAST with an
     `error` event, instead of the SDK's ~600s hang (the 7m49s symptom)."""
     patch_build_model(StallModel())
-    monkeypatch.setattr(server_mod, "CHUNK_TIMEOUT_S", 3.0)  # fires during the 20s stall
+    monkeypatch.setattr("ginno_runtime.api.stream.CHUNK_TIMEOUT_S", 3.0)  # fires during the 20s stall
     sid = client.post(
         "/api/sessions", json={"project_slug": "default", "workspace": "/tmp/wf-ws"}
     ).json()["id"]

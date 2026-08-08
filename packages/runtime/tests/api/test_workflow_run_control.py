@@ -27,8 +27,7 @@ def _human_wf():
 
 def _patch_model(monkeypatch):
     monkeypatch.setattr(
-        server,
-        "build_model",
+        "ginno_runtime.api.workflows.build_model",
         lambda *a, **k: __import__(
             "ginno_runtime.testing.fake_model", fromlist=["ScriptedChatModel"]
         ).ScriptedChatModel(scripts=[script(text='done\nWRITE_JSON {"z": 1}')]),

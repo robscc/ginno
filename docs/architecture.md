@@ -64,7 +64,7 @@
 └─────────────────────────┼───────────────────────────────────────────┘
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Python Sidecar  =  FastAPI app（ginno_runtime/server.py, ~4200 行） │
+│  Python Sidecar  =  FastAPI app（server.py 壳 + api/ 路由包）         │
 │   • GET /_next/*、catch-all GET /{path}  → 托管 Next 静态导出        │
 │       打包时来自 sys._MEIPASS/web_out，开发时来自 apps/web/out       │
 │   • /api/**          → ~92 个 REST 端点（§7.1）                      │
@@ -100,7 +100,11 @@ ginno/
 ├── packages/
 │   └── runtime/        # Python：FastAPI + LangGraph（uv 管理，非 pnpm 成员）
 │       └── src/ginno_runtime/
-│           ├── server.py        # FastAPI + WS + goal driver + workflow runner（集成层）
+│           ├── server.py        # FastAPI 壳：app/lifespan/CORS/静态托管/main + facade
+│           ├── server_shared.py # 进程级可变状态（_SESSIONS/_SESSION_WS/…）+ 事件推送
+│           ├── session_meta.py  # sessions/_index.json 存取助手
+│           ├── api/             # 按域拆分的 APIRouter：sessions/stream/workflows/
+│           │                    #   files/knowledge/config/todos/usage/memory/messages_ui
 │           ├── graph.py         # 聊天主图（agent/permission/tools）+ 系统提示分层
 │           ├── state.py         # 图状态 TypedDict
 │           ├── world_state.py   # WorldState 上下文工程（分节 + diff）
@@ -131,7 +135,7 @@ ginno/
 
 - **磁盘真相源**：每 project slug 一个 `sessions/_index.json`（session meta 数组）+ 每会话一个
   `<sid>.json`（FileCheckpointer）+ `<sid>.world.json`（WorldState baseline）+ `<sid>/`（文件目录）。
-- **内存注册表**（`server.py`）：
+- **内存注册表**（`server_shared.py`）：
   - `_SESSIONS`：session_id → 已编译 graph + model + meta；**重启后由 `_ensure_session` 惰性重建**。
   - `_SESSION_WS`：session_id → 该会话**所有**活跃 socket（广播式投递，§7.3）。
   - `_RUNNING_TURNS` / `_PENDING_RESUME`：在途 turn / 待 resume 的 interrupt（重连恢复用）。

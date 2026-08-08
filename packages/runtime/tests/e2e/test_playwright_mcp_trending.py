@@ -69,7 +69,7 @@ def test_session_opens_trending_screenshot_and_analyzes(isolated_home: Path, mon
             pytest.skip("Playwright MCP unavailable (no browser / npx) in this environment")
 
         # scripted LLM decides the tool calls; Playwright MCP + Chrome are real.
-        monkeypatch.setattr(server, "build_model", lambda *a, **k: model)
+        monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: model)
 
         r = client.post("/api/sessions", json={"project_slug": "default", "workspace": str(ws), "agent_id": "dev"})
         assert r.status_code == 200

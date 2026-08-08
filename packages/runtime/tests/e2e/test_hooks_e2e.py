@@ -47,7 +47,7 @@ def test_prettooluse_hook_blocks_tool(hook_client, monkeypatch):
             script(text="blocked, sorry."),
         ]
     )
-    monkeypatch.setattr(server, "build_model", lambda *a, **k: model)
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: model)
 
     r = hook_client.post("/api/sessions", json={"project_slug": "default", "workspace": "/unused", "agent_id": "dev"})
     sid = r.json()["id"]

@@ -26,7 +26,7 @@ from typing import Any, Callable
 import pytest
 from fastapi.testclient import TestClient
 
-from ginno_runtime import paths, server
+from ginno_runtime import paths, server, server_shared
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
 from langchain_core.messages import AIMessage
 
@@ -56,8 +56,8 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Process-wide state that the lifespan does NOT reset between tests.
     server._SESSIONS.clear()
     server._USAGE_BY_SESSION.clear()
-    server._mcp = None
-    server._hooks = None
+    server_shared._mcp = None
+    server_shared._hooks = None
     # Keep the default Playwright MCP out of unrelated tests (it would spawn a
     # headless browser on every server start). ensure_layout only re-seeds the
     # default when mcp.json is missing/empty, so a non-empty stub opts us out.
@@ -92,10 +92,16 @@ def fake_model_factory() -> Callable[..., ScriptedChatModel]:
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def patch_build_model(monkeypatch: pytest.MonkeyPatch) -> Callable[[Any], Any]:
-    """Patch server.build_model so create_session/ensure_session use the fake."""
+    """Patch build_model so create_session/ensure_session AND workflow runs
+    use the fake (the two call sites live in different modules)."""
 
     def _patch(model: Any) -> Any:
-        monkeypatch.setattr(server, "build_model", lambda *a, **k: model)
+        monkeypatch.setattr(
+            "ginno_runtime.api.sessions.build_model", lambda *a, **k: model
+        )
+        monkeypatch.setattr(
+            "ginno_runtime.api.workflows.build_model", lambda *a, **k: model
+        )
         return model
 
     return _patch

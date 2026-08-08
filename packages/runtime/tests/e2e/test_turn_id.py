@@ -19,7 +19,7 @@ def test_client_turn_id_propagates_to_events(client, create_session, ws_conv, mo
     from ginno_runtime.testing.fake_model import ScriptedChatModel
 
     sm = ScriptedChatModel(scripts=[script(text="hello there")])
-    monkeypatch.setattr(server, "build_model", lambda *a, **k: sm)
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: sm)
     sid = create_session(sm, agent_id="dev")
 
     with ws_conv(sid) as conv:

@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 from conftest import events_of, script, script_tool_call
 
-from ginno_runtime import paths, server
+from ginno_runtime import paths, server, server_shared
 
 pytestmark = pytest.mark.e2e
 
@@ -28,8 +28,8 @@ pytestmark = pytest.mark.e2e
 @pytest.fixture
 def fast_prune(monkeypatch):
     """Shrink the stuck-socket send timeout so an unread socket is pruned
-    quickly (production default is 5s; see server._WS_SEND_TIMEOUT_S)."""
-    monkeypatch.setattr(server, "_WS_SEND_TIMEOUT_S", 0.5)
+    quickly (production default is 5s; see server_shared._WS_SEND_TIMEOUT_S)."""
+    monkeypatch.setattr(server_shared, "_WS_SEND_TIMEOUT_S", 0.5)
 
 
 # --------------------------------------------------------------------------- #

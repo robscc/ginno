@@ -65,7 +65,7 @@ def _wait_goal(client, sid, predicate, timeout=15.0, interval=0.1):
 @pytest.fixture(autouse=True)
 def fast_grace(monkeypatch):
     # Shrink the inter-turn grace so continuation runs immediately in tests.
-    monkeypatch.setattr(server, "GOAL_GRACE_S", 0.0)
+    monkeypatch.setattr("ginno_runtime.api.sessions.GOAL_GRACE_S", 0.0)
 
 
 def test_continuation_completes_goal(create_session, client):
@@ -138,7 +138,7 @@ def test_continuation_blocked_stops_loop(create_session, client):
 
 def test_pause_stops_continuation(create_session, client, monkeypatch):
     # Give the pause a grace window to land before the first turn fires.
-    monkeypatch.setattr(server, "GOAL_GRACE_S", 2.0)
+    monkeypatch.setattr("ginno_runtime.api.sessions.GOAL_GRACE_S", 2.0)
     # Model that would keep the loop alive if it ran; pause must prevent it.
     model = [script(text="still working…")] * 5
     sid = create_session(model)
@@ -156,7 +156,7 @@ def test_pause_stops_continuation(create_session, client, monkeypatch):
 
 def test_agent_switch_auto_pauses_goal(create_session, client, monkeypatch):
     # Keep the driver from racing ahead while we flip the agent.
-    monkeypatch.setattr(server, "GOAL_GRACE_S", 2.0)
+    monkeypatch.setattr("ginno_runtime.api.sessions.GOAL_GRACE_S", 2.0)
     model = [script(text="working")] * 5
     sid = create_session(model, agent_id="dev")  # goal snapshots agent_id=dev
     client.put(f"/api/sessions/{sid}/goal", json={"objective": "Dev task"})
@@ -168,7 +168,7 @@ def test_agent_switch_auto_pauses_goal(create_session, client, monkeypatch):
 
 
 def test_goal_slash_command(ws_conv, create_session, client, monkeypatch):
-    monkeypatch.setattr(server, "GOAL_GRACE_S", 60.0)  # no auto-run during this test
+    monkeypatch.setattr("ginno_runtime.api.sessions.GOAL_GRACE_S", 60.0)  # no auto-run during this test
     sid = create_session([script(text="ok")])
 
     with ws_conv(sid) as conv:

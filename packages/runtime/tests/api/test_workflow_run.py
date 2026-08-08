@@ -28,8 +28,7 @@ def test_trigger_run_executes_and_writes_context(client, monkeypatch):
     )
     wid = wf["id"]
     monkeypatch.setattr(
-        server,
-        "build_model",
+        "ginno_runtime.api.workflows.build_model",
         lambda *a, **k: __import__(
             "ginno_runtime.testing.fake_model", fromlist=["ScriptedChatModel"]
         ).ScriptedChatModel(
