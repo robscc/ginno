@@ -14,6 +14,15 @@ import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus,
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory";
 
+// Right panel width bounds (right-panel-redesign.md §3.4). The panel renders
+// at `rightPanelWidth`; dragging clamps into this range, double-click resets.
+export const PANEL_WIDTH_MIN = 280;
+export const PANEL_WIDTH_MAX = 560;
+export const PANEL_WIDTH_DEFAULT = 380;
+
+// localStorage key for the persisted right-panel prefs ({open, width}).
+const PANEL_PREFS_KEY = "ginno-right-panel";
+
 export interface PreviewFile {
   id: string;
   name: string;
@@ -43,6 +52,14 @@ interface GinnoState {
   setConnected: (v: boolean) => void;
   setActiveSession: (id: string | null) => void;
   setRightTab: (tab: RightTab, opts?: { manual?: boolean }) => void;
+  // ---- right panel open/width/badges (right-panel-redesign.md) ----
+  rightPanelOpen: boolean;
+  rightPanelWidth: number; // px, clamped to [PANEL_WIDTH_MIN, PANEL_WIDTH_MAX]
+  // Unread counts accumulated while the panel was collapsed (v1: artifacts).
+  panelBadge: Partial<Record<RightTab, number>>;
+  setRightPanelOpen: (open: boolean) => void;
+  setRightPanelWidth: (w: number) => void;
+  clearPanelBadge: (tab?: RightTab) => void; // omit tab → clear all
   openPreview: (f: PreviewFile) => void;
   closePreview: () => void;
   notifyPreviewInvalidate: (fileId: string) => void;
@@ -53,6 +70,10 @@ interface GinnoState {
   reloadProviders: () => Promise<void>;
   reloadWorkflows: () => Promise<void>;
   reloadWorkflowRuns: () => Promise<void>;
+  // Workflow tab badge (work item E): live counts derived from workflowRuns.
+  activeRunCount: number; // running + paused → blue pulsing badge
+  unseenFailedCount: number; // failed since last visit → red badge
+  markFailedRunsSeen: () => void; // called when the Workflow tab is opened
   reloadArtifacts: () => Promise<void>;
   removeArtifact: (id: string) => Promise<void>;
   patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
@@ -93,7 +114,24 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
   const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
+  // Tab-badge bookkeeping (work item E): ids of failed runs the user has
+  // already seen. Bootstrapped with the boot-time failures on first load so a
+  // restart doesn't light up the red badge for stale history; new failures
+  // stay unseen until the Workflow tab is visited.
+  const [failedSeen, setFailedSeen] = useState<Set<string>>(new Set());
+  const failedSeedRef = useRef(false);
+  const workflowRunsRef = useRef<WorkflowRun[]>([]);
+  useEffect(() => {
+    workflowRunsRef.current = workflowRuns;
+  }, [workflowRuns]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  // Ref mirror of the committed artifacts list: reloadArtifacts diffs against
+  // it OUTSIDE the setState updater (side effects inside updaters double-fire
+  // under dev StrictMode).
+  const artifactsListRef = useRef<Artifact[]>([]);
+  useEffect(() => {
+    artifactsListRef.current = artifacts;
+  }, [artifacts]);
   const [providers, setProviders] = useState<Providers>({});
   const [defaultProvider, setDefaultProvider] = useState("custom");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -104,12 +142,100 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   // Right panel: tab is store-owned so chat events can auto-switch to
   // Artifacts when the active session gains one (docs §7.6). Manual clicks
   // turn autoFollow off (sticky) so the agent can't yank focus repeatedly;
-  // visiting Artifacts manually or starting fresh re-enables it.
-  const [rightTab, setRightTabState] = useState<RightTab>("todo");
+  // visiting Artifacts manually or starting fresh re-enables it. Default is
+  // Artifacts — first tab of the reordered bar (right-panel-redesign.md §3.1).
+  const [rightTab, setRightTabState] = useState<RightTab>("artifacts");
   const [artifactsFollow, setArtifactsFollow] = useState(true);
+  const artifactsFollowRef = useRef(true);
+  useEffect(() => {
+    artifactsFollowRef.current = artifactsFollow;
+  }, [artifactsFollow]);
   const [flashArtifactIds, setFlashArtifactIds] = useState<string[]>([]);
   const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const [previewNonce, setPreviewNonce] = useState(0);
+
+  // ---- right panel open/width + collapsed badges (right-panel-redesign.md) ----
+  // Defaults match the pre-redesign behavior (open, 380px) so upgrading users
+  // see no sudden change. Persisted as one JSON blob (`ginno-right-panel`).
+  const [rightPanelOpen, setRightPanelOpenState] = useState(true);
+  const [rightPanelWidth, setRightPanelWidthState] = useState(PANEL_WIDTH_DEFAULT);
+  const [panelBadge, setPanelBadge] = useState<Partial<Record<RightTab, number>>>({});
+  const rightPanelOpenRef = useRef(true);
+  const rightPanelWidthRef = useRef(PANEL_WIDTH_DEFAULT);
+  // Artifact ids that arrived while collapsed — replayed as a pulse on reopen
+  // so the highlight isn't lost to the hidden window.
+  const pendingFlashRef = useRef<string[]>([]);
+
+  const persistPanelPrefs = useCallback(() => {
+    try {
+      localStorage.setItem(
+        PANEL_PREFS_KEY,
+        JSON.stringify({ open: rightPanelOpenRef.current, width: rightPanelWidthRef.current }),
+      );
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+
+  // Hydrate persisted prefs once on the client (SSR renders defaults, the
+  // effect fixes them up after mount — same pattern as ginno-theme).
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PANEL_PREFS_KEY);
+      if (!raw) return;
+      const v = JSON.parse(raw) as { open?: unknown; width?: unknown };
+      if (typeof v.open === "boolean") {
+        rightPanelOpenRef.current = v.open;
+        setRightPanelOpenState(v.open);
+      }
+      if (typeof v.width === "number") {
+        const w = Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, v.width));
+        rightPanelWidthRef.current = w;
+        setRightPanelWidthState(w);
+      }
+    } catch {
+      /* corrupted prefs — keep defaults */
+    }
+  }, []);
+
+  const setRightPanelOpen = useCallback(
+    (open: boolean) => {
+      rightPanelOpenRef.current = open;
+      setRightPanelOpenState(open);
+      if (open) {
+        // Reopening consumes the badges and replays the missed-arrival pulse.
+        setPanelBadge({});
+        if (pendingFlashRef.current.length) {
+          const ids = pendingFlashRef.current;
+          pendingFlashRef.current = [];
+          setFlashArtifactIds(ids);
+          window.setTimeout(() => setFlashArtifactIds([]), 2500);
+        }
+      }
+      persistPanelPrefs();
+    },
+    [persistPanelPrefs],
+  );
+
+  const setRightPanelWidth = useCallback(
+    (w: number) => {
+      const cw = Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, Math.round(w)));
+      rightPanelWidthRef.current = cw;
+      setRightPanelWidthState(cw);
+      persistPanelPrefs();
+    },
+    [persistPanelPrefs],
+  );
+
+  const clearPanelBadge = useCallback((tab?: RightTab) => {
+    setPanelBadge((prev) => {
+      if (!tab) return Object.keys(prev).length ? {} : prev;
+      if (!(tab in prev)) return prev;
+      const next = { ...prev };
+      delete next[tab];
+      return next;
+    });
+  }, []);
 
   const activeSessionRef = useRef<string | null>(null);
   useEffect(() => {
@@ -122,13 +248,29 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   // arriving within the same session).
   const artifactScopeRef = useRef<string | null | undefined>(undefined);
 
-  const setRightTab = useCallback((tab: RightTab, opts?: { manual?: boolean }) => {
-    if (opts?.manual) {
-      // explicit user choice: stop auto-following unless they picked Artifacts
-      setArtifactsFollow(tab === "artifacts");
-    }
-    setRightTabState(tab);
+  // Visiting the Workflow tab marks every currently-failed run as seen, which
+  // clears the red badge. New failures arriving afterwards light it up again.
+  const markFailedRunsSeen = useCallback(() => {
+    setFailedSeen((prev) => {
+      const next = new Set(prev);
+      for (const r of workflowRunsRef.current) {
+        if (r.status === "failed") next.add(r.id);
+      }
+      return next;
+    });
   }, []);
+
+  const setRightTab = useCallback(
+    (tab: RightTab, opts?: { manual?: boolean }) => {
+      if (opts?.manual) {
+        // explicit user choice: stop auto-following unless they picked Artifacts
+        setArtifactsFollow(tab === "artifacts");
+      }
+      if (tab === "workflow") markFailedRunsSeen();
+      setRightTabState(tab);
+    },
+    [markFailedRunsSeen],
+  );
 
   const openPreview = useCallback((f: PreviewFile) => {
     setPreviewFile(f);
@@ -191,11 +333,35 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   }, []);
   const reloadWorkflowRuns = useCallback(async () => {
     try {
-      setWorkflowRuns(await api.listWorkflowRuns());
+      const runs = await api.listWorkflowRuns();
+      setWorkflowRuns(runs);
+      // Maintain the failed-seen set for the red badge: seed once at boot with
+      // the existing failures (they're history, not news), then keep the set
+      // intersected with runs that still exist (deleted runs drop off). New
+      // failures are deliberately NOT marked seen here.
+      const failedIds = runs.filter((r) => r.status === "failed").map((r) => r.id);
+      setFailedSeen((prev) => {
+        if (!failedSeedRef.current) {
+          failedSeedRef.current = true;
+          return new Set(failedIds);
+        }
+        const next = new Set<string>();
+        for (const id of prev) if (failedIds.includes(id)) next.add(id);
+        return next;
+      });
     } catch {
       /* ignore */
     }
   }, []);
+
+  // Fallback poll (work item E): the session WS pushes run.status /
+  // workflows.changed and keeps the badge fresh in normal operation. This slow
+  // 30s sweep only covers the gaps — no session WS connected (headless runs at
+  // boot) or the reconnect window. Cheap: one small JSON read.
+  useEffect(() => {
+    const t = setInterval(() => void reloadWorkflowRuns(), 30000);
+    return () => clearInterval(t);
+  }, [reloadWorkflowRuns]);
   const reloadArtifacts = useCallback(async () => {
     try {
       // Artifacts belong to the session: scope the fetch to the active session
@@ -205,28 +371,39 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       const next = await api.listArtifacts("default", scope ?? undefined);
       const scopeChanged = artifactScopeRef.current !== scope;
       artifactScopeRef.current = scope;
-      setArtifacts((prev) => {
-        // §7.6 auto-follow: new artifact for the ACTIVE session → switch to
-        // the Artifacts tab (if follow is on) and pulse-highlight the rows.
-        // Skip on a scope change (session switch) — that swaps the whole list,
-        // it isn't a fresh arrival.
-        const prevIds = new Set(prev.map((a) => a.id));
-        const fresh = next.filter((a) => !prevIds.has(a.id));
-        const mine = fresh.filter(
-          (a) => !a.session_id || a.session_id === activeSessionRef.current,
-        );
-        if (!scopeChanged && mine.length) {
-          setArtifactsFollow((follow) => {
-            if (follow) {
-              setRightTabState("artifacts");
-              setFlashArtifactIds(mine.map((a) => a.id));
-              window.setTimeout(() => setFlashArtifactIds([]), 2500);
-            }
-            return follow;
-          });
+
+      // §7.6 auto-follow: new artifact for the ACTIVE session → switch to the
+      // Artifacts tab (if follow is on) and pulse-highlight the rows; when the
+      // panel is collapsed, badge the edge dock instead and queue the pulse
+      // for the next reopen (right-panel-redesign.md §3.6). Skip on a scope
+      // change (session switch) — that swaps the whole list, it isn't a fresh
+      // arrival. Diff + side effects stay OUTSIDE the setState updater:
+      // StrictMode double-invokes updaters in dev and would double-count
+      // badges/flashes.
+      const prevIds = new Set(artifactsListRef.current.map((a) => a.id));
+      const fresh = next.filter((a) => !prevIds.has(a.id));
+      const mine = fresh.filter(
+        (a) => !a.session_id || a.session_id === activeSessionRef.current,
+      );
+      setArtifacts(next);
+      if (!scopeChanged && mine.length) {
+        if (!rightPanelOpenRef.current) {
+          setPanelBadge((prev) => ({
+            ...prev,
+            artifacts: (prev.artifacts ?? 0) + mine.length,
+          }));
+          pendingFlashRef.current.push(...mine.map((a) => a.id));
         }
-        return next;
-      });
+        if (artifactsFollowRef.current) {
+          // Silent when collapsed: pre-select the tab so expanding lands on
+          // Artifacts, but never yank the panel open.
+          setRightTabState("artifacts");
+          if (rightPanelOpenRef.current) {
+            setFlashArtifactIds(mine.map((a) => a.id));
+            window.setTimeout(() => setFlashArtifactIds([]), 2500);
+          }
+        }
+      }
     } catch {
       /* ignore */
     }
@@ -510,6 +687,14 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     setGoalBySession((prev) => ({ ...prev, [sessionId]: null }));
   }, []);
 
+  // Workflow tab badge counts (work item E), derived on each render.
+  const activeRunCount = workflowRuns.filter(
+    (r) => r.status === "running" || r.status === "paused",
+  ).length;
+  const unseenFailedCount = workflowRuns.filter(
+    (r) => r.status === "failed" && !failedSeen.has(r.id),
+  ).length;
+
   const value: GinnoState = {
     agents,
     skills,
@@ -532,6 +717,12 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     setConnected,
     setActiveSession: setActiveSessionId,
     setRightTab,
+    rightPanelOpen,
+    rightPanelWidth,
+    panelBadge,
+    setRightPanelOpen,
+    setRightPanelWidth,
+    clearPanelBadge,
     openPreview,
     closePreview,
     notifyPreviewInvalidate,
@@ -542,6 +733,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     reloadProviders,
     reloadWorkflows,
     reloadWorkflowRuns,
+    activeRunCount,
+    unseenFailedCount,
+    markFailedRunsSeen,
     reloadArtifacts,
     removeArtifact,
     patchArtifact,

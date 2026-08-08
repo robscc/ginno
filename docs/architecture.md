@@ -468,7 +468,7 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   45s watchdog、close 后 3s 自动重连、重连后 `turn_state` 探测；`handle()` 消费约 25 种 WS 事件驱动 UI；
   发送走 `{type:"invoke", …}`，未送达标红可重试（复用 turn_id 让 add_messages 去重）。
 - **组件**：blocks（9 种块，d3 只做数学、SVG 由 React 渲染）、RunBlocks（对话内 workflow 实时块）、
-  commandMenu（`/` 与 `@` 补全）、SheetViewer（全屏文件预览）、right/（Todo/Workflow/Artifacts/Memory 面板）、
+  commandMenu（`/` 与 `@` 补全）、SheetViewer（全屏文件预览）、right/（Artifacts/TODO/Workflow/Memory 面板；可收起为右缘悬停 Dock，宽度可拖拽 280–560px，开合/宽度持久化于 `ginno-right-panel`，`⌘\` 切换；见 design/right-panel-redesign.md）、
   workflow/（**自绘 SVG DAG**，无 reactflow/d3；Inspector/ContextEditor/DiffView/LogTimeline）、
   kb/（**手写力导向图谱**于 SVG；PageViewer 三态 read/edit/create）、settings/（逐 tab 接 API）。
 

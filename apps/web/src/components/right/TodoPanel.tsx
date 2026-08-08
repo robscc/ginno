@@ -547,16 +547,26 @@ export function TodoPanel() {
         flash(`同步失败：${r?.error || "触发失败"}`, false);
         return;
       }
+      // A todo-sync run is HEADLESS (no present_in session), so it emits no
+      // run.* events into any chat and the Workflow panel only hears about it
+      // via the completion `workflows.changed` push. Refresh the run list right
+      // away so the run shows up in the Workflow tab immediately (as running) —
+      // previously it stayed invisible for the whole run until that final push.
+      void g.reloadWorkflowRuns();
       let status = "running";
       for (let i = 0; i < 40; i++) {
         await new Promise((res) => setTimeout(res, 4000));
         const run = await api.getWorkflowRun(r.run.id);
         status = run?.run?.status ?? status;
+        // Keep the Workflow panel's copy in step while the user watches it (the
+        // panel's own 1.5s poll only runs when it is the visible tab).
+        void g.reloadWorkflowRuns();
         if (status === "done" || status === "failed") break;
       }
       const after = await api.listTodos();
       const added = after.filter((t) => !before.has(t.id)).length;
       await g.reloadTodos();
+      await g.reloadWorkflowRuns();
       refreshSync();
       if (status === "failed") flash("同步失败（详见 Workflow 面板）", false);
       else if (added > 0) flash(`同步完成：新增 ${added} 条`, true);
@@ -909,14 +919,14 @@ export function TodoPanel() {
                           )}
                           {st?.status === "running" && <span className="text-faint">同步中</span>}
                           {st?.status === "ok" && <span className="text-green">✓</span>}
-                          {st?.status === "failed" && (
+                          {["failed", "cancelled", "interrupted"].includes(st?.status ?? "") && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 void api.pushTodo(t.id, x.provider || "").then(refreshSync);
                               }}
                               className="text-red hover:underline"
-                              title={`同步失败：${st.error || "未知错误"}（点击重试）`}
+                              title={`同步失败：${st?.error || "未知错误"}（点击重试）`}
                             >
                               重试
                             </button>

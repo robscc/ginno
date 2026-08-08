@@ -64,9 +64,12 @@ app: sidecar
 
 ## sidecar: stage the runtime onedir bundle as a Tauri resource
 sidecar: runtime
-	rm -rf $(RUNTIME_RES)
+	@# Never rm -rf the staging dir: Finder may recreate .DS_Store inside it
+	@# mid-delete and rmdir would fail the build. rsync overwrites + prunes
+	@# without rmdir-ing the watched dir, so the race cannot fail the build
+	@# (a .DS_Store sneaking in mid-transfer just stays until find cleans it).
 	mkdir -p $(RUNTIME_RES)
-	cp -R $(RUNTIME)/dist/ginno-runtime/ $(RUNTIME_RES)/
+	rsync -a --delete $(RUNTIME)/dist/ginno-runtime/ $(RUNTIME_RES)/
 	@find $(RUNTIME_RES) -name .DS_Store -delete
 	@echo "✅ Runtime bundle → $(RUNTIME_RES)"
 

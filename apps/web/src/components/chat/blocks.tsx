@@ -21,6 +21,7 @@ import {
 import type { WorkflowRun } from "@/lib/types";
 import { useGinno } from "@/lib/store";
 import { Markdown } from "./Markdown";
+import { toolLabel } from "@/lib/toolLabels";
 
 export type Block =
   | { kind: "text"; text: string }
@@ -496,11 +497,12 @@ const LONG_OUTPUT_CHARS = 600;
 
 function ToolBlock({ name, content, pending }: { name: string; content: string; pending: boolean }) {
   const [open, setOpen] = useState(false);
+  const label = toolLabel(name);
   if (pending) {
     return (
       <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5 font-mono text-xs">
-        <span className="inline-flex items-center gap-1.5 text-faint">
-          <Loader2 className="h-3 w-3 animate-spin" /> {name}…
+        <span className="inline-flex items-center gap-1.5 text-faint" title={name}>
+          <Loader2 className="h-3 w-3 animate-spin" /> {label}…
         </span>
       </div>
     );
@@ -514,7 +516,7 @@ function ToolBlock({ name, content, pending }: { name: string; content: string; 
         className={`flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left ${
           isLong ? "cursor-pointer transition-colors hover:bg-card2/50" : "cursor-default"
         }`}
-        title={isLong ? (open ? "收起" : "展开完整输出") : undefined}
+        title={`${name}${isLong ? (open ? " — 收起" : " — 展开完整输出") : ""}`}
       >
         {isLong ? (
           <ChevronRight
@@ -524,7 +526,7 @@ function ToolBlock({ name, content, pending }: { name: string; content: string; 
           <span className="w-3 shrink-0" />
         )}
         <span className="truncate text-faint">
-          tool · <span className="text-muted">{name}</span>
+          tool · <span className="text-muted">{label}</span>
         </span>
         <span className="shrink-0 text-green">✓</span>
         <span className="ml-auto shrink-0 text-[10px] text-faint">
@@ -548,10 +550,36 @@ function ToolBlock({ name, content, pending }: { name: string; content: string; 
 function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
   const [open, setOpen] = useState(true);
   const wasLive = useRef(live);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // "Sticky bottom": keep pinned to the newest line while thinking streams in.
+  // If the user scrolls up to read earlier reasoning we stop yanking them back
+  // down; scrolling to the bottom re-engages the auto-follow.
+  const stickToBottom = useRef(true);
+
   useEffect(() => {
     if (wasLive.current && !live) setOpen(false); // collapse when thinking finishes
     wasLive.current = live;
   }, [live]);
+
+  // Re-engage auto-follow whenever the panel is (re)opened.
+  useEffect(() => {
+    if (open) stickToBottom.current = true;
+  }, [open]);
+
+  // While streaming, follow the newest line unless the user scrolled away.
+  useEffect(() => {
+    if (!live || !open) return;
+    const el = scrollRef.current;
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [text, live, open]);
+
+  function onScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    // "At bottom" within a small threshold so a tiny overshoot still counts.
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }
+
   return (
     <div className="my-2 overflow-hidden rounded-r-lg border-l-2 border-violet/70 bg-violet/[0.07]">
       <button
@@ -569,7 +597,11 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
         </span>
       </button>
       {open && (
-        <div className="max-h-60 overflow-y-auto border-t border-violet/15 px-3 py-2">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="max-h-60 overflow-y-auto border-t border-violet/15 px-3 py-2"
+        >
           <div className="whitespace-pre-wrap text-xs leading-relaxed text-muted">{text}</div>
         </div>
       )}

@@ -5,9 +5,11 @@ tracks per-step status and pins the DSL version it executed.
 """
 
 from .store import (
+    TERMINAL_STATUSES,
     create_def,
     create_run,
     delete_def,
+    delete_run,
     diff_versions,
     ensure_seeded,
     get_def,
@@ -34,6 +36,8 @@ __all__ = [
     "list_runs",
     "get_run",
     "create_run",
+    "delete_run",
     "update_step",
     "ensure_seeded",
+    "TERMINAL_STATUSES",
 ]

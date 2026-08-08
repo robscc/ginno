@@ -63,6 +63,20 @@ _DEFAULT_SETTINGS = {
         "ask": ["Bash(*)", "bash(*)", "Write(*)", "Edit(*)", "write_file", "edit_file", "analyze_table", "mcp_vault_write_*", "mcp_vault_edit_*", "mcp_vault_create_*", "mcp_vault_move_*"],
     },
     "hooks": {},
+    # Tool display labels: friendly names for tool call bubbles in the UI.
+    # Keys are raw tool names (e.g. "write_file"), values are display labels
+    # (e.g. "写文件中"). MCP tools (mcp_{server}_{tool}) are auto-detected and
+    # shown as "正在调用MCP：{server}" when no explicit mapping exists.
+    "tool_labels": {
+        "read_file": "读取文件中",
+        "write_file": "写文件中",
+        "edit_file": "编辑文件中",
+        "glob_files": "搜索文件中",
+        "grep_files": "搜索内容中",
+        "bash": "执行命令中",
+        "parse_document": "解析文档中",
+        "analyze_table": "分析表格中",
+    },
     # Context engineering (docs/design/world-state-plan.md). All keys have
     # safe defaults in world_state.context_settings(); values here override.
     "context": {

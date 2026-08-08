@@ -24,6 +24,7 @@ import { TopBar } from "@/components/shell/TopBar";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
+import { RightDock } from "@/components/right/RightDock";
 import type { SessionMeta, SessionUsage } from "@/lib/types";
 
 function SectionHeader({
@@ -165,6 +166,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onSettings = pathname.startsWith("/settings");
   const onKb = pathname.startsWith("/kb");
   const onWorkflows = pathname.startsWith("/workflows");
+
+  // Toggle the right panel with ⌘\ / Ctrl+\ (right-panel-redesign.md §3.3).
+  // Workspace-only: on settings/kb/workflows routes there is no panel.
+  // Stable refs destructured out of `g` so the listener isn't re-armed on
+  // every provider render.
+  const rightPanelOpen = g.rightPanelOpen;
+  const setRightPanelOpen = g.setRightPanelOpen;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!onWorkspace) return;
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === "\\") {
+        e.preventDefault();
+        setRightPanelOpen(!rightPanelOpen);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onWorkspace, rightPanelOpen, setRightPanelOpen]);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-base text-txt">
@@ -350,7 +369,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <TopBar session={session} agent={agent} running={running} modelLabel={modelLabel} usage={usage} />
             <ChatStream session={session} onRunningChange={setRunning} onUsageChange={setUsage} />
           </div>
-          <RightPanel />
+          {/* Right panel or its collapsed edge dock (right-panel-redesign.md) */}
+          {g.rightPanelOpen ? <RightPanel /> : <RightDock />}
           <SheetViewer />
         </div>
         {/* Non-workspace routes (settings, kb, workflows) */}

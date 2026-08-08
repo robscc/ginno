@@ -68,7 +68,16 @@ class MCPServerConfig:
         # mcpServers schema many configs in the wild use) — a streamable-http
         # server declared with "type" would otherwise fall back to stdio and
         # fail startup with "stdio requires command".
-        transport = cfg.get("transport") or cfg.get("type") or "stdio"
+        #
+        # Normalize the spelling too: configs in the wild spell the HTTP
+        # transport as "streamable-http", "streamable_http", or
+        # "Streamable_HTTP". Underscores/case variants used to raise
+        # "unknown transport" at connect time, silently dropping the server's
+        # tools (the 2026-08 web-search server never registered because its
+        # config said "streamable_http"). Valid transports carry no
+        # underscores, so fold them to hyphens + lowercase.
+        transport = str(cfg.get("transport") or cfg.get("type") or "stdio")
+        transport = transport.strip().lower().replace("_", "-")
         return cls(
             name=name,
             transport=transport,
@@ -144,7 +153,7 @@ class _LiveServer:
                     raise RuntimeError("mcp SSE client not installed")
                 ctx_res = await stack.enter_async_context(sse_client(self.config.url))
                 read, write = _unpack_rw(ctx_res)
-            elif self.config.transport in ("streamable-http", "http"):
+            elif self.config.transport in ("streamable-http", "streamablehttp", "http"):
                 if not streamablehttp_client:
                     raise RuntimeError("mcp streamable_http client not installed")
                 ctx_res = await stack.enter_async_context(

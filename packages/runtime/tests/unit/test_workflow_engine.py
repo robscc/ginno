@@ -139,3 +139,47 @@ async def test_engine_surfaces_step_error_as_event():
     async for ev in engine.run_workflow(d, run_id="r2", model=Boom(), tools=[]):
         events.append(ev)
     assert any(e["kind"] == "error" and "kaboom" in e.get("error", "") for e in events)
+    # Localization fields: the failing node is attributed and a trimmed
+    # traceback is carried so the UI can hand it to a debugger/Claude.
+    err = next(e for e in events if e["kind"] == "error")
+    assert err.get("node_id") == "a"
+    tb = err.get("traceback") or ""
+    assert "Traceback" in tb
+    assert "kaboom" in tb
+    assert "RuntimeError" in tb
+
+
+@pytest.mark.asyncio
+async def test_engine_error_attributes_failing_node_in_chain():
+    """A two-step chain where the SECOND step raises: the error event must name
+    node "b", and — because events flush incrementally — the footprint of the
+    failed node (its node_enter) plus the whole of node "a" must already be in
+    the stream. A batch flush would have lost all of it."""
+    from langchain_core.messages import AIMessage
+
+    class BoomSecond:
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, *a, **k):
+            return self
+
+        async def ainvoke(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(content="done a")
+            raise ValueError("boom-b")
+
+    events = []
+    async for ev in engine.run_workflow(_dsl(), run_id="r3", model=BoomSecond(), tools=[]):
+        events.append(ev)
+
+    enters = [e["node_id"] for e in events if e["kind"] == "node_enter"]
+    exits = [e["node_id"] for e in events if e["kind"] == "node_exit"]
+    # node a completed fully; node b entered (footprint kept) then raised.
+    assert enters == ["a", "b"]
+    assert exits == ["a"]
+    err = next(e for e in events if e["kind"] == "error")
+    assert err.get("node_id") == "b"
+    assert "boom-b" in (err.get("error") or "")
+    assert "boom-b" in (err.get("traceback") or "")

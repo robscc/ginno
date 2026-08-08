@@ -28,6 +28,7 @@ from typing import Any
 
 from .. import paths
 from . import dsl as wf_dsl
+from . import expr as wf_expr
 
 
 def _new_id() -> str:
@@ -336,6 +337,12 @@ def rollback(wf_id: str, to: int, commit: str = "") -> dict[str, Any] | None:
 
 
 # ---- runs (global; now version-pinned) ----
+# Terminal statuses (a run in one of these has no live task and will never
+# progress on its own; retry creates a NEW run). "paused" is deliberately NOT
+# terminal — it is resumable from its checkpoint.
+TERMINAL_STATUSES = ("done", "failed", "cancelled", "interrupted")
+
+
 def list_runs() -> list[dict[str, Any]]:
     d = _runs_dir()
     if not d.exists():
@@ -365,10 +372,25 @@ def create_run(
     wf: dict[str, Any],
     session_id: str | None = None,
     present_in_session_id: str | None = None,
+    context_override: dict | None = None,
+    retried_from: str | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     d, ver = _wf_dsl_and_version(wf)
     steps = wf_dsl.steps_from_dsl(d)
+    # Fill the {{placeholders}} in step titles with the run's initial context
+    # (DSL context.initial merged with the trigger's override — exactly what the
+    # engine seeds) so the run reads as real content ("把 dingtalk 上 id=123 的
+    # 待办「写周报」标记为已完成…") instead of the raw template. Placeholders that
+    # only resolve at runtime (earlier steps' outputs, loop vars) are left as-is.
+    initial = dict((d.get("context") or {}).get("initial") or {})
+    if isinstance(context_override, dict):
+        initial.update(context_override)
+    if initial:
+        for s in steps:
+            t = s.get("title")
+            if isinstance(t, str) and "{{" in t:
+                s["title"] = wf_expr.render_partial(t, initial)
     run = {
         "id": _new_id(),
         "workflow_id": wf.get("id", ""),
@@ -378,6 +400,21 @@ def create_run(
         "present_in_session_id": present_in_session_id or session_id,
         "dsl_version": ver,
         "status": "running",
+        # Persist the trigger's context override so a retry can re-run with the
+        # exact same inputs (previously discarded → retries lost the provider/
+        # skill/template vars of todo-sync runs). Also useful for debugging
+        # ("what did this run execute with?").
+        "context_override": context_override,
+        # Retry provenance: which run this one re-executes (None on first run).
+        "retried_from": retried_from,
+        # Last failure reason (surfaced by the UI without parsing events.jsonl);
+        # cleared when the run reaches done.
+        "error": None,
+        # Structured companion of ``error`` for localization: {node_id, traceback}.
+        # Optional on legacy runs (files written before this field existed).
+        "error_detail": None,
+        # Wall-clock end; set when the run reaches any terminal status.
+        "finished": None,
         "steps": [
             {"id": s["id"], "title": s.get("title", ""), "status": "pending", "output": ""}
             for s in steps
@@ -398,11 +435,34 @@ def update_step(run_id: str, step_id: str, status: str, output: str = "") -> dic
             s["status"] = status
             if output:
                 s["output"] = output
-    done = all(s["status"] in ("done", "failed") for s in run.get("steps", []))
-    run["status"] = "done" if done else "running"
+    # Only a run that is still "running" may have its overall status
+    # recomputed from its steps. A late step update must never demote a
+    # terminal status (failed/cancelled/interrupted) or a paused run back to
+    # done/running.
+    if run.get("status") == "running":
+        done = all(s["status"] in ("done", "failed") for s in run.get("steps", []))
+        run["status"] = "done" if done else "running"
+        if done and not run.get("finished"):
+            run["finished"] = time.time()
     run["updated"] = time.time()
     _write_json(_run_path(run_id), run)
     return run
+
+
+def delete_run(run_id: str) -> bool:
+    """Remove a run's persisted artifacts: the run JSON and its events JSONL.
+
+    Both live in the same ``workflow_runs`` dir. Checkpoint files (under the
+    project sessions dir) are removed by the caller (server), which owns the
+    ``project_slug`` knowledge. Returns True if any artifact existed.
+    """
+    from . import events as wf_events
+
+    p = _run_path(run_id)
+    existed = p.exists()
+    p.unlink(missing_ok=True)
+    ev_existed = wf_events.delete_events(run_id)
+    return existed or ev_existed
 
 
 # ---- seed ----
@@ -433,6 +493,9 @@ _SEED = [
                     "type": "agent",
                     "agent": "dev",
                     "skills": ["{{skill}}"],
+                    # Short human label for the run panel (templated, rendered per
+                    # run); the verbose `goal` below is what the agent executes.
+                    "title": "把待办「{{title}}」标记为完成（{{provider}}）",
                     "goal": (
                         "把外部 TODO 平台 {{provider}} 上 id={{ext_id}} 的待办「{{title}}」标记为已完成。"
                         "优先使用注入的 skill；若没有注入 skill，则直接调用 {{mcp}} 服务的 MCP 工具"
@@ -457,6 +520,9 @@ _SEED = [
                     "type": "agent",
                     "agent": "dev",
                     "skills": ["{{skill}}"],
+                    # Short human label for the run panel (templated, rendered per
+                    # run); the verbose `goal` below is what the agent executes.
+                    "title": "拉取 {{provider}} 的未完成待办",
                     "goal": (
                         "拉取我在外部 TODO 平台 {{provider}} 上【未完成】的待办。"
                         "调用列表工具时参数必须严格为："

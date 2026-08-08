@@ -236,3 +236,89 @@ html.light .hljs-name {
 .meta-pop-in {
   animation: ginno-pop-left 0.16s ease-out;
 }
+
+/* ---- workflow trigger feedback (error-localization push, work item D) ---- */
+/* Press acknowledgement: stateless, pure CSS — every trigger button gets it. */
+.btn-press {
+  transition: transform 0.1s ease;
+}
+.btn-press:active {
+  transform: scale(0.96);
+}
+
+/* Success: green ring fading out (button-level confirmation). */
+@keyframes ginno-success-flash {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(34, 197, 94, 0);
+  }
+}
+.anim-success-flash {
+  animation: ginno-success-flash 0.6s ease-out;
+}
+
+/* Failure: horizontal shake + inline message (never fail silently again). */
+@keyframes ginno-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-4px);
+  }
+  40% {
+    transform: translateX(4px);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(2px);
+  }
+}
+.anim-shake {
+  animation: ginno-shake 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+/* New run card entrance: slide up + violet pulse ×2 (run.bind / trigger / retry). */
+@keyframes ginno-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.anim-slide-in {
+  animation: ginno-slide-in 0.25s ease-out;
+}
+@keyframes ginno-pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(139, 92, 246, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0);
+  }
+}
+.anim-pulse-ring {
+  animation: ginno-pulse-ring 1.2s ease-out 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-success-flash,
+  .anim-shake,
+  .anim-slide-in,
+  .anim-pulse-ring {
+    animation: none;
+  }
+  .btn-press:active {
+    transform: none;
+  }
+}

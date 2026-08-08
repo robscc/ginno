@@ -137,6 +137,11 @@ class BaseNode:
         nid = node["id"]
 
         async def wrapped(state: dict, config=None) -> dict:
+            # Stamp the currently-executing node so engine-level error events
+            # can attribute the failure (see engine.run_workflow's except).
+            # Parallel supersteps would race this to "last starter" — current
+            # DSLs execute sequentially, so that is acceptable for v1.
+            cctx["run_ctx"]["current_node"] = nid
             ctx = dict(state.get("context") or {})
             inputs = dict(state.get("inputs") or {})
             eff = inputs.get(nid)

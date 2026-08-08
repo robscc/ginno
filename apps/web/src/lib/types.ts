@@ -158,6 +158,38 @@ export interface WorkflowRun {
   started: number;
   updated: number;
   dsl_version?: number; // DSL version this run executed (P2+)
+  error?: string | null; // last failure reason (failed/interrupted/cancelled)
+  // Structured companion of `error` for localization: which node failed + the
+  // trimmed traceback. Optional on legacy runs (created before this existed).
+  error_detail?: { node_id?: string | null; traceback?: string | null } | null;
+  finished?: number | null; // wall-clock end for terminal runs
+  context_override?: Record<string, unknown> | null; // inputs this run executed with
+  retried_from?: string | null; // run id this one re-executes
+  retry_run_id?: string | null; // set on the original once it has been retried
+  session_id?: string | null;
+  present_in_session_id?: string | null;
+}
+
+/** One execution event from ``runs/<id>.events.jsonl`` (GET /workflow_runs/{id}/events).
+ *  Kept open-ended ([k: string]: unknown) so existing `Record<string, unknown>`
+ *  consumers keep compiling while new fields ride along. */
+export interface WorkflowRunEvent {
+  ts?: number;
+  run_id?: string;
+  kind?: string; // node_enter | node_exit | tool_call | tool_result | context_write | loop_iter | interrupt | resume | error | done | paused | cancelled | interrupted
+  node_id?: string | null;
+  node_type?: string;
+  status?: string;
+  error?: string;
+  traceback?: string; // present on error events (trimmed tail)
+  name?: string; // tool_result: tool name
+  content?: string; // tool_result: output (server caps at 2000 chars)
+  calls?: Array<{ name?: string; args?: unknown }>; // tool_call
+  keys?: string[]; // context_write
+  index?: number; // loop_iter
+  of?: number; // loop_iter
+  question?: string; // interrupt
+  [k: string]: unknown;
 }
 
 export interface Artifact {

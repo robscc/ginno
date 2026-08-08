@@ -12,6 +12,7 @@ graph but keep separate message histories inside their node closures.
 
 from __future__ import annotations
 
+import traceback
 from typing import Any, AsyncIterator
 
 from langgraph.types import Command
@@ -19,6 +20,18 @@ from langgraph.types import Command
 from ..checkpointer import FileCheckpointer
 from . import compiler as wf_compiler
 from . import dsl as wf_dsl
+
+
+def _trimmed_traceback(exc: BaseException, max_chars: int = 4000) -> str:
+    """Format ``exc``'s traceback, keeping only the tail when oversized.
+
+    The tail frames are closest to the raise site and therefore the most
+    useful for localization; the cap keeps run JSON / WS frames bounded.
+    Reused by the API layer for driver-level failures (no engine events)."""
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    if len(tb) <= max_chars:
+        return tb
+    return "…[traceback trimmed — showing tail]…\n" + tb[-max_chars:]
 
 
 async def run_workflow(
@@ -58,7 +71,15 @@ async def run_workflow(
                 yield evs[yielded]
                 yielded += 1
     except Exception as exc:  # surface graph/step failures as an event, don't crash
-        ev = {"run_id": run_id, "kind": "error", "error": f"{type(exc).__name__}: {exc}"}
+        ev = {
+            "run_id": run_id,
+            "kind": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            # current_node is stamped by BaseNode.make_node (None → dropped by
+            # append_event); traceback keeps error localization past the one-liner.
+            "node_id": run_ctx.get("current_node"),
+            "traceback": _trimmed_traceback(exc),
+        }
         run_ctx["events"].append(ev)
         while yielded < len(run_ctx["events"]):
             yield run_ctx["events"][yielded]
@@ -131,7 +152,13 @@ async def resume_workflow(
                 yield evs[yielded]
                 yielded += 1
     except Exception as exc:
-        ev = {"run_id": run_id, "kind": "error", "error": f"{type(exc).__name__}: {exc}"}
+        ev = {
+            "run_id": run_id,
+            "kind": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "node_id": run_ctx.get("current_node"),
+            "traceback": _trimmed_traceback(exc),
+        }
         run_ctx["events"].append(ev)
         while yielded < len(run_ctx["events"]):
             yield run_ctx["events"][yielded]

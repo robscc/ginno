@@ -343,6 +343,24 @@ export async function decideWorkflowRun(
     body: JSON.stringify({ decision, context_patch }),
   });
 }
+export async function retryWorkflowRun(run_id: string) {
+  return json<{
+    ok: boolean;
+    run?: import("./types").WorkflowRun;
+    source_run_id?: string;
+    detail?: string;
+  }>(`${BASE}/workflow_runs/${run_id}/retry`, { method: "POST", headers: H, body: JSON.stringify({}) });
+}
+export async function deleteWorkflowRun(run_id: string) {
+  return json<{ ok: boolean }>(`${BASE}/workflow_runs/${run_id}`, { method: "DELETE" });
+}
+export async function cleanupWorkflowRuns(statuses?: string[]) {
+  return json<{ ok: boolean; deleted: number }>(`${BASE}/workflow_runs/cleanup`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(statuses ? { statuses } : {}),
+  });
+}
 export async function updateWorkflow(id: string, data: Partial<import("./types").WorkflowDef>) {
   return json<{ ok: boolean; workflow?: import("./types").WorkflowDef }>(`${BASE}/workflows/${id}`, {
     method: "PUT",
@@ -358,7 +376,7 @@ export async function getWorkflowRunEvents(
   if (opts.node_id) q.set("node_id", opts.node_id);
   if (opts.kind) q.set("kind", opts.kind);
   const qs = q.toString();
-  return json<{ ok: boolean; events: Array<Record<string, unknown>> }>(
+  return json<{ ok: boolean; events: Array<import("./types").WorkflowRunEvent> }>(
     `${BASE}/workflow_runs/${run_id}/events${qs ? `?${qs}` : ""}`,
   );
 }

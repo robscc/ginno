@@ -57,7 +57,7 @@ class AgentNode(BaseNode):
         loop_vars = dict(state.get("loop_vars") or {})
         render_ctx = {**context, **loop_vars, **(eff or {})}
         goal = wf_expr.render(node.get("goal") or node.get("title") or "", render_ctx)
-        events = [{"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "step"}]
+        events: list = []
 
         # Provider sync runs (todo-pull/push et al.): unlock the provider's
         # MCP server tools even when the forked agent's tools_allow doesn't
@@ -103,6 +103,17 @@ class AgentNode(BaseNode):
                     secs.append(f'<skill name="{sk.name}">\n{sk.body.strip()}\n</skill>')
             if secs:
                 sys_text += "\n\n## Injected skills\n" + "\n\n".join(secs)
+
+        # Incremental flush: every event lands in run_ctx["events"] as it is
+        # produced (engine streams it → API persists + pushes it). If the step
+        # raises mid-flight, its node_enter/tool_call/tool_result footprints are
+        # already recorded — a batch flush at the end would lose them all.
+        # ``events`` is still returned in the state update (LangGraph reducer).
+        def emit(ev):
+            events.append(ev)
+            run_ctx["events"].append(ev)
+
+        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "step"})
         msgs = [SystemMessage(content=sys_text), HumanMessage(content=goal)]
         result_text = ""
         for _ in range(max_iters):
@@ -112,7 +123,7 @@ class AgentNode(BaseNode):
             calls = getattr(resp, "tool_calls", None) or []
             if not calls:
                 break
-            events.append(
+            emit(
                 {
                     "run_id": run_ctx["run_id"],
                     "node_id": node_id,
@@ -126,7 +137,7 @@ class AgentNode(BaseNode):
             tmsgs = tres["messages"] if isinstance(tres, dict) else tres
             for tm in tmsgs:
                 c = tm.content if isinstance(tm.content, str) else str(tm.content)
-                events.append(
+                emit(
                     {
                         "run_id": run_ctx["run_id"],
                         "node_id": node_id,
@@ -141,10 +152,9 @@ class AgentNode(BaseNode):
         meta = dict(state.get("context_meta") or {})
         for k in writes:
             meta[k] = f"step:{node_id}"
-        events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
+        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
         if writes:
-            events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write", "keys": list(writes.keys())})
-        run_ctx["events"].extend(events)
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write", "keys": list(writes.keys())})
         return {
             "context": {**context, **writes},
             "context_meta": meta,
@@ -168,7 +178,16 @@ class LLMNode(BaseNode):
         node_id = node["id"]
         context = dict(state.get("context") or {})
         prompt = wf_expr.render(node.get("prompt") or "", {**context, **(eff or {})})
-        events = [{"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "llm"}]
+
+        # Incremental flush (see AgentNode): mid-flight failures keep their
+        # footprint; ``events`` still returns in the state update (reducer).
+        events: list = []
+
+        def emit(ev):
+            events.append(ev)
+            run_ctx["events"].append(ev)
+
+        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "llm"})
         resp = await model.ainvoke([HumanMessage(content=prompt)])
         text = resp.content if isinstance(resp.content, str) else str(resp.content)
         out = {"text": text}
@@ -176,9 +195,8 @@ class LLMNode(BaseNode):
         key = node.get("output")
         if key:
             update["context"] = {**context, key: text}
-            events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write", "keys": [key]})
-        events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
-        run_ctx["events"].extend(events)
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write", "keys": [key]})
+        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
         return update
 
 
@@ -275,17 +293,23 @@ class LoopNode(BaseNode):
             st["items"] = val if isinstance(val, list) else []
         idx = st["index"]
         items = st["items"]
-        events = []
+        # Incremental flush (see AgentNode): loop_iter/node_enter are recorded
+        # as produced; ``events`` still returns in the state update (reducer).
+        events: list = []
+
+        def emit(ev):
+            events.append(ev)
+            run_ctx["events"].append(ev)
+
         if idx < len(items) and idx < max_iters:
             loop_vars[as_var] = items[idx]
-            events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_iter", "index": idx, "of": len(items)})
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_iter", "index": idx, "of": len(items)})
             st["index"] = idx + 1
             st["done"] = False
         else:
             st["done"] = True
         iters[node_id] = st
-        events.append({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "loop"})
-        run_ctx["events"].extend(events)
+        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "loop"})
         return {"loop_iters": iters, "loop_vars": loop_vars, "events": events}
 
     @classmethod

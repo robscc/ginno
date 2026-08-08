@@ -47,6 +47,20 @@ def test_render_substitutes_and_swallows_missing():
     assert out == "repo=ginno n=!"
 
 
+def test_render_partial_keeps_unresolved_placeholders():
+    """render_partial fills what it can and leaves the rest as {{…}} (display at
+    run-creation time must not blank runtime-only placeholders)."""
+    tpl = "平台 {{provider}}，id={{ext_id}}，来源={{upstream.summary}}"
+    out = expr.render_partial(tpl, {"provider": "dingtalk"})
+    assert out == "平台 dingtalk，id={{ext_id}}，来源={{upstream.summary}}"
+
+
+def test_render_partial_empty_string_substitutes_none_kept():
+    # explicit empty value is a real value -> substituted; None -> kept as-is
+    assert expr.render_partial("mcp=[{{mcp}}]", {"mcp": ""}) == "mcp=[]"
+    assert expr.render_partial("mcp=[{{mcp}}]", {"mcp": None}) == "mcp=[{{mcp}}]"
+
+
 def test_eval_branch_first_match_then_default():
     node = {
         "cases": [

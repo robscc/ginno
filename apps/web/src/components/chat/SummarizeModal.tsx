@@ -1,19 +1,22 @@
 "use client";
 
-import { Workflow, X } from "lucide-react";
+import { Loader2, Workflow, X } from "lucide-react";
 
 /**
  * 聊天页「总结成流程」确认弹层 (design A a2): shows the DSL draft distilled from
- * the current session; user can 创建并运行 / 仅创建 / 取消.
+ * the current session; user can 创建并运行 / 仅创建 / 取消. On failure the modal
+ * STAYS open and shows the reason inline (the draft must not be lost silently).
  */
 export function SummarizeModal({
   dsl,
   busy,
+  error,
   onClose,
   onCreate,
 }: {
   dsl: Record<string, unknown>;
   busy?: "create" | "run" | null;
+  error?: string | null;
   onClose: () => void;
   onCreate: (run: boolean) => void;
 }) {
@@ -41,22 +44,29 @@ export function SummarizeModal({
             {JSON.stringify(dsl, null, 2)}
           </pre>
         </div>
+        {error && (
+          <div className="mx-4 mb-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
+            {error}
+          </div>
+        )}
         <div className="flex justify-end gap-2 border-t border-line px-4 py-3">
-          <button onClick={onClose} className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-card2">
+          <button onClick={onClose} className="btn-press rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-card2">
             取消
           </button>
           <button
             disabled={!!busy}
             onClick={() => onCreate(false)}
-            className="rounded-md border border-line px-3 py-1.5 text-xs text-txt hover:bg-card2 disabled:opacity-50"
+            className="btn-press flex items-center gap-1 rounded-md border border-line px-3 py-1.5 text-xs text-txt hover:bg-card2 disabled:opacity-50"
           >
+            {busy === "create" && <Loader2 className="h-3 w-3 animate-spin" />}
             {busy === "create" ? "创建中…" : "仅创建"}
           </button>
           <button
             disabled={!!busy}
             onClick={() => onCreate(true)}
-            className="rounded-md bg-gradient-to-r from-violet to-fuchsia px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            className="btn-press flex items-center gap-1 rounded-md bg-gradient-to-r from-violet to-fuchsia px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
           >
+            {busy === "run" && <Loader2 className="h-3 w-3 animate-spin" />}
             {busy === "run" ? "运行中…" : "创建并运行"}
           </button>
         </div>

@@ -59,3 +59,11 @@ def read_events(
             continue
         out.append(ev)
     return out
+
+
+def delete_events(run_id: str) -> bool:
+    """Remove a run's events JSONL. Returns True if the file existed."""
+    p = _events_path(run_id)
+    existed = p.exists()
+    p.unlink(missing_ok=True)
+    return existed

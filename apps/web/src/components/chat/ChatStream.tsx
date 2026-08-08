@@ -4,12 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
+import { loadToolLabels } from "@/lib/toolLabels";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { ContextBlocks, InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
 import { DiffView } from "@/components/workflow/DiffView";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
+import { ConfirmModal } from "@/components/ConfirmModal";
 import { ComposerMenu } from "@/components/chat/ComposerMenu";
 import {
   applySelection,
@@ -25,7 +27,9 @@ import {
   cancelWorkflowRun,
   createWorkflow,
   decideWorkflowRun,
+  deleteWorkflowRun,
   getWorkflowRun,
+  retryWorkflowRun,
   summarizeSessionToDsl,
   triggerWorkflowRun,
 } from "@/lib/runtime";
@@ -441,9 +445,12 @@ export function ChatStream({
   // In-chat live workflow runs bound to each session (design A: run 回到对话)
   const runsBySessionRef = useRef<Record<string, WorkflowRun[]>>({});
   const [runs, setRuns]   = useState<WorkflowRun[]>([]);
-  // 「总结成流程」draft + busy state
+  // Run id pending delete confirmation (ConfirmModal guards the destructive op).
+  const [confirmDelRun, setConfirmDelRun] = useState<string | null>(null);
+  // 「总结成流程」draft + busy state + inline failure reason (modal stays open)
   const [summarize, setSummarize] = useState<Record<string, unknown> | null>(null);
   const [sumBusy, setSumBusy]     = useState<"create" | "run" | null>(null);
+  const [sumErr, setSumErr]       = useState<string | null>(null);
 
   // Push the given session's ref state into React display state.
   // No-op when sid is not the currently displayed session (background socket).
@@ -459,6 +466,9 @@ export function ChatStream({
     setPropose(proposeRef.current[sid] ?? null);
     setStreamAgent(streamAgentRef.current[sid] ?? null);
   };
+
+  // Pre-load tool display labels from settings (cached at module level).
+  useEffect(() => { loadToolLabels(); }, []);
 
   // Drop per-session state for deleted sessions to prevent memory leaks.
   useEffect(() => {
@@ -770,9 +780,20 @@ export function ChatStream({
           const nid = inner.node_id as string | undefined;
           const kind = inner.kind as string | undefined;
           if (nid && (kind === "node_enter" || kind === "node_exit")) {
-            run.steps = run.steps.map((s) =>
-              s.id === nid ? { ...s, status: kind === "node_enter" ? "running" : "done" } : s,
-            );
+            // node_exit carries the step's real outcome — a failed step must not
+            // render as done (green) in the live card.
+            const stepStatus =
+              kind === "node_enter" ? "running" : inner.status === "failed" ? "failed" : "done";
+            run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: stepStatus } : s));
+            runsBySessionRef.current[sid] = [...list];
+          } else if (kind === "error") {
+            // Show the failure one beat before run.status lands, and stamp the
+            // structured diagnostic so RunErrorBox renders without a lazy fetch.
+            if (typeof inner.error === "string") run.error = inner.error;
+            run.error_detail = {
+              node_id: (inner.node_id as string | null) ?? null,
+              traceback: (inner.traceback as string | undefined) ?? null,
+            };
             runsBySessionRef.current[sid] = [...list];
           }
           syncDisplay(sid);
@@ -786,6 +807,7 @@ export function ChatStream({
         const run = list.find((x) => x.id === runId);
         if (run) {
           run.status = status;
+          if (typeof ev.error === "string") run.error = ev.error;
           runsBySessionRef.current[sid] = [...list];
         }
         syncDisplay(sid);
@@ -1070,6 +1092,7 @@ export function ChatStream({
   // ─── 闭环 (design A): 总结成流程 + 对话内运行块控制 ─────────────────────────
   async function openSummarize() {
     if (!session) return;
+    setSumErr(null);
     const r = await summarizeSessionToDsl(session.id);
     setSummarize(r.ok ? r.dsl : null);
     if (!r.ok) alert(`总结失败：${(r as { error?: string }).error ?? "unknown"}`);
@@ -1078,26 +1101,39 @@ export function ChatStream({
   async function createFromSummarize(run: boolean) {
     if (!summarize || !session) return;
     setSumBusy(run ? "run" : "create");
+    setSumErr(null);
     try {
       const cw = await createWorkflow({
         name: (summarize.name as string) || "新流程",
         dsl: summarize,
       });
-      if (cw.workflow) {
-        g.reloadWorkflows();
-        if (run) {
-          const tr = await triggerWorkflowRun(cw.workflow.id, undefined, session.id);
-          if (tr.run) {
-            const list = runsBySessionRef.current[session.id] ?? [];
-            if (!list.some((x) => x.id === tr.run.id)) list.push(tr.run);
-            runsBySessionRef.current[session.id] = [...list];
-            syncDisplay(session.id);
-          }
+      const cwBody = cw as { ok?: boolean; workflow?: import("@/lib/types").WorkflowDef; detail?: string };
+      if (!cwBody.workflow) {
+        // json() doesn't throw on HTTP errors — surface the reason inline and
+        // KEEP the modal open so the draft isn't lost.
+        setSumErr(cwBody.detail || "创建工作流失败");
+        return;
+      }
+      g.reloadWorkflows();
+      if (run) {
+        const tr = await triggerWorkflowRun(cwBody.workflow.id, undefined, session.id);
+        const trBody = tr as { ok?: boolean; run?: import("@/lib/types").WorkflowRun; detail?: string };
+        if (trBody.run) {
+          const list = runsBySessionRef.current[session.id] ?? [];
+          if (!list.some((x) => x.id === trBody.run!.id)) list.push(trBody.run);
+          runsBySessionRef.current[session.id] = [...list];
+          syncDisplay(session.id);
+        } else {
+          // Created but not started: still a partial success — report inline.
+          setSumErr(`已创建，但运行触发失败：${trBody.detail || "未知错误"}`);
+          return;
         }
       }
+      setSummarize(null); // success → close; the new run card animates in
+    } catch {
+      setSumErr("无法连接运行时");
     } finally {
       setSumBusy(null);
-      setSummarize(null);
     }
   }
 
@@ -1106,6 +1142,30 @@ export function ChatStream({
   }
   function continueRun(runId: string) {
     decideWorkflowRun(runId, "continue");
+  }
+  function retryRun(runId: string): Promise<{ ok?: boolean; detail?: string } | void> {
+    // The retry creates a NEW run bound to the same session; the run.bind push
+    // (or the workflows.changed reload) surfaces it. Refresh the local list too.
+    // Returns the outcome so LiveRunBlock can shake + show the reason on failure.
+    return retryWorkflowRun(runId)
+      .then((r) => {
+        g.reloadWorkflowRuns();
+        const body = r as { ok?: boolean; detail?: string } | undefined;
+        if (body && body.ok === false) return { ok: false, detail: body.detail };
+        return undefined;
+      })
+      .catch(() => ({ ok: false, detail: "无法连接运行时" }));
+  }
+  function deleteRun(runId: string) {
+    void deleteWorkflowRun(runId).then(() => {
+      const sid = curSessionIdRef.current;
+      if (sid) {
+        const list = (runsBySessionRef.current[sid] ?? []).filter((r) => r.id !== runId);
+        runsBySessionRef.current[sid] = list;
+        syncDisplay(sid);
+      }
+      g.reloadWorkflowRuns();
+    });
   }
 
   // ─── Command / mention autocomplete ────────────────────────────────────────
@@ -1553,12 +1613,33 @@ export function ChatStream({
           )}
 
           {runs.map((r) => (
-            <LiveRunBlock key={r.id} run={r} onCancel={cancelRun} onContinue={continueRun} />
+            <LiveRunBlock
+              key={r.id}
+              run={r}
+              onCancel={cancelRun}
+              onContinue={continueRun}
+              onRetry={retryRun}
+              onDelete={(id) => setConfirmDelRun(id)}
+            />
           ))}
 
           <div ref={bottomRef} />
         </div>
       </div>
+
+      {confirmDelRun && (
+        <ConfirmModal
+          title="删除运行记录"
+          message="删除该运行记录？事件日志与检查点将一并删除，此操作不可撤销。"
+          confirmLabel="删除"
+          onConfirm={() => {
+            const id = confirmDelRun;
+            setConfirmDelRun(null);
+            deleteRun(id);
+          }}
+          onCancel={() => setConfirmDelRun(null)}
+        />
+      )}
 
       {permission && (
         <div className="mx-auto w-full max-w-3xl px-6">
@@ -1623,7 +1704,11 @@ export function ChatStream({
         <SummarizeModal
           dsl={summarize}
           busy={sumBusy}
-          onClose={() => setSummarize(null)}
+          error={sumErr}
+          onClose={() => {
+            setSummarize(null);
+            setSumErr(null);
+          }}
           onCreate={createFromSummarize}
         />
       )}

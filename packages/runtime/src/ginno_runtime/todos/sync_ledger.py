@@ -74,5 +74,33 @@ def set_status(run_id: str, status: str, error: str = "") -> None:
     _write(items)
 
 
+def clone_for_retry(old_run_id: str, new_run_id: str) -> bool:
+    """Carry the sync-relation of a failed/interrupted run over to its retry.
+
+    Finds the latest ledger entry for ``old_run_id`` and re-appends the same
+    todo_id/provider/ext_id/direction under ``new_run_id`` (status=running), so
+    the TodoPanel keeps showing per-provider sync state across a retry. No-op
+    (False) for runs that were never todo-sync runs.
+    """
+    items = _read()
+    src = next((e for e in reversed(items) if e.get("run_id") == old_run_id), None)
+    if src is None:
+        return False
+    items.append(
+        {
+            "todo_id": src.get("todo_id", ""),
+            "provider": src.get("provider", ""),
+            "ext_id": src.get("ext_id", ""),
+            "direction": src.get("direction", ""),
+            "run_id": new_run_id,
+            "status": "running",
+            "error": "",
+            "at": time.time(),
+        }
+    )
+    _write(items)
+    return True
+
+
 def latest(limit: int = 100) -> list[dict[str, Any]]:
     return _read()[-limit:]

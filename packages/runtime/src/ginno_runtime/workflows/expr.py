@@ -180,6 +180,25 @@ def render(template: str, context: dict) -> str:
     return _TEMPLATE_RE.sub(repl, template or "")
 
 
+def render_partial(template: str, context: dict) -> str:
+    """Like :func:`render`, but placeholders that fail to resolve are LEFT AS-IS
+    instead of blanked. Used for run step titles at create time: trigger-time
+    context (provider/ext_id/title/…) is known and should display filled in, but
+    placeholders that depend on runtime state (earlier-step outputs, loop vars)
+    are not yet resolvable and must not be wiped."""
+
+    def repl(m: re.Match) -> str:
+        try:
+            v = eval_expr(m.group(1), context)
+        except Exception:
+            return m.group(0)
+        if v is None:
+            return m.group(0)
+        return str(v)
+
+    return _TEMPLATE_RE.sub(repl, template or "")
+
+
 def eval_branch(node: dict, context: dict) -> str | None:
     """Return the target node id for a branch node: first matching case, else default."""
     for case in node.get("cases") or []:

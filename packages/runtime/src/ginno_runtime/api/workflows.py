@@ -252,11 +252,14 @@ def _set_run_status(
     status: str,
     error: str | None = None,
     only_from: tuple[str, ...] | None = None,
+    error_detail: dict | None = None,
 ) -> None:
     """Persist a run status transition.
 
     ``error`` is stored when given and cleared on ``done``; terminal statuses
-    stamp ``finished``. ``only_from`` guards races (e.g. a queued engine "done"
+    stamp ``finished``. ``error_detail`` ({"node_id", "traceback"}) is the
+    structured companion for localization UIs; it follows the same lifecycle
+    as ``error``. ``only_from`` guards races (e.g. a queued engine "done"
     must not overwrite a user cancel that landed first).
     """
     run = wf_store.get_run(run_id)
@@ -268,8 +271,11 @@ def _set_run_status(
     run["updated"] = time.time()
     if error is not None:
         run["error"] = error
+    if error_detail is not None:
+        run["error_detail"] = error_detail
     if status == "done":
         run["error"] = None
+        run["error_detail"] = None
     if status in wf_storemod.TERMINAL_STATUSES and not run.get("finished"):
         run["finished"] = run["updated"]
     wf_storemod._write_json(wf_storemod._run_path(run_id), run)
@@ -286,12 +292,24 @@ def _touch_run(run_id: str) -> None:
 
 async def _mark_run_failed(run_id: str, exc: BaseException, present_in: str | None = None) -> None:
     """The one place a run failure is persisted: error event + run.error +
-    ledger + run.status push (so chat/panel show the reason immediately)."""
+    ledger + run.status push (so chat/panel show the reason immediately).
+
+    Driver-level failures (agent fork / model+tool build) have no engine
+    events, so the traceback is captured here; node_id stays None because no
+    node ever started."""
+    from ..workflows.engine import _trimmed_traceback
+
     err = f"{type(exc).__name__}: {exc}"
-    wf_events.append_event(run_id, "error", error=err)
-    _set_run_status(run_id, "failed", error=err)
+    tb = _trimmed_traceback(exc)
+    wf_events.append_event(run_id, "error", error=err, traceback=tb)
+    _set_run_status(
+        run_id, "failed", error=err, error_detail={"node_id": None, "traceback": tb}
+    )
     sync_ledger.set_status(run_id, "failed", err)
-    await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "failed", "error": err})
+    await _push_session_event(
+        present_in, "run.status",
+        {"run_id": run_id, "status": "failed", "error": err, "node_id": None},
+    )
 
 
 async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen) -> None:
@@ -321,7 +339,15 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
             # recompute it to "done" (all steps terminal) and the failed write
             # below would then be a no-op. With the run already "failed",
             # update_step only touches the step, not the run status.
-            _set_run_status(run_id, "failed", error=str(ev.get("error") or ""), only_from=("running", "paused"))
+            _set_run_status(
+                run_id, "failed",
+                error=str(ev.get("error") or ""),
+                only_from=("running", "paused"),
+                error_detail={
+                    "node_id": ev.get("node_id"),
+                    "traceback": ev.get("traceback"),
+                },
+            )
             run = wf_store.get_run(run_id)
             if run:
                 for s in run.get("steps", []):
@@ -329,7 +355,12 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
                         wf_store.update_step(run_id, s["id"], "failed")
             await _push_session_event(
                 present_in, "run.status",
-                {"run_id": run_id, "status": "failed", "error": str(ev.get("error") or "")},
+                {
+                    "run_id": run_id,
+                    "status": "failed",
+                    "error": str(ev.get("error") or ""),
+                    "node_id": ev.get("node_id"),
+                },
             )
 
 
@@ -348,7 +379,14 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
         wf, dsl, model, tools, fork_id = _wf_build_deps(run_id, workflow_id)
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
-        await _push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
+        if present_in:
+            await _push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
+        else:
+            # Headless run (todo-sync et al.): there is no chat to carry run.*
+            # events, and the completion push below only fires when the run
+            # finishes. Announce the run at START too, so the Workflow panel
+            # lists it as running immediately instead of materialising late.
+            await _push_global_event("workflows.changed", {})
         agen = wf_engine.run_workflow(dsl, run_id=run_id, model=model, tools=tools, context_override=context_override)
         await _drive_run_events(run_id, present_in, wf, agen)
         sync_ledger.set_status(run_id, "ok")
@@ -416,13 +454,19 @@ def _spawn_run_task(run_id: str, coro) -> asyncio.Task:
             run = wf_store.get_run(run_id)
             if run and run.get("status") == "running":
                 exc = t.exception()
-                err = (
-                    f"{type(exc).__name__}: {exc}"
-                    if exc is not None
-                    else "run task ended without emitting a terminal event"
+                if exc is not None:
+                    from ..workflows.engine import _trimmed_traceback
+
+                    err = f"{type(exc).__name__}: {exc}"
+                    detail = {"node_id": None, "traceback": _trimmed_traceback(exc)}
+                else:
+                    err = "run task ended without emitting a terminal event"
+                    detail = None
+                wf_events.append_event(
+                    run_id, "error", error=err,
+                    traceback=(detail or {}).get("traceback"),
                 )
-                wf_events.append_event(run_id, "error", error=err)
-                _set_run_status(run_id, "failed", error=err)
+                _set_run_status(run_id, "failed", error=err, error_detail=detail)
                 sync_ledger.set_status(run_id, "failed", err)
                 _log.error("workflow_run_guard_healed run=%s err=%s", run_id, err)
         except Exception:
@@ -458,9 +502,17 @@ def _reconcile_orphan_runs() -> None:
         elif status == "failed" and not run.get("error"):
             errs = wf_events.read_events(rid, kind="error")
             if errs:
-                last = errs[-1].get("error") or ""
+                last_ev = errs[-1]
+                last = last_ev.get("error") or ""
                 if last:
                     run["error"] = last
+                    # Carry the diagnostic fields along too, so historical
+                    # failed runs enjoy the same localization data.
+                    if last_ev.get("traceback") or last_ev.get("node_id"):
+                        run["error_detail"] = {
+                            "node_id": last_ev.get("node_id"),
+                            "traceback": last_ev.get("traceback"),
+                        }
                     wf_storemod._write_json(wf_storemod._run_path(rid), run)
                     backfilled += 1
     if interrupted or backfilled:
