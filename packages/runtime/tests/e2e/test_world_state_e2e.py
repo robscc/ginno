@@ -171,6 +171,9 @@ def test_mcp_drift_from_baseline_announced(create_session, ws_conv, client):
 
 
 def test_usage_events_accumulate(create_session, ws_conv):
+    # Anthropic-style raw usage: `input_tokens` EXCLUDES the cached portions.
+    # Extraction normalizes to whole-prompt input (usage-stats-design.md §3.5):
+    #   usage1 → input 100+40+0 = 140 ; usage2 → input 150+90+5 = 245.
     usage1 = {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
               "input_token_details": {"cache_read": 40, "cache_creation": 0}}
     usage2 = {"input_tokens": 150, "output_tokens": 12, "total_tokens": 162,
@@ -183,13 +186,14 @@ def test_usage_events_accumulate(create_session, ws_conv):
         e2 = conv.recv_until("message.end", "error")
 
     u1 = events_of(e1, "usage")
-    assert len(u1) == 1 and u1[0]["turn"]["input_tokens"] == 100
+    assert len(u1) == 1 and u1[0]["turn"]["input_tokens"] == 140
     assert u1[0]["session"]["calls"] == 1
     assert u1[0]["session"]["cache_read_tokens"] == 40
 
     u2 = events_of(e2, "usage")
-    assert len(u2) == 1 and u2[0]["turn"]["input_tokens"] == 150
+    assert len(u2) == 1 and u2[0]["turn"]["input_tokens"] == 245
     assert u2[0]["session"]["calls"] == 2
-    assert u2[0]["session"]["input_tokens"] == 250
+    assert u2[0]["session"]["input_tokens"] == 140 + 245
     assert u2[0]["session"]["cache_read_tokens"] == 130
-    assert u2[0]["cache_hit_ratio"] == round(130 / 250, 4)
+    # Hit ratio uses whole-prompt input as denominator (never > 100%).
+    assert u2[0]["cache_hit_ratio"] == round(130 / (140 + 245), 4)

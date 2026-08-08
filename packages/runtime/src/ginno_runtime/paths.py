@@ -189,6 +189,7 @@ def ensure_layout() -> None:
         "agents",
         "workflows",
         "knowledge",
+        "usage",
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
@@ -307,6 +308,14 @@ def files_index_path(slug: str) -> Path:
 
 def session_index_path(slug: str) -> Path:
     return project_sessions_dir(slug) / "_index.json"
+
+
+def usage_dir() -> Path:
+    """Global token-usage telemetry (usage-stats-design.md).
+
+    Append-only per-day JSONL request logs live here:
+    ``requests-YYYY-MM-DD.jsonl`` (local-time dates)."""
+    return home() / "usage"
 
 
 def session_files_dir(slug: str, session_id: str) -> Path:

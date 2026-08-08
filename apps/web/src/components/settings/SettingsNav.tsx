@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, ShieldCheck, Webhook, FolderOpen } from "lucide-react";
+import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, ShieldCheck, Webhook, FolderOpen, BarChart3 } from "lucide-react";
 
 type Item = { id: string; label: string; icon: typeof Cpu; color: string };
 
@@ -13,6 +13,7 @@ const MAIN: Item[] = [
   { id: "workflows", label: "Workflows", icon: Workflow, color: "#4ade80" },
   { id: "knowledge", label: "知识库", icon: BookOpen, color: "#60a5fa" },
   { id: "session-files", label: "会话文件", icon: FolderOpen, color: "#38bdf8" },
+  { id: "usage", label: "用量统计", icon: BarChart3, color: "#2dd4bf" },
 ];
 const SAFE: Item[] = [
   { id: "permissions", label: "权限策略", icon: ShieldCheck, color: "#f87171" },

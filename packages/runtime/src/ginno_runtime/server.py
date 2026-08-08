@@ -22,6 +22,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -39,6 +40,7 @@ from .agents.memory import ensure_agent_memory
 from .checkpointer import ABANDONED_TURNS, FileCheckpointer
 from . import commands as _commands
 from .graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context
+from . import usage_store
 from .usage import add_usage, cache_hit_ratio, empty_usage, extract_usage
 from .world_state import (
     TURN_CONTEXT_PREFIX,
@@ -120,6 +122,12 @@ async def lifespan(app: FastAPI):
     # Attach the trace-file handler up front so pre-turn lifecycle lines
     # (session_create / ws_open / ws_close) land in the log, not just turn lines.
     _ensure_turn_log()
+    # Drop usage logs past the retention window (usage-stats-design.md §4.3).
+    # Best-effort and cheap (a directory glob); never blocks startup on failure.
+    try:
+        usage_store.cleanup()
+    except Exception:
+        log.exception("usage cleanup failed (continuing)")
     # Best-effort, idempotent move of legacy session files into their per-session
     # dirs. Runs before `yield`, so nothing (uploads/previews/watchers) can race
     # it. Must never block startup on failure.
@@ -406,6 +414,10 @@ async def _run_goal_turn(session: dict, goal: dict, turn_id: str) -> None:
             "agent_id": agent_id,
             "turn_id": turn_id,
             "user_text": text,
+            # Usage telemetry tags continuation turns as source="goal"
+            # (usage-stats-design.md §3.6) so they are distinguishable from
+            # user-driven chat in the usage log.
+            "usage_source": "goal",
         }
     }
     _log.info(
@@ -634,11 +646,120 @@ async def health() -> dict:
 async def get_session_usage(session_id: str) -> dict:
     """Per-session cumulative model usage (the TopBar counter). The live
     `usage` WS event only fires on turns; this lets the UI show a session's
-    accumulated stats immediately after a session switch."""
+    accumulated stats immediately after a session switch.
+
+    Source order (usage-stats-design.md §5): the persistent usage log first —
+    it survives runtime restarts, so a session's total stays truthful across
+    restarts — falling back to the in-memory accumulator when nothing was
+    logged yet. Response shape is unchanged."""
+    logged = usage_store.session_totals(session_id)
+    if logged:
+        return {"ok": True, "usage": logged}
     acc = _USAGE_BY_SESSION.get(session_id)
     if not acc:
         return {"ok": True, "usage": None}
     return {"ok": True, "usage": {**acc, "cache_hit_ratio": cache_hit_ratio(acc)}}
+
+
+# ---- usage telemetry (usage-stats-design.md §5) ----------------------------
+
+
+def _usage_session_display(sid: str) -> dict:
+    """Join display meta for a usage row. Deleted sessions keep their usage
+    (billing-style data) under a placeholder title (design §3.3)."""
+    s = _SESSIONS.get(sid)
+    if s:
+        return {
+            "title": s.get("title") or "",
+            "icon": s.get("icon") or "message-square",
+            "agent_id": s.get("agent_id"),
+            "provider": s.get("model_provider") or "",
+            "model": s.get("model_name") or "",
+            "deleted": False,
+        }
+    found = _find_meta(sid)
+    if found:
+        m, _slug = found
+        return {
+            "title": m.get("title") or "",
+            "icon": m.get("icon") or "message-square",
+            "agent_id": m.get("agent_id"),
+            "provider": m.get("provider") or "",
+            "model": m.get("model") or "",
+            "deleted": False,
+        }
+    return {
+        "title": f"(已删除) {sid[:6]}",
+        "icon": "message-square",
+        "agent_id": None,
+        "provider": "",
+        "model": "",
+        "deleted": True,
+    }
+
+
+@app.get("/api/usage/overview")
+async def usage_overview(days: int = 30) -> dict:
+    """KPI + daily series + provider/model breakdown for the trailing window
+    (design §5). Window is clamped to [1, retention]."""
+    days = max(1, min(int(days), usage_store.RETENTION_DAYS))
+    return {"ok": True, **usage_store.aggregate_overview(days)}
+
+
+@app.get("/api/usage/hourly")
+async def usage_hourly(date: str | None = None) -> dict:
+    """24-hour distribution for one day (defaults to today, local time)."""
+    return {"ok": True, **usage_store.aggregate_hourly(date)}
+
+
+@app.get("/api/usage/sessions")
+async def usage_sessions(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = None,
+    sort: str = "total",
+    limit: int = 200,
+) -> dict:
+    """Per-session aggregates over [from, to] (defaults: full retention window
+    ending today), joined with display meta."""
+    rows = usage_store.aggregate_sessions(from_, to, sort=sort, limit=limit)
+    for r in rows:
+        sid = r.get("session_id")
+        r.update(_usage_session_display(sid) if sid else {
+            "title": "(后台/系统)", "icon": "cpu", "agent_id": None,
+            "provider": "", "model": "", "deleted": False,
+        })
+    return {"ok": True, "sessions": rows}
+
+
+@app.get("/api/usage/sessions/{session_id}")
+async def usage_session_detail(
+    session_id: str,
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = None,
+) -> dict:
+    """One session's aggregate within [from, to] (defaults: full retention)."""
+    totals = usage_store.session_totals(session_id, from_, to)
+    if totals is None:
+        return {"ok": True, "usage": None}
+    return {"ok": True, "usage": totals, **_usage_session_display(session_id)}
+
+
+@app.get("/api/usage/requests")
+async def usage_requests(
+    date: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    source: str | None = None,
+    session_id: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict:
+    """Request log for one day with filters + pagination (design §3.4)."""
+    res = usage_store.query_requests(
+        date_str=date, provider=provider, model=model, source=source,
+        session_id=session_id, page=page, page_size=page_size,
+    )
+    return {"ok": True, **res}
 
 
 # ---- session goal (goal-design.md §4.4) -----------------------------------
@@ -3792,6 +3913,9 @@ async def _stream_graph(
         slug = (config.get("configurable") or {}).get("project_slug", "default")
         session_id = (config.get("configurable") or {}).get("thread_id", "")
         agent_id = (config.get("configurable") or {}).get("agent_id", "")
+        # Usage telemetry: continuation turns are tagged by the goal driver;
+        # everything else is user-driven "chat" (usage-stats-design.md §3.6).
+        usage_source = (config.get("configurable") or {}).get("usage_source") or "chat"
         _RUNNING_TURNS[session_id] = turn_id
 
         # The client (app webview / browser tab) can close the socket mid-turn
@@ -3960,6 +4084,25 @@ async def _stream_graph(
                             if u:
                                 acc = _USAGE_BY_SESSION.setdefault(session_id, empty_usage())
                                 add_usage(acc, u)
+                                # Persist the call into the global usage log
+                                # (usage-stats-design.md §4). Best-effort: the
+                                # store never raises, so this cannot break the
+                                # turn. provider/model come from the session's
+                                # meta (resolved at create/rebuild time).
+                                _sreg = _SESSIONS.get(session_id) or {}
+                                usage_store.record(
+                                    input_tokens=u["input_tokens"],
+                                    output_tokens=u["output_tokens"],
+                                    cache_read_tokens=u["cache_read_tokens"],
+                                    cache_creation_tokens=u["cache_creation_tokens"],
+                                    provider=_sreg.get("model_provider") or "",
+                                    model=_sreg.get("model_name") or "",
+                                    source=usage_source,
+                                    session_id=session_id or None,
+                                    project_slug=slug or None,
+                                    agent_id=agent_id or None,
+                                    turn_id=turn_id,
+                                )
                                 await safe_send(
                                     emit(
                                         "usage",
