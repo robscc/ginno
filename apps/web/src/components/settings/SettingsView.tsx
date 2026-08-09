@@ -9,6 +9,7 @@ import { WorkflowsSettings } from "./WorkflowsSettings";
 import { GeneralSettings } from "./GeneralSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
 import { KnowledgeSettings } from "./KnowledgeSettings";
+import { WebSearchSettings } from "./WebSearchSettings";
 import { PermissionsSettings } from "./PermissionsSettings";
 import { HooksSettings } from "./HooksSettings";
 import { SessionFilesSettings } from "./SessionFilesSettings";
@@ -28,6 +29,7 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "workflows" && <WorkflowsSettings />}
         {tab === "synthesis-quality" && <SynthesisQualitySettings />}
         {tab === "knowledge" && <KnowledgeSettings />}
+        {tab === "web" && <WebSearchSettings />}
         {tab === "permissions" && <PermissionsSettings />}
         {tab === "hooks" && <HooksSettings />}
         {tab === "session-files" && <SessionFilesSettings />}
@@ -35,7 +37,7 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "general" && <GeneralSettings />}
         {tab === "notifications" && <NotificationsSettings />}
         {tab === "tool-labels" && <ToolLabelsSettings />}
-        {!["model-api", "skills", "mcp", "agents", "workflows", "synthesis-quality", "knowledge", "permissions", "hooks", "session-files", "usage", "general", "notifications", "tool-labels"].includes(tab) && (
+        {!["model-api", "skills", "mcp", "agents", "workflows", "synthesis-quality", "knowledge", "web", "permissions", "hooks", "session-files", "usage", "general", "notifications", "tool-labels"].includes(tab) && (
           <div className="px-8 py-10 text-sm text-faint">Unknown tab: {tab}</div>
         )}
       </div>

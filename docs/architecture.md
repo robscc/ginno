@@ -1,8 +1,9 @@
 # Ginno Architecture
 
-> 本文描述 **当前主干代码的真实架构**（2026-08 重写，替换早期骨架版）。
+> 本文描述 **当前主干代码的真实架构**（2026-08 重写并持续同步；最近一次全量核对 2026-08-08）。
 > Ginno 已从"单轮 ReAct 骨架"演进为：多 Agent 对话 + 工具/权限/技能/MCP/记忆/知识库
-> + Workflow DSL 引擎 + Goal 长程自主推进 + TODO 外部平台同步 的个人 AI Agent 桌面应用。
+> + Workflow DSL 引擎 + Goal 长程自主推进 + TODO 外部平台同步 + 内置 Web 搜索与引用溯源
+> 的个人 AI Agent 桌面应用。
 >
 > 相关文档：
 > - 使用层面 → `docs/user-guide.md`
@@ -10,6 +11,8 @@
 > - Workflow DSL → `docs/workflow-dsl-design.md`
 > - Goal 设计 → `docs/goal-design.md`
 > - 命令与 @提及 → `docs/commands-and-mentions-design.md`
+> - 引用与来源（Wiki + WebSearch）→ `docs/citations-design.md`
+> - 用量统计 → `docs/usage-stats-design.md`
 > - 打包细节 → `docs/p3-packaging-notes.md`
 > - 文件解析 → `docs/file-parsing-research.md`
 
@@ -67,7 +70,7 @@
 │  Python Sidecar  =  FastAPI app（server.py 壳 + api/ 路由包）         │
 │   • GET /_next/*、catch-all GET /{path}  → 托管 Next 静态导出        │
 │       打包时来自 sys._MEIPASS/web_out，开发时来自 apps/web/out       │
-│   • /api/**          → ~92 个 REST 端点（§7.1）                      │
+│   • /api/**          → ~105 个 REST 端点（§7.1）                     │
 │   • /api/ws/sessions/{sid} → WebSocket（turn 流式 + HITL，§7.2）     │
 │   • 端口 8787（GINNO_RUNTIME_PORT 可改）                             │
 └──────────────────────────┬──────────────────────────────────────────┘
@@ -81,12 +84,14 @@
 
 ### Runtime 启动流程（FastAPI lifespan）
 1. `paths.ensure_layout()`：建 `~/.ginno` 目录树 + 种子文件（settings/config/MEMORY.md/mcp.json/todos.json/agents）。
-2. 初始化轮转日志 `sidecar.log`（5MB×3）。
+2. 初始化轮转日志 `sidecar.log`（5MB×3）；`usage_store.cleanup()` 清过期用量日志（保留期裁剪）。
 3. `migration.migrate_session_files()`：遗留会话文件迁移（幂等、非致命）。
-4. `HookDispatcher.from_settings()`；种子 todos / agents 工具纪律 / workflows。
-5. `_refresh_session_metas()`：按当前 provider 重解析所有 session meta。
-6. `MCPRegistry.load()` 后**后台** `connect_all()`——端口绑定不被慢 MCP 阻塞。
-7. CORS 全开。
+4. `HookDispatcher.from_settings()`；种子 todos / workflows；agents 幂等迁移
+   （`ensure_todo_tools / ensure_research_discipline / ensure_goal_tools / ensure_web_tools`）。
+5. `_reconcile_orphan_runs()`：上次崩溃遗留的 "running" workflow run 置 interrupted。
+6. `_refresh_session_metas()`：按当前 provider 重解析所有 session meta。
+7. `MCPRegistry.load()` 后**后台** `connect_all()`——端口绑定不被慢 MCP 阻塞。
+8. CORS 全开；shutdown 时取消 run 后台任务、关闭 MCP。
 
 ---
 
@@ -112,13 +117,15 @@ ginno/
 │           ├── compaction.py    # 自动摘要压缩（E3/E4）
 │           ├── microcompact.py  # 清理旧工具输出占位符（E2.5）
 │           ├── truncation.py    # 工具输出中段截断（E2）
-│           ├── tokens.py usage.py  # token 估算 / 用量遥测
+│           ├── tokens.py usage.py usage_store.py  # token 估算 / 内存用量 / 持久用量日志
 │           ├── paths.py         # ~/.ginno 布局 + 默认 settings 模板
 │           ├── providers.py models.py  # 多 provider 注册表 / LangChain model 工厂
 │           ├── commands/        # slash 命令 + @mentions 解析
 │           ├── skills/          # SKILL.md 加载 + 安装
 │           ├── hooks/ permission/ mcp/ agents/ memory/
-│           ├── knowledge/       # LLMWiki：indexer/retriever/semantic/injection/compiler/association
+│           ├── knowledge/       # LLMWiki：indexer/retriever/semantic/injection/compiler/
+│           │                    #   association + citations/usage/web_usage（引用台账）
+│           ├── web/             # 内置网络搜索：config/engines/fetch（§6.13）
 │           ├── workflows/       # DSL/compiler/engine/nodes/supervisor/store/events
 │           ├── goals/           # goal store / 模板 / 事件桥
 │           ├── todos/           # TODO store / providers / sync_ledger
@@ -139,8 +146,9 @@ ginno/
   - `_SESSIONS`：session_id → 已编译 graph + model + meta；**重启后由 `_ensure_session` 惰性重建**。
   - `_SESSION_WS`：session_id → 该会话**所有**活跃 socket（广播式投递，§7.3）。
   - `_RUNNING_TURNS` / `_PENDING_RESUME`：在途 turn / 待 resume 的 interrupt（重连恢复用）。
-  - `_USAGE_BY_SESSION`：本次应用会话的 token 用量累计（重启清零）。
+  - `_USAGE_BY_SESSION`：本次应用会话的 token 用量累计（重启清零；持久口径见 `usage_store`）。
   - `_GOAL_DRIVERS`：每个 active goal 一个自主续跑 asyncio task（§6.12）。
+  - `_TURN_LOCKS` / `_WF_RUN_TASKS`：每会话 turn 串行锁 / workflow run 后台任务表。
 - **一个对话 = 一个 session**；会话可中途切 Agent（历史共享）；project slug 当前固定 `default`。
 
 ---
@@ -196,12 +204,19 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 | Workflow-dev | `workflow_propose_edit` |
 | Artifact | `artifact_register` |
 | 文档 | `parse_document, analyze_table` |
+| Web | `web_search, web_fetch`（引擎可插拔；`settings.web.enabled=false` 时不注册） |
 | MCP | `mcp_{server}_{tool}`（动态，默认含 playwright） |
 
 > `render_widget` / `attach_ref` 是 **no-op 工具**，WS 层拦截其调用发 `widget.emit`/`ref.emit`
 > 事件，不产生普通工具气泡、对所有 Agent 恒允许、免权限。图表是 `render_widget(kind="chart")`
 > （**没有独立的 `render_chart` 工具**）；`analyze_table` 在隔离子进程跑 pandas（打包走
 > `ginno-runtime --analyze` 隐藏模式）。
+>
+> **引用与来源**（`docs/citations-design.md`）：每轮维护 SourceRegistry（注入的 wiki 页 +
+> web_search 结果编号 `sN`）；模型按引用契约在回复末尾附 `<ginno_citations>` 块，turn 结束时
+> 解析/三态校验（verified / index_only / unverified）并记台账（`knowledge/usage.json`、
+> `web_usage.json`）；历史渲染把块折叠为 `sources` 块（前端「来源」卡），`web_fetch` 仅允许公网
+> http/https。
 
 ### 6.4 WorldState 上下文工程（`world_state.py`）
 
@@ -239,7 +254,8 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 | **E3 自动压缩**（`compaction.py`） | 每 turn 开始前、估算 ≥ `compact_threshold_tokens`（默认 500000）且无 pending interrupt | 按用户轮切分，保留最近 `compact_keep_turns`（默认 3）轮逐字；前缀用会话自身模型总结成 `[conversation summary]`；`RemoveMessage` 后重写 |
 | **E4 压缩后重申** | 压缩成功后 | 重申 WorldState；广播 `context.compacted` |
 | **图片剥离** | agent 节点 | 只留最近 2 轮用户图（send-only，落盘保留） |
-| **D 用量遥测**（`usage.py`） | 每次完整 LLM 调用 | 抽 input/output/cache_read/cache_creation，累计 + `usage` WS 事件 + `cache_hit_ratio` |
+| **D1 用量遥测（内存）**（`usage.py`） | 每次完整 LLM 调用 | 抽 input/output/cache_read/cache_creation，累计 `_USAGE_BY_SESSION` + `usage` WS 事件 + `cache_hit_ratio`（重启清零） |
+| **D2 用量遥测（持久）**（`usage_store.py` + `api/usage.py`） | 同上，每次调用追加一行 | `~/.ginno/usage/requests-YYYY-MM-DD.jsonl` append-only（只存计数/元数据、无内容）；Settings → 用量统计页（overview/hourly/sessions/requests）流式聚合；启动与跨天清理过保留期。详见 `usage-stats-design.md` |
 
 > 超时：`CHAT_TIMEOUT_S=180`（请求级）、`CHUNK_TIMEOUT_S=180`（chunk 看门狗）、`_WS_SEND_TIMEOUT_S=5`（socket 剪枝）。
 
@@ -269,7 +285,7 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   每 Agent 一个 `~/.ginno/agents/<id>.json`。
 - **内置种子**：`dev`（`*` 全工具）、`research`（只读纪律）、`writer`、`workflow-dev`（仅
   `workflow_propose_edit/workflow_list`，走 diff 确认）。
-- **幂等迁移**：`ensure_todo_tools / ensure_goal_tools / ensure_research_discipline`。
+- **幂等迁移**：`ensure_todo_tools / ensure_goal_tools / ensure_web_tools / ensure_research_discipline`。
 - **每 Agent 私有记忆**：`agents/<id>/MEMORY.md` + `memory/`，回答时注入其 prompt。
 - **路由**：`@agent` mention 产 `agent_override`；WS 优先级 `override > msg.agent_id > session.agent_id > 首个`。
 - Workflow 运行时 `fork_agent` fork 一次性 scratch agent，run 结束删除。
@@ -329,15 +345,34 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   活跃 goal 的存在性进 WorldState `GoalSection`。
 - REST `GET/PUT/DELETE /api/sessions/{sid}/goal` + WS `goal.updated/cleared` + `/goal` 命令。
 
+### 6.13 Web 搜索（`web/` + `tools/web_tools.py`）
+
+- **内置工具**：`web_search(query, max_results?, engine?)` / `web_fetch(url)`——builtin 契约
+  （永不抛异常，返回 `[error] …`）；`settings.web.enabled=false` 时不注册。
+- **引擎可插拔**（`web/engines.py`，纯 stdlib 网络）：`duckduckgo`（默认，免 key，HTML 解析 +
+  `uddg` 重定向解包）/ `searxng`（自建 base_url）/ `tavily`（API key）；注册表开放增补。
+- **fetch 守卫**（`web/fetch.py`）：仅 http/https；主机**只解析一次**，混合应答（公网+内网 IP）
+  整体拒绝；**连接钉死在已验证的地址上**（socket 直连验证过的 IP，无第二次可被 DNS-rebinding
+  竞争的解析，TOCTOU 安全）；重定向手动跟随（≤5 跳）且**每一跳**重新解析+验证；正文经 stdlib
+  HTMLParser 提取、上限截断。
+- **来源登记**：搜索结果逐条进当轮 SourceRegistry（编号 `sN`、depth=snippet）；`web_fetch` 把
+  匹配 URL 升级为 depth=fetched（引用校验与前端「来源」卡的数据源，见 §6.3 注）。
+- **遥测**：`knowledge/web_usage.json` 按引擎记 searches/hits_cited（被引率=引擎有效性），
+  按域名记 cited/fetched；`GET /kb/wiki/web-usage` 供 Settings → Web 搜索页展示。
+- 权限默认 `allow`（只读网络）；`ensure_web_tools` 把两工具并入 research/writer；
+  `ensure_web_permissions` 迁移把两工具补进**升级安装**的 `permissions.allow`
+  （默认种子只对全新安装生效，不迁移的话 bypass 关闭时会落到 `ask`，goal 无头续轮会卡死在权限弹窗）。
+
 ---
 
 ## 7. API 表面
 
-### 7.1 REST（~92 端点，前缀 `/api`，按组）
+### 7.1 REST（~105 端点，前缀 `/api`，按组；路由分散在 `api/` 各 router + `server.py`）
 
 | 组 | 代表端点 |
 |---|---|
-| health/usage | `GET /health` · `GET /sessions/{sid}/usage` |
+| health | `GET /health` |
+| usage（内存+持久） | `GET /sessions/{sid}/usage`（内存累计）· `GET /usage/overview /hourly /sessions /sessions/{sid} /requests`（持久 JSONL 聚合，用量统计页） |
 | sessions | `POST/GET /sessions` · `PATCH/DELETE /sessions/{sid}` · `GET /sessions/{sid}/history` |
 | goals | `GET/PUT/DELETE /sessions/{sid}/goal` |
 | skills | `GET /skills` · `POST /skills` · `DELETE /skills/{name}` · `POST /skills/import-dir` |
@@ -348,6 +383,8 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 | files / session-files | `POST /files`（上传）· `/{id}/preview /download /save-to-downloads` · `attach-path` · session-files 浏览/reveal/删除 |
 | settings/providers/agents/mcp | `GET/PUT /settings` · `GET/PUT /providers`（保存清空 `_SESSIONS`）· `/providers/{id}/verify /search_probe` · agents CRUD · `GET /mcp` · `PUT /mcp` · `POST /mcp/reload` |
 | kb / memory | `GET /kb/servers /search /list`（MCP 透传）· `GET/PUT/POST /kb/wiki/*`（probe/search/list/stats/page/index/ingest/build/related/discover/orphans/backlinks/config）· `GET /memory` · `POST /memory/summarize` |
+| 引用遥测 | `GET /kb/wiki/usage`（wiki 台账）· `POST /kb/wiki/usage/reset` · `GET /kb/wiki/web-usage`（web 引擎/域名） |
+| web / 外链 | `POST /web/test-search`（引擎探活）· `POST /open-external`（系统浏览器打开，公网守卫） |
 | 其他 | catch-all `GET /{path}`（SPA 兜底）· `WS /api/ws/sessions/{sid}` |
 
 ### 7.2 WebSocket 协议（`/api/ws/sessions/{session_id}`）
@@ -359,7 +396,8 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   error, keepalive(15s)`。
 - **面板/资源同步事件**：`todos.changed / workflows.changed / artifacts.changed / skills.changed /
   agents.changed`、`preview.emit / preview.invalidate`、`run.bind / run.event / run.status`、
-  `context.updated / context.compacted`、`goal.updated / goal.cleared`、`notice / turn.state / pong`。
+  `context.updated / context.microcompacted / context.compacted`、`goal.updated / goal.cleared`、
+  `notice / turn.state / pong`。
 
 ### 7.3 断线重连 / resume（关键设计）
 
@@ -421,6 +459,9 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   （≥0.7 写 `## Related`）；关联扫描只限 wiki_dir，绝不改写用户 raw 文档。
 - **关联图**（`association.py`，无 embedding）：TF-IDF 余弦 0.35 + tag Jaccard 0.25 + 共被引 0.20
   + 时间 0.10 + 层级 0.10；discover 提供 strong/isolated/orphan_bridges/merge_candidates。
+- **引用与用量台账**（`citations.py / usage.py / web_usage.py`）：注入计数 + 回复引用校验
+  （verified/index_only/unverified）落 `knowledge/usage.json` 与 `web_usage.json`，供检索加权
+  （P2）、Discover 分区与 Settings 展示。全链路设计见 `citations-design.md`。
 
 ---
 
@@ -456,7 +497,9 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 
 ## 12. Web 前端（`apps/web`）
 
-- **静态导出**（`output:"export"`）；路由 `/`（工作区）、`/kb`、`/workflows`、`/settings/[tab]`（11 tab）。
+- **静态导出**（`output:"export"`）；路由 `/`（工作区）、`/kb`、`/workflows`、`/settings/[tab]`
+  （14 tab：model-api/skills/mcp/agents/workflows/knowledge/web/permissions/hooks/session-files/
+  usage/general/notifications/tool-labels）。
   `/` 页面返回 `null`——工作区由 `AppShell` **常驻渲染**，路由切换用 `hidden` 隐藏而非卸载，
   保住 WS 连接与内存消息。
 - **状态管理**：单一 React Context（`store.tsx` 的 `GinnoProvider`，无 Zustand）。全局态
@@ -467,10 +510,13 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 - **`ChatStream`（聊天核心）**：per-session refs 存消息/socket/权限弹窗/草稿/绑定 runs；WS 每 20s ping、
   45s watchdog、close 后 3s 自动重连、重连后 `turn_state` 探测；`handle()` 消费约 25 种 WS 事件驱动 UI；
   发送走 `{type:"invoke", …}`，未送达标红可重试（复用 turn_id 让 add_messages 去重）。
-- **组件**：blocks（9 种块，d3 只做数学、SVG 由 React 渲染）、RunBlocks（对话内 workflow 实时块）、
+- **组件**：blocks（10 种块——含 `sources` 引用来源块；d3 只做数学、SVG 由 React 渲染；流式文本里的
+  `<ginno_citations>` 块渲染时解析/遮罩并折叠为 `SourcesBlock`，web 条目经 `POST /open-external`
+  开系统浏览器）、RunBlocks（对话内 workflow 实时块）、
   commandMenu（`/` 与 `@` 补全）、SheetViewer（全屏文件预览）、right/（Artifacts/TODO/Workflow/Memory 面板；可收起为右缘悬停 Dock，宽度可拖拽 280–560px，开合/宽度持久化于 `ginno-right-panel`，`⌘\` 切换；见 design/right-panel-redesign.md）、
   workflow/（**自绘 SVG DAG**，无 reactflow/d3；Inspector/ContextEditor/DiffView/LogTimeline）、
-  kb/（**手写力导向图谱**于 SVG；PageViewer 三态 read/edit/create）、settings/（逐 tab 接 API）。
+  kb/（**手写力导向图谱**于 SVG；PageViewer 三态 read/edit/create）、settings/（逐 tab 接 API；
+  含 WebSearchSettings：引擎配置 + 测试搜索 + 引擎被引率遥测）。
 
 ---
 
@@ -491,16 +537,19 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 
 ```
 ~/.ginno/                        # GINNO_HOME 可覆盖
-├── settings.json                # providers/default_provider/permissions/hooks/context/knowledge/bypass_permissions
+├── settings.json                # providers/default_provider/permissions/hooks/context/knowledge/web/bypass_permissions
 ├── config.json                  # UI 配置（theme 等）
 ├── MEMORY.md                    # 全局长期记忆索引
 ├── todos.json                   # 全局 TODO 列表
+├── todo_sync.json               # TODO 外部平台同步台账（append-only，上限 200 条）
 ├── agents/<id>.json + <id>/     # Agent 定义 + 私有记忆（MEMORY.md + memory/）
 ├── skills/<name>/SKILL.md       # 全局技能（内置 < 全局 < 项目）
 ├── mcp/mcp.json                 # MCP 注册表（默认含 playwright）
 ├── hooks/                       # 用户 hook 脚本
 ├── memory/pool/*.jsonl          # 每 turn 捕获的助手文本（summarize 原料）
-├── knowledge/  vectorstore/  cache/   # LLMWiki 配置 / 语义缓存 / 通用缓存
+├── knowledge/                   # usage.json（wiki 引用台账）+ web_usage.json（web 遥测）
+├── usage/requests-YYYY-MM-DD.jsonl  # 持久 token 用量日志（D2；保留期裁剪）
+├── vectorstore/  cache/         # 语义缓存 / 通用缓存
 ├── logs/sidecar.log             # RotatingFileHandler 5MB×3
 ├── workflows/<wf_id>/{meta.json, versions/N.json}   # 工作流版本化定义
 ├── workflow_runs/<run_id>.json + <run_id>.events.jsonl  # run 状态与事件（全局）
@@ -561,6 +610,15 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 8. 图片剥离是 **send-only**（落盘保留）；工具中段截断是**持久化的**——两者语义相反。
 9. 没有 `render_chart` 工具，图表是 `render_widget(kind="chart")`；hooks 五事件仅 `PreToolUse` 接线。
 10. 打包后 **sidecar 同源托管 UI/REST/WS**，Tauri 不托管任何前端文件、也无任何 tauri command。
+11. 旧工具输出会被 **microcompact 静默清空**（保留窗口外、>500 字符 → `[old tool output cleared]`）；
+    模型需要时得重新调用工具——这是设计行为不是 bug。
+12. `web_fetch` / `POST /open-external` 都带**公网守卫**：主机只解析一次、混合应答整体拒绝、
+    **连接钉死在已验证地址**（防 DNS-rebinding TOCTOU）、重定向每跳重验——引用里的 URL 不能当
+    跳板探内网。
+13. 回复末尾的 `<ginno_citations>` 块是**机器元数据**：历史端点剥离并折叠为 `sources` 块，
+    memory pool 捕获也整块剥离——它不进记忆、不当正文显示。
+14. server.py 只是 **app 壳**（347 行）：端点在 `api/` 各 router，进程级状态在 `server_shared.py`，
+    底部大量 re-export 是历史兼容 facade，别在 server.py 里找业务逻辑。
 
 ---
 
@@ -576,6 +634,8 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 | + | WorldState 上下文工程 + 失败重试加固 | ✅ |
 | + | Goal 长程自主推进（P0/P1） | ✅ |
 | + | 聊天内联图表 widget（render_widget chart） | ✅ |
-| 🔮 | 经验循环、多项目（project slug）、真实桌面通知、账号体系 | 路线中 |
+| + | 上下文治理梯度（E2 截断 / E2.5 microcompact / E3 压缩 / E4 重申）+ 持久用量统计 | ✅ |
+| + | 引用与来源体系（Wiki + WebSearch：契约/台账/SourcesBlock）+ 内置 web 搜索 | ✅ P0/P1（见 citations-design） |
+| 🔮 | 引用检索加权生效、provider 原生搜索适配、web→Raw 沉淀、经验循环、多项目、真实桌面通知、账号体系 | 路线中 |
 
 > 界面/功能的逐项完成度与已知限制，见 `docs/user-guide.md` 的图例标注。

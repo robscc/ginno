@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from .. import workflows as wf_store
 from ..goals.templates import context_row_text as goal_context_row
+from ..knowledge.citations import parse_citation_block, strip_citation_block
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from ..tools.render_tools import RENDER_TOOL_NAMES
 from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
@@ -111,12 +112,65 @@ def _truncate_for_ws(text: str) -> str:
     return text[:TOOL_OUTPUT_WS_LIMIT] + f"\n…（已截断，完整 {len(text)} 字符）"
 
 
+# web_search tool output lines: "[s1] Title — host\n    https://url"
+_WEB_RESULT_RE = re.compile(r"\[(s\d+)\][^\n]*\n\s+(https?://\S+)")
+
+
+def _web_ref_map(tool_results: dict) -> dict[str, str]:
+    """sN → URL, reconstructed from persisted web_search outputs (the citation
+    contract's `web|sN` ids are meaningless without the tool result that minted
+    them; history replay resolves them here so the 来源 card is clickable)."""
+    ref_map: dict[str, str] = {}
+    for content in tool_results.values():
+        if not content or "[s" not in content:
+            continue
+        for m in _WEB_RESULT_RE.finditer(content):
+            ref_map[m.group(1).lower()] = m.group(2)
+    return ref_map
+
+
+def _resolve_source_items(items: list[dict], ref_map: dict[str, str]) -> list[dict]:
+    if not ref_map:
+        return items
+    out = []
+    for it in items:
+        ref = it.get("ref") or ""
+        if it.get("kind") == "web" and re.fullmatch(r"s\d+", ref, re.IGNORECASE):
+            url = ref_map.get(ref.lower())
+            if url:
+                it = {**it, "ref": url}
+        out.append(it)
+    return out
+
+
+def _text_with_citations(t: str, blocks: list[dict]) -> None:
+    """Append a text block for *t*, folding a trailing ``<ginno_citations>``
+    block into a ``sources`` block (citations-design.md §5.6 history replay).
+    The raw block is machine metadata — never shown as prose."""
+    entries = parse_citation_block(t)
+    if entries:
+        t = strip_citation_block(t)
+    if t.strip():
+        blocks.append({"kind": "text", "text": t})
+    if entries:
+        # sources render under the prose (the block sits at the reply's end)
+        blocks.append(
+            {
+                "kind": "sources",
+                "items": [
+                    {"kind": e.get("kind"), "ref": e.get("ref"), "note": e.get("note") or ""}
+                    for e in entries
+                ],
+            }
+        )
+
+
 def _ai_content_blocks(content: Any) -> list[dict]:
     """AIMessage.content (str or list of provider blocks) -> UI text/thinking/image blocks."""
     blocks: list[dict] = []
     if isinstance(content, str):
         if content:
-            blocks.append({"kind": "text", "text": content})
+            _text_with_citations(content, blocks)
     elif isinstance(content, list):
         for b in content:
             if isinstance(b, dict):
@@ -128,13 +182,13 @@ def _ai_content_blocks(content: Any) -> list[dict]:
                 elif bt == "text":
                     t = b.get("text") or ""
                     if t:
-                        blocks.append({"kind": "text", "text": t})
+                        _text_with_citations(t, blocks)
                 elif bt in ("image", "image_url"):
                     url = _image_block_url(b)
                     if url:
                         blocks.append({"kind": "image", "url": url})
             elif isinstance(b, str) and b:
-                blocks.append({"kind": "text", "text": b})
+                _text_with_citations(b, blocks)
     return blocks
 
 
@@ -157,6 +211,9 @@ def _messages_to_ui(
     for m in messages:
         if isinstance(m, ToolMessage):
             results[getattr(m, "tool_call_id", None)] = _tool_content_str(getattr(m, "content", ""))
+    # Citation ids (web|sN) resolve against the web_search outputs of the SAME
+    # transcript — build the map once, apply to every sources block below.
+    ref_map = _web_ref_map(results)
 
     ui: list[dict] = []
     acc: list[dict] | None = None
@@ -223,6 +280,11 @@ def _messages_to_ui(
                 acc = []
                 acc_id = getattr(m, "id", None)
             step = list(_ai_content_blocks(getattr(m, "content", "")))
+            # Resolve `web|sN` citation ids to URLs (from web_search outputs)
+            # so the 来源 card is clickable on history replay.
+            for blk in step:
+                if blk.get("kind") == "sources" and blk.get("items"):
+                    blk["items"] = _resolve_source_items(blk["items"], ref_map)
             rk = (getattr(m, "additional_kwargs", None) or {}).get("reasoning_content")
             if rk:
                 step.insert(0, {"kind": "thinking", "text": rk})

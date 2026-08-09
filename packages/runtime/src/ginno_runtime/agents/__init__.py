@@ -7,6 +7,7 @@ from .registry import (
     ensure_goal_tools,
     ensure_research_discipline,
     ensure_todo_tools,
+    ensure_web_tools,
     fork_agent,
     get_agent,
     list_agents,
@@ -24,4 +25,5 @@ __all__ = [
     "ensure_todo_tools",
     "ensure_research_discipline",
     "ensure_goal_tools",
+    "ensure_web_tools",
 ]

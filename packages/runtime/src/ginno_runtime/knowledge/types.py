@@ -84,6 +84,12 @@ class KnowledgeConfig:
     pool_flush_threshold: int = 30
     summarize_model: str = ""
     memory_budget_chars: int = 3000
+    # citation framework (docs/citations-design.md): master switch for the
+    # citation contract + usage telemetry; the retrieval usage bonus and its
+    # small-sample floor (bonus wiring lands in P2, fields reserved now).
+    citations: bool = True
+    citation_bonus: float = 0.05
+    min_injected_for_bonus: int = 3
 
     @property
     def usable(self) -> bool:

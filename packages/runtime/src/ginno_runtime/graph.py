@@ -501,6 +501,7 @@ def build_all_tools(
     goal tools (goal-design.md §4.2); callers without a session omit them.
     """
     from .tools.goal_tools import build_goal_tools
+    from .tools.web_tools import build_web_tools
 
     goal_tools = (
         build_goal_tools(project_slug, session_id)
@@ -518,6 +519,9 @@ def build_all_tools(
         + ALL_WORKFLOW_DEV_TOOLS
         + ALL_ARTIFACT_TOOLS
         + ALL_DOCUMENT_TOOLS
+        # Web search/fetch (citations-design.md §4.2) — [] when disabled in
+        # settings; session_id binds citation source registration.
+        + build_web_tools(session_id)
     )
 
 

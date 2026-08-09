@@ -844,3 +844,35 @@ export async function summarizeMemory(provider?: string) {
     { method: "POST", headers: H, body: JSON.stringify(provider ? { provider } : {}) },
   );
 }
+
+// ---- citations & web sources (docs/citations-design.md) ----
+export type SourceItem = { kind: "wiki" | "web"; ref: string; note?: string };
+
+export async function openExternal(url: string) {
+  return json<{ ok: boolean; error?: string }>(`${BASE}/open-external`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ url }),
+  });
+}
+export async function getCitationUsage(sort = "cited", limit = 20) {
+  return json<{ ok: boolean; rows: Array<Record<string, unknown>> }>(
+    `${BASE}/kb/wiki/usage?sort=${encodeURIComponent(sort)}&limit=${limit}`,
+  );
+}
+export async function getWebUsage() {
+  return json<{
+    ok: boolean;
+    engines: Array<{ engine: string; searches: number; hits_cited: number; cite_rate: number }>;
+    top_domains: Array<{ domain: string; cited: number; fetched: number }>;
+    total_searches: number;
+    total_cited: number;
+  }>(`${BASE}/kb/wiki/web-usage`);
+}
+export async function testWebSearch(engine: string) {
+  return json<{ ok: boolean; results?: number; error?: string }>(`${BASE}/web/test-search`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ engine }),
+  });
+}
