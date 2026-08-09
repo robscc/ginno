@@ -267,7 +267,9 @@ export async function listWorkflows() {
 export async function listWorkflowRuns() {
   return json<import("./types").WorkflowRun[]>(`${BASE}/workflow_runs`);
 }
-export async function createWorkflow(data: Partial<import("./types").WorkflowDef>) {
+export async function createWorkflow(
+  data: Partial<import("./types").WorkflowDef> & { synthesis_id?: string },
+) {
   return json<{ ok: boolean; workflow?: import("./types").WorkflowDef }>(`${BASE}/workflows`, {
     method: "POST",
     headers: H,
@@ -281,9 +283,10 @@ export async function getWorkflow(id: string) {
   return json<{ ok: boolean; workflow: import("./types").WorkflowDef }>(`${BASE}/workflows/${id}`);
 }
 export async function listWorkflowVersions(id: string) {
-  return json<{ ok: boolean; versions: Array<{ version: number; current: boolean }> }>(
-    `${BASE}/workflows/${id}/versions`,
-  );
+  return json<{
+    ok: boolean;
+    versions: Array<{ version: number; current: boolean; ts?: number }>;
+  }>(`${BASE}/workflows/${id}/versions`);
 }
 export async function diffWorkflowVersions(id: string, a: number, b: number) {
   return json<{ ok: boolean; a: number; b: number; diff: string }>(
@@ -351,6 +354,19 @@ export async function retryWorkflowRun(run_id: string) {
     detail?: string;
   }>(`${BASE}/workflow_runs/${run_id}/retry`, { method: "POST", headers: H, body: JSON.stringify({}) });
 }
+export async function retryWorkflowRunFromCheckpoint(run_id: string) {
+  // P2: re-execute only the failed node + suffix from the persisted checkpoint.
+  return json<{
+    ok: boolean;
+    run?: import("./types").WorkflowRun;
+    source_run_id?: string;
+    detail?: string;
+  }>(`${BASE}/workflow_runs/${run_id}/retry_from_checkpoint`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({}),
+  });
+}
 export async function deleteWorkflowRun(run_id: string) {
   return json<{ ok: boolean }>(`${BASE}/workflow_runs/${run_id}`, { method: "DELETE" });
 }
@@ -380,14 +396,82 @@ export async function getWorkflowRunEvents(
     `${BASE}/workflow_runs/${run_id}/events${qs ? `?${qs}` : ""}`,
   );
 }
-export async function summarizeSessionToDsl(session_id: string, provider?: string) {
+
+// ---- workflow doctor (static dataflow lint, master-plan §4.2) ----
+export async function doctorWorkflow(id: string) {
+  return json<{
+    ok: boolean;
+    errors: Array<{ rule: string; node_id?: string; message: string }>;
+    warnings: Array<{ rule: string; node_id?: string; message: string }>;
+  }>(`${BASE}/workflows/${id}/doctor`);
+}
+
+// ---- synthesis-case review (quality-plan §3.2) ----
+export interface SynthesisCaseSummary {
+  synthesis_id: string;
+  ts?: number;
+  prompt_version?: string;
+  session_stats?: { messages?: number; tool_calls?: number };
+  status?: string;
+  fail_stage?: string;
+  attempts_used?: number;
+  outcome?: {
+    created?: boolean;
+    workflow_id?: string;
+    first_run?: { run_id?: string; status?: string; failed_node?: string };
+    edit_distance?: number;
+  };
+}
+export async function listSynthesisCases(limit = 100) {
+  return json<{ ok: boolean; cases: SynthesisCaseSummary[] }>(
+    `${BASE}/synthesis/cases?limit=${limit}`,
+  );
+}
+export async function getSynthesisCase(synthesis_id: string) {
+  return json<{
+    ok: boolean;
+    case: {
+      synthesis_id: string;
+      input?: { trace?: string; prompt_version?: string; provider?: string; ts?: number; session_stats?: object };
+      output?: { status?: string; fail_stage?: string; dsl?: object; attempts_used?: number };
+      outcome?: object;
+      attempts?: Array<{ attempt: number; parse: string; validate_errors: string[]; latency_ms: number }>;
+    };
+  }>(`${BASE}/synthesis/cases/${synthesis_id}`);
+}
+export async function getSynthesisStats(days = 30) {
+  return json<{
+    ok: boolean;
+    total: number;
+    l1_generated: number;
+    l2_adopted: number;
+    l3_first_run_done: number;
+    avg_edit_distance: number | null;
+    top_fail_labels: Array<{ label: string; count: number }>;
+  }>(`${BASE}/synthesis/stats?days=${days}`);
+}
+export async function replaySynthesis(synthesis_id: string, provider?: string) {
+  return json<{
+    ok: boolean;
+    dsl?: Record<string, unknown>;
+    errors?: string[];
+    fail_stage?: string | null;
+    attempts_used?: number;
+    prompt_version?: string;
+  }>(`${BASE}/synthesis/replay/${synthesis_id}`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(provider ? { provider } : {}),
+  });
+}
+export async function summarizeSessionToDsl(session_id: string, provider?: string, last_n?: number) {
   return json<
-    | { ok: true; dsl: Record<string, unknown>; source_session_id: string }
-    | { ok: false; error: string; raw?: string; dsl?: Record<string, unknown> }
+    | { ok: true; dsl: Record<string, unknown>; source_session_id: string; synthesis_id?: string }
+    | { ok: false; error: string; raw?: string; dsl?: Record<string, unknown>; synthesis_id?: string }
   >(`${BASE}/workflows/summarize-from-session`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ session_id, provider }),
+    body: JSON.stringify({ session_id, provider, ...(last_n ? { last_n } : {}) }),
   });
 }
 

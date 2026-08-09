@@ -174,3 +174,69 @@ async def resume_workflow(
         yield {"run_id": run_id, "kind": "paused"}
     else:
         yield {"run_id": run_id, "kind": "done"}
+
+
+async def continue_workflow(
+    dsl: dict,
+    *,
+    run_id: str,
+    model,
+    tools: list,
+    project_slug: str = "default",
+) -> AsyncIterator[dict]:
+    """Retry-from-failure (workflow-ux-redesign P2): stream the graph with
+    input=None on the run's thread so LangGraph re-executes the pending node
+    from the last committed superstep instead of re-running the whole graph.
+
+    The caller copies the source run's checkpoint file under this run's id
+    before starting; if the checkpoint is missing/empty the graph has nothing
+    to continue and this yields an error event."""
+    d = wf_dsl.normalize_dsl(dsl)
+    run_ctx: dict[str, Any] = {"run_id": run_id, "events": []}
+    graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug))
+    config = {"configurable": {"thread_id": run_id}}
+    yielded = 0
+    try:
+        snap = await graph.aget_state(config)
+        has_state = snap is not None and (
+            bool(getattr(snap, "next", None))
+            or bool((getattr(snap, "values", None) or {}))
+        )
+    except Exception:
+        has_state = False
+    if not has_state:
+        yield {
+            "run_id": run_id,
+            "kind": "error",
+            "error": "no resumable checkpoint for this run (retry from the start instead)",
+            "node_id": None,
+        }
+        return
+    try:
+        async for _mode, _payload in graph.astream(None, config=config, stream_mode=["updates"]):
+            evs = run_ctx["events"]
+            while yielded < len(evs):
+                yield evs[yielded]
+                yielded += 1
+    except Exception as exc:
+        ev = {
+            "run_id": run_id,
+            "kind": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "node_id": run_ctx.get("current_node"),
+            "traceback": _trimmed_traceback(exc),
+        }
+        run_ctx["events"].append(ev)
+        while yielded < len(run_ctx["events"]):
+            yield run_ctx["events"][yielded]
+            yielded += 1
+        return
+    evs = run_ctx["events"]
+    while yielded < len(evs):
+        yield evs[yielded]
+        yielded += 1
+    paused = (await run_state(run_id, d, model, tools, project_slug))["paused"]
+    if paused:
+        yield {"run_id": run_id, "kind": "paused"}
+    else:
+        yield {"run_id": run_id, "kind": "done"}

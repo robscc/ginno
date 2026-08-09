@@ -1,29 +1,39 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertCircle, Check } from "lucide-react";
 
 type Schema = { type?: string; properties?: Record<string, { type?: string }> };
+
+function isEmpty(v: unknown): boolean {
+  return v === undefined || v === null || v === "";
+}
 
 function Field({
   propKey,
   schema,
   value,
   onChange,
+  warn,
 }: {
   propKey: string;
   schema: { type?: string };
   value: unknown;
   onChange: (v: unknown) => void;
+  // P3: the DSL references {{context.<key>}} but the value is still empty —
+  // yellow border so the user knows what to fill before running.
+  warn?: boolean;
 }) {
   const t = schema.type;
   // Hook must be called unconditionally (rules-of-hooks), even though the
   // textarea that uses it only renders for object/array types.
   const [txt, setTxt] = useState(JSON.stringify(value ?? (t === "array" ? [] : {}), null, 2));
+  const warnCls = warn ? "border-yellow/60 focus:border-yellow" : "";
   if (t === "number" || t === "integer") {
     return (
       <input
         type="number"
-        className="field"
+        className={`field ${warnCls}`}
         value={value == null ? "" : String(value)}
         onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
       />
@@ -42,7 +52,7 @@ function Field({
   if (t === "object" || t === "array") {
     return (
       <textarea
-        className="field font-mono text-[11px]"
+        className={`field font-mono text-[11px] ${warnCls}`}
         rows={3}
         value={txt}
         onChange={(e) => {
@@ -59,7 +69,7 @@ function Field({
   return (
     <input
       type="text"
-      className="field"
+      className={`field ${warnCls}`}
       value={value == null ? "" : String(value)}
       onChange={(e) => onChange(e.target.value)}
     />
@@ -97,6 +107,20 @@ export function ContextEditor({
   };
 
   const keys = Object.keys(props);
+  // P3: which context keys the DSL actually interpolates ({{context.<key>}}) —
+  // drives the fill-status chips and the yellow "unfilled" field highlight.
+  const templateKeys = useMemo(() => {
+    const found = new Set<string>();
+    try {
+      for (const m of JSON.stringify(dsl ?? {}).matchAll(/\{\{\s*context\.([a-zA-Z0-9_]+)\s*\}\}/g)) {
+        found.add(m[1]);
+      }
+    } catch {
+      /* unstringifiable dsl — no hints */
+    }
+    return found;
+  }, [dsl]);
+  const hintKeys = [...templateKeys].filter((k) => keys.includes(k));
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-1.5">
@@ -123,6 +147,26 @@ export function ContextEditor({
           重置
         </button>
       </div>
+      {hintKeys.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] text-faint">模板变量</span>
+          {hintKeys.map((k) => {
+            const filled = !isEmpty(form[k]);
+            return (
+              <span
+                key={k}
+                className={`flex items-center gap-1 rounded-full border px-1.5 py-0.5 font-mono text-[10px] ${
+                  filled ? "border-line text-green" : "border-yellow/50 bg-yellow/10 text-yellow"
+                }`}
+              >
+                {filled ? <Check className="h-2.5 w-2.5" /> : <AlertCircle className="h-2.5 w-2.5" />}
+                {k}
+                {!filled && <span className="font-sans">(未填)</span>}
+              </span>
+            );
+          })}
+        </div>
+      )}
       <p className="text-[10px] leading-snug text-faint">
         {keys.length === 0
           ? "该 DSL 未声明 context.schema，下方用 JSON 自由填写本次运行的初始上下文（可为空 {}）。"
@@ -152,7 +196,13 @@ export function ContextEditor({
             <label className="truncate text-[11px] text-muted" title={k}>
               {k}
             </label>
-            <Field propKey={k} schema={props[k]} value={form[k]} onChange={(v) => set(k, v)} />
+            <Field
+              propKey={k}
+              schema={props[k]}
+              value={form[k]}
+              onChange={(v) => set(k, v)}
+              warn={templateKeys.has(k) && isEmpty(form[k])}
+            />
           </div>
         ))
       )}

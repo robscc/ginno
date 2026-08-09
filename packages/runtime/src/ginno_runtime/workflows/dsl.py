@@ -11,6 +11,7 @@ in v1 (decided Q1).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 NODE_TYPES_V1 = {"step", "branch", "loop", "human"}
@@ -52,8 +53,30 @@ def validate_dsl(dsl: dict) -> list[str]:
         nt = n.get("type")
         if nt == "subflow":
             errs.append(f"node '{nid}' type 'subflow' is not supported until v2")
+        elif nt == "extract":
+            errs.append(
+                f"node '{nid}' type 'extract' is compiler-internal — declare "
+                f"`writes` on a step node instead"
+            )
         elif wf_nodes.get_node(nt) is None:
             errs.append(f"node '{nid}' unknown type '{nt}'")
+        # The compiler synthesizes <id>__extract nodes; users must not collide.
+        if isinstance(nid, str) and nid.endswith("__extract"):
+            errs.append(f"node '{nid}' id must not end with '__extract' (reserved)")
+        # writes / extract_model shape (master-plan §2.2.3)
+        w = n.get("writes")
+        if w is not None:
+            if not isinstance(w, dict) or not w:
+                errs.append(f"node '{nid}' writes must be a non-empty object")
+            else:
+                for k, v in w.items():
+                    if not isinstance(k, str) or not re.match(r"^[a-zA-Z0-9_]+$", k):
+                        errs.append(f"node '{nid}' writes key '{k}' must match [a-zA-Z0-9_]+")
+                    if not isinstance(v, dict) or "type" not in v:
+                        errs.append(f"node '{nid}' writes['{k}'] must be an object with a 'type'")
+        em = n.get("extract_model")
+        if em is not None and not isinstance(em, str):
+            errs.append(f"node '{nid}' extract_model must be a string")
     if len(ids) != len(set(ids)):
         errs.append("duplicate node id")
     idset = set(ids)
@@ -136,10 +159,16 @@ def validate_dsl(dsl: dict) -> list[str]:
     return errs
 
 
-def steps_from_dsl(dsl: dict) -> list[dict]:
+def steps_from_dsl(dsl: dict, include_extracts: bool = False) -> list[dict]:
     """Project nodes -> legacy `steps` view [{id,title,agent_id}] so existing
     consumers (workflow_* tools, right panel, chat WorkflowBlock) keep working
-    until the P2 executor replaces them. Title falls back goal -> title -> id."""
+    until the P2 executor replaces them. Title falls back goal -> title -> id.
+
+    ``include_extracts`` (run accounting, master-plan §2.2): for every node that
+    declares ``writes`` the compiler injects a ``<id>__extract`` node. Runs must
+    list those as steps too, otherwise the step-based run-status recomputation
+    marks the run "done" the moment the producing step finishes — before the
+    injected extract node has run (and possibly failed)."""
     out: list[dict] = []
     for n in _as_list(dsl.get("nodes")):
         if not isinstance(n, dict):
@@ -151,6 +180,15 @@ def steps_from_dsl(dsl: dict) -> list[dict]:
                 "agent_id": n.get("agent") or n.get("agent_id"),
             }
         )
+        if include_extracts and n.get("writes"):
+            keys = list((n.get("writes") or {}).keys())
+            out.append(
+                {
+                    "id": f"{n.get('id')}__extract",
+                    "title": "提取结构化输出" + (f"（{'、'.join(keys)}）" if keys else ""),
+                    "agent_id": None,
+                }
+            )
     return out
 
 

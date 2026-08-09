@@ -115,3 +115,22 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
     if es:
         chat_kw["extra_body"] = {"enable_search": True}
     return ChatOpenAI(**chat_kw)
+
+
+def build_model_by_name(model_name: str):
+    """Build a chat model from a bare model name (master-plan §2.2 checklist M).
+
+    ``extract_model`` in a DSL node is a single string (e.g. a cheap model id),
+    but ``build_model`` keys on provider id. Resolve the name to a provider:
+    (1) an enabled provider whose configured ``model`` equals the name,
+    (2) an enabled provider whose *id* equals the name,
+    (3) the default provider with the name passed as a model override.
+    """
+    all_prov = prov_mod.load_providers()
+    for pid, cfg in all_prov.items():
+        if cfg.get("enabled") and cfg.get("model") == model_name:
+            return build_model(pid, model_name)
+    if model_name in all_prov and all_prov[model_name].get("enabled"):
+        return build_model(model_name)
+    default = prov_mod.get_default_provider()
+    return build_model(default, model_name)

@@ -89,3 +89,31 @@ def test_summarize_rejects_invalid_model_output(client, monkeypatch):
 
 def test_summarize_404_for_unknown_session(client):
     assert client.post("/api/workflows/summarize-from-session", json={"session_id": "nope"}).status_code == 404
+
+
+def test_summarize_handles_thinking_block_content(client, monkeypatch):
+    """Extended-thinking hub models return content as a block list
+    ('', {'thinking': ...}, '<json>') — the text parts must still be parsed.
+    Regression: str(list) corrupted the payload → ok:false (2026-08-09)."""
+    sid = "sess-synth-3"
+    _seed_session("default", sid)
+
+    dsl_json = json.dumps(
+        {
+            "name": "Thinking WF",
+            "entry": "s1",
+            "nodes": [{"id": "s1", "type": "step", "agent": "dev", "goal": "x"}],
+            "edges": [],
+        }
+    )
+
+    class _ThinkingModel:
+        async def ainvoke(self, *_a, **_k):
+            return AIMessage(content=["", {"thinking": "reasoning..."}, dsl_json])
+
+    monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: _ThinkingModel())
+    r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True, body
+    assert body["dsl"]["name"] == "Thinking WF"

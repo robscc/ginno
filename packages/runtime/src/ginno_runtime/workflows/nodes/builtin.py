@@ -7,16 +7,42 @@ of ``agent`` so existing DSLs and tests keep working.
 
 from __future__ import annotations
 
+import time
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END
 from langgraph.prebuilt import ToolNode
 
 from ... import agents as agents_reg
-from ...graph import tool_allowed
+from ...graph import text_of_content, tool_allowed
 from .. import expr as wf_expr
 from . import agent_helpers as ah
 from .base import BaseNode
 from .registry import register_node
+
+
+def _usage_from_msg(msg) -> dict:
+    """Extract token usage from a chat-model response (master-plan §4.5).
+
+    Providers differ: OpenAI puts it under ``response_metadata.token_usage``
+    (prompt/completion), Anthropic under ``response_metadata.usage``
+    (input/output). Returns ``{}`` when nothing is available so callers can
+    merge harmlessly.
+    """
+    meta = getattr(msg, "response_metadata", None) or {}
+    tu = meta.get("token_usage") or {}
+    if tu:
+        return {
+            "input_tokens": tu.get("prompt_tokens", 0),
+            "output_tokens": tu.get("completion_tokens", 0),
+        }
+    u = meta.get("usage") or {}
+    if u:
+        return {
+            "input_tokens": u.get("input_tokens", 0),
+            "output_tokens": u.get("output_tokens", 0),
+        }
+    return {}
 
 
 @register_node
@@ -110,16 +136,20 @@ class AgentNode(BaseNode):
         # already recorded — a batch flush at the end would lose them all.
         # ``events`` is still returned in the state update (LangGraph reducer).
         def emit(ev):
+            ev.setdefault("ts", time.time())
             events.append(ev)
             run_ctx["events"].append(ev)
 
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "step"})
         msgs = [SystemMessage(content=sys_text), HumanMessage(content=goal)]
         result_text = ""
+        usage = {"input_tokens": 0, "output_tokens": 0}
         for _ in range(max_iters):
             resp = await bound.ainvoke(msgs)
             msgs.append(resp)
-            result_text = resp.content if isinstance(resp.content, str) else str(resp.content)
+            result_text = text_of_content(resp.content)
+            for k, v in _usage_from_msg(resp).items():
+                usage[k] = usage.get(k, 0) + v
             calls = getattr(resp, "tool_calls", None) or []
             if not calls:
                 break
@@ -136,7 +166,7 @@ class AgentNode(BaseNode):
             tres = await tool_node.ainvoke({"messages": [resp]})
             tmsgs = tres["messages"] if isinstance(tres, dict) else tres
             for tm in tmsgs:
-                c = tm.content if isinstance(tm.content, str) else str(tm.content)
+                c = text_of_content(tm.content)
                 emit(
                     {
                         "run_id": run_ctx["run_id"],
@@ -152,7 +182,7 @@ class AgentNode(BaseNode):
         meta = dict(state.get("context_meta") or {})
         for k in writes:
             meta[k] = f"step:{node_id}"
-        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
+        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done", "usage": usage})
         if writes:
             emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write", "keys": list(writes.keys())})
         return {
@@ -184,19 +214,21 @@ class LLMNode(BaseNode):
         events: list = []
 
         def emit(ev):
+            ev.setdefault("ts", time.time())
             events.append(ev)
             run_ctx["events"].append(ev)
 
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "llm"})
         resp = await model.ainvoke([HumanMessage(content=prompt)])
-        text = resp.content if isinstance(resp.content, str) else str(resp.content)
+        text = text_of_content(resp.content)
+        usage = _usage_from_msg(resp)
         out = {"text": text}
         update = {"events": events, "__output__": out}
         key = node.get("output")
         if key:
             update["context"] = {**context, key: text}
             emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write", "keys": [key]})
-        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
+        emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done", "usage": usage})
         return update
 
 
@@ -270,6 +302,8 @@ class LoopNode(BaseNode):
             errs.append(f"loop '{nid}' needs over")
         if not isinstance(node.get("max_iters"), int) or node.get("max_iters", 0) < 1:
             errs.append(f"loop '{nid}' needs max_iters >= 1")
+        if node.get("on_empty") not in (None, "skip", "fail"):
+            errs.append(f"loop '{nid}' on_empty must be 'skip' or 'fail'")
         return errs
 
     @staticmethod
@@ -278,6 +312,7 @@ class LoopNode(BaseNode):
         node_id = node["id"]
         as_var = node.get("as") or "item"
         max_iters = int(node.get("max_iters") or 100)
+        on_empty = node.get("on_empty") or "skip"  # "skip" | "fail"
         iters = dict(state.get("loop_iters") or {})
         st = dict(iters.get(node_id) or {"index": 0, "items": None, "done": False})
         context = dict(state.get("context") or {})
@@ -298,8 +333,29 @@ class LoopNode(BaseNode):
         events: list = []
 
         def emit(ev):
+            ev.setdefault("ts", time.time())
             events.append(ev)
             run_ctx["events"].append(ev)
+
+        # ---- on_empty: first pass with an empty sequence (master-plan §2.1) ----
+        # Emit a visible loop_skip so the skip is never silent, then either
+        # continue (skip) or fail the whole run (fail) attributed to this loop.
+        if idx == 0 and len(items) == 0:
+            over_expr = node.get("over")
+            emit({
+                "run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_skip",
+                "over": str(over_expr), "reason": "empty sequence", "on_empty": on_empty,
+            })
+            if on_empty == "fail":
+                emit({
+                    "run_id": run_ctx["run_id"], "node_id": node_id, "kind": "error",
+                    "error": f"loop '{node_id}' over '{over_expr}' is empty and on_empty='fail'",
+                })
+                raise RuntimeError(f"loop '{node_id}' empty sequence with on_empty='fail'")
+            st["done"] = True
+            iters[node_id] = st
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
+            return {"loop_iters": iters, "loop_vars": loop_vars, "events": events}
 
         if idx < len(items) and idx < max_iters:
             loop_vars[as_var] = items[idx]
@@ -308,8 +364,16 @@ class LoopNode(BaseNode):
             st["done"] = False
         else:
             st["done"] = True
+            # Hitting max_iters before exhausting items is a cap, not a clean end.
+            if idx >= max_iters and idx < len(items):
+                emit({
+                    "run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_cap",
+                    "max_iters": max_iters, "remaining": len(items) - idx,
+                })
         iters[node_id] = st
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "loop"})
+        if st["done"]:
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
         return {"loop_iters": iters, "loop_vars": loop_vars, "events": events}
 
     @classmethod
@@ -331,7 +395,16 @@ class LoopNode(BaseNode):
             routes[nxt] = nxt
         g.add_conditional_edges(nid, route, routes | {END: END})
         if body:
-            g.add_edge(body, nid)
+            # If the body step declared ``writes``, the compiler injected a
+            # ``body__extract`` node whose back_to points at this loop head;
+            # that node wires the return edge itself, so we must NOT also add
+            # body->head here (it would fork the body into two paths).
+            body_extracted = any(
+                isinstance(n, dict) and n.get("id") == f"{body}__extract"
+                for n in d.get("nodes") or []
+            )
+            if not body_extracted:
+                g.add_edge(body, nid)
 
 
 @register_node
@@ -348,10 +421,10 @@ class HumanNode(BaseNode):
 
         run_ctx = cctx["run_ctx"]
         run_ctx["events"].append(
-            {"run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "interrupt", "question": node.get("question")}
+            {"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "interrupt", "question": node.get("question")}
         )
         value = interrupt({"kind": "human", "node": node["id"], "question": node.get("question")})
-        run_ctx["events"].append({"run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "resume"})
+        run_ctx["events"].append({"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "resume"})
         update: dict = {"events": []}
         # a context_patch in the resume value merges into context
         if isinstance(value, dict) and isinstance(value.get("context_patch"), dict):
@@ -371,5 +444,5 @@ class PassNode(BaseNode):
     @staticmethod
     async def execute(node, cctx, state, config, eff) -> dict:
         run_ctx = cctx["run_ctx"]
-        run_ctx["events"].append({"run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "node_enter", "node_type": "pass"})
+        run_ctx["events"].append({"ts": time.time(), "run_id": run_ctx["run_id"], "node_id": node["id"], "kind": "node_enter", "node_type": "pass"})
         return {"events": [], "__output__": {}}

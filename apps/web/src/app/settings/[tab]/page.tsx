@@ -7,6 +7,7 @@ export function generateStaticParams() {
     { tab: "mcp" },
     { tab: "agents" },
     { tab: "workflows" },
+    { tab: "synthesis-quality" },
     { tab: "knowledge" },
     { tab: "permissions" },
     { tab: "hooks" },

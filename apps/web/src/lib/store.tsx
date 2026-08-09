@@ -30,6 +30,70 @@ export interface PreviewFile {
   kind?: string;
 }
 
+/** Live in-flight tool call for a workflow run step (workflow-ux-redesign P1):
+ *  shown under the running step in LiveRunBlock; cleared by tool_result /
+ *  node_exit / terminal events. Ephemeral — never persisted. */
+export interface RunToolActivity {
+  nodeId: string;
+  toolName: string;
+  argsPreview: string;
+}
+
+// ---- Browser notifications for run completion (P3) ----
+// Module-level prev-status map: reloadWorkflowRuns diffs against it to catch
+// done/failed transitions while the tab is hidden.
+const _prevRunStatus: Record<string, string> = {};
+
+function fmtRunElapsed(r: { started: number; finished?: number | null }): string {
+  const s = Math.max(0, Math.round((r.finished ?? Date.now() / 1000) - r.started));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function notifyRunTransitions(
+  runs: Array<{ id: string; name?: string; status: string; steps?: Array<{ id: string; title?: string; status: string }>; started: number; finished?: number | null }>,
+  onOpenPanel?: () => void,
+) {
+  const hidden = typeof document !== "undefined" && document.visibilityState !== "visible";
+  for (const r of runs) {
+    const prev = _prevRunStatus[r.id];
+    _prevRunStatus[r.id] = r.status;
+    if (prev === undefined || prev === r.status) continue;
+    // First time anything runs: ask for permission once (user-initiated work
+    // is happening, so the prompt is contextually reasonable).
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      try {
+        void Notification.requestPermission();
+      } catch {
+        /* unsupported */
+      }
+    }
+    if (!hidden) continue; // user is looking — the badges already cover it
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") continue;
+    try {
+      const name = r.name || "Workflow";
+      let body: string;
+      if (r.status === "done") {
+        body = `已完成 · 用时 ${fmtRunElapsed(r)}`;
+      } else if (r.status === "failed") {
+        const failed = (r.steps || []).find((s) => s.status === "failed");
+        body = failed?.title ? `失败于「${failed.title}」` : "执行失败";
+      } else {
+        continue;
+      }
+      const n = new Notification(`${r.status === "done" ? "✓" : "✕"} ${name}`, { body });
+      n.onclick = () => {
+        window.focus();
+        onOpenPanel?.(); // land on the Workflow tab so the run is visible
+        n.close();
+      };
+    } catch {
+      /* notification blocked/unsupported */
+    }
+  }
+}
+
 interface GinnoState {
   agents: AgentConfig[];
   skills: SkillSummary[];
@@ -74,6 +138,13 @@ interface GinnoState {
   activeRunCount: number; // running + paused → blue pulsing badge
   unseenFailedCount: number; // failed since last visit → red badge
   markFailedRunsSeen: () => void; // called when the Workflow tab is opened
+  // Paused-at-human-node count (workflow-ux-redesign P1) → yellow dock badge.
+  pendingHumanCount: number;
+  // Recent completed-run durations per workflow_id (P3 adaptive stuck).
+  runDurationByWorkflow: Record<string, number[]>;
+  // Live tool-call visibility (workflow-ux-redesign P1): run_id → activity.
+  liveToolActivity: Record<string, RunToolActivity>;
+  notifyRunToolActivity: (runId: string, act: RunToolActivity | null) => void;
   reloadArtifacts: () => Promise<void>;
   removeArtifact: (id: string) => Promise<void>;
   patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
@@ -120,6 +191,21 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   // stay unseen until the Workflow tab is visited.
   const [failedSeen, setFailedSeen] = useState<Set<string>>(new Set());
   const failedSeedRef = useRef(false);
+  // Live tool-call activity per run (workflow-ux-redesign P1). Fed by the
+  // run.event WS handler (ChatStream): tool_call sets it, tool_result /
+  // node_exit / terminal events clear it.
+  const [liveToolActivity, setLiveToolActivity] = useState<Record<string, RunToolActivity>>({});
+  const notifyRunToolActivity = useCallback((runId: string, act: RunToolActivity | null) => {
+    setLiveToolActivity((prev) => {
+      if (act === null) {
+        if (!(runId in prev)) return prev;
+        const next = { ...prev };
+        delete next[runId];
+        return next;
+      }
+      return { ...prev, [runId]: act };
+    });
+  }, []);
   const workflowRunsRef = useRef<WorkflowRun[]>([]);
   useEffect(() => {
     workflowRunsRef.current = workflowRuns;
@@ -335,6 +421,24 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     try {
       const runs = await api.listWorkflowRuns();
       setWorkflowRuns(runs);
+      // Browser notifications (workflow-ux-redesign P3): when the tab is in
+      // the background, announce terminal transitions the user would otherwise
+      // miss. Permission is requested lazily the first time any run goes
+      // active (never a cold-start prompt). Clicking opens the Workflow tab.
+      notifyRunTransitions(runs, () => {
+        setRightTabState("workflow");
+        if (!rightPanelOpenRef.current) setRightPanelOpen(true);
+      });
+      // Prune stale tool-activity entries (deleted runs / runs that finished
+      // between WS events — e.g. the poll path misses a tool_result).
+      setLiveToolActivity((prev) => {
+        const alive = new Set(runs.filter((r) => r.status === "running").map((r) => r.id));
+        const stale = Object.keys(prev).filter((id) => !alive.has(id));
+        if (!stale.length) return prev;
+        const next = { ...prev };
+        for (const id of stale) delete next[id];
+        return next;
+      });
       // Maintain the failed-seen set for the red badge: seed once at boot with
       // the existing failures (they're history, not news), then keep the set
       // intersected with runs that still exist (deleted runs drop off). New
@@ -694,6 +798,26 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const unseenFailedCount = workflowRuns.filter(
     (r) => r.status === "failed" && !failedSeen.has(r.id),
   ).length;
+  // Paused runs waiting on a HUMAN answer (workflow-ux-redesign P1) — a
+  // stronger signal than "running": somebody must act. Drives the yellow dock
+  // badge; version_propose interrupts live in the session graph, not runs.
+  const pendingHumanCount = workflowRuns.filter(
+    (r) => r.status === "paused" && r.pending_interrupt?.kind === "human",
+  ).length;
+
+  // Adaptive stuck detection (P3): recent completed-run durations per workflow
+  // (last 10). LiveRunBlock flags a step stuck after max(60s, avg×3) instead
+  // of a fixed 5-minute window.
+  const runDurationByWorkflow: Record<string, number[]> = {};
+  for (const r of workflowRuns) {
+    if (r.status === "done" && r.finished) {
+      const d = r.finished - r.started;
+      if (d > 0) (runDurationByWorkflow[r.workflow_id] ??= []).push(d);
+    }
+  }
+  for (const k of Object.keys(runDurationByWorkflow)) {
+    runDurationByWorkflow[k] = runDurationByWorkflow[k].slice(-10);
+  }
 
   const value: GinnoState = {
     agents,
@@ -736,6 +860,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     activeRunCount,
     unseenFailedCount,
     markFailedRunsSeen,
+    pendingHumanCount,
+    runDurationByWorkflow,
+    liveToolActivity,
+    notifyRunToolActivity,
     reloadArtifacts,
     removeArtifact,
     patchArtifact,

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, FileEdit, Check, RotateCcw } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
 import { loadToolLabels } from "@/lib/toolLabels";
@@ -30,6 +30,7 @@ import {
   deleteWorkflowRun,
   getWorkflowRun,
   retryWorkflowRun,
+  retryWorkflowRunFromCheckpoint,
   summarizeSessionToDsl,
   triggerWorkflowRun,
 } from "@/lib/runtime";
@@ -131,6 +132,53 @@ interface VersionPropose {
 
 let _mid = 0;
 const mid = () => `m${++_mid}`;
+
+// S6: localStorage key for the unsaved summarize draft (24h TTL, see openSummarize).
+const SUMMARIZE_DRAFT_KEY = "ginno-summarize-draft";
+const SUMMARIZE_DRAFT_TTL = 24 * 3600 * 1000;
+
+interface SummarizeDraft {
+  dsl: Record<string, unknown>;
+  sourceSessionId?: string;
+  sourceLabel?: string;
+  savedAt: number;
+}
+
+function readSummarizeDraft(): SummarizeDraft | null {
+  try {
+    const raw = localStorage.getItem(SUMMARIZE_DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as SummarizeDraft;
+    if (d?.dsl && typeof d.savedAt === "number" && Date.now() - d.savedAt < SUMMARIZE_DRAFT_TTL) {
+      return d;
+    }
+  } catch {
+    /* corrupted draft */
+  }
+  return null;
+}
+
+/** Compact relative time for the session picker / draft banner. */
+function relTime(tsSeconds: number): string {
+  const diff = Math.max(0, Date.now() / 1000 - tsSeconds);
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return `${Math.floor(diff / 86400)} 天前`;
+}
+
+/** One-line summary of a tool call's args for the live-run tool row
+ *  (workflow-ux-redesign P1): first string-ish value, truncated to 50 chars. */
+function toolArgsPreview(args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  for (const v of Object.values(args as Record<string, unknown>)) {
+    if (typeof v === "string" && v.trim()) {
+      const t = v.trim();
+      return t.length > 50 ? t.slice(0, 49) + "…" : t;
+    }
+  }
+  return "";
+}
 
 interface Attachment {
   data: string; // base64 payload (no data-url prefix)
@@ -449,8 +497,36 @@ export function ChatStream({
   const [confirmDelRun, setConfirmDelRun] = useState<string | null>(null);
   // 「总结成流程」draft + busy state + inline failure reason (modal stays open)
   const [summarize, setSummarize] = useState<Record<string, unknown> | null>(null);
-  const [sumBusy, setSumBusy]     = useState<"create" | "run" | null>(null);
+  const [sumBusy, setSumBusy]     = useState<"create" | "run" | "dev" | null>(null);
   const [sumErr, setSumErr]       = useState<string | null>(null);
+  // Create-only success receipt: keeps the modal open with an explicit
+  // "已创建 <name>" confirmation (so the user never wonders whether the
+  // workflow was added). 创建并运行 closes and the run card animates in instead.
+  const [sumCreated, setSumCreated] = useState<string | null>(null);
+  // S1: summarize API call in flight + which session the draft came from (the
+  // modal's retry button and header label need both).
+  const [sumLoading, setSumLoading] = useState(false);
+  const [sumSource, setSumSource] = useState<{ id: string; label: string } | null>(null);
+  // quality-plan §3.1: synthesis case id for outcome backfill (adoption/first-run).
+  const [sumSynthesisId, setSumSynthesisId] = useState<string | null>(null);
+  const [sumMenuOpen, setSumMenuOpen] = useState(false);
+  // S5: trace range — null = full session; 5/10/20 = last N messages.
+  const [sumLastN, setSumLastN] = useState<number | null>(null);
+  // S6: bump to re-read the localStorage draft (after restore/delete/save). The
+  // draft is exposed as an OPT-IN row in the summarize dropdown — it must never
+  // block a fresh summarize (a leftover draft from another session used to wedge
+  // the button and prevent creating any workflow).
+  const [draftTick, setDraftTick] = useState(0);
+  // Re-read the localStorage draft when it may have changed (open/save/delete).
+  const savedDraft = useMemo(
+    () => (sumMenuOpen ? readSummarizeDraft() : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sumMenuOpen, draftTick],
+  );
+  // Receipt shown briefly after a version_propose decision (card already unmounted).
+  const [proposeResult, setProposeResult] = useState<
+    { decision: "allow" | "deny"; workflowId: string; fromVersion: number } | null
+  >(null);
 
   // Push the given session's ref state into React display state.
   // No-op when sid is not the currently displayed session (background socket).
@@ -776,17 +852,52 @@ export function ChatStream({
         const inner = (ev.payload ?? {}) as Record<string, unknown>;
         const list = runsBySessionRef.current[sid] ?? [];
         const run = list.find((x) => x.id === runId);
+        // Live tool-call visibility (workflow-ux-redesign P1): show the
+        // in-flight tool under the running step; results/exit clear it.
+        const innerKind = inner.kind as string | undefined;
+        if (innerKind === "tool_call") {
+          const calls = (inner.calls as Array<{ name?: string; args?: unknown }>) ?? [];
+          const latest = calls[calls.length - 1]; // batched calls: show the newest
+          if (latest?.name) {
+            g.notifyRunToolActivity(runId, {
+              nodeId: (inner.node_id as string) ?? "",
+              toolName: latest.name,
+              argsPreview: toolArgsPreview(latest.args),
+            });
+          }
+        } else if (
+          innerKind === "tool_result" || innerKind === "node_exit" ||
+          innerKind === "error" || innerKind === "done"
+        ) {
+          g.notifyRunToolActivity(runId, null);
+        }
         if (run) {
           const nid = inner.node_id as string | undefined;
-          const kind = inner.kind as string | undefined;
-          if (nid && (kind === "node_enter" || kind === "node_exit")) {
+          const kind2 = inner.kind as string | undefined;
+          // Mirror the server's per-event _touch_run: without this the in-chat
+          // card's adaptive stuck check fires during long steps that DO emit
+          // tool traffic (the 1.5s panel poll doesn't cover the chat list).
+          run.updated = Date.now() / 1000;
+          if (nid && (kind2 === "node_enter" || kind2 === "node_exit")) {
             // node_exit carries the step's real outcome — a failed step must not
             // render as done (green) in the live card.
             const stepStatus =
-              kind === "node_enter" ? "running" : inner.status === "failed" ? "failed" : "done";
+              kind2 === "node_enter" ? "running" : inner.status === "failed" ? "failed" : "done";
             run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: stepStatus } : s));
             runsBySessionRef.current[sid] = [...list];
-          } else if (kind === "error") {
+          } else if (kind2 === "interrupt") {
+            // Human node asked a question (P1): stamp the payload so the card
+            // renders immediately, without waiting for the reload round-trip.
+            // HumanNode never fires node_enter/exit — flip its step to running
+            // (done on resume) so progress reads correctly.
+            run.pending_interrupt = { ...(inner as object), kind: "human" } as typeof run.pending_interrupt;
+            if (nid) run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "running" } : s));
+            runsBySessionRef.current[sid] = [...list];
+          } else if (kind2 === "resume") {
+            run.pending_interrupt = null;
+            if (nid) run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "done" } : s));
+            runsBySessionRef.current[sid] = [...list];
+          } else if (kind2 === "error") {
             // Show the failure one beat before run.status lands, and stamp the
             // structured diagnostic so RunErrorBox renders without a lazy fetch.
             if (typeof inner.error === "string") run.error = inner.error;
@@ -808,6 +919,14 @@ export function ChatStream({
         if (run) {
           run.status = status;
           if (typeof ev.error === "string") run.error = ev.error;
+          // P1: the paused push carries WHY (human question); terminal states
+          // and fresh resumes clear it.
+          if (status === "paused") {
+            run.pending_interrupt =
+              (ev.pending_interrupt as typeof run.pending_interrupt) ?? run.pending_interrupt ?? null;
+          } else {
+            run.pending_interrupt = null;
+          }
           runsBySessionRef.current[sid] = [...list];
         }
         syncDisplay(sid);
@@ -1090,22 +1209,104 @@ export function ChatStream({
   }
 
   // ─── 闭环 (design A): 总结成流程 + 对话内运行块控制 ─────────────────────────
-  async function openSummarize() {
-    if (!session) return;
+  // The actual LLM summarization path (also used by the modal's ↺ retry).
+  async function freshSummarize(sessionId?: string) {
+    setSumMenuOpen(false);
+    const targetId = sessionId || session?.id;
+    if (!targetId) return;
+    const label =
+      targetId === session?.id
+        ? session?.title || "当前会话"
+        : g.sessions.find((s) => s.id === targetId)?.title || "历史会话";
+    setSumLoading(true);
     setSumErr(null);
-    const r = await summarizeSessionToDsl(session.id);
-    setSummarize(r.ok ? r.dsl : null);
-    if (!r.ok) alert(`总结失败：${(r as { error?: string }).error ?? "unknown"}`);
+    setSumCreated(null);
+    try {
+      const r = await summarizeSessionToDsl(targetId, undefined, sumLastN ?? undefined);
+      if (r.ok) {
+        setSumSource({ id: targetId, label });
+        setSumSynthesisId(r.synthesis_id ?? null);
+        setSummarize(r.dsl);
+      } else {
+        setSumErr(`总结失败：${r.error ?? "unknown"}`);
+        setSummarize({}); // keep the modal open so the reason is visible
+      }
+    } catch {
+      setSumErr("总结失败：无法连接运行时");
+      setSummarize({});
+    } finally {
+      setSumLoading(false);
+    }
   }
 
-  async function createFromSummarize(run: boolean) {
-    if (!summarize || !session) return;
+  // Summarize is the primary action and must ALWAYS run fresh — a leftover
+  // draft (possibly from another session) must never intercept it. Draft
+  // recovery is an explicit opt-in row in the dropdown (openDraftModal).
+  async function openSummarize(sessionId?: string) {
+    await freshSummarize(sessionId);
+  }
+
+  function openDraftModal() {
+    const draft = readSummarizeDraft();
+    if (!draft) return;
+    setSumMenuOpen(false);
+    setSumSource({
+      id: draft.sourceSessionId || "",
+      label: draft.sourceLabel || "上次草稿",
+    });
+    setSummarize(draft.dsl);
+    setSumErr(null);
+    setSumCreated(null);
+  }
+
+  function deleteDraft() {
+    try {
+      localStorage.removeItem(SUMMARIZE_DRAFT_KEY);
+    } catch {
+      /* ignore */
+    }
+    setDraftTick((n) => n + 1); // refresh the dropdown's draft row
+  }
+
+  function closeSummarize(saveDraft: boolean) {
+    // S6: closing without creating keeps the draft recoverable for 24h
+    // (sourceSessionId travels with it so ↺重新总结 works after restore). Only
+    // non-trivial drafts are saved — an empty/failed `{}` must not become a
+    // "restorable" draft that later confuses the user.
+    const hasNodes = Array.isArray(summarize?.nodes) && (summarize!.nodes as unknown[]).length > 0;
+    try {
+      if (saveDraft && summarize && hasNodes) {
+        localStorage.setItem(
+          SUMMARIZE_DRAFT_KEY,
+          JSON.stringify({
+            dsl: summarize,
+            sourceSessionId: sumSource?.id || undefined,
+            sourceLabel: sumSource?.label,
+            savedAt: Date.now(),
+          }),
+        );
+      } else {
+        localStorage.removeItem(SUMMARIZE_DRAFT_KEY);
+      }
+    } catch {
+      /* storage unavailable */
+    }
+    setDraftTick((n) => n + 1);
+    setSummarize(null);
+    setSumErr(null);
+    setSumCreated(null);
+  }
+
+  async function createFromSummarize(run: boolean, editedDsl: Record<string, unknown>) {
+    if (!session) return;
     setSumBusy(run ? "run" : "create");
     setSumErr(null);
     try {
       const cw = await createWorkflow({
-        name: (summarize.name as string) || "新流程",
-        dsl: summarize,
+        name: (editedDsl.name as string) || "新流程",
+        description: (editedDsl.description as string) || "",
+        dsl: editedDsl,
+        ...(sumSynthesisId ? { synthesis_id: sumSynthesisId } : {}),
       });
       const cwBody = cw as { ok?: boolean; workflow?: import("@/lib/types").WorkflowDef; detail?: string };
       if (!cwBody.workflow) {
@@ -1114,7 +1315,11 @@ export function ChatStream({
         setSumErr(cwBody.detail || "创建工作流失败");
         return;
       }
-      g.reloadWorkflows();
+      await g.reloadWorkflows(); // list reflects the new workflow immediately
+      setDraftTick((n) => n + 1);
+      try {
+        localStorage.removeItem(SUMMARIZE_DRAFT_KEY); // created → draft consumed
+      } catch { /* ignore */ }
       if (run) {
         const tr = await triggerWorkflowRun(cwBody.workflow.id, undefined, session.id);
         const trBody = tr as { ok?: boolean; run?: import("@/lib/types").WorkflowRun; detail?: string };
@@ -1128,8 +1333,47 @@ export function ChatStream({
           setSumErr(`已创建，但运行触发失败：${trBody.detail || "未知错误"}`);
           return;
         }
+        setSummarize(null); // run card animates in — close the modal
+      } else {
+        // Create-only: keep the modal open with an explicit receipt so it is
+        // unambiguous that the workflow was added (then 完成 closes it).
+        setSumErr(null);
+        setSumCreated(cwBody.workflow.name || "新流程");
       }
-      setSummarize(null); // success → close; the new run card animates in
+    } catch {
+      setSumErr("无法连接运行时");
+    } finally {
+      setSumBusy(null);
+    }
+  }
+
+  // S2: 进入开发会话精炼 — create the draft as v1 first, then open a
+  // workflow-dev session where the agent can propose further edits.
+  async function openDevFromSummarize(editedDsl: Record<string, unknown>) {
+    setSumBusy("dev");
+    setSumErr(null);
+    try {
+      const cw = await createWorkflow({
+        name: (editedDsl.name as string) || "新流程",
+        description: (editedDsl.description as string) || "",
+        dsl: editedDsl,
+        ...(sumSynthesisId ? { synthesis_id: sumSynthesisId } : {}),
+      });
+      const cwBody = cw as { ok?: boolean; workflow?: import("@/lib/types").WorkflowDef; detail?: string };
+      if (!cwBody.workflow) {
+        setSumErr(cwBody.detail || "创建工作流失败");
+        return;
+      }
+      await g.reloadWorkflows();
+      setDraftTick((n) => n + 1);
+      try {
+        localStorage.removeItem(SUMMARIZE_DRAFT_KEY);
+      } catch { /* ignore */ }
+      setSummarize(null);
+      setSumCreated(null);
+      await g.newSession("workflow-dev", {
+        title: `精炼流程：${cwBody.workflow.name}`,
+      });
     } catch {
       setSumErr("无法连接运行时");
     } finally {
@@ -1148,6 +1392,17 @@ export function ChatStream({
     // (or the workflows.changed reload) surfaces it. Refresh the local list too.
     // Returns the outcome so LiveRunBlock can shake + show the reason on failure.
     return retryWorkflowRun(runId)
+      .then((r) => {
+        g.reloadWorkflowRuns();
+        const body = r as { ok?: boolean; detail?: string } | undefined;
+        if (body && body.ok === false) return { ok: false, detail: body.detail };
+        return undefined;
+      })
+      .catch(() => ({ ok: false, detail: "无法连接运行时" }));
+  }
+  function retryRunFromCheckpoint(runId: string): Promise<{ ok?: boolean; detail?: string } | void> {
+    // P2: re-execute from the persisted checkpoint (failed node + suffix only).
+    return retryWorkflowRunFromCheckpoint(runId)
       .then((r) => {
         g.reloadWorkflowRuns();
         const body = r as { ok?: boolean; detail?: string } | undefined;
@@ -1447,8 +1702,15 @@ export function ChatStream({
     } catch {
       /* socket gone — reconnect re-emits version.propose if still pending */
     }
+    const p = propose;
     proposeRef.current[sid] = null;
     setPropose(null);
+    // P0 polish: the card unmounts on decide, so leave a short receipt line
+    // ("已应用 · v3 → 新版本" / "已拒绝") where the card used to be.
+    if (p) {
+      setProposeResult({ decision, workflowId: p.workflow_id, fromVersion: p.from_version });
+      window.setTimeout(() => setProposeResult(null), 4000);
+    }
   }
 
   // Drag the composer's top handle to resize the input area. Auto-grow (capped)
@@ -1619,6 +1881,7 @@ export function ChatStream({
               onCancel={cancelRun}
               onContinue={continueRun}
               onRetry={retryRun}
+              onRetryFromCheckpoint={retryRunFromCheckpoint}
               onDelete={(id) => setConfirmDelRun(id)}
             />
           ))}
@@ -1669,33 +1932,25 @@ export function ChatStream({
         </div>
       )}
 
-      {propose && (
+      {propose && <ProposeCard propose={propose} onDecide={respondPropose} />}
+
+      {proposeResult && (
         <div className="mx-auto w-full max-w-3xl px-6">
-          <div className="mb-2 rounded-xl border border-violet/40 bg-violet/10 p-3">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium text-violet">
-              工作流修改待确认
-              <span className="rounded border border-violet/40 px-1.5 py-0.5 text-[10px] font-normal">
-                {propose.workflow_id} · v{propose.from_version} → 新版本
-              </span>
-            </div>
-            {propose.rationale && (
-              <div className="mb-2 text-xs text-muted">理由：{propose.rationale}</div>
+          <div
+            className={`anim-slide-in mb-2 flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs ${
+              proposeResult.decision === "allow"
+                ? "border-green/30 bg-green/[0.06] text-green"
+                : "border-line bg-card2/40 text-muted"
+            }`}
+          >
+            {proposeResult.decision === "allow" ? (
+              <Check className="h-3 w-3" />
+            ) : (
+              <X className="h-3 w-3" />
             )}
-            <DiffView diff={propose.diff} />
-            <div className="mt-3 flex gap-2">
-              <button
-                onClick={() => respondPropose("allow")}
-                className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
-              >
-                应用（创建新版本）
-              </button>
-              <button
-                onClick={() => respondPropose("deny")}
-                className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
-              >
-                拒绝
-              </button>
-            </div>
+            {proposeResult.decision === "allow"
+              ? `已应用变更 · ${proposeResult.workflowId} v${proposeResult.fromVersion} → 新版本`
+              : `已拒绝该 DSL 变更 · ${proposeResult.workflowId}`}
           </div>
         </div>
       )}
@@ -1705,11 +1960,12 @@ export function ChatStream({
           dsl={summarize}
           busy={sumBusy}
           error={sumErr}
-          onClose={() => {
-            setSummarize(null);
-            setSumErr(null);
-          }}
+          createdName={sumCreated}
+          sourceLabel={sumSource?.label}
+          onClose={() => closeSummarize(!sumCreated)}
           onCreate={createFromSummarize}
+          onRetry={sumSource?.id ? () => void freshSummarize(sumSource!.id) : undefined}
+          onOpenDevSession={openDevFromSummarize}
         />
       )}
 
@@ -1742,13 +1998,77 @@ export function ChatStream({
             >
               + New Session
             </button>
-            <button
-              onClick={openSummarize}
-              title="把当前会话总结成 workflow"
-              className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-2.5 py-1 text-xs text-violet hover:bg-violet/20"
-            >
-              ⌁ 总结成流程
-            </button>
+            {/* S1/S5: summarize entry — session picker + trace range (last N
+                messages) live in one dropdown. */}
+            <div className="relative">
+              <button
+                onClick={() => setSumMenuOpen((v) => !v)}
+                disabled={sumLoading || g.sessions.length === 0}
+                title="把会话总结成 workflow"
+                className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-2.5 py-1 text-xs text-violet hover:bg-violet/20 disabled:opacity-60"
+              >
+                {sumLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                {sumLoading ? "正在总结…" : "总结成流程"}
+                <ChevronDown className="h-3 w-3 opacity-70" />
+              </button>
+              {sumMenuOpen && (
+                <div className="absolute bottom-full left-0 z-30 mb-1 w-64 rounded-lg border border-line bg-card p-1 shadow-2xl">
+                  {/* S6: an unsaved draft is an OPT-IN restore, never a blocker. */}
+                  {savedDraft && (
+                    <div className="mb-1 flex items-center gap-1 rounded-md border border-violet/30 bg-violet/[0.06] px-2 py-1.5">
+                      <button
+                        onClick={openDraftModal}
+                        title="恢复这份未保存的草稿"
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[11px] text-violet hover:opacity-80"
+                      >
+                        <RotateCcw className="h-3 w-3 shrink-0" />
+                        <span className="truncate">恢复草稿 · {relTime(savedDraft.savedAt / 1000)}</span>
+                      </button>
+                      <button
+                        onClick={deleteDraft}
+                        title="删除草稿"
+                        className="shrink-0 rounded p-0.5 text-faint hover:bg-red/10 hover:text-red"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-faint">
+                    选择要总结的会话
+                  </div>
+                  {g.sessions.slice(0, 10).map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => void openSummarize(s.id)}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-card2 hover:text-txt"
+                    >
+                      {s.id === session?.id && <span className="text-violet">●</span>}
+                      <span className="max-w-[150px] truncate">{s.title || "未命名会话"}</span>
+                      {s.id === session?.id && <span className="text-[10px] text-faint">（推荐）</span>}
+                      <span className="ml-auto shrink-0 text-[10px] text-faint">{relTime(s.updated)}</span>
+                    </button>
+                  ))}
+                  <div className="mt-1 border-t border-line2 px-2 pb-1 pt-1.5">
+                    <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">范围</div>
+                    <div className="flex gap-1">
+                      {([null, 5, 10, 20] as const).map((n) => (
+                        <button
+                          key={String(n)}
+                          onClick={() => setSumLastN(n)}
+                          className={`rounded px-1.5 py-0.5 text-[10px] ${
+                            sumLastN === n
+                              ? "bg-violet/15 text-violet"
+                              : "text-faint hover:bg-card2 hover:text-muted"
+                          }`}
+                        >
+                          {n === null ? "全部" : `最近 ${n} 条`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           <div
@@ -2009,6 +2329,68 @@ export function ChatStream({
               </button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** workflow_propose_edit diff confirmation card (workflow-ux-redesign P0
+ *  polish): busy buttons + collapsed-by-default diff with hunk count. The
+ *  session graph is paused at the tool's interrupt until the user decides. */
+function ProposeCard({
+  propose,
+  onDecide,
+}: {
+  propose: VersionPropose;
+  onDecide: (decision: "allow" | "deny") => void;
+}) {
+  const [busy, setBusy] = useState<null | "allow" | "deny">(null);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const hunks = (propose.diff.match(/^@@/gm) || []).length;
+  const decide = (d: "allow" | "deny") => {
+    if (busy) return;
+    setBusy(d);
+    onDecide(d); // the card unmounts when the server clears the pending propose
+  };
+  return (
+    <div className="mx-auto w-full max-w-3xl px-6">
+      <div className="mb-2 rounded-xl border border-yellow/30 bg-yellow/[0.04] p-3">
+        <div className="mb-1 flex items-center gap-2 text-sm font-medium text-yellow">
+          <FileEdit className="h-3.5 w-3.5" />
+          DSL 变更提案
+          <span className="rounded border border-yellow/40 px-1.5 py-0.5 text-[10px] font-normal text-muted">
+            {propose.workflow_id} · v{propose.from_version} → 新版本
+          </span>
+        </div>
+        {propose.rationale && (
+          <div className="mb-2 text-xs text-muted">理由：{propose.rationale}</div>
+        )}
+        <button
+          onClick={() => setDiffOpen((v) => !v)}
+          className="mb-2 flex items-center gap-1 text-[11px] text-faint hover:text-muted"
+        >
+          <ChevronDown className={`h-3 w-3 transition-transform ${diffOpen ? "" : "-rotate-90"}`} />
+          {diffOpen ? "收起 diff" : `查看完整 diff（${hunks} 处改动）`}
+        </button>
+        {diffOpen && <DiffView diff={propose.diff} />}
+        <div className="mt-3 flex gap-2">
+          <button
+            onClick={() => decide("allow")}
+            disabled={!!busy}
+            className="btn-press flex items-center gap-1 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {busy === "allow" && <Loader2 className="h-3 w-3 animate-spin" />}
+            {busy === "allow" ? "应用中…" : "应用变更（创建新版本）"}
+          </button>
+          <button
+            onClick={() => decide("deny")}
+            disabled={!!busy}
+            className="btn-press flex items-center gap-1 rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:bg-red/10 hover:text-red disabled:opacity-50"
+          >
+            {busy === "deny" && <Loader2 className="h-3 w-3 animate-spin" />}
+            拒绝
+          </button>
         </div>
       </div>
     </div>
