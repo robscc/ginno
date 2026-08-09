@@ -50,6 +50,17 @@ def _validate_writes(data: dict, schema: dict) -> tuple[dict, list[str]]:
     return out, errs
 
 
+def _cap_text(text: str, cap: int) -> str:
+    """Keep the head AND tail when truncating: structured results (lists, final
+    answers) frequently sit at the END of a long step reply, so a head-only cut
+    would drop exactly what the extractor needs (master-plan §2.2 L)."""
+    if len(text) <= cap:
+        return text
+    tail = cap // 3
+    head = cap - tail
+    return text[:head] + "\n…[中段省略]…\n" + text[-tail:]
+
+
 def _extract_json_from_text(text: str) -> dict:
     """Return the first complete JSON object in ``text`` (fence-tolerant)."""
     text = (text or "").strip()
@@ -144,12 +155,26 @@ class ExtractNode(BaseNode):
             m = cctx["model"]
 
         schema_str = json.dumps(writes_schema, ensure_ascii=False)
+        # Enumerate the exact top-level keys (with types) + an output skeleton so
+        # the model can't rename/omit them — the #1 cause of "key missing" failures.
+        key_lines = []
+        for k, sch in writes_schema.items():
+            t = sch.get("type", "any") if isinstance(sch, dict) else "any"
+            key_lines.append(f'  - "{k}"（类型 {t}）')
+        keys_block = "\n".join(key_lines)
+        skeleton = "{\n" + ",\n".join(f'  "{k}": ...' for k in writes_schema) + "\n}"
+        capped_source = _cap_text(source_text, _SOURCE_CHAR_CAP)
         base_prompt = (
-            "以下是一个步骤执行后的输出文本。请严格按给定 JSON Schema 提取字段，"
-            "只输出一个 JSON 对象，不要任何解释、不要代码围栏。"
-            "若某字段内容确实不存在，该字段值输出 null。\n\n"
-            f"JSON Schema:\n{schema_str}\n\n"
-            f"步骤输出：\n{source_text[:_SOURCE_CHAR_CAP]}"
+            "你是结构化数据抽取器。下面的「步骤输出」是某个工作流步骤执行后的结果文本。\n"
+            "请从中抽取信息并构造一个 JSON 对象，严格遵守：\n"
+            "1. 输出对象的顶层必须恰好包含以下字段，键名完全一致，不得改名、不得增删：\n"
+            f"{keys_block}\n"
+            "2. 每个字段的值须符合其类型；从步骤输出中找到对应内容，原样或整理后填入。\n"
+            "3. 只输出这一个 JSON 对象，不要任何解释、注释、代码围栏。\n"
+            "4. 仅当步骤输出中确实完全没有某字段的内容时才输出 null。\n\n"
+            f"完整 Schema：{schema_str}\n\n"
+            f"输出结构示例：\n{skeleton}\n\n"
+            f"步骤输出：\n{capped_source}"
         )
         prompt = base_prompt
         last_err = ""
@@ -157,7 +182,9 @@ class ExtractNode(BaseNode):
         for attempt in range(2):
             if attempt > 0:
                 prompt = base_prompt + (
-                    f"\n\n[上一次输出有误：{last_err}。请只输出符合 Schema 的 JSON 对象。]"
+                    "\n\n[上一次输出有误：" + last_err + "。请重新从步骤输出中抽取，"
+                    "确保顶层恰好包含上述全部字段且值非 null（除非确无内容），"
+                    "只输出修正后的 JSON 对象。]"
                 )
             resp = await m.ainvoke([HumanMessage(content=prompt)])
             raw = text_of_content(resp.content)

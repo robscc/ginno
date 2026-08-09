@@ -165,6 +165,34 @@ def test_extract_node_llm_path_writes_context(client, monkeypatch):
     assert any(s["id"] == "s1__extract" for s in aw["run"]["steps"])
 
 
+def test_extract_multi_key_string_and_array(client, monkeypatch):
+    """Mirror the real failure (market_news_summary string + stock_list array):
+    the improved prompt must let the extractor emit BOTH exact keys."""
+    wf = store.create_def({"name": "ExtractMulti", "dsl": {
+        "entry": "s1",
+        "nodes": [{"id": "s1", "type": "step", "agent": "research", "goal": "search news",
+                   "writes": {"market_news_summary": {"type": "string"},
+                              "stock_list": {"type": "array", "items": {"type": "object"}}}}],
+        "edges": [],
+    }})
+    _patch_build_model(monkeypatch, [
+        ScriptedChatModel(scripts=[
+            script(text="News: markets up. Stocks: X, Y."),
+            script(text=json.dumps({
+                "market_news_summary": "Markets rose across regions.",
+                "stock_list": [{"code": "X"}, {"code": "Y"}],
+            })),
+        ]),
+    ])
+    run_id = client.post("/api/workflow_runs", json={"workflow_id": wf["id"]}).json()["run"]["id"]
+    aw = client.post(f"/api/workflow_runs/{run_id}/_await").json()
+    assert aw["run"]["status"] == "done", aw
+    evs = client.get(f"/api/workflow_runs/{run_id}/events").json()["events"]
+    cw = [e for e in evs if e["kind"] == "context_write"
+          and set(e.get("keys") or []) == {"market_news_summary", "stock_list"}]
+    assert cw, "expected both keys written"
+
+
 def test_extract_node_write_json_fast_path(client, monkeypatch):
     wf = store.create_def({"name": "ExtractFast", "dsl": _writes_dsl()})
     _patch_build_model(monkeypatch, [
@@ -178,6 +206,21 @@ def test_extract_node_write_json_fast_path(client, monkeypatch):
     evs = client.get(f"/api/workflow_runs/{run_id}/events").json()["events"]
     cw = [e for e in evs if e["kind"] == "context_write" and e.get("keys") == ["stocks"]]
     assert cw and cw[-1].get("method") == "write_json"
+
+
+def test_cap_text_keeps_head_and_tail():
+    """Structured results often sit at the END of a long step reply — a head-only
+    truncation would drop them (master-plan §2.2 L)."""
+    from ginno_runtime.workflows.nodes.extract import _cap_text
+
+    short = "abc"
+    assert _cap_text(short, 100) == short
+    long_text = ("H" * 9000) + ("T" * 9000)
+    out = _cap_text(long_text, 8000)
+    assert len(out) <= 8000 + len("\n…[中段省略]…\n")
+    assert out.startswith("H")
+    assert out.rstrip().endswith("T"), "tail must be preserved"
+    assert "中段省略" in out
 
 
 def test_extract_failure_attributes_to_source_step(client, monkeypatch):
