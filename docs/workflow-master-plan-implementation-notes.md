@@ -8,11 +8,11 @@
 - [x] Round 1 后端：node_exit usage 遥测
 - [x] Round 2 后端：② ExtractNode + 注入器 + LoopNode back-edge + validate + steps_from_dsl(include_extracts) + build_model_by_name + 归因解析 + 提示词
 - [x] Round 2 后端：synthesis 记录三件套 + outcome 回填 + cases/stats/replay API
-- [ ] Round 3 前端：skipped/loop_skip/loop_cap 样式 + doctor 面板 + 耗时列 + 时间线过滤 tabs
-- [ ] Round 3 前端：Settings 总结质量 tab（指标 + case 列表 + 侧抽屉 + replay）
-- [ ] 完整性测试（新增测试用例 + 全量回归）— 后端已全过（688）
-- [ ] make app 构建
-- [ ] commit + push
+- [x] Round 3 前端：skipped/loop_skip/loop_cap 样式 + doctor 面板 + 耗时列 + 时间线过滤 tabs
+- [x] Round 3 前端：Settings 总结质量 tab（指标 + case 列表 + 侧抽屉 + replay）
+- [x] 完整性测试（新增 20+ 用例 + 全量回归）— 后端 692 全过，前端 tsc 干净
+- [x] make app 构建（exit 0）
+- [x] commit + push（branch: workflow-master-plan，commit 405a865）
 
 ## Deviations
 （记录偏离文档的决策）
