@@ -80,13 +80,22 @@ export function RightDock() {
           const Ic = t.icon;
           const n = t.id === "artifacts" ? unreadArtifacts : 0;
           // Mirror the tab-bar workflow badges so the collapsed dock carries
-          // the same signal (work item E).
-          const showActive = t.id === "workflow" && g.activeRunCount > 0;
-          const showFailed = t.id === "workflow" && g.unseenFailedCount > 0;
+          // the same signal (work item E). The yellow "needs your input" badge
+          // is the strongest signal and claims the first slot (P1); each
+          // following badge shifts 18px left.
+          const wfBadges: Array<{ count: number; cls: string }> = [];
+          if (t.id === "workflow") {
+            if (g.pendingHumanCount > 0)
+              wfBadges.push({ count: g.pendingHumanCount, cls: "bg-yellow text-black animate-pulse" });
+            if (g.activeRunCount > 0)
+              wfBadges.push({ count: g.activeRunCount, cls: "bg-blue text-white animate-pulse" });
+            if (g.unseenFailedCount > 0)
+              wfBadges.push({ count: g.unseenFailedCount, cls: "bg-red text-white" });
+          }
           const badgeExtra = n
             ? `，${n} 个新文件`
-            : showActive || showFailed
-              ? `，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
+            : wfBadges.length
+              ? `，${g.pendingHumanCount} 个等待输入，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
               : "";
           return (
             <button
@@ -103,20 +112,15 @@ export function RightDock() {
                   {n > 99 ? "99+" : n}
                 </span>
               )}
-              {showActive && (
-                <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-[16px] animate-pulse items-center justify-center rounded-full bg-blue px-1 text-[10px] font-semibold leading-none text-white">
-                  {g.activeRunCount}
-                </span>
-              )}
-              {showFailed && (
+              {wfBadges.map((b, i) => (
                 <span
-                  className={`absolute -top-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red px-1 text-[10px] font-semibold leading-none text-white ${
-                    showActive ? "-right-4" : "-right-0.5"
-                  }`}
+                  key={i}
+                  className={`absolute -top-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-semibold leading-none ${b.cls}`}
+                  style={{ right: `${-2 - i * 18}px` }}
                 >
-                  {g.unseenFailedCount}
+                  {b.count > 99 ? "99+" : b.count}
                 </span>
-              )}
+              ))}
             </button>
           );
         })}

@@ -45,10 +45,10 @@ def test_update_dsl_creates_new_version_keeps_history(isolated_home):
     new_dsl["edges"] = new_dsl["edges"] + [{"from": "s1", "to": "s2"}]
     wf2 = store.update_def(wid, {"dsl": new_dsl})
     assert wf2["version"] == 2
-    assert store.list_versions(wid) == [
-        {"version": 1, "current": False},
-        {"version": 2, "current": True},
-    ]
+    vlist = store.list_versions(wid)
+    assert [(v["version"], v["current"]) for v in vlist] == [(1, False), (2, True)]
+    # ts (version file mtime) rides along for the version-history drawer
+    assert all(isinstance(v.get("ts"), float) for v in vlist)
     assert len(store.get_version(wid, 1)["nodes"]) == 1
     assert len(store.get_version(wid, 2)["nodes"]) == 2
 

@@ -168,6 +168,14 @@ export interface WorkflowRun {
   retry_run_id?: string | null; // set on the original once it has been retried
   session_id?: string | null;
   present_in_session_id?: string | null;
+  // Why the run is paused (workflow-ux-redesign P1): stamped by the server when
+  // the run transitions to "paused". kind "human" → show the question card.
+  pending_interrupt?: {
+    kind?: string; // "human"
+    node_id?: string | null;
+    question?: string | null;
+    [k: string]: unknown;
+  } | null;
 }
 
 /** One execution event from ``runs/<id>.events.jsonl`` (GET /workflow_runs/{id}/events).
@@ -176,7 +184,7 @@ export interface WorkflowRun {
 export interface WorkflowRunEvent {
   ts?: number;
   run_id?: string;
-  kind?: string; // node_enter | node_exit | tool_call | tool_result | context_write | loop_iter | interrupt | resume | error | done | paused | cancelled | interrupted
+  kind?: string; // node_enter | node_exit | tool_call | tool_result | context_write | loop_iter | loop_skip | loop_cap | interrupt | resume | error | done | paused | cancelled | interrupted
   node_id?: string | null;
   node_type?: string;
   status?: string;
@@ -186,6 +194,8 @@ export interface WorkflowRunEvent {
   content?: string; // tool_result: output (server caps at 2000 chars)
   calls?: Array<{ name?: string; args?: unknown }>; // tool_call
   keys?: string[]; // context_write
+  method?: string; // context_write: "write_json" | "llm" (master-plan §2.2)
+  usage?: { input_tokens?: number; output_tokens?: number }; // node_exit telemetry
   index?: number; // loop_iter
   of?: number; // loop_iter
   question?: string; // interrupt

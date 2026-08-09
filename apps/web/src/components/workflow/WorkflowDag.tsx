@@ -69,11 +69,14 @@ export function WorkflowDag({
   status,
   selected,
   onSelect,
+  interactive = true,
 }: {
   dsl?: Dsl;
   status?: Record<string, string>;
   selected?: string | null;
   onSelect?: (id: string | null) => void;
+  /** false = pure preview (e.g. SummarizeModal): nodes are not clickable. */
+  interactive?: boolean;
 }) {
   const [sel, setSel] = useState<string | null>(null);
   const selId = selected !== undefined ? selected : sel;
@@ -145,8 +148,8 @@ export function WorkflowDag({
             <g
               key={n.id}
               transform={`translate(${p.x},${p.y})`}
-              onClick={() => setSelId(isSel ? null : n.id)}
-              style={{ cursor: "pointer" }}
+              onClick={interactive ? () => setSelId(isSel ? null : n.id) : undefined}
+              style={{ cursor: interactive ? "pointer" : "default" }}
             >
               <rect
                 width={NW}

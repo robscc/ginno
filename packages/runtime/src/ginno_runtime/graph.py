@@ -232,6 +232,9 @@ def text_of_content(content) -> str:
     Multimodal content (e.g. a HumanMessage carrying text + image blocks) is a
     list of provider blocks; join the text parts so downstream consumers (wiki
     retrieval, skill detection) keep working for image-first messages.
+    Thinking blocks (extended-thinking Anthropic models via the hub) are
+    skipped — they are reasoning, not output; stringifying the whole list used
+    to corrupt payloads (summarize-from-session parsed ``str(list)`` → garbage).
     """
     if isinstance(content, str):
         return content
@@ -241,10 +244,13 @@ def text_of_content(content) -> str:
             if isinstance(b, str):
                 if b:
                     parts.append(b)
-            elif isinstance(b, dict) and b.get("type") == "text":
-                t = b.get("text") or ""
-                if t:
-                    parts.append(t)
+                continue
+            btype = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+            if btype == "thinking":
+                continue  # reasoning, never part of the usable output
+            text = b.get("text") if isinstance(b, dict) else getattr(b, "text", None)
+            if text:
+                parts.append(str(text))
         return "\n".join(parts)
     return ""
 

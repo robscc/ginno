@@ -14,6 +14,7 @@ import { HooksSettings } from "./HooksSettings";
 import { SessionFilesSettings } from "./SessionFilesSettings";
 import { UsageSettings } from "./UsageSettings";
 import { ToolLabelsSettings } from "./ToolLabelsSettings";
+import { SynthesisQualitySettings } from "./SynthesisQualitySettings";
 
 export function SettingsView({ tab }: { tab: string }) {
   return (
@@ -25,6 +26,7 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "mcp" && <McpSettings />}
         {tab === "agents" && <AgentsSettings />}
         {tab === "workflows" && <WorkflowsSettings />}
+        {tab === "synthesis-quality" && <SynthesisQualitySettings />}
         {tab === "knowledge" && <KnowledgeSettings />}
         {tab === "permissions" && <PermissionsSettings />}
         {tab === "hooks" && <HooksSettings />}
@@ -33,7 +35,7 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "general" && <GeneralSettings />}
         {tab === "notifications" && <NotificationsSettings />}
         {tab === "tool-labels" && <ToolLabelsSettings />}
-        {!["model-api", "skills", "mcp", "agents", "workflows", "knowledge", "permissions", "hooks", "session-files", "usage", "general", "notifications", "tool-labels"].includes(tab) && (
+        {!["model-api", "skills", "mcp", "agents", "workflows", "synthesis-quality", "knowledge", "permissions", "hooks", "session-files", "usage", "general", "notifications", "tool-labels"].includes(tab) && (
           <div className="px-8 py-10 text-sm text-faint">Unknown tab: {tab}</div>
         )}
       </div>

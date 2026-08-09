@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { Search } from "lucide-react";
 import { useGinno } from "@/lib/store";
-import * as api from "@/lib/runtime";
 import { WorkflowInspector } from "@/components/workflow/WorkflowInspector";
 
 /** Workflow detail page (design §10 / P4): list on the left, live inspector
@@ -11,62 +11,62 @@ import { WorkflowInspector } from "@/components/workflow/WorkflowInspector";
 export default function WorkflowsPage() {
   const g = useGinno();
   const [selId, setSelId] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const sel = g.workflows.find((w) => w.id === selId) || g.workflows[0] || null;
+  // P3: client-side search + 全部/系统/用户 filter tabs.
+  const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<"all" | "system" | "user">("all");
+  const visible = g.workflows.filter((w) => {
+    if (scope === "system" && !w.system) return false;
+    if (scope === "user" && w.system) return false;
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      w.name.toLowerCase().includes(q) || (w.description || "").toLowerCase().includes(q)
+    );
+  });
+  const sel = visible.find((w) => w.id === selId) || visible[0] || null;
 
-  // P6: distill the most recent session into a DSL draft, then create a workflow.
-  const summarizeLastSession = async () => {
-    const last = g.sessions[0];
-    if (!last) {
-      setMsg("没有可总结的会话");
-      return;
-    }
-    setBusy(true);
-    setMsg(null);
-    try {
-      const r = await api.summarizeSessionToDsl(last.id);
-      if (!r.ok) {
-        setMsg(`总结失败：${r.error}`);
-        return;
-      }
-      const created = await api.createWorkflow({
-        name: (r.dsl.name as string) || "从会话总结",
-        description: (r.dsl.description as string) || "",
-        dsl: r.dsl as never,
-      });
-      if (created.ok && created.workflow) {
-        setSelId(created.workflow.id);
-        g.reloadWorkflows();
-        setMsg(`已从会话生成工作流 v1：${created.workflow.name}`);
-      } else {
-        setMsg("创建工作流失败");
-      }
-    } catch {
-      setMsg("无法连接运行时");
-    } finally {
-      setBusy(false);
-    }
-  };
+  // 「总结成流程」moved to the chat composer (workflow-ux-redesign S1): the
+  // entry lives where the conversation happens, with session picker + draft
+  // modal. This page stays focused on inspecting definitions/runs.
 
   return (
     <div className="grid h-full grid-cols-1 gap-4 overflow-auto p-5 lg:grid-cols-[320px_minmax(0,1fr)]">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold text-txt">工作流</h2>
-          <button
-            onClick={summarizeLastSession}
-            disabled={busy || g.sessions.length === 0}
-            title="把最近一次会话提炼成工作流 DSL 草稿并创建为 v1"
-            className="ml-auto rounded-md border border-line2 px-2 py-1 text-[11px] text-muted transition-colors hover:text-txt disabled:opacity-50"
-          >
-            {busy ? "总结中…" : "从会话总结"}
-          </button>
         </div>
-        <p className="text-xs text-muted">版本化 DSL，由 LangGraph 图执行。选一个查看执行图 / 上下文 / 日志。</p>
-        {msg && <div className="text-[11px] text-violet">{msg}</div>}
+        <p className="text-xs text-muted">版本化 DSL，由 LangGraph 图执行。选一个查看执行图 / 上下文 / 日志。在聊天页可用「总结成流程」从会话创建工作流。</p>
+
+        {/* P3: search + scope tabs */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-faint" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索 workflow 名称…"
+            className="w-full rounded border border-line bg-base py-1 pl-7 pr-2 text-xs text-txt placeholder:text-faint focus:border-violet/60 focus:outline-none"
+          />
+        </div>
+        <div className="flex gap-3 border-b border-line2 text-[11px]">
+          {([
+            ["all", "全部"],
+            ["system", "系统"],
+            ["user", "用户"],
+          ] as const).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setScope(k)}
+              className={`-mb-px border-b pb-1 transition-colors ${
+                scope === k ? "border-violet text-violet" : "border-transparent text-faint hover:text-muted"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         <div className="space-y-1.5">
-          {g.workflows.map((w) => (
+          {visible.map((w) => (
             <button
               key={w.id}
               onClick={() => setSelId(w.id)}
@@ -97,7 +97,9 @@ export default function WorkflowsPage() {
               <div className="mt-0.5 text-[10px] text-faint">{w.steps.length} 步</div>
             </button>
           ))}
-          {g.workflows.length === 0 && <div className="text-xs text-faint">暂无工作流。</div>}
+          {visible.length === 0 && (
+            <div className="text-xs text-faint">{g.workflows.length === 0 ? "暂无工作流。" : "没有匹配的工作流"}</div>
+          )}
         </div>
       </div>
 

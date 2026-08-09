@@ -74,13 +74,15 @@ export function RightPanel() {
         <div role="tablist" aria-label="右栏面板" className="flex min-w-0 flex-1 items-center gap-0.5">
           {RIGHT_TABS.map((t) => {
             const Ic = t.icon;
-            // Workflow tab badge (work item E): blue = active runs (pulsing),
+            // Workflow tab badge (work item E): yellow = waiting for a human
+            // answer (strongest signal, P1), blue = active runs (pulsing),
             // red = failures the user hasn't looked at yet.
+            const showHuman = t.id === "workflow" && g.pendingHumanCount > 0;
             const showActive = t.id === "workflow" && g.activeRunCount > 0;
             const showFailed = t.id === "workflow" && g.unseenFailedCount > 0;
             const ariaExtra =
-              t.id === "workflow" && (showActive || showFailed)
-                ? `，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
+              t.id === "workflow" && (showHuman || showActive || showFailed)
+                ? `，${g.pendingHumanCount} 个等待输入，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
                 : "";
             return (
               <button
@@ -96,6 +98,14 @@ export function RightPanel() {
               >
                 <Ic className="h-3.5 w-3.5 shrink-0" />
                 {!compact && <span className="ml-1 truncate">{t.label}</span>}
+                {showHuman && (
+                  <span
+                    className="ml-1 inline-flex h-4 min-w-[16px] animate-pulse items-center justify-center rounded-full bg-yellow px-1 text-[10px] font-semibold leading-none text-black"
+                    title={`${g.pendingHumanCount} 个运行等待你的输入`}
+                  >
+                    {g.pendingHumanCount}
+                  </span>
+                )}
                 {showActive && (
                   <span
                     className="ml-1 inline-flex h-4 min-w-[16px] animate-pulse items-center justify-center rounded-full bg-blue px-1 text-[10px] font-semibold leading-none text-white"

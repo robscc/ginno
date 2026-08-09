@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Loader2, RotateCcw } from "lucide-react";
 import type { WorkflowRun, WorkflowRunEvent } from "@/lib/types";
 import { getWorkflowRunEvents } from "@/lib/runtime";
 import { buildRunErrorReport, copyText, failedStep } from "@/lib/errorReport";
@@ -25,15 +25,50 @@ function fallbackError(run: WorkflowRun): string {
  * Data: traceback comes from ``run.error_detail`` when present; otherwise (or
  * for the event tail / report) events are lazy-loaded on first expand.
  */
-export function RunErrorBox({ run, defaultOpen = false }: { run: WorkflowRun; defaultOpen?: boolean }) {
+export function RunErrorBox({
+  run,
+  defaultOpen = false,
+  onRetryFromCheckpoint,
+}: {
+  run: WorkflowRun;
+  defaultOpen?: boolean;
+  /** P2: 从失败步骤重试 — shown only for failed runs with node attribution
+   *  where the failure is NOT the first step (nothing to skip otherwise). */
+  onRetryFromCheckpoint?: () => Promise<{ ok?: boolean; detail?: string } | void>;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   const [events, setEvents] = useState<WorkflowRunEvent[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  const [resumeBusy, setResumeBusy] = useState(false);
+  const [resumeErr, setResumeErr] = useState<string | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const color = run.status === "interrupted" ? "#f97316" : "#ef4444";
   const step = failedStep(run);
+  const canResumeFromCheckpoint =
+    run.status === "failed" &&
+    !!run.error_detail?.node_id &&
+    !run.retry_run_id &&
+    run.steps.length > 0 &&
+    run.steps[0]?.id !== run.error_detail.node_id;
+
+  const doResume = async () => {
+    if (!onRetryFromCheckpoint || resumeBusy) return;
+    setResumeBusy(true);
+    setResumeErr(null);
+    try {
+      const r = await onRetryFromCheckpoint();
+      if (r && r.ok === false) {
+        setResumeErr(r.detail || "无法从断点重试");
+        setResumeBusy(false);
+      }
+      // ok: stay busy — the refresh swaps this panel for the new run card.
+    } catch {
+      setResumeErr("无法连接运行时");
+      setResumeBusy(false);
+    }
+  };
   const traceback =
     run.error_detail?.traceback ||
     (events || []).filter((e) => e.kind === "error").map((e) => e.traceback).filter(Boolean).pop() ||
@@ -104,6 +139,23 @@ export function RunErrorBox({ run, defaultOpen = false }: { run: WorkflowRun; de
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {canResumeFromCheckpoint && onRetryFromCheckpoint && (
+            <button
+              onClick={() => void doResume()}
+              disabled={resumeBusy}
+              className={`flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:bg-card2 hover:text-txt disabled:opacity-50 ${
+                resumeErr ? "anim-shake" : ""
+              }`}
+              title={`从「${step?.title || run.error_detail?.node_id}」节点恢复，跳过已完成的步骤`}
+            >
+              {resumeBusy ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3 w-3" />
+              )}
+              {resumeBusy ? "恢复中…" : "从失败步骤重试"}
+            </button>
+          )}
           <button
             onClick={() => setOpen((o) => !o)}
             className="rounded border border-line px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:bg-card2 hover:text-txt"
@@ -130,6 +182,7 @@ export function RunErrorBox({ run, defaultOpen = false }: { run: WorkflowRun; de
           </button>
         </div>
       </div>
+      {resumeErr && <div className="px-2 pb-1.5 text-[10px] text-red">{resumeErr}</div>}
 
       {open && (
         <div className="space-y-2 border-t border-red/20 px-2 py-2">

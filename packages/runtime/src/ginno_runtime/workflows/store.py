@@ -227,17 +227,19 @@ def create_def(data: dict[str, Any]) -> dict[str, Any]:
     if errs:
         raise ValueError("invalid DSL: " + "; ".join(errs))
     _write_json(_version_path(wf_id, 1), d)
-    _write_json(
-        _meta_path(wf_id),
-        {
-            "id": wf_id,
-            "name": d["name"],
-            "description": d["description"],
-            "current": 1,
-            "versions": [1],
-            "system": bool(data.get("system")),
-        },
-    )
+    meta = {
+        "id": wf_id,
+        "name": d["name"],
+        "description": d["description"],
+        "current": 1,
+        "versions": [1],
+        "system": bool(data.get("system")),
+    }
+    # Provenance link back to the synthesis case that produced this workflow
+    # (quality-plan §3.1 outcome backfill).
+    if data.get("synthesis_id"):
+        meta["synthesized_from"] = {"synthesis_id": data["synthesis_id"]}
+    _write_json(_meta_path(wf_id), meta)
     return get_def(wf_id)
 
 
@@ -309,7 +311,19 @@ def list_versions(wf_id: str) -> list[dict[str, Any]]:
     if not meta:
         return []
     cur = meta.get("current")
-    return [{"version": n, "current": n == cur} for n in sorted(meta.get("versions") or [])]
+    out: list[dict[str, Any]] = []
+    for n in sorted(meta.get("versions") or []):
+        row: dict[str, Any] = {"version": n, "current": n == cur}
+        # Version files are immutable append-only snapshots: mtime == commit time
+        # (used by the version-history drawer's relative timestamps).
+        try:
+            f = _version_path(wf_id, n)
+            if f.exists():
+                row["ts"] = f.stat().st_mtime
+        except OSError:
+            pass
+        out.append(row)
+    return out
 
 
 def get_version(wf_id: str, n: int) -> dict[str, Any] | None:
@@ -377,7 +391,10 @@ def create_run(
 ) -> dict[str, Any]:
     now = time.time()
     d, ver = _wf_dsl_and_version(wf)
-    steps = wf_dsl.steps_from_dsl(d)
+    # include_extracts: the run's step list must account for the compiler's
+    # injected ``<id>__extract`` nodes, otherwise the step-based run-status
+    # recomputation finalizes the run before extraction runs (master-plan §2.2).
+    steps = wf_dsl.steps_from_dsl(d, include_extracts=True)
     # Fill the {{placeholders}} in step titles with the run's initial context
     # (DSL context.initial merged with the trigger's override — exactly what the
     # engine seeds) so the run reads as real content ("把 dingtalk 上 id=123 的
@@ -440,7 +457,9 @@ def update_step(run_id: str, step_id: str, status: str, output: str = "") -> dic
     # terminal status (failed/cancelled/interrupted) or a paused run back to
     # done/running.
     if run.get("status") == "running":
-        done = all(s["status"] in ("done", "failed") for s in run.get("steps", []))
+        # "skipped" is terminal too: a loop body skipped via on_empty must not
+        # keep the run "running" forever (master-plan §2.1).
+        done = all(s["status"] in ("done", "failed", "skipped") for s in run.get("steps", []))
         run["status"] = "done" if done else "running"
         if done and not run.get("finished"):
             run["finished"] = time.time()

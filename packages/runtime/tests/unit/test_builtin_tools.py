@@ -18,7 +18,13 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def ws(tmp_path):
-    return str(tmp_path)
+    # A PROPER subdir of the (test) home — mirrors real session workspaces
+    # (projects/<slug>/sessions/<id>/), which the hard-deny rule exempts. A
+    # workspace equal to home itself is the workflow cwd fallback and stays
+    # protected, so tests must not use home directly.
+    d = tmp_path / "ws"
+    d.mkdir(exist_ok=True)
+    return str(d)
 
 
 @pytest.fixture

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Play } from "lucide-react";
+import { Check, ChevronDown, Loader2, Play, Shield, ShieldAlert, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { WorkflowDef, WorkflowRun, WorkflowRunEvent } from "@/lib/types";
@@ -12,6 +12,7 @@ import { WorkflowDag } from "./WorkflowDag";
 import { WorkflowLogTimeline } from "./WorkflowLogTimeline";
 import { ContextEditor } from "./ContextEditor";
 import { RunErrorBox } from "./RunErrorBox";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 
 const STEP_COLOR: Record<string, string> = {
   done: "#22c55e",
@@ -20,6 +21,7 @@ const STEP_COLOR: Record<string, string> = {
   paused: "#f59e0b",
   cancelled: "#71717a",
   interrupted: "#f97316",
+  skipped: "#a1a1aa",
 };
 
 function fmtRunOption(r: WorkflowRun): string {
@@ -48,6 +50,14 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
   const [selRunId, setSelRunId] = useState<string | null>(null);
   const fb = useTriggerFeedback();
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  // P2: version history drawer (diff + rollback) opened from the v-badge.
+  const [versionDrawer, setVersionDrawer] = useState(false);
+  // §4.2 doctor: static dataflow lint results + expandable panel.
+  const [doctor, setDoctor] = useState<{
+    errors: Array<{ rule: string; node_id?: string; message: string }>;
+    warnings: Array<{ rule: string; node_id?: string; message: string }>;
+  } | null>(null);
+  const [doctorOpen, setDoctorOpen] = useState(false);
 
   // All runs of THIS workflow, newest first (listWorkflowRuns ordering).
   const wfRuns = runs.filter((r) => r.workflow_id === wf.id);
@@ -60,7 +70,23 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
     setEvents([]);
     setSelNode(null);
     setErrMsg(null);
+    setDoctorOpen(false);
   }, [wf.id]);
+
+  // §4.2: run the dataflow lint whenever the definition/version changes.
+  useEffect(() => {
+    let alive = true;
+    setDoctor(null);
+    api
+      .doctorWorkflow(wf.id)
+      .then((r) => {
+        if (alive && r.ok) setDoctor({ errors: r.errors || [], warnings: r.warnings || [] });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [wf.id, wf.version]);
 
   useEffect(() => {
     if (!activeId) {
@@ -141,12 +167,72 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
 
   const filteredEvents = selNode ? events.filter((e) => e.node_id === selNode) : events;
 
+  // §4.5 per-node telemetry from the event stream: latency (node_enter→node_exit)
+  // and token usage (node_exit.usage), keyed by node id.
+  const nodeStats = useMemo(() => {
+    const enter: Record<string, number> = {};
+    const stats: Record<string, { latencyMs?: number; tokens?: number }> = {};
+    for (const e of events) {
+      const nid = e.node_id;
+      if (!nid) continue;
+      if (e.kind === "node_enter" && typeof e.ts === "number") enter[nid] = e.ts;
+      if (e.kind === "node_exit" && typeof e.ts === "number") {
+        const s = (stats[nid] ??= {});
+        if (enter[nid] !== undefined) s.latencyMs = Math.max(0, (e.ts - enter[nid]) * 1000);
+        const u = e.usage;
+        if (u) s.tokens = (s.tokens || 0) + (u.input_tokens || 0) + (u.output_tokens || 0);
+      }
+    }
+    return stats;
+  }, [events]);
+
+  // P3: {{context.x}} placeholders still unfilled (no override + empty initial)
+  // — the 运行 button switches to a yellow outline so the gap is visible, but
+  // running stays allowed (empty strings are a legitimate input).
+  const unfilledVars = (() => {
+    const keys = new Set<string>();
+    try {
+      for (const m of JSON.stringify(wf.dsl ?? {}).matchAll(/\{\{\s*context\.([a-zA-Z0-9_]+)\s*\}\}/g)) {
+        keys.add(m[1]);
+      }
+    } catch {
+      return [] as string[];
+    }
+    const initial =
+      ((wf.dsl as { context?: { initial?: Record<string, unknown> } } | undefined)?.context?.initial) || {};
+    const empty = (v: unknown) => v === undefined || v === null || v === "";
+    return [...keys].filter((k) => empty(ctxOverride[k]) && empty(initial[k]));
+  })();
+
   return (
     <div className="space-y-3">
       <ContextEditor dsl={wf.dsl as never} onChange={setCtxOverride} />
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium text-txt">执行图</span>
+        {/* P2: current DSL version — click to open history (diff + rollback) */}
+        <button
+          onClick={() => setVersionDrawer(true)}
+          title="查看版本历史与差异"
+          className="btn-press flex items-center gap-1 rounded border border-line2 px-1.5 py-0.5 text-[10px] text-faint hover:text-muted"
+        >
+          v{wf.version ?? 1} <ChevronDown className="h-3 w-3" />
+        </button>
+        {/* §4.2 doctor badge: red = errors, yellow = warnings only. */}
+        {doctor && (doctor.errors.length > 0 || doctor.warnings.length > 0) && (
+          <button
+            onClick={() => setDoctorOpen((o) => !o)}
+            title="查看 DSL 数据流检查结果"
+            className={`btn-press flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
+              doctor.errors.length > 0
+                ? "border-red/40 text-red hover:bg-red/10"
+                : "border-yellow/40 text-yellow hover:bg-yellow/10"
+            }`}
+          >
+            <ShieldAlert className="h-3 w-3" />
+            {doctor.errors.length > 0 ? doctor.errors.length : doctor.warnings.length}
+          </button>
+        )}
         {selNode && (
           <button
             onClick={() => setSelNode(null)}
@@ -182,7 +268,12 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         <button
           onClick={trigger}
           disabled={busy || fb.phase === "busy"}
-          className={`btn-press ml-auto flex items-center gap-1.5 rounded-md bg-violet px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 ${fb.animClass}`}
+          title={unfilledVars.length ? `有 ${unfilledVars.length} 个模板变量未填：${unfilledVars.join(", ")}` : undefined}
+          className={`btn-press ml-auto flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium disabled:opacity-50 ${
+            unfilledVars.length
+              ? "border border-yellow/60 bg-yellow/10 text-yellow hover:bg-yellow/20"
+              : "bg-violet text-white hover:opacity-90"
+          } ${fb.animClass}`}
         >
           {busy || fb.phase === "busy" ? (
             <>
@@ -196,6 +287,39 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         </button>
       </div>
       {errMsg && <div className="rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red">{errMsg}</div>}
+
+      {/* §4.2 doctor panel: expanded findings with a one-click dev-session fix. */}
+      {doctorOpen && doctor && (doctor.errors.length > 0 || doctor.warnings.length > 0) && (
+        <div className="space-y-1.5 rounded-lg border border-line bg-base/30 p-2.5">
+          <div className="flex items-center gap-1.5">
+            <ShieldAlert className="h-3.5 w-3.5 text-muted" />
+            <span className="text-xs font-medium text-txt">DSL 数据流检查</span>
+            <button onClick={() => setDoctorOpen(false)} className="ml-auto text-[10px] text-faint hover:text-muted">
+              收起 ▴
+            </button>
+          </div>
+          {doctor.errors.map((e, i) => (
+            <div key={`e${i}`} className="flex items-start gap-1.5 text-[11px]">
+              <X className="mt-0.5 h-3 w-3 shrink-0 text-red" />
+              <span className="text-red">{e.message}</span>
+            </div>
+          ))}
+          {doctor.warnings.map((w, i) => (
+            <div key={`w${i}`} className="flex items-start gap-1.5 text-[11px]">
+              <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-yellow" />
+              <span className="text-yellow">{w.message}</span>
+            </div>
+          ))}
+          {doctor.errors.length > 0 && (
+            <button
+              onClick={openDevSession}
+              className="btn-press mt-1 flex items-center gap-1 rounded-md border border-violet/40 px-2 py-1 text-[11px] text-violet hover:bg-violet/[0.06]"
+            >
+              一键升级（开发会话补 writes 声明）
+            </button>
+          )}
+        </div>
+      )}
 
       <WorkflowDag
         dsl={wf.dsl as never}
@@ -212,28 +336,61 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         </div>
       )}
 
-      {run && <RunErrorBox run={run} />}
+      {run && (
+        <RunErrorBox
+          run={run}
+          onRetryFromCheckpoint={async () => {
+            try {
+              const r = await api.retryWorkflowRunFromCheckpoint(run.id);
+              const body = r as { ok?: boolean; detail?: string; run?: WorkflowRun };
+              if (body.ok && body.run) {
+                setSelRunId(body.run.id);
+                setRun(body.run);
+                setBusy(true);
+                setEvents([]);
+                return undefined;
+              }
+              return { ok: false, detail: body.detail || "无法从断点重试" };
+            } catch {
+              return { ok: false, detail: "无法连接运行时" };
+            }
+          }}
+        />
+      )}
 
       {run && (
         <div className="space-y-1">
           <div className="text-xs font-medium text-txt">步骤清单</div>
           <div className="space-y-0.5">
-            {run.steps.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => setSelNode((n) => (n === s.id ? null : s.id))}
-                className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-[11px] transition-colors hover:bg-card2/50 ${
-                  selNode === s.id ? "bg-card2/60" : ""
-                }`}
-              >
-                <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: STEP_COLOR[s.status] || "rgb(var(--faint))" }}
-                />
-                <span style={{ color: STEP_COLOR[s.status] || "rgb(var(--muted))" }}>{s.status}</span>
-                <span className="text-txt">{s.title || s.id}</span>
-              </button>
-            ))}
+            {run.steps.map((s) => {
+              const st = nodeStats[s.id] || {};
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => setSelNode((n) => (n === s.id ? null : s.id))}
+                  className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-[11px] transition-colors hover:bg-card2/50 ${
+                    selNode === s.id ? "bg-card2/60" : ""
+                  }`}
+                >
+                  <span
+                    className="h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{ background: STEP_COLOR[s.status] || "rgb(var(--faint))" }}
+                  />
+                  <span style={{ color: STEP_COLOR[s.status] || "rgb(var(--muted))" }}>{s.status}</span>
+                  <span className="min-w-0 flex-1 truncate text-txt">{s.title || s.id}</span>
+                  {st.latencyMs !== undefined && (
+                    <span className="shrink-0 tabular-nums text-faint">
+                      {st.latencyMs >= 1000 ? `${(st.latencyMs / 1000).toFixed(1)}s` : `${Math.round(st.latencyMs)}ms`}
+                    </span>
+                  )}
+                  {st.tokens !== undefined && st.tokens > 0 && (
+                    <span className="shrink-0 tabular-nums text-faint" title="tokens (in+out)">
+                      {st.tokens >= 1000 ? `${(st.tokens / 1000).toFixed(1)}K` : st.tokens}↑
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -242,29 +399,67 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         <div className="text-xs font-medium text-txt">
           执行日志{selNode ? ` · 节点 ${selNode}` : ""}
         </div>
-        <WorkflowLogTimeline events={filteredEvents} />
+        <WorkflowLogTimeline events={filteredEvents} filters />
       </div>
 
-      <div className="space-y-1 rounded-lg border border-line bg-base/30 p-2.5">
-        <div className="text-xs font-medium text-txt">Supervisor</div>
+      {/* Supervisor interventions of the inspected run (workflow-ux-redesign
+          P2): the deterministic decider (coerce/patch_dsl/abort) already runs
+          inside the engine — this surfaces what it did instead of a stub. */}
+      <div className="space-y-1.5 rounded-lg border border-line bg-base/30 p-2.5">
+        <div className="flex items-center gap-1.5">
+          <Shield className="h-3.5 w-3.5 text-muted" />
+          <span className="text-xs font-medium text-txt">Supervisor</span>
+          <span className="ml-auto text-[10px] text-faint">自动模式</span>
+        </div>
         {(() => {
-          const sup = (wf.dsl as { supervisor?: { enabled?: boolean; mode?: string } } | undefined)
-            ?.supervisor;
-          const on = !!sup?.enabled;
+          const supEvents = events.filter((e) => e.kind === "supervisor_intervene");
+          if (!supEvents.length) {
+            return <div className="text-[11px] text-faint">本次运行未触发 Supervisor 干预</div>;
+          }
           return (
-            <div className="text-[11px] text-muted">
-              状态：
-              <span className={on ? "text-violet" : "text-faint"}>
-                {on ? `已启用 · 模式 ${sup?.mode ?? "human"}` : "未启用"}
-              </span>
-              <p className="mt-1 text-faint">
-                监控节点（每步后观察并决定 继续/重试/跳过/改上下文/暂停）的 auto 策略与人工决策 UX
-                待深入讨论，本期仅占位，尚未接入图执行。
-              </p>
+            <div className="space-y-1.5">
+              <div className="text-[10px] text-faint">本次运行 {supEvents.length} 次干预</div>
+              {supEvents.map((e, i) => {
+                const action = String(e.action ?? "?");
+                const ok = action === "coerce" || action === "patch_dsl";
+                const errs = Array.isArray(e.errors) ? (e.errors as unknown[]) : [];
+                return (
+                  <div key={i} className="rounded border border-line bg-card p-2 text-[11px]">
+                    <div className="flex items-center gap-1.5">
+                      {ok ? (
+                        <Check className="h-3 w-3 text-green" />
+                      ) : action === "abort" ? (
+                        <X className="h-3 w-3 text-red" />
+                      ) : (
+                        <ShieldAlert className="h-3 w-3 text-orange" />
+                      )}
+                      <span className={ok ? "text-green" : action === "abort" ? "text-red" : "text-orange"}>
+                        {action}
+                      </span>
+                      {e.node_id && <span className="font-mono text-faint">· {e.node_id}</span>}
+                    </div>
+                    {errs.length > 0 && (
+                      <div className="mt-0.5 text-faint">校验错误：{errs.map(String).join("；")}</div>
+                    )}
+                    {typeof e.reason === "string" && e.reason && (
+                      <div className="mt-0.5 text-muted">{e.reason}</div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           );
         })()}
       </div>
+
+      {versionDrawer && (
+        <VersionHistoryDrawer
+          workflowId={wf.id}
+          currentVersion={wf.version ?? 1}
+          onClose={() => setVersionDrawer(false)}
+          onRolledBack={() => g.reloadWorkflows()}
+        />
+      )}
     </div>
   );
 }

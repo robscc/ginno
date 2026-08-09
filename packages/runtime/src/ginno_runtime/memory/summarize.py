@@ -10,6 +10,7 @@ from __future__ import annotations
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .. import paths
+from ..graph import text_of_content
 from ..models import build_model
 from .pool import clear_pool, read_pool, sanitize_for_memory
 
@@ -82,7 +83,7 @@ async def summarize_pool(model_provider: str | None = None) -> dict:
             SystemMessage(content=SUMMARIZE_PROMPT),
             HumanMessage(content=f"## Existing Memory\n{existing}\n\n## New Conversation Excerpts\n{excerpts}\n\nPlease produce an updated memory summary."),
         ])
-        new_memory = response.content if isinstance(response.content, str) else str(response.content)
+        new_memory = text_of_content(response.content)
         _write_memory(new_memory)
         clear_pool()
         return {

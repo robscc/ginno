@@ -275,16 +275,37 @@ async def _serve_web(full_path: str):
     # HTML entry points must never be cached: they reference content-hashed
     # /_next chunks, and a heuristically-cached stale page (WKWebView) would
     # keep the webview on an old frontend build after a rebuild. The chunks
-    # themselves are immutable (hashed names) and cache freely.
+    # themselves are immutable (hashed names) and cache freely. The route .txt
+    # RSC payloads are no-store too: they are regenerated per build under the
+    # SAME name (no content hash in the filename).
     no_store = {"Cache-Control": "no-store"}
+    root = WEB_OUT.resolve()
+
+    def _safe(rel: str) -> _Path | None:
+        """Resolve ``rel`` inside WEB_OUT only (guards %-decoded traversal)."""
+        try:
+            f = (WEB_OUT / rel).resolve()
+        except OSError:
+            return None
+        return f if f.is_file() and f.is_relative_to(root) else None
+
     p = full_path.strip("/")
     if p == "":
         return FileResponse(WEB_OUT / "index.html", headers=no_store)
-    cand = WEB_OUT / (p + ".html")
-    if cand.exists():
+    # Exact files shipped with the export — critically the route ``.txt`` RSC
+    # payloads (workflows.txt, settings/*.txt, …). The App Router fetches them
+    # for soft navigation; answering with index.html instead forces a FULL page
+    # reload on every menu switch, wiping all in-memory UI state (in-flight
+    # summarize loading, open modals, chat drafts).
+    exact = _safe(p)
+    if exact is not None:
+        headers = no_store if p.endswith((".html", ".txt")) else None
+        return FileResponse(exact, headers=headers)
+    cand = _safe(p + ".html")
+    if cand is not None:
         return FileResponse(cand, headers=no_store)
-    idx = WEB_OUT / p / "index.html"
-    if idx.exists():
+    idx = _safe(p + "/index.html")
+    if idx is not None:
         return FileResponse(idx, headers=no_store)
     return FileResponse(WEB_OUT / "index.html", headers=no_store)  # SPA fallback
 

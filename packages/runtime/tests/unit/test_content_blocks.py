@@ -47,6 +47,32 @@ def test_text_of_content_empty_list():
     assert text_of_content([]) == ""
 
 
+def test_text_of_content_skips_thinking_blocks():
+    # Extended-thinking Anthropic models via the corporate hub return content
+    # as a block list: ['', {'thinking': ...}, '<json text>']. str(list) used
+    # to corrupt the payload (summarize-from-session regression, 2026-08-09).
+    content = [
+        "",
+        {"thinking": "Let me analyze this conversation trace..."},
+        '{"name": "wf", "nodes": []}',
+    ]
+    assert text_of_content(content) == '{"name": "wf", "nodes": []}'
+
+
+def test_text_of_content_skips_typed_thinking_and_object_blocks():
+    class _Block:  # pydantic-ish block objects (langchain content parts)
+        def __init__(self, type_, text=None):
+            self.type = type_
+            self.text = text
+
+    content = [
+        {"type": "thinking", "thinking": "reasoning..."},
+        _Block("thinking", None),
+        _Block("text", "answer"),
+    ]
+    assert text_of_content(content) == "answer"
+
+
 def test_latest_human_text_multimodal_message():
     msgs = [
         HumanMessage(
