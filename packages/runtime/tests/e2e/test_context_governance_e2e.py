@@ -8,6 +8,7 @@ import json
 import pytest
 from conftest import events_of, script, script_tool_call
 
+from ginno_runtime import paths
 from ginno_runtime.truncation import TRUNCATION_MARKER
 from ginno_runtime.world_state import REINJECT_MSG_PREFIX, SUMMARY_MSG_PREFIX
 
@@ -89,22 +90,23 @@ def test_compaction_disabled_does_nothing(create_session, ws_conv, client, isola
 # --------------------------------------------------------------------------- #
 def test_big_tool_output_truncated_in_history(create_session, ws_conv, client, isolated_home):
     _settings_context(isolated_home, tool_output_max_chars=2000)
-    ws_dir = isolated_home / "ws"
-    ws_dir.mkdir(exist_ok=True)
-    big = ws_dir / "big.txt"
-    big.write_text("HEAD-MARK\n" + "x" * 8000 + "\nTAIL-MARK\n", encoding="utf-8")
-
     sid = create_session(
         [
             script(
                 tool_calls=[
-                    script_tool_call("read_file", {"path": str(big)}),
+                    # F1: file tools resolve relative paths against the per-session
+                    # files dir (the bound workspace); no absolute/workspace arg.
+                    script_tool_call("read_file", {"path": "big.txt"}),
                 ]
             ),
             script(text="读完了。"),
         ],
         agent_id="dev",
-        workspace=str(ws_dir),
+    )
+    # Seed the file in the session's files dir AFTER create (sid known) but
+    # BEFORE the turn runs; the home-dir path guard only permits this dir.
+    (paths.session_files_dir("default", sid) / "big.txt").write_text(
+        "HEAD-MARK\n" + "x" * 8000 + "\nTAIL-MARK\n", encoding="utf-8"
     )
     with ws_conv(sid) as conv:
         conv.invoke("读一下这个文件")
@@ -119,17 +121,15 @@ def test_big_tool_output_truncated_in_history(create_session, ws_conv, client, i
 
 
 def test_small_tool_output_untouched(create_session, ws_conv, client, isolated_home):
-    ws_dir = isolated_home / "ws"
-    ws_dir.mkdir(exist_ok=True)
-    small = ws_dir / "small.txt"
-    small.write_text("just a line", encoding="utf-8")
     sid = create_session(
         [
-            script(tool_calls=[script_tool_call("read_file", {"path": str(small)})]),
+            script(tool_calls=[script_tool_call("read_file", {"path": "small.txt"})]),
             script(text="ok"),
         ],
         agent_id="dev",
-        workspace=str(ws_dir),
+    )
+    (paths.session_files_dir("default", sid) / "small.txt").write_text(
+        "just a line", encoding="utf-8"
     )
     with ws_conv(sid) as conv:
         conv.invoke("read it")

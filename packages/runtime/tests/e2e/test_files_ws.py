@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from ginno_runtime import paths
 from ginno_runtime.files import reset_registries
 from ginno_runtime.testing.fake_model import script, script_tool_call
 
@@ -204,22 +205,25 @@ def test_analyze_table_derived_result_emits_preview_open(client, create_session,
     assert any(a["id"] == derived[0]["id"] for a in scoped)
 
 
-def test_write_file_touch_emits_invalidate(client, create_session, ws_conv, ws_dir):
+def test_write_file_touch_emits_invalidate(client, create_session, ws_conv):
     """Editing a registered file via write_file → preview.invalidate for it.
 
     Attach by PATH (auto-registers in the registry at f.resolve()); the agent
     then overwrites that same path, so the touch matches the registered entry.
+    F1: file tools are bound to the per-session files dir, so the CSV is seeded
+    there and referenced by relative path (the home-dir guard permits only this
+    dir for tool writes).
     """
-    f = _csv(ws_dir, body="a,b\n1,2\n")
     scripted = [
         script(
             tool_calls=[
-                script_tool_call("write_file", {"path": str(f), "content": "a,b\n9,9\n"})
+                script_tool_call("write_file", {"path": "data.csv", "content": "a,b\n9,9\n"})
             ]
         ),
         script(text="已更新。"),
     ]
-    sid = create_session(scripted, workspace=str(ws_dir))
+    sid = create_session(scripted)
+    f = _csv(paths.session_files_dir("default", sid), body="a,b\n1,2\n")
 
     with ws_conv(sid) as conv:
         conv.send(
