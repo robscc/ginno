@@ -184,7 +184,9 @@ def test_delete_running_run_cancels_and_does_not_resurrect(client, monkeypatch):
 
     wf = store.create_def(_step_wf())
 
-    async def _hang(dsl, *, run_id, model, tools, context_override=None, project_slug="default"):
+    async def _hang(
+        dsl, *, run_id, model, tools, context_override=None, project_slug="default", usage_attr=None
+    ):
         # an engine that never produces a terminal event
         await asyncio.sleep(30)
         yield {"run_id": run_id, "kind": "done"}

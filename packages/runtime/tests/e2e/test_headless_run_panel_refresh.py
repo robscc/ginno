@@ -49,7 +49,9 @@ def test_headless_run_announced_at_start(client, create_session, ws_conv, monkey
     _patch(ScriptedChatModel(scripts=[script(text="hi")]))
     wf = wf_store.create_def(_step_wf())
 
-    async def _hang(dsl, *, run_id, model, tools, context_override=None, project_slug="default"):
+    async def _hang(
+        dsl, *, run_id, model, tools, context_override=None, project_slug="default", usage_attr=None
+    ):
         await asyncio.sleep(30)  # keep the run "running" for the whole test
         yield {"run_id": run_id, "kind": "done"}
 
