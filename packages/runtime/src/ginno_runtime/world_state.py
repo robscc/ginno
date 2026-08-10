@@ -215,7 +215,7 @@ def _agent_by_id(agent_id: str | None):
     return lst[0] if lst else None
 
 
-def _agent_allowed_count(agent, all_tool_names: list[str]) -> int:
+def _agent_allowed_names(agent, all_tool_names: list[str]) -> list[str]:
     """Mirror of graph.tool_allowed for snapshot purposes (keep in sync)."""
     import fnmatch
 
@@ -224,16 +224,20 @@ def _agent_allowed_count(agent, all_tool_names: list[str]) -> int:
     from .tools.workflow_tools import WORKFLOW_TOOL_NAMES
 
     if not agent:
-        return len(all_tool_names)
+        return list(all_tool_names)
     allow = agent.tools_allow or ["*"]
-    n = 0
+    out: list[str] = []
     for name in all_tool_names:
         if name in RENDER_TOOL_NAMES or name in WORKFLOW_TOOL_NAMES or name in ARTIFACT_TOOL_NAMES:
-            n += 1
+            out.append(name)
             continue
         if "*" in allow or any(fnmatch.fnmatch(name, p) for p in allow):
-            n += 1
-    return n
+            out.append(name)
+    return out
+
+
+def _agent_allowed_count(agent, all_tool_names: list[str]) -> int:
+    return len(_agent_allowed_names(agent, all_tool_names))
 
 
 class AgentSection:
@@ -406,7 +410,14 @@ class McpSection:
     def snapshot(self, ctx: SessionCtx) -> dict | None:
         if not ctx.mcp_tool_names:
             return None
-        names = sorted(ctx.mcp_tool_names)
+        # Agent perspective (2026-08-10 incident): announcing MCP tools the
+        # active role's tools_allow excludes teases the model with tools it
+        # can never call — the model then goes hunting for them (probing
+        # ~/.ginno, guessing names). Filter to what this role may use.
+        agent = ctx.agent or _agent_by_id(ctx.agent_id)
+        names = sorted(_agent_allowed_names(agent, list(ctx.mcp_tool_names)))
+        if not names:
+            return None
         return {"count": len(names), "hash": _sha1("\n".join(names))}
 
     def render(self, snap: dict) -> str:

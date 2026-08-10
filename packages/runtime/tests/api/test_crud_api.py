@@ -123,7 +123,7 @@ def test_mcp_config_get_put(client):
 
 def test_mcp_empty_registry(client):
     r = client.get("/api/mcp").json()
-    assert r == {"servers": [], "tools": []}
+    assert r == {"servers": [], "tools": [], "failed": []}
 
 
 def test_kb_servers_empty(client):

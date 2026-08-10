@@ -102,10 +102,19 @@ async def import_skills_dir(data: dict) -> dict:
 @router.get("/api/mcp")
 async def list_mcp() -> dict:
     if not shared._mcp:
-        return {"servers": [], "tools": []}
+        return {"servers": [], "tools": [], "failed": []}
+    reg = shared._mcp
+    # Lazy healing (2026-08-10 incident): a startup-time DNS/network blip
+    # used to leave MCP dead until a manual reload or app restart. The UI
+    # polls this endpoint, so opportunistically re-attempt failed servers
+    # here — cooldown + busy-guard live inside retry_failed(); the task is
+    # fire-and-forget so a hung server can never stall the settings page.
+    if reg.has_pending_failures():
+        shared.spawn_bg(reg.retry_failed())
     return {
-        "servers": list(shared._mcp.ensure_loaded().keys()),
-        "tools": shared._mcp.list_tools(),
+        "servers": list(reg.ensure_loaded().keys()),
+        "tools": reg.list_tools(),
+        "failed": reg.failed_servers,
     }
 
 

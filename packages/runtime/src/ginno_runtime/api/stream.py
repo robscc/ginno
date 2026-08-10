@@ -27,7 +27,7 @@ from .. import paths, usage_store
 from .. import server_shared as shared
 from .. import workflows as wf_store
 from ..checkpointer import ABANDONED_TURNS
-from ..graph import BLOCK_PREFIX, build_all_tools, build_turn_context
+from ..graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context
 from ..server_shared import (
     _PENDING_RESUME,
     _RUNNING_TURNS,
@@ -41,6 +41,7 @@ from ..server_shared import (
     _push_session_event,
     _try_send,
     _turn_lock,
+    spawn_bg,
 )
 from ..session_meta import _session_meta_patch
 from ..todos import store as todo_store
@@ -272,7 +273,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         "agent_id": resume_agent,
                     },
                 }
-                await _run_resume(ws, graph, resume_config, {"decision": decision})
+                await _run_resume(ws, session["graph"], resume_config, {"decision": decision})
             elif kind == "turn_state":
                 # Post-reconnect probe (frontend ChatStream): is a turn still
                 # streaming (or parked at an interrupt) for this session? If
@@ -472,6 +473,55 @@ async def _tool_file_effects(
             )
 
 
+def _maybe_refresh_session_graph(session: dict) -> None:
+    """Rebuild the session graph when the live MCP toolset drifts from the
+    one frozen into the graph at session-create time.
+
+    The compiled graph binds its ToolNode + model toolset at construction;
+    MCP servers that connect LATER (late startup connect, a DNS window that
+    healed, a mid-session /api/mcp/reload) never reached existing sessions.
+    2026-08-10 incident: the registry held 97 DingTalk tools while a
+    research session still offered the single MCP tool it had frozen with,
+    and the world diff kept announcing counts the agent could not call.
+
+    Fast path is cheap: ``list_wrapped_tools()`` reads graph-facing tool
+    names without constructing langchain wrappers; the heavy rebuild only
+    runs on change. Agent tools_allow needs no rebuild — agent_node
+    re-resolves the agent and re-filters per step.
+    """
+    reg = shared._mcp
+    if not reg:
+        return
+    live = sorted(reg.list_wrapped_tools())
+    if live == sorted(session.get("mcp_tool_names") or []):
+        return
+    mcp_tools = reg.all_langchain_tools()
+    slug = session.get("project_slug") or "default"
+    workspace = str(session.get("workspace") or "")
+    all_tools = build_all_tools(
+        mcp_tools,
+        workspace=workspace,
+        project_slug=slug,
+        session_id=session.get("session_id", ""),
+    )
+    session["graph"] = build_graph(
+        model=session["model"],
+        project_slug=slug,
+        workspace=workspace,
+        mcp_tools=mcp_tools,
+        hook_dispatcher=shared._hooks,
+        all_tools=all_tools,
+    )
+    session["all_tool_names"] = [t.name for t in all_tools]
+    session["mcp_tool_names"] = [t.name for t in mcp_tools]
+    _log.info(
+        "graph_refreshed session=%s mcp_tools=%d all_tools=%d",
+        session.get("session_id", ""),
+        len(mcp_tools),
+        len(all_tools),
+    )
+
+
 async def _run_stream(
     ws: WebSocket,
     graph,
@@ -518,6 +568,19 @@ async def _run_stream(
     slug = session["project_slug"]
     turn_id = ((config or {}).get("configurable") or {}).get("turn_id")
     effective_agent = agent_id or session.get("agent_id") or ""
+
+    # Lazy MCP healing + graph refresh: a server that connects AFTER session
+    # creation (late startup connect, recovered DNS, mid-session reload) must
+    # still reach THIS turn's tool bindings. Retry is fire-and-forget with a
+    # cooldown inside; a recovered server triggers the graph rebuild on the
+    # NEXT turn (its tools only become live once connect_all finishes).
+    try:
+        if shared._mcp and shared._mcp.has_pending_failures():
+            spawn_bg(shared._mcp.retry_failed())
+        _maybe_refresh_session_graph(session)
+    except Exception:
+        _log.exception("graph_refresh_failed session=%s", session_id)
+    graph = session["graph"]
 
     _live_names: dict[str, list[str]] = {}
 

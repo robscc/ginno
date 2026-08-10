@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,14 @@ from pydantic import BaseModel, Field, create_model
 from .. import paths
 
 log = logging.getLogger(__name__)
+
+
+def _full_tool_name(server_name: str, tool_name: str) -> str:
+    """Graph-facing name of one MCP tool. Single source of truth — used by
+    the langchain wrapper AND by cheap name-only comparisons, so the two can
+    never drift (2026-08-10: comparing raw vs wrapped names would have made
+    the per-turn graph-refresh fingerprint mismatch on EVERY turn)."""
+    return f"mcp_{server_name}_{tool_name}"
 
 
 def _unpack_rw(ctx_res: tuple) -> tuple[Any, Any]:
@@ -191,7 +200,7 @@ class _LiveServer:
     def _wrap_tool(self, mcp_tool: Any) -> StructuredTool:
         server_name = self.config.name
         tool_name = mcp_tool.name
-        full_name = f"mcp_{server_name}_{tool_name}"
+        full_name = _full_tool_name(server_name, tool_name)
         description = mcp_tool.description or f"MCP tool {full_name}"
         schema = mcp_tool.inputSchema or {"type": "object", "properties": {}}
 
@@ -259,6 +268,11 @@ class MCPRegistry:
         self._live: dict[str, _LiveServer] = {}
         self._stack: AsyncExitStack | None = None
         self._loaded = False
+        # Servers whose last connect attempt failed: name -> monotonic time
+        # of that attempt. retry_failed() re-attempts them on a cooldown so a
+        # dead DNS/network window isn't hammered on every turn/UI poll.
+        self._failed: dict[str, float] = {}
+        self._retry_busy = False
 
     def load(self) -> dict[str, MCPServerConfig]:
         if not self.config_path.exists():
@@ -293,7 +307,9 @@ class MCPRegistry:
             try:
                 await asyncio.wait_for(live.connect(), timeout=cfg.connect_timeout)
                 self._live[name] = live
+                self._failed.pop(name, None)
             except Exception:
+                self._failed[name] = time.monotonic()
                 log.exception("mcp[%s] failed to connect (skipped)", name)
                 try:
                     await live.close()
@@ -312,6 +328,49 @@ class MCPRegistry:
                 pass
         self._live.clear()
 
+    @property
+    def failed_servers(self) -> list[str]:
+        """Configured servers that are not live (last connect failed)."""
+        return [n for n in self._failed if n not in self._live]
+
+    def has_pending_failures(self, cooldown_s: float = 120.0) -> bool:
+        """True when a retry is due: failures exist, none is being retried
+        right now, and the newest failure is older than the cooldown."""
+        if not self._failed or self._retry_busy:
+            return False
+        if all(n in self._live for n in self._failed):
+            return False
+        return (time.monotonic() - max(self._failed.values())) >= cooldown_s
+
+    async def retry_failed(self, cooldown_s: float = 120.0) -> list[str]:
+        """Re-attempt servers whose last connect failed (lazy healing).
+
+        Called opportunistically from the turn path and GET /api/mcp so a
+        startup-time DNS/network blip doesn't leave MCP dead until a manual
+        reload (2026-08-06: all four servers failed with Errno 8 at boot and
+        stayed dead for days). connect_all() only touches servers not in
+        _live; the cooldown (keyed on the newest failure) bounds the rate.
+        Never raises — a failed retry just stays failed until the next window.
+        """
+        if self._retry_busy:
+            return []
+        pending = [n for n in self._failed if n not in self._live]
+        if not pending:
+            return []
+        if (time.monotonic() - max(self._failed.values())) < cooldown_s:
+            return []
+        self._retry_busy = True
+        try:
+            await self.connect_all()
+        except Exception:
+            log.exception("mcp retry_failed: connect_all raised")
+        finally:
+            self._retry_busy = False
+        recovered = [n for n in pending if n in self._live]
+        if recovered:
+            log.info("mcp retry recovered: %s", ", ".join(recovered))
+        return recovered
+
     def all_langchain_tools(self) -> list[StructuredTool]:
         tools: list[StructuredTool] = []
         for live in self._live.values():
@@ -320,6 +379,18 @@ class MCPRegistry:
 
     def list_tools(self) -> list[str]:
         return [t.name for live in self._live.values() for t in live.tools]
+
+    def list_wrapped_tools(self) -> list[str]:
+        """Graph-facing (wrapped) names of all tools of all live servers —
+        without constructing langchain wrappers. This is what sessions store
+        in ``mcp_tool_names``, so it is the correct fingerprint for the
+        per-turn graph-refresh check (``list_tools`` returns RAW server-side
+        names, which never match the wrapped session list)."""
+        return [
+            _full_tool_name(name, t.name)
+            for name, live in self._live.items()
+            for t in live.tools
+        ]
 
     def server_tools(self, server_name: str) -> list[str]:
         """Raw tool names of one connected server ([] when not connected) —

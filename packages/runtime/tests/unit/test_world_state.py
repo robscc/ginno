@@ -225,6 +225,37 @@ def test_mcp_section_change_text():
     assert sec.update_text(before, before) is None
 
 
+def test_mcp_section_filters_by_agent_allow():
+    """2026-08-10 incident: the section announced MCP tools the active role's
+    tools_allow excluded (111→127 global while the agent could call 17), and
+    the model went hunting for tools it could never reach. The count must be
+    from the agent's perspective."""
+    from ginno_runtime.agents.registry import AgentConfig
+
+    sec = McpSection()
+    names = [
+        "mcp_钉钉文档_get_document_content",
+        "mcp_钉钉待办_get_user_todos",
+        "mcp_火山引擎联网搜索服务_search",
+    ]
+    narrow = AgentConfig(id="narrow", name="N", tools_allow=["mcp_火山*"])
+    snap = sec.snapshot(ctx(mcp_tool_names=names, agent=narrow))
+    assert snap == {
+        "count": 1,
+        "hash": McpSection().snapshot(
+            ctx(mcp_tool_names=["mcp_火山引擎联网搜索服务_search"], agent=narrow)
+        )["hash"],
+    }
+
+    # allow list covering none of the MCP tools → section absent entirely
+    none_allowed = AgentConfig(id="none", name="N", tools_allow=["read_file"])
+    assert sec.snapshot(ctx(mcp_tool_names=names, agent=none_allowed)) is None
+
+    # wildcard keeps everything (parity with the pre-fix behaviour)
+    star = AgentConfig(id="star", name="S", tools_allow=["*"])
+    assert sec.snapshot(ctx(mcp_tool_names=names, agent=star))["count"] == 3
+
+
 # --------------------------------------------------------------------------- #
 # WorldState assembly + diff + update rendering
 # --------------------------------------------------------------------------- #

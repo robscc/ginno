@@ -86,6 +86,19 @@ _RUNNING_TURNS: dict[str, str] = {}
 # an already-resumed graph.
 _PENDING_RESUME: set[str] = set()
 
+# Fire-and-forget background tasks (MCP lazy retry etc.). asyncio keeps only
+# WEAK references to tasks, so an unreferenced create_task() can be garbage
+# collected mid-flight; hold strong refs until done.
+_BG_TASKS: set[Any] = set()
+
+
+def spawn_bg(coro: Any) -> Any:
+    """create_task with a strong reference kept until completion."""
+    t = asyncio.create_task(coro)
+    _BG_TASKS.add(t)
+    t.add_done_callback(_BG_TASKS.discard)
+    return t
+
 
 # One frame may sit in a stuck/suspended client's buffer; never let it stall
 # delivery to the session's OTHER sockets (or the turn loop itself). A client
