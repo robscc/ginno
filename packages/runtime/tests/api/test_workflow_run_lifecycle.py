@@ -48,19 +48,22 @@ def _patch_model(monkeypatch):
     )
 
 
-# --- dependency-build failures land as a visible failed run, not "running" ---
+# --- a missing agent no longer fails dep-build: fallback + warning (2026-08-10) ---
 
 
-def test_dep_build_failure_marks_failed_with_error(client, monkeypatch):
+def test_missing_agent_falls_back_with_warning(client, monkeypatch):
+    """A DSL referencing a nonexistent agent used to die at fork time before
+    the first node. Now the run continues with a substituted persona and the
+    substitution stays visible as a warning event."""
     _patch_model(monkeypatch)
     wf = store.create_def(_step_wf(agent="ghost"))
     run_id = client.post("/api/workflow_runs", json={"workflow_id": wf["id"]}).json()["run"]["id"]
     aw = client.post(f"/api/workflow_runs/{run_id}/_await").json()
     run = aw["run"]
-    assert run["status"] == "failed", aw
-    assert "ghost" in (run.get("error") or ""), run
-    kinds = [e["kind"] for e in client.get(f"/api/workflow_runs/{run_id}/events").json()["events"]]
-    assert "error" in kinds
+    assert run["status"] == "done", aw
+    events = client.get(f"/api/workflow_runs/{run_id}/events").json()["events"]
+    warns = [e for e in events if e["kind"] == "warning"]
+    assert warns and "ghost" in (warns[0].get("message") or ""), events
     # the bg task was pruned from the registry
     assert run_id not in server._WF_RUN_TASKS
 

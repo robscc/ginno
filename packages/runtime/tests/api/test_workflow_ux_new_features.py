@@ -251,8 +251,12 @@ def test_retry_from_checkpoint_continues_after_failed_node(client, monkeypatch):
 
 
 def test_retry_from_checkpoint_409_without_node_attribution(client, monkeypatch):
-    """Driver-level failure (agent fork) has error_detail.node_id == None."""
-    _patch_build_model(monkeypatch, [ScriptedChatModel(scripts=[script(text="x")])])
+    """Driver-level failure (dep build) has error_detail.node_id == None."""
+
+    def _raise_dep(*a, **k):
+        raise ValueError("provider x is disabled (enable it in Settings)")
+
+    monkeypatch.setattr("ginno_runtime.api.workflows.build_model", _raise_dep)
     wf = store.create_def(
         {
             "name": "Ghost",

@@ -505,14 +505,27 @@ def _wf_build_deps(run_id: str, workflow_id: str):
         if n.get("agent"):
             src_agent_id = n["agent"]
             break
-    src_agent_id = src_agent_id or wf.get("agent_id") or "dev"
-    fork = agents_reg.fork_agent(src_agent_id, f"wf-{run_id[:8]}-{src_agent_id}")
+    src_agent_id = src_agent_id or wf.get("agent_id")
+    # Fallback instead of fail when the referenced agent doesn't exist
+    # (LLM-drafted DSLs invent role names — 2026-08-10 incident: the run
+    # died at fork time before the first node). Same rule as AgentNode; a
+    # warning event keeps the substitution visible. Only raises when NO
+    # agent exists at all.
+    from ..workflows.nodes import agent_helpers as ah
+
+    resolved, agent_warn = ah.resolve_agent(src_agent_id)
+    if resolved is None:
+        raise ValueError(agent_warn or "no agents available")
+    if agent_warn:
+        _log.warning("workflow_run run=%s agent fallback: %s", run_id, agent_warn)
+        wf_events.append_event(run_id, "warning", message=agent_warn)
+    fork = agents_reg.fork_agent(resolved.id, f"wf-{run_id[:8]}-{resolved.id}")
     model = build_model(fork.provider, fork.model or None)
     tools = build_all_tools(_wf_mcp_tools())
     usage_attr = {
         "provider": fork.provider or "",
         "model": fork.model or getattr(model, "model", None) or getattr(model, "model_name", "") or "",
-        "agent_id": src_agent_id,
+        "agent_id": resolved.id,
         "run_id": run_id,
     }
     return wf, dsl, model, tools, fork.id, usage_attr

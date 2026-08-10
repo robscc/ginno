@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 
+from .. import agents as agents_reg
 from .dsl import normalize_dsl
 
 _CTX_REF = re.compile(r"\{\{\s*context\.([a-zA-Z0-9_]+)\s*\}\}")
@@ -58,6 +59,19 @@ def run_doctor(dsl: dict) -> dict:
             errors.append({
                 "rule": "node_id.reserved_suffix", "node_id": nid,
                 "message": f"节点 id '{nid}' 不得以 __extract 结尾（引擎保留后缀）",
+            })
+
+        # Referenced agent must exist. The engine falls back at runtime since
+        # 2026-08-10 (LLM-drafted DSLs invent role names) — doctor surfaces the
+        # drafting mistake early instead of letting it hide in a warning event.
+        ag = n.get("agent")
+        if ag and agents_reg.get_agent(ag) is None:
+            warnings.append({
+                "rule": "agent.not_found", "node_id": nid,
+                "message": (
+                    f"节点 '{nid}' 引用的 agent '{ag}' 不存在，"
+                    f"运行时将回退到默认 agent"
+                ),
             })
 
         # loop.over must have a declared source.

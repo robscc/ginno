@@ -78,7 +78,10 @@ class AgentNode(BaseNode):
         tools = cctx["tools"]
         node_id = node["id"]
         max_iters = int(node.get("max_tool_iters") or 8)
-        agent = agents_reg.get_agent(node.get("agent"))
+        # Fallback instead of fail: a DSL may reference an agent that doesn't
+        # exist (LLM-drafted DSLs invent role names). The run continues with
+        # a substituted persona and a warning event (2026-08-10 incident).
+        agent, agent_warning = ah.resolve_agent(node.get("agent"))
         context = dict(state.get("context") or {})
         loop_vars = dict(state.get("loop_vars") or {})
         render_ctx = {**context, **loop_vars, **(eff or {})}
@@ -141,6 +144,8 @@ class AgentNode(BaseNode):
             run_ctx["events"].append(ev)
 
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "step"})
+        if agent_warning:
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "warning", "message": agent_warning})
         msgs = [SystemMessage(content=sys_text), HumanMessage(content=goal)]
         result_text = ""
         usage = {"input_tokens": 0, "output_tokens": 0}

@@ -10,6 +10,44 @@ from ...graph import build_agent_system_prompt
 # Marker the step system prompt asks the model to use for context write-back.
 WRITE_OPEN = "WRITE_JSON"
 
+# Fallback order when a DSL references an agent that doesn't exist (2026-08-10
+# incident: an LLM-drafted sample DSL invented role names like
+# 'research-planner' and the run died at fork time before the first node).
+_FALLBACK_PREFERENCE = ("dev", "research", "writer")
+
+
+def resolve_agent(agent_id: str | None):
+    """Resolve a DSL agent reference to an existing agent, with fallback.
+
+    Returns ``(agent, warning)`` — ``warning`` is a human-readable string when
+    the reference had to be substituted (callers surface it as a run event /
+    log line), or None on exact resolution. ``(None, msg)`` only when NO
+    agents exist at all; callers decide how to fail then.
+    """
+    from ... import agents as agents_reg
+
+    if agent_id:
+        agent = agents_reg.get_agent(agent_id)
+        if agent:
+            return agent, None
+    for cand in _FALLBACK_PREFERENCE:
+        fb = agents_reg.get_agent(cand)
+        if fb:
+            if agent_id:
+                return fb, f"agent '{agent_id}' 不存在，已回退到 '{cand}'"
+            return fb, f"未指定 agent，使用默认 '{cand}'"
+    lst = agents_reg.list_agents()
+    if lst:
+        fb = lst[0]
+        if agent_id:
+            return fb, f"agent '{agent_id}' 不存在，已回退到 '{fb.id}'"
+        return fb, f"未指定 agent，使用默认 '{fb.id}'"
+    return None, (
+        f"agent '{agent_id}' 不存在且系统中没有任何 agent"
+        if agent_id
+        else "系统中没有任何 agent"
+    )
+
 
 def build_system(goal: str, context: dict, agent) -> str:
     base = build_agent_system_prompt(agent, "default", [], query="")
