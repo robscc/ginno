@@ -143,7 +143,11 @@ _BLOCK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-_NOTE_RE = re.compile(r"\|\s*note\s*=\s*\[(.*)\]\s*$", re.IGNORECASE | re.DOTALL)
+# Brackets are OPTIONAL. The citation contract is ``note=[…]``, but models often
+# emit ``note=…`` without the brackets; if we only matched the bracketed form the
+# note would never split off and a web ref would be left as ``<url>|note=…`` — a
+# corrupt link that cannot be opened (the reported "来源链接打不开" bug).
+_NOTE_RE = re.compile(r"\|\s*note\s*=\s*\[?(.*?)\]?\s*$", re.IGNORECASE | re.DOTALL)
 
 MAX_CITATIONS_PER_TURN = 20
 

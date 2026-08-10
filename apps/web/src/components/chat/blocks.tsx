@@ -67,7 +67,9 @@ export function parseSources(text: string): SourceItem[] {
     let line = raw.trim();
     if (!line) continue;
     let note = "";
-    const nm = line.match(/\|\s*note\s*=\s*\[(.*)\]\s*$/i);
+    // Brackets optional: contract is note=[…] but models often emit note=… —
+    // accept both so the note splits off and web refs stay clean, openable URLs.
+    const nm = line.match(/\|\s*note\s*=\s*\[?(.*?)\]?\s*$/i);
     if (nm) {
       note = nm[1].trim();
       line = line.slice(0, nm.index).trimEnd();

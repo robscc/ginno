@@ -25,6 +25,26 @@ def test_parse_basic_block():
     assert entries[1]["ref"] == "s2"
 
 
+def test_parse_note_without_brackets_keeps_web_ref_clean():
+    """The contract is ``note=[…]`` but models often emit ``note=…`` (no
+    brackets). The note must still split off so a web ref stays a clean,
+    openable URL — otherwise it's left as ``<url>|note=…`` and won't open."""
+    text = (
+        "<ginno_citations>\n"
+        "web|https://www.news.cn/a/c.html|note=新华网报道深圳发布政策\n"
+        "wiki|Ginno/Wiki/x.md|note=[带括号的仍可用]\n"
+        "</ginno_citations>"
+    )
+    entries = cit.parse_citation_block(text)
+    assert len(entries) == 2
+    web = entries[0]
+    assert web["kind"] == "web"
+    assert web["ref"] == "https://www.news.cn/a/c.html"  # no "|note=…" glued on
+    assert web["note"] == "新华网报道深圳发布政策"
+    assert entries[1]["ref"] == "Ginno/Wiki/x.md"
+    assert entries[1]["note"] == "带括号的仍可用"
+
+
 def test_parse_tolerates_whitespace_missing_note_and_dupes():
     text = (
         "<ginno_citations>\n"
