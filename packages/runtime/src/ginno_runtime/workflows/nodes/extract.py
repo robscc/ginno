@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage
 
 from ...graph import text_of_content
 from . import agent_helpers as ah
-from .base import BaseNode, validate_against
+from .base import BaseNode, llm_invoke_with_timeout, validate_against
 from .registry import register_node
 
 # Cap how much of the source reply we hand the extractor. Long replies (full
@@ -186,7 +186,7 @@ class ExtractNode(BaseNode):
                     "确保顶层恰好包含上述全部字段且值非 null（除非确无内容），"
                     "只输出修正后的 JSON 对象。]"
                 )
-            resp = await m.ainvoke([HumanMessage(content=prompt)])
+            resp = await llm_invoke_with_timeout(m.ainvoke([HumanMessage(content=prompt)]))
             raw = text_of_content(resp.content)
             try:
                 parsed = _extract_json_from_text(raw)

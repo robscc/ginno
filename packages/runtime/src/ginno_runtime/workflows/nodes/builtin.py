@@ -17,7 +17,7 @@ from ... import agents as agents_reg
 from ...graph import text_of_content, tool_allowed
 from .. import expr as wf_expr
 from . import agent_helpers as ah
-from .base import BaseNode
+from .base import BaseNode, llm_invoke_with_timeout
 from .registry import register_node
 
 
@@ -145,7 +145,7 @@ class AgentNode(BaseNode):
         result_text = ""
         usage = {"input_tokens": 0, "output_tokens": 0}
         for _ in range(max_iters):
-            resp = await bound.ainvoke(msgs)
+            resp = await llm_invoke_with_timeout(bound.ainvoke(msgs))
             msgs.append(resp)
             result_text = text_of_content(resp.content)
             for k, v in _usage_from_msg(resp).items():
@@ -219,7 +219,7 @@ class LLMNode(BaseNode):
             run_ctx["events"].append(ev)
 
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "llm"})
-        resp = await model.ainvoke([HumanMessage(content=prompt)])
+        resp = await llm_invoke_with_timeout(model.ainvoke([HumanMessage(content=prompt)]))
         text = text_of_content(resp.content)
         usage = _usage_from_msg(resp)
         out = {"text": text}
