@@ -192,7 +192,11 @@ export function Markdown({
           return <h1 className="mb-2 mt-4 text-lg font-bold first:mt-0">{children}</h1>;
         },
         h2({ children }) {
-          return <h2 className="mb-2 mt-4 text-base font-bold first:mt-0">{children}</h2>;
+          // NOTE: text-[1rem], NOT text-base — the custom `base` color shadows
+          // Tailwind's `base` font-size keyword, so `text-base` also emits
+          // color:var(--base), painting the heading the background color
+          // (invisible in dark & light). Arbitrary size dodges the collision.
+          return <h2 className="mb-2 mt-4 text-[1rem] font-bold first:mt-0">{children}</h2>;
         },
         h3({ children }) {
           return <h3 className="mb-1.5 mt-3 text-sm font-semibold first:mt-0">{children}</h3>;

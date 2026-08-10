@@ -5,6 +5,10 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        // ⚠️ `base` shadows Tailwind's `base` FONT-SIZE keyword: the utility
+        // `text-base` compiles to BOTH font-size:1rem AND color:var(--base),
+        // painting text the background color (invisible). Never use `text-base`
+        // for font-size here — use `text-[1rem]` (or text-sm/lg/…) instead.
         base: "rgb(var(--base) / <alpha-value>)",
         panel: "rgb(var(--panel) / <alpha-value>)",
         card: "rgb(var(--card) / <alpha-value>)",

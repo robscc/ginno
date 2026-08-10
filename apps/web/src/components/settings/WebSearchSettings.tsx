@@ -126,7 +126,7 @@ export function WebSearchSettings() {
     <div className="mx-auto max-w-2xl px-8 py-8">
       <div className="mb-6 flex items-center gap-2">
         <Globe className="h-5 w-5 text-blue" />
-        <h2 className="text-base font-semibold">Web 搜索</h2>
+        <h2 className="text-[1rem] font-semibold">Web 搜索</h2>
       </div>
 
       <div className="flex flex-col gap-5">

@@ -107,7 +107,7 @@ export default function WorkflowsPage() {
         {sel ? (
           <div className="rounded-xl border border-line bg-card p-4">
             <div className="mb-3 flex items-center gap-2">
-              <span className="text-base font-semibold text-txt">{sel.name}</span>
+              <span className="text-[1rem] font-semibold text-txt">{sel.name}</span>
               <span className="text-xs text-faint">[{sel.id}]</span>
             </div>
             <WorkflowInspector wf={sel} runs={g.workflowRuns} />
