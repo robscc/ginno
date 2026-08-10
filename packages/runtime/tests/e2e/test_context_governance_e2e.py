@@ -137,3 +137,34 @@ def test_small_tool_output_untouched(create_session, ws_conv, client, isolated_h
     texts = json.dumps(_all_history(client, sid), ensure_ascii=False)
     assert "just a line" in texts
     assert TRUNCATION_MARKER not in texts
+
+
+# --------------------------------------------------------------------------- #
+# tool.args — "see WHAT a tool is doing": the tool bubble surfaces the call's
+# args (e.g. the bash command) while it runs, and history replay carries it.
+# --------------------------------------------------------------------------- #
+def test_tool_args_event_surfaces_command(create_session, ws_conv, client, isolated_home):
+    sid = create_session(
+        [
+            script(tool_calls=[script_tool_call("read_file", {"path": "hello.txt"})]),
+            script(text="ok"),
+        ],
+        agent_id="dev",
+    )
+    (paths.session_files_dir("default", sid) / "hello.txt").write_text("hi", encoding="utf-8")
+    with ws_conv(sid) as conv:
+        conv.invoke("read it")
+        events = conv.recv_until("message.end", "error")
+
+    args_events = events_of(events, "tool.args")
+    assert len(args_events) == 1
+    assert args_events[0]["preview"] == "hello.txt"
+
+    # history replay carries the preview on the tool block too
+    tools = [
+        b
+        for m in _all_history(client, sid)
+        for b in m.get("blocks", [])
+        if b.get("kind") == "tool"
+    ]
+    assert tools and tools[0].get("argsPreview") == "hello.txt"

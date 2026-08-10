@@ -112,6 +112,35 @@ def _truncate_for_ws(text: str) -> str:
     return text[:TOOL_OUTPUT_WS_LIMIT] + f"\n…（已截断，完整 {len(text)} 字符）"
 
 
+# Keys most likely to carry the "headline" argument of a tool call, in display
+# priority order. bash → command; file tools → path; search/fetch → query/url.
+_ARGS_PREVIEW_KEYS = ("command", "path", "pattern", "url", "query", "content")
+_ARGS_PREVIEW_CAP = 500
+
+
+def _tool_args_preview(name: str, args: dict) -> str:
+    """One-line preview of a tool call's args for the tool bubble.
+
+    Lets the user see WHAT a tool is doing (e.g. the bash command) rather than
+    just the generic label ("执行命令中…"). Returns the most informative string
+    argument, collapsed to one line and truncated to a cap so huge payloads
+    (e.g. write_file content) never ride the WebSocket / history payload.
+    """
+    if not isinstance(args, dict):
+        return ""
+    for key in _ARGS_PREVIEW_KEYS:
+        v = args.get(key)
+        if isinstance(v, str) and v.strip():
+            break
+    else:
+        v = next((x for x in args.values() if isinstance(x, str) and x.strip()), "")
+    text = str(v).strip()
+    if not text:
+        return ""
+    text = " ".join(text.split())  # collapse newlines → keep it one line
+    return text if len(text) <= _ARGS_PREVIEW_CAP else text[: _ARGS_PREVIEW_CAP - 1] + "…"
+
+
 # web_search tool output lines: "[s1] Title — host\n    https://url"
 _WEB_RESULT_RE = re.compile(r"\[(s\d+)\][^\n]*\n\s+(https?://\S+)")
 
@@ -308,11 +337,17 @@ def _messages_to_ui(
                     if run:
                         step.append({"kind": "workflow", "run": run})
                     else:
-                        step.append({"kind": "tool", "id": tid, "name": nm, "content": res, "pending": False})
+                        step.append({
+                            "kind": "tool", "id": tid, "name": nm, "content": res,
+                            "pending": False, "argsPreview": _tool_args_preview(nm, args),
+                        })
                 elif nm in ARTIFACT_TOOL_NAMES or nm in RENDER_TOOL_NAMES:
                     pass  # silent / already handled above
                 else:
-                    step.append({"kind": "tool", "id": tid, "name": nm, "content": res, "pending": False})
+                    step.append({
+                        "kind": "tool", "id": tid, "name": nm, "content": res,
+                        "pending": False, "argsPreview": _tool_args_preview(nm, args),
+                    })
             acc.extend(step)
         # ToolMessage: folded into the tool blocks above
     flush_assistant()

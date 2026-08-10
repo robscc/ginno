@@ -57,7 +57,7 @@ from .files import (
     _register_artifact_file,
     _session_workspace,
 )
-from .messages_ui import _tool_content_str, _truncate_for_ws
+from .messages_ui import _tool_args_preview, _tool_content_str, _truncate_for_ws
 from .sessions import _ensure_session, _first_agent_id, _start_goal_driver
 from .workflows import _run_workflow_bg, _spawn_run_task
 
@@ -984,13 +984,24 @@ async def _stream_graph(
                             for tc in getattr(m, "tool_calls", []) or []:
                                 nm = tc.get("name")
                                 args = tc.get("args") or {}
-                                tool_args_by_id[tc.get("id")] = (nm, args)
+                                tc_id = tc.get("id")
+                                tool_args_by_id[tc_id] = (nm, args)
                                 if (
                                     nm in RENDER_TOOL_NAMES
                                     or nm in WORKFLOW_TOOL_NAMES
                                     or nm in ARTIFACT_TOOL_NAMES
                                 ):
-                                    special_ids[tc.get("id")] = nm
+                                    special_ids[tc_id] = nm
+                                elif tc_id:
+                                    # Show WHAT is running: surface the tool call's
+                                    # args (e.g. the bash command) on the pending
+                                    # tool bubble. Fires from the agent update —
+                                    # after args are complete, before the tool runs.
+                                    preview = _tool_args_preview(nm, args)
+                                    if preview:
+                                        await safe_send(
+                                            emit("tool.args", {"id": tc_id, "preview": preview})
+                                        )
                                 if nm == "render_widget":
                                     await safe_send(
                                         emit("widget.emit", {

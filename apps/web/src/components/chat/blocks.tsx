@@ -33,7 +33,7 @@ export type Block =
   | { kind: "file"; fileId?: string; name: string; path?: string; fileKind?: string }
   | { kind: "widget"; widgetKind: string; data: unknown }
   | { kind: "ref"; refKind: string; name: string; refId?: string }
-  | { kind: "tool"; id?: string; name: string; content: string; pending: boolean }
+  | { kind: "tool"; id?: string; name: string; content: string; pending: boolean; argsPreview?: string }
   | { kind: "thinking"; text: string }
   | { kind: "workflow"; run: WorkflowRun }
   // WorldState change announcements (docs/design/world-state-plan.md §7):
@@ -671,14 +671,19 @@ function RefChip({ refKind, name }: { refKind: string; name: string }) {
 const LONG_OUTPUT_LINES = 12;
 const LONG_OUTPUT_CHARS = 600;
 
-function ToolBlock({ name, content, pending }: { name: string; content: string; pending: boolean }) {
+function ToolBlock({ name, content, pending, argsPreview }: { name: string; content: string; pending: boolean; argsPreview?: string }) {
   const [open, setOpen] = useState(false);
   const label = toolLabel(name);
   if (pending) {
     return (
       <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5 font-mono text-xs">
-        <span className="inline-flex items-center gap-1.5 text-faint" title={name}>
-          <Loader2 className="h-3 w-3 animate-spin" /> {label}…
+        <span
+          className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-faint"
+          title={argsPreview ? `${name}\n${argsPreview}` : name}
+        >
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+          <span className="shrink-0">{label}…</span>
+          {argsPreview && <span className="truncate text-muted">· {argsPreview}</span>}
         </span>
       </div>
     );
@@ -701,8 +706,9 @@ function ToolBlock({ name, content, pending }: { name: string; content: string; 
         ) : (
           <span className="w-3 shrink-0" />
         )}
-        <span className="truncate text-faint">
+        <span className="truncate text-faint" title={argsPreview || undefined}>
           tool · <span className="text-muted">{label}</span>
+          {argsPreview && <span> · {argsPreview}</span>}
         </span>
         <span className="shrink-0 text-green">✓</span>
         <span className="ml-auto shrink-0 text-[10px] text-faint">
@@ -936,7 +942,7 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
     } else if (b.kind === "workflow") {
       out.push(<WorkflowBlock key={key++} run={b.run} />);
     } else if (b.kind === "tool") {
-      out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} />);
+      out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} argsPreview={b.argsPreview} />);
     } else if (b.kind === "thinking") {
       out.push(<ThinkingBlock key={key++} text={b.text} live={!!streaming && last} />);
     } else if (b.kind === "file") {
