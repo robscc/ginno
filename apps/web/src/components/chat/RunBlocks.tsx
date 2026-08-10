@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, Circle, Loader2, MessageSquare, RotateCcw, SkipForward, Square, Trash2, Workflow, Wrench } from "lucide-react";
+import { AlertTriangle, Check, Circle, Loader2, MessageSquare, Pause, RotateCcw, SkipForward, Square, Trash2, Workflow, Wrench } from "lucide-react";
 import type { WorkflowRun } from "@/lib/types";
 import { useGinno } from "@/lib/store";
 import { RunErrorBox } from "@/components/workflow/RunErrorBox";
@@ -62,12 +62,13 @@ const STUCK_FALLBACK_S = 120; // no history yet → 2 min (was a fixed 5 min)
 /**
  * In-chat live run block (design A): renders a workflow run bound to this session,
  * driven by run.event/run.status push events. Shows live step states + controls
- * (cancel while running, continue when paused, retry/delete when terminal) + a
- * link to the workflow page. Shared by the right-panel Workflow tab.
+ * (pause/cancel while running, continue when paused, retry/delete when terminal)
+ * + a link to the workflow page. Shared by the right-panel Workflow tab.
  */
 export function LiveRunBlock({
   run,
   onCancel,
+  onPause,
   onContinue,
   onRetry,
   onDelete,
@@ -75,6 +76,7 @@ export function LiveRunBlock({
 }: {
   run: WorkflowRun;
   onCancel?: (runId: string) => void;
+  onPause?: (runId: string) => void;
   onContinue?: (runId: string) => void;
   onRetry?: (runId: string) => void | Promise<{ ok?: boolean; detail?: string } | void>;
   onDelete?: (runId: string) => void;
@@ -89,11 +91,14 @@ export function LiveRunBlock({
   const isTerminal = TERMINAL.has(run.status);
   const showFailure = run.status === "failed" || run.status === "interrupted" || run.status === "cancelled";
   // Paused because a human node asked a question → answer card (P1). Other
-  // paused reasons (supervisor) keep the generic 继续 button.
+  // paused reasons (manual pause / supervisor) keep the generic 继续 button.
   const humanInterrupt =
     run.status === "paused" && run.pending_interrupt?.kind === "human"
       ? run.pending_interrupt
       : null;
+  // Manual pause (workflow-ux-redesign #14): user-suspended mid-run; generic
+  // 继续/取消 controls, no answer card, no dock badge.
+  const manualPaused = run.status === "paused" && run.pending_interrupt?.kind === "manual";
   // Live in-flight tool call for the current step (P1 visibility).
   const activity = run.status === "running" ? g.liveToolActivity[run.id] : undefined;
 
@@ -217,6 +222,15 @@ export function LiveRunBlock({
 
       {(run.status === "running" || (run.status === "paused" && !humanInterrupt)) && (
         <div className="mt-2 flex gap-2">
+          {run.status === "running" && onPause && (
+            <button
+              onClick={() => onPause(run.id)}
+              title="在当前步骤/工具调用完成后暂停，可从暂停点继续"
+              className="btn-press flex items-center gap-1 rounded-md border border-yellow/40 px-2 py-1 text-xs text-yellow hover:bg-yellow/10"
+            >
+              <Pause className="h-3 w-3" /> 暂停
+            </button>
+          )}
           {run.status === "running" && onCancel && (
             <button
               onClick={() => onCancel(run.id)}
@@ -230,7 +244,15 @@ export function LiveRunBlock({
               onClick={() => onContinue(run.id)}
               className="btn-press flex items-center gap-1 rounded-md border border-yellow/40 px-2 py-1 text-xs text-yellow hover:bg-yellow/10"
             >
-              <Check className="h-3 w-3" /> 继续（human/supervisor）
+              <Check className="h-3 w-3" /> {manualPaused ? "继续执行" : "继续（human/supervisor）"}
+            </button>
+          )}
+          {run.status === "paused" && onCancel && (
+            <button
+              onClick={() => onCancel(run.id)}
+              className="btn-press flex items-center gap-1 rounded-md border border-red/40 px-2 py-1 text-xs text-red hover:bg-red/10"
+            >
+              <Square className="h-3 w-3" /> 取消
             </button>
           )}
         </div>

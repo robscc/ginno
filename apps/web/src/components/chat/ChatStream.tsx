@@ -29,6 +29,7 @@ import {
   decideWorkflowRun,
   deleteWorkflowRun,
   getWorkflowRun,
+  pauseWorkflowRun,
   retryWorkflowRun,
   retryWorkflowRunFromCheckpoint,
   summarizeSessionToDsl,
@@ -903,16 +904,23 @@ export function ChatStream({
             run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: stepStatus } : s));
             runsBySessionRef.current[sid] = [...list];
           } else if (kind2 === "interrupt") {
-            // Human node asked a question (P1): stamp the payload so the card
+            // A node suspended the graph (P1): stamp the payload so the card
             // renders immediately, without waiting for the reload round-trip.
-            // HumanNode never fires node_enter/exit — flip its step to running
-            // (done on resume) so progress reads correctly.
-            run.pending_interrupt = { ...(inner as object), kind: "human" } as typeof run.pending_interrupt;
+            // nature: "human" (question card) vs "manual" (user pause, #14);
+            // HumanNode events carry no nature and default to human. The step
+            // flips to running (done on resume — except manual pauses, whose
+            // step re-executes and settles via node_enter/exit).
+            run.pending_interrupt = {
+              ...(inner as object),
+              kind: (inner.nature as string) || "human",
+            } as typeof run.pending_interrupt;
             if (nid) run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "running" } : s));
             runsBySessionRef.current[sid] = [...list];
           } else if (kind2 === "resume") {
             run.pending_interrupt = null;
-            if (nid) run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "done" } : s));
+            if (nid && inner.nature !== "manual") {
+              run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "done" } : s));
+            }
             runsBySessionRef.current[sid] = [...list];
           } else if (kind2 === "error") {
             // Show the failure one beat before run.status lands, and stamp the
@@ -1400,6 +1408,11 @@ export function ChatStream({
 
   function cancelRun(runId: string) {
     cancelWorkflowRun(runId);
+  }
+  function pauseRun(runId: string) {
+    // Manual pause (#14): cooperative — the run flips to paused via the
+    // run.status push once it reaches a safe boundary.
+    void pauseWorkflowRun(runId);
   }
   function continueRun(runId: string) {
     decideWorkflowRun(runId, "continue");
@@ -1896,6 +1909,7 @@ export function ChatStream({
               key={r.id}
               run={r}
               onCancel={cancelRun}
+              onPause={pauseRun}
               onContinue={continueRun}
               onRetry={retryRun}
               onRetryFromCheckpoint={retryRunFromCheckpoint}

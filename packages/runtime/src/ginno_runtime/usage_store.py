@@ -227,13 +227,14 @@ def _with_ratio(acc: dict[str, int]) -> dict:
 # Aggregates (design §5)
 # --------------------------------------------------------------------------- #
 def aggregate_overview(days: int) -> dict:
-    """KPI + daily series + provider/model breakdown for the trailing window."""
+    """KPI + daily series + provider/model/source breakdown for the trailing window."""
     today = datetime.now()
     dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1)]
     daily: list[dict] = []
     totals = _acc()
     providers: dict[str, dict] = {}
     models: dict[str, dict] = {}
+    sources: dict[str, dict] = {}
     sessions_seen: set[str] = set()
     for ds in dates:
         day_acc = _acc()
@@ -248,6 +249,10 @@ def aggregate_overview(days: int) -> dict:
             _add(ma, e)
             ma["provider"] = p  # type: ignore[assignment]
             ma["model"] = e.get("model") or "?"  # type: ignore[assignment]
+            # source split (design §3.6): totals stay whole-account; the
+            # breakdown answers chat vs workflow vs background work.
+            sa = sources.setdefault(e.get("source") or "other", _acc())
+            _add(sa, e)
             if e.get("session_id"):
                 sessions_seen.add(e["session_id"])
         daily.append({"date": ds, **_with_ratio(day_acc)})
@@ -268,6 +273,10 @@ def aggregate_overview(days: int) -> dict:
         "models": [
             _with_ratio(a)
             for _, a in sorted(models.items(), key=lambda kv: -(kv[1]["input_tokens"] + kv[1]["output_tokens"]))
+        ],
+        "sources": [
+            {"source": s, **_with_ratio(a)}
+            for s, a in sorted(sources.items(), key=lambda kv: -(kv[1]["input_tokens"] + kv[1]["output_tokens"]))
         ],
     }
 

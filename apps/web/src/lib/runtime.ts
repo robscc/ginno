@@ -328,6 +328,13 @@ export async function cancelWorkflowRun(run_id: string) {
     body: JSON.stringify({}),
   });
 }
+export async function pauseWorkflowRun(run_id: string) {
+  return json<{ ok: boolean; status: string }>(`${BASE}/workflow_runs/${run_id}/pause`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({}),
+  });
+}
 export async function resumeWorkflowRun(run_id: string, value: Record<string, unknown> = {}) {
   return json<{ ok: boolean; status: string }>(`${BASE}/workflow_runs/${run_id}/resume`, {
     method: "POST",

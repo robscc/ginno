@@ -187,6 +187,12 @@ class ExtractNode(BaseNode):
                     "只输出修正后的 JSON 对象。]"
                 )
             resp = await llm_invoke_with_timeout(m.ainvoke([HumanMessage(content=prompt)]))
+            # Per-call usage telemetry (source=workflow). The extraction model
+            # may differ from the run model — attribute the configured name.
+            ah.record_model_usage(
+                resp, run_ctx.get("usage_attr"),
+                model_override=getattr(m, "model", None) or getattr(m, "model_name", None),
+            )
             raw = text_of_content(resp.content)
             try:
                 parsed = _extract_json_from_text(raw)

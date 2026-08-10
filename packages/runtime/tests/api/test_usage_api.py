@@ -51,6 +51,22 @@ def test_overview_days_clamped(client):
     assert client.get("/api/usage/overview?days=9999").json()["window"]["days"] == usage_store.RETENTION_DAYS
 
 
+def test_overview_sources_breakdown(client):
+    """Overview splits usage by source (chat vs workflow, design §3.6) while
+    totals stay whole-account; sorted by total tokens desc."""
+    _seed(source="chat", input_tokens=1000, output_tokens=100)
+    _seed(source="workflow", session_id=None, input_tokens=300, output_tokens=50)
+    _seed(source="workflow", session_id=None, input_tokens=200, output_tokens=20)
+    data = client.get("/api/usage/overview?days=7").json()
+    srcs = {s["source"]: s for s in data["sources"]}
+    assert srcs["chat"]["calls"] == 1
+    assert srcs["chat"]["input_tokens"] == 1000
+    assert srcs["workflow"]["calls"] == 2
+    assert srcs["workflow"]["input_tokens"] == 500
+    assert data["sources"][0]["source"] == "chat"  # biggest first
+    assert data["totals"]["input_tokens"] == 1500  # whole-account unchanged
+
+
 def test_hourly_endpoint(client):
     _seed()
     data = client.get("/api/usage/hourly").json()

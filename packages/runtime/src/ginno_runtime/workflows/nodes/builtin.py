@@ -144,11 +144,26 @@ class AgentNode(BaseNode):
         msgs = [SystemMessage(content=sys_text), HumanMessage(content=goal)]
         result_text = ""
         usage = {"input_tokens": 0, "output_tokens": 0}
-        for _ in range(max_iters):
+        for it in range(max_iters):
+            if it:
+                # Manual-pause boundary (workflow-ux-redesign #14): between
+                # tool iterations, so a long step can be paused without waiting
+                # for it to finish. The checkpoint only commits per superstep,
+                # so pausing here rewinds the WHOLE step — it re-executes from
+                # scratch on resume (accepted semantics; duplicated events /
+                # usage mirror the retry path).
+                from .. import engine as wf_engine
+
+                wf_engine.check_pause(run_ctx, node_id)
             resp = await llm_invoke_with_timeout(bound.ainvoke(msgs))
             msgs.append(resp)
             result_text = text_of_content(resp.content)
-            for k, v in _usage_from_msg(resp).items():
+            # Per-call telemetry into the global usage log (source=workflow);
+            # falls back to response_metadata parsing when the provider does
+            # not populate usage_metadata (then nothing is logged — same
+            # best-effort semantics as the chat path).
+            u = ah.record_model_usage(resp, run_ctx.get("usage_attr")) or _usage_from_msg(resp)
+            for k, v in u.items():
                 usage[k] = usage.get(k, 0) + v
             calls = getattr(resp, "tool_calls", None) or []
             if not calls:
@@ -221,7 +236,7 @@ class LLMNode(BaseNode):
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "llm"})
         resp = await llm_invoke_with_timeout(model.ainvoke([HumanMessage(content=prompt)]))
         text = text_of_content(resp.content)
-        usage = _usage_from_msg(resp)
+        usage = ah.record_model_usage(resp, run_ctx.get("usage_attr")) or _usage_from_msg(resp)
         out = {"text": text}
         update = {"events": events, "__output__": out}
         key = node.get("output")

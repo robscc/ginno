@@ -31,6 +31,7 @@
 | 11 | supervisor_intervene 事件样式 | P3 | 前端（Timeline）| 日志可读性 |
 | 12 | Settings DSL 编辑器升级 | P3 | 前端 | 创建体验 |
 | 13 | 自适应 stuck 检测 | P3 | 前端（store + RunBlocks）| 准确性 |
+| 14 | 手动暂停 / 继续（运行中随时暂停，断点恢复） | P1 | 后端（engine 控制通道 + pause 端点）+ 前端（LiveRunBlock/ChatStream/WorkflowPanel） | 执行可控性 |
 | — | **从会话总结 Workflow** | — | — | — |
 | S1 | 聊天页入口 + session 选择器 | P0 | 前端（chat header）| 入口可达性 |
 | S2 | SummarizeModal 重设计（DAG 预览 + 可编辑）| P0 | 前端（SummarizeModal）| 结果可审阅 |

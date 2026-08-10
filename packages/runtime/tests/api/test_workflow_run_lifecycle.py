@@ -79,9 +79,9 @@ def _raise_disabled(*a, **k):
     raise ValueError("provider x is disabled (enable it in Settings)")
 
 
-def test_build_deps_missing_workflow_returns_5_tuple():
+def test_build_deps_missing_workflow_returns_6_tuple():
     result = server._wf_build_deps("r", "nope")
-    assert result == (None, None, None, None, None)
+    assert result == (None, None, None, None, None, None)
 
 
 # --- startup reconciliation heals orphaned / historical runs ---

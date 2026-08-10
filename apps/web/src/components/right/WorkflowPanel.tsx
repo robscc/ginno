@@ -10,6 +10,7 @@ import {
   cleanupWorkflowRuns,
   decideWorkflowRun,
   deleteWorkflowRun,
+  pauseWorkflowRun,
   retryWorkflowRun,
   retryWorkflowRunFromCheckpoint,
 } from "@/lib/runtime";
@@ -120,6 +121,7 @@ export function WorkflowPanel() {
             key={r.id}
             run={r}
             onCancel={(id) => cancelWorkflowRun(id)}
+            onPause={(id) => void pauseWorkflowRun(id)}
             onContinue={(id) => decideWorkflowRun(id, "continue")}
             onRetry={(id) =>
               retryWorkflowRun(id)

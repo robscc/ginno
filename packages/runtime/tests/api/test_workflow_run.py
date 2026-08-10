@@ -56,6 +56,69 @@ def test_trigger_run_404_for_unknown_workflow(client):
     assert client.post("/api/workflow_runs", json={"workflow_id": "nope"}).status_code == 404
 
 
+def test_run_llm_usage_recorded_as_source_workflow(client, monkeypatch):
+    """Every LLM call inside a workflow run lands in the global usage log with
+    source=workflow (usage-stats-design §3.6), attributed to the run via
+    turn_id; overview aggregates split it from chat usage."""
+    from ginno_runtime import usage_store
+
+    wf = store.create_def(
+        {
+            "name": "Metered",
+            "dsl": {
+                "entry": "s1",
+                "nodes": [
+                    {"id": "s1", "type": "step", "agent": "dev", "goal": "a"},
+                    {"id": "s2", "type": "step", "agent": "dev", "goal": "b"},
+                ],
+                "edges": [{"from": "s1", "to": "s2"}],
+            },
+        }
+    )
+    usage = {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
+             "input_token_details": {"cache_read": 40, "cache_creation": 0}}
+    monkeypatch.setattr(
+        "ginno_runtime.api.workflows.build_model",
+        lambda *a, **k: __import__(
+            "ginno_runtime.testing.fake_model", fromlist=["ScriptedChatModel"]
+        ).ScriptedChatModel(scripts=[script(text="a", usage=usage), script(text="b", usage=usage)]),
+    )
+
+    run_id = client.post("/api/workflow_runs", json={"workflow_id": wf["id"]}).json()["run"]["id"]
+    aw = client.post(f"/api/workflow_runs/{run_id}/_await").json()
+    assert aw["run"]["status"] == "done", aw
+
+    # request log: one row per LLM call, tagged workflow, attributed to the run
+    req = client.get("/api/usage/requests?source=workflow").json()
+    assert req["total"] == 2, req
+    for row in req["rows"]:
+        assert row["source"] == "workflow"
+        assert row["turn_id"] == run_id
+        # normalized whole-prompt input: 100 + 40 + 0
+        assert row["input_tokens"] == 140
+        assert row["output_tokens"] == 10
+        assert row["cache_read_tokens"] == 40
+    assert client.get("/api/usage/requests?source=chat").json()["total"] == 0
+
+    # overview splits sources while totals stay whole-account
+    ov = client.get("/api/usage/overview?days=7").json()
+    srcs = {s["source"]: s for s in ov["sources"]}
+    assert srcs["workflow"]["calls"] == 2
+    assert srcs["workflow"]["input_tokens"] == 280
+    assert ov["totals"]["input_tokens"] == 280
+
+    # headless run (no present_in session) is not attributed to any session
+    assert all(row["session_id"] is None for row in req["rows"])
+
+    # node_exit events keep their per-step usage too
+    evs = client.get(f"/api/workflow_runs/{run_id}/events").json()["events"]
+    exits = [e for e in evs if e["kind"] == "node_exit" and e.get("usage")]
+    assert len(exits) == 2
+    assert all(e["usage"]["input_tokens"] == 140 for e in exits)
+
+    usage_store.reset_cache()
+
+
 class _BoomModel:
     """Engine-path failure: the step node's model raises on first invoke."""
 
