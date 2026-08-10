@@ -149,6 +149,52 @@ text 提取），替换所有 `str(content)` 同款站点：
 合法 DSL（validate 无错）。新增回归测试：text_of_content thinking 场景 ×2 +
 summarize API thinking 模型 ×1。668 测试全过；make app exit 0。
 
+## 手动暂停 / 继续（workflow-ux-redesign #14，2026-08-10）
+
+**需求**：运行中的 workflow 可随时手动暂停，之后从暂停点继续——不依赖 DSL 预埋
+human 节点，也不是失败重试。用户选定语义：**尽快暂停**（当前模型调用/工具返回后
+立即生效）；若停在步骤中途，继续时该步骤从头重跑。
+
+**机制**：完整复用 human 节点的 interrupt()/checkpoint/resume 链路，新增一条
+「暂停请求」控制通道：
+
+- `engine.py`：模块级 `_RUN_CONTROLS`（run_id → 活的 run_ctx）；`request_pause()`
+  置标志；`check_pause()` one-shot 命中即清标志、发 `interrupt` 事件
+  （`nature: "manual"`）并调用 langgraph `interrupt()`；三个生成器
+  （run/resume/continue）经 `_run_control` 上下文注册/反注册。
+- 两个检查点：① `nodes/base.py` 节点 wrapper（节点边界，恢复无重跑）；
+  ② `nodes/builtin.py` AgentNode 工具循环轮次之间（步骤中途，恢复时整步重跑，
+  事件/usage 重复一份，同 retry 语义）。LoopNode 重入经 wrapper，循环边界自然生效。
+- 新端点 `POST /api/workflow_runs/{id}/pause`（404/409 守卫齐全），返回 `pausing`；
+  状态翻转沿用现有 paused 检测 → `_drive_run_events` → WS 推送。
+- **恢复**：`/resume`、`/decide` 不改。`_drive_run_events` 的 interrupt/resume
+  分支改为 nature 感知（`ev.get("nature") or "human"`；manual resume 不把步骤置
+  done——它要重跑，由 node_exit 落 done）。
+- **关键补发**：手动恢复时被中断节点重跑且不再调 `interrupt()`，没人发 resume
+  事件 → `_resume_workflow_bg` 从 run JSON 的 `pending_interrupt.kind` 读 nature，
+  经 `engine.resume_workflow(resume_nature="manual")` 由引擎在流式前补发
+  `{"kind":"resume","nature":"manual"}`（human 恢复不受影响，HumanNode 自发）。
+
+**偏离/决策**：
+- 原计划从 checkpoint 快照读 pending interrupt 的 value 判断 manual——实测
+  langgraph 1.2.9 的 checkpoint **不持久化 interrupt payload**（pending_writes 空、
+  tasks.interrupts 空、无 `__interrupt__` channel；恢复即重跑 pending 节点，未消费
+  的 resume 值被静默丢弃）。改为从 run JSON 的 pending_interrupt 取 nature（重启
+  后同样可用，run JSON 是持久化的）。
+- 暂停延迟上界 = 一次模型调用/工具执行（不打断进行中的 ainvoke）；暂停点击后
+  runtime 被杀则标志丢失，run 留在 running → 启动 reconcile 归为 interrupted
+  （现有崩溃行为）；真正落地的暂停跨重启可恢复（checkpoint + run JSON）。
+- 前端：`LiveRunBlock`（聊天 + 右栏共用）running 时加「暂停」，paused-manual 显示
+  「继续执行 + 取消」；`pending_interrupt.kind === "manual"` 不触发 HumanInputCard、
+  不占 dock 角标（pendingHumanCount 只数 human）。
+
+**事件 schema**：`{"kind":"interrupt","nature":"manual","node_id":...}` →
+run.pending_interrupt `{..., "kind":"manual"}` → `{"kind":"resume","nature":"manual"}`。
+
+**测试**：tests/unit/test_workflow_manual_pause.py（边界暂停/中途暂停重跑/注册卫生
+×3）+ tests/api/test_workflow_run_control.py（工具触发暂停→恢复、/pause 端点
+活 run 全链路、守卫 ×3）。注入缝：monkeypatch `build_all_tools`。
+
 ## Deviations
 （记录偏离文档的决策）
 

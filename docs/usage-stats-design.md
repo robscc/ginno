@@ -188,7 +188,7 @@ Ginno 是单机个人 Agent，用户即机主。核心场景：
 | `chat` | 用户对话轮次（含工具循环中的每次模型调用） | P0 |
 | `goal` | Goal 自主续轮（与 chat 同一流式路径，由续轮注入方打标） | P0 |
 | `compaction` | 历史压缩摘要调用 | P1 |
-| `workflow` | workflow 合成 / 运行中的模型节点 | P1 |
+| `workflow` | workflow 合成 / 运行中的模型节点 | P1 ✅（已接线：运行节点 agent/llm/extract 逐次 + 合成逐 attempt） |
 | `memory` | memory 提炼/摘要 | P1 |
 | `kb` | 知识库 Wiki 构建/摘要 | P1 |
 | `probe` | provider verify / search_probe 探测 | P1 |

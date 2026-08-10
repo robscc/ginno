@@ -228,13 +228,80 @@ export function OverviewPanel() {
             )}
           </div>
 
-          {/* Provider / 模型 */}
-          <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_1.25fr]">
+          {/* 来源 / Provider / 模型 */}
+          <div className="mt-3 grid gap-3 lg:grid-cols-3">
+            <SourceDist ov={ov} />
             <ProviderDist ov={ov} />
             <ModelRank ov={ov} />
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** 来源（usage-stats-design §3.6）：对话 vs 工作流 vs 后台任务。
+ * 颜色与请求日志的 SrcChip 保持一致（RequestsPanel.SRC_STYLE 的 fg 列）。 */
+const SOURCE_META: Record<string, { label: string; color: string }> = {
+  chat: { label: "对话", color: "#8d90f8" },
+  goal: { label: "Goal 续轮", color: "#b39df9" },
+  compaction: { label: "历史压缩", color: "#d9a93e" },
+  workflow: { label: "工作流", color: "#4ade80" },
+  memory: { label: "记忆", color: "#38bdf8" },
+  kb: { label: "知识库", color: "#60a5fa" },
+  probe: { label: "探测", color: "#9a9aa6" },
+  other: { label: "其他", color: "#9a9aa6" },
+};
+
+function SourceDist({ ov }: { ov: UsageOverview }) {
+  const { show, hide, move, tipEl } = useTip();
+  const sources = ov.sources || [];
+  const total = sources.reduce((a, s) => a + s.input_tokens + s.output_tokens, 0) || 1;
+  const vmax = Math.max(...sources.map((s) => s.input_tokens + s.output_tokens), 1);
+  return (
+    <div className="rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
+      <div className="mb-1.5 flex items-baseline gap-3">
+        <h3 className="text-[13px] font-semibold">来源分布</h3>
+        <span className="text-[11px] text-faint">对话 · 工作流 · 后台</span>
+      </div>
+      {sources.length === 0 && <div className="py-6 text-center text-xs text-faint">暂无数据</div>}
+      {sources.map((s) => {
+        const meta = SOURCE_META[s.source] || { label: s.source, color: "#9a9aa6" };
+        const v = s.input_tokens + s.output_tokens;
+        return (
+          <div
+            key={s.source}
+            className="grid grid-cols-[96px_1fr_118px] items-center gap-2.5 border-b border-white/5 py-2 last:border-b-0"
+            onMouseEnter={(e) =>
+              show(
+                <>
+                  <b className="text-txt">{meta.label}</b>（{s.source}）· 窗口内
+                  <TipRow label="Tokens" value={fmt(v)} />
+                  <TipRow label="输入" value={fmt(s.input_tokens)} />
+                  <TipRow label="输出" value={fmt(s.output_tokens)} />
+                  <TipRow label="缓存读" value={fmt(s.cache_read_tokens)} swatch={SERIES.cache} />
+                  <TipRow label="请求数" value={String(s.calls)} />
+                </>,
+                e,
+              )
+            }
+            onMouseMove={move}
+            onMouseLeave={hide}
+          >
+            <span className="flex items-center gap-2 text-[12.5px] text-muted">
+              <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: meta.color }} />
+              {meta.label}
+            </span>
+            <span className="h-2.5 overflow-hidden rounded-full bg-card2">
+              <span className="block h-full rounded-full" style={{ width: `${(v / vmax) * 100}%`, background: meta.color }} />
+            </span>
+            <span className="text-right text-xs tabular-nums text-muted">
+              <b className="text-txt">{pct(v / total)}</b> · {fmt(v)}
+            </span>
+          </div>
+        );
+      })}
+      {tipEl}
     </div>
   );
 }

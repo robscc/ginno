@@ -242,17 +242,20 @@ def _extract_json_obj(text: str) -> dict | None:
     return None
 
 
-async def _run_synthesis(trace: str, model, case_dir) -> dict:
+async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = None) -> dict:
     """The ≤3-attempt self-correcting synthesis loop (shared by the live
     endpoint and offline replay). Returns a result dict::
 
         {"ok", "dsl", "raw", "errors", "fail_stage", "attempts_used", "total_ms"}
 
     Records each attempt onto ``case_dir`` when provided (quality-plan §3.1).
+    Each model call is also logged to the global usage store (source=workflow,
+    usage-stats-design §3.6) when ``usage_attr`` carries the attribution.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from ..workflows import synthesis as wf_synth
+    from ..workflows.nodes import agent_helpers as ah
 
     extra_hint = ""
     dsl = None
@@ -266,6 +269,7 @@ async def _run_synthesis(trace: str, model, case_dir) -> dict:
         resp = await model.ainvoke(
             [SystemMessage(content=_SYNTHESIZE_PROMPT), HumanMessage(content=trace + extra_hint)]
         )
+        ah.record_model_usage(resp, usage_attr)
         latency_ms = int((time.time() - t0) * 1000)
         raw = text_of_content(resp.content)
         dsl = _extract_json_obj(raw)
@@ -346,7 +350,14 @@ async def summarize_session_to_dsl(data: dict) -> dict:
     wf_synth.prune_cases()
 
     # S4b: up to 3 self-correcting attempts (shared helper, also used by replay).
-    result = await _run_synthesis(trace, model, case_dir)
+    # Each attempt is metered into the usage log as source=workflow.
+    synth_model_name = getattr(model, "model", None) or getattr(model, "model_name", "") or ""
+    result = await _run_synthesis(trace, model, case_dir, usage_attr={
+        "provider": provider,
+        "model": synth_model_name,
+        "session_id": session_id,
+        "run_id": synthesis_id,
+    })
     wf_synth.finish_case(
         case_dir,
         status="ok" if result["ok"] else "failed",
@@ -447,7 +458,13 @@ async def synthesis_replay_endpoint(synthesis_id: str, data: dict | None = None)
         model = build_model(provider)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"model unavailable: {e}")
-    result = await _run_synthesis(trace, model, None)
+    result = await _run_synthesis(trace, model, None, usage_attr={
+        "provider": provider,
+        "model": getattr(model, "model", None) or getattr(model, "model_name", "") or "",
+        # offline replay: not attributable to a live session/run
+        "session_id": None,
+        "run_id": synthesis_id,
+    })
     return {
         "ok": result["ok"],
         "dsl": result["dsl"],
@@ -468,8 +485,12 @@ def _wf_mcp_tools() -> list:
 
 
 def _wf_build_deps(run_id: str, workflow_id: str):
-    """Resolve (wf, dsl, model, tools, fork_id) for a run by forking its source
-    agent. Returns a 5-tuple of None when the workflow def is missing.
+    """Resolve (wf, dsl, model, tools, fork_id, usage_attr) for a run by forking
+    its source agent. Returns a 6-tuple of None when the workflow def is missing.
+
+    ``usage_attr`` carries the attribution (provider/model/agent/run) the LLM
+    nodes stamp on their per-call usage records (source=workflow); the driver
+    adds ``session_id`` (present_in) before handing it to the engine.
 
     NOTE: fork_agent/build_model can RAISE (unknown agent, disabled/keyless
     provider) — callers must invoke this inside a try/except that marks the run
@@ -477,7 +498,7 @@ def _wf_build_deps(run_id: str, workflow_id: str):
     """
     wf = wf_store.get_def(workflow_id)
     if not wf:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     dsl = wf["dsl"]
     src_agent_id = None
     for n in dsl.get("nodes") or []:
@@ -488,7 +509,13 @@ def _wf_build_deps(run_id: str, workflow_id: str):
     fork = agents_reg.fork_agent(src_agent_id, f"wf-{run_id[:8]}-{src_agent_id}")
     model = build_model(fork.provider, fork.model or None)
     tools = build_all_tools(_wf_mcp_tools())
-    return wf, dsl, model, tools, fork.id
+    usage_attr = {
+        "provider": fork.provider or "",
+        "model": fork.model or getattr(model, "model", None) or getattr(model, "model_name", "") or "",
+        "agent_id": src_agent_id,
+        "run_id": run_id,
+    }
+    return wf, dsl, model, tools, fork.id, usage_attr
 
 
 def _set_run_status(
@@ -629,10 +656,13 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
             if body and body in node_to_step:
                 wf_store.update_step(run_id, node_to_step[body], "skipped")
         elif kind == "interrupt":
-            # HumanNode asked a question — remember the payload so the "paused"
-            # transition below can stamp it on the run JSON.
+            # A node suspended the graph (human question or manual pause,
+            # workflow-ux-redesign #14) — remember the payload so the "paused"
+            # transition below can stamp it on the run JSON. nature
+            # distinguishes the two; HumanNode events carry none and keep the
+            # historical "human" default.
             last_interrupt = {k: v for k, v in ev.items() if k not in ("run_id", "kind")}
-            last_interrupt["kind"] = "human"
+            last_interrupt["kind"] = ev.get("nature") or "human"
             _set_run_pending_interrupt(run_id, last_interrupt)
             # HumanNode suspends before its node_enter/exit events fire, so the
             # step would stay "pending" forever — mark it running while waiting.
@@ -641,7 +671,9 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
         elif kind == "resume":
             last_interrupt = None
             _set_run_pending_interrupt(run_id, None)
-            if nid in node_to_step:
+            # A manually paused step RE-EXECUTES after resume (checkpoint
+            # rewind) — its node_exit marks it done; don't flip it here.
+            if nid in node_to_step and ev.get("nature") != "manual":
                 wf_store.update_step(run_id, node_to_step[nid], "done")
         elif kind == "done":
             _set_run_pending_interrupt(run_id, None)
@@ -714,7 +746,7 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id = _wf_build_deps(run_id, workflow_id)
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id)
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
         if present_in:
@@ -725,7 +757,11 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
             # finishes. Announce the run at START too, so the Workflow panel
             # lists it as running immediately instead of materialising late.
             await _push_global_event("workflows.changed", {})
-        agen = wf_engine.run_workflow(dsl, run_id=run_id, model=model, tools=tools, context_override=context_override)
+        agen = wf_engine.run_workflow(
+            dsl, run_id=run_id, model=model, tools=tools,
+            context_override=context_override,
+            usage_attr={**(usage_attr or {}), "session_id": present_in},
+        )
         await _drive_run_events(run_id, present_in, wf, agen)
         sync_ledger.set_status(run_id, "ok")
     except asyncio.CancelledError:
@@ -753,11 +789,18 @@ async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict,
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id = _wf_build_deps(run_id, workflow_id)
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id)
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
         _set_run_status(run_id, "running")
-        agen = wf_engine.resume_workflow(dsl, run_id=run_id, model=model, tools=tools, resume_value=resume_value)
+        # Manual pauses (#14) carry no node-side resume event — tell the engine
+        # to emit it from the run's pending_interrupt nature instead.
+        _nature = ((wf_store.get_run(run_id) or {}).get("pending_interrupt") or {}).get("kind")
+        agen = wf_engine.resume_workflow(
+            dsl, run_id=run_id, model=model, tools=tools, resume_value=resume_value,
+            usage_attr={**(usage_attr or {}), "session_id": present_in},
+            resume_nature="manual" if _nature == "manual" else None,
+        )
         await _drive_run_events(run_id, present_in, wf, agen)
     except asyncio.CancelledError:
         raise
@@ -920,6 +963,31 @@ async def cancel_workflow_run_endpoint(run_id: str) -> dict:
     return {"ok": True, "status": "cancelled"}
 
 
+@router.post("/api/workflow_runs/{run_id}/pause")
+async def pause_workflow_run_endpoint(run_id: str) -> dict:
+    """Request a manual pause of a RUNNING run (workflow-ux-redesign #14).
+
+    Cooperative: the flag takes effect at the earliest safe boundary (a node
+    entry or an agent step's tool-iteration boundary); the run then transitions
+    to "paused" exactly like a human-node pause and resumes via /resume from
+    the last committed superstep. If the run finishes before reaching a
+    boundary it simply completes (the pending flag dies with the run)."""
+    run = wf_store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.get("status") != "running":
+        raise HTTPException(status_code=409, detail=f"run not pausable (status={run.get('status')})")
+    from ..workflows import engine as wf_engine
+
+    if not wf_engine.request_pause(run_id):
+        raise HTTPException(
+            status_code=409,
+            detail="run has no live execution loop yet (try again shortly)",
+        )
+    wf_events.append_event(run_id, "pause_requested")
+    return {"ok": True, "status": "pausing"}
+
+
 @router.post("/api/workflow_runs/{run_id}/resume")
 async def resume_workflow_run_endpoint(run_id: str, data: dict) -> dict:
     """Resume a paused run with a value (e.g. {"decision":..., "context_patch":{...}})."""
@@ -1032,11 +1100,14 @@ async def _continue_run_bg(run_id: str, workflow_id: str, present_in: str | None
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id = _wf_build_deps(run_id, workflow_id)
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id)
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
         _set_run_status(run_id, "running")
-        agen = wf_engine.continue_workflow(dsl, run_id=run_id, model=model, tools=tools)
+        agen = wf_engine.continue_workflow(
+            dsl, run_id=run_id, model=model, tools=tools,
+            usage_attr={**(usage_attr or {}), "session_id": present_in},
+        )
         await _drive_run_events(run_id, present_in, wf, agen)
         sync_ledger.set_status(run_id, "ok")
     except asyncio.CancelledError:

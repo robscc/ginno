@@ -169,9 +169,10 @@ export interface WorkflowRun {
   session_id?: string | null;
   present_in_session_id?: string | null;
   // Why the run is paused (workflow-ux-redesign P1): stamped by the server when
-  // the run transitions to "paused". kind "human" → show the question card.
+  // the run transitions to "paused". kind "human" → show the question card;
+  // "manual" → user pause (#14), generic 继续/取消 controls.
   pending_interrupt?: {
-    kind?: string; // "human"
+    kind?: string; // "human" | "manual"
     node_id?: string | null;
     question?: string | null;
     [k: string]: unknown;
@@ -391,6 +392,9 @@ export interface UsageModelAgg extends UsageCounters {
   provider: string;
   model: string;
 }
+export interface UsageSourceAgg extends UsageCounters {
+  source: string; // usage-stats-design §3.6: chat / goal / workflow / …
+}
 export interface UsageOverview {
   ok: boolean;
   window: { days: number; from: string; to: string };
@@ -400,6 +404,7 @@ export interface UsageOverview {
   daily: UsageDailyPoint[];
   providers: UsageProviderAgg[];
   models: UsageModelAgg[];
+  sources?: UsageSourceAgg[];
 }
 export interface UsageHourPoint {
   hour: number;

@@ -142,6 +142,14 @@ class BaseNode:
             # Parallel supersteps would race this to "last starter" — current
             # DSLs execute sequentially, so that is acceptable for v1.
             cctx["run_ctx"]["current_node"] = nid
+            # Manual-pause boundary (workflow-ux-redesign #14): suspend BEFORE
+            # this node starts — the checkpoint rewinds to the last committed
+            # superstep, so resume simply executes this node (no duplicated
+            # work). Function-local import: engine imports compiler which
+            # imports this module.
+            from .. import engine as wf_engine
+
+            wf_engine.check_pause(cctx["run_ctx"], nid)
             ctx = dict(state.get("context") or {})
             inputs = dict(state.get("inputs") or {})
             eff = inputs.get(nid)
