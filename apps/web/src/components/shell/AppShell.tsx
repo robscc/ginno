@@ -162,6 +162,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     applyTheme(t);
   }, []);
 
+  // Tauri shell bridges: clicking a native notification fires one of these via
+  // webview.eval (apps/desktop/src/lib.rs) — same convention as ChatStream's
+  // __ginnoFileDrop. AppShell stays mounted for the app's lifetime, including
+  // while the window is hidden, so the globals are always registered.
+  // Stable setters destructured out of `g` so the effect doesn't re-arm on
+  // every provider render; the route is read live inside the handlers.
+  const setActiveSession = g.setActiveSession;
+  const setRightTab = g.setRightTab;
+  const setRightPanelOpenForBridge = g.setRightPanelOpen;
+  useEffect(() => {
+    const openSession = (sid: string) => {
+      if (!sid) return;
+      setActiveSession(sid);
+      if (window.location.pathname !== "/") router.push("/");
+      // ChatStream arms stick-to-bottom and scrolls on this event (the
+      // session's history may still be loading — its switch effect and the
+      // [messages] auto-scroll finish the job).
+      window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: sid }));
+    };
+    const openWorkflowRun = () => {
+      // The right panel only renders on the workspace route.
+      if (window.location.pathname !== "/") router.push("/");
+      setRightTab("workflow"); // manual open also clears the panel badge
+      setRightPanelOpenForBridge(true);
+    };
+    (window as unknown as { __ginnoOpenSession?: (sid: string) => void }).__ginnoOpenSession =
+      openSession;
+    (window as unknown as { __ginnoOpenWorkflowRun?: () => void }).__ginnoOpenWorkflowRun =
+      openWorkflowRun;
+    return () => {
+      delete (window as unknown as { __ginnoOpenSession?: unknown }).__ginnoOpenSession;
+      delete (window as unknown as { __ginnoOpenWorkflowRun?: unknown }).__ginnoOpenWorkflowRun;
+    };
+  }, [setActiveSession, setRightTab, setRightPanelOpenForBridge, router]);
+
   const onWorkspace = pathname === "/";
   const onSettings = pathname.startsWith("/settings");
   const onKb = pathname.startsWith("/kb");

@@ -17,6 +17,11 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+# preview-macos-un: modern UNUserNotificationCenter backend. The default
+# NSUserNotification path is deprecated and, on current macOS, only ever
+# shows the generic first-use banner for background apps — the notification
+# content (and its click) never reaches the user.
+notify-rust = { version = "4", features = ["preview-macos-un"] }
 
 [features]
 default = ["custom-protocol"]

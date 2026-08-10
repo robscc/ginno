@@ -6,6 +6,7 @@ import { useGinno } from "@/lib/store";
 import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
 import { loadToolLabels } from "@/lib/toolLabels";
 import { agentHex } from "@/lib/theme";
+import { notifyNative } from "@/lib/desktop";
 import { Icon } from "@/components/icons";
 import { ContextBlocks, InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
 import { DiffView } from "@/components/workflow/DiffView";
@@ -382,6 +383,13 @@ export function ChatStream({
   const liveIdRef = useRef<string | null>(null);
   // connectRef: the reconnect button always calls this; updated on each session switch
   const connectRef = useRef<() => void>(() => {});
+  // Socket callbacks outlive session switches (per-session sockets stay open),
+  // so they capture stale context — anything they need live must come from refs.
+  const activeSidRef = useRef<string | null>(g.activeSessionId);
+  activeSidRef.current = g.activeSessionId;
+  // Set when a notification click asked to land on a session's latest message;
+  // consumed by the session-switch effect / focus-latest listener below.
+  const focusLatestRef = useRef<string | null>(null);
 
   // Abandon an in-flight turn after a socket drop that the server cannot
   // answer for (legacy fallback): the user bubble keeps its retry payload.
@@ -711,6 +719,16 @@ export function ChatStream({
     }
 
     syncDisplay(sid);
+
+    // Notification-click jump: land on the latest message regardless of the
+    // parked scroll position. For uncached sessions the async history load
+    // re-syncs display later; stickRef=true lets the [messages] auto-scroll
+    // effect finish the job then.
+    if (focusLatestRef.current === sid) {
+      focusLatestRef.current = null;
+      stickRef.current = true;
+      scrollToBottomSoon();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
 
@@ -739,6 +757,39 @@ export function ChatStream({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Scroll-to-bottom that tolerates the container still having no layout
+  // (e.g. the route flipping back to "/" right after a notification click) —
+  // retries a few frames until scrollHeight is real.
+  function scrollToBottomSoon() {
+    let tries = 0;
+    const attempt = () => {
+      const el = scrollRef.current;
+      if (el && el.scrollHeight > 0) {
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
+      if (++tries < 20) requestAnimationFrame(attempt);
+    };
+    requestAnimationFrame(attempt);
+  }
+
+  // Notification-click jump target (dispatched by AppShell's __ginnoOpenSession
+  // and by the HTML5-notification browser fallback in the message.end handler).
+  // Arm stick-to-bottom; if the session is already displayed scroll now,
+  // otherwise the session-switch effect handles it once it lands.
+  useEffect(() => {
+    const onFocusLatest = (e: Event) => {
+      const sid = (e as CustomEvent<string>).detail;
+      if (!sid) return;
+      focusLatestRef.current = sid;
+      stickRef.current = true;
+      if (curSessionIdRef.current === sid) scrollToBottomSoon();
+    };
+    window.addEventListener("ginno:focus-latest", onFocusLatest);
+    return () => window.removeEventListener("ginno:focus-latest", onFocusLatest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Delivery confirmed (the server started or finished the turn) → clear the
   // "sending" marker off user bubbles.
@@ -1073,6 +1124,56 @@ export function ChatStream({
         // persisted history renders the whole turn as ONE merged bubble (with
         // the right agent name) — rebuild from it to heal the split.
         if (wasOrphan) reconcileTurnFromHistory(sid);
+        // Turn done → desktop notification unless the user is watching this
+        // exact session right now (visible ∧ workspace route ∧ active session).
+        // Socket callbacks capture stale closures (sockets outlive session
+        // switches) — read refs / live values only. The session title may be
+        // stale too (rename after connect); cosmetic, accepted.
+        {
+          let notifyEnabled = true;
+          try {
+            notifyEnabled = localStorage.getItem("ginno-notify") !== "0";
+          } catch {
+            /* ignore */
+          }
+          const watching =
+            document.visibilityState === "visible" &&
+            window.location.pathname === "/" &&
+            activeSidRef.current === sid;
+          if (notifyEnabled && !watching) {
+            const title = g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
+            const raw = typeof ev.text === "string" ? ev.text.trim() : "";
+            const body = raw || "回复已完成";
+            void notifyNative({ kind: "session", id: sid, title, body }).then((sent) => {
+              if (sent) return;
+              // Plain-browser dev fallback — WKWebView has no Notification API,
+              // so inside the packaged app this branch is a silent no-op.
+              if (typeof Notification === "undefined") return;
+              if (Notification.permission === "default") {
+                try {
+                  void Notification.requestPermission();
+                } catch {
+                  /* unsupported */
+                }
+                return;
+              }
+              if (Notification.permission !== "granted") return;
+              try {
+                const n = new Notification(title, { body });
+                n.onclick = () => {
+                  window.focus();
+                  g.setActiveSession(sid); // stable setter — stale closure safe
+                  window.dispatchEvent(
+                    new CustomEvent("ginno:focus-latest", { detail: sid }),
+                  );
+                  n.close();
+                };
+              } catch {
+                /* blocked/unsupported */
+              }
+            });
+          }
+        }
         break;
       }
       case "error": {

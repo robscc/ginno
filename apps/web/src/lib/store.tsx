@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import * as api from "./runtime";
+import { notifyNative } from "./desktop";
 import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory";
@@ -39,7 +40,7 @@ export interface RunToolActivity {
   argsPreview: string;
 }
 
-// ---- Browser notifications for run completion (P3) ----
+// ---- Notifications for run completion (P3) ----
 // Module-level prev-status map: reloadWorkflowRuns diffs against it to catch
 // done/failed transitions while the tab is hidden.
 const _prevRunStatus: Record<string, string> = {};
@@ -55,42 +56,59 @@ function notifyRunTransitions(
   runs: Array<{ id: string; name?: string; status: string; steps?: Array<{ id: string; title?: string; status: string }>; started: number; finished?: number | null }>,
   onOpenPanel?: () => void,
 ) {
+  // Master gate (Settings → Notifications). _prevRunStatus keeps updating even
+  // while disabled so re-enabling doesn't fire a burst of stale transitions.
+  let enabled = true;
+  try {
+    enabled = typeof localStorage !== "undefined" && localStorage.getItem("ginno-notify") !== "0";
+  } catch {
+    /* ignore */
+  }
   const hidden = typeof document !== "undefined" && document.visibilityState !== "visible";
   for (const r of runs) {
     const prev = _prevRunStatus[r.id];
     _prevRunStatus[r.id] = r.status;
     if (prev === undefined || prev === r.status) continue;
-    // First time anything runs: ask for permission once (user-initiated work
-    // is happening, so the prompt is contextually reasonable).
-    if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      try {
-        void Notification.requestPermission();
-      } catch {
-        /* unsupported */
-      }
-    }
+    if (!enabled) continue;
     if (!hidden) continue; // user is looking — the badges already cover it
-    if (typeof Notification === "undefined" || Notification.permission !== "granted") continue;
-    try {
-      const name = r.name || "Workflow";
-      let body: string;
-      if (r.status === "done") {
-        body = `已完成 · 用时 ${fmtRunElapsed(r)}`;
-      } else if (r.status === "failed") {
-        const failed = (r.steps || []).find((s) => s.status === "failed");
-        body = failed?.title ? `失败于「${failed.title}」` : "执行失败";
-      } else {
-        continue;
-      }
-      const n = new Notification(`${r.status === "done" ? "✓" : "✕"} ${name}`, { body });
-      n.onclick = () => {
-        window.focus();
-        onOpenPanel?.(); // land on the Workflow tab so the run is visible
-        n.close();
-      };
-    } catch {
-      /* notification blocked/unsupported */
+    let body: string;
+    if (r.status === "done") {
+      body = `已完成 · 用时 ${fmtRunElapsed(r)}`;
+    } else if (r.status === "failed") {
+      const failed = (r.steps || []).find((s) => s.status === "failed");
+      body = failed?.title ? `失败于「${failed.title}」` : "执行失败";
+    } else {
+      continue;
     }
+    const title = `${r.status === "done" ? "✓" : "✕"} ${r.name || "Workflow"}`;
+    // Desktop: the Tauri shell fires a real macOS notification (WKWebView has
+    // no window.Notification). Click → window focus + open the Workflow panel.
+    void notifyNative({ kind: "workflow-run", id: r.id, title, body }).then((sent) => {
+      if (sent) return;
+      // Plain-browser dev fallback.
+      if (typeof Notification === "undefined") return;
+      if (Notification.permission === "default") {
+        // First time anything runs: ask for permission once (user-initiated
+        // work is happening, so the prompt is contextually reasonable).
+        try {
+          void Notification.requestPermission();
+        } catch {
+          /* unsupported */
+        }
+        return;
+      }
+      if (Notification.permission !== "granted") return;
+      try {
+        const n = new Notification(title, { body });
+        n.onclick = () => {
+          window.focus();
+          onOpenPanel?.(); // land on the Workflow tab so the run is visible
+          n.close();
+        };
+      } catch {
+        /* notification blocked/unsupported */
+      }
+    });
   }
 }
 

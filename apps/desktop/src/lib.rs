@@ -9,20 +9,41 @@
 //!      navigates to the app the moment the runtime is up.
 //!   3. Forward runtime stdout/stderr to a log file under ~/.ginno/logs/.
 //!   4. Terminate the runtime on app exit.
+//!   5. Native notifications: the web UI emits `ginno:notify` when a session
+//!      turn / workflow run finishes while the user looks away; the shell
+//!      shows the macOS notification and, on click, restores the window and
+//!      tells the webview to navigate to the target (`__ginnoOpenSession` /
+//!      `__ginnoOpenWorkflowRun`, same eval convention as `__ginnoFileDrop`).
+//!      Closing the window hides it (macOS convention) so the webview and its
+//!      sockets survive to keep receiving completion events.
 //!
 //! In dev (`tauri dev`), the user runs `pnpm dev:runtime` in a separate
 //! terminal; this file only spawns the runtime in release builds.
 
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{DragDropEvent, Manager, WindowEvent};
+use tauri::{DragDropEvent, Listener, Manager, WindowEvent};
 
 const SIDECAR_PORT: u16 = 8787;
 
 /// Handle to the spawned runtime process, so `RunEvent::Exit` can terminate it.
 struct RuntimeProcess(Mutex<Option<Child>>);
+
+/// Payload of the `ginno:notify` event emitted by the web UI (see
+/// `notifyNative` in apps/web/src/lib/desktop.ts) when a session turn or
+/// workflow run finishes while the user isn't looking at it.
+#[derive(serde::Deserialize)]
+struct NotifyPayload {
+    /// `"session"` or `"workflow-run"` — decides which bridge global is called.
+    kind: String,
+    /// Session id (`kind == "session"`) or run id (`kind == "workflow-run"`).
+    id: String,
+    title: String,
+    body: String,
+}
 
 fn open_log_file(app: &tauri::App) -> Option<std::fs::File> {
     let home = dirs_home(app);
@@ -45,6 +66,26 @@ fn dirs_home(app: &tauri::App) -> std::path::PathBuf {
         .home_dir()
         .expect("home dir");
     home.join(".ginno")
+}
+
+/// Append one line to ~/.ginno/logs/shell.log (same convention as sidecar.log).
+/// Best-effort diagnostics for the notification / window-visibility flow.
+fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
+    let home = if let Ok(p) = std::env::var("GINNO_HOME") {
+        std::path::PathBuf::from(p)
+    } else {
+        match app.path().home_dir() {
+            Ok(h) => h.join(".ginno"),
+            Err(_) => return,
+        }
+    };
+    let logs = home.join("logs");
+    let _ = std::fs::create_dir_all(&logs);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("shell.log"))
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
 }
 
 /// Reclaim the runtime port from a stale `ginno-runtime`, if one holds it.
@@ -185,24 +226,100 @@ const SPLASH_HTML: &str = r#"<!doctype html>
 </body>
 </html>"#;
 
+/// Fire a native macOS notification and wait for the user's reaction.
+///
+/// Uses notify-rust's NSUserNotification path directly: Tauri's notification
+/// plugin drops the handle on desktop and offers no click callback, while
+/// notify-rust's `wait_for_action` resolves with the interaction (delegate
+/// callbacks arrive on the main run loop, which the Tauri event loop keeps
+/// pumping). Each notification parks its own thread — notifications are rare
+/// and the cost is negligible; an uninteracted notification keeps its thread
+/// until clicked from Notification Center (macOS keeps alerts there
+/// indefinitely and a late click must still navigate).
+fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyPayload) {
+    let mut n = notify_rust::Notification::new();
+    n.summary(&payload.title).body(&payload.body);
+    let Ok(handle) = n.show() else {
+        return;
+    };
+    handle.wait_for_action(|action| {
+        // "__closed" = dismissed without clicking; anything else = clicked.
+        shell_log(
+            &app,
+            &format!("wait_for_action resolved action={action} kind={} id={}", payload.kind, payload.id),
+        );
+        if action != "__closed" {
+            focus_and_open(&app, &payload.kind, &payload.id);
+        }
+    });
+}
+
+/// Restore the window and tell the webview to navigate to the notification's
+/// target. Same eval convention as the DragDrop → `__ginnoFileDrop` bridge;
+/// the globals are registered in AppShell and survive because close = hide
+/// (the webview stays alive). The target id is JSON-escaped — never
+/// interpolated raw.
+fn focus_and_open(app: &tauri::AppHandle, kind: &str, id: &str) {
+    shell_log(app, &format!("focus_and_open kind={kind} id={id}"));
+    let script = if kind == "workflow-run" {
+        "window.__ginnoOpenWorkflowRun && window.__ginnoOpenWorkflowRun();".to_string()
+    } else {
+        let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());
+        format!("window.__ginnoOpenSession && window.__ginnoOpenSession({id_js});")
+    };
+    let app = app.clone();
+    let inner = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = inner.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+            let _ = w.eval(&script);
+        }
+    });
+}
+
 pub fn run() {
+    // Set while a real quit is in flight (⌘Q / menu / ExitRequested) so the
+    // CloseRequested handler below destroys the window instead of hiding it.
+    let quitting = Arc::new(AtomicBool::new(false));
+
     let app = tauri::Builder::default()
         // WKWebView never fires the HTML5 `ondrop` for files dragged from the
         // Finder, so the composer's JS drop handler can't see them. Handle the
         // OS-level drop natively and forward the file paths to the page via
         // `window.__ginnoFileDrop` (defined in ChatStream), which attaches them
         // through the runtime's /api/files/attach-path endpoint.
-        .on_window_event(|window, event| {
-            if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
-                if paths.is_empty() {
-                    return;
-                }
-                if let Some(webview) = window.get_webview_window("main") {
-                    let paths_json =
-                        serde_json::to_string(paths).unwrap_or_else(|_| "[]".to_string());
-                    let _ = webview.eval(&format!(
-                        "window.__ginnoFileDrop && window.__ginnoFileDrop({paths_json});"
-                    ));
+        .on_window_event({
+            let quitting = quitting.clone();
+            move |window, event| {
+                match event {
+                    WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
+                        if paths.is_empty() {
+                            return;
+                        }
+                        if let Some(webview) = window.get_webview_window("main") {
+                            let paths_json = serde_json::to_string(paths)
+                                .unwrap_or_else(|_| "[]".to_string());
+                            let _ = webview.eval(&format!(
+                                "window.__ginnoFileDrop && window.__ginnoFileDrop({paths_json});"
+                            ));
+                        }
+                    }
+                    // macOS convention: closing the window hides it instead of
+                    // destroying it, so the webview and its per-session sockets
+                    // stay alive and background turn completions can still fire
+                    // notifications. Real quit is ⌘Q / menu Quit — ExitRequested
+                    // flips the flag first, making this a real close; the
+                    // sidecar is terminated on RunEvent::Exit as before.
+                    WindowEvent::CloseRequested { api, .. } => {
+                        if !quitting.load(Ordering::SeqCst) {
+                            shell_log(window, "close_requested -> hide");
+                            api.prevent_close();
+                            let _ = window.hide();
+                        }
+                    }
+                    _ => {}
                 }
             }
         })
@@ -291,24 +408,79 @@ pub fn run() {
                 let _ = w.show();
                 let _ = w.set_focus();
             }
+
+            // The UNUserNotificationCenter backend requires explicit
+            // authorization before banners show content (the deprecated
+            // NSUserNotification path did not). Release builds are a real
+            // app bundle, so request once at startup — macOS shows its
+            // permission prompt on first use. Dev builds are unbundled and
+            // cannot post UN notifications at all; they're a no-op there.
+            #[cfg(not(debug_assertions))]
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    shell_log(&h, "notification auth: requesting…");
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        notify_rust::request_auth_blocking()
+                    }));
+                    shell_log(&h, &format!("notification auth state={res:?}"));
+                });
+            }
+
+            // Session/workflow completion notifications: the web UI decides
+            // WHEN to notify (it knows what the user is looking at) and emits
+            // ginno:notify; the shell owns the OS notification and the
+            // click-to-focus round trip.
+            let notify_handle = app.handle().clone();
+            app.listen_any("ginno:notify", move |event| {
+                let Ok(payload) = serde_json::from_str::<NotifyPayload>(event.payload()) else {
+                    return;
+                };
+                let h = notify_handle.clone();
+                shell_log(&h, &format!("ginno:notify kind={} id={}", payload.kind, payload.id));
+                std::thread::spawn(move || show_notification_and_wait(h, payload));
+            });
+
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building Ginno desktop shell");
 
-    app.run(|app_handle, event| {
-        // Terminate the runtime when the app quits so it doesn't linger and
-        // hold the port (kill_stale_sidecar would reclaim it on the next
-        // start, but a clean exit is cleaner).
-        if let tauri::RunEvent::Exit = event {
-            if let Some(state) = app_handle.try_state::<RuntimeProcess>() {
-                if let Ok(mut guard) = state.0.lock() {
-                    if let Some(child) = guard.as_mut() {
-                        let _ = child.kill();
-                        let _ = child.wait();
+    app.run(move |app_handle, event| {
+        match event {
+            // A real quit (⌘Q / menu / programmatic exit) is starting — let
+            // CloseRequested destroy the window instead of hiding it.
+            tauri::RunEvent::ExitRequested { .. } => {
+                quitting.store(true, Ordering::SeqCst);
+            }
+            // Dock click while the window is hidden → bring it back
+            // (macOS convention; notification clicks are handled explicitly
+            // in focus_and_open).
+            tauri::RunEvent::Reopen {
+                has_visible_windows, ..
+            } => {
+                shell_log(app_handle, &format!("reopen has_visible_windows={has_visible_windows}"));
+                if !has_visible_windows {
+                    if let Some(w) = app_handle.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
                     }
                 }
             }
+            // Terminate the runtime when the app quits so it doesn't linger and
+            // hold the port (kill_stale_sidecar would reclaim it on the next
+            // start, but a clean exit is cleaner).
+            tauri::RunEvent::Exit => {
+                if let Some(state) = app_handle.try_state::<RuntimeProcess>() {
+                    if let Ok(mut guard) = state.0.lock() {
+                        if let Some(child) = guard.as_mut() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     });
 }

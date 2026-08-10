@@ -1238,17 +1238,22 @@ async def _stream_graph(
                 await _process_turn_citations(session_id, turn_id, _final_text)
             except Exception:
                 _log.exception("citations_failed session=%s turn=%s", session_id, turn_id)
-            # Capture sanitized assistant text for memory summarization (P2)
+            # Capture sanitized assistant text for memory summarization (P2).
+            # Also reused as the desktop notification body below (the web shell
+            # shows a turn-done notification when the user looked away).
+            from ..knowledge.citations import strip_citation_block
+
+            _clean_text = strip_citation_block(_final_text)
             if turn_text:
-                from ..knowledge.citations import strip_citation_block
                 from ..memory import append_to_pool
 
-                append_to_pool(session_id, agent_id, strip_citation_block(_final_text))
+                append_to_pool(session_id, agent_id, _clean_text)
             _log.info(
                 "turn_done session=%s turn=%s status=completed text_len=%d",
                 session_id, turn_id, len("".join(turn_text)),
             )
-            await safe_send(emit("message.end", {}))
+            # Empty text (tool-only turn) → the UI falls back to a generic body.
+            await safe_send(emit("message.end", {"text": _clean_text.strip()[:200]}))
         else:
             _log.info(
                 "turn_done session=%s turn=%s status=paused_at_interrupt",
