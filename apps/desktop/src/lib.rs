@@ -239,9 +239,20 @@ const SPLASH_HTML: &str = r#"<!doctype html>
 fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyPayload) {
     let mut n = notify_rust::Notification::new();
     n.summary(&payload.title).body(&payload.body);
-    let Ok(handle) = n.show() else {
-        return;
+    let handle = match n.show() {
+        Ok(h) => h,
+        Err(e) => {
+            // 2026-08-10: notifications silently died here — macOS auth was
+            // denied (request_auth_blocking → false) and show()'s error was
+            // swallowed by a bare `return`. Never drop the only trace.
+            shell_log(&app, &format!("notification show FAILED: {e}"));
+            return;
+        }
     };
+    shell_log(
+        &app,
+        &format!("notification shown kind={} id={}", payload.kind, payload.id),
+    );
     handle.wait_for_action(|action| {
         // "__closed" = dismissed without clicking; anything else = clicked.
         shell_log(
