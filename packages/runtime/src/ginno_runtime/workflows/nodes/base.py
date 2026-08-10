@@ -21,9 +21,34 @@ downstream input computation via edge ``transform``.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, ClassVar
 
 from . import transforms as wf_transforms
+
+# Hard cap on a single workflow LLM call. Unlike the chat path (CHAT_TIMEOUT_S
+# + the per-chunk stall watchdog in server._stream_graph), the workflow
+# step/llm/extract nodes used to ``await`` the model with NO timeout, so a
+# stalled provider hung the entire run forever — the task blocks on the call
+# and the run is stranded in "running" (see wf_b4ee9936, 2026-08-10). With a
+# timeout the node raises, the engine surfaces an error event, and the run
+# lands "failed" instead of stuck. Module-level so tests can monkeypatch it.
+WORKFLOW_LLM_TIMEOUT_S = 300.0
+
+
+async def llm_invoke_with_timeout(coro, timeout: float | None = None):
+    """Await a workflow LLM call, failing fast on a stalled provider.
+
+    Raises a descriptive ``RuntimeError`` on timeout (caught by the engine and
+    surfaced as an ``error`` event → the run is marked ``failed``).
+    """
+    t = WORKFLOW_LLM_TIMEOUT_S if timeout is None else timeout
+    try:
+        return await asyncio.wait_for(coro, timeout=t)
+    except asyncio.TimeoutError:
+        raise RuntimeError(
+            f"workflow LLM call timed out after {t:.0f}s (provider not responding)"
+        ) from None
 
 _TYPE_CHECKS = {
     "string": lambda v: isinstance(v, str),

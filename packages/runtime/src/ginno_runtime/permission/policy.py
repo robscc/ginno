@@ -88,3 +88,39 @@ def is_bypass_permissions(settings: dict | None = None) -> bool:
         p = paths.settings_path()
         settings = json.loads(p.read_text() or "{}") if p.exists() else {}
     return bool(settings.get("bypass_permissions", True))
+
+
+_WEB_TOOL_NAMES = ("web_search", "web_fetch")
+
+
+def ensure_web_permissions() -> None:
+    """Idempotent migration (sibling of agents.ensure_web_tools).
+
+    ``paths._DEFAULT_SETTINGS`` seeds the web tools into ``permissions.allow``
+    only for FRESH installs (ensure_layout writes defaults when settings.json is
+    missing). Upgraded installs never get them, so with ``bypass_permissions``
+    OFF every web_search/web_fetch falls through to the default ``ask`` and
+    interrupts the turn — worst on headless goal-continuation turns, which park
+    at the prompt indefinitely. Add the two names to ``allow`` unless the user
+    already mentions them in any bucket (a deliberate deny/ask is respected).
+    """
+    p = paths.settings_path()
+    if not p.exists():
+        return
+    try:
+        settings = json.loads(p.read_text() or "{}")
+    except json.JSONDecodeError:
+        return
+    perms = settings.get("permissions")
+    if not isinstance(perms, dict):
+        return  # no permissions block: defaults apply, nothing to migrate
+    existing = " ".join(
+        str(x) for bucket in ("allow", "deny", "ask") for x in perms.get(bucket, []) or []
+    ).lower()
+    allow = list(perms.get("allow") or [])
+    added = [n for n in _WEB_TOOL_NAMES if n not in existing and n not in allow]
+    if not added:
+        return
+    perms["allow"] = allow + added
+    settings["permissions"] = perms
+    p.write_text(json.dumps(settings, indent=2, ensure_ascii=False))

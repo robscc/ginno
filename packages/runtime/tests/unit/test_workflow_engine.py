@@ -150,6 +150,60 @@ async def test_engine_surfaces_step_error_as_event():
 
 
 @pytest.mark.asyncio
+async def test_engine_times_out_hung_llm_call(monkeypatch):
+    """A model that never answers must fail the step (error event), NOT hang the
+    run forever. Regression for wf_b4ee9936 (2026-08-10): a workflow step's
+    ``await model.ainvoke`` had no timeout, so a stalled provider stranded the
+    run in "running" for hours."""
+    import asyncio as _asyncio
+
+    from ginno_runtime.workflows.nodes import base as nodes_base
+
+    monkeypatch.setattr(nodes_base, "WORKFLOW_LLM_TIMEOUT_S", 0.2)
+
+    class Hang:
+        def bind_tools(self, *a, **k):
+            return self
+
+        async def ainvoke(self, *a, **k):
+            await _asyncio.sleep(5)  # far beyond the patched timeout
+            raise AssertionError("should have been cancelled by the timeout")
+
+    d = {
+        "name": "w",
+        "entry": "a",
+        "nodes": [{"id": "a", "type": "step", "agent": "dev", "goal": "g"}],
+        "edges": [],
+    }
+    events = []
+    async for ev in engine.run_workflow(d, run_id="r-timeout", model=Hang(), tools=[]):
+        events.append(ev)
+    err = next((e for e in events if e["kind"] == "error"), None)
+    assert err is not None, f"no error event in {[e['kind'] for e in events]}"
+    assert "timed out" in err.get("error", "")
+    assert err.get("node_id") == "a"
+
+
+@pytest.mark.asyncio
+async def test_llm_invoke_with_timeout_helper():
+    """Direct helper contract: fast calls return, slow calls raise descriptively."""
+    import asyncio as _asyncio
+
+    from ginno_runtime.workflows.nodes import base as nodes_base
+
+    async def fast():
+        return "ok"
+
+    assert await nodes_base.llm_invoke_with_timeout(fast(), timeout=1.0) == "ok"
+
+    async def slow():
+        await _asyncio.sleep(5)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        await nodes_base.llm_invoke_with_timeout(slow(), timeout=0.1)
+
+
+@pytest.mark.asyncio
 async def test_engine_error_attributes_failing_node_in_chain():
     """A two-step chain where the SECOND step raises: the error event must name
     node "b", and — because events flush incrementally — the footprint of the

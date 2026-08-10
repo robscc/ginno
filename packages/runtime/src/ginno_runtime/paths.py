@@ -58,7 +58,7 @@ _DEFAULT_SETTINGS = {
         },
     },
     "permissions": {
-        "allow": ["Read(*)", "Glob(*)", "Grep(*)", "read_file", "glob_files", "grep_files", "parse_document", "mcp_vault_read_*", "mcp_vault_list_*", "mcp_vault_search_*", "mcp_vault_directory_*", "mcp_vault_get_*"],
+        "allow": ["Read(*)", "Glob(*)", "Grep(*)", "read_file", "glob_files", "grep_files", "parse_document", "web_search", "web_fetch", "mcp_vault_read_*", "mcp_vault_list_*", "mcp_vault_search_*", "mcp_vault_directory_*", "mcp_vault_get_*"],
         "deny": ["Bash(rm -rf *)", "bash(rm -rf *)", "Bash(sudo *)", "bash(sudo *)", "Write(~/.ssh/**)", "Write(~/.gnupg/**)"],
         "ask": ["Bash(*)", "bash(*)", "Write(*)", "Edit(*)", "write_file", "edit_file", "analyze_table", "mcp_vault_write_*", "mcp_vault_edit_*", "mcp_vault_create_*", "mcp_vault_move_*"],
     },

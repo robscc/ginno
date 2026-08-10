@@ -256,6 +256,14 @@ async def kb_wiki_stats() -> dict:
         for t in e.tags:
             tag_counts[t] = tag_counts.get(t, 0) + 1
     unique_tags = sorted(tag_counts, key=lambda t: (-tag_counts[t], t))[:30]
+    # Citation usage aggregates (citations-design.md §5.9) — the ledger lives
+    # even when citations are disabled (counts simply stop growing).
+    try:
+        from ..knowledge import usage as kb_usage
+
+        citation_stats = kb_usage.summary()
+    except Exception:
+        citation_stats = {}
     return {
         "ok": True,
         "vault_path": cfg.vault_path,
@@ -265,7 +273,47 @@ async def kb_wiki_stats() -> dict:
         "total_tags": len(tag_counts),
         "unique_tags": unique_tags,
         "last_indexed": idx.last_full_scan,
+        "citations": citation_stats,
     }
+
+
+@router.get("/api/kb/wiki/usage")
+async def kb_wiki_usage(sort: str = "cited", limit: int = 20) -> dict:
+    """Per-page citation usage ledger (citations-design.md §6.1).
+
+    ``sort`` ∈ cited | injected | rate; rows carry injected/cited counts,
+    citation_rate and last-use attribution for the KB page / Discover.
+    """
+    try:
+        from ..knowledge import usage as kb_usage
+
+        return {"ok": True, "rows": kb_usage.top(sort, limit)}
+    except Exception as e:  # ledger missing/corrupt — never break the KB page
+        return {"ok": False, "error": str(e), "rows": []}
+
+
+@router.post("/api/kb/wiki/usage/reset")
+async def kb_wiki_usage_reset() -> dict:
+    """Clear the citation usage ledger (operational; UI asks for confirm)."""
+    try:
+        from ..knowledge import usage as kb_usage
+
+        kb_usage.reset()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/api/kb/wiki/web-usage")
+async def kb_web_usage() -> dict:
+    """Web search telemetry: per-engine search/cite rates + top cited domains
+    (citations-design.md §4.6). Feeds the Settings web block + KB Discover."""
+    try:
+        from ..knowledge import web_usage
+
+        return {"ok": True, **web_usage.summary()}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "engines": [], "top_domains": []}
 
 
 def _vault_resolve(cfg, rel: str):

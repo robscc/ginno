@@ -293,6 +293,22 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
     }
     case "tool.start":
       return [...blocks, { kind: "tool", id: ev.id as string | undefined, name: ev.name as string, content: "…", pending: true }];
+    case "tool.args": {
+      // Attach the tool call's args preview (e.g. the bash command) to the
+      // pending bubble so the user sees WHAT is running, not just the label.
+      const id = ev.id as string | undefined;
+      const preview = ev.preview as string;
+      if (!id || !preview) return blocks;
+      let matched = false;
+      return blocks.map((b) => {
+        if (b.kind !== "tool") return b;
+        if (!matched && b.id === id) {
+          matched = true;
+          return { ...b, argsPreview: preview };
+        }
+        return b;
+      });
+    }
     case "tool.end": {
       const id = ev.id as string | undefined;
       const name = ev.name as string | undefined;
@@ -769,6 +785,7 @@ export function ChatStream({
       case "token.delta":
       case "thinking.delta":
       case "tool.start":
+      case "tool.args":
       case "tool.end":
       case "widget.emit":
       case "ref.emit":

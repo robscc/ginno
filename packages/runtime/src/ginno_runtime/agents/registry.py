@@ -250,6 +250,29 @@ def ensure_goal_tools() -> None:
             update_agent(cfg.id, {"tools_allow": allow + added})
 
 
+_WEB_PATTERNS: dict[str, list[str]] = {
+    "research": ["web_search", "web_fetch"],
+    "writer": ["web_search", "web_fetch"],
+}
+
+
+def ensure_web_tools() -> None:
+    """Merge web search/fetch into research/writer agents (idempotent migration).
+
+    dev carries ``*`` already; workflow-dev deliberately gets no web tools
+    (citations-design.md §8)."""
+    for cfg in list_agents():
+        needed = _WEB_PATTERNS.get(cfg.id)
+        if not needed:
+            continue
+        allow = list(cfg.tools_allow or ["*"])
+        if "*" in allow:
+            continue  # already all-inclusive
+        added = [p for p in needed if p not in allow]
+        if added:
+            update_agent(cfg.id, {"tools_allow": allow + added})
+
+
 def ensure_research_discipline() -> None:
     """Upgrade the seeded Research Agent prompt on old installs (idempotent).
 

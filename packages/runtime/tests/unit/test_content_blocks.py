@@ -19,6 +19,7 @@ from ginno_runtime.server import (
     _content_ui_blocks,
     _image_block_url,
     _messages_to_ui,
+    _tool_args_preview,
     _tool_content_str,
     _truncate_for_ws,
 )
@@ -246,3 +247,48 @@ def test_messages_to_ui_replays_chart_widget():
     assert widgets[0]["data"] == chart_data
     # render_widget is silent on replay too: no ordinary tool bubble
     assert not [b for b in ui[0]["blocks"] if b["kind"] == "tool"]
+
+
+# --------------------------------------------------------------------------- #
+# _tool_args_preview — "see WHAT a tool is doing" command preview
+# --------------------------------------------------------------------------- #
+def test_args_preview_bash_command():
+    assert _tool_args_preview("bash", {"command": "ls -la"}) == "ls -la"
+
+
+def test_args_preview_prefers_path_over_content():
+    # write_file carries path + content; show the path, never the (huge) content
+    assert _tool_args_preview("write_file", {"path": "a.txt", "content": "X" * 5000}) == "a.txt"
+
+
+def test_args_preview_collapses_newlines_to_one_line():
+    assert _tool_args_preview("bash", {"command": "echo a\necho b"}) == "echo a echo b"
+
+
+def test_args_preview_truncates_to_cap():
+    out = _tool_args_preview("bash", {"command": "x" * 600})
+    assert len(out) == 500 and out.endswith("…")
+
+
+def test_args_preview_empty_and_blank():
+    assert _tool_args_preview("bash", {}) == ""
+    assert _tool_args_preview("bash", {"command": "   "}) == ""
+
+
+def test_args_preview_falls_back_to_first_string():
+    assert _tool_args_preview("custom_tool", {"foo": "bar"}) == "bar"
+
+
+def test_messages_to_ui_tool_block_carries_args_preview():
+    ai = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "bash", "args": {"command": "pwd"}, "id": "t1", "type": "tool_call"}
+        ],
+        id="a1",
+    )
+    tm = ToolMessage(content="/workspace", tool_call_id="t1")
+    ui = _messages_to_ui([ai, tm], None)
+    tools = [b for b in ui[0]["blocks"] if b["kind"] == "tool"]
+    assert len(tools) == 1
+    assert tools[0]["argsPreview"] == "pwd"

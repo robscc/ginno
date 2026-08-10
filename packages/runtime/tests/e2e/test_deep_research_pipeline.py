@@ -64,7 +64,10 @@ def pipeline_dsl() -> dict:
                     "把研究主题「{{context.topic}}」拆成 3-5 个互不重叠、可独立检索的"
                     "子问题;结合 {{context.scope}} 界定范围。"
                 ),
-                "writes": ["questions", "scope"],
+                "writes": {
+                    "questions": {"type": "array", "items": {"type": "string"}},
+                    "scope": {"type": "string"},
+                },
             },
             {
                 "id": "research",
@@ -82,7 +85,9 @@ def pipeline_dsl() -> dict:
                     "针对子问题「{{q}}」做 web 检索与阅读,产出一条 finding"
                     "({question, sources, note}),并把包含全部已有发现的完整列表写回。"
                 ),
-                "writes": ["findings"],
+                "writes": {
+                    "findings": {"type": "array", "items": {"type": "object"}},
+                },
             },
             {
                 "id": "synthesize",
@@ -101,7 +106,10 @@ def pipeline_dsl() -> dict:
                     "评审 context.draft:准确性/覆盖度/结构,打分 0-10 并列出不超过 3 条"
                     "最要命的 issues。只输出评分与问题,不改稿。"
                 ),
-                "writes": ["score", "issues"],
+                "writes": {
+                    "score": {"type": "number"},
+                    "issues": {"type": "array", "items": {"type": "string"}},
+                },
             },
             {
                 "id": "gate",
@@ -128,7 +136,10 @@ def pipeline_dsl() -> dict:
                     "针对 issues({{context.issues}})修改草稿,产出新版 draft;"
                     "WRITE_JSON 必须同时写回 \"tries\": {{tries}}。"
                 ),
-                "writes": ["draft", "tries"],
+                "writes": {
+                    "draft": {"type": "string"},
+                    "tries": {"type": "number"},
+                },
             },
             {
                 "id": "review",
@@ -154,7 +165,9 @@ def pipeline_dsl() -> dict:
                     "把最终稿写入知识库 Ginno/Wiki/research/ 下(文件名用主题 slug),"
                     "写回 page_path。"
                 ),
-                "writes": ["page_path"],
+                "writes": {
+                    "page_path": {"type": "string"},
+                },
             },
             {
                 "id": "digest",
@@ -282,7 +295,7 @@ async def test_happy_path_with_one_rework_cycle(isolated_home):
 async def test_human_fallback_then_publish(isolated_home):
     model = ScriptedChatModel(
         scripts=[
-            script(text="拆解" + _wjson({"questions": ["q-a?", "q-b?"]})),
+            script(text="拆解" + _wjson({"questions": ["q-a?", "q-b?"], "scope": "近 30 天"})),
             script(text=_wjson({"findings": [{"question": "q-a?", "note": "n1"}]})),
             script(text=_wjson({"findings": [
                 {"question": "q-a?", "note": "n1"}, {"question": "q-b?", "note": "n2"},
@@ -345,7 +358,7 @@ async def test_human_fallback_then_publish(isolated_home):
 async def test_human_sends_back_then_passes(isolated_home):
     model = ScriptedChatModel(
         scripts=[
-            script(text="拆解" + _wjson({"questions": ["q-a?"]})),
+            script(text="拆解" + _wjson({"questions": ["q-a?"], "scope": "近 30 天"})),
             script(text=_wjson({"findings": [{"question": "q-a?", "note": "n1"}]})),
             script(text="草稿 v1"),
             script(text=_wjson({"score": 4, "issues": ["i1"]})),
@@ -382,7 +395,13 @@ async def test_human_sends_back_then_passes(isolated_home):
     ):
         resumed.append(ev)
 
-    r_enters = [e["node_id"] for e in resumed if e["kind"] == "node_enter"]
+    # Compiler-injected <id>__extract nodes are internal; the assertion below is
+    # about the logical node sequence, so filter them out.
+    r_enters = [
+        e["node_id"]
+        for e in resumed
+        if e["kind"] == "node_enter" and not e["node_id"].endswith("__extract")
+    ]
     # route default → revise; then judge scores 9 → gate case① → publish
     assert r_enters[:2] == ["revise", "judge"]
     assert "publish" in r_enters and "review" not in r_enters

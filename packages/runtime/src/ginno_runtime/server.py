@@ -56,6 +56,15 @@ async def lifespan(app: FastAPI):
     agents_reg.ensure_todo_tools()
     agents_reg.ensure_research_discipline()
     agents_reg.ensure_goal_tools()
+    agents_reg.ensure_web_tools()
+    # Upgraded installs never got the web tools in permissions.allow (defaults
+    # seed only fresh homes) — migrate so they don't fall through to `ask`.
+    try:
+        from .permission.policy import ensure_web_permissions
+
+        ensure_web_permissions()
+    except Exception:
+        _log.exception("web permissions migration failed (continuing)")
     wf_store.ensure_seeded()
     # Reconcile workflow runs left "running" by a previous crash/quit: at this
     # point no background task can be alive, so every "running" run is an orphan
@@ -162,6 +171,54 @@ async def health() -> dict:
     return {"ok": True, "version": "0.1.0"}
 
 
+@app.post("/api/web/test-search")
+async def web_test_search(body: dict) -> dict:
+    """Probe a search engine with a neutral query (Settings → Web 搜索)."""
+    from .web.config import load_web_config
+    from .web.engines import EngineError, search as engine_search
+
+    cfg = load_web_config()
+    engine = ((body or {}).get("engine") or cfg.default_engine or "").strip()
+    try:
+        hits = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: engine_search("ginno", engine, cfg.engine_cfg(engine), cfg.timeout_s, 3),
+        )
+        return {"ok": True, "results": len(hits)}
+    except (EngineError, Exception) as e:  # noqa: BLE001 — surface as payload
+        if isinstance(e, EngineError):
+            return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/open-external")
+def open_external(body: dict) -> dict:
+    """Open a URL in the system browser (citations-design.md §5.7).
+
+    WKWebView won't hand external links to the OS browser on its own, so the
+    desktop SourcesBlock routes web-citation clicks through the sidecar. The
+    same guard as web_fetch applies: http/https + public hosts only, so a
+    crafted citation can't launch an internal address.
+
+    Sync (not ``async def``): the DNS guard + browser launch are blocking, so
+    FastAPI runs this in the threadpool instead of stalling the event loop
+    (and every live WS stream) on a slow/unresolvable host.
+    """
+    url = (body or {}).get("url") or ""
+    if not isinstance(url, str) or not url.strip():
+        return {"ok": False, "error": "url required"}
+    try:
+        import webbrowser
+
+        from .web.fetch import _assert_public_host
+
+        _assert_public_host(url.strip())
+        webbrowser.open(url.strip())
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ---- compatibility facade -------------------------------------------------
 # Historical call sites (tests, tooling) import these names from this module.
 # They live in server_shared / session_meta / api.* now; re-exported here so
@@ -194,6 +251,7 @@ from .api.messages_ui import (  # noqa: E402, F401
     _image_block_url,
     _messages_to_ui,
     _run_id_in,
+    _tool_args_preview,
     _tool_content_str,
     _truncate_for_ws,
 )

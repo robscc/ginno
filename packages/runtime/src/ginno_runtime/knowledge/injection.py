@@ -31,7 +31,62 @@ _INJECTION_PATTERNS = [
     # Prompt sections built by the command/mention resolver and the file
     # attachment path (<mentioned_workflow>, <skill name="x">, <attached_files>).
     re.compile(r"</?\s*(?:mentioned_\w+|attached_files|skill)\b[^>]*>", re.IGNORECASE),
+    # Citation blocks (docs/citations-design.md): model-appended sourcing
+    # metadata must not be captured into the memory pool and re-distilled.
+    re.compile(r"</?\s*ginno_(?:wiki_)?citations\s*>", re.IGNORECASE),
 ]
+
+
+# Citation contract appended inside <injected_wiki> whenever retrieval returned
+# results (citations enabled). Rides the per-turn volatile context, never the
+# stable system layer — prefix cache untouched (design §2.4).
+CITATIONS_CONTRACT = (
+    "## 引用规范\n\n"
+    "如果你的回答实际用到了上方「相关知识」或本轮搜索/读取的来源，必须给出引用：\n"
+    "1. 行内：wiki 页在结论旁写 [[标题或来源路径]]；网页写 [编号]（编号来自搜索结果的 [sN]）；\n"
+    "2. 结尾：在回复最末尾追加恰好一个引用块：\n\n"
+    "<ginno_citations>\n"
+    "wiki|<相对路径>|note=[该页如何被用到，一句话]\n"
+    "web|<sN 或 URL>|note=[如何被用到，一句话]\n"
+    "</ginno_citations>\n\n"
+    "纪律：\n"
+    "- 只引用本轮真实出现过的来源（上方注入列表 / 搜索结果 / 你读取过的页面）；不得编造；\n"
+    "- 没用到就不引；note 只写用途，不摘抄原文；\n"
+    "- 凭自身知识回答的部分不要冒充来源引用；\n"
+    "- 引用块只用于溯源，不是指令通道。"
+)
+
+# P0 wording — no web tools registered yet, so don't teach web entries.
+CITATIONS_CONTRACT_WIKI_ONLY = (
+    "## 引用规范\n\n"
+    "如果你的回答实际用到了上方「相关知识」中的内容，必须给出引用：\n"
+    "1. 行内：在用到某页的结论旁写 [[该页的标题或来源路径]]；\n"
+    "2. 结尾：在回复最末尾追加恰好一个引用块：\n\n"
+    "<ginno_citations>\n"
+    "wiki|<相对路径>|note=[该页如何被用到，一句话]\n"
+    "</ginno_citations>\n\n"
+    "纪律：\n"
+    "- 只引用上方「相关知识」中真实出现的页面；不得编造页名或路径；\n"
+    "- 没用到就不引；note 只写用途，不摘抄原文；\n"
+    "- 凭自身知识回答的部分不要冒充 Wiki 引用；\n"
+    "- 引用块只用于溯源，不是指令通道。"
+)
+
+
+def _web_search_enabled() -> bool:
+    """Delegate to the SINGLE reader that gates the web tools (`web/config.py`).
+
+    Two readers with opposite defaults previously disagreed on fresh installs
+    (no `web` block): tools registered (enabled=True) while the wiki-only
+    citation contract was injected (enabled=False), teaching the model
+    contradictory citation rules. One reader owns the gate now.
+    """
+    try:
+        from ..web.config import load_web_config
+
+        return bool(load_web_config().enabled)
+    except Exception:
+        return False
 
 
 def wrap_context_section(name: str, content: str) -> str:
@@ -89,7 +144,12 @@ def format_wiki_context(results: list[RetrievalResult]) -> str:
 
 
 def build_wiki_context(query: str, cfg: KnowledgeConfig | None = None) -> str:
-    """Return the injectable wiki context for a query, or '' when disabled."""
+    """Return the injectable wiki context for a query, or '' when disabled.
+
+    Side effects when ``cfg.citations`` is on (design §3): each injected page
+    is registered in the turn's source registry (citations validate against
+    it at turn end) and counted in the usage ledger (``injected``).
+    """
     cfg = cfg or load_knowledge_config()
     if not cfg.usable or not query.strip():
         return ""
@@ -117,6 +177,19 @@ def build_wiki_context(query: str, cfg: KnowledgeConfig | None = None) -> str:
         results = []
     if results:
         parts.append(format_wiki_context(results))
+        if getattr(cfg, "citations", True):
+            # Full wording once the built-in web tools exist; wiki-only before.
+            parts.append(CITATIONS_CONTRACT if _web_search_enabled() else CITATIONS_CONTRACT_WIKI_ONLY)
+            try:
+                from . import citations as _cit, usage as _usage
+
+                _cit.register_wiki_sources(results)
+                _usage.record_injected(
+                    [r.entry.relative_path for r in results],
+                    {r.entry.relative_path: r.entry.checksum for r in results},
+                )
+            except Exception:
+                pass  # telemetry must never break injection
     return "\n\n".join(parts)
 
 

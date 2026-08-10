@@ -57,7 +57,7 @@ from .files import (
     _register_artifact_file,
     _session_workspace,
 )
-from .messages_ui import _tool_content_str, _truncate_for_ws
+from .messages_ui import _tool_args_preview, _tool_content_str, _truncate_for_ws
 from .sessions import _ensure_session, _first_agent_id, _start_goal_driver
 from .workflows import _run_workflow_bg, _spawn_run_task
 
@@ -607,11 +607,23 @@ async def _run_stream(
 
     # B1 — per-turn volatile context (wiki retrieval / attached files /
     # @mentions) rides a tail message instead of the stable system prompt.
-    turn_ctx_text = build_turn_context(
-        query=user_text or "",
-        attached_files=attached,
-        mention_context=mention_context,
-    )
+    # Citation framework (citations-design.md): begin this turn's source list
+    # so wiki injection (and later web tools) can register what the model
+    # actually saw — the trailing citation block validates against it.
+    # begin() resets the list, which is exactly the retry-with-same-turn-id
+    # semantics; an interrupt-parked turn keeps its list until it completes.
+    from ..knowledge import citations as _citations_mod
+
+    _turn_sources = _citations_mod.begin_turn_sources(session_id)
+    _src_token = _citations_mod.CURRENT_TURN_SOURCES.set(_turn_sources)
+    try:
+        turn_ctx_text = build_turn_context(
+            query=user_text or "",
+            attached_files=attached,
+            mention_context=mention_context,
+        )
+    finally:
+        _citations_mod.CURRENT_TURN_SOURCES.reset(_src_token)
 
     messages: list = []
     if compaction_stats and compaction_stats.get("reinject"):
@@ -647,6 +659,80 @@ async def _run_stream(
 async def _run_resume(ws: WebSocket, graph, config: dict, resume_value: dict) -> None:
     """Resume the graph from a pending interrupt (e.g. permission ask)."""
     await _stream_graph(ws, graph, config, command=Command(resume=resume_value))
+
+
+async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> None:
+    """Parse the trailing ``<ginno_citations>`` block, validate it against the
+    turn's registered sources, and record the wiki usage ledger
+    (docs/citations-design.md §2-3). Telemetry-only: never raises outward.
+    """
+    from ..knowledge import citations as cit
+    from ..knowledge import usage as kb_usage
+    from ..knowledge import web_usage
+    from ..knowledge.config import load_knowledge_config
+
+    sources = cit.end_turn_sources(session_id)  # always pop — turn is over
+    if not text:
+        return
+    cfg = load_knowledge_config()
+    if not getattr(cfg, "citations", True):
+        return
+    entries = cit.parse_citation_block(text)
+    if not entries:
+        return
+
+    resolve_wiki = None
+    if cfg.usable:
+        def resolve_wiki(ref: str):  # noqa: E306 — index lookup for index_only triage
+            try:
+                from ..knowledge.indexer import get_indexer
+
+                idx = get_indexer(cfg.vault_path, cfg.rescan_interval_s)
+                key = cit._norm_wiki_ref(ref)
+                want_title = ref.strip().lower()
+                for e in idx.get_entries():
+                    if cit._norm_wiki_ref(e.relative_path) == key:
+                        return e.relative_path
+                    if (e.title or "").strip().lower() == want_title:
+                        return e.relative_path
+            except Exception:
+                pass
+            return None
+
+    validated = cit.validate_citations(entries, sources, resolve_wiki=resolve_wiki)
+    invalid: list[str] = []
+    web_cited = 0
+    for item in validated:
+        kind = item.get("kind")
+        status = item.get("status")
+        ref = item.get("identity") or item.get("ref") or ""
+        if kind == "wiki":
+            if status == "verified":
+                kb_usage.record_cited(ref, session_id, turn_id)
+            elif status == "index_only":
+                kb_usage.record_cited(ref, session_id, turn_id, index_only=True)
+            else:
+                invalid.append(item.get("ref") or "")
+        elif kind == "web" and status == "verified":
+            # Web ledger (citations-design.md §4.6): credit domain + engine.
+            # NOTE: no `fetched` flag here — web_fetch already called
+            # record_fetched at fetch time; passing it again would double-count
+            # the domain's fetched counter.
+            try:
+                web_usage.record_cited(ref, engine=item.get("engine") or "")
+                web_cited += 1
+            except Exception:
+                _log.exception("web_usage_cited_failed session=%s", session_id)
+    if invalid:
+        kb_usage.record_invalid(invalid)
+    _log.info(
+        "turn_citations session=%s turn=%s entries=%d verified=%d invalid=%d",
+        session_id,
+        turn_id,
+        len(validated),
+        sum(1 for i in validated if i.get("status") == "verified"),
+        len(invalid),
+    )
 
 
 # Max seconds between stream chunks before the stall watchdog aborts the turn
@@ -898,13 +984,24 @@ async def _stream_graph(
                             for tc in getattr(m, "tool_calls", []) or []:
                                 nm = tc.get("name")
                                 args = tc.get("args") or {}
-                                tool_args_by_id[tc.get("id")] = (nm, args)
+                                tc_id = tc.get("id")
+                                tool_args_by_id[tc_id] = (nm, args)
                                 if (
                                     nm in RENDER_TOOL_NAMES
                                     or nm in WORKFLOW_TOOL_NAMES
                                     or nm in ARTIFACT_TOOL_NAMES
                                 ):
-                                    special_ids[tc.get("id")] = nm
+                                    special_ids[tc_id] = nm
+                                elif tc_id:
+                                    # Show WHAT is running: surface the tool call's
+                                    # args (e.g. the bash command) on the pending
+                                    # tool bubble. Fires from the agent update —
+                                    # after args are complete, before the tool runs.
+                                    preview = _tool_args_preview(nm, args)
+                                    if preview:
+                                        await safe_send(
+                                            emit("tool.args", {"id": tc_id, "preview": preview})
+                                        )
                                 if nm == "render_widget":
                                     await safe_send(
                                         emit("widget.emit", {
@@ -1070,11 +1167,20 @@ async def _stream_graph(
         # turn's skills index must reflect it without a manual refresh.
         await safe_send(emit("skills.changed", {}))
         if not saw_interrupt:
+            _final_text = "".join(turn_text)
+            # Citation framework: parse/validate the trailing block against the
+            # turn's registered sources, record the usage ledger. Runs before
+            # memory capture so the block can be stripped from the pool text.
+            try:
+                await _process_turn_citations(session_id, turn_id, _final_text)
+            except Exception:
+                _log.exception("citations_failed session=%s turn=%s", session_id, turn_id)
             # Capture sanitized assistant text for memory summarization (P2)
             if turn_text:
+                from ..knowledge.citations import strip_citation_block
                 from ..memory import append_to_pool
 
-                append_to_pool(session_id, agent_id, "".join(turn_text))
+                append_to_pool(session_id, agent_id, strip_citation_block(_final_text))
             _log.info(
                 "turn_done session=%s turn=%s status=completed text_len=%d",
                 session_id, turn_id, len("".join(turn_text)),

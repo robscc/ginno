@@ -8,6 +8,7 @@ import json
 import pytest
 from conftest import events_of, script, script_tool_call
 
+from ginno_runtime import paths
 from ginno_runtime.truncation import TRUNCATION_MARKER
 from ginno_runtime.world_state import REINJECT_MSG_PREFIX, SUMMARY_MSG_PREFIX
 
@@ -89,22 +90,23 @@ def test_compaction_disabled_does_nothing(create_session, ws_conv, client, isola
 # --------------------------------------------------------------------------- #
 def test_big_tool_output_truncated_in_history(create_session, ws_conv, client, isolated_home):
     _settings_context(isolated_home, tool_output_max_chars=2000)
-    ws_dir = isolated_home / "ws"
-    ws_dir.mkdir(exist_ok=True)
-    big = ws_dir / "big.txt"
-    big.write_text("HEAD-MARK\n" + "x" * 8000 + "\nTAIL-MARK\n", encoding="utf-8")
-
     sid = create_session(
         [
             script(
                 tool_calls=[
-                    script_tool_call("read_file", {"path": str(big)}),
+                    # F1: file tools resolve relative paths against the per-session
+                    # files dir (the bound workspace); no absolute/workspace arg.
+                    script_tool_call("read_file", {"path": "big.txt"}),
                 ]
             ),
             script(text="读完了。"),
         ],
         agent_id="dev",
-        workspace=str(ws_dir),
+    )
+    # Seed the file in the session's files dir AFTER create (sid known) but
+    # BEFORE the turn runs; the home-dir path guard only permits this dir.
+    (paths.session_files_dir("default", sid) / "big.txt").write_text(
+        "HEAD-MARK\n" + "x" * 8000 + "\nTAIL-MARK\n", encoding="utf-8"
     )
     with ws_conv(sid) as conv:
         conv.invoke("读一下这个文件")
@@ -119,17 +121,15 @@ def test_big_tool_output_truncated_in_history(create_session, ws_conv, client, i
 
 
 def test_small_tool_output_untouched(create_session, ws_conv, client, isolated_home):
-    ws_dir = isolated_home / "ws"
-    ws_dir.mkdir(exist_ok=True)
-    small = ws_dir / "small.txt"
-    small.write_text("just a line", encoding="utf-8")
     sid = create_session(
         [
-            script(tool_calls=[script_tool_call("read_file", {"path": str(small)})]),
+            script(tool_calls=[script_tool_call("read_file", {"path": "small.txt"})]),
             script(text="ok"),
         ],
         agent_id="dev",
-        workspace=str(ws_dir),
+    )
+    (paths.session_files_dir("default", sid) / "small.txt").write_text(
+        "just a line", encoding="utf-8"
     )
     with ws_conv(sid) as conv:
         conv.invoke("read it")
@@ -137,3 +137,34 @@ def test_small_tool_output_untouched(create_session, ws_conv, client, isolated_h
     texts = json.dumps(_all_history(client, sid), ensure_ascii=False)
     assert "just a line" in texts
     assert TRUNCATION_MARKER not in texts
+
+
+# --------------------------------------------------------------------------- #
+# tool.args — "see WHAT a tool is doing": the tool bubble surfaces the call's
+# args (e.g. the bash command) while it runs, and history replay carries it.
+# --------------------------------------------------------------------------- #
+def test_tool_args_event_surfaces_command(create_session, ws_conv, client, isolated_home):
+    sid = create_session(
+        [
+            script(tool_calls=[script_tool_call("read_file", {"path": "hello.txt"})]),
+            script(text="ok"),
+        ],
+        agent_id="dev",
+    )
+    (paths.session_files_dir("default", sid) / "hello.txt").write_text("hi", encoding="utf-8")
+    with ws_conv(sid) as conv:
+        conv.invoke("read it")
+        events = conv.recv_until("message.end", "error")
+
+    args_events = events_of(events, "tool.args")
+    assert len(args_events) == 1
+    assert args_events[0]["preview"] == "hello.txt"
+
+    # history replay carries the preview on the tool block too
+    tools = [
+        b
+        for m in _all_history(client, sid)
+        for b in m.get("blocks", [])
+        if b.get("kind") == "tool"
+    ]
+    assert tools and tools[0].get("argsPreview") == "hello.txt"
