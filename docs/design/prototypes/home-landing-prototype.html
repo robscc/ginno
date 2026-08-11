@@ -1,0 +1,540 @@
+<!doctype html>
+<!--
+  Ginno「打开体验」重设计原型(单文件,假数据,不连真代码)
+  对照 docs/design 优化清单 P0/P1 项。底部控制条切换 3 个状态:
+    A · 着陆首页      —— 时段问候 + 居中 composer + 建议 chips(教学空状态)
+    C · 会话恢复      —— 恢复最近使用会话;composer 从居中落到底部,控件行保持一致
+    D · 启动失败      —— splash 超时后的错误态:重试 / 查看日志(替代原生报错页)
+  (首次启动引导态曾作为 B 状态设计,产品侧决定暂不做,已从原型移除。)
+  侧边栏(全程):新建 ⌘N / 搜索 ⌘K 提顶、会话按时间分组、自动标题 + 相对时间。
+  composer 底行:权限模式 + 模型 + 思考 内联下拉(点击可弹出,演示不跳设置页)。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ginno · 打开体验原型</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --base: rgb(10, 10, 15);
+    --panel: rgb(14, 14, 21);
+    --card: rgb(21, 21, 29);
+    --card2: rgb(27, 27, 37);
+    --line: rgb(38, 38, 50);
+    --line2: rgb(52, 52, 63);
+    --txt: rgb(233, 233, 240);
+    --muted: rgb(154, 154, 166);
+    --faint: rgb(98, 98, 110);
+    --violet: #8b5cf6;
+    --violet-soft: rgba(139, 92, 246, 0.14);
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: rgb(44,44,56) transparent; }
+  html, body { height: 100%; }
+  body {
+    background: var(--base); color: var(--txt);
+    font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  svg { display: block; }
+
+  /* ── shell ─────────────────────────────────────────────── */
+  .shell { display: flex; height: 100vh; }
+  body[data-state="D"] .shell { display: none; }
+
+  aside {
+    width: 272px; flex-shrink: 0; display: flex; flex-direction: column;
+    background: var(--panel); border-right: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 18px 16px; }
+  .brand .logo {
+    width: 28px; height: 28px; border-radius: 8px; background: var(--violet-soft);
+    display: flex; align-items: center; justify-content: center; color: var(--violet);
+  }
+  .brand .name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+
+  .side-scroll { flex: 1; overflow-y: auto; padding: 0 10px 8px; }
+
+  .action-row {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 9px 10px; border-radius: 8px; color: var(--muted); font-size: 14px;
+    transition: background .12s, color .12s;
+  }
+  .action-row:hover { background: var(--card); color: var(--txt); }
+  .action-row kbd {
+    margin-left: auto; font: 11px/1 ui-monospace, monospace; color: var(--faint);
+    border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px;
+  }
+  .actions { padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+
+  .group-label {
+    display: flex; align-items: center; gap: 6px;
+    padding: 16px 10px 6px; font-size: 11px; font-weight: 500; color: var(--faint);
+  }
+  .sess {
+    display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    padding: 8px 10px; border-radius: 8px; color: var(--muted); font-size: 13px;
+    transition: background .12s, color .12s;
+  }
+  .sess:hover { background: var(--card); color: var(--txt); }
+  .sess.sel { background: rgba(99, 102, 241, 0.14); color: var(--txt); }
+  .sess .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess .ago { font-size: 11px; color: var(--faint); flex-shrink: 0; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+  .side-foot { border-top: 1px solid var(--line); padding: 10px; }
+  .side-foot .action-row { font-size: 13px; }
+  .user-card {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 8px; padding: 12px 10px 4px; border-top: 1px solid var(--line);
+  }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%; background: var(--violet);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600; flex-shrink: 0;
+  }
+  .uc-name { display: flex; flex-direction: column; line-height: 1.3; font-size: 13px; font-weight: 500; }
+  .uc-plan { font-size: 11px; color: var(--faint); font-weight: 400; }
+
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+
+  /* ── landing (A / B) ───────────────────────────────────── */
+  .landing {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px; position: relative; overflow: hidden;
+  }
+  .watermark {
+    position: absolute; top: 6%; left: 50%; transform: translateX(-50%);
+    color: var(--txt); opacity: 0.05; pointer-events: none;
+  }
+  .greet { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; text-align: center; }
+  .greet-sub { margin-top: 10px; color: var(--faint); font-size: 13px; text-align: center; }
+
+  /* composer card (centered on landing, docked in session) */
+  .composer {
+    width: min(760px, 100%);
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 14px 16px; margin-top: 40px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.35);
+  }
+  .composer .proj { display: none; } /* 项目 chip 已按决策隐藏(P2 多 workspace 再启用) */
+  .composer textarea {
+    display: block; width: 100%; min-height: 64px; resize: none;
+    background: none; border: none; outline: none; color: var(--txt);
+    font: inherit; padding: 10px 4px;
+  }
+  .composer textarea::placeholder { color: var(--faint); }
+  .crow { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; position: relative;
+    font-size: 12.5px; color: var(--muted); border-radius: 8px; padding: 6px 10px;
+    cursor: pointer; transition: background .12s, color .12s;
+  }
+  .chip:hover { background: var(--card2); color: var(--txt); }
+  .chip .caret { opacity: .6; }
+  .spacer { flex: 1; }
+  .send {
+    width: 34px; height: 34px; border-radius: 10px; background: var(--violet);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    transition: filter .12s;
+  }
+  .send:hover { filter: brightness(1.12); }
+  .icon-btn {
+    width: 34px; height: 34px; border-radius: 9px; color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .icon-btn:hover { background: var(--card2); color: var(--txt); }
+
+  /* chip popover (model / permission inline switching) */
+  .pop {
+    position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 30;
+    min-width: 190px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+    display: none;
+  }
+  .pop.open { display: block; }
+  .pop button {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    padding: 7px 9px; border-radius: 7px; font-size: 12.5px; color: var(--muted);
+  }
+  .pop button:hover { background: var(--card2); color: var(--txt); }
+  .pop button.on { color: var(--txt); }
+  .pop button.on .tick { color: var(--violet); }
+  .pop .hint { padding: 6px 9px 4px; font-size: 10.5px; color: var(--faint); border-top: 1px solid var(--line); margin-top: 4px; }
+
+  /* suggestion chips */
+  .sugs { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 26px; max-width: 800px; }
+  .sug {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--line); border-radius: 999px; padding: 9px 16px;
+    font-size: 13px; color: var(--muted); transition: all .12s;
+  }
+  .sug:hover { border-color: var(--line2); background: var(--card); color: var(--txt); }
+  .cap-note { margin-top: 28px; font-size: 11px; color: var(--faint); text-align: center; }
+
+  /* ── in-session (C) ────────────────────────────────────── */
+  .topbar {
+    height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+    padding: 0 20px; border-bottom: 1px solid var(--line);
+  }
+  .topbar h1 { font-size: 15px; font-weight: 600; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 500;
+  }
+  .chat { flex: 1; overflow-y: auto; padding: 28px 0; }
+  .msg { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+  .msg + .msg { margin-top: 26px; }
+  .msg .who { font-size: 11.5px; font-weight: 600; color: var(--faint); margin-bottom: 7px; }
+  .msg .body {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; font-size: 13.5px; color: var(--txt);
+  }
+  .msg.user .body { background: var(--card2); }
+  .tool-line {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+    font-size: 12px; color: var(--muted);
+  }
+  .tool-line .ok { color: var(--green); }
+  .docked-composer { padding: 14px 24px 84px; }
+  .docked-composer .composer { margin-top: 0; width: 100%; max-width: 760px; margin-inline: auto; box-shadow: none; }
+
+  /* ── splash failure (D) ────────────────────────────────── */
+  .splash {
+    height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: var(--base);
+  }
+  .splash .box { text-align: center; width: min(420px, 90vw); }
+  .splash .err-ic {
+    width: 48px; height: 48px; margin: 0 auto 16px; border-radius: 14px;
+    background: rgba(239, 68, 68, 0.12); color: var(--red);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .splash h2 { font-size: 16px; font-weight: 600; }
+  .splash p { margin-top: 8px; color: var(--muted); font-size: 12.5px; }
+  .splash code {
+    display: inline-block; margin-top: 10px; font: 11px/1.6 ui-monospace, monospace;
+    color: var(--muted); background: var(--card); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 8px;
+  }
+  .splash .row { margin-top: 20px; display: flex; gap: 10px; justify-content: center; }
+  .btn-primary {
+    background: var(--violet); color: #fff; border-radius: 9px; padding: 8px 16px;
+    font-size: 13px; font-weight: 500;
+  }
+  .btn-ghost {
+    border: 1px solid var(--line2); color: var(--muted); border-radius: 9px;
+    padding: 8px 16px; font-size: 13px;
+  }
+  .btn-ghost:hover { color: var(--txt); background: var(--card); }
+  .elapsed { margin-top: 14px; font-size: 11px; color: var(--faint); }
+
+  /* state visibility */
+  .st { display: none; }
+  body[data-state="A"] .st-a { display: flex; }
+  body[data-state="C"] .st-c { display: flex; }
+  body[data-state="D"] .st-d { display: flex; }
+
+  /* ── prototype control bar (not part of the design) ────── */
+  .ctrl {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 99;
+    display: flex; align-items: center; gap: 4px;
+    background: rgb(30, 24, 10); border: 1px solid rgb(120, 90, 20);
+    border-radius: 999px; padding: 5px 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  }
+  .ctrl .tag { font-size: 10px; color: rgb(200, 160, 60); padding: 0 8px 0 6px; letter-spacing: .05em; }
+  .ctrl button {
+    font-size: 11.5px; color: rgb(220, 190, 120); border-radius: 999px; padding: 5px 11px;
+    white-space: nowrap;
+  }
+  .ctrl button.on { background: rgb(120, 90, 20); color: #fff; }
+  .ctrl-note {
+    position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%); z-index: 99;
+    font-size: 11px; color: rgb(220, 190, 120); background: rgb(30, 24, 10);
+    border: 1px solid rgb(120, 90, 20); border-radius: 8px; padding: 5px 12px;
+    max-width: 88vw; text-align: center;
+  }
+</style>
+</head>
+<body data-state="A">
+
+<div class="shell">
+  <!-- ── sidebar (shared by A/B/C) ──────────────────────── -->
+  <aside>
+    <div class="brand">
+      <span class="logo">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.9 6.6 7.1.7-5.4 4.8 1.6 7-6.2-3.7-6.2 3.7 1.6-7L2 9.3l7.1-.7z"/></svg>
+      </span>
+      <span class="name">GinnoWork</span>
+    </div>
+
+    <div class="side-scroll">
+      <!-- 主操作提顶:新建 / 搜索,带快捷键 -->
+      <div class="actions">
+        <button class="action-row">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+          新建会话 <kbd>⌘N</kbd>
+        </button>
+        <button class="action-row">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          搜索会话与产物 <kbd>⌘K</kbd>
+        </button>
+      </div>
+
+      <!-- 会话:按时间分组 + 自动标题 + 相对时间 -->
+      <div class="sess-groups">
+      <div class="group-label">今天</div>
+      <button class="sess sel">
+        <span class="dot" style="background:#34d399"></span>
+        <span class="t">修复 CSV 预览下载乱码</span><span class="ago">2小时</span>
+      </button>
+      <button class="sess">
+        <span class="dot" style="background:#34d399"></span>
+        <span class="t">分析 7 月 token 用量报表</span><span class="ago">5小时</span>
+      </button>
+
+      <div class="group-label">昨天</div>
+      <button class="sess">
+        <span class="dot" style="background:#52525b"></span>
+        <span class="t">知识库导入流程梳理</span><span class="ago">1天</span>
+      </button>
+
+      <div class="group-label">更早</div>
+      <button class="sess">
+        <span class="dot" style="background:#52525b"></span>
+        <span class="t">workflow 晨报每周运行调试</span><span class="ago">7天</span>
+      </button>
+      <button class="sess">
+        <span class="dot" style="background:#52525b"></span>
+        <span class="t">起草 GINNO.md 项目规则</span><span class="ago">12天</span>
+      </button>
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <button class="action-row">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>
+        Knowledge Base
+      </button>
+      <button class="action-row">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="8.5" y="14" width="7" height="7" rx="1.5"/><path d="M6.5 10v2a2 2 0 0 0 2 2H12m3.5 0v-2"/></svg>
+        Workflows
+      </button>
+      <button class="action-row">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+      <div class="user-card">
+        <span class="avatar">DC</span>
+        <span class="uc-name">David Chen<span class="uc-plan">Pro Plan</span></span>
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <!-- ══ A · 着陆首页 ══ -->
+    <div class="landing st st-a">
+      <svg class="watermark" width="340" height="340" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="0.6">
+        <path d="M12 2l2.9 6.6 7.1.7-5.4 4.8 1.6 7-6.2-3.7-6.2 3.7 1.6-7L2 9.3l7.1-.7z"/>
+      </svg>
+
+      <div class="greet" id="greet">下午好,今天想做点什么?</div>
+      <div class="greet-sub">交给 Agent:代码、文档、数据、工作流。</div>
+
+      <div class="composer">
+        <textarea id="ta-a" placeholder="问点什么…  / 命令 · @ 提及 · $ 技能 · 可拖入文件"></textarea>
+        <div class="crow">
+          <button class="icon-btn" title="附件">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 1 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"/></svg>
+          </button>
+          <div class="chip" data-pop="perm" role="button" tabindex="0">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
+            <span id="perm-label">变更前确认</span>
+            <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+            <span class="pop" id="pop-perm">
+              <button data-perm="变更前确认" class="on"><span class="tick">✓</span> 变更前确认 <span style="margin-left:auto;color:var(--faint)">推荐</span></button>
+              <button data-perm="自动执行">自动执行</button>
+              <button data-perm="只读">只读</button>
+              <div class="hint">权限模式作用于本会话,全局默认在 设置 → 权限</div>
+            </span>
+          </div>
+          <span class="spacer"></span>
+          <div class="chip" data-pop="model" role="button" tabindex="0">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+            <span id="model-label">Claude Sonnet 4.6</span>
+            <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+            <span class="pop" id="pop-model">
+              <button data-model="Claude Sonnet 4.6" class="on"><span class="tick">✓</span> Claude Sonnet 4.6</button>
+              <button data-model="Claude Opus 4.7"><span class="tick" style="opacity:0">✓</span> Claude Opus 4.7</button>
+              <button data-model="custom · GLM-5.2"><span class="tick" style="opacity:0">✓</span> custom · GLM-5.2</button>
+              <div class="hint">切换只影响本会话 · 管理提供商去 设置 → 模型 API</div>
+            </span>
+          </div>
+          <button class="chip" title="思考强度">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9.5 2a2.5 2.5 0 0 1 2.5 2.5v.55a7 7 0 0 1 5 6.7c0 1.6-.54 3.07-1.45 4.25l.95 3.5H8l.95-3.5A6.98 6.98 0 0 1 7.5 11.75a7 7 0 0 1 2-4.85V4.5A2.5 2.5 0 0 1 9.5 2z"/></svg>
+            思考
+            <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <button class="send" title="发送">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="sugs">
+        <button class="sug" data-fill="分析这份 7 月用量报表,找出异常增长">📊 分析拖入的 Excel / CSV</button>
+        <button class="sug" data-fill="/workflow 跑一次晨报">🔁 跑一次晨报 workflow</button>
+        <button class="sug" data-fill="@记忆 上周我们定了什么方案?">🧠 @记忆 回顾上周决定</button>
+        <button class="sug" data-fill="">🎯 设定一个长程目标</button>
+      </div>
+      <div class="cap-note">支持拖入 Excel / Word / PPT / PDF · / 命令 · @ 提及产物 / 智能体 / 工作流 / 记忆</div>
+    </div>
+
+    <!-- ══ C · 会话恢复(打开即回到最近使用的会话) ══ -->
+    <div class="st st-c" style="flex-direction:column;flex:1;min-height:0">
+      <div class="topbar">
+        <h1>修复 CSV 预览下载乱码</h1>
+        <span class="pill" style="background:var(--card);border:1px solid var(--line2)">
+          <span class="dot" style="background:#34d399"></span> Dev Agent
+        </span>
+        <span class="pill" style="background:rgba(34,197,94,.13);color:#4ade80">
+          <span class="dot" style="background:#22c55e"></span> Running
+        </span>
+        <span class="spacer"></span>
+        <span class="pill" style="background:rgba(59,130,246,.1);color:#93c5fd;font-family:ui-monospace,monospace">↑12.4k ↓3.1k ⚡62%</span>
+      </div>
+
+      <div class="chat">
+        <div class="msg user">
+          <div class="who">你 · 2小时前</div>
+          <div class="body">导出的 CSV 用 Excel 打开中文全乱码,预览倒是好的,修一下。</div>
+        </div>
+        <div class="msg">
+          <div class="who">Dev Agent</div>
+          <div class="body">
+            定位到导出路径没写 BOM,Excel 按 GBK 猜测编码导致乱码。我给导出加了 UTF-8 BOM,并补了回归测试。
+            <div class="tool-line"><span class="ok">✓</span> edit apps/web/src/lib/exportCsv.ts</div>
+            <div class="tool-line"><span class="ok">✓</span> bash pnpm test -- exportCsv</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="docked-composer">
+        <div class="composer">
+          <textarea placeholder="继续对话…  / 命令 · @ 提及"></textarea>
+          <div class="crow">
+            <button class="icon-btn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 1 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"/></svg>
+            </button>
+            <button class="chip">✋ 变更前确认 <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
+            <span class="spacer"></span>
+            <button class="chip">Claude Sonnet 4.6 <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
+            <button class="chip">思考 <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
+            <button class="send">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ══ D · 启动失败 splash ══ -->
+<div class="splash st st-d">
+  <div class="box">
+    <div class="err-ic">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+    </div>
+    <h2>运行时启动失败</h2>
+    <p>等待 sidecar 就绪超时(60s)。会话数据不受影响。</p>
+    <code>~/.ginno/logs/sidecar.log</code>
+    <div class="row">
+      <button class="btn-primary" id="retry">重试</button>
+      <button class="btn-ghost">查看日志</button>
+      <button class="btn-ghost">复制诊断信息</button>
+    </div>
+    <div class="elapsed" id="elapsed">已等待 60s · 第 1 次尝试</div>
+  </div>
+</div>
+
+<!-- ── prototype control bar ────────────────────────────── -->
+<div class="ctrl-note" id="ctrl-note"></div>
+<div class="ctrl">
+  <span class="tag">原型</span>
+  <button data-s="A" class="on">A 着陆首页</button>
+  <button data-s="C">C 会话恢复</button>
+  <button data-s="D">D 启动失败</button>
+</div>
+
+<script>
+  const NOTES = {
+    A: "优化点:着陆首页(时段问候)· 建议 chips 教学空状态 · 模型/权限/思考内联下拉(可点击演示)· 侧边栏 ⌘N/⌘K 提顶 + 时间分组 + 自动标题 + 相对时间",
+    C: "优化点:打开恢复「最近使用」会话;composer 从居中落到底部,控件行与首页完全一致(肌肉记忆)",
+    D: "优化点:启动超时不再露出 webview 原生报错页,给出 重试 / 查看日志 / 复制诊断",
+  };
+  const body = document.body;
+  const note = document.getElementById("ctrl-note");
+  function setS(s) {
+    body.dataset.state = s;
+    note.textContent = NOTES[s];
+    document.querySelectorAll(".ctrl button").forEach((b) => b.classList.toggle("on", b.dataset.s === s));
+  }
+  document.querySelectorAll(".ctrl button").forEach((b) => b.addEventListener("click", () => setS(b.dataset.s)));
+  // deep-link a state: ?s=A|C|D
+  const qs = new URLSearchParams(location.search).get("s");
+  setS(qs && NOTES[qs.toUpperCase()] ? qs.toUpperCase() : "A");
+
+  // time-of-day greeting
+  const h = new Date().getHours();
+  document.getElementById("greet").textContent =
+    (h < 6 ? "夜深了" : h < 12 ? "早上好" : h < 14 ? "中午好" : h < 18 ? "下午好" : "晚上好") + ",今天想做点什么?";
+
+  // suggestion chips fill the composer
+  document.querySelectorAll(".sug").forEach((s) =>
+    s.addEventListener("click", () => {
+      const ta = document.getElementById("ta-a");
+      if (s.dataset.fill) { ta.value = s.dataset.fill; ta.focus(); }
+    })
+  );
+
+  // inline popovers (model / permission)
+  document.querySelectorAll("[data-pop]").forEach((chip) => {
+    const pop = chip.querySelector(".pop");
+    chip.addEventListener("click", (e) => {
+      if (e.target.closest(".pop button")) return; // handled below
+      document.querySelectorAll(".pop.open").forEach((p) => p !== pop && p.classList.remove("open"));
+      pop.classList.toggle("open");
+    });
+    pop.querySelectorAll("button").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        pop.querySelectorAll("button").forEach((b) => {
+          b.classList.toggle("on", b === btn);
+          const t = b.querySelector(".tick"); if (t) t.style.opacity = b === btn ? 1 : 0;
+        });
+        if (btn.dataset.model) document.getElementById("model-label").textContent = btn.dataset.model;
+        if (btn.dataset.perm) document.getElementById("perm-label").textContent = btn.dataset.perm;
+        pop.classList.remove("open");
+      })
+    );
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("[data-pop]")) document.querySelectorAll(".pop.open").forEach((p) => p.classList.remove("open"));
+  });
+
+  // retry demo
+  let tries = 1;
+  document.getElementById("retry")?.addEventListener("click", (e) => {
+    tries++;
+    const el = document.getElementById("elapsed");
+    el.textContent = "重试中…";
+    setTimeout(() => (el.textContent = `已等待 60s · 第 ${tries} 次尝试`), 900);
+  });
+</script>
+</body>
+</html>
