@@ -324,9 +324,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel">
         {/* brand */}
         <div className="flex items-center gap-2.5 px-4 py-4">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet/15 text-violet">
-            <Icon name="star" className="h-4 w-4 fill-violet" />
-          </div>
+          <img src="/icon.png" alt="" className="h-7 w-7" />
           <span className="text-[15px] font-semibold tracking-tight">GinnoWork</span>
         </div>
 
