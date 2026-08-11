@@ -4,74 +4,34 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  ChevronDown,
   BookOpen,
   Settings as SettingsIcon,
   Plus,
-  Target,
+  Search,
   Workflow as WorkflowIcon,
   Pencil,
   Trash2,
 } from "lucide-react";
 import { GoalEditor } from "@/components/shell/GoalChip";
-import { useGinno } from "@/lib/store";
+import { useGinno, LAST_SESSION_KEY } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
+import { relTime } from "@/lib/utils";
 import { Icon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { applyTheme } from "@/components/settings/GeneralSettings";
 import { TopBar } from "@/components/shell/TopBar";
+import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
 import type { SessionMeta, SessionUsage } from "@/lib/types";
 
-function SectionHeader({
-  icon,
-  label,
-  onAdd,
-  onGoal,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onAdd?: () => void;
-  onGoal?: () => void;
-}) {
-  return (
-    <div className="mb-1.5 flex items-center gap-1.5 px-2.5 text-xs font-medium text-faint">
-      {icon}
-      <span>{label}</span>
-      <span className="ml-auto flex items-center gap-1">
-        {onGoal && (
-          <button
-            onClick={onGoal}
-            title="目标会话（Agent 自主多轮推进）"
-            className="rounded p-0.5 text-faint transition-colors hover:bg-card hover:text-violet"
-          >
-            <Target className="h-3.5 w-3.5" />
-          </button>
-        )}
-        {onAdd && (
-          <button
-            onClick={onAdd}
-            title="新建会话"
-            className="rounded p-0.5 text-faint transition-colors hover:bg-card hover:text-txt"
-          >
-            <Plus className="h-3.5 w-3.5" />
-          </button>
-        )}
-        <ChevronDown className="h-3.5 w-3.5" />
-      </span>
-    </div>
-  );
-}
-
 export function AppShell({ children }: { children: React.ReactNode }) {
   const g = useGinno();
   const pathname = usePathname();
   const router = useRouter();
-  const active = g.sessions.find((s) => s.id === g.activeSessionId) ?? null;
   // inline session rename (double-click title or pencil icon)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -132,24 +92,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (didInit.current) return;
     if (!g.ready) return;
-    if (g.sessions.length) {
-      if (!g.activeSessionId) g.setActiveSession(g.sessions[0].id);
-      didInit.current = true;
-    } else {
-      didInit.current = true;
-      g.newSession(g.agents[0]?.id);
+    didInit.current = true;
+    // Restore the last-used session; otherwise stay on the landing home —
+    // sessions are created lazily on first send (open-experience redesign).
+    if (!g.activeSessionId && g.sessions.length) {
+      let last: string | null = null;
+      try {
+        last = localStorage.getItem(LAST_SESSION_KEY);
+      } catch {
+        /* storage unavailable */
+      }
+      if (last && g.sessions.some((s) => s.id === last)) g.setActiveSession(last);
     }
-  }, [g.ready, g.sessions, g.agents, g.activeSessionId, g]);
+  }, [g.ready, g.sessions, g.activeSessionId, g]);
 
-  const session = g.sessions.find((s) => s.id === g.activeSessionId) ?? g.sessions[0] ?? null;
+  const session = g.sessions.find((s) => s.id === g.activeSessionId) ?? null;
   const agent = session ? g.agents.find((a) => a.id === session.agent_id) ?? null : null;
   const modelLabel = session?.model || session?.provider || g.defaultProvider || "model";
   // ─────────────────────────────────────────────────────────────────────────
 
-  const onNewSession = async () => {
-    const s = await g.newSession(g.agents[0]?.id);
-    if (s) router.push("/"); // success -> show the new session (error, if any, is in g.sessionError)
+  // "New session" = go home; the session itself is created on first send.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const setActiveSessionForNav = g.setActiveSession;
+  const goHome = () => {
+    setActiveSessionForNav(null);
+    if (pathname !== "/") router.push("/");
   };
+  const onNewSession = goHome;
 
   // apply persisted theme as early as the shell mounts
   useEffect(() => {
@@ -202,6 +171,116 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onKb = pathname.startsWith("/kb");
   const onWorkflows = pathname.startsWith("/workflows");
 
+  // Sidebar sessions: activity-day groups, newest activity first. `updated`
+  // is bumped per turn server-side, so it tracks last use, not creation.
+  const sortedSessions = [...g.sessions].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
+  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const todayMs = dayStart(new Date());
+  const groupOf = (s: SessionMeta): "今天" | "昨天" | "更早" => {
+    const day = dayStart(new Date((s.updated ?? s.created) * 1000));
+    if (day >= todayMs) return "今天";
+    if (day >= todayMs - 86400000) return "昨天";
+    return "更早";
+  };
+  const sessionGroups: Array<["今天" | "昨天" | "更早", SessionMeta[]]> = [
+    ["今天", sortedSessions.filter((s) => groupOf(s) === "今天")],
+    ["昨天", sortedSessions.filter((s) => groupOf(s) === "昨天")],
+    ["更早", sortedSessions.filter((s) => groupOf(s) === "更早")],
+  ];
+
+  const renderSessionRow = (s: SessionMeta) => {
+    const sel = onWorkspace && s.id === g.activeSessionId;
+    const hex = agentHex(g.agents.find((a) => a.id === s.agent_id)?.color);
+    const editing = editingId === s.id;
+    return (
+      <div
+        key={s.id}
+        className={`nav-item group ${sel ? "text-txt" : ""}`}
+        style={sel ? { background: "rgba(99,102,241,0.14)" } : undefined}
+      >
+        {editing ? (
+          <input
+            autoFocus
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            onBlur={() => {
+              if (cancelRename.current) {
+                cancelRename.current = false;
+                setEditingId(null);
+                return;
+              }
+              g.renameSession(s.id, editTitle);
+              setEditingId(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                g.renameSession(s.id, editTitle);
+                setEditingId(null);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelRename.current = true; // suppress the onBlur commit
+                setEditingId(null);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="min-w-0 flex-1 rounded border border-line2 bg-base/60 px-1 text-sm text-txt outline-none focus:border-violet"
+          />
+        ) : (
+          <>
+            <button
+              onClick={() => {
+                g.setActiveSession(s.id);
+                if (!onWorkspace) router.push("/");
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setEditTitle(s.title || "");
+                setEditingId(s.id);
+              }}
+              className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+            >
+              <Icon
+                name={s.icon || "message-square"}
+                className="h-4 w-4 shrink-0"
+                style={{ color: hex }}
+              />
+              <span className="truncate">{s.title || "Untitled"}</span>
+              <span className="ml-auto shrink-0 text-[10px] text-faint">
+                {relTime(s.updated ?? s.created)}
+              </span>
+            </button>
+            <span className="flex shrink-0 items-center gap-0.5">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditTitle(s.title || "");
+                  setEditingId(s.id);
+                }}
+                aria-label="重命名会话"
+                title="重命名（也可双击标题）"
+                className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeleteTarget(s);
+                }}
+                aria-label="删除会话"
+                title="删除会话"
+                className="rounded p-1 text-muted hover:bg-card2 hover:text-red"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          </>
+        )}
+      </div>
+    );
+  };
+
   // Toggle the right panel with ⌘\ / Ctrl+\ (right-panel-redesign.md §3.3).
   // Workspace-only: on settings/kb/workflows routes there is no panel.
   // Stable refs destructured out of `g` so the listener isn't re-armed on
@@ -220,6 +299,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onWorkspace, rightPanelOpen, setRightPanelOpen]);
 
+  // ⌘N → home (new session is created lazily on first send); ⌘K → session
+  // search. Global on purpose: reachable from settings/kb/workflows too.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "n") {
+        e.preventDefault();
+        setActiveSessionForNav(null);
+        if (window.location.pathname !== "/") router.push("/");
+      } else if (k === "k") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setActiveSessionForNav, router]);
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-base text-txt">
       {/* left nav */}
@@ -233,107 +331,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-2.5 pb-2">
-          {/* sessions */}
-          <SectionHeader
-            icon={<Icon name="message-square" className="h-3.5 w-3.5" />}
-            label="Sessions"
-            onAdd={onNewSession}
-            onGoal={() => setGoalSessionModal(true)}
-          />
-          <div className="mb-4 space-y-0.5">
-            {g.sessions.length === 0 && (
-              <div className="px-2.5 py-1 text-xs text-faint">No sessions yet</div>
-            )}
-            {g.sessions.map((s) => {
-              const sel = onWorkspace && s.id === g.activeSessionId;
-              const hex = agentHex(g.agents.find((a) => a.id === s.agent_id)?.color);
-              const editing = editingId === s.id;
-              return (
-                <div
-                  key={s.id}
-                  className={`nav-item group ${sel ? "text-txt" : ""}`}
-                  style={sel ? { background: "rgba(99,102,241,0.14)" } : undefined}
-                >
-                  {editing ? (
-                    <input
-                      autoFocus
-                      value={editTitle}
-                      onChange={(e) => setEditTitle(e.target.value)}
-                      onBlur={() => {
-                        if (cancelRename.current) {
-                          cancelRename.current = false;
-                          setEditingId(null);
-                          return;
-                        }
-                        g.renameSession(s.id, editTitle);
-                        setEditingId(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          g.renameSession(s.id, editTitle);
-                          setEditingId(null);
-                        } else if (e.key === "Escape") {
-                          e.preventDefault();
-                          cancelRename.current = true; // suppress the onBlur commit
-                          setEditingId(null);
-                        }
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      className="min-w-0 flex-1 rounded border border-line2 bg-base/60 px-1 text-sm text-txt outline-none focus:border-violet"
-                    />
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => {
-                          g.setActiveSession(s.id);
-                          if (!onWorkspace) router.push("/");
-                        }}
-                        onDoubleClick={(e) => {
-                          e.stopPropagation();
-                          setEditTitle(s.title || "");
-                          setEditingId(s.id);
-                        }}
-                        className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                      >
-                        <Icon
-                          name={s.icon || "message-square"}
-                          className="h-4 w-4 shrink-0"
-                          style={{ color: hex }}
-                        />
-                        <span className="truncate">{s.title || "Untitled"}</span>
-                      </button>
-                      <span className="flex shrink-0 items-center gap-0.5">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditTitle(s.title || "");
-                            setEditingId(s.id);
-                          }}
-                          aria-label="重命名会话"
-                          title="重命名（也可双击标题）"
-                          className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteTarget(s);
-                          }}
-                          aria-label="删除会话"
-                          title="删除会话"
-                          className="rounded p-1 text-muted hover:bg-card2 hover:text-red"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </span>
-                    </>
-                  )}
-                </div>
-              );
-            })}
+          {/* primary actions first (open-experience prototype) */}
+          <div className="mb-1 space-y-0.5 border-b border-line pb-2.5">
+            <button onClick={onNewSession} className="nav-item" title="回到着陆首页，会话在首次发送时创建">
+              <Plus className="h-4 w-4" />
+              <span>新建会话</span>
+              <kbd className="ml-auto rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-faint">⌘N</kbd>
+            </button>
+            <button onClick={() => setSearchOpen(true)} className="nav-item">
+              <Search className="h-4 w-4" />
+              <span>搜索会话</span>
+              <kbd className="ml-auto rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-faint">⌘K</kbd>
+            </button>
           </div>
+
+          {/* sessions grouped by activity day */}
+          {sessionGroups.map(([label, rows]) =>
+            rows.length ? (
+              <div key={label} className="mb-1">
+                <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-faint">{label}</div>
+                <div className="space-y-0.5">{rows.map(renderSessionRow)}</div>
+              </div>
+            ) : null,
+          )}
+          {g.sessions.length === 0 && (
+            <div className="px-2.5 py-2 text-xs leading-relaxed text-faint">
+              还没有会话。
+              <br />
+              点「新建会话」或 ⌘N 开始第一个对话。
+            </div>
+          )}
 
           {g.sessionError && (
             <button
@@ -344,36 +371,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {g.sessionError}
             </button>
           )}
-
-          {/* agents */}
-          <SectionHeader icon={<Icon name="boxes" className="h-3.5 w-3.5" />} label="Agents" />
-          <div className="space-y-0.5">
-            {g.agents.map((a) => {
-              const isActive =
-                a.status === "running" || a.status === "active" || a.id === active?.agent_id;
-              const hex = agentHex(a.color);
-              return (
-                <div key={a.id} className="nav-item cursor-default">
-                  <span
-                    className="flex h-5 w-5 items-center justify-center rounded-md"
-                    style={{ background: hex + "22", color: hex }}
-                  >
-                    <Icon name={a.icon} className="h-3.5 w-3.5" />
-                  </span>
-                  <span className="truncate text-txt">{a.name}</span>
-                  <span className="ml-auto flex items-center gap-1 text-[11px]">
-                    <span
-                      className="h-1.5 w-1.5 rounded-full"
-                      style={{ background: isActive ? "#22c55e" : "#52525b" }}
-                    />
-                    <span style={{ color: isActive ? "#4ade80" : "#71717a" }}>
-                      {isActive ? "Active" : "Idle"}
-                    </span>
-                  </span>
-                </div>
-              );
-            })}
-          </div>
         </div>
 
         {/* footer nav */}
@@ -401,8 +398,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             survive navigating to /settings or /kb and back. Hidden off-route. */}
         <div className={`flex min-w-0 flex-1 ${onWorkspace ? "" : "hidden"}`}>
           <div className="flex min-w-0 flex-1 flex-col">
-            <TopBar session={session} agent={agent} running={running} modelLabel={modelLabel} usage={usage} />
-            <ChatStream session={session} onRunningChange={setRunning} onUsageChange={setUsage} />
+            {session && (
+              <TopBar session={session} agent={agent} running={running} modelLabel={modelLabel} usage={usage} />
+            )}
+            <ChatStream
+              session={session}
+              onRunningChange={setRunning}
+              onUsageChange={setUsage}
+              onOpenGoal={() => setGoalSessionModal(true)}
+            />
           </div>
           {/* Right panel or its collapsed edge dock (right-panel-redesign.md) */}
           {g.rightPanelOpen ? <RightPanel /> : <RightDock />}
@@ -418,6 +422,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           title="目标会话 — 设定长程目标"
           onClose={() => setGoalSessionModal(false)}
           onSubmit={onGoalSession}
+        />
+      )}
+
+      {searchOpen && (
+        <SessionSearchModal
+          onClose={() => setSearchOpen(false)}
+          onOpen={(sid) => {
+            g.setActiveSession(sid);
+            if (pathname !== "/") router.push("/");
+            window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: sid }));
+          }}
         />
       )}
 

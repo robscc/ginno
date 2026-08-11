@@ -82,7 +82,7 @@ export async function createSession(req: {
 }
 
 export async function patchSession(id: string, patch: Partial<SessionMeta>) {
-  return json<{ ok: boolean; session: SessionMeta | null }>(`${BASE}/sessions/${id}`, {
+  return json<{ ok: boolean; session: SessionMeta | null; error?: string }>(`${BASE}/sessions/${id}`, {
     method: "PATCH",
     headers: H,
     body: JSON.stringify(patch),

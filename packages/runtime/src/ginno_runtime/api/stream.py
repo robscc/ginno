@@ -43,7 +43,7 @@ from ..server_shared import (
     _turn_lock,
     spawn_bg,
 )
-from ..session_meta import _session_meta_patch
+from ..session_meta import _find_meta, _session_meta_patch
 from ..todos import store as todo_store
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from ..tools.render_tools import RENDER_TOOL_NAMES
@@ -63,6 +63,30 @@ from .sessions import _ensure_session, _first_agent_id, _start_goal_driver
 from .workflows import _run_workflow_bg, _spawn_run_task
 
 router = APIRouter()
+
+
+async def _touch_session_title(
+    slug: str, session_id: str, session: dict, user_text: str, turn_id: str
+) -> None:
+    """Auto-title a session from its first user message; touch `updated`.
+
+    While meta `title_auto` is set, the first non-empty user message becomes
+    the title (single line, 40-char preview — same convention as goal-session
+    titles) and a `session_title` event refreshes connected clients so the
+    sidebar/TopBar rename live. Every turn — first or not — runs a (possibly
+    empty) meta patch, which bumps `updated`; that timestamp is what the
+    sidebar's day grouping sorts on.
+    """
+    found = _find_meta(session_id)
+    meta = found[0] if found else {}
+    text = (user_text or "").strip()
+    if meta.get("title_auto", True) and text:
+        title = text.replace("\n", " ")[:40]
+        _session_meta_patch(slug, session_id, {"title": title, "title_auto": False})
+        session["title_auto"] = False
+        await _push_session_event(session_id, "session_title", {"title": title}, turn_id)
+    else:
+        _session_meta_patch(slug, session_id, {})
 
 
 @router.websocket("/api/ws/sessions/{session_id}")
@@ -208,6 +232,9 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         await ws.send_text(_ev("message.end", {}, turn_id))
                         continue
                     user_text = plan.text
+                    await _touch_session_title(
+                        session["project_slug"], session_id, session, user_text, turn_id
+                    )
                     turn_agent = (
                         plan.agent_override
                         or msg.get("agent_id")

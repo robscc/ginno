@@ -226,6 +226,62 @@ const SPLASH_HTML: &str = r#"<!doctype html>
 </body>
 </html>"#;
 
+/// Error page shown when the runtime never came up within the 60s budget.
+///
+/// Same data:-URL constraints as SPLASH_HTML (no network JS, no Tauri IPC):
+/// the 重试 button is a plain top-level navigation (PNA never gates those),
+/// and a background poller in the shell auto-navigates to the app once the
+/// port accepts — so recovery works even without clicking.
+#[cfg(not(debug_assertions))]
+const ERROR_HTML: &str = r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0a0a0f; color: #e9e9f0;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .box { text-align: center; width: min(420px, 90vw); }
+  .ic {
+    width: 48px; height: 48px; margin: 0 auto 16px; border-radius: 14px;
+    background: rgba(239,68,68,.12); color: #ef4444;
+    display: flex; align-items: center; justify-content: center;
+  }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 8px; }
+  p { font-size: 12.5px; color: #9a9aa6; margin: 0; }
+  code {
+    display: inline-block; margin-top: 10px; font: 11px/1.6 ui-monospace, monospace;
+    color: #9a9aa6; background: #15151d; border: 1px solid #262632;
+    border-radius: 6px; padding: 4px 8px;
+  }
+  .row { margin-top: 20px; }
+  button {
+    background: #8b5cf6; color: #fff; border: none; border-radius: 9px;
+    padding: 8px 18px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.12); }
+  .note { margin-top: 14px; font-size: 11px; color: #62626e; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="ic">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+  </div>
+  <h1>运行时启动失败</h1>
+  <p>等待 sidecar 就绪超时（60s）。会话数据不受影响。</p>
+  <code>~/.ginno/logs/sidecar.log</code>
+  <div class="row">
+    <button onclick="location.href='http://127.0.0.1:__PORT__/'">重试</button>
+  </div>
+  <div class="note">运行时就绪后将自动进入应用</div>
+</div>
+</body>
+</html>"#;
+
 /// Fire a native macOS notification and wait for the user's reaction.
 ///
 /// Uses notify-rust's NSUserNotification path directly: Tauri's notification
@@ -392,12 +448,39 @@ pub fn run() {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
                     let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
+                    let mut up = false;
                     for _ in 0..240 {
                         // ~60s budget; connect_timeout bounds each iteration.
                         if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+                            up = true;
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(250));
+                    }
+                    if !up {
+                        // Budget exhausted: reveal the window on the error
+                        // page (instead of today's silent dead-port page), then
+                        // keep polling slowly — a late cold start or a manually
+                        // started runtime recovers without user action.
+                        let html = ERROR_HTML.replace("__PORT__", &SIDECAR_PORT.to_string());
+                        let err_url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
+                        let h = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            if let Some(w) = h.get_webview_window("main") {
+                                if let Ok(u) = err_url.parse() {
+                                    let _ = w.navigate(u);
+                                }
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        });
+                        loop {
+                            std::thread::sleep(Duration::from_secs(1));
+                            if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+                            {
+                                break;
+                            }
+                        }
                     }
                     let url = tauri::Url::parse("http://127.0.0.1:8787/")
                         .expect("sidecar url");

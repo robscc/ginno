@@ -71,12 +71,13 @@ def test_get_session(client, patch_build_model):
     assert got["session_id"] == sid
 
 
-def test_patch_auto_title_follows_agent_switch(client, patch_build_model):
+def test_patch_agent_switch_keeps_auto_title(client, patch_build_model):
     patch_build_model(script(text="ok"))
-    sid = _post_session(client, agent_id="dev").json()["id"]
-    # auto title follows the agent when switched
-    r = client.patch(f"/api/sessions/{sid}", json={"agent_id": "research"}).json()
-    assert r["session"]["title"] == "Research Agent session"
+    data = _post_session(client, agent_id="dev").json()
+    # auto titles now come from the first user message (stream side); an
+    # agent switch must no longer rename.
+    r = client.patch(f"/api/sessions/{data['id']}", json={"agent_id": "research"}).json()
+    assert r["session"]["title"] == data["title"]
     assert r["session"]["title_auto"] is True
 
 
@@ -88,6 +89,71 @@ def test_patch_explicit_title_stops_auto_follow(client, patch_build_model):
     r = client.patch(f"/api/sessions/{sid}", json={"agent_id": "writer"}).json()
     assert r["session"]["title"] == "Pinned"
     assert r["session"]["title_auto"] is False
+
+
+def test_patch_model_switch_updates_meta_and_drops_graph(client, patch_build_model):
+    patch_build_model(script(text="ok"))
+    sid = _post_session(client).json()["id"]
+    from ginno_runtime.server_shared import _SESSIONS
+
+    assert sid in _SESSIONS
+    r = client.patch(f"/api/sessions/{sid}", json={"model": "other-model"}).json()
+    assert r["ok"] is True
+    assert r["session"]["model"] == "other-model"
+    # in-memory graph dropped → rebuilt with the new model on next WS connect
+    assert sid not in _SESSIONS
+
+
+def test_patch_model_switch_rejects_invalid(client, monkeypatch):
+    def fake(provider, model=None):
+        if model == "nope":
+            raise ValueError("unknown model")
+        return object()
+
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", fake)
+    sid = _post_session(client).json()["id"]
+    r = client.patch(f"/api/sessions/{sid}", json={"model": "nope"}).json()
+    assert r["ok"] is False
+    assert "unknown model" in r["error"]
+
+
+def test_touch_session_title_first_message_then_bump(monkeypatch):
+    import asyncio
+
+    from ginno_runtime.api import stream as stream_mod
+
+    calls: dict = {}
+    monkeypatch.setattr(
+        stream_mod, "_find_meta", lambda sid: ({"id": sid, "title_auto": True}, "default")
+    )
+
+    def fake_patch(slug, sid, patch):
+        calls["patch"] = patch
+        return {"id": sid, **patch}
+
+    monkeypatch.setattr(stream_mod, "_session_meta_patch", fake_patch)
+    events: list = []
+
+    async def fake_push(sid, kind, payload, turn_id):
+        events.append((kind, payload))
+
+    monkeypatch.setattr(stream_mod, "_push_session_event", fake_push)
+
+    session: dict = {}
+    asyncio.run(stream_mod._touch_session_title("default", "s1", session, "hello\nworld", "t1"))
+    assert calls["patch"] == {"title": "hello world", "title_auto": False}
+    assert events == [("session_title", {"title": "hello world"})]
+    assert session["title_auto"] is False
+
+    # subsequent turn: title sticks, only the `updated` bump (empty patch)
+    monkeypatch.setattr(
+        stream_mod, "_find_meta", lambda sid: ({"id": sid, "title_auto": False}, "default")
+    )
+    calls.clear()
+    events.clear()
+    asyncio.run(stream_mod._touch_session_title("default", "s1", session, "again", "t2"))
+    assert calls["patch"] == {}
+    assert events == []
 
 
 def test_delete_session_removes_index_and_checkpoint(client, patch_build_model):

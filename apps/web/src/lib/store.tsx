@@ -23,6 +23,10 @@ export const PANEL_WIDTH_DEFAULT = 380;
 
 // localStorage key for the persisted right-panel prefs ({open, width}).
 const PANEL_PREFS_KEY = "ginno-right-panel";
+// Last active session, restored on boot (open-experience redesign). Only real
+// ids are stored; visiting home (null) keeps the previous id so a relaunch
+// still resumes where the user left off.
+export const LAST_SESSION_KEY = "ginno-last-session";
 
 export interface PreviewFile {
   id: string;
@@ -166,10 +170,16 @@ interface GinnoState {
   reloadArtifacts: () => Promise<void>;
   removeArtifact: (id: string) => Promise<void>;
   patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
-  newSession: (agent_id?: string, opts?: { title?: string }) => Promise<SessionMeta | null>;
+  newSession: (
+    agent_id?: string,
+    opts?: { title?: string; provider?: string; model?: string },
+  ) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
   removeSession: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
+  // Merge a server-pushed or optimistic partial into one session's meta
+  // (session_title WS events, model-switch reconcile).
+  applySessionPatch: (id: string, patch: Partial<SessionMeta>) => void;
   patchTodo: (id: string, patch: Partial<Todo>) => Promise<void>;
   addTodo: (data: Partial<Todo>) => Promise<void>;
   removeTodo: (id: string) => Promise<void>;
@@ -242,6 +252,16 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [ready, setReady] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
+
+  // Persist the last real session so boot can resume it (AppShell reads
+  // LAST_SESSION_KEY). Home (null) intentionally keeps the previous id.
+  useEffect(() => {
+    try {
+      if (activeSessionId) localStorage.setItem(LAST_SESSION_KEY, activeSessionId);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [activeSessionId]);
 
   // Right panel: tab is store-owned so chat events can auto-switch to
   // Artifacts when the active session gains one (docs §7.6). Manual clicks
@@ -627,7 +647,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
 
   const creatingRef = useRef(false);
   const newSession = useCallback(
-    async (agent_id?: string, opts?: { title?: string }) => {
+    async (
+      agent_id?: string,
+      opts?: { title?: string; provider?: string; model?: string },
+    ) => {
       if (creatingRef.current) return null;
       creatingRef.current = true;
       setSessionError(null);
@@ -636,6 +659,8 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
           workspace: process.env.NEXT_PUBLIC_WORKSPACE ?? "/tmp/gw",
           agent_id,
           title: opts?.title,
+          provider: opts?.provider,
+          model: opts?.model,
         });
         if (s && s.ok !== false && s.id) {
           setSessions((prev) => [s, ...prev.filter((x) => x.id !== s.id)]);
@@ -696,12 +721,13 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const removeSession = useCallback(async (id: string) => {
-    // optimistic remove; if it was active, fall to another session (or none)
+    // optimistic remove; if it was active, land on home (lazy creation will
+    // make the next send start a fresh session — no phantom auto-session)
     setSessions((prev) => {
       const next = prev.filter((s) => s.id !== id);
       setActiveSessionId((cur) => {
         if (cur !== id) return cur;
-        return next[0]?.id ?? null;
+        return null;
       });
       return next;
     });
@@ -726,6 +752,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
+  }, []);
+
+  const applySessionPatch = useCallback((id: string, patch: Partial<SessionMeta>) => {
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
 
   const addTodo = useCallback(async (data: Partial<Todo>) => {
@@ -889,6 +919,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     setSessionAgent,
     removeSession,
     renameSession,
+    applySessionPatch,
     patchTodo,
     addTodo,
     removeTodo,

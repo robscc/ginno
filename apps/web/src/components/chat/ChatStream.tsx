@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, FileEdit, Check, RotateCcw } from "lucide-react";
+import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, FileEdit, Check, RotateCcw, Globe } from "lucide-react";
 import { useGinno } from "@/lib/store";
+import * as api from "@/lib/runtime";
 import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
 import { loadToolLabels } from "@/lib/toolLabels";
 import { agentHex } from "@/lib/theme";
+import { greeting, relTime } from "@/lib/utils";
 import { notifyNative } from "@/lib/desktop";
 import { Icon } from "@/components/icons";
 import { ContextBlocks, InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
@@ -158,15 +160,6 @@ function readSummarizeDraft(): SummarizeDraft | null {
     /* corrupted draft */
   }
   return null;
-}
-
-/** Compact relative time for the session picker / draft banner. */
-function relTime(tsSeconds: number): string {
-  const diff = Math.max(0, Date.now() / 1000 - tsSeconds);
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  return `${Math.floor(diff / 86400)} 天前`;
 }
 
 /** One-line summary of a tool call's args for the live-run tool row
@@ -351,10 +344,12 @@ export function ChatStream({
   session,
   onRunningChange,
   onUsageChange,
+  onOpenGoal,
 }: {
   session: SessionMeta | null;
   onRunningChange?: (b: boolean) => void;
   onUsageChange?: (u: SessionUsage) => void;
+  onOpenGoal?: () => void;
 }) {
   const g = useGinno();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -390,6 +385,36 @@ export function ChatStream({
   // Set when a notification click asked to land on a session's latest message;
   // consumed by the session-switch effect / focus-latest listener below.
   const focusLatestRef = useRef<string | null>(null);
+  // socket-ready promises per sid (lazy-creation send awaits the socket).
+  const socketReadyRef = useRef<
+    Record<string, { promise: Promise<void>; resolve: () => void; reject: (e: unknown) => void }>
+  >({});
+  // Draft-slot tracking incl. the landing home ("__home__"); see switch effect.
+  const prevSlotRef = useRef<string | null>(null);
+  function armSocketReady(sid: string) {
+    let resolve!: () => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    promise.catch(() => {}); // closes without a waiter are normal
+    socketReadyRef.current[sid] = { promise, resolve, reject };
+  }
+  /** Resolves true once the sid's socket is OPEN; false on timeout/close. */
+  function waitForSocketOpen(sid: string, timeoutMs = 8000): Promise<boolean> {
+    const sock = socketsRef.current[sid];
+    if (sock?.readyState === WebSocket.OPEN) return Promise.resolve(true);
+    const entry = socketReadyRef.current[sid];
+    if (!entry) return Promise.resolve(false);
+    return Promise.race([
+      entry.promise.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((res) => setTimeout(() => res(false), timeoutMs)),
+    ]);
+  }
 
   // Abandon an in-flight turn after a socket drop that the server cannot
   // answer for (legacy fallback): the user bubble keeps its retry payload.
@@ -615,8 +640,12 @@ export function ChatStream({
     syncDisplay(sid);
     const sock = openSessionSocket(sid);
     socketsRef.current[sid] = sock;
+    // socket-ready promise: lazy creation (home → first send) must be able to
+    // await the socket instead of racing it into a "连接未就绪" failed bubble.
+    armSocketReady(sid);
     sock.onopen = () => {
       if (socketsRef.current[sid] !== sock) return;
+      socketReadyRef.current[sid]?.resolve();
       g.setConnected(true);
       statusRef.current[sid] = "live";
       lastSeenRef.current[sid] = Date.now();
@@ -654,12 +683,14 @@ export function ChatStream({
     };
     sock.onerror = () => {
       if (socketsRef.current[sid] !== sock) return;
+      socketReadyRef.current[sid]?.reject(new Error("socket error"));
       try { sock.close(); } catch { /* ignore */ }
     };
     sock.onclose = () => {
       if (pingTimerRef.current[sid]) { clearInterval(pingTimerRef.current[sid]!); pingTimerRef.current[sid] = null; }
       if (watchTimerRef.current[sid]) { clearInterval(watchTimerRef.current[sid]!); watchTimerRef.current[sid] = null; }
       if (socketsRef.current[sid] !== sock) return;
+      socketReadyRef.current[sid]?.reject(new Error("socket closed"));
       delete socketsRef.current[sid];
       statusRef.current[sid] = "reconnecting";
       syncDisplay(sid);
@@ -673,21 +704,38 @@ export function ChatStream({
   // When the active session changes: save draft, restore draft, connect socket,
   // load history, and sync display state from refs → React state.
   useEffect(() => {
-    if (!session) return;
-    const sid = session.id;
-    const prev = curSessionIdRef.current;
+    const sid = session?.id ?? null;
+    // Draft slots include the landing home so ⌘N → type → open session → ⌘N
+    // round-trips keep the text.
+    const HOME_SLOT = "__home__";
+    const prevSlot = prevSlotRef.current;
+    const nextSlot = sid ?? HOME_SLOT;
 
-    // Save outgoing draft
-    if (prev && prev !== sid) {
-      draftCacheRef.current[prev] = {
+    // Save outgoing draft (before any early return)
+    if (prevSlot && prevSlot !== nextSlot) {
+      draftCacheRef.current[prevSlot] = {
         input,
         attachments,
-        mentions: pruneMentions(mentionsRef.current[prev] ?? [], input),
+        mentions: pruneMentions(
+          mentionsRef.current[prevSlot === HOME_SLOT ? "" : prevSlot] ?? [],
+          input,
+        ),
       };
       setInput("");
       setAttachments([]);
       setTarget(null);
       setMenu(null); // menu is composer-global state; never leak across sessions
+    }
+    prevSlotRef.current = nextSlot;
+
+    if (!session || !sid) {
+      curSessionIdRef.current = null;
+      const draft = draftCacheRef.current[HOME_SLOT];
+      if (draft) {
+        setInput(draft.input);
+        setAttachments(draft.attachments);
+      }
+      return;
     }
 
     curSessionIdRef.current = sid;
@@ -1042,6 +1090,11 @@ export function ChatStream({
       case "goal.cleared":
         g.notifyGoal(sid, null);
         break;
+      case "session_title":
+        // Auto-title from the first user message (runtime _touch_session_title):
+        // sidebar + TopBar rename live without a sessions reload.
+        g.applySessionPatch(sid, { title: (ev.title as string) ?? "", title_auto: false });
+        break;
       case "context.updated": {
         // WorldState change announcement (world-state-plan §7). Chip display
         // level table: environment-only changes (date rollover) stay SILENT in
@@ -1232,6 +1285,38 @@ export function ChatStream({
     syncDisplay(sid);
   }
 
+  // Docs/native paths dropped while on the landing home (no session yet):
+  // buffered with optimistic chips, uploaded right after lazy creation.
+  const pendingDocsRef = useRef<Array<{ file: File; tmpId: string }>>([]);
+  const pendingPathsRef = useRef<Array<{ path: string; tmpId: string }>>([]);
+
+  async function uploadOneDoc(sid: string, f: File, tmpId: string) {
+    try {
+      const r = await uploadFile(sid, f);
+      void debugLog({ where: "addFiles:upload-resp", name: f.name, ok: r?.ok, hasFile: !!r?.file, error: r?.error });
+      if (r.ok && r.file) {
+        const entry = r.file;
+        setFileAttachments((a) =>
+          a.map((x) =>
+            x.id === tmpId
+              ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
+              : x,
+          ),
+        );
+        // spreadsheets/tables auto-open the preview on drop
+        if (TABLE_KINDS.has(entry.kind)) {
+          g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
+        }
+        g.reloadArtifacts();
+      } else {
+        setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      }
+    } catch (e) {
+      void debugLog({ where: "addFiles:upload-error", name: f.name, error: String(e) });
+      setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+    }
+  }
+
   async function addFiles(files: FileList | File[] | null) {
     // [DEBUG] telemetry for WKWebView drag & drop diagnosis
     void debugLog({
@@ -1240,8 +1325,8 @@ export function ChatStream({
       count: files?.length ?? 0,
       files: Array.from(files ?? []).map((f) => ({ name: f.name, type: f.type, size: f.size })),
     });
-    if (!files?.length || !session) return;
-    const sid = session.id;
+    if (!files?.length) return;
+    const sid = session?.id ?? null;
     const list = Array.from(files);
     // Images keep the base64 → multimodal path; everything else is uploaded
     // to the sidecar and attached by registry ref (docs §7.2).
@@ -1260,30 +1345,11 @@ export function ChatStream({
         ...a,
         { id: tmpId, name: f.name, path: "", kind: "", uploading: true },
       ]);
-      try {
-        const r = await uploadFile(sid, f);
-        void debugLog({ where: "addFiles:upload-resp", name: f.name, ok: r?.ok, hasFile: !!r?.file, error: r?.error });
-        if (r.ok && r.file) {
-          const entry = r.file;
-          setFileAttachments((a) =>
-            a.map((x) =>
-              x.id === tmpId
-                ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
-                : x,
-            ),
-          );
-          // spreadsheets/tables auto-open the preview on drop
-          if (TABLE_KINDS.has(entry.kind)) {
-            g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
-          }
-          g.reloadArtifacts();
-        } else {
-          setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
-        }
-      } catch (e) {
-        void debugLog({ where: "addFiles:upload-error", name: f.name, error: String(e) });
-        setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      if (!sid) {
+        pendingDocsRef.current.push({ file: f, tmpId });
+        continue;
       }
+      await uploadOneDoc(sid, f, tmpId);
     }
   }
 
@@ -1300,37 +1366,46 @@ export function ChatStream({
     };
   });
 
+  async function attachOne(sid: string, p: string, tmpId: string) {
+    const name = p.split("/").pop() || p;
+    try {
+      const r = await attachFilePath(sid, p);
+      void debugLog({ where: "attachPaths:resp", name, ok: r?.ok, error: r?.error });
+      if (r.ok && r.file) {
+        const entry = r.file;
+        setFileAttachments((a) =>
+          a.map((x) =>
+            x.id === tmpId
+              ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
+              : x,
+          ),
+        );
+        if (TABLE_KINDS.has(entry.kind)) {
+          g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
+        }
+        g.reloadArtifacts();
+      } else {
+        setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      }
+    } catch (e) {
+      void debugLog({ where: "attachPaths:error", name, error: String(e) });
+      setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+    }
+  }
+
   async function attachPaths(paths: string[]) {
     void debugLog({ where: "attachPaths", paths });
-    if (!session || !paths?.length) return;
-    const sid = session.id;
+    if (!paths?.length) return;
+    const sid = session?.id ?? null;
     for (const p of paths) {
       const name = p.split("/").pop() || p;
       const tmpId = `path-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       setFileAttachments((a) => [...a, { id: tmpId, name, path: p, kind: "", uploading: true }]);
-      try {
-        const r = await attachFilePath(sid, p);
-        void debugLog({ where: "attachPaths:resp", name, ok: r?.ok, error: r?.error });
-        if (r.ok && r.file) {
-          const entry = r.file;
-          setFileAttachments((a) =>
-            a.map((x) =>
-              x.id === tmpId
-                ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
-                : x,
-            ),
-          );
-          if (TABLE_KINDS.has(entry.kind)) {
-            g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
-          }
-          g.reloadArtifacts();
-        } else {
-          setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
-        }
-      } catch (e) {
-        void debugLog({ where: "attachPaths:error", name, error: String(e) });
-        setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      if (!sid) {
+        pendingPathsRef.current.push({ path: p, tmpId });
+        continue;
       }
+      await attachOne(sid, p, tmpId);
     }
   }
 
@@ -1600,14 +1675,97 @@ export function ChatStream({
     });
   }
 
+  // Home-state model pick (composer model chip, M3) consumed on lazy creation.
+  const [homeModel, setHomeModel] = useState<{ provider?: string; model?: string } | undefined>(
+    undefined,
+  );
+  const homeCreatingRef = useRef(false);
+
+  // ── composer inline controls (open-experience redesign M3) ──────────────
+  // Model chip = per-session provider/model switch (server drops the graph,
+  // next WS connect rebuilds).
+  const [modelOpen, setModelOpen] = useState(false);
+  function cycleSessionSocket(sid: string) {
+    const old = socketsRef.current[sid];
+    if (old) {
+      try {
+        old.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    delete socketsRef.current[sid];
+    connectSession(sid);
+  }
+  async function pickModel(pid: string, model: string) {
+    setModelOpen(false);
+    if (!session) {
+      setHomeModel({ provider: pid, model });
+      return;
+    }
+    const prevProvider = session.provider;
+    const prevModel = session.model;
+    g.applySessionPatch(session.id, { provider: pid, model });
+    try {
+      const r = await api.patchSession(session.id, { provider: pid, model });
+      if (!r?.ok || !r.session) throw new Error(r?.error ?? "switch failed");
+      g.applySessionPatch(session.id, r.session);
+      cycleSessionSocket(session.id);
+    } catch {
+      g.applySessionPatch(session.id, { provider: prevProvider, model: prevModel });
+    }
+  }
+  const enabledProviders = Object.entries(g.providers).filter(([, p]) => p.enabled);
+  const modelChipLabel = session
+    ? session.model || session.provider
+    : homeModel?.model || homeModel?.provider || g.defaultProvider;
+
+  /** Lazy creation: home composer send creates the session, flushes buffered
+   *  attachments, awaits the socket, then posts the turn. */
+  async function createAndSend(payload: {
+    text: string;
+    images: Attachment[];
+    files: FileAttachment[];
+  }) {
+    if (homeCreatingRef.current) return;
+    homeCreatingRef.current = true;
+    try {
+      const agentId = target ?? g.agents[0]?.id ?? null;
+      const s = await g.newSession(agentId, homeModel ? { ...homeModel } : undefined);
+      if (!s) return; // sessionError banner carries the reason; composer keeps text
+      curSessionIdRef.current = s.id;
+      connectSession(s.id);
+      const docs = pendingDocsRef.current;
+      pendingDocsRef.current = [];
+      for (const d of docs) await uploadOneDoc(s.id, d.file, d.tmpId);
+      const natives = pendingPathsRef.current;
+      pendingPathsRef.current = [];
+      for (const n of natives) await attachOne(s.id, n.path, n.tmpId);
+      // The socket race fix: await open instead of failing fast. Timeout
+      // degrades to attemptSend's retryable failed bubble.
+      await waitForSocketOpen(s.id);
+      attemptSend(s.id, { ...payload, mentions: [], agentId });
+      setInput("");
+      setAttachments([]);
+      setFileAttachments([]);
+      setTarget(null);
+      setMenu(null);
+    } finally {
+      homeCreatingRef.current = false;
+    }
+  }
+
   function send() {
-    if (!session) return;
-    const sid = session.id;
-    if (busyBySessionRef.current[sid]) return; // one turn at a time
     const text = input.trim();
     const readyFiles = fileAttachments.filter((f) => !f.uploading);
     if (!text && attachments.length === 0 && readyFiles.length === 0) return;
     if (readyFiles.length !== fileAttachments.length) return; // upload in flight
+    if (!session) {
+      void createAndSend({ text, images: attachments, files: readyFiles });
+      return;
+    }
+    const sid = session.id;
+    if (busyBySessionRef.current[sid]) return; // one turn at a time
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     // Final prune against the raw (untrimmed) input, deduped — only mentions
@@ -1877,8 +2035,372 @@ export function ChatStream({
     null,
   );
 
+  const isHome = !session;
+
+  // Home autofocus: the composer remounts on the home slot (keyed), so focus
+  // must be re-armed after the transition.
+  useEffect(() => {
+    if (!session) textareaRef.current?.focus();
+  }, [session]);
+
+  // Composer box extracted so the landing home can center it. Same single
+  // instance; the two keyed slots force a clean remount on home↔session
+  // transitions (all composer state lives on ChatStream — only DOM focus is
+  // lost, and home autofocuses above).
+  const composerBoxEl = (
+          <div
+            ref={composerBoxRef}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              void addFiles(e.dataTransfer.files);
+            }}
+            className={`relative rounded-2xl border bg-card p-2.5 transition-colors focus-within:border-line2 ${
+              dragOver ? "border-violet/70 ring-2 ring-violet/30" : "border-line"
+            }`}
+          >
+            <div
+              onPointerDown={onResizeStart}
+              title="拖拽调整输入框高度（双击还原自动高度）"
+              onDoubleClick={() => setComposerH(undefined)}
+              className="absolute -top-1 left-1/2 z-10 flex h-2 w-12 -translate-x-1/2 cursor-ns-resize items-center justify-center rounded-full hover:bg-line2/60"
+              aria-label="调整输入框高度"
+            >
+              <span className="h-0.5 w-6 rounded-full bg-line2" />
+            </div>
+            {menu && (
+              <ComposerMenu
+                items={menu.items}
+                active={menu.active}
+                onPick={pickItem}
+                onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
+              />
+            )}
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachments.map((a, i) => (
+                  <div key={i} className="group relative">
+                    <img
+                      src={a.preview}
+                      alt={a.name}
+                      title={a.name}
+                      className="h-14 w-14 rounded-lg border border-line object-cover"
+                    />
+                    <button
+                      onClick={() => setAttachments((l) => l.filter((_, j) => j !== i))}
+                      aria-label={`移除 ${a.name}`}
+                      className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {fileAttachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {fileAttachments.map((f, i) => (
+                  <div
+                    key={f.id}
+                    className="group relative flex items-center gap-1.5 rounded-lg border border-line bg-card2 px-2.5 py-1.5 text-xs text-txt"
+                  >
+                    <span>{TABLE_KINDS.has(f.kind) ? "📊" : "📄"}</span>
+                    <span className="max-w-[180px] truncate" title={f.name}>
+                      {f.name}
+                    </span>
+                    {f.uploading && <span className="text-faint">上传中…</span>}
+                    <button
+                      onClick={() => setFileAttachments((l) => l.filter((_, j) => j !== i))}
+                      aria-label={`移除 ${f.name}`}
+                      className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => {
+                const v = e.target.value;
+                setInput(v);
+                recomputeMenu(v);
+                // Keep the resolved mentions in sync with the visible tokens.
+                if (session) {
+                  mentionsRef.current[session.id] = pruneMentions(
+                    mentionsRef.current[session.id] ?? [],
+                    v,
+                  );
+                }
+              }}
+              onPaste={(e) => {
+                if (e.clipboardData?.files?.length) {
+                  e.preventDefault();
+                  void addFiles(e.clipboardData.files);
+                }
+              }}
+              onKeyDown={(e) => {
+                // Guard IME composition: without this, pressing Enter to commit a
+                // CJK candidate (e.g. Chinese) fires send() mid-composition and
+                // posts partial/garbled text. isComposing + keyCode 229 cover it.
+                const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+                // While the autocomplete menu is open, navigate/confirm it
+                // instead of sending. (IME guard first — same as send.)
+                if (menu && !composing) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setMenu((m) => m && { ...m, active: (m.active + 1) % m.items.length });
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setMenu((m) => m && { ...m, active: (m.active - 1 + m.items.length) % m.items.length });
+                    return;
+                  }
+                  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                    e.preventDefault();
+                    pickItem(menu.items[menu.active]);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setMenu(null);
+                    return;
+                  }
+                }
+                if (e.key === "Enter" && !e.shiftKey && !composing) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              rows={2}
+              placeholder="问点什么…  / 命令 · @ 提及产物/智能体/工作流/记忆 · 可拖入图片 / Excel / Word / PPT / PDF"
+              style={
+                composerH != null
+                  ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
+                  : { maxHeight: 240 }
+              }
+              className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-txt outline-none placeholder:text-faint"
+            />
+            <div className="flex items-center justify-between px-1 pt-1">
+              <div className="flex items-center gap-1 text-faint">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*,.xlsx,.xls,.xlsm,.csv,.tsv,.docx,.pptx,.pdf,.json,.xml,.txt,.md"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    void addFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  className="rounded-md p-1.5 transition-colors hover:bg-card2 hover:text-muted"
+                  title="添加附件（图片 / Excel / Word / PPT / PDF，也可直接粘贴 / 拖拽）"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    // Start a slash command — only valid as the FIRST token, so
+                    // this only makes sense on an empty composer. With existing
+                    // text we just focus the textarea instead of mangling it.
+                    if (!input.trim()) {
+                      setInput("/");
+                      requestAnimationFrame(() => {
+                        const el = textareaRef.current;
+                        if (el) {
+                          el.focus();
+                          el.setSelectionRange(1, 1);
+                        }
+                        recomputeMenu("/");
+                      });
+                    } else {
+                      textareaRef.current?.focus();
+                    }
+                  }}
+                  className="rounded-md p-1.5 hover:bg-card2 hover:text-muted"
+                  title="斜杠命令 / @ 提及（输入 / 或 @ 触发补全）"
+                  aria-label="插入斜杠命令"
+                >
+                  <Keyboard className="h-4 w-4" />
+                </button>
+                {!isHome && (() => {
+                  const live = wsStatus === "live";
+                  const dot =
+                    wsStatus === "live"
+                      ? "#22c55e"
+                      : wsStatus === "offline"
+                        ? "#ef4444"
+                        : "#eab308";
+                  const label =
+                    wsStatus === "live"
+                      ? "已连接"
+                      : wsStatus === "reconnecting"
+                        ? "重连中"
+                        : wsStatus === "offline"
+                          ? "离线"
+                          : "连接中";
+                  const tip = live
+                    ? "实时连接正常"
+                    : wsStatus === "reconnecting"
+                      ? "连接中断，正在自动重连…（点击立即重试）"
+                      : wsStatus === "offline"
+                        ? "未连接到运行时（点击重试）"
+                        : "正在连接…";
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!live) connectRef.current();
+                      }}
+                      title={tip}
+                      aria-label={`连接状态：${label}${live ? "" : "，点击重连"}`}
+                      className={`ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
+                        live ? "cursor-default" : "cursor-pointer hover:bg-card2"
+                      }`}
+                      style={{ color: dot }}
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${
+                          live || wsStatus === "offline" ? "" : "animate-pulse"
+                        }`}
+                        style={{ background: dot }}
+                      />
+                      {label}
+                    </button>
+                  );
+                })()}
+              </div>
+              {running && goalActive && (
+                <button
+                  onClick={() => void g.setGoalStatus(session!.id, "paused")}
+                  title="暂停目标（当前轮跑完后停止自主续跑）"
+                  aria-label="暂停目标"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-line2 text-muted hover:text-txt"
+                >
+                  <Square className="h-3.5 w-3.5" />
+                </button>
+              )}
+              {/* model chip: per-session provider/model switch (home: pick for
+                  the session that first send will create) */}
+              <div className="relative ml-auto">
+                <button
+                  type="button"
+                  disabled={running || !!permission}
+                  onClick={() => setModelOpen((v) => !v)}
+                  title={session ? "切换本会话模型" : "选择新会话使用的模型"}
+                  className="flex items-center gap-1.5 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted hover:border-line hover:bg-card2 hover:text-txt disabled:opacity-50"
+                >
+                  <Globe className="h-3.5 w-3.5" />
+                  <span className="max-w-[160px] truncate font-medium">{modelChipLabel}</span>
+                  <ChevronDown className="h-3 w-3 opacity-70" />
+                </button>
+                {modelOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setModelOpen(false)} />
+                    <div className="absolute bottom-full right-0 z-50 mb-1 w-72 rounded-lg border border-line bg-card py-1 shadow-xl">
+                      {enabledProviders.length === 0 && (
+                        <div className="px-3 py-2 text-xs text-faint">
+                          无已启用提供商 — 去 设置 → 模型 API 启用
+                        </div>
+                      )}
+                      {enabledProviders.map(([pid, p]) => {
+                        const m = p.default_model || p.model || "";
+                        const on = (session ? session.provider : homeModel?.provider) === pid;
+                        return (
+                          <button
+                            key={pid}
+                            onClick={() => void pickModel(pid, m)}
+                            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
+                              on ? "text-txt" : "text-muted"
+                            }`}
+                          >
+                            <span className={on ? "" : "opacity-0"}>✓</span>
+                            <span className="min-w-0 flex-1 truncate">
+                              {p.name || pid} · {m}
+                            </span>
+                          </button>
+                        );
+                      })}
+                      <div className="mt-1 border-t border-line px-3 pt-1 text-[10px] text-faint">
+                        下一轮生效 · 设置页更改会覆盖会话级选择
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={send}
+                disabled={
+                  !!permission ||
+                  running ||
+                  fileAttachments.some((f) => f.uploading) ||
+                  (!input.trim() && attachments.length === 0 && fileAttachments.length === 0)
+                }
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                <ArrowUp className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {isHome ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-6 pb-10 pt-6">
+          <Icon name="star" className="h-48 w-48" style={{ color: "rgba(233,233,240,0.05)" }} />
+          <div className="mt-2 text-center text-[26px] font-semibold tracking-tight text-txt">
+            {greeting()}
+          </div>
+          <div className="mt-2 text-center text-[13px] text-faint">
+            交给 Agent：代码、文档、数据、工作流。
+          </div>
+          <div key="composer-home" className="mt-8 w-full max-w-[760px]">
+            {composerBoxEl}
+          </div>
+          <div className="mt-6 flex max-w-[820px] flex-wrap justify-center gap-2.5">
+            {[
+              { icon: "📊", label: "分析拖入的 Excel / CSV", fill: "分析这份 7 月用量报表，找出异常增长" },
+              { icon: "🔁", label: "跑一次晨报 workflow", fill: "/workflow 跑一次晨报" },
+              { icon: "🧠", label: "@记忆 回顾上周决定", fill: "@记忆 上周我们定了什么方案？" },
+            ].map((c) => (
+              <button
+                key={c.label}
+                onClick={() => {
+                  setInput(c.fill);
+                  requestAnimationFrame(() => textareaRef.current?.focus());
+                }}
+                className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
+              >
+                <span>{c.icon}</span>
+                {c.label}
+              </button>
+            ))}
+            <button
+              onClick={() => onOpenGoal?.()}
+              className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
+            >
+              <span>🎯</span>
+              设定一个长程目标
+            </button>
+          </div>
+          <div className="mt-6 text-[11px] text-faint">
+            支持拖入 Excel / Word / PPT / PDF · / 命令 · @ 提及产物 / 智能体 / 工作流 / 记忆
+          </div>
+        </div>
+      ) : (
+        <>
       {goal && goalStalled && !resumeDismissed && (
         <div className="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />
@@ -1912,7 +2434,7 @@ export function ChatStream({
         <div className="mx-auto flex max-w-3xl flex-col gap-5">
           {messages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
-              Start a conversation. The agent will use tools and may ask for permission.
+              开始对话吧，Agent 会使用工具完成任务，并可能就权限询问你。
             </div>
           )}
 
@@ -2125,7 +2647,7 @@ export function ChatStream({
               );
             })}
             <button
-              onClick={() => g.newSession(g.agents[0]?.id)}
+              onClick={() => g.setActiveSession(null)}
               className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted hover:text-txt"
             >
               + New Session
@@ -2203,266 +2725,11 @@ export function ChatStream({
             </div>
           </div>
 
-          <div
-            ref={composerBoxRef}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOver(false);
-              void addFiles(e.dataTransfer.files);
-            }}
-            className={`relative rounded-2xl border bg-card p-2.5 transition-colors focus-within:border-line2 ${
-              dragOver ? "border-violet/70 ring-2 ring-violet/30" : "border-line"
-            }`}
-          >
-            <div
-              onPointerDown={onResizeStart}
-              title="拖拽调整输入框高度（双击还原自动高度）"
-              onDoubleClick={() => setComposerH(undefined)}
-              className="absolute -top-1 left-1/2 z-10 flex h-2 w-12 -translate-x-1/2 cursor-ns-resize items-center justify-center rounded-full hover:bg-line2/60"
-              aria-label="调整输入框高度"
-            >
-              <span className="h-0.5 w-6 rounded-full bg-line2" />
-            </div>
-            {menu && (
-              <ComposerMenu
-                items={menu.items}
-                active={menu.active}
-                onPick={pickItem}
-                onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
-              />
-            )}
-            {attachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {attachments.map((a, i) => (
-                  <div key={i} className="group relative">
-                    <img
-                      src={a.preview}
-                      alt={a.name}
-                      title={a.name}
-                      className="h-14 w-14 rounded-lg border border-line object-cover"
-                    />
-                    <button
-                      onClick={() => setAttachments((l) => l.filter((_, j) => j !== i))}
-                      aria-label={`移除 ${a.name}`}
-                      className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {fileAttachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {fileAttachments.map((f, i) => (
-                  <div
-                    key={f.id}
-                    className="group relative flex items-center gap-1.5 rounded-lg border border-line bg-card2 px-2.5 py-1.5 text-xs text-txt"
-                  >
-                    <span>{TABLE_KINDS.has(f.kind) ? "📊" : "📄"}</span>
-                    <span className="max-w-[180px] truncate" title={f.name}>
-                      {f.name}
-                    </span>
-                    {f.uploading && <span className="text-faint">上传中…</span>}
-                    <button
-                      onClick={() => setFileAttachments((l) => l.filter((_, j) => j !== i))}
-                      aria-label={`移除 ${f.name}`}
-                      className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => {
-                const v = e.target.value;
-                setInput(v);
-                recomputeMenu(v);
-                // Keep the resolved mentions in sync with the visible tokens.
-                if (session) {
-                  mentionsRef.current[session.id] = pruneMentions(
-                    mentionsRef.current[session.id] ?? [],
-                    v,
-                  );
-                }
-              }}
-              onPaste={(e) => {
-                if (e.clipboardData?.files?.length) {
-                  e.preventDefault();
-                  void addFiles(e.clipboardData.files);
-                }
-              }}
-              onKeyDown={(e) => {
-                // Guard IME composition: without this, pressing Enter to commit a
-                // CJK candidate (e.g. Chinese) fires send() mid-composition and
-                // posts partial/garbled text. isComposing + keyCode 229 cover it.
-                const composing = e.nativeEvent.isComposing || e.keyCode === 229;
-                // While the autocomplete menu is open, navigate/confirm it
-                // instead of sending. (IME guard first — same as send.)
-                if (menu && !composing) {
-                  if (e.key === "ArrowDown") {
-                    e.preventDefault();
-                    setMenu((m) => m && { ...m, active: (m.active + 1) % m.items.length });
-                    return;
-                  }
-                  if (e.key === "ArrowUp") {
-                    e.preventDefault();
-                    setMenu((m) => m && { ...m, active: (m.active - 1 + m.items.length) % m.items.length });
-                    return;
-                  }
-                  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-                    e.preventDefault();
-                    pickItem(menu.items[menu.active]);
-                    return;
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setMenu(null);
-                    return;
-                  }
-                }
-                if (e.key === "Enter" && !e.shiftKey && !composing) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              rows={2}
-              placeholder="Ask any Agent …  / 调用技能 · @ 提及产物/智能体/工作流/记忆 · 可拖入图片 / Excel / Word / PPT / PDF"
-              style={
-                composerH != null
-                  ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
-                  : { maxHeight: 240 }
-              }
-              className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-txt outline-none placeholder:text-faint"
-            />
-            <div className="flex items-center justify-between px-1 pt-1">
-              <div className="flex items-center gap-1 text-faint">
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*,.xlsx,.xls,.xlsm,.csv,.tsv,.docx,.pptx,.pdf,.json,.xml,.txt,.md"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    void addFiles(e.target.files);
-                    e.target.value = "";
-                  }}
-                />
-                <button
-                  onClick={() => fileRef.current?.click()}
-                  className="rounded-md p-1.5 transition-colors hover:bg-card2 hover:text-muted"
-                  title="添加附件（图片 / Excel / Word / PPT / PDF，也可直接粘贴 / 拖拽）"
-                >
-                  <Paperclip className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={() => {
-                    // Start a slash command — only valid as the FIRST token, so
-                    // this only makes sense on an empty composer. With existing
-                    // text we just focus the textarea instead of mangling it.
-                    if (!input.trim()) {
-                      setInput("/");
-                      requestAnimationFrame(() => {
-                        const el = textareaRef.current;
-                        if (el) {
-                          el.focus();
-                          el.setSelectionRange(1, 1);
-                        }
-                        recomputeMenu("/");
-                      });
-                    } else {
-                      textareaRef.current?.focus();
-                    }
-                  }}
-                  className="rounded-md p-1.5 hover:bg-card2 hover:text-muted"
-                  title="斜杠命令 / @ 提及（输入 / 或 @ 触发补全）"
-                  aria-label="插入斜杠命令"
-                >
-                  <Keyboard className="h-4 w-4" />
-                </button>
-                <span className="px-1 text-xs">/</span>
-                {(() => {
-                  const live = wsStatus === "live";
-                  const dot =
-                    wsStatus === "live"
-                      ? "#22c55e"
-                      : wsStatus === "offline"
-                        ? "#ef4444"
-                        : "#eab308";
-                  const label =
-                    wsStatus === "live"
-                      ? "已连接"
-                      : wsStatus === "reconnecting"
-                        ? "重连中"
-                        : wsStatus === "offline"
-                          ? "离线"
-                          : "连接中";
-                  const tip = live
-                    ? "实时连接正常"
-                    : wsStatus === "reconnecting"
-                      ? "连接中断，正在自动重连…（点击立即重试）"
-                      : wsStatus === "offline"
-                        ? "未连接到运行时（点击重试）"
-                        : "正在连接…";
-                  return (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!live) connectRef.current();
-                      }}
-                      title={tip}
-                      aria-label={`连接状态：${label}${live ? "" : "，点击重连"}`}
-                      className={`ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
-                        live ? "cursor-default" : "cursor-pointer hover:bg-card2"
-                      }`}
-                      style={{ color: dot }}
-                    >
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          live || wsStatus === "offline" ? "" : "animate-pulse"
-                        }`}
-                        style={{ background: dot }}
-                      />
-                      {label}
-                    </button>
-                  );
-                })()}
-              </div>
-              {running && goalActive && (
-                <button
-                  onClick={() => void g.setGoalStatus(session!.id, "paused")}
-                  title="暂停目标（当前轮跑完后停止自主续跑）"
-                  aria-label="暂停目标"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-line2 text-muted hover:text-txt"
-                >
-                  <Square className="h-3.5 w-3.5" />
-                </button>
-              )}
-              <button
-                onClick={send}
-                disabled={
-                  !!permission ||
-                  running ||
-                  fileAttachments.some((f) => f.uploading) ||
-                  (!input.trim() && attachments.length === 0 && fileAttachments.length === 0)
-                }
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-              >
-                <ArrowUp className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+          <div key="composer-session">{composerBoxEl}</div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

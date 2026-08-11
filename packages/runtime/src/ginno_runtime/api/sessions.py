@@ -549,6 +549,8 @@ class PatchSessionRequest(BaseModel):
     title: str | None = None
     icon: str | None = None
     agent_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 @router.patch("/api/sessions/{session_id}")
@@ -557,19 +559,43 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     slug = s["project_slug"] if s else "default"
     patch = req.model_dump()
 
-    # Inspect the stored meta to honour the title_auto flag: an auto-generated
-    # title ("X session") follows the active agent; a manually-set title sticks.
+    # Per-session model switch (composer model chip): validate before touching
+    # meta, then drop the in-memory graph so the next WS connect rebuilds it
+    # via _ensure_session with the new model — same heal path as
+    # PUT /api/providers. A goal driver holding the old session object keeps
+    # the old model until that reconnect; accepted.
+    switched = patch.get("provider") is not None or patch.get("model") is not None
+    if switched:
+        cur_meta = next(
+            (m for m in _session_meta_list(slug) if m.get("id") == session_id), None
+        ) or {}
+        provider = (
+            patch.get("provider") or (s or {}).get("provider") or cur_meta.get("provider")
+        )
+        if patch.get("provider") is not None and patch.get("model") is None:
+            # provider change without an explicit model → that provider's
+            # configured default, so the meta never keeps a foreign model.
+            patch["model"] = prov_mod.model_for_provider(
+                prov_mod.load_providers(), patch["provider"]
+            )
+        try:
+            build_model(provider, patch.get("model"))
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+
+    # Inspect the stored meta to honour the title_auto flag. Auto titles come
+    # from the first user message (stream._touch_session_title); an explicit
+    # rename sticks and an agent switch no longer renames.
     cur = next((m for m in _session_meta_list(slug) if m.get("id") == session_id), None)
     title_auto = (cur or {}).get("title_auto", True)
     if patch.get("title") is not None:
-        title_auto = False  # explicit rename → stop auto-following
-    if patch.get("agent_id") is not None and title_auto:
-        ag = _agent_lookup(patch["agent_id"])
-        if ag:
-            patch["title"] = f"{ag.name} session"
+        title_auto = False
     patch["title_auto"] = title_auto
 
     updated = _session_meta_patch(slug, session_id, patch)
+    if switched:
+        _SESSIONS.pop(session_id, None)
+        s = None
     if s:
         for k, v in patch.items():
             if v is not None:
