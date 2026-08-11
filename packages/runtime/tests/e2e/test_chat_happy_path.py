@@ -23,7 +23,10 @@ def test_plain_answer_streams_tokens_and_ends(create_session, ws_conv):
         events = conv.recv_until("message.end", "error")
 
     names = event_names(events)
-    assert names[0] == "turn.start"
+    # A new session's first turn auto-titles, emitting session_title just before
+    # turn.start; turn.start must still be present and lead the turn itself.
+    assert names[0] in ("turn.start", "session_title")
+    assert "turn.start" in names
     # the assistant's text arrives as one or more token.delta chunks
     deltas = "".join(e.get("content", "") for e in events_of(events, "token.delta"))
     assert "Hello from Ginno." in deltas
