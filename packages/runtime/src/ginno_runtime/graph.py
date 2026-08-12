@@ -78,6 +78,8 @@ def build_stable_system(
     mcp_tool_names: list[str] | None = None,
     session_id: str = "",
     workspace: str = "",
+    context_dirs: list[dict] | None = None,
+    primary_path: str = "",
 ) -> str:
     """The STABLE system layer (plan B2): persona + WorldState sections +
     tool guidance. Contains nothing that changes per turn (no clock time, no
@@ -100,6 +102,8 @@ def build_stable_system(
         all_tool_names=[t.name for t in all_tools],
         agent=agent,
         workspace=workspace,
+        context_dirs=list(context_dirs or []),
+        primary_path=primary_path or "",
     )
     world = WorldState(ctx)
     parts = [persona, world.render_system()]
@@ -368,6 +372,8 @@ def agent_node_factory(model, all_tools):
                 mcp_tool_names=state.get("mcp_tool_names") or [],
                 session_id=((config or {}).get("configurable") or {}).get("thread_id", ""),
                 workspace=state.get("workspace", "") or "",
+                context_dirs=state.get("context_dirs") or [],
+                primary_path=state.get("primary_path", "") or "",
             ),
             model,
         )
@@ -489,6 +495,8 @@ def build_all_tools(
     workspace: str | None = None,
     project_slug: str | None = None,
     session_id: str | None = None,
+    context_dirs: list[dict] | None = None,
+    primary_path: str | None = None,
 ) -> list:
     """The union toolset shared by the main chat graph and the workflow engine.
 
@@ -499,6 +507,9 @@ def build_all_tools(
 
     ``session_id`` (with ``project_slug``) additionally binds the per-session
     goal tools (goal-design.md §4.2); callers without a session omit them.
+
+    ``context_dirs`` / ``primary_path`` bind the session's mounted context
+    folders into the builtin file/shell tools (context-folders-design.md).
     """
     from .tools.goal_tools import build_goal_tools
     from .tools.web_tools import build_web_tools
@@ -509,7 +520,7 @@ def build_all_tools(
         else []
     )
     return (
-        build_builtin_tools(workspace)
+        build_builtin_tools(workspace, context_dirs=context_dirs, primary_path=primary_path)
         + build_skill_tools(project_slug)
         + (mcp_tools or [])
         + [render_widget, attach_ref]
@@ -572,6 +583,8 @@ def build_graph(
     mcp_tools: list | None = None,
     hook_dispatcher=None,
     all_tools: list | None = None,
+    context_dirs: list[dict] | None = None,
+    primary_path: str | None = None,
 ):
     """Compose the main agent graph (single graph, union toolset).
 
@@ -579,7 +592,13 @@ def build_graph(
     the exact tool names for WorldState sections (mcp/agent snapshots).
     """
     if all_tools is None:
-        all_tools = build_all_tools(mcp_tools, workspace=workspace, project_slug=project_slug)
+        all_tools = build_all_tools(
+            mcp_tools,
+            workspace=workspace,
+            project_slug=project_slug,
+            context_dirs=context_dirs,
+            primary_path=primary_path,
+        )
     policy = PermissionPolicy.from_settings()
 
     g = StateGraph(AgentState)

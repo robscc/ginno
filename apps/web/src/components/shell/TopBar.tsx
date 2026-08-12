@@ -9,6 +9,7 @@ import type { AgentConfig, SessionMeta, SessionUsage } from "@/lib/types";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
 import { GoalChip } from "./GoalChip";
+import { ContextFoldersChip } from "./ContextFoldersChip";
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -91,6 +92,8 @@ export function TopBar({
       </span>
 
       <GoalChip sessionId={session?.id ?? null} />
+
+      <ContextFoldersChip session={session} />
 
       <div className="ml-auto flex items-center gap-2">
         {usage && usage.calls > 0 && (

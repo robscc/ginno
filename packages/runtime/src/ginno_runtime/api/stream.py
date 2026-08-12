@@ -530,6 +530,8 @@ def _maybe_refresh_session_graph(session: dict) -> None:
         workspace=workspace,
         project_slug=slug,
         session_id=session.get("session_id", ""),
+        context_dirs=session.get("context_dirs") or [],
+        primary_path=session.get("primary_path") or "",
     )
     session["graph"] = build_graph(
         model=session["model"],
@@ -636,6 +638,8 @@ async def _run_stream(
             mcp_tool_names=list(_live_names["mcp"]),
             all_tool_names=list(_live_names["all"]),
             workspace=str(session.get("workspace") or ""),
+            context_dirs=list(session.get("context_dirs") or []),
+            primary_path=str(session.get("primary_path") or ""),
         )
 
     # Microcompact — clear stale tool outputs (rung below E3) BEFORE E3
@@ -742,6 +746,11 @@ async def _run_stream(
         # other channels, refreshed on every invoke. Live value (not the
         # session-dict freeze) so the snapshot converges with reality.
         "mcp_tool_names": list(_world_ctx().mcp_tool_names),
+        # Mounted context folders (context-folders-design.md): stable within a
+        # mount set; a change goes through PUT /sessions/{id}/context (or
+        # /mount), which rebuilds the graph and updates the session dict.
+        "context_dirs": list(session.get("context_dirs") or []),
+        "primary_path": str(session.get("primary_path") or ""),
     }
     await _stream_graph(ws, graph, config, input_state=input_state)
 

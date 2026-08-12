@@ -1096,6 +1096,15 @@ export function ChatStream({
         // sidebar + TopBar rename live without a sessions reload.
         g.applySessionPatch(sid, { title: (ev.title as string) ?? "", title_auto: false });
         break;
+      case "session.context":
+        // Mount set changed server-side (context-folders-design.md): /mount
+        // command or another client ran PUT /sessions/{id}/context. Patch the
+        // store so the TopBar chip re-renders without a full reload.
+        g.applySessionPatch(sid, {
+          context_folders: ((ev.context_folders as string[]) ?? []),
+          primary_folder: (ev.primary_folder as string | null) ?? null,
+        });
+        break;
       case "context.updated": {
         // WorldState change announcement (world-state-plan §7). Chip display
         // level table: environment-only changes (date rollover) stay SILENT in

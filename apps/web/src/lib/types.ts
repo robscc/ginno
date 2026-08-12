@@ -106,6 +106,43 @@ export interface SessionMeta {
   model: string;
   created: number;
   updated: number;
+  // Context folder mounts (docs/context-folders-design.md): library ids +
+  // the one mount whose dir is the bash cwd / relative-path base.
+  context_folders?: string[];
+  primary_folder?: string | null;
+}
+
+// A registered context folder (~/.ginno/folders.json entry).
+export interface FolderEntry {
+  id: string;
+  path: string;
+  name: string;
+  access: "ro" | "rw";
+  load_rules: boolean;
+  added?: string;
+  last_used?: string;
+}
+
+// Resolved mount as seen by a session (context_dirs entry).
+export interface ContextDirEntry {
+  id: string;
+  path?: string;
+  name?: string;
+  access?: "ro" | "rw";
+  load_rules?: boolean;
+  missing?: boolean;
+}
+
+export interface FolderProbe {
+  ok: boolean;
+  error?: string;
+  path?: string;
+  is_dir?: boolean;
+  file_count?: number;
+  file_count_truncated?: boolean;
+  has_git?: boolean;
+  rule_file?: string | null;
+  already_registered?: boolean;
 }
 
 export interface VerifyResult {
