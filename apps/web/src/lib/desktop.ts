@@ -24,12 +24,16 @@ export function isDesktop(): boolean {
 
 /** Payload for the shell-side native notification (apps/desktop/src/lib.rs). */
 export interface NativeNotification {
-  /** Click target kind: focus a chat session, or open the Workflow panel. */
-  kind: "session" | "workflow-run";
+  /** Click target kind: focus a chat session, open the Workflow panel, or
+   *  "test" (Settings → Notifications test button) which only refocuses. */
+  kind: "session" | "workflow-run" | "test";
   /** Session id (kind=session) or run id (kind=workflow-run). */
   id: string;
   title: string;
   body: string;
+  /** macOS system sound name ("Glass", "Ping", …); omitted = silent. The
+   *  shell validates against its own allow-list. */
+  sound?: string;
 }
 
 /**

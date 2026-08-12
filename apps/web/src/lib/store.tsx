@@ -11,6 +11,7 @@ import {
 } from "react";
 import * as api from "./runtime";
 import { notifyNative } from "./desktop";
+import { loadNotifyPrefs, notifyPrefs } from "./notifyPrefs";
 import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory";
@@ -60,20 +61,17 @@ function notifyRunTransitions(
   runs: Array<{ id: string; name?: string; status: string; steps?: Array<{ id: string; title?: string; status: string }>; started: number; finished?: number | null }>,
   onOpenPanel?: () => void,
 ) {
-  // Master gate (Settings → Notifications). _prevRunStatus keeps updating even
-  // while disabled so re-enabling doesn't fire a burst of stale transitions.
-  let enabled = true;
-  try {
-    enabled = typeof localStorage !== "undefined" && localStorage.getItem("ginno-notify") !== "0";
-  } catch {
-    /* ignore */
-  }
+  // Master gate (Settings → Notifications, persisted in settings.json; the
+  // sync cache avoids stale closures — see lib/notifyPrefs.ts). _prevRunStatus
+  // keeps updating even while disabled so re-enabling doesn't fire a burst of
+  // stale transitions.
+  const prefs = notifyPrefs();
   const hidden = typeof document !== "undefined" && document.visibilityState !== "visible";
   for (const r of runs) {
     const prev = _prevRunStatus[r.id];
     _prevRunStatus[r.id] = r.status;
     if (prev === undefined || prev === r.status) continue;
-    if (!enabled) continue;
+    if (!prefs.enabled) continue;
     if (!hidden) continue; // user is looking — the badges already cover it
     let body: string;
     if (r.status === "done") {
@@ -87,7 +85,13 @@ function notifyRunTransitions(
     const title = `${r.status === "done" ? "✓" : "✕"} ${r.name || "Workflow"}`;
     // Desktop: the Tauri shell fires a real macOS notification (WKWebView has
     // no window.Notification). Click → window focus + open the Workflow panel.
-    void notifyNative({ kind: "workflow-run", id: r.id, title, body }).then((sent) => {
+    void notifyNative({
+      kind: "workflow-run",
+      id: r.id,
+      title,
+      body,
+      sound: prefs.sound ? prefs.soundName : undefined,
+    }).then((sent) => {
       if (sent) return;
       // Plain-browser dev fallback.
       if (typeof Notification === "undefined") return;
@@ -628,6 +632,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         reloadWorkflows(),
         reloadWorkflowRuns(),
         reloadArtifacts(),
+        // Notification gate + sound prefs (settings.json) into the sync cache
+        // before any completion event can arrive.
+        loadNotifyPrefs(),
       ]);
       if (alive) setReady(true);
     })();
