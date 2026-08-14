@@ -28,3 +28,10 @@ class AgentState(TypedDict):
     # a mid-session MCP reload can be detected and announced (plan A7). Set by
     # the WS layer every invoke; persists across steps like other channels.
     mcp_tool_names: list[str]
+    # Mounted context folders (docs/context-folders-design.md): serializable
+    # dicts {id, path, name, access, load_rules, missing}. Session-scoped and
+    # stable across turns (mount changes rebuild the graph); feeds the
+    # WorldState environment/folder_rules sections.
+    context_dirs: list[dict]
+    # Resolved path of the primary mount dir ("" = session files dir is cwd).
+    primary_path: str

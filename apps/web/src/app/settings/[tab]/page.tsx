@@ -9,6 +9,7 @@ export function generateStaticParams() {
     { tab: "workflows" },
     { tab: "synthesis-quality" },
     { tab: "knowledge" },
+    { tab: "folders" },
     { tab: "web" },
     { tab: "browser" },
     { tab: "permissions" },

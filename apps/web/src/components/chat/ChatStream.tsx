@@ -9,6 +9,7 @@ import { loadToolLabels } from "@/lib/toolLabels";
 import { agentHex } from "@/lib/theme";
 import { greeting, relTime } from "@/lib/utils";
 import { notifyNative } from "@/lib/desktop";
+import { notifyPrefs } from "@/lib/notifyPrefs";
 import { Icon } from "@/components/icons";
 import { ContextBlocks, InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
 import { DiffView } from "@/components/workflow/DiffView";
@@ -1141,6 +1142,15 @@ export function ChatStream({
         // sidebar + TopBar rename live without a sessions reload.
         g.applySessionPatch(sid, { title: (ev.title as string) ?? "", title_auto: false });
         break;
+      case "session.context":
+        // Mount set changed server-side (context-folders-design.md): /mount
+        // command or another client ran PUT /sessions/{id}/context. Patch the
+        // store so the TopBar chip re-renders without a full reload.
+        g.applySessionPatch(sid, {
+          context_folders: ((ev.context_folders as string[]) ?? []),
+          primary_folder: (ev.primary_folder as string | null) ?? null,
+        });
+        break;
       case "context.updated": {
         // WorldState change announcement (world-state-plan §7). Chip display
         // level table: environment-only changes (date rollover) stay SILENT in
@@ -1229,21 +1239,24 @@ export function ChatStream({
         // switches) — read refs / live values only. The session title may be
         // stale too (rename after connect); cosmetic, accepted.
         {
-          let notifyEnabled = true;
-          try {
-            notifyEnabled = localStorage.getItem("ginno-notify") !== "0";
-          } catch {
-            /* ignore */
-          }
+          // Settings → Notifications (settings.json; sync cache — see
+          // lib/notifyPrefs.ts for why this isn't React state).
+          const np = notifyPrefs();
           const watching =
             document.visibilityState === "visible" &&
             window.location.pathname === "/" &&
             activeSidRef.current === sid;
-          if (notifyEnabled && !watching) {
+          if (np.enabled && !watching) {
             const title = g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
             const raw = typeof ev.text === "string" ? ev.text.trim() : "";
             const body = raw || "回复已完成";
-            void notifyNative({ kind: "session", id: sid, title, body }).then((sent) => {
+            void notifyNative({
+              kind: "session",
+              id: sid,
+              title,
+              body,
+              sound: np.sound ? np.soundName : undefined,
+            }).then((sent) => {
               if (sent) return;
               // Plain-browser dev fallback — WKWebView has no Notification API,
               // so inside the packaged app this branch is a silent no-op.

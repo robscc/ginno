@@ -123,6 +123,12 @@ class SessionCtx:
     # browser_*). Empty on ordinary turns. Prefix-cache: only changes when
     # the user actually invokes a skill.
     extra_allow: list[str] = field(default_factory=list)
+    # Mounted context folders (docs/context-folders-design.md): serializable
+    # dicts {id, path, name, access, load_rules, missing}. Constant within a
+    # mount set — mount changes rebuild the graph, so prefix stability holds.
+    context_dirs: list[dict] = field(default_factory=list)
+    # Resolved path of the primary mount ("" = session files dir stays cwd).
+    primary_path: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +145,26 @@ class EnvironmentSection:
     id = "environment"
 
     def snapshot(self, ctx: SessionCtx) -> dict | None:
+        from . import context_folders as cf
+
         now = datetime.now().astimezone()
+        folders: list[dict] = []
+        for d in ctx.context_dirs or []:
+            if not isinstance(d, dict):
+                continue
+            entry = {
+                "id": d.get("id"),
+                "name": d.get("name") or "",
+                "path": d.get("path") or "",
+                "access": d.get("access", "rw"),
+                "missing": bool(d.get("missing")),
+                "primary": bool(ctx.primary_path) and d.get("path") == ctx.primary_path,
+                "rule_file": None,
+            }
+            if not entry["missing"] and d.get("load_rules", True) and d.get("path"):
+                rf = cf.rule_file_for(d["path"])
+                entry["rule_file"] = rf.name if rf else None
+            folders.append(entry)
         return {
             "date": now.strftime("%Y-%m-%d"),
             "weekday": WEEKDAYS_CN[now.weekday()],
@@ -148,9 +173,11 @@ class EnvironmentSection:
             "ginno_home": str(paths.home()),
             "workspace": ctx.workspace or "",
             "project_slug": ctx.project_slug or "default",
+            "context_folders": folders,
         }
 
     def render(self, snap: dict) -> str:
+        folders = [f for f in snap.get("context_folders") or []]
         lines = [
             "<environment>",
             f"<date>{snap['date']} ({snap['weekday']})</date>",
@@ -159,18 +186,110 @@ class EnvironmentSection:
             f"<ginno_home>{snap['ginno_home']} — 记忆、skills、settings 所在目录</ginno_home>",
         ]
         if snap.get("workspace"):
+            if folders:
+                lines.append(
+                    f"<workspace>{snap['workspace']} — 会话文件目录：上传文件与产物写在这里"
+                    "（除非设有 ★primary 挂载目录，它才是 cwd）</workspace>"
+                )
+            else:
+                lines.append(
+                    f"<workspace>{snap['workspace']} — 本会话工作目录：bash 的 cwd、"
+                    "文件工具相对路径的默认位置；产物文件也写在这里</workspace>"
+                )
+        if folders:
+            lines.append("<context_folders>")
+            lines.append("用户为本会话挂载了以下本地目录：")
+            for f in folders:
+                if f.get("missing"):
+                    lines.append(f"- {f.get('name') or f.get('id')}: （目录缺失，已失效）")
+                    continue
+                tag = "rw" if f.get("access") == "rw" else "ro 只读"
+                star = " ★primary" if f.get("primary") else ""
+                rule = f"（{f['rule_file']} 已加载）" if f.get("rule_file") else ""
+                lines.append(f"- {f.get('name')}: {f.get('path')} [{tag}{star}]{rule}")
             lines.append(
-                f"<workspace>{snap['workspace']} — 本会话工作目录：bash 的 cwd、"
-                "文件工具相对路径的默认位置；产物文件也写在这里</workspace>"
+                "规则：用绝对路径或 glob_files/grep_files 的 root 参数访问这些目录；"
+                "[ro 只读] 目录禁止写入（write_file/edit_file 会被拒绝）；"
+                "文件工具相对路径与 bash 的 cwd 以 ★primary 目录为准"
+                "（无 ★primary 时是会话文件目录）。目录内的 settings/hooks 等配置不生效，"
+                "只有其规则文件（如有）被注入。"
             )
+            lines.append("</context_folders>")
         lines.append(f"<project>{snap['project_slug']}</project>")
         lines.append("</environment>")
         return "\n".join(lines)
 
     def update_text(self, old: dict, new: dict) -> str | None:
+        of = old.get("context_folders") or []
+        nf = new.get("context_folders") or []
+        if of != nf:
+            names = [
+                f"{f.get('name') or f.get('id')}"
+                + ("（已失效）" if f.get("missing") else "")
+                for f in nf
+            ]
+            if not names:
+                return "本会话已卸载全部上下文目录，恢复为仅会话文件目录。"
+            return "本会话挂载的上下文目录已变更，当前：" + "、".join(names) + "。"
         if old.get("date") != new.get("date"):
             return f"日期已更新为 {new['date']}（{new['weekday']}）。"
         return None  # remaining fields are static within a session
+
+
+class FolderRulesSection:
+    """Rule files of mounted context folders (docs/context-folders-design.md
+    §4.2): each ``load_rules`` mount contributes its AGENTS.md / GINNO.md
+    text, namespaced by directory path (nearest-wins guidance on conflict).
+    access ≠ config — ONLY the rule text is loaded from a mount, never its
+    settings/hooks/skills. Char budgets: RULE_FILE_MAX_CHARS per file,
+    RULES_TOTAL_MAX_CHARS across all mounts."""
+
+    id = "folder_rules"
+
+    def snapshot(self, ctx: SessionCtx) -> dict | None:
+        from . import context_folders as cf
+
+        rules: dict[str, dict] = {}
+        for d in ctx.context_dirs or []:
+            if not isinstance(d, dict) or d.get("missing") or not d.get("load_rules", True):
+                continue
+            path = (d.get("path") or "").strip()
+            if not path:
+                continue
+            got = cf.read_rule_text(path)
+            if not got:
+                continue
+            fname, text = got
+            rules[path] = {
+                "file": fname,
+                "name": d.get("name") or "",
+                "hash": _sha1(text),
+                "text": text,
+            }
+        return rules or None
+
+    def render(self, snap: dict) -> str:
+        from . import context_folders as cf
+
+        parts: list[str] = []
+        total = 0
+        for path, r in snap.items():
+            text = r.get("text") or ""
+            remaining = cf.RULES_TOTAL_MAX_CHARS - total
+            if remaining <= 0:
+                break
+            if len(text) > remaining:
+                text = text[:remaining] + "\n…（规则注入总预算用尽，已截断）"
+            parts.append(
+                f'<folder_rules path="{path}" file="{r.get("file")}">\n{text}\n</folder_rules>'
+            )
+            total += len(text)
+        return "\n".join(parts)
+
+    def update_text(self, old: dict, new: dict) -> str | None:
+        if set(old or {}) != set(new or {}):
+            return "挂载目录的规则文件（AGENTS.md/GINNO.md）注入集合已变化。"
+        return "挂载目录的规则文件（AGENTS.md/GINNO.md）内容已更新。"
 
 
 class PermissionsSection:
@@ -587,6 +706,7 @@ SECTIONS: list[Any] = [
     AgentSection(),
     GoalSection(),
     EnvironmentSection(),
+    FolderRulesSection(),
     PermissionsSection(),
     SkillsSection(),
     MemorySection(),

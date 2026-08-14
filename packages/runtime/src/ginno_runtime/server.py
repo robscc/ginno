@@ -160,6 +160,7 @@ if WEB_OUT is not None and (WEB_OUT / "_next").exists():
 # Included before the catch-all web route at the bottom of this module.
 from .api import config as _config_api  # noqa: E402
 from .api import files as _files_api  # noqa: E402
+from .api import folders as _folders_api  # noqa: E402
 from .api import knowledge as _knowledge_api  # noqa: E402
 from .api import memory as _memory_api  # noqa: E402
 from .api import sessions as _sessions_api  # noqa: E402
@@ -171,6 +172,7 @@ from .api import browser as _browser_api  # noqa: E402
 
 app.include_router(_config_api.router)
 app.include_router(_files_api.router)
+app.include_router(_folders_api.router)
 app.include_router(_knowledge_api.router)
 app.include_router(_memory_api.router)
 app.include_router(_sessions_api.router)

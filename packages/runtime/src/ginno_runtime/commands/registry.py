@@ -132,6 +132,160 @@ def _goal_handler(project_slug: str | None = None, session=None, args=None) -> s
     return f"🎯 目标已设定，开始自主推进：\n{g['objective']}\n（/goal pause 可暂停）"
 
 
+def _mounts_list(session) -> list[dict]:
+    """Current mounts of a live session (resolved context-dir dicts)."""
+    return list((session or {}).get("context_dirs") or [])
+
+
+def _fmt_mounts(session) -> str:
+    from .. import context_folders as cf
+
+    dirs = _mounts_list(session)
+    primary_path = (session or {}).get("primary_path") or ""
+    if not dirs:
+        return "（本会话未挂载任何上下文目录）"
+    lines = ["**本会话挂载的上下文目录**", ""]
+    for d in dirs:
+        if d.get("missing"):
+            lines.append(f"- ❓ {d.get('id')}（目录缺失，已失效）")
+            continue
+        tag = "rw" if d.get("access") == "rw" else "ro 只读"
+        star = " ★primary" if primary_path and d.get("path") == primary_path else ""
+        rf = cf.rule_file_for(d["path"])
+        rule = f"（{rf.name}）" if rf else ""
+        lines.append(f"- **{d.get('name')}** `{d.get('path')}` [{tag}{star}]{rule}")
+    return "\n".join(lines)
+
+
+def _match_mount(dirs: list[dict], token: str) -> dict | None:
+    tok = (token or "").strip().rstrip("/")
+    if not tok:
+        return None
+    for d in dirs:  # exact name / exact path first
+        if not d.get("missing") and tok in (d.get("name"), d.get("path")):
+            return d
+    from pathlib import Path as _P
+
+    for d in dirs:  # then basename of the path
+        if not d.get("missing") and _P(d.get("path") or "").name == tok:
+            return d
+    return None
+
+
+_MOUNT_USAGE = (
+    "**上下文目录挂载用法**\n"
+    "- `/mount <路径> [ro|rw]` — 挂载目录（自动注册进目录库，默认 rw）\n"
+    "- `/mount` / `/mounts` — 查看当前挂载\n"
+    "- `/umount <名称|路径>` — 卸载\n"
+    "- `/primary <名称|路径>` — 设为主工作目录（bash 的 cwd）\n"
+    "- `/primary clear` — 取消主工作目录\n"
+    "目录库与访问级也可在 设置 → 上下文目录 管理。"
+)
+
+
+def _mount_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    from .. import context_folders as cf
+
+    if not session:
+        return _MOUNT_USAGE
+    args = (args or "").strip()
+    if not args:
+        return _fmt_mounts(session) + "\n\n" + _MOUNT_USAGE
+
+    # `<path> [ro|rw]` — path may contain spaces; access token is the tail.
+    parts = args.split()
+    access = cf.DEFAULT_ACCESS
+    if len(parts) >= 2 and parts[-1].lower() in cf.ACCESS_TIERS:
+        access = parts[-1].lower()
+        path = " ".join(parts[:-1])
+    else:
+        path = args
+
+    probe = cf.probe(path)
+    if not probe.get("ok"):
+        return f"挂载失败：{probe.get('error')}"
+    folder = cf.add_folder(path, access=access, load_rules=True)
+
+    dirs = _mounts_list(session)
+    ids = [d["id"] for d in dirs if not d.get("missing")]
+    if folder["id"] in ids:
+        return (
+            f"目录已在挂载中：**{folder['name']}** `{folder['path']}`\n\n"
+            + _fmt_mounts(session)
+        )
+    ids.append(folder["id"])
+    # First mount becomes primary automatically (bash cwd switches to it);
+    # later mounts never steal an existing primary.
+    primary = session.get("primary_folder") or (folder["id"] if not dirs else None)
+
+    from ..api.sessions import apply_session_context  # lazy: avoid import cycle
+
+    res = apply_session_context(session.get("session_id", ""), ids, primary)
+    if not res.get("ok"):
+        return f"挂载失败：{res.get('error')}"
+    star = "，已设为主工作目录（bash 的 cwd）" if primary == folder["id"] and not dirs else ""
+    rf = probe.get("rule_file")
+    rule_note = f"；检测到 {rf}，其规则将注入上下文" if rf else ""
+    return (
+        f"✅ 已挂载 **{folder['name']}** `{folder['path']}`"
+        f"（{folder['access']}{star}）{rule_note}\n\n" + _fmt_mounts(session)
+    )
+
+
+def _mounts_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    if not session:
+        return _MOUNT_USAGE
+    return _fmt_mounts(session)
+
+
+def _umount_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    if not session:
+        return _MOUNT_USAGE
+    token = (args or "").strip()
+    if not token:
+        return "用法：`/umount <名称|路径>`\n\n" + _fmt_mounts(session)
+    dirs = _mounts_list(session)
+    hit = _match_mount(dirs, token)
+    if not hit:
+        return f"未找到挂载：{token}\n\n" + _fmt_mounts(session)
+    ids = [d["id"] for d in dirs if not d.get("missing") and d["id"] != hit["id"]]
+    primary = session.get("primary_folder")
+    if primary == hit["id"]:
+        primary = None
+    from ..api.sessions import apply_session_context  # lazy: avoid import cycle
+
+    res = apply_session_context(session.get("session_id", ""), ids, primary)
+    if not res.get("ok"):
+        return f"卸载失败：{res.get('error')}"
+    return f"已卸载 **{hit.get('name')}** `{hit.get('path')}`\n\n" + _fmt_mounts(session)
+
+
+def _primary_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    if not session:
+        return _MOUNT_USAGE
+    token = (args or "").strip()
+    dirs = _mounts_list(session)
+    if not token:
+        return "用法：`/primary <名称|路径>` 或 `/primary clear`\n\n" + _fmt_mounts(session)
+    ids = [d["id"] for d in dirs if not d.get("missing")]
+    if token.lower() == "clear":
+        primary = None
+    else:
+        hit = _match_mount(dirs, token)
+        if not hit:
+            return f"未找到挂载：{token}（先用 /mount 挂载）"
+        primary = hit["id"]
+    from ..api.sessions import apply_session_context  # lazy: avoid import cycle
+
+    res = apply_session_context(session.get("session_id", ""), ids, primary)
+    if not res.get("ok"):
+        return f"设置失败：{res.get('error')}"
+    if primary is None:
+        return "已取消主工作目录（cwd 恢复为会话文件目录）\n\n" + _fmt_mounts(session)
+    pp = res.get("primary_path") or ""
+    return f"主工作目录已设为 `{pp}`（bash 的 cwd 与相对路径基准）\n\n" + _fmt_mounts(session)
+
+
 BUILTINS: dict[str, BuiltinCommand] = {
     "help": BuiltinCommand(
         name="help",
@@ -142,5 +296,25 @@ BUILTINS: dict[str, BuiltinCommand] = {
         name="goal",
         description="设定或查看本会话的长程目标（自主推进）",
         handler=_goal_handler,
+    ),
+    "mount": BuiltinCommand(
+        name="mount",
+        description="挂载本地目录为本会话上下文（/mount <路径> [ro|rw]）",
+        handler=_mount_handler,
+    ),
+    "mounts": BuiltinCommand(
+        name="mounts",
+        description="查看本会话挂载的上下文目录",
+        handler=_mounts_handler,
+    ),
+    "umount": BuiltinCommand(
+        name="umount",
+        description="卸载一个上下文目录（/umount <名称|路径>）",
+        handler=_umount_handler,
+    ),
+    "primary": BuiltinCommand(
+        name="primary",
+        description="设置主工作目录（bash cwd）；/primary clear 取消",
+        handler=_primary_handler,
     ),
 }

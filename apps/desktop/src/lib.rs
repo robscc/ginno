@@ -11,16 +11,18 @@
 //!   4. Terminate the runtime on app exit.
 //!   5. Native notifications: the web UI emits `ginno:notify` when a session
 //!      turn / workflow run finishes while the user looks away; the shell
-//!      shows the macOS notification and, on click, restores the window and
-//!      tells the webview to navigate to the target (`__ginnoOpenSession` /
-//!      `__ginnoOpenWorkflowRun`, same eval convention as `__ginnoFileDrop`).
-//!      Closing the window hides it (macOS convention) so the webview and its
-//!      sockets survive to keep receiving completion events.
+//!      shows the macOS notification (optionally with a system sound, chosen
+//!      in Settings → Notifications and passed per-event in the payload) and,
+//!      on click, restores the window and tells the webview to navigate to
+//!      the target (`__ginnoOpenSession` / `__ginnoOpenWorkflowRun`, same
+//!      eval convention as `__ginnoFileDrop`). Closing the window hides it
+//!      (macOS convention) so the webview and its sockets survive to keep
+//!      receiving completion events.
 //!   6. Browser tile host: listen for `ginno:browser-tile`, punch a
 //!      transparent hole in the WKWebView, and (when Helper.app +
 //!      libginno_cef.dylib are packaged) attach a CEF child to the hole.
-//!      Geometry + hit-test passthrough only — Space / ownership stay in
-//!      the sidecar. See `browser_tile.rs` / `cef_host.rs`.
+//!      Geometry only — Space / ownership stay in the sidecar. See
+//!      `browser_tile.rs` / `cef_host.rs`.
 //!
 //! In dev (`tauri dev`), the user runs `pnpm dev:runtime` in a separate
 //! terminal; this file only spawns the runtime in release builds.
@@ -46,18 +48,24 @@ struct RuntimeProcess(Mutex<Option<Child>>);
 /// workflow run finishes while the user isn't looking at it.
 #[derive(serde::Deserialize)]
 struct NotifyPayload {
-    /// `"session"` or `"workflow-run"` — decides which bridge global is called.
+    /// `"session"`, `"workflow-run"` — decides which bridge global is called
+    /// on click — or `"test"` (Settings → Notifications test button), which
+    /// only refocuses the window.
     kind: String,
     /// Session id (`kind == "session"`) or run id (`kind == "workflow-run"`).
     id: String,
     title: String,
     body: String,
+    /// macOS system sound name ("Glass", "Ping", …); absent = silent. The web
+    /// UI reads the preference from settings.json (`notifications.sound` /
+    /// `sound_name`) and passes it per-event, so the shell stays stateless.
+    #[serde(default)]
+    sound: Option<String>,
 }
 
 /// Payload of the `ginno:browser-tile` event emitted by BrowserPane when the
-/// page tile is resized / hidden. Rust only stores geometry + whether the
-/// WKWebView should forward hits into the hole. Space / ownership stay in
-/// the sidecar (design §15).
+/// page tile is resized / hidden. Rust only stores geometry. Space /
+/// ownership stay in the sidecar (design §15).
 #[derive(serde::Deserialize, Clone)]
 pub(crate) struct BrowserTilePayload {
     x: f64,
@@ -68,15 +76,23 @@ pub(crate) struct BrowserTilePayload {
     space: Option<String>,
     #[serde(default)]
     visible: Option<bool>,
-    /// True when the human owns the tile and CEF should receive clicks.
-    /// Never a Space name / owner string.
+    /// Kept for wire compatibility; native hit forwarding is disabled (human
+    /// input goes over CDP). Always false from the current web UI.
     #[serde(default)]
     passthrough: Option<bool>,
 }
 
-/// Last tile rect the webview reported. Read by a future CEF host; never
-/// used to decide Space ownership.
+/// Last tile rect the webview reported.
 struct BrowserTile(Mutex<Option<BrowserTilePayload>>);
+
+/// Sounds that ship with macOS (`/System/Library/Sounds/<name>.aiff`).
+/// Allow-list doubles as sanitization: `sound` arrives over IPC from the
+/// webview, so anything unknown is dropped rather than handed to the OS.
+/// Keep in sync with SOUND_NAMES in apps/web/src/lib/notifyPrefs.ts.
+const SYSTEM_SOUNDS: &[&str] = &[
+    "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Sosumi",
+    "Submarine", "Purr", "Pop", "Tink",
+];
 
 fn open_log_file(app: &tauri::App) -> Option<std::fs::File> {
     let home = dirs_home(app);
@@ -328,6 +344,16 @@ const ERROR_HTML: &str = r#"<!doctype html>
 fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyPayload) {
     let mut n = notify_rust::Notification::new();
     n.summary(&payload.title).body(&payload.body);
+    // Sound preference arrives per-event (settings.json → web UI → payload).
+    // The UN backend maps this to UNNotificationSound soundNamed:, resolving
+    // against /System/Library/Sounds; unknown names are dropped here.
+    if let Some(name) = payload.sound.as_deref() {
+        if SYSTEM_SOUNDS.contains(&name) {
+            n.sound_name(name);
+        } else {
+            shell_log(&app, &format!("ignoring unknown sound name {name:?}"));
+        }
+    }
     let handle = match n.show() {
         Ok(h) => h,
         Err(e) => {
@@ -361,7 +387,11 @@ fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyPayload) {
 /// interpolated raw.
 fn focus_and_open(app: &tauri::AppHandle, kind: &str, id: &str) {
     shell_log(app, &format!("focus_and_open kind={kind} id={id}"));
-    let script = if kind == "workflow-run" {
+    // "test" (Settings → Notifications test button): refocus only — there is
+    // no target to navigate to.
+    let script = if kind == "test" {
+        String::new()
+    } else if kind == "workflow-run" {
         "window.__ginnoOpenWorkflowRun && window.__ginnoOpenWorkflowRun();".to_string()
     } else {
         let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());

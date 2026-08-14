@@ -12,6 +12,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from .. import agents as agents_reg
+from .. import context_folders as cf
 from .. import paths
 from .. import providers as prov_mod
 from .. import server_shared as shared
@@ -54,6 +55,10 @@ class CreateSessionRequest(BaseModel):
     icon: str | None = None
     provider: str | None = None
     model: str | None = None
+    # Context folder mounts (context-folders-design.md): library ids; the
+    # session starts with these attached. Unknown ids are dropped silently.
+    context_folders: list[str] = []
+    primary_folder: str | None = None
     # legacy aliases
     model_provider: str | None = None
     model_name: str | None = None
@@ -495,8 +500,21 @@ async def create_session(req: CreateSessionRequest) -> dict:
     session_dir = paths.session_files_dir(req.project_slug, session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
     workspace = str(session_dir)
+    # Context folder mounts: filter to known library ids; a primary must be
+    # one of the mounts (context-folders-design.md §4.1).
+    folder_ids = [fid for fid in (req.context_folders or []) if cf.get_folder(fid)]
+    primary_id = req.primary_folder if req.primary_folder in folder_ids else None
+    context_dirs, primary_path = cf.resolve_session_dirs(folder_ids, primary_id)
+    for d in context_dirs:
+        if not d.get("missing"):
+            cf.touch_folder(d["id"])
     all_tools = build_all_tools(
-        mcp_tools, workspace=workspace, project_slug=req.project_slug, session_id=session_id
+        mcp_tools,
+        workspace=workspace,
+        project_slug=req.project_slug,
+        session_id=session_id,
+        context_dirs=context_dirs,
+        primary_path=primary_path,
     )
     graph = build_graph(
         model=model,
@@ -521,17 +539,20 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "provider": provider,
         "model": model_name,
         "workspace": workspace,
+        "context_folders": folder_ids,
+        "primary_folder": primary_id,
         "created": time.time(),
         "updated": time.time(),
     }
     _session_meta_upsert(req.project_slug, meta)
     _log.info(
-        "session_create session=%s agent=%s provider=%s model=%s title=%r",
+        "session_create session=%s agent=%s provider=%s model=%s title=%r folders=%d",
         session_id,
         agent_id,
         provider,
         model_name,
         title,
+        len(folder_ids),
     )
     _SESSIONS[session_id] = {
         "session_id": session_id,
@@ -549,6 +570,10 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "model": model,
         "all_tool_names": [t.name for t in all_tools],
         "mcp_tool_names": [t.name for t in mcp_tools],
+        # Context folder mounts (context-folders-design.md)
+        "context_dirs": context_dirs,
+        "primary_folder": primary_id,
+        "primary_path": primary_path or "",
     }
     # return the meta shape (with `id`) so the frontend SessionMeta matches
     return {**meta, "ok": True}
@@ -681,6 +706,113 @@ async def delete_session(session_id: str) -> dict:
     return {"ok": True, "removed": removed, "files_dir": files_dir}
 
 
+# ---- session context folders (context-folders-design.md §4.3) -------------
+
+
+class PutSessionContextRequest(BaseModel):
+    folder_ids: list[str] = []
+    primary_id: str | None = None
+
+
+def _apply_context_to_live_session(
+    s: dict, dirs: list[dict], primary_id: str | None, primary_path: str | None
+) -> None:
+    """Rebind a live session's tools/graph to a new mount set."""
+    slug = s.get("project_slug") or "default"
+    workspace = str(s.get("workspace") or "")
+    s["context_dirs"] = dirs
+    s["primary_folder"] = primary_id
+    s["primary_path"] = primary_path or ""
+    mcp_tools = shared._mcp.all_langchain_tools() if shared._mcp else []
+    all_tools = build_all_tools(
+        mcp_tools,
+        workspace=workspace,
+        project_slug=slug,
+        session_id=s.get("session_id", ""),
+        context_dirs=dirs,
+        primary_path=primary_path,
+    )
+    s["graph"] = build_graph(
+        model=s["model"],
+        project_slug=slug,
+        workspace=workspace,
+        mcp_tools=mcp_tools,
+        hook_dispatcher=shared._hooks,
+        all_tools=all_tools,
+    )
+    s["all_tool_names"] = [t.name for t in all_tools]
+    s["mcp_tool_names"] = [t.name for t in mcp_tools]
+
+
+def apply_session_context(
+    session_id: str, folder_ids: list[str], primary_id: str | None
+) -> dict:
+    """Persist a session's mount set and rebuild its live graph (shared by
+    ``PUT /api/sessions/{id}/context`` and the ``/mount`` builtin command)."""
+    s = _SESSIONS.get(session_id)
+    found = None if s else _find_meta(session_id)
+    if s is None and found is None:
+        return {"ok": False, "error": "unknown session"}
+    slug = s["project_slug"] if s else found[1]
+
+    folder_ids = [fid for fid in (folder_ids or []) if isinstance(fid, str) and fid]
+    unknown = [fid for fid in folder_ids if cf.get_folder(fid) is None]
+    if unknown:
+        return {"ok": False, "error": f"未知的目录 id：{unknown}"}
+    if primary_id and primary_id not in folder_ids:
+        primary_id = None  # primary must be one of the mounts
+
+    # "" clears a stale primary (_session_meta_patch drops None values).
+    _session_meta_patch(
+        slug,
+        session_id,
+        {"context_folders": folder_ids, "primary_folder": primary_id or ""},
+    )
+    dirs, primary_path = cf.resolve_session_dirs(folder_ids, primary_id)
+    for d in dirs:
+        if not d.get("missing"):
+            cf.touch_folder(d["id"])
+
+    if s is not None:
+        _apply_context_to_live_session(s, dirs, primary_id, primary_path)
+
+    # Let connected clients refresh their mount chip without a full refetch.
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            _push_session_event(
+                session_id,
+                "session.context",
+                {"context_folders": folder_ids, "primary_folder": primary_id},
+            )
+        )
+    except RuntimeError:
+        pass  # sync caller without a loop; clients reconcile on refetch
+
+    _log.info(
+        "session_context session=%s folders=%s primary=%s",
+        session_id,
+        folder_ids,
+        primary_id,
+    )
+    return {
+        "ok": True,
+        "session": {
+            "id": session_id,
+            "context_folders": folder_ids,
+            "primary_folder": primary_id,
+        },
+        "context_dirs": dirs,
+        "primary_path": primary_path,
+    }
+
+
+@router.put("/api/sessions/{session_id}/context")
+async def put_session_context(session_id: str, req: PutSessionContextRequest) -> dict:
+    """Replace the session's mount set (idempotent full replacement)."""
+    return apply_session_context(session_id, req.folder_ids, req.primary_id)
+
+
 # ---- session history (rebuild the chat UI's block layout from checkpoints) ----
 
 
@@ -737,9 +869,19 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     # still holds the shared "/tmp/gw" converge on the per-session dir without
     # rewriting the index.
     workspace = str(paths.session_files_dir(slug, session_id))
+    # Restore the persisted mount set (context-folders-design.md): sessions
+    # resume with exactly the folders they had before the restart.
+    folder_ids = meta.get("context_folders") or []
+    primary_id = meta.get("primary_folder") or None
+    context_dirs, primary_path = cf.resolve_session_dirs(folder_ids, primary_id)
     mcp_tools = shared._mcp.all_langchain_tools() if shared._mcp else []
     all_tools = build_all_tools(
-        mcp_tools, workspace=workspace, project_slug=slug, session_id=session_id
+        mcp_tools,
+        workspace=workspace,
+        project_slug=slug,
+        session_id=session_id,
+        context_dirs=context_dirs,
+        primary_path=primary_path,
     )
     graph = build_graph(
         model=model,
@@ -762,6 +904,9 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "model": model,
         "all_tool_names": [t.name for t in all_tools],
         "mcp_tool_names": [t.name for t in mcp_tools],
+        "context_dirs": context_dirs,
+        "primary_folder": primary_id,
+        "primary_path": primary_path or "",
     }
     _SESSIONS[session_id] = s
     return s

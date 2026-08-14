@@ -182,6 +182,62 @@ export async function clearSessionGoal(id: string) {
   });
 }
 
+// ---- context folders (docs/context-folders-design.md) ----
+export async function listFolders() {
+  return json<{ ok: boolean; folders: import("./types").FolderEntry[] }>(`${BASE}/folders`);
+}
+
+export async function createFolder(data: {
+  path: string;
+  name?: string;
+  access?: "ro" | "rw";
+  load_rules?: boolean;
+}) {
+  return json<{
+    ok: boolean;
+    error?: string;
+    folder?: import("./types").FolderEntry;
+    probe?: import("./types").FolderProbe;
+  }>(`${BASE}/folders`, { method: "POST", headers: H, body: JSON.stringify(data) });
+}
+
+export async function probeFolder(path: string) {
+  return json<import("./types").FolderProbe>(`${BASE}/folders/probe`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ path }),
+  });
+}
+
+export async function updateFolder(id: string, patch: Partial<import("./types").FolderEntry>) {
+  return json<{ ok: boolean; error?: string; folder?: import("./types").FolderEntry }>(
+    `${BASE}/folders/${id}`,
+    { method: "PATCH", headers: H, body: JSON.stringify(patch) },
+  );
+}
+
+export async function deleteFolder(id: string) {
+  return json<{ ok: boolean; removed: boolean }>(`${BASE}/folders/${id}`, { method: "DELETE" });
+}
+
+// Replace a session's mount set (idempotent full replacement).
+export async function putSessionContext(
+  id: string,
+  body: { folder_ids: string[]; primary_id?: string | null },
+) {
+  return json<{
+    ok: boolean;
+    error?: string;
+    session?: { id: string; context_folders: string[]; primary_folder: string | null };
+    context_dirs?: import("./types").ContextDirEntry[];
+    primary_path?: string | null;
+  }>(`${BASE}/sessions/${id}/context`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify(body),
+  });
+}
+
 // ---- providers ----
 export async function getProviders() {
   return json<{ default_provider: string; providers: Providers }>(`${BASE}/providers`);

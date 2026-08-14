@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, Globe, ShieldCheck, Webhook, FolderOpen, BarChart3, Tags, TrendingUp } from "lucide-react";
+import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, Globe, ShieldCheck, Webhook, FolderOpen, FolderInput, BarChart3, Tags, TrendingUp } from "lucide-react";
 
 type Item = { id: string; label: string; icon: typeof Cpu; color: string };
 
@@ -13,6 +13,7 @@ const MAIN: Item[] = [
   { id: "workflows", label: "Workflows", icon: Workflow, color: "#4ade80" },
   { id: "synthesis-quality", label: "总结质量", icon: TrendingUp, color: "#a78bfa" },
   { id: "knowledge", label: "知识库", icon: BookOpen, color: "#60a5fa" },
+  { id: "folders", label: "上下文目录", icon: FolderInput, color: "#34d399" },
   { id: "web", label: "Web 搜索", icon: Globe, color: "#3b82f6" },
   { id: "browser", label: "浏览器", icon: Globe, color: "#a78bfa" },
   { id: "session-files", label: "会话文件", icon: FolderOpen, color: "#38bdf8" },
