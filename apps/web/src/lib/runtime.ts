@@ -342,6 +342,173 @@ export async function resumeWorkflowRun(run_id: string, value: Record<string, un
     body: JSON.stringify(value),
   });
 }
+export async function getBrowserState() {
+  return json<import("./types").BrowserState>(`${BASE}/browser/state`);
+}
+
+export async function createBrowserSpace(data: {
+  name?: string;
+  owner?: string;
+  session_id?: string;
+  run_id?: string;
+}) {
+  return json<{ ok: boolean; space?: import("./types").BrowserSpace; error?: string }>(
+    `${BASE}/browser/spaces`,
+    { method: "POST", headers: H, body: JSON.stringify(data) },
+  );
+}
+
+export async function navigateBrowserSpace(name: string, url: string, opts?: { human?: boolean }) {
+  return json<{ ok: boolean; space?: import("./types").BrowserSpace; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/navigate`,
+    { method: "POST", headers: H, body: JSON.stringify({ url, human: Boolean(opts?.human) }) },
+  );
+}
+
+export async function handoffBrowserSpace(name: string, reason = "") {
+  return json<{ ok: boolean; interrupt?: string; space?: string; url?: string; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/handoff`,
+    { method: "POST", headers: H, body: JSON.stringify({ reason }) },
+  );
+}
+
+export async function takeoverBrowserSpace(name: string) {
+  return json<{ ok: boolean; space?: import("./types").BrowserSpace; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/takeover`,
+    { method: "POST", headers: H, body: JSON.stringify({}) },
+  );
+}
+
+export async function completeBrowserSpace(name: string, keep = true) {
+  return json<{ ok: boolean; kept?: boolean; space?: unknown; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/complete`,
+    { method: "POST", headers: H, body: JSON.stringify({ keep }) },
+  );
+}
+
+export async function screenshotBrowserSpace(
+  name: string,
+  opts?: { session_id?: string; project_slug?: string },
+) {
+  return json<{ ok: boolean; path?: string; artifact?: unknown; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/screenshot`,
+    { method: "POST", headers: H, body: JSON.stringify(opts || {}) },
+  );
+}
+
+export async function setBrowserViewport(data: {
+  width: number;
+  height: number;
+  space?: string;
+  dpr?: number;
+}) {
+  return json<{ ok: boolean; error?: string; width?: number; height?: number }>(
+    `${BASE}/browser/viewport`,
+    { method: "POST", headers: H, body: JSON.stringify(data) },
+  );
+}
+
+/** @deprecated viewport-only alias; no OS window is moved. */
+export async function dockBrowser(bounds: { x: number; y: number; width: number; height: number }) {
+  return setBrowserViewport({ width: bounds.width, height: bounds.height });
+}
+
+export function browserFrameUrl(name: string, bust?: number) {
+  const q = bust ? `?t=${bust}` : "";
+  return `${BASE}/browser/spaces/${encodeURIComponent(name)}/frame${q}`;
+}
+
+export async function resetBrowser() {
+  return json<{ ok: boolean }>(`${BASE}/browser/reset`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({}),
+  });
+}
+
+export async function sendBrowserInput(
+  name: string,
+  event: {
+    type: string;
+    x?: number;
+    y?: number;
+    button?: string;
+    buttons?: number;
+    clickCount?: number;
+    deltaX?: number;
+    deltaY?: number;
+    key?: string;
+    text?: string;
+    modifiers?: number;
+    windowsVirtualKeyCode?: number;
+  },
+) {
+  return json<{ ok: boolean; error?: string; handoff?: boolean }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/input`,
+    { method: "POST", headers: H, body: JSON.stringify(event) },
+  );
+}
+
+export async function listBrowserTabs(name: string) {
+  return json<{ ok: boolean; tabs?: import("./types").BrowserTab[]; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs`,
+  );
+}
+
+export async function openBrowserTab(name: string, url = "about:blank") {
+  return json<{ ok: boolean; tab?: import("./types").BrowserTab; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs`,
+    { method: "POST", headers: H, body: JSON.stringify({ url, human: true }) },
+  );
+}
+
+export async function activateBrowserTab(name: string, tabId: string) {
+  return json<{ ok: boolean; space?: import("./types").BrowserSpace; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs/${encodeURIComponent(tabId)}/activate`,
+    { method: "POST", headers: H, body: JSON.stringify({ human: true }) },
+  );
+}
+
+export async function closeBrowserTab(name: string, tabId: string) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs/${encodeURIComponent(tabId)}/close`,
+    { method: "POST", headers: H, body: JSON.stringify({ human: true }) },
+  );
+}
+
+export async function listBrowserDownloads(name?: string) {
+  const path = name
+    ? `${BASE}/browser/spaces/${encodeURIComponent(name)}/downloads`
+    : `${BASE}/browser/downloads`;
+  return json<{ ok: boolean; downloads?: import("./types").BrowserDownload[]; error?: string }>(path);
+}
+
+export async function getChromeImportStatus() {
+  return json<import("./types").ChromeImportStatus>(`${BASE}/browser/import-chrome`);
+}
+
+export async function importChromeProfile(data: {
+  profile?: string;
+  profile_id?: string;
+  include_extensions?: boolean;
+  force?: boolean;
+}) {
+  return json<{
+    ok: boolean;
+    error?: string;
+    chrome_running?: boolean;
+    from?: string;
+    to?: string;
+    copied?: string[];
+    skipped?: string[];
+    cookies_ok?: boolean;
+  }>(`${BASE}/browser/import-chrome`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(data),
+  });
+}
+
 export async function decideWorkflowRun(
   run_id: string,
   decision: string,

@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, Circle, Loader2, MessageSquare, Pause, RotateCcw, SkipForward, Square, Trash2, Workflow, Wrench } from "lucide-react";
+import { AlertTriangle, Check, Circle, Globe, Loader2, MessageSquare, Pause, RotateCcw, SkipForward, Square, Trash2, Workflow, Wrench } from "lucide-react";
 import type { WorkflowRun } from "@/lib/types";
 import { useGinno } from "@/lib/store";
+import { decideWorkflowRun } from "@/lib/runtime";
 import { RunErrorBox } from "@/components/workflow/RunErrorBox";
 import { HumanInputCard } from "@/components/workflow/HumanInputCard";
 
@@ -96,6 +97,10 @@ export function LiveRunBlock({
     run.status === "paused" && run.pending_interrupt?.kind === "human"
       ? run.pending_interrupt
       : null;
+  const browserHandoff =
+    run.status === "paused" && run.pending_interrupt?.kind === "browser_handoff"
+      ? run.pending_interrupt
+      : null;
   // Manual pause (workflow-ux-redesign #14): user-suspended mid-run; generic
   // 继续/取消 controls, no answer card, no dock badge.
   const manualPaused = run.status === "paused" && run.pending_interrupt?.kind === "manual";
@@ -148,7 +153,7 @@ export function LiveRunBlock({
 
   return (
     <div
-      {...(humanInterrupt ? { "data-waiting-human": "true" } : {})}
+      {...(humanInterrupt || browserHandoff ? { "data-waiting-human": "true" } : {})}
       className={`my-2 rounded-lg border border-violet/40 bg-violet/[0.06] p-3 ${
         isNew ? "anim-slide-in anim-pulse-ring" : ""
       }`}
@@ -158,7 +163,11 @@ export function LiveRunBlock({
         title="打开工作流详情"
         className="mb-2 flex cursor-pointer items-center gap-1.5 text-sm font-medium text-txt hover:text-violet"
       >
-        {humanInterrupt ? <MessageSquare className="h-3.5 w-3.5 text-yellow" /> : <Workflow className="h-3.5 w-3.5 text-violet" />}
+        {humanInterrupt || browserHandoff ? (
+          browserHandoff ? <Globe className="h-3.5 w-3.5 text-yellow" /> : <MessageSquare className="h-3.5 w-3.5 text-yellow" />
+        ) : (
+          <Workflow className="h-3.5 w-3.5 text-violet" />
+        )}
         {run.name || "Workflow"}
         <span className="ml-auto flex items-center gap-1.5 text-xs font-normal" style={{ color: c }}>
           {elapsed !== null && <span className="text-faint">⏱ {fmtElapsed(elapsed)}</span>}
@@ -182,7 +191,9 @@ export function LiveRunBlock({
         {run.steps.map((s) => {
           // The step a paused human node is waiting on (P1): speech-bubble
           // glyph instead of the running spinner.
-          const waitingHuman = !!humanInterrupt && humanInterrupt.node_id === s.id;
+          const waitingHuman =
+            (!!humanInterrupt && humanInterrupt.node_id === s.id) ||
+            (!!browserHandoff && browserHandoff.node_id === s.id);
           return (
             <div key={s.id}>
               <div className="flex items-center gap-2 text-xs">
@@ -220,7 +231,16 @@ export function LiveRunBlock({
         />
       )}
 
-      {(run.status === "running" || (run.status === "paused" && !humanInterrupt)) && (
+      {browserHandoff && (
+        <WorkflowBrowserHandoffCard
+          runId={run.id}
+          space={(browserHandoff.space as string | undefined) ?? undefined}
+          url={(browserHandoff.url as string | undefined) ?? undefined}
+          reason={(browserHandoff.reason as string | undefined) ?? undefined}
+        />
+      )}
+
+      {(run.status === "running" || (run.status === "paused" && !humanInterrupt && !browserHandoff)) && (
         <div className="mt-2 flex gap-2">
           {run.status === "running" && onPause && (
             <button
@@ -290,6 +310,67 @@ export function LiveRunBlock({
           {retryErr && <span className="text-[11px] text-red">{retryErr}</span>}
         </div>
       )}
+    </div>
+  );
+}
+
+function WorkflowBrowserHandoffCard({
+  runId,
+  space,
+  url,
+  reason,
+}: {
+  runId: string;
+  space?: string;
+  url?: string;
+  reason?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const resume = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await decideWorkflowRun(runId, "browser_resume", space ? { space } : undefined);
+      setDone(true);
+    } catch {
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div className="mt-2 flex items-center gap-1.5 rounded-md border border-line bg-card2/40 px-2.5 py-1.5 text-[11px] text-muted">
+        <Check className="h-3 w-3 text-green" /> 已交还浏览器
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-md border-2 border-yellow/40 bg-yellow/[0.05] p-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-yellow">
+        <Globe className="h-3.5 w-3.5" />
+        需要你在浏览器里操作
+        {space ? <span className="font-normal text-faint">· {space}</span> : null}
+      </div>
+      {reason ? <div className="mb-1 text-xs text-txt">{reason}</div> : null}
+      {url ? <div className="mb-2 font-mono text-[11px] text-muted break-all">{url}</div> : null}
+      <div className="flex gap-2">
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent("ginno:open-browser"))}
+          className="rounded-md bg-violet px-2 py-1 text-[11px] font-medium text-white hover:opacity-90"
+        >
+          去浏览器
+        </button>
+        <button
+          onClick={() => void resume()}
+          disabled={busy}
+          className="rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt disabled:opacity-50"
+        >
+          {busy ? "交还中…" : "交还"}
+        </button>
+      </div>
     </div>
   );
 }

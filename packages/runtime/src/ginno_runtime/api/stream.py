@@ -27,7 +27,7 @@ from .. import paths, usage_store
 from .. import server_shared as shared
 from .. import workflows as wf_store
 from ..checkpointer import ABANDONED_TURNS
-from ..graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context
+from ..graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context, skill_extra_tools
 from ..server_shared import (
     _PENDING_RESUME,
     _RUNNING_TURNS,
@@ -186,6 +186,19 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             },
                         )
                     )
+                elif isinstance(value, dict) and value.get("kind") == "browser_handoff":
+                    _PENDING_RESUME.add(session_id)
+                    _RUNNING_TURNS.setdefault(session_id, "")
+                    await ws.send_text(
+                        _ev(
+                            "browser.handoff",
+                            {
+                                "space": value.get("space"),
+                                "url": value.get("url") or "",
+                                "reason": value.get("reason") or "",
+                            },
+                        )
+                    )
     except Exception:
         # introspecting resume state must never stop the socket from opening
         pass
@@ -291,6 +304,16 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     continue
                 _PENDING_RESUME.discard(session_id)
                 decision = msg.get("decision", "deny")
+                # Chat-path takeOver: the human finished operating the real page.
+                if decision == "browser_resume":
+                    space = msg.get("space") or ""
+                    if space:
+                        try:
+                            from ..browser import get_supervisor
+
+                            get_supervisor().take_over(space)
+                        except Exception:
+                            _log.exception("browser take_over on resume failed")
                 # resume under the agent that was active when the interrupt fired
                 resume_agent = session.get("agent_id") or _first_agent_id()
                 resume_config = {
@@ -636,6 +659,9 @@ async def _run_stream(
             mcp_tool_names=list(_live_names["mcp"]),
             all_tool_names=list(_live_names["all"]),
             workspace=str(session.get("workspace") or ""),
+            extra_allow=skill_extra_tools(
+                [skill_name] if skill_name else [], slug
+            ),
         )
 
     # Microcompact — clear stale tool outputs (rung below E3) BEFORE E3
@@ -1168,6 +1194,20 @@ async def _stream_graph(
                                         "from_version": value.get("from_version"),
                                         "diff": value.get("diff", ""),
                                         "rationale": value.get("rationale", ""),
+                                    })
+                                )
+                            elif isinstance(value, dict) and value.get("kind") == "browser_handoff":
+                                saw_interrupt = True
+                                _PENDING_RESUME.add(session_id)
+                                _log.info(
+                                    "turn_interrupt session=%s turn=%s kind=%s space=%s",
+                                    session_id, turn_id, value.get("kind"), value.get("space"),
+                                )
+                                await safe_send(
+                                    emit("browser.handoff", {
+                                        "space": value.get("space"),
+                                        "url": value.get("url") or "",
+                                        "reason": value.get("reason") or "",
                                     })
                                 )
                     elif node_name == "tools":

@@ -49,3 +49,25 @@ export async function notifyNative(n: NativeNotification): Promise<boolean> {
     return false;
   }
 }
+
+/** Tile CSS rect for the CEF hole-punch host (M2). Rust only stores geometry. */
+export interface BrowserTileRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  space?: string | null;
+  visible?: boolean;
+  /** Forward WKWebView hits into the CEF hole. Geometry only — not a Space owner. */
+  passthrough?: boolean;
+}
+
+export async function emitBrowserTile(rect: BrowserTileRect): Promise<boolean> {
+  if (!isDesktop()) return false;
+  try {
+    await emit("ginno:browser-tile", rect);
+    return true;
+  } catch {
+    return false;
+  }
+}

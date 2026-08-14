@@ -119,6 +119,10 @@ class SessionCtx:
     # with F1/F2 until the 2026-08 skill-install incident proved the model
     # cannot improvise file operations without knowing where it is.
     workspace: str = ""
+    # Slash-skill frontmatter tools granted for this turn (e.g. /browse →
+    # browser_*). Empty on ordinary turns. Prefix-cache: only changes when
+    # the user actually invokes a skill.
+    extra_allow: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -215,7 +219,9 @@ def _agent_by_id(agent_id: str | None):
     return lst[0] if lst else None
 
 
-def _agent_allowed_names(agent, all_tool_names: list[str]) -> list[str]:
+def _agent_allowed_names(
+    agent, all_tool_names: list[str], extra_allow: list[str] | None = None
+) -> list[str]:
     """Mirror of graph.tool_allowed for snapshot purposes (keep in sync)."""
     import fnmatch
 
@@ -223,9 +229,10 @@ def _agent_allowed_names(agent, all_tool_names: list[str]) -> list[str]:
     from .tools.render_tools import RENDER_TOOL_NAMES
     from .tools.workflow_tools import WORKFLOW_TOOL_NAMES
 
+    extra = list(extra_allow or [])
     if not agent:
         return list(all_tool_names)
-    allow = agent.tools_allow or ["*"]
+    allow = list(agent.tools_allow or ["*"])
     out: list[str] = []
     for name in all_tool_names:
         if name in RENDER_TOOL_NAMES or name in WORKFLOW_TOOL_NAMES or name in ARTIFACT_TOOL_NAMES:
@@ -233,11 +240,16 @@ def _agent_allowed_names(agent, all_tool_names: list[str]) -> list[str]:
             continue
         if "*" in allow or any(fnmatch.fnmatch(name, p) for p in allow):
             out.append(name)
+            continue
+        if extra and any(fnmatch.fnmatch(name, p) for p in extra):
+            out.append(name)
     return out
 
 
-def _agent_allowed_count(agent, all_tool_names: list[str]) -> int:
-    return len(_agent_allowed_names(agent, all_tool_names))
+def _agent_allowed_count(
+    agent, all_tool_names: list[str], extra_allow: list[str] | None = None
+) -> int:
+    return len(_agent_allowed_names(agent, all_tool_names, extra_allow))
 
 
 class AgentSection:
@@ -255,7 +267,9 @@ class AgentSection:
             "agent_id": agent.id,
             "name": agent.name,
             "prompt_hash": _sha1(agent.system_prompt or ""),
-            "tool_count": _agent_allowed_count(agent, ctx.all_tool_names),
+            "tool_count": _agent_allowed_count(
+                agent, ctx.all_tool_names, ctx.extra_allow
+            ),
         }
 
     def render(self, snap: dict) -> str:
@@ -500,6 +514,75 @@ class GoalSection:
         return " ".join(l for l in lines if l) or None
 
 
+class BrowserSection:
+    """Active Spaces + ownership. Tells the model which Space to reuse."""
+
+    id = "browser"
+
+    def snapshot(self, ctx: SessionCtx) -> dict | None:
+        try:
+            from .browser import get_supervisor
+            from .browser import waiting_human as _wh
+        except Exception:
+            return None
+        try:
+            spaces = get_supervisor().list_spaces()
+        except Exception:
+            return None
+        if not spaces and not _wh(ctx.session_id):
+            return {"spaces": [], "waiting_human": False}
+        slim = [
+            {
+                "name": s.get("name"),
+                "owner": s.get("owner"),
+                "url": s.get("url") or "",
+                "title": s.get("title") or "",
+            }
+            for s in spaces
+        ]
+        return {
+            "spaces": slim,
+            "waiting_human": _wh(ctx.session_id),
+        }
+
+    def render(self, snap: dict) -> str:
+        spaces = snap.get("spaces") or []
+        if not spaces:
+            return (
+                "Embedded browser is available via browser_eval. No Space is open yet. "
+                "For login / click / SPA work, call useOrCreateTaskSpace first."
+            )
+        lines = ["<browser>"]
+        for s in spaces:
+            lines.append(
+                f"- space={s.get('name')!r} owner={s.get('owner')} "
+                f"url={s.get('url') or ''} title={s.get('title') or ''}"
+            )
+        if snap.get("waiting_human"):
+            lines.append(
+                "<guidance>A Space is agentDelegatedToUser — do NOT eval/click "
+                "until the human returns control. On resume, takeOver the SAME name.</guidance>"
+            )
+        else:
+            lines.append(
+                "<guidance>Reuse an existing Space of the same name. Never open a "
+                "new Space to continue the same task. complete({keep}) is its own turn.</guidance>"
+            )
+        lines.append("</browser>")
+        return "\n".join(lines)
+
+    def update_text(self, old: dict, new: dict) -> str | None:
+        if (old or {}).get("waiting_human") != (new or {}).get("waiting_human"):
+            if new.get("waiting_human"):
+                return "浏览器已交给你操作（handoff）。Agent 工具已硬停。"
+            return "浏览器已交还 Agent（takeOver）。"
+        old_n = {s.get("name") for s in (old or {}).get("spaces") or []}
+        new_n = {s.get("name") for s in (new or {}).get("spaces") or []}
+        if old_n != new_n:
+            return f"浏览器 Space 已更新：{', '.join(sorted(new_n)) or '（无）'}"
+        return None
+
+
 SECTIONS: list[Any] = [
     AgentSection(),
     GoalSection(),
@@ -508,6 +591,7 @@ SECTIONS: list[Any] = [
     SkillsSection(),
     MemorySection(),
     McpSection(),
+    BrowserSection(),
 ]
 
 

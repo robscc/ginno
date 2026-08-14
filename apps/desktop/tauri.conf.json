@@ -17,6 +17,7 @@
         "height": 820,
         "minWidth": 900,
         "minHeight": 600,
+        "backgroundColor": "#0a0a0f",
         "dragDropEnabled": true,
         "visible": false
       }
@@ -31,7 +32,12 @@
     "icon": ["icons/icon.icns", "icons/icon.png"],
     "resources": ["resources/runtime"],
     "macOS": {
-      "signingIdentity": "Ginno Local Code Signing"
+      "signingIdentity": "Ginno Local Code Signing",
+      "entitlements": "entitlements.plist",
+      "frameworks": [
+        "Frameworks/Chromium Embedded Framework.framework",
+        "Frameworks/libginno_cef.dylib"
+      ]
     }
   }
 }

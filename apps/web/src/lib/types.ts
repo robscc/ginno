@@ -12,6 +12,8 @@ export interface Goal {
   agent_id?: string | null;
   created_at: number;
   updated_at: number;
+  /** Live hint from the sidecar when a Space is waiting on the human. */
+  browser_state?: "waiting_human" | string | null;
 }
 
 export interface Todo {
@@ -172,11 +174,72 @@ export interface WorkflowRun {
   // the run transitions to "paused". kind "human" → show the question card;
   // "manual" → user pause (#14), generic 继续/取消 controls.
   pending_interrupt?: {
-    kind?: string; // "human" | "manual"
+    kind?: string; // "human" | "manual" | "browser_handoff"
     node_id?: string | null;
     question?: string | null;
+    space?: string;
+    url?: string;
+    reason?: string;
     [k: string]: unknown;
   } | null;
+}
+
+export type BrowserOwner = "agent" | "agentDelegatedToUser" | "user";
+
+export interface BrowserSpace {
+  name: string;
+  owner: BrowserOwner;
+  url?: string;
+  title?: string;
+  bound_session_id?: string | null;
+  bound_run_id?: string | null;
+  reason?: string;
+  keep?: boolean;
+  headed?: boolean;
+  pending_risky_url?: string;
+  tabs?: string[];
+}
+
+export interface BrowserTab {
+  id: string;
+  url?: string;
+  title?: string;
+  active?: boolean;
+}
+
+export interface BrowserDownload {
+  id: string;
+  space?: string;
+  url?: string;
+  filename?: string;
+  path?: string;
+  state?: string;
+  bytes?: number;
+  ts?: number;
+}
+
+export interface BrowserState {
+  ok: boolean;
+  active_space?: string | null;
+  url?: string;
+  focus?: string | null;
+  spaces: BrowserSpace[];
+  waiting_human?: boolean;
+  headed?: boolean;
+  engine?: "idle" | "fake" | "chrome" | "cef" | string;
+  engine_error?: string | null;
+  error?: string;
+}
+
+export interface ChromeImportStatus {
+  ok?: boolean;
+  chrome_user_data?: string;
+  chrome_running?: boolean;
+  profiles?: Array<{ id: string; path?: string; has_cookies?: boolean; label?: string }>;
+  ginno_profile?: string;
+  imported?: boolean;
+  imported_from?: string;
+  error?: string;
 }
 
 /** One execution event from ``runs/<id>.events.jsonl`` (GET /workflow_runs/{id}/events).

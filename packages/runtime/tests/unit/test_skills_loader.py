@@ -87,6 +87,17 @@ def test_builtin_todo_skill_always_present(isolated_home):
     assert "todo_list" in (s.allowed_tools or []) or "todo" in s.body
 
 
+def test_builtin_browse_skill_always_present(isolated_home):
+    s = SkillLoader().get("browse")
+    assert s is not None and s.builtin is True
+    assert "browser_eval" in (s.allowed_tools or [])
+    assert "browser_screenshot" in (s.allowed_tools or [])
+    assert "handOffTaskSpace" in s.body
+    assert "about:blank" in s.body
+    assert "takeOverTaskSpace" in s.body
+    assert "mcp_playwright" in s.body
+
+
 def test_global_copy_overrides_builtin(isolated_home):
     _write_skill(
         paths.global_skills_dir(),
@@ -101,3 +112,4 @@ def test_global_copy_overrides_builtin(isolated_home):
 def test_builtin_skill_dir_resolves(isolated_home):
     d = paths.builtin_skills_dir()
     assert (d / "todo" / "SKILL.md").exists()
+    assert (d / "browse" / "SKILL.md").exists()

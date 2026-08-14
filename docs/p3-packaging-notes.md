@@ -2,10 +2,10 @@
 
 ## Build artifacts
 
-- `apps/desktop/target/release/bundle/macos/Ginno.app` — Tauri shell + bundled `ginno-runtime` (a PyInstaller **onedir** bundle, which also serves the web UI)
+- `apps/desktop/target/release/bundle/macos/Ginno.app` — Tauri shell + bundled `ginno-runtime` (a PyInstaller **onedir** bundle, which also serves the web UI) + `Contents/Frameworks/Chromium Embedded Framework.framework` (Spotify CEF minimal, `scripts/vendor-cef.sh`) + four `Ginno Helper.app` + `libginno_cef.dylib` (`scripts/build-cef-host.sh`, stamped by `scripts/stage-cef-bundle.sh`)
 - `apps/desktop/target/release/bundle/dmg/Ginno_0.1.0_aarch64.dmg` — installer
 
-`make app` runs the whole pipeline; the steps below are what it does.
+`make app` runs the whole pipeline (including `make cef`); the steps below are what it does.
 
 ## Reproduce
 
@@ -25,6 +25,8 @@ uv run --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-ru
   --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
   --collect-all docx --collect-all pptx --collect-all pypdf \
   --add-data "${OUT}:web_out" \
+  --add-data "src/ginno_runtime/skills/builtin:ginno_runtime/skills/builtin" \
+  --add-data "src/ginno_runtime/browser/fixtures:ginno_runtime/browser/fixtures" \
   bin/ginno-runtime.py
 # → dist/ginno-runtime/ (executable + _internal/ with the .so/.pyc payload)
 #

@@ -16,7 +16,7 @@ pytestmark = pytest.mark.unit
 
 def test_builtin_types_registered_with_aliases():
     types = known_types()
-    for t in ("agent", "branch", "loop", "llm", "pass", "human"):
+    for t in ("agent", "branch", "loop", "llm", "pass", "human", "browser"):
         assert t in types
     # step is an alias of agent; noop of pass
     assert get_node("step") is AgentNode

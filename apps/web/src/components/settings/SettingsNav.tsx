@@ -14,6 +14,7 @@ const MAIN: Item[] = [
   { id: "synthesis-quality", label: "总结质量", icon: TrendingUp, color: "#a78bfa" },
   { id: "knowledge", label: "知识库", icon: BookOpen, color: "#60a5fa" },
   { id: "web", label: "Web 搜索", icon: Globe, color: "#3b82f6" },
+  { id: "browser", label: "浏览器", icon: Globe, color: "#a78bfa" },
   { id: "session-files", label: "会话文件", icon: FolderOpen, color: "#38bdf8" },
   { id: "usage", label: "用量统计", icon: BarChart3, color: "#2dd4bf" },
 ];

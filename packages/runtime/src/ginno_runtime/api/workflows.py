@@ -139,7 +139,7 @@ async def doctor_workflow_endpoint(wf_id: str) -> dict:
 # ---- P6: synthesize a workflow DSL draft from a session's conversation ----
 # Bump on any change to the prompt above so synthesis cases can be grouped by
 # the prompt that produced them (quality-plan §3.2 A/B).
-SYNTH_PROMPT_VERSION = "synth-3"
+SYNTH_PROMPT_VERSION = "synth-4"
 _SYNTHESIZE_PROMPT = (
     "You are a workflow synthesizer. Given a conversation trace between a user and "
     "an agent (including tool calls), produce a reusable workflow DSL that captures "
@@ -153,13 +153,21 @@ _SYNTHESIZE_PROMPT = (
     "Node types:\n"
     '- step: {"id","type":"step","agent":"dev|research|writer","goal":"<instruction>"}\n'
     '- branch: {"id","type":"branch","cases":[{"when":"<expr>","then":"<id>"}],"default":"<id>"}\n'
-    '- loop: {"id","type":"loop","over":"<expr e.g. context.items>","as":"<var>","body":"<body id>","max_iters":<int>}\n\n'
+    '- loop: {"id","type":"loop","over":"<expr e.g. context.items>","as":"<var>","body":"<body id>","max_iters":<int>}\n'
+    '- browser: {"id","type":"browser","action":"eval|snapshot|handoff|complete","space":"<3-6 words>","code":"<ego helpers>","url":"<optional>","keep":true}\n\n'
     "Rules:\n"
     "- `entry` MUST be an existing node id; every edge endpoint MUST exist.\n"
     "- A loop's body returns to the loop head automatically: do NOT add an edge FROM the body; reference the loop item via {{<as>}}.\n"
     "- A branch routes via cases/default: do NOT add plain edges from a branch.\n"
     "- Put any per-run inputs the conversation revealed into context.schema + context.initial.\n"
     "- Default to a simple linear step chain; only add branch/loop when the trace clearly shows conditionals or repetition.\n"
+    "- When the trace uses /browse, browser_eval, browser_snapshot, browser_handoff or "
+    "logged-in page work, emit type:\"browser\" nodes (NOT a step that just says "
+    "'use playwright'). action eval does the work script; login/captcha/payment is a "
+    "separate action:\"handoff\" node; close/keep the Space with action:\"complete\" "
+    "(complete MUST be its own node — never mix completeTaskSpace into the eval code). "
+    "Reuse the same space name across the run. Prefer the logged-in embedded browser "
+    "over mcp_playwright_* (that one is anonymous headless).\n"
     "- Agents: dev (code/actions), research (read/summarise), writer (draft text).\n"
     "- Any per-run placeholder you use in goal/prompt fields ({{variable_name}}) MUST also appear "
     'in context.schema.properties with type:"string" and in context.initial as "" '
@@ -574,6 +582,37 @@ def _touch_run(run_id: str) -> None:
         wf_storemod._write_json(wf_storemod._run_path(run_id), run)
 
 
+def _latest_session_id() -> str | None:
+    """Most recently updated session across projects (design §9.6 headless bind)."""
+    from ..session_meta import _session_meta_list
+
+    best: tuple[float, str] | None = None
+    for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
+        slug = slug_dir.parent.parent.name
+        for m in _session_meta_list(slug):
+            sid = m.get("id")
+            if not sid:
+                continue
+            ts = float(m.get("updated") or m.get("created") or 0)
+            if best is None or ts > best[0]:
+                best = (ts, sid)
+    return best[1] if best else None
+
+
+def _bind_headless_browser_handoff(run_id: str, _interrupt: dict) -> str | None:
+    """Attach a headless run to the latest session so handoff has a surface."""
+    sid = _latest_session_id()
+    if not sid:
+        return None
+    run = wf_store.get_run(run_id)
+    if run:
+        run["present_in_session_id"] = sid
+        run["session_id"] = run.get("session_id") or sid
+        run["updated"] = time.time()
+        wf_storemod._write_json(wf_storemod._run_path(run_id), run)
+    return sid
+
+
 def _set_run_pending_interrupt(run_id: str, payload: dict | None) -> None:
     """Stamp/clear ``pending_interrupt`` on the run JSON (workflow-ux-redesign
     P1). Lets any UI (panel, dock badge) tell WHY a run is paused — a human
@@ -681,6 +720,34 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
             # step would stay "pending" forever — mark it running while waiting.
             if nid in node_to_step:
                 wf_store.update_step(run_id, node_to_step[nid], "running")
+            # Design §9.6: a headless run (no present_in_session_id) that hits a
+            # browser handoff must still have a surface — bind the latest session
+            # so the pane / HandoffCard can open. Never leave an interrupt with
+            # no picture.
+            if last_interrupt.get("kind") == "browser_handoff" and not present_in:
+                present_in = _bind_headless_browser_handoff(run_id, last_interrupt)
+                if present_in:
+                    await _push_session_event(
+                        present_in,
+                        "run.bind",
+                        {
+                            "run_id": run_id,
+                            "workflow_id": wf.get("id"),
+                            "present_in_session_id": present_in,
+                        },
+                    )
+                    await _push_session_event(
+                        present_in,
+                        "browser.handoff",
+                        {
+                            "space": last_interrupt.get("space"),
+                            "url": last_interrupt.get("url") or "",
+                            "reason": last_interrupt.get("reason")
+                            or last_interrupt.get("question")
+                            or "",
+                            "run_id": run_id,
+                        },
+                    )
         elif kind == "resume":
             last_interrupt = None
             _set_run_pending_interrupt(run_id, None)
@@ -1017,7 +1084,17 @@ async def resume_workflow_run_endpoint(run_id: str, data: dict) -> dict:
 async def decide_workflow_run_endpoint(run_id: str, data: dict) -> dict:
     """Supervisor/human decision = resume with {"decision","context_patch"}."""
     data = data or {}
-    value = {"decision": data.get("decision"), "context_patch": data.get("context_patch") or {}}
+    decision = data.get("decision")
+    if decision == "browser_resume":
+        space = data.get("space") or (data.get("context_patch") or {}).get("space")
+        if space:
+            try:
+                from ..browser import get_supervisor
+
+                get_supervisor().take_over(space)
+            except Exception:
+                _log.exception("workflow browser take_over failed")
+    value = {"decision": decision, "context_patch": data.get("context_patch") or {}}
     return await resume_workflow_run_endpoint(run_id, value)
 
 

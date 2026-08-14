@@ -53,6 +53,24 @@ def test_goal_lifecycle(create_session, client):
     assert client.get(f"/api/sessions/{sid}/goal").json()["goal"] is None
 
 
+def test_goal_browser_state_waiting_human(create_session, client):
+    from ginno_runtime.browser import get_supervisor, reset_supervisor
+    from ginno_runtime.browser.helpers import BrowserHandoff
+
+    sid = create_session([script(text="ok")])
+    client.put(f"/api/sessions/{sid}/goal", json={"objective": "login somewhere"})
+    reset_supervisor()
+    sup = get_supervisor()
+    rec = sup.use_or_create("inbox", session_id=sid)
+    try:
+        sup.hand_off(rec["name"], reason="need login")
+    except BrowserHandoff:
+        pass
+    goal = client.get(f"/api/sessions/{sid}/goal").json()["goal"]
+    assert goal["browser_state"] == "waiting_human"
+    reset_supervisor()
+
+
 def test_goal_validation(create_session, client):
     sid = create_session([script(text="ok")])
     r = client.put(f"/api/sessions/{sid}/goal", json={"objective": "   "})

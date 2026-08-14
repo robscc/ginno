@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-NODE_TYPES_V1 = {"step", "branch", "loop", "human"}
+NODE_TYPES_V1 = {"step", "branch", "loop", "human", "browser"}
 NODE_TYPES_ALL = NODE_TYPES_V1 | {"subflow"}
 
 

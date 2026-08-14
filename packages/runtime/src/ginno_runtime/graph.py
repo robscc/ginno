@@ -38,6 +38,7 @@ from .tools.workflow_tools import (
 from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 from .tools.document_tools import ALL_DOCUMENT_TOOLS
 from .tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools
+from .tools.browser_tools import BROWSER_TOOL_NAMES, build_browser_tools
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -53,10 +54,13 @@ def _resolve_agent(agent_id: str | None):
     return lst[0] if lst else None
 
 
-def tool_allowed(agent, tool_name: str) -> bool:
+def tool_allowed(agent, tool_name: str, extra_allow: list[str] | None = None) -> bool:
     if tool_name in RENDER_TOOL_NAMES:
         return True  # structured-output tools are available to every agent
     if tool_name in WORKFLOW_TOOL_NAMES or tool_name in ARTIFACT_TOOL_NAMES:
+        return True
+    extra = extra_allow or []
+    if extra and any(fnmatch.fnmatch(tool_name, p) for p in extra):
         return True
     if not agent:
         return True
@@ -66,8 +70,34 @@ def tool_allowed(agent, tool_name: str) -> bool:
     return any(fnmatch.fnmatch(tool_name, p) for p in allow)
 
 
-def _allowed_tool_names(agent, all_tools) -> list[str]:
-    return [t.name for t in all_tools if tool_allowed(agent, t.name)]
+def _allowed_tool_names(agent, all_tools, extra_allow: list[str] | None = None) -> list[str]:
+    return [t.name for t in all_tools if tool_allowed(agent, t.name, extra_allow)]
+
+
+def skill_extra_tools(skill_names: list[str] | None, project_slug: str | None = None) -> list[str]:
+    """Frontmatter ``tools:`` of slash-invoked skills — granted for this turn.
+
+    Without this, ``/browse`` only injects SKILL.md text and analyst (no
+    ``browser_*`` on tools_allow) silently cannot open a site.
+    """
+    names = [n for n in (skill_names or []) if n]
+    if not names:
+        return []
+    from .skills.loader import SkillLoader
+
+    loader = SkillLoader(project_slug=project_slug)
+    extra: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        skill = loader.get(name)
+        if not skill:
+            continue
+        for pat in skill.allowed_tools or []:
+            p = str(pat).strip()
+            if p and p not in seen:
+                seen.add(p)
+                extra.append(p)
+    return extra
 
 
 def build_stable_system(
@@ -78,6 +108,7 @@ def build_stable_system(
     mcp_tool_names: list[str] | None = None,
     session_id: str = "",
     workspace: str = "",
+    extra_allow: list[str] | None = None,
 ) -> str:
     """The STABLE system layer (plan B2): persona + WorldState sections +
     tool guidance. Contains nothing that changes per turn (no clock time, no
@@ -100,10 +131,11 @@ def build_stable_system(
         all_tool_names=[t.name for t in all_tools],
         agent=agent,
         workspace=workspace,
+        extra_allow=list(extra_allow or []),
     )
     world = WorldState(ctx)
     parts = [persona, world.render_system()]
-    allowed = _allowed_tool_names(agent, all_tools)
+    allowed = _allowed_tool_names(agent, all_tools, extra_allow)
     parts.append(
         "Tools available to you in this role: "
         + (", ".join(allowed) or "(none — answer from knowledge only)")
@@ -162,6 +194,16 @@ def build_stable_system(
             "workflow_step; the right-panel Workflow tab shows live progress. After "
             "workflow_run (note the run_id and step ids it returns), mark each step with "
             "workflow_step(run_id, step_id, 'done') as you complete it."
+        )
+    if any(n.startswith("browser_") for n in allowed):
+        parts.append(
+            "Embedded browser: for login walls, clicks, SPAs, or 'open this site', use "
+            "browser_eval (ego-browser helpers: useOrCreateTaskSpace, openOrReuseTab, "
+            "snapshotText, click('@N'), fillInput, handOffTaskSpace, takeOverTaskSpace, "
+            "pageInfo, cliLog). Do NOT use web_fetch or mcp_playwright_* as the logged-in "
+            "browser. After a handoff resumes, takeOver the SAME space name — never open "
+            "a new one. completeTaskSpace({keep}) is a separate turn/node, never mixed "
+            "into the work script."
         )
     return "\n".join(p for p in parts if p)
 
@@ -317,6 +359,10 @@ def _read_global_memory() -> str:
     return text
 
 
+def _turn_extra_allow(state: AgentState) -> list[str]:
+    return skill_extra_tools(state.get("active_skills") or [], state.get("project_slug") or None)
+
+
 def _turn_agent_id(state: AgentState, config) -> str | None:
     # config['configurable'] is injected reliably every step (including after a
     # permission interrupt resume), unlike the input dict on a continued thread.
@@ -351,7 +397,8 @@ def _system_message(sys_text: str, model) -> SystemMessage:
 def agent_node_factory(model, all_tools):
     async def agent_node(state: AgentState, config=None) -> dict:
         agent = _resolve_agent(_turn_agent_id(state, config))
-        allowed = [t for t in all_tools if tool_allowed(agent, t.name)]
+        extra = _turn_extra_allow(state)
+        allowed = [t for t in all_tools if tool_allowed(agent, t.name, extra)]
         bound = (
             model.bind_tools(allowed)
             if allowed and hasattr(model, "bind_tools")
@@ -368,6 +415,7 @@ def agent_node_factory(model, all_tools):
                 mcp_tool_names=state.get("mcp_tool_names") or [],
                 session_id=((config or {}).get("configurable") or {}).get("thread_id", ""),
                 workspace=state.get("workspace", "") or "",
+                extra_allow=extra,
             ),
             model,
         )
@@ -391,6 +439,7 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
         # With no hooks configured (the default) this means every tool runs freely.
         bypass = is_bypass_permissions()
         agent = _resolve_agent(_turn_agent_id(state, config))
+        extra = _turn_extra_allow(state)
         pending = state.get("pending_tool_calls") or []
         for tc in pending:
             name = tc.get("name", "")
@@ -401,7 +450,7 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                 continue
 
             # 0) per-agent tools_allow enforcement (skipped under bypass)
-            if not bypass and not tool_allowed(agent, name):
+            if not bypass and not tool_allowed(agent, name, extra):
                 return Command(
                     goto="agent",
                     update={
@@ -436,6 +485,7 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                 or name in ARTIFACT_TOOL_NAMES
                 or name in WORKFLOW_DEV_TOOL_NAMES
                 or name in SKILL_TOOL_NAMES
+                or name in BROWSER_TOOL_NAMES
             ):
                 continue
 
@@ -522,6 +572,9 @@ def build_all_tools(
         # Web search/fetch (citations-design.md §4.2) — [] when disabled in
         # settings; session_id binds citation source registration.
         + build_web_tools(session_id)
+        # Embedded browser (docs/browser-embed-design.md §5) — always present;
+        # FakeEngine is used under pytest so unit/api tests never spawn Chrome.
+        + build_browser_tools(session_id)
     )
 
 

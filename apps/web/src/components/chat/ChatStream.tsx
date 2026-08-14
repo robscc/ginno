@@ -15,6 +15,7 @@ import { DiffView } from "@/components/workflow/DiffView";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
+import { HandoffCard } from "@/components/browser/HandoffCard";
 import { ComposerMenu } from "@/components/chat/ComposerMenu";
 import {
   applySelection,
@@ -342,14 +343,20 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
 
 export function ChatStream({
   session,
+  compact,
   onRunningChange,
   onUsageChange,
   onOpenGoal,
+  onBrowserHandoff,
+  onOpenBrowser,
 }: {
   session: SessionMeta | null;
+  compact?: boolean;
   onRunningChange?: (b: boolean) => void;
   onUsageChange?: (u: SessionUsage) => void;
   onOpenGoal?: () => void;
+  onBrowserHandoff?: (h: { space?: string; url?: string; reason?: string } | null) => void;
+  onOpenBrowser?: () => void;
 }) {
   const g = useGinno();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -362,6 +369,7 @@ export function ChatStream({
   const [target, setTarget] = useState<string | null>(null);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [propose, setPropose] = useState<VersionPropose | null>(null);
+  const [handoff, setHandoff] = useState<{ space?: string; url?: string; reason?: string } | null>(null);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
@@ -518,6 +526,7 @@ export function ChatStream({
   const statusRef        = useRef<Record<string, "connecting" | "live" | "reconnecting" | "offline">>({});
   const permsRef         = useRef<Record<string, PermissionPrompt | null>>({});
   const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
+  const handoffRef       = useRef<Record<string, { space?: string; url?: string; reason?: string } | null>>({});
   const busyBySessionRef = useRef<Record<string, boolean>>({});
   const streamAgentRef   = useRef<Record<string, string | null>>({});
   // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
@@ -590,6 +599,7 @@ export function ChatStream({
     setWsStatus(statusRef.current[sid] ?? "connecting");
     setPermission(permsRef.current[sid] ?? null);
     setPropose(proposeRef.current[sid] ?? null);
+    setHandoff(handoffRef.current[sid] ?? null);
     setStreamAgent(streamAgentRef.current[sid] ?? null);
   };
 
@@ -609,6 +619,7 @@ export function ChatStream({
         delete socketsRef.current[id];    delete storeRef.current[id];
         delete liveBySessionRef.current[id]; delete statusRef.current[id];
         delete permsRef.current[id];      delete proposeRef.current[id];
+        delete handoffRef.current[id];
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
         delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
@@ -781,7 +792,7 @@ export function ChatStream({
   }, [session?.id]);
 
   const running =
-    liveId !== null || !!permission || !!propose || messages.some((m) => hasPendingTool(m.blocks));
+    liveId !== null || !!permission || !!propose || !!handoff || messages.some((m) => hasPendingTool(m.blocks));
   useEffect(() => {
     onRunningChange?.(running);
   }, [running, onRunningChange]);
@@ -836,6 +847,17 @@ export function ChatStream({
     };
     window.addEventListener("ginno:focus-latest", onFocusLatest);
     return () => window.removeEventListener("ginno:focus-latest", onFocusLatest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // BrowserPane 交还：同一条 permission_response / browser_resume 通道。
+  useEffect(() => {
+    const onResume = (e: Event) => {
+      const space = (e as CustomEvent<{ space?: string }>).detail?.space;
+      respondBrowserResume(space);
+    };
+    window.addEventListener("ginno:browser-resume", onResume);
+    return () => window.removeEventListener("ginno:browser-resume", onResume);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -936,6 +958,30 @@ export function ChatStream({
           diff: (ev.diff as string) ?? "",
           rationale: (ev.rationale as string) ?? "",
         };
+        break;
+      case "browser.handoff": {
+        const h = {
+          space: ev.space as string | undefined,
+          url: (ev.url as string) || "",
+          reason: (ev.reason as string) || "",
+        };
+        handoffRef.current[sid] = h;
+        onBrowserHandoff?.(h);
+        break;
+      }
+      case "browser.space":
+        if (ev.owner === "agentDelegatedToUser") {
+          const h = {
+            space: ev.name as string | undefined,
+            url: (ev.url as string) || "",
+            reason: (ev.reason as string) || "",
+          };
+          handoffRef.current[sid] = h;
+          onBrowserHandoff?.(h);
+        } else if (ev.owner === "agent") {
+          // Agent started browsing — surface the embedded browser.
+          onOpenBrowser?.();
+        }
         break;
       case "todos.changed":
         g.reloadTodos();
@@ -2002,6 +2048,22 @@ export function ChatStream({
     }
   }
 
+  function respondBrowserResume(space?: string) {
+    const sid = curSessionIdRef.current;
+    if (!sid) return;
+    const name = space || handoffRef.current[sid]?.space || handoff?.space;
+    try {
+      socketsRef.current[sid]?.send(
+        JSON.stringify({ type: "permission_response", decision: "browser_resume", space: name }),
+      );
+    } catch {
+      /* socket gone — reconnect re-emits browser.handoff if still pending */
+    }
+    handoffRef.current[sid] = null;
+    setHandoff(null);
+    onBrowserHandoff?.(null);
+  }
+
   // Drag the composer's top handle to resize the input area. Auto-grow (capped)
   // still applies while composerH is undefined; dragging switches to a fixed,
   // scrollable height. The flex layout (message list = flex-1) keeps the overall
@@ -2387,13 +2449,15 @@ export function ChatStream({
                 {c.label}
               </button>
             ))}
-            <button
-              onClick={() => onOpenGoal?.()}
-              className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
-            >
-              <span>🎯</span>
-              设定一个长程目标
-            </button>
+            {!compact && (
+              <button
+                onClick={() => onOpenGoal?.()}
+                className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
+              >
+                <span>🎯</span>
+                设定一个长程目标
+              </button>
+            )}
           </div>
           <div className="mt-6 text-[11px] text-faint">
             支持拖入 Excel / Word / PPT / PDF · / 命令 · @ 提及产物 / 智能体 / 工作流 / 记忆
@@ -2429,9 +2493,9 @@ export function ChatStream({
           const el = e.currentTarget;
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        className="flex-1 overflow-y-auto px-6 py-6"
+        className={`flex-1 overflow-y-auto ${compact ? "px-3 py-3" : "px-6 py-6"}`}
       >
-        <div className="mx-auto flex max-w-3xl flex-col gap-5">
+        <div className={`mx-auto flex flex-col gap-5 ${compact ? "max-w-none" : "max-w-3xl"}`}>
           {messages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
               开始对话吧，Agent 会使用工具完成任务，并可能就权限询问你。
@@ -2588,6 +2652,16 @@ export function ChatStream({
 
       {propose && <ProposeCard propose={propose} onDecide={respondPropose} />}
 
+      {handoff && (
+        <HandoffCard
+          space={handoff.space}
+          url={handoff.url}
+          reason={handoff.reason}
+          onGo={() => onOpenBrowser?.()}
+          onReturn={() => respondBrowserResume(handoff.space)}
+        />
+      )}
+
       {proposeResult && (
         <div className="mx-auto w-full max-w-3xl px-6">
           <div
@@ -2624,8 +2698,9 @@ export function ChatStream({
       )}
 
       {/* composer */}
-      <div className="px-6 pb-5 pt-2">
-        <div className="mx-auto max-w-3xl">
+      <div className={`${compact ? "px-3" : "px-6"} pb-5 pt-2`}>
+        <div className={`mx-auto ${compact ? "max-w-none" : "max-w-3xl"}`}>
+          {!compact && (
           <div className="mb-2 flex flex-wrap gap-2">
             {g.agents.map((a) => {
               const sel = (target ?? session?.agent_id) === a.id;
@@ -2724,6 +2799,7 @@ export function ChatStream({
               )}
             </div>
           </div>
+          )}
 
           <div key="composer-session">{composerBoxEl}</div>
         </div>

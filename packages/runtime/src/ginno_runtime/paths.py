@@ -119,11 +119,11 @@ _DEFAULT_SETTINGS = {
     },
 }
 
-# Default MCP servers shipped with Ginno. Playwright gives every agent the ability
-# to operate a real (headless) browser — navigate / screenshot / snapshot — which
-# powers web end-to-end flows (e.g. open GitHub Trending, screenshot, analyze).
-# `--browser chrome` reuses an installed Google Chrome so no Chromium download is
-# needed; falls back gracefully (server skipped) when no browser is available.
+# Default MCP servers shipped with Ginno. Playwright is the *anonymous headless*
+# browser (no cookies / login). Logged-in / handoff work uses the embedded
+# browser (browser_eval + ~/.ginno/browser/profile). `--browser chrome` reuses
+# an installed Google Chrome so no Chromium download is needed; falls back
+# gracefully (server skipped) when no browser is available.
 _DEFAULT_MCP = {
     "mcpServers": {
         "playwright": {
@@ -208,6 +208,7 @@ def ensure_layout() -> None:
         "workflows",
         "knowledge",
         "usage",
+        "browser",
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
 

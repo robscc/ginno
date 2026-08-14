@@ -48,12 +48,18 @@ export function TopBar({
   running,
   modelLabel,
   usage,
+  browserOpen,
+  onToggleBrowser,
+  browserHandoff,
 }: {
   session: SessionMeta | null;
   agent: AgentConfig | null;
   running: boolean;
   modelLabel: string;
   usage?: SessionUsage | null;
+  browserOpen?: boolean;
+  onToggleBrowser?: () => void;
+  browserHandoff?: boolean;
 }) {
   const router = useRouter();
   const g = useGinno();
@@ -61,13 +67,13 @@ export function TopBar({
   const hex = agentHex(agent?.color);
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line px-5">
+    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-base px-5">
       <h1 className="text-[15px] font-semibold tracking-tight text-txt">
         {session?.title || "New Session"}
       </h1>
       <SessionIdChip sessionId={session?.id} />
 
-      {agent && (
+      {!browserOpen && agent && (
         <span className="pill border border-line2 bg-card text-txt">
           <span className="flex h-3.5 w-3.5 items-center justify-center" style={{ color: hex }}>
             <Icon name={agent.icon} className="h-3.5 w-3.5" />
@@ -90,7 +96,24 @@ export function TopBar({
         {running ? "Running" : "Idle"}
       </span>
 
-      <GoalChip sessionId={session?.id ?? null} />
+      {!browserOpen && <GoalChip sessionId={session?.id ?? null} />}
+
+      {onToggleBrowser && (
+        <button
+          onClick={onToggleBrowser}
+          className={`pill border ${
+            browserHandoff
+              ? "border-yellow/50 bg-yellow/15 text-yellow"
+              : browserOpen
+                ? "border-violet/40 bg-violet/10 text-violet"
+                : "border-line2 bg-card text-muted hover:text-txt"
+          }`}
+          title={browserOpen ? "收起浏览器（⌘.）" : "打开内嵌浏览器（⌘.）"}
+        >
+          <Globe className="h-3 w-3" />
+          {browserHandoff ? "需要你 · 浏览器" : "浏览器"}
+        </button>
+      )}
 
       <div className="ml-auto flex items-center gap-2">
         {usage && usage.calls > 0 && (

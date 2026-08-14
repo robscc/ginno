@@ -40,6 +40,10 @@ export function McpSettings() {
       <p className="mt-1 text-sm text-muted">
         已连接 {info.servers.length} server(s)，{info.tools.length} tool(s)。编辑 mcp.json 后保存并重载。
       </p>
+      <p className="mt-2 rounded-lg border border-line/60 bg-base/40 px-3 py-2 text-xs text-muted">
+        Playwright MCP（mcp_playwright_*）是<strong className="text-yellow"> 匿名无头</strong>
+        浏览器，没有你的登录态。已登录站点、接管、handoff 请用内嵌浏览器（设置 → 浏览器 / browser_eval）。
+      </p>
       <textarea
         className="field mt-4 font-mono text-xs"
         rows={14}

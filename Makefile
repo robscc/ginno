@@ -34,12 +34,12 @@ RUNTIME := $(ROOT)/packages/runtime
 # Contents/Resources/resources/runtime/ and lib.rs launches the executable.
 RUNTIME_RES := $(ROOT)/apps/desktop/resources/runtime
 
-.PHONY: all app sidecar runtime web clean help e2e-ui
+.PHONY: all app sidecar runtime web cef clean help e2e-ui
 
 all: app
 
-## app: full rebuild — web + runtime bundle + Tauri desktop app (+ dmg)
-app: sidecar
+## app: full rebuild — web + runtime bundle + CEF Frameworks/Helpers + Tauri desktop app (+ dmg)
+app: sidecar cef
 	@# Unlock the dedicated codesign keychain (locked after sleep/reboot). It
 	@# holds the self-signed "Ginno Local Code Signing" identity that keeps a
 	@# stable designated requirement across rebuilds, so macOS TCC grants
@@ -57,10 +57,28 @@ app: sidecar
 	  exit 1; \
 	fi
 	@echo "✅ Code signature OK (not linker-signed)"
+	@$(ROOT)/scripts/stage-cef-bundle.sh "$(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
+	@fw="$(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app/Contents/Frameworks/Chromium Embedded Framework.framework"; \
+	if [ ! -d "$$fw" ]; then \
+	  echo "❌ CEF framework missing at $$fw"; \
+	  exit 1; \
+	fi
+	@helper="$(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app/Contents/Frameworks/Ginno Helper.app"; \
+	if [ ! -d "$$helper" ]; then \
+	  echo "❌ Ginno Helper.app missing at $$helper"; \
+	  exit 1; \
+	fi
+	@echo "✅ CEF Frameworks + Helper.app in Contents/Frameworks"
 	@echo ""
 	@echo "✅ Built:"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/dmg/"
+
+## cef: fetch Spotify CEF minimal, compile Helper.app + libginno_cef.dylib
+cef:
+	$(ROOT)/scripts/vendor-cef.sh
+	$(ROOT)/scripts/build-cef-host.sh
+	@echo "✅ CEF → $(ROOT)/apps/desktop/Frameworks"
 
 ## sidecar: stage the runtime onedir bundle as a Tauri resource
 sidecar: runtime
@@ -84,6 +102,8 @@ runtime: web
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
 	  --collect-all docx --collect-all pptx --collect-all pypdf \
 	  --add-data "$(WEB_OUT):web_out" \
+	  --add-data "src/ginno_runtime/skills/builtin:ginno_runtime/skills/builtin" \
+	  --add-data "src/ginno_runtime/browser/fixtures:ginno_runtime/browser/fixtures" \
 	  bin/ginno-runtime.py
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 

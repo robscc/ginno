@@ -189,6 +189,18 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 - 标题、当前 Agent 胶囊、`Running/Idle` 状态点；
 - 右侧 **model 按钮**：显示当前模型标签，点击跳到 **Settings → 模型 API**；
 - 右侧 **⋮** 按钮：✅ 打开会话菜单——**重命名会话**（写回标题，之后不再随 Agent 自动改名）与**复制会话 ID**。
+- **浏览器**按钮：✅ 打开右侧 **Chat | Browser 分栏**。页面画在分栏里（无头 Chrome 投屏），**不会弹出系统 Chrome**。handoff 时按钮变黄「需要你 · 浏览器」。
+
+### 5.9b 内嵌浏览器 ✅
+工作区右侧分栏是一台带 Space 的真 Chromium（登录态与你共享）：
+1. 顶栏点 **浏览器**（⌘.），或聊天里发 `/browse 打开 https://…`（也支持「打开 ai.sf-express.com」这种不带协议的主机名）。`/browse` **不挑 Agent**：当前是分析师也能开浏览器。打开后**左侧菜单和右栏收起**，网页约占 2/3；「设定目标 / Ask Agent」暂时隐藏。⌘⇧. 最大化网页（聊天仍挂着，会话不断）。关浏览器后侧栏和这些控件回来。
+2. Agent 用 `browser_eval` 在自己的 Space 里点页面；需要登录 / 验证码时会 **handoff**，聊天出现黄卡「需要你在右侧画面里操作」。
+3. **直接点分栏画面**就能操作（Agent 占用时第一次点击即接管），做完再点「交还」。交还后 Agent 必须接管**同一个** Space，不会新开空白页。
+4. 地址栏下一行是**这个 Space 的标签**（不是整台 Chrome 的所有页）。点 `+` 开新标签；下载进 `~/.ginno/browser/downloads`，完成后进 Artifacts（顶栏下载图标）。
+5. 设置 → **浏览器**：从系统 Chrome 导入 Cookies（先完全退出 Chrome），以及编辑高风险域名（支付/网银/改密强制交还，Goal 会停）。
+6. Playwright MCP（`mcp_playwright_*`）是**另一套匿名无头**，没有你的登录态，不要混用。
+7. 分栏一直是空白 / 地址栏停在 `about:blank`：完全退出 Ginno（含 sidecar），再开新包。旧 Chrome 锁着 `~/.ginno/browser/profile` 时新标签会开不出来。
+8. 打包后的 `.app` 带 `Chromium Embedded Framework.framework`、四份 `Ginno Helper.app` 和 `libginno_cef.dylib`。宿主起来后页面是原生子视图（`engine=cef`）；没起来仍走无头 Chrome 投屏，不会弹出系统 Chrome。Agent 占用时点画面仍会先接管，交还后点击落到真页面上。
 
 ### 5.10 输入区按钮 ✅ / 🚧
 - **📎（附件）**：选择图片附加到本轮（等同粘贴 / 拖拽，详见 5.5）。
@@ -388,7 +400,12 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 
 ### 9.7 通知 🚧（仅本地偏好）
 一个“启用桌面提醒”复选框，**只写本地 `localStorage`**（`ginno-notify`）。
-> ⚠️ **目前没有真实的桌面通知推送实现**——该开关暂不影响任何行为，属占位偏好。
+> ⚠️ 该开关已接通：会话结束会按 `settings.json` 的 `notifications` 发本机通知（见设置页「通知」）。
+
+### 9.8 浏览器 ✅
+- 说明两套浏览器：**内嵌**（无头 Chrome + 分栏画面 + 共享登录）vs **Playwright MCP**（匿名无头）。
+- **从系统 Chrome 导入登录态**：先退出 Chrome，选 Profile，可选含扩展 / 强制覆盖。
+- **高风险域名**：匹配即强制 handoff（支付 / 网银），即使特权模式开着。
 
 ---
 
@@ -412,7 +429,8 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 ├── knowledge/             # 知识库配置（索引/关联图在内存，不落盘）
 ├── cache/                 # 通用缓存
 ├── vectorstore/           # 语义向量缓存（LanceDB；use_semantic 开启后写入）
-└── logs/
+├── browser/               # 内嵌浏览器：profile / spaces.json / screenshots
+├── logs/
 ```
 
 ### 10.2 权限策略（🧩，编辑 `settings.json` 的 `permissions`）

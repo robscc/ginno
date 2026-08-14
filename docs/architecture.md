@@ -13,6 +13,7 @@
 > - 命令与 @提及 → `docs/commands-and-mentions-design.md`
 > - 引用与来源（Wiki + WebSearch）→ `docs/citations-design.md`
 > - 用量统计 → `docs/usage-stats-design.md`
+> - 内嵌浏览器 → `docs/browser-embed-design.md`
 > - 打包细节 → `docs/p3-packaging-notes.md`
 > - 文件解析 → `docs/file-parsing-research.md`
 
@@ -60,7 +61,7 @@
 │     的 stale ginno-runtime）；日志重定向 ~/.ginno/logs/sidecar.log   │
 │   • dev: 不拉起，假定 `pnpm dev:runtime` 已起                        │
 │   • 冷启动未就绪 → 先导航 data: URL 内嵌 splash，轮询 /api/health     │
-│   • 唯一 Rust→JS 桥：原生拖放 window.__ginnoFileDrop(paths)          │
+│   • 原生桥：拖放 `__ginnoFileDrop`；完成通知 `ginno:notify`；浏览器 tile 几何 `ginno:browser-tile`（只存矩形，业务仍在 sidecar）          │
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │  WKWebView ──► http://127.0.0.1:8787                          │   │
 │  └──────────────────────┬───────────────────────────────────────┘   │
@@ -128,6 +129,7 @@ ginno/
 │           ├── web/             # 内置网络搜索：config/engines/fetch（§6.13）
 │           ├── workflows/       # DSL/compiler/engine/nodes/supervisor/store/events
 │           ├── goals/           # goal store / 模板 / 事件桥
+│           ├── browser/         # BrowserSupervisor / Space 注册表 / CDP / handoff（§6.14）
 │           ├── todos/           # TODO store / providers / sync_ledger
 │           ├── artifacts/ files/ tools/ testing/
 ├── docs/               # 本文 + 各子系统设计与使用文档
@@ -196,7 +198,7 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 | 组 | 工具名 |
 |---|---|
 | 文件/shell | `read_file, write_file, edit_file, glob_files, grep_files, bash` |
-| 技能管理 | `list_skills, install_skills, uninstall_skill` |
+| 技能 | `use_skill, list_skills, install_skills, uninstall_skill` |
 | 结构化输出（静默） | `render_widget, attach_ref` |
 | TODO | `todo_list, todo_create, todo_update, todo_done, todo_delete, todo_link` |
 | Goal | `goal_get, goal_create, goal_update`（仅有 session 时绑定） |
@@ -205,6 +207,7 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 | Artifact | `artifact_register` |
 | 文档 | `parse_document, analyze_table` |
 | Web | `web_search, web_fetch`（引擎可插拔；`settings.web.enabled=false` 时不注册） |
+| Browser | `browser_eval`（内嵌浏览器 JS 执行；详见 §6.14） |
 | MCP | `mcp_{server}_{tool}`（动态，默认含 playwright） |
 
 > `render_widget` / `attach_ref` 是 **no-op 工具**，WS 层拦截其调用发 `widget.emit`/`ref.emit`
@@ -295,6 +298,8 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 - **Skills**（`skills/`）：`SKILL.md` 带 frontmatter（`name, description, trigger, tools, todo_provider`）。
   三层目录，同名覆盖 **内置 < 全局 < 项目**；索引注入走 WorldState `SkillsSection`（非旧式
   `build_index_prompt`）。安装 `skills.installer` 由 REST `import-dir` 与工具 `install_skills` 共享。
+  **`/<skill>` 本轮会把 frontmatter `tools:` 并入该 Agent 的 tools_allow**（`/browse` → `browser_*`，
+  即使当前是 analyst）。不写 `tools:` 的 skill 仍只注入正文。
 - **Slash commands**（`commands/`）：消息**首 token** 形如 `/name` 且命中内置命令或
   user-invocable skill 才触发（membership-gated，`/tmp/foo` 安全透传）。内置：`/help`、`/goal`。
   `/<skill>` 替换 SKILL.md 正文为 `<skill name=…>` + `User request:`。
@@ -359,9 +364,36 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   匹配 URL 升级为 depth=fetched（引用校验与前端「来源」卡的数据源，见 §6.3 注）。
 - **遥测**：`knowledge/web_usage.json` 按引擎记 searches/hits_cited（被引率=引擎有效性），
   按域名记 cited/fetched；`GET /kb/wiki/web-usage` 供 Settings → Web 搜索页展示。
-- 权限默认 `allow`（只读网络）；`ensure_web_tools` 把两工具并入 research/writer；
+ 权限默认 `allow`（只读网络）；`ensure_web_tools` 把两工具并入 research/writer；
   `ensure_web_permissions` 迁移把两工具补进**升级安装**的 `permissions.allow`
   （默认种子只对全新安装生效，不迁移的话 bypass 关闭时会落到 `ask`，goal 无头续轮会卡死在权限弹窗）。
+
+### 6.14 Browser — 内嵌浏览器（`browser/`）
+
+> 详细设计见 `docs/browser-embed-design.md`。本节为架构级摘要。
+
+- **产品形态**：工作区变 **Chat | Browser** 分栏，右侧不是截图回放，是一台带 Space/标签/地址栏的真 Chromium。
+  人日常在 Human Space 浏览，Agent 在自己的 Space 里干活，登录共用（同一 profile），互不抢焦点。
+- **所有权三态**（复制 ego-lite 契约）：`agent` → `agentDelegatedToUser`（handoff 等登录/验证码）→ `user` →
+  `agent`（takeOver 完成）。`handOff()` 通过 LangGraph `interrupt({kind:"browser_handoff"})` 实现，
+  与现有 `HumanNode` 的 `interrupt({kind:"human"})` 同模式；`takeOver()` 走 `/decide` + `/resume`。
+- **工具契约**：`browser_eval(code, space?, timeout_s=180)` 在指定 Space 跑 ego-browser 方言；
+  helpers 预注入。`openOrReuseTab` 会把裸主机名补成 `https://` 并等到非 `about:blank`。
+  Chrome 新标签走 `PUT /json/new`（GET 会 405）。`/browse` 本轮授予 `browser_*`。
+  超时 180s（绕过 bash 30s 默认），handoff 期间 Goal driver 自动暂停。
+- **引擎两阶段**：生产优先打包 CEF 原生子视图（Helper.app + `libginno_cef.dylib` +
+  宿主写出 `~/.ginno/browser/cef-cdp.json`）；宿主没起来则回退无头系统 Chrome +
+  独立 profile + CDP screencast。`try_cef()` 只在 helpers **并且** CDP 真的在听时
+  才返回实例，不会假装 native tile。引擎切换时节点/协议/数据模型**不动**。
+- **BrowserSupervisor**（Python sidecar）：所有浏览器实例的权威管理者。维护 Space 注册表
+  （`~/.ginno/browser/spaces.json`）、CDP 连接、ownership 状态机、handoff 协议。
+- **Snapshot 85% 诚实**：CDP accessibility tree + 自研 refMap（`@N` / `loc=`）；M2 补同源 iframe
+  与开放 shadow 提示。跨源 iframe / 封闭 shadow DOM 仍省略。
+- **Workflow 一等节点**：DSL v1 扩展 `type: "browser"` 节点（action: `eval | snapshot | handoff | complete`），
+  与 `step / branch / loop / human` 并列。工作流可写「打开审批页 → 等用户登录 → 抓取数据 → 关闭」
+  的确定性流程，handoff 卡与聊天 human node 同模式。
+- **Goal 集成**：Goal driver 续跑前检查 `browser_state`；`waiting_human`（handoff 中）时**不续跑**。
+  高风险导航会先 flip owner 再 raise，driver 不会空转。
 
 ---
 
@@ -553,6 +585,10 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 ├── logs/sidecar.log             # RotatingFileHandler 5MB×3
 ├── workflows/<wf_id>/{meta.json, versions/N.json}   # 工作流版本化定义
 ├── workflow_runs/<run_id>.json + <run_id>.events.jsonl  # run 状态与事件（全局）
+├── browser/                     # 内嵌浏览器（§6.14）
+│   ├── spaces.json              # Space 注册表（id/name/profileDir/owner/state）
+│   ├── profiles/<space_id>/     # 每 Space 独立 Chrome profile（cookies/localStorage 隔离）
+│   └── extracts/<space_id>/     # browser_eval 提取的结构化数据（可选持久化）
 └── projects/<slug>/
     ├── files.json  artifacts.json  goals.json  skills/
     └── sessions/
@@ -636,6 +672,7 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 | + | 聊天内联图表 widget（render_widget chart） | ✅ |
 | + | 上下文治理梯度（E2 截断 / E2.5 microcompact / E3 压缩 / E4 重申）+ 持久用量统计 | ✅ |
 | + | 引用与来源体系（Wiki + WebSearch：契约/台账/SourcesBlock）+ 内置 web 搜索 | ✅ P0/P1（见 citations-design） |
+| + | 内嵌浏览器 M1 + M2 协议层 + atrium 挖洞 + Frameworks + Helper | ✅ Helper.app + C 宿主进包；宿主 CDP 活着才切 native tile，否则 screencast |
 | 🔮 | 引用检索加权生效、provider 原生搜索适配、web→Raw 沉淀、经验循环、多项目、真实桌面通知、账号体系 | 路线中 |
 
 > 界面/功能的逐项完成度与已知限制，见 `docs/user-guide.md` 的图例标注。

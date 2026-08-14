@@ -455,6 +455,200 @@ class HumanNode(BaseNode):
 
 
 @register_node
+class BrowserNode(BaseNode):
+    """First-class browser step (docs/browser-embed-design.md §9).
+
+    ``action``: eval | snapshot | handoff | complete. ``complete`` cannot share a
+    node with ``eval`` (ego PR #29). Same ``space`` name is reused for the run.
+    """
+
+    type = "browser"
+    params_schema = {
+        "type": "object",
+        "properties": {
+            "space": {"type": "string"},
+            "action": {"type": "string"},
+            "code": {"type": "string"},
+            "keep": {"type": "boolean"},
+            "timeout_s": {"type": "integer"},
+            "headed": {"type": "boolean"},
+        },
+    }
+
+    @classmethod
+    def validate_params(cls, node: dict) -> list[str]:
+        errs = super().validate_params(node)
+        action = (node.get("action") or "eval").strip()
+        if action not in ("eval", "snapshot", "handoff", "complete"):
+            errs.append(f"browser '{node.get('id')}' action must be eval|snapshot|handoff|complete")
+        if action == "complete" and (node.get("code") or "").strip():
+            # complete may carry keep only — mixing work script is the ego #29 footgun
+            if "handOff" in (node.get("code") or "") or "useOrCreate" in (node.get("code") or ""):
+                errs.append(
+                    f"browser '{node.get('id')}': complete cannot share a node with eval helpers"
+                )
+        if action == "eval" and not (node.get("code") or node.get("url")):
+            errs.append(f"browser '{node.get('id')}' eval needs code (or url)")
+        return errs
+
+    @staticmethod
+    async def execute(node, cctx, state, config, eff) -> dict:
+        from langgraph.types import interrupt
+
+        from ...browser import get_supervisor
+        from ...browser.helpers import BrowserHandoff
+        from ...browser.supervisor import BrowserLocked
+
+        run_ctx = cctx["run_ctx"]
+        run_id = run_ctx.get("run_id")
+        session_id = run_ctx.get("present_in_session_id") or run_ctx.get("session_id")
+        ctx = dict(state.get("context") or {})
+        action = (node.get("action") or "eval").strip()
+        space = wf_expr.render(node.get("space") or f"wf-{run_id or 'run'}", ctx).strip()
+        code = wf_expr.render(node.get("code") or "", ctx)
+        url = wf_expr.render(node.get("url") or "", ctx)
+        timeout_s = int(node.get("timeout_s") or 180)
+        headed = bool(node.get("headed", True))
+        keep = bool(node.get("keep", True))
+        sup = get_supervisor()
+        run_ctx["events"].append(
+            {
+                "ts": time.time(),
+                "run_id": run_id,
+                "node_id": node["id"],
+                "kind": "node_enter",
+                "node_type": "browser",
+                "space": space,
+                "action": action,
+            }
+        )
+
+        def _handoff_interrupt(space_name: str, page_url: str, reason: str) -> dict:
+            run_ctx["events"].append(
+                {
+                    "ts": time.time(),
+                    "run_id": run_id,
+                    "node_id": node["id"],
+                    "kind": "interrupt",
+                    "nature": "browser_handoff",
+                    "space": space_name,
+                    "url": page_url,
+                    "reason": reason,
+                    "question": reason or "需要你在浏览器里操作",
+                }
+            )
+            value = interrupt(
+                {
+                    "kind": "browser_handoff",
+                    "node": node["id"],
+                    "space": space_name,
+                    "url": page_url,
+                    "reason": reason,
+                    "run_id": run_id,
+                }
+            )
+            run_ctx["events"].append(
+                {
+                    "ts": time.time(),
+                    "run_id": run_id,
+                    "node_id": node["id"],
+                    "kind": "resume",
+                    "nature": "browser_handoff",
+                }
+            )
+            try:
+                sup.take_over(space_name)
+            except Exception:
+                pass
+            return value if isinstance(value, dict) else {"resume": value}
+
+        try:
+            rec = sup.use_or_create(space, session_id=session_id, run_id=run_id)
+            if action == "snapshot":
+                snap = sup.snapshot(rec["name"])
+                out = {
+                    "space": rec["name"],
+                    "url": snap.get("url"),
+                    "title": snap.get("title"),
+                    "snapshot": snap.get("text"),
+                }
+            elif action == "handoff":
+                try:
+                    sup.hand_off(rec["name"], reason=node.get("reason") or node.get("question") or "")
+                    out = {"space": rec["name"]}
+                except BrowserHandoff as h:
+                    out = _handoff_interrupt(h.space, h.url, h.reason)
+            elif action == "complete":
+                out = sup.complete(rec["name"], keep=keep, from_complete_node=True)
+            else:
+                script = code
+                if url and "openOrReuseTab" not in script and "gotoUrl" not in script:
+                    script = f"await openOrReuseTab({url!r}, {{ wait: true }})\n" + script
+                result = sup.eval(
+                    script,
+                    space=rec["name"],
+                    session_id=session_id,
+                    run_id=run_id,
+                    timeout_s=timeout_s,
+                    headed=headed,
+                    allow_complete=False,
+                )
+                if isinstance(result, dict) and result.get("interrupt") == "handoff":
+                    out = _handoff_interrupt(
+                        result.get("space") or rec["name"],
+                        result.get("url") or "",
+                        result.get("reason") or "",
+                    )
+                elif isinstance(result, dict) and result.get("error"):
+                    raise RuntimeError(result["error"])
+                else:
+                    out = result if isinstance(result, dict) else {"return": result}
+        except BrowserLocked as e:
+            raise RuntimeError(str(e)) from e
+
+        info = {}
+        try:
+            info = sup.page_info(space)
+        except Exception:
+            pass
+        if isinstance(out, dict):
+            out.setdefault("url", info.get("url"))
+            out.setdefault("title", info.get("title"))
+            out.setdefault("space", space)
+        run_ctx["events"].append(
+            {
+                "ts": time.time(),
+                "run_id": run_id,
+                "node_id": node["id"],
+                "kind": "node_exit",
+                "node_type": "browser",
+                "status": "ok",
+                "space": space,
+            }
+        )
+        update: dict = {"events": [], "__output__": out if isinstance(out, dict) else {"return": out}}
+        writes = node.get("writes")
+        if writes and isinstance(out, dict):
+            ctx_update = dict(state.get("context") or {})
+            # DSL `writes` is `{key: {type}}` (schema); a bare string is also accepted.
+            keys: list[str]
+            if isinstance(writes, dict):
+                keys = list(writes.keys())
+            elif isinstance(writes, list):
+                keys = [str(w) for w in writes]
+            elif isinstance(writes, str):
+                keys = [writes]
+            else:
+                keys = []
+            for w in keys:
+                if w in out:
+                    ctx_update[w] = out[w]
+            if keys:
+                update["context"] = ctx_update
+        return update
+
+
+@register_node
 class PassNode(BaseNode):
     """No-op passthrough (useful for wiring/placeholder)."""
 

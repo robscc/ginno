@@ -108,13 +108,34 @@ def _agent_icon(agent_id: str | None) -> str:
 GOAL_GRACE_S = 3.0  # pause between turns so the user can interject
 
 
+def _goal_browser_state(session_id: str) -> str | None:
+    """Attach a live browser hint so the Goal chip can show a handoff pause."""
+    try:
+        from ..browser import waiting_human
+
+        if waiting_human(session_id):
+            return "waiting_human"
+    except Exception:
+        return None
+    return None
+
+
 async def _emit_goal_event(
     slug: str, session_id: str, goal: dict | None, turn_id: str | None = None
 ) -> None:
+    browser_state = _goal_browser_state(session_id)
     if goal is None:
-        await _push_session_event(session_id, "goal.cleared", {})
-    else:
-        await _push_session_event(session_id, "goal.updated", {"goal": goal}, turn_id)
+        await _push_session_event(session_id, "goal.cleared", {"browser_state": browser_state})
+        return
+    payload_goal = dict(goal)
+    if browser_state:
+        payload_goal["browser_state"] = browser_state
+    await _push_session_event(
+        session_id,
+        "goal.updated",
+        {"goal": payload_goal, "browser_state": browser_state},
+        turn_id,
+    )
 
 
 def _stop_goal_driver(session_id: str) -> None:
@@ -228,11 +249,15 @@ async def _run_goal_turn(session: dict, goal: dict, turn_id: str) -> None:
 
 def _goal_interrupted(session_id: str) -> bool:
     """True while continuation must not start: a user turn runs, a permission
-    interrupt is pending, or the session vanished."""
+    interrupt is pending, a browser handoff is waiting on the human, or the
+    session vanished."""
+    from ..browser import waiting_human
+
     return (
         session_id in _RUNNING_TURNS
         or session_id in _PENDING_RESUME
         or session_id not in _SESSIONS
+        or waiting_human(session_id)
     )
 
 
@@ -372,7 +397,12 @@ async def get_session_goal(session_id: str) -> dict:
     slug = _goal_slug(session_id)
     if not slug:
         return {"ok": False, "error": "unknown session"}
-    return {"ok": True, "goal": goal_store.get_goal(slug, session_id)}
+    goal = goal_store.get_goal(slug, session_id)
+    if goal:
+        browser_state = _goal_browser_state(session_id)
+        if browser_state:
+            goal = {**goal, "browser_state": browser_state}
+    return {"ok": True, "goal": goal}
 
 
 @router.put("/api/sessions/{session_id}/goal")

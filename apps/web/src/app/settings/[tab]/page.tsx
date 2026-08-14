@@ -10,6 +10,7 @@ export function generateStaticParams() {
     { tab: "synthesis-quality" },
     { tab: "knowledge" },
     { tab: "web" },
+    { tab: "browser" },
     { tab: "permissions" },
     { tab: "hooks" },
     { tab: "session-files" },

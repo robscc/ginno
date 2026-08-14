@@ -53,11 +53,19 @@ def as_fake_model(model_or_scripts: Any) -> ScriptedChatModel:
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point $GINNO_HOME at a fresh temp dir and reset server globals per test."""
     monkeypatch.setenv("GINNO_HOME", str(tmp_path))
+    # Never spawn system Chrome from unit/api tests (docs/browser-embed-design.md).
+    monkeypatch.setenv("GINNO_BROWSER_ENGINE", "fake")
     # Process-wide state that the lifespan does NOT reset between tests.
     server._SESSIONS.clear()
     server._USAGE_BY_SESSION.clear()
     server_shared._mcp = None
     server_shared._hooks = None
+    try:
+        from ginno_runtime.browser import reset_supervisor
+
+        reset_supervisor()
+    except Exception:
+        pass
     # Keep the default Playwright MCP out of unrelated tests (it would spawn a
     # headless browser on every server start). ensure_layout only re-seeds the
     # default when mcp.json is missing/empty, so a non-empty stub opts us out.

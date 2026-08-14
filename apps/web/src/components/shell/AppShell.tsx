@@ -23,10 +23,21 @@ import { applyTheme } from "@/components/settings/GeneralSettings";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { ChatStream } from "@/components/chat/ChatStream";
+import { BrowserPane } from "@/components/browser/BrowserPane";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
 import type { SessionMeta, SessionUsage } from "@/lib/types";
+
+const BROWSER_SPLIT_KEY = "ginno.browserSplit";
+const BROWSER_SPLIT_DEFAULT = 0.68;
+const BROWSER_SPLIT_MIN = 0.55;
+const BROWSER_SPLIT_MAX = 0.8;
+
+function clampBrowserSplit(n: number): number {
+  if (!Number.isFinite(n)) return BROWSER_SPLIT_DEFAULT;
+  return Math.min(BROWSER_SPLIT_MAX, Math.max(BROWSER_SPLIT_MIN, n));
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const g = useGinno();
@@ -63,6 +74,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // the workspace here and toggling visibility with `hidden`, ChatStream's refs
   // survive any route change.
   const [running, setRunning] = useState(false);
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserMax, setBrowserMax] = useState(false);
+  const [browserSplit, setBrowserSplit] = useState(() => {
+    try {
+      const raw = localStorage.getItem(BROWSER_SPLIT_KEY);
+      if (raw != null) return clampBrowserSplit(Number(raw));
+    } catch {
+      /* storage unavailable */
+    }
+    return BROWSER_SPLIT_DEFAULT;
+  });
+  const [splitDragging, setSplitDragging] = useState(false);
+  const splitRowRef = useRef<HTMLDivElement>(null);
+  const rightPanelWasOpen = useRef<boolean | null>(null);
+  const [browserHandoff, setBrowserHandoff] = useState<{
+    space?: string;
+    url?: string;
+    reason?: string;
+  } | null>(null);
   // Session-cumulative model usage (world-state-plan D2/D3), pushed up from
   // the chat socket and rendered as a small counter in the TopBar.
   const [usage, setUsage] = useState<SessionUsage | null>(null);
@@ -290,14 +320,77 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!onWorkspace) return;
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === "\\") {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      if (e.key === "\\" && !e.shiftKey) {
         e.preventDefault();
         setRightPanelOpen(!rightPanelOpen);
+      } else if (e.key === ".") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          setBrowserOpen(true);
+          setBrowserMax((v) => (browserOpen ? !v : true));
+        } else {
+          setBrowserOpen((v) => !v);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onWorkspace, rightPanelOpen, setRightPanelOpen]);
+  }, [onWorkspace, rightPanelOpen, setRightPanelOpen, browserOpen]);
+
+  // Opening the browser is "page is the main surface": collapse the right
+  // panel once (user can still pull it from the dock). Closing restores the
+  // pre-open switch without writing that snapshot into the user preference.
+  useEffect(() => {
+    if (browserOpen) {
+      if (rightPanelWasOpen.current === null) {
+        rightPanelWasOpen.current = rightPanelOpen;
+        if (rightPanelOpen) setRightPanelOpen(false);
+      }
+      return;
+    }
+    if (rightPanelWasOpen.current !== null) {
+      setRightPanelOpen(rightPanelWasOpen.current);
+      rightPanelWasOpen.current = null;
+    }
+    setBrowserMax(false);
+    // Only react to the open/close edge — not to later dock toggles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browserOpen]);
+
+  useEffect(() => {
+    if (!splitDragging) return;
+    document.body.style.cursor = "col-resize";
+    document.body.classList.add("select-none");
+    const onMove = (e: MouseEvent) => {
+      const el = splitRowRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1) return;
+      const v = clampBrowserSplit(1 - (e.clientX - r.left) / r.width);
+      setBrowserSplit(v);
+      try {
+        localStorage.setItem(BROWSER_SPLIT_KEY, String(v));
+      } catch {
+        /* storage unavailable */
+      }
+    };
+    const onUp = () => setSplitDragging(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      document.body.style.cursor = "";
+      document.body.classList.remove("select-none");
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [splitDragging]);
+
+  useEffect(() => {
+    const onOpen = () => setBrowserOpen(true);
+    window.addEventListener("ginno:open-browser", onOpen);
+    return () => window.removeEventListener("ginno:open-browser", onOpen);
+  }, []);
 
   // ⌘N → home (new session is created lazily on first send); ⌘K → session
   // search. Global on purpose: reachable from settings/kb/workflows too.
@@ -319,9 +412,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [setActiveSessionForNav, router]);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-base text-txt">
-      {/* left nav */}
-      <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel">
+    <div className="ginno-root flex h-screen w-full overflow-hidden bg-base text-txt">
+      {/* left nav — stay mounted so session list / rename state survive; hidden
+          while the browser is the main surface. */}
+      <aside
+        className={`flex w-64 shrink-0 flex-col border-r border-line bg-panel ${
+          browserOpen && onWorkspace ? "hidden" : ""
+        }`}
+      >
         {/* brand */}
         <div className="flex items-center gap-2.5 px-4 py-4">
           <img src="/icon.png" alt="" className="h-7 w-7" />
@@ -397,14 +495,91 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className={`flex min-w-0 flex-1 ${onWorkspace ? "" : "hidden"}`}>
           <div className="flex min-w-0 flex-1 flex-col">
             {session && (
-              <TopBar session={session} agent={agent} running={running} modelLabel={modelLabel} usage={usage} />
+              <TopBar
+                session={session}
+                agent={agent}
+                running={running}
+                modelLabel={modelLabel}
+                usage={usage}
+                browserOpen={browserOpen}
+                onToggleBrowser={() => setBrowserOpen((v) => !v)}
+                browserHandoff={!!browserHandoff}
+              />
             )}
-            <ChatStream
-              session={session}
-              onRunningChange={setRunning}
-              onUsageChange={setUsage}
-              onOpenGoal={() => setGoalSessionModal(true)}
-            />
+            <div ref={splitRowRef} className="flex min-h-0 min-w-0 flex-1">
+              <div
+                className={`flex min-h-0 min-w-0 flex-col bg-base ${
+                  browserOpen && browserMax ? "hidden" : ""
+                }`}
+                style={
+                  browserOpen && !browserMax
+                    ? { flex: `${1 - browserSplit} 1 280px`, minWidth: 280 }
+                    : { flex: "1 1 0%" }
+                }
+              >
+                <ChatStream
+                  session={session}
+                  compact={browserOpen}
+                  onRunningChange={setRunning}
+                  onUsageChange={setUsage}
+                  onOpenGoal={() => setGoalSessionModal(true)}
+                  onBrowserHandoff={(h) => {
+                    setBrowserHandoff(h);
+                    if (h) setBrowserOpen(true);
+                  }}
+                  onOpenBrowser={() => setBrowserOpen(true)}
+                />
+              </div>
+              {browserOpen && (
+                <>
+                  {!browserMax && (
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label="拖拽调整浏览器宽度（双击重置）"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setSplitDragging(true);
+                      }}
+                      onDoubleClick={() => {
+                        setBrowserSplit(BROWSER_SPLIT_DEFAULT);
+                        try {
+                          localStorage.setItem(BROWSER_SPLIT_KEY, String(BROWSER_SPLIT_DEFAULT));
+                        } catch {
+                          /* storage unavailable */
+                        }
+                      }}
+                      className={`w-1 shrink-0 cursor-col-resize transition-colors ${
+                        splitDragging ? "bg-violet/60" : "hover:bg-violet/40"
+                      }`}
+                    />
+                  )}
+                  <div
+                    className="flex min-h-0 min-w-0 flex-col"
+                    style={
+                      browserMax
+                        ? { flex: "1 1 0%" }
+                        : { flex: `${browserSplit} 1 480px`, minWidth: 480 }
+                    }
+                  >
+                    <BrowserPane
+                      sessionId={session?.id}
+                      handoff={browserHandoff}
+                      maximized={browserMax}
+                      onToggleMaximize={() => setBrowserMax((v) => !v)}
+                      onTakeOver={async (space) => {
+                        await api.takeoverBrowserSpace(space);
+                        setBrowserHandoff(null);
+                        window.dispatchEvent(
+                          new CustomEvent("ginno:browser-resume", { detail: { space } }),
+                        );
+                      }}
+                      onClose={() => setBrowserOpen(false)}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
           </div>
           {/* Right panel or its collapsed edge dock (right-panel-redesign.md) */}
           {g.rightPanelOpen ? <RightPanel /> : <RightDock />}

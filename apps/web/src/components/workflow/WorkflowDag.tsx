@@ -2,7 +2,15 @@
 
 import { useMemo, useState } from "react";
 
-type Node = { id: string; type: string; title?: string; goal?: string; agent?: string };
+type Node = {
+  id: string;
+  type: string;
+  title?: string;
+  goal?: string;
+  agent?: string;
+  space?: string;
+  action?: string;
+};
 type Edge = { from: string; to: string };
 type Dsl = { entry?: string; nodes?: Node[]; edges?: Edge[] };
 
@@ -161,11 +169,13 @@ export function WorkflowDag({
               />
               <circle cx={12} cy={NH / 2} r={4} fill={color} />
               <text x={22} y={17} fill="rgb(var(--txt))" fontSize={11} fontWeight={600}>
-                {(n.title || n.goal || n.id).slice(0, 16)}
+                {n.type === "browser" ? "🌐 " : ""}
+                {(n.title || n.space || n.goal || n.id).slice(0, n.type === "browser" ? 12 : 16)}
               </text>
               <text x={22} y={31} fill="rgb(var(--faint))" fontSize={9}>
-                {n.type}
-                {n.agent ? ` · ${n.agent}` : ""}
+                {n.type === "browser"
+                  ? `browser${n.action ? ` · ${n.action}` : ""}${n.space ? ` · ${n.space.slice(0, 8)}` : ""}`
+                  : `${n.type}${n.agent ? ` · ${n.agent}` : ""}`}
               </text>
             </g>
           );

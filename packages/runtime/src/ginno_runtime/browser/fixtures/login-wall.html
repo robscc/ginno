@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>Login Wall</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 28rem; margin: 4rem auto; }
+    label { display: block; margin: 1rem 0; }
+    input { padding: .4rem .6rem; width: 100%; }
+    button { padding: .5rem 1rem; }
+    .ok { color: #166534; }
+    .err { color: #991b1b; }
+  </style>
+</head>
+<body>
+  <h1>请先登录</h1>
+  <form id="f" onsubmit="return false">
+    <label>密码 <input id="pw" type="password" autocomplete="current-password"></label>
+    <button id="login" type="button">登录</button>
+  </form>
+  <p id="hint">正确密码是 <code>secret</code>。handoff 后来这里亲手输入。</p>
+  <p id="msg"></p>
+  <script>
+    document.getElementById("login").addEventListener("click", () => {
+      const pw = document.getElementById("pw").value;
+      const msg = document.getElementById("msg");
+      if (pw === "secret") {
+        document.title = "已登录";
+        document.querySelector("h1").textContent = "欢迎回来";
+        msg.className = "ok";
+        msg.innerHTML = '<a class="inbox" href="#inbox">未读邮件 (3)</a>';
+      } else {
+        msg.className = "err";
+        msg.textContent = "wrong password";
+      }
+    });
+  </script>
+</body>
+</html>

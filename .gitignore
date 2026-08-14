@@ -24,6 +24,8 @@ venv/
 apps/desktop/target/
 apps/desktop/gen/
 apps/desktop/Cargo.lock
+# Spotify CEF snapshot (~300MB) — fetched by scripts/vendor-cef.sh
+apps/desktop/Frameworks/
 
 # local runtime state (never commit user data)
 .ginno/

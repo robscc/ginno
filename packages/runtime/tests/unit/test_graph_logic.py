@@ -45,6 +45,15 @@ def test_structured_tools_always_allowed():
     assert tool_allowed(a, "attach_ref") is True
     assert tool_allowed(a, "workflow_run") is True
     assert tool_allowed(a, "artifact_register") is True
+    # browser_* follows tools_allow (dev=* has them; workflow-dev does not).
+    assert tool_allowed(a, "browser_eval") is False
+    assert tool_allowed(_agent(["browser_*"]), "browser_eval") is True
+    assert tool_allowed(_agent(["*"]), "browser_eval") is True
+    # Slash-skill frontmatter tools are granted for the turn even if the
+    # persona (analyst) does not list them.
+    assert tool_allowed(a, "browser_eval", ["browser_*"]) is True
+    assert tool_allowed(a, "browser_handoff", ["browser_eval", "browser_handoff"]) is True
+    assert tool_allowed(a, "bash", ["browser_*"]) is False
 
 
 def test_allowed_tool_names_filters():
@@ -149,3 +158,27 @@ async def test_raising_tool_is_contained_not_fatal(isolated_home):
     tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
     assert tool_msgs and tool_msgs[0].status == "error"
     assert "Invalid argument" in tool_msgs[0].content
+
+
+def test_skill_extra_tools_browse(isolated_home):
+    from ginno_runtime.graph import skill_extra_tools
+
+    extra = skill_extra_tools(["browse"], "default")
+    assert "browser_eval" in extra
+    assert "browser_handoff" in extra
+    assert skill_extra_tools([], "default") == []
+    assert skill_extra_tools(None, "default") == []
+    assert skill_extra_tools(["no-such-skill"], "default") == []
+
+
+def test_browse_skill_grants_browser_tools_on_analyst(isolated_home):
+    from ginno_runtime.graph import _allowed_tool_names, skill_extra_tools
+    from ginno_runtime.tools.browser_tools import BROWSER_TOOL_NAMES, build_browser_tools
+
+    extra = skill_extra_tools(["browse"])
+    tools = build_builtin_tools() + build_browser_tools("s1")
+    names = _allowed_tool_names(_agent(["read_file", "web_search"]), tools, extra)
+    for n in BROWSER_TOOL_NAMES:
+        assert n in names
+    assert "write_file" not in names
+    assert "read_file" in names

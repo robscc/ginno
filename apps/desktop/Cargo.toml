@@ -23,6 +23,12 @@ tokio = { version = "1", features = ["full"] }
 # content (and its click) never reaches the user.
 notify-rust = { version = "4", features = ["preview-macos-un"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSValue", "NSString", "NSObject", "NSKeyValueCoding"] }
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSGraphics", "NSResponder"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "objc2-app-kit"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

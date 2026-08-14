@@ -850,7 +850,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   // stronger signal than "running": somebody must act. Drives the yellow dock
   // badge; version_propose interrupts live in the session graph, not runs.
   const pendingHumanCount = workflowRuns.filter(
-    (r) => r.status === "paused" && r.pending_interrupt?.kind === "human",
+    (r) =>
+      r.status === "paused" &&
+      (r.pending_interrupt?.kind === "human" || r.pending_interrupt?.kind === "browser_handoff"),
   ).length;
 
   // Adaptive stuck detection (P3): recent completed-run durations per workflow

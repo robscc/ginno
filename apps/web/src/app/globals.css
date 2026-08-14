@@ -55,6 +55,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* CEF hole: the native Chromium view sits BEHIND the WKWebView. For the
+   live page to show through the tile rect, every layer of the DOM above
+   it must be transparent there. BrowserPane toggles html.ginno-hole while
+   a CEF tile is live; AppShell/chat/topbar carry their own bg-base so the
+   rest of the window stays opaque. */
+html.ginno-hole,
+html.ginno-hole body,
+html.ginno-hole .ginno-root {
+  background: transparent;
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: rgb(var(--scroll)) transparent;

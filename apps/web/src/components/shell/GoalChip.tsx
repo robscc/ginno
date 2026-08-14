@@ -186,7 +186,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
         <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: sc.dot }} />
         <Target className="h-3 w-3 shrink-0" />
         <span className="truncate">
-          {label} · {fmtElapsed(elapsed)}
+          {goal.browser_state === "waiting_human" ? "等你操作" : label} · {fmtElapsed(elapsed)}
         </span>
       </button>
 
@@ -204,6 +204,11 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
             <div className="mt-2 text-[11px] text-faint">
               自主推进 {goal.turns_used} 轮 · 已用 {fmtElapsed(elapsed)}
             </div>
+            {goal.browser_state === "waiting_human" && (
+              <div className="mt-2 rounded border border-yellow/40 bg-yellow/10 px-2 py-1 text-[11px] text-yellow">
+                浏览器在等你操作 — 续跑已暂停，交还后继续。
+              </div>
+            )}
             <div className="mt-3 flex flex-wrap gap-1.5">
               {goal.status === "active" && (
                 <button

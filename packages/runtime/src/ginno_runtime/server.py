@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI):
     agents_reg.ensure_research_discipline()
     agents_reg.ensure_goal_tools()
     agents_reg.ensure_web_tools()
+    agents_reg.ensure_browser_tools()
     # Upgraded installs never got the web tools in permissions.allow (defaults
     # seed only fresh homes) — migrate so they don't fall through to `ask`.
     try:
@@ -65,6 +66,12 @@ async def lifespan(app: FastAPI):
         ensure_web_permissions()
     except Exception:
         _log.exception("web permissions migration failed (continuing)")
+    try:
+        from .browser.spaces import ensure_browser_layout
+
+        ensure_browser_layout()
+    except Exception:
+        _log.exception("browser layout failed (continuing)")
     wf_store.ensure_seeded()
     # Reconcile workflow runs left "running" by a previous crash/quit: at this
     # point no background task can be alive, so every "running" run is an orphan
@@ -98,6 +105,12 @@ async def lifespan(app: FastAPI):
             _log.exception("run_shutdown_failed")
         if shared._mcp:
             await shared._mcp.close_all()
+        try:
+            from .browser import reset_supervisor
+
+            reset_supervisor()
+        except Exception:
+            _log.exception("browser supervisor shutdown failed")
 
 
 async def _connect_mcp_background() -> None:
@@ -154,6 +167,7 @@ from .api import stream as _stream_api  # noqa: E402
 from .api import todos as _todos_api  # noqa: E402
 from .api import usage as _usage_api  # noqa: E402
 from .api import workflows as _workflows_api  # noqa: E402
+from .api import browser as _browser_api  # noqa: E402
 
 app.include_router(_config_api.router)
 app.include_router(_files_api.router)
@@ -164,6 +178,7 @@ app.include_router(_stream_api.router)
 app.include_router(_todos_api.router)
 app.include_router(_usage_api.router)
 app.include_router(_workflows_api.router)
+app.include_router(_browser_api.router)
 
 
 @app.get("/api/health")
