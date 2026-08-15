@@ -243,10 +243,33 @@ static NSWindow* main_window(void) {
  * VISIBILITY (one active shown, rest ordered out; hide_all hides everything).
  * No hole / no pinning — the user can move/resize the companion window. */
 static void dock_layout(void) {
+  NSWindow* main = main_window();
+  NSScreen* screen = [NSScreen mainScreen];
+  NSRect sf = screen ? [screen frame] : NSMakeRect(0, 0, 2560, 1440);
   for (NSUInteger i = 0; i < g_docked.count; i++) {
     NSWindow* w = g_docked[i];
-    if (!g_hidden_all && (int)i == g_active) [w orderFront:nil];
-    else [w orderOut:nil];
+    if (!g_hidden_all && (int)i == g_active) {
+      // Place the companion window beside the main window (not overlapping /
+      // not hidden behind it) and bring it to the front so it visibly pops up.
+      NSRect f = [w frame];
+      CGFloat ww = f.size.width > 100 ? f.size.width : 1000;
+      CGFloat wh = f.size.height > 100 ? f.size.height : sf.size.height - 60;
+      CGFloat x = sf.origin.x + 40;
+      CGFloat y = sf.origin.y + 30;
+      if (main) {
+        NSRect mf = [main frame];
+        x = mf.origin.x + mf.size.width + 8;   // right of the main window
+        y = mf.origin.y;
+        wh = mf.size.height;
+      }
+      if (x + ww > sf.origin.x + sf.size.width)  // clamp to screen
+        x = sf.origin.x + sf.size.width - ww - 8;
+      if (x < sf.origin.x) x = sf.origin.x + 8;
+      [w setFrame:NSMakeRect(x, y, ww, wh) display:YES];
+      [w makeKeyAndOrderFront:nil];
+    } else {
+      [w orderOut:nil];
+    }
   }
 }
 
