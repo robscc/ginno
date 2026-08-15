@@ -171,7 +171,28 @@ class CefEngine:
         return tid
 
     @staticmethod
+    def _rpc(cmd: dict) -> bool:
+        """Synchronous RPC to the in-process C host over a Unix socket."""
+        import socket as _socket
+
+        base = os.environ.get("GINNO_HOME") or str(Path.home() / ".ginno")
+        sp = Path(base) / "browser" / "cef-rpc.sock"
+        try:
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            s.connect(str(sp))
+            s.sendall(json.dumps(cmd).encode())
+            s.recv(64)  # ack
+            s.close()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def _write_cmd(cmd: dict) -> None:
+        if CefEngine._rpc(cmd):
+            return
+        # Fallback to the old file channel if the socket isn't up.
         base = os.environ.get("GINNO_HOME") or str(Path.home() / ".ginno")
         p = Path(base) / "browser" / "cef-cmd.json"
         try:

@@ -19,13 +19,16 @@
 
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include "ginno_cef.h"
@@ -324,11 +327,73 @@ static void rep_read_cmd(void) {
   [[NSFileManager defaultManager] removeItemAtPath:p error:nil];
 }
 
+/* --- RPC over a Unix domain socket (replaces the cef-cmd.json file channel) ---
+ * The Python sidecar is a separate process; this socket is the synchronous RPC.
+ * The last hop (apply_cmd -> dock_layout) runs on the main queue as a normal
+ * function call, since C lives in the same process as the Rust shell. */
+static NSString* rpc_path(void) {
+  const char* home = getenv("GINNO_HOME");
+  NSString* base = home ? [NSString stringWithUTF8String:home]
+                        : [NSHomeDirectory() stringByAppendingString:@"/.ginno"];
+  return [base stringByAppendingString:@"/browser/cef-rpc.sock"];
+}
+
+static void rpc_apply(NSDictionary* d) {
+  NSString* op = d[@"op"];
+  if ([op isEqualToString:@"show"]) {
+    g_hidden_all = 0;
+    int slot = [d[@"slot"] intValue];
+    if (slot >= 0 && slot < (int)g_docked.count) g_active = slot;
+    dock_layout();
+  } else if ([op isEqualToString:@"hide_all"]) {
+    g_hidden_all = 1;
+    dock_layout();
+  }
+}
+
+static void* rpc_loop(void* arg) {
+  (void)arg;
+  int srv = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (srv < 0) return NULL;
+  struct sockaddr_un sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sun_family = AF_UNIX;
+  strncpy(sa.sun_path, [rpc_path() fileSystemRepresentation],
+          sizeof(sa.sun_path) - 1);
+  unlink(sa.sun_path);
+  if (bind(srv, (struct sockaddr*)&sa, sizeof(sa)) != 0) { close(srv); return NULL; }
+  if (listen(srv, 8) != 0) { close(srv); return NULL; }
+  for (;;) {
+    int c = accept(srv, NULL, NULL);
+    if (c < 0) continue;
+    char buf[512];
+    memset(buf, 0, sizeof(buf));
+    ssize_t n = read(c, buf, sizeof(buf) - 1);
+    if (n > 0) {
+      NSData* data = [NSData dataWithBytes:buf length:(NSUInteger)n];
+      NSDictionary* d =
+          [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+      if (d) {
+        // Apply window ops on the main queue (AppKit), synchronously.
+        dispatch_sync(dispatch_get_main_queue(), ^{ rpc_apply(d); });
+      }
+      const char* ack = "{\"ok\":true}";
+      (void)write(c, ack, strlen(ack));
+    }
+    close(c);
+  }
+  return NULL;
+}
+
+static void start_rpc_server(void) {
+  pthread_t t;
+  if (pthread_create(&t, NULL, rpc_loop, NULL) == 0) pthread_detach(t);
+}
+
 static void reparent_timer_cb(CFRunLoopTimerRef timer, void* info) {
   (void)timer; (void)info;
   if (!g_inited) return;
   dock_scan();
-  rep_read_cmd();
 }
 
 static void start_reparent_timer(void) {
@@ -879,6 +944,7 @@ int ginno_cef_init(const char* framework_dir, const char* helper_exe,
   g_inited = 1;
   start_pump();
   start_reparent_timer();
+  start_rpc_server();
   /* One tick so OnContextInitialized can run before we return. Never
    * call create_browser_sync from didFinishLaunching — that CHECKs. */
   cef_do_message_loop_work();
