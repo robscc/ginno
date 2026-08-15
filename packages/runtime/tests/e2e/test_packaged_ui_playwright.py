@@ -109,22 +109,35 @@ def test_packaged_ui_shows_lists_and_adds_session(tmp_path):
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
             page.wait_for_timeout(2000)
 
-            # Agent list renders (seeded agents).
-            assert page.locator("text=Dev Agent").count() >= 1, "agent list should show Dev Agent"
+            # open-experience redesign: the landing page is a centred home state
+            # (no session yet); assert it actually rendered.
+            assert page.locator("text=交给 Agent").count() >= 1, "landing home should render"
 
-            # Session list: capture count, then add one via the button.
+            # Seeded agents are served by the API (rendered as "Ask <name>"
+            # composer chips once a session is active).
+            agents = page.evaluate(
+                "fetch('/api/agents').then(r=>r.json()).then(j=>j.map(a=>a.name))"
+            )
+            assert any("Dev Agent" in a for a in agents), "agent registry should seed Dev Agent"
+
+            # Session list: capture count, then add one by sending the first
+            # message (lazy session creation — "+ New Session" only returns home).
             def session_count() -> int:
                 return page.evaluate(
                     "fetch('/api/sessions?project_slug=default').then(r=>r.json()).then(j=>j.length)"
                 )
 
             before = session_count()
-            page.get_by_text("+ New Session").first.click()
-            page.wait_for_timeout(1500)
+            ta = page.locator("textarea").first
+            ta.click()
+            ta.fill("hi")
+            ta.press("Enter")
+            page.wait_for_timeout(2000)
             after = session_count()
-            assert after == before + 1, f"New Session should add one session ({before}->{after})"
-            # The new session is selected/shown in the sidebar.
-            assert page.locator("text=session").count() >= 1
+            assert after == before + 1, f"first send should lazily create a session ({before}->{after})"
+            # Agent chips + new-session affordance render in the active composer.
+            assert page.locator("text=Ask Dev Agent").count() >= 1, "agent chips should render"
+            assert page.locator("text=+ New Session").count() >= 1, "+ New Session should render"
             browser.close()
     finally:
         proc.terminate()
