@@ -204,17 +204,55 @@ class CefEngine:
     def _write_show(self, slot: int) -> None:
         self._write_cmd({"op": "show", "slot": slot})
 
+    def query_visible(self) -> dict:
+        """Bidirectional RPC: ask the C host whether a companion is shown."""
+        import socket as _socket
+
+        base = os.environ.get("GINNO_HOME") or str(Path.home() / ".ginno")
+        sp = Path(base) / "browser" / "cef-rpc.sock"
+        try:
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            s.connect(str(sp))
+            s.sendall(json.dumps({"op": "query"}).encode())
+            r = s.recv(256)
+            s.close()
+            return json.loads(r.decode() or "{}")
+        except Exception:
+            return {"ok": False, "visible": False}
+
+    def toggle(self) -> dict:
+        """Toggle companion visibility; returns the authoritative new state."""
+        import socket as _socket
+
+        base = os.environ.get("GINNO_HOME") or str(Path.home() / ".ginno")
+        sp = Path(base) / "browser" / "cef-rpc.sock"
+        try:
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            s.connect(str(sp))
+            s.sendall(json.dumps({"op": "toggle"}).encode())
+            r = s.recv(256)
+            s.close()
+            return json.loads(r.decode() or "{}")
+        except Exception:
+            return {"ok": False, "visible": False}
+
+
     def show(self, name: str) -> None:
         """Show this session's browser window, hide the others (single visible)."""
         self._activate(name)
 
     def show_only(self, name: str) -> None:
-        """Show this session's window if it already exists; never create/navigate."""
+        """Show this session's active-tab window; never create/navigate.
+
+        Slot = the session's active tab index in creation order (so switching
+        sessions shows THAT session's window, not the global newest)."""
         tid = self._inner._tabs.get(name)
         if not tid:
             return
         order = getattr(self._inner, "_target_order", None) or []
-        slot = order.index(tid) if tid in order else 0
+        slot = order.index(tid) if tid in order else -1
         self._write_show(slot)
 
     def hide_all(self) -> None:
@@ -223,3 +261,42 @@ class CefEngine:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+
+def start_event_listener() -> None:
+    """Listen for C→runtime push events (window_closed) and broadcast to the
+    frontend over WS, replacing frontend polling for external-close sync."""
+    import socket as _socket
+    import threading
+
+    from .. import server_shared as shared
+
+    base = os.environ.get("GINNO_HOME") or str(Path.home() / ".ginno")
+    sp = Path(base) / "browser" / "cef-events.sock"
+
+    def run() -> None:
+        try:
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            if sp.exists():
+                sp.unlink()
+            srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            srv.bind(str(sp))
+            srv.listen(4)
+            while True:
+                c, _ = srv.accept()
+                data = c.recv(256)
+                c.close()
+                if not data:
+                    continue
+                try:
+                    ev = json.loads(data.decode())
+                except Exception:
+                    continue
+                if ev.get("event") == "window_closed":
+                    shared.spawn_bg(
+                        shared._push_global_event("browser.visible", {"visible": False})
+                    )
+        except Exception:
+            pass
+
+    threading.Thread(target=run, daemon=True).start()

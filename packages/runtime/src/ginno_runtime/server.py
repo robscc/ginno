@@ -97,6 +97,13 @@ async def lifespan(app: FastAPI):
     # before connections finish simply starts without those tools (the
     # /api/mcp/reload endpoint or a new session picks them up once ready).
     mcp_connect_task = asyncio.create_task(_connect_mcp_background())
+    # C→runtime push (window_closed) → WS broadcast; replaces frontend polling.
+    try:
+        from .browser import cef as _cef
+
+        _cef.start_event_listener()
+    except Exception:
+        _log.exception("cef event listener failed")
     try:
         yield
     finally:

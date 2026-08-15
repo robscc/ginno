@@ -242,6 +242,26 @@ class BrowserSupervisor:
         except Exception:
             log.debug("browser hide_all failed", exc_info=True)
 
+    def query_visible(self) -> dict:
+        """Bidirectional RPC: is a companion window currently shown?"""
+        try:
+            q = getattr(self._eng(), "query_visible", None)
+            if q:
+                return q()
+        except Exception:
+            log.debug("browser query failed", exc_info=True)
+        return {"ok": False, "visible": False}
+
+    def toggle_browser(self) -> dict:
+        """Toggle companion visibility; returns authoritative new state."""
+        try:
+            t = getattr(self._eng(), "toggle", None)
+            if t:
+                return t()
+        except Exception:
+            log.debug("browser toggle failed", exc_info=True)
+        return {"ok": False, "visible": False}
+
     def resume_preempted(self, session_id: str) -> None:
         self._preempted.discard(session_id)
 

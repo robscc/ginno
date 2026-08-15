@@ -338,16 +338,39 @@ static NSString* rpc_path(void) {
   return [base stringByAppendingString:@"/browser/cef-rpc.sock"];
 }
 
-static void rpc_apply(NSDictionary* d) {
+/* Runs on the main queue. Fills ``out`` with the JSON response. ``g_visible`` is
+ * the single source of truth for "is a companion window shown". */
+/* visible is DERIVED (not stored) so it can't desync from the adoption race:
+ * a companion is visible iff not hidden_all and at least one window is docked. */
+static int rpc_visible(void) { return !g_hidden_all && g_docked && g_docked.count > 0; }
+
+static void rpc_handle(NSDictionary* d, char* out, size_t outsz) {
   NSString* op = d[@"op"];
   if ([op isEqualToString:@"show"]) {
     g_hidden_all = 0;
     int slot = [d[@"slot"] intValue];
-    if (slot >= 0 && slot < (int)g_docked.count) g_active = slot;
+    if (slot < 0) {
+      g_active = (int)g_docked.count - 1;  // newest
+    } else if (slot < (int)g_docked.count) {
+      g_active = slot;
+    }
+    if (g_active < 0) g_active = 0;
     dock_layout();
+    snprintf(out, outsz, "{\"ok\":true,\"visible\":%d}", rpc_visible());
   } else if ([op isEqualToString:@"hide_all"]) {
     g_hidden_all = 1;
     dock_layout();
+    snprintf(out, outsz, "{\"ok\":true,\"visible\":0}");
+  } else if ([op isEqualToString:@"toggle"]) {
+    // Read-only: the frontend effect is the single driver (it calls show /
+    // hide_all). toggle just reports the derived state.
+    snprintf(out, outsz, "{\"ok\":true,\"visible\":%d}", rpc_visible());
+  } else if ([op isEqualToString:@"query"]) {
+    snprintf(out, outsz,
+             "{\"ok\":true,\"visible\":%d,\"active\":%d,\"windows\":%lu}",
+             rpc_visible(), g_active, (unsigned long)(g_docked ? g_docked.count : 0));
+  } else {
+    snprintf(out, outsz, "{\"ok\":false}");
   }
 }
 
@@ -373,12 +396,14 @@ static void* rpc_loop(void* arg) {
       NSData* data = [NSData dataWithBytes:buf length:(NSUInteger)n];
       NSDictionary* d =
           [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+      char* out = (char*)malloc(256);
+      snprintf(out, 256, "{\"ok\":false}");
       if (d) {
-        // Apply window ops on the main queue (AppKit), synchronously.
-        dispatch_sync(dispatch_get_main_queue(), ^{ rpc_apply(d); });
+        // Apply/query on the main queue (AppKit), synchronously (same process).
+        dispatch_sync(dispatch_get_main_queue(), ^{ rpc_handle(d, out, 256); });
       }
-      const char* ack = "{\"ok\":true}";
-      (void)write(c, ack, strlen(ack));
+      (void)write(c, out, strlen(out));
+      free(out);
     }
     close(c);
   }
@@ -388,6 +413,60 @@ static void* rpc_loop(void* arg) {
 static void start_rpc_server(void) {
   pthread_t t;
   if (pthread_create(&t, NULL, rpc_loop, NULL) == 0) pthread_detach(t);
+}
+
+/* When the user closes a companion window (red button), reflect it in the
+ * single source of truth so the frontend toggle can sync to OFF. */
+/* Push an event to the runtime over a reverse Unix socket (best-effort). The
+ * runtime listens and can broadcast to the frontend, replacing polling. */
+static void push_event(const char* json) {
+  const char* home = getenv("GINNO_HOME");
+  NSString* base = home ? [NSString stringWithUTF8String:home]
+                        : [NSHomeDirectory() stringByAppendingString:@"/.ginno"];
+  NSString* p = [base stringByAppendingString:@"/browser/cef-events.sock"];
+  int s = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (s < 0) return;
+  struct sockaddr_un sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sun_family = AF_UNIX;
+  strncpy(sa.sun_path, [p fileSystemRepresentation], sizeof(sa.sun_path) - 1);
+  if (connect(s, (struct sockaddr*)&sa, sizeof(sa)) == 0) {
+    (void)write(s, json, strlen(json));
+  }
+  close(s);
+}
+
+static void on_window_close(NSNotification* note) {
+  NSWindow* w = [note object];
+  if (!w || !g_docked || ![g_docked containsObject:w]) return;
+  [g_docked removeObject:w];
+  if (g_active >= (int)g_docked.count) g_active = (int)g_docked.count - 1;
+  if (g_active < 0) g_active = 0;
+  if (g_docked.count == 0) g_hidden_all = 1;  // visible derives to false
+  dock_layout();
+  push_event("{\"event\":\"window_closed\"}");
+}
+
+static void register_close_observer(void) {
+  [[NSNotificationCenter defaultCenter]
+      addObserverForName:NSWindowWillCloseNotification
+                  object:nil
+                   queue:nil
+              usingBlock:^(NSNotification* note) { on_window_close(note); }];
+  // Notification-driven adoption (#4): adopt a CEF window as soon as it becomes
+  // key, instead of waiting for the 100ms dock_scan poll.
+  [[NSNotificationCenter defaultCenter]
+      addObserverForName:NSWindowDidBecomeKeyNotification
+                  object:nil
+                   queue:nil
+              usingBlock:^(NSNotification* note) {
+                NSWindow* w = [note object];
+                if (!w || !is_cef_window(w)) return;
+                if (g_docked && ![g_docked containsObject:w]) {
+                  [g_docked addObject:w];
+                  dock_layout();
+                }
+              }];
 }
 
 static void reparent_timer_cb(CFRunLoopTimerRef timer, void* info) {
@@ -945,6 +1024,7 @@ int ginno_cef_init(const char* framework_dir, const char* helper_exe,
   start_pump();
   start_reparent_timer();
   start_rpc_server();
+  register_close_observer();
   /* One tick so OnContextInitialized can run before we return. Never
    * call create_browser_sync from didFinishLaunching — that CHECKs. */
   cef_do_message_loop_work();

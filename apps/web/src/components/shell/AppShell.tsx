@@ -220,6 +220,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [onWorkspace, browserOpen, g.activeSessionId]);
 
+  // Bidirectional sync: if the companion window was closed externally (red
+  // button), the C host reports visible=false; sync the toggle OFF. Use a grace
+  // period + consecutive-false streak so the startup adoption race doesn't
+  // prematurely turn the toggle off.
+  const hiddenStreak = useRef(0);
+  const openedAt = useRef(0);
+  useEffect(() => {
+    openedAt.current = Date.now();
+    hiddenStreak.current = 0;
+    if (!browserOpen) return;
+    const t = window.setInterval(() => {
+      if (Date.now() - openedAt.current < 4000) return; // startup grace
+      api
+        .queryBrowserVisible()
+        .then((r) => {
+          if (r?.ok && r.visible === false) {
+            hiddenStreak.current += 1;
+            if (hiddenStreak.current >= 2) setBrowserOpen(false);
+          } else {
+            hiddenStreak.current = 0;
+          }
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(t);
+  }, [browserOpen]);
+
   // Sidebar sessions: activity-day groups, newest activity first. `updated`
   // is bumped per turn server-side, so it tracks last use, not creation.
   const sortedSessions = [...g.sessions].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
@@ -505,6 +532,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   onBrowserHandoff={(h) => setBrowserHandoff(h)}
                   onOpenBrowser={() => {
                     /* companion window shows itself; no right pane to open */
+                  }}
+                  onBrowserVisible={(v) => {
+                    if (!v) setBrowserOpen(false);
                   }}
                 />
               </div>

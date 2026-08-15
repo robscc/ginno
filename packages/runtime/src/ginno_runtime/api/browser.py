@@ -370,6 +370,18 @@ def hide_browser() -> dict:
     return {"ok": True}
 
 
+@router.get("/api/browser/visible")
+def browser_visible() -> dict:
+    """Query whether a companion browser window is currently shown."""
+    return get_supervisor().query_visible()
+
+
+@router.post("/api/browser/toggle")
+def browser_toggle() -> dict:
+    """Toggle companion visibility; returns the authoritative new state."""
+    return get_supervisor().toggle_browser()
+
+
 @router.get("/api/browser/focus")
 def browser_focus() -> dict:
     from ..browser import spaces as space_store

@@ -502,6 +502,19 @@ export async function hideBrowser() {
   });
 }
 
+/** Query whether a companion browser window is currently shown. */
+export async function queryBrowserVisible() {
+  return json<{ ok: boolean; visible?: boolean }>(`${BASE}/browser/visible`);
+}
+
+/** Toggle companion visibility; returns the authoritative new state. */
+export async function toggleBrowser() {
+  return json<{ ok: boolean; visible?: boolean }>(`${BASE}/browser/toggle`, {
+    method: "POST",
+    headers: H,
+  });
+}
+
 export async function getBrowserFocus() {
   return json<{ ok: boolean; active_space?: string | null }>(`${BASE}/browser/focus`);
 }

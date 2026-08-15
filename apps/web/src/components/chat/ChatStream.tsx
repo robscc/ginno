@@ -350,6 +350,7 @@ export function ChatStream({
   onOpenGoal,
   onBrowserHandoff,
   onOpenBrowser,
+  onBrowserVisible,
 }: {
   session: SessionMeta | null;
   compact?: boolean;
@@ -358,6 +359,7 @@ export function ChatStream({
   onOpenGoal?: () => void;
   onBrowserHandoff?: (h: { space?: string; url?: string; reason?: string } | null) => void;
   onOpenBrowser?: () => void;
+  onBrowserVisible?: (visible: boolean) => void;
 }) {
   const g = useGinno();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -983,6 +985,10 @@ export function ChatStream({
           // Agent started browsing — surface the embedded browser.
           onOpenBrowser?.();
         }
+        break;
+      case "browser.visible":
+        // C→runtime push: companion window closed externally; sync toggle.
+        onBrowserVisible?.(ev.visible !== false);
         break;
       case "todos.changed":
         g.reloadTodos();
