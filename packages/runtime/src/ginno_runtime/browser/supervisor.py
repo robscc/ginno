@@ -25,6 +25,13 @@ class BrowserLocked(RuntimeError):
     """Agent tools hard-stop while ownership is delegated / user-owned."""
 
 
+# After a deliberate 交还 (take_over), real page inputs landing within this
+# window are treated as residual (trackpad momentum scroll, a slow release) and
+# must NOT flip the Space straight back to the human — otherwise the pane
+# immediately re-shows 「交还」 once ownership returns to the agent.
+TAKEOVER_GRACE_S = 0.6
+
+
 def _url_keep(prev: str, new: str) -> str:
     """A freshly restarted engine reports about:blank; don't let that
     clobber the Space's persisted URL (restart reattach needs it)."""
@@ -41,6 +48,7 @@ class BrowserSupervisor:
         self._lock = threading.RLock()
         self._reattached = False
         self._last_promo_check = 0.0
+        self._takeover_ts: dict[str, float] = {}
 
     # -- engine ------------------------------------------------------------ #
 
@@ -404,6 +412,10 @@ class BrowserSupervisor:
             # the person saying "I want this page" — flip and deliver.
             if kind in ("", "mouseMoved"):
                 raise BrowserLocked(f"space {name!r} is agent-owned; take over first")
+            # Residual input right after a deliberate 交还 (momentum scroll /
+            # slow release) must not steal the Space straight back — swallow it.
+            if time.monotonic() - self._takeover_ts.get(name, 0.0) < TAKEOVER_GRACE_S:
+                raise BrowserLocked(f"space {name!r} was just handed back; retry shortly")
             rec = self._delegate_for_human(rec, reason="pane input")
             claimed = True
         out = self._eng().dispatch_input(name, ev)
@@ -455,6 +467,7 @@ class BrowserSupervisor:
         space_store.write_state(
             {"active_space": name, "url": rec.get("url") or "", "focus": OWNER_AGENT}
         )
+        self._takeover_ts[name] = time.monotonic()
         return rec
 
     def claim_user(self, name: str) -> dict[str, Any]:

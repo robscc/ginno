@@ -6,7 +6,7 @@ import pytest
 
 from ginno_runtime.browser import get_supervisor, reset_supervisor
 from ginno_runtime.browser.engine import FakeEngine
-from ginno_runtime.browser.helpers import transpile_js
+from ginno_runtime.browser.helpers import BrowserHandoff, transpile_js
 from ginno_runtime.browser.ownership import OWNER_AGENT, OWNER_DELEGATED, OWNER_USER
 from ginno_runtime.browser.supervisor import BrowserLocked, BrowserSupervisor
 
@@ -68,6 +68,30 @@ def test_login_wall_walk_and_handoff(sup):
     snap = sup.snapshot("check inbox")
     assert "欢迎回来" in snap["text"]
     assert "未读邮件" in snap["text"]
+
+
+def test_takeover_swallows_residual_input_within_grace(sup):
+    rec = sup.use_or_create("resume mode", session_id="s1")
+    with pytest.raises(BrowserHandoff):
+        sup.hand_off("resume mode", reason="need me")
+    sup.take_over("resume mode")
+    assert sup.get_space("resume mode")["owner"] == OWNER_AGENT
+
+    # Residual input right after 交还 (momentum scroll) must not steal the
+    # Space straight back — it is swallowed, ownership stays with the agent.
+    with pytest.raises(BrowserLocked):
+        sup.dispatch_input(
+            "resume mode", {"type": "mouseWheel", "x": 10, "y": 10, "deltaX": 0, "deltaY": 40}
+        )
+    assert sup.get_space("resume mode")["owner"] == OWNER_AGENT
+
+    # Once the grace window lapses, a real click takes over normally.
+    sup._takeover_ts.pop("resume mode", None)
+    out = sup.dispatch_input(
+        "resume mode", {"type": "mousePressed", "x": 10, "y": 10, "button": "left", "clickCount": 1}
+    )
+    assert out.get("handoff") is True
+    assert sup.get_space("resume mode")["owner"] == OWNER_DELEGATED
 
 
 def test_complete_forbidden_on_work_script(sup):
