@@ -144,7 +144,15 @@ def build_builtin_tools(
         if cand.is_dir():
             base_dir = cand
 
-    read_roots: list[Path] = [ws_root] + [p for p, _ in mounts]
+    # Mounted context dirs are passed to _path_denied as ``extra_roots`` (an
+    # unconditional "this is reachable" exemption). The WORKSPACE must NOT be
+    # in that list: the workspace exemption is handled separately inside
+    # _path_denied via ``base_dir``, where it is limited to a workspace that is
+    # a PROPER subdir of home — a workspace equal to home (the workflow cwd
+    # fallback) stays protected. Putting ws_root in extra_roots would exempt it
+    # unconditionally and reopen ~/.ginno to a cwd=home run.
+    mount_roots: list[Path] = [p for p, _ in mounts]
+    read_roots: list[Path] = [ws_root] + mount_roots
     write_roots: list[Path] = [ws_root] + [p for p, a in mounts if a == "rw"]
 
     def _mount_access(p: Path) -> str | None:
@@ -174,7 +182,7 @@ def build_builtin_tools(
         working directory. Returns contents or an ``[error]`` string."""
         try:
             p = _ws(base_dir, path)
-            if _path_denied(p, base_dir, read_roots):
+            if _path_denied(p, base_dir, mount_roots):
                 return _deny_msg(path)
             return p.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
@@ -193,7 +201,7 @@ def build_builtin_tools(
         instead of crashing the whole turn.
         """
         p = _ws(base_dir, path)
-        if _path_denied(p, base_dir, read_roots):
+        if _path_denied(p, base_dir, mount_roots):
             return _deny_msg(path)
         if _mount_access(p) == "ro":
             return _ro_write_msg(path)
@@ -249,10 +257,10 @@ def build_builtin_tools(
             try:
                 for r, dirs, files in os.walk(search_root):
                     # Prune hard-denied directories so they are never traversed.
-                    dirs[:] = [d for d in dirs if not _path_denied(Path(r) / d, base_dir, read_roots)]
+                    dirs[:] = [d for d in dirs if not _path_denied(Path(r) / d, base_dir, mount_roots)]
                     for name in files:
                         fp = Path(r) / name
-                        if _path_denied(fp, base_dir, read_roots):
+                        if _path_denied(fp, base_dir, mount_roots):
                             continue
                         rel = str(fp.relative_to(search_root))
                         try:
@@ -304,10 +312,10 @@ def build_builtin_tools(
             header = f"(root: {search_root})" if str(search_root) != str(base_dir) else ""
             for r, dirs, files in os.walk(search_root):
                 # Prune hard-denied directories (master-plan §2.3).
-                dirs[:] = [d for d in dirs if not _path_denied(Path(r) / d, base_dir, read_roots)]
+                dirs[:] = [d for d in dirs if not _path_denied(Path(r) / d, base_dir, mount_roots)]
                 for name in files:
                     f = Path(r) / name
-                    if _path_denied(f, base_dir, read_roots):
+                    if _path_denied(f, base_dir, mount_roots):
                         continue
                     try:
                         for i, line in enumerate(
@@ -329,7 +337,7 @@ def build_builtin_tools(
     def edit_file(path: str, old: str, new: str) -> str:
         """Replace a unique occurrence of `old` with `new` in a file."""
         p = _ws(base_dir, path)
-        if _path_denied(p, base_dir, read_roots):
+        if _path_denied(p, base_dir, mount_roots):
             return _deny_msg(path)
         if _mount_access(p) == "ro":
             return _ro_write_msg(path)
@@ -364,7 +372,7 @@ def build_builtin_tools(
             tok = tok.strip("'\"`;|&")
             if not tok or not (tok.startswith("/") or tok.startswith("~")):
                 continue
-            if _path_denied(_P(tok).expanduser(), base_dir, read_roots):
+            if _path_denied(_P(tok).expanduser(), base_dir, mount_roots):
                 return _deny_msg(tok)
         cwd = str(base_dir) if base_dir.is_dir() else None
         try:
