@@ -152,5 +152,53 @@ class CefEngine:
     def headed(self) -> bool:
         return True
 
+    def _activate(self, name: str):
+        tid = self._inner._activate(name)
+        try:
+            # 151 dock: tell the C host which lifted browser window to show.
+            # Slot = the target's index in creation order (_target_order), which
+            # matches the C host's g_docked adoption order; fall back to the
+            # /json/list index if the target isn't tracked yet.
+            order = getattr(self._inner, "_target_order", None) or []
+            if tid in order:
+                slot = order.index(tid)
+            else:
+                ids = [t.get("id") for t in self._inner._page_targets()]
+                slot = ids.index(tid) if tid in ids else 0
+            self._write_show(slot)
+        except Exception:
+            pass
+        return tid
+
+    @staticmethod
+    def _write_cmd(cmd: dict) -> None:
+        base = os.environ.get("GINNO_HOME") or str(Path.home() / ".ginno")
+        p = Path(base) / "browser" / "cef-cmd.json"
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(cmd))
+        except Exception:
+            pass
+
+    def _write_show(self, slot: int) -> None:
+        self._write_cmd({"op": "show", "slot": slot})
+
+    def show(self, name: str) -> None:
+        """Show this session's browser window, hide the others (single visible)."""
+        self._activate(name)
+
+    def show_only(self, name: str) -> None:
+        """Show this session's window if it already exists; never create/navigate."""
+        tid = self._inner._tabs.get(name)
+        if not tid:
+            return
+        order = getattr(self._inner, "_target_order", None) or []
+        slot = order.index(tid) if tid in order else 0
+        self._write_show(slot)
+
+    def hide_all(self) -> None:
+        """Hide every docked browser window (non-workspace route)."""
+        self._write_cmd({"op": "hide_all"})
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)

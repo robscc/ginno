@@ -11,6 +11,10 @@ from typing import Any
 from .. import paths
 from .ownership import ALL_OWNERS, OWNER_AGENT
 
+# Single shared embedded browser (multi-Space removed). All sessions / agents /
+# workflow runs target this one Space; its tabs are the global tab strip.
+GLOBAL_SPACE = "main"
+
 
 def browser_dir() -> Path:
     return paths.home() / "browser"

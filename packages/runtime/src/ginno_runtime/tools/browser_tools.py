@@ -15,7 +15,7 @@ from langgraph.types import interrupt
 
 from ..browser import get_supervisor
 from ..browser.ownership import AGENT_LOCKED
-from ..browser.supervisor import BrowserLocked
+from ..browser.supervisor import BrowserLocked, BrowserPreempted
 
 BROWSER_TOOL_NAMES = {
     "browser_eval",
@@ -41,6 +41,10 @@ def _interrupt_handoff(payload: dict) -> None:
             "reason": payload.get("reason") or "",
         }
     )
+
+
+def _interrupt_preempt(session_id: str) -> None:
+    interrupt({"kind": "browser_preempted", "space": session_id})
 
 
 def build_browser_tools(
@@ -74,7 +78,7 @@ def build_browser_tools(
 
         Args:
             code: JS (or the Python helper dialect). Helpers are already in scope.
-            space: Space name (3–6 words). Default is session-<id>.
+            space: Legacy. All sessions share one embedded browser; leave unset.
             timeout_s: Soft cap, default 60, max 180.
             headed: Whether to raise the window (handoff always forces headed).
         """
@@ -90,6 +94,9 @@ def build_browser_tools(
             )
         except BrowserLocked as e:
             return f"[error] {e}"
+        except BrowserPreempted:
+            _interrupt_preempt(space or sid or "default")
+            return "[error] browser preempted"
         except Exception as e:  # noqa: BLE001 — builtin contract
             return f"[error] browser_eval failed: {type(e).__name__}: {e}"
         if isinstance(out, dict) and out.get("interrupt") == "handoff":
@@ -106,7 +113,7 @@ def build_browser_tools(
         name = (space or "").strip()
         if not name:
             rec = sup.use_or_create(
-                f"session-{sid[:8]}" if sid else "default",
+                space or None,
                 session_id=sid or None,
                 run_id=run_id,
             )
@@ -129,7 +136,7 @@ def build_browser_tools(
         name = (space or "").strip()
         if not name:
             rec = sup.use_or_create(
-                f"session-{sid[:8]}" if sid else "default",
+                space or None,
                 session_id=sid or None,
                 run_id=run_id,
             )
@@ -161,7 +168,7 @@ def build_browser_tools(
         name = (space or "").strip()
         if not name:
             rec = sup.use_or_create(
-                f"session-{sid[:8]}" if sid else "default",
+                space or None,
                 session_id=sid or None,
                 run_id=run_id,
             )

@@ -28,6 +28,10 @@ from typing import Any, Protocol
 
 from . import spaces as space_store
 
+# Serializes Space→tab allocation/adoption so two concurrent navigations can't
+# both grab the same leftover about:blank (the multi-tab collision).
+_TAB_LOCK = threading.Lock()
+
 log = logging.getLogger(__name__)
 
 
@@ -538,6 +542,14 @@ class ChromeEngine:
         self._proc: subprocess.Popen | None = None
         self._tabs: dict[str, str] = {}  # space name → active CDP target id
         self._space_tabs: dict[str, list[str]] = {}  # space name → owned target ids
+        # Creation-order of CDP targets; matches the C host's g_docked adoption
+        # order so CefEngine can compute a stable dock slot per target.
+        self._target_order: list[str] = []
+        # LRU of live per-session browsers (single-window design §9): hidden
+        # browsers stay alive for instant session-switch; beyond the cap the
+        # least-recently-used is closed (next switch reloads it).
+        self._lru: list[str] = []
+        self.MAX_LIVE_BROWSERS = 3
         self._sessions: dict[str, Any] = {}  # target id → CdpSession
         self._refs: dict[str, dict[str, dict[str, Any]]] = {}  # space → refMap
         self._frames: dict[str, dict[str, Any]] = {}  # space → latest jpeg
@@ -568,9 +580,6 @@ class ChromeEngine:
             "--no-default-browser-check",
             "--disable-sync",
             "--disable-features=Translate",
-            # Initial only; Emulation.setDeviceMetricsOverride follows the pane.
-            "--window-size=1280,800",
-            "--force-device-scale-factor=1",
             "about:blank",
         ]
         log.info("chrome launch port=%s profile=%s", self._port, space_store.profile_dir())
@@ -643,6 +652,11 @@ class ChromeEngine:
         if sess is not None and sess.alive():
             return sess
         ws = self._ws_url_for(tid)
+        for _ in range(10):
+            if ws:
+                break
+            time.sleep(0.2)
+            ws = self._ws_url_for(tid)
         if not ws:
             raise RuntimeError(f"no debugger url for tab {tid}")
         sess = CdpSession(ws)
@@ -656,7 +670,6 @@ class ChromeEngine:
             log.debug("cdp domain enable failed", exc_info=True)
         self._enable_downloads(sess)
         self._sessions[tid] = sess
-        self._apply_metrics(sess)
         self._start_screencast(name, sess)
         return sess
 
@@ -680,31 +693,33 @@ class ChromeEngine:
         except Exception as e:
             last_err = e
             log.info("chrome PUT /json/new failed: %s", e)
-        # Fallback: Target.createTarget over any live CDP session (or a
-        # throwaway attach to the first page). Avoids GET /json/new 405.
+        # Fallback: Target.createTarget over the BROWSER-level websocket.
+        # Creating via a page session and then closing it also closes the new
+        # tab; the browser session keeps created tabs alive (verified on CEF).
         try:
             from .cdp import CdpSession
 
-            sess = next((s for s in self._sessions.values() if s is not None and s.alive()), None)
-            owned = sess is None
-            if sess is None:
-                pages = self._page_targets()
-                ws = (pages[0].get("webSocketDebuggerUrl") if pages else None) or None
-                if not ws:
-                    raise RuntimeError("no existing page to attach for Target.createTarget")
-                sess = CdpSession(ws)
-                sess.connect()
+            bws = self._browser_ws()
+            if not bws:
+                raise RuntimeError("no browser websocket for Target.createTarget")
+            sess = CdpSession(bws)
+            sess.connect()
             try:
                 out = sess.call("Target.createTarget", {"url": "about:blank"})
                 tid = (out or {}).get("targetId") or (out or {}).get("id")
                 if tid:
-                    return str(tid)
+                    tid = str(tid)
+                    # Wait until the new target is discoverable with a debugger
+                    # url; connecting before then yields Page.navigate timeouts.
+                    for _ in range(20):
+                        if self._ws_url_for(tid):
+                            break
+                        time.sleep(0.15)
+                    return tid
             finally:
-                if owned:
-                    try:
-                        sess.close()
-                    except Exception:
-                        pass
+                # Do NOT close the browser session — closing it would tear down
+                # tabs created through it.
+                pass
         except Exception as e:
             last_err = e
             log.exception("chrome Target.createTarget failed")
@@ -713,6 +728,11 @@ class ChromeEngine:
         raise RuntimeError("chrome could not open a new tab")
 
     def ensure_space(self, name: str) -> None:
+        with _TAB_LOCK:
+            self._ensure_space_locked(name)
+
+    def _ensure_space_locked(self, name: str) -> None:
+        self._touch_lru(name)
         if name in self._tabs:
             tid = self._tabs[name]
             if any(t.get("id") == tid for t in self._page_targets()):
@@ -744,6 +764,11 @@ class ChromeEngine:
 
     def _claim_tab(self, name: str, tid: str) -> None:
         self._tabs[name] = tid
+        order = getattr(self, "_target_order", None)
+        if order is None:
+            order = self._target_order = []
+        if tid not in order:
+            order.append(tid)
         owned_map = getattr(self, "_space_tabs", None)
         if owned_map is None:
             self._space_tabs = {}
@@ -752,8 +777,35 @@ class ChromeEngine:
         if tid not in owned:
             owned.append(tid)
 
+    def _browser_ws(self) -> str | None:
+        """Browser-level DevTools websocket (for Target.createTarget)."""
+        try:
+            rec = self._http("/json/version")
+        except Exception:
+            return None
+        return rec.get("webSocketDebuggerUrl") if isinstance(rec, dict) else None
+
+    def _touch_lru(self, name: str) -> None:
+        """Mark ``name``'s browser as most-recently used; evict over the cap."""
+        lru = getattr(self, "_lru", None)
+        if lru is None:
+            lru = self._lru = []
+        if name in lru:
+            lru.remove(name)
+        lru.append(name)
+        cap = getattr(self, "MAX_LIVE_BROWSERS", 3)
+        while len(lru) > cap:
+            old = lru.pop(0)
+            if old == name:
+                continue
+            try:
+                self.close_space(old)
+            except Exception:
+                pass
+
     def _activate(self, name: str) -> str | None:
         self.ensure_space(name)
+        self._touch_lru(name)
         tid = self._tabs.get(name)
         if not tid:
             return None
@@ -1187,6 +1239,9 @@ class ChromeEngine:
             return {"ok": False, "error": str(e)}
         kept = [x for x in owned if x != tid]
         self._space_tabs[name] = kept
+        order = getattr(self, "_target_order", None) or []
+        if tid in order:
+            order.remove(tid)
         if self._tabs.get(name) == tid:
             nxt = kept[-1] if kept else None
             if nxt:
@@ -1211,8 +1266,11 @@ class ChromeEngine:
         if active and active not in owned:
             owned.append(active)
         self._refs.pop(name, None)
+        order = getattr(self, "_target_order", None) or []
         for tid in owned:
             self._drop_session(tid)
+            if tid in order:
+                order.remove(tid)
             try:
                 self._http(f"/json/close/{tid}")
             except Exception:
@@ -1245,49 +1303,13 @@ class ChromeEngine:
         except Exception:
             log.debug("screencast start on activate failed", exc_info=True)
 
+    # Companion-window model: the OS window is user-sized; we never force a
+    # viewport / device-metrics override. Kept as no-ops for API compat.
     def set_bounds(self, x: int, y: int, width: int, height: int) -> dict[str, Any]:
-        # Kept for API compat. Viewport (not OS window) is what we size.
-        if width >= 80 and height >= 80:
-            return self.set_viewport("", int(width), int(height))
-        return {"ok": False, "error": "tile too small"}
+        return {"ok": True, "note": "companion window is user-sized"}
 
     def set_viewport(self, name: str, width: int, height: int, dpr: float = 1.0) -> dict[str, Any]:
-        w = max(200, min(int(width or 0), 2400))
-        h = max(160, min(int(height or 0), 1800))
-        # Clicks are CSS pixels. Keep deviceScaleFactor at 1 so the screencast
-        # bitmap and Input.dispatch* share the same space as the pane tile.
-        # Sharpness comes from a 1:1 CSS viewport matching the tile, not from
-        # a Retina override that then has to be remapped on every pointer.
-        scale = 1.0
-        self._viewport = {"width": w, "height": h, "dpr": scale}
-        targets = [name] if name else list(self._tabs)
-        for space in targets:
-            try:
-                sess = self._session(space)
-                self._apply_metrics(sess)
-                self._start_screencast(space, sess)
-            except Exception:
-                log.debug("set_viewport failed for %s", space, exc_info=True)
-        return {"ok": True, **self._viewport}
-
-    def _apply_metrics(self, sess: Any) -> None:
-        w = int(self._viewport.get("width") or 1024)
-        h = int(self._viewport.get("height") or 768)
-        try:
-            sess.call(
-                "Emulation.setDeviceMetricsOverride",
-                {
-                    "width": w,
-                    "height": h,
-                    "deviceScaleFactor": 1,
-                    "mobile": False,
-                    "screenWidth": w,
-                    "screenHeight": h,
-                    "dontSetVisibleSize": False,
-                },
-            )
-        except Exception:
-            log.debug("setDeviceMetricsOverride failed", exc_info=True)
+        return {"ok": True, "note": "companion window is user-sized"}
 
     def _start_screencast(self, name: str, sess: Any) -> None:
         if not getattr(self, "_screencast", True):

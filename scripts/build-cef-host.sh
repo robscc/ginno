@@ -142,8 +142,10 @@ if [[ -f "${HELPER_BIN}" && "${SRC}/helper_main.c" -ot "${HELPER_BIN}" ]]; then
 fi
 if [[ "${need_helper}" == "1" ]]; then
   echo "cc helper_main.c"
+  # CEF_API_VERSION comes from the vendored header (151 defines it, older
+  # builds like 127 don't) so helper_main.c can pick the right cef_api_hash
+  # arity. Don't hardcode it.
   "${CLANG}" -std=c11 -O2 -mmacosx-version-min="${MACOSX_MIN}" \
-    -DCEF_API_VERSION=15101 \
     -I "${INCLUDE_ROOT}" \
     -o "${HELPER_BIN}" "${SRC}/helper_main.c"
 fi
@@ -162,7 +164,6 @@ if [[ "${need_dylib}" == "1" ]]; then
   echo "cc ginno_cef.m → libginno_cef.dylib"
   "${CLANG}" -std=c11 -fobjc-arc -O2 -dynamiclib \
     -mmacosx-version-min="${MACOSX_MIN}" \
-    -DCEF_API_VERSION=15101 \
     -I "${INCLUDE_ROOT}" \
     -I "${SRC}" \
     -framework AppKit -framework CoreFoundation -framework WebKit \

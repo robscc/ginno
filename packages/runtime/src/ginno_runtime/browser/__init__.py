@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .spaces import GLOBAL_SPACE
 from .supervisor import BrowserSupervisor
 
 _SUPERVISOR: BrowserSupervisor | None = None
@@ -45,6 +46,7 @@ def waiting_human(session_id: str | None = None) -> bool:
 
 __all__ = [
     "BrowserSupervisor",
+    "GLOBAL_SPACE",
     "get_supervisor",
     "reset_supervisor",
     "waiting_human",

@@ -54,6 +54,14 @@ static cef_browser_t* g_browser;
 static CFRunLoopTimerRef g_pump;
 static CFRunLoopTimerRef g_pump_once;
 static void* g_parent;
+/* Dock (151 Chrome runtime): browsers come up as their own NSWindows. Rather
+ * than reparenting views (which suspends the page and breaks Page.navigate),
+ * we turn each CEF window into a borderless CHILD of the main window, pinned
+ * over the atrium hole. The page stays alive/navigable and looks embedded.
+ * g_docked holds the windows in creation order; g_active picks the visible. */
+static NSMutableArray* g_docked = nil;
+static int g_active = 0;
+static int g_hidden_all = 0;  // non-workspace route: hide every docked window
 
 /* Timestamped breadcrumb trail to /tmp/ginno-cef-bc.log — correlates the
  * last host action with a Chromium-side crash (stripped .ips symbols are
@@ -204,6 +212,113 @@ static void fit_children(void* parent_nsview) {
   }
 }
 
+/* --- reparent (151) ------------------------------------------------------ */
+
+static NSString* rep_cmd_path(void) {
+  const char* home = getenv("GINNO_HOME");
+  NSString* base = home ? [NSString stringWithUTF8String:home]
+                        : [NSHomeDirectory() stringByAppendingString:@"/.ginno"];
+  return [base stringByAppendingString:@"/browser/cef-cmd.json"];
+}
+
+static BOOL is_cef_window(NSWindow* w) {
+  if (w == nil) return NO;
+  NSRect f = w.frame;
+  if (f.size.width < 100 || f.size.height < 100) return NO;  // skip chrome strips
+  if ([w.title isEqualToString:@"Ginno"]) return NO;         // the app window
+  // Chrome-runtime companion windows don't expose a "Cef" contentView class;
+  // every non-main, content-sized window of this process is a companion browser.
+  return YES;
+}
+
+static NSWindow* main_window(void) {
+  for (NSWindow* w in [NSApp windows]) {
+    if ([w.title isEqualToString:@"Ginno"]) return w;
+  }
+  return nil;
+}
+
+/* Position every docked CEF window over the hole; show only the active. */
+/* Companion-window model: browsers are ordinary OS windows. We only control
+ * VISIBILITY (one active shown, rest ordered out; hide_all hides everything).
+ * No hole / no pinning — the user can move/resize the companion window. */
+static void dock_layout(void) {
+  for (NSUInteger i = 0; i < g_docked.count; i++) {
+    NSWindow* w = g_docked[i];
+    if (!g_hidden_all && (int)i == g_active) [w orderFront:nil];
+    else [w orderOut:nil];
+  }
+}
+
+/* Adopt any new CEF browser window as a borderless child pinned to the hole. */
+static void dock_scan(void) {
+  if (g_docked == nil) g_docked = [NSMutableArray array];
+  // Prune docked windows that no longer exist (a tab was closed) so the slot
+  // indices stay aligned with the runtime's creation-order list.
+  NSArray* live = [NSApp windows];
+  NSMutableArray* dead = [NSMutableArray array];
+  for (NSWindow* w in g_docked) {
+    if (![live containsObject:w]) [dead addObject:w];
+  }
+  if (dead.count) {
+    [g_docked removeObjectsInArray:dead];
+    if (g_active >= (int)g_docked.count) g_active = (int)g_docked.count - 1;
+    if (g_active < 0) g_active = 0;
+  }
+  BOOL added = NO;
+  for (NSWindow* w in live) {
+    if (!is_cef_window(w)) continue;
+    if ([g_docked containsObject:w]) continue;
+    // Companion windows stay ordinary, movable OS windows; we only track them
+    // for show/hide, no restyle / no parenting into the main window.
+    [g_docked addObject:w];
+    added = YES;
+  }
+  if (added) {
+    g_active = (int)g_docked.count - 1;  // newest visible until runtime says otherwise
+    bc("dock_scan now %lu windows, active=%d", (unsigned long)g_docked.count, g_active);
+  }
+  dock_layout();
+}
+
+/* Runtime writes {"op":"show","slot":N}; we flip the visible lifted view. */
+static void rep_read_cmd(void) {
+  NSString* p = rep_cmd_path();
+  NSData* data = [NSData dataWithContentsOfFile:p];
+  if (data == nil) return;
+  NSDictionary* d = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if (d == nil) { [[NSFileManager defaultManager] removeItemAtPath:p error:nil]; return; }
+  NSString* op = d[@"op"];
+  if ([op isEqualToString:@"show"]) {
+    g_hidden_all = 0;
+    int slot = [d[@"slot"] intValue];
+    if (slot >= 0 && slot < (int)g_docked.count) g_active = slot;
+    dock_layout();
+  } else if ([op isEqualToString:@"hide_all"]) {
+    g_hidden_all = 1;
+    dock_layout();
+  }
+  [[NSFileManager defaultManager] removeItemAtPath:p error:nil];
+}
+
+static void reparent_timer_cb(CFRunLoopTimerRef timer, void* info) {
+  (void)timer; (void)info;
+  if (!g_inited) return;
+  dock_scan();
+  rep_read_cmd();
+}
+
+static void start_reparent_timer(void) {
+  CFRunLoopTimerContext ctx = {0, NULL, NULL, NULL, NULL};
+  CFRunLoopTimerRef t = CFRunLoopTimerCreate(
+      kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 0.1, 0.1, 0, 0,
+      reparent_timer_cb, &ctx);
+  if (t != NULL) {
+    CFRunLoopAddTimer(CFRunLoopGetMain(), t, kCFRunLoopCommonModes);
+    CFRelease(t);
+  }
+}
+
 static int load_framework(const char* framework_dir) {
   if (g_fw != NULL) {
     return 1;
@@ -307,9 +422,16 @@ static void evict_profile_holders(const char* cache_path) {
 }
 
 static int configure_api_version(void) {
-  /* CEF 151 CToCpp wrappers FATAL with "invalid version -1" unless the
-   * client process calls cef_api_hash before handing over any cef_*_t. */
+  /* Newer CEF CToCpp wrappers FATAL with "invalid version -1" unless the
+   * client process calls cef_api_hash before handing over any cef_*_t. The
+   * signature changed: older builds (<=~135) expose cef_api_hash(entry) and do
+   * not define CEF_API_VERSION; newer (151+) expose cef_api_hash(version,
+   * entry) and define CEF_API_VERSION. Branch on the header. */
+#ifdef CEF_API_VERSION
   const char* hash = cef_api_hash(CEF_API_VERSION, 0);
+#else
+  const char* hash = cef_api_hash(0);
+#endif
   if (hash == NULL || hash[0] == '\0') {
     set_err("cef_api_hash failed");
     return 0;
@@ -408,7 +530,9 @@ static int life_on_before_popup(
     cef_life_span_handler_t* self,
     cef_browser_t* browser,
     cef_frame_t* frame,
-    int popup_id,
+#ifdef CEF_API_VERSION
+    int popup_id,  /* added in newer CEF */
+#endif
     const cef_string_t* target_url,
     const cef_string_t* target_frame_name,
     cef_window_open_disposition_t target_disposition,
@@ -422,7 +546,9 @@ static int life_on_before_popup(
   (void)self;
   (void)browser;
   (void)frame;
+#ifdef CEF_API_VERSION
   (void)popup_id;
+#endif
   (void)target_url;
   (void)target_frame_name;
   (void)target_disposition;
@@ -495,6 +621,10 @@ static void app_on_before_command_line(cef_app_t* self,
   append_switch(command_line, "noerrdialogs");
   append_switch(command_line, "disable-session-crashed-bubble");
   append_switch(command_line, "hide-crash-restore-bubble");
+  /* Avoid the macOS "Chromium Safe Storage" keychain prompt, which blocks
+   * browser IO (causes "Chrome not ready" + Page.navigate timeouts). */
+  append_switch(command_line, "use-mock-keychain");
+  append_switch(command_line, "password-store=basic");
 }
 
 static cef_browser_process_handler_t* app_get_bph(cef_app_t* self) {
@@ -565,7 +695,9 @@ static void create_browser_now(void) {
 
   cef_window_info_t wi;
   memset(&wi, 0, sizeof(wi));
-  wi.size = sizeof(wi);
+#ifdef CEF_API_VERSION
+  wi.size = sizeof(wi);  /* field only exists in newer CEF */
+#endif
   /* cefclient-mac configuration: parent_view only. CEF creates and owns
    * its child NSView; we only resize the parent. */
   wi.parent_view = g_parent;
@@ -723,6 +855,7 @@ int ginno_cef_init(const char* framework_dir, const char* helper_exe,
   }
   g_inited = 1;
   start_pump();
+  start_reparent_timer();
   /* One tick so OnContextInitialized can run before we return. Never
    * call create_browser_sync from didFinishLaunching — that CHECKs. */
   cef_do_message_loop_work();
@@ -750,6 +883,7 @@ int ginno_cef_attach(void* parent_nsview, int width, int height) {
    * middle of CEF's own layout pass has crashed inside Chromium. */
   dispatch_async(dispatch_get_main_queue(), ^{
     fit_children(parent_nsview);
+    dock_layout();  // re-pin docked browser windows over the resized hole
   });
 
   NSView* parent = (__bridge NSView*)parent_nsview;

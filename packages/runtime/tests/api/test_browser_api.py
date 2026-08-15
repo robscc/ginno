@@ -16,6 +16,7 @@ def test_browser_state_empty(client):
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
+    # Per-session model: no browser context until a session activates one.
     assert data["spaces"] == []
     # Tests force FakeEngine; production would report chrome or a real error.
     assert data.get("engine") in ("fake", "chrome", "idle")

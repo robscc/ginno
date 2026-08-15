@@ -30,71 +30,20 @@ impl BrowserTileHost {
     }
 }
 
-/// Punch the WKWebView background and attach the sibling tile view.
+/// Companion-window model: no hole, no wrapper, no transparent WKWebView.
+/// Just start the CEF host; CEF browsers are ordinary companion OS windows.
 pub fn prepare(window: &WebviewWindow) {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use objc2::runtime::AnyObject;
-        use objc2::{MainThreadMarker, MainThreadOnly};
-        use objc2_app_kit::{NSView, NSWindowOrderingMode};
-        use objc2_foundation::{NSNumber, NSPoint, NSRect, NSSize, NSString};
-        use objc2_web_kit::WKWebView;
-
-        let window_for_state = window.clone();
-        let _ = window.with_webview(move |webview| unsafe {
-            let Some(mtm) = MainThreadMarker::new() else {
-                return;
-            };
-            let view: &WKWebView = &*webview.inner().cast::<WKWebView>();
-            // Private KVC used by wry's own `transparent` feature and by atrium:
-            // https://getatrium.dev/blog/embedding-real-browser-tauri
-            let key = NSString::from_str("drawsBackground");
-            let no = NSNumber::numberWithBool(false);
-            let any = &*(view as *const WKWebView).cast::<AnyObject>();
-            msg_send_set_value(any, &no, &key);
-
-            let Some(content) = view.superview() else {
-                return;
-            };
-            let wrapper = NSView::initWithFrame(
-                NSView::alloc(mtm),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
-            );
-            wrapper.setWantsLayer(true);
-            wrapper.setHidden(true);
-            // Visual stack: wrapper sits *behind* the webview. Hit-testing still
-            // follows subview order, so we hide the wrapper when the pane is
-            // closed — otherwise chrome clicks would miss (atrium's surprise).
-            let as_nsview = &*(view as *const WKWebView).cast::<NSView>();
-            content.addSubview_positioned_relativeTo(
-                &wrapper,
-                NSWindowOrderingMode::Below,
-                Some(as_nsview),
-            );
-            let ptr = RetainedExt::as_ptr(&wrapper) as usize;
-            // Superview now owns the view; leak our extra retain so the pointer
-            // stays valid for the life of the window.
-            std::mem::forget(wrapper);
-            if let Some(host) = window_for_state.try_state::<BrowserTileHost>() {
-                if let Ok(mut guard) = host.wrapper.lock() {
-                    *guard = Some(ptr);
-                }
-            }
-            let app = window_for_state.app_handle().clone();
-            let parent = ptr as *mut std::ffi::c_void;
-            let wv_ptr = (view as *const WKWebView).cast::<std::ffi::c_void>() as *mut std::ffi::c_void;
-            crate::cef_host::ensure_init(&app, parent);
-            crate::cef_host::install_hittest(wv_ptr, parent);
-        });
-    }
+    let app = window.app_handle().clone();
+    crate::cef_host::ensure_init(&app, std::ptr::null_mut());
 }
 
 /// Apply the last `ginno:browser-tile` payload to the native wrapper.
+/// Companion-window model: the tile/hole is gone; visibility is driven by the
+/// runtime via cef-cmd.json show/hide_all, so this is a no-op.
 pub fn apply(app: &tauri::AppHandle, payload: &BrowserTilePayload) {
+    let _ = (app, payload);
+    return;
+    #[allow(unreachable_code)]
     let Some(window) = app.get_webview_window("main") else {
         return;
     };

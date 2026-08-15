@@ -25,6 +25,11 @@ class BrowserLocked(RuntimeError):
     """Agent tools hard-stop while ownership is delegated / user-owned."""
 
 
+class BrowserPreempted(RuntimeError):
+    """Single-window: the user switched the visible browser to another session,
+    so this session's agent browser calls pause (interrupt) until resumed."""
+
+
 # After a deliberate 交还 (take_over), real page inputs landing within this
 # window are treated as residual (trackpad momentum scroll, a slow release) and
 # must NOT flip the Space straight back to the human — otherwise the pane
@@ -49,6 +54,9 @@ class BrowserSupervisor:
         self._reattached = False
         self._last_promo_check = 0.0
         self._takeover_ts: dict[str, float] = {}
+        # Sessions whose visible browser was taken by a user session-switch while
+        # their agent was using it; their next browser op pauses (preempted).
+        self._preempted: set[str] = set()
 
     # -- engine ------------------------------------------------------------ #
 
@@ -116,20 +124,21 @@ class BrowserSupervisor:
         run_id: str | None = None,
         confirm_shared: bool = False,
     ) -> dict[str, Any]:
-        key = (name or "").strip() or (
-            f"session-{session_id[:8]}" if session_id else "default"
-        )
+        # Per-session browser (single-window design): no explicit name means the
+        # calling session's own browser context. Explicit names still allowed.
+        explicit = bool((name or "").strip())
+        key = (name or "").strip() or (session_id or "default")
         with self._lock:
             existing = space_store.get_space(key)
             if existing and existing["owner"] == OWNER_USER:
                 raise BrowserLocked(
                     f"space {key!r} is user-owned; claim it explicitly first"
                 )
-            if existing and run_id:
+            # Explicitly-named shared spaces keep the cross-run lock (two runs must
+            # not silently share); session-default keys are per-session, no lock.
+            if explicit and existing and run_id:
                 bound = existing.get("bound_run_id")
                 if bound and bound != run_id:
-                    # Two runs must not silently share a Space (design §9.4).
-                    # Explicit `shared:` prefix + confirm_shared is the opt-in.
                     if not (key.startswith("shared:") and confirm_shared):
                         raise BrowserLocked(
                             f"space {key!r} is bound to run {bound}; "
@@ -141,12 +150,6 @@ class BrowserSupervisor:
                 "bound_session_id": session_id,
                 "bound_run_id": run_id,
             }
-            if existing:
-                # Same-name reuse (design §4.2 / §9.3). Do not recreate.
-                if session_id and not rec.get("bound_session_id"):
-                    rec["bound_session_id"] = session_id
-                if run_id and not rec.get("bound_run_id"):
-                    rec["bound_run_id"] = run_id
             rec["owner"] = rec.get("owner") or OWNER_AGENT
             rec = space_store.upsert_space(rec)
             self._eng().ensure_space(key)
@@ -172,7 +175,61 @@ class BrowserSupervisor:
             raise BrowserLocked(
                 f"space {name!r} is {rec['owner']}; agent tools hard-stop until takeOver"
             )
+        if name in self._preempted:
+            # User switched the visible browser away; pause until resume (§3.6).
+            raise BrowserPreempted(
+                f"space {name!r} lost the browser; resume to continue"
+            )
         return rec
+
+    def activate_session(self, session_id: str) -> dict[str, Any]:
+        """User switched the visible browser to ``session_id`` (browser_focus).
+
+        Show-only: never creates a tab or navigates (so focusing/toggling never
+        clobbers the user's current page to about:blank). The browser window
+        appears via agent browsing / explicit open; we only show/hide it here.
+        The previous agent-owned session is marked preempted."""
+        st = space_store.read_state()
+        prev = st.get("active_space")
+        rec = space_store.get_space(session_id) or space_store.upsert_space(
+            {
+                "name": session_id,
+                "owner": OWNER_AGENT,
+                "bound_session_id": session_id,
+                "bound_run_id": None,
+            }
+        )
+        if prev and prev != session_id:
+            p = space_store.get_space(prev)
+            if p and p.get("owner") == OWNER_AGENT:
+                self._preempted.add(prev)
+        self._preempted.discard(session_id)
+        space_store.write_state(
+            {
+                "active_space": session_id,
+                "url": rec.get("url") or "",
+                "focus": rec.get("owner") or OWNER_AGENT,
+            }
+        )
+        try:
+            show = getattr(self._eng(), "show_only", None)
+            if show:
+                show(session_id)
+        except Exception:
+            log.debug("browser show on activate failed", exc_info=True)
+        return rec
+
+    def hide_browser(self) -> None:
+        """Hide every browser window (user left the workspace route)."""
+        try:
+            hide = getattr(self._eng(), "hide_all", None)
+            if hide:
+                hide()
+        except Exception:
+            log.debug("browser hide_all failed", exc_info=True)
+
+    def resume_preempted(self, session_id: str) -> None:
+        self._preempted.discard(session_id)
 
     def navigate(self, name: str, url: str, *, human: bool = False) -> dict[str, Any]:
         from .helpers import normalize_url
@@ -264,6 +321,12 @@ class BrowserSupervisor:
         rec = self._require(name)
         tabs = self._eng().list_tabs(name)
         rec["tabs"] = [t.get("id") for t in tabs if isinstance(t, dict) and t.get("id")]
+        # Keep the Space record's url/title in sync with the active tab so the
+        # address bar / world-state track in-page navigation without a navigate.
+        active = next((t for t in tabs if isinstance(t, dict) and t.get("active")), None)
+        if active:
+            rec["url"] = active.get("url") or rec.get("url") or ""
+            rec["title"] = active.get("title") or rec.get("title") or ""
         space_store.upsert_space(rec)
         return tabs
 
@@ -493,6 +556,10 @@ class BrowserSupervisor:
             return {"ok": False, "error": f"no such space {name!r}"}
         if rec["owner"] == OWNER_USER:
             return {"done": False, "skipped": "user-owned", "space": name}
+        # The shared global Space must never be torn down — it holds every
+        # session's tabs.
+        if name == space_store.GLOBAL_SPACE:
+            keep = True
         if not from_complete_node:
             return {
                 "ok": False,
@@ -562,6 +629,8 @@ class BrowserSupervisor:
             self._eng()
         except Exception:
             log.exception("engine start from state() failed")
+        # Per-session model: report stored state as-is; active_space is set when a
+        # session activates its browser (use_or_create / session activate).
         st = space_store.read_state()
         spaces = space_store.list_spaces()
         eng = self._engine
@@ -596,9 +665,7 @@ class BrowserSupervisor:
         allow_complete: bool = False,
     ) -> dict[str, Any]:
         """Run a helper script. ``BrowserHandoff`` is re-raised for the tool/node."""
-        name = (space or "").strip() or (
-            f"session-{session_id[:8]}" if session_id else "default"
-        )
+        name = (space or "").strip() or (session_id or "default")
         rec = self.use_or_create(name, session_id=session_id, run_id=run_id)
         if rec["owner"] in AGENT_LOCKED:
             raise BrowserLocked(

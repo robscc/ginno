@@ -495,7 +495,7 @@ class BrowserNode(BaseNode):
     async def execute(node, cctx, state, config, eff) -> dict:
         from langgraph.types import interrupt
 
-        from ...browser import get_supervisor
+        from ...browser import GLOBAL_SPACE, get_supervisor
         from ...browser.helpers import BrowserHandoff
         from ...browser.supervisor import BrowserLocked
 
@@ -504,7 +504,7 @@ class BrowserNode(BaseNode):
         session_id = run_ctx.get("present_in_session_id") or run_ctx.get("session_id")
         ctx = dict(state.get("context") or {})
         action = (node.get("action") or "eval").strip()
-        space = wf_expr.render(node.get("space") or f"wf-{run_id or 'run'}", ctx).strip()
+        space = wf_expr.render(node.get("space") or GLOBAL_SPACE, ctx).strip()
         code = wf_expr.render(node.get("code") or "", ctx)
         url = wf_expr.render(node.get("url") or "", ctx)
         timeout_s = int(node.get("timeout_s") or 180)

@@ -21,7 +21,7 @@ def _broadcast(event: str, data: dict) -> None:
 
 
 @router.get("/api/browser/state")
-async def browser_state() -> dict:
+def browser_state() -> dict:
     try:
         return {"ok": True, **get_supervisor().state()}
     except Exception as e:  # noqa: BLE001
@@ -35,7 +35,7 @@ async def list_spaces() -> dict:
 
 
 @router.post("/api/browser/spaces")
-async def create_or_use_space(data: dict) -> dict:
+def create_or_use_space(data: dict) -> dict:
     data = data or {}
     name = (data.get("name") or "").strip()
     owner = (data.get("owner") or "agent").strip()
@@ -58,7 +58,9 @@ async def create_or_use_space(data: dict) -> dict:
 
 
 @router.post("/api/browser/spaces/{name}/navigate")
-async def navigate_space(name: str, data: dict) -> dict:
+def navigate_space(name: str, data: dict) -> dict:
+    # Sync (threadpool) handler: the CDP engine is blocking; an async def here
+    # would stall the event loop and hang concurrent browser requests.
     url = (data or {}).get("url") or ""
     human = bool((data or {}).get("human"))
     before = get_supervisor().get_space(name)
@@ -93,7 +95,7 @@ async def navigate_space(name: str, data: dict) -> dict:
 
 
 @router.post("/api/browser/spaces/{name}/handoff")
-async def handoff_space(name: str, data: dict | None = None) -> dict:
+def handoff_space(name: str, data: dict | None = None) -> dict:
     reason = ((data or {}).get("reason") or "").strip()
     try:
         get_supervisor().hand_off(name, reason=reason)
@@ -124,7 +126,7 @@ async def get_space(name: str) -> dict:
 
 
 @router.post("/api/browser/spaces/{name}/takeover")
-async def takeover_space(name: str) -> dict:
+def takeover_space(name: str) -> dict:
     try:
         rec = get_supervisor().take_over(name)
     except (BrowserLocked, KeyError) as e:
@@ -136,7 +138,7 @@ async def takeover_space(name: str) -> dict:
 
 
 @router.post("/api/browser/spaces/{name}/complete")
-async def complete_space(name: str, data: dict | None = None) -> dict:
+def complete_space(name: str, data: dict | None = None) -> dict:
     keep = True if data is None else bool((data or {}).get("keep", True))
     try:
         rec = get_supervisor().complete(name, keep=keep, from_complete_node=True)
@@ -149,7 +151,7 @@ async def complete_space(name: str, data: dict | None = None) -> dict:
 
 
 @router.post("/api/browser/spaces/{name}/screenshot")
-async def screenshot_space(name: str, data: dict | None = None) -> dict:
+def screenshot_space(name: str, data: dict | None = None) -> dict:
     data = data or {}
     try:
         out = get_supervisor().screenshot(
@@ -166,13 +168,13 @@ async def screenshot_space(name: str, data: dict | None = None) -> dict:
 
 
 @router.post("/api/browser/dock")
-async def dock_browser(data: dict) -> dict:
+def dock_browser(data: dict) -> dict:
     """Compat alias: tile size → viewport. No OS window is moved."""
-    return await set_viewport(data)
+    return set_viewport(data)
 
 
 @router.post("/api/browser/viewport")
-async def set_viewport(data: dict) -> dict:
+def set_viewport(data: dict) -> dict:
     data = data or {}
     try:
         out = get_supervisor().set_viewport(
@@ -187,7 +189,7 @@ async def set_viewport(data: dict) -> dict:
 
 
 @router.get("/api/browser/spaces/{name}/frame")
-async def space_frame(name: str):
+def space_frame(name: str):
     from fastapi.responses import Response
 
     try:
@@ -212,7 +214,7 @@ async def space_frame(name: str):
 
 
 @router.post("/api/browser/spaces/{name}/input")
-async def space_input(name: str, data: dict) -> dict:
+def space_input(name: str, data: dict) -> dict:
     try:
         out = get_supervisor().dispatch_input(name, data or {})
     except (BrowserLocked, KeyError) as e:
@@ -254,7 +256,7 @@ async def import_chrome(data: dict | None = None) -> dict:
 
 
 @router.post("/api/browser/eval")
-async def eval_in_space(data: dict) -> dict:
+def eval_in_space(data: dict) -> dict:
     data = data or {}
     try:
         out = get_supervisor().eval(
@@ -282,7 +284,7 @@ async def eval_in_space(data: dict) -> dict:
 
 
 @router.get("/api/browser/spaces/{name}/tabs")
-async def list_tabs(name: str) -> dict:
+def list_tabs(name: str) -> dict:
     try:
         tabs = get_supervisor().list_tabs(name)
     except KeyError as e:
@@ -293,7 +295,7 @@ async def list_tabs(name: str) -> dict:
 
 
 @router.post("/api/browser/spaces/{name}/tabs")
-async def open_tab(name: str, data: dict | None = None) -> dict:
+def open_tab(name: str, data: dict | None = None) -> dict:
     data = data or {}
     human = bool(data.get("human"))
     try:
@@ -313,7 +315,7 @@ async def open_tab(name: str, data: dict | None = None) -> dict:
 
 
 @router.post("/api/browser/spaces/{name}/tabs/{tab_id}/activate")
-async def activate_tab(name: str, tab_id: str, data: dict | None = None) -> dict:
+def activate_tab(name: str, tab_id: str, data: dict | None = None) -> dict:
     human = bool((data or {}).get("human", True))
     try:
         rec = get_supervisor().switch_tab(name, tab_id, human=human)
@@ -326,7 +328,7 @@ async def activate_tab(name: str, tab_id: str, data: dict | None = None) -> dict
 
 
 @router.post("/api/browser/spaces/{name}/tabs/{tab_id}/close")
-async def close_tab(name: str, tab_id: str, data: dict | None = None) -> dict:
+def close_tab(name: str, tab_id: str, data: dict | None = None) -> dict:
     human = bool((data or {}).get("human", True))
     try:
         out = get_supervisor().close_tab(name, tab_id, human=human)
@@ -338,6 +340,42 @@ async def close_tab(name: str, tab_id: str, data: dict | None = None) -> dict:
     if rec:
         _broadcast("browser.space", rec)
     return {"ok": bool(out.get("ok", True)), **out}
+
+
+@router.post("/api/browser/session/{session_id}/activate")
+def activate_session(session_id: str) -> dict:
+    """Switch the visible browser to this session (browser_focus). No reload for
+    kept-alive sessions; the C host shows that browser and hides others."""
+    try:
+        rec = get_supervisor().activate_session(session_id)
+    except (BrowserLocked, KeyError) as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    # Only broadcast focus (which browser is visible). Do NOT broadcast
+    # browser.space here — ChatStream treats owner==agent browser.space as
+    # "agent started browsing" and auto-opens the pane (compact), which would
+    # hide the composer on a plain session switch.
+    _broadcast("browser.focus", {"active_space": session_id})
+    return {"ok": True, "space": rec}
+
+
+@router.post("/api/browser/hide")
+def hide_browser() -> dict:
+    """Hide every browser window (user navigated off the workspace route)."""
+    try:
+        get_supervisor().hide_browser()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True}
+
+
+@router.get("/api/browser/focus")
+def browser_focus() -> dict:
+    from ..browser import spaces as space_store
+
+    st = space_store.read_state()
+    return {"ok": True, "active_space": st.get("active_space")}
 
 
 @router.get("/api/browser/spaces/{name}/downloads")
@@ -361,7 +399,7 @@ async def list_all_downloads() -> dict:
 
 
 @router.post("/api/browser/reset")
-async def reset_browser() -> dict:
+def reset_browser() -> dict:
     """Test/ops: drop the singleton and reap Chrome."""
     reset_supervisor()
     return {"ok": True}

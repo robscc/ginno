@@ -25,7 +25,17 @@ typedef struct {
   char** argv;
 } cef_main_args_t;
 
+/* cef_api_hash arity changed across CEF versions: older (<=~135) expose
+ * cef_api_hash(entry) and do NOT define CEF_API_VERSION; newer (151+) expose
+ * cef_api_hash(version, entry) and define CEF_API_VERSION in the header.
+ * Branch on the header so the right call is made for the vendored build. */
+#ifdef CEF_API_VERSION
 typedef const char* (*cef_api_hash_fn)(int, int);
+#define GINNO_CALL_API_HASH(fn) (fn)(CEF_API_VERSION, 0)
+#else
+typedef const char* (*cef_api_hash_fn)(int);
+#define GINNO_CALL_API_HASH(fn) (fn)(0)
+#endif
 typedef int (*cef_execute_process_fn)(const cef_main_args_t*, void*, void*);
 
 static int dirname_inplace(char* path) {
@@ -76,7 +86,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "ginno-helper: dlsym cef_api_hash: %s\n", dlerror());
     return 1;
   }
-  if (api_hash(CEF_API_VERSION, 0) == NULL) {
+  if (GINNO_CALL_API_HASH(api_hash) == NULL) {
     fprintf(stderr, "ginno-helper: cef_api_hash failed\n");
     return 1;
   }

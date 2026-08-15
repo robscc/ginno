@@ -1086,14 +1086,19 @@ async def decide_workflow_run_endpoint(run_id: str, data: dict) -> dict:
     data = data or {}
     decision = data.get("decision")
     if decision == "browser_resume":
-        space = data.get("space") or (data.get("context_patch") or {}).get("space")
-        if space:
-            try:
-                from ..browser import get_supervisor
+        from ..browser import GLOBAL_SPACE
 
-                get_supervisor().take_over(space)
-            except Exception:
-                _log.exception("workflow browser take_over failed")
+        space = (
+            data.get("space")
+            or (data.get("context_patch") or {}).get("space")
+            or GLOBAL_SPACE
+        )
+        try:
+            from ..browser import get_supervisor
+
+            get_supervisor().take_over(space)
+        except Exception:
+            _log.exception("workflow browser take_over failed")
     value = {"decision": decision, "context_patch": data.get("context_patch") or {}}
     return await resume_workflow_run_endpoint(run_id, value)
 

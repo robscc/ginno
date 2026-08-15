@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { useState } from "react";
 import { MoreVertical, Globe } from "lucide-react";
 import * as api from "@/lib/runtime";
@@ -51,7 +51,6 @@ export function TopBar({
   usage,
   browserOpen,
   onToggleBrowser,
-  browserHandoff,
 }: {
   session: SessionMeta | null;
   agent: AgentConfig | null;
@@ -60,9 +59,10 @@ export function TopBar({
   usage?: SessionUsage | null;
   browserOpen?: boolean;
   onToggleBrowser?: () => void;
-  browserHandoff?: boolean;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const onWorkspace = pathname === "/";
   const g = useGinno();
   const [menu, setMenu] = useState(false);
   const hex = agentHex(agent?.color);
@@ -74,7 +74,7 @@ export function TopBar({
       </h1>
       <SessionIdChip sessionId={session?.id} />
 
-      {!browserOpen && agent && (
+      {agent && (
         <span className="pill border border-line2 bg-card text-txt">
           <span className="flex h-3.5 w-3.5 items-center justify-center" style={{ color: hex }}>
             <Icon name={agent.icon} className="h-3.5 w-3.5" />
@@ -97,22 +97,23 @@ export function TopBar({
         {running ? "Running" : "Idle"}
       </span>
 
-      {!browserOpen && <GoalChip sessionId={session?.id ?? null} />}
+      <GoalChip sessionId={session?.id ?? null} />
 
       {onToggleBrowser && (
         <button
           onClick={onToggleBrowser}
+          disabled={!onWorkspace}
           className={`pill border ${
-            browserHandoff
-              ? "border-yellow/50 bg-yellow/15 text-yellow"
+            !onWorkspace
+              ? "border-line2 bg-card text-faint opacity-50"
               : browserOpen
                 ? "border-violet/40 bg-violet/10 text-violet"
                 : "border-line2 bg-card text-muted hover:text-txt"
           }`}
-          title={browserOpen ? "收起浏览器（⌘.）" : "打开内嵌浏览器（⌘.）"}
+          title={!onWorkspace ? "浏览器仅在工作区可用" : browserOpen ? "隐藏伴随浏览器（⌘.）" : "显示伴随浏览器（⌘.）"}
         >
           <Globe className="h-3 w-3" />
-          {browserHandoff ? "需要你 · 浏览器" : "浏览器"}
+          浏览器
         </button>
       )}
 

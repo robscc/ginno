@@ -452,28 +452,6 @@ export async function screenshotBrowserSpace(
   );
 }
 
-export async function setBrowserViewport(data: {
-  width: number;
-  height: number;
-  space?: string;
-  dpr?: number;
-}) {
-  return json<{ ok: boolean; error?: string; width?: number; height?: number }>(
-    `${BASE}/browser/viewport`,
-    { method: "POST", headers: H, body: JSON.stringify(data) },
-  );
-}
-
-/** @deprecated viewport-only alias; no OS window is moved. */
-export async function dockBrowser(bounds: { x: number; y: number; width: number; height: number }) {
-  return setBrowserViewport({ width: bounds.width, height: bounds.height });
-}
-
-export function browserFrameUrl(name: string, bust?: number) {
-  const q = bust ? `?t=${bust}` : "";
-  return `${BASE}/browser/spaces/${encodeURIComponent(name)}/frame${q}`;
-}
-
 export async function resetBrowser() {
   return json<{ ok: boolean }>(`${BASE}/browser/reset`, {
     method: "POST",
@@ -482,28 +460,6 @@ export async function resetBrowser() {
   });
 }
 
-export async function sendBrowserInput(
-  name: string,
-  event: {
-    type: string;
-    x?: number;
-    y?: number;
-    button?: string;
-    buttons?: number;
-    clickCount?: number;
-    deltaX?: number;
-    deltaY?: number;
-    key?: string;
-    text?: string;
-    modifiers?: number;
-    windowsVirtualKeyCode?: number;
-  },
-) {
-  return json<{ ok: boolean; error?: string; handoff?: boolean }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/input`,
-    { method: "POST", headers: H, body: JSON.stringify(event) },
-  );
-}
 
 export async function listBrowserTabs(name: string) {
   return json<{ ok: boolean; tabs?: import("./types").BrowserTab[]; error?: string }>(
@@ -530,6 +486,24 @@ export async function closeBrowserTab(name: string, tabId: string) {
     `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs/${encodeURIComponent(tabId)}/close`,
     { method: "POST", headers: H, body: JSON.stringify({ human: true }) },
   );
+}
+
+export async function activateBrowserSession(sessionId: string) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/browser/session/${encodeURIComponent(sessionId)}/activate`,
+    { method: "POST", headers: H },
+  );
+}
+
+export async function hideBrowser() {
+  return json<{ ok: boolean; error?: string }>(`${BASE}/browser/hide`, {
+    method: "POST",
+    headers: H,
+  });
+}
+
+export async function getBrowserFocus() {
+  return json<{ ok: boolean; active_space?: string | null }>(`${BASE}/browser/focus`);
 }
 
 export async function listBrowserDownloads(name?: string) {

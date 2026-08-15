@@ -205,8 +205,9 @@ def build_stable_system(
             "browser_eval (ego-browser helpers: useOrCreateTaskSpace, openOrReuseTab, "
             "snapshotText, click('@N'), fillInput, handOffTaskSpace, takeOverTaskSpace, "
             "pageInfo, cliLog). Do NOT use web_fetch or mcp_playwright_* as the logged-in "
-            "browser. After a handoff resumes, takeOver the SAME space name — never open "
-            "a new one. completeTaskSpace({keep}) is a separate turn/node, never mixed "
+            "browser. All sessions share ONE embedded browser (multi-tab). After a "
+            "handoff resumes, takeOver and continue — never open a new Space. "
+            "completeTaskSpace({keep}) is a separate turn/node, never mixed "
             "into the work script."
         )
     return "\n".join(p for p in parts if p)

@@ -90,6 +90,9 @@ fi
 rm -rf "${STAGED}"
 mkdir -p "${DEST}"
 cp -R "${found}" "${STAGED}"
+# 127 ships some read-only resources (gpu_shader_cache.bin); tauri's bundler
+# runs `xattr -c` over the .app and fails on them. Make them writable first.
+chmod -R u+w "${STAGED}" 2>/dev/null || true
 # Drop quarantine so codesign / Gatekeeper don't trip on a freshly fetched binary.
 xattr -cr "${STAGED}" 2>/dev/null || true
 printf '%s\n' "${CEF_VERSION}" > "${MARKER}"

@@ -91,13 +91,39 @@ _PENDING_RESUME: set[str] = set()
 # collected mid-flight; hold strong refs until done.
 _BG_TASKS: set[Any] = set()
 
+# Main event loop, recorded in server.lifespan so sync (threadpool) handlers can
+# still schedule coroutines (WS broadcasts) onto it.
+_MAIN_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _MAIN_LOOP
+    _MAIN_LOOP = loop
+
 
 def spawn_bg(coro: Any) -> Any:
-    """create_task with a strong reference kept until completion."""
-    t = asyncio.create_task(coro)
-    _BG_TASKS.add(t)
-    t.add_done_callback(_BG_TASKS.discard)
-    return t
+    """Schedule a coroutine, keeping a strong reference until completion.
+
+    Works both from the event loop (create_task) and from threadpool workers
+    (run_coroutine_threadsafe onto the recorded main loop) — sync REST handlers
+    call this via _broadcast and must not raise "no running event loop"."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        t = loop.create_task(coro)
+        _BG_TASKS.add(t)
+        t.add_done_callback(_BG_TASKS.discard)
+        return t
+    if _MAIN_LOOP is not None and not _MAIN_LOOP.is_closed():
+        fut = asyncio.run_coroutine_threadsafe(coro, _MAIN_LOOP)
+        _BG_TASKS.add(fut)
+        fut.add_done_callback(_BG_TASKS.discard)
+        return fut
+    # No loop anywhere (shutdown edge): drop the coroutine rather than crash.
+    coro.close()
+    return None
 
 
 # One frame may sit in a stuck/suspended client's buffer; never let it stall

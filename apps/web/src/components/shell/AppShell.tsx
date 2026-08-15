@@ -74,7 +74,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // the workspace here and toggling visibility with `hidden`, ChatStream's refs
   // survive any route change.
   const [running, setRunning] = useState(false);
-  const [browserOpen, setBrowserOpen] = useState(false);
+  // Manual companion-window toggle (TopBar button / ⌘.). Combined with the
+  // route/session auto logic below: visible = onWorkspace && activeSession && browserOpen.
+  const [browserOpen, setBrowserOpen] = useState(true);
   const [browserMax, setBrowserMax] = useState(false);
   const [browserSplit, setBrowserSplit] = useState(() => {
     try {
@@ -201,6 +203,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onKb = pathname.startsWith("/kb");
   const onWorkflows = pathname.startsWith("/workflows");
 
+  // Single-window visibility (#1/#2/#3): on the workspace with the browser open,
+  // show the active session's browser (hides others'); otherwise hide every window.
+  // The TopBar 浏览器 button (and ⌘.) just flips browserOpen; this effect drives
+  // the companion window accordingly.
+  // Companion window visibility: visible = onWorkspace && activeSession &&
+  // browserOpen (manual). Shows the active session's browser, hides others;
+  // hide_all off-workspace or when manually toggled off.
+  useEffect(() => {
+    if (!onWorkspace || !browserOpen) {
+      api.hideBrowser().catch(() => {});
+      return;
+    }
+    if (g.activeSessionId) {
+      api.activateBrowserSession(g.activeSessionId).catch(() => {});
+    }
+  }, [onWorkspace, browserOpen, g.activeSessionId]);
+
   // Sidebar sessions: activity-day groups, newest activity first. `updated`
   // is bumped per turn server-side, so it tracks last use, not creation.
   const sortedSessions = [...g.sessions].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
@@ -326,37 +345,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setRightPanelOpen(!rightPanelOpen);
       } else if (e.key === ".") {
         e.preventDefault();
-        if (e.shiftKey) {
-          setBrowserOpen(true);
-          setBrowserMax((v) => (browserOpen ? !v : true));
-        } else {
-          setBrowserOpen((v) => !v);
-        }
+        setBrowserOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onWorkspace, rightPanelOpen, setRightPanelOpen, browserOpen]);
-
-  // Opening the browser is "page is the main surface": collapse the right
-  // panel once (user can still pull it from the dock). Closing restores the
-  // pre-open switch without writing that snapshot into the user preference.
-  useEffect(() => {
-    if (browserOpen) {
-      if (rightPanelWasOpen.current === null) {
-        rightPanelWasOpen.current = rightPanelOpen;
-        if (rightPanelOpen) setRightPanelOpen(false);
-      }
-      return;
-    }
-    if (rightPanelWasOpen.current !== null) {
-      setRightPanelOpen(rightPanelWasOpen.current);
-      rightPanelWasOpen.current = null;
-    }
-    setBrowserMax(false);
-    // Only react to the open/close edge — not to later dock toggles.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browserOpen]);
+  }, [onWorkspace, rightPanelOpen, setRightPanelOpen]);
 
   useEffect(() => {
     if (!splitDragging) return;
@@ -413,13 +407,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="ginno-root flex h-screen w-full overflow-hidden bg-base text-txt">
-      {/* left nav — stay mounted so session list / rename state survive; hidden
-          while the browser is the main surface. */}
-      <aside
-        className={`flex w-64 shrink-0 flex-col border-r border-line bg-panel ${
-          browserOpen && onWorkspace ? "hidden" : ""
-        }`}
-      >
+      {/* left nav — always visible (browser is a companion window, not the main surface). */}
+      <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel">
         {/* brand */}
         <div className="flex items-center gap-2.5 px-4 py-4">
           <img src="/icon.png" alt="" className="h-7 w-7" />
@@ -503,82 +492,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 usage={usage}
                 browserOpen={browserOpen}
                 onToggleBrowser={() => setBrowserOpen((v) => !v)}
-                browserHandoff={!!browserHandoff}
               />
             )}
             <div ref={splitRowRef} className="flex min-h-0 min-w-0 flex-1">
-              <div
-                className={`flex min-h-0 min-w-0 flex-col bg-base ${
-                  browserOpen && browserMax ? "hidden" : ""
-                }`}
-                style={
-                  browserOpen && !browserMax
-                    ? { flex: `${1 - browserSplit} 1 280px`, minWidth: 280 }
-                    : { flex: "1 1 0%" }
-                }
-              >
+              <div className="flex min-h-0 min-w-0 flex-col bg-base" style={{ flex: "1 1 0%" }}>
                 <ChatStream
                   session={session}
-                  compact={browserOpen}
+                  compact={false}
                   onRunningChange={setRunning}
                   onUsageChange={setUsage}
                   onOpenGoal={() => setGoalSessionModal(true)}
-                  onBrowserHandoff={(h) => {
-                    setBrowserHandoff(h);
-                    if (h) setBrowserOpen(true);
+                  onBrowserHandoff={(h) => setBrowserHandoff(h)}
+                  onOpenBrowser={() => {
+                    /* companion window shows itself; no right pane to open */
                   }}
-                  onOpenBrowser={() => setBrowserOpen(true)}
                 />
               </div>
-              {browserOpen && (
-                <>
-                  {!browserMax && (
-                    <div
-                      role="separator"
-                      aria-orientation="vertical"
-                      aria-label="拖拽调整浏览器宽度（双击重置）"
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        setSplitDragging(true);
-                      }}
-                      onDoubleClick={() => {
-                        setBrowserSplit(BROWSER_SPLIT_DEFAULT);
-                        try {
-                          localStorage.setItem(BROWSER_SPLIT_KEY, String(BROWSER_SPLIT_DEFAULT));
-                        } catch {
-                          /* storage unavailable */
-                        }
-                      }}
-                      className={`w-1 shrink-0 cursor-col-resize transition-colors ${
-                        splitDragging ? "bg-violet/60" : "hover:bg-violet/40"
-                      }`}
-                    />
-                  )}
-                  <div
-                    className="flex min-h-0 min-w-0 flex-col"
-                    style={
-                      browserMax
-                        ? { flex: "1 1 0%" }
-                        : { flex: `${browserSplit} 1 480px`, minWidth: 480 }
-                    }
-                  >
-                    <BrowserPane
-                      sessionId={session?.id}
-                      handoff={browserHandoff}
-                      maximized={browserMax}
-                      onToggleMaximize={() => setBrowserMax((v) => !v)}
-                      onTakeOver={async (space) => {
-                        await api.takeoverBrowserSpace(space);
-                        setBrowserHandoff(null);
-                        window.dispatchEvent(
-                          new CustomEvent("ginno:browser-resume", { detail: { space } }),
-                        );
-                      }}
-                      onClose={() => setBrowserOpen(false)}
-                    />
-                  </div>
-                </>
-              )}
             </div>
           </div>
           {/* Right panel or its collapsed edge dock (right-panel-redesign.md) */}

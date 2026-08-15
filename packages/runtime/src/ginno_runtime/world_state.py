@@ -668,8 +668,8 @@ class BrowserSection:
         spaces = snap.get("spaces") or []
         if not spaces:
             return (
-                "Embedded browser is available via browser_eval. No Space is open yet. "
-                "For login / click / SPA work, call useOrCreateTaskSpace first."
+                "Embedded browser is available via browser_eval. There is one shared "
+                "browser (multi-tab); just call browser_eval — no need to create a Space."
             )
         lines = ["<browser>"]
         for s in spaces:
@@ -679,13 +679,13 @@ class BrowserSection:
             )
         if snap.get("waiting_human"):
             lines.append(
-                "<guidance>A Space is agentDelegatedToUser — do NOT eval/click "
-                "until the human returns control. On resume, takeOver the SAME name.</guidance>"
+                "<guidance>The shared browser is handed to the human — do NOT eval/click "
+                "until they return control. On resume, takeOver and continue.</guidance>"
             )
         else:
             lines.append(
-                "<guidance>Reuse an existing Space of the same name. Never open a "
-                "new Space to continue the same task. complete({keep}) is its own turn.</guidance>"
+                "<guidance>All sessions share ONE embedded browser with multiple tabs. "
+                "Never create a new Space. complete({keep}) is its own turn.</guidance>"
             )
         lines.append("</browser>")
         return "\n".join(lines)

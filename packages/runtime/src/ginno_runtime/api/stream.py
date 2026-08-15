@@ -306,14 +306,16 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 decision = msg.get("decision", "deny")
                 # Chat-path takeOver: the human finished operating the real page.
                 if decision == "browser_resume":
-                    space = msg.get("space") or ""
-                    if space:
-                        try:
-                            from ..browser import get_supervisor
+                    from ..browser import get_supervisor
 
-                            get_supervisor().take_over(space)
-                        except Exception:
-                            _log.exception("browser take_over on resume failed")
+                    space = msg.get("space") or session_id
+                    sup = get_supervisor()
+                    try:
+                        sup.take_over(space)
+                    except Exception:
+                        _log.exception("browser take_over on resume failed")
+                    # Clears both handoff-delegated and single-window preempted.
+                    sup.resume_preempted(space)
                 # resume under the agent that was active when the interrupt fired
                 resume_agent = session.get("agent_id") or _first_agent_id()
                 resume_config = {

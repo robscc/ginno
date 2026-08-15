@@ -33,6 +33,12 @@ async def lifespan(app: FastAPI):
     # _shutdown_run_tasks resolve at call time from the module-level (facade)
     # imports below — the app cannot start before this module fully imports.
     paths.ensure_layout()
+    # Record the main loop so sync (threadpool) REST handlers can schedule WS
+    # broadcasts via run_coroutine_threadsafe (spawn_bg) instead of failing with
+    # "no running event loop".
+    from . import server_shared as _shared
+
+    _shared.set_main_loop(asyncio.get_running_loop())
     # Attach the trace-file handler up front so pre-turn lifecycle lines
     # (session_create / ws_open / ws_close) land in the log, not just turn lines.
     _ensure_turn_log()
