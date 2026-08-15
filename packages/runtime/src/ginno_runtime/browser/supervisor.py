@@ -212,9 +212,23 @@ class BrowserSupervisor:
             }
         )
         try:
-            show = getattr(self._eng(), "show_only", None)
-            if show:
-                show(session_id)
+            eng = self._eng()
+            has_browser = bool(getattr(eng, "_tabs", {}).get(session_id))
+            if not has_browser:
+                # No live browser for this session: open one with a real page so
+                # the companion window appears (never a bare about:blank). An
+                # existing stored url wins; else a portal home.
+                url = rec.get("url") or ""
+                if not url or url == "about:blank":
+                    url = "https://www.baidu.com/"
+                try:
+                    self.open_tab(session_id, url, human=False)
+                except Exception:
+                    log.debug("open browser on activate failed", exc_info=True)
+            else:
+                show = getattr(eng, "show_only", None)
+                if show:
+                    show(session_id)
         except Exception:
             log.debug("browser show on activate failed", exc_info=True)
         return rec
