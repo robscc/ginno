@@ -213,7 +213,18 @@ class BrowserSupervisor:
         )
         try:
             eng = self._eng()
-            has_browser = bool(getattr(eng, "_tabs", {}).get(session_id))
+            # A tab mapping is stale after the user closes the window via the red
+            # button: only treat it as "has browser" if its CDP target is still
+            # alive, otherwise re-create (or toggling on would no-op forever).
+            tid = getattr(eng, "_tabs", {}).get(session_id)
+            has_browser = False
+            if tid:
+                try:
+                    has_browser = any(
+                        t.get("id") == tid for t in eng._page_targets()
+                    )
+                except Exception:
+                    has_browser = False
             if not has_browser:
                 # No live browser for this session: open one with a real page so
                 # the companion window appears (never a bare about:blank). An
