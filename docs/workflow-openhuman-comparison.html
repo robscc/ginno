@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ginno × OpenHuman Workflow 深度对比</title>
+<style>
+/* ============ tokens ============ */
+:root{
+  --bg:#f4f4f8; --surface:#ffffff; --surface2:#ececf3;
+  --ink:#1d1d2b; --muted:#5c5c70; --faint:#8b8b9e;
+  --line:#dcdce8; --line2:#c9c9da;
+  --ginno:#6450d6; --ginno-soft:#eceaf9; --ginno-line:#c9c2ef;
+  --oh:#b56a05; --oh-soft:#f7efe2; --oh-line:#e4cfa6;
+  --ok:#1e7a4d; --ok-soft:#e5f2ea;
+  --warn:#9c6a00; --warn-soft:#f7efdb;
+  --bad:#b23a30; --bad-soft:#f8e9e7;
+  --code-bg:#f0f0f6; --chip:#e8e8f1;
+  --shadow:0 1px 3px rgba(29,29,43,.07), 0 8px 24px rgba(29,29,43,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#131318; --surface:#1c1c25; --surface2:#232330;
+    --ink:#eaeaf4; --muted:#a4a4b8; --faint:#737387;
+    --line:#2f2f3e; --line2:#3d3d4f;
+    --ginno:#a493f7; --ginno-soft:#262341; --ginno-line:#4a4279;
+    --oh:#eaa64a; --oh-soft:#2e2617; --oh-line:#6a5426;
+    --ok:#5fc48d; --ok-soft:#1b2c23;
+    --warn:#d9a94e; --warn-soft:#2e2714;
+    --bad:#e58a80; --bad-soft:#33201d;
+    --code-bg:#22222e; --chip:#2a2a38;
+    --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131318; --surface:#1c1c25; --surface2:#232330;
+  --ink:#eaeaf4; --muted:#a4a4b8; --faint:#737387;
+  --line:#2f2f3e; --line2:#3d3d4f;
+  --ginno:#a493f7; --ginno-soft:#262341; --ginno-line:#4a4279;
+  --oh:#eaa64a; --oh-soft:#2e2617; --oh-line:#6a5426;
+  --ok:#5fc48d; --ok-soft:#1b2c23;
+  --warn:#d9a94e; --warn-soft:#2e2714;
+  --bad:#e58a80; --bad-soft:#33201d;
+  --code-bg:#22222e; --chip:#2a2a38;
+  --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+}
+/* ============ base ============ */
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  font-size:15px; line-height:1.75; -webkit-font-smoothing:antialiased;
+}
+.serif{font-family:Georgia,"Times New Roman","Songti SC","Noto Serif CJK SC","SimSun",serif}
+.mono,code,pre,kbd{font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+a{color:var(--ginno); text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--ginno); outline-offset:2px; border-radius:3px}
+/* ============ header ============ */
+header.masthead{
+  border-bottom:1px solid var(--line);
+  background:
+    linear-gradient(115deg, var(--ginno-soft) 0%, transparent 34%),
+    linear-gradient(245deg, var(--oh-soft) 0%, transparent 34%),
+    var(--surface);
+}
+.masthead-inner{max-width:980px; margin:0 auto; padding:52px 24px 40px}
+.kicker{
+  display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+  font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+  font-weight:600; margin-bottom:18px;
+}
+.kicker .dot{width:7px;height:7px;border-radius:50%;background:var(--ginno)}
+.kicker .dot2{background:var(--oh)}
+h1.title{
+  font-size:clamp(28px,4.6vw,44px); line-height:1.22; margin:0 0 16px;
+  font-weight:700; letter-spacing:.01em; text-wrap:balance;
+}
+h1.title .vs{color:var(--faint); font-weight:400; padding:0 .18em}
+h1.title .g{color:var(--ginno)} h1.title .o{color:var(--oh)}
+.subtitle{max-width:760px; color:var(--muted); font-size:16px; margin:0 0 26px}
+.meta-row{display:flex; flex-wrap:wrap; gap:8px 18px; font-size:12.5px; color:var(--faint)}
+.meta-row b{color:var(--muted); font-weight:600}
+/* ============ nav ============ */
+nav.toc{
+  position:sticky; top:0; z-index:20;
+  background:var(--surface); border-bottom:1px solid var(--line);
+  box-shadow:0 1px 0 rgba(29,29,43,.02);
+}
+.toc-inner{max-width:980px; margin:0 auto; padding:0 24px; display:flex; gap:2px; overflow-x:auto; scrollbar-width:none}
+.toc-inner::-webkit-scrollbar{display:none}
+.toc a{
+  flex:none; padding:11px 12px; font-size:13px; color:var(--muted);
+  border-bottom:2px solid transparent; white-space:nowrap;
+}
+.toc a:hover{color:var(--ink); text-decoration:none; border-bottom-color:var(--line2)}
+.toc a b{font-weight:600; color:var(--faint); margin-right:5px; font-variant-numeric:tabular-nums}
+/* ============ layout ============ */
+main{max-width:980px; margin:0 auto; padding:8px 24px 80px}
+section{padding-top:44px}
+section + section{margin-top:12px}
+h2{
+  font-size:25px; line-height:1.35; margin:0 0 6px; font-weight:700;
+  display:flex; align-items:baseline; gap:12px; text-wrap:balance;
+}
+h2 .no{
+  font-family:Georgia,"Songti SC",serif; font-size:15px; color:var(--faint);
+  font-weight:400; font-variant-numeric:tabular-nums; letter-spacing:.06em; flex:none;
+}
+h3{font-size:18px; margin:34px 0 10px; font-weight:700; line-height:1.45}
+h4{font-size:15px; margin:24px 0 8px; font-weight:700}
+p{margin:10px 0}
+.lede{color:var(--muted); margin:6px 0 18px; max-width:820px}
+hr.sep{border:0; border-top:1px solid var(--line); margin:44px 0 0}
+/* ============ components ============ */
+.card{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:20px 22px; box-shadow:var(--shadow);
+}
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+.grid2>*{min-width:0}
+pre{max-width:100%}
+@media (max-width:760px){.grid2{grid-template-columns:1fr}}
+.side{border-top:3px solid var(--line2)}
+.side.g{border-top-color:var(--ginno)}
+.side.o{border-top-color:var(--oh)}
+.side .tag{
+  display:inline-block; font-size:11.5px; font-weight:700; letter-spacing:.1em;
+  text-transform:uppercase; padding:2px 9px; border-radius:99px; margin-bottom:10px;
+}
+.side.g .tag{background:var(--ginno-soft); color:var(--ginno)}
+.side.o .tag{background:var(--oh-soft); color:var(--oh)}
+.side h5{margin:0 0 8px; font-size:15.5px}
+blockquote{
+  margin:12px 0; padding:10px 16px; border-left:3px solid var(--line2);
+  background:var(--surface2); border-radius:0 8px 8px 0;
+  color:var(--muted); font-size:13.8px; line-height:1.7;
+}
+blockquote .src{display:block; margin-top:6px; font-size:11.5px; color:var(--faint)}
+.verdict{
+  border:1px solid var(--line); border-left:4px solid var(--ginno);
+  background:var(--surface); border-radius:8px;
+  padding:14px 18px; margin:20px 0; font-size:14.2px;
+}
+.verdict b.vt{color:var(--ginno); font-weight:700}
+.verdict.oh{border-left-color:var(--oh)} .verdict.oh b.vt{color:var(--oh)}
+.verdict.split{border-left-color:var(--line2)} .verdict.split b.vt{color:var(--muted)}
+.chip{
+  display:inline-block; font-size:11.5px; font-weight:600; padding:1.5px 9px;
+  border-radius:99px; background:var(--chip); color:var(--muted); white-space:nowrap;
+}
+.chip.g{background:var(--ginno-soft); color:var(--ginno)}
+.chip.o{background:var(--oh-soft); color:var(--oh)}
+.chip.ok{background:var(--ok-soft); color:var(--ok)}
+.chip.warn{background:var(--warn-soft); color:var(--warn)}
+.chip.bad{background:var(--bad-soft); color:var(--bad)}
+.chip.lead{background:var(--ok-soft); color:var(--ok)}
+.chip.even{background:var(--chip); color:var(--muted)}
+.chip.gap{background:var(--bad-soft); color:var(--bad)}
+/* tables */
+.tbl-wrap{overflow-x:auto; margin:16px 0; border:1px solid var(--line); border-radius:10px; background:var(--surface)}
+table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:640px}
+th,td{padding:10px 14px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line)}
+thead th{
+  background:var(--surface2); font-size:12px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--muted); font-weight:700; white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:0}
+td .mono{font-size:12px}
+th.cg{color:var(--ginno)} th.co{color:var(--oh)}
+/* code */
+pre{
+  background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+  padding:14px 16px; overflow-x:auto; font-size:12.3px; line-height:1.65; margin:14px 0;
+}
+code{font-size:.88em; background:var(--code-bg); padding:1px 5px; border-radius:4px}
+pre code{background:none; padding:0}
+/* flow strips */
+.flow{display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:12px 0 4px}
+.flow .fstep{
+  flex:1 1 0; min-width:96px; background:var(--surface); border:1px solid var(--line);
+  border-radius:8px; padding:8px 10px; font-size:12.3px; line-height:1.45;
+  display:flex; flex-direction:column; gap:3px; position:relative; margin-right:20px; margin-bottom:10px;
+}
+.flow .fstep:last-child{margin-right:0}
+.flow .fstep::after{
+  content:"→"; position:absolute; right:-17px; top:50%; transform:translateY(-50%);
+  color:var(--faint); font-size:14px;
+}
+.flow .fstep:last-child::after{content:""}
+.flow .fstep b{font-size:12.5px}
+.flow .fstep small{color:var(--faint); font-size:11px}
+.flow.g .fstep{border-top:2px solid var(--ginno)}
+.flow.o .fstep{border-top:2px solid var(--oh)}
+/* borrow cards */
+.bcard{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:18px 20px; margin:14px 0; box-shadow:var(--shadow);
+}
+.bcard .bh{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px}
+.bcard .bh b{font-size:15.5px}
+.bcard .num{
+  font-family:Georgia,"Songti SC",serif; color:var(--faint); font-size:14px;
+  font-variant-numeric:tabular-nums; flex:none;
+}
+.bcard p{font-size:13.8px; margin:7px 0}
+.bcard .why{color:var(--muted)}
+.bcard .how{padding:9px 13px; background:var(--surface2); border-radius:7px; font-size:13px}
+.bcard .how b{font-size:12px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint)}
+/* misc */
+ul,ol{padding-left:22px; margin:10px 0}
+li{margin:5px 0}
+.small{font-size:12.8px; color:var(--muted)}
+.foot-note{font-size:12px; color:var(--faint)}
+.kv{display:grid; grid-template-columns:150px 1fr; gap:4px 14px; font-size:13.5px}
+.kv dt{color:var(--faint)} .kv dd{margin:0}
+.toc-top{margin-top:6px}
+.stat-row{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:16px 0}
+.stat{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px;
+}
+.stat .n{font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.2}
+.stat .l{font-size:12px; color:var(--muted); margin-top:3px}
+.stat.g .n{color:var(--ginno)} .stat.o .n{color:var(--oh)}
+.legend{display:flex; gap:16px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); margin:8px 0 0}
+.legend .sw{display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="kicker"><span class="dot"></span> Workflow 方案研究 <span class="dot2"></span> 2026-08-16</div>
+    <h1 class="title serif"><span class="g">Ginno</span><span class="vs">×</span><span class="o">OpenHuman</span><br>Workflow 方案深度对比</h1>
+    <p class="subtitle">同一个起点——「agent 起草、人来批准」——在「对话优先」与「画布优先」的岔路口走向了两种产品。本报告对比产品、技术与成熟度三个维度，并给出 Ginno 可借鉴清单。</p>
+    <div class="meta-row">
+      <span><b>Ginno</b> 本地仓库 @0.1.0（2026-08-15 状态）</span>
+      <span><b>OpenHuman</b> @a221052 · v0.63.8 · 36.3k★ · GPL-3.0</span>
+      <span><b>tinyflows</b> @c77db47 · v0.8.0 · GPL-3.0-or-later</span>
+    </div>
+  </div>
+</header>
+
+<nav class="toc" aria-label="目录">
+  <div class="toc-inner">
+    <a href="#s0"><b>0</b>摘要</a>
+    <a href="#s1"><b>1</b>调研对象</a>
+    <a href="#s2"><b>2</b>产品定位</a>
+    <a href="#s3"><b>3</b>产品对比</a>
+    <a href="#s4"><b>4</b>技术对比</a>
+    <a href="#s5"><b>5</b>成熟度</a>
+    <a href="#s6"><b>6</b>借鉴清单</a>
+    <a href="#s7"><b>7</b>反向观察</a>
+    <a href="#s8"><b>8</b>结论</a>
+    <a href="#sA"><b>附A</b>DSL 深度对比</a>
+    <a href="#s9"><b>附B</b>来源</a>
+  </div>
+</nav>
+
+<main>
+
+<!-- ================= 0 摘要 ================= -->
+<section id="s0">
+  <h2 class="serif"><span class="no">00</span>摘要</h2>
+  <p class="lede">四路独立调研（Ginno 产品/技术 × 本地仓库全量文档与代码；OpenHuman × 浅克隆代码级深读；tinyflows × 引擎源码级深读）后的核心判断：</p>
+
+  <div class="card" style="padding:6px 22px">
+    <ul>
+      <li><b>理念同源，路线分叉。</b>两者都收敛到「agent 提议自动化 → 人审阅 → 批准后才生效」，且都把「批准」做成结构性机制而非提示词约定。分叉在媒介：Ginno 选择<b>对话优先</b>（明确不做画布编辑器，DSL + diff 卡为载体）；OpenHuman 选择<b>画布优先</b>（React Flow 可视化 + 内嵌 copilot，叙事对标 n8n/Zapier）。</li>
+      <li><b>Ginno 的长板</b>：会话蒸馏创建（summarize-from-session 提炼的是真实用法而非想象中的自动化）、总结质量漏斗度量体系（L0–L4 + case 档案 + replay，OpenHuman 没有对应物）、doctor 运行前静态检查、运行回到对话的内联体验、浏览器一等节点。</li>
+      <li><b>OpenHuman 的长板</b>：<b>触发器体系</b>（cron/应用事件/手动/恢复 + 启动重注册 + per-flow 并发锁）与<b>无人值守安全工程</b>（trust origin、服务端强制规则、预授权清单、graph_hash 防过期审批）——这恰是 Ginno 的两个最大缺口。</li>
+      <li><b>引擎层面</b> tinyflows 表达力明显更强（并行扇出、错误路由、retry/backoff、子流程、dedup、spawn/gate），但两者共享同一血统——都是 LangGraph 风格超步运行时 + checkpoint + interrupt/resume；Ginno 直接用 LangGraph Python，tinyflows 是从 tinyagents vendored 的裁剪版 Rust 运行时。</li>
+      <li><b>最值得借鉴的不是画布</b>，而是：① 结构性安全闸门（若 Ginno 要做定时/无头运行，这是前置条件）；② Fix-with-agent 失败修复闭环；③ 全链路白话化；④ 模板 + 主动发现（Scout）；⑤ dry-run 提速。画布编辑投入巨大（OpenHuman 自评「最大 UI 工程」），与 Ginno 的团队规模和哲学不匹配。</li>
+      <li><b>成熟度</b>：两者 workflow 都在 1.0 之前。OpenHuman 面更大但挂 Beta 横幅、webhook 未实现、存在文档/代码不一致（审批 TTL）；Ginno 面更小但计划内事项全部落地（692 测试通过），质量度量机制反而领先。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 1 对象 ================= -->
+<section id="s1">
+  <h2 class="serif"><span class="no">01</span>调研对象与事实基础</h2>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th></th><th class="cg">Ginno</th><th class="co">OpenHuman</th><th>tinyflows</th></tr></thead>
+      <tbody>
+        <tr><td>定位</td><td>个人 AI Agent 桌面应用，workflow 是其执行原语之一（TODO / Workflow / Goal 三分法）</td><td>「个人 AI 超级智能」：记忆 + 编排 + 研究三支柱，workflow 属编排支柱</td><td>Rust 原生、宿主无关的 workflow 引擎库（library crate）</td></tr>
+        <tr><td>技术栈</td><td>Tauri + Next.js 静态导出 + Python（FastAPI + LangGraph）sidecar</td><td>Rust 核心 + Node/pnpm 前端，Tauri/CEF 桌面壳；JSON-RPC + Socket.IO</td><td>Rust 2024 · MSRV 1.85 · <span class="mono">forbid(unsafe_code)</span> · ~65k 行（354 文件）</td></tr>
+        <tr><td>workflow 引擎</td><td>自研 DSL 编译器 → LangGraph StateGraph（Python）</td><td>tinyflows 0.8（<span class="mono">[patch.crates-io]</span> 指向 vendored submodule，随宿主联调）</td><td>自身即引擎：<span class="mono">WorkflowGraph → validate → compile → engine::run</span></td></tr>
+        <tr><td>存储</td><td>纯文件 <span class="mono">~/.ginno/</span>（无数据库）</td><td>SQLite ×2（flows.db + checkpoints.db）+ 草稿文件</td><td>引擎不管存储；宿主实现 <span class="mono">StateStore</span>/<span class="mono">Checkpointer</span> trait</td></tr>
+        <tr><td>规模/状态</td><td>个人项目；workflow 设计 2026-07-24 启动，三个 Sprint + master-plan 三轮全部落地，692 后端测试通过</td><td>36.3k★ / 3.6k forks；v0.63.8；workflow 页挂 <b>Beta</b> 横幅；HEAD 2026-08-15，近两周仍在密集升级 tinyflows</td><td>v0.8.0，未发布 crates.io；Phase-A 引擎完成，Phase-B（宿主集成）即 OpenHuman</td></tr>
+        <tr><td>许可证</td><td>私有仓库</td><td>GPL-3.0</td><td>GPL-3.0-or-later（copyleft，商业嵌入需评估）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="foot-note">调研方式：Ginno 侧全量阅读 docs/ 下 10 篇 workflow 文档 + runtime/workflows 全部模块与前端组件；OpenHuman 侧浅克隆后代码级检索（flows 域 Rust 代码、app/src 前端、gitbooks、docs/plans 规划文档）；tinyflows 侧浅克隆后源码级阅读（model/engine/caps/nodes/catalog/testkit + wiki + CHANGELOG）。关键论断均给出出处。</p>
+</section>
+
+<!-- ================= 2 定位 ================= -->
+<section id="s2">
+  <h2 class="serif"><span class="no">02</span>产品定位：两种哲学</h2>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno</span>
+      <h5 class="serif">对话领先，流程跟随</h5>
+      <blockquote>「先聊出结果，再把过程固化；运行时也回到对话里观察，而不是被甩到一个独立页面。流程不是被打开的页面，而是对话的另一个视角。」<span class="src">docs/design/session-workflow-A.md §1</span></blockquote>
+      <p>workflow 是<b>会话的结构化投影 / 可重放脚本</b>：把「重复发生的、步骤已知的多 Agent 任务」固化成版本化 DSL 配方，确定性重放。产品内三分法清晰：TODO 回答「要做什么」、Workflow 回答「怎么做（已知流程）」、Goal 回答「达成什么（开放目标）」。</p>
+      <p class="small">来源：workflow-dsl-design.md 开篇、goal-design.md §3.1</p>
+    </div>
+    <div class="card side o">
+      <span class="tag">OpenHuman</span>
+      <h5 class="serif">把重复工作放上自动驾驶</h5>
+      <blockquote>「Chat is great for one-off asks. Workflows are for the things you want done <i>every time</i>… Heavily inspired by n8n and Zapier… The difference: you don't build the graph, the agent does.」<span class="src">gitbooks/features/workflows.md</span></blockquote>
+      <p>workflow 是<b>无人值守的自动驾驶</b>：定时、事件触发、重启存活、副作用经审批。竞品对比表中四个形容词就是产品主张——「Visual, durable, agent-proposed, approval-gated」。欢迎页文案：<i>“Put the busywork on autopilot.”</i></p>
+      <p class="small">来源：README「Workflows you can see」、FlowsPage 欢迎页</p>
+    </div>
+  </div>
+
+  <div class="verdict split"><b class="vt">判断</b>　定位差异是后面一切差异的根：Ginno 的 workflow 服务于「把这次好用的对话变成下次可重放的脚本」，所以入口在聊天页、运行回对话、不需要触发器；OpenHuman 的 workflow 服务于「我不在场它也按时干完」，所以必须有触发器、审批闸与持久化。两者不是优劣，是场景排序不同——但 Ginno 的文档自己也承认，无头/定时运行是开放问题（方案 A 契合度仅 ★★，方案 B 工作室路线 ★★★★★）。</div>
+</section>
+
+<!-- ================= 3 产品对比 ================= -->
+<section id="s3">
+  <h2 class="serif"><span class="no">03</span>产品对比：端到端链路</h2>
+
+  <h3 id="s3-1">3.1 创建：四条路 vs 三条路</h3>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno · 3 条路径</span>
+      <div class="flow g">
+        <div class="fstep"><b>聊天页「总结成流程」</b><small>选会话 → LLM 蒸馏 trace → DSL 草稿（≤3 次自纠错）</small></div>
+        <div class="fstep"><b>SummarizeModal</b><small>DAG 预览 + 节点 inline 编辑 + 变量确认</small></div>
+        <div class="fstep"><b>创建 / 创建并运行 / 进 dev 会话精炼</b><small>草稿 24h 本地持久化</small></div>
+      </div>
+      <p class="small">另有：workflow-dev 对话式生成/编辑；Settings 手写 JSON（高级入口，自动包成最小 DSL）。模板仅 1 个种子 pr-triage + 2 个系统流（todo-pull/push）。</p>
+    </div>
+    <div class="card side o">
+      <span class="tag">OpenHuman · 4 条路径</span>
+      <div class="flow o">
+        <div class="fstep"><b>聊天描述 → propose_workflow</b><small>Proposal Card：白话步骤 + Save &amp; enable / Open in canvas / Dismiss</small></div>
+        <div class="fstep"><b>模板库（7 个）</b><small>Scheduled / Triggered / On demand 三类</small></div>
+        <div class="fstep"><b>空白画布 / Flow Scout</b><small>Scout 按工作方式主动建议；Build this 只预填不代答</small></div>
+      </div>
+      <p class="small">Proposal Card 落库唯一路径是用户点「Save &amp; enable」→ 由 app（而非 agent）直调 <span class="mono">flows_create</span>。</p>
+    </div>
+  </div>
+  <p><b>分析</b>：OpenHuman 多出的两样是<b>模板</b>与<b>主动发现</b>（Flow Scout 从用户行为模式建议自动化）；Ginno 独有的王牌是 <b>summarize-from-session</b>——蒸馏的是用户刚完成的<b>真实用法</b>，起点质量高于「凭空描述一个自动化」。值得注意的是双方对「agent 提议」的安全姿态高度一致：Ginno 规定「总结产出的 DSL 必然是建议，必须经人确认」；OpenHuman 更进一步，把 <span class="mono">propose_workflow</span> 做成「只校验不创建」的纯函数工具，注释写明 <i>“this tool must NEVER call flows_create”</i>。</p>
+
+  <h3 id="s3-2">3.2 编辑：对话 + diff 卡 vs 画布 + copilot</h3>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno</span>
+      <h5>刻意不做画布编辑器</h5>
+      <blockquote>「所有修改前后对比确认 + 版本化由独立 interrupt + diff 卡天然保证，且不需要任何 DAG 拖拽编辑器。」<span class="src">workflow-dsl-design.md §8.3；user-guide §9.5 标题即「对话式编辑（无 DAG 拖拽编辑器）」</span></blockquote>
+      <ul class="small">
+        <li>修改路径：workflow-dev agent → <span class="mono">propose_edit</span> → violet diff 确认卡 → Apply 才落新版本</li>
+        <li>版本不可变快照 + VersionHistoryDrawer + 任意两版 diff + 回滚</li>
+        <li>doctor 静态 lint（无来源变量/路径字面量/未消费 writes）+ 一键升级</li>
+        <li>DAG 只读：状态着色、实时高亮、点节点过滤日志</li>
+      </ul>
+    </div>
+    <div class="card side o">
+      <span class="tag">OpenHuman</span>
+      <h5>画布是一等公民，但创作主线仍是 agent</h5>
+      <ul class="small">
+        <li>React Flow v12：拖拽连线、删除、undo/redo、节点面板（16 项三组）、form ⟷ JSON 双模检查器、cron 白话编辑器</li>
+        <li>Copilot 面板与画布并存：提议到达时进入 diff 审阅态——新增节点 sage 实线环、删除节点 45% 透明「幽灵化」，Accept &amp; save 才落库</li>
+        <li>防抖 500ms 自动 <span class="mono">flows_validate</span>，错误阻断保存、警告不阻断</li>
+        <li><b>刻意不做自动保存</b>（注释：saved+enabled 即 live，误存会真的触发 schedule），每次保存有确认弹窗 + 离开守卫</li>
+        <li>20 版修订历史 + rollback；支持 n8n JSON 导入</li>
+      </ul>
+    </div>
+  </div>
+  <p><b>分析</b>：表面上是「无画布 vs 有画布」，实质两边的<b>编辑主叙事都是 agent 提议 + diff 审阅</b>——OpenHuman 的规划文档明写「手动画布是 escape hatch, not the headline，两条创作路径在文案上不许互相竞争」。差异在兜底手段：OpenHuman 给 power user 直接操作的能力（规划文档称画布是其「最大 UI 工程」），Ginno 用 doctor + dev 会话 + 原始 JSON 兜底。Ginno 的取舍省下了巨大的 UI 维护面，代价是空间式理解与细粒度手动调整能力弱。</p>
+
+  <h3 id="s3-3">3.3 触发：最大缺口所在</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>触发方式</th><th class="cg">Ginno</th><th class="co">OpenHuman</th></tr></thead>
+      <tbody>
+        <tr><td>手动</td><td>Inspector 运行按钮、右栏面板、聊天工具触发、创建并运行</td><td>Run 按钮 / <span class="mono">flows_run_detached</span> / agent <span class="mono">run_flow</span>（须用户明确确认）</td></tr>
+        <tr><td>定时</td><td><span class="chip gap">无</span>（文档自认短板，无排期；Goal 系统是另一套机制）</td><td><span class="chip ok">cron / at / every</span>，启用时注册作业，<b>每次 app 启动幂等重注册</b>，per-flow 并发锁防突发重复</td></tr>
+        <tr><td>事件</td><td><span class="chip warn">仅 TODO 勾选 → todo-push</span>（硬编码单例）</td><td><span class="chip ok">应用事件</span>：Composio 集成触发器（Gmail 新邮件 / Notion 变更 / Linear / GitHub / Stripe…）按 toolkit+slug 匹配分发</td></tr>
+        <tr><td>webhook</td><td><span class="chip gap">无</span></td><td>模型中已声明，dispatch <b>未实现</b>（等 tunnel；官方口径用 app_event 覆盖第三方故事）</td></tr>
+        <tr><td>恢复</td><td>paused run 手动继续（含手动暂停、human 节点）</td><td>Resume 是一等触发类型（<span class="mono">flows_resume</span> 从 checkpoint 续跑）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="verdict oh"><b class="vt">判断</b>　这是两者产品面差距最大的一处，且是「 autopilot」叙事的根基。Ginno 的 workflow 目前是「重放脚本」——每次都要有人点火；OpenHuman 的是「值班员工」。Ginno 若走向定时/无人运行（其文档已列为开放问题 Q-A2），触发器 + §3.5 的安全机制必须成对引入，否则会造出一个「没人看管 yet 有副作用」的最差组合。</div>
+
+  <h3 id="s3-4">3.4 运行与监控</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>能力</th><th class="cg">Ginno</th><th class="co">OpenHuman</th></tr></thead>
+      <tbody>
+        <tr><td>进度呈现</td><td>聊天内联 LiveRunBlock（run 回到对话）+ 右栏面板 + Inspector DAG 实时高亮；WS 推送替代轮询</td><td>画布节点 overlay（running 脉冲 / success / failed）+ /flows 列表状态 + 全局运行页（7 种状态）</td></tr>
+        <tr><td>中间产物</td><td>步骤下实时工具调用行（减「黑箱焦虑」）、context 表单 + 来源追踪（context_meta）、事件时间线四类过滤</td><td>Run Inspector 步骤时间线：Port 徽章、表达式警告（如 <span class="mono">=item.url resolved to null</span>）、白话结果、Table ⟷ JSON 原始数据浏览器</td></tr>
+        <tr><td>耗时/成本</td><td>节点级耗时 + token（node_exit.usage 事件）</td><td>per-call 成本核算 + 可重放 run journal（宣传点）；Langfuse trace 导出</td></tr>
+        <tr><td>失败处理</td><td>RunErrorBox（归因到步骤 + traceback + 复制报告）；<b>从失败步骤 checkpoint 重试</b>（前 N-1 步不重跑）；浏览器通知 + 自适应 stuck 检测（历史时长 ×3）</td><td>失败节点两种红色区分「运行失败 vs 配置错误」；<b>Fix with agent</b>：一键把失败节点 + 错误喂给画布 copilot 发起 repair；600s run 总超时</td></tr>
+        <tr><td>暂停/恢复</td><td>手动暂停（节点边界生效，中途停则整步重跑）、human 问答卡、浏览器登录交接</td><td>审批 gate 暂停；桌面通知审批卡；跨重启可恢复（checkpoint in SQLite）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><b>分析</b>：两边在可观测上都下了真功夫，各有独家亮点——Ginno 的「运行回到对话 + 自适应 stuck 通知」把监控做到用户视线内；OpenHuman 的「Fix with agent 闭环 + 表达式 null 警告 + Table/JSON 数据浏览器」把调试做成了循环。互有可交换的东西（见 §6）。</p>
+
+  <h3 id="s3-5">3.5 审批与人机协作：哲学相反，但会在「无人值守」处汇合</h3>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno · 自由侧</span>
+      <h5>「人在环上而非环内」</h5>
+      <ul class="small">
+        <li>默认自主跑（bypass）；permission 子系统计划全局移除</li>
+        <li>四类 interrupt：human 问答、手动暂停、浏览器交接、DSL diff 确认——统一走 LangGraph interrupt + checkpoint</li>
+        <li>安全底线 = 路径硬 deny（~/.ssh、Keychains、~/.ginno）+ 越界 tool error</li>
+        <li>workflow 步骤强制剥离 <span class="mono">workflow_*</span> 工具防嵌套；tools_allow 按 agent 过滤</li>
+      </ul>
+    </div>
+    <div class="card side o">
+      <span class="tag">OpenHuman · 控制侧</span>
+      <h5>四层审批工程</h5>
+      <ul class="small">
+        <li><b>信任模型</b>：flow run 有专属 trust origin；静态图配置 = 保存时已审 = 可信，运行时事件载荷 = 不可信、只能喂参数不能引入新动作</li>
+        <li><b>服务端铁律 B29</b>（与 UI/agent 无关）：自动触发图强制 disabled 落库；含出站副作用节点强制 <span class="mono">require_approval</span></li>
+        <li><b>预授权清单</b>：启用时一次性展示「这个 flow 会要哪些权限」，四类诚实文案（approvable / blocked / dynamic / agent），信任按 (flow_id, tool) 粒度存，绝不全局放行</li>
+        <li><b>运行中 gate</b>：Approve once / always（限本 flow）；park 时钉住 graph_hash，图被改过则拒绝恢复（防过期审批）；无人应答 600s fail-closed 取消</li>
+      </ul>
+    </div>
+  </div>
+  <div class="verdict split"><b class="vt">判断</b>　交互式会话里 Ginno 的「自由」是对的——审批疲劳是真实成本。但这条哲学直接平移到<b>无人值守运行</b>会出问题：一个定时跑、能发邮件、能写文件的流程，「默认 bypass」等于把钥匙留在门上。OpenHuman 给出的答案不是「处处审批」，而是把信任边界前移到<b>保存/启用时刻</b>（图是审过的、权限是一次性批量授予的、信任按 flow 隔离），运行时只在未预授权处停。这套机制与 Ginno 的交互式自由可以共存：交互会话保持 bypass，自动触发的 flow 走闸门轨道。</div>
+
+  <h3 id="s3-6">3.6 易用性小结</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>领先方</th><th>一句话依据</th></tr></thead>
+      <tbody>
+        <tr><td>上手创建</td><td><span class="chip even">接近</span></td><td>Ginno 入口更少但起点质量高（真实会话蒸馏）；OpenHuman 路径更多且有模板/Scout 兜住「凭空想象」场景</td></tr>
+        <tr><td>编辑上限</td><td><span class="chip o">OpenHuman</span></td><td>画布直接操作 + form/JSON 双模 + undo；Ginno 对复杂图的细粒度调整依赖对话往返</td></tr>
+        <tr><td>编辑心智成本</td><td><span class="chip g">Ginno</span></td><td>无需学画布/端口/连线概念；diff 卡即审即批</td></tr>
+        <tr><td>触发能力</td><td><span class="chip o">OpenHuman</span></td><td>定时 + 应用事件 vs 基本手动——差距最大的一项</td></tr>
+        <tr><td>运行可见性</td><td><span class="chip even">接近</span></td><td>Ginno 胜在「就近」（内联进对话），OpenHuman 胜在「空间」（画布 overlay + 全局运行页）</td></tr>
+        <tr><td>调试闭环</td><td><span class="chip even">各有一手</span></td><td>Ginno：checkpoint 断点重试 + doctor 前置检查；OpenHuman：Fix-with-agent + null 表达式警告 + dry-run</td></tr>
+        <tr><td>无人值守安全</td><td><span class="chip o">OpenHuman</span></td><td>结构性四层闸门 vs 路径 deny 底线</td></tr>
+        <tr><td>质量度量</td><td><span class="chip g">Ginno</span></td><td>L0–L4 漏斗 + case 档案 + replay 评测雏形，OpenHuman 无对应物</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 4 技术对比 ================= -->
+<section id="s4">
+  <h2 class="serif"><span class="no">04</span>技术方案对比</h2>
+
+  <h3 id="s4-1">4.1 图格式与数据模型：黑板 vs 流水线</h3>
+  <p>两者都是 JSON 图（nodes + edges），但<b>数据如何流动</b>是根本分歧：</p>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno · 共享 Context 黑板</span>
+      <pre><code>{
+  "dsl_version": "1",
+  "entry": "fetch",
+  "context": {            // 一等公民：schema + 初值 + 来源追踪
+    "schema": {"type":"object","properties":{
+      "repo":{"type":"string"},
+      "prs":{"type":"array","items":{"type":"object"}}}},
+    "initial": {"repo": "robscc/ginno"}
+  },
+  "nodes": [
+    {"id":"fetch","type":"step","agent":"research",
+     "goal":"列出 {{context.repo}} 的待审 PR",
+     "writes":{"prs":{"type":"array","items":{"type":"object"}}}},
+    {"id":"each","type":"loop","over":"context.prs",
+     "as":"pr","body":"review","max_iters":50},
+    {"id":"gate","type":"branch","cases":[
+      {"when":"len(context.drafts) > 0","then":"notify"}],
+     "default":"done"}
+  ],
+  "edges": [{"from":"fetch","to":"each"}]
+}</code></pre>
+      <p class="small">步骤间靠<b>命名 context 键</b>传值；<span class="mono">writes</span> 是硬契约（编译器注入 extract 节点保证产出）；<span class="mono">context_meta</span> 追踪每个值来自 initial/step/human。表达式是自研 Python AST 沙箱（白名单、禁 dunder、≤4000 字符/300 节点，防 LLM 病态输入）。</p>
+    </div>
+    <div class="card side o">
+      <span class="tag">tinyflows · Item 流水线（n8n 风格）</span>
+      <pre><code>{
+  "schema_version": 1,
+  "inputs": [{"name":"repo","type":"string","required":true}],
+  "nodes": [
+    {"id":"start","kind":"trigger",
+     "config":{"trigger_kind":"schedule","schedule":"0 9 * * *"}},
+    {"id":"fetch","kind":"http_request",
+     "config":{"method":"GET","url":"=inputs.repo"}},
+    {"id":"each","kind":"split_out","config":{"path":"result"}},
+    {"id":"work","kind":"agent","config":{"prompt":"Review",
+     "execution":"per_item","concurrency":8}},
+    {"id":"gate","kind":"condition",
+     "config":{"field":"=item.json.priority == \"urgent\""}}
+  ],
+  "edges": [
+    {"from_node":"gate","from_port":"true",
+     "to_node":"notify","to_port":"main"}
+  ]
+}</code></pre>
+      <p class="small">连接上流动的是 <b>Item 数组</b>（<span class="mono">{json, binary?, paired_item?}</span>）；每节点写自己的输出槽，跨层引用 <span class="mono">=nodes.&lt;id&gt;.item.x</span>；分支标签写在<b>边的 from_port</b> 上。表达式是 <span class="mono">=</span> 前缀 + jaq/jq 全量（剔除 env 等危险内建），null 解析会被追踪诊断。</p>
+    </div>
+  </div>
+  <p><b>分析</b>：Ginno 的黑板模型更贴 LLM 工作流——步骤是「达成 goal」，产出是命名数据，doctor 能静态验证「每个引用都有来源」；代价是没有按 item 的天然并行。tinyflows 的 item 流更贴集成自动化——<span class="mono">per_item</span> 扇出、dedup、scatter/gather 都是数据驱动宽度；代价是全局可变上下文与「步骤产出命名键」这类 LLM 友好抽象要自己搭。Ginno 若做 v2 并行，tinyflows 的「输出恒按输入顺序 + paired_item」确定性承诺值得直接抄。</p>
+
+  <h3 id="s4-2">4.2 执行引擎：同一血统，不同完成度</h3>
+  <p>一个有趣的事实：<b>两者都是 LangGraph 风格超步运行时</b>——Ginno 直接使用 LangGraph Python；tinyflows 的 <span class="mono">src/graph/</span> 是从姊妹 crate tinyagents vendored 并裁剪的 LangGraph 风格运行时（超步、reducer、command/interrupt、checkpoint、streaming）。执行语义因此高度同构：superstep 边界提交 checkpoint；interrupt 暂停；被中断节点恢复时<b>从头重跑</b>（at-least-once）。</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>能力</th><th class="cg">Ginno v1</th><th class="co">tinyflows 0.8</th></tr></thead>
+      <tbody>
+        <tr><td>编译模型</td><td>DSL → StateGraph，一次编译绑 checkpointer</td><td><b>compile 只验证打包</b>；执行图每次 run 重建并捕获该 run 的能力集——同图可配不同 caps 运行，也是跨进程 resume 的根基</td></tr>
+        <tr><td>并行</td><td><span class="chip gap">无</span>（loop 串行，parallel 字段忽略）</td><td>超步内分支并发（确定性折叠）、per-item 扇出（并发上限 64）、scatter/gather 泳道、spawn/gate 工单（quorum/first_n/timeout_partial 等 5 种释放策略）</td></tr>
+        <tr><td>子流程</td><td><span class="chip gap">拒绝到 v2</span></td><td>sub_workflow：内联图 XOR 按 id 解析；深度上限 8；per_item 下是乘数器</td></tr>
+        <tr><td>错误处理</td><td>失败 = run 终态；无错误边；手动重试 / checkpoint 重试</td><td>每节点 <span class="mono">on_error: stop|continue|route</span> + error 端口；retry + fixed/exponential 退避（封顶 60s）；per-item on_item_error；<span class="mono">RunStatus::CompletedWithErrors</span> 让「失败变数据」不隐身</td></tr>
+        <tr><td>循环</td><td>loop over/as/max_iters/on_empty；迭代计数</td><td>loop 有界（默认 25）+ fold 状态累加器 + condition/until + on_exceeded 路由；迭代数可 checkpoint、可表达式寻址</td></tr>
+        <tr><td>运行级旋钮</td><td>max_tool_iters（默认 8）、LLM 超时 300s</td><td>recursion_limit / max_node_visits（点名失控节点）/ max_concurrency≤256 / node_timeout 每 attempt / 子流程深度，全部写在 trigger config</td></tr>
+        <tr><td>LLM 步骤</td><td>AgentNode = 完整 agent 循环（bind_tools + ToolNode，多轮）</td><td>agent 节点不跑自研循环——组装 AgentRunRequest 交给宿主 harness（OpenHuman 嵌套一个完整 tinyagents turn，并发槽 8）</td></tr>
+        <tr><td>幂等</td><td>无专门机制（WRITE_JSON 快速路径天然幂等）</td><td>dedup 节点：commit-on-success 恰好一次过滤</td></tr>
+        <tr><td>取消</td><td>cancel 端点 + 状态竞态防护（only_from）</td><td>协作式 CancellationToken，节点边界检查，子工作流链逐级下传</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="verdict"><b class="vt">判断</b>　作为引擎，tinyflows 的表达力与容错语汇明显更完整——这是它作为「给多个宿主用的库」的必然要求。Ginno v1 的表达力克制是有意的（先把可靠性做厚：extract 硬契约、on_empty 语义、超时、孤儿对账三层守护网）。但要看到：Ginno 缺的 <b>retry/backoff 与 on_error 路由</b>不是「高级功能」，而是无人值守运行的基本件——定时任务半夜失败，「等人手动重试」等于没有。</div>
+
+  <h3 id="s4-3">4.3 持久化与恢复</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th></th><th class="cg">Ginno</th><th class="co">OpenHuman</th><th>tinyflows</th></tr></thead>
+      <tbody>
+        <tr><td>定义存储</td><td><span class="mono">workflows/&lt;id&gt;/meta.json + versions/N.json</span> 不可变全量快照，原子写，rollback = 旧版复制为新版</td><td>SQLite <span class="mono">flow_definitions</span> + <span class="mono">flow_revisions</span>（20 版）+ 乐观并发（expected_updated_at）</td><td>引擎不管；store feature 提供版本文档/patch 编辑参考实现</td></tr>
+        <tr><td>运行记录</td><td>全局 <span class="mono">workflow_runs/&lt;id&gt;.json + .events.jsonl</span>（钉 dsl_version）</td><td>SQLite <span class="mono">flow_runs</span>（每 flow 上限 100 行，running/pending 行永不清理）</td><td>宿主自定</td></tr>
+        <tr><td>checkpoint</td><td>FileCheckpointer（JSON，full/delta 双模式）；<span class="mono">put_writes</span> 已存但未用于 mid-step resume</td><td>SqliteCheckpointer（镜像 LangGraph 两表结构）</td><td>Checkpointer trait + 内置 InMemory/File；<b>PendingWrites 部分失败协议</b>（按 (task_id, idx) 记账，resume 跳过已完成任务，避免重复副作用）</td></tr>
+        <tr><td>重启语义</td><td>paused 可续；running → reconcile 为 interrupted；failed → retry_from_checkpoint</td><td>pending_approval 可续（但 parked TTL 600s）；running → 启动清扫为 interrupted</td><td>重建 caps + 同一 checkpointer 即可跨进程 resume（图确定性重建）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><b>分析</b>：重启语义两边<b>惊人一致</b>（running 一律判 interrupted，只有暂停态可续）——这是超步 checkpoint 模型的自然结论。Ginno 的 delta checkpoint（messages 纯追加差分）是对大状态的务实优化；tinyflows 的 PendingWrites 协议则是 Ginno 已铺好地基（put_writes 在存）但没盖楼的那层——未来做 mid-step resume 时可直接对齐该语义。</p>
+
+  <h3 id="s4-4">4.4 节点体系与扩展</h3>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno</span>
+      <ul class="small">
+        <li><b>类型化注册表</b>：BaseNode 契约（params/inputs/outputs schema + coerce + execute + add_edges），新节点类型<b>零编译器改动</b>；三条扩展路（自注册 / entry-point / 环境变量插件）</li>
+        <li>内置：agent(step) / llm / branch / loop / human / <b>browser（一等节点：eval/snapshot/handoff/complete，独立 Chrome Space + 登录交接）</b> / pass / extract（编译器内部）</li>
+        <li>工具与聊天主图共享同一 union，按 tools_allow 过滤，workflow_* 强制剥离</li>
+      </ul>
+    </div>
+    <div class="card side o">
+      <span class="tag">tinyflows / OpenHuman</span>
+      <ul class="small">
+        <li><b>21 种节点</b>（OpenHuman 产品面暴露 15 种）：trigger/agent/tool_call/http_request/code/shell/condition/switch/merge/split_out/transform/loop/output_parser/sub_workflow/memory/dedup/spawn/gate/scatter/gather/void</li>
+        <li><b>机器可读节点契约 catalog</b>：每种节点有 summary/config_fields/ports/example，专供宿主与<b>编写图的 agent</b> 枚举查询</li>
+        <li>宿主能力 = 10 个 caps trait（6 必选 + 4 可选）；凭据只以不透明 connection_ref 存在；agent_ref/slug/scope 等信任字段禁止表达式注入</li>
+        <li>创作期 gates「只拒绝保证错的图」+ bindings 静态分析 + 绿 run 隐患诊断</li>
+      </ul>
+    </div>
+  </div>
+  <p><b>分析</b>：Ginno 的 browser 一等节点（登录/验证码交接人）是 OpenHuman 用 Chrome 扩展 companion 才覆盖的场景，做法更内聚。tinyflows 的<b>节点契约 catalog 是面向「agent 写图」时代的设计</b>——Ginno 的 summarize/dev agent 生成 DSL 时只能靠提示词描述 schema（L1 失败标签里 schema 错误是最大类），把注册表里已有的 params/inputs/outputs schema 升级成可枚举契约喂给生成侧，是低成本高收益的移植。</p>
+
+  <h3 id="s4-5">4.5 宿主集成方式</h3>
+  <p>Ginno 的引擎<b>内嵌于产品</b>（Python sidecar，与聊天主图共享工具/模型/权限基建），好处是复用一切、迭代快，代价是引擎与产品耦合（legacy 双执行路径并存至今未清退）。tinyflows 走另一个极端：<b>宿主无关</b>——LLM/工具/HTTP/代码/shell/记忆/子图解析全部经 trait 注入，引擎连 SQLite、Langfuse、agent 循环都刻意不带（vendoring 时宁可删功能不留依赖）。OpenHuman 的 seam 实现（<span class="mono">src/openhuman/flows/tinyflows/caps/</span>）展示了这套接口的真实用法：agent 节点嵌套 tinyagents harness、自治等级穿透进 run（Prompt 档调用强制升级为 HITL 审批）、shell 能力「边界不存在前刻意不提供」。</p>
+  <p class="small">对 Ginno 的启示：不必追求宿主无关（只有一个宿主），但 tinyflows「编译与能力解耦、per-run 重建执行图」的做法，对 Ginno 未来多 provider/多工具集运行同一 workflow 有参考价值。</p>
+
+  <h3 id="s4-6">4.6 可观测与调试</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th></th><th class="cg">Ginno</th><th class="co">tinyflows / OpenHuman</th></tr></thead>
+      <tbody>
+        <tr><td>事件流</td><td>events.jsonl 落盘（~18 种 kind，含 loop_skip/loop_cap/supervisor_intervene）+ WS run.event 实时推</td><td>tracing 结构化日志 + RunObserver（on_step_finish）+ GraphEventJournal 按 run 追加可导出</td></tr>
+        <tr><td>静态检查</td><td><b>doctor</b>：运行前数据流 lint（无来源引用/路径字面量/未消费 writes），毫秒级无 LLM</td><td><b>gates + bindings</b>：创作期只拒「保证错」的图；null 绑定静态分析</td></tr>
+        <tr><td>运行后诊断</td><td>error_detail 归因（源步骤 + extract 细节）、失败标签 taxonomy</td><td>diagnostics 读「绿 run 隐藏的失败」（null 绑定/空 prompt/被吞错误）；Run Inspector 表达式警告</td></tr>
+        <tr><td>测试工具</td><td>ScriptedChatModel 脚本假模型；692 测试；真图编译驱动</td><td><b>testkit</b>：可编程 mock（glob/调用序列/按 schema 合成/超时演练）、trace、断言 harness、<b>真断点调试</b>（before/after/on_error/第 N 次激活），全部打包成带 JSON Schema 的工具供 agent 调用</td></tr>
+        <tr><td>模糊测试</td><td>无</td><td>proptest 覆盖 graph/resume/scatter/cancellation/interception</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><b>分析</b>：Ginno 的 doctor 做在<b>运行前</b>，tinyflows 的 diagnostics 做在<b>运行后</b>（绿 run 也不放过），时间轴互补，都值得要。tinyflows testkit 把「mock/trace/断点」暴露成 agent 可调工具，是「工作流由 agent 编写并调试」的完整闭环——Ginno 的 workflow-dev agent 目前只能 propose，若未来想让它「自己试运行验证再提交」，dry-run（§6-P1-4）就是第一步。</p>
+
+  <h3 id="s4-7">4.7 测试与质量工程</h3>
+  <p>Ginno 独家的是<b>总结质量度量体系</b>：L0 触发→L1 生成合法→L2 被采用→L3 首跑成功→L4 保真的漏斗，每次合成建 case 档案（input/attempts/output/outcome 四件套），prompt_version 进每条记录形成低成本 A/B，outcome 异步回填采用与首跑结果，Settings 内有漏斗仪表盘 + case 抽屉 + replay 对比。示例数据 L1 82% / L2 71% / L3 64%，top 失败标签 schema.edge_unknown。OpenHuman 侧未发现对应度量机制（有 flow_suggestions 存储但无漏斗遥测）；其质量手段是安全审计驱动（代码中遍布 B29/G4/T-M1 等审计 issue 编号）。</p>
+  <div class="verdict"><b class="vt">判断</b>　「agent 生成 workflow」这条路线的生死线就是生成质量。Ginno 在这条线上建了同类少见的度量基建——这是它相对 OpenHuman 真正的差异化资产，应继续加深（golden set / LLM-judge 仍在纸面），而不是掉头去补画布。</div>
+</section>
+
+<!-- ================= 5 成熟度 ================= -->
+<section id="s5">
+  <h2 class="serif"><span class="no">05</span>成熟度对比</h2>
+  <div class="stat-row">
+    <div class="stat g"><div class="n">692</div><div class="l">Ginno 后端测试通过（含 workflow 专项 74 单测 + 7 API + 38 e2e）</div></div>
+    <div class="stat g"><div class="n">3/3</div><div class="l">Ginno UX Sprint 与 master-plan 三轮全部落地</div></div>
+    <div class="stat o"><div class="n">36.3k★</div><div class="l">OpenHuman（3.6k forks），PR 编号已到 #5558</div></div>
+    <div class="stat o"><div class="n">Beta</div><div class="l">OpenHuman workflow 页横幅声明；webhook 触发未实现</div></div>
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>维度</th><th class="cg">Ginno</th><th class="co">OpenHuman / tinyflows</th></tr></thead>
+      <tbody>
+        <tr><td>计划执行</td><td>设计文档 → implementation-notes 全程对账，偏离有记录；已决事项全部落地</td><td>n8n 对标路线图 Phase 0–8，Phase 1–5 主体落地；近两周仍在做 tinyflows 0.8 升级与 checkpoint 修复</td></tr>
+        <tr><td>已知缺口（自述）</td><td>Supervisor 自治策略占位；subflow/并行延后 v2；文件 allowlist 三决策待定；eval harness 在纸面；legacy 双路径未清退；触发器缺</td><td>webhook 未实现；无 wait 节点；in-process resume 的超步 replay 优化未做；tinyflows 未发布 crates.io（0.x）</td></tr>
+        <tr><td>一致性风险</td><td>文档/代码高度一致（少见）</td><td>发现一处不一致：gitbook 称审批暂停「later today is fine」，代码实为 600s TTL fail-closed 取消</td></tr>
+        <tr><td>生产验证</td><td>个人使用 + Playwright 冒烟；无外部用户</td><td>大量用户 + 安全审计多轮（Codex P1 等）+ 事故编号入码</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="verdict split"><b class="vt">判断</b>　两者都在 1.0 之前，但姿态不同：Ginno 是「窄而实」（面小、全部落地、度量先行），OpenHuman 是「宽而快」（面大、Beta 声明诚实、审计驱动修补）。对 Ginno 有用的参照是：OpenHuman 在 36k 星的用户压力下，workflow 依然只敢挂 Beta——说明这个品类的可靠性门槛天然高，Ginno「先做厚可靠性再扩面」的次序是对的。</div>
+</section>
+
+<!-- ================= 6 借鉴 ================= -->
+<section id="s6">
+  <h2 class="serif"><span class="no">06</span>借鉴清单：OpenHuman 产品设计思路 → Ginno 行动</h2>
+  <p class="lede">先提炼设计思路（6.1），再按落地成本分层的行动清单（6.2–6.4）。</p>
+
+  <h3>6.1 OpenHuman 值得内化的七条设计思路</h3>
+  <div class="card" style="padding:8px 22px">
+    <ol>
+      <li><b>结构性保证 &gt; 提示词约定。</b>「agent 提议、人来保存」靠五道闸门实现，其中四道在后端：propose 工具永不落库、builder 工具表里<b>不存在 enable 工具</b>、create/duplicate 永远 born disabled、自动触发图服务端强制 disabled、出站副作用强制审批——与 UI/agent 是否守规矩无关。Ginno 已有同款思想（「writes 是硬契约」「retry 永远是手动」），可把该思路推广到未来的无人值守场景。</li>
+      <li><b>提议权与落库权分离。</b>agent 只能产出「建议」，落库动作永远由 app 代用户发起。Ginno 的 summarize 草稿已符合；version_propose 已符合；未来任何 agent 可触发的新动作面（如 agent 建议定时任务）都应继承这条。</li>
+      <li><b>权限最小化 + 诚实标注未知。</b>预授权清单把条目分成 approvable / blocked / dynamic（运行时才知道）/ agent（AI 步骤内部不可枚举）四类，<b>对无法预知的部分诚实说明而不是假装全知</b>。Ginno 的 doctor 警告与运行错误文案可借鉴这种「分级 + 诚实」表达。</li>
+      <li><b>全链路白话化。</b>节点类型人性化（future_thing → “Future thing”）、cron 白话摘要、步骤结果白话（“Fetched 3 item(s)”）、运行失败与配置错误用两种红色。画布给非技术用户看的是人话不是 slug。Ginno UI 目前偏工程语汇（事件 kind、DSL 术语）。</li>
+      <li><b>克制：推荐系统只给提议权。</b>Flow Scout 的 Build this 只是把建议预填进输入框，<b>绝不自动发送</b>；「真实试运行必须用户明确确认」。主动性与控制权的边界画得很清楚。</li>
+      <li><b>把设计理由写进代码注释。</b>「不做自动保存」的原因（saved+enabled 即 live）直接写在注释里；「Identity is a filled square; status is an outline」的视觉原则写在组件里。Ginno 的 implementation-notes 文化已经更好——保持。</li>
+      <li><b>fail-closed 的保守默认。</b>审批无人应答 10 分钟即取消（代价是文档叙事没跟上，成为反面教材）。无人值守场景里，保守默认 + 明确文案优于宽松默认 + 静默。</li>
+    </ol>
+  </div>
+
+  <h3 id="s6-p0">6.2 第一层：低成本高回报（可立即排期）</h3>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">01</span><b>Fix-with-agent 失败修复闭环</b><span class="chip ok">成本低</span><span class="chip lead">体验收益高</span></div>
+    <p class="why">OpenHuman：failed run 上一键把错误 + 失败节点 id 喂给画布 copilot 发起 repair turn，审阅-修复不断出画布。Ginno 的零件全在（RunErrorBox、workflow-dev 会话、doctor、error_detail 归因），只差一根线。</p>
+    <div class="how"><b>落地</b>　RunErrorBox 增「让 dev agent 修复」按钮 → newSession(workflow-dev) 并注入 seed：workflow 名 + 当前 DSL + 失败节点 id + error + 相关事件片段。修复走既有 propose_edit diff 卡。</div>
+  </div>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">02</span><b>全链路白话化 + 两种红色</b><span class="chip ok">成本低</span></div>
+    <p class="why">把事件 kind、节点类型、错误信息转成人话；「运行失败」与「DSL 配置错误」用不同视觉（对应 Ginno 的 run error vs doctor error），避免用户误诊。</p>
+    <div class="how"><b>落地</b>　时间线/步骤列表/通知文案统一过一层 humanize 映射；doctor 面板与 RunErrorBox 配色区分；stuck 通知已有基础，补齐其余触点。</div>
+  </div>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">03</span><b>version_propose 可视化 DAG diff</b><span class="chip ok">成本中低</span></div>
+    <p class="why">OpenHuman copilot 的 diff overlay（新增节点实线环、删除节点幽灵化 + 计数徽章）比纯文本 unified diff 直觉得多。Ginno 已有 WorkflowDag 组件与 canonical diff 数据。</p>
+    <div class="how"><b>落地</b>　diff 确认卡在文本 diff 之上加一个小型 DAG：对 current 与 proposed 两版图做节点 id 对齐，新增=绿环 / 删除=半透明 / 变更=标记。文本 diff 保留为展开详情。</div>
+  </div>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">04</span><b>dry-run 提前（原 P2）</b><span class="chip ok">成本中低</span><span class="chip warn">安全收益</span></div>
+    <p class="why">OpenHuman 的 dry_run_workflow 用 mock capabilities 跑草稿图，零副作用、不设自治门槛（只读 agent 也能自检提议），并且「真实试运行必须用户确认」。Ginno tooling-plan 已规划（step/llm 替换为回显 stub），可提级：它同时是总结质量工具（L3 前置验证）与未来无人值守的安全件。</p>
+    <div class="how"><b>落地</b>　按既有设计实现 stub 编译路径；在 SummarizeModal 与 doctor 面板暴露「试运行」；dev agent 允许自主 dry-run、禁止自主真跑（对齐 OpenHuman 的工具带设计）。</div>
+  </div>
+
+  <h3 id="s6-p1">6.3 第二层：与触发器演进绑定的战略件</h3>
+  <p class="small">这一层是一个包：<b>触发器 + 无人值守安全 + 引擎容错</b>必须成对引入。只做触发器不做闸门 = 造出没人看管的副作用机器；只做闸门没有触发器 = 闸门无用武之地。</p>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">05</span><b>触发器体系（schedule / event）</b><span class="chip bad">最大缺口</span><span class="chip warn">成本中高</span></div>
+    <p class="why">OpenHuman：trigger 是 DSL 的一等字段（cron/at/every），启用时注册调度作业，<b>每次 app 启动幂等重注册</b>（“survive restarts” 的真实含义），per-flow in-flight 锁防定时突发并发，触发只发事件、dispatch 前复核 enabled。这是「autopilot」叙事的地基。</p>
+    <div class="how"><b>落地</b>　DSL 增 <span class="mono">trigger</span> 段（kind: manual/schedule/event）；runtime 加轻量调度器（启动重注册 + 事件复核 + per-flow 锁）；事件类先做 Ginno 内部事件（todo/goal/kb 变更）再接外部（webhook 可缓，OpenHuman 自己也没做完）。</div>
+  </div>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">06</span><b>无人值守安全闸门（B29 模式）</b><span class="chip bad">与 #05 绑定</span><span class="chip warn">成本中</span></div>
+    <p class="why">OpenHuman 的四层里，Ginno 至少需要三层的对应物：<br>
+    ① <b>服务端铁律</b>：自动触发的 workflow 强制 born disabled，需显式启用；含出站副作用（发通知/写外部平台/HTTP）的 DSL 强制开启审批或至少显式确认——这两条与 UI/agent 无关；<br>
+    ② <b>启用时预授权清单</b>：一次性说清「这个 flow 会动什么」（工具/路径/外发），信任按 (workflow, tool) 粒度记录，文案对未知项诚实（dynamic/agent 分类）；<br>
+    ③ <b>graph_hash 防过期审批</b>：run 停在审批时钉住 DSL 版本，恢复前校验图未变，变了就拒绝并给专属文案。Ginno run 已钉 dsl_version，补校验即成。</p>
+    <div class="how"><b>落地</b>　复用现有 interrupt 通道增一种 nature（automation_gate）；信任表可落 ~/.ginno/workflows/&lt;id&gt;/trust.json；与「permission 全局移除」方向不冲突——交互会话保持自由，闸门只作用于自动触发的 flow。</div>
+  </div>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">07</span><b>引擎级 retry/backoff + on_error 路由</b><span class="chip warn">成本中</span><span class="chip bad">无人值守基本件</span></div>
+    <p class="why">tinyflows 每节点可配 retry（max_attempts + fixed/exponential 退避）与 on_error（stop/continue/route）；Ginno 目前失败即终态、全靠人手动重试——「Retry is always deliberate」在交互场景是美德，在凌晨三点的定时任务里是事故。另建议 per-node 超时配置（现全局 300s）。</p>
+    <div class="how"><b>落地</b>　DSL step/agent 节点加 <span class="mono">retry</span>/<span class="mono">on_error</span> 可选字段，默认保守（不重试）；副作用类节点重试需配合幂等提示（doctor 增规则：有外发工具的节点开重试时 warn）。</div>
+  </div>
+
+  <h3 id="s6-p2">6.4 第三层：长线选项</h3>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">08</span><b>模板库 + Session Scout（主动发现）</b><span class="chip warn">成本中</span><span class="chip g">Ginno 特色机会</span></div>
+    <p class="why">模板便宜（把 pr-triage 之外再沉淀 3–5 个 JSON，放进创建入口）。Scout 更有趣：OpenHuman 靠行为遥测建议自动化，而 <b>Ginno 手里有更好的材料——synthesis case 库</b>已经记录了每次会话蒸馏的采用/丢弃/首跑结果。「你最近三次会话都在做类似的事，要不要固化成流程？」是从真实用法长出来的建议，与「对话领先」哲学完全自洽。记住克制原则：只提议、只预填，不代办。</p>
+  </div>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">09</span><b>flow 私有记忆命名空间</b><span class="chip warn">成本中</span></div>
+    <p class="why">OpenHuman 每个 flow 有私有 memory namespace：成功 run 的 ≤1000 字摘要自动沉淀（上限 50 条），下次运行的 agent 步骤可读「上次跑发生了什么」；dedup 节点还靠它做跨 run 去重、且只在 run 成功后 commit。这让重复性自动化有「经验积累」。Ginno 的记忆系统现成，接一根管即可。</p>
+  </div>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">10</span><b>节点契约 catalog 反哺生成质量</b><span class="chip ok">成本低</span><span class="chip g">直击 L1 失败</span></div>
+    <p class="why">Ginno 节点注册表已有 params/inputs/outputs schema；把它们整理成机器可读契约（每类型：字段/约束/示例/常见错误），注入 summarize 与 workflow-dev 的提示词。synthesis 失败标签中 schema 类占大头——这是用 tinyflows 的「agent-first catalog」思路打 Ginno 自己的 L1 漏斗。</p>
+  </div>
+
+  <div class="bcard">
+    <div class="bh"><span class="num">11</span><b>战略议题：画布要不要做</b><span class="chip even">建议：暂缓，但升级观察台</span></div>
+    <p class="why">OpenHuman 的证据表明<b>画布与 agent 创作并不互斥</b>——它的创作主线仍是 agent 提议，画布承担「观察台 + escape hatch」，且即便如此仍被其自评列为最大 UI 工程。Ginno 现有立场（无拖拽编辑器）在团队规模下依然成立；建议的中间路线是：保持对话编辑主线，把只读 DAG 升级为更强的<b>运行观察台</b>（实时 overlay + 点选下钻 + §03 的可视化 diff），拿到画布八成的理解力、不背两成的编辑维护成本。若未来数据表明「复杂图编辑往返成本」成为采用漏斗的瓶颈（L2 heavy_edit 标签），再重议。</p>
+  </div>
+</section>
+
+<!-- ================= 7 反向 ================= -->
+<section id="s7">
+  <h2 class="serif"><span class="no">07</span>反向观察：Ginno 的独有价值与 OpenHuman 的镜鉴</h2>
+  <p>借鉴不等于仰望。调研同样揭示了 Ginno 不该丢的东西，和 OpenHuman 踩过的坑：</p>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno 独有 / 领先</span>
+      <ul class="small">
+        <li><b>summarize-from-session</b>：从真实会话蒸馏工作流——OpenHuman 的 propose 来自用户口头描述，起点信息量更低</li>
+        <li><b>L0–L4 质量漏斗 + case 档案 + replay</b>：生成质量的度量与 A/B 基建，OpenHuman 无对应物</li>
+        <li><b>doctor 运行前静态检查</b>（tinyflows 的 gates 同思路但更偏结构合法性，Ginno 做到了数据流来源分析）</li>
+        <li><b>运行回到对话</b>（run.bind 内联）：监控的「就近原则」做得比 hub 式产品更彻底</li>
+        <li><b>浏览器一等节点 + 登录交接</b>：OpenHuman 需要 Chrome 扩展 companion 才覆盖同等场景</li>
+        <li><b>context 来源追踪（context_meta）</b>：「这个值哪来的」在 item 流模型里要靠 null 诊断反推</li>
+        <li><b>文档/实现对账文化</b>：implementation-notes 逐条记录偏离与事故，OpenHuman 出现了文档领先代码的情况</li>
+      </ul>
+    </div>
+    <div class="card side o">
+      <span class="tag">OpenHuman 的坑（镜鉴）</span>
+      <ul class="small">
+        <li><b>文档/代码不一致</b>：gitbook 说审批暂停「later today is fine」，代码是 600s TTL fail-closed 取消——保守实现没错，叙事没跟上就是信任损耗</li>
+        <li><b>webhook 触发声明了没实现</b>：能力宣称与实际面要有明确边界（Beta 横幅是好习惯）</li>
+        <li><b>审批 UX 复杂度高</b>：预授权 + once/always + gate 卡片两代并存，学习成本不小——闸门多寡要与场景匹配</li>
+        <li><b>画布轮询 2s</b>：Run Inspector 靠 live-polling 而非推送（Ginno 的 WS 推送更优）</li>
+        <li><b>画布工程成本</b>：其规划文档自认 Phase 3 画布是「最大 UI 工程」——Ginno 不跟是对的，除非数据说话</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 8 结论 ================= -->
+<section id="s8">
+  <h2 class="serif"><span class="no">08</span>结论</h2>
+  <div class="card">
+    <p><b>一句话</b>：Ginno 与 OpenHuman 在「agent 起草、人批准」上殊途同归，在「对话 vs 画布」上各押一边；Ginno 赢在起点质量与质量度量，OpenHuman 赢在触发面与无人值守安全工程。</p>
+    <p><b>三个真实差距</b>（按重要性）：① 触发器 + 无人值守安全机制（战略缺口，成对补齐）；② 引擎容错语汇（retry/on_error，无人值守基本件）；③ 失败修复闭环与白话化（体验打磨，成本低）。</p>
+    <p><b>三个不要跟</b>：全功能画布编辑器（成本与哲学都不匹配，升级只读观察台即可）；审批复杂度向交互会话蔓延（闸门只加在自动触发轨道）；能力宣称跑在实现前面（OpenHuman 的 TTL 教训）。</p>
+    <p><b>行动序</b>：先做第一层四件（Fix-with-agent / 白话化 / DAG diff / dry-run）——两周内可见效且不动架构；随后把「触发器 + B29 闸门 + retry」作为一个设计包整体评审（这是 Ginno workflow 从「重放脚本」到「值班员工」的成人礼）；Scout、flow 记忆、节点契约 catalog 按质量漏斗数据择机插入。</p>
+  </div>
+</section>
+
+<!-- ================= 附录A DSL 深度对比 ================= -->
+<section id="sA">
+  <h2 class="serif"><span class="no">附A</span>DSL 逐字段深度对比</h2>
+  <p class="lede">把两边真实的 DSL 摊开对比：先各看一份「出厂原件」（A.1），再做同题互译（A.2），然后逐层对字段（A.3–A.7），最后给出 Ginno DSL 的演进建议（A.8）。引文来源：Ginno <span class="mono">workflows/dsl.py</span> / <span class="mono">nodes/builtin.py</span> / <span class="mono">store.py</span>（权威校验与种子）；tinyflows <span class="mono">src/model/mod.rs</span> / <span class="mono">catalog/contracts</span>；OpenHuman <span class="mono">app/src/lib/flows/templates/</span>（真实模板原件）。</p>
+
+  <h3>A.1 出厂原件：两份真实 DSL</h3>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno · 系统种子 todo-pull（verbatim）</span>
+      <pre><code>{
+  "dsl_version": "1",          // normalize_dsl 补默认
+  "name": "🔄 TODO 拉取",
+  "entry": "pull",
+  "context": {                  // 未写 → 归一化补空 schema+initial
+    "schema": {"type":"object","properties":{}},
+    "initial": {}
+  },
+  "supervisor": {"enabled": false, "mode": "human"},
+  "nodes": [
+    { "id": "pull", "type": "agent", "agent": "dev",
+      "skills": ["{{skill}}"],
+      "title": "拉取 {{provider}} 的未完成待办",
+      "goal": "拉取我在外部 TODO 平台 {{provider}} 上【未完成】的待办。调用列表工具时参数必须严格为：{\"pageNum\":\"1\",\"pageSize\":\"20\",…} …必须传 ext=[{\"provider\":\"{{provider}}\",\"id\":\"&lt;平台待办id&gt;\"}] …" }
+  ],
+  "edges": []
+}</code></pre>
+      <p class="small">注意形态：<b>没有 trigger 节点</b>——点火方式在 DSL 之外（todo 勾选事件经 <span class="mono">context_override</span> 注入 <span class="mono">{{skill}}/{{provider}}/{{mcp}}</span> 等模板变量）。一个定义服务所有平台，靠的是 goal/skills 里的 <span class="mono">{{}}</span> 模板。</p>
+    </div>
+    <div class="card side o">
+      <span class="tag">tinyflows · OpenHuman 模板 scheduled-scrape（verbatim）</span>
+      <pre><code>{
+  "schema_version": 1,
+  "name": "Scheduled scrape to memory",
+  "nodes": [
+    { "id": "trigger", "kind": "trigger", "name": "Every 6 hours",
+      "config": { "trigger_kind": "schedule",
+                  "schedule": "0 */6 * * *" },
+      "ports": [], "position": {"x":0,"y":0} },
+    { "id": "fetch", "kind": "http_request", "name": "Fetch source",
+      "config": { "method": "GET",
+                  "url": "https://example.com/feed.json",
+                  "headers": {} }, "ports": [] },
+    { "id": "shape", "kind": "transform", "name": "Shape the item",
+      "config": { "set": { "title": "=item.title",
+                           "summary": "=item.summary" } } },
+    { "id": "remember", "kind": "tool_call",
+      "config": { "slug": "", "args": {} } }
+  ],
+  "edges": [
+    { "from_node":"trigger","from_port":"main","to_node":"fetch","to_port":"main" },
+    { "from_node":"fetch","from_port":"main","to_node":"shape","to_port":"main" },
+    { "from_node":"shape","from_port":"main","to_node":"remember","to_port":"main" }
+  ]
+}</code></pre>
+      <p class="small">注意形态：<b>trigger 是一等节点</b>（定时写进图）；数据沿线流动（fetch 的 item → transform 用 <span class="mono">=item.x</span> 整形）；无 LLM 也能成流（http+transform+tool 全确定性）；<span class="mono">position</span> 是画布坐标、引擎忽略。</p>
+    </div>
+  </div>
+  <div class="verdict split"><b class="vt">第一眼差异</b>　Ginno 的 DSL 是「<b>目标脚本</b>」：一个 agent 节点 + 一大段 goal 散文 + 模板变量，控制流与数据流都隐含在 context 约定里；tinyflows 的 DSL 是「<b>数据流水线</b>」：每种动作一个确定节点，数据沿边以 item 流动，表达式显式取字段。前者对 LLM 起草友好（写散文即可），后者对确定性与可验证友好（每个字段可静态分析）。</div>
+
+  <h3>A.2 同题互译：同一个工作流，两种写法</h3>
+  <p>题目用 Ginno 文档里的真实事故场景（search → 选 10 股 → 逐个分析 → 写报告 → 达标则通知），完整互译：</p>
+  <div class="card side g">
+    <span class="tag">Ginno 写法</span>
+    <pre><code>{
+  "dsl_version": "1", "name": "股票日报", "entry": "search",
+  "context": {
+    "schema": {"type":"object","properties":{
+      "stocks":  {"type":"array","items":{"type":"object"}},
+      "reports": {"type":"array","items":{"type":"string"}},
+      "raw_path":{"type":"string"}}},
+    "initial": {"raw_path": "/Users/me/obsidian/raw"}
+  },
+  "nodes": [
+    {"id":"search","type":"step","agent":"research",
+     "goal":"搜索明日 A 股市场新闻，选出 10 只关注股票",
+     "writes":{"stocks":{"type":"array","items":{"type":"object"}}}},
+    {"id":"each","type":"loop","over":"context.stocks","as":"stock",
+     "body":"analyze","max_iters":20,"on_empty":"skip"},
+    {"id":"analyze","type":"step","agent":"research",
+     "goal":"为股票 {{stock.name}} 生成一段分析，追加到 context.reports",
+     "writes":{"reports":{"type":"array","items":{"type":"string"}}}},
+    {"id":"write","type":"step","agent":"writer",
+     "goal":"把 context.reports 汇总成日报，存入 {{context.raw_path}}"},
+    {"id":"gate","type":"branch",
+     "cases":[{"when":"len(context.reports) &gt;= 10","then":"notify"}],
+     "default":"done"},
+    {"id":"notify","type":"step","agent":"writer","goal":"发送日报摘要通知"},
+    {"id":"done","type":"pass"}
+  ],
+  "edges": [
+    {"from":"search","to":"each"},
+    {"from":"each","to":"write"},
+    {"from":"write","to":"gate"},
+    {"from":"notify","to":"done"}
+  ]
+}</code></pre>
+  </div>
+  <div class="card side o" style="margin-top:16px">
+    <span class="tag">tinyflows 写法</span>
+    <pre><code>{
+  "schema_version": 1, "name": "股票日报",
+  "inputs": [{"name":"raw_path","type":"string","required":true}],
+  "nodes": [
+    {"id":"start","kind":"trigger","name":"工作日早8点",
+     "config":{"trigger_kind":"schedule","schedule":"0 8 * * 1-5"}},
+    {"id":"search","kind":"agent",
+     "config":{"prompt":"搜索明日 A 股市场新闻，选出 10 只关注股票",
+       "output_parser":{"schema":{"type":"object","properties":{
+         "stocks":{"type":"array","items":{"type":"object"}}}}}}},
+    {"id":"split","kind":"split_out","config":{"path":"json.stocks"}},
+    {"id":"analyze","kind":"agent",
+     "config":{"prompt":"为股票 =item.name 生成一段分析",
+       "execution":"per_item","concurrency":4,
+       "retry":{"max_attempts":2,"backoff":"exponential"}}},
+    {"id":"write","kind":"agent",
+     "config":{"prompt":"把 =nodes.analyze.items 汇总成日报，存入 =inputs.raw_path"}},
+    {"id":"gate","kind":"condition",
+     "config":{"field":"=nodes.analyze.items | length &gt;= 10"},
+     "ports":[{"name":"true"},{"name":"false"}]},
+    {"id":"notify","kind":"agent","config":{"prompt":"发送日报摘要通知"},
+     "requires_approval":true},
+    {"id":"sink","kind":"void"}
+  ],
+  "edges": [
+    {"from_node":"start","to_node":"search"},
+    {"from_node":"search","to_node":"split"},
+    {"from_node":"split","to_node":"analyze"},
+    {"from_node":"analyze","to_node":"write"},
+    {"from_node":"write","to_node":"gate"},
+    {"from_node":"gate","from_port":"true","to_node":"notify"},
+    {"from_node":"notify","to_node":"sink"}
+  ]
+}</code></pre>
+  </div>
+  <h4>互译中暴露的语义差（逐条）</h4>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>关注点</th><th class="cg">Ginno 里它在哪</th><th class="co">tinyflows 里它在哪</th><th>差异性质</th></tr></thead>
+      <tbody>
+        <tr><td>结构化产出</td><td><span class="mono">writes</span> 声明 → 编译器注入 <span class="mono">__extract</span> 节点（硬契约，忘写必失败）</td><td><span class="mono">output_parser.schema</span>（作者自觉配置；不配则输出靠下游猜）</td><td>Ginno 更强制；tinyflows 更自由</td></tr>
+        <tr><td>列表遍历</td><td><span class="mono">loop over/as/body</span>（串行，循环是一等结构）</td><td><span class="mono">split_out</span> + <span class="mono">execution:"per_item"</span>（遍历=扇出，天然可并行）；loop 节点另有用途（有界重复 + fold 累加器）</td><td>概念拆分不同：Ginno 的「循环」≈ tinyflows 的「扇出」</td></tr>
+        <tr><td>空列表语义</td><td><span class="mono">on_empty: skip|fail</span> + 显式 <span class="mono">loop_skip</span> 事件（事故后补的显式化）</td><td>split_out 空数组 → 下游 0 次执行，<b>静默</b>；靠 diagnostics 的 null/空诊断事后发现</td><td>Ginno 在这里反而更显式</td></tr>
+        <tr><td>步骤间传值</td><td>命名 context 键（<span class="mono">context.reports</span>）+ <span class="mono">context_meta</span> 来源追踪</td><td>item 沿边流动 + 跨层引用 <span class="mono">=nodes.&lt;id&gt;.items</span>；无全局黑板、无来源元数据</td><td>黑板 vs 流水线（§4.1 已述）</td></tr>
+        <tr><td>goal 里引用变量</td><td><span class="mono">{{stock.name}}</span> / <span class="mono">{{context.x}}</span> 字符串插值（Jinja 式模板）</td><td>无插值；整值 <span class="mono">=expr</span> 替换（<span class="mono">=item.name</span>）</td><td>Ginno 的散文 goal 可读性更高；tinyflows 的取值更可静态分析</td></tr>
+        <tr><td>并行</td><td>无（<span class="mono">parallel</span> 字段保留但忽略）</td><td><span class="mono">concurrency: 4</span> 一行开启，输出恒按输入序</td><td>表达力差</td></tr>
+        <tr><td>重试</td><td>无字段；失败即终态、人工 retry</td><td><span class="mono">retry{max_attempts,backoff}</span> 每节点可配</td><td>表达力差（无人值守基本件）</td></tr>
+        <tr><td>审批</td><td>显式 <span class="mono">human</span> 节点（问答）</td><td>任意节点 <span class="mono">requires_approval:true</span> 正交标志</td><td>tinyflows 的标志式更省节点；Ginno 的节点式语义更清晰（问什么写什么）</td></tr>
+        <tr><td>触发</td><td>DSL 之外（无字段）</td><td>trigger 一等节点（schedule/app_event/manual…）</td><td>最大的结构性差</td></tr>
+        <tr><td>终止/丢弃</td><td><span class="mono">pass</span> 占位</td><td><span class="mono">void</span> 终端汇（验证拒绝任何出边，「显式说出这是副作用、无人等待」）</td><td>tinyflows 把副作用语义写进了类型</td></tr>
+        <tr><td>分支路由写在哪</td><td>节点内 <span class="mono">cases/default</span>；<b>禁止</b> branch 的显式出边</td><td>边的 <span class="mono">from_port</span>（写错到 to_port 会被验证拒绝——那会变成无条件扇出）</td><td>两种防错风格：Ginno 收进节点，tinyflows 放边上但硬规则</td></tr>
+        <tr><td>画布坐标</td><td>无（产品不做画布）</td><td><span class="mono">position</span> 可选，引擎忽略，「只给缺坐标的节点补位」</td><td>tinyflows 为可视化宿主预留</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>A.3 顶层结构字段映射</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>关注点</th><th class="cg">Ginno</th><th class="co">tinyflows</th></tr></thead>
+      <tbody>
+        <tr><td>格式版本</td><td><span class="mono">dsl_version:"1"</span> 单轴</td><td><span class="mono">schema_version</span>（整体）+ 每节点 <span class="mono">type_version</span>（kind 的 config 形状）双轴；加载期纯函数迁移；版本过高报 <span class="mono">SchemaVersionTooNew</span>，<b>绝不静默降级</b></td></tr>
+        <tr><td>入口</td><td><span class="mono">entry</span>：node id，必填，validate 检查存在</td><td>恰好一个 <span class="mono">trigger</span> 节点（0 或 &gt;1 硬拒绝）；运行级旋钮（recursion_limit/max_node_visits/max_concurrency/node_timeout…）挂在 trigger config</td></tr>
+        <tr><td>运行参数</td><td><span class="mono">context.schema</span>（JSON Schema，驱动 UI 表单 + 校验）+ <span class="mono">context.initial</span>（默认输入，可被 context_override 覆盖）</td><td><span class="mono">inputs[]</span> 类型化签名（name/type/required/default/description），run 前验证，<span class="mono">=inputs.x</span> 寻址</td></tr>
+        <tr><td>agent 注册</td><td>节点上 <span class="mono">agent:"dev|research|writer"</span> 字符串引用 app 注册表；虚构名运行时回退 + doctor warn</td><td>图级 <span class="mono">agents[]</span>（AgentDefinition）随图旅行；节点 <span class="mono">agent_ref</span> 选择并只能<b>收窄</b>（instructions 追加、tools 取交、limits 取下界）</td></tr>
+        <tr><td>全局监控</td><td><span class="mono">supervisor{enabled,mode}</span> 占位字段（validate 但不消费）</td><td>无（宿主/interceptor 职责）</td></tr>
+        <tr><td>描述</td><td>name + description</td><td>name（description 在宿主定义层，如 openhuman DB）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>A.4 节点类型映射</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th class="cg">Ginno</th><th class="co">tinyflows</th><th>语义差</th></tr></thead>
+      <tbody>
+        <tr><td><span class="mono">step/agent</span>：goal+agent+skills+writes+extract_model+max_tool_iters</td><td><span class="mono">agent</span>：prompt+agent_ref+model+context 块+tools grants+limits+output_parser+connection_ref+execution/concurrency/on_item_error</td><td>goal（目标散文）vs prompt（指令）；Ginno 步骤天然是多轮工具循环；tinyflows 把循环交给宿主 harness</td></tr>
+        <tr><td><span class="mono">llm</span>（prompt+output）</td><td>agent 无 tools 即单次补全</td><td>等价</td></tr>
+        <tr><td><span class="mono">branch</span>（cases[].when/then/transform + default）</td><td><span class="mono">condition</span>（二路）+ <span class="mono">switch</span>（多路）</td><td>Ginno 一个节点含多 case 且 case 可带 transform；tinyflows 拆两类、路由在端口</td></tr>
+        <tr><td><span class="mono">loop</span>（over/as/body/max_iters/on_empty）</td><td><span class="mono">loop</span>（max_iterations/condition/until/state-fold/emit/on_exceeded）+ <span class="mono">split_out</span>+per_item</td><td>Ginno loop = 列表迭代器；tinyflows loop = 有界重复 + fold 累加器，列表迭代是扇出</td></tr>
+        <tr><td><span class="mono">human</span>（question）</td><td><span class="mono">requires_approval</span> 正交标志 + interrupt</td><td>见 A.2 表</td></tr>
+        <tr><td><span class="mono">browser</span>（space/action/code/keep/timeout_s/headed）</td><td><span class="mono">tool_call slug:"browser"</span> + Chrome companion 扩展</td><td>一等节点 vs 集成工具</td></tr>
+        <tr><td><span class="mono">extract</span>（编译器内部）</td><td><span class="mono">output_parser</span> / agent.output_parser.schema</td><td>注入式 vs 声明式</td></tr>
+        <tr><td><span class="mono">pass</span></td><td><span class="mono">void</span>（语义更强：终端丢弃、禁出边）</td><td>—</td></tr>
+        <tr><td>—</td><td><span class="mono">trigger / tool_call / http_request / code / shell / transform / split_out / merge / memory / dedup / spawn / gate / scatter / gather / sub_workflow</span></td><td>Ginno 缺整族「确定性效果与数据整形」节点——shell/HTTP 只能借 agent 的工具间接获得</td></tr>
+        <tr><td>—（全节点通用）</td><td><span class="mono">on_error / retry / requires_approval</span> 每节点可配</td><td>Ginno 无</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>A.5 边与数据适配</h3>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno 边 = 连接 + 适配器</span>
+      <pre><code>{"from":"fetch","to":"each",
+ "transform":{
+   "map":  {"repo":"prs[0].repo"},   // 路径复制
+   "expr": {"n":"len(context.prs)"}, // 沙箱表达式
+   "pick": ["title"],                // 只带这些键
+   "defaults": {"lang":"zh"},
+   "fn":   "my_registered_xform"     // 注册自定义
+ }}</code></pre>
+      <p class="small">无 transform 时默认 = context 浅合并上游 output。结构性禁令：branch 不得有显式出边；loop body 的回边是结构边、不许手写。</p>
+    </div>
+    <div class="card side o">
+      <span class="tag">tinyflows 边 = 纯端口连接</span>
+      <pre><code>{"from_node":"gate","from_port":"true",
+ "to_node":"notify","to_port":"main"}</code></pre>
+      <p class="small">数据适配不在边上：整形用 <span class="mono">transform</span> 节点（<span class="mono">set:{k:"=expr"}</span>）或下游 <span class="mono">=</span> 表达式自取。分支标签必须在 <b>from_port</b>（HARD RULE）；多前驱节点自动接 fan-in 屏障（merge 语义）。</p>
+    </div>
+  </div>
+  <p><b>分析</b>：Ginno 把适配放在边上是务实的——LLM 起草时「把上一步的 X 作为下一步的 Y」是一句话的事；代价是边变「胖」、校验更复杂。tinyflows 的边保持极简，把适配推给节点与表达式，换来端口/屏障/扇出的统一语义。两者都做了「路由写错位置即验证失败」的硬规则，只是落点不同。</p>
+
+  <h3>A.6 表达式与校验哲学</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th></th><th class="cg">Ginno</th><th class="co">tinyflows</th></tr></thead>
+      <tbody>
+        <tr><td>语法</td><td><span class="mono">{{expr}}</span> 模板插值 + when/over 条件表达式；Python AST 白名单沙箱（禁 import/exec/dunder/任意调用，≤4000 字符/300 节点——防 LLM 病态输入）</td><td><span class="mono">=expr</span>：简单点路径快路径（<span class="mono">=item.name</span>），否则整段交 jaq/jq；剔除 env/regex/时间等内建（防宿主秘密泄漏）</td></tr>
+        <tr><td>作用域</td><td>context ∪ loop_vars  边 input</td><td>item / items / run / nodes.&lt;id&gt; / inputs</td></tr>
+        <tr><td>失败语义</td><td>求值异常 → 分支 continue 跳过该 case（BranchNode 静默）；transform.expr 异常 → null</td><td>一切错误得 <span class="mono">Value::Null</span>，但 null 解析被<b>追踪</b>（NullResolution 挂到 diagnostics，warn 出来）</td></tr>
+        <tr><td>静态检查</td><td>doctor：数据流来源分析（loop.over/goal 引用无来源 = error；路径字面量、未消费 writes = warn）——运行<b>前</b></td><td>validate（结构，一趟收集全部）+ gates（只拒「保证错」）+ bindings 静态分析——创作<b>期</b>；diagnostics 读绿 run 隐患——运行<b>后</b></td></tr>
+        <tr><td>动态兜底</td><td>supervisor 参数级恢复（coerce/patch_dsl/retry/skip/abort）+ agent 名回退</td><td>per-node retry/on_error；能力缺席语义清晰（降级或拒绝，不假装）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>A.7 版本化与人机交互字段</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th></th><th class="cg">Ginno</th><th class="co">tinyflows / OpenHuman</th></tr></thead>
+      <tbody>
+        <tr><td>内容版本</td><td>存储层 <span class="mono">versions/N.json</span> 不可变快照 + current 指针 + canonical_dsl diff + rollback</td><td>引擎不管；openhuman <span class="mono">flow_revisions</span>（20 版）+ 乐观并发 + <b>graph_hash</b> 审批钉版本</td></tr>
+        <tr><td>格式迁移</td><td>单轴 dsl_version；legacy steps 数组经 <span class="mono">legacy_steps_to_dsl</span> 一次性包装</td><td>双轴 + 加载期迁移函数 + 过新拒绝</td></tr>
+        <tr><td>HITL 载荷</td><td>interrupt <span class="mono">{kind: human|manual|browser_handoff|version_propose}</span>；resume 可带 context_patch</td><td>requires_approval → interrupt；resume <span class="mono">{approved[], rejected[]}</span> 逐 gate 精确</td></tr>
+        <tr><td>信任字段防注入</td><td>skills/agent 允许模板（{{}}）但由触发方 context_override 注入；workflow_* 工具剥离</td><td>agent_ref/slug/connection_ref/scope <b>必须字面量</b>、禁表达式（「否则运行数据能选择凭据与工具」）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>A.8 对 Ginno DSL 的演进建议</h3>
+  <div class="grid2">
+    <div class="card side o">
+      <span class="tag">值得引入（按价值序）</span>
+      <ul class="small">
+        <li><b>顶层 <span class="mono">trigger</span> 段</b>：不必学 tinyflows 做成节点；Ginno 的 entry 已独立，加 <span class="mono">"trigger":{"kind":"schedule","cron":"0 8 * * 1-5"}</span> 顶层对象更贴现有形状（与 §6.3-05 绑定）</li>
+        <li><b>每节点 <span class="mono">retry</span> / <span class="mono">on_error</span> / <span class="mono">timeout_s</span></b>：无人值守基本件；默认保守（不重试）</li>
+        <li><b>type_version 双轴迁移</b>：现在只有 dsl_version 单轴，某 kind 的 config 形状一旦调整就会撞旧版本；学 tinyflows「per-kind 版本 + 加载期迁移 + 过新拒绝」</li>
+        <li><b>void 语义</b>：把「副作用终点、无人等待」写进类型（比 pass 更诚实），配合未来 spawn 式异步触发</li>
+        <li><b>节点契约 catalog</b>：注册表里的 params/inputs/outputs schema 整理成可枚举契约，注入生成侧（打 L1 漏斗）</li>
+      </ul>
+    </div>
+    <div class="card side g">
+      <span class="tag">应当保留（Ginno 更优处）</span>
+      <ul class="small">
+        <li><b>context 黑板三件套</b>（schema 驱动 UI 表单 / initial 默认输入 / meta 来源追踪）——tinyflows 没有对等物，「这个值哪来的」要靠诊断反推</li>
+        <li><b>writes 硬契约 + extract 注入</b>——比 output_parser 的「作者自觉」强一个量级；事故证明过</li>
+        <li><b>{{}} 散文模板</b>——goal 可读性是对话式产品的门面；tinyflows 无插值是真实痛点</li>
+        <li><b>结构性路由禁令</b>（branch/loop-body 禁显式出边）——与 tinyflows 的端口硬规则等效但更省认知</li>
+        <li><b>保留后缀等防碰撞规则</b> 与 canonical_dsl 版本 diff——工程纪律的体现</li>
+        <li><b>loop 空序列显式化</b>（on_empty + loop_skip 事件）——tinyflows 的 split_out 空数组至今静默，Ginno 在这里是领先的，别在借鉴时弄丢</li>
+      </ul>
+    </div>
+  </div>
+  <div class="verdict"><b class="vt">结语</b>　两份 DSL 是两种产品哲学的精确投影：Ginno 为「LLM 起草 + 人确认 + 对话执行」优化（散文 goal、黑板 context、硬契约 writes），tinyflows 为「宿主无关 + 确定性流水线 + agent 可调试」优化（端口边、item 流、契约 catalog、testkit）。互译练习表明它们并非不可通约——控制流概念一一对应，真正不可通约的是<b>数据模型</b>（黑板 vs item 流）与<b>触发/容错字段的存在性</b>。Ginno 的演进不必换数据模型，而应把 tinyflows 的「触发、容错、版本迁移、契约」四个字段族移植进自己的黑板模型——用最小语义变动补齐无人值守所需的全部表达力。</div>
+</section>
+
+<!-- ================= 附录B ================= -->
+<section id="s9">
+  <h2 class="serif"><span class="no">附B</span>主要来源</h2>
+  <div class="grid2">
+    <div class="card">
+      <h5>Ginno（本地仓库）</h5>
+      <p class="small">docs/workflow-dsl-design.md · workflow-master-plan.md（+implementation-notes）· workflow-ux-redesign.md（+implementation-notes）· workflow-reliability-discussion.md · workflow-synthesis-quality-plan.md · workflow-summarize-eval-design.md · workflow-tooling-plan.md · architecture.md §8 · user-guide.md §7/§9 · goal-design.md · docs/design/session-workflow-*.md ｜ 代码：packages/runtime/src/ginno_runtime/workflows/（dsl·compiler·engine·store·events·expr·doctor·synthesis·supervisor·nodes/）· api/workflows.py · checkpointer.py · apps/web/src/components/workflow/</p>
+    </div>
+    <div class="card">
+      <h5>OpenHuman / tinyflows（浅克隆 @2026-08-16）</h5>
+      <p class="small">README.md · gitbooks/features/workflows.md · approval-gate.md · integrations/triggers.md · docs/plans/tinyflows-integration/README.md ｜ src/openhuman/flows/（ops·store·tools·builder_tools·bus·types·run_registry）· flows/tinyflows/caps/ · security/approval/ · app/src/pages/Flows* · components/flows/canvas/* · hooks/useFlowPreauthorization.ts · lib/flows/templates/*.json ｜ tinyflows：src/{model,engine,graph,nodes,caps,catalog,testkit,expr,migrate,interception} · wiki/Architecture.md · Roadmap-and-Status.md · CHANGELOG.md · docs/AUDIT-n8n-gap.md · tests/</p>
+    </div>
+  </div>
+  <p class="foot-note toc-top">本报告由四路并行调研（Ginno 产品 / Ginno 技术 / OpenHuman 集成 / tinyflows 引擎）交叉验证后综合而成。数字与引文以调研当日（2026-08-16）仓库状态为准；OpenHuman 与 tinyflows 迭代极快（近两周仍有引擎升级 PR），引用前建议复核上游。</p>
+</section>
+
+</main>
+</body>
+</html>
