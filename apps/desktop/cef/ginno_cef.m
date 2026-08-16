@@ -813,7 +813,7 @@ static void app_on_before_command_line(cef_app_t* self,
    * (base::Feature strings in the framework binary). */
   append_switch_value(
       command_line, "disable-features",
-      "LensOverlay,BuiltInAIAPIsEnabled,HistoryEmbeddings,"
+      "AiMode,LensOverlay,BuiltInAIAPIsEnabled,HistoryEmbeddings,"
       "HistoryEmbeddingsAnswers,HistorySearch,Compose");
 }
 
