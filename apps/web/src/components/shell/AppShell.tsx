@@ -203,21 +203,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onKb = pathname.startsWith("/kb");
   const onWorkflows = pathname.startsWith("/workflows");
 
-  // Single-window visibility (#1/#2/#3): on the workspace with the browser open,
-  // show the active session's browser (hides others'); otherwise hide every window.
-  // The TopBar 浏览器 button (and ⌘.) just flips browserOpen; this effect drives
-  // the companion window accordingly.
   // Companion window visibility: visible = onWorkspace && activeSession &&
-  // browserOpen (manual). Shows the active session's browser, hides others;
-  // hide_all off-workspace or when manually toggled off.
+  // browserOpen (manual). DEBOUNCED so rapid clicks coalesce into one final
+  // show/hide call instead of racing out-of-order show/hide RPCs.
   useEffect(() => {
-    if (!onWorkspace || !browserOpen) {
-      api.hideBrowser().catch(() => {});
-      return;
-    }
-    if (g.activeSessionId) {
-      api.activateBrowserSession(g.activeSessionId).catch(() => {});
-    }
+    const t = window.setTimeout(() => {
+      if (!onWorkspace || !browserOpen) {
+        api.hideBrowser().catch(() => {});
+        return;
+      }
+      if (g.activeSessionId) {
+        api.activateBrowserSession(g.activeSessionId).catch(() => {});
+      }
+    }, 150);
+    return () => window.clearTimeout(t);
   }, [onWorkspace, browserOpen, g.activeSessionId]);
 
   // Bidirectional sync: if the companion window was closed externally (red
@@ -226,12 +225,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // prematurely turn the toggle off.
   const hiddenStreak = useRef(0);
   const openedAt = useRef(0);
+  const lastToggleAt = useRef(0);
   useEffect(() => {
     openedAt.current = Date.now();
     hiddenStreak.current = 0;
     if (!browserOpen) return;
     const t = window.setInterval(() => {
       if (Date.now() - openedAt.current < 4000) return; // startup grace
+      if (Date.now() - lastToggleAt.current < 3000) return; // user just toggled
       api
         .queryBrowserVisible()
         .then((r) => {
@@ -372,6 +373,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setRightPanelOpen(!rightPanelOpen);
       } else if (e.key === ".") {
         e.preventDefault();
+        lastToggleAt.current = Date.now();
         setBrowserOpen((v) => !v);
       }
     };
@@ -518,7 +520,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 modelLabel={modelLabel}
                 usage={usage}
                 browserOpen={browserOpen}
-                onToggleBrowser={() => setBrowserOpen((v) => !v)}
+                onToggleBrowser={() => {
+                  lastToggleAt.current = Date.now();
+                  setBrowserOpen((v) => !v);
+                }}
               />
             )}
             <div ref={splitRowRef} className="flex min-h-0 min-w-0 flex-1">

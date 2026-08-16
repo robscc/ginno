@@ -777,6 +777,22 @@ static void append_switch(cef_command_line_t* cl, const char* name) {
   cef_string_clear(&s);
 }
 
+static void append_switch_value(cef_command_line_t* cl, const char* name,
+                                const char* value) {
+  if (cl == NULL || cl->append_switch_with_value == NULL || name == NULL ||
+      value == NULL) {
+    return;
+  }
+  cef_string_t k, v;
+  memset(&k, 0, sizeof(k));
+  memset(&v, 0, sizeof(v));
+  set_cef_str(&k, name);
+  set_cef_str(&v, value);
+  cl->append_switch_with_value(cl, &k, &v);
+  cef_string_clear(&k);
+  cef_string_clear(&v);
+}
+
 static void app_on_before_command_line(cef_app_t* self,
                                        const cef_string_t* process_type,
                                        cef_command_line_t* command_line) {
@@ -792,6 +808,13 @@ static void app_on_before_command_line(cef_app_t* self,
    * browser IO (causes "Chrome not ready" + Page.navigate timeouts). */
   append_switch(command_line, "use-mock-keychain");
   append_switch(command_line, "password-store=basic");
+  /* Disable Chrome 151 Gen-AI surface (Ask AI / Lens overlay, built-in AI
+   * APIs, AI history search). Feature names verified against this Chromium
+   * (base::Feature strings in the framework binary). */
+  append_switch_value(
+      command_line, "disable-features",
+      "LensOverlay,BuiltInAIAPIsEnabled,HistoryEmbeddings,"
+      "HistoryEmbeddingsAnswers,HistorySearch,Compose");
 }
 
 static cef_browser_process_handler_t* app_get_bph(cef_app_t* self) {
