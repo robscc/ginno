@@ -83,6 +83,89 @@ def _extract_json_from_text(text: str) -> dict:
     raise ValueError("no JSON object found in extraction output")
 
 
+async def extract_from_text(
+    source_text: str,
+    writes_schema: dict,
+    model,
+    run_ctx: dict,
+    label: str,
+    *,
+    fast_path: bool = True,
+    extract_model_name: str | None = None,
+) -> tuple[dict | None, str]:
+    """Extract a ``writes``-schema-conformant JSON object from a step reply.
+
+    Shared by :class:`ExtractNode` and the parallel gather adapter (stability
+    plan P3): WRITE_JSON fast path first, then a dedicated extraction LLM with
+    ≤2 self-correcting attempts. Returns ``(validated, last_error)`` — callers
+    own the event emission and failure attribution."""
+    if fast_path:
+        wj = ah.parse_writes(source_text or "")
+        if wj and all(k in wj for k in writes_schema):
+            validated, errs = _validate_writes(wj, writes_schema)
+            if not errs:
+                return validated, ""
+
+    from ...models import build_model_by_name
+
+    try:
+        m = build_model_by_name(extract_model_name) if extract_model_name else model
+    except Exception:
+        # A misconfigured extract_model must not kill the run's dep build;
+        # degrade to the step model so extraction still has a chance.
+        m = model
+
+    schema_str = json.dumps(writes_schema, ensure_ascii=False)
+    # Enumerate the exact top-level keys (with types) + an output skeleton so
+    # the model can't rename/omit them — the #1 cause of "key missing" failures.
+    key_lines = []
+    for k, sch in writes_schema.items():
+        t = sch.get("type", "any") if isinstance(sch, dict) else "any"
+        key_lines.append(f'  - "{k}"（类型 {t}）')
+    keys_block = "\n".join(key_lines)
+    skeleton = "{\n" + ",\n".join(f'  "{k}": ...' for k in writes_schema) + "\n}"
+    capped_source = _cap_text(source_text or "", _SOURCE_CHAR_CAP)
+    base_prompt = (
+        "你是结构化数据抽取器。下面的「步骤输出」是某个工作流步骤执行后的结果文本。\n"
+        "请从中抽取信息并构造一个 JSON 对象，严格遵守：\n"
+        "1. 输出对象的顶层必须恰好包含以下字段，键名完全一致，不得改名、不得增删：\n"
+        f"{keys_block}\n"
+        "2. 每个字段的值须符合其类型；从步骤输出中找到对应内容，原样或整理后填入。\n"
+        "3. 只输出这一个 JSON 对象，不要任何解释、注释、代码围栏。\n"
+        "4. 仅当步骤输出中确实完全没有某字段的内容时才输出 null。\n\n"
+        f"完整 Schema：{schema_str}\n\n"
+        f"输出结构示例：\n{skeleton}\n\n"
+        f"步骤输出：\n{capped_source}"
+    )
+    prompt = base_prompt
+    last_err = ""
+    for attempt in range(2):
+        if attempt > 0:
+            prompt = base_prompt + (
+                "\n\n[上一次输出有误：" + last_err + "。请重新从步骤输出中抽取，"
+                "确保顶层恰好包含上述全部字段且值非 null（除非确无内容），"
+                "只输出修正后的 JSON 对象。]"
+            )
+        resp = await llm_invoke_with_timeout(m.ainvoke([HumanMessage(content=prompt)]))
+        # Per-call usage telemetry (source=workflow). The extraction model may
+        # differ from the run model — attribute the configured name.
+        ah.record_model_usage(
+            resp, run_ctx.get("usage_attr"),
+            model_override=getattr(m, "model", None) or getattr(m, "model_name", None),
+        )
+        raw = text_of_content(resp.content)
+        try:
+            parsed = _extract_json_from_text(raw)
+        except Exception as e:
+            last_err = f"JSON 解析失败：{e}"
+            continue
+        validated, errs = _validate_writes(parsed, writes_schema)
+        if not errs:
+            return validated, ""
+        last_err = "; ".join(errs)
+    return None, last_err or "extraction failed"
+
+
 @register_node
 class ExtractNode(BaseNode):
     """Read a source step's reply, emit strict JSON for the declared ``writes``."""
@@ -135,75 +218,21 @@ class ExtractNode(BaseNode):
                 "__output__": validated,
             }
 
-        # ---- Fast path: the step already emitted a valid WRITE_JSON covering
-        # every declared key — adopt it and skip the extraction LLM call. ----
+        # Shared extraction core (fast path + ≤2 LLM attempts) — the parallel
+        # gather adapter reuses it per item (stability plan P3).
+        # ``fast_covered`` mirrors extract_from_text's fast-path condition
+        # exactly (parse + type validation), so the ``method`` label below is
+        # accurate even when a parseable WRITE_JSON fails validation and the
+        # LLM path ends up doing the work.
         wj = ah.parse_writes(source_text)
+        fast_covered = False
         if wj and all(k in wj for k in writes_schema):
-            validated, errs = _validate_writes(wj, writes_schema)
-            if not errs:
-                return _commit(validated, "write_json")
-
-        # ---- Main path: dedicated extraction LLM (≤2 attempts). ----
-        from ...models import build_model_by_name
-
-        extract_model_name = node.get("extract_model")
-        try:
-            m = build_model_by_name(extract_model_name) if extract_model_name else cctx["model"]
-        except Exception:
-            # A misconfigured extract_model must not kill the run's dep build;
-            # degrade to the step model so extraction still has a chance.
-            m = cctx["model"]
-
-        schema_str = json.dumps(writes_schema, ensure_ascii=False)
-        # Enumerate the exact top-level keys (with types) + an output skeleton so
-        # the model can't rename/omit them — the #1 cause of "key missing" failures.
-        key_lines = []
-        for k, sch in writes_schema.items():
-            t = sch.get("type", "any") if isinstance(sch, dict) else "any"
-            key_lines.append(f'  - "{k}"（类型 {t}）')
-        keys_block = "\n".join(key_lines)
-        skeleton = "{\n" + ",\n".join(f'  "{k}": ...' for k in writes_schema) + "\n}"
-        capped_source = _cap_text(source_text, _SOURCE_CHAR_CAP)
-        base_prompt = (
-            "你是结构化数据抽取器。下面的「步骤输出」是某个工作流步骤执行后的结果文本。\n"
-            "请从中抽取信息并构造一个 JSON 对象，严格遵守：\n"
-            "1. 输出对象的顶层必须恰好包含以下字段，键名完全一致，不得改名、不得增删：\n"
-            f"{keys_block}\n"
-            "2. 每个字段的值须符合其类型；从步骤输出中找到对应内容，原样或整理后填入。\n"
-            "3. 只输出这一个 JSON 对象，不要任何解释、注释、代码围栏。\n"
-            "4. 仅当步骤输出中确实完全没有某字段的内容时才输出 null。\n\n"
-            f"完整 Schema：{schema_str}\n\n"
-            f"输出结构示例：\n{skeleton}\n\n"
-            f"步骤输出：\n{capped_source}"
+            _fast, _fast_errs = _validate_writes(wj, writes_schema)
+            fast_covered = not _fast_errs
+        validated, last_err = await extract_from_text(
+            source_text, writes_schema, cctx["model"], run_ctx, node_id,
+            fast_path=True, extract_model_name=node.get("extract_model"),
         )
-        prompt = base_prompt
-        last_err = ""
-        validated = None
-        for attempt in range(2):
-            if attempt > 0:
-                prompt = base_prompt + (
-                    "\n\n[上一次输出有误：" + last_err + "。请重新从步骤输出中抽取，"
-                    "确保顶层恰好包含上述全部字段且值非 null（除非确无内容），"
-                    "只输出修正后的 JSON 对象。]"
-                )
-            resp = await llm_invoke_with_timeout(m.ainvoke([HumanMessage(content=prompt)]))
-            # Per-call usage telemetry (source=workflow). The extraction model
-            # may differ from the run model — attribute the configured name.
-            ah.record_model_usage(
-                resp, run_ctx.get("usage_attr"),
-                model_override=getattr(m, "model", None) or getattr(m, "model_name", None),
-            )
-            raw = text_of_content(resp.content)
-            try:
-                parsed = _extract_json_from_text(raw)
-            except Exception as e:
-                last_err = f"JSON 解析失败：{e}"
-                continue
-            validated, errs = _validate_writes(parsed, writes_schema)
-            if not errs:
-                break
-            last_err = "; ".join(errs)
-            validated = None
 
         if validated is None:
             emit({"run_id": run_ctx["run_id"], "node_id": node_id,
@@ -212,7 +241,7 @@ class ExtractNode(BaseNode):
                   "traceback": None})
             raise RuntimeError(f"ExtractNode '{node_id}' failed: {last_err}")
 
-        return _commit(validated, "llm")
+        return _commit(validated, "write_json" if fast_covered else "llm")
 
     @classmethod
     def add_edges(cls, g, node: dict, d: dict) -> None:

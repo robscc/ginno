@@ -7,6 +7,7 @@ of ``agent`` so existing DSLs and tests keep working.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -45,6 +46,227 @@ def _usage_from_msg(msg) -> dict:
     return {}
 
 
+async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dict, str | None]:
+    """One autonomous goal→tools loop (extracted for the parallel gather
+    adapter, stability plan P3; AgentNode.execute keeps its own sequential
+    copy for now). Returns ``(result_text, usage, agent_warning)``; emits
+    tool_call/tool_result via ``emit``. node_enter/exit and WRITE_JSON
+    bookkeeping stay with the caller."""
+    run_ctx = cctx["run_ctx"]
+    model = cctx["model"]
+    tools = cctx["tools"]
+    node_id = node["id"]
+    max_iters = int(node.get("max_tool_iters") or 8)
+    agent, agent_warning = ah.resolve_agent(node.get("agent"))
+    goal = wf_expr.render(node.get("goal") or node.get("title") or "", render_ctx)
+
+    mcp_prefix = ""
+    prov_id = str(render_ctx.get("provider") or "")
+    if prov_id:
+        from ...todos import providers as todo_providers
+
+        _prov = todo_providers.get_todo_provider(prov_id)
+        if _prov and _prov.get("mcp"):
+            mcp_prefix = f"mcp_{_prov['mcp']}_"
+    allowed = [
+        t
+        for t in tools
+        if (tool_allowed(agent, t.name) or (mcp_prefix and t.name.startswith(mcp_prefix)))
+        and not t.name.startswith("workflow_")
+    ]
+    bound = model.bind_tools(allowed) if allowed and hasattr(model, "bind_tools") else model
+    tool_node = ToolNode(allowed, handle_tool_errors=True) if allowed else None
+
+    sys_text = ah.build_system(goal, dict(state.get("context") or {}), agent)
+    skill_names = [
+        wf_expr.render(s, render_ctx)
+        for s in (node.get("skills") or [])
+        if isinstance(s, str) and s.strip()
+    ]
+    if skill_names:
+        from ...skills.loader import SkillLoader
+
+        loader = SkillLoader(project_slug="default")
+        secs = []
+        for nm in skill_names:
+            sk = loader.get(nm)
+            if sk and sk.body:
+                secs.append(f'<skill name="{sk.name}">\n{sk.body.strip()}\n</skill>')
+        if secs:
+            sys_text += "\n\n## Injected skills\n" + "\n\n".join(secs)
+
+    msgs = [SystemMessage(content=sys_text), HumanMessage(content=goal)]
+    result_text = ""
+    usage: dict = {"input_tokens": 0, "output_tokens": 0}
+    for it in range(max_iters):
+        if it:
+            from .. import engine as wf_engine
+
+            wf_engine.check_pause(run_ctx, node_id)
+        resp = await llm_invoke_with_timeout(bound.ainvoke(msgs))
+        msgs.append(resp)
+        result_text = text_of_content(resp.content)
+        u = ah.record_model_usage(resp, run_ctx.get("usage_attr")) or _usage_from_msg(resp)
+        for k, v in u.items():
+            usage[k] = usage.get(k, 0) + v
+        calls = getattr(resp, "tool_calls", None) or []
+        if not calls:
+            break
+        emit({
+            "run_id": run_ctx["run_id"], "node_id": node_id, "kind": "tool_call",
+            "calls": [{"name": c.get("name"), "args": c.get("args")} for c in calls],
+        })
+        if tool_node is None:
+            break
+        tres = await tool_node.ainvoke({"messages": [resp]})
+        tmsgs = tres["messages"] if isinstance(tres, dict) else tres
+        for tm in tmsgs:
+            c = text_of_content(tm.content)
+            emit({
+                "run_id": run_ctx["run_id"], "node_id": node_id, "kind": "tool_result",
+                "name": getattr(tm, "name", ""), "content": c[:2000],
+            })
+        msgs.extend(tmsgs)
+    return result_text, usage, agent_warning
+
+
+async def _execute_parallel_body(node, owner, cctx, state, eff) -> dict:
+    """Gather mode for a parallel loop's body (stability plan P3).
+
+    Runs every item's agent turn concurrently (bounded by the loop's
+    max_concurrency), extracts per item (writes keys are validated as arrays;
+    each item contributes one element, index-ordered), and writes the assembled
+    arrays back to context in ONE state update — so the LastValue channels
+    never see concurrent writers. One node_enter/node_exit pair wraps the
+    whole batch, keeping the step-status machinery's one-step view intact;
+    per-item progress rides loop_iter/loop_item_error events.
+
+    Failure policy reuses the node's P2 fields per item: retry first, then
+    on_error=continue records the index as null (loop_item_error + soft
+    failure count) while stop re-raises and fails the run."""
+    from langgraph.errors import GraphBubbleUp, GraphRecursionError
+
+    from .. import dsl as wf_dsl
+    from .. import supervisor as wf_sup
+    from .extract import extract_from_text
+
+    run_ctx = cctx["run_ctx"]
+    node_id = node["id"]
+    as_var = owner.get("as") or "item"
+    items = (state.get("loop_vars") or {}).get(as_var)
+    items = items if isinstance(items, list) else []
+    _, max_conc = wf_dsl.loop_parallel_spec(owner)
+    writes_schema = node.get("writes") or {}
+    # Per-item schema = the array's items sub-schema (one element per item).
+    per_item_schema = {
+        k: (v.get("items") if isinstance(v, dict) and isinstance(v.get("items"), dict) else {})
+        for k, v in writes_schema.items()
+    }
+    on_error = node.get("on_error") or "stop"
+    spec = node.get("retry") or {}
+    try:
+        max_attempts = max(1, min(int(spec.get("max_attempts") or 1), 10))
+    except (TypeError, ValueError):
+        max_attempts = 1
+    backoff = spec.get("backoff") or "fixed"
+    try:
+        backoff_ms = int(spec.get("backoff_ms") if spec.get("backoff_ms") is not None else 1000)
+    except (TypeError, ValueError):
+        backoff_ms = 1000
+
+    context = dict(state.get("context") or {})
+    events: list = []
+
+    def emit(ev):
+        ev.setdefault("ts", time.time())
+        events.append(ev)
+        run_ctx["events"].append(ev)
+
+    emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter",
+          "node_type": "step", "parallel": True, "of": len(items)})
+
+    sem = asyncio.Semaphore(max(1, max_conc))
+    texts: list[str] = [""] * len(items)
+    values: dict[str, list] = {k: [None] * len(items) for k in writes_schema}
+    usage_total = {"input_tokens": 0, "output_tokens": 0}
+    _CONTROL = (asyncio.CancelledError, GraphBubbleUp, GraphRecursionError, wf_sup.SupervisorAbort)
+
+    async def _one(i: int, item) -> None:
+        async with sem:
+            from .. import engine as wf_engine
+
+            wf_engine.check_pause(run_ctx, node_id)  # pause boundary per item
+            # Per-item progress (same observable contract as sequential loops:
+            # one loop_iter per iteration — here per item as it starts).
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_iter",
+                  "index": i, "of": len(items), "parallel": True})
+            render_ctx = {**context, as_var: item, **(eff or {})}
+            attempt = 1
+            while True:
+                try:
+                    text, usage, _warn = await _run_agent_turn(node, cctx, state, render_ctx, emit)
+                    vals, err = await extract_from_text(
+                        text, per_item_schema, cctx["model"], run_ctx, f"{node_id}[{i}]",
+                        fast_path=True, extract_model_name=node.get("extract_model"),
+                    )
+                    if vals is None:
+                        raise RuntimeError(f"item {i} extraction failed: {err}")
+                    break
+                except _CONTROL:
+                    raise
+                except Exception as exc:
+                    if attempt >= max_attempts:
+                        raise
+                    wait = backoff_ms if backoff != "exponential" else backoff_ms * (2 ** (attempt - 1))
+                    wait = min(wait, 30_000)
+                    emit({"run_id": run_ctx["run_id"], "node_id": node_id,
+                          "kind": "node_retry", "attempt": attempt,
+                          "max_attempts": max_attempts, "item": i,
+                          "error": f"{type(exc).__name__}: {exc}", "backoff_ms": wait})
+                    await asyncio.sleep(wait / 1000.0)
+                    attempt += 1
+            for k in writes_schema:
+                values[k][i] = vals.get(k)
+            texts[i] = text
+            for ku, vu in usage.items():
+                usage_total[ku] = usage_total.get(ku, 0) + vu
+
+    results = await asyncio.gather(
+        *[_one(i, it) for i, it in enumerate(items)], return_exceptions=True
+    )
+    soft = 0
+    for i, r in enumerate(results):
+        if isinstance(r, BaseException):
+            if isinstance(r, _CONTROL):
+                raise r
+            if on_error == "continue":
+                soft += 1
+                emit({"run_id": run_ctx["run_id"], "node_id": node_id,
+                      "kind": "loop_item_error", "index": i, "action": "continue",
+                      "error": f"{type(r).__name__}: {r}"})
+            else:
+                raise r
+    if soft:
+        run_ctx["soft_failures"] = int(run_ctx.get("soft_failures") or 0) + soft
+
+    meta = dict(state.get("context_meta") or {})
+    new_context = dict(context)
+    for k in writes_schema:
+        new_context[k] = values[k]
+        meta[k] = f"step:{node_id}"
+    emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write",
+          "keys": list(writes_schema)})
+    emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit",
+          "status": "done", "usage": usage_total, "parallel": True})
+    return {
+        "context": new_context,
+        "context_meta": meta,
+        "results": {**state.get("results", {}), node_id: "\n\n".join(t for t in texts if t)},
+        "events": events,
+        "__output__": {k: values[k] for k in writes_schema},
+    }
+
+
 @register_node
 class AgentNode(BaseNode):
     """General-purpose autonomous agent step: pursue a goal with tools, write context."""
@@ -73,6 +295,17 @@ class AgentNode(BaseNode):
 
     @staticmethod
     async def execute(node, cctx, state, config, eff) -> dict:
+        # Parallel-loop body in gather mode (stability plan P3): the loop head
+        # published the full item table into loop_vars and expects ONE batched
+        # activation that writes index-ordered arrays back.
+        from .. import dsl as wf_dsl
+
+        owner = wf_dsl.parallel_loop_owner(cctx.get("dsl") or {}, node["id"])
+        if owner is not None and (
+            (state.get("loop_iters") or {}).get(owner["id"]) or {}
+        ).get("parallel"):
+            return await _execute_parallel_body(node, owner, cctx, state, eff)
+
         run_ctx = cctx["run_ctx"]
         model = cctx["model"]
         tools = cctx["tools"]
@@ -375,6 +608,47 @@ class LoopNode(BaseNode):
             st["done"] = True
             iters[node_id] = st
             emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
+            return {"loop_iters": iters, "loop_vars": loop_vars, "events": events}
+
+        # ---- parallel gather (stability plan P3) ----
+        # First pass hands the WHOLE item table to the body (loop_vars[as]=items)
+        # and marks the loop parallel; the body's gather adapter does the
+        # per-item work in one activation and the next pass closes the loop.
+        # Gate off → degrade to sequential with a visible warning, never error.
+        from ... import world_state as ws_mod
+        from .. import dsl as wf_dsl
+
+        par, _mc = wf_dsl.loop_parallel_spec(node)
+        if par and not ws_mod.workflow_parallel_enabled():
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "warning",
+                  "message": f"loop '{node_id}' 声明了 parallel，但 settings "
+                  "workflow_parallel_loops 未开启，降级为顺序执行"})
+            par = False
+        if st.get("parallel"):
+            st["done"] = True
+            iters[node_id] = st
+            # The batch table is no longer needed; drop it so downstream steps
+            # don't render the whole list into their goals (sequential loops
+            # leave the LAST item; parallel leaves nothing).
+            loop_vars.pop(as_var, None)
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "loop"})
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit", "status": "done"})
+            return {"loop_iters": iters, "loop_vars": loop_vars, "events": events}
+        if par and idx == 0:
+            # max_iters caps the batch exactly like it caps sequential passes.
+            batch = items[:max_iters]
+            if len(batch) < len(items):
+                emit({
+                    "run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_cap",
+                    "max_iters": max_iters, "remaining": len(items) - len(batch),
+                })
+            loop_vars[as_var] = batch
+            # Per-item loop_iter events are emitted by the gather adapter as
+            # each item starts (index/of/parallel) — same observable contract
+            # as the sequential one-event-per-iteration flow.
+            st = {"index": len(batch), "items": items, "done": False, "parallel": True}
+            iters[node_id] = st
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "loop"})
             return {"loop_iters": iters, "loop_vars": loop_vars, "events": events}
 
         if idx < len(items) and idx < max_iters:

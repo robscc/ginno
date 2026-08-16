@@ -5,8 +5,10 @@ LangGraph graph (compiler lives in P2). This module is pure data + validation
 so it can be unit-tested without the graph or the store.
 
 v1 node types (decided Q1): step / branch / loop / human. `subflow` is parsed
-but rejected by validate_dsl until v2. `loop.parallel` is accepted but ignored
-in v1 (decided Q1).
+but rejected by validate_dsl until v2. `loop.parallel` (stability plan P3)
+gathers all items in one body activation (asyncio.gather, index-ordered array
+writes); the global gate ``settings.context.workflow_parallel_loops`` decides
+at run time whether it engages or degrades to sequential.
 """
 
 from __future__ import annotations
@@ -20,6 +22,84 @@ NODE_TYPES_ALL = NODE_TYPES_V1 | {"subflow"}
 
 def _as_list(v: Any) -> list:
     return v if isinstance(v, list) else []
+
+
+# Node types whose runtime body can fail in a retryable way (LLM / tool /
+# browser execution). branch/human/pass/loop carry no such body: branch only
+# routes, human suspends on interrupt (never retried), loop is a state machine
+# — on_error on them would be meaningless (stability plan P2).
+_ON_ERROR_TYPES = {"step", "agent", "llm", "browser"}
+
+
+def _validate_fault_tolerance(n: dict, nid: str, errs: list[str]) -> None:
+    """Shape-check the optional per-node fault-tolerance fields (stability
+    plan P2): ``retry{max_attempts,backoff,backoff_ms}``, ``timeout_s`` and
+    ``on_error``. Absent fields keep legacy behavior byte-for-byte (single
+    attempt, global LLM timeout, hard stop on error) — ``normalize_dsl``
+    deliberately injects no defaults for them."""
+    r = n.get("retry")
+    if r is not None:
+        if not isinstance(r, dict):
+            errs.append(f"node '{nid}' retry must be an object")
+        else:
+            ma = r.get("max_attempts")
+            if ma is not None and (
+                isinstance(ma, bool) or not isinstance(ma, int) or not 1 <= ma <= 10
+            ):
+                errs.append(f"node '{nid}' retry.max_attempts must be an integer in 1..10")
+            bo = r.get("backoff")
+            if bo is not None and bo not in ("fixed", "exponential"):
+                errs.append(f"node '{nid}' retry.backoff must be 'fixed' or 'exponential'")
+            bm = r.get("backoff_ms")
+            if bm is not None and (
+                isinstance(bm, bool) or not isinstance(bm, int) or not 0 <= bm <= 60000
+            ):
+                errs.append(f"node '{nid}' retry.backoff_ms must be an integer in 0..60000")
+    ts = n.get("timeout_s")
+    if ts is not None and (isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts <= 0):
+        errs.append(f"node '{nid}' timeout_s must be a number > 0")
+    oe = n.get("on_error")
+    if oe is not None:
+        if oe not in ("stop", "continue"):
+            errs.append(f"node '{nid}' on_error must be 'stop' or 'continue'")
+        elif n.get("type") not in _ON_ERROR_TYPES:
+            errs.append(
+                f"node '{nid}' on_error is only supported on step/agent/llm/browser nodes"
+            )
+
+
+def loop_parallel_spec(loop_node: dict) -> tuple[bool, int]:
+    """(parallel?, max_concurrency) for a loop node (stability plan P3).
+
+    ``parallel`` accepts ``true`` (concurrency 4) or ``{"max_concurrency": N}``
+    (1..8). Invalid shapes are validate_dsl's job; this helper clamps so the
+    runtime never trusts the field blindly."""
+    p = loop_node.get("parallel")
+    if p is True:
+        return True, 4
+    if isinstance(p, dict):
+        try:
+            mc = int(p.get("max_concurrency") or 4)
+        except (TypeError, ValueError):
+            mc = 4
+        return True, max(1, min(mc, 8))
+    return False, 4
+
+
+def parallel_loop_owner(dsl: dict, node_id: str) -> dict | None:
+    """The parallel loop whose body is ``node_id``, if any (stability plan P3).
+
+    Used by the runtime to switch a body step into gather mode and by the
+    compiler/steps projection to skip the __extract injection for it."""
+    for n in _as_list((dsl or {}).get("nodes")):
+        if (
+            isinstance(n, dict)
+            and n.get("type") == "loop"
+            and n.get("body") == node_id
+            and loop_parallel_spec(n)[0]
+        ):
+            return n
+    return None
 
 
 def validate_dsl(dsl: dict) -> list[str]:
@@ -40,6 +120,7 @@ def validate_dsl(dsl: dict) -> list[str]:
         errs.append("at least one node is required")
     ids = [n.get("id") for n in nodes if isinstance(n, dict)]
     by_type = {n.get("id"): n.get("type") for n in nodes if isinstance(n, dict)}
+    by_id = {n.get("id"): n for n in nodes if isinstance(n, dict)}
     from . import nodes as wf_nodes  # lazy: dsl is imported by store at package init
 
     wf_nodes.load_plugins()
@@ -77,6 +158,10 @@ def validate_dsl(dsl: dict) -> list[str]:
         em = n.get("extract_model")
         if em is not None and not isinstance(em, str):
             errs.append(f"node '{nid}' extract_model must be a string")
+        # Fault-tolerance fields (stability plan P2): all optional — absent
+        # means byte-identical legacy behaviour (no retry, global timeout,
+        # stop-on-error).
+        _validate_fault_tolerance(n, nid, errs)
     if len(ids) != len(set(ids)):
         errs.append("duplicate node id")
     idset = set(ids)
@@ -121,6 +206,32 @@ def validate_dsl(dsl: dict) -> list[str]:
         elif isinstance(tr, dict) and "fn" in tr and not isinstance(tr.get("fn"), str):
             errs.append(f"edges[{i}].transform.fn must be a string")
 
+    # Multi-out-edge graphs were silently mis-routed pre-P2 (the compiler only
+    # wired each node's FIRST out-edge). Strict mode (default on) rejects them
+    # instead of shipping a graph that drops edges; the settings flag is the
+    # rollback lever for any legacy DSL that relied on the silent behaviour.
+    try:
+        from .. import world_state as ws_mod
+
+        strict_multi = bool(ws_mod.context_settings().get("workflow_strict_multi_edge", True))
+    except Exception:
+        strict_multi = True
+    if strict_multi:
+        out_count: dict[str, int] = {}
+        for e in edges:
+            if not isinstance(e, dict):
+                continue
+            f = e.get("from")
+            if by_type.get(f) in ("branch", "loop"):
+                continue  # branch out-edges are forbidden; loop capped below
+            out_count[f] = out_count.get(f, 0) + 1
+        for f, c in out_count.items():
+            if c > 1:
+                errs.append(
+                    f"node '{f}' has {c} explicit out-edges; only linear chains are "
+                    "supported (parallel fan-out is not implemented for this node type)"
+                )
+
     for n in nodes:
         if not isinstance(n, dict):
             continue
@@ -138,6 +249,38 @@ def validate_dsl(dsl: dict) -> list[str]:
         if nt == "loop":
             if n.get("body") and n["body"] not in idset:
                 errs.append(f"loop '{nid}' body '{n.get('body')}' unknown")
+            # parallel loops (stability plan P3): the body runs as a gather over
+            # all items, so its writes contract tightens to per-item appends.
+            p = n.get("parallel")
+            if p is not None:
+                if p is not True and not isinstance(p, dict):
+                    errs.append(f"loop '{nid}' parallel must be true or {{max_concurrency}}")
+                elif isinstance(p, dict):
+                    mc = p.get("max_concurrency", 4)
+                    if isinstance(mc, bool) or not isinstance(mc, int) or not 1 <= mc <= 8:
+                        errs.append(f"loop '{nid}' parallel.max_concurrency must be an int 1..8")
+                body = by_id.get(n.get("body"))
+                if isinstance(body, dict):
+                    bcls = wf_nodes.get_node(body.get("type"))
+                    btype = bcls.type if bcls is not None else body.get("type")
+                    if btype != "agent":
+                        errs.append(
+                            f"loop '{nid}' is parallel but body '{body.get('id')}' is "
+                            "not a step/agent node (only agent steps run per-item)"
+                        )
+                    bw = body.get("writes")
+                    if not bw or not isinstance(bw, dict):
+                        errs.append(
+                            f"loop '{nid}' is parallel: body '{body.get('id')}' must "
+                            "declare writes (per-item results are appended in index order)"
+                        )
+                    else:
+                        for k, v in bw.items():
+                            if not isinstance(v, dict) or v.get("type") != "array":
+                                errs.append(
+                                    f"loop '{nid}' is parallel: body writes key '{k}' "
+                                    'must be {"type":"array"} (one element per item)'
+                                )
 
     ctx = dsl.get("context")
     if ctx is not None:
@@ -170,6 +313,14 @@ def steps_from_dsl(dsl: dict, include_extracts: bool = False) -> list[dict]:
     marks the run "done" the moment the producing step finishes — before the
     injected extract node has run (and possibly failed)."""
     out: list[dict] = []
+    # Parallel-loop bodies extract inline per item (stability plan P3): the
+    # compiler injects no __extract node for them, so the run step table must
+    # not list one either (step table and graph must agree).
+    parallel_bodies = {
+        n.get("body")
+        for n in _as_list(dsl.get("nodes"))
+        if isinstance(n, dict) and n.get("type") == "loop" and loop_parallel_spec(n)[0]
+    }
     for n in _as_list(dsl.get("nodes")):
         if not isinstance(n, dict):
             continue
@@ -180,7 +331,7 @@ def steps_from_dsl(dsl: dict, include_extracts: bool = False) -> list[dict]:
                 "agent_id": n.get("agent") or n.get("agent_id"),
             }
         )
-        if include_extracts and n.get("writes"):
+        if include_extracts and n.get("writes") and n.get("id") not in parallel_bodies:
             keys = list((n.get("writes") or {}).keys())
             out.append(
                 {

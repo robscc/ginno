@@ -185,6 +185,16 @@ export function LiveRunBlock({
           )}
           <span className="inline-block h-2 w-2 rounded-full" style={{ background: c }} />
           {label} · {done}/{total}
+          {/* stability plan P2: soft failures (on_error=continue) finish the run
+              "done" but must stay visible — amber count next to the status. */}
+          {isTerminal && (run.warnings ?? 0) > 0 && (
+            <span
+              className="ml-1 text-yellow"
+              title="部分步骤失败但运行继续（on_error=continue）"
+            >
+              ⚠ {run.warnings}
+            </span>
+          )}
         </span>
       </div>
       <div className="space-y-1">

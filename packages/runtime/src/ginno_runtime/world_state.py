@@ -68,6 +68,11 @@ _CONTEXT_DEFAULTS = {
     "compact_keep_turns": 3,
     "checkpoint_mode": "delta",
     "skills_index_max_chars": DEFAULT_SKILLS_INDEX_MAX_CHARS,
+    # Stability plan P2/P3: multi-out-edge DSLs used to be silently mis-routed
+    # (only the first edge was wired); strict mode turns that into a validate
+    # error. Parallel loops are opt-in behind this flag plus the DSL field.
+    "workflow_strict_multi_edge": True,
+    "workflow_parallel_loops": False,
 }
 
 
@@ -83,6 +88,20 @@ def context_settings() -> dict:
     if isinstance(user, dict):
         out.update({k: v for k, v in user.items() if k in _CONTEXT_DEFAULTS})
     return out
+
+
+def workflow_parallel_enabled() -> bool:
+    """Gate for loop.parallel execution (stability plan P3).
+
+    Double opt-in: the settings flag must be on AND the loop declares
+    ``parallel``. ``GINNO_WF_PARALLEL`` overrides settings for tests/ops
+    (1/true/on vs 0/false/off); unset falls back to settings.context."""
+    import os
+
+    env = (os.environ.get("GINNO_WF_PARALLEL") or "").strip().lower()
+    if env:
+        return env in ("1", "true", "yes", "on")
+    return bool(context_settings().get("workflow_parallel_loops"))
 
 
 def _sha1(text: str) -> str:
@@ -639,6 +658,14 @@ class BrowserSection:
     id = "browser"
 
     def snapshot(self, ctx: SessionCtx) -> dict | None:
+        # 浏览器属 Debug 模式特性；未开启时整个 section 缺席（不宣传浏览器可用）。
+        try:
+            from .debug import debug_enabled
+
+            if not debug_enabled():
+                return None
+        except Exception:
+            return None
         try:
             from .browser import get_supervisor
             from .browser import waiting_human as _wh

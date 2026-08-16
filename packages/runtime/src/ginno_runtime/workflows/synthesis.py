@@ -83,6 +83,7 @@ def record_attempt(
     parse: str,
     validate_errors: list[str],
     hint_fed_back: str | None,
+    doctor_errors: list[str] | None = None,
 ) -> None:
     if not case_dir:
         return
@@ -95,6 +96,10 @@ def record_attempt(
             "validate_errors": validate_errors,
             "hint_fed_back": hint_fed_back,
         }
+        # Added with the stability plan (P1a); absent on older records and on
+        # not_json attempts, so readers must treat it as optional.
+        if doctor_errors:
+            line["doctor_errors"] = doctor_errors
         with (case_dir / "attempts.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, ensure_ascii=False) + "\n")
     except Exception:

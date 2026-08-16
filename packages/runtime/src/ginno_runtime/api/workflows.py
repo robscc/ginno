@@ -136,11 +136,82 @@ async def doctor_workflow_endpoint(wf_id: str) -> dict:
     return {"ok": True, **result}
 
 
+@router.post("/api/workflows/dry-run")
+async def dry_run_workflow_endpoint(data: dict) -> dict:
+    """Zero-LLM preflight for a DSL draft (stability plan P1d): normalize +
+    validate + doctor + compile + entry-reachability. The SummarizeModal and
+    the doctor panel use it to trial a draft before it is saved or run; the
+    node callables are built but NEVER executed, so no provider is needed."""
+    dsl = (data or {}).get("dsl")
+    if not isinstance(dsl, dict):
+        raise HTTPException(status_code=400, detail="dsl object required")
+    from ..workflows import compiler as wf_compiler
+    from ..workflows import doctor as wf_doctor
+
+    d = wf_dsl.normalize_dsl(dsl)
+    errors = wf_dsl.validate_dsl(d)
+    doc = wf_doctor.run_doctor(d)
+    result = {
+        "ok": False,
+        "errors": errors,
+        "doctor_errors": doc.get("errors") or [],
+        "warnings": doc.get("warnings") or [],
+        "unreachable": [],
+    }
+    if errors or result["doctor_errors"]:
+        return result
+
+    class _DryRunModel:  # compile-time placeholder; never invoked here
+        def bind_tools(self, *a, **k):
+            return self
+
+        async def ainvoke(self, *a, **k):
+            raise RuntimeError("dry-run stub model must never be invoked")
+
+    try:
+        g = wf_compiler.compile_workflow(
+            d, _DryRunModel(), [], {"run_id": "dry-run", "events": []}
+        )
+    except Exception as e:
+        result["errors"] = [f"compile failed: {type(e).__name__}: {e}"]
+        return result
+
+    # Reachability: BFS from START over the compiled graph; anything unvisited
+    # is dead wiring the author should know about before saving the draft.
+    graph = g.get_graph()
+    adj: dict[str, list[str]] = {}
+    for e in graph.edges:
+        adj.setdefault(e.source, []).append(e.target)
+    seen = {"__start__"}
+    stack = ["__start__"]
+    while stack:
+        cur = stack.pop()
+        for nxt in adj.get(cur, []):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    result["unreachable"] = sorted(
+        n for n in graph.nodes if n not in seen and n not in ("__start__", "__end__")
+    )
+    result["ok"] = True
+    result["node_count"] = sum(
+        1 for n in graph.nodes if n not in ("__start__", "__end__")
+    )
+    return result
+
+
 # ---- P6: synthesize a workflow DSL draft from a session's conversation ----
 # Bump on any change to the prompt above so synthesis cases can be grouped by
 # the prompt that produced them (quality-plan §3.2 A/B).
-SYNTH_PROMPT_VERSION = "synth-4"
-_SYNTHESIZE_PROMPT = (
+# synth-5: doctor dataflow findings (loop.over.no_source et al.) are fed back
+# into the retry loop alongside validate_dsl errors, and the node-type catalog
+# is rendered from the single-source contracts module.
+SYNTH_PROMPT_VERSION = "synth-5"
+# The node-type section is rendered at call time from workflows/contracts.py
+# (single source of truth: registry schemas + structural rules) so the prompt
+# can no longer drift from the engine's real node surface. {{NODE_CATALOG}}
+# is the injection point; see _synthesize_prompt().
+_SYNTHESIZE_PROMPT_TEMPLATE = (
     "You are a workflow synthesizer. Given a conversation trace between a user and "
     "an agent (including tool calls), produce a reusable workflow DSL that captures "
     "the repeatable process as a directed graph.\n\n"
@@ -150,25 +221,12 @@ _SYNTHESIZE_PROMPT = (
     '  "context": {"schema": {"type":"object","properties":{...}}, "initial": {...}},\n'
     '  "nodes": [ {"id","type","agent","goal", ...} ],\n'
     '  "edges": [ {"from","to"} ]\n}\n\n'
-    "Node types:\n"
-    '- step: {"id","type":"step","agent":"dev|research|writer","goal":"<instruction>"}\n'
-    '- branch: {"id","type":"branch","cases":[{"when":"<expr>","then":"<id>"}],"default":"<id>"}\n'
-    '- loop: {"id","type":"loop","over":"<expr e.g. context.items>","as":"<var>","body":"<body id>","max_iters":<int>}\n'
-    '- browser: {"id","type":"browser","action":"eval|snapshot|handoff|complete","space":"<3-6 words>","code":"<ego helpers>","url":"<optional>","keep":true}\n\n'
+    "Node contract (every type the engine accepts, with fields and rules):\n"
+    "{{NODE_CATALOG}}\n\n"
     "Rules:\n"
     "- `entry` MUST be an existing node id; every edge endpoint MUST exist.\n"
-    "- A loop's body returns to the loop head automatically: do NOT add an edge FROM the body; reference the loop item via {{<as>}}.\n"
-    "- A branch routes via cases/default: do NOT add plain edges from a branch.\n"
     "- Put any per-run inputs the conversation revealed into context.schema + context.initial.\n"
     "- Default to a simple linear step chain; only add branch/loop when the trace clearly shows conditionals or repetition.\n"
-    "- When the trace uses /browse, browser_eval, browser_snapshot, browser_handoff or "
-    "logged-in page work, emit type:\"browser\" nodes (NOT a step that just says "
-    "'use playwright'). action eval does the work script; login/captcha/payment is a "
-    "separate action:\"handoff\" node; close/keep the Space with action:\"complete\" "
-    "(complete MUST be its own node — never mix completeTaskSpace into the eval code). "
-    "Reuse the same space name across the run. Prefer the logged-in embedded browser "
-    "over mcp_playwright_* (that one is anonymous headless).\n"
-    "- Agents: dev (code/actions), research (read/summarise), writer (draft text).\n"
     "- Any per-run placeholder you use in goal/prompt fields ({{variable_name}}) MUST also appear "
     'in context.schema.properties with type:"string" and in context.initial as "" '
     "so the caller can fill them before running.\n"
@@ -186,6 +244,18 @@ _SYNTHESIZE_PROMPT = (
     "output automatically from declared writes.\n\n"
     "Reply with ONLY the JSON object, no prose, no markdown fences."
 )
+
+
+def _synthesize_prompt() -> str:
+    """Assemble the synthesizer prompt with the live node catalog (P1b).
+
+    Lazy on purpose: importing contracts touches the nodes registry, which
+    must not happen at server-module import time (circular via agents)."""
+    from ..workflows import contracts as wf_contracts
+
+    return _SYNTHESIZE_PROMPT_TEMPLATE.replace(
+        "{{NODE_CATALOG}}", wf_contracts.render_catalog()
+    )
 
 
 def _trace_text(messages, last_n: int | None = None) -> str:
@@ -262,6 +332,7 @@ async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = 
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
+    from ..workflows import doctor as wf_doctor
     from ..workflows import synthesis as wf_synth
     from ..workflows.nodes import agent_helpers as ah
 
@@ -269,13 +340,15 @@ async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = 
     dsl = None
     raw = ""
     errs: list[str] = ["no attempt made"]
+    doc_errs: list[str] = []  # last attempt's doctor messages (report fallback)
     fail_stage = None
+    doctor_warnings: list[dict] = []
     t_start = time.time()
     attempt = 0
     for attempt in range(3):
         t0 = time.time()
         resp = await model.ainvoke(
-            [SystemMessage(content=_SYNTHESIZE_PROMPT), HumanMessage(content=trace + extra_hint)]
+            [SystemMessage(content=_synthesize_prompt()), HumanMessage(content=trace + extra_hint)]
         )
         ah.record_model_usage(resp, usage_attr)
         latency_ms = int((time.time() - t0) * 1000)
@@ -294,27 +367,56 @@ async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = 
             continue
         dsl = wf_dsl.normalize_dsl(dsl)
         errs = wf_dsl.validate_dsl(dsl)
+        # Dataflow lint (stability plan P1a): validate passes structural checks
+        # but not dataflow ones (loop.over without a source, dangling
+        # {{context.x}} refs) — the doctor catches exactly the incident class,
+        # so its errors join the self-correction loop; warnings only surface.
+        doc_errs: list[str] = []
+        doc_rules: list[str] = []
+        doctor_warnings = []
+        if not errs:
+            dr = wf_doctor.run_doctor(dsl)
+            doctor_warnings = list(dr.get("warnings") or [])
+            for e in dr.get("errors") or []:
+                doc_rules.append(e.get("rule") or "unknown")
+                doc_errs.append(f"{e.get('rule')}: {e.get('message')}")
         wf_synth.record_attempt(
             case_dir, attempt=attempt + 1, latency_ms=latency_ms, raw=raw, parse="ok",
-            validate_errors=list(errs),
-            hint_fed_back=None if not errs else "[DSL errors: " + "; ".join(errs) + "]",
+            validate_errors=list(errs), doctor_errors=list(doc_errs),
+            hint_fed_back=None if not (errs or doc_errs)
+            else "[DSL errors: " + "; ".join(errs or doc_errs) + "]",
         )
-        if not errs:
+        if not errs and not doc_errs:
             fail_stage = None
             break
-        fail_stage = "schema." + (errs[0].split(":")[0][:40] if errs else "unknown")
-        extra_hint = (
-            "\n\n[Previous attempt DSL errors: " + "; ".join(errs) +
-            ". Fix them and reply ONLY with the corrected JSON object.]"
-        )
+        if errs:
+            fail_stage = "schema." + (errs[0].split(":")[0][:40] if errs else "unknown")
+            extra_hint = (
+                "\n\n[Previous attempt DSL errors: " + "; ".join(errs) +
+                ". Fix them and reply ONLY with the corrected JSON object.]"
+            )
+        else:
+            fail_stage = "doctor." + (doc_rules[0][:40] if doc_rules else "unknown")
+            extra_hint = (
+                "\n\n[Previous attempt dataflow errors: " + "; ".join(doc_errs) +
+                ". Fix the dataflow — declare the missing `writes` on the producing "
+                "step or add the key to context.initial — and reply ONLY with the "
+                "corrected JSON object.]"
+            )
     return {
-        "ok": isinstance(dsl, dict) and not errs,
+        # fail_stage is None only on a clean break (no validate AND no doctor
+        # errors) — a last attempt that died on dataflow errors is not ok even
+        # though ``errs`` (validate) is empty.
+        "ok": isinstance(dsl, dict) and fail_stage is None,
         "dsl": dsl if isinstance(dsl, dict) else None,
         "raw": raw,
-        "errors": errs,
+        # Validate errors take precedence; when the DSL is schema-clean but
+        # dataflow-dirty, report the doctor messages instead of an empty list.
+        "errors": errs or doc_errs,
         "fail_stage": fail_stage,
         "attempts_used": max(1, attempt + 1),
         "total_ms": int((time.time() - t_start) * 1000),
+        "doctor_warnings": doctor_warnings,
     }
 
 
@@ -380,9 +482,11 @@ async def summarize_session_to_dsl(data: dict) -> dict:
                     "raw": result["raw"][:1000], "synthesis_id": synthesis_id}
         return {"ok": False,
                 "error": "synthesized DSL invalid: " + "; ".join(result["errors"]),
-                "dsl": result["dsl"], "synthesis_id": synthesis_id}
+                "dsl": result["dsl"], "synthesis_id": synthesis_id,
+                "doctor_warnings": result["doctor_warnings"]}
     return {"ok": True, "dsl": result["dsl"], "source_session_id": session_id,
-            "synthesis_id": synthesis_id}
+            "synthesis_id": synthesis_id,
+            "doctor_warnings": result["doctor_warnings"]}
 
 
 # ---- synthesis-case review API (quality-plan §3.2, UI in Settings) ----
@@ -413,20 +517,29 @@ async def synthesis_stats_endpoint(days: int = 30) -> dict:
     total = l1 = l2 = l3 = 0
     edit_distances: list[int] = []
     fail_labels: dict[str, int] = {}
+    # stability plan P4: the funnel split by prompt_version so synth-4 vs
+    # synth-5 (doctor feedback + catalog) compare directly in the UI.
+    by_version: dict[str, dict] = {}
     for c in cases:
         if (c.get("ts") or 0) < cutoff:
             continue
         total += 1
+        pv = c.get("prompt_version") or "unknown"
+        g = by_version.setdefault(pv, {"total": 0, "l1_generated": 0, "l2_adopted": 0, "l3_first_run_done": 0})
+        g["total"] += 1
         if c.get("status") == "ok":
             l1 += 1
+            g["l1_generated"] += 1
         elif c.get("fail_stage"):
             fail_labels[c["fail_stage"]] = fail_labels.get(c["fail_stage"], 0) + 1
         oc = c.get("outcome") or {}
         if oc.get("created"):
             l2 += 1
+            g["l2_adopted"] += 1
         fr = oc.get("first_run") or {}
         if fr.get("status") == "done":
             l3 += 1
+            g["l3_first_run_done"] += 1
         elif fr.get("status") == "failed" and fr.get("failed_node"):
             label = f"exec.{fr['failed_node']}"
             fail_labels[label] = fail_labels.get(label, 0) + 1
@@ -441,6 +554,7 @@ async def synthesis_stats_endpoint(days: int = 30) -> dict:
         "l1_generated": l1,
         "l2_adopted": l2,
         "l3_first_run_done": l3,
+        "by_prompt_version": dict(sorted(by_version.items())),
         "avg_edit_distance": (
             round(sum(edit_distances) / len(edit_distances), 2) if edit_distances else None
         ),
@@ -755,11 +869,32 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
             # rewind) — its node_exit marks it done; don't flip it here.
             if nid in node_to_step and ev.get("nature") != "manual":
                 wf_store.update_step(run_id, node_to_step[nid], "done")
+        elif kind == "error" and ev.get("handled"):
+            # Soft failure (stability plan P2, on_error="continue"): the node
+            # exhausted its retries but the run GOES ON. Fail only the
+            # attributed step, count a warning on the run, and never flip the
+            # run status — the terminal done/failed event still decides it.
+            raw_nid = ev.get("node_id")
+            attr_nid = (
+                raw_nid[: -len("__extract")]
+                if isinstance(raw_nid, str) and raw_nid.endswith("__extract")
+                else raw_nid
+            )
+            if attr_nid in node_to_step:
+                wf_store.update_step(run_id, node_to_step[attr_nid], "failed")
+            _runw = wf_store.get_run(run_id)
+            if _runw:
+                _runw["warnings"] = int(_runw.get("warnings") or 0) + 1
+                wf_storemod._write_json(wf_storemod._run_path(run_id), _runw)
         elif kind == "done":
             _set_run_pending_interrupt(run_id, None)
             _set_run_status(run_id, "done", only_from=("running", "paused"))
-            await _push_session_event(present_in, "run.status", {"run_id": run_id, "status": "done"})
             _fin = wf_store.get_run(run_id)
+            _warn = int((_fin or {}).get("warnings") or 0)
+            await _push_session_event(
+                present_in, "run.status",
+                {"run_id": run_id, "status": "done", **({"warnings": _warn} if _warn else {})},
+            )
             if _fin:
                 _backfill_first_run(wf.get("id"), _fin)
         elif kind == "paused":

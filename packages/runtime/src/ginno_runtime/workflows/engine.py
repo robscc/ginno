@@ -36,6 +36,27 @@ def _trimmed_traceback(exc: BaseException, max_chars: int = 4000) -> str:
     return "…[traceback trimmed — showing tail]…\n" + tb[-max_chars:]
 
 
+def _recursion_limit(d: dict) -> int:
+    """Explicit superstep budget for a workflow run (stability plan P2).
+
+    langgraph's default (10007 in 1.2.9) is ample, but an explicit bound turns
+    a pathological/infinite graph into a fast, attributable ``GraphRecursionError``
+    instead of a near-unbounded burn, and makes the cap legible in one place.
+    Budget ≈ 20 + 4·nodes + 3·Σ(loop.max_iters): each loop iteration consumes a
+    head + body (+ extract) superstep, so 3 per iter is a safe upper bound.
+    """
+    nodes = d.get("nodes") or []
+    node_count = len(nodes)
+    loop_iters = 0
+    for n in nodes:
+        if isinstance(n, dict) and n.get("type") == "loop":
+            try:
+                loop_iters += max(0, int(n.get("max_iters") or 0))
+            except (TypeError, ValueError):
+                loop_iters += 100
+    return max(25, min(2000, 20 + 4 * node_count + 3 * loop_iters))
+
+
 # --------------------------------------------------------------------------- #
 # Manual pause control channel (workflow-ux-redesign #14)
 # --------------------------------------------------------------------------- #
@@ -122,7 +143,7 @@ async def run_workflow(
             "inputs": {},
             "outputs": {},
         }
-        config = {"configurable": {"thread_id": run_id}}
+        config = {"configurable": {"thread_id": run_id}, "recursion_limit": _recursion_limit(d)}
         yielded = 0
         try:
             async for _mode, _payload in graph.astream(
@@ -214,7 +235,7 @@ async def resume_workflow(
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug))
-        config = {"configurable": {"thread_id": run_id}}
+        config = {"configurable": {"thread_id": run_id}, "recursion_limit": _recursion_limit(d)}
         if resume_nature:
             pending_node = None
             try:
@@ -283,7 +304,7 @@ async def continue_workflow(
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug))
-        config = {"configurable": {"thread_id": run_id}}
+        config = {"configurable": {"thread_id": run_id}, "recursion_limit": _recursion_limit(d)}
         yielded = 0
         try:
             snap = await graph.aget_state(config)

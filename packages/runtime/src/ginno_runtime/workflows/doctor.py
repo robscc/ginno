@@ -76,6 +76,37 @@ def run_doctor(dsl: dict) -> dict:
 
         # loop.over must have a declared source.
         if nt == "loop":
+            # Parallel loops (stability plan P3) tighten the body contract;
+            # surface the same findings validate_dsl hard-rejects so drafts
+            # see them in the panel before a run.
+            if n.get("parallel"):
+                body = next(
+                    (x for x in nodes if isinstance(x, dict) and x.get("id") == n.get("body")),
+                    None,
+                )
+                if isinstance(body, dict):
+                    bw = body.get("writes")
+                    if not bw or not isinstance(bw, dict):
+                        errors.append({
+                            "rule": "loop.parallel.body_writes_not_array", "node_id": nid,
+                            "message": f"parallel loop '{nid}' 的 body 必须声明 writes",
+                        })
+                    else:
+                        for k, v in bw.items():
+                            if not isinstance(v, dict) or v.get("type") != "array":
+                                errors.append({
+                                    "rule": "loop.parallel.body_writes_not_array",
+                                    "node_id": nid,
+                                    "message": (
+                                        f"parallel loop '{nid}' 的 body writes 键 '{k}' "
+                                        '必须为 {"type":"array"}（每 item 追加一元素）'
+                                    ),
+                                })
+                    if body.get("type") not in ("step", "agent"):
+                        errors.append({
+                            "rule": "loop.parallel.body_type", "node_id": nid,
+                            "message": f"parallel loop '{nid}' 的 body 必须是 step/agent 节点",
+                        })
             over = n.get("over") or ""
             m = re.match(r"^\s*context\.([a-zA-Z0-9_]+)\s*$", str(over))
             if m:
@@ -128,5 +159,35 @@ def run_doctor(dsl: dict) -> dict:
                 "rule": "writes.unused", "node_id": src,
                 "message": f"节点 '{src}' 声明写入 '{key}' 但下游未消费",
             })
+
+    # Multi-out-edge graphs: the compiler only ever wired each node's FIRST
+    # out-edge (pre-P2), so extra edges were silently dropped. Severity tracks
+    # the same strict flag as validate_dsl — error by default (make the latent
+    # mis-route visible), warning when the flag is rolled off.
+    try:
+        from .. import world_state as ws_mod
+
+        strict_multi = bool(ws_mod.context_settings().get("workflow_strict_multi_edge", True))
+    except Exception:
+        strict_multi = True
+    by_type = {n.get("id"): n.get("type") for n in nodes if isinstance(n, dict)}
+    out_count: dict[str, int] = {}
+    for e in d.get("edges") or []:
+        if not isinstance(e, dict):
+            continue
+        f = e.get("from")
+        if by_type.get(f) in ("branch", "loop"):
+            continue  # branch out-edges forbidden; loop capped by validate
+        out_count[f] = out_count.get(f, 0) + 1
+    for f, c in out_count.items():
+        if c > 1:
+            finding = {
+                "rule": "edges.multi_out.unsupported", "node_id": f,
+                "message": (
+                    f"节点 '{f}' 有 {c} 条显式出边，引擎只接第一条"
+                    "（并行分支未实现，多余边曾被静默丢弃）"
+                ),
+            }
+            (errors if strict_multi else warnings).append(finding)
 
     return {"errors": errors, "warnings": warnings}

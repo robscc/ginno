@@ -202,6 +202,9 @@ export interface WorkflowRun {
   // trimmed traceback. Optional on legacy runs (created before this existed).
   error_detail?: { node_id?: string | null; traceback?: string | null } | null;
   finished?: number | null; // wall-clock end for terminal runs
+  // Count of soft-failed steps (on_error="continue", stability plan P2): the
+  // run still ends "done" but with degraded output — UI shows a ⚠ badge.
+  warnings?: number;
   context_override?: Record<string, unknown> | null; // inputs this run executed with
   retried_from?: string | null; // run id this one re-executes
   retry_run_id?: string | null; // set on the original once it has been retried

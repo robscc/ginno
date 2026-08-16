@@ -113,6 +113,22 @@ def workflow_propose_edit(workflow_id: str, new_dsl_json: str, rationale: str = 
     if errs:
         return "error: proposed DSL invalid: " + "; ".join(errs)
 
+    # Stability plan P1c: the dev agent's proposal must also pass the dataflow
+    # doctor. Doctor ERRORS are rejected back to the agent (no interrupt — it
+    # should fix and re-propose); WARNINGS ride along on the interrupt payload
+    # so the human sees them in the diff dialog but they do not block.
+    from ..workflows import doctor as wf_doctor
+
+    _doc = wf_doctor.run_doctor(new_dsl)
+    doctor_errors = _doc.get("errors") or []
+    doctor_warnings = _doc.get("warnings") or []
+    if doctor_errors:
+        return (
+            "error: proposed DSL failed dataflow checks (doctor): "
+            + "; ".join(f"{e.get('rule')}: {e.get('message')}" for e in doctor_errors)
+            + " — fix these and propose again."
+        )
+
     cur = wf_store.get_def(workflow_id)
     if not cur:
         return f"error: workflow {workflow_id} not found"
@@ -135,6 +151,9 @@ def workflow_propose_edit(workflow_id: str, new_dsl_json: str, rationale: str = 
             "from_version": cur.get("version", 0),
             "diff": diff,
             "rationale": rationale,
+            # P1c: advisory dataflow findings — shown alongside the diff, never
+            # blocking (errors already rejected above).
+            "doctor_warnings": doctor_warnings,
         }
     )
     if isinstance(decision, dict) and decision.get("decision") == "allow":

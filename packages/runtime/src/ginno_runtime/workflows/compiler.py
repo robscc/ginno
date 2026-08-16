@@ -57,10 +57,21 @@ def _inject_extract_nodes(dsl: dict) -> dict:
         for n in nodes
         if isinstance(n, dict) and n.get("type") == "loop" and n.get("body")
     }
+    # Parallel-loop bodies (stability plan P3) extract inline per item inside
+    # the gather adapter — no separate __extract node for them.
+    from .dsl import loop_parallel_spec
+
+    parallel_bodies = {
+        n.get("body")
+        for n in nodes
+        if isinstance(n, dict) and n.get("type") == "loop" and loop_parallel_spec(n)[0]
+    }
     existing_ids = {n.get("id") for n in nodes if isinstance(n, dict)}
     synthetic = []
     for n in list(nodes):
         if not isinstance(n, dict) or not n.get("writes"):
+            continue
+        if n.get("id") in parallel_bodies:
             continue
         src_id = n["id"]
         ext_id = f"{src_id}__extract"

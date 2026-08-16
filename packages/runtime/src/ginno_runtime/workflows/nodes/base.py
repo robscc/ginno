@@ -22,9 +22,15 @@ downstream input computation via edge ``transform``.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, ClassVar
 
 from . import transforms as wf_transforms
+
+# Backoff ceiling for per-node retries (stability plan P2): exponential
+# backoff doubles per attempt and is capped here so a 10-attempt policy can
+# never sleep for minutes inside a single node.
+_MAX_RETRY_BACKOFF_MS = 30_000
 
 # Hard cap on a single workflow LLM call. Unlike the chat path (CHAT_TIMEOUT_S
 # + the per-chunk stall watchdog in server._stream_graph), the workflow
@@ -189,7 +195,13 @@ class BaseNode:
                 if action == "skip":
                     return cls._post(state, node, cctx, {})
                 eff = decision.get("input", eff)
-            update = await cls.execute(node, cctx, state, config, eff)
+            update = await cls._execute_resilient(node, cctx, state, config, eff)
+            if update is None:
+                # on_error="continue" soft failure (stability plan P2): the error
+                # event was emitted with handled:true and soft_failures bumped;
+                # proceed with an empty output so downstream still runs and the
+                # run can finish "done" (with a warnings count).
+                return cls._post(state, node, cctx, {})
             output = update.pop("__output__", None) or {}
             node_inputs = update.pop("inputs", None)  # routing-time input adaptation (branch)
             post = cls._post(state, node, cctx, output)
@@ -198,6 +210,116 @@ class BaseNode:
             return {**update, **post}
 
         return wrapped
+
+    @classmethod
+    async def _execute_resilient(cls, node: dict, cctx: dict, state: dict, config, eff: dict):
+        """``execute`` under the node's optional fault-tolerance policy
+        (stability plan P2): ``retry{max_attempts,backoff,backoff_ms}`` retries
+        with backoff, ``timeout_s`` bounds total execution time, and
+        ``on_error`` decides whether an exhausted failure stops the run
+        (``stop``, default = re-raise, engine marks the run failed) or soft-
+        fails this node only (``continue`` = emit ``error`` with
+        ``handled:true``, count it in ``run_ctx['soft_failures']``, return
+        ``None`` so the caller proceeds with an empty output).
+
+        Absent fields keep legacy behavior byte-for-byte: one attempt, no
+        wall-clock cap, re-raise on failure.
+
+        Control-flow exceptions are NEVER retried: ``CancelledError`` (cooperative
+        cancel), ``GraphInterrupt`` (human node / manual pause / browser handoff
+        suspensions — note it IS an ``Exception`` subclass in langgraph, so it
+        must be re-raised ahead of the generic handler), ``SupervisorAbort`` and
+        ``GraphRecursionError`` (graph-level failures).
+        """
+        from langgraph.errors import GraphInterrupt, GraphRecursionError
+
+        from .. import engine as wf_engine
+        from .. import supervisor as wf_sup
+
+        run_ctx = cctx["run_ctx"]
+        nid = node["id"]
+        spec = node.get("retry") or {}
+        try:
+            max_attempts = max(1, min(int(spec.get("max_attempts") or 1), 10))
+        except (TypeError, ValueError):
+            max_attempts = 1
+        backoff = spec.get("backoff") or "fixed"
+        try:
+            backoff_ms = int(spec.get("backoff_ms") or 1000)
+        except (TypeError, ValueError):
+            backoff_ms = 1000
+        timeout_s = node.get("timeout_s")
+        on_error = node.get("on_error") or "stop"
+        # Parallel-loop bodies apply retry/on_error PER ITEM inside the gather
+        # adapter; a node-level wrap would multiply attempts (items × attempts)
+        # and contradict per-item decisions. timeout_s still bounds the batch.
+        try:
+            from ..dsl import parallel_loop_owner
+
+            if parallel_loop_owner(cctx.get("dsl") or {}, nid):
+                max_attempts = 1
+                on_error = "stop"
+        except Exception:
+            pass
+
+        def _delay_seconds(attempt: int) -> float:
+            ms = backoff_ms if backoff != "exponential" else backoff_ms * (2 ** (attempt - 1))
+            return min(ms, _MAX_RETRY_BACKOFF_MS) / 1000.0
+
+        attempt = 1
+        last_exc: BaseException | None = None
+        while True:
+            try:
+                coro = cls.execute(node, cctx, state, config, eff)
+                if timeout_s:
+                    return await asyncio.wait_for(coro, timeout=float(timeout_s))
+                return await coro
+            except (
+                asyncio.CancelledError,
+                GraphInterrupt,
+                GraphRecursionError,
+                wf_sup.SupervisorAbort,
+            ):
+                raise
+            except Exception as exc:  # noqa: BLE001 — deliberate retry boundary
+                if isinstance(exc, asyncio.TimeoutError):
+                    last_exc = RuntimeError(
+                        f"node '{nid}' timed out after {timeout_s}s (on_error/retry policy applies)"
+                    )
+                else:
+                    last_exc = exc
+            if attempt >= max_attempts:
+                if on_error == "continue":
+                    run_ctx["soft_failures"] = int(run_ctx.get("soft_failures") or 0) + 1
+                    run_ctx["events"].append(
+                        {
+                            "ts": time.time(),
+                            "run_id": run_ctx.get("run_id"),
+                            "node_id": nid,
+                            "kind": "error",
+                            "error": f"{type(last_exc).__name__}: {last_exc}",
+                            "handled": True,
+                            "attempts": attempt,
+                            "traceback": wf_engine._trimmed_traceback(last_exc),
+                        }
+                    )
+                    return None
+                raise last_exc
+            delay_s = _delay_seconds(attempt)
+            run_ctx["events"].append(
+                {
+                    "ts": time.time(),
+                    "run_id": run_ctx.get("run_id"),
+                    "node_id": nid,
+                    "kind": "node_retry",
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "error": f"{type(last_exc).__name__}: {last_exc}",
+                    "backoff_ms": int(delay_s * 1000),
+                }
+            )
+            await asyncio.sleep(delay_s)
+            attempt += 1
 
     @staticmethod
     async def execute(node: dict, cctx: dict, state: dict, config, eff_input: dict) -> dict:

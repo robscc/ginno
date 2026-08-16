@@ -39,6 +39,7 @@ from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 from .tools.document_tools import ALL_DOCUMENT_TOOLS
 from .tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools
 from .tools.browser_tools import BROWSER_TOOL_NAMES, build_browser_tools
+from .debug import debug_enabled
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -125,6 +126,18 @@ def build_stable_system(
         if agent and agent.system_prompt
         else "You are a helpful assistant."
     )
+    if getattr(agent, "id", None) == "workflow-dev":
+        # Stability plan P1b: append the live node contract (single source of
+        # truth, rendered from the registry) so the dev agent edits against the
+        # engine's real node surface. Stable within a process, so the prefix
+        # cache stays intact. Lazy import: workflows imports graph elsewhere.
+        from .workflows import contracts as wf_contracts
+
+        persona = (
+            persona
+            + "\n\nNode contract (authoritative — rendered from the engine):\n"
+            + wf_contracts.render_catalog()
+        )
     ctx = SessionCtx(
         session_id=session_id,
         project_slug=project_slug,
@@ -584,9 +597,10 @@ def build_all_tools(
         # Web search/fetch (citations-design.md §4.2) — [] when disabled in
         # settings; session_id binds citation source registration.
         + build_web_tools(session_id)
-        # Embedded browser (docs/browser-embed-design.md §5) — always present;
-        # FakeEngine is used under pytest so unit/api tests never spawn Chrome.
-        + build_browser_tools(session_id)
+        # Embedded browser (docs/browser-embed-design.md §5) — present only under
+        # Debug 模式; FakeEngine is used under pytest so unit/api tests never
+        # spawn Chrome.
+        + (build_browser_tools(session_id) if debug_enabled() else [])
     )
 
 

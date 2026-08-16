@@ -417,6 +417,9 @@ def create_run(
         "present_in_session_id": present_in_session_id or session_id,
         "dsl_version": ver,
         "status": "running",
+        # Soft-failure counter (stability plan P2): on_error="continue" nodes
+        # bump this via _drive_run_events; the UI shows a ⚠ count on done runs.
+        "warnings": 0,
         # Persist the trigger's context override so a retry can re-run with the
         # exact same inputs (previously discarded → retries lost the provider/
         # skill/template vars of todo-sync runs). Also useful for debugging

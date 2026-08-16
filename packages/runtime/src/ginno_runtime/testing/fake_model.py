@@ -65,10 +65,30 @@ def script(
     )
 
 
-class ScriptedChatModel(BaseChatModel):
-    """Replay a fixed list of AIMessage turns. Each call pops the next turn."""
+class _ScriptedRaise:
+    """Marker: when the scripted model reaches this turn it raises ``exc``.
 
-    scripts: list[AIMessage] = []
+    Test seam for retry/on_error/timeout policies (stability plan P2): pair
+    with :func:`script` turns to simulate "fail once, then recover".
+    """
+
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+
+def script_raise(exc: BaseException) -> _ScriptedRaise:
+    """Script a provider failure: the next model call raises ``exc``."""
+    return _ScriptedRaise(exc)
+
+
+class ScriptedChatModel(BaseChatModel):
+    """Replay a fixed list of AIMessage turns. Each call pops the next turn.
+
+    Entries may also be :func:`script_raise` markers (stability plan P2): when
+    popped, the model call raises instead of returning a message — the seam
+    for retry/on_error/timeout tests."""
+
+    scripts: list[Any] = []
     _i: int = PrivateAttr(default=0)
 
     @property
@@ -97,6 +117,8 @@ class ScriptedChatModel(BaseChatModel):
             return AIMessage(content="")
         msg = self.scripts[self._i]
         self._i += 1
+        if isinstance(msg, _ScriptedRaise):  # script_raise() seam (P2 tests)
+            raise msg.exc
         return msg
 
     @staticmethod

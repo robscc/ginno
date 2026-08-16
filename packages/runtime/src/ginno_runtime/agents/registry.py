@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
+from ..debug import debug_enabled
 from .memory import ensure_agent_memory
 
 
@@ -153,13 +154,12 @@ _SEED: list[AgentConfig] = [
             "new_dsl_json, rationale) with the FULL proposed DSL object. Your edit "
             "then PAUSES: the user sees a unified diff and must Apply or Reject — "
             "there is no DAG editor, the diff confirmation is the gate. Only on Apply "
-            "is a new immutable version created. DSL node types: step/branch/loop/"
-            "human/browser. A loop routes structurally (its body must NOT carry an "
-            "explicit out-edge; reference the loop item via {{<as>}}). browser nodes "
-            "use action eval|snapshot|handoff|complete (complete is its own node). "
-            "Validate your proposal: entry must be a node id, every edge endpoint "
-            "must exist, branch needs cases or default, loop needs over+body+max_iters. "
-            "Explain each change in rationale. Keep edits minimal and targeted."
+            "is a new immutable version created. The authoritative node contract "
+            "(every node type with fields and structural rules) is appended to your "
+            "system prompt under 'Node contract' — follow it exactly instead of "
+            "guessing node shapes. A step's `agent` is optional: when omitted the "
+            "engine defaults to the dev agent, so never invent role names. Explain "
+            "each change in rationale. Keep edits minimal and targeted."
         ),
         provider="custom",
         tools_allow=["workflow_propose_edit", "workflow_list"],
@@ -282,7 +282,10 @@ _BROWSER_PATTERNS: dict[str, list[str]] = {
 
 def ensure_browser_tools() -> None:
     """Merge browser_* into research/writer (idempotent). workflow-dev stays off
-    — it only authors DSL (docs/browser-embed-design.md §9.5)."""
+    — it only authors DSL (docs/browser-embed-design.md §9.5). Browser 工具属
+    Debug 模式特性；未开启时不并入任何 agent 的 tools_allow。"""
+    if not debug_enabled():
+        return
     for cfg in list_agents():
         needed = _BROWSER_PATTERNS.get(cfg.id)
         if not needed:

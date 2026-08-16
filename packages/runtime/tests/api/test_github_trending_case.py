@@ -18,9 +18,20 @@ pytestmark = pytest.mark.api
 
 
 def _v1_dsl() -> dict:
+    # synth-5 feeds doctor findings back into the synthesis retry loop, so the
+    # drafted DSL must be doctor-CLEAN. The runtime bug the test narrates
+    # (fetch writes `repositories` while the loop reads `repos`) survives:
+    # `repos` now has a declared (empty) initial source, so the loop simply
+    # iterates 0 items on run#1 and the dev-session debug fixes the key.
     return {
         "name": "Trending Repo 分析",
         "entry": "fetch",
+        "context": {
+            "schema": {"type": "object", "properties": {
+                "repos": {"type": "array", "items": {"type": "object"}},
+            }},
+            "initial": {"repos": []},
+        },
         "nodes": [
             {"id": "fetch", "type": "step", "agent": "dev", "goal": "拉取 GitHub Trending 列表"},
             {"id": "loop", "type": "loop", "over": "context.repos", "as": "repo", "body": "analyze", "max_iters": 5},

@@ -14,6 +14,11 @@ const KIND_STYLE: Record<string, string> = {
   loop_iter: "text-orange",
   loop_skip: "text-yellow",
   loop_cap: "text-yellow",
+  // stability plan P2/P3: retries and per-item failures are actionable, not
+  // plain log lines; warnings surface degradation (e.g. parallel flag off).
+  node_retry: "text-yellow",
+  loop_item_error: "text-red",
+  warning: "text-yellow",
   error: "text-red",
   done: "text-green",
   supervisor_intervene: "text-orange",
@@ -21,7 +26,7 @@ const KIND_STYLE: Record<string, string> = {
 
 // Kinds whose payload is worth expanding (full content beats a truncated guess
 // when localizing a failure).
-const EXPANDABLE = new Set(["tool_result", "error", "tool_call", "supervisor_intervene"]);
+const EXPANDABLE = new Set(["tool_result", "error", "tool_call", "supervisor_intervene", "node_retry", "loop_item_error"]);
 
 // P3 #11: supervisor interventions are system actions, not log lines — they get
 // a dedicated card row with an action badge (coerce green / patch_dsl violet /
@@ -45,7 +50,12 @@ function fmt(ev: WorkflowRunEvent): string {
   }
   if (kind === "branch_decision") return `→ ${String(ev.chosen ?? "")}`;
   if (kind === "error") return String(ev.error || "");
-  if (kind === "loop_iter") return `iter ${ev.index ?? "?"}/${ev.of ?? "?"}`;
+  if (kind === "loop_iter")
+    return ev.parallel ? `并行 ${ev.index ?? "?"}/${ev.of ?? "?"}` : `iter ${ev.index ?? "?"}/${ev.of ?? "?"}`;
+  if (kind === "node_retry")
+    return `重试 ${ev.attempt ?? "?"}/${ev.max_attempts ?? "?"}${typeof ev.item === "number" ? `（item ${ev.item}）` : ""} · ${String(ev.error || "").slice(0, 60)}`;
+  if (kind === "loop_item_error") return `item ${ev.index ?? "?"} 失败（${ev.action ?? "?"}）· ${String(ev.error || "").slice(0, 60)}`;
+  if (kind === "warning") return String(ev.message || "");
   if (kind === "loop_skip") return `空序列跳过（over ${String(ev.over ?? "")}）`;
   if (kind === "loop_cap") return `达到 max_iters=${ev.max_iters ?? "?"}，剩余 ${ev.remaining ?? "?"}`;
   if (kind === "supervisor_intervene") {
