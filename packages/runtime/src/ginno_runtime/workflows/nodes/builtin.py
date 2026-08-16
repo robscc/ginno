@@ -130,7 +130,7 @@ async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dic
     return result_text, usage, agent_warning
 
 
-async def _execute_parallel_body(node, owner, cctx, state, eff) -> dict:
+async def _execute_parallel_body(node, owner, cctx, state, eff, config=None) -> dict:
     """Gather mode for a parallel loop's body (stability plan P3).
 
     Runs every item's agent turn concurrently (bounded by the loop's
@@ -143,7 +143,16 @@ async def _execute_parallel_body(node, owner, cctx, state, eff) -> dict:
 
     Failure policy reuses the node's P2 fields per item: retry first, then
     on_error=continue records the index as null (loop_item_error + soft
-    failure count) while stop re-raises and fails the run."""
+    failure count) while stop re-raises and fails the run.
+
+    Per-item checkpoint granularity (2026-08-17 follow-up): each finished item
+    is persisted via ``checkpointer.put_writes`` under the app-level
+    ``parallel_progress`` channel. When this activation re-runs (pause/resume,
+    or a retry that copied the checkpoint file), completed items are restored
+    from that progress and skipped — resume no longer replays the whole batch.
+    The channel is invisible to pregel (filtered in FileCheckpointer.get_tuple)
+    because langgraph would otherwise treat the body task as finished and skip
+    it entirely on resume."""
     from langgraph.errors import GraphBubbleUp, GraphRecursionError
 
     from .. import dsl as wf_dsl
@@ -156,6 +165,20 @@ async def _execute_parallel_body(node, owner, cctx, state, eff) -> dict:
     items = (state.get("loop_vars") or {}).get(as_var)
     items = items if isinstance(items, list) else []
     _, max_conc = wf_dsl.loop_parallel_spec(owner)
+    # Restore per-item progress from a previous (interrupted) activation of this
+    # same run: {index: {"text", "vals"}} persisted via put_writes.
+    ckpt = cctx.get("checkpointer")
+    progress: dict[int, dict] = {}
+    if ckpt is not None and config is not None:
+        saved = ckpt.get_app_pending(config, "parallel_progress")
+        if isinstance(saved, dict):
+            for k, v in saved.items():
+                try:
+                    idx = int(k)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(v, dict) and 0 <= idx < len(items):
+                    progress[idx] = v
     writes_schema = node.get("writes") or {}
     # Per-item schema = the array's items sub-schema (one element per item).
     per_item_schema = {
@@ -188,10 +211,20 @@ async def _execute_parallel_body(node, owner, cctx, state, eff) -> dict:
     sem = asyncio.Semaphore(max(1, max_conc))
     texts: list[str] = [""] * len(items)
     values: dict[str, list] = {k: [None] * len(items) for k in writes_schema}
+    for i, p in progress.items():
+        texts[i] = str(p.get("text") or "")
+        pv = p.get("vals") or {}
+        for k in writes_schema:
+            values[k][i] = pv.get(k)
     usage_total = {"input_tokens": 0, "output_tokens": 0}
     _CONTROL = (asyncio.CancelledError, GraphBubbleUp, GraphRecursionError, wf_sup.SupervisorAbort)
 
     async def _one(i: int, item) -> None:
+        if i in progress:
+            # Finished in a previous activation — restored above; do not re-run.
+            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_iter",
+                  "index": i, "of": len(items), "parallel": True, "resumed": True})
+            return
         async with sem:
             from .. import engine as wf_engine
 
@@ -230,6 +263,18 @@ async def _execute_parallel_body(node, owner, cctx, state, eff) -> dict:
             texts[i] = text
             for ku, vu in usage.items():
                 usage_total[ku] = usage_total.get(ku, 0) + vu
+            # Durable per-item progress: a re-executed activation (resume /
+            # crash-retry) skips this item. Best-effort — losing it degrades to
+            # the old whole-batch replay, never breaks the run.
+            progress[i] = {"text": text, "vals": {k: vals.get(k) for k in writes_schema}}
+            if ckpt is not None and config is not None:
+                try:
+                    ckpt.put_writes(
+                        config, [("parallel_progress", progress)],
+                        task_id=f"{node_id}:gather",
+                    )
+                except Exception:
+                    pass
 
     results = await asyncio.gather(
         *[_one(i, it) for i, it in enumerate(items)], return_exceptions=True
@@ -258,6 +303,13 @@ async def _execute_parallel_body(node, owner, cctx, state, eff) -> dict:
           "keys": list(writes_schema)})
     emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit",
           "status": "done", "usage": usage_total, "parallel": True})
+    # Batch committed to context — clear the incremental progress so a later
+    # re-activation of this node (shouldn't happen; cheap insurance) starts fresh.
+    if ckpt is not None and config is not None:
+        try:
+            ckpt.put_writes(config, [("parallel_progress", {})], task_id=f"{node_id}:gather")
+        except Exception:
+            pass
     return {
         "context": new_context,
         "context_meta": meta,
@@ -304,67 +356,17 @@ class AgentNode(BaseNode):
         if owner is not None and (
             (state.get("loop_iters") or {}).get(owner["id"]) or {}
         ).get("parallel"):
-            return await _execute_parallel_body(node, owner, cctx, state, eff)
+            return await _execute_parallel_body(node, owner, cctx, state, eff, config)
 
+        # Sequential path runs the exact same turn loop as the parallel gather
+        # adapter via _run_agent_turn (deduped 2026-08-17 — this block used to
+        # carry a second copy of the loop that could drift).
         run_ctx = cctx["run_ctx"]
-        model = cctx["model"]
-        tools = cctx["tools"]
         node_id = node["id"]
-        max_iters = int(node.get("max_tool_iters") or 8)
-        # Fallback instead of fail: a DSL may reference an agent that doesn't
-        # exist (LLM-drafted DSLs invent role names). The run continues with
-        # a substituted persona and a warning event (2026-08-10 incident).
-        agent, agent_warning = ah.resolve_agent(node.get("agent"))
         context = dict(state.get("context") or {})
         loop_vars = dict(state.get("loop_vars") or {})
         render_ctx = {**context, **loop_vars, **(eff or {})}
-        goal = wf_expr.render(node.get("goal") or node.get("title") or "", render_ctx)
         events: list = []
-
-        # Provider sync runs (todo-pull/push et al.): unlock the provider's
-        # MCP server tools even when the forked agent's tools_allow doesn't
-        # list them — the provider config (settings → todo_providers.mcp) is
-        # the capability declaration for MCP-based platforms.
-        mcp_prefix = ""
-        prov_id = str(render_ctx.get("provider") or "")
-        if prov_id:
-            from ...todos import providers as todo_providers
-
-            _prov = todo_providers.get_todo_provider(prov_id)
-            if _prov and _prov.get("mcp"):
-                mcp_prefix = f"mcp_{_prov['mcp']}_"
-        allowed = [
-            t
-            for t in tools
-            if (tool_allowed(agent, t.name) or (mcp_prefix and t.name.startswith(mcp_prefix)))
-            and not t.name.startswith("workflow_")
-        ]
-        bound = model.bind_tools(allowed) if allowed and hasattr(model, "bind_tools") else model
-        # handle_tool_errors=True: a raising tool must degrade to an error
-        # ToolMessage the step can react to, never kill the whole workflow run
-        # (same discipline as the main chat graph).
-        tool_node = ToolNode(allowed, handle_tool_errors=True) if allowed else None
-
-        sys_text = ah.build_system(goal, context, agent)
-        # Configurable skill injection (todo-provider sync et al.): entries are
-        # template-rendered so a single generic workflow can serve any provider
-        # (the trigger passes the resolved skill via context_override).
-        skill_names = [
-            wf_expr.render(s, render_ctx)
-            for s in (node.get("skills") or [])
-            if isinstance(s, str) and s.strip()
-        ]
-        if skill_names:
-            from ...skills.loader import SkillLoader
-
-            loader = SkillLoader(project_slug="default")
-            secs = []
-            for nm in skill_names:
-                sk = loader.get(nm)
-                if sk and sk.body:
-                    secs.append(f'<skill name="{sk.name}">\n{sk.body.strip()}\n</skill>')
-            if secs:
-                sys_text += "\n\n## Injected skills\n" + "\n\n".join(secs)
 
         # Incremental flush: every event lands in run_ctx["events"] as it is
         # produced (engine streams it → API persists + pushes it). If the step
@@ -377,59 +379,11 @@ class AgentNode(BaseNode):
             run_ctx["events"].append(ev)
 
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "step"})
+        result_text, usage, agent_warning = await _run_agent_turn(
+            node, cctx, state, render_ctx, emit
+        )
         if agent_warning:
             emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "warning", "message": agent_warning})
-        msgs = [SystemMessage(content=sys_text), HumanMessage(content=goal)]
-        result_text = ""
-        usage = {"input_tokens": 0, "output_tokens": 0}
-        for it in range(max_iters):
-            if it:
-                # Manual-pause boundary (workflow-ux-redesign #14): between
-                # tool iterations, so a long step can be paused without waiting
-                # for it to finish. The checkpoint only commits per superstep,
-                # so pausing here rewinds the WHOLE step — it re-executes from
-                # scratch on resume (accepted semantics; duplicated events /
-                # usage mirror the retry path).
-                from .. import engine as wf_engine
-
-                wf_engine.check_pause(run_ctx, node_id)
-            resp = await llm_invoke_with_timeout(bound.ainvoke(msgs))
-            msgs.append(resp)
-            result_text = text_of_content(resp.content)
-            # Per-call telemetry into the global usage log (source=workflow);
-            # falls back to response_metadata parsing when the provider does
-            # not populate usage_metadata (then nothing is logged — same
-            # best-effort semantics as the chat path).
-            u = ah.record_model_usage(resp, run_ctx.get("usage_attr")) or _usage_from_msg(resp)
-            for k, v in u.items():
-                usage[k] = usage.get(k, 0) + v
-            calls = getattr(resp, "tool_calls", None) or []
-            if not calls:
-                break
-            emit(
-                {
-                    "run_id": run_ctx["run_id"],
-                    "node_id": node_id,
-                    "kind": "tool_call",
-                    "calls": [{"name": c.get("name"), "args": c.get("args")} for c in calls],
-                }
-            )
-            if tool_node is None:
-                break
-            tres = await tool_node.ainvoke({"messages": [resp]})
-            tmsgs = tres["messages"] if isinstance(tres, dict) else tres
-            for tm in tmsgs:
-                c = text_of_content(tm.content)
-                emit(
-                    {
-                        "run_id": run_ctx["run_id"],
-                        "node_id": node_id,
-                        "kind": "tool_result",
-                        "name": getattr(tm, "name", ""),
-                        "content": c[:2000],
-                    }
-                )
-            msgs.extend(tmsgs)
 
         writes = ah.parse_writes(result_text)
         meta = dict(state.get("context_meta") or {})

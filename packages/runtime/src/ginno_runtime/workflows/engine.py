@@ -130,7 +130,7 @@ async def run_workflow(
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(
-            d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug)
+            d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True)
         )
 
         state = {
@@ -200,7 +200,7 @@ async def run_state(run_id: str, dsl: dict, model, tools: list, project_slug: st
     """Introspect whether a run is currently paused at an interrupt (for UI/status)."""
     d = wf_dsl.normalize_dsl(dsl)
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": []}
-    graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug))
+    graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))
     config = {"configurable": {"thread_id": run_id}}
     try:
         snap = await graph.aget_state(config)
@@ -234,7 +234,7 @@ async def resume_workflow(
     d = wf_dsl.normalize_dsl(dsl)
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
     with _run_control(run_id, run_ctx):
-        graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug))
+        graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": _recursion_limit(d)}
         if resume_nature:
             pending_node = None
@@ -303,7 +303,7 @@ async def continue_workflow(
     d = wf_dsl.normalize_dsl(dsl)
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
     with _run_control(run_id, run_ctx):
-        graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug))
+        graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": _recursion_limit(d)}
         yielded = 0
         try:

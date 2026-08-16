@@ -49,6 +49,13 @@ from . import paths
 
 _MESSAGES_CHANNEL = "messages"
 
+# App-level channels persisted via put_writes for node-internal bookkeeping
+# (per-item progress of the parallel gather adapter, stability follow-up
+# 2026-08-17). They are crash-durable and readable via get_app_pending, but
+# MUST stay invisible to pregel: langgraph treats a task that has pending
+# writes as "already finished" and would skip the body node on resume.
+_APP_PENDING_CHANNELS = {"parallel_progress"}
+
 
 def _dump_typed(typed: tuple[str, bytes]) -> dict:
     """Serialize serde's (type_tag, bytes) tuple into JSON-safe dict."""
@@ -96,9 +103,15 @@ class FileCheckpointer(BaseCheckpointSaver):
 
     serde = JsonPlusSerializer()
 
-    def __init__(self, project_slug: str) -> None:
+    def __init__(self, project_slug: str, surface_pending_writes: bool = False) -> None:
         super().__init__()
         self.project_slug = project_slug
+        # When True, get_tuple returns stored put_writes (minus app-level
+        # channels) so langgraph gets its standard mid-step resume semantics:
+        # tasks that already completed inside an interrupted superstep are not
+        # re-executed. The workflow engine opts in; chat keeps the historical
+        # pending_writes=None behavior for byte-identical resume semantics.
+        self.surface_pending_writes = surface_pending_writes
         # Serializes read-modify-write cycles on the session file. aput and
         # aput_writes run on thread-pool executors and LangGraph may drive them
         # concurrently (e.g. the interrupted superstep); without this lock the
@@ -296,6 +309,20 @@ class FileCheckpointer(BaseCheckpointSaver):
             return None
         checkpoint = self._reconstruct_checkpoint(record, entry)
         metadata = self.serde.loads_typed(_load_typed(entry["metadata"]))
+        pending = None
+        if self.surface_pending_writes:
+            # Standard langgraph mid-step resume: completed tasks inside an
+            # interrupted superstep are skipped on re-entry. App-level
+            # bookkeeping channels are filtered out (see _APP_PENDING_CHANNELS).
+            pending = [
+                (
+                    w.get("task_id") or "",
+                    w["channel"],
+                    self.serde.loads_typed(_load_typed(w["value"])),
+                )
+                for w in (entry.get("pending_writes") or [])
+                if w.get("channel") not in _APP_PENDING_CHANNELS
+            ] or None
         return CheckpointTuple(
             config={"configurable": {"thread_id": session_id, "checkpoint_id": entry["checkpoint_id"]}},
             checkpoint=checkpoint,
@@ -305,9 +332,34 @@ class FileCheckpointer(BaseCheckpointSaver):
                 if entry.get("parent_id")
                 else None
             ),
-            # NOTE: stored per-step writes (put_writes) are intentionally NOT
-            # surfaced here yet — preserves the pre-E5 resume semantics exactly.
+            pending_writes=pending,
         )
+
+    def get_app_pending(self, config: dict, channel: str) -> Any:
+        """Latest app-level pending write for ``channel`` (last write wins).
+
+        Companion to :data:`_APP_PENDING_CHANNELS`: nodes persist incremental
+        bookkeeping (parallel gather per-item progress) via ``put_writes`` and
+        read it back here on re-execution, skipping already-finished work after
+        a pause/resume or a crash-retry (the retry endpoint copies the whole
+        checkpoint file, pending writes included)."""
+        if channel not in _APP_PENDING_CHANNELS:
+            return None
+        session_id = config["configurable"]["thread_id"]
+        record = self._read(session_id)
+        cps = record.get("checkpoints", [])
+        target = config["configurable"].get("checkpoint_id")
+        entries = reversed(cps) if not target else (
+            c for c in reversed(cps) if c["checkpoint_id"] == target
+        )
+        for entry in entries:
+            for w in reversed(entry.get("pending_writes") or []):
+                if w.get("channel") == channel:
+                    try:
+                        return self.serde.loads_typed(_load_typed(w["value"]))
+                    except Exception:
+                        return None
+        return None
 
     def put_writes(self, config: dict, writes: list, task_id: str) -> None:
         """Persist a superstep's writes under the owning checkpoint entry.

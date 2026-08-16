@@ -117,7 +117,15 @@ def compile_workflow(dsl: dict, model, tools: list, run_ctx: dict, checkpointer=
     # re-derived each compile, so the stored DSL stays clean.
     d = _inject_extract_nodes(d)
 
-    cctx = {"dsl": d, "model": model, "tools": tools, "run_ctx": run_ctx}
+    cctx = {
+        "dsl": d,
+        "model": model,
+        "tools": tools,
+        "run_ctx": run_ctx,
+        # Lets node adapters persist incremental bookkeeping (parallel gather
+        # per-item progress) via put_writes and read it back on re-execution.
+        "checkpointer": checkpointer,
+    }
     g = StateGraph(WorkflowState)
 
     for n in d["nodes"]:

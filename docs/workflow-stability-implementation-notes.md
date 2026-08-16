@@ -34,8 +34,27 @@
 6. **暂停语义**：parallel body 内 item 间 check_pause；暂停恢复=整批重跑（与现行步中暂停同级，文档化接受）。per-item checkpoint 粒度依赖 FileCheckpointer pending_writes 升级，独立后续项。
 7. **dry-run 与 propose_edit 的 doctor 接线由协作会话先落地**，本文确认其行为与计划一致（dry-run 含 unreachable 可达性集合）。
 
+## Follow-ups（2026-08-17，两项保留项修复）
+
+1. **顺序路径去重**：AgentNode.execute 顺序路径切换为复用 `_run_agent_turn`，
+   删除第二份 turn 循环。事件顺序微差：agent 回退 warning 事件现在位于
+   tool_call/tool_result 流之后（原先在 node_enter 之后），内容不变。
+2. **FileCheckpointer pending_writes 升级 + per-item checkpoint 粒度**：
+   - 构造参数 `surface_pending_writes`（engine 四入口 True；chat 默认 False，
+     维持 pre-E5 的 `pending_writes=None` 字节级语义）。开启后 get_tuple 返回
+     存储的 put_writes（langgraph 标准 mid-step resume：中断 superstep 内已完成
+     任务不重跑），但**过滤 app 级通道** `_APP_PENDING_CHANNELS={"parallel_progress"}`。
+   - 新 `get_app_pending(config, channel)`：节点适配器读回自己经 put_writes 持久化
+     的增量进度（last-write-wins）。
+   - gather 适配器每完成一个 item 即 put_writes 进度；激活重跑（pause/resume、或
+     retry 拷贝 checkpoint 文件——pending writes 随文件带走）时按 index 恢复并跳过
+     已完成 item，loop_iter 事件带 `resumed:true`；批量提交后进度清空。
+   - **关键取舍（langgraph 语义陷阱）**：不能把 per-item 进度暴露给 pregel——
+     langgraph 把「有 pending writes 的 task」视为已完成并在 resume 时跳过，
+     body 会被整体跳过、剩余 item 永不执行。故进度通道对 pregel 隐藏、对适配器可见。
+   - 测试：test_checkpointer_pending_writes（3）、test_parallel_resume_skips_done_items（2）。
+
 ## 已知保留（记录不修）
 
-- `_run_agent_turn` 与 AgentNode 顺序路径重复（见 Deviation 1）。
 - 并行 gather 的 usage 求和进单条 node_exit.usage；per-item 用量明细不入事件（成本核算粒度够用）。
 - replay 脚本需真实 provider（opt-in 评测工具，CI 不跑）。
