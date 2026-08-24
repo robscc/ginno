@@ -86,6 +86,19 @@ _RUNNING_TURNS: dict[str, str] = {}
 # an already-resumed graph.
 _PENDING_RESUME: set[str] = set()
 
+# Live turn tasks (session_id -> asyncio.Task for the invoke/resume job). The
+# WS receive loop no longer awaits turns inline (it must stay free to accept a
+# `stop` message mid-turn), so this registry answers "is a turn running here?"
+# for the busy check and the stop handler. Identity-checked done callbacks pop.
+_TURN_TASKS: dict[str, Any] = {}
+
+# Cooperative stop signals (session_id -> asyncio.Event). Created by the WS
+# loop BEFORE the turn task spawns (so the stop handler never races a task
+# that exists but hasn't registered in _RUNNING_TURNS yet), consumed by
+# _stream_graph's chunked_stream, popped in the turn's finally. NEVER left
+# set for an idle session — a stale set event would kill the next turn.
+_TURN_STOP: dict[str, Any] = {}
+
 # Fire-and-forget background tasks (MCP lazy retry etc.). asyncio keeps only
 # WEAK references to tasks, so an unreferenced create_task() can be garbage
 # collected mid-flight; hold strong refs until done.

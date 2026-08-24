@@ -12,7 +12,29 @@ pytestmark = pytest.mark.unit
 def test_seed_creates_default_personas(isolated_home):
     registry.ensure_seeded()
     ids = {a.id for a in registry.list_agents()}
-    assert {"dev", "research", "writer"} <= ids
+    assert {"dev", "research", "writer", "workflow-dev"} <= ids
+
+
+def test_workflow_dev_prompt_names_human_node(isolated_home):
+    registry.ensure_seeded()
+    prompt = registry.get_agent("workflow-dev").system_prompt
+    assert "human" in prompt
+    assert "workflow_get" in prompt
+    assert "workflow_get" in registry.get_agent("workflow-dev").tools_allow
+
+
+def test_ensure_workflow_dev_lands_on_upgraded_install(isolated_home):
+    registry.ensure_seeded()
+    registry.delete_agent("workflow-dev")
+    assert registry.get_agent("workflow-dev") is None
+    registry.ensure_workflow_dev()
+    landed = registry.get_agent("workflow-dev")
+    assert landed is not None
+    assert landed.id == "workflow-dev"
+    assert "human" in landed.system_prompt
+    # idempotent
+    registry.ensure_workflow_dev()
+    assert registry.get_agent("workflow-dev").id == "workflow-dev"
 
 
 def test_research_is_read_only_by_default(isolated_home):

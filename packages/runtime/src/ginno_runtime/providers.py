@@ -67,6 +67,55 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 
+# ---- system-proxy switch (settings.json top-level `use_system_proxy`) ----
+
+
+def use_system_proxy(settings: dict[str, Any] | None = None) -> bool:
+    """Whether model traffic should honour OS/environment proxies.
+
+    Defaults to True (standard behaviour for remote endpoints). Loopback
+    destinations bypass unconditionally regardless — see
+    ``_ensure_loopback_no_proxy`` in the package ``__init__``.
+    """
+    settings = settings if settings is not None else _read_settings()
+    return bool(settings.get("use_system_proxy", True))
+
+
+def apply_system_proxy(enabled: bool) -> None:
+    """Make the switch effective for every httpx-based client in this process.
+
+    All LLM traffic (anthropic/openai SDKs, langchain ChatAnthropic /
+    ChatOpenAI) rides httpx with ``trust_env=True``; each client freezes its
+    proxy map at init from ``httpx._client.get_environment_proxies`` — a
+    module-global name resolved at call time. Swapping that one name is the
+    process-wide choke point; there is no per-client wiring for
+    ChatAnthropic anyway (langchain_anthropic builds its httpx client
+    internally and shares one ``functools.lru_cache``'d instance per
+    (base_url, timeout)).
+
+    Already-built clients keep their frozen proxy map, so callers must also
+    evict whatever caches still hold them (``_SESSIONS``); the lru_cache
+    clear below covers the shared langchain_anthropic clients.
+    """
+    import httpx._client as _hx_client
+    import httpx._utils as _hx_utils
+
+    if enabled:
+        _hx_client.get_environment_proxies = _hx_utils.get_environment_proxies
+    else:
+        _hx_client.get_environment_proxies = lambda: {}
+    # langchain_anthropic shares one lru_cache'd httpx client across ALL
+    # ChatAnthropic instances — drop both (sync/async) so the next model
+    # rebuild picks up the new proxy map.
+    try:
+        from langchain_anthropic import _client_utils as _lc_cu
+
+        _lc_cu._get_default_httpx_client.cache_clear()
+        _lc_cu._get_default_async_httpx_client.cache_clear()
+    except Exception:  # noqa: BLE001 — version drift must not break settings
+        pass
+
+
 def _read_settings() -> dict[str, Any]:
     p = paths.settings_path()
     if not p.exists():

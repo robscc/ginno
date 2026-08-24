@@ -911,7 +911,20 @@ export function TodoPanel() {
                           title={`外部待办 ${x.provider}:${x.id ?? ""}`}
                         >
                           {x.url ? (
-                            <a href={x.url} target="_blank" rel="noreferrer" className="hover:underline">
+                            <a
+                              href={x.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(e) => {
+                                if (/^https?:\/\//i.test(x.url!)) {
+                                  // WKWebView ignores target=_blank — open via
+                                  // the sidecar's default-browser handoff.
+                                  e.preventDefault();
+                                  api.openLinkExternal(x.url!);
+                                }
+                              }}
+                              className="hover:underline"
+                            >
                               {label}
                             </a>
                           ) : (

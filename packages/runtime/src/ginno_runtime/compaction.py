@@ -99,6 +99,10 @@ def _copy_with_new_id(m: BaseMessage) -> BaseMessage:
         return AIMessage(
             content=m.content,
             tool_calls=list(getattr(m, "tool_calls", None) or []),
+            # Preserve additional_kwargs — carries the agent_id attribution
+            # tag (graph.py) among provider extras like reasoning_content;
+            # dropping it would lose per-turn attribution after compaction.
+            additional_kwargs=dict(getattr(m, "additional_kwargs", None) or {}),
             id=new_id,
         )
     return m

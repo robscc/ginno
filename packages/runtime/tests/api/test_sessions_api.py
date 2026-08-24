@@ -46,6 +46,37 @@ def test_create_session_explicit_title(client, patch_build_model):
     assert data["title_auto"] is False
 
 
+def test_create_session_binds_workflow_id(client, patch_build_model):
+    patch_build_model(script(text="ok"))
+    data = _post_session(client, agent_id="workflow-dev", workflow_id="wf-abc").json()
+    assert data["ok"] is True
+    assert data["workflow_id"] == "wf-abc"
+    assert data["agent_id"] == "workflow-dev"
+    index = json.loads(paths.session_index_path("default").read_text())
+    hit = next(m for m in index if m["id"] == data["id"])
+    assert hit["workflow_id"] == "wf-abc"
+    # in-memory session carries the bind (used by turn-context injection)
+    from ginno_runtime.server_shared import _SESSIONS
+
+    assert _SESSIONS[data["id"]]["workflow_id"] == "wf-abc"
+
+
+def test_ensure_session_restores_workflow_id_after_restart(client, patch_build_model):
+    """Sidecar restart drops _SESSIONS; the bind must come back from disk meta."""
+    patch_build_model(script(text="ok"))
+    data = _post_session(client, agent_id="workflow-dev", workflow_id="wf-abc").json()
+    sid = data["id"]
+    from ginno_runtime.api.sessions import _ensure_session
+    from ginno_runtime.server_shared import _SESSIONS
+
+    _SESSIONS.pop(sid, None)
+    rebuilt = _ensure_session(sid)
+    assert rebuilt is not None
+    assert rebuilt["workflow_id"] == "wf-abc"
+    assert rebuilt["agent_id"] == "workflow-dev"
+    assert _SESSIONS[sid]["workflow_id"] == "wf-abc"
+
+
 def test_create_session_model_error_returns_ok_false(client, monkeypatch):
     def boom(*a, **k):
         raise ValueError("provider disabled")
@@ -141,7 +172,13 @@ def test_touch_session_title_first_message_then_bump(monkeypatch):
 
     session: dict = {}
     asyncio.run(stream_mod._touch_session_title("default", "s1", session, "hello\nworld", "t1"))
-    assert calls["patch"] == {"title": "hello world", "title_auto": False}
+    # truncated placeholder + LLM subject title armed for title_gen
+    assert calls["patch"] == {
+        "title": "hello world",
+        "title_auto": False,
+        "title_llm_pending": True,
+        "title_seed": "hello\nworld",
+    }
     assert events == [("session_title", {"title": "hello world"})]
     assert session["title_auto"] is False
 
@@ -154,6 +191,20 @@ def test_touch_session_title_first_message_then_bump(monkeypatch):
     asyncio.run(stream_mod._touch_session_title("default", "s1", session, "again", "t2"))
     assert calls["patch"] == {}
     assert events == []
+
+
+def test_patch_title_clears_llm_pending(client, patch_build_model):
+    from ginno_runtime.session_meta import _session_meta_patch
+
+    patch_build_model(script(text="ok"))
+    sid = _post_session(client, agent_id="dev").json()["id"]
+    # arm as if the first turn had started (title_gen pending)
+    _session_meta_patch("default", sid, {"title_llm_pending": True, "title_seed": "x"})
+    r = client.patch(f"/api/sessions/{sid}", json={"title": "Pinned"}).json()
+    assert r["session"]["title"] == "Pinned"
+    # a manual rename cancels the pending LLM title
+    index = {m["id"]: m for m in json.loads(paths.session_index_path("default").read_text())}
+    assert index[sid]["title_llm_pending"] is False
 
 
 def test_delete_session_removes_index_and_checkpoint(client, patch_build_model):

@@ -1,8 +1,7 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { MoreVertical, Globe } from "lucide-react";
+import { MoreVertical } from "lucide-react";
 import * as api from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type { AgentConfig, SessionMeta, SessionUsage } from "@/lib/types";
@@ -36,7 +35,7 @@ function SessionIdChip({ sessionId }: { sessionId?: string }) {
         }
       }}
       title={`session ${sessionId}（点击复制，用于日志定位）`}
-      className="rounded border border-line2 px-1 py-px font-mono text-[9px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
+      className="shrink-0 whitespace-nowrap rounded border border-line2 px-1 py-px font-mono text-[9px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
     >
       {copied ? "copied" : `#${short}`}
     </button>
@@ -47,78 +46,54 @@ export function TopBar({
   session,
   agent,
   running,
-  modelLabel,
   usage,
-  browserOpen,
-  onToggleBrowser,
-  browserHandoff,
 }: {
   session: SessionMeta | null;
   agent: AgentConfig | null;
   running: boolean;
-  modelLabel: string;
   usage?: SessionUsage | null;
-  browserOpen?: boolean;
-  onToggleBrowser?: () => void;
-  browserHandoff?: boolean;
 }) {
-  const router = useRouter();
   const g = useGinno();
   const [menu, setMenu] = useState(false);
   const hex = agentHex(agent?.color);
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-base px-5">
-      <h1 className="text-[15px] font-semibold tracking-tight text-txt">
-        {session?.title || "New Session"}
-      </h1>
-      <SessionIdChip sessionId={session?.id} />
+    <header className="flex min-h-14 min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-5 py-1.5">
+      <div className="flex min-w-[min(100%,12rem)] flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
+        <h1 className="min-w-[5rem] max-w-full truncate text-[15px] font-semibold tracking-tight text-txt" title={session?.title || "New Session"}>
+          {session?.title || "New Session"}
+        </h1>
+        <SessionIdChip sessionId={session?.id} />
 
-      {!browserOpen && agent && (
-        <span className="pill border border-line2 bg-card text-txt">
-          <span className="flex h-3.5 w-3.5 items-center justify-center" style={{ color: hex }}>
-            <Icon name={agent.icon} className="h-3.5 w-3.5" />
+        {agent && (
+          <span className="pill border border-line2 bg-card text-txt">
+            <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" style={{ color: hex }}>
+              <Icon name={agent.icon} className="h-3.5 w-3.5" />
+            </span>
+            {agent.name}
           </span>
-          {agent.name}
-        </span>
-      )}
+        )}
 
-      <span
-        className="pill"
-        style={{
-          background: running ? "#22c55e22" : "#52525b22",
-          color: running ? "#4ade80" : "#a1a1aa",
-        }}
-      >
         <span
-          className="h-1.5 w-1.5 rounded-full"
-          style={{ background: running ? "#22c55e" : "#71717a" }}
-        />
-        {running ? "Running" : "Idle"}
-      </span>
-
-      {!browserOpen && <GoalChip sessionId={session?.id ?? null} />}
-
-      {onToggleBrowser && (
-        <button
-          onClick={onToggleBrowser}
-          className={`pill border ${
-            browserHandoff
-              ? "border-yellow/50 bg-yellow/15 text-yellow"
-              : browserOpen
-                ? "border-violet/40 bg-violet/10 text-violet"
-                : "border-line2 bg-card text-muted hover:text-txt"
-          }`}
-          title={browserOpen ? "收起浏览器（⌘.）" : "打开内嵌浏览器（⌘.）"}
+          className="pill"
+          style={{
+            background: running ? "#22c55e22" : "#52525b22",
+            color: running ? "#4ade80" : "#a1a1aa",
+          }}
         >
-          <Globe className="h-3 w-3" />
-          {browserHandoff ? "需要你 · 浏览器" : "浏览器"}
-        </button>
-      )}
+          <span
+            className="h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ background: running ? "#22c55e" : "#71717a" }}
+          />
+          {running ? "Running" : "Idle"}
+        </span>
 
-      <ContextFoldersChip session={session} />
+        <GoalChip sessionId={session?.id ?? null} />
 
-      <div className="ml-auto flex items-center gap-2">
+        <ContextFoldersChip session={session} />
+      </div>
+
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         {usage && usage.calls > 0 && (
           <span
             className="pill font-mono text-[11px]"
@@ -131,14 +106,6 @@ export function TopBar({
             )}
           </span>
         )}
-        <button
-          onClick={() => router.push("/settings/model-api")}
-          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted hover:bg-card hover:text-txt"
-          title="Model settings"
-        >
-          <Globe className="h-3.5 w-3.5 text-muted" />
-          {modelLabel || "model"}
-        </button>
         <div className="relative">
           <button
             onClick={() => setMenu((m) => !m)}

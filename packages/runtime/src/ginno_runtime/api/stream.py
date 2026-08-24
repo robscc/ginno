@@ -1,8 +1,9 @@
 """Session WebSocket + the per-turn streaming engine.
 
-The WS endpoint accepts invoke / permission_response / turn_state / ping
-messages; the streaming engine drives the LangGraph agent loop and broadcasts
-token / tool / permission / usage events to every live socket of the session.
+The WS endpoint accepts invoke / stop / permission_response / turn_state /
+ping messages; the streaming engine drives the LangGraph agent loop and
+broadcasts token / tool / permission / usage events to every live socket of
+the session.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from .. import agents as agents_reg
@@ -27,12 +28,15 @@ from .. import paths, usage_store
 from .. import server_shared as shared
 from .. import workflows as wf_store
 from ..checkpointer import ABANDONED_TURNS
-from ..graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context, skill_extra_tools
+from ..goals import store as goal_store
+from ..graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context
 from ..server_shared import (
     _PENDING_RESUME,
     _RUNNING_TURNS,
     _SESSION_WS,
     _SESSIONS,
+    _TURN_STOP,
+    _TURN_TASKS,
     _USAGE_BY_SESSION,
     _WF_RUN_TASKS,
     _ensure_turn_log,
@@ -46,7 +50,7 @@ from ..server_shared import (
 from ..session_meta import _find_meta, _session_meta_patch
 from ..todos import store as todo_store
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
-from ..tools.render_tools import RENDER_TOOL_NAMES
+from ..tools.render_tools import RENDER_TOOL_NAMES, widget_event
 from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ..usage import add_usage, cache_hit_ratio, empty_usage, extract_usage
 from ..workflows import store as wf_storemod
@@ -59,7 +63,7 @@ from .files import (
     _session_workspace,
 )
 from .messages_ui import _tool_args_preview, _tool_content_str, _truncate_for_ws
-from .sessions import _ensure_session, _first_agent_id, _start_goal_driver
+from .sessions import _emit_goal_event, _ensure_session, _first_agent_id, _start_goal_driver
 from .workflows import _run_workflow_bg, _spawn_run_task
 
 router = APIRouter()
@@ -73,7 +77,10 @@ async def _touch_session_title(
     While meta `title_auto` is set, the first non-empty user message becomes
     the title (single line, 40-char preview — same convention as goal-session
     titles) and a `session_title` event refreshes connected clients so the
-    sidebar/TopBar rename live. Every turn — first or not — runs a (possibly
+    sidebar/TopBar rename live. The same patch arms `title_llm_pending` +
+    `title_seed`: once this first turn completes, title_gen replaces the
+    truncated placeholder with an LLM subject summary (a manual rename clears
+    the flag and wins). Every turn — first or not — runs a (possibly
     empty) meta patch, which bumps `updated`; that timestamp is what the
     sidebar's day grouping sorts on.
     """
@@ -82,7 +89,16 @@ async def _touch_session_title(
     text = (user_text or "").strip()
     if meta.get("title_auto", True) and text:
         title = text.replace("\n", " ")[:40]
-        _session_meta_patch(slug, session_id, {"title": title, "title_auto": False})
+        _session_meta_patch(
+            slug,
+            session_id,
+            {
+                "title": title,
+                "title_auto": False,
+                "title_llm_pending": True,
+                "title_seed": text[:1200],
+            },
+        )
         session["title_auto"] = False
         await _push_session_event(session_id, "session_title", {"title": title}, turn_id)
     else:
@@ -186,19 +202,6 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             },
                         )
                     )
-                elif isinstance(value, dict) and value.get("kind") == "browser_handoff":
-                    _PENDING_RESUME.add(session_id)
-                    _RUNNING_TURNS.setdefault(session_id, "")
-                    await ws.send_text(
-                        _ev(
-                            "browser.handoff",
-                            {
-                                "space": value.get("space"),
-                                "url": value.get("url") or "",
-                                "reason": value.get("reason") or "",
-                            },
-                        )
-                    )
     except Exception:
         # introspecting resume state must never stop the socket from opening
         pass
@@ -245,50 +248,106 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         await ws.send_text(_ev("message.end", {}, turn_id))
                         continue
                     user_text = plan.text
-                    await _touch_session_title(
-                        session["project_slug"], session_id, session, user_text, turn_id
-                    )
-                    turn_agent = (
-                        plan.agent_override
-                        or msg.get("agent_id")
-                        or session.get("agent_id")
-                        or _first_agent_id()
-                    )
-                    if turn_agent != session.get("agent_id"):
-                        session["agent_id"] = turn_agent
-                        _session_meta_patch(
-                            session["project_slug"], session_id, {"agent_id": turn_agent}
+                    # Busy check: a turn task is already live for this session
+                    # (multi-tab race — the frontend gates sends on `running`).
+                    # A goal turn running inline holds the lock but has no entry
+                    # here: our task simply queues on _turn_lock, as before.
+                    _busy = _TURN_TASKS.get(session_id)
+                    if _busy is not None and not _busy.done():
+                        await ws.send_text(
+                            _ev("notice", {"message": "当前有回合正在进行，请等待其结束"}, turn_id)
                         )
-                    turn_config = {
-                        **config,
-                        "configurable": {
-                            **config["configurable"],
-                            "agent_id": turn_agent,
-                            "turn_id": turn_id,
-                            "user_text": user_text or "",
-                        },
-                    }
-                    async with _turn_lock(session_id):
-                        await _run_stream(
-                            ws,
-                            graph,
-                            turn_config,
-                            user_text,
-                            session,
-                            turn_agent,
-                            images=msg.get("images"),
-                            files=(msg.get("files") or []) + plan.files_extra,
-                            mention_context=plan.mention_ctx,
-                            skill_name=plan.skill_name,
-                        )
-                    # The turn may have created/resumed a goal (goal tools) —
-                    # (re)arm the continuation driver now that we're idle.
-                    _start_goal_driver(session_id)
+                        continue
+                    # Pre-arm the cooperative stop signal BEFORE spawning the
+                    # task: a `stop` that lands before _RUNNING_TURNS is set
+                    # still finds the event; _stream_graph's setdefault never
+                    # clobbers it. Job's finally pops it — a stale set event
+                    # would kill the NEXT turn. setdefault (not assign): when
+                    # a goal turn runs inline it owns the current event —
+                    # overwriting it would orphan that waiter AND leave our
+                    # queued turn holding a pre-set event (instant suicide).
+                    _TURN_STOP.setdefault(session_id, asyncio.Event())
+
+                    # The turn runs as a background task so this receive loop
+                    # stays free to accept `stop` mid-turn (it used to await
+                    # _run_stream inline, which blocked ALL messages). The
+                    # loop vars (msg/plan/turn_id/user_text) are rebound by
+                    # later iterations, so bind them as defaults NOW.
+                    async def _turn_job(
+                        _msg=msg, _text=user_text, _tid=turn_id, _plan=plan
+                    ) -> None:
+                        try:
+                            await _touch_session_title(
+                                session["project_slug"], session_id, session, _text, _tid
+                            )
+                            turn_agent = (
+                                _plan.agent_override
+                                or _msg.get("agent_id")
+                                or session.get("agent_id")
+                                or _first_agent_id()
+                            )
+                            if turn_agent != session.get("agent_id"):
+                                session["agent_id"] = turn_agent
+                                _session_meta_patch(
+                                    session["project_slug"], session_id, {"agent_id": turn_agent}
+                                )
+                            turn_config = {
+                                **config,
+                                "configurable": {
+                                    **config["configurable"],
+                                    "agent_id": turn_agent,
+                                    "turn_id": _tid,
+                                    "user_text": _text or "",
+                                },
+                            }
+                            async with _turn_lock(session_id):
+                                await _run_stream(
+                                    None,  # events broadcast via _SESSION_WS
+                                    session["graph"],
+                                    turn_config,
+                                    _text,
+                                    session,
+                                    turn_agent,
+                                    images=_msg.get("images"),
+                                    files=(_msg.get("files") or []) + _plan.files_extra,
+                                    mention_context=_plan.mention_ctx,
+                                    skill_name=_plan.skill_name,
+                                )
+                            # The turn may have created/resumed a goal (goal
+                            # tools) — (re)arm the continuation driver now that
+                            # we're idle. Success path only (a failed turn must
+                            # not re-arm the driver — pre-refactor semantics).
+                            _start_goal_driver(session_id)
+                        except Exception as e:
+                            # Lower-layer invoke failures (title touch, agent
+                            # resolution, stream setup) surface as an in-chat
+                            # error card instead of a silently dropped turn.
+                            _log.exception("invoke_error session=%s", session_id)
+                            await _push_session_event(
+                                session_id, "error", {"message": f"{type(e).__name__}: {e}"}, _tid
+                            )
+                        finally:
+                            # Drop the busy markers BEFORE post-turn housekeeping:
+                            # a new invoke arriving right after turn.stopped /
+                            # message.end must not hit a stale "busy". No awaits
+                            # between here and _stream_graph's own cleanup, so
+                            # this unwinds atomically from the loop's POV.
+                            if _TURN_TASKS.get(session_id) is asyncio.current_task():
+                                _TURN_TASKS.pop(session_id, None)
+                            _TURN_STOP.pop(session_id, None)
+
+                    task = asyncio.create_task(_turn_job())
+                    _TURN_TASKS[session_id] = task
+                    # Identity-checked pop: never delete a SUCCESSOR task that a
+                    # later invoke stored under the same session id.
+                    task.add_done_callback(
+                        lambda t: _TURN_TASKS.pop(session_id, None)
+                        if _TURN_TASKS.get(session_id) is t
+                        else None
+                    )
                 except Exception as e:
-                    # Any lower-layer failure on the invoke path (command /
-                    # mention resolution, stream setup, graph run leaking past
-                    # its own handler) surfaces as an in-chat error card instead
-                    # of a silently dropped socket.
+                    # Inline-phase failure (command/mention resolution, task
+                    # spawn) — report on this socket; the turn never started.
                     _log.exception("invoke_error session=%s", session_id)
                     try:
                         await ws.send_text(
@@ -304,16 +363,6 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     continue
                 _PENDING_RESUME.discard(session_id)
                 decision = msg.get("decision", "deny")
-                # Chat-path takeOver: the human finished operating the real page.
-                if decision == "browser_resume":
-                    space = msg.get("space") or ""
-                    if space:
-                        try:
-                            from ..browser import get_supervisor
-
-                            get_supervisor().take_over(space)
-                        except Exception:
-                            _log.exception("browser take_over on resume failed")
                 # resume under the agent that was active when the interrupt fired
                 resume_agent = session.get("agent_id") or _first_agent_id()
                 resume_config = {
@@ -323,7 +372,84 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         "agent_id": resume_agent,
                     },
                 }
-                await _run_resume(ws, session["graph"], resume_config, {"decision": decision})
+                # Resume is a turn too — it must not block the receive loop
+                # (a `stop` during a resumed turn must get through).
+                _TURN_STOP.setdefault(session_id, asyncio.Event())
+
+                async def _resume_job(_cfg=resume_config, _decision=decision) -> None:
+                    try:
+                        # Serialize behind _turn_lock: the paused turn's task
+                        # may still be draining its stream generator, and the
+                        # suspension checkpoint is only flushed during that
+                        # drain. Resuming before it lands reads the PRE-
+                        # interrupt checkpoint and re-runs the interrupted
+                        # tool from scratch (it interrupts again — the turn
+                        # never advances). The lock is held until the turn's
+                        # _run_stream returns, i.e. after the drain. (The old
+                        # inline receive loop got this serialization for
+                        # free; task-ified turns need it explicitly.)
+                        async with _turn_lock(session_id):
+                            await _run_resume(
+                                None, session["graph"], _cfg, {"decision": _decision}
+                            )
+                        _start_goal_driver(session_id)  # success path only
+                    except Exception as e:
+                        _log.exception("resume_error session=%s", session_id)
+                        await _push_session_event(
+                            session_id, "error", {"message": f"{type(e).__name__}: {e}"}
+                        )
+                    finally:
+                        if _TURN_TASKS.get(session_id) is asyncio.current_task():
+                            _TURN_TASKS.pop(session_id, None)
+                        _TURN_STOP.pop(session_id, None)
+
+                task = asyncio.create_task(_resume_job())
+                _TURN_TASKS[session_id] = task
+                task.add_done_callback(
+                    lambda t: _TURN_TASKS.pop(session_id, None)
+                    if _TURN_TASKS.get(session_id) is t
+                    else None
+                )
+            elif kind == "stop":
+                # Stop the running turn (user hit ⏹). Semantics: hard stop —
+                # the current model/tool step is abandoned (ABANDONED_TURNS
+                # blocks its late writes); streamed text + completed steps are
+                # kept; state is healed so the next turn starts clean.
+                slug = session.get("project_slug")
+                # An active goal would auto-continue ~3s after the stopped
+                # turn unwinds — pause it first so "stop" means stop. Do NOT
+                # cancel the driver task: it awaits the goal turn inline, and
+                # task.cancel() would inject CancelledError into the running
+                # turn (the swallow-prone cancellation this design avoids).
+                try:
+                    goal = goal_store.get_goal(slug, session_id)
+                    if goal and goal.get("status") == goal_store.STATUS_ACTIVE:
+                        paused = goal_store.update_status(
+                            slug,
+                            session_id,
+                            goal_store.STATUS_PAUSED,
+                            expected_goal_id=goal.get("goal_id"),
+                        )
+                        if paused:
+                            await _emit_goal_event(slug, session_id, paused)
+                except Exception:
+                    _log.exception("stop_goal_pause_failed session=%s", session_id)
+                if session_id in _PENDING_RESUME:
+                    # Parked at a permission/version interrupt: no live task —
+                    # heal + broadcast directly. Check-and-discard (sync, so
+                    # exactly one of two tabs wins; the loser no-ops).
+                    _PENDING_RESUME.discard(session_id)
+                    tid = _RUNNING_TURNS.pop(session_id, "")
+                    spawn_bg(_stop_parked_turn(session, session_id, tid))
+                    continue
+                _t = _TURN_TASKS.get(session_id)
+                _live = (_t is not None and not _t.done()) or session_id in _RUNNING_TURNS
+                if _live:
+                    evt = _TURN_STOP.get(session_id)
+                    if evt is None:
+                        evt = _TURN_STOP[session_id] = asyncio.Event()
+                    evt.set()
+                # idle → no-op (never leave a set event for the next turn)
             elif kind == "turn_state":
                 # Post-reconnect probe (frontend ChatStream): is a turn still
                 # streaming (or parked at an interrupt) for this session? If
@@ -574,8 +700,24 @@ def _maybe_refresh_session_graph(session: dict) -> None:
     )
 
 
+def _bound_workflow_view(session: dict) -> dict | None:
+    """Load the session-bound workflow definition for turn-context injection.
+
+    Missing / unknown ids return None so an unbound session stays quiet.
+    """
+    wid = session.get("workflow_id")
+    if not wid:
+        return None
+    try:
+        wf = wf_store.get_def(wid)
+    except Exception:
+        _log.exception("bound_workflow_load_failed session=%s workflow=%s", session.get("session_id"), wid)
+        return None
+    return wf
+
+
 async def _run_stream(
-    ws: WebSocket,
+    ws: WebSocket | None,
     graph,
     config: dict,
     user_text: str,
@@ -661,9 +803,6 @@ async def _run_stream(
             mcp_tool_names=list(_live_names["mcp"]),
             all_tool_names=list(_live_names["all"]),
             workspace=str(session.get("workspace") or ""),
-            extra_allow=skill_extra_tools(
-                [skill_name] if skill_name else [], slug
-            ),
             context_dirs=list(session.get("context_dirs") or []),
             primary_path=str(session.get("primary_path") or ""),
         )
@@ -741,6 +880,7 @@ async def _run_stream(
             query=user_text or "",
             attached_files=attached,
             mention_context=mention_context,
+            bound_workflow=_bound_workflow_view(session),
         )
     finally:
         _citations_mod.CURRENT_TURN_SOURCES.reset(_src_token)
@@ -778,12 +918,12 @@ async def _run_stream(
         "context_dirs": list(session.get("context_dirs") or []),
         "primary_path": str(session.get("primary_path") or ""),
     }
-    await _stream_graph(ws, graph, config, input_state=input_state)
+    await _stream_graph(graph, config, input_state=input_state)
 
 
-async def _run_resume(ws: WebSocket, graph, config: dict, resume_value: dict) -> None:
+async def _run_resume(ws: WebSocket | None, graph, config: dict, resume_value: dict) -> None:
     """Resume the graph from a pending interrupt (e.g. permission ask)."""
-    await _stream_graph(ws, graph, config, command=Command(resume=resume_value))
+    await _stream_graph(graph, config, command=Command(resume=resume_value))
 
 
 async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> None:
@@ -865,8 +1005,117 @@ async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> N
 CHUNK_TIMEOUT_S = 180.0
 
 
+class TurnStopped(Exception):
+    """Raised inside the chunked stream loop when the user stops the turn.
+
+    Cooperative by design (NOT task.cancel): the LLM retry layers swallow
+    CancelledError (see the watchdog note below), so the stop signal rides an
+    asyncio.Event checked between chunks / inside the per-chunk wait instead.
+    """
+
+
+async def _heal_interrupted_turn(graph, config: dict, seg_text: str = "") -> None:
+    """Repair checkpoint state after a turn was stopped mid-superstep.
+
+    Checkpoints commit per superstep, so an interrupted turn can leave:
+    1. a trailing AIMessage whose tool_calls have NO ToolMessage answers —
+       the next turn would forward that to the provider API and get a 400;
+    2. streamed-but-uncommitted assistant text (only exists client-side).
+
+    Fix both via aupdate_state (precedent: compaction.py), using a DERIVED
+    turn_id — the original one is in ABANDONED_TURNS and would be refused by
+    FileCheckpointer.aput/aput_writes. Heal only when actually needed: a
+    needless update on a clean thread still forks a checkpoint. Empirically
+    verified (langgraph 1.2.9 + FileCheckpointer delta mode): as_node="agent"
+    with pending_tool_calls=[] routes through route_after_agent to END, so
+    the repaired checkpoint has next=() and the next invoke starts clean
+    (it also clears a parked permission interrupt).
+    """
+    session_id = (config.get("configurable") or {}).get("thread_id", "")
+    try:
+        snap = await graph.aget_state(config)
+        msgs = list((getattr(snap, "values", None) or {}).get("messages") or [])
+        heal: list = []
+        if msgs and isinstance(msgs[-1], AIMessage):
+            # Trailing AIMessage ⇒ nothing after it can answer its tool_calls:
+            # every one is dangling and needs an "(interrupted)" placeholder.
+            last_ai = msgs[-1]
+            for tc in getattr(last_ai, "tool_calls", None) or []:
+                tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                if tc_id:
+                    tc_name = (
+                        tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+                    ) or ""
+                    heal.append(
+                        ToolMessage(
+                            content="(interrupted)",
+                            tool_call_id=tc_id,
+                            name=tc_name,
+                        )
+                    )
+        elif (seg_text or "").strip():
+            # Superstep never committed — persist the streamed partial answer
+            # so the next turn's model (and a history reload) can see it.
+            agent_id = (config.get("configurable") or {}).get("agent_id") or ""
+            heal.append(
+                AIMessage(
+                    content=seg_text,
+                    **({"additional_kwargs": {"agent_id": agent_id}} if agent_id else {}),
+                )
+            )
+        if not heal:
+            return
+        turn_id = (config.get("configurable") or {}).get("turn_id") or ""
+        heal_config = {
+            **config,
+            "configurable": {
+                **(config.get("configurable") or {}),
+                "turn_id": f"{turn_id}:stop",
+            },
+        }
+        await graph.aupdate_state(
+            heal_config, {"messages": heal, "pending_tool_calls": []}, as_node="agent"
+        )
+        _log.info(
+            "turn_stop_healed session=%s turn=%s msgs=%d", session_id, turn_id, len(heal)
+        )
+    except Exception:
+        # Healing is best-effort; a failure must not break the stop path.
+        _log.exception("turn_stop_heal_failed session=%s", session_id)
+
+
+async def _stop_parked_turn(session: dict, session_id: str, turn_id: str) -> None:
+    """Stop a turn parked at a permission/version-propose interrupt.
+
+    No live stream task exists — heal the persisted state (the aupdate_state
+    also clears the pending interrupt, verified empirically) and broadcast
+    turn.stopped so every tab leaves the running state. File IO stays off the
+    receive loop: callers run this via spawn_bg.
+    """
+    try:
+        graph = session["graph"]
+        config = {
+            "configurable": {
+                "thread_id": session_id,
+                "project_slug": session["project_slug"],
+                "turn_id": turn_id,
+            }
+        }
+        # Heal under the turn lock: the paused turn's task may still be
+        # draining its stream generator, and its suspension checkpoint is
+        # only flushed during that drain. Healing earlier reads the PRE-pause
+        # checkpoint and then gets overwritten by the flush (the dangling
+        # tool_calls survive). The lock is held until _run_stream returns,
+        # i.e. after the drain. Same serialization as _resume_job.
+        async with _turn_lock(session_id):
+            await _heal_interrupted_turn(graph, config)
+        await _push_session_event(session_id, "turn.stopped", {}, turn_id or None)
+        _log.info("turn_stopped_parked session=%s turn=%s", session_id, turn_id)
+    except Exception:
+        _log.exception("stop_parked_turn_failed session=%s", session_id)
+
+
 async def _stream_graph(
-    ws: WebSocket,
     graph,
     config: dict,
     input_state: dict | None = None,
@@ -877,6 +1126,10 @@ async def _stream_graph(
     # NameError that masks the original failure.
     saw_interrupt = False
     ws_closed = False
+    # Uncommitted text of the CURRENT agent superstep (reset at each agent
+    # commit): what a user stop must persist as a partial AIMessage.
+    seg_text: list[str] = []
+    stop_waiter: Any = None
     session_id = (config.get("configurable") or {}).get("thread_id", "")
     try:
         # Per-turn trace id (from invoke, or fresh on a bare resume). `emit`
@@ -899,6 +1152,9 @@ async def _stream_graph(
         # everything else is user-driven "chat" (usage-stats-design.md §3.6).
         usage_source = (config.get("configurable") or {}).get("usage_source") or "chat"
         _RUNNING_TURNS[session_id] = turn_id
+        # Cooperative stop signal: setdefault so an event pre-armed by the WS
+        # loop (created before this task spawned) is never clobbered.
+        stop_evt = _TURN_STOP.setdefault(session_id, asyncio.Event())
 
         # The client (app webview / browser tab) can close the socket mid-turn
         # (refresh, navigate, sleep). Turn events therefore broadcast to EVERY
@@ -993,6 +1249,12 @@ async def _stream_graph(
         # watchdog never fires. Instead await with asyncio.wait and ABANDON the
         # stuck task on timeout (fire-and-forget cancel); at most one stuck
         # task leaks per stall, and the turn still errors out fast.
+        # One waiter per turn on the cooperative stop signal (armed by the WS
+        # `stop` handler); cancelled in the finally block. Sharing the
+        # per-chunk asyncio.wait below means a stop lands promptly even while
+        # a long tool/LLM step holds __anext__ — no task.cancel() needed.
+        stop_waiter = asyncio.ensure_future(stop_evt.wait())
+
         async def chunked_stream():
             it = stream.__aiter__()
             while True:
@@ -1000,7 +1262,23 @@ async def _stream_graph(
                 nxt.add_done_callback(
                     lambda t: None if t.cancelled() else t.exception()
                 )  # mark result retrieved, silence "never retrieved" warnings
-                done, _ = await asyncio.wait({nxt}, timeout=CHUNK_TIMEOUT_S)
+                done, _ = await asyncio.wait(
+                    {nxt, stop_waiter},
+                    timeout=CHUNK_TIMEOUT_S,
+                    # FIRST_COMPLETED, not the ALL_COMPLETED default: the
+                    # stop waiter stays pending until a stop lands, and with
+                    # ALL_COMPLETED every chunk would block to the timeout.
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if stop_waiter in done:
+                    nxt.cancel()
+                    # Same abandonment protocol as the stall watchdog below:
+                    # block the detached run's late checkpoint writes, then
+                    # unwind through the dedicated TurnStopped handler (state
+                    # heal + turn.stopped event). Cooperative event, NOT
+                    # task.cancel — retry layers swallow CancelledError.
+                    ABANDONED_TURNS.add(turn_id)
+                    raise TurnStopped()
                 if not done:
                     nxt.cancel()
                     # Block any late checkpoint writes from this detached run
@@ -1039,9 +1317,11 @@ async def _stream_graph(
                             txt = b.get("text") or ""
                             if txt:
                                 turn_text.append(txt)
+                                seg_text.append(txt)
                                 await safe_send(emit("token.delta", {"content": txt}))
                 elif isinstance(content, str) and content:
                     turn_text.append(content)
+                    seg_text.append(content)
                     await safe_send(emit("token.delta", {"content": content}))
                 rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
                 if rk:
@@ -1069,6 +1349,10 @@ async def _stream_graph(
                 # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
                 for node_name, delta in (payload or {}).items():
                     if node_name == "agent":
+                        # Superstep COMMIT point: everything streamed so far is
+                        # checkpointed, so the uncommitted segment restarts here
+                        # (a user stop only persists what's still uncommitted).
+                        seg_text.clear()
                         for m in (delta or {}).get("messages", []):
                             # D2 — per-call usage + session accumulator. Only
                             # complete AIMessages carry usage_metadata (never
@@ -1129,10 +1413,7 @@ async def _stream_graph(
                                         )
                                 if nm == "render_widget":
                                     await safe_send(
-                                        emit("widget.emit", {
-                                            "kind": args.get("kind", "widget"),
-                                            "data": args.get("data"),
-                                        })
+                                        emit("widget.emit", widget_event(args, tc_id))
                                     )
                                 elif nm == "attach_ref":
                                     kind = args.get("kind", "file")
@@ -1203,20 +1484,6 @@ async def _stream_graph(
                                         "from_version": value.get("from_version"),
                                         "diff": value.get("diff", ""),
                                         "rationale": value.get("rationale", ""),
-                                    })
-                                )
-                            elif isinstance(value, dict) and value.get("kind") == "browser_handoff":
-                                saw_interrupt = True
-                                _PENDING_RESUME.add(session_id)
-                                _log.info(
-                                    "turn_interrupt session=%s turn=%s kind=%s space=%s",
-                                    session_id, turn_id, value.get("kind"), value.get("space"),
-                                )
-                                await safe_send(
-                                    emit("browser.handoff", {
-                                        "space": value.get("space"),
-                                        "url": value.get("url") or "",
-                                        "reason": value.get("reason") or "",
                                     })
                                 )
                     elif node_name == "tools":
@@ -1324,6 +1591,19 @@ async def _stream_graph(
                 from ..memory import append_to_pool
 
                 append_to_pool(session_id, agent_id, _clean_text)
+            # LLM subject title (title_gen): armed by _touch_session_title on
+            # the first invoke, fired by the first turn that completes without
+            # an interrupt. Background + best-effort — failure keeps the
+            # truncated placeholder and retries on the next completed turn.
+            if _clean_text.strip():
+                from ..title_gen import spawn_title_gen
+
+                _found = _find_meta(session_id)
+                if _found and _found[0].get("title_llm_pending"):
+                    _session_meta_patch(
+                        slug, session_id, {"title_assistant": _clean_text[:2000]}
+                    )
+                    spawn_title_gen(session_id, turn_id)
             _log.info(
                 "turn_done session=%s turn=%s status=completed text_len=%d",
                 session_id, turn_id, len("".join(turn_text)),
@@ -1335,6 +1615,17 @@ async def _stream_graph(
                 "turn_done session=%s turn=%s status=paused_at_interrupt",
                 session_id, turn_id,
             )
+    except TurnStopped:
+        # User pressed stop: heal the persisted state (dangling tool_calls /
+        # uncommitted partial text), tell the clients, exit quietly. No error
+        # card, no last_error, no completion side effects (memory/title/
+        # citations live under the normal-completion branch below).
+        await _heal_interrupted_turn(graph, config, "".join(seg_text))
+        _log.info(
+            "turn_stopped session=%s turn=%s seg_len=%d",
+            session_id, turn_id, len("".join(seg_text)),
+        )
+        await safe_send(emit("turn.stopped", {}))
     except Exception as e:
         _log.exception("turn_error session=%s turn=%s", session_id, turn_id)
         err_msg = f"{type(e).__name__}: {e}"
@@ -1352,6 +1643,11 @@ async def _stream_graph(
             _ka.cancel()
         except Exception:
             pass
+        if stop_waiter is not None and not stop_waiter.done():
+            stop_waiter.cancel()
+        # A parked-at-interrupt turn no longer needs the stop event either —
+        # the WS `stop` handler heals parked turns directly (no live stream).
+        _TURN_STOP.pop(session_id, None)
         # Ended or errored (not paused at an interrupt): unregister so a client
         # `turn_state` query reports "not running". A turn parked at a
         # permission/version-propose interrupt stays registered — its resume

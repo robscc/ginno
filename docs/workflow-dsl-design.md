@@ -206,7 +206,7 @@ step 节点 = 在该 run 的 thread 内跑一次「带 goal 的 agent turn」：
 ### 8.3 对话式编辑
 
 - 内置 seed agent **`workflow-dev`**：`tools_allow` 限定为 workflow 读写 + diff 工具；`system_prompt` 内置「你正在编辑 workflow X 的 DSL，遵守 schema，改动必须经 propose_edit」。
-- 每个 workflow 一个**专属开发 session**（`workflows/<id>/dev_session.json` 记录 id；首次「打开开发会话」时 `newSession(workflow-dev)` 并把 workflow id + 当前 DSL 注入为首条上下文）。详情页「开发」tab 的「打开开发会话」按钮 = `newSession('workflow-dev', {seed})` + 跳 `/`（复用现有 `newSession(agent_id)` + composer `target` 原语）。
+- 每个 workflow 一个**专属开发 session**：`newSession("workflow-dev", { workflow_id })` 把 id 写进 session meta（重启经 `_ensure_session` 回写）。每轮 `[turn context]` 注入当前 DSL（`<bound_workflow>`：id / version / node_types / 完整 JSON），Apply 后下一轮自动看到新版本。详情页 / 总结后「进入开发会话精炼」走同一绑定。任意 agent 还可用 `workflow_get` 按 id/名拉一份 DSL。
 - **修改 = 工具调用 + 独立 interrupt 确认（已决 Q5）**：dev agent 调 `propose_edit(workflow_id, new_dsl, rationale)` → 后端算 `diff(current, new_dsl)` + 校验 new_dsl → 发 WS `version.propose { workflow_id, diff, rationale, propose_id }` 并 `interrupt`。
   - **确认卡是独立的一等 interrupt kind（`version.propose`），不依赖 permission 子系统**：UI 复用 permission 卡片的交互形态（左右/unified diff + Apply/Reject），但走自己的 interrupt/resume 通道。原因：permission 计划在全局移除（默认 bypass、后续彻底去限制，见 Q9），diff 确认必须与之解耦，免得随 permission 一起被删。
   - 用户 Apply → `Command(resume={apply:true})` → 写新版本 + 发 `workflows.changed`；Reject → resume(apply:false)，dev agent 收到拒绝可继续对话调整。

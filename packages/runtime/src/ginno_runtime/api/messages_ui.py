@@ -17,7 +17,7 @@ from .. import workflows as wf_store
 from ..goals.templates import context_row_text as goal_context_row
 from ..knowledge.citations import parse_citation_block, strip_citation_block
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
-from ..tools.render_tools import RENDER_TOOL_NAMES
+from ..tools.render_tools import RENDER_TOOL_NAMES, widget_event
 from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ..world_state import (
     ALL_CONTEXT_PREFIXES,
@@ -175,10 +175,12 @@ def _resolve_source_items(items: list[dict], ref_map: dict[str, str]) -> list[di
 def _text_with_citations(t: str, blocks: list[dict]) -> None:
     """Append a text block for *t*, folding a trailing ``<ginno_citations>``
     block into a ``sources`` block (citations-design.md §5.6 history replay).
-    The raw block is machine metadata — never shown as prose."""
+    The raw block is machine metadata — never shown as prose, so it is
+    stripped UNCONDITIONALLY: an empty block (or one whose entries all fail
+    validation) still parses to zero entries but must not leak into display
+    text (2026-08-21: turn b1463216 rendered a raw empty block)."""
     entries = parse_citation_block(t)
-    if entries:
-        t = strip_citation_block(t)
+    t = strip_citation_block(t)
     if t.strip():
         blocks.append({"kind": "text", "text": t})
     if entries:
@@ -247,13 +249,19 @@ def _messages_to_ui(
     ui: list[dict] = []
     acc: list[dict] | None = None
     acc_id: str | None = None
+    # Real per-bubble attribution read from the agent_id tag that agent_node
+    # writes into AIMessage.additional_kwargs (graph.py). A merged bubble spans
+    # exactly one turn, so the first tagged message wins; the session-level
+    # ``agent_id`` argument stays as the fallback for old, untagged sessions.
+    acc_agent: str | None = None
 
     def flush_assistant() -> None:
-        nonlocal acc, acc_id
+        nonlocal acc, acc_id, acc_agent
         if acc:
-            ui.append({"id": acc_id, "role": "assistant", "agentId": agent_id, "blocks": acc})
+            ui.append({"id": acc_id, "role": "assistant", "agentId": acc_agent or agent_id, "blocks": acc})
         acc = None
         acc_id = None
+        acc_agent = None
 
     for m in messages:
         if isinstance(m, HumanMessage):
@@ -308,6 +316,8 @@ def _messages_to_ui(
             if acc is None:
                 acc = []
                 acc_id = getattr(m, "id", None)
+            if acc_agent is None:
+                acc_agent = (getattr(m, "additional_kwargs", None) or {}).get("agent_id")
             step = list(_ai_content_blocks(getattr(m, "content", "")))
             # Resolve `web|sN` citation ids to URLs (from web_search outputs)
             # so the 来源 card is clickable on history replay.
@@ -323,7 +333,13 @@ def _messages_to_ui(
                 tid = tc.get("id")
                 res = results.get(tid, "")
                 if nm == "render_widget":
-                    step.append({"kind": "widget", "widgetKind": args.get("kind", "widget"), "data": args.get("data")})
+                    ev = widget_event(args, tid)
+                    step.append({
+                        "kind": "widget",
+                        "widgetKind": ev["kind"],
+                        "data": ev["data"],
+                        "renderId": ev["render_id"],
+                    })
                 elif nm == "attach_ref":
                     step.append({
                         "kind": "ref",

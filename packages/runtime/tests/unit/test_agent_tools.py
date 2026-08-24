@@ -67,6 +67,33 @@ def test_workflow_create_and_list(isolated_home):
     assert "WF" in workflow_tools.workflow_list.invoke({})
 
 
+def test_workflow_get_returns_dsl_and_node_types(isolated_home):
+    from ginno_runtime import workflows as wf_store
+
+    wf = wf_store.create_def(
+        {
+            "name": "gated",
+            "description": "has a human gate",
+            "dsl": {
+                "entry": "s1",
+                "nodes": [
+                    {"id": "s1", "type": "step", "agent": "dev", "goal": "prep"},
+                    {"id": "gate", "type": "human", "question": "ok?"},
+                ],
+                "edges": [{"from": "s1", "to": "gate"}],
+            },
+        }
+    )
+    out = workflow_tools.workflow_get.invoke({"workflow_id": wf["id"]})
+    assert wf["id"] in out
+    assert "gated" in out
+    assert "gate=human" in out
+    assert '"type": "human"' in out
+    assert "first-class interrupt" in out
+    missing = workflow_tools.workflow_get.invoke({"workflow_id": "nope"})
+    assert "not found" in missing
+
+
 def test_workflow_create_bad_json(isolated_home):
     out = workflow_tools.workflow_create.invoke({"name": "WF", "description": "d", "steps_json": "not json"})
     assert "not valid JSON" in out
@@ -118,3 +145,6 @@ def test_tool_name_sets():
         "todo_list", "todo_create", "todo_update", "todo_done", "todo_delete", "todo_link"
     }
     assert render_tools.RENDER_TOOL_NAMES == {"render_widget", "attach_ref"}
+    assert "workflow_get" in workflow_tools.WORKFLOW_TOOL_NAMES
+    assert "workflow_propose_edit" in workflow_tools.WORKFLOW_DEV_TOOL_NAMES
+    assert "workflow_get" not in workflow_tools.WORKFLOW_DEV_TOOL_NAMES

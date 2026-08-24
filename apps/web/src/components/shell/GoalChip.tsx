@@ -144,9 +144,9 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
         <button
           onClick={() => setEditing(true)}
           title="为本会话设定长程目标（Agent 自主多轮推进）"
-          className="flex items-center gap-1 rounded-lg border border-dashed border-line2 px-2 py-1 text-[11px] text-faint hover:border-violet/50 hover:text-violet"
+          className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-dashed border-line2 px-2 py-1 text-[11px] text-faint hover:border-violet/50 hover:text-violet"
         >
-          <Target className="h-3 w-3" /> 设定目标
+          <Target className="h-3 w-3 shrink-0" /> 设定目标
         </button>
         {editing && (
           <GoalEditor
@@ -176,24 +176,24 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
   };
 
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <button
         onClick={() => setPop((p) => !p)}
         title={`目标：${goal.objective}`}
-        className="flex max-w-[260px] items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px]"
+        className="flex max-w-[260px] items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px]"
         style={{ background: sc.bg, color: sc.fg }}
       >
         <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: sc.dot }} />
         <Target className="h-3 w-3 shrink-0" />
         <span className="truncate">
-          {goal.browser_state === "waiting_human" ? "等你操作" : label} · {fmtElapsed(elapsed)}
+          {label} · {fmtElapsed(elapsed)}
         </span>
       </button>
 
       {pop && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setPop(false)} />
-          <div className="absolute left-0 z-50 mt-1 w-80 overflow-hidden rounded-lg border border-line bg-card p-3 text-xs shadow-xl">
+          <div className="absolute left-0 z-50 mt-1 w-80 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-line bg-card p-3 text-xs shadow-xl">
             <div className="flex items-center gap-1.5 font-semibold text-txt">
               <span className="h-1.5 w-1.5 rounded-full" style={{ background: sc.dot }} />
               目标 · {label}
@@ -204,11 +204,6 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
             <div className="mt-2 text-[11px] text-faint">
               自主推进 {goal.turns_used} 轮 · 已用 {fmtElapsed(elapsed)}
             </div>
-            {goal.browser_state === "waiting_human" && (
-              <div className="mt-2 rounded border border-yellow/40 bg-yellow/10 px-2 py-1 text-[11px] text-yellow">
-                浏览器在等你操作 — 续跑已暂停，交还后继续。
-              </div>
-            )}
             <div className="mt-3 flex flex-wrap gap-1.5">
               {goal.status === "active" && (
                 <button

@@ -89,7 +89,42 @@ def test_uninstall_project_scoped_first(src, isolated_home):
 # agent-facing tools
 # --------------------------------------------------------------------------- #
 def test_skill_tool_names():
-    assert SKILL_TOOL_NAMES == {"list_skills", "install_skills", "uninstall_skill"}
+    assert SKILL_TOOL_NAMES == {
+        "use_skill",
+        "list_skills",
+        "install_skills",
+        "uninstall_skill",
+    }
+
+
+def test_use_skill_wraps_body_and_substitutes_arguments(src):
+    import_skills_from_dir(str(src))
+    # rewrite ponytail body to include $ARGUMENTS so we pin substitution
+    p = paths.global_skills_dir() / "ponytail" / "SKILL.md"
+    p.write_text(
+        "---\nname: ponytail\ndescription: d\ntrigger: both\n---\n\n"
+        "Run for $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    tools = {t.name: t for t in build_skill_tools("default")}
+    out = tools["use_skill"].invoke({"name": "ponytail", "request": "latest bill"})
+    assert '<skill name="ponytail">' in out
+    assert "Run for latest bill" in out
+    assert "User request: latest bill" in out
+    assert "Skill directory:" in out
+
+
+def test_use_skill_unknown_and_user_only(isolated_home):
+    d = isolated_home / "skills" / "user-only"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: user-only\ndescription: d\ntrigger: user-invocable\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    tools = {t.name: t for t in build_skill_tools("default")}
+    assert tools["use_skill"].invoke({"name": "nope"}).startswith("[error] unknown")
+    err = tools["use_skill"].invoke({"name": "user-only", "request": "x"})
+    assert err.startswith("[error]") and "user-invocable only" in err
 
 
 def test_tool_schemas_hide_project_slug():

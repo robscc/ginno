@@ -1,15 +1,10 @@
-"""Skill management tools: list_skills / install_skills / uninstall_skill.
+"""Skill tools: use_skill / list_skills / install_skills / uninstall_skill.
 
-Before these existed (2026-08), "install this skill" requests had no
-first-class path: the agent improvised with bash/glob and — knowing neither
-the skills directories nor any install mechanism — invented paths and
-crashed. These tools give the model a deterministic install path that the
-system prompt's skills section can point at.
-
-They only touch Ginno-managed storage (~/.ginno/skills and the project
-skills dir), so the permission node treats them like the todo/workflow
-tools — never prompts (writes to the user's own files/shell stay gated by
-the regular policy via bash/write_file).
+``use_skill`` is how the model auto-invokes a skill (the user can still
+slash-invoke via ``/<name>``). The other three manage Ginno-owned storage
+(~/.ginno/skills and the project skills dir) so the permission node treats
+them like the todo/workflow tools — never prompts (writes to the user's
+own files/shell stay gated by the regular policy via bash/write_file).
 
 Like the builtin tools they are built per session
 (``build_skill_tools(project_slug)``) so listing knows the session's project
@@ -25,13 +20,35 @@ from langchain_core.tools import tool
 from .. import paths
 from ..skills.installer import import_skills_from_dir
 from ..skills.installer import uninstall_skill as _uninstall
-from ..skills.loader import _parse_skill_file
+from ..skills.loader import SkillLoader, _parse_skill_file, wrap_skill_body
 
-SKILL_TOOL_NAMES = {"list_skills", "install_skills", "uninstall_skill"}
+SKILL_TOOL_NAMES = {"use_skill", "list_skills", "install_skills", "uninstall_skill"}
 
 
 def build_skill_tools(project_slug: str | None = None) -> list:
     slug = project_slug or ""
+
+    @tool
+    def use_skill(name: str, request: str = "") -> str:
+        """Load a skill's instructions and follow them for this request.
+
+        Call this when an available skill matches the user's intent (billing,
+        platform ops, research playbooks, …) instead of asking the user to
+        type /<name>. ``name`` is the skill id from the skills index;
+        ``request`` is the user's concrete ask (passed through as the skill
+        argument). Returns the skill body, or an error string.
+        """
+        skill = SkillLoader(project_slug=slug or None).get(name)
+        if not skill:
+            return f"[error] unknown skill: {name}"
+        if not skill.model_invocable():
+            return (
+                f"[error] skill {name!r} is user-invocable only "
+                f"(the user must type /{name} themselves)."
+            )
+        if not skill.body:
+            return f"[error] skill {name!r} has an empty body."
+        return wrap_skill_body(skill, (request or "").strip())
 
     @tool
     def list_skills() -> str:
@@ -93,4 +110,4 @@ def build_skill_tools(project_slug: str | None = None) -> list:
         """
         return json.dumps(_uninstall(name, project_slug=slug or None), ensure_ascii=False)
 
-    return [list_skills, install_skills, uninstall_skill]
+    return [use_skill, list_skills, install_skills, uninstall_skill]

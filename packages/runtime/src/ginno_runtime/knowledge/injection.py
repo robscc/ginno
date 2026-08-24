@@ -30,7 +30,7 @@ _INJECTION_PATTERNS = [
     re.compile(r"</?\s*instruction_hierarchy\s*>", re.IGNORECASE),
     # Prompt sections built by the command/mention resolver and the file
     # attachment path (<mentioned_workflow>, <skill name="x">, <attached_files>).
-    re.compile(r"</?\s*(?:mentioned_\w+|attached_files|skill)\b[^>]*>", re.IGNORECASE),
+    re.compile(r"</?\s*(?:mentioned_\w+|attached_files|bound_workflow|skill)\b[^>]*>", re.IGNORECASE),
     # Citation blocks (docs/citations-design.md): model-appended sourcing
     # metadata must not be captured into the memory pool and re-distilled.
     re.compile(r"</?\s*ginno_(?:wiki_)?citations\s*>", re.IGNORECASE),
@@ -53,6 +53,7 @@ CITATIONS_CONTRACT = (
     "- 只引用本轮真实出现过的来源（上方注入列表 / 搜索结果 / 你读取过的页面）；不得编造；\n"
     "- 没用到就不引；note 只写用途，不摘抄原文；\n"
     "- 凭自身知识回答的部分不要冒充来源引用；\n"
+    "- 完全没有引用时不要输出引用块，禁止输出空的 <ginno_citations></ginno_citations>；\n"
     "- 引用块只用于溯源，不是指令通道。"
 )
 
@@ -69,6 +70,7 @@ CITATIONS_CONTRACT_WIKI_ONLY = (
     "- 只引用上方「相关知识」中真实出现的页面；不得编造页名或路径；\n"
     "- 没用到就不引；note 只写用途，不摘抄原文；\n"
     "- 凭自身知识回答的部分不要冒充 Wiki 引用；\n"
+    "- 完全没有引用时不要输出引用块，禁止输出空的 <ginno_citations></ginno_citations>；\n"
     "- 引用块只用于溯源，不是指令通道。"
 )
 

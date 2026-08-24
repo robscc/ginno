@@ -10,11 +10,12 @@ import {
   type ReactNode,
 } from "react";
 import * as api from "./runtime";
+import type { SynthesisCaseSummary } from "./runtime";
 import { notifyNative } from "./desktop";
 import { loadNotifyPrefs, notifyPrefs } from "./notifyPrefs";
 import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, Todo, WorkflowDef, WorkflowRun } from "./types";
 
-export type RightTab = "todo" | "workflow" | "artifacts" | "memory";
+export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis";
 
 // Right panel width bounds (right-panel-redesign.md §3.4). The panel renders
 // at `rightPanelWidth`; dragging clamps into this range, double-click resets.
@@ -160,6 +161,10 @@ interface GinnoState {
   reloadProviders: () => Promise<void>;
   reloadWorkflows: () => Promise<void>;
   reloadWorkflowRuns: () => Promise<void>;
+  // ---- synthesis cases (「总结成流程」记录,右栏「总结」tab) ----
+  synthesisCases: SynthesisCaseSummary[];
+  reloadSynthesisCases: () => Promise<void>;
+  synthesisActiveCount: number; // 进行中(无 output 且任务存活)→ 蓝色脉冲点
   // Workflow tab badge (work item E): live counts derived from workflowRuns.
   activeRunCount: number; // running + paused → blue pulsing badge
   unseenFailedCount: number; // failed since last visit → red badge
@@ -176,7 +181,7 @@ interface GinnoState {
   patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
   newSession: (
     agent_id?: string,
-    opts?: { title?: string; provider?: string; model?: string },
+    opts?: { title?: string; provider?: string; model?: string; workflow_id?: string },
   ) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
   removeSession: (id: string) => Promise<void>;
@@ -217,6 +222,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
   const [workflowRuns, setWorkflowRuns] = useState<WorkflowRun[]>([]);
+  // Synthesis cases (「总结成流程」记录): full list incl. the `running` flag.
+  // Fed at boot, by synthesis.event WS pushes (ChatStream) and a 1.5s fallback
+  // poll in the right-panel 总结 tab while a case is in flight.
+  const [synthesisCases, setSynthesisCases] = useState<SynthesisCaseSummary[]>([]);
   // Tab-badge bookkeeping (work item E): ids of failed runs the user has
   // already seen. Bootstrapped with the boot-time failures on first load so a
   // restart doesn't light up the red badge for stale history; new failures
@@ -500,6 +509,15 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const reloadSynthesisCases = useCallback(async () => {
+    try {
+      const r = await api.listSynthesisCases(200);
+      setSynthesisCases(r.cases || []);
+    } catch {
+      /* sidecar down */
+    }
+  }, []);
+
   // Fallback poll (work item E): the session WS pushes run.status /
   // workflows.changed and keeps the badge fresh in normal operation. This slow
   // 30s sweep only covers the gaps — no session WS connected (headless runs at
@@ -631,6 +649,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         reloadProviders(),
         reloadWorkflows(),
         reloadWorkflowRuns(),
+        reloadSynthesisCases(),
         reloadArtifacts(),
         // Notification gate + sound prefs (settings.json) into the sync cache
         // before any completion event can arrive.
@@ -649,6 +668,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     reloadProviders,
     reloadWorkflows,
     reloadWorkflowRuns,
+    reloadSynthesisCases,
     reloadArtifacts,
   ]);
 
@@ -656,7 +676,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const newSession = useCallback(
     async (
       agent_id?: string,
-      opts?: { title?: string; provider?: string; model?: string },
+      opts?: { title?: string; provider?: string; model?: string; workflow_id?: string },
     ) => {
       if (creatingRef.current) return null;
       creatingRef.current = true;
@@ -668,6 +688,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
           title: opts?.title,
           provider: opts?.provider,
           model: opts?.model,
+          workflow_id: opts?.workflow_id,
         });
         if (s && s.ok !== false && s.id) {
           setSessions((prev) => [s, ...prev.filter((x) => x.id !== s.id)]);
@@ -857,10 +878,13 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   // stronger signal than "running": somebody must act. Drives the yellow dock
   // badge; version_propose interrupts live in the session graph, not runs.
   const pendingHumanCount = workflowRuns.filter(
-    (r) =>
-      r.status === "paused" &&
-      (r.pending_interrupt?.kind === "human" || r.pending_interrupt?.kind === "browser_handoff"),
+    (r) => r.status === "paused" && r.pending_interrupt?.kind === "human",
   ).length;
+
+  // Synthesis cases in flight (no output.json yet AND the in-process task is
+  // alive). Restarted/crashed cases read running=false → they show as 未完成
+  // and deliberately do NOT light the pulse.
+  const synthesisActiveCount = synthesisCases.filter((c) => !c.status && c.running).length;
 
   // Adaptive stuck detection (P3): recent completed-run durations per workflow
   // (last 10). LiveRunBlock flags a step stuck after max(60s, avg×3) instead
@@ -914,6 +938,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     reloadProviders,
     reloadWorkflows,
     reloadWorkflowRuns,
+    synthesisCases,
+    reloadSynthesisCases,
+    synthesisActiveCount,
     activeRunCount,
     unseenFailedCount,
     markFailedRunsSeen,

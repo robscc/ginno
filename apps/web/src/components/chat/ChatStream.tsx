@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, FileEdit, Check, RotateCcw, Globe } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
@@ -16,7 +16,6 @@ import { DiffView } from "@/components/workflow/DiffView";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
-import { HandoffCard } from "@/components/browser/HandoffCard";
 import { ComposerMenu } from "@/components/chat/ComposerMenu";
 import {
   applySelection,
@@ -33,6 +32,7 @@ import {
   createWorkflow,
   decideWorkflowRun,
   deleteWorkflowRun,
+  getSynthesisCase,
   getWorkflowRun,
   pauseWorkflowRun,
   retryWorkflowRun,
@@ -122,6 +122,24 @@ function TurnIdChip({ turnId }: { turnId?: string }) {
       {copied ? "copied" : `#${short}`}
     </button>
   );
+}
+
+// C+ 方案①：composer chip 的轻量关键词推荐（原型 REC_RULES）。纯客户端
+// 启发式，顺序敏感——命中第一条规则即停；只展示「推荐」小标签，绝不自动选中。
+const AGENT_REC_RULES: Array<{ agentId: string; kws: string[] }> = [
+  { agentId: "research", kws: ["调研", "研究", "查一下", "搜", "资料", "对比", "了解", "竞品"] },
+  { agentId: "writer", kws: ["写一篇", "文档", "文章", "总结", "润色", "周报", "邮件", "大纲"] },
+  { agentId: "workflow-dev", kws: ["工作流", "workflow", "流水线"] },
+  { agentId: "dev", kws: ["代码", "bug", "实现", "修复", "重构", "报错", "函数", "部署"] },
+];
+
+function recommendAgentId(text: string, existing: ReadonlySet<string>): string | null {
+  const t = text.toLowerCase();
+  for (const rule of AGENT_REC_RULES) {
+    if (!existing.has(rule.agentId)) continue; // 自定义/已删除的 agent 不参与推荐
+    if (rule.kws.some((k) => t.includes(k))) return rule.agentId;
+  }
+  return null;
 }
 
 interface PermissionPrompt {
@@ -329,7 +347,15 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
       });
     }
     case "widget.emit":
-      return [...blocks, { kind: "widget", widgetKind: ev.kind as string, data: ev.data }];
+      return [
+        ...blocks,
+        {
+          kind: "widget",
+          widgetKind: ev.kind as string,
+          data: ev.data,
+          renderId: (ev.render_id as string | undefined) || undefined,
+        },
+      ];
     case "workflow.emit":
       return [...blocks, { kind: "workflow", run: ev.run as import("@/lib/types").WorkflowRun }];
     case "ref.emit":
@@ -344,20 +370,14 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
 
 export function ChatStream({
   session,
-  compact,
   onRunningChange,
   onUsageChange,
   onOpenGoal,
-  onBrowserHandoff,
-  onOpenBrowser,
 }: {
   session: SessionMeta | null;
-  compact?: boolean;
   onRunningChange?: (b: boolean) => void;
   onUsageChange?: (u: SessionUsage) => void;
   onOpenGoal?: () => void;
-  onBrowserHandoff?: (h: { space?: string; url?: string; reason?: string } | null) => void;
-  onOpenBrowser?: () => void;
 }) {
   const g = useGinno();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -370,7 +390,6 @@ export function ChatStream({
   const [target, setTarget] = useState<string | null>(null);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [propose, setPropose] = useState<VersionPropose | null>(null);
-  const [handoff, setHandoff] = useState<{ space?: string; url?: string; reason?: string } | null>(null);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
@@ -527,7 +546,6 @@ export function ChatStream({
   const statusRef        = useRef<Record<string, "connecting" | "live" | "reconnecting" | "offline">>({});
   const permsRef         = useRef<Record<string, PermissionPrompt | null>>({});
   const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
-  const handoffRef       = useRef<Record<string, { space?: string; url?: string; reason?: string } | null>>({});
   const busyBySessionRef = useRef<Record<string, boolean>>({});
   const streamAgentRef   = useRef<Record<string, string | null>>({});
   // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
@@ -569,6 +587,12 @@ export function ChatStream({
   const [sumSource, setSumSource] = useState<{ id: string; label: string } | null>(null);
   // quality-plan §3.1: synthesis case id for outcome backfill (adoption/first-run).
   const [sumSynthesisId, setSumSynthesisId] = useState<string | null>(null);
+  // The synthesis case the UI is waiting on (background summarization). The WS
+  // synthesis.event(finished) frame and the 2s polling fallback both resolve
+  // through finishSynthesisWait; the ref mirror lets the WS handler and the
+  // idempotency guard read it synchronously.
+  const [sumPendingId, setSumPendingId] = useState<string | null>(null);
+  const sumPendingRef = useRef<string | null>(null);
   const [sumMenuOpen, setSumMenuOpen] = useState(false);
   // S5: trace range — null = full session; 5/10/20 = last N messages.
   const [sumLastN, setSumLastN] = useState<number | null>(null);
@@ -600,7 +624,6 @@ export function ChatStream({
     setWsStatus(statusRef.current[sid] ?? "connecting");
     setPermission(permsRef.current[sid] ?? null);
     setPropose(proposeRef.current[sid] ?? null);
-    setHandoff(handoffRef.current[sid] ?? null);
     setStreamAgent(streamAgentRef.current[sid] ?? null);
   };
 
@@ -620,7 +643,6 @@ export function ChatStream({
         delete socketsRef.current[id];    delete storeRef.current[id];
         delete liveBySessionRef.current[id]; delete statusRef.current[id];
         delete permsRef.current[id];      delete proposeRef.current[id];
-        delete handoffRef.current[id];
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
         delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
@@ -737,6 +759,17 @@ export function ChatStream({
       setAttachments([]);
       setTarget(null);
       setMenu(null); // menu is composer-global state; never leak across sessions
+      // Deferred home attachments follow the user into the session they land
+      // in: start the uploads now so the chips flip to ready instead of
+      // blocking sends forever (they can only flush into a real session).
+      if (prevSlot === HOME_SLOT && sid) {
+        const docs = pendingDocsRef.current;
+        pendingDocsRef.current = [];
+        for (const d of docs) void uploadOneDoc(sid, d.file, d.tmpId);
+        const natives = pendingPathsRef.current;
+        pendingPathsRef.current = [];
+        for (const n of natives) void attachOne(sid, n.path, n.tmpId);
+      }
     }
     prevSlotRef.current = nextSlot;
 
@@ -793,7 +826,7 @@ export function ChatStream({
   }, [session?.id]);
 
   const running =
-    liveId !== null || !!permission || !!propose || !!handoff || messages.some((m) => hasPendingTool(m.blocks));
+    liveId !== null || !!permission || !!propose || messages.some((m) => hasPendingTool(m.blocks));
   useEffect(() => {
     onRunningChange?.(running);
   }, [running, onRunningChange]);
@@ -848,17 +881,6 @@ export function ChatStream({
     };
     window.addEventListener("ginno:focus-latest", onFocusLatest);
     return () => window.removeEventListener("ginno:focus-latest", onFocusLatest);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // BrowserPane 交还：同一条 permission_response / browser_resume 通道。
-  useEffect(() => {
-    const onResume = (e: Event) => {
-      const space = (e as CustomEvent<{ space?: string }>).detail?.space;
-      respondBrowserResume(space);
-    };
-    window.addEventListener("ginno:browser-resume", onResume);
-    return () => window.removeEventListener("ginno:browser-resume", onResume);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -960,30 +982,6 @@ export function ChatStream({
           rationale: (ev.rationale as string) ?? "",
         };
         break;
-      case "browser.handoff": {
-        const h = {
-          space: ev.space as string | undefined,
-          url: (ev.url as string) || "",
-          reason: (ev.reason as string) || "",
-        };
-        handoffRef.current[sid] = h;
-        onBrowserHandoff?.(h);
-        break;
-      }
-      case "browser.space":
-        if (ev.owner === "agentDelegatedToUser") {
-          const h = {
-            space: ev.name as string | undefined,
-            url: (ev.url as string) || "",
-            reason: (ev.reason as string) || "",
-          };
-          handoffRef.current[sid] = h;
-          onBrowserHandoff?.(h);
-        } else if (ev.owner === "agent") {
-          // Agent started browsing — surface the embedded browser.
-          onOpenBrowser?.();
-        }
-        break;
       case "todos.changed":
         g.reloadTodos();
         break;
@@ -999,6 +997,16 @@ export function ChatStream({
       case "workflows.changed":
         g.reloadWorkflows();
         g.reloadWorkflowRuns();
+        break;
+      case "synthesis.event":
+        // Background summarization progressed — refresh the 总结 panel list
+        // (started/attempt/finished all change what it shows). If THIS is the
+        // case the summarize button is waiting on, resolve the wait (the ref
+        // guard inside finishSynthesisWait dedupes vs the polling fallback).
+        void g.reloadSynthesisCases();
+        if (ev.kind === "finished" && ev.synthesis_id === sumPendingRef.current) {
+          void finishSynthesisWait(ev.synthesis_id as string);
+        }
         break;
       case "run.bind": {
         const runId = ev.run_id as string;
@@ -1288,6 +1296,49 @@ export function ChatStream({
         }
         break;
       }
+      case "turn.stopped": {
+        // User pressed stop: the server abandoned the in-flight step and
+        // healed the persisted state; everything already streamed is kept.
+        // Close out the live stream like message.end, force-close pending
+        // tool blocks like the error handler — but no error card and no
+        // "turn done" notification (the turn didn't complete).
+        markDelivered(sid);
+        const wasOrphan = !!orphanStreamRef.current[sid];
+        orphanStreamRef.current[sid] = false;
+        const liveMsgId = liveBySessionRef.current[sid];
+        liveBySessionRef.current[sid] = null;
+        streamAgentRef.current[sid] = null;
+        busyBySessionRef.current[sid] = false;
+        // Stop also clears a parked prompt (server heals those too) — every
+        // tab of the session leaves the running state together.
+        permsRef.current[sid] = null;
+        proposeRef.current[sid] = null;
+        setPermission(null);
+        setPropose(null);
+        if (wasOrphan) {
+          reconcileTurnFromHistory(sid);
+          break;
+        }
+        const list = storeRef.current[sid] ?? [];
+        storeRef.current[sid] = list
+          // An empty live bubble (stopped before the first token) would
+          // render as a confusing "（空回复）" — drop it; streamed text stays.
+          .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
+          // Close out any in-flight tool blocks so `running` unsticks.
+          .map((msg) =>
+            hasPendingTool(msg.blocks)
+              ? {
+                  ...msg,
+                  blocks: msg.blocks.map((b) =>
+                    b.kind === "tool" && b.pending
+                      ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
+                      : b,
+                  ),
+                }
+              : msg,
+          );
+        break;
+      }
       case "error": {
         // The turn reached the server (it is the run, not the delivery, that
         // failed) → the user bubble counts as delivered; the failure becomes
@@ -1349,7 +1400,7 @@ export function ChatStream({
   const pendingDocsRef = useRef<Array<{ file: File; tmpId: string }>>([]);
   const pendingPathsRef = useRef<Array<{ path: string; tmpId: string }>>([]);
 
-  async function uploadOneDoc(sid: string, f: File, tmpId: string) {
+  async function uploadOneDoc(sid: string, f: File, tmpId: string): Promise<FileAttachment | null> {
     try {
       const r = await uploadFile(sid, f);
       void debugLog({ where: "addFiles:upload-resp", name: f.name, ok: r?.ok, hasFile: !!r?.file, error: r?.error });
@@ -1367,12 +1418,15 @@ export function ChatStream({
           g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
         }
         g.reloadArtifacts();
+        return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
       } else {
         setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+        return null;
       }
     } catch (e) {
       void debugLog({ where: "addFiles:upload-error", name: f.name, error: String(e) });
       setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      return null;
     }
   }
 
@@ -1425,7 +1479,7 @@ export function ChatStream({
     };
   });
 
-  async function attachOne(sid: string, p: string, tmpId: string) {
+  async function attachOne(sid: string, p: string, tmpId: string): Promise<FileAttachment | null> {
     const name = p.split("/").pop() || p;
     try {
       const r = await attachFilePath(sid, p);
@@ -1443,12 +1497,15 @@ export function ChatStream({
           g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
         }
         g.reloadArtifacts();
+        return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
       } else {
         setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+        return null;
       }
     } catch (e) {
       void debugLog({ where: "attachPaths:error", name, error: String(e) });
       setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      return null;
     }
   }
 
@@ -1470,7 +1527,15 @@ export function ChatStream({
 
   // ─── 闭环 (design A): 总结成流程 + 对话内运行块控制 ─────────────────────────
   // The actual LLM summarization path (also used by the modal's ↺ retry).
+  // Async contract (G2): the endpoint validates synchronously, spawns the
+  // synthesis in the background and returns {ok, synthesis_id, status:"started"}
+  // immediately. The DSL then arrives via finishSynthesisWait — resolved either
+  // by the WS synthesis.event(finished) frame or the 2s polling fallback,
+  // whichever wins the idempotency guard. sumLoading stays true until the
+  // terminal state so the button ("正在总结…") doubles as the double-click
+  // guard and the modal never opens on a half-finished case.
   async function freshSummarize(sessionId?: string) {
+    if (sumLoading) return; // a synthesis is already in flight
     setSumMenuOpen(false);
     const targetId = sessionId || session?.id;
     if (!targetId) return;
@@ -1483,21 +1548,88 @@ export function ChatStream({
     setSumCreated(null);
     try {
       const r = await summarizeSessionToDsl(targetId, undefined, sumLastN ?? undefined);
-      if (r.ok) {
+      if (r.ok && r.synthesis_id) {
         setSumSource({ id: targetId, label });
-        setSumSynthesisId(r.synthesis_id ?? null);
-        setSummarize(r.dsl);
+        setSumSynthesisId(r.synthesis_id);
+        setSumPendingId(r.synthesis_id);
+        sumPendingRef.current = r.synthesis_id;
+        // NOTE: no setSummarize / setSumLoading(false) here — the wait state
+        // machine below resolves the draft once the case finishes.
       } else {
-        setSumErr(`总结失败：${r.error ?? "unknown"}`);
+        // Synchronous validation failure (400/404/500) — HTTPException bodies
+        // carry {detail}; json() doesn't throw on HTTP errors.
+        setSumErr(`总结失败：${r.error ?? r.detail ?? "unknown"}`);
         setSummarize({}); // keep the modal open so the reason is visible
+        setSumLoading(false);
+      }
+    } catch {
+      setSumErr("总结失败：无法连接运行时");
+      setSummarize({});
+      setSumLoading(false);
+    }
+  }
+
+  // Idempotent resolver for a finished synthesis wait. Both the WS handler and
+  // the polling fallback call this; the ref guard makes the second caller a
+  // no-op. Fetches the case detail (the finished event deliberately omits the
+  // DSL) and drives the same success/error states the old sync path did.
+  async function finishSynthesisWait(id: string) {
+    if (sumPendingRef.current !== id) return; // already resolved / abandoned
+    sumPendingRef.current = null;
+    setSumPendingId(null);
+    try {
+      const r = await getSynthesisCase(id);
+      const out = r.case?.output;
+      if (r.ok && out?.status === "ok" && out.dsl) {
+        setSummarize(out.dsl as Record<string, unknown>);
+      } else {
+        setSumErr(
+          `总结失败：${out?.fail_stage || "unknown"}（案例 ${id}，~/.ginno/synthesis/${id}）`,
+        );
+        setSummarize({});
       }
     } catch {
       setSumErr("总结失败：无法连接运行时");
       setSummarize({});
     } finally {
       setSumLoading(false);
+      void g.reloadSynthesisCases();
     }
   }
+
+  // Polling fallback for the pending synthesis: the WS frame is the fast path,
+  // but a session switch (per-session sockets) or a dropped frame must not
+  // strand the wait. 2s interval, 180s hard timeout with the case id in the
+  // message so the on-disk trace is locatable.
+  useEffect(() => {
+    if (!sumPendingId) return;
+    const started = Date.now();
+    const id = sumPendingId;
+    const t = setInterval(() => {
+      if (sumPendingRef.current !== id) {
+        clearInterval(t); // resolved via WS or abandoned
+        return;
+      }
+      if (Date.now() - started > 180_000) {
+        clearInterval(t);
+        sumPendingRef.current = null;
+        setSumPendingId(null);
+        setSumErr(`总结失败：等待超时（案例 ${id}，~/.ginno/synthesis/${id}）`);
+        setSummarize({});
+        setSumLoading(false);
+        return;
+      }
+      getSynthesisCase(id)
+        .then((r) => {
+          if (r.ok && r.case.output) void finishSynthesisWait(id);
+        })
+        .catch(() => {
+          /* transient — retry on the next tick */
+        });
+    }, 2000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sumPendingId]);
 
   // Summarize is the primary action and must ALWAYS run fresh — a leftover
   // draft (possibly from another session) must never intercept it. Draft
@@ -1555,6 +1687,11 @@ export function ChatStream({
     setSummarize(null);
     setSumErr(null);
     setSumCreated(null);
+    // Abandon any in-flight synthesis wait — the server-side case keeps
+    // running and stays visible in the 总结 panel; only the UI stops waiting.
+    sumPendingRef.current = null;
+    setSumPendingId(null);
+    setSumLoading(false);
   }
 
   async function createFromSummarize(run: boolean, editedDsl: Record<string, unknown>) {
@@ -1633,6 +1770,7 @@ export function ChatStream({
       setSumCreated(null);
       await g.newSession("workflow-dev", {
         title: `精炼流程：${cwBody.workflow.name}`,
+        workflow_id: cwBody.workflow.id,
       });
     } catch {
       setSumErr("无法连接运行时");
@@ -1796,14 +1934,28 @@ export function ChatStream({
       connectSession(s.id);
       const docs = pendingDocsRef.current;
       pendingDocsRef.current = [];
-      for (const d of docs) await uploadOneDoc(s.id, d.file, d.tmpId);
       const natives = pendingPathsRef.current;
       pendingPathsRef.current = [];
-      for (const n of natives) await attachOne(s.id, n.path, n.tmpId);
+      // Collect the resolved entries so they ride in the turn payload — the
+      // fileAttachments state update below hasn't rendered yet in this closure.
+      const flushed: FileAttachment[] = [];
+      for (const d of docs) {
+        const e = await uploadOneDoc(s.id, d.file, d.tmpId);
+        if (e) flushed.push(e);
+      }
+      for (const n of natives) {
+        const e = await attachOne(s.id, n.path, n.tmpId);
+        if (e) flushed.push(e);
+      }
       // The socket race fix: await open instead of failing fast. Timeout
       // degrades to attemptSend's retryable failed bubble.
       await waitForSocketOpen(s.id);
-      attemptSend(s.id, { ...payload, mentions: [], agentId });
+      attemptSend(s.id, {
+        ...payload,
+        files: [...payload.files, ...flushed],
+        mentions: [],
+        agentId,
+      });
       setInput("");
       setAttachments([]);
       setFileAttachments([]);
@@ -1817,14 +1969,19 @@ export function ChatStream({
   function send() {
     const text = input.trim();
     const readyFiles = fileAttachments.filter((f) => !f.uploading);
-    if (!text && attachments.length === 0 && readyFiles.length === 0) return;
-    if (readyFiles.length !== fileAttachments.length) return; // upload in flight
     if (!session) {
+      // Home: dropped-file chips are intentionally deferred until the session
+      // exists (pendingDocsRef / pendingPathsRef) — they must NOT count as
+      // "upload in flight", or send dead-locks on the very uploads it triggers
+      // (2026-08-19: 新建会话拖入图片永远发不出去). createAndSend flushes them.
+      if (!text && attachments.length === 0 && fileAttachments.length === 0) return;
       void createAndSend({ text, images: attachments, files: readyFiles });
       return;
     }
     const sid = session.id;
     if (busyBySessionRef.current[sid]) return; // one turn at a time
+    if (!text && attachments.length === 0 && readyFiles.length === 0) return;
+    if (readyFiles.length !== fileAttachments.length) return; // upload in flight
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     // Final prune against the raw (untrimmed) input, deduped — only mentions
@@ -2040,6 +2197,19 @@ export function ChatStream({
     setPermission(null);
   }
 
+  function stopTurn() {
+    // Hard-stop the running turn (server abandons the in-flight step, keeps
+    // what already streamed, heals state). Idempotent server-side; a stopped
+    // turn ends with a turn.stopped broadcast that clears `running`.
+    const sid = curSessionIdRef.current;
+    if (!sid) return;
+    try {
+      socketsRef.current[sid]?.send(JSON.stringify({ type: "stop" }));
+    } catch {
+      /* socket gone — reconnect reconciles via turn_state */
+    }
+  }
+
   function respondPropose(decision: "allow" | "deny") {
     const sid = curSessionIdRef.current;
     if (!sid) return;
@@ -2059,22 +2229,6 @@ export function ChatStream({
       setProposeResult({ decision, workflowId: p.workflow_id, fromVersion: p.from_version });
       window.setTimeout(() => setProposeResult(null), 4000);
     }
-  }
-
-  function respondBrowserResume(space?: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    const name = space || handoffRef.current[sid]?.space || handoff?.space;
-    try {
-      socketsRef.current[sid]?.send(
-        JSON.stringify({ type: "permission_response", decision: "browser_resume", space: name }),
-      );
-    } catch {
-      /* socket gone — reconnect re-emits browser.handoff if still pending */
-    }
-    handoffRef.current[sid] = null;
-    setHandoff(null);
-    onBrowserHandoff?.(null);
   }
 
   // Drag the composer's top handle to resize the input area. Auto-grow (capped)
@@ -2188,7 +2342,9 @@ export function ChatStream({
                     <span className="max-w-[180px] truncate" title={f.name}>
                       {f.name}
                     </span>
-                    {f.uploading && <span className="text-faint">上传中…</span>}
+                    {f.uploading && (
+                      <span className="text-faint">{session ? "上传中…" : "发送时上传"}</span>
+                    )}
                     <button
                       onClick={() => setFileAttachments((l) => l.filter((_, j) => j !== i))}
                       aria-label={`移除 ${f.name}`}
@@ -2250,6 +2406,13 @@ export function ChatStream({
                     return;
                   }
                 }
+                // Esc while a turn runs = stop it (same as the ⏹ button);
+                // only when the composer is focused and no prompt is up.
+                if (e.key === "Escape" && !composing && running && !permission && !propose) {
+                  e.preventDefault();
+                  stopTurn();
+                  return;
+                }
                 if (e.key === "Enter" && !e.shiftKey && !composing) {
                   e.preventDefault();
                   send();
@@ -2264,8 +2427,8 @@ export function ChatStream({
               }
               className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-txt outline-none placeholder:text-faint"
             />
-            <div className="flex items-center justify-between px-1 pt-1">
-              <div className="flex items-center gap-1 text-faint">
+            <div className="flex flex-wrap items-center justify-between gap-1 px-1 pt-1">
+              <div className="flex min-w-0 items-center gap-1 text-faint">
                 <input
                   ref={fileRef}
                   type="file"
@@ -2340,7 +2503,7 @@ export function ChatStream({
                       }}
                       title={tip}
                       aria-label={`连接状态：${label}${live ? "" : "，点击重连"}`}
-                      className={`ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
+                      className={`ml-1 flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
                         live ? "cursor-default" : "cursor-pointer hover:bg-card2"
                       }`}
                       style={{ color: dot }}
@@ -2356,6 +2519,7 @@ export function ChatStream({
                   );
                 })()}
               </div>
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
               {running && goalActive && (
                 <button
                   onClick={() => void g.setGoalStatus(session!.id, "paused")}
@@ -2368,7 +2532,7 @@ export function ChatStream({
               )}
               {/* model chip: per-session provider/model switch (home: pick for
                   the session that first send will create) */}
-              <div className="relative ml-auto">
+              <div className="relative">
                 <button
                   type="button"
                   disabled={running || !!permission}
@@ -2376,14 +2540,14 @@ export function ChatStream({
                   title={session ? "切换本会话模型" : "选择新会话使用的模型"}
                   className="flex items-center gap-1.5 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted hover:border-line hover:bg-card2 hover:text-txt disabled:opacity-50"
                 >
-                  <Globe className="h-3.5 w-3.5" />
+                  <Globe className="h-3.5 w-3.5 shrink-0" />
                   <span className="max-w-[160px] truncate font-medium">{modelChipLabel}</span>
-                  <ChevronDown className="h-3 w-3 opacity-70" />
+                  <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
                 </button>
                 {modelOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setModelOpen(false)} />
-                    <div className="absolute bottom-full right-0 z-50 mb-1 w-72 rounded-lg border border-line bg-card py-1 shadow-xl">
+                    <div className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-line bg-card py-1 shadow-xl">
                       {enabledProviders.length === 0 && (
                         <div className="px-3 py-2 text-xs text-faint">
                           无已启用提供商 — 去 设置 → 模型 API 启用
@@ -2414,21 +2578,86 @@ export function ChatStream({
                   </>
                 )}
               </div>
+              {running && session && !permission ? (
+                <button
+                  onClick={stopTurn}
+                  title="停止当前回合（保留已输出的内容）"
+                  aria-label="停止"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-red text-white transition-opacity hover:opacity-90"
+                >
+                  <Square className="h-3.5 w-3.5" fill="currentColor" />
+                </button>
+              ) : (
               <button
                 onClick={send}
                 disabled={
                   !!permission ||
                   running ||
-                  fileAttachments.some((f) => f.uploading) ||
+                  // In-session uploads run immediately and gate the send; on
+                  // home they're deferred until lazy creation, so they must
+                  // not disable the button (same deadlock as send()'s guard).
+                  (!!session && fileAttachments.some((f) => f.uploading)) ||
                   (!input.trim() && attachments.length === 0 && fileAttachments.length === 0)
                 }
                 className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 <ArrowUp className="h-4 w-4" />
               </button>
+              )}
+              </div>
             </div>
           </div>
   );
+
+  // C+ 方案①/④：chip「推荐」标签由草稿关键词派生（render 期，同 sel 模式）；
+  // 切换预告条在 target 指向另一个 agent 时出现——发送后 target 自动清零，
+  // 无需额外清理。agentChipsEl 抽成变量：composerBoxEl 是单实例双 key 槽，
+  // chip 行不能挪进去（会把 session-only 按钮拖进 home），两槽各渲染一份。
+  const recAgentId = recommendAgentId(input, new Set(g.agents.map((a) => a.id)));
+  const switchTarget =
+    target && session && target !== session.agent_id ? agentById(target) : null;
+
+  const agentChipsEl = (
+    <>
+      {g.agents.map((a) => {
+        const sel = (target ?? session?.agent_id) === a.id;
+        const hex = agentHex(a.color);
+        const rec = recAgentId === a.id && !sel;
+        return (
+          <button
+            key={a.id}
+            onClick={() => setTarget(sel ? null : a.id)}
+            className={
+              sel
+                ? "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors"
+                : "flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted transition-colors hover:border-line2 hover:text-txt"
+            }
+            style={sel ? { borderColor: hex, background: hex + "1a", color: hex } : undefined}
+          >
+            <Icon name={a.icon} className="h-3.5 w-3.5" />
+            Ask {a.name}
+            {rec && (
+              <span className="rounded-full border border-yellow/40 bg-yellow/10 px-1.5 text-[10px] leading-4 text-yellow">
+                推荐
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </>
+  );
+
+  // C+ 方案②「X 接手」分隔线：与上一条 agentId 已知的 assistant 气泡不同
+  // agent 时插入。旧会话无标记（两侧任一 agentId 为空）自动跳过，不渲染。
+  const handoffBefore: Record<number, true> = {};
+  {
+    let lastKnown: string | null = null;
+    messages.forEach((m, i) => {
+      if (m.role !== "assistant" || m.error) return;
+      if (m.agentId && lastKnown && m.agentId !== lastKnown) handoffBefore[i] = true;
+      if (m.agentId) lastKnown = m.agentId;
+    });
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -2442,6 +2671,14 @@ export function ChatStream({
             交给 Agent：代码、文档、数据、工作流。
           </div>
           <div key="composer-home" className="mt-8 w-full max-w-[760px]">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              {agentChipsEl}
+              {!target && (
+                <span className="ml-auto self-center text-[11px] text-faint">
+                  ⏎ 直接发送 = 默认 {g.agents[0]?.name ?? "Agent"}
+                </span>
+              )}
+            </div>
             {composerBoxEl}
           </div>
           <div className="mt-6 flex max-w-[820px] flex-wrap justify-center gap-2.5">
@@ -2462,15 +2699,13 @@ export function ChatStream({
                 {c.label}
               </button>
             ))}
-            {!compact && (
-              <button
-                onClick={() => onOpenGoal?.()}
-                className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
-              >
-                <span>🎯</span>
-                设定一个长程目标
-              </button>
-            )}
+            <button
+              onClick={() => onOpenGoal?.()}
+              className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
+            >
+              <span>🎯</span>
+              设定一个长程目标
+            </button>
           </div>
           <div className="mt-6 text-[11px] text-faint">
             支持拖入 Excel / Word / PPT / PDF · / 命令 · @ 提及产物 / 智能体 / 工作流 / 记忆
@@ -2506,16 +2741,16 @@ export function ChatStream({
           const el = e.currentTarget;
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        className={`flex-1 overflow-y-auto ${compact ? "px-3 py-3" : "px-6 py-6"}`}
+        className="flex-1 overflow-y-auto px-6 py-6"
       >
-        <div className={`mx-auto flex flex-col gap-5 ${compact ? "max-w-none" : "max-w-3xl"}`}>
+        <div className="mx-auto flex max-w-3xl flex-col gap-5">
           {messages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
               开始对话吧，Agent 会使用工具完成任务，并可能就权限询问你。
             </div>
           )}
 
-          {messages.map((m) =>
+          {messages.map((m, idx) =>
             m.role === "system" ? (
               <ContextBlocks
                 key={m.id}
@@ -2593,14 +2828,18 @@ export function ChatStream({
                 onRetry={() => retryError(m.id)}
               />
             ) : (
-              <AssistantBubble
-                key={m.id}
-                agent={agentById(m.agentId)}
-                agentName={m.agentName}
-                blocks={m.blocks}
-                streaming={m.id === liveId}
-                turnId={m.turnId}
-              />
+              <Fragment key={m.id}>
+                {handoffBefore[idx] && (
+                  <HandoffDivider agent={agentById(m.agentId)} agentName={m.agentName} />
+                )}
+                <AssistantBubble
+                  agent={agentById(m.agentId)}
+                  agentName={m.agentName}
+                  blocks={m.blocks}
+                  streaming={m.id === liveId}
+                  turnId={m.turnId}
+                />
+              </Fragment>
             ),
           )}
 
@@ -2665,16 +2904,6 @@ export function ChatStream({
 
       {propose && <ProposeCard propose={propose} onDecide={respondPropose} />}
 
-      {handoff && (
-        <HandoffCard
-          space={handoff.space}
-          url={handoff.url}
-          reason={handoff.reason}
-          onGo={() => onOpenBrowser?.()}
-          onReturn={() => respondBrowserResume(handoff.space)}
-        />
-      )}
-
       {proposeResult && (
         <div className="mx-auto w-full max-w-3xl px-6">
           <div
@@ -2711,29 +2940,31 @@ export function ChatStream({
       )}
 
       {/* composer */}
-      <div className={`${compact ? "px-3" : "px-6"} pb-5 pt-2`}>
-        <div className={`mx-auto ${compact ? "max-w-none" : "max-w-3xl"}`}>
-          {!compact && (
+      <div className="px-6 pb-5 pt-2">
+        <div className="mx-auto max-w-3xl">
+          {switchTarget && (
+            <div className="mb-2 flex items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ background: agentHex(switchTarget.color) }}
+              />
+              <span className="flex-1 text-muted">
+                下一条起由{" "}
+                <span className="font-medium" style={{ color: agentHex(switchTarget.color) }}>
+                  {switchTarget.name}
+                </span>{" "}
+                应答 · 会话记录保留
+              </span>
+              <button
+                onClick={() => setTarget(null)}
+                className="shrink-0 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:text-txt"
+              >
+                撤销
+              </button>
+            </div>
+          )}
           <div className="mb-2 flex flex-wrap gap-2">
-            {g.agents.map((a) => {
-              const sel = (target ?? session?.agent_id) === a.id;
-              const hex = agentHex(a.color);
-              return (
-                <button
-                  key={a.id}
-                  onClick={() => setTarget(sel ? null : a.id)}
-                  className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors"
-                  style={{
-                    borderColor: sel ? hex : "#262632",
-                    background: sel ? hex + "1a" : "#15151d",
-                    color: sel ? hex : "#9a9aa6",
-                  }}
-                >
-                  <Icon name={a.icon} className="h-3.5 w-3.5" />
-                  Ask {a.name}
-                </button>
-              );
-            })}
+            {agentChipsEl}
             <button
               onClick={() => g.setActiveSession(null)}
               className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted hover:text-txt"
@@ -2754,7 +2985,7 @@ export function ChatStream({
                 <ChevronDown className="h-3 w-3 opacity-70" />
               </button>
               {sumMenuOpen && (
-                <div className="absolute bottom-full left-0 z-30 mb-1 w-64 rounded-lg border border-line bg-card p-1 shadow-2xl">
+                <div className="absolute bottom-full left-0 z-30 mb-1 w-64 max-w-[min(16rem,calc(100vw-2rem))] rounded-lg border border-line bg-card p-1 shadow-2xl">
                   {/* S6: an unsaved draft is an OPT-IN restore, never a blocker. */}
                   {savedDraft && (
                     <div className="mb-1 flex items-center gap-1 rounded-md border border-violet/30 bg-violet/[0.06] px-2 py-1.5">
@@ -2812,7 +3043,6 @@ export function ChatStream({
               )}
             </div>
           </div>
-          )}
 
           <div key="composer-session">{composerBoxEl}</div>
         </div>
@@ -2927,6 +3157,25 @@ function ErrorCard({
   );
 }
 
+/** C+ 方案②：虚线 pill 分隔线——下一个气泡由哪个 agent 接手。 */
+function HandoffDivider({ agent, agentName }: { agent: AgentConfig | null; agentName?: string }) {
+  const hex = agentHex(agent?.color);
+  const name = agent?.name || agentName || "Agent";
+  return (
+    <div className="-my-1 flex items-center gap-2 text-xs">
+      <div className="h-px flex-1 border-t border-dashed border-line" />
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full border border-dashed bg-card px-2.5 py-0.5"
+        style={{ borderColor: hex + "55", color: hex }}
+      >
+        <span className="h-1.5 w-1.5 rounded-full" style={{ background: hex }} />
+        {name} 接手
+      </span>
+      <div className="h-px flex-1 border-t border-dashed border-line" />
+    </div>
+  );
+}
+
 function AssistantBubble({
   agent,
   agentName,
@@ -2944,22 +3193,24 @@ function AssistantBubble({
   const displayName = agent?.name || agentName || "Agent";
   const hasInner = blocks.some((b) => b.kind !== "ref");
   return (
-    <div className="flex gap-3">
-      <div
-        className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
-        style={{ background: hex + "22", color: hex }}
-      >
-        <Icon name={agent?.icon || "terminal"} className="h-4 w-4" />
+    <div className="min-w-0">
+      {/* C+ 方案②归属徽标：agent 色 dot + 名字 pill（原型风格），替代原先的
+          头像方块——归属信息一眼可见，且与「X 接手」分隔线同一视觉语言。 */}
+      <div className="mb-1 flex items-center gap-2">
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium"
+          style={{ borderColor: hex + "55", background: hex + "1a", color: hex }}
+          title={displayName}
+        >
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: hex }} />
+          {displayName}
+        </span>
+        <span className="text-xs text-faint">{streaming ? "thinking…" : "just now"}</span>
+        <span className="ml-auto">
+          <TurnIdChip turnId={turnId} />
+        </span>
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 flex items-center gap-2 text-sm">
-          <span className="font-medium text-txt">{displayName}</span>
-          <span className="text-xs text-faint">{streaming ? "thinking…" : "just now"}</span>
-          <span className="ml-auto">
-            <TurnIdChip turnId={turnId} />
-          </span>
-        </div>
-        <div className="rounded-xl border border-line bg-card px-4 py-3 text-sm leading-relaxed text-txt">
+      <div className="rounded-xl border border-line bg-card px-4 py-3 text-sm leading-relaxed text-txt">
           {hasInner ? (
             <InnerBlocks blocks={blocks} streaming={streaming} />
           ) : streaming ? (
@@ -2977,7 +3228,6 @@ function AssistantBubble({
         </div>
         <RefBlocks blocks={blocks} />
       </div>
-    </div>
   );
 }
 

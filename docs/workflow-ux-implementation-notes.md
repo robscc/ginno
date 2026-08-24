@@ -74,7 +74,6 @@
   有 active run 时隐藏——运行中 run 本就不可清，语义改为「清除全部终态历史」
 - Settings DSL 编辑器无语法高亮（零依赖决策保留）
 - 自适应 stuck 为 run 级而非步骤级（无步骤时长数据源）
-- dev 会话不带 workflow id 绑定（与 Inspector openDevSession 行为一致）
 
 ## 用户反馈修复（2026-08-09 第三轮）：总结流程切换 session 丢状态 + 不新增 workflow
 
@@ -208,8 +207,13 @@ run.pending_interrupt `{..., "kind":"manual"}` → `{"kind":"resume","nature":"m
   （`_set_run_pending_interrupt`），因为 WorkflowPanel 的 run 列表来自
   reloadWorkflowRuns 全量刷新，前端 store 方案会在刷新时丢失。
 - S6 草稿持久化：与 Sprint 1 一起实现（改动极小，直接并入）。
-- 「进入开发会话精炼」：先创建 workflow（v1），再 newSession("workflow-dev")，
-  会话标题带 workflow 名；不做 workflow id 绑定（与 Inspector openDevSession 一致）。
+- 「进入开发会话精炼」：先创建 workflow（v1），再
+  `newSession("workflow-dev", { title, workflow_id })`。会话 meta 持久化
+  `workflow_id`（重启经 `_ensure_session` 从 `_index.json` 回写）；每轮
+  `[turn context]` 注入当前 DSL（`<bound_workflow>`：id / version /
+  node_types / 完整 JSON）。Inspector「打开开发会话」走同一绑定。
+  升级安装靠 `ensure_workflow_dev()` 补种缺失的 persona；任意 agent 可用
+  `workflow_get` 看节点类型（`human` 是一等 interrupt，不是 step 里口头提问）。
 - #15 DSL 编辑器：未引入 react-simple-code-editor/prismjs 新依赖，改为
   monospace textarea + 实时 JSON/结构校验提示（入口/节点校验），服务端创建时
   仍跑完整 validate_dsl。效果等价、零依赖风险。
@@ -218,3 +222,98 @@ run.pending_interrupt `{..., "kind":"manual"}` → `{"kind":"resume","nature":"m
 - retry_from_checkpoint 引擎实现：新增 engine.continue_workflow，用
   graph.astream(None) 从 checkpoint 的 pending 节点续跑（LangGraph 对失败节点
   不提交 superstep，checkpoint 中保留 next），而非 Command(resume)。
+
+## 总结记录:UUID 定位 + 右栏「总结」实时面板(2026-08-23)
+
+> 计划:~/.claude/plans/steady-conjuring-ullman.md。按 G1→G4 分组实施,便于回退。
+
+**动机**:① synthesis_id 原格式 `<时间戳>-<session8>`,同秒同会话重复总结会互相
+覆盖目录,失败案例磁盘定位不便;② summarize 端点同步阻塞(最多 3 轮串行 LLM),
+期间总结过程完全不可见。
+
+### G1 后端:synthesis_id 加 uuid
+- `workflows/synthesis.py` `new_case`:`<yyyymmdd-HHMMSS>-<session8>-<uuid8>`。
+  **时间戳保持最前**——`list_cases`/`prune_cases` 依赖目录名字典序=时间序。
+- 所有消费方精确匹配/纯透传,零解析;旧案例(无 uuid 段)继续可读。
+
+### G2 后端:summarize 端点后台化 + 实时事件
+- `api/workflows.py`:新注册表 `_SYNTH_TASKS`(与 `_WF_RUN_TASKS` 分离,done-callback
+  是 run 专属);`_run_synthesis` 加 `on_attempt` 回调(每轮
+  `{attempt, parse, validate_errors, latency_ms}`,不带 raw);
+  端点同步段保留全部校验 + `new_case`/`prune_cases` 后 `_spawn_synth_task` 立即返回
+  `{ok, synthesis_id, status:"started"}`;后台任务 push WS `synthesis.event`
+  (started/attempt/finished),finished 载荷 `{ok, fail_stage, attempts_used,
+  total_ms, error}` **不含 DSL**(UI 经 getSynthesisCase 拉)。
+- 不变量:任务正常结束 → 案例必有 output.json(done-callback 自愈兜底)。
+  `_shutdown_synth_tasks` 优雅退出**不写** output.json → 重启后遗留案例显示
+  「未完成」,与崩溃语义一致,无需启动 reconcile。
+- 测试观察通道:`POST /api/synthesis/cases/{id}/_await`;list 端点标注
+  `running`(`_SYNTH_TASKS` 进程内任务表是唯一「进行中」来源)。
+
+### G3 前端:右栏「总结」面板 + 共享抽屉
+- store:`synthesisCases` + `reloadSynthesisCases` + `synthesisActiveCount`
+  (`!status && running`);启动 Promise.all 拉一次,不加全局轮询。
+- 新「总结」tab(RIGHT_TABS 末位,Sparkles):列表行 = 状态图标 + 两行
+  (状态 / monospace 截断 synthesis_id,title=磁盘路径);激活时 1.5s 轮询兜底;
+  进行中时 tab/折叠 dock 显示蓝色脉冲圆点。
+- 新 `SynthesisCaseDrawer`(设置页内联抽屉抽出共享):无 output 时 1.5s 轮询,
+  attempts 实时增长,头部「总结中…」脉冲;设置页与面板共用。
+- 设置页 CaseRow:无 status 时按 running 显示「进行中」(蓝转圈)/「未完成」(黄)。
+
+### G4 前端:等待状态机
+- `freshSummarize`:`sumLoading` 防重入;POST 成功只登记 `sumPendingId` +
+  ref 镜像,**不开模态框、不释放 loading**(按钮「正在总结…」即双击守卫)。
+- `finishSynthesisWait(id)` **幂等**(ref 守卫):拉案例 →
+  `output.status==="ok"` → setSummarize(原成功路径);失败文案含
+  `fail_stage` + `~/.ginno/synthesis/<id>` 磁盘路径。
+- 双通道:WS `synthesis.event(finished)`(快)+ 2s 轮询(会话切换/丢帧兜底),
+  180s 硬超时;`closeSummarize` 放弃等待但服务端案例继续跑(面板可见)。
+
+### 「未完成/孤儿案例」判定(无时间启发式)
+| output.status | running | 展示 |
+|---|---|---|
+| ok | — | 成功(绿) |
+| failed | — | 失败(红 + fail_stage) |
+| 无 | true | 进行中(蓝脉冲,1.5s 轮询) |
+| 无 | false | 未完成(灰黄,运行时退出中断,trace 已保留) |
+
+**测试**:test_workflow_masterplan.py 31 个(含 5 个新增:uuid 唯一性、立返+_await、
+后台失败记录、running 标注/孤儿、_await 404)。全量 pytest 941 passed / 1 skipped;
+唯一失败 test_packaged_ui_playwright 是环境性(驱动 8-21 冻结的旧 bundle,
+与本次改动无关,make app 重建后再验)。前端 `npx tsc --noEmit` 零错误。
+
+**验证结果**:全量 pytest 942 passed / 1 skipped / 0 failed(含重建后的
+packaged_ui e2e);`npx tsc --noEmit` 零错误;`make app` 构建成功,重启后
+sidecar 日志无 zlib/ERROR。
+
+**顺手修复**:`test_packaged_ui_shows_lists_and_adds_session` 在本改动之前已红
+(8-21 旧 bundle 即失败)——它点击「+ New Session」断言会话数 +1,但当前产品
+行为是**会话惰性创建**(首个消息发送时才建),零会话时渲染欢迎页,该按钮不存在。
+已重写为当前真实用户路径:欢迎页输入框输入→回车→轮询 /api/sessions 断言创建
+恰好 1 个会话、侧栏空态提示消失。
+
+## 用户反馈修复（2026-08-23）：聊天渲染链接点击无法打开系统浏览器
+
+**现象**:会话 65638e75…(Writer Agent)turn b6774889 渲染的钉钉文档链接
+(`https://sf-alidocs.dingtalk.com/i/nodes/…`)点击后无任何反应。
+
+**根因**:Tauri 的 macOS WKWebView **静默忽略** `target="_blank"` 锚点与
+`window.open`。`Markdown.tsx` 的 `a` 覆盖只设了 `target="_blank" rel="noreferrer"`,
+没有像 SourcesBlock 那样走 sidecar 的外部打开通道。
+
+**修复**(纯前端,复用既有后端端点,零 Rust 改动):
+- `lib/runtime.ts`:新增 `openLinkExternal(url)` —— 调既有
+  `POST /api/open-external`(server.py:212,经 `_assert_public_host` 公网主机守卫
+  后 `webbrowser.open` 拉起系统默认浏览器);`!r.ok` 或网络失败降级
+  `window.open`(纯浏览器 dev 模式下可用)。
+- `Markdown.tsx` `a` 覆盖:`http(s)` 链接点击 `preventDefault()` →
+  `openLinkExternal(href)`;非 http 协议(mailto: 等)保持锚点默认行为。
+  该共享组件覆盖全部 markdown 面:聊天消息、知识库页、表格视图、HumanInputCard。
+- `TodoPanel.tsx`:外部 todo 链接同样拦截走 `openLinkExternal`。
+- SourcesBlock 引用链接本就走该通道,未动。
+
+**验证**(真机实时链路):Playwright 打开运行中的打包应用
+(`http://127.0.0.1:8787/`)→ 进入该会话 → 点击该钉钉链接 →
+网络面板确认 `POST /api/open-external`,body 为原链接,响应 `{"ok":true}`,
+页面未发生导航(preventDefault 生效),控制台零报错;系统默认浏览器被
+`webbrowser.open` 拉起。`make app` 重建 + 完全重启后验证,无 zlib/ERROR。

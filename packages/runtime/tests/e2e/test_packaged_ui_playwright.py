@@ -1,9 +1,10 @@
 """Playwright e2e against the PACKAGED sidecar (dist/ginno-runtime).
 
 Boots the real PyInstaller binary on a free port with a temp home + GINNO_FAKE_LLM,
-then drives a real Chromium to verify the UI shows the Agent/Session lists and that
-"+ New Session" actually creates a session. This walks the same case a user runs in
-the desktop app, without touching the user's live sidecar on :8787.
+then drives a real Chromium to verify the UI shows the Agent list and that sending
+the first message creates a session (sessions are created lazily on first send —
+the old eager "+ New Session" button is gone). This walks the same case a user
+runs in the desktop app, without touching the user's live sidecar on :8787.
 
 Skips gracefully when the binary isn't built, playwright isn't installed, or the
 port is taken.
@@ -112,19 +113,28 @@ def test_packaged_ui_shows_lists_and_adds_session(tmp_path):
             # Agent list renders (seeded agents).
             assert page.locator("text=Dev Agent").count() >= 1, "agent list should show Dev Agent"
 
-            # Session list: capture count, then add one via the button.
             def session_count() -> int:
                 return page.evaluate(
                     "fetch('/api/sessions?project_slug=default').then(r=>r.json()).then(j=>j.length)"
                 )
 
-            before = session_count()
-            page.get_by_text("+ New Session").first.click()
-            page.wait_for_timeout(1500)
-            after = session_count()
-            assert after == before + 1, f"New Session should add one session ({before}->{after})"
-            # The new session is selected/shown in the sidebar.
-            assert page.locator("text=session").count() >= 1
+            # A fresh home starts with zero sessions — the welcome screen shows
+            # instead of a chat view.
+            assert session_count() == 0, "fresh home should start with no sessions"
+
+            # Sessions are created LAZILY on first send: type into the welcome
+            # composer and press Enter (same flow a user runs in the desktop app).
+            ta = page.locator("textarea").first
+            ta.click()
+            ta.fill("你好")
+            ta.press("Enter")
+
+            deadline = time.time() + 15
+            while time.time() < deadline and session_count() == 0:
+                page.wait_for_timeout(300)
+            assert session_count() == 1, "first message should create exactly one session"
+            # The sidebar's empty-state hint disappears once the session exists.
+            assert page.get_by_text("还没有会话").count() == 0, "sidebar should list the new session"
             browser.close()
     finally:
         proc.terminate()

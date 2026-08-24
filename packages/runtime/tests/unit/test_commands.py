@@ -95,6 +95,14 @@ def test_substitute_skill_body_format(isolated_home):
     assert "User request: do it now" in text
 
 
+def test_substitute_skill_arguments_placeholder(isolated_home):
+    seed_skill(isolated_home, "aliyun-bill", body="用户输入: $ARGUMENTS\n跑脚本。")
+    text, name = substitute_skill("/aliyun-bill overview 2026-07", "default")
+    assert name == "aliyun-bill"
+    assert "用户输入: overview 2026-07" in text
+    assert "$ARGUMENTS" not in text
+
+
 def test_substitute_skill_no_tail(isolated_home):
     seed_skill(isolated_home, "summarize-notes")
     text, name = substitute_skill("/summarize-notes", "default")

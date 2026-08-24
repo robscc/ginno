@@ -34,18 +34,18 @@ RUNTIME := $(ROOT)/packages/runtime
 # Contents/Resources/resources/runtime/ and lib.rs launches the executable.
 RUNTIME_RES := $(ROOT)/apps/desktop/resources/runtime
 
-.PHONY: all app sidecar runtime web cef clean help e2e-ui
+.PHONY: all app sidecar runtime web clean help e2e-ui
 
 all: app
 
-## app: full rebuild — web + runtime bundle + CEF Frameworks/Helpers + Tauri desktop app (+ dmg)
-app: sidecar cef
+## app: full rebuild — web + runtime bundle + Tauri desktop app (+ dmg)
+app: sidecar
 	@# Unlock the dedicated codesign keychain (locked after sleep/reboot). It
 	@# holds the self-signed "Ginno Local Code Signing" identity that keeps a
 	@# stable designated requirement across rebuilds, so macOS TCC grants
 	@# (Desktop/Documents access prompts) persist instead of resetting.
 	@security unlock-keychain -p ginno $(HOME)/Library/Keychains/ginno-codesign.keychain-db 2>/dev/null || true
-	cd $(ROOT)/apps/desktop && pnpm tauri build
+	cd $(ROOT)/apps/desktop && node node_modules/@tauri-apps/cli/tauri.js build
 	@# Regression guard: an only-linker-signed .app makes WKWebView's
 	@# Networking helper reject every request -> the webview white-screens
 	@# while the sidecar looks perfectly healthy. bundle.macOS.signingIdentity
@@ -57,28 +57,10 @@ app: sidecar cef
 	  exit 1; \
 	fi
 	@echo "✅ Code signature OK (not linker-signed)"
-	@$(ROOT)/scripts/stage-cef-bundle.sh "$(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
-	@fw="$(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app/Contents/Frameworks/Chromium Embedded Framework.framework"; \
-	if [ ! -d "$$fw" ]; then \
-	  echo "❌ CEF framework missing at $$fw"; \
-	  exit 1; \
-	fi
-	@helper="$(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app/Contents/Frameworks/Ginno Helper.app"; \
-	if [ ! -d "$$helper" ]; then \
-	  echo "❌ Ginno Helper.app missing at $$helper"; \
-	  exit 1; \
-	fi
-	@echo "✅ CEF Frameworks + Helper.app in Contents/Frameworks"
 	@echo ""
 	@echo "✅ Built:"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/dmg/"
-
-## cef: fetch Spotify CEF minimal, compile Helper.app + libginno_cef.dylib
-cef:
-	$(ROOT)/scripts/vendor-cef.sh
-	$(ROOT)/scripts/build-cef-host.sh
-	@echo "✅ CEF → $(ROOT)/apps/desktop/Frameworks"
 
 ## sidecar: stage the runtime onedir bundle as a Tauri resource
 sidecar: runtime
@@ -102,8 +84,6 @@ runtime: web
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
 	  --collect-all docx --collect-all pptx --collect-all pypdf \
 	  --add-data "$(WEB_OUT):web_out" \
-	  --add-data "src/ginno_runtime/skills/builtin:ginno_runtime/skills/builtin" \
-	  --add-data "src/ginno_runtime/browser/fixtures:ginno_runtime/browser/fixtures" \
 	  bin/ginno-runtime.py
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 

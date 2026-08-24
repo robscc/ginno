@@ -392,6 +392,13 @@ _VALID_DSL = json.dumps(
 )
 
 
+def _await_synth(client, synthesis_id: str) -> dict:
+    """Deterministically await the background synthesis task; return the case."""
+    aw = client.post(f"/api/synthesis/cases/{synthesis_id}/_await").json()
+    assert aw["ok"] is True and aw.get("error") is None, aw
+    return aw["case"]
+
+
 def test_summarize_last_n_limits_trace(client, monkeypatch):
     sid = "sess-ux-lastn"
     _seed_session("default", sid)
@@ -404,6 +411,7 @@ def test_summarize_last_n_limits_trace(client, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True, body
+    _await_synth(client, body["synthesis_id"])
     # last_n=1 keeps only the final message ("here is the summary")
     trace = model.calls[0][1].content
     assert "here is the summary" in trace
@@ -413,7 +421,9 @@ def test_summarize_last_n_limits_trace(client, monkeypatch):
     model2 = _RecordingModel([AIMessage(content=_VALID_DSL)])
     monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: model2)
     r2 = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
-    assert r2.json()["ok"] is True
+    body2 = r2.json()
+    assert body2["ok"] is True
+    _await_synth(client, body2["synthesis_id"])
     trace2 = model2.calls[0][1].content
     assert "list the open PRs" in trace2 and "here is the summary" in trace2
 
@@ -426,9 +436,9 @@ def test_summarize_retry_loop_bounded_at_3_attempts(client, monkeypatch):
 
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is False
-    assert "raw" in body
+    case = _await_synth(client, r.json()["synthesis_id"])
+    assert case["output"]["status"] == "failed"
+    assert case["attempts"][0]["raw"]
     # the loop must terminate: exactly 3 model attempts, never more
     assert len(model.calls) == 3, f"retry loop ran {len(model.calls)} attempts"
     # attempts 2+ carry the corrective hint
@@ -452,6 +462,7 @@ def test_summarize_retry_recovers_on_second_attempt(client, monkeypatch):
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     body = r.json()
     assert body["ok"] is True, body
+    _await_synth(client, body["synthesis_id"])
     assert len(model.calls) == 2
     # the validation errors were fed back to the model
     assert "Previous attempt DSL errors" in model.calls[1][1].content

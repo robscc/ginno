@@ -177,6 +177,32 @@ def test_turn_context_carries_volatile(isolated_home):
     assert "<mentioned_workflow>" in out
 
 
+def test_turn_context_carries_bound_workflow(isolated_home):
+    from ginno_runtime.graph import build_turn_context
+
+    out = build_turn_context(
+        query="",
+        bound_workflow={
+            "id": "790382cc6f",
+            "name": "cluster_checklist_review",
+            "version": 1,
+            "description": "review a cluster checklist",
+            "dsl": {
+                "entry": "parse",
+                "nodes": [
+                    {"id": "parse", "type": "step", "goal": "read"},
+                    {"id": "gate", "type": "human", "question": "ok?"},
+                ],
+                "edges": [{"from": "parse", "to": "gate"}],
+            },
+        },
+    )
+    assert "<bound_workflow>" in out
+    assert "790382cc6f" in out
+    assert "gate=human" in out
+    assert '"type": "human"' in out
+
+
 def test_turn_context_empty_when_nothing(isolated_home):
     from ginno_runtime.graph import build_turn_context
 

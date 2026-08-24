@@ -19,7 +19,7 @@ from langgraph.types import interrupt
 from .. import workflows as wf_store
 from ..workflows import dsl as wf_dsl
 
-WORKFLOW_TOOL_NAMES = {"workflow_list", "workflow_create", "workflow_run", "workflow_step"}
+WORKFLOW_TOOL_NAMES = {"workflow_list", "workflow_get", "workflow_create", "workflow_run", "workflow_step"}
 # Gated to the workflow-dev agent (P5): editing tools that pause for a diff
 # confirmation via interrupt before mutating a versioned definition.
 WORKFLOW_DEV_TOOL_NAMES = {"workflow_propose_edit"}
@@ -39,6 +39,42 @@ def workflow_list() -> str:
     if not defs:
         return "(no workflows defined)"
     return "\n".join(f"[{d['id']}] {d['name']} — {len(d.get('steps', []))} steps" for d in defs)
+
+
+@tool
+def workflow_get(workflow_id: str = "", name: str = "") -> str:
+    """Return one workflow's current DSL (id, version, node types, full JSON).
+
+    Use this to inspect node types (step / branch / loop / human) instead of
+    guessing from workflow_list's step count. Prefer the session-bound
+    <bound_workflow> context when this session already has a workflow_id."""
+    wf = None
+    if workflow_id:
+        wf = wf_store.get_def(workflow_id)
+    if not wf and name:
+        needle = name.lower()
+        for d in wf_store.list_defs():
+            if (d.get("name") or "").lower() == needle:
+                wf = d
+                break
+    if not wf:
+        return "error: workflow not found (use workflow_list to see ids)"
+    dsl = wf.get("dsl") if isinstance(wf.get("dsl"), dict) else {}
+    nodes = dsl.get("nodes") or []
+    types = ", ".join(
+        f"{n.get('id')}={n.get('type')}" for n in nodes if isinstance(n, dict) and n.get("id")
+    )
+    header = (
+        f"[{wf.get('id')}] {wf.get('name')} v{wf.get('version') or wf.get('current') or '?'}"
+        + (f" — {wf.get('description')}" if wf.get("description") else "")
+    )
+    body = json.dumps(dsl, ensure_ascii=False, indent=2)
+    extra = f"\nnode_types: {types}" if types else ""
+    extra += (
+        "\nNote: `human` is a first-class interrupt node (run pauses for UI "
+        "resume). A step whose goal merely asks the user is not a human node."
+    )
+    return f"{header}{extra}\n{body}"
 
 
 @tool
@@ -91,7 +127,7 @@ def workflow_step(run_id: str, step_id: str, status: str, output: str = "") -> s
     )
 
 
-ALL_WORKFLOW_TOOLS = [workflow_list, workflow_create, workflow_run, workflow_step]
+ALL_WORKFLOW_TOOLS = [workflow_list, workflow_get, workflow_create, workflow_run, workflow_step]
 
 
 @tool

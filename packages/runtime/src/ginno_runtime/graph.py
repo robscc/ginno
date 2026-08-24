@@ -38,7 +38,6 @@ from .tools.workflow_tools import (
 from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 from .tools.document_tools import ALL_DOCUMENT_TOOLS
 from .tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools
-from .tools.browser_tools import BROWSER_TOOL_NAMES, build_browser_tools
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -59,8 +58,14 @@ def tool_allowed(agent, tool_name: str, extra_allow: list[str] | None = None) ->
         return True  # structured-output tools are available to every agent
     if tool_name in WORKFLOW_TOOL_NAMES or tool_name in ARTIFACT_TOOL_NAMES:
         return True
-    extra = extra_allow or []
-    if extra and any(fnmatch.fnmatch(tool_name, p) for p in extra):
+    # use_skill is how the model auto-invokes a matching skill. Every role
+    # can call it; the skill's own `tools:` frontmatter then widens the
+    # allowlist for the rest of the turn (see extra_allow). Management
+    # tools (install/uninstall) stay gated by tools_allow so a read-only
+    # agent cannot rewrite ~/.ginno/skills.
+    if tool_name == "use_skill":
+        return True
+    if extra_allow and any(fnmatch.fnmatch(tool_name, p) for p in extra_allow):
         return True
     if not agent:
         return True
@@ -70,34 +75,35 @@ def tool_allowed(agent, tool_name: str, extra_allow: list[str] | None = None) ->
     return any(fnmatch.fnmatch(tool_name, p) for p in allow)
 
 
-def _allowed_tool_names(agent, all_tools, extra_allow: list[str] | None = None) -> list[str]:
-    return [t.name for t in all_tools if tool_allowed(agent, t.name, extra_allow)]
+def _skill_extra_allow(state: dict | None) -> list[str]:
+    """Union of `tools:` declared by currently active skills.
 
-
-def skill_extra_tools(skill_names: list[str] | None, project_slug: str | None = None) -> list[str]:
-    """Frontmatter ``tools:`` of slash-invoked skills — granted for this turn.
-
-    Without this, ``/browse`` only injects SKILL.md text and analyst (no
-    ``browser_*`` on tools_allow) silently cannot open a site.
+    A skill that needs bash/write (e.g. aliyun-bill) can therefore run even
+    when the persona is a read-only analyst — but only after use_skill (or
+    a slash invoke) has put the skill on active_skills this turn.
     """
-    names = [n for n in (skill_names or []) if n]
+    names = list((state or {}).get("active_skills") or [])
     if not names:
         return []
+    slug = (state or {}).get("project_slug") or None
     from .skills.loader import SkillLoader
 
-    loader = SkillLoader(project_slug=project_slug)
+    loader = SkillLoader(project_slug=slug)
     extra: list[str] = []
     seen: set[str] = set()
     for name in names:
         skill = loader.get(name)
         if not skill:
             continue
-        for pat in skill.allowed_tools or []:
-            p = str(pat).strip()
-            if p and p not in seen:
-                seen.add(p)
-                extra.append(p)
+        for pat in skill.effective_tools():
+            if pat and pat not in seen:
+                seen.add(pat)
+                extra.append(pat)
     return extra
+
+
+def _allowed_tool_names(agent, all_tools, extra_allow: list[str] | None = None) -> list[str]:
+    return [t.name for t in all_tools if tool_allowed(agent, t.name, extra_allow)]
 
 
 def build_stable_system(
@@ -108,9 +114,9 @@ def build_stable_system(
     mcp_tool_names: list[str] | None = None,
     session_id: str = "",
     workspace: str = "",
-    extra_allow: list[str] | None = None,
     context_dirs: list[dict] | None = None,
     primary_path: str = "",
+    extra_allow: list[str] | None = None,
 ) -> str:
     """The STABLE system layer (plan B2): persona + WorldState sections +
     tool guidance. Contains nothing that changes per turn (no clock time, no
@@ -133,7 +139,6 @@ def build_stable_system(
         all_tool_names=[t.name for t in all_tools],
         agent=agent,
         workspace=workspace,
-        extra_allow=list(extra_allow or []),
         context_dirs=list(context_dirs or []),
         primary_path=primary_path or "",
     )
@@ -163,11 +168,24 @@ def build_stable_system(
         "[{'month': 'Jan', 'count': 12}, {'month': 'Feb', 'count': 19}]. Rules: use ONLY "
         "numbers you actually computed from real data — never invent or extrapolate; "
         "aggregate/downsample to <=30 points before charting; one measure per chart (never "
-        "a dual axis); >5 categories -> fold the tail into an 'Other' row. Pick the display "
+        "a dual axis). For pie, send the slices you want shown — the UI will not re-fold "
+        "them into Other. Each render_widget call is a new card (do not reuse an id). Pick the display "
         "by size: 1-2 numbers -> prose; <=5 KPIs -> stat_list; series/comparison/"
         "composition -> chart. After the chart state the one-line takeaway (e.g. the peak "
         "and the trend) — do not repeat the raw numbers."
     )
+    if "attach_ref" in allowed:
+        parts.append(
+            "Artifact registration: files you create through bash or any tool "
+            "without a path argument (e.g. a python heredoc writing "
+            ".xlsx/.html/.csv) are NOT visible to the Artifacts panel "
+            "automatically — in the answer that delivers one, call "
+            "attach_ref(kind='file', name='<file name>', ref_id='<absolute "
+            "path>') to register it (chip + panel entry). write_file outputs "
+            "need the same attach_ref echo. analyze_table's derived CSV "
+            "auto-registers. Skip intermediates (.~* lock files, .DS_Store, "
+            "scratch/temp files)."
+        )
     if any(n.startswith("todo_") for n in allowed):
         parts.append(
             "The user's daily TODO list is shown in the right panel. Use todo_list to read "
@@ -193,22 +211,30 @@ def build_stable_system(
                 "local ext item auto-syncs back to the platform — no manual platform call."
             )
     if any(n.startswith("workflow_") for n in allowed):
-        parts.append(
-            "To run a tracked multi-step process, use workflow_list / workflow_run / "
-            "workflow_step; the right-panel Workflow tab shows live progress. After "
-            "workflow_run (note the run_id and step ids it returns), mark each step with "
-            "workflow_step(run_id, step_id, 'done') as you complete it."
-        )
-    if any(n.startswith("browser_") for n in allowed):
-        parts.append(
-            "Embedded browser: for login walls, clicks, SPAs, or 'open this site', use "
-            "browser_eval (ego-browser helpers: useOrCreateTaskSpace, openOrReuseTab, "
-            "snapshotText, click('@N'), fillInput, handOffTaskSpace, takeOverTaskSpace, "
-            "pageInfo, cliLog). Do NOT use web_fetch or mcp_playwright_* as the logged-in "
-            "browser. After a handoff resumes, takeOver the SAME space name — never open "
-            "a new one. completeTaskSpace({keep}) is a separate turn/node, never mixed "
-            "into the work script."
-        )
+        if "workflow_propose_edit" in allowed:
+            parts.append(
+                "You edit a versioned workflow DSL. The bound workflow (id + "
+                "current DSL) is injected every turn under <bound_workflow> — "
+                "do not glob the filesystem for it. Call workflow_get to read "
+                "another definition. To change the bound workflow, call "
+                "workflow_propose_edit with the FULL proposed DSL; the user "
+                "must Apply the unified diff before a new version is written. "
+                "DSL node types: step / branch / loop / human. `human` is a "
+                "first-class interrupt (the run pauses for UI resume). A step "
+                "whose goal says 'ask the user' is not a human node."
+            )
+        else:
+            parts.append(
+                "To run a tracked multi-step process, use workflow_list / "
+                "workflow_get / workflow_run / workflow_step; the right-panel "
+                "Workflow tab shows live progress. After workflow_run (note "
+                "the run_id and step ids it returns), mark each step with "
+                "workflow_step(run_id, step_id, 'done') as you complete it. "
+                "workflow_get(workflow_id) returns the current DSL (node "
+                "types include step / branch / loop / human). `human` is a "
+                "first-class interrupt node; a step that merely asks the "
+                "user in chat is not."
+            )
     return "\n".join(p for p in parts if p)
 
 
@@ -216,15 +242,19 @@ def build_turn_context(
     query: str = "",
     attached_files: list[dict] | None = None,
     mention_context: list[dict] | None = None,
+    bound_workflow: dict | None = None,
 ) -> str:
     """The PER-TURN volatile context (plan B1): wiki retrieval for this query,
-    attached files, @mentions. Returned as plain text for a turn-context
+    attached files, @mentions, and (for workflow-dev sessions) the bound
+    workflow's current DSL. Returned as plain text for a turn-context
     message appended right before the user's HumanMessage — never part of the
     stable system prompt, so cached prefixes survive turn to turn.
     """
     from .knowledge.injection import build_wiki_context, wrap_context_section
 
     parts: list[str] = []
+    if bound_workflow:
+        parts.append(wrap_context_section("bound_workflow", _format_bound_workflow(bound_workflow)))
     if query:
         wiki_ctx = build_wiki_context(query)
         if wiki_ctx:
@@ -252,6 +282,36 @@ def build_turn_context(
                 content += "\n" + summary
             parts.append(wrap_context_section(f"mentioned_{kind}", content))
     return "\n".join(parts)
+
+
+def _format_bound_workflow(wf: dict) -> str:
+    """Compact, model-facing dump of the session-bound workflow definition."""
+    import json
+
+    dsl = wf.get("dsl") if isinstance(wf.get("dsl"), dict) else {}
+    lines = [
+        f"id: {wf.get('id') or ''}",
+        f"name: {wf.get('name') or ''}",
+        f"version: {wf.get('version') or wf.get('current') or ''}",
+    ]
+    if wf.get("description"):
+        lines.append(f"description: {wf['description']}")
+    nodes = dsl.get("nodes") or []
+    types = ", ".join(
+        f"{n.get('id')}={n.get('type')}" for n in nodes if isinstance(n, dict) and n.get("id")
+    )
+    if types:
+        lines.append(f"node_types: {types}")
+    lines.append("current_dsl:")
+    lines.append(json.dumps(dsl, ensure_ascii=False, indent=2))
+    lines.append(
+        "This is the workflow this session is bound to. Edit it with "
+        "workflow_propose_edit(workflow_id, new_dsl_json, rationale) using "
+        "the id above. Node types: step / branch / loop / human. `human` "
+        "pauses the run via interrupt for UI resume; a step that merely "
+        "asks the user in chat does not."
+    )
+    return "\n".join(lines)
 
 
 def build_agent_system_prompt(
@@ -363,10 +423,6 @@ def _read_global_memory() -> str:
     return text
 
 
-def _turn_extra_allow(state: AgentState) -> list[str]:
-    return skill_extra_tools(state.get("active_skills") or [], state.get("project_slug") or None)
-
-
 def _turn_agent_id(state: AgentState, config) -> str | None:
     # config['configurable'] is injected reliably every step (including after a
     # permission interrupt resume), unlike the input dict on a continued thread.
@@ -401,7 +457,7 @@ def _system_message(sys_text: str, model) -> SystemMessage:
 def agent_node_factory(model, all_tools):
     async def agent_node(state: AgentState, config=None) -> dict:
         agent = _resolve_agent(_turn_agent_id(state, config))
-        extra = _turn_extra_allow(state)
+        extra = _skill_extra_allow(state)
         allowed = [t for t in all_tools if tool_allowed(agent, t.name, extra)]
         bound = (
             model.bind_tools(allowed)
@@ -410,6 +466,9 @@ def agent_node_factory(model, all_tools):
         )
         # Stable system layer rebuilt from live WorldState sections (plan C1):
         # byte-identical across turns unless a section actually changed.
+        # extra_allow (active skill tools) is the one per-turn exception —
+        # listing those tools here is what lets the model call them after
+        # use_skill without violating "Never call a tool outside this list".
         sys_msg = _system_message(
             build_stable_system(
                 agent,
@@ -419,9 +478,9 @@ def agent_node_factory(model, all_tools):
                 mcp_tool_names=state.get("mcp_tool_names") or [],
                 session_id=((config or {}).get("configurable") or {}).get("thread_id", ""),
                 workspace=state.get("workspace", "") or "",
-                extra_allow=extra,
                 context_dirs=state.get("context_dirs") or [],
                 primary_path=state.get("primary_path", "") or "",
+                extra_allow=extra,
             ),
             model,
         )
@@ -430,6 +489,14 @@ def agent_node_factory(model, all_tools):
         # the persisted state keeps every image (UI history / time-travel intact).
         history = strip_old_images(history)
         response = await bound.ainvoke([sys_msg] + history)
+        # Attribution tag for history replay (C+ plan): messages_ui reads this
+        # to label each bubble with the agent that actually answered. Lives in
+        # additional_kwargs because langchain-core 1.x BaseMessage has no
+        # metadata field; round-trips through the checkpointer serde and is
+        # ignored by provider payload converters.
+        aid = _turn_agent_id(state, config)
+        if aid:
+            response.additional_kwargs["agent_id"] = aid
         tool_calls = getattr(response, "tool_calls", None) or []
         return {"messages": [response], "pending_tool_calls": tool_calls}
 
@@ -444,8 +511,10 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
         # PreToolUse hooks still run (they are user-authored rules, authoritative).
         # With no hooks configured (the default) this means every tool runs freely.
         bypass = is_bypass_permissions()
+        extra = _skill_extra_allow(state)
         agent = _resolve_agent(_turn_agent_id(state, config))
-        extra = _turn_extra_allow(state)
+        # Attribution tag for deny/blocked bubbles below (see agent_node).
+        aid = _turn_agent_id(state, config)
         pending = state.get("pending_tool_calls") or []
         for tc in pending:
             name = tc.get("name", "")
@@ -466,7 +535,8 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                                     f"{BLOCK_PREFIX}{name}] {name} 不可用于 "
                                     f"{agent.name if agent else 'this agent'}。"
                                     "请改用你可用的工具，或直接回答。"
-                                )
+                                ),
+                                additional_kwargs={"agent_id": aid} if aid else {},
                             )
                         ]
                     },
@@ -491,7 +561,6 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                 or name in ARTIFACT_TOOL_NAMES
                 or name in WORKFLOW_DEV_TOOL_NAMES
                 or name in SKILL_TOOL_NAMES
-                or name in BROWSER_TOOL_NAMES
             ):
                 continue
 
@@ -507,7 +576,10 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                             goto="agent",
                             update={
                                 "messages": [
-                                    AIMessage(content=f"{BLOCK_PREFIX}{name}] hook blocked: {r.reason}")
+                                    AIMessage(
+                                        content=f"{BLOCK_PREFIX}{name}] hook blocked: {r.reason}",
+                                        additional_kwargs={"agent_id": aid} if aid else {},
+                                    )
                                 ]
                             },
                         )
@@ -521,14 +593,24 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                         return Command(
                             goto="agent",
                             update={
-                                "messages": [AIMessage(content=f"{BLOCK_PREFIX}{name}] user denied")]
+                                "messages": [
+                                    AIMessage(
+                                        content=f"{BLOCK_PREFIX}{name}] user denied",
+                                        additional_kwargs={"agent_id": aid} if aid else {},
+                                    )
+                                ]
                             },
                         )
                 elif decision == "deny":
                     return Command(
                         goto="agent",
                         update={
-                            "messages": [AIMessage(content=f"{BLOCK_PREFIX}{name}] policy denied")]
+                            "messages": [
+                                AIMessage(
+                                    content=f"{BLOCK_PREFIX}{name}] policy denied",
+                                    additional_kwargs={"agent_id": aid} if aid else {},
+                                )
+                            ]
                         },
                     )
         return Command(goto="tools")
@@ -583,9 +665,6 @@ def build_all_tools(
         # Web search/fetch (citations-design.md §4.2) — [] when disabled in
         # settings; session_id binds citation source registration.
         + build_web_tools(session_id)
-        # Embedded browser (docs/browser-embed-design.md §5) — always present;
-        # FakeEngine is used under pytest so unit/api tests never spawn Chrome.
-        + build_browser_tools(session_id)
     )
 
 
@@ -610,6 +689,9 @@ def _tools_node_factory(all_tools):
         out = await node.ainvoke(state, config)
         max_chars = int(context_settings().get("tool_output_max_chars", 20000))
         msgs = []
+        activated: list[str] = []
+        pending = state.get("pending_tool_calls") or []
+        pending_by_id = {tc.get("id"): tc for tc in pending if tc.get("id")}
         for m in (out or {}).get("messages", []):
             if isinstance(m, ToolMessage):
                 content = truncate_tool_content(getattr(m, "content", ""), max_chars)
@@ -622,9 +704,26 @@ def _tools_node_factory(all_tools):
                         status=getattr(m, "status", None),
                     )
                 )
+                # A successful use_skill widens this turn's allowlist to the
+                # skill's declared tools so the next agent step can actually
+                # run them (analyst + aliyun-bill → bash, etc.).
+                if getattr(m, "name", None) == "use_skill":
+                    raw = str(getattr(m, "content", "") or "")
+                    if not raw.startswith("[error]"):
+                        tc = pending_by_id.get(getattr(m, "tool_call_id", None)) or {}
+                        skill_name = (tc.get("args") or {}).get("name")
+                        if skill_name:
+                            activated.append(str(skill_name))
             else:
                 msgs.append(m)
-        return {"messages": msgs}
+        update: dict = {"messages": msgs}
+        if activated:
+            existing = list(state.get("active_skills") or [])
+            for n in activated:
+                if n not in existing:
+                    existing.append(n)
+            update["active_skills"] = existing
+        return update
 
     return tools_node
 

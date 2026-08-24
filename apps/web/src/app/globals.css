@@ -17,7 +17,7 @@
   --code-bg: 14 14 20;
   --inline-code: 233 170 200;
   /* Chart categorical series slots — fixed CVD-validated order, dark steps.
-     Assign in order, never cycle; >5 series fold into "Other". */
+     Assign in order; pie may cycle if the model sends more than 5 slices. */
   --chart-1: #3987e5;
   --chart-2: #d95926;
   --chart-3: #199e70;
@@ -55,17 +55,6 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* CEF hole: the native Chromium view sits BEHIND the WKWebView. For the
-   live page to show through the tile rect, every layer of the DOM above
-   it must be transparent there. BrowserPane toggles html.ginno-hole while
-   a CEF tile is live; AppShell/chat/topbar carry their own bg-base so the
-   rest of the window stays opaque. */
-html.ginno-hole,
-html.ginno-hole body,
-html.ginno-hole .ginno-root {
-  background: transparent;
-}
-
 * {
   scrollbar-width: thin;
   scrollbar-color: rgb(var(--scroll)) transparent;
@@ -100,7 +89,7 @@ html.ginno-hole .ginno-root {
     @apply mb-1.5 block text-xs font-medium text-muted;
   }
   .pill {
-    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
+    @apply inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium;
   }
 }
 

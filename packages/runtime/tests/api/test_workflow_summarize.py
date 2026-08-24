@@ -42,6 +42,13 @@ def _seed_session(slug: str, sid: str) -> None:
     cp.put({"configurable": {"thread_id": sid}}, checkpoint, {}, {})
 
 
+def _await_case(client, synthesis_id: str) -> dict:
+    """Deterministically await the background synthesis task; return the case."""
+    aw = client.post(f"/api/synthesis/cases/{synthesis_id}/_await").json()
+    assert aw["ok"] is True and aw.get("error") is None, aw
+    return aw["case"]
+
+
 def test_summarize_returns_valid_dsl_draft(client, monkeypatch):
     from ginno_runtime import server
 
@@ -62,13 +69,20 @@ def test_summarize_returns_valid_dsl_draft(client, monkeypatch):
     sm = ScriptedChatModel(scripts=[script(text=dsl_json)])
     monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: sm)
 
+    # Endpoint returns immediately with the synthesis_id; the DSL arrives once
+    # the background task finishes (observed via _await / WS / polling).
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True, body
-    assert body["dsl"]["entry"] == "s1"
-    assert len(body["dsl"]["nodes"]) == 2
-    assert body["source_session_id"] == sid
+    assert body.get("synthesis_id")
+    assert body.get("status") == "started"
+
+    case = _await_case(client, body["synthesis_id"])
+    assert case["output"]["status"] == "ok"
+    assert case["output"]["dsl"]["entry"] == "s1"
+    assert len(case["output"]["dsl"]["nodes"]) == 2
+    assert case["input"]["session_id"] == sid
     # a draft is NOT persisted as a workflow definition
     assert all(w.get("name") != "PR Review" for w in client.get("/api/workflows").json())
 
@@ -82,9 +96,12 @@ def test_summarize_rejects_invalid_model_output(client, monkeypatch):
     monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: sm)
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is False
-    assert "raw" in body
+    syn_id = r.json()["synthesis_id"]
+    case = _await_case(client, syn_id)
+    assert case["output"]["status"] == "failed"
+    assert case["output"]["fail_stage"] == "format.not_json"
+    # raw model output is preserved per-attempt in the case record
+    assert case["attempts"] and case["attempts"][0]["raw"]
 
 
 def test_summarize_404_for_unknown_session(client):
@@ -114,6 +131,7 @@ def test_summarize_handles_thinking_block_content(client, monkeypatch):
     monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: _ThinkingModel())
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["ok"] is True, body
-    assert body["dsl"]["name"] == "Thinking WF"
+    syn_id = r.json()["synthesis_id"]
+    case = _await_case(client, syn_id)
+    assert case["output"]["status"] == "ok"
+    assert case["output"]["dsl"]["name"] == "Thinking WF"

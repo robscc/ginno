@@ -139,7 +139,7 @@ async def doctor_workflow_endpoint(wf_id: str) -> dict:
 # ---- P6: synthesize a workflow DSL draft from a session's conversation ----
 # Bump on any change to the prompt above so synthesis cases can be grouped by
 # the prompt that produced them (quality-plan §3.2 A/B).
-SYNTH_PROMPT_VERSION = "synth-4"
+SYNTH_PROMPT_VERSION = "synth-3"
 _SYNTHESIZE_PROMPT = (
     "You are a workflow synthesizer. Given a conversation trace between a user and "
     "an agent (including tool calls), produce a reusable workflow DSL that captures "
@@ -153,21 +153,13 @@ _SYNTHESIZE_PROMPT = (
     "Node types:\n"
     '- step: {"id","type":"step","agent":"dev|research|writer","goal":"<instruction>"}\n'
     '- branch: {"id","type":"branch","cases":[{"when":"<expr>","then":"<id>"}],"default":"<id>"}\n'
-    '- loop: {"id","type":"loop","over":"<expr e.g. context.items>","as":"<var>","body":"<body id>","max_iters":<int>}\n'
-    '- browser: {"id","type":"browser","action":"eval|snapshot|handoff|complete","space":"<3-6 words>","code":"<ego helpers>","url":"<optional>","keep":true}\n\n'
+    '- loop: {"id","type":"loop","over":"<expr e.g. context.items>","as":"<var>","body":"<body id>","max_iters":<int>}\n\n'
     "Rules:\n"
     "- `entry` MUST be an existing node id; every edge endpoint MUST exist.\n"
     "- A loop's body returns to the loop head automatically: do NOT add an edge FROM the body; reference the loop item via {{<as>}}.\n"
     "- A branch routes via cases/default: do NOT add plain edges from a branch.\n"
     "- Put any per-run inputs the conversation revealed into context.schema + context.initial.\n"
     "- Default to a simple linear step chain; only add branch/loop when the trace clearly shows conditionals or repetition.\n"
-    "- When the trace uses /browse, browser_eval, browser_snapshot, browser_handoff or "
-    "logged-in page work, emit type:\"browser\" nodes (NOT a step that just says "
-    "'use playwright'). action eval does the work script; login/captcha/payment is a "
-    "separate action:\"handoff\" node; close/keep the Space with action:\"complete\" "
-    "(complete MUST be its own node — never mix completeTaskSpace into the eval code). "
-    "Reuse the same space name across the run. Prefer the logged-in embedded browser "
-    "over mcp_playwright_* (that one is anonymous headless).\n"
     "- Agents: dev (code/actions), research (read/summarise), writer (draft text).\n"
     "- Any per-run placeholder you use in goal/prompt fields ({{variable_name}}) MUST also appear "
     'in context.schema.properties with type:"string" and in context.initial as "" '
@@ -250,7 +242,20 @@ def _extract_json_obj(text: str) -> dict | None:
     return None
 
 
-async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = None) -> dict:
+# In-process synthesis task registry (mirrors _WF_RUN_TASKS for workflow runs;
+# separate because the run registry's done-callback is run-specific). Sole
+# source of "running" for synthesis cases: after a restart it is empty, so
+# cases left without output.json render as 未完成 — no reconciliation needed.
+_SYNTH_TASKS: dict[str, asyncio.Task] = {}
+
+
+async def _run_synthesis(
+    trace: str,
+    model,
+    case_dir,
+    usage_attr: dict | None = None,
+    on_attempt=None,
+) -> dict:
     """The ≤3-attempt self-correcting synthesis loop (shared by the live
     endpoint and offline replay). Returns a result dict::
 
@@ -259,6 +264,9 @@ async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = 
     Records each attempt onto ``case_dir`` when provided (quality-plan §3.1).
     Each model call is also logged to the global usage store (source=workflow,
     usage-stats-design §3.6) when ``usage_attr`` carries the attribution.
+    ``on_attempt`` (optional async callback) is invoked after each recorded
+    attempt with ``{attempt, parse, validate_errors, latency_ms}`` (no raw —
+    the case-detail API provides that); replay leaves it None.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -291,6 +299,9 @@ async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = 
             wf_synth.record_attempt(case_dir, attempt=attempt + 1, latency_ms=latency_ms,
                                     raw=raw, parse="not_json", validate_errors=[],
                                     hint_fed_back=extra_hint)
+            if on_attempt:
+                await on_attempt({"attempt": attempt + 1, "parse": "not_json",
+                                  "validate_errors": [], "latency_ms": latency_ms})
             continue
         dsl = wf_dsl.normalize_dsl(dsl)
         errs = wf_dsl.validate_dsl(dsl)
@@ -299,6 +310,9 @@ async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = 
             validate_errors=list(errs),
             hint_fed_back=None if not errs else "[DSL errors: " + "; ".join(errs) + "]",
         )
+        if on_attempt:
+            await on_attempt({"attempt": attempt + 1, "parse": "ok",
+                              "validate_errors": list(errs), "latency_ms": latency_ms})
         if not errs:
             fail_stage = None
             break
@@ -318,10 +332,121 @@ async def _run_synthesis(trace: str, model, case_dir, usage_attr: dict | None = 
     }
 
 
+def _synth_error_text(result: dict) -> str:
+    """User-facing failure text for a failed synthesis result (carried by the
+    background finished-event and readable in the panel/chat error copy)."""
+    if result.get("dsl") is None:
+        return "model did not return a JSON DSL object"
+    return "synthesized DSL invalid: " + "; ".join(result.get("errors") or [])
+
+
+async def _run_synthesis_bg(
+    session_id: str,
+    synthesis_id: str,
+    case_dir: Path,
+    trace: str,
+    model,
+    usage_attr: dict | None,
+) -> None:
+    """Background driver: runs the ≤3-attempt loop, records the case outcome,
+    and pushes live ``synthesis.event`` WS events (started/attempt/finished)
+    so the right-dock 总结 panel and the waiting chat UI update in real time.
+
+    Invariant: when this task ends normally the case always has output.json
+    (written here, or healed by ``_spawn_synth_task``'s done-callback)."""
+    from ..workflows import synthesis as wf_synth
+
+    _log.info("synthesis_start synthesis=%s session=%s", synthesis_id, session_id)
+    await _push_session_event(session_id, "synthesis.event",
+                             {"synthesis_id": synthesis_id, "kind": "started"})
+    try:
+        async def _on_attempt(info: dict) -> None:
+            _log.info(
+                "synthesis_attempt synthesis=%s attempt=%s parse=%s errors=%d",
+                synthesis_id, info.get("attempt"), info.get("parse"),
+                len(info.get("validate_errors") or []),
+            )
+            await _push_session_event(
+                session_id, "synthesis.event",
+                {"synthesis_id": synthesis_id, "kind": "attempt", **info},
+            )
+
+        result = await _run_synthesis(trace, model, case_dir, usage_attr=usage_attr,
+                                      on_attempt=_on_attempt)
+        wf_synth.finish_case(
+            case_dir,
+            status="ok" if result["ok"] else "failed",
+            dsl=result["dsl"],
+            fail_stage=result["fail_stage"],
+            total_latency_ms=result["total_ms"],
+            attempts_used=result["attempts_used"],
+        )
+        _log.info(
+            "synthesis_finish synthesis=%s ok=%s fail_stage=%s attempts=%s ms=%s",
+            synthesis_id, result["ok"], result["fail_stage"],
+            result["attempts_used"], result["total_ms"],
+        )
+        await _push_session_event(session_id, "synthesis.event", {
+            "synthesis_id": synthesis_id,
+            "kind": "finished",
+            "ok": result["ok"],
+            "fail_stage": result["fail_stage"],
+            "attempts_used": result["attempts_used"],
+            "total_ms": result["total_ms"],
+            "error": None if result["ok"] else _synth_error_text(result),
+        })
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        _log.exception("synthesis_failed synthesis=%s session=%s", synthesis_id, session_id)
+        wf_synth.finish_case(case_dir, status="failed", dsl=None,
+                             fail_stage="internal.error", total_latency_ms=0, attempts_used=0)
+        await _push_session_event(session_id, "synthesis.event", {
+            "synthesis_id": synthesis_id, "kind": "finished", "ok": False,
+            "fail_stage": "internal.error", "attempts_used": 0, "total_ms": 0,
+            "error": "internal error during synthesis",
+        })
+
+
+def _spawn_synth_task(synthesis_id: str, case_dir: Path, coro) -> asyncio.Task:
+    """Register a synthesis background task with the permanent safety net
+    (mirrors ``_spawn_run_task``): a non-cancelled task that ends while the
+    case still has no output.json is healed to failed/internal.error."""
+    from ..workflows import synthesis as wf_synth
+
+    task = asyncio.create_task(coro)
+    _SYNTH_TASKS[synthesis_id] = task
+
+    def _on_done(t: asyncio.Task) -> None:
+        _SYNTH_TASKS.pop(synthesis_id, None)
+        if t.cancelled():
+            return
+        try:
+            t.exception()  # consume: already logged inside the task
+            if not (case_dir / "output.json").exists():
+                wf_synth.finish_case(case_dir, status="failed", dsl=None,
+                                     fail_stage="internal.error",
+                                     total_latency_ms=0, attempts_used=0)
+                _log.error("synthesis_guard_healed synthesis=%s (no output.json)",
+                           synthesis_id)
+        except Exception:
+            _log.exception("synthesis_guard_failed synthesis=%s", synthesis_id)
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 @router.post("/api/workflows/summarize-from-session")
 async def summarize_session_to_dsl(data: dict) -> dict:
     """Distill a session's conversation into a workflow DSL *draft* (not saved).
-    The UI then creates a workflow from it (version 1) or opens the dev agent."""
+    The UI then creates a workflow from it (version 1) or opens the dev agent.
+
+    Validation + case creation happen synchronously — the case directory exists
+    when the response returns, so the 总结 panel shows the in-progress row
+    immediately. The ≤3-attempt LLM loop then runs in the background and
+    streams ``synthesis.event`` WS events; the response carries the
+    synthesis_id and the UI awaits the terminal state via WS + polling
+    (tests/ops use the ``_await`` endpoint)."""
     session_id = (data or {}).get("session_id")
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
@@ -356,33 +481,23 @@ async def summarize_session_to_dsl(data: dict) -> dict:
         prompt_version=SYNTH_PROMPT_VERSION,
     )
     wf_synth.prune_cases()
+    if case_dir is None:
+        raise HTTPException(status_code=500, detail="failed to create synthesis case")
 
-    # S4b: up to 3 self-correcting attempts (shared helper, also used by replay).
-    # Each attempt is metered into the usage log as source=workflow.
+    # S4b: up to 3 self-correcting attempts (shared helper, also used by
+    # replay). Each attempt is metered into the usage log as source=workflow.
     synth_model_name = getattr(model, "model", None) or getattr(model, "model_name", "") or ""
-    result = await _run_synthesis(trace, model, case_dir, usage_attr={
-        "provider": provider,
-        "model": synth_model_name,
-        "session_id": session_id,
-        "run_id": synthesis_id,
-    })
-    wf_synth.finish_case(
+    _spawn_synth_task(
+        synthesis_id,
         case_dir,
-        status="ok" if result["ok"] else "failed",
-        dsl=result["dsl"],
-        fail_stage=result["fail_stage"],
-        total_latency_ms=result["total_ms"],
-        attempts_used=result["attempts_used"],
+        _run_synthesis_bg(session_id, synthesis_id, case_dir, trace, model, usage_attr={
+            "provider": provider,
+            "model": synth_model_name,
+            "session_id": session_id,
+            "run_id": synthesis_id,
+        }),
     )
-    if not result["ok"]:
-        if result["dsl"] is None:
-            return {"ok": False, "error": "model did not return a JSON DSL object",
-                    "raw": result["raw"][:1000], "synthesis_id": synthesis_id}
-        return {"ok": False,
-                "error": "synthesized DSL invalid: " + "; ".join(result["errors"]),
-                "dsl": result["dsl"], "synthesis_id": synthesis_id}
-    return {"ok": True, "dsl": result["dsl"], "source_session_id": session_id,
-            "synthesis_id": synthesis_id}
+    return {"ok": True, "synthesis_id": synthesis_id, "status": "started"}
 
 
 # ---- synthesis-case review API (quality-plan §3.2, UI in Settings) ----
@@ -390,7 +505,13 @@ async def summarize_session_to_dsl(data: dict) -> dict:
 async def synthesis_cases_endpoint(limit: int = 100) -> dict:
     from ..workflows import synthesis as wf_synth
 
-    return {"ok": True, "cases": wf_synth.list_cases(limit=max(1, min(500, limit)))}
+    cases = wf_synth.list_cases(limit=max(1, min(500, limit)))
+    # Live "running" annotation: the in-process task table is the only source
+    # of truth (empty after a restart → leftover cases render 未完成).
+    for row in cases:
+        t = _SYNTH_TASKS.get(row.get("synthesis_id"))
+        row["running"] = bool(t is not None and not t.done())
+    return {"ok": True, "cases": cases}
 
 
 @router.get("/api/synthesis/cases/{synthesis_id}")
@@ -401,6 +522,25 @@ async def synthesis_case_detail_endpoint(synthesis_id: str) -> dict:
     if not case:
         raise HTTPException(status_code=404, detail="synthesis case not found")
     return {"ok": True, "case": case}
+
+
+@router.post("/api/synthesis/cases/{synthesis_id}/_await")
+async def await_synthesis_case_endpoint(synthesis_id: str) -> dict:
+    """Test/ops helper: await the background synthesis task so callers can
+    observe the terminal case state deterministically (mirrors the workflow
+    run ``_await``). The UI uses WS + polling instead."""
+    from ..workflows import synthesis as wf_synth
+
+    if wf_synth.find_case_by_synthesis_id(synthesis_id) is None:
+        raise HTTPException(status_code=404, detail="synthesis case not found")
+    task = _SYNTH_TASKS.get(synthesis_id)
+    err: str | None = None
+    if task is not None:
+        try:
+            await task
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+    return {"ok": True, "case": wf_synth.load_case(synthesis_id), "error": err}
 
 
 @router.get("/api/synthesis/stats")
@@ -582,37 +722,6 @@ def _touch_run(run_id: str) -> None:
         wf_storemod._write_json(wf_storemod._run_path(run_id), run)
 
 
-def _latest_session_id() -> str | None:
-    """Most recently updated session across projects (design §9.6 headless bind)."""
-    from ..session_meta import _session_meta_list
-
-    best: tuple[float, str] | None = None
-    for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
-        slug = slug_dir.parent.parent.name
-        for m in _session_meta_list(slug):
-            sid = m.get("id")
-            if not sid:
-                continue
-            ts = float(m.get("updated") or m.get("created") or 0)
-            if best is None or ts > best[0]:
-                best = (ts, sid)
-    return best[1] if best else None
-
-
-def _bind_headless_browser_handoff(run_id: str, _interrupt: dict) -> str | None:
-    """Attach a headless run to the latest session so handoff has a surface."""
-    sid = _latest_session_id()
-    if not sid:
-        return None
-    run = wf_store.get_run(run_id)
-    if run:
-        run["present_in_session_id"] = sid
-        run["session_id"] = run.get("session_id") or sid
-        run["updated"] = time.time()
-        wf_storemod._write_json(wf_storemod._run_path(run_id), run)
-    return sid
-
-
 def _set_run_pending_interrupt(run_id: str, payload: dict | None) -> None:
     """Stamp/clear ``pending_interrupt`` on the run JSON (workflow-ux-redesign
     P1). Lets any UI (panel, dock badge) tell WHY a run is paused — a human
@@ -720,34 +829,6 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
             # step would stay "pending" forever — mark it running while waiting.
             if nid in node_to_step:
                 wf_store.update_step(run_id, node_to_step[nid], "running")
-            # Design §9.6: a headless run (no present_in_session_id) that hits a
-            # browser handoff must still have a surface — bind the latest session
-            # so the pane / HandoffCard can open. Never leave an interrupt with
-            # no picture.
-            if last_interrupt.get("kind") == "browser_handoff" and not present_in:
-                present_in = _bind_headless_browser_handoff(run_id, last_interrupt)
-                if present_in:
-                    await _push_session_event(
-                        present_in,
-                        "run.bind",
-                        {
-                            "run_id": run_id,
-                            "workflow_id": wf.get("id"),
-                            "present_in_session_id": present_in,
-                        },
-                    )
-                    await _push_session_event(
-                        present_in,
-                        "browser.handoff",
-                        {
-                            "space": last_interrupt.get("space"),
-                            "url": last_interrupt.get("url") or "",
-                            "reason": last_interrupt.get("reason")
-                            or last_interrupt.get("question")
-                            or "",
-                            "run_id": run_id,
-                        },
-                    )
         elif kind == "resume":
             last_interrupt = None
             _set_run_pending_interrupt(run_id, None)
@@ -1005,6 +1086,23 @@ async def _shutdown_run_tasks() -> None:
             sync_ledger.set_status(rid, "interrupted", reason)
 
 
+async def _shutdown_synth_tasks() -> None:
+    """Graceful shutdown: cancel live synthesis tasks. Deliberately does NOT
+    write output.json for them — the leftover cases render as 未完成 after the
+    restart (crash semantics), the intended reconciliation-free behavior."""
+    pending = [t for t in list(_SYNTH_TASKS.values()) if not t.done()]
+    for t in pending:
+        t.cancel()
+    if pending:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=3.0,
+            )
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+
+
 @router.post("/api/workflow_runs")
 async def create_workflow_run_endpoint(data: dict) -> dict:
     """Trigger a workflow run: creates the run (bound to a session for in-chat
@@ -1084,17 +1182,7 @@ async def resume_workflow_run_endpoint(run_id: str, data: dict) -> dict:
 async def decide_workflow_run_endpoint(run_id: str, data: dict) -> dict:
     """Supervisor/human decision = resume with {"decision","context_patch"}."""
     data = data or {}
-    decision = data.get("decision")
-    if decision == "browser_resume":
-        space = data.get("space") or (data.get("context_patch") or {}).get("space")
-        if space:
-            try:
-                from ..browser import get_supervisor
-
-                get_supervisor().take_over(space)
-            except Exception:
-                _log.exception("workflow browser take_over failed")
-    value = {"decision": decision, "context_patch": data.get("context_patch") or {}}
+    value = {"decision": data.get("decision"), "context_patch": data.get("context_patch") or {}}
     return await resume_workflow_run_endpoint(run_id, value)
 
 

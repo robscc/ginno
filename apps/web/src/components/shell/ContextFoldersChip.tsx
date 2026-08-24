@@ -81,7 +81,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
   });
 
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <button
         onClick={() => setOpen((o) => !o)}
         title="本会话挂载的上下文目录"
@@ -95,7 +95,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 z-50 mt-1.5 w-96 overflow-hidden rounded-xl border border-line bg-card shadow-xl">
+          <div className="absolute left-0 z-50 mt-1.5 w-96 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-card shadow-xl">
             <div className="border-b border-line px-3 py-2 text-xs font-medium text-muted">
               本会话上下文目录
             </div>

@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Check, Loader2, RotateCcw, TrendingUp, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { SynthesisCaseSummary } from "@/lib/runtime";
+import { SynthesisCaseDrawer } from "@/components/right/SynthesisCaseDrawer";
 
 /** Settings → 总结质量 (quality-plan §3.2/§3.4): funnel metrics over recorded
  *  synthesis cases, a filterable case list, and a detail drawer with one-click
@@ -136,18 +137,31 @@ function MetricCard({ label, value, sub, color }: { label: string; value: string
 }
 
 function CaseRow({ c, onOpen }: { c: SynthesisCaseSummary; onOpen: () => void }) {
-  const failed = c.status !== "ok";
   const runFailed = c.outcome?.first_run && c.outcome.first_run.status === "failed";
   const adopted = c.outcome?.created;
-  const icon = failed ? <X className="h-3.5 w-3.5 text-red" /> : runFailed ? <X className="h-3.5 w-3.5 text-red" /> : adopted ? <Check className="h-3.5 w-3.5 text-green" /> : <Check className="h-3.5 w-3.5 text-faint" />;
+  let icon: ReactNode;
+  let label: string;
+  if (!c.status) {
+    // No output.json yet: either the in-process task is alive (进行中) or the
+    // runtime exited before it finished (未完成 — trace preserved on disk).
+    if (c.running) {
+      icon = <Loader2 className="h-3.5 w-3.5 animate-spin text-blue" />;
+      label = "进行中";
+    } else {
+      icon = <X className="h-3.5 w-3.5 text-yellow" />;
+      label = "未完成";
+    }
+  } else if (c.status !== "ok") {
+    icon = <X className="h-3.5 w-3.5 text-red" />;
+    label = c.fail_stage || "生成失败";
+  } else if (runFailed) {
+    icon = <X className="h-3.5 w-3.5 text-red" />;
+    label = `首跑失败 @ ${c.outcome?.first_run?.failed_node || "?"}`;
+  } else {
+    icon = <Check className={`h-3.5 w-3.5 ${adopted ? "text-green" : "text-faint"}`} />;
+    label = adopted ? "已采用 · 首跑成功" : "已生成";
+  }
   const when = c.ts ? new Date(c.ts * 1000).toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
-  const label = failed
-    ? c.fail_stage || "生成失败"
-    : runFailed
-      ? `首跑失败 @ ${c.outcome?.first_run?.failed_node || "?"}`
-      : adopted
-        ? "已采用 · 首跑成功"
-        : "已生成";
   return (
     <button
       onClick={onOpen}
@@ -161,120 +175,5 @@ function CaseRow({ c, onOpen }: { c: SynthesisCaseSummary; onOpen: () => void })
       {c.prompt_version && <span className="shrink-0 rounded border border-line px-1.5 text-[10px] font-mono text-faint">{c.prompt_version}</span>}
       <span className="shrink-0 text-[10px] text-faint">{when}</span>
     </button>
-  );
-}
-
-function SynthesisCaseDrawer({
-  synthesisId,
-  onClose,
-  onReplayed,
-}: {
-  synthesisId: string;
-  onClose: () => void;
-  onReplayed: () => void;
-}) {
-  const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.getSynthesisCase>>["case"] | null>(null);
-  const [replaying, setReplaying] = useState(false);
-  const [replayMsg, setReplayMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .getSynthesisCase(synthesisId)
-      .then((r) => alive && r.ok && setDetail(r.case))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [synthesisId]);
-
-  const replay = async () => {
-    setReplaying(true);
-    setReplayMsg(null);
-    try {
-      const r = await api.replaySynthesis(synthesisId);
-      if (r.ok) {
-        setReplayMsg(`重放成功（${r.attempts_used} 次尝试，${r.prompt_version}）`);
-        onReplayed();
-      } else {
-        setReplayMsg(`重放失败：${r.fail_stage || (r.errors || []).join("; ") || "未知"}`);
-      }
-    } catch {
-      setReplayMsg("重放失败：无法连接运行时");
-    } finally {
-      setReplaying(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-40" onClick={onClose}>
-      <div
-        className="absolute right-0 top-0 flex h-full w-96 flex-col border-l border-line bg-panel shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-          <span className="text-sm font-semibold text-txt">案例详情</span>
-          <span className="truncate font-mono text-[10px] text-faint">{synthesisId}</span>
-          <button onClick={onClose} className="ml-auto rounded p-1 text-faint hover:bg-card2 hover:text-txt" aria-label="关闭">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-          {!detail && <div className="py-6 text-center text-xs text-faint">加载中…</div>}
-          {detail && (
-            <>
-              <div className="rounded-lg border border-line bg-base/30 p-2.5 text-[11px]">
-                <div className="text-faint">
-                  状态：<span className={detail.output?.status === "ok" ? "text-green" : "text-red"}>{detail.output?.status}</span>
-                  {detail.output?.fail_stage && <> · {detail.output.fail_stage}</>}
-                </div>
-                <div className="mt-0.5 text-faint">
-                  提示词版本：{detail.input?.prompt_version} · 尝试 {detail.output?.attempts_used} 次
-                </div>
-              </div>
-
-              {(detail.attempts || []).length > 0 && (
-                <div>
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">各轮尝试</div>
-                  <div className="space-y-1">
-                    {(detail.attempts || []).map((a, i) => (
-                      <div key={i} className="rounded-md border border-line bg-card px-2 py-1.5 text-[11px]">
-                        <span className={a.validate_errors.length ? "text-red" : "text-green"}>
-                          第 {a.attempt} 轮 · {a.parse}
-                        </span>
-                        <span className="ml-2 text-faint">{a.latency_ms}ms</span>
-                        {a.validate_errors.length > 0 && (
-                          <div className="mt-0.5 text-[10px] text-red">{a.validate_errors.join("；")}</div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {detail.input?.trace && (
-                <div>
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">Trace（会话摘要）</div>
-                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-base/50 p-2 font-mono text-[10px] leading-relaxed text-muted">
-                    {detail.input.trace}
-                  </pre>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-        <div className="border-t border-line p-3">
-          {replayMsg && <div className="mb-2 text-[11px] text-muted">{replayMsg}</div>}
-          <button
-            onClick={() => void replay()}
-            disabled={replaying || !detail}
-            className="btn-press flex w-full items-center justify-center gap-1.5 rounded-md bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-          >
-            {replaying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-            {replaying ? "重放中…" : "用当前提示词重新总结（离线重放）"}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }

@@ -49,6 +49,45 @@ class Skill:
         """One-line summary for injection into system prompt index."""
         return f"- {self.name}: {self.description}"
 
+    def model_invocable(self) -> bool:
+        return self.trigger in ("model-invocable", "both")
+
+    def user_invocable(self) -> bool:
+        return self.trigger in ("user-invocable", "both")
+
+    def effective_tools(self) -> list[str]:
+        """Tools this skill is allowed to use once activated.
+
+        Frontmatter ``tools:`` wins. Script-backed skills that omit it still
+        need a shell to run the companion ``*.py``, so default to ``bash``.
+        """
+        if self.allowed_tools:
+            return list(self.allowed_tools)
+        return ["bash"]
+
+
+def wrap_skill_body(skill: Skill, request: str = "") -> str:
+    """Wrap a SKILL.md body the same way slash substitution and ``use_skill`` do.
+
+    ``$ARGUMENTS`` in the body is replaced with the request (empty when none),
+    matching Claude-Code-style skill templates. The skill directory is
+    appended so script-backed skills know where to run from.
+    """
+    body = (skill.body or "").strip()
+    body = body.replace("$ARGUMENTS", request or "")
+    blocks = [
+        f'<skill name="{skill.name}">',
+        body,
+        "</skill>",
+    ]
+    if skill.path is not None:
+        blocks.append(f"\nSkill directory: {skill.path.parent}")
+    if request:
+        blocks.append(f"\n\nUser request: {request}")
+    else:
+        blocks.append("\n\n(Follow the skill instructions above.)")
+    return "\n".join(blocks)
+
 
 def _parse_skill_file(p: Path, builtin: bool = False) -> Skill | None:
     raw = p.read_text(encoding="utf-8")
@@ -103,8 +142,9 @@ class SkillLoader:
         if not skills:
             return ""
         lines = [
-            "Available skills (the user can invoke one by starting a message with"
-            " /<name>; listed here for your awareness):"
+            "Available skills. Call use_skill(name, request) when a skill matches"
+            " the user's intent — do not ask the user to type /<name> yourself."
+            " The user can also invoke one by starting a message with /<name>:"
         ]
         lines += [s.system_prompt_snippet() for s in skills]
         return "\n".join(lines)

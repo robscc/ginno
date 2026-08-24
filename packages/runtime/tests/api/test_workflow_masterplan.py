@@ -16,6 +16,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -388,6 +389,16 @@ def test_hard_deny_home_protected_but_workspace_exempt(monkeypatch, tmp_path):
     out = tools["bash"].invoke({"command": f"cat {secret}"})
     assert out.startswith("[error]")
 
+    # Skill trees are user content — readable and bash-able (script-backed
+    # skills like aliyun-bill live here). Settings next door stay denied.
+    skill = fake_home / "skills" / "aliyun-bill" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# bill\n", encoding="utf-8")
+    assert tools["read_file"].invoke({"path": str(skill)}) == "# bill\n"
+    out = tools["bash"].invoke({"command": f"cat {skill}"})
+    assert not out.startswith("[error]"), out
+    assert "# bill" in out
+
 
 def test_hard_deny_cwd_home_fallback_protected(monkeypatch, tmp_path):
     """When the workspace equals home itself (the workflow cwd fallback), the
@@ -476,6 +487,8 @@ def test_synthesis_case_lifecycle():
         prompt_version="synth-test",
     )
     assert case_dir is not None and case_dir.is_dir()
+    # timestamp prefix stays first (dir-name sort == chronological); uuid last
+    assert re.match(r"^\d{8}-\d{6}-.+-[0-9a-f]{8}$", syn_id), syn_id
     ws.record_attempt(case_dir, attempt=1, latency_ms=10, raw="{}", parse="ok",
                       validate_errors=["e"], hint_fed_back="hint")
     ws.finish_case(case_dir, status="failed", dsl={"x": 1}, fail_stage="schema.e",
@@ -493,7 +506,8 @@ def test_synthesis_case_lifecycle():
 
 
 def test_synthesis_records_on_summarize(client, monkeypatch):
-    """The live endpoint must produce a case dir + synthesis_id in the reply."""
+    """The live endpoint returns immediately with synthesis_id (no dsl); the
+    background task records the case and `_await` observes the terminal state."""
     from ginno_runtime import server as srv
     from ginno_runtime.checkpointer import FileCheckpointer
     from langchain_core.messages import HumanMessage
@@ -515,10 +529,14 @@ def test_synthesis_records_on_summarize(client, monkeypatch):
     body = r.json()
     assert body["ok"] is True, body
     assert body.get("synthesis_id")
+    assert body.get("status") == "started"
+    assert "dsl" not in body  # result arrives via WS/polling, not the POST reply
 
-    from ginno_runtime.workflows import synthesis as ws
-    case = ws.load_case(body["synthesis_id"])
+    aw = client.post(f"/api/synthesis/cases/{body['synthesis_id']}/_await").json()
+    assert aw["ok"] is True and aw.get("error") is None, aw
+    case = aw["case"]
     assert case["output"]["status"] == "ok"
+    assert case["attempts"] and case["attempts"][0]["parse"] == "ok"
 
 
 def _seed_case(client, monkeypatch, sid="sess-api-case"):
@@ -538,7 +556,10 @@ def _seed_case(client, monkeypatch, sid="sess-api-case"):
     monkeypatch.setattr("ginno_runtime.api.workflows.build_model",
                         lambda *a, **k: ScriptedChatModel(scripts=[script(text=dsl_json)]))
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
-    return r.json()["synthesis_id"]
+    syn_id = r.json()["synthesis_id"]
+    aw = client.post(f"/api/synthesis/cases/{syn_id}/_await").json()
+    assert aw.get("error") is None, aw
+    return syn_id
 
 
 def test_synthesis_api_cases_and_stats(client, monkeypatch):
@@ -571,3 +592,107 @@ def test_synthesis_api_case_detail_and_replay(client, monkeypatch):
 
 def test_synthesis_replay_404_unknown(client):
     assert client.post("/api/synthesis/replay/nope").status_code == 404
+
+
+def test_synthesis_uuid_suffix_unique():
+    """uuid suffix: same-second cases get distinct dirs, both loadable."""
+    from ginno_runtime.workflows import synthesis as ws
+
+    ids = []
+    for _ in range(2):
+        case_dir, syn_id = ws.new_case(
+            "sess-uuidtest", provider="anthropic", model="m", last_n=None,
+            trace="t", session_stats={}, prompt_version="synth-test",
+        )
+        assert case_dir is not None
+        assert re.match(r"^\d{8}-\d{6}-.+-[0-9a-f]{8}$", syn_id), syn_id
+        ids.append(syn_id)
+    assert ids[0] != ids[1]  # same-second cases must not overwrite each other
+    for syn_id in ids:
+        case = ws.load_case(syn_id)
+        assert case is not None and case["input"]["trace"] == "t"
+
+
+def test_synthesis_bg_failure_records_case(client, monkeypatch):
+    """A fully failed background synthesis still records a terminal case."""
+    from ginno_runtime import server as srv
+    from ginno_runtime.checkpointer import FileCheckpointer
+    from langchain_core.messages import HumanMessage
+
+    sid = "sess-synth-fail"
+    srv._session_meta_upsert("default", {"id": sid, "title": "t", "agent_id": "dev"})
+    cp = FileCheckpointer("default")
+    state = {"messages": [HumanMessage(content="build a workflow")], "workspace": "/tmp",
+             "project_slug": "default", "agent_id": "dev", "active_skills": [],
+             "pending_tool_calls": []}
+    cp.put({"configurable": {"thread_id": sid}},
+           {"id": "c1", "channel_values": state, "pending_sends": []}, {}, {})
+    monkeypatch.setattr("ginno_runtime.api.workflows.build_model",
+                        lambda *a, **k: ScriptedChatModel(
+                            scripts=[script(text="sorry, not json")] * 3))
+    r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
+    syn_id = r.json()["synthesis_id"]
+    aw = client.post(f"/api/synthesis/cases/{syn_id}/_await").json()
+    assert aw["ok"] is True and aw.get("error") is None, aw
+    out = aw["case"]["output"]
+    assert out["status"] == "failed"
+    assert out["fail_stage"] == "format.not_json"
+    assert out["attempts_used"] == 3
+
+
+def test_synthesis_cases_running_annotation(client, monkeypatch):
+    """running flag: in-process task table is the only source of truth."""
+    from ginno_runtime.api import workflows as wf_api
+
+    syn_id = _seed_case(client, monkeypatch, sid="sess-running-flag")
+    cases = client.get("/api/synthesis/cases").json()["cases"]
+    row = next(c for c in cases if c["synthesis_id"] == syn_id)
+    assert row["running"] is False  # finished, no live task
+
+    class _FakeTask:  # duck-typed: only .done() is consulted
+        def done(self):
+            return False
+
+    wf_api._SYNTH_TASKS[syn_id] = _FakeTask()
+    try:
+        cases = client.get("/api/synthesis/cases").json()["cases"]
+        row = next(c for c in cases if c["synthesis_id"] == syn_id)
+        assert row["running"] is True
+    finally:
+        wf_api._SYNTH_TASKS.pop(syn_id, None)
+
+
+def test_synthesis_await_unknown_404(client):
+    assert client.post("/api/synthesis/cases/nope/_await").status_code == 404
+
+
+def test_synthesis_ws_events(create_session, client, monkeypatch, ws_conv):
+    """The background driver streams synthesis.event started/attempt/finished."""
+    from ginno_runtime.checkpointer import FileCheckpointer
+    from langchain_core.messages import HumanMessage
+
+    # create_session puts the session in _SESSIONS so the WS endpoint accepts it
+    sid = create_session([script(text="unused")], agent_id="dev")
+    cp = FileCheckpointer("default")
+    state = {"messages": [HumanMessage(content="build a workflow")], "workspace": "/tmp",
+             "project_slug": "default", "agent_id": "dev", "active_skills": [],
+             "pending_tool_calls": []}
+    cp.put({"configurable": {"thread_id": sid}},
+           {"id": "c1", "channel_values": state, "pending_sends": []}, {}, {})
+    dsl_json = json.dumps({"name": "W", "entry": "s1",
+                           "nodes": [{"id": "s1", "type": "step", "goal": "x"}], "edges": []})
+    monkeypatch.setattr("ginno_runtime.api.workflows.build_model",
+                        lambda *a, **k: ScriptedChatModel(scripts=[script(text=dsl_json)]))
+    with ws_conv(sid) as conv:
+        r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
+        syn_id = r.json()["synthesis_id"]
+        client.post(f"/api/synthesis/cases/{syn_id}/_await")  # deterministically finish
+        kinds = []
+        while "finished" not in kinds:
+            ev = conv.recv()
+            if ev.get("event") != "synthesis.event":
+                continue  # ignore unrelated frames (e.g. file watcher)
+            assert ev.get("synthesis_id") == syn_id, ev
+            kinds.append(ev.get("kind"))
+        assert kinds[0] == "started"
+        assert "attempt" in kinds
