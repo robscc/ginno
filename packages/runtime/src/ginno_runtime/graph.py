@@ -183,7 +183,10 @@ def build_stable_system(
             "attach_ref(kind='file', name='<file name>', ref_id='<absolute "
             "path>') to register it (chip + panel entry). write_file outputs "
             "need the same attach_ref echo. analyze_table's derived CSV "
-            "auto-registers. Skip intermediates (.~* lock files, .DS_Store, "
+            "auto-registers. Image files (.png/.jpg/.gif/.webp/...) generated "
+            "by bash are the exception: they are detected, registered, and "
+            "shown inline in the chat automatically — do NOT attach_ref them. "
+            "Skip intermediates (.~* lock files, .DS_Store, "
             "scratch/temp files)."
         )
     if any(n.startswith("todo_") for n in allowed):
@@ -219,7 +222,7 @@ def build_stable_system(
                 "another definition. To change the bound workflow, call "
                 "workflow_propose_edit with the FULL proposed DSL; the user "
                 "must Apply the unified diff before a new version is written. "
-                "DSL node types: step / branch / loop / human. `human` is a "
+                "DSL node types: step / branch / loop / human / python. `python` runs a deterministic whitelisted entry (no LLM): {\"type\":\"python\",\"entry\":\"<registered name>\",\"args\":{...},\"writes\":{...}} — prefer it for mechanical fetch/compute steps. `human` is a "
                 "first-class interrupt (the run pauses for UI resume). A step "
                 "whose goal says 'ask the user' is not a human node."
             )
@@ -231,7 +234,7 @@ def build_stable_system(
                 "the run_id and step ids it returns), mark each step with "
                 "workflow_step(run_id, step_id, 'done') as you complete it. "
                 "workflow_get(workflow_id) returns the current DSL (node "
-                "types include step / branch / loop / human). `human` is a "
+                "types include step / branch / loop / human / python). `python` runs a deterministic whitelisted entry (no LLM): {\"type\":\"python\",\"entry\":\"<registered name>\",\"args\":{...},\"writes\":{...}} — prefer it for mechanical fetch/compute steps. `human` is a "
                 "first-class interrupt node; a step that merely asks the "
                 "user in chat is not."
             )
@@ -307,7 +310,7 @@ def _format_bound_workflow(wf: dict) -> str:
     lines.append(
         "This is the workflow this session is bound to. Edit it with "
         "workflow_propose_edit(workflow_id, new_dsl_json, rationale) using "
-        "the id above. Node types: step / branch / loop / human. `human` "
+        "the id above. Node types: step / branch / loop / human / python. `python` runs a deterministic whitelisted entry (no LLM): {\"type\":\"python\",\"entry\":\"<registered name>\",\"args\":{...},\"writes\":{...}} — prefer it for mechanical fetch/compute steps. `human` "
         "pauses the run via interrupt for UI resume; a step that merely "
         "asks the user in chat does not."
     )
@@ -401,6 +404,63 @@ def strip_old_images(messages, keep_turns: int = IMAGE_KEEP_TURNS):
     return out
 
 
+def strip_tool_image_markers(messages):
+    """Return a copy with code-generated-image markers removed from ToolMessage
+    bodies (send-only; the persisted ToolMessages keep the markers).
+
+    The bash tool appends a ``<!--ginno-images:[...]-->`` trailer so the WS
+    layer and history builder can surface generated pictures. The model should
+    not see the raw marker — images are display-only — so it is stripped from
+    the LLM-bound copy, mirroring ``strip_old_images``' send-only semantics.
+    """
+    from .files.images import strip_images_marker
+
+    out = []
+    changed = False
+    for m in messages:
+        content = getattr(m, "content", "")
+        if (
+            isinstance(m, ToolMessage)
+            and isinstance(content, str)
+            and "<!--ginno-images:" in content
+        ):
+            out.append(m.model_copy(update={"content": strip_images_marker(content)}))
+            changed = True
+        else:
+            out.append(m)
+    return out if changed else messages
+
+
+def collect_turn_images(messages) -> list[str]:
+    """Absolute paths of code-generated images produced in the current turn.
+
+    Scans the ToolMessages of the current turn (everything after the most
+    recent HumanMessage) and gathers the paths recorded in bash image markers.
+    The agent node lifts these into the AIMessage's ``additional_kwargs`` — a
+    durable anchor that survives microcompact (which clears old ToolMessage
+    bodies) so the history builder can re-emit the images on replay.
+    """
+    from .files.images import parse_images_marker
+
+    # The current turn is everything after the last HumanMessage; walk it
+    # forward so the paths come out in chronological order.
+    start = 0
+    for i, m in enumerate(messages):
+        if isinstance(m, HumanMessage):
+            start = i + 1
+    found: list[str] = []
+    for m in messages[start:]:
+        if not isinstance(m, ToolMessage):
+            continue
+        content = getattr(m, "content", "")
+        if not isinstance(content, str):
+            continue
+        for p in parse_images_marker(content):
+            if p not in found:
+                found.append(p)
+    return found
+
+
 def _latest_human_text(messages) -> str:
     """The most recent user message text — used as the wiki retrieval query."""
     for m in reversed(messages):
@@ -488,6 +548,9 @@ def agent_node_factory(model, all_tools):
         # Trim old turns' images on a COPY so the LLM context stays bounded while
         # the persisted state keeps every image (UI history / time-travel intact).
         history = strip_old_images(history)
+        # Hide code-generated-image markers from the model (display-only); the
+        # persisted ToolMessages keep them for the WS layer / history builder.
+        history = strip_tool_image_markers(history)
         response = await bound.ainvoke([sys_msg] + history)
         # Attribution tag for history replay (C+ plan): messages_ui reads this
         # to label each bubble with the agent that actually answered. Lives in
@@ -497,6 +560,12 @@ def agent_node_factory(model, all_tools):
         aid = _turn_agent_id(state, config)
         if aid:
             response.additional_kwargs["agent_id"] = aid
+        # Durable anchor for code-generated images this turn (bash markers):
+        # microcompact clears old ToolMessage bodies but never additional_kwargs,
+        # so the history builder can still re-emit the images on replay.
+        turn_imgs = collect_turn_images(state.get("messages", []))
+        if turn_imgs:
+            response.additional_kwargs["ginno_images"] = turn_imgs
         tool_calls = getattr(response, "tool_calls", None) or []
         return {"messages": [response], "pending_tool_calls": tool_calls}
 

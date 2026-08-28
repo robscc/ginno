@@ -421,8 +421,8 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 - **server→client** 帧为扁平 JSON `{"event", "turn_id"?, …}`。client→server 为 `{"type", …}`，
   type ∈ `invoke / permission_response / turn_state / ping`。
 - **turn 生命周期事件**：`turn.start, token.delta, thinking.delta, tool.start, tool.end,
-  permission.request, version.propose, widget.emit, ref.emit, workflow.emit, usage, message.end,
-  error, keepalive(15s)`。
+  permission.request, version.propose, widget.emit, ref.emit, image.emit, workflow.emit, usage,
+  message.end, error, keepalive(15s)`。`image.emit` 见 §11 代码生成图片（inline-images）。
 - **面板/资源同步事件**：`todos.changed / workflows.changed / artifacts.changed / skills.changed /
   agents.changed`、`preview.emit / preview.invalidate`、`run.bind / run.event / run.status`、
   `context.updated / context.microcompacted / context.compacted`、`goal.updated / goal.cleared`、
@@ -517,10 +517,17 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   右栏只读展示 + metadata inspector（文件丢失时尝试在 vault 里 heal）。
 - **Files**（`files/`）：
   - **extractors**：支持 xlsx/xlsm/xls、csv/tsv、docx、pptx、pdf、json/xml、txt/md；重依赖**懒加载**
-    （`--extra docs`）。`schema_summary` 产表格紧凑 schema 供 prompt 注入。
+    （`--extra docs`）。`schema_summary` 产表格紧凑 schema 供 prompt 注入。图片扩展名
+    （png/jpg/gif/webp/bmp/svg）分类为 `"image"`——不可解析为文本，仅供登记与内联展示。
   - **preview**：表格→分页 grid JSON，文档→markdown。
   - **registry**：`projects/<slug>/files.json` 文件身份台账；`touch()` 反应式通知（WS preview.invalidate）。
   - 会话文件目录 `sessions/<sid>/{uploads,results}/`；**会话删除后保留**，仅 orphaned 可经 session-files 端点清理。
+- **代码生成图片内联展示**（`docs/inline-images-design.md`）：bash 工具执行前后对工作区图片
+  快照 diff，新增图以机器标记 `<!--ginno-images:[…]-->` 随 ToolMessage 落盘；`_tool_file_effects`
+  解析后注册（kind=`image`）并广播 `image.emit {file_id, name, mtime}` 渲染进气泡；
+  agent 节点把路径提升进 `AIMessage.additional_kwargs["ginno_images"]` 作持久锚点
+  （microcompact 只清 ToolMessage 正文），`/history` 据此重建 image 块。标记对模型 send-only
+  剥离（展示专用，不回喂视觉）。
 
 ---
 

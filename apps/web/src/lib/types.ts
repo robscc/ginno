@@ -286,12 +286,13 @@ export interface FileEntry {
   id: string;
   name: string;
   path: string;
-  kind: string; // spreadsheet | table | document | presentation | pdf | data | text
+  kind: string; // spreadsheet | table | document | presentation | pdf | data | text | image
   mime?: string;
   size?: number;
   session_id?: string;
   artifact_id?: string | null;
   stale?: boolean;
+  mtime?: number;
 }
 
 // Settings → 会话文件: one row per per-session files directory.

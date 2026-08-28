@@ -277,6 +277,9 @@ function payloadFromBlocks(blocks: Block[], agentId: string | null): SendPayload
         kind: b.fileKind ?? "",
       });
     } else if (b.kind === "image") {
+      // Only user-upload data URLs round-trip into a retry payload; generated
+      // images (fileId-based) are display-only and skipped here.
+      if (!b.url) continue;
       const m = /^data:([^;]+);base64,(.*)$/.exec(b.url);
       if (m) payload.images.push({ data: m[2], mediaType: m[1], preview: b.url, name: "image" });
     }
@@ -362,6 +365,17 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
       return [
         ...blocks,
         { kind: "ref", refKind: ev.kind as string, name: ev.name as string, refId: ev.ref_id as string | undefined },
+      ];
+    case "image.emit":
+      // Code-generated image (bash) surfaced inline; URL resolved from fileId.
+      return [
+        ...blocks,
+        {
+          kind: "image",
+          fileId: ev.file_id as string,
+          name: ev.name as string | undefined,
+          mtime: ev.mtime as number | undefined,
+        },
       ];
     default:
       return blocks;
@@ -933,6 +947,7 @@ export function ChatStream({
       case "tool.end":
       case "widget.emit":
       case "ref.emit":
+      case "image.emit":
       case "workflow.emit":
         adoptOrphanStream(sid);
         mutateLive(sid, ev);

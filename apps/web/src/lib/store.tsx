@@ -35,6 +35,7 @@ export interface PreviewFile {
   name: string;
   path: string;
   kind?: string;
+  mtime?: number;
 }
 
 /** Live in-flight tool call for a workflow run step (workflow-ux-redesign P1):

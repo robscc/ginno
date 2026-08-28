@@ -27,9 +27,21 @@ _KIND_BY_EXT = {
     ".txt": "text",
     ".md": "text",
     ".markdown": "text",
+    # Images — not parseable to text; classified so code-generated pictures
+    # can be registered in the file ledger and surfaced in the chat UI.
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".gif": "image",
+    ".webp": "image",
+    ".bmp": "image",
+    ".svg": "image",
 }
 
 PREVIEWABLE_KINDS = {"spreadsheet", "table", "document", "presentation", "pdf"}
+
+#: Extensions classified as ``image`` (used by bash new-image detection).
+IMAGE_EXTS = frozenset(e for e, k in _KIND_BY_EXT.items() if k == "image")
 
 
 class ExtractorUnavailable(RuntimeError):
@@ -340,8 +352,9 @@ def extract(path: str | Path, max_rows: int = 50, max_chars: int = 200_000) -> E
         return _extract_pdf(p, max_chars=max_chars)
     if kind in ("data", "text"):
         return _extract_text(p, max_chars=max_chars, kind=kind)
+    parseable = sorted(e for e, k in _KIND_BY_EXT.items() if k != "image")
     raise UnsupportedFormat(
-        f"不支持的文件格式: {p.suffix}。支持: {', '.join(sorted(_KIND_BY_EXT))}"
+        f"不支持的文件格式: {p.suffix}。支持: {', '.join(parseable)}"
     )
 
 

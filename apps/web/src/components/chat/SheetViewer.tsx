@@ -56,6 +56,13 @@ export function SheetViewer() {
 
   const load = useCallback(async () => {
     if (!file) return;
+    // Images are served raw by the sidecar (no extraction step) — the body
+    // renders them directly from the download URL, so skip the preview fetch.
+    if (file.kind === "image") {
+      setErr(null);
+      setPv(null);
+      return;
+    }
     setLoading(true);
     setErr(null);
     try {
@@ -85,6 +92,7 @@ export function SheetViewer() {
   if (!file) return null;
 
   const isTable = pv?.kind === "spreadsheet" || pv?.kind === "table";
+  const isImage = file?.kind === "image";
   const total = pv?.total_rows ?? 0;
   const shown = pv?.rows?.length ?? 0;
 
@@ -100,8 +108,10 @@ export function SheetViewer() {
         {/* header */}
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <span className="truncate text-sm font-semibold text-txt">{file.name}</span>
-          {pv?.kind && (
-            <span className="rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{pv.kind}</span>
+          {(pv?.kind || (isImage ? "image" : "")) && (
+            <span className="rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">
+              {pv?.kind || "image"}
+            </span>
           )}
           {isTable && (
             <span className="text-xs text-faint">
@@ -179,7 +189,19 @@ export function SheetViewer() {
         {/* body */}
         <div className="min-h-0 flex-1 overflow-auto">
           {err && <div className="px-4 py-6 text-center text-sm text-red-400">{err}</div>}
-          {!err && !pv && <div className="px-4 py-6 text-center text-sm text-faint">加载中…</div>}
+          {!err && !pv && !isImage && (
+            <div className="px-4 py-6 text-center text-sm text-faint">加载中…</div>
+          )}
+          {isImage && (
+            <div className="flex min-h-full items-center justify-center px-5 py-4">
+              {/* mtime busts the cache when a same-named image is regenerated */}
+              <img
+                src={`${api.fileDownloadUrl(file.id)}?t=${file.mtime ?? 0}`}
+                alt={file.name}
+                className="max-h-[75vh] max-w-full rounded-lg object-contain"
+              />
+            </div>
+          )}
           {pv && isTable && (
             <table className="w-full border-collapse text-xs">
               <thead className="sticky top-0 z-10 bg-card2">

@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import type { WorkflowRun } from "@/lib/types";
+import { fileDownloadUrl } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { Markdown } from "./Markdown";
 import { toolLabel } from "@/lib/toolLabels";
@@ -29,7 +30,9 @@ export type SourceItem = { kind: "wiki" | "web"; ref: string; note?: string };
 
 export type Block =
   | { kind: "text"; text: string }
-  | { kind: "image"; url: string }
+  // `url` is set for user uploads (data URL). Code-generated images carry a
+  // file-ledger `fileId` (+ mtime for cache-busting) resolved via imageUrl().
+  | { kind: "image"; url?: string; fileId?: string; name?: string; mtime?: number }
   | { kind: "file"; fileId?: string; name: string; path?: string; fileKind?: string }
   | { kind: "widget"; widgetKind: string; data: unknown; renderId?: string }
   | { kind: "ref"; refKind: string; name: string; refId?: string }
@@ -43,6 +46,21 @@ export type Block =
   // model cited. Server emits this on history replay; live text blocks are
   // parsed client-side (the trailing <ginno_citations> block is machine meta).
   | { kind: "sources"; items: SourceItem[] };
+
+/** Resolve an image block to a displayable URL.
+
+User uploads carry a self-contained data URL in `url`. Code-generated images
+(bash → file ledger) carry a `fileId` served by the sidecar; the URL is built
+through the BASE-aware download helper, with `?t=mtime` busting the browser
+cache when a same-named image is regenerated. */
+export function imageUrl(b: Extract<Block, { kind: "image" }>): string {
+  if (b.url) return b.url;
+  if (b.fileId) {
+    const t = b.mtime ? `?t=${b.mtime}` : "";
+    return `${fileDownloadUrl(b.fileId)}${t}`;
+  }
+  return "";
+}
 
 // Non-global: used by .test()/.match() (a /g regex there would be stateful).
 const CITATION_BLOCK_RE =
@@ -256,7 +274,9 @@ export function FileChips({ files }: { files: FileBlock[] }) {
               clickable ? "cursor-pointer hover:border-violet/50" : "cursor-default"
             }`}
           >
-            <span>{TABLE_KINDS.has(f.fileKind ?? "") ? "📊" : "📄"}</span>
+            <span>
+              {TABLE_KINDS.has(f.fileKind ?? "") ? "📊" : f.fileKind === "image" ? "🖼️" : "📄"}
+            </span>
             <span className="max-w-[220px] truncate">{f.name}</span>
           </button>
         );
@@ -910,7 +930,7 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
       // Group consecutive images into one gallery.
       const urls: string[] = [];
       while (i < blocks.length && blocks[i].kind === "image") {
-        urls.push((blocks[i] as Extract<Block, { kind: "image" }>).url);
+        urls.push(imageUrl(blocks[i] as Extract<Block, { kind: "image" }>));
         i++;
       }
       out.push(<ImageGallery key={key++} urls={urls} />);
@@ -961,7 +981,7 @@ export function UserBlocks({ blocks }: { blocks: Block[] }) {
   const files = blocks.filter((b): b is FileBlock => b.kind === "file");
   const imgs = blocks
     .filter((b): b is Extract<Block, { kind: "image" }> => b.kind === "image")
-    .map((b) => b.url);
+    .map(imageUrl);
   const texts = blocks
     .filter((b): b is Extract<Block, { kind: "text" }> => b.kind === "text")
     .map((b) => b.text);

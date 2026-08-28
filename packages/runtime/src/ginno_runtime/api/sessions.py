@@ -826,7 +826,9 @@ async def get_session_history(session_id: str) -> dict:
     last_error = (meta.get("last_error") or None) if isinstance(meta, dict) else None
     return {
         "ok": True,
-        "messages": _messages_to_ui(messages, agent_id, attached),
+        "messages": _messages_to_ui(
+            messages, agent_id, attached, project_slug=slug, session_id=session_id
+        ),
         "last_error": last_error or None,
     }
 

@@ -235,3 +235,109 @@ def test_packaged_ui_context_chip_and_usage(tmp_path):
             browser.close()
     finally:
         proc.terminate()
+
+
+PORT3 = 8897
+
+
+def test_packaged_ui_code_generated_image_inline(tmp_path):
+    """inline-images design in the PACKAGED app (real PyInstaller bundle + real
+    browser): a bash command writes an image → it is registered, broadcast via
+    ``image.emit``, and rendered inline in the chat bubble; a page reload still
+    shows it (history replay resolves the ginno_images anchor to image blocks).
+    """
+    if not RUNTIME_BIN.exists():
+        pytest.skip("packaged sidecar not built (run `make runtime`)")
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        pytest.skip(
+            "playwright not installed (uv sync --group test && playwright install chromium)"
+        )
+    if _port_open(PORT3):
+        pytest.skip(f"port {PORT3} already in use")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "settings.json").write_text(json.dumps(_settings()))
+    scripts = tmp_path / "scripts.json"
+    # A real decodable 1x1 PNG (browsers size <img> only after decode, and the
+    # gallery thumbnail has no box until then — a fake byte blob would render
+    # 0x0 and fail the visibility wait).
+    png_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+        "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+    scripts.write_text(
+        json.dumps(
+            [
+                # turn 1: run bash that writes a PNG into the session workspace
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "bash",
+                            "args": {
+                                "command": (
+                                    f"python3 -c \"import base64,sys; "
+                                    f"sys.stdout.buffer.write(base64.b64decode('{png_b64}'))\" "
+                                    "> chart.png"
+                                )
+                            },
+                        }
+                    ],
+                },
+                # turn 2: final answer
+                {"content": "图已生成。"},
+            ]
+        )
+    )
+
+    env = dict(
+        os.environ,
+        GINNO_HOME=str(home),
+        GINNO_FAKE_LLM="1",
+        GINNO_FAKE_LLM_SCRIPTS=str(scripts),
+        GINNO_RUNTIME_PORT=str(PORT3),
+    )
+    proc = subprocess.Popen(
+        [str(RUNTIME_BIN)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    try:
+        _wait_health(PORT3)
+        with sync_playwright() as pw:
+            browser = _launch_chromium(pw)
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{PORT3}/", wait_until="load")
+            page.wait_for_timeout(2000)
+
+            ta = page.locator("textarea").first
+            ta.click()
+            ta.fill("画个图")
+            ta.press("Enter")
+
+            # The generated image renders inline (src served by the sidecar).
+            img = page.locator("img[src*='/api/files/'][src*='/download']")
+            img.first.wait_for(timeout=20000)
+
+            # The browser actually decoded the served bytes (full loop: bash →
+            # detect → register → image.emit → <img> → /api/files/{id}/download).
+            page.wait_for_function(
+                "() => { const el = document.querySelector("
+                "\"img[src*='/api/files/'][src*='/download']\"); "
+                "return el && el.naturalWidth > 0; }",
+                timeout=10000,
+            )
+
+            # The tool bubble must not leak the raw machine marker.
+            body_text = page.locator("body").inner_text()
+            assert "ginno-images" not in body_text
+
+            # Reload → history replay re-emits the image block.
+            page.reload(wait_until="load")
+            page.wait_for_timeout(2000)
+            img2 = page.locator("img[src*='/api/files/'][src*='/download']")
+            img2.first.wait_for(timeout=15000)
+            browser.close()
+    finally:
+        proc.terminate()

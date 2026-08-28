@@ -33,6 +33,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from .. import paths
+from ..files.images import diff_images, encode_images_marker, snapshot_images
 
 # A runaway glob (e.g. ``**`` under a huge tree) used to stream the entire
 # filesystem listing into the context; cap it like grep_files does.
@@ -433,6 +434,11 @@ def build_builtin_tools(
             if _path_denied(candidate, base_dir, mount_roots):
                 return _deny_msg(tok)
         cwd = str(base_dir) if base_dir.is_dir() else None
+        # Snapshot workspace images so we can detect pictures the command
+        # generates (e.g. matplotlib savefig) and surface them inline in the
+        # chat. Detection is workspace-scoped and display-only — the marker
+        # is stripped from the model's view by the agent node.
+        img_before = snapshot_images(base_dir) if cwd else {}
         try:
             # Prefer the user's login shell so PATH / exports from zshrc
             # (or bashrc) are present even when Ginno was launched from
@@ -446,10 +452,15 @@ def build_builtin_tools(
                 capture_output=True,
                 text=True,
             )
-            return f"[exit {r.returncode}]\n{r.stdout}\n--- stderr ---\n{r.stderr}"
+            out = f"[exit {r.returncode}]\n{r.stdout}\n--- stderr ---\n{r.stderr}"
         except subprocess.TimeoutExpired:
             return f"[timeout after {timeout}s]"
         except OSError as e:
             return f"[error] cannot execute: {type(e).__name__}: {e}"
+        if cwd:
+            new_imgs = diff_images(img_before, snapshot_images(base_dir))
+            if new_imgs:
+                out += "\n" + encode_images_marker(new_imgs)
+        return out
 
     return [read_file, write_file, glob_files, grep_files, edit_file, bash]

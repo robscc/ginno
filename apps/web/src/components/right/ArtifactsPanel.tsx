@@ -9,6 +9,7 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
+  Image as ImageIcon,
   Link2,
   Loader2,
   Pencil,
@@ -27,6 +28,7 @@ export const ICON: Record<string, typeof FileText> = {
   link: Link2,
   doc: FileText,
   file: FileSpreadsheet,
+  image: ImageIcon,
 };
 
 export const KIND_LABEL: Record<string, string> = {
@@ -34,11 +36,12 @@ export const KIND_LABEL: Record<string, string> = {
   doc: "文档",
   link: "链接",
   workflow: "工作流",
+  image: "图片",
 };
 
 // Registry file kinds — the classification that steers prompt tool guidance
 // (analyze_table for spreadsheet/table, parse_document otherwise).
-const FILE_KINDS = ["spreadsheet", "table", "document", "presentation", "pdf", "data", "text"];
+const FILE_KINDS = ["spreadsheet", "table", "document", "presentation", "pdf", "data", "text", "image"];
 const FILE_KIND_LABEL: Record<string, string> = {
   spreadsheet: "Excel 表格",
   table: "CSV 表格",
@@ -47,6 +50,7 @@ const FILE_KIND_LABEL: Record<string, string> = {
   pdf: "PDF",
   data: "结构化数据",
   text: "纯文本",
+  image: "图片",
   unknown: "未知",
 };
 
@@ -203,7 +207,7 @@ export function ArtifactMetaCard({
     : { right: window.innerWidth - rect.left + 10, top: Math.max(8, rect.top - 6), maxHeight: vh - rect.top - 16 };
 
   const Ic = ICON[artifact.kind] || FileText;
-  const isFile = artifact.kind === "file";
+  const isFile = artifact.kind === "file" || artifact.kind === "image";
 
   return (
     <div
@@ -462,11 +466,11 @@ export function ArtifactsPanel() {
   // File artifacts open in the SheetViewer/document preview. The artifact
   // only carries a path (ref), so resolve the registry entry to get its id.
   async function openArtifact(a: (typeof items)[number]) {
-    if (a.kind !== "file" || !a.ref) return;
+    if ((a.kind !== "file" && a.kind !== "image") || !a.ref) return;
     try {
       const entry = matchByRef(await api.listFiles(), a.ref);
       if (entry) {
-        g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
+        g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind, mtime: entry.mtime });
       }
     } catch {
       /* sidecar hiccup — ignore */
@@ -477,7 +481,7 @@ export function ArtifactsPanel() {
   // a browser download (dev). Independent of opening the preview.
   async function downloadArtifact(e: React.MouseEvent, a: (typeof items)[number]) {
     e.stopPropagation();
-    if (a.kind !== "file" || !a.ref || busyId) return;
+    if ((a.kind !== "file" && a.kind !== "image") || !a.ref || busyId) return;
     setBusyId(a.id);
     try {
       const entry = matchByRef(await api.listFiles(), a.ref);
@@ -524,7 +528,7 @@ export function ArtifactsPanel() {
         )}
         {items.map((a) => {
           const Ic = ICON[a.kind] || FileText;
-          const clickable = a.kind === "file" && !!a.ref;
+          const clickable = (a.kind === "file" || a.kind === "image") && !!a.ref;
           return (
             <div
               key={a.id}

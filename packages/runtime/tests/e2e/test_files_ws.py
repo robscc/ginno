@@ -255,3 +255,80 @@ def test_preview_fetch_clears_stale(client, create_session, ws_dir):
     pv = client.get(f"/api/files/{fid}/preview").json()
     assert pv["ok"] is True
     assert pv["file"]["stale"] is False  # cleared by the fetch
+
+
+# ── code-generated images (inline-images design) ─────────────────────────────
+
+
+def test_bash_generated_image_surfaces_inline(client, create_session, ws_conv, ws_dir):
+    """A bash command that writes an image → registered (kind=image), emitted as
+    ``image.emit``, present in history, and the marker never leaks to the UI or
+    the model."""
+    seen_second_call: list[str] = []
+
+    class RecordingModel:
+        """First call runs bash; second (post-tool) call records what it sees."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, tools):
+            return self
+
+        async def ainvoke(self, messages, **kw):
+            from langchain_core.messages import AIMessage
+
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "bash", "args": {"command": "printf x > chart.png"}, "id": "c1"}
+                    ],
+                )
+            # record the second call's transcript to assert marker stripping
+            import json as _json
+
+            seen_second_call.append(
+                _json.dumps([getattr(m, "content", "") for m in messages], default=str)
+            )
+            return AIMessage(content="图已生成。")
+
+    sid = create_session(RecordingModel(), workspace=str(ws_dir))
+    with ws_conv(sid) as conv:
+        conv.send({"type": "invoke", "message": "画个图"})
+        events = conv.recv_until("message.end", "error")
+
+    # bash cwd is the session files dir (supersedes the client workspace)
+    session_dir = paths.session_files_dir("default", sid)
+    assert (session_dir / "chart.png").is_file()
+
+    # live event carries the ledger id + cache-busting mtime
+    emits = [e for e in events if e["event"] == "image.emit"]
+    assert emits, f"no image.emit in {[e['event'] for e in events]}"
+    fid = emits[0]["file_id"]
+    assert emits[0]["name"] == "chart.png"
+    assert isinstance(emits[0]["mtime"], int)
+
+    # registered as an image artifact with session attribution
+    arts = client.get("/api/artifacts?project_slug=default").json()
+    assert any(
+        a["kind"] == "image" and a["session_id"] == sid and a["ref"].endswith("chart.png")
+        for a in arts
+    ), arts
+
+    # history replays the image block (fileId matches) and strips the marker
+    msgs = client.get(f"/api/sessions/{sid}/history").json()["messages"]
+    assistant = [m for m in msgs if m["role"] == "assistant"][0]
+    imgs = [b for b in assistant["blocks"] if b["kind"] == "image"]
+    assert len(imgs) == 1 and imgs[0]["fileId"] == fid
+    tool = next(b for b in assistant["blocks"] if b["kind"] == "tool")
+    assert "ginno-images" not in tool["content"]
+
+    # the marker never reached the model on the post-tool call (display-only)
+    assert seen_second_call, "model was not re-invoked after the tool"
+    assert "ginno-images" not in seen_second_call[0]
+
+    # the bytes are served raw for inline display
+    r = client.get(f"/api/files/{fid}/download")
+    assert r.status_code == 200 and r.content == b"x"

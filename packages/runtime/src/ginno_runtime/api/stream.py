@@ -638,6 +638,37 @@ async def _tool_file_effects(
             await safe_send(emit("artifacts.changed", {}))
             touched.append(norm_ref)
 
+    # Code-generated images (inline-images design): the bash tool appends a
+    # machine marker listing pictures the command wrote into the workspace.
+    # Register each one (kind="image"), surface it as an artifact, and
+    # broadcast ``image.emit`` so the chat renders it inline. The frontend
+    # builds the URL from file_id (BASE-aware); mtime busts the browser cache
+    # when a same-named image is regenerated.
+    if name == "bash" and content:
+        from ..files.images import parse_images_marker
+
+        for p in parse_images_marker(content):
+            pp = Path(p).expanduser()
+            if not pp.is_file():
+                continue
+            norm_ref = files_mod.norm_path(str(pp))
+            is_new = reg.find_by_path(norm_ref) is None
+            art = art_store.add_artifact(slug, "image", pp.name, norm_ref, session_id)
+            entry = reg.register(
+                pp.name, str(pp), kind="image", session_id=session_id,
+                artifact_id=art.get("id"),
+            )
+            if is_new:
+                await safe_send(emit("artifacts.changed", {}))
+            try:
+                mtime = int(pp.stat().st_mtime)
+            except OSError:
+                mtime = 0
+            await safe_send(
+                emit("image.emit", {"file_id": entry["id"], "name": entry["name"], "mtime": mtime})
+            )
+            touched.append(norm_ref)
+
     seen: set[str] = set()
     for p in touched:
         if p in seen:
@@ -1537,7 +1568,7 @@ async def _stream_graph(
                                 # + open derived analysis results.
                                 await _tool_file_effects(
                                     safe_send, emit, slug, session_id,
-                                    tool_args_by_id.get(tc_id), _tool_content_str(raw),
+                                    tool_args_by_id.get(tc_id), raw,
                                 )
                     elif node_name == "permission":
                         # resolve "running" tool bubbles that were denied by
