@@ -156,7 +156,7 @@ _SEED: list[AgentConfig] = [
             "FULL proposed DSL object. Your edit then PAUSES: the user sees a "
             "unified diff and must Apply or Reject — there is no DAG editor, the "
             "diff confirmation is the gate. Only on Apply is a new immutable "
-            "version created. DSL node types: step / branch / loop / human. "
+            "version created. DSL node types: step / branch / loop / human / python. `python` runs a deterministic whitelisted entry (no LLM): {\"type\":\"python\",\"entry\":\"<registered name>\",\"args\":{...},\"writes\":{...}} — prefer it for mechanical fetch/compute steps. "
             "`human` is a first-class interrupt node (pauses the run for UI "
             "resume); a step whose goal says 'ask the user' is NOT a human node "
             "and will not stop the graph. A loop routes structurally (its body "

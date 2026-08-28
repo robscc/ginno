@@ -104,7 +104,10 @@
 | `branch` | 对 `context` 求值 `cases[].when`，首个命中走 `then`，否则 `default` | 条件边 |
 | `loop` | 遍历 `over`（列表/范围/`while` 条件），每轮跑 `body` 节点；`parallel` 用 LangGraph `Send` 扇出 | 回边 / Send |
 | `human` | `interrupt`，暂停并把控制权交给 UI（可编辑 context 后 resume） | `interrupt()` |
+| `python` | 跑**白名单登记的确定性 entry**（`workflows/scripts/ENTRY_REGISTRY`，无 LLM）：`args` 支持 `{{...}}` 模板/原样对象传参，返回值过 `writes` schema 写回 `context`；worker 线程执行 + 节点级 timeout | `PythonNode`（registry 插件式注册） |
 | `subflow` | 嵌套引用另一 workflow（带版本） | 子图（**v2，已决 Q1 延后**） |
+
+> **`python` 节点（2026-08 落地）**：用于把机械的抓取/归一/计算步骤从 agent 固化成脚本（如账单对比流水线的 fetch×2 + normalize）。`entry` 必须是已登记名称，DSL 校验期即报错；声明 `writes` 时注入的 `__extract` 节点走 `WRITE_JSON` 快路径，不消耗模型。
 
 > **v1 范围（已决 Q1）**：实装 `step` + `branch` + `loop` + `human`；`subflow` 与 `parallel` 默认关闭、延后到 v2。`loop.parallel` 字段保留但 v1 忽略。
 

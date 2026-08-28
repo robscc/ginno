@@ -153,7 +153,7 @@ _SYNTHESIZE_PROMPT = (
     "Node types:\n"
     '- step: {"id","type":"step","agent":"dev|research|writer","goal":"<instruction>"}\n'
     '- branch: {"id","type":"branch","cases":[{"when":"<expr>","then":"<id>"}],"default":"<id>"}\n'
-    '- loop: {"id","type":"loop","over":"<expr e.g. context.items>","as":"<var>","body":"<body id>","max_iters":<int>}\n\n'
+    '- loop: {"id","type":"loop","over":"<expr e.g. context.items>","as":"<var>","body":"<body id>","max_iters":<int>}\n- python: {"id","type":"python","entry":"<registered entry>","args":{...},"writes":{...}} (deterministic, no LLM — PREFER for mechanical fetch/normalize/compute steps)\n\n'
     "Rules:\n"
     "- `entry` MUST be an existing node id; every edge endpoint MUST exist.\n"
     "- A loop's body returns to the loop head automatically: do NOT add an edge FROM the body; reference the loop item via {{<as>}}.\n"

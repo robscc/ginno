@@ -45,7 +45,7 @@ def workflow_list() -> str:
 def workflow_get(workflow_id: str = "", name: str = "") -> str:
     """Return one workflow's current DSL (id, version, node types, full JSON).
 
-    Use this to inspect node types (step / branch / loop / human) instead of
+    Use this to inspect node types (step / branch / loop / human / python) instead of
     guessing from workflow_list's step count. Prefer the session-bound
     <bound_workflow> context when this session already has a workflow_id."""
     wf = None

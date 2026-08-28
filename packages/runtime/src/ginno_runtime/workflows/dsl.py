@@ -4,7 +4,7 @@ The DSL is the single source of truth for a workflow and compiles 1:1 to a
 LangGraph graph (compiler lives in P2). This module is pure data + validation
 so it can be unit-tested without the graph or the store.
 
-v1 node types (decided Q1): step / branch / loop / human. `subflow` is parsed
+v1 node types (decided Q1): step / branch / loop / human (+ python, registry-driven). `subflow` is parsed
 but rejected by validate_dsl until v2. `loop.parallel` is accepted but ignored
 in v1 (decided Q1).
 """
