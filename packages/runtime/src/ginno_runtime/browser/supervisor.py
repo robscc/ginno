@@ -667,6 +667,22 @@ class BrowserSupervisor:
     def state(self) -> dict[str, Any]:
         from .engine import FakeEngine, last_engine_error
 
+        # Debug 模式未开启时完全隔离：不构造/启动引擎（本方法也是 CEF 提升的
+        # 心安跳，会真正拉起引擎），直接返回「disabled」占位。API/工具/skill 层
+        # 另有各自守卫，正常路径根本到不了这里。
+        from ..debug import debug_enabled
+
+        if not debug_enabled():
+            return {
+                **space_store.read_state(),
+                "spaces": [],
+                "waiting_human": False,
+                "headed": False,
+                "engine": "disabled",
+                "disabled": True,
+                "engine_error": None,
+            }
+
         # Opening the pane / retrying after reset should actually start the
         # engine; also the only reliable heartbeat for CEF promotion when the
         # placeholder (fake) engine is cached and nothing else calls _eng().

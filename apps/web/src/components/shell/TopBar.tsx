@@ -36,7 +36,7 @@ function SessionIdChip({ sessionId }: { sessionId?: string }) {
         }
       }}
       title={`session ${sessionId}（点击复制，用于日志定位）`}
-      className="rounded border border-line2 px-1 py-px font-mono text-[9px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
+      className="shrink-0 whitespace-nowrap rounded border border-line2 px-1 py-px font-mono text-[9px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
     >
       {copied ? "copied" : `#${short}`}
     </button>
@@ -69,7 +69,10 @@ export function TopBar({
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-base px-5">
-      <h1 className="text-[15px] font-semibold tracking-tight text-txt">
+      <h1
+        className="min-w-0 truncate text-[15px] font-semibold tracking-tight text-txt"
+        title={session?.title || "New Session"}
+      >
         {session?.title || "New Session"}
       </h1>
       <SessionIdChip sessionId={session?.id} />
@@ -119,7 +122,7 @@ export function TopBar({
 
       <ContextFoldersChip session={session} />
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         {usage && usage.calls > 0 && (
           <span
             className="pill font-mono text-[11px]"
@@ -134,7 +137,7 @@ export function TopBar({
         )}
         <button
           onClick={() => router.push("/settings/model-api")}
-          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted hover:bg-card hover:text-txt"
+          className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs text-muted hover:bg-card hover:text-txt"
           title="Model settings"
         >
           <Globe className="h-3.5 w-3.5 text-muted" />

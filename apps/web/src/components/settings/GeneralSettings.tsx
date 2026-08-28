@@ -29,6 +29,7 @@ export function GeneralSettings() {
   const [msg, setMsg] = useState("");
   const [bypass, setBypass] = useState(true);
   const [engine, setEngine] = useState<string>("cef");
+  const [debug, setDebug] = useState(false);
 
   useEffect(() => {
     let t = "dark";
@@ -44,6 +45,7 @@ export function GeneralSettings() {
       .then((s) => {
         setBypass((s as Record<string, unknown>).bypass_permissions !== false);
         setEngine((s as Record<string, unknown>).browser_engine === "chrome" ? "chrome" : "cef");
+        setDebug((s as Record<string, unknown>).debug === true);
       })
       .catch(() => {});
   }, []);
@@ -76,6 +78,21 @@ export function GeneralSettings() {
       setEngine(v);
       await api.resetBrowser();
       setMsg(v === "cef" ? "浏览器引擎 → 内嵌 CEF（默认）" : "浏览器引擎 → Chrome screencast");
+    } catch {
+      setMsg("保存失败");
+    }
+  }
+  async function toggleDebug(v: boolean) {
+    try {
+      const s = (await api.getSettings()) as Record<string, unknown>;
+      s.debug = v;
+      await api.putSettings(s);
+      setDebug(v);
+      setMsg(
+        v
+          ? "Debug 模式已开启：⚠️ 需重启应用后生效（含浏览器模式）"
+          : "Debug 模式已关闭：⚠️ 需重启应用后生效"
+      );
     } catch {
       setMsg("保存失败");
     }
@@ -120,6 +137,16 @@ export function GeneralSettings() {
           </label>
           <p className="mt-1 text-xs text-faint">
             开启后 Agent 调用任何工具都不再询问、不被权限策略拦截（含 Bash/Write 等危险操作）。默认开启；关闭后按权限策略询问/拦截。注意：你配置的 PreToolUse hook 仍会执行（hook 是自定义规则，始终生效）。
+          </p>
+        </div>
+        <div>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input type="checkbox" checked={debug} onChange={(e) => toggleDebug(e.target.checked)} />
+            Debug 模式
+          </label>
+          <p className="mt-1 text-xs text-faint">
+            开启后启用不稳定特性（当前为浏览器模式：内嵌 CEF / browse skill / CDP）。
+            ⚠️ 改完需重启应用才生效；关闭时浏览器相关逻辑完全不加载。
           </p>
         </div>
         <div>

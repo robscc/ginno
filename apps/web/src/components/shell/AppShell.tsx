@@ -77,6 +77,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Manual companion-window toggle (TopBar button / ⌘.). Combined with the
   // route/session auto logic below: visible = onWorkspace && activeSession && browserOpen.
   const [browserOpen, setBrowserOpen] = useState(true);
+  // Debug 模式：浏览器 / CEF 是 debug-only 特性；未开启时不渲染开关、不发任何浏览器 RPC。
+  const [browserEnabled, setBrowserEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api
+      .getSettings()
+      .then((s) => setBrowserEnabled((s as Record<string, unknown>).debug === true))
+      .catch(() => setBrowserEnabled(false));
+  }, []);
   const [browserMax, setBrowserMax] = useState(false);
   const [browserSplit, setBrowserSplit] = useState(() => {
     try {
@@ -208,6 +217,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // show/hide call instead of racing out-of-order show/hide RPCs.
   useEffect(() => {
     const t = window.setTimeout(() => {
+      if (browserEnabled !== true) return;
       if (!onWorkspace || !browserOpen) {
         api.hideBrowser().catch(() => {});
         return;
@@ -217,7 +227,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }
     }, 150);
     return () => window.clearTimeout(t);
-  }, [onWorkspace, browserOpen, g.activeSessionId]);
+  }, [onWorkspace, browserOpen, g.activeSessionId, browserEnabled]);
 
   // Bidirectional sync: if the companion window was closed externally (red
   // button), the C host reports visible=false; sync the toggle OFF. Use a grace
@@ -227,6 +237,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const openedAt = useRef(0);
   const lastToggleAt = useRef(0);
   useEffect(() => {
+    if (browserEnabled !== true) return;
     openedAt.current = Date.now();
     hiddenStreak.current = 0;
     if (!browserOpen) return;
@@ -246,7 +257,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         .catch(() => {});
     }, 2000);
     return () => window.clearInterval(t);
-  }, [browserOpen]);
+  }, [browserOpen, browserEnabled]);
 
   // Sidebar sessions: activity-day groups, newest activity first. `updated`
   // is bumped per turn server-side, so it tracks last use, not creation.
@@ -519,11 +530,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 running={running}
                 modelLabel={modelLabel}
                 usage={usage}
-                browserOpen={browserOpen}
-                onToggleBrowser={() => {
-                  lastToggleAt.current = Date.now();
-                  setBrowserOpen((v) => !v);
-                }}
+                browserOpen={browserEnabled === true ? browserOpen : false}
+                onToggleBrowser={
+                  browserEnabled
+                    ? () => {
+                        lastToggleAt.current = Date.now();
+                        setBrowserOpen((v) => !v);
+                      }
+                    : undefined
+                }
               />
             )}
             <div ref={splitRowRef} className="flex min-h-0 min-w-0 flex-1">

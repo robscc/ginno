@@ -117,6 +117,29 @@ fn dirs_home(app: &tauri::App) -> std::path::PathBuf {
     home.join(".ginno")
 }
 
+/// True when Debug 模式 is enabled in `~/.ginno/settings.json` (`"debug": true`).
+///
+/// Read once at startup — there is no live reload, so flipping the flag in
+/// Settings takes effect only after an app restart. Gates the browser / CEF
+/// host (embedded Chromium is unstable, so it lives behind Debug).
+fn debug_enabled(app: &tauri::AppHandle) -> bool {
+    let home = if let Ok(p) = std::env::var("GINNO_HOME") {
+        std::path::PathBuf::from(p)
+    } else {
+        match app.path().home_dir() {
+            Ok(h) => h.join(".ginno"),
+            Err(_) => return false,
+        }
+    };
+    let Ok(raw) = std::fs::read_to_string(home.join("settings.json")) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    v.get("debug").and_then(|d| d.as_bool()).unwrap_or(false)
+}
+
 /// Append one line to ~/.ginno/logs/shell.log (same convention as sidecar.log).
 /// Best-effort diagnostics for the notification / window-visibility flow.
 pub(crate) fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
@@ -454,15 +477,21 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // Punch the hole and (when Helper + dylib exist) start CEF *before*
-            // the sidecar so `~/.ginno/browser/cef-cdp.json` is already written
-            // when choose_engine() runs. No Space / ownership here.
-            app.manage(BrowserTile(Mutex::new(None)));
-            app.manage(browser_tile::BrowserTileHost::new());
-            if let Some(w) = app.get_webview_window("main") {
-                browser_tile::prepare(&w);
+            // Debug 模式：浏览器 / CEF 宿主只在开关打开时启动（读一次 settings.json，
+            // 无热加载 → 改完需重启）。关闭时完全不触碰 CEF（不 dlopen、不 cef_initialize）。
+            let debug = debug_enabled(app.handle());
+            shell_log(app.handle(), &format!("debug_mode enabled={debug}"));
+            if debug {
+                // Punch the hole and (when Helper + dylib exist) start CEF *before*
+                // the sidecar so `~/.ginno/browser/cef-cdp.json` is already written
+                // when choose_engine() runs. No Space / ownership here.
+                app.manage(BrowserTile(Mutex::new(None)));
+                app.manage(browser_tile::BrowserTileHost::new());
+                if let Some(w) = app.get_webview_window("main") {
+                    browser_tile::prepare(&w);
+                }
+                browser_tile::log_host_ready(app.handle());
             }
-            browser_tile::log_host_ready(app.handle());
 
             // Spawn the bundled runtime in release builds.
             // In dev, the user runs `pnpm dev:runtime` manually.
@@ -616,32 +645,34 @@ pub fn run() {
                 std::thread::spawn(move || show_notification_and_wait(h, payload));
             });
 
-            let tile_handle = app.handle().clone();
-            app.listen_any("ginno:browser-tile", move |event| {
-                let Ok(payload) = serde_json::from_str::<BrowserTilePayload>(event.payload()) else {
-                    return;
-                };
-                if let Some(state) = tile_handle.try_state::<BrowserTile>() {
-                    if let Ok(mut guard) = state.0.lock() {
-                        *guard = Some(payload.clone());
+            if debug {
+                let tile_handle = app.handle().clone();
+                app.listen_any("ginno:browser-tile", move |event| {
+                    let Ok(payload) = serde_json::from_str::<BrowserTilePayload>(event.payload()) else {
+                        return;
+                    };
+                    if let Some(state) = tile_handle.try_state::<BrowserTile>() {
+                        if let Ok(mut guard) = state.0.lock() {
+                            *guard = Some(payload.clone());
+                        }
                     }
-                }
-                // Touch x/y so rustc does not warn — the host consumes them.
-                let _ = (payload.x, payload.y);
-                browser_tile::apply(&tile_handle, &payload);
-                shell_log(
-                    &tile_handle,
-                    &format!(
-                        "browser-tile visible={} {}x{} @{},{} space={}",
-                        payload.visible.unwrap_or(true),
-                        payload.width as i32,
-                        payload.height as i32,
-                        payload.x as i32,
-                        payload.y as i32,
-                        payload.space.as_deref().unwrap_or("-")
-                    ),
-                );
-            });
+                    // Touch x/y so rustc does not warn — the host consumes them.
+                    let _ = (payload.x, payload.y);
+                    browser_tile::apply(&tile_handle, &payload);
+                    shell_log(
+                        &tile_handle,
+                        &format!(
+                            "browser-tile visible={} {}x{} @{},{} space={}",
+                            payload.visible.unwrap_or(true),
+                            payload.width as i32,
+                            payload.height as i32,
+                            payload.x as i32,
+                            payload.y as i32,
+                            payload.space.as_deref().unwrap_or("-")
+                        ),
+                    );
+                });
+            }
 
             // The native strip outside the WKWebView shows the window
             // background; follow the web theme so it never reads as a black

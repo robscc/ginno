@@ -144,7 +144,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
         <button
           onClick={() => setEditing(true)}
           title="为本会话设定长程目标（Agent 自主多轮推进）"
-          className="flex items-center gap-1 rounded-lg border border-dashed border-line2 px-2 py-1 text-[11px] text-faint hover:border-violet/50 hover:text-violet"
+          className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-dashed border-line2 px-2 py-1 text-[11px] text-faint hover:border-violet/50 hover:text-violet"
         >
           <Target className="h-3 w-3" /> 设定目标
         </button>
@@ -176,7 +176,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
   };
 
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <button
         onClick={() => setPop((p) => !p)}
         title={`目标：${goal.objective}`}

@@ -1551,6 +1551,11 @@ def choose_engine() -> BrowserEngine:
     """
     global _LAST_ENGINE_ERROR
     _LAST_ENGINE_ERROR = None
+    from ..debug import debug_enabled
+
+    if not debug_enabled():
+        _LAST_ENGINE_ERROR = "浏览器模式已在 Debug 模式中关闭"
+        return FakeEngine()
     forced = (os.environ.get("GINNO_BROWSER_ENGINE") or "").strip().lower()
     if forced in ("fake", "test") or os.environ.get("PYTEST_CURRENT_TEST"):
         return FakeEngine()

@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import agents as agents_reg
 from . import paths, usage_store
+from .debug import debug_enabled
 from . import server_shared as shared
 from . import workflows as wf_store
 from .hooks.dispatcher import HookDispatcher
@@ -63,7 +64,8 @@ async def lifespan(app: FastAPI):
     agents_reg.ensure_research_discipline()
     agents_reg.ensure_goal_tools()
     agents_reg.ensure_web_tools()
-    agents_reg.ensure_browser_tools()
+    if debug_enabled():
+        agents_reg.ensure_browser_tools()
     # Upgraded installs never got the web tools in permissions.allow (defaults
     # seed only fresh homes) — migrate so they don't fall through to `ask`.
     try:
@@ -73,9 +75,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("web permissions migration failed (continuing)")
     try:
-        from .browser.spaces import ensure_browser_layout
+        if debug_enabled():
+            from .browser.spaces import ensure_browser_layout
 
-        ensure_browser_layout()
+            ensure_browser_layout()
     except Exception:
         _log.exception("browser layout failed (continuing)")
     wf_store.ensure_seeded()
@@ -99,9 +102,10 @@ async def lifespan(app: FastAPI):
     mcp_connect_task = asyncio.create_task(_connect_mcp_background())
     # C→runtime push (window_closed) → WS broadcast; replaces frontend polling.
     try:
-        from .browser import cef as _cef
+        if debug_enabled():
+            from .browser import cef as _cef
 
-        _cef.start_event_listener()
+            _cef.start_event_listener()
     except Exception:
         _log.exception("cef event listener failed")
     try:

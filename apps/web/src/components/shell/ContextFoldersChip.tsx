@@ -81,7 +81,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
   });
 
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <button
         onClick={() => setOpen((o) => !o)}
         title="本会话挂载的上下文目录"

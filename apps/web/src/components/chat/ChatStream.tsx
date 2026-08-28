@@ -2728,12 +2728,14 @@ export function ChatStream({
                 <button
                   key={a.id}
                   onClick={() => setTarget(sel ? null : a.id)}
-                  className="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors"
-                  style={{
-                    borderColor: sel ? hex : "#262632",
-                    background: sel ? hex + "1a" : "#15151d",
-                    color: sel ? hex : "#9a9aa6",
-                  }}
+                  className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors ${
+                    sel ? "" : "border-line bg-card text-muted hover:text-txt"
+                  }`}
+                  style={
+                    sel
+                      ? { borderColor: hex, background: hex + "1a", color: hex }
+                      : undefined
+                  }
                 >
                   <Icon name={a.icon} className="h-3.5 w-3.5" />
                   Ask {a.name}

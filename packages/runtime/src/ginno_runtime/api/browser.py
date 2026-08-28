@@ -6,14 +6,25 @@ WS layer also pushes ``browser.space`` / ``browser.handoff``.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 
 from ..browser import get_supervisor, reset_supervisor
 from ..browser.helpers import BrowserHandoff
 from ..browser.supervisor import BrowserLocked
+from ..debug import debug_enabled
 from ..server_shared import _log, _push_global_event, spawn_bg
 
-router = APIRouter()
+
+def require_debug() -> None:
+    """Debug 模式未开启时整个浏览器 REST 面 403（启动 CEF/CDP 属于调试特性）。"""
+    if not debug_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="浏览器模式需开启 Debug 模式后重启应用（设置 → 通用）",
+        )
+
+
+router = APIRouter(dependencies=[Depends(require_debug)])
 
 
 def _broadcast(event: str, data: dict) -> None:

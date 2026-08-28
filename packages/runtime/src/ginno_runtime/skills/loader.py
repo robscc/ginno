@@ -28,6 +28,7 @@ from pathlib import Path
 import yaml
 
 from .. import paths
+from ..debug import debug_enabled
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 
@@ -87,6 +88,11 @@ def load_all_skills(project_slug: str | None = None) -> list[Skill]:
     _scan_dir(paths.global_skills_dir(), builtin=False, into=skills)
     if project_slug:
         _scan_dir(paths.project_skills_dir(project_slug), builtin=False, into=skills)
+
+    # browse 依赖 browser_* 工具，属 Debug 模式特性；未开启时不对外暴露
+    # (tools 层同样被守卫，二者保持一致)。
+    if not debug_enabled():
+        skills.pop("browse", None)
 
     return list(skills.values())
 
