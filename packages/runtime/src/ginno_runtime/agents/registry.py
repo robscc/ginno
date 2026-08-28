@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
-from ..debug import debug_enabled
 from .memory import ensure_agent_memory
 
 
@@ -149,23 +148,35 @@ _SEED: list[AgentConfig] = [
         color="violet",
         system_prompt=(
             "You are Workflow Dev Agent. You edit ONE workflow's versioned DSL by "
-            "conversation. The user's first message gives the workflow_id and the "
-            "current DSL. Before proposing, preflight your draft with "
-            "workflow_dry_run(new_dsl_json=...) — zero cost, no side effects; fix "
-            "whatever it reports yourself. To change the DSL, call "
-            "workflow_propose_edit(workflow_id, new_dsl_json, rationale) with the "
-            "FULL proposed DSL object. Your edit then PAUSES: the user sees a "
-            "unified diff and must Apply or Reject — there is no DAG editor, the "
-            "diff confirmation is the gate. Only on Apply is a new immutable "
-            "version created. The authoritative node contract (every node type "
-            "with fields and structural rules) is appended to your system prompt "
-            "under 'Node contract' — follow it exactly instead of guessing node "
-            "shapes. A step's `agent` is optional: when omitted the engine "
+            "conversation. The session is bound to a workflow_id; every turn's "
+            "[turn context] already includes that id, version, and the FULL current "
+            "DSL — do not hunt for the file on disk. To inspect another workflow "
+            "call workflow_get(workflow_id). Before proposing an edit, preflight "
+            "your draft with workflow_dry_run(new_dsl_json=...) — zero cost, no "
+            "side effects; fix whatever it reports yourself. To change the bound "
+            "workflow, call workflow_propose_edit(workflow_id, new_dsl_json, "
+            "rationale) with the FULL proposed DSL object. Your edit then PAUSES: "
+            "the user sees a unified diff and must Apply or Reject — there is no "
+            "DAG editor, the diff confirmation is the gate. Only on Apply is a new "
+            "immutable version created. DSL node types: step / branch / loop / "
+            "human / python. `python` runs a deterministic whitelisted entry (no "
+            "LLM): {\"type\":\"python\",\"entry\":\"<registered name>\",\"args\":{...},\"writes\":{...}} "
+            "— prefer it for mechanical fetch/compute steps. "
+            "`human` is a first-class interrupt node (pauses the run for UI "
+            "resume); a step whose goal says 'ask the user' is NOT a human node "
+            "and will not stop the graph. A loop routes structurally (its body "
+            "must NOT carry an explicit out-edge; reference the loop item via "
+            "{{<as>}}). Validate your proposal: entry must be a node id, every "
+            "edge endpoint must exist, branch needs cases or default, loop needs "
+            "over+body+max_iters. The authoritative node contract (every node "
+            "type with fields and structural rules) is appended to your system "
+            "prompt under 'Node contract' — follow it exactly instead of guessing "
+            "node shapes. A step's `agent` is optional: when omitted the engine "
             "defaults to the dev agent, so never invent role names. Explain each "
             "change in rationale. Keep edits minimal and targeted."
         ),
         provider="custom",
-        tools_allow=["workflow_propose_edit", "workflow_dry_run", "workflow_list"],
+        tools_allow=["workflow_propose_edit", "workflow_dry_run", "workflow_list", "workflow_get"],
     ),
 ]
 
@@ -208,6 +219,22 @@ def ensure_seeded() -> None:
     for cfg in _SEED:
         _write(cfg)
         ensure_agent_memory(cfg.id, cfg.name, _MEMORY_SEED.get(cfg.id, ""))
+
+
+def ensure_workflow_dev() -> None:
+    """Idempotent: land the workflow-dev seed on upgraded installs.
+
+    ``ensure_seeded`` only writes when the agents dir is empty, so machines
+    that already had personas never received workflow-dev. Missing this
+    persona used to silently fall back to the first listed agent (analyst).
+    """
+    if _read("workflow-dev") is not None:
+        return
+    seed = next((c for c in _SEED if c.id == "workflow-dev"), None)
+    if seed is None:
+        return
+    _write(seed)
+    ensure_agent_memory(seed.id, seed.name, _MEMORY_SEED.get(seed.id, ""))
 
 
 # TODO tool patterns each persona should have (read-only for research).
@@ -272,30 +299,6 @@ def ensure_web_tools() -> None:
         allow = list(cfg.tools_allow or ["*"])
         if "*" in allow:
             continue  # already all-inclusive
-        added = [p for p in needed if p not in allow]
-        if added:
-            update_agent(cfg.id, {"tools_allow": allow + added})
-
-
-_BROWSER_PATTERNS: dict[str, list[str]] = {
-    "research": ["browser_*"],
-    "writer": ["browser_*"],
-}
-
-
-def ensure_browser_tools() -> None:
-    """Merge browser_* into research/writer (idempotent). workflow-dev stays off
-    — it only authors DSL (docs/browser-embed-design.md §9.5). Browser 工具属
-    Debug 模式特性；未开启时不并入任何 agent 的 tools_allow。"""
-    if not debug_enabled():
-        return
-    for cfg in list_agents():
-        needed = _BROWSER_PATTERNS.get(cfg.id)
-        if not needed:
-            continue
-        allow = list(cfg.tools_allow or ["*"])
-        if "*" in allow:
-            continue
         added = [p for p in needed if p not in allow]
         if added:
             update_agent(cfg.id, {"tools_allow": allow + added})

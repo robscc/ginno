@@ -6,9 +6,11 @@ import { useGinno } from "@/lib/store";
 import { relTime } from "@/lib/utils";
 import { agentHex } from "@/lib/theme";
 import { Icon } from "@/components/icons";
+import type { SessionMeta } from "@/lib/types";
 
-/** ⌘K session search: title-substring filter over sessions sorted by last
- *  activity; ↑↓/Enter/click opens the session (open-experience redesign). */
+/** ⌘K session search: title ∪ agent-name substring filter over sessions
+ *  sorted by last activity; ↑↓/Enter/click opens the session
+ *  (open-experience redesign). */
 export function SessionSearchModal({
   onClose,
   onOpen,
@@ -24,10 +26,15 @@ export function SessionSearchModal({
   const results = useMemo(() => {
     const sorted = [...g.sessions].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
     const needle = q.trim().toLowerCase();
-    return needle
-      ? sorted.filter((s) => (s.title || "").toLowerCase().includes(needle))
-      : sorted;
-  }, [g.sessions, q]);
+    if (!needle) return sorted;
+    // C+ 方案⑤：标题 ∪ Agent 名匹配——直接输「调研」能找到该 agent 经手的
+    // 所有会话（agent 被删除的会话仍可凭标题命中）。
+    const agentName = (s: SessionMeta) =>
+      (g.agents.find((a) => a.id === s.agent_id)?.name || "").toLowerCase();
+    return sorted.filter(
+      (s) => (s.title || "").toLowerCase().includes(needle) || agentName(s).includes(needle),
+    );
+  }, [g.sessions, g.agents, q]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -73,7 +80,7 @@ export function SessionSearchModal({
                 onClose();
               }
             }}
-            placeholder="搜索会话标题…"
+            placeholder="搜索会话标题，或直接输 Agent 名…"
             className="w-full bg-transparent py-3 text-sm text-txt outline-none placeholder:text-faint"
           />
         </div>
@@ -81,7 +88,10 @@ export function SessionSearchModal({
           {results.length === 0 && (
             <div className="px-3 py-6 text-center text-xs text-faint">没有匹配的会话</div>
           )}
-          {results.map((s, i) => (
+          {results.map((s, i) => {
+            const rowAgent = g.agents.find((a) => a.id === s.agent_id) ?? null;
+            const hex = agentHex(rowAgent?.color);
+            return (
             <button
               key={s.id}
               onMouseEnter={() => setActive(i)}
@@ -93,12 +103,23 @@ export function SessionSearchModal({
               <Icon
                 name={s.icon || "message-square"}
                 className="h-4 w-4 shrink-0"
-                style={{ color: agentHex(g.agents.find((a) => a.id === s.agent_id)?.color) }}
+                style={{ color: hex }}
               />
               <span className="min-w-0 flex-1 truncate">{s.title || "Untitled"}</span>
+              {/* C+ 方案⑤：agent dot + name 小标签（agent 已删除时不渲染） */}
+              {rowAgent && (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 text-[10px] leading-4"
+                  style={{ borderColor: hex + "44", background: hex + "14", color: hex }}
+                >
+                  <span className="h-1 w-1 rounded-full" style={{ background: hex }} />
+                  {rowAgent.name}
+                </span>
+              )}
               <span className="shrink-0 text-[11px] text-faint">{relTime(s.updated ?? s.created)}</span>
             </button>
-          ))}
+            );
+          })}
         </div>
         <div className="border-t border-line px-3 py-1.5 text-[10px] text-faint">
           ↑↓ 选择 · Enter 打开 · Esc 关闭

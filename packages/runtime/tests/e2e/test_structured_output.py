@@ -30,6 +30,7 @@ def test_render_widget_emits_widget_not_tool_bubble(create_session, ws_conv):
     assert len(widgets) == 1
     assert widgets[0]["kind"] == "stat_list"
     assert widgets[0]["data"]["title"] == "PRs"
+    assert widgets[0].get("render_id")
     # render_widget is silent: no ordinary tool bubble
     tool_starts = events_of(events, "tool.start")
     assert all(t.get("name") != "render_widget" for t in tool_starts)
@@ -60,6 +61,7 @@ def test_render_chart_widget_emits_spec(create_session, ws_conv):
     assert widgets[0]["kind"] == "chart"
     assert widgets[0]["data"]["type"] == "bar"
     assert widgets[0]["data"]["data"][1] == {"month": "Feb", "count": 19}
+    assert widgets[0].get("render_id")
     tool_starts = events_of(events, "tool.start")
     assert all(t.get("name") != "render_widget" for t in tool_starts)
 

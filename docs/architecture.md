@@ -60,8 +60,9 @@
 │   • release: std::process::Command 拉起 sidecar（先 kill 占用 8787   │
 │     的 stale ginno-runtime）；日志重定向 ~/.ginno/logs/sidecar.log   │
 │   • dev: 不拉起，假定 `pnpm dev:runtime` 已起                        │
+│   • 菜单栏 Debug：重启后端 / 打开日志 / 重新加载界面（不必退应用）     │
 │   • 冷启动未就绪 → 先导航 data: URL 内嵌 splash，轮询 /api/health     │
-│   • 原生桥：拖放 `__ginnoFileDrop`；完成通知 `ginno:notify`；浏览器 tile 几何 `ginno:browser-tile`（只存矩形，业务仍在 sidecar）          │
+│   • 唯一 Rust→JS 桥：原生拖放 window.__ginnoFileDrop(paths)          │
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │  WKWebView ──► http://127.0.0.1:8787                          │   │
 │  └──────────────────────┬───────────────────────────────────────┘   │
@@ -298,8 +299,6 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 - **Skills**（`skills/`）：`SKILL.md` 带 frontmatter（`name, description, trigger, tools, todo_provider`）。
   三层目录，同名覆盖 **内置 < 全局 < 项目**；索引注入走 WorldState `SkillsSection`（非旧式
   `build_index_prompt`）。安装 `skills.installer` 由 REST `import-dir` 与工具 `install_skills` 共享。
-  **`/<skill>` 本轮会把 frontmatter `tools:` 并入该 Agent 的 tools_allow**（`/browse` → `browser_*`，
-  即使当前是 analyst）。不写 `tools:` 的 skill 仍只注入正文。
 - **Slash commands**（`commands/`）：消息**首 token** 形如 `/name` 且命中内置命令或
   user-invocable skill 才触发（membership-gated，`/tmp/foo` 安全透传）。内置：`/help`、`/goal`。
   `/<skill>` 替换 SKILL.md 正文为 `<skill name=…>` + `User request:`。
@@ -368,7 +367,7 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   `ensure_web_permissions` 迁移把两工具补进**升级安装**的 `permissions.allow`
   （默认种子只对全新安装生效，不迁移的话 bypass 关闭时会落到 `ask`，goal 无头续轮会卡死在权限弹窗）。
 
-### 6.14 Browser — 内嵌浏览器（`browser/`）
+### 6.14 Browser — 内嵌浏览器（`browser/`，设计稿）
 
 > 详细设计见 `docs/browser-embed-design.md`。本节为架构级摘要。
 
@@ -377,23 +376,21 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 - **所有权三态**（复制 ego-lite 契约）：`agent` → `agentDelegatedToUser`（handoff 等登录/验证码）→ `user` →
   `agent`（takeOver 完成）。`handOff()` 通过 LangGraph `interrupt({kind:"browser_handoff"})` 实现，
   与现有 `HumanNode` 的 `interrupt({kind:"human"})` 同模式；`takeOver()` 走 `/decide` + `/resume`。
-- **工具契约**：`browser_eval(code, space?, timeout_s=180)` 在指定 Space 跑 ego-browser 方言；
-  helpers 预注入。`openOrReuseTab` 会把裸主机名补成 `https://` 并等到非 `about:blank`。
-  Chrome 新标签走 `PUT /json/new`（GET 会 405）。`/browse` 本轮授予 `browser_*`。
+- **工具契约**：`browser_eval(code, space?, timeout_s=180)` 在指定 Space 的 renderer 执行 JS；
+  支持 ego-lite helpers（`waitFor`, `askUser`, `snapshot` 等）兼容层，模型从 Claude Code/ego 过来几乎零改写。
   超时 180s（绕过 bash 30s 默认），handoff 期间 Goal driver 自动暂停。
-- **引擎两阶段**：生产优先打包 CEF 原生子视图（Helper.app + `libginno_cef.dylib` +
-  宿主写出 `~/.ginno/browser/cef-cdp.json`）；宿主没起来则回退无头系统 Chrome +
-  独立 profile + CDP screencast。`try_cef()` 只在 helpers **并且** CDP 真的在听时
-  才返回实例，不会假装 native tile。引擎切换时节点/协议/数据模型**不动**。
+- **引擎两阶段**：M1 用系统 Chrome + 独立 profile + 窗口 dock 进 tile（过渡）；M2 切 CEF
+  （Chromium Embedded Framework）让浏览器真正嵌进 Ginno NSView/窗口层级（参考 atrium / OpenHuman）。
+  引擎切换时节点/协议/数据模型**不动**。
 - **BrowserSupervisor**（Python sidecar）：所有浏览器实例的权威管理者。维护 Space 注册表
   （`~/.ginno/browser/spaces.json`）、CDP 连接、ownership 状态机、handoff 协议。
-- **Snapshot 85% 诚实**：CDP accessibility tree + 自研 refMap（`@N` / `loc=`）；M2 补同源 iframe
-  与开放 shadow 提示。跨源 iframe / 封闭 shadow DOM 仍省略。
+- **Snapshot 85% 诚实**：CDP accessibility tree + 自研 refMap（`@N` / `loc=`），覆盖主流页面；
+  跨源 iframe / 封闭 shadow DOM 做不到 ego 的内核级精度，M1 承诺明确标注限制。
 - **Workflow 一等节点**：DSL v1 扩展 `type: "browser"` 节点（action: `eval | snapshot | handoff | complete`），
   与 `step / branch / loop / human` 并列。工作流可写「打开审批页 → 等用户登录 → 抓取数据 → 关闭」
   的确定性流程，handoff 卡与聊天 human node 同模式。
-- **Goal 集成**：Goal driver 续跑前检查 `browser_state`；`waiting_human`（handoff 中）时**不续跑**。
-  高风险导航会先 flip owner 再 raise，driver 不会空转。
+- **Goal 集成**：Goal driver 续跑前检查 `browser_state`；`waiting_human`（handoff 中）时**不续跑**，
+  避免无头轮次撞在 locked 页面上空转。
 
 ---
 
@@ -424,8 +421,8 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 - **server→client** 帧为扁平 JSON `{"event", "turn_id"?, …}`。client→server 为 `{"type", …}`，
   type ∈ `invoke / permission_response / turn_state / ping`。
 - **turn 生命周期事件**：`turn.start, token.delta, thinking.delta, tool.start, tool.end,
-  permission.request, version.propose, widget.emit, ref.emit, workflow.emit, usage, message.end,
-  error, keepalive(15s)`。
+  permission.request, version.propose, widget.emit, ref.emit, image.emit, workflow.emit, usage,
+  message.end, error, keepalive(15s)`。`image.emit` 见 §11 代码生成图片（inline-images）。
 - **面板/资源同步事件**：`todos.changed / workflows.changed / artifacts.changed / skills.changed /
   agents.changed`、`preview.emit / preview.invalidate`、`run.bind / run.event / run.status`、
   `context.updated / context.microcompacted / context.compacted`、`goal.updated / goal.cleared`、
@@ -520,10 +517,17 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   右栏只读展示 + metadata inspector（文件丢失时尝试在 vault 里 heal）。
 - **Files**（`files/`）：
   - **extractors**：支持 xlsx/xlsm/xls、csv/tsv、docx、pptx、pdf、json/xml、txt/md；重依赖**懒加载**
-    （`--extra docs`）。`schema_summary` 产表格紧凑 schema 供 prompt 注入。
+    （`--extra docs`）。`schema_summary` 产表格紧凑 schema 供 prompt 注入。图片扩展名
+    （png/jpg/gif/webp/bmp/svg）分类为 `"image"`——不可解析为文本，仅供登记与内联展示。
   - **preview**：表格→分页 grid JSON，文档→markdown。
   - **registry**：`projects/<slug>/files.json` 文件身份台账；`touch()` 反应式通知（WS preview.invalidate）。
   - 会话文件目录 `sessions/<sid>/{uploads,results}/`；**会话删除后保留**，仅 orphaned 可经 session-files 端点清理。
+- **代码生成图片内联展示**（`docs/inline-images-design.md`）：bash 工具执行前后对工作区图片
+  快照 diff，新增图以机器标记 `<!--ginno-images:[…]-->` 随 ToolMessage 落盘；`_tool_file_effects`
+  解析后注册（kind=`image`）并广播 `image.emit {file_id, name, mtime}` 渲染进气泡；
+  agent 节点把路径提升进 `AIMessage.additional_kwargs["ginno_images"]` 作持久锚点
+  （microcompact 只清 ToolMessage 正文），`/history` 据此重建 image 块。标记对模型 send-only
+  剥离（展示专用，不回喂视觉）。
 
 ---
 
@@ -672,7 +676,7 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 | + | 聊天内联图表 widget（render_widget chart） | ✅ |
 | + | 上下文治理梯度（E2 截断 / E2.5 microcompact / E3 压缩 / E4 重申）+ 持久用量统计 | ✅ |
 | + | 引用与来源体系（Wiki + WebSearch：契约/台账/SourcesBlock）+ 内置 web 搜索 | ✅ P0/P1（见 citations-design） |
-| + | 内嵌浏览器 M1 + M2 协议层 + atrium 挖洞 + Frameworks + Helper | ✅ Helper.app + C 宿主进包；宿主 CDP 活着才切 native tile，否则 screencast |
+| 🔮 | **内嵌浏览器**（Chat|Browser 分栏 + Space + 三态所有权 + workflow browser 节点） | 设计稿（见 browser-embed-design） |
 | 🔮 | 引用检索加权生效、provider 原生搜索适配、web→Raw 沉淀、经验循环、多项目、真实桌面通知、账号体系 | 路线中 |
 
 > 界面/功能的逐项完成度与已知限制，见 `docs/user-guide.md` 的图例标注。

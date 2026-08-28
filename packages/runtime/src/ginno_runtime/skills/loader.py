@@ -28,7 +28,6 @@ from pathlib import Path
 import yaml
 
 from .. import paths
-from ..debug import debug_enabled
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 
@@ -49,6 +48,45 @@ class Skill:
     def system_prompt_snippet(self) -> str:
         """One-line summary for injection into system prompt index."""
         return f"- {self.name}: {self.description}"
+
+    def model_invocable(self) -> bool:
+        return self.trigger in ("model-invocable", "both")
+
+    def user_invocable(self) -> bool:
+        return self.trigger in ("user-invocable", "both")
+
+    def effective_tools(self) -> list[str]:
+        """Tools this skill is allowed to use once activated.
+
+        Frontmatter ``tools:`` wins. Script-backed skills that omit it still
+        need a shell to run the companion ``*.py``, so default to ``bash``.
+        """
+        if self.allowed_tools:
+            return list(self.allowed_tools)
+        return ["bash"]
+
+
+def wrap_skill_body(skill: Skill, request: str = "") -> str:
+    """Wrap a SKILL.md body the same way slash substitution and ``use_skill`` do.
+
+    ``$ARGUMENTS`` in the body is replaced with the request (empty when none),
+    matching Claude-Code-style skill templates. The skill directory is
+    appended so script-backed skills know where to run from.
+    """
+    body = (skill.body or "").strip()
+    body = body.replace("$ARGUMENTS", request or "")
+    blocks = [
+        f'<skill name="{skill.name}">',
+        body,
+        "</skill>",
+    ]
+    if skill.path is not None:
+        blocks.append(f"\nSkill directory: {skill.path.parent}")
+    if request:
+        blocks.append(f"\n\nUser request: {request}")
+    else:
+        blocks.append("\n\n(Follow the skill instructions above.)")
+    return "\n".join(blocks)
 
 
 def _parse_skill_file(p: Path, builtin: bool = False) -> Skill | None:
@@ -89,11 +127,6 @@ def load_all_skills(project_slug: str | None = None) -> list[Skill]:
     if project_slug:
         _scan_dir(paths.project_skills_dir(project_slug), builtin=False, into=skills)
 
-    # browse 依赖 browser_* 工具，属 Debug 模式特性；未开启时不对外暴露
-    # (tools 层同样被守卫，二者保持一致)。
-    if not debug_enabled():
-        skills.pop("browse", None)
-
     return list(skills.values())
 
 
@@ -109,8 +142,9 @@ class SkillLoader:
         if not skills:
             return ""
         lines = [
-            "Available skills (the user can invoke one by starting a message with"
-            " /<name>; listed here for your awareness):"
+            "Available skills. Call use_skill(name, request) when a skill matches"
+            " the user's intent — do not ask the user to type /<name> yourself."
+            " The user can also invoke one by starting a message with /<name>:"
         ]
         lines += [s.system_prompt_snippet() for s in skills]
         return "\n".join(lines)

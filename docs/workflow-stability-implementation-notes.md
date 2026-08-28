@@ -100,3 +100,20 @@
   retry→continue）与 Playwright 渲染抽查：前者被 synth_replay_batch（需真实
   provider）覆盖为 opt-in；后者所需的事件渲染逻辑已有单测/时间线组件覆盖，
   端到端抽查随下次 make app 一并做。
+
+## 附记（2026-08-29，与远端汇流）
+
+本地 16 个提交（含本分支 5 个）与 origin/main 的 3 个提交（轮次停止 /
+python 节点 / 生成图片内联）合并。远端在 d368f6d 已**整体移除内嵌浏览器
+子系统**（用户裁定跟随远端），因此：
+
+- browser/CEF 全家族取远端删除；本地 8/15-16 的浏览器修复与 29fad57 的
+  Debug 门控一并退役（代码留在 29fad57 及更早提交的历史里）。
+- 本分支成果全部保留并与远端新机制合流：synthesis 改为远端的异步
+  `synthesis.event` 流，doctor 回喂/警告留在 `_run_synthesis` 内（警告随
+  finished 帧透出，相关 API 测试改写为直驱 `_run_synthesis`）；node 契约
+  catalog 增 python 条目；workflow-dev 种子 prompt 合并「bound workflow +
+  workflow_get」与「dry-run 预检」两段指引、tools_allow 并入
+  `workflow_dry_run`/`workflow_get`。
+- 验证：合并后全量 1027 passed 1 skipped；tsc 干净；cargo check 干净；
+  `make sidecar`（web 导出 + PyInstaller）通过，打包 UI e2e（含图片内联）绿。

@@ -53,19 +53,11 @@ def as_fake_model(model_or_scripts: Any) -> ScriptedChatModel:
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point $GINNO_HOME at a fresh temp dir and reset server globals per test."""
     monkeypatch.setenv("GINNO_HOME", str(tmp_path))
-    # Never spawn system Chrome from unit/api tests (docs/browser-embed-design.md).
-    monkeypatch.setenv("GINNO_BROWSER_ENGINE", "fake")
     # Process-wide state that the lifespan does NOT reset between tests.
     server._SESSIONS.clear()
     server._USAGE_BY_SESSION.clear()
     server_shared._mcp = None
     server_shared._hooks = None
-    try:
-        from ginno_runtime.browser import reset_supervisor
-
-        reset_supervisor()
-    except Exception:
-        pass
     # Keep the default Playwright MCP out of unrelated tests (it would spawn a
     # headless browser on every server start). ensure_layout only re-seeds the
     # default when mcp.json is missing/empty, so a non-empty stub opts us out.
@@ -137,7 +129,7 @@ def create_session(client: TestClient, patch_build_model: Callable) -> Callable:
     """Patch the model and POST /sessions; returns the new session id.
 
     Signature: create_session(model, *, agent_id="dev", slug="default",
-    workspace=None, title=None) -> session_id
+    workspace=None, title=None, workflow_id=None) -> session_id
     """
 
     def _create(
@@ -147,6 +139,7 @@ def create_session(client: TestClient, patch_build_model: Callable) -> Callable:
         slug: str = "default",
         workspace: str | None = None,
         title: str | None = None,
+        workflow_id: str | None = None,
     ) -> str:
         patch_build_model(as_fake_model(model))
         ws = workspace or str(Path(os.environ["GINNO_HOME"]) / "ws")
@@ -156,6 +149,8 @@ def create_session(client: TestClient, patch_build_model: Callable) -> Callable:
             body["agent_id"] = agent_id
         if title is not None:
             body["title"] = title
+        if workflow_id is not None:
+            body["workflow_id"] = workflow_id
         r = client.post("/api/sessions", json=body)
         data = r.json()
         assert r.status_code == 200 and data.get("ok") is not False, data

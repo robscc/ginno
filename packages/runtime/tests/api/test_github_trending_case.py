@@ -76,7 +76,11 @@ def test_chat_then_summarize_then_debug_to_stable(client, create_session, ws_con
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True, body
-    dsl_v1 = body["dsl"]
+    # the DSL arrives once the background synthesis task finishes (_await/WS)
+    aw = client.post(f"/api/synthesis/cases/{body['synthesis_id']}/_await").json()
+    assert aw["ok"] is True and aw.get("error") is None, aw
+    assert aw["case"]["output"]["status"] == "ok", aw["case"]["output"]
+    dsl_v1 = aw["case"]["output"]["dsl"]
     cw = client.post("/api/workflows", json={"name": dsl_v1.get("name"), "dsl": dsl_v1})
     assert cw.status_code == 200
     wf_id = cw.json()["workflow"]["id"]

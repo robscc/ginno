@@ -33,6 +33,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from .. import paths
+from ..files.images import diff_images, encode_images_marker, snapshot_images
 
 # A runaway glob (e.g. ``**`` under a huge tree) used to stream the entire
 # filesystem listing into the context; cap it like grep_files does.
@@ -43,6 +44,49 @@ def _always_deny_roots() -> list[str]:
     """Directories NO file/shell tool may ever touch, regardless of workspace
     (credentials — never a legitimate work location)."""
     return [os.path.expanduser("~/.ssh"), os.path.expanduser("~/Library/Keychains")]
+
+
+def _skill_exempt_roots() -> list[Path]:
+    """Skill trees the model is allowed to read and execute from.
+
+    Global + every project's ``skills/`` dir. Walking ``projects/*/skills``
+    (instead of taking a slug) keeps bash token checks working even when
+    the session slug is unknown at tool-build time.
+    """
+    roots: list[Path] = [paths.global_skills_dir()]
+    projects = paths.home() / "projects"
+    if projects.is_dir():
+        for child in projects.iterdir():
+            if child.is_dir():
+                roots.append(child / "skills")
+    return roots
+
+
+# User shell rc / profile files. GUI-launched sidecars don't inherit an
+# interactive login env, so skills that need `export`s (Aliyun / Volc
+# keys, PATH extras) source these. They live in $HOME, not ~/.ginno, so
+# the home-deny does not cover them — but we still list them so bash
+# token scans and an explicit `source ~/.zshrc` stay allowed, and so
+# ~/.ssh / keychains remain the only always-deny roots.
+_USER_RC_NAMES = (
+    ".zshrc",
+    ".zprofile",
+    ".zshenv",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+)
+
+
+def _is_user_rc(p: Path) -> bool:
+    """True for a user's own shell rc/profile file (not ~/.ssh, not ~/.ginno)."""
+    try:
+        real = Path(os.path.realpath(Path(p).expanduser()))
+    except OSError:
+        real = Path(p).expanduser()
+    if real.name not in _USER_RC_NAMES:
+        return False
+    return real.parent == Path.home()
 
 
 def _inside(child_real: str, parent_real: str) -> bool:
@@ -62,6 +106,11 @@ def _path_denied(p: Path, base_dir: Path | None, extra_roots: list[Path] | None 
       (``projects/<slug>/sessions/<id>/``), so without the exemption a
       blanket deny would break legitimate file tools, while checkpoints,
       settings and memory stay protected.
+    * EXEMPT: skill trees (``~/.ginno/skills`` and
+      ``~/.ginno/projects/<slug>/skills``). Skills are user-authored
+      playbooks + companion scripts; the model must be able to read
+      SKILL.md and ``python3`` them. Settings / sessions / mcp / keys
+      stay behind the home deny.
     """
     try:
         real = os.path.realpath(p)
@@ -77,6 +126,13 @@ def _path_denied(p: Path, base_dir: Path | None, extra_roots: list[Path] | None 
             continue
         if _inside(real, root_real):
             return False  # explicitly mounted → reachable
+    for root in _skill_exempt_roots():
+        try:
+            root_real = os.path.realpath(root)
+        except OSError:
+            continue
+        if _inside(real, root_real):
+            return False  # skill trees are user content, not runtime secrets
     home = os.path.realpath(paths.home())
     if real == home or real.startswith(home + os.sep):
         if base_dir is not None:
@@ -144,16 +200,13 @@ def build_builtin_tools(
         if cand.is_dir():
             base_dir = cand
 
-    # Mounted context dirs are passed to _path_denied as ``extra_roots`` (an
-    # unconditional "this is reachable" exemption). The WORKSPACE must NOT be
-    # in that list: the workspace exemption is handled separately inside
-    # _path_denied via ``base_dir``, where it is limited to a workspace that is
-    # a PROPER subdir of home — a workspace equal to home (the workflow cwd
-    # fallback) stays protected. Putting ws_root in extra_roots would exempt it
-    # unconditionally and reopen ~/.ginno to a cwd=home run.
+    # Mounts only for _path_denied extra_roots — the session workspace is
+    # exempted separately (and ONLY when it is a proper subdir of ~/.ginno).
+    # Putting ws_root into extra_roots would punch a hole through the home
+    # deny whenever workspace == home (workflow cwd fallback).
     mount_roots: list[Path] = [p for p, _ in mounts]
-    read_roots: list[Path] = [ws_root] + mount_roots
-    write_roots: list[Path] = [ws_root] + [p for p, a in mounts if a == "rw"]
+    # Workspace + mounts: used only to validate an explicit glob/grep `root=`.
+    search_roots: list[Path] = [ws_root] + mount_roots
 
     def _mount_access(p: Path) -> str | None:
         """Access tier of the MOST SPECIFIC mount containing ``p`` (or None)."""
@@ -222,14 +275,14 @@ def build_builtin_tools(
             real = os.path.realpath(rp)
         except OSError:
             real = str(rp)
-        for rr in read_roots:
+        for rr in search_roots:
             try:
                 rr_real = os.path.realpath(rr)
             except OSError:
                 continue
             if _inside(real, rr_real):
                 return rp
-        avail = ", ".join(str(rr) for rr in read_roots)
+        avail = ", ".join(str(rr) for rr in search_roots)
         return f"[error] root {root!r} 不在本会话的可达目录内（工作目录/挂载目录：{avail}）"
 
     @tool
@@ -372,22 +425,42 @@ def build_builtin_tools(
             tok = tok.strip("'\"`;|&")
             if not tok or not (tok.startswith("/") or tok.startswith("~")):
                 continue
-            if _path_denied(_P(tok).expanduser(), base_dir, mount_roots):
+            candidate = _P(tok).expanduser()
+            # `source ~/.zshrc` (and friends) must be allowed — GUI sidecars
+            # don't inherit an interactive login env, so skills load user
+            # exports this way. ~/.ssh / ~/.ginno stay denied.
+            if _is_user_rc(candidate):
+                continue
+            if _path_denied(candidate, base_dir, mount_roots):
                 return _deny_msg(tok)
         cwd = str(base_dir) if base_dir.is_dir() else None
+        # Snapshot workspace images so we can detect pictures the command
+        # generates (e.g. matplotlib savefig) and surface them inline in the
+        # chat. Detection is workspace-scoped and display-only — the marker
+        # is stripped from the model's view by the agent node.
+        img_before = snapshot_images(base_dir) if cwd else {}
         try:
+            # Prefer the user's login shell so PATH / exports from zshrc
+            # (or bashrc) are present even when Ginno was launched from
+            # Finder and the sidecar inherited a bare GUI environment.
+            # Fall back to /bin/sh -lc if $SHELL is missing.
+            user_shell = os.environ.get("SHELL") or "/bin/sh"
             r = subprocess.run(
-                command,
-                shell=True,
+                [user_shell, "-lc", command],
                 cwd=cwd,
                 timeout=timeout,
                 capture_output=True,
                 text=True,
             )
-            return f"[exit {r.returncode}]\n{r.stdout}\n--- stderr ---\n{r.stderr}"
+            out = f"[exit {r.returncode}]\n{r.stdout}\n--- stderr ---\n{r.stderr}"
         except subprocess.TimeoutExpired:
             return f"[timeout after {timeout}s]"
         except OSError as e:
             return f"[error] cannot execute: {type(e).__name__}: {e}"
+        if cwd:
+            new_imgs = diff_images(img_before, snapshot_images(base_dir))
+            if new_imgs:
+                out += "\n" + encode_images_marker(new_imgs)
+        return out
 
     return [read_file, write_file, glob_files, grep_files, edit_file, bash]

@@ -13,6 +13,7 @@ import base64
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ginno_runtime.graph import _latest_human_text, text_of_content
+from ginno_runtime.world_state import TURN_CONTEXT_PREFIX
 from ginno_runtime.server import (
     TOOL_OUTPUT_WS_LIMIT,
     _ai_content_blocks,
@@ -205,6 +206,62 @@ def test_messages_to_ui_multimodal_user_and_ai():
     assert imgs and imgs[0]["url"] == f"data:image/jpeg;base64,{B64}"
 
 
+def test_messages_to_ui_attributes_bubbles_to_their_turn_agent():
+    # C+ attribution: agent_node tags AIMessage.additional_kwargs["agent_id"];
+    # each merged bubble (= one turn) must carry its own agent, not the
+    # session-level value.
+    msgs = [
+        HumanMessage(content="写个函数", id="h1"),
+        AIMessage(content="done", additional_kwargs={"agent_id": "dev"}, id="a1"),
+        HumanMessage(content="再调研一下背景", id="h2"),
+        AIMessage(content="findings", additional_kwargs={"agent_id": "research"}, id="a2"),
+    ]
+    ui = _messages_to_ui(msgs, "dev")
+    bubbles = [m for m in ui if m["role"] == "assistant"]
+    assert [b["agentId"] for b in bubbles] == ["dev", "research"]
+
+
+def test_messages_to_ui_untagged_history_falls_back_to_session_agent():
+    # Sessions written before attribution tagging: keep the legacy behavior.
+    msgs = [
+        HumanMessage(content="hi", id="h1"),
+        AIMessage(content="hello", id="a1"),
+    ]
+    ui = _messages_to_ui(msgs, "writer")
+    assert [m["agentId"] for m in ui if m["role"] == "assistant"] == ["writer"]
+
+
+def test_messages_to_ui_late_tag_in_same_turn_wins_over_missing():
+    # A turn whose first AI step is untagged (e.g. legacy block message) still
+    # picks up the first non-empty tag inside the merged bubble.
+    msgs = [
+        HumanMessage(content="q", id="h1"),
+        AIMessage(content="step1", id="a1"),
+        AIMessage(content="step2", additional_kwargs={"agent_id": "research"}, id="a2"),
+    ]
+    ui = _messages_to_ui(msgs, "dev")
+    bubbles = [m for m in ui if m["role"] == "assistant"]
+    assert len(bubbles) == 1 and bubbles[0]["agentId"] == "research"
+
+
+def test_messages_to_ui_turn_context_scaffold_does_not_split_attribution():
+    # The per-turn context bundle is hidden scaffolding (continue, no flush):
+    # it must neither split the bubble nor leak attribution across turns.
+    msgs = [
+        HumanMessage(content="q1", id="h1"),
+        AIMessage(content="part1", additional_kwargs={"agent_id": "dev"}, id="a1"),
+        HumanMessage(content=f"{TURN_CONTEXT_PREFIX}env bundle", id="ctx"),
+        AIMessage(content="part2", id="a2"),
+        HumanMessage(content="q2", id="h2"),
+        AIMessage(content="next", additional_kwargs={"agent_id": "writer"}, id="a3"),
+    ]
+    ui = _messages_to_ui(msgs, "dev")
+    assert all(m["role"] != "system" for m in ui)  # scaffold stays hidden
+    bubbles = [m for m in ui if m["role"] == "assistant"]
+    assert [b["agentId"] for b in bubbles] == ["dev", "writer"]
+    assert len(bubbles) == 2  # scaffold did not split turn 1's bubble
+
+
 def test_messages_to_ui_tool_message_list_content_is_stringified():
     ai = AIMessage(
         content="",
@@ -245,8 +302,58 @@ def test_messages_to_ui_replays_chart_widget():
     assert len(widgets) == 1
     assert widgets[0]["widgetKind"] == "chart"
     assert widgets[0]["data"] == chart_data
+    assert widgets[0]["renderId"] == "t1"
     # render_widget is silent on replay too: no ordinary tool bubble
     assert not [b for b in ui[0]["blocks"] if b["kind"] == "tool"]
+
+
+def test_messages_to_ui_stamps_distinct_render_ids_for_repeated_charts():
+    """A reused data.id from the model must not collapse two pie cards."""
+    spec = {
+        "type": "pie",
+        "title": "share",
+        "x": "name",
+        "y": "n",
+        "id": "aug-bailian-pie-v2",
+        "data": [{"name": "a", "n": 1}, {"name": "b", "n": 2}],
+    }
+    ai1 = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "render_widget", "args": {"kind": "chart", "data": spec}, "id": "tc-aaa", "type": "tool_call"}
+        ],
+        id="a1",
+    )
+    ai2 = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "render_widget", "args": {"kind": "chart", "data": spec}, "id": "tc-bbb", "type": "tool_call"}
+        ],
+        id="a2",
+    )
+    ui = _messages_to_ui(
+        [
+            ai1,
+            ToolMessage(content="ok", tool_call_id="tc-aaa"),
+            ai2,
+            ToolMessage(content="ok", tool_call_id="tc-bbb"),
+        ],
+        None,
+    )
+    widgets = [b for b in ui[0]["blocks"] if b["kind"] == "widget"]
+    assert [w["renderId"] for w in widgets] == ["tc-aaa", "tc-bbb"]
+
+
+def test_widget_event_ignores_model_data_id():
+    from ginno_runtime.tools.render_tools import widget_event
+
+    ev1 = widget_event({"kind": "chart", "data": {"id": "same"}}, "tc-1")
+    ev2 = widget_event({"kind": "chart", "data": {"id": "same"}}, "tc-2")
+    assert ev1["render_id"] == "tc-1"
+    assert ev2["render_id"] == "tc-2"
+    ev3 = widget_event({"kind": "stat_list", "data": {}})
+    assert ev3["render_id"]  # minted when no tool-call id
+    assert ev3["kind"] == "stat_list"
 
 
 # --------------------------------------------------------------------------- #
@@ -292,3 +399,55 @@ def test_messages_to_ui_tool_block_carries_args_preview():
     tools = [b for b in ui[0]["blocks"] if b["kind"] == "tool"]
     assert len(tools) == 1
     assert tools[0]["argsPreview"] == "pwd"
+
+
+# --------------------------------------------------------------------------- #
+# citation folding on history replay (citations-design.md §5.6)
+# --------------------------------------------------------------------------- #
+def test_messages_to_ui_folds_citation_block_into_sources():
+    ai = AIMessage(
+        content=(
+            "结论。\n\n"
+            "<ginno_citations>\n"
+            "wiki|Ginno/Wiki/x.md|note=[依据]\n"
+            "</ginno_citations>"
+        ),
+        id="a1",
+    )
+    ui = _messages_to_ui([ai], "dev")
+    blocks = ui[0]["blocks"]
+    texts = [b for b in blocks if b["kind"] == "text"]
+    assert len(texts) == 1 and "ginno_citations" not in texts[0]["text"]
+    sources = [b for b in blocks if b["kind"] == "sources"]
+    assert len(sources) == 1
+    assert sources[0]["items"] == [
+        {"kind": "wiki", "ref": "Ginno/Wiki/x.md", "note": "依据"}
+    ]
+
+
+def test_messages_to_ui_strips_empty_citation_block():
+    """Regression (2026-08-21, turn b1463216): the model emitted an EMPTY
+    <ginno_citations></ginno_citations> block. Zero parseable entries must
+    not spare the raw tags from stripping — they are machine metadata."""
+    ai = AIMessage(content="结论。\n<ginno_citations>\n</ginno_citations>", id="a1")
+    ui = _messages_to_ui([ai], "dev")
+    blocks = ui[0]["blocks"]
+    texts = [b for b in blocks if b["kind"] == "text"]
+    assert len(texts) == 1
+    assert "ginno_citations" not in texts[0]["text"]
+    assert texts[0]["text"].strip() == "结论。"
+    assert not [b for b in blocks if b["kind"] == "sources"]
+
+
+def test_messages_to_ui_strips_block_with_only_invalid_entries():
+    """Same hole, second shape: every line fails validation (unknown kind),
+    so the block parses to zero entries — still must not leak."""
+    ai = AIMessage(
+        content="结论。\n<ginno_citations>\nunknown_kind|something\n</ginno_citations>",
+        id="a1",
+    )
+    ui = _messages_to_ui([ai], "dev")
+    blocks = ui[0]["blocks"]
+    texts = [b for b in blocks if b["kind"] == "text"]
+    assert len(texts) == 1 and "ginno_citations" not in texts[0]["text"]
+    assert not [b for b in blocks if b["kind"] == "sources"]

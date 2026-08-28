@@ -10,6 +10,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import { openLinkExternal } from "@/lib/runtime";
 
 // Obsidian-style [[target]] / [[target|alias]] / [[target#heading]]. Turned into
 // in-page fragment links (#wl:<encoded>) so any URL transform keeps them; the
@@ -121,6 +122,16 @@ export function Markdown({
               href={href}
               target="_blank"
               rel="noreferrer"
+              onClick={(e) => {
+                // WKWebView ignores target=_blank — hand http(s) links to the
+                // sidecar, which opens the OS default browser (same route the
+                // SourcesBlock citations use). Non-http schemes (mailto: …)
+                // keep the default anchor behavior.
+                if (href && /^https?:\/\//i.test(href)) {
+                  e.preventDefault();
+                  openLinkExternal(href);
+                }
+              }}
               className="text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:decoration-violet"
             >
               {children}

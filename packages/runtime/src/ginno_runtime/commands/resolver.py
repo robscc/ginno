@@ -27,7 +27,7 @@ from typing import Any
 from .. import agents as agents_reg
 from .. import artifacts as art_store
 from .. import workflows as wf_store
-from ..skills.loader import SkillLoader
+from ..skills.loader import SkillLoader, wrap_skill_body
 from ..workflows import dsl as wf_dsl
 from .registry import BUILTINS
 
@@ -62,7 +62,7 @@ def _user_invocable_skill_names(project_slug: str | None) -> set[str]:
     return {
         s.name
         for s in SkillLoader(project_slug=project_slug).load()
-        if s.trigger in ("user-invocable", "both")
+        if s.user_invocable()
     }
 
 
@@ -94,19 +94,10 @@ def substitute_skill(text: str, project_slug: str | None) -> tuple[str, str | No
     skill = SkillLoader(project_slug=project_slug).get(m.group(1))
     if not skill or not skill.body:
         return text, None
-    if skill.trigger not in ("user-invocable", "both"):
+    if not skill.user_invocable():
         return text, None
     tail = (m.group(2) or "").strip()
-    blocks = [
-        f'<skill name="{skill.name}">',
-        skill.body.strip(),
-        "</skill>",
-    ]
-    if tail:
-        blocks.append(f"\n\nUser request: {tail}")
-    else:
-        blocks.append("\n\n(Follow the skill instructions above.)")
-    return "\n".join(blocks), skill.name
+    return wrap_skill_body(skill, tail), skill.name
 
 
 def parse_mention_tokens(text: str) -> list[dict]:

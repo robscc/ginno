@@ -8,7 +8,10 @@
 //!      splash page (data: URL — needs no server) that polls `/api/health` and
 //!      navigates to the app the moment the runtime is up.
 //!   3. Forward runtime stdout/stderr to a log file under ~/.ginno/logs/.
-//!   4. Terminate the runtime on app exit.
+//!   4. Terminate the runtime on app exit. The macOS menu bar has a Debug
+//!      submenu: restart just the sidecar (release: bundled ginno-runtime;
+//!      dev: `uv run uvicorn` against packages/runtime), open logs, reload
+//!      the UI — so a stale/broken backend does not require quitting the app.
 //!   5. Native notifications: the web UI emits `ginno:notify` when a session
 //!      turn / workflow run finishes while the user looks away; the shell
 //!      shows the macOS notification (optionally with a system sound, chosen
@@ -18,30 +21,29 @@
 //!      eval convention as `__ginnoFileDrop`). Closing the window hides it
 //!      (macOS convention) so the webview and its sockets survive to keep
 //!      receiving completion events.
-//!   6. Browser tile host: listen for `ginno:browser-tile`, punch a
-//!      transparent hole in the WKWebView, and (when Helper.app +
-//!      libginno_cef.dylib are packaged) attach a CEF child to the hole.
-//!      Geometry only — Space / ownership stay in the sidecar. See
-//!      `browser_tile.rs` / `cef_host.rs`.
 //!
 //! In dev (`tauri dev`), the user runs `pnpm dev:runtime` in a separate
 //! terminal; this file only spawns the runtime in release builds.
-
-mod browser_tile;
-#[cfg(target_os = "macos")]
-mod cef_host;
 
 use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{DragDropEvent, Listener, Manager, WindowEvent};
+use tauri::{
+    DragDropEvent, Listener, Manager, WindowEvent,
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+};
 
 const SIDECAR_PORT: u16 = 8787;
 
-/// Handle to the spawned runtime process, so `RunEvent::Exit` can terminate it.
+/// Handle to the spawned runtime process, so `RunEvent::Exit` / Debug → Restart
+/// can terminate it. Present in both release (bundled ginno-runtime) and dev
+/// (`uv run uvicorn`) so the menu can restart the backend without quitting.
 struct RuntimeProcess(Mutex<Option<Child>>);
+
+/// Serialize Debug → Restart Runtime so a double-click cannot spawn two sidecars.
+struct RestartLock(Mutex<()>);
 
 /// Payload of the `ginno:notify` event emitted by the web UI (see
 /// `notifyNative` in apps/web/src/lib/desktop.ts) when a session turn or
@@ -63,28 +65,6 @@ struct NotifyPayload {
     sound: Option<String>,
 }
 
-/// Payload of the `ginno:browser-tile` event emitted by BrowserPane when the
-/// page tile is resized / hidden. Rust only stores geometry. Space /
-/// ownership stay in the sidecar (design §15).
-#[derive(serde::Deserialize, Clone)]
-pub(crate) struct BrowserTilePayload {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    #[serde(default)]
-    space: Option<String>,
-    #[serde(default)]
-    visible: Option<bool>,
-    /// Kept for wire compatibility; native hit forwarding is disabled (human
-    /// input goes over CDP). Always false from the current web UI.
-    #[serde(default)]
-    passthrough: Option<bool>,
-}
-
-/// Last tile rect the webview reported.
-struct BrowserTile(Mutex<Option<BrowserTilePayload>>);
-
 /// Sounds that ship with macOS (`/System/Library/Sounds/<name>.aiff`).
 /// Allow-list doubles as sanitization: `sound` arrives over IPC from the
 /// webview, so anything unknown is dropped rather than handed to the OS.
@@ -94,9 +74,8 @@ const SYSTEM_SOUNDS: &[&str] = &[
     "Submarine", "Purr", "Pop", "Tink",
 ];
 
-fn open_log_file(app: &tauri::App) -> Option<std::fs::File> {
-    let home = dirs_home(app);
-    let logs = home.join("logs");
+fn open_log_file_for<M: tauri::Manager<tauri::Wry>>(app: &M) -> Option<std::fs::File> {
+    let logs = ginno_home_path(app).join("logs");
     std::fs::create_dir_all(&logs).ok()?;
     std::fs::OpenOptions::new()
         .create(true)
@@ -105,44 +84,9 @@ fn open_log_file(app: &tauri::App) -> Option<std::fs::File> {
         .ok()
 }
 
-fn dirs_home(app: &tauri::App) -> std::path::PathBuf {
-    // Honor $GINNO_HOME for tests, otherwise ~/.ginno.
-    if let Ok(p) = std::env::var("GINNO_HOME") {
-        return std::path::PathBuf::from(p);
-    }
-    let home = app
-        .path()
-        .home_dir()
-        .expect("home dir");
-    home.join(".ginno")
-}
-
-/// True when Debug 模式 is enabled in `~/.ginno/settings.json` (`"debug": true`).
-///
-/// Read once at startup — there is no live reload, so flipping the flag in
-/// Settings takes effect only after an app restart. Gates the browser / CEF
-/// host (embedded Chromium is unstable, so it lives behind Debug).
-fn debug_enabled(app: &tauri::AppHandle) -> bool {
-    let home = if let Ok(p) = std::env::var("GINNO_HOME") {
-        std::path::PathBuf::from(p)
-    } else {
-        match app.path().home_dir() {
-            Ok(h) => h.join(".ginno"),
-            Err(_) => return false,
-        }
-    };
-    let Ok(raw) = std::fs::read_to_string(home.join("settings.json")) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return false;
-    };
-    v.get("debug").and_then(|d| d.as_bool()).unwrap_or(false)
-}
-
 /// Append one line to ~/.ginno/logs/shell.log (same convention as sidecar.log).
 /// Best-effort diagnostics for the notification / window-visibility flow.
-pub(crate) fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
+fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
     let home = if let Ok(p) = std::env::var("GINNO_HOME") {
         std::path::PathBuf::from(p)
     } else {
@@ -160,19 +104,63 @@ pub(crate) fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
     }
 }
 
-/// Reclaim the runtime port from a stale `ginno-runtime`, if one holds it.
+fn sidecar_listening() -> bool {
+    let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
+}
+
+/// True if this pid looks like a Ginno runtime we are allowed to kill:
+/// the packaged `ginno-runtime` binary, or a `uvicorn` serving
+/// `ginno_runtime.server` (the `pnpm dev:runtime` / Debug-menu spawn).
+fn is_ours_sidecar(pid: &str) -> bool {
+    let comm = Command::new("ps")
+        .args(["-p", pid, "-o", "comm="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    if comm.contains("ginno-runtime") {
+        return true;
+    }
+    let args = Command::new("ps")
+        .args(["-p", pid, "-o", "args="])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    args.contains("ginno_runtime.server") || args.contains("ginno-runtime")
+}
+
+/// Kill a listener pid and, if its parent is also a Ginno sidecar (uvicorn
+/// --reload supervisor / `uv run` wrapper), kill the parent first so it
+/// cannot immediately respawn the worker we just stopped.
+fn kill_ours(pid: &str, signal: &str) {
+    if let Ok(out) = Command::new("ps").args(["-p", pid, "-o", "ppid="]).output() {
+        let ppid = String::from_utf8_lossy(&out.stdout);
+        let ppid = ppid.trim();
+        if !ppid.is_empty() && ppid != "1" && is_ours_sidecar(ppid) {
+            let mut k = Command::new("kill");
+            if signal == "-9" {
+                k.arg("-9");
+            }
+            let _ = k.arg(ppid).status();
+        }
+    }
+    let mut k = Command::new("kill");
+    if signal == "-9" {
+        k.arg("-9");
+    }
+    let _ = k.arg(pid).status();
+}
+
+/// Reclaim the runtime port from a stale Ginno sidecar, if one holds it.
 ///
 /// The packaged runtime is rebuilt *in place*: if a previous app instance's
 /// runtime is still alive when a new build replaces its files, the old process
 /// keeps the port but can no longer load anything from the replaced bundle,
 /// surfacing as broken chat turns. Such a process is unrecoverable; kill it
-/// (and only it — verified by process name) so the fresh runtime can bind.
-#[cfg(not(debug_assertions))]
+/// (and only it — verified by process name / cmdline) so the fresh runtime can
+/// bind. Also used by Debug → Restart Runtime.
 fn kill_stale_sidecar() {
-    use std::process::Command;
-
-    let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
-    if TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_err() {
+    if !sidecar_listening() {
         return; // port already free
     }
     let Ok(list) = Command::new("lsof")
@@ -182,21 +170,16 @@ fn kill_stale_sidecar() {
         return;
     };
     for pid in String::from_utf8_lossy(&list.stdout).split_whitespace() {
-        // Never kill a stranger on the port — only a ginno-runtime of ours.
-        let is_ours = Command::new("ps")
-            .args(["-p", pid, "-o", "comm="])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("ginno-runtime"))
-            .unwrap_or(false);
-        if is_ours {
-            let _ = Command::new("kill").arg(pid).status();
+        // Never kill a stranger on the port — only a Ginno runtime of ours.
+        if is_ours_sidecar(pid) {
+            kill_ours(pid, "");
         }
     }
     // Wait for the port to free up; escalate to SIGKILL once if it lingers.
     let mut escalated = false;
     for _ in 0..30 {
         std::thread::sleep(Duration::from_millis(100));
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_err() {
+        if !sidecar_listening() {
             return;
         }
         if !escalated {
@@ -206,11 +189,261 @@ fn kill_stale_sidecar() {
                 .output()
             {
                 for pid in String::from_utf8_lossy(&list.stdout).split_whitespace() {
-                    let _ = Command::new("kill").arg("-9").arg(pid).status();
+                    if is_ours_sidecar(pid) {
+                        kill_ours(pid, "-9");
+                    }
                 }
             }
         }
     }
+}
+
+fn ginno_home_path<M: tauri::Manager<tauri::Wry>>(app: &M) -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("GINNO_HOME") {
+        return std::path::PathBuf::from(p);
+    }
+    app.path()
+        .home_dir()
+        .map(|h| h.join(".ginno"))
+        .unwrap_or_else(|_| std::path::PathBuf::from(".ginno"))
+}
+
+/// Open a path in Finder (macOS) / Explorer / xdg-open. Best-effort.
+fn reveal_path(path: &std::path::Path) {
+    let _ = std::fs::create_dir_all(path);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").arg(path).status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("explorer").arg(path).status();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = Command::new("xdg-open").arg(path).status();
+    }
+}
+
+fn open_in_editor(path: &std::path::Path) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if !path.exists() {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `-t` = default text editor (TextEdit / whatever the user set).
+        let _ = Command::new("open").args(["-t"]).arg(path).status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        reveal_path(path.parent().unwrap_or(path));
+    }
+}
+
+/// Resolve `packages/runtime` so `tauri dev` can spawn uvicorn against source.
+/// Walks up from CARGO_MANIFEST_DIR / current_exe until we find it.
+fn runtime_src_dir() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    candidates.push(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(p) = exe.parent() {
+            candidates.push(p.to_path_buf());
+        }
+    }
+    for start in candidates {
+        let mut cur = start;
+        for _ in 0..8 {
+            let hit = cur.join("packages").join("runtime");
+            if hit.join("src").join("ginno_runtime").is_dir() {
+                return Some(hit);
+            }
+            if !cur.pop() {
+                break;
+            }
+        }
+    }
+    None
+}
+
+fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Child, String> {
+    let mut cmd = if cfg!(debug_assertions) {
+        let runtime = runtime_src_dir().ok_or_else(|| {
+            "cannot find packages/runtime (run `tauri dev` from the ginno repo)".to_string()
+        })?;
+        let mut cmd = Command::new("uv");
+        cmd.current_dir(&runtime).args([
+            "run",
+            "uvicorn",
+            "ginno_runtime.server:app",
+            "--port",
+            &SIDECAR_PORT.to_string(),
+        ]);
+        cmd
+    } else {
+        let runtime_exe = app
+            .path()
+            .resource_dir()
+            .map_err(|e| format!("resource dir: {e}"))?
+            .join("resources")
+            .join("runtime")
+            .join("ginno-runtime");
+        Command::new(runtime_exe)
+    };
+    cmd.stdin(Stdio::null());
+    if let Some(log) = open_log_file_for(app) {
+        let log_err = log
+            .try_clone()
+            .map_err(|e| format!("clone log handle: {e}"))?;
+        cmd.stdout(Stdio::from(log)).stderr(Stdio::from(log_err));
+    }
+    cmd.spawn().map_err(|e| format!("spawn sidecar: {e}"))
+}
+
+fn wait_for_sidecar(timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if sidecar_listening() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    sidecar_listening()
+}
+
+/// Kill the tracked child (and any leftover listener on :8787), then spawn a
+/// fresh sidecar. Reloads the webview onto splash → app once the port accepts.
+fn restart_sidecar(app: &tauri::AppHandle) {
+    shell_log(app, "debug: restart runtime requested");
+    // Splash first so the webview is not sitting on a dying origin.
+    #[cfg(not(debug_assertions))]
+    if let Some(window) = app.get_webview_window("main") {
+        let html = SPLASH_HTML.replace("__PORT__", &SIDECAR_PORT.to_string());
+        let url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
+        if let Ok(url) = url.parse() {
+            let _ = window.navigate(url);
+        }
+    }
+
+    if let Some(state) = app.try_state::<RuntimeProcess>() {
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    kill_stale_sidecar();
+
+    match spawn_sidecar(app) {
+        Ok(child) => {
+            if let Some(state) = app.try_state::<RuntimeProcess>() {
+                if let Ok(mut guard) = state.0.lock() {
+                    *guard = Some(child);
+                }
+            }
+        }
+        Err(e) => {
+            shell_log(app, &format!("debug: spawn sidecar FAILED: {e}"));
+            return;
+        }
+    }
+
+    // Caller already runs on a background thread and holds RestartLock for
+    // this whole function, so wait here (don't spawn another waiter).
+    let up = wait_for_sidecar(Duration::from_secs(60));
+    if !up {
+        shell_log(app, "debug: sidecar did not come up within 60s");
+        #[cfg(not(debug_assertions))]
+        {
+            let html = ERROR_HTML.replace("__PORT__", &SIDECAR_PORT.to_string());
+            let err_url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
+            let h = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(w) = h.get_webview_window("main") {
+                    if let Ok(u) = err_url.parse() {
+                        let _ = w.navigate(u);
+                    }
+                }
+            });
+        }
+        return;
+    }
+    // Release: sidecar hosts the UI, so navigate back onto :8787.
+    // Dev: the webview stays on :3000 (Next); just bring the window forward
+    // and let ChatStream's existing reconnect loop pick the new sidecar up.
+    #[cfg(not(debug_assertions))]
+    {
+        let url = match tauri::Url::parse(&format!("http://127.0.0.1:{SIDECAR_PORT}/")) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let h = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(w) = h.get_webview_window("main") {
+                let _ = w.navigate(url);
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        });
+    }
+    #[cfg(debug_assertions)]
+    {
+        let h = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(w) = h.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        });
+    }
+    shell_log(app, "debug: sidecar restarted");
+}
+
+fn install_debug_menu(app: &tauri::App) -> tauri::Result<()> {
+    let restart = MenuItem::with_id(
+        app,
+        "debug-restart-runtime",
+        "重启后端",
+        true,
+        Some("CmdOrCtrl+Alt+R"),
+    )?;
+    let sidecar_log = MenuItem::with_id(app, "debug-open-sidecar-log", "打开 sidecar 日志", true, None::<&str>)?;
+    let shell_log_item = MenuItem::with_id(app, "debug-open-shell-log", "打开 shell 日志", true, None::<&str>)?;
+    let logs_dir = MenuItem::with_id(app, "debug-reveal-logs", "在访达中显示日志目录", true, None::<&str>)?;
+    let home_dir = MenuItem::with_id(app, "debug-reveal-home", "在访达中显示 ~/.ginno", true, None::<&str>)?;
+    let reload = MenuItem::with_id(app, "debug-reload-ui", "重新加载界面", true, Some("CmdOrCtrl+R"))?;
+
+    let debug = Submenu::with_id_and_items(
+        app,
+        "debug",
+        "Debug",
+        true,
+        &[
+            &restart,
+            &PredefinedMenuItem::separator(app)?,
+            &sidecar_log,
+            &shell_log_item,
+            &logs_dir,
+            &home_dir,
+            &PredefinedMenuItem::separator(app)?,
+            &reload,
+        ],
+    )?;
+
+    // Default menu (Ginno / File / Edit / View / Window / Help) plus Debug.
+    let menu = Menu::default(app.handle())?;
+    menu.append(&debug)?;
+    app.set_menu(menu)?;
+    Ok(())
 }
 
 #[cfg(not(debug_assertions))]
@@ -438,6 +671,53 @@ pub fn run() {
     let quitting = Arc::new(AtomicBool::new(false));
 
     let app = tauri::Builder::default()
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            match id {
+                "debug-restart-runtime" => {
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let Some(lock) = app.try_state::<RestartLock>() else {
+                            return;
+                        };
+                        let Ok(_guard) = lock.0.try_lock() else {
+                            shell_log(&app, "debug: restart already in flight");
+                            return;
+                        };
+                        restart_sidecar(&app);
+                    });
+                }
+                "debug-open-sidecar-log" => {
+                    open_in_editor(&ginno_home_path(app).join("logs").join("sidecar.log"));
+                }
+                "debug-open-shell-log" => {
+                    open_in_editor(&ginno_home_path(app).join("logs").join("shell.log"));
+                }
+                "debug-reveal-logs" => {
+                    reveal_path(&ginno_home_path(app).join("logs"));
+                }
+                "debug-reveal-home" => {
+                    reveal_path(&ginno_home_path(app));
+                }
+                "debug-reload-ui" => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        #[cfg(not(debug_assertions))]
+                        if sidecar_listening() {
+                            if let Ok(url) =
+                                format!("http://127.0.0.1:{SIDECAR_PORT}/").parse()
+                            {
+                                let _ = w.navigate(url);
+                            }
+                        }
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = w.eval("location.reload()");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        })
         // WKWebView never fires the HTML5 `ondrop` for files dragged from the
         // Finder, so the composer's JS drop handler can't see them. Handle the
         // OS-level drop natively and forward the file paths to the page via
@@ -477,64 +757,32 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // Debug 模式：浏览器 / CEF 宿主只在开关打开时启动（读一次 settings.json，
-            // 无热加载 → 改完需重启）。关闭时完全不触碰 CEF（不 dlopen、不 cef_initialize）。
-            let debug = debug_enabled(app.handle());
-            shell_log(app.handle(), &format!("debug_mode enabled={debug}"));
-            if debug {
-                // Punch the hole and (when Helper + dylib exist) start CEF *before*
-                // the sidecar so `~/.ginno/browser/cef-cdp.json` is already written
-                // when choose_engine() runs. No Space / ownership here.
-                app.manage(BrowserTile(Mutex::new(None)));
-                app.manage(browser_tile::BrowserTileHost::new());
-                if let Some(w) = app.get_webview_window("main") {
-                    browser_tile::prepare(&w);
-                }
-                browser_tile::log_host_ready(app.handle());
+            app.manage(RuntimeProcess(Mutex::new(None)));
+            app.manage(RestartLock(Mutex::new(())));
+            if let Err(e) = install_debug_menu(app) {
+                shell_log(app, &format!("install_debug_menu FAILED: {e}"));
             }
 
             // Spawn the bundled runtime in release builds.
-            // In dev, the user runs `pnpm dev:runtime` manually.
+            // In dev, the user runs `pnpm dev:runtime` (or uses Debug → 重启后端).
             #[cfg(not(debug_assertions))]
             {
                 // A previous instance's runtime may still hold the port (its
                 // bundle replaced by a rebuild → unusable); reclaim it first.
                 kill_stale_sidecar();
-
-                let runtime_exe = app
-                    .path()
-                    .resource_dir()
-                    .expect("failed to resolve resource dir")
-                    .join("resources")
-                    .join("runtime")
-                    .join("ginno-runtime");
-
-                let mut cmd = Command::new(&runtime_exe);
-                cmd.stdin(Stdio::null());
-                if let Ok(exe) = std::env::current_exe() {
-                    if let Some(macos) = exe.parent() {
-                        let fw = macos.join("..").join("Frameworks");
-                        if fw.join("Chromium Embedded Framework.framework").is_dir() {
-                            cmd.env("GINNO_CEF_DIR", &fw);
+                match spawn_sidecar(app) {
+                    Ok(child) => {
+                        if let Some(state) = app.try_state::<RuntimeProcess>() {
+                            if let Ok(mut guard) = state.0.lock() {
+                                *guard = Some(child);
+                            }
                         }
                     }
+                    Err(e) => {
+                        panic!("failed to spawn sidecar: {e}");
+                    }
                 }
-                if let Some(log) = open_log_file(app) {
-                    let log_err = log
-                        .try_clone()
-                        .expect("failed to clone log file handle");
-                    cmd.stdout(Stdio::from(log)).stderr(Stdio::from(log_err));
-                }
-                let child = cmd.spawn().unwrap_or_else(|e| {
-                    panic!("failed to spawn {}: {e}", runtime_exe.display())
-                });
-                app.manage(RuntimeProcess(Mutex::new(Some(child))));
 
-                // If the runtime isn't listening yet, swap the pending
-                // navigation (which would hit a dead port) for the local splash
-                // and flip to the app from a background task once the port
-                // accepts. setup() returns immediately either way, so the event
-                // loop runs and the window/splash stay responsive.
                 let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
                 let ready_now = TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok();
 
@@ -604,9 +852,9 @@ pub fn run() {
                     });
                 });
             }
-            // In dev the sidecar is run by the user; just reveal the window
-            // (it loads `devUrl`). The release path reveals it once the
-            // sidecar is ready (above).
+            // In dev the sidecar is run by the user (or Debug → 重启后端);
+            // just reveal the window (it loads `devUrl`). The release path
+            // reveals it once the sidecar is ready (above).
             #[cfg(debug_assertions)]
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -643,44 +891,6 @@ pub fn run() {
                 let h = notify_handle.clone();
                 shell_log(&h, &format!("ginno:notify kind={} id={}", payload.kind, payload.id));
                 std::thread::spawn(move || show_notification_and_wait(h, payload));
-            });
-
-            if debug {
-                let tile_handle = app.handle().clone();
-                app.listen_any("ginno:browser-tile", move |event| {
-                    let Ok(payload) = serde_json::from_str::<BrowserTilePayload>(event.payload()) else {
-                        return;
-                    };
-                    if let Some(state) = tile_handle.try_state::<BrowserTile>() {
-                        if let Ok(mut guard) = state.0.lock() {
-                            *guard = Some(payload.clone());
-                        }
-                    }
-                    // Touch x/y so rustc does not warn — the host consumes them.
-                    let _ = (payload.x, payload.y);
-                    browser_tile::apply(&tile_handle, &payload);
-                    shell_log(
-                        &tile_handle,
-                        &format!(
-                            "browser-tile visible={} {}x{} @{},{} space={}",
-                            payload.visible.unwrap_or(true),
-                            payload.width as i32,
-                            payload.height as i32,
-                            payload.x as i32,
-                            payload.y as i32,
-                            payload.space.as_deref().unwrap_or("-")
-                        ),
-                    );
-                });
-            }
-
-            // The native strip outside the WKWebView shows the window
-            // background; follow the web theme so it never reads as a black
-            // bar (light theme).
-            let bg_handle = app.handle().clone();
-            app.listen_any("ginno:window-bg", move |event| {
-                let hex = event.payload().trim_matches('"').to_string();
-                browser_tile::set_window_background(&bg_handle, &hex);
             });
 
             Ok(())

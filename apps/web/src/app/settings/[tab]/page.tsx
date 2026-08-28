@@ -11,7 +11,6 @@ export function generateStaticParams() {
     { tab: "knowledge" },
     { tab: "folders" },
     { tab: "web" },
-    { tab: "browser" },
     { tab: "permissions" },
     { tab: "hooks" },
     { tab: "session-files" },

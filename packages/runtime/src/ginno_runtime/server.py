@@ -20,7 +20,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import agents as agents_reg
 from . import paths, usage_store
-from .debug import debug_enabled
 from . import server_shared as shared
 from . import workflows as wf_store
 from .hooks.dispatcher import HookDispatcher
@@ -40,6 +39,15 @@ async def lifespan(app: FastAPI):
     from . import server_shared as _shared
 
     _shared.set_main_loop(asyncio.get_running_loop())
+    # Apply the user's system-proxy switch (Settings → 模型 API) before any
+    # LLM client exists: verify / sessions / probes all ride httpx, whose
+    # clients freeze their proxy map at init. Default honours OS proxies.
+    try:
+        from . import providers as _prov
+
+        _prov.apply_system_proxy(_prov.use_system_proxy())
+    except Exception:
+        _log.exception("system proxy apply failed (continuing)")
     # Attach the trace-file handler up front so pre-turn lifecycle lines
     # (session_create / ws_open / ws_close) land in the log, not just turn lines.
     _ensure_turn_log()
@@ -65,8 +73,7 @@ async def lifespan(app: FastAPI):
     agents_reg.ensure_goal_tools()
     agents_reg.ensure_web_tools()
     agents_reg.ensure_workflow_dev_tools()
-    if debug_enabled():
-        agents_reg.ensure_browser_tools()
+    agents_reg.ensure_workflow_dev()
     # Upgraded installs never got the web tools in permissions.allow (defaults
     # seed only fresh homes) — migrate so they don't fall through to `ask`.
     try:
@@ -75,13 +82,6 @@ async def lifespan(app: FastAPI):
         ensure_web_permissions()
     except Exception:
         _log.exception("web permissions migration failed (continuing)")
-    try:
-        if debug_enabled():
-            from .browser.spaces import ensure_browser_layout
-
-            ensure_browser_layout()
-    except Exception:
-        _log.exception("browser layout failed (continuing)")
     wf_store.ensure_seeded()
     # Reconcile workflow runs left "running" by a previous crash/quit: at this
     # point no background task can be alive, so every "running" run is an orphan
@@ -101,14 +101,6 @@ async def lifespan(app: FastAPI):
     # before connections finish simply starts without those tools (the
     # /api/mcp/reload endpoint or a new session picks them up once ready).
     mcp_connect_task = asyncio.create_task(_connect_mcp_background())
-    # C→runtime push (window_closed) → WS broadcast; replaces frontend polling.
-    try:
-        if debug_enabled():
-            from .browser import cef as _cef
-
-            _cef.start_event_listener()
-    except Exception:
-        _log.exception("cef event listener failed")
     try:
         yield
     finally:
@@ -121,14 +113,14 @@ async def lifespan(app: FastAPI):
             await _shutdown_run_tasks()
         except Exception:
             _log.exception("run_shutdown_failed")
+        # Cancel live synthesis tasks (their cases stay without output.json and
+        # render 未完成 after the restart — intentional, no reconciliation).
+        try:
+            await _shutdown_synth_tasks()
+        except Exception:
+            _log.exception("synthesis_shutdown_failed")
         if shared._mcp:
             await shared._mcp.close_all()
-        try:
-            from .browser import reset_supervisor
-
-            reset_supervisor()
-        except Exception:
-            _log.exception("browser supervisor shutdown failed")
 
 
 async def _connect_mcp_background() -> None:
@@ -186,7 +178,6 @@ from .api import stream as _stream_api  # noqa: E402
 from .api import todos as _todos_api  # noqa: E402
 from .api import usage as _usage_api  # noqa: E402
 from .api import workflows as _workflows_api  # noqa: E402
-from .api import browser as _browser_api  # noqa: E402
 
 app.include_router(_config_api.router)
 app.include_router(_files_api.router)
@@ -198,7 +189,6 @@ app.include_router(_stream_api.router)
 app.include_router(_todos_api.router)
 app.include_router(_usage_api.router)
 app.include_router(_workflows_api.router)
-app.include_router(_browser_api.router)
 
 
 @app.get("/api/health")
@@ -322,6 +312,7 @@ from .api.workflows import (  # noqa: E402, F401
     _run_workflow_bg,
     _set_run_status,
     _shutdown_run_tasks,
+    _shutdown_synth_tasks,
     _spawn_run_task,
     _wf_build_deps,
 )

@@ -92,11 +92,16 @@ export function RightDock() {
             if (g.unseenFailedCount > 0)
               wfBadges.push({ count: g.unseenFailedCount, cls: "bg-red text-white" });
           }
+          // 总结 tab: blue pulse dot while a synthesis is in flight (mirrors
+          // the tab bar).
+          const synthActive = t.id === "synthesis" && g.synthesisActiveCount > 0;
           const badgeExtra = n
             ? `，${n} 个新文件`
             : wfBadges.length
               ? `，${g.pendingHumanCount} 个等待输入，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
-              : "";
+              : synthActive
+                ? `，${g.synthesisActiveCount} 个总结进行中`
+                : "";
           return (
             <button
               key={t.id}
@@ -121,6 +126,9 @@ export function RightDock() {
                   {b.count > 99 ? "99+" : b.count}
                 </span>
               ))}
+              {synthActive && (
+                <span className="absolute -right-0.5 -top-0.5 inline-block h-2 w-2 animate-pulse rounded-full bg-blue" />
+              )}
             </button>
           );
         })}

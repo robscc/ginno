@@ -3,8 +3,7 @@
 Single source of truth for what the synthesis prompt and the workflow-dev
 agent teach about node types: the node registry (types / aliases /
 params_schema) plus a static table of structural rules and one-line examples
-that live outside the schemas (edge prohibitions, writes semantics, browser
-separation). Previously these rules were hand-maintained in two places
+that live outside the schemas (edge prohibitions, writes semantics). Previously these rules were hand-maintained in two places
 (_SYNTHESIZE_PROMPT and the workflow-dev seed prompt) and drifted.
 
 Rendered lazily: ``render_catalog`` imports the nodes package at call time —
@@ -49,10 +48,12 @@ _STRUCTURAL_RULES: dict[str, list[str]] = {
     "human": [
         "question; pauses the run for a user answer (resume may patch context)",
     ],
-    "browser": [
-        "action eval|snapshot|handoff|complete; space name reused across the run",
-        "login/captcha/payment = separate handoff node; complete MUST be its own "
-        "node (never mixed with eval); prefer over mcp_playwright_* (headless anon)",
+    "python": [
+        "deterministic whitelisted script — NO LLM: prefer for mechanical "
+        "fetch/normalize/compute steps",
+        "`entry` must be a registered name (validate rejects unknown entries); "
+        "`args` accepts {{...}} templates or plain objects; the return value is "
+        "written back to context per `writes`",
     ],
     "pass": ["no-op placeholder; terminal or connector"],
 }
@@ -66,8 +67,8 @@ _EXAMPLES: dict[str, str] = {
     "loop": '{"id":"each","type":"loop","over":"context.stocks","as":"stock",'
     '"body":"review","max_iters":50}',
     "human": '{"id":"confirm","type":"human","question":"Publish these drafts?"}',
-    "browser": '{"id":"scrape","type":"browser","action":"eval","space":"news site",'
-    '"code":"…"}',
+    "python": '{"id":"bills","type":"python","entry":"fetch_aliyun_bills",'
+    '"args":{"month":"{{context.month}}"},"writes":{"bills":{"type":"array","items":{"type":"object"}}}}',
     "pass": '{"id":"done","type":"pass"}',
 }
 

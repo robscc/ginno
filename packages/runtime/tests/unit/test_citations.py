@@ -79,6 +79,19 @@ def test_strip_citation_block():
     assert cit.strip_citation_block(text) == "正文。"
 
 
+def test_strip_empty_and_invalid_only_blocks():
+    """An EMPTY block — or one whose lines all fail validation (unknown
+    kinds) — parses to zero entries but must still be stripped, or the raw
+    tags leak into display text (2026-08-21, turn b1463216)."""
+    assert cit.parse_citation_block("正文。\n<ginno_citations>\n</ginno_citations>") == []
+    assert (
+        cit.strip_citation_block("正文。\n<ginno_citations>\n</ginno_citations>") == "正文。"
+    )
+    invalid_only = "正文。\n<ginno_citations>\nunknown_kind|something\n</ginno_citations>"
+    assert cit.parse_citation_block(invalid_only) == []
+    assert cit.strip_citation_block(invalid_only) == "正文。"
+
+
 # --------------------------- normalization --------------------------- #
 def test_normalize_web_ref():
     a = cit.normalize_web_ref("https://WWW.Example.com/a/?utm_source=x&k=1#frag")

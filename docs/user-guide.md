@@ -121,7 +121,7 @@ pnpm build:desktop   # Tauri 产出 .dmg / .msi / .AppImage
 
 ### 5.1 发送与“一次一轮”
 - 文本框输入，**Enter 发送**、**Shift+Enter 换行**，或点右下发送➤。
-- 有**发送锁**：一轮未结束（仍在流式 / 有未决工具 / 弹着权限确认）时不能发下一条，发送按钮置灰。
+- 有**发送锁**：一轮未结束（仍在流式 / 有未决工具 / 弹着权限确认）时不能发下一条。此时发送➤会变成红色**停止■**按钮（输入框聚焦时也可按 **Esc**）：点击立即打断当前轮——已输出的文字与已完成的步骤保留，进行中的工具调用作废（显示为 interrupted）；若会话有进行中的长程目标，会一并暂停。权限确认弹出时不显示停止按钮，用弹窗自带的允许 / 拒绝。
 - 未连上 sidecar 时发送按钮置灰（左下/顶栏状态会变）。
 - **切换会话不丢状态**：每个会话各自保留**未发送的草稿 + 附件**，切走再切回原样恢复；对话区也保留你**离开时的最新内存态**（含流式/乐观更新），切回时即时恢复、不会闪空，只有**第一次**打开某会话才从服务端拉历史。删除某会话会一并清掉它的缓存。
 
@@ -132,7 +132,7 @@ pnpm build:desktop   # Tauri 产出 .dmg / .msi / .AppImage
 | 图片 image | 模型/工具产出的图片，缩略图网格，点击放大预览（见 5.5） | ✅ |
 | 思考 thinking | 模型的思考内容，**独立可折叠面板**（左侧紫色强调边 + 思考图标，流式时展开并显示“思考中…”，结束后自动折叠、可点开看全文），来自 `thinking`/`reasoning_content` | ✅ |
 | 工具调用 tool | `tool · <name> ✓ · N 行 · M 字符` 的**可折叠条**：输出较长时默认收起，展开后放在带内滚动的限高容器里；执行中显示转圈 `name…` | ✅ |
-| 卡片 widget | `render_widget(kind="stat_list", data={title, items:[{label,value,status}]})` 渲染成状态列表卡 | ✅ |
+| 卡片 widget | `render_widget(kind="stat_list", …)` 状态列表卡；`kind="chart"` 内联 d3 图（bar/line/area/pie）。每次调用是一张新卡，服务端会打独立 `render_id`，饼图按模型给的切片原样画、不再二次折成 Other | ✅ |
 | 引用 ref | `attach_ref(kind, name)` 在气泡**下方**生成可点击 chip（file/doc/workflow/link） | ✅ |
 | 流程 workflow | `workflow_run` 在气泡内嵌入实时步骤进度块 | ✅ |
 
@@ -189,23 +189,11 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 - 标题、当前 Agent 胶囊、`Running/Idle` 状态点；
 - 右侧 **model 按钮**：显示当前模型标签，点击跳到 **Settings → 模型 API**；
 - 右侧 **⋮** 按钮：✅ 打开会话菜单——**重命名会话**（写回标题，之后不再随 Agent 自动改名）与**复制会话 ID**。
-- **浏览器**按钮：✅ 打开右侧 **Chat | Browser 分栏**。页面画在分栏里（无头 Chrome 投屏），**不会弹出系统 Chrome**。handoff 时按钮变黄「需要你 · 浏览器」。
-
-### 5.9b 内嵌浏览器 ✅
-工作区右侧分栏是一台带 Space 的真 Chromium（登录态与你共享）：
-1. 顶栏点 **浏览器**（⌘.），或聊天里发 `/browse 打开 https://…`（也支持「打开 ai.sf-express.com」这种不带协议的主机名）。`/browse` **不挑 Agent**：当前是分析师也能开浏览器。打开后**左侧菜单和右栏收起**，网页约占 2/3；「设定目标 / Ask Agent」暂时隐藏。⌘⇧. 最大化网页（聊天仍挂着，会话不断）。关浏览器后侧栏和这些控件回来。
-2. Agent 用 `browser_eval` 在自己的 Space 里点页面；需要登录 / 验证码时会 **handoff**，聊天出现黄卡「需要你在右侧画面里操作」。
-3. **直接点分栏画面**就能操作（Agent 占用时第一次点击即接管），做完再点「交还」。交还后 Agent 必须接管**同一个** Space，不会新开空白页。
-4. 地址栏下一行是**这个 Space 的标签**（不是整台 Chrome 的所有页）。点 `+` 开新标签；下载进 `~/.ginno/browser/downloads`，完成后进 Artifacts（顶栏下载图标）。
-5. 设置 → **浏览器**：从系统 Chrome 导入 Cookies（先完全退出 Chrome），以及编辑高风险域名（支付/网银/改密强制交还，Goal 会停）。
-6. Playwright MCP（`mcp_playwright_*`）是**另一套匿名无头**，没有你的登录态，不要混用。
-7. 分栏一直是空白 / 地址栏停在 `about:blank`：完全退出 Ginno（含 sidecar），再开新包。旧 Chrome 锁着 `~/.ginno/browser/profile` 时新标签会开不出来。
-8. 打包后的 `.app` 带 `Chromium Embedded Framework.framework`、四份 `Ginno Helper.app` 和 `libginno_cef.dylib`。宿主起来后页面是原生子视图（`engine=cef`）；没起来仍走无头 Chrome 投屏，不会弹出系统 Chrome。Agent 占用时点画面仍会先接管，交还后点击落到真页面上。
 
 ### 5.10 输入区按钮 ✅ / 🚧
 - **📎（附件）**：选择图片附加到本轮（等同粘贴 / 拖拽，详见 5.5）。
 - **⌨（斜杠）**：✅ 输入框为空时点击会插入 `/` 并打开**命令补全菜单**（见 5.8）；已有文本时只聚焦输入框（斜杠命令只在行首生效）。
-- **连接状态指示**（📎/⌨ 右侧的小圆点+文字）：🟢**已连接** / 🟡**连接中·重连中** / 🔴**离线**。它实时反映与服务端（sidecar）的 WebSocket 连接；当连接掉线/卡住时这里会变色，**非连接态点它可立即重连**。长任务里若它一直 🟢 却无输出，说明是模型/网关在慢，而非连接断了。
+- **连接状态指示**（📎/⌨ 右侧的小圆点+文字）：🟢**已连接** / 🟡**连接中·重连中** / 🔴**离线**。它实时反映与服务端（sidecar）的 WebSocket 连接；当连接掉线/卡住时这里会变色，**非连接态点它可立即重连**。长任务里若它一直 🟢 却无输出，说明是模型/网关在慢，而非连接断了。打包版若一直「重连中」，用菜单栏 **Debug → 重启后端**（不必退应用）。
 - **拖拽调高输入框**：输入框**顶缘中间**有一个小横条（grip，鼠标变上下箭头），按住向上拖可把输入框调高（夹在 96px–70vh 之间，超出后框内滚动）；**双击横条还原**自动高度。拖高只改变输入框，消息列表仍占满剩余空间并可滚动，不影响整体布局。
 
 ### 5.11 长任务保护 与 turn 诊断 ✅
@@ -370,7 +358,7 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 
 列表显示 `/<name>`、`trigger`（user-invocable / model-invocable / both）、描述、`tools`；非内置可 `delete`。
 - **New skill**：填 `name`(kebab-case) + 带 frontmatter 的正文，`Create`。
-- 触发：在聊天输入 `/<name>`（见 5.8）。
+- 触发：在聊天输入 `/<name>`（见 5.8）；Agent 也会在意图匹配时自动 `use_skill(name, request)`，不必再让用户打斜杠。
 - **让 Agent 安装**：直接说“安装 <仓库/目录> 里的 skill”。有工具权限的 Agent（如 Dev）会用 `install_skills(path)` 把含 `<skill>/SKILL.md` 的目录装进全局 skills 目录（远端仓库会先 `git clone` 到会话工作目录再安装）；`list_skills()` / `uninstall_skill(name)` 查看与卸载（内置技能不可卸载）。UI 的 `import-dir` 接口与其共享同一实现。
 
 ### 9.3 MCP 工具 ✅
@@ -400,12 +388,7 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 
 ### 9.7 通知 🚧（仅本地偏好）
 一个“启用桌面提醒”复选框，**只写本地 `localStorage`**（`ginno-notify`）。
-> ⚠️ 该开关已接通：会话结束会按 `settings.json` 的 `notifications` 发本机通知（见设置页「通知」）。
-
-### 9.8 浏览器 ✅
-- 说明两套浏览器：**内嵌**（无头 Chrome + 分栏画面 + 共享登录）vs **Playwright MCP**（匿名无头）。
-- **从系统 Chrome 导入登录态**：先退出 Chrome，选 Profile，可选含扩展 / 强制覆盖。
-- **高风险域名**：匹配即强制 handoff（支付 / 网银），即使特权模式开着。
+> ⚠️ **目前没有真实的桌面通知推送实现**——该开关暂不影响任何行为，属占位偏好。
 
 ---
 
@@ -429,8 +412,7 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 ├── knowledge/             # 知识库配置（索引/关联图在内存，不落盘）
 ├── cache/                 # 通用缓存
 ├── vectorstore/           # 语义向量缓存（LanceDB；use_semantic 开启后写入）
-├── browser/               # 内嵌浏览器：profile / spaces.json / screenshots
-├── logs/
+└── logs/
 ```
 
 ### 10.2 权限策略（🧩，编辑 `settings.json` 的 `permissions`）
@@ -485,7 +467,7 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 
 ## 12. 常见问题 FAQ
 
-- **界面打不开 / 聊天转圈连不上**：确认运行时在跑（`pnpm dev:runtime` 或 sidecar 已起），浏览器/壳访问 `http://127.0.0.1:8787/health` 应返回 `{"ok":true}`。界面对 sidecar 有 60 次×500ms 的启动等待，刚启动稍等即可。
+- **界面打不开 / 聊天转圈连不上 / 顶栏一直「重连中」**：打包版用菜单栏 **Debug → 重启后端**（⌘⌥R）只重启 sidecar，不必退应用。开发模式同样可用（会停掉占用 8787 的 `uvicorn ginno_runtime.server` 再拉起一份，无 `--reload`）。也可 **Debug → 打开 sidecar 日志** 看 `~/.ginno/logs/sidecar.log`。浏览器/壳访问 `http://127.0.0.1:8787/health` 应返回 `{"ok":true}`。冷启动有约 60s 等待。
 - **发消息没反应 / 报错**：多半是**没有启用并验证通过任何模型提供商**（Settings → 模型 API）。先用“验证”确认“已连接”。
 - **点“新建会话”没反应**：现在不会静默失败了——若因未配置模型而失败，左导航 Sessions 下会出现**琥珀色提示**，点击直达 设置 → 模型 API（见第 4 节）。若提示是 `401`/“缺少 Authorization 头”，按 9.1 给 provider 加 `bearer_auth: true`。
 - **工具一直弹权限 / 被拒绝**：检查 `settings.json` 的 `permissions`（10.2）与该 Agent 的 `tools_allow`（越权工具会被直接拦，不弹框）。

@@ -38,4 +38,13 @@ Tauri (Rust)
 ```
 
 Frontend talks to the sidecar via HTTP/WebSocket on `127.0.0.1:8787`.
-The port is exposed to JS via the `sidecar_port()` Tauri command.
+
+The menu bar has a **Debug** submenu (release and `tauri dev`):
+
+- **重启后端** (`⌘⌥R`) — kill the listener on :8787 if it is ours
+  (`ginno-runtime` or `uvicorn ginno_runtime.server`) and spawn a fresh one.
+  Release reloads the webview onto splash → `http://127.0.0.1:8787/`.
+  Dev leaves the webview on `:3000` and lets ChatStream reconnect.
+- Open `sidecar.log` / `shell.log`, reveal `~/.ginno/logs` or `~/.ginno`.
+- **重新加载界面** (`⌘R`) — release navigates to the sidecar origin; dev
+  `location.reload()`.

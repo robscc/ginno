@@ -55,7 +55,11 @@ def test_session_summarize_invoke_modify(client, create_session, ws_conv):
     _patch(ScriptedChatModel(scripts=[script(text=json.dumps(_v1_dsl(), ensure_ascii=False))]))
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": session_id})
     assert r.status_code == 200 and r.json()["ok"] is True
-    dsl_v1 = r.json()["dsl"]
+    syn_id = r.json()["synthesis_id"]
+    aw = client.post(f"/api/synthesis/cases/{syn_id}/_await").json()
+    assert aw["ok"] is True and aw.get("error") is None, aw
+    assert aw["case"]["output"]["status"] == "ok", aw["case"]["output"]
+    dsl_v1 = aw["case"]["output"]["dsl"]
     wf_id = client.post("/api/workflows", json={"name": dsl_v1["name"], "dsl": dsl_v1}).json()["workflow"]["id"]
 
     # ---------- 2) 唤起: run bound to the session ---------- #

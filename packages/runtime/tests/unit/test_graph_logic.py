@@ -44,16 +44,89 @@ def test_structured_tools_always_allowed():
     assert tool_allowed(a, "render_widget") is True
     assert tool_allowed(a, "attach_ref") is True
     assert tool_allowed(a, "workflow_run") is True
+    assert tool_allowed(a, "workflow_get") is True
     assert tool_allowed(a, "artifact_register") is True
-    # browser_* follows tools_allow (dev=* has them; workflow-dev does not).
-    assert tool_allowed(a, "browser_eval") is False
-    assert tool_allowed(_agent(["browser_*"]), "browser_eval") is True
-    assert tool_allowed(_agent(["*"]), "browser_eval") is True
-    # Slash-skill frontmatter tools are granted for the turn even if the
-    # persona (analyst) does not list them.
-    assert tool_allowed(a, "browser_eval", ["browser_*"]) is True
-    assert tool_allowed(a, "browser_handoff", ["browser_eval", "browser_handoff"]) is True
-    assert tool_allowed(a, "bash", ["browser_*"]) is False
+    assert tool_allowed(a, "use_skill") is True
+    # management stays gated — a read-only analyst must not rewrite skills
+    assert tool_allowed(a, "install_skills") is False
+    assert tool_allowed(a, "uninstall_skill") is False
+
+
+def test_skill_extra_allow_widens_after_activation(isolated_home):
+    """Analyst + aliyun-bill: use_skill is always visible; bash only after
+    the skill is on active_skills (script skills default to bash)."""
+    from ginno_runtime.graph import _skill_extra_allow
+
+    d = isolated_home / "skills" / "aliyun-bill"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: aliyun-bill\ndescription: bills\ntrigger: both\n---\n\n"
+        "跑 python3 aliyun_bill.py $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    a = _agent(["read_file", "glob_files"])
+    assert tool_allowed(a, "use_skill") is True
+    assert tool_allowed(a, "bash") is False
+    extra = _skill_extra_allow({"active_skills": ["aliyun-bill"], "project_slug": "default"})
+    assert "bash" in extra
+    assert tool_allowed(a, "bash", extra) is True
+    t = isolated_home / "skills" / "todo-like"
+    t.mkdir(parents=True)
+    (t / "SKILL.md").write_text(
+        "---\nname: todo-like\ndescription: t\ntrigger: both\n"
+        "tools: [todo_list]\n---\n\nlist\n",
+        encoding="utf-8",
+    )
+    extra2 = _skill_extra_allow({"active_skills": ["todo-like"], "project_slug": "default"})
+    assert extra2 == ["todo_list"]
+    assert "bash" not in extra2
+
+
+async def test_use_skill_activates_skill_on_state(isolated_home):
+    """After use_skill succeeds, active_skills carries the name so the next
+    agent step can bind the skill's declared (or default bash) tools."""
+    from langchain_core.messages import ToolMessage
+
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import script_tool_call
+    from ginno_runtime.tools.skill_tools import build_skill_tools
+
+    d = isolated_home / "skills" / "aliyun-bill"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: aliyun-bill\ndescription: bills\ntrigger: both\n---\n\n"
+        "跑 python3 aliyun_bill.py $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    model = ScriptedChatModel(
+        scripts=[
+            script(tool_calls=[script_tool_call("use_skill", {"name": "aliyun-bill", "request": "overview"})]),
+            script(text="ok, following the skill"),
+        ]
+    )
+    graph = build_graph(
+        model=model,
+        project_slug="default",
+        workspace="/tmp",
+        mcp_tools=[],
+        all_tools=build_skill_tools("default"),
+    )
+    cfg = {"configurable": {"thread_id": "t-skill", "project_slug": "default", "agent_id": "dev"}}
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="拉一下百炼账单")],
+            "workspace": "/tmp",
+            "project_slug": "default",
+            "agent_id": "dev",
+            "active_skills": [],
+            "pending_tool_calls": [],
+        },
+        config=cfg,
+    )
+    assert "aliyun-bill" in (result.get("active_skills") or [])
+    tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert tool_msgs and '<skill name="aliyun-bill">' in tool_msgs[0].content
+    assert "overview" in tool_msgs[0].content
 
 
 def test_allowed_tool_names_filters():
@@ -117,6 +190,30 @@ def test_system_prompt_carries_workspace_and_skill_dirs(isolated_home):
     assert "install_skills" in prompt  # guidance present for a ["*"] agent
 
 
+def test_stable_system_instructs_artifact_registration_when_attach_ref_allowed(isolated_home):
+    """Files written via bash/python heredocs are opaque to the Artifacts
+    panel; the stable layer must tell the model to echo them through
+    attach_ref (2026-08-17 turn 4b5a390f produced files that never showed
+    up). Gated on attach_ref so agents without it don't get dead guidance."""
+    from ginno_runtime.graph import build_stable_system
+    from ginno_runtime.tools.render_tools import attach_ref, render_widget
+
+    ws_dir = str(paths.home() / "projects" / "p" / "sessions" / "s2")
+    # mirror the production assembly (graph.py: builtin + [render_widget, attach_ref])
+    tools = build_builtin_tools(ws_dir) + [render_widget, attach_ref]
+    assert any(t.name == "attach_ref" for t in tools)  # sanity: it's builtin
+
+    prompt = build_stable_system(_agent(["*"]), "p", tools, workspace=ws_dir)
+    assert "Artifact registration" in prompt
+    assert "attach_ref(kind='file'" in prompt
+    assert "write_file outputs" in prompt  # echo rule covers write_file too
+
+    # gating: without attach_ref in the allowed set, no dead guidance
+    no_attach = [t for t in tools if t.name != "attach_ref"]
+    prompt2 = build_stable_system(_agent(["*"]), "p", no_attach, workspace=ws_dir)
+    assert "Artifact registration" not in prompt2
+
+
 async def test_raising_tool_is_contained_not_fatal(isolated_home):
     """The 2026-08 incident shape: a tool raises OSError mid-call. The turn
     must survive — the exception becomes an error ToolMessage the agent reads,
@@ -158,27 +255,3 @@ async def test_raising_tool_is_contained_not_fatal(isolated_home):
     tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
     assert tool_msgs and tool_msgs[0].status == "error"
     assert "Invalid argument" in tool_msgs[0].content
-
-
-def test_skill_extra_tools_browse(isolated_home):
-    from ginno_runtime.graph import skill_extra_tools
-
-    extra = skill_extra_tools(["browse"], "default")
-    assert "browser_eval" in extra
-    assert "browser_handoff" in extra
-    assert skill_extra_tools([], "default") == []
-    assert skill_extra_tools(None, "default") == []
-    assert skill_extra_tools(["no-such-skill"], "default") == []
-
-
-def test_browse_skill_grants_browser_tools_on_analyst(isolated_home):
-    from ginno_runtime.graph import _allowed_tool_names, skill_extra_tools
-    from ginno_runtime.tools.browser_tools import BROWSER_TOOL_NAMES, build_browser_tools
-
-    extra = skill_extra_tools(["browse"])
-    tools = build_builtin_tools() + build_browser_tools("s1")
-    names = _allowed_tool_names(_agent(["read_file", "web_search"]), tools, extra)
-    for n in BROWSER_TOOL_NAMES:
-        assert n in names
-    assert "write_file" not in names
-    assert "read_file" in names

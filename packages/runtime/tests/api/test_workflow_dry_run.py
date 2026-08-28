@@ -120,7 +120,12 @@ def _seed_session(slug: str, sid: str) -> None:
     cp.put({"configurable": {"thread_id": sid}}, checkpoint, {}, {})
 
 
-def test_summarize_success_carries_doctor_warnings(client, monkeypatch):
+async def test_synthesis_result_carries_doctor_warnings(client, monkeypatch):
+    """Async synthesis contract (2026-08-29 merge): the endpoint only ACKs
+    (started + synthesis_id); the doctor findings ride the synthesis result /
+    finished-event instead of the HTTP response."""
+    from ginno_runtime.api.workflows import _run_synthesis
+
     sid = "sess-dry-warn"
     _seed_session("default", sid)
     # writes declared but never consumed → writes.unused warning, no errors
@@ -137,17 +142,22 @@ def test_summarize_success_carries_doctor_warnings(client, monkeypatch):
         }
     )
     model = _RecordingModel([AIMessage(content=warn_dsl)])
+    result = await _run_synthesis("trace", model, None)
+    assert result["ok"] is True, result
+    rules = {w.get("rule") for w in result.get("doctor_warnings") or []}
+    assert "writes.unused" in rules
+
+    # The HTTP surface now answers "started" and defers to synthesis.event.
     monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: model)
     r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
     body = r.json()
-    assert body["ok"] is True, body
-    rules = {w.get("rule") for w in body.get("doctor_warnings") or []}
-    assert "writes.unused" in rules
+    assert body["ok"] is True and body.get("status") == "started", body
+    assert body.get("synthesis_id")
 
 
-def test_summarize_doctor_failure_reports_messages(client, monkeypatch):
-    sid = "sess-dry-dirty"
-    _seed_session("default", sid)
+async def test_synthesis_doctor_failure_reports_messages():
+    from ginno_runtime.api.workflows import _run_synthesis, _synth_error_text
+
     dirty = json.dumps(
         {
             "name": "dirty",
@@ -161,10 +171,10 @@ def test_summarize_doctor_failure_reports_messages(client, monkeypatch):
         }
     )
     model = _RecordingModel([AIMessage(content=dirty)] * 5)
-    monkeypatch.setattr("ginno_runtime.api.workflows.build_model", lambda *a, **k: model)
-    r = client.post("/api/workflows/summarize-from-session", json={"session_id": sid})
-    body = r.json()
-    assert body["ok"] is False
-    # The failure message carries the doctor findings (not an empty suffix).
-    assert "loop.over.no_source" in body["error"]
+    result = await _run_synthesis("trace", model, None)
+    assert result["ok"] is False
+    assert result["fail_stage"] == "doctor.loop.over.no_source"
+    # The finished-event error text carries the doctor findings (not an empty
+    # suffix).
+    assert "loop.over.no_source" in _synth_error_text(result)
     assert len(model.calls) == 3  # bounded self-correction loop

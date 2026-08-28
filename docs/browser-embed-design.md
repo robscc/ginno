@@ -1,6 +1,6 @@
 # Browser Embedding Design（内嵌浏览器：聊天 + 工作流 + Goal）
 
-> 状态：**M2 协议层 + atrium 挖洞 + Frameworks + Helper.app + C 宿主已进包**。目标：在 Ginno 里内嵌一台带 Space 的真 Chromium 浏览器——
+> 状态：**设计稿**（待评审）。目标：在 Ginno 里内嵌一台带 Space 的真 Chromium 浏览器——
 > 复制 ego-lite 的体验（真页面、真标签、真接管、登录共享），并作为**一等能力**同时服务
 > 聊天、工作流节点、Goal 自主推进。
 >
@@ -9,11 +9,9 @@
 > - [atrium — From WKWebView to CEF](https://getatrium.dev/blog/embedding-real-browser-tauri) — Tauri 内嵌 Chromium 的工程路径
 > - OpenHuman（tinyhumansai/openhuman）— CEF fork + child webview + CDP
 >
-> 引擎：生产优先 **打包 CEF 原生子视图**（Helper.app + `libginno_cef.dylib` + 宿主
-> `cef_initialize` 写出 `~/.ginno/browser/cef-cdp.json`）。`try_cef()` 只在 helpers
-> **并且** 宿主 CDP 真的在听时才返回实例；否则回退无头系统 Chrome screencast，
-> **不会假装 native tile 活着**。Rust 壳按 atrium 挖洞，并把 CEF 挂成 hole NSView
-> 的子视图。节点 / 协议 / 数据模型在引擎切换时不动。不弹出系统 Chrome 窗口。
+> 前置依赖：本文假设浏览器引擎最终是 **CEF（Chromium Embedded Framework）**；M1 用
+> 「系统 Chrome + 独立 profile + 窗口 dock 进 tile」作过渡，M2 切 CEF 让浏览器真正嵌进
+> Ginno 的 NSView/窗口层级。引擎换的时候节点/协议/数据模型**不动**。
 
 ---
 
@@ -21,9 +19,8 @@
 
 - **产品目标**：Ginno 工作区变成 **Chat | Browser** 分栏。右边不是截图回放，是一台
   带地址栏、多标签、下载、Space 的真 Chromium。人日常可在 Human Space 里逛，Agent 在
-  自己的 Space 里干活，登录共用，互不抢焦点。要登录 / 过验证码时，点「接管」，手点在
-  **右侧分栏的画面上**（M1：CDP screencast + Input.dispatch；M2：CEF 原生子视图）。
-  不弹出系统 Chrome。
+  自己的 Space 里干活，登录共用，互不抢焦点。要登录 / 过验证码时，点「接管」，手直接
+  落在**真页面**上，**不是**点在假画面上发事件。
 - **不做**：不把 `ego lite.app` 嵌进 Ginno；不把 WKWebView 子 webview 当 ego 替身
   （atrium 已证伪）。
 - **产品契约 = ego-lite 的契约**。helpers / Space / 三态所有权 / handoff 纪律照抄，
@@ -109,7 +106,7 @@ iframe API。ego-lite 的集成分三层，由浅到深：
 |---|---|
 | 新建 Agent Space | 工具调用 `useOrCreate(name)` |
 | 切换当前展示的 Space | 点 Space 条 |
-| 接管 | 点画面或点「接管」→ ownership=`agentDelegatedToUser`，工具全部硬停 |
+| 接管 | 点「接管」→ ownership=`agentDelegatedToUser`，工具全部硬停 |
 | 交还 | 聊天「交还」/ 在 Space 内点浮标 → `takeOverTaskSpace` |
 | 保持 / 关掉 | 对应 `completeTaskSpace({ keep })`，必须**单独一轮** |
 
@@ -187,11 +184,9 @@ await click('@12')
 
 不强迫模型去 `bash` 调 `ego-browser`。Ginno 给的是：
 
-- 一等工具 `browser_eval(code, space?)`：helpers 预注入（M0 把 ego 方言转成 Python 再 `exec`）
-- 内置 skill `/browse`：正文替换 + **本轮授予 frontmatter `tools:`（`browser_*`）**，不挑当前 Agent
+- 一等工具 `browser_eval(code, space?)`：在**常驻 Node/JS 运行时**里跑这段，helpers 预注入
+- 内置 skill `/browse`（或叫 `ego-browser`，降低模型迁移成本）
 - 显式工具：`browser_snapshot` / `browser_handoff` / `browser_screenshot`
-- `openOrReuseTab` 会把 `ai.sf-express.com` 补成 `https://…`，等到非 `about:blank`；登录墙会在返回值里标 `login_wall`
-- Chrome 新标签必须 `PUT /json/new`（GET = 405，Space 会停在空白页）
 
 ### 5.3 选择规则（写进 WorldState / skill）
 
@@ -280,7 +275,7 @@ Python sidecar
 
 ### 7.3 引擎两阶段
 
-**M1（screencast）**：系统 Chrome / Chromium，独立 `user-data-dir=~/.ginno/browser/profile`，**无头**。Ginno 用 `Page.startScreencast` 把 JPEG 画进右侧分栏，鼠标/键盘经 `Input.dispatch*` 打回页面。接管 = 手点在 App 里的这块画面上，不弹系统窗。
+**M1（dock）**：系统 Chrome / Chromium，独立 `user-data-dir=~/.ginno/browser/profile`，headed。Ginno 用原生子窗口 dock 到右侧矩形（macOS 把 Chrome 窗贴进 tile）。观感接近内嵌，接管 = 把鼠标键盘焦点交给这扇窗，零合成。
 
 **M2（CEF）**：Chromium Embedded Framework 子视图画进主窗口。才能做到无缝分栏、resize、和聊天同一窗口循环。工作量是「换引擎」级：打包体积、签名、`Contents/Frameworks`、崩溃隔离。M1 的 Space / helpers / HITL **全部复用**，只换渲染宿主。
 
@@ -551,12 +546,6 @@ GET    /api/browser/spaces/{name}
 POST   /api/browser/spaces/{name}/handoff
 POST   /api/browser/spaces/{name}/takeover
 POST   /api/browser/spaces/{name}/complete    { keep }
-GET    /api/browser/spaces/{name}/tabs
-POST   /api/browser/spaces/{name}/tabs                 { url, human }
-POST   /api/browser/spaces/{name}/tabs/{id}/activate   { human }
-POST   /api/browser/spaces/{name}/tabs/{id}/close      { human }
-GET    /api/browser/spaces/{name}/downloads
-GET    /api/browser/downloads
 GET    /api/browser/state
 POST   /api/browser/import-chrome
 ```
@@ -567,10 +556,10 @@ POST   /api/browser/import-chrome
 
 ```text
 M0  对照实现，不进主干（3–5 天）
-    无头系统 Chrome + 独立 profile + 分栏 screencast
+    系统 Chrome + 独立 profile + 右侧 dock 窗
     helpers 最小集：useOrCreate / snapshotText / click(@N) / handOff
     一张本地带登录墙的 HTML，走完三态所有权
-    验收：人能在 App 分栏里输入，Agent 在 handoff 期间点不动
+    验收：人能在窗里原生输入，Agent 在 handoff 期间点不动
 
 M1  可日常用的 ego 骨架
     Chat|Browser 分栏、Space 列表、chip
@@ -581,13 +570,11 @@ M1  可日常用的 ego 骨架
     工作流 type: browser 节点 + handoff 卡 + DAG 图标
     Playwright MCP 仍在，只标成「匿名无头」
 
-M2  真嵌入 + 真 chrome（协议层 + 挖洞 + Frameworks + Helper.app + C 宿主）
-    CEF tile：`choose_engine` / `CefEngine` 只在宿主 CDP 活着时返回
-    atrium 式 WKWebView 挖洞 + `Contents/Frameworks/{Chromium Embedded Framework, Ginno Helper*.app, libginno_cef.dylib}`
-    （宿主没起来 → 仍走 Chrome screencast，不假装 native tile）
-    地址栏 / 每 Space 多标签 / 下载进 ~/.ginno/browser/downloads + Artifacts
-    高风险域名（及改密 path）强制 ask，并 flip owner → Goal 停
-    snapshot 补同源 iframe / 开放 shadow 提示；跨源 / 封闭 shadow 仍省略
+M2  真嵌入 + 真 chrome
+    CEF tile（或等价物）换掉 dock 窗
+    地址栏 / 多标签 / 下载进 Artifacts
+    高风险域名强制 ask（支付 / 网银 / 改密）
+    snapshot 补同源 iframe / shadow
 
 M3  体验打磨
     Human Space、多 Space 并行

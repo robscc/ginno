@@ -4,11 +4,12 @@ The DSL is the single source of truth for a workflow and compiles 1:1 to a
 LangGraph graph (compiler lives in P2). This module is pure data + validation
 so it can be unit-tested without the graph or the store.
 
-v1 node types (decided Q1): step / branch / loop / human. `subflow` is parsed
-but rejected by validate_dsl until v2. `loop.parallel` (stability plan P3)
-gathers all items in one body activation (asyncio.gather, index-ordered array
-writes); the global gate ``settings.context.workflow_parallel_loops`` decides
-at run time whether it engages or degrades to sequential.
+v1 node types (decided Q1): step / branch / loop / human (+ python,
+registry-driven — validate_dsl accepts any registered node type). `subflow` is
+parsed but rejected by validate_dsl until v2. `loop.parallel` (stability plan
+P3) gathers all items in one body activation (asyncio.gather, index-ordered
+array writes); the global gate ``settings.context.workflow_parallel_loops``
+decides at run time whether it engages or degrades to sequential.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-NODE_TYPES_V1 = {"step", "branch", "loop", "human", "browser"}
+NODE_TYPES_V1 = {"step", "branch", "loop", "human"}
 NODE_TYPES_ALL = NODE_TYPES_V1 | {"subflow"}
 
 

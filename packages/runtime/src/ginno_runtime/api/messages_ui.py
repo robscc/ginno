@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -17,7 +18,7 @@ from .. import workflows as wf_store
 from ..goals.templates import context_row_text as goal_context_row
 from ..knowledge.citations import parse_citation_block, strip_citation_block
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
-from ..tools.render_tools import RENDER_TOOL_NAMES
+from ..tools.render_tools import RENDER_TOOL_NAMES, widget_event
 from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ..world_state import (
     ALL_CONTEXT_PREFIXES,
@@ -78,9 +79,13 @@ def _content_ui_blocks(content: Any) -> list[dict]:
 
 def _tool_content_str(content: Any) -> str:
     """ToolMessage.content (str or list of provider blocks) -> plain text for
-    the UI tool bubble. Image parts become an ``[image]`` marker."""
+    the UI tool bubble. Image parts become an ``[image]`` marker. The
+    code-generated-image trailer (bash) is stripped — it is machine metadata
+    rendered as real image blocks instead (see _messages_to_ui)."""
+    from ..files.images import strip_images_marker
+
     if isinstance(content, str):
-        return content
+        return strip_images_marker(content)
     if isinstance(content, list):
         parts: list[str] = []
         for b in content:
@@ -94,10 +99,10 @@ def _tool_content_str(content: Any) -> str:
                     parts.append("[image]")
                 else:
                     parts.append(json.dumps(b, ensure_ascii=False, default=str))
-        return "\n".join(p for p in parts if p)
+        return strip_images_marker("\n".join(p for p in parts if p))
     if content is None:
         return ""
-    return json.dumps(content, ensure_ascii=False, default=str)
+    return strip_images_marker(json.dumps(content, ensure_ascii=False, default=str))
 
 
 # Live WS tool outputs are capped to keep frames small; the history endpoint
@@ -175,10 +180,12 @@ def _resolve_source_items(items: list[dict], ref_map: dict[str, str]) -> list[di
 def _text_with_citations(t: str, blocks: list[dict]) -> None:
     """Append a text block for *t*, folding a trailing ``<ginno_citations>``
     block into a ``sources`` block (citations-design.md §5.6 history replay).
-    The raw block is machine metadata — never shown as prose."""
+    The raw block is machine metadata — never shown as prose, so it is
+    stripped UNCONDITIONALLY: an empty block (or one whose entries all fail
+    validation) still parses to zero entries but must not leak into display
+    text (2026-08-21: turn b1463216 rendered a raw empty block)."""
     entries = parse_citation_block(t)
-    if entries:
-        t = strip_citation_block(t)
+    t = strip_citation_block(t)
     if t.strip():
         blocks.append({"kind": "text", "text": t})
     if entries:
@@ -226,8 +233,58 @@ def _run_id_in(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _gen_image_blocks(
+    paths_list: list[str], slug: str | None, session_id: str | None, seen: set[str]
+) -> list[dict]:
+    """Resolve code-generated image paths (from the bash marker / the
+    ``ginno_images`` anchor) into UI image blocks: ``{kind:"image", fileId,
+    name, mtime}``. The frontend builds the actual URL from ``fileId`` via its
+    BASE-aware download helper (+ ``?t=mtime`` cache-busting).
+
+    Self-heals: a path not yet in the file ledger (e.g. the live emit was lost
+    to a restart) is registered here so replay still resolves it. ``seen``
+    de-duplicates by file id across the merged bubble's sources.
+    """
+    from .. import artifacts as art_store
+    from .. import files as files_mod
+
+    blocks: list[dict] = []
+    if not slug or not paths_list:
+        return blocks
+    reg = files_mod.get_registry(slug)
+    for p in paths_list:
+        pp = Path(p).expanduser()
+        if not pp.is_file():
+            continue
+        norm = files_mod.norm_path(str(pp))
+        entry = reg.find_by_path(norm)
+        if entry is None:
+            art = art_store.add_artifact(slug, "image", pp.name, norm, session_id or "")
+            entry = reg.register(
+                pp.name, str(pp), kind="image", session_id=session_id or "",
+                artifact_id=art.get("id"),
+            )
+        fid = entry.get("id")
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        blocks.append(
+            {
+                "kind": "image",
+                "fileId": fid,
+                "name": entry.get("name", pp.name),
+                "mtime": int(entry.get("mtime") or 0),
+            }
+        )
+    return blocks
+
+
 def _messages_to_ui(
-    messages: list[Any], agent_id: str | None, attached_files: list[dict] | None = None
+    messages: list[Any],
+    agent_id: str | None,
+    attached_files: list[dict] | None = None,
+    project_slug: str | None = None,
+    session_id: str | None = None,
 ) -> list[dict]:
     """Convert stored LangChain messages into the chat UI's {role, blocks} shape.
 
@@ -235,11 +292,19 @@ def _messages_to_ui(
     single assistant bubble, matching how a live turn renders (one bubble/turn).
     Special tools (render_widget/attach_ref/workflow_*) reproduce their visual
     blocks; ordinary tools fold their ToolMessage result into a tool block.
+
+    ``project_slug``/``session_id`` let code-generated images (bash marker →
+    ``ginno_images`` anchor) resolve to file-ledger ids for inline rendering.
     """
+    from ..files.images import parse_images_marker
+
     results: dict[str, str] = {}
+    raw_results: dict[str, str] = {}
     for m in messages:
         if isinstance(m, ToolMessage):
-            results[getattr(m, "tool_call_id", None)] = _tool_content_str(getattr(m, "content", ""))
+            raw = getattr(m, "content", "")
+            raw_results[getattr(m, "tool_call_id", None)] = raw if isinstance(raw, str) else ""
+            results[getattr(m, "tool_call_id", None)] = _tool_content_str(raw)
     # Citation ids (web|sN) resolve against the web_search outputs of the SAME
     # transcript — build the map once, apply to every sources block below.
     ref_map = _web_ref_map(results)
@@ -247,13 +312,30 @@ def _messages_to_ui(
     ui: list[dict] = []
     acc: list[dict] | None = None
     acc_id: str | None = None
+    # Real per-bubble attribution read from the agent_id tag that agent_node
+    # writes into AIMessage.additional_kwargs (graph.py). A merged bubble spans
+    # exactly one turn, so the first tagged message wins; the session-level
+    # ``agent_id`` argument stays as the fallback for old, untagged sessions.
+    acc_agent: str | None = None
+    # De-dupe generated-image blocks within a merged bubble (they can arrive via
+    # the ginno_images anchor on several AIMessages and/or the bash tool marker).
+    # Blocks accumulate separately and are appended at the bubble's end so the
+    # pictures render after the turn's prose/tool blocks regardless of which
+    # step produced them.
+    acc_imgs: set[str] = set()
+    acc_img_blocks: list[dict] = []
 
     def flush_assistant() -> None:
-        nonlocal acc, acc_id
+        nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks
         if acc:
-            ui.append({"id": acc_id, "role": "assistant", "agentId": agent_id, "blocks": acc})
+            if acc_img_blocks:
+                acc.extend(acc_img_blocks)
+            ui.append({"id": acc_id, "role": "assistant", "agentId": acc_agent or agent_id, "blocks": acc})
         acc = None
         acc_id = None
+        acc_agent = None
+        acc_imgs = set()
+        acc_img_blocks = []
 
     for m in messages:
         if isinstance(m, HumanMessage):
@@ -308,6 +390,8 @@ def _messages_to_ui(
             if acc is None:
                 acc = []
                 acc_id = getattr(m, "id", None)
+            if acc_agent is None:
+                acc_agent = (getattr(m, "additional_kwargs", None) or {}).get("agent_id")
             step = list(_ai_content_blocks(getattr(m, "content", "")))
             # Resolve `web|sN` citation ids to URLs (from web_search outputs)
             # so the 来源 card is clickable on history replay.
@@ -323,7 +407,13 @@ def _messages_to_ui(
                 tid = tc.get("id")
                 res = results.get(tid, "")
                 if nm == "render_widget":
-                    step.append({"kind": "widget", "widgetKind": args.get("kind", "widget"), "data": args.get("data")})
+                    ev = widget_event(args, tid)
+                    step.append({
+                        "kind": "widget",
+                        "widgetKind": ev["kind"],
+                        "data": ev["data"],
+                        "renderId": ev["render_id"],
+                    })
                 elif nm == "attach_ref":
                     step.append({
                         "kind": "ref",
@@ -348,6 +438,22 @@ def _messages_to_ui(
                         "kind": "tool", "id": tid, "name": nm, "content": res,
                         "pending": False, "argsPreview": _tool_args_preview(nm, args),
                     })
+                    # Fallback path for code-generated images: if the turn ended
+                    # before agent_node could lift the bash marker into
+                    # additional_kwargs (crash/interrupt), the persisted
+                    # ToolMessage still carries it — surface the pictures here.
+                    for blk in _gen_image_blocks(
+                        parse_images_marker(raw_results.get(tid, "")),
+                        project_slug, session_id, acc_imgs,
+                    ):
+                        acc_img_blocks.append(blk)
+            # Durable anchor: agent_node lifts this turn's bash-generated image
+            # paths into additional_kwargs["ginno_images"] (survives microcompact,
+            # which clears old ToolMessage bodies). Resolve them to image blocks.
+            gi = (getattr(m, "additional_kwargs", None) or {}).get("ginno_images")
+            if isinstance(gi, list):
+                for blk in _gen_image_blocks(gi, project_slug, session_id, acc_imgs):
+                    acc_img_blocks.append(blk)
             acc.extend(step)
         # ToolMessage: folded into the tool blocks above
     flush_assistant()

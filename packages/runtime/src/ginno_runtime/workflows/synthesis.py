@@ -1,11 +1,16 @@
 """Synthesis-case recording for the session→workflow summarizer
 (master-plan §3.1). Each summarize attempt builds a case directory::
 
-    ~/.ginno/synthesis/<yyyymmdd-HHMMSS>-<session8>/
+    ~/.ginno/synthesis/<yyyymmdd-HHMMSS>-<session8>-<uuid8>/
         input.json      # replayable snapshot: trace + model + prompt version
         attempts.jsonl  # one line per LLM attempt (raw output, parse, errors)
         output.json     # final DSL + fail_stage label + latency
         outcome.json    # async backfill: adopted / edited / first_run / feedback
+
+The timestamp prefix stays first so directory-name sort == chronological order
+(``list_cases``/``prune_cases`` rely on it); the uuid suffix disambiguates
+same-second cases and gives a unique, greppable handle for locating a case on
+disk or in logs.
 
 Everything is best-effort (never raises into the summarize hot path) and local.
 Retention is bounded lazily by :func:`prune_cases`.
@@ -16,6 +21,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -52,7 +58,7 @@ def new_case(
     try:
         ts = time.time()
         stamp = datetime.fromtimestamp(ts).strftime("%Y%m%d-%H%M%S")
-        synthesis_id = f"{stamp}-{(session_id or '')[:8]}"
+        synthesis_id = f"{stamp}-{(session_id or '')[:8]}-{uuid.uuid4().hex[:8]}"
         case_dir = _root() / synthesis_id
         case_dir.mkdir(parents=True, exist_ok=True)
         _write(

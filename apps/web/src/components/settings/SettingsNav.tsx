@@ -1,9 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, Globe, ShieldCheck, Webhook, FolderOpen, FolderInput, BarChart3, Tags, TrendingUp } from "lucide-react";
-import * as api from "@/lib/runtime";
 
 type Item = { id: string; label: string; icon: typeof Cpu; color: string };
 
@@ -17,7 +15,6 @@ const MAIN: Item[] = [
   { id: "knowledge", label: "知识库", icon: BookOpen, color: "#60a5fa" },
   { id: "folders", label: "上下文目录", icon: FolderInput, color: "#34d399" },
   { id: "web", label: "Web 搜索", icon: Globe, color: "#3b82f6" },
-  { id: "browser", label: "浏览器", icon: Globe, color: "#a78bfa" },
   { id: "session-files", label: "会话文件", icon: FolderOpen, color: "#38bdf8" },
   { id: "usage", label: "用量统计", icon: BarChart3, color: "#2dd4bf" },
 ];
@@ -33,15 +30,6 @@ const SYSTEM: Item[] = [
 
 export function SettingsNav({ active }: { active: string }) {
   const router = useRouter();
-  // 「浏览器」设置入口随 Debug 模式显隐（同 TopBar 开关 / 后端 403 守卫）。
-  const [debug, setDebug] = useState<boolean | null>(null);
-  useEffect(() => {
-    api
-      .getSettings()
-      .then((s) => setDebug((s as Record<string, unknown>).debug === true))
-      .catch(() => setDebug(false));
-  }, []);
-  const mainItems = MAIN.filter((m) => m.id !== "browser" || debug === true);
   const Row = ({ id, label, icon: Ic, color }: Item) => {
     const sel = active === id;
     return (
@@ -62,7 +50,7 @@ export function SettingsNav({ active }: { active: string }) {
     <nav className="w-48 shrink-0 border-r border-line px-3 py-5">
       <div className="mb-3 px-3 text-sm font-semibold text-txt">Settings</div>
       <div className="space-y-0.5">
-        {mainItems.map((m) => (
+        {MAIN.map((m) => (
           <Row key={m.id} {...m} />
         ))}
       </div>

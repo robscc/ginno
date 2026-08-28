@@ -161,7 +161,16 @@ async def get_settings() -> dict:
 
 @router.put("/api/settings")
 async def put_settings(data: dict) -> dict:
+    prev_use_proxy = prov_mod.use_system_proxy()  # reads the still-on-disk value
     paths.settings_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    new_use_proxy = prov_mod.use_system_proxy(data)
+    if new_use_proxy != prev_use_proxy:
+        # httpx clients freeze their proxy map at init — swap the lookup,
+        # then drop every cache still holding clients built under the old
+        # mode (apply_system_proxy also clears langchain_anthropic's shared
+        # lru_cache'd clients).
+        prov_mod.apply_system_proxy(new_use_proxy)
+        _SESSIONS.clear()
     return {"ok": True}
 
 

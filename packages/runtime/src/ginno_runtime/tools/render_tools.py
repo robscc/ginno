@@ -9,9 +9,26 @@ shown as ordinary tool bubbles.
 
 from __future__ import annotations
 
+import uuid
+
 from langchain_core.tools import tool
 
 RENDER_TOOL_NAMES = {"render_widget", "attach_ref"}
+
+
+def widget_event(args: dict, tc_id: str | None = None) -> dict:
+    """Build the `widget.emit` / history-replay payload.
+
+    `render_id` is stamped here from the tool-call id (unique per invocation).
+    The model sometimes echoes a reused `data.id` hoping the UI will refresh;
+    we ignore that and never let two calls share a render_id.
+    """
+    rid = (tc_id or "").strip() or str(uuid.uuid4())
+    return {
+        "kind": args.get("kind", "widget"),
+        "data": args.get("data"),
+        "render_id": rid,
+    }
 
 
 @tool
@@ -27,6 +44,7 @@ def render_widget(kind: str, data: dict, summary: str = "") -> str:
         "format"?: "number"|"percent"|"currency"}
         data must be a flat array of <=30 objects with real computed numbers
         (never invented), aggregated before charting; one measure per chart.
+        For pie, send the slices you want shown — the UI will not re-fold them.
     After rendering, also give a one-line textual summary.
     """
     return summary or f"[rendered widget: {kind}]"

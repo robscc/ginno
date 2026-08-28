@@ -144,7 +144,7 @@ def test_contracts_cover_registry_and_skip_internal():
     assert got == public
     assert "extract" not in got  # compiler-internal never taught to authors
     # The core authoring types are all present with rules or schema fields.
-    for t in ("agent", "branch", "loop", "browser"):
+    for t in ("agent", "branch", "loop", "python"):
         c = next(c for c in contracts.node_contracts() if c["type"] == t)
         assert c["rules"], f"{t} lost its structural rules"
 
@@ -153,7 +153,7 @@ def test_render_catalog_respects_budget_and_degrades():
     from ginno_runtime.workflows import contracts
 
     full = contracts.render_catalog(char_budget=100_000)
-    for t in ("agent", "branch", "loop", "browser", "human", "llm", "pass"):
+    for t in ("agent", "branch", "loop", "python", "human", "llm", "pass"):
         assert t in full
     # Default budget is honored.
     assert len(contracts.render_catalog()) <= 2400
@@ -161,7 +161,7 @@ def test_render_catalog_respects_budget_and_degrades():
     # than the minimal render (the contract floor is returned as-is): every
     # budget still yields all public types.
     tight = contracts.render_catalog(char_budget=10)
-    for t in ("agent", "branch", "loop", "browser", "human", "llm", "pass"):
+    for t in ("agent", "branch", "loop", "python", "human", "llm", "pass"):
         assert t in tight
     # A generous budget keeps the floor within budget; shrinking never grows.
     assert len(contracts.render_catalog(char_budget=100_000, include_examples=False)) <= len(full)

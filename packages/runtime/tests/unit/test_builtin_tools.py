@@ -9,6 +9,8 @@ tool result, never an exception that kills the turn.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ginno_runtime.tools.builtin import build_builtin_tools
@@ -166,3 +168,57 @@ def test_tools_never_raise_with_default_workspace(monkeypatch, tmp_path):
     tools = {t.name: t for t in build_builtin_tools(None)}
     assert tools["glob_files"].invoke({"pattern": "**/skills/**"}) == "(no matches)"
     assert tools["grep_files"].invoke({"pattern": "x"}) == "(no matches)"
+
+
+def test_skill_dirs_are_not_home_denied(monkeypatch, tmp_path):
+    """~/.ginno/skills (and project skills/) are playbooks, not secrets.
+    The model must be able to read SKILL.md and run companion scripts."""
+    from ginno_runtime.tools import builtin as tools_builtin
+
+    fake_home = tmp_path / "fake_home"
+    ws = fake_home / "projects" / "default" / "sessions" / "s1"
+    ws.mkdir(parents=True)
+    monkeypatch.setattr(tools_builtin.paths, "home", lambda: fake_home)
+
+    skill = fake_home / "skills" / "aliyun-bill" / "aliyun_bill.py"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("print('ok')\n", encoding="utf-8")
+    (fake_home / "settings.json").write_text("secret", encoding="utf-8")
+
+    tools = {t.name: t for t in tools_builtin.build_builtin_tools(str(ws))}
+    assert tools["read_file"].invoke({"path": str(skill)}) == "print('ok')\n"
+    assert "拒绝访问" in tools["read_file"].invoke({"path": str(fake_home / "settings.json")})
+    bash_out = tools["bash"].invoke({"command": f"python3 {skill}"})
+    assert not bash_out.startswith("[error]"), bash_out
+    assert "ok" in bash_out
+
+
+def test_bash_allows_source_user_rc_but_still_denies_secrets(monkeypatch, tmp_path):
+    """`source ~/.zshrc` must not be hard-denied — skills load Aliyun/Volc
+    keys from the user's rc. ~/.ssh and ~/.ginno/settings stay blocked."""
+    from ginno_runtime.tools import builtin as tools_builtin
+
+    fake_home = tmp_path / "fake_home"
+    ws = fake_home / "projects" / "default" / "sessions" / "s1"
+    ws.mkdir(parents=True)
+    monkeypatch.setattr(tools_builtin.paths, "home", lambda: fake_home)
+
+    rc = Path.home() / ".zshrc"
+    assert tools_builtin._is_user_rc(Path("~/.zshrc")) is True
+    assert tools_builtin._is_user_rc(rc) is True
+    assert tools_builtin._is_user_rc(Path.home() / ".ssh" / "id_rsa") is False
+    assert tools_builtin._is_user_rc(fake_home / "settings.json") is False
+
+    tools = {t.name: t for t in tools_builtin.build_builtin_tools(str(ws))}
+    # Scanner-only: `true` after source short-circuits if the file is
+    # missing; we only care that the token is not hard-denied.
+    out = tools["bash"].invoke({"command": "source ~/.zshrc; true"})
+    assert not out.startswith("[error]"), out
+
+    secret = fake_home / "settings.json"
+    secret.write_text("nope", encoding="utf-8")
+    denied = tools["bash"].invoke({"command": f"cat {secret}"})
+    assert denied.startswith("[error]") and "拒绝访问" in denied
+
+    denied_ssh = tools["bash"].invoke({"command": f"cat {Path.home() / '.ssh' / 'id_rsa'}"})
+    assert denied_ssh.startswith("[error]")

@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import type { WorkflowRun } from "@/lib/types";
+import { fileDownloadUrl } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { Markdown } from "./Markdown";
 import { toolLabel } from "@/lib/toolLabels";
@@ -29,9 +30,11 @@ export type SourceItem = { kind: "wiki" | "web"; ref: string; note?: string };
 
 export type Block =
   | { kind: "text"; text: string }
-  | { kind: "image"; url: string }
+  // `url` is set for user uploads (data URL). Code-generated images carry a
+  // file-ledger `fileId` (+ mtime for cache-busting) resolved via imageUrl().
+  | { kind: "image"; url?: string; fileId?: string; name?: string; mtime?: number }
   | { kind: "file"; fileId?: string; name: string; path?: string; fileKind?: string }
-  | { kind: "widget"; widgetKind: string; data: unknown }
+  | { kind: "widget"; widgetKind: string; data: unknown; renderId?: string }
   | { kind: "ref"; refKind: string; name: string; refId?: string }
   | { kind: "tool"; id?: string; name: string; content: string; pending: boolean; argsPreview?: string }
   | { kind: "thinking"; text: string }
@@ -43,6 +46,21 @@ export type Block =
   // model cited. Server emits this on history replay; live text blocks are
   // parsed client-side (the trailing <ginno_citations> block is machine meta).
   | { kind: "sources"; items: SourceItem[] };
+
+/** Resolve an image block to a displayable URL.
+
+User uploads carry a self-contained data URL in `url`. Code-generated images
+(bash → file ledger) carry a `fileId` served by the sidecar; the URL is built
+through the BASE-aware download helper, with `?t=mtime` busting the browser
+cache when a same-named image is regenerated. */
+export function imageUrl(b: Extract<Block, { kind: "image" }>): string {
+  if (b.url) return b.url;
+  if (b.fileId) {
+    const t = b.mtime ? `?t=${b.mtime}` : "";
+    return `${fileDownloadUrl(b.fileId)}${t}`;
+  }
+  return "";
+}
 
 // Non-global: used by .test()/.match() (a /g regex there would be stateful).
 const CITATION_BLOCK_RE =
@@ -256,7 +274,9 @@ export function FileChips({ files }: { files: FileBlock[] }) {
               clickable ? "cursor-pointer hover:border-violet/50" : "cursor-default"
             }`}
           >
-            <span>{TABLE_KINDS.has(f.fileKind ?? "") ? "📊" : "📄"}</span>
+            <span>
+              {TABLE_KINDS.has(f.fileKind ?? "") ? "📊" : f.fileKind === "image" ? "🖼️" : "📄"}
+            </span>
             <span className="max-w-[220px] truncate">{f.name}</span>
           </button>
         );
@@ -507,18 +527,9 @@ function XYChart({ spec }: { spec: ChartSpec }) {
 
 function PieChart({ spec }: { spec: ChartSpec }) {
   const [hover, setHover] = useState<number | null>(null);
-  // Fold the tail beyond 5 slices into "Other" — categorical slots never cycle.
-  let rows = spec.data;
-  if (rows.length > 5) {
-    const sorted = [...rows].sort((a, b) => Number(b[spec.y]) - Number(a[spec.y]));
-    rows = [
-      ...sorted.slice(0, 4),
-      {
-        [spec.x]: "Other",
-        [spec.y]: sorted.slice(4).reduce((s, r) => s + Number(r[spec.y]), 0),
-      },
-    ];
-  }
+  // Trust the model's aggregation — do not re-fold into Other (that hid
+  // later render_widget calls that only expanded the tail).
+  const rows = spec.data;
   const vals = rows.map((d) => Math.max(0, Number(d[spec.y])));
   const total = d3.sum(vals) || 1;
   const arcs = d3.pie<number>().sort(null)(vals);
@@ -528,6 +539,7 @@ function PieChart({ spec }: { spec: ChartSpec }) {
   const mkArc = (r: number) =>
     d3.arc<d3.PieArcDatum<number>>().innerRadius(0).outerRadius(r).cornerRadius(2);
   const pct = d3.format(".0%");
+  const { axis: fAxis, label: fLabel } = makeFormatters(spec.format);
 
   return (
     <>
@@ -568,7 +580,7 @@ function PieChart({ spec }: { spec: ChartSpec }) {
                 pointerEvents="none"
                 style={{ fill: "rgb(var(--txt))" }}
               >
-                {pct(frac)}
+                {fAxis(vals[i])}
               </text>
             );
           })}
@@ -587,7 +599,9 @@ function PieChart({ spec }: { spec: ChartSpec }) {
               style={{ background: SERIES[i % SERIES.length] }}
             />
             <span className={hover === i ? "text-txt" : ""}>{String(r[spec.x])}</span>
-            <span className="text-faint">{pct(vals[i] / total)}</span>
+            <span className="text-faint">
+              {fLabel(vals[i])} · {pct(vals[i] / total)}
+            </span>
           </span>
         ))}
       </div>
@@ -916,7 +930,7 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
       // Group consecutive images into one gallery.
       const urls: string[] = [];
       while (i < blocks.length && blocks[i].kind === "image") {
-        urls.push((blocks[i] as Extract<Block, { kind: "image" }>).url);
+        urls.push(imageUrl(blocks[i] as Extract<Block, { kind: "image" }>));
         i++;
       }
       out.push(<ImageGallery key={key++} urls={urls} />);
@@ -926,7 +940,11 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
       // Citation framework: fold a trailing <ginno_citations> block into a
       // SourcesBlock; while streaming, mask the in-flight (unclosed) block.
       const cited = parseSources(b.text);
-      let text = cited.length ? stripSources(b.text) : b.text;
+      // Strip UNCONDITIONALLY: an empty block (or one whose entries all fail
+      // validation) parses to zero items but is still machine metadata — with
+      // a conditional strip the raw tags leak into the bubble
+      // (2026-08-21: turn b1463216 emitted an empty block).
+      let text = stripSources(b.text);
       if (streaming && last && !cited.length) text = maskPartialSources(text);
       out.push(
         <div key={key++}>
@@ -940,7 +958,9 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
     } else if (b.kind === "sources") {
       out.push(<SourcesBlock key={key++} items={resolveSourceRefs(b.items, refMap)} />);
     } else if (b.kind === "widget") {
-      out.push(<WidgetBlock key={key++} kind={b.widgetKind} data={b.data} />);
+      out.push(
+        <WidgetBlock key={b.renderId || `w${key++}`} kind={b.widgetKind} data={b.data} />,
+      );
     } else if (b.kind === "workflow") {
       out.push(<WorkflowBlock key={key++} run={b.run} />);
     } else if (b.kind === "tool") {
@@ -961,7 +981,7 @@ export function UserBlocks({ blocks }: { blocks: Block[] }) {
   const files = blocks.filter((b): b is FileBlock => b.kind === "file");
   const imgs = blocks
     .filter((b): b is Extract<Block, { kind: "image" }> => b.kind === "image")
-    .map((b) => b.url);
+    .map(imageUrl);
   const texts = blocks
     .filter((b): b is Extract<Block, { kind: "text" }> => b.kind === "text")
     .map((b) => b.text);

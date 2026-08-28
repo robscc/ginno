@@ -31,6 +31,7 @@ from .registry import (
 # Importing builtin triggers @register_node for the shipped node types.
 from . import builtin  # noqa: F401,E402
 from . import extract  # noqa: F401,E402  (compiler-internal extract node)
+from . import python_node  # noqa: F401,E402  (deterministic whitelisted entries)
 
 __all__ = [
     "BaseNode",
@@ -45,4 +46,5 @@ __all__ = [
     "transforms",
     "builtin",
     "extract",
+    "python_node",
 ]

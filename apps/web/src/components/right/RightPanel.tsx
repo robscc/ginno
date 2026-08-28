@@ -1,21 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Brain, FileBox, ListTodo, PanelRightClose, Zap, type LucideIcon } from "lucide-react";
+import { Brain, FileBox, ListTodo, PanelRightClose, Sparkles, Zap, type LucideIcon } from "lucide-react";
 import { PANEL_WIDTH_DEFAULT, useGinno, type RightTab } from "@/lib/store";
 import { TodoPanel } from "./TodoPanel";
 import { WorkflowPanel } from "./WorkflowPanel";
 import { ArtifactsPanel } from "./ArtifactsPanel";
 import { MemoryPanel } from "./MemoryPanel";
+import { SynthesisPanel } from "./SynthesisPanel";
 
 // Tab order follows right-panel-redesign.md §3.1: Artifacts first (highest
-// frequency), default tab included. Icons are shared with the collapsed
-// RightDock so both affordances read identically.
+// frequency), default tab included. 总结 (synthesis cases + live summarization
+// output) was added last so it never displaces the established tabs. Icons
+// are shared with the collapsed RightDock so both affordances read identically.
 export const RIGHT_TABS: { id: RightTab; label: string; icon: LucideIcon }[] = [
   { id: "artifacts", label: "Artifacts", icon: FileBox },
   { id: "todo", label: "TODO", icon: ListTodo },
   { id: "workflow", label: "Workflow", icon: Zap },
   { id: "memory", label: "Memory", icon: Brain },
+  { id: "synthesis", label: "总结", icon: Sparkles },
 ];
 
 export function RightPanel() {
@@ -80,10 +83,14 @@ export function RightPanel() {
             const showHuman = t.id === "workflow" && g.pendingHumanCount > 0;
             const showActive = t.id === "workflow" && g.activeRunCount > 0;
             const showFailed = t.id === "workflow" && g.unseenFailedCount > 0;
+            // 总结 tab: blue pulse dot while a synthesis case is in flight.
+            const showSynthActive = t.id === "synthesis" && g.synthesisActiveCount > 0;
             const ariaExtra =
               t.id === "workflow" && (showHuman || showActive || showFailed)
                 ? `，${g.pendingHumanCount} 个等待输入，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
-                : "";
+                : showSynthActive
+                  ? `，${g.synthesisActiveCount} 个总结进行中`
+                  : "";
             return (
               <button
                 key={t.id}
@@ -122,6 +129,12 @@ export function RightPanel() {
                     {g.unseenFailedCount}
                   </span>
                 )}
+                {showSynthActive && (
+                  <span
+                    className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-blue"
+                    title={`${g.synthesisActiveCount} 个总结进行中`}
+                  />
+                )}
               </button>
             );
           })}
@@ -140,6 +153,7 @@ export function RightPanel() {
         {tab === "workflow" && <WorkflowPanel />}
         {tab === "artifacts" && <ArtifactsPanel />}
         {tab === "memory" && <MemoryPanel />}
+        {tab === "synthesis" && <SynthesisPanel />}
       </div>
     </aside>
   );

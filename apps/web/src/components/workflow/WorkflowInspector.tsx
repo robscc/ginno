@@ -181,9 +181,13 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
   };
 
   const openDevSession = async () => {
-    // Open a session bound to the workflow-dev agent; the user then asks for the
-    // edit in chat. The agent proposes via workflow_propose_edit → diff card.
-    const s = await g.newSession("workflow-dev");
+    // Bind the session to this workflow so every turn injects the current DSL
+    // (docs/workflow-dsl-design.md §8.3). The agent proposes via
+    // workflow_propose_edit → diff card.
+    const s = await g.newSession("workflow-dev", {
+      title: `精炼流程：${wf.name}`,
+      workflow_id: wf.id,
+    });
     router.push("/");
     return s;
   };

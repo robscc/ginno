@@ -61,6 +61,12 @@ def test_copy_with_new_id_preserves_content_and_changes_id():
     ai2 = _copy_with_new_id(ai)
     assert ai2.tool_calls == ai.tool_calls and ai2.id != "oldai"
 
+    # additional_kwargs must survive: carries the agent_id attribution tag
+    # (graph.py) — losing it would drop per-turn attribution after compaction.
+    tagged = AIMessage(content="y", additional_kwargs={"agent_id": "research"}, id="tagged")
+    tagged2 = _copy_with_new_id(tagged)
+    assert tagged2.additional_kwargs.get("agent_id") == "research" and tagged2.id != "tagged"
+
     tm = ToolMessage(content="r", tool_call_id="c1", name="bash", id="oldt")
     tm2 = _copy_with_new_id(tm)
     assert tm2.tool_call_id == "c1" and tm2.id != "oldt"

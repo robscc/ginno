@@ -59,6 +59,9 @@ class CreateSessionRequest(BaseModel):
     # session starts with these attached. Unknown ids are dropped silently.
     context_folders: list[str] = []
     primary_folder: str | None = None
+    # Bound workflow for workflow-dev refine sessions (docs/workflow-dsl-design.md
+    # §8.3). Injected into every turn's [turn context] as the current DSL.
+    workflow_id: str | None = None
     # legacy aliases
     model_provider: str | None = None
     model_name: str | None = None
@@ -113,34 +116,13 @@ def _agent_icon(agent_id: str | None) -> str:
 GOAL_GRACE_S = 3.0  # pause between turns so the user can interject
 
 
-def _goal_browser_state(session_id: str) -> str | None:
-    """Attach a live browser hint so the Goal chip can show a handoff pause."""
-    try:
-        from ..browser import waiting_human
-
-        if waiting_human(session_id):
-            return "waiting_human"
-    except Exception:
-        return None
-    return None
-
-
 async def _emit_goal_event(
     slug: str, session_id: str, goal: dict | None, turn_id: str | None = None
 ) -> None:
-    browser_state = _goal_browser_state(session_id)
     if goal is None:
-        await _push_session_event(session_id, "goal.cleared", {"browser_state": browser_state})
-        return
-    payload_goal = dict(goal)
-    if browser_state:
-        payload_goal["browser_state"] = browser_state
-    await _push_session_event(
-        session_id,
-        "goal.updated",
-        {"goal": payload_goal, "browser_state": browser_state},
-        turn_id,
-    )
+        await _push_session_event(session_id, "goal.cleared", {})
+    else:
+        await _push_session_event(session_id, "goal.updated", {"goal": goal}, turn_id)
 
 
 def _stop_goal_driver(session_id: str) -> None:
@@ -249,20 +231,31 @@ async def _run_goal_turn(session: dict, goal: dict, turn_id: str) -> None:
         turn_id,
         int(goal.get("turns_used", 0)) + 1,
     )
-    await _stream_api._run_stream(None, session["graph"], config, text, session, agent_id)
+    # Early-arm the running flag: _stream_graph only registers the turn once
+    # streaming starts, but _run_stream's preamble (compaction etc.) can take
+    # seconds — a user `stop` arriving in that window must see a live turn.
+    # Goal turns don't pass the WS loop, so this flag is the stop handler's
+    # only liveness signal for them.
+    _RUNNING_TURNS[session_id] = turn_id
+    try:
+        await _stream_api._run_stream(None, session["graph"], config, text, session, agent_id)
+    finally:
+        # Normal/error paths already pop inside _stream_graph; a turn parked
+        # at an interrupt must STAY registered (resume hasn't happened yet).
+        if (
+            _RUNNING_TURNS.get(session_id) == turn_id
+            and session_id not in _PENDING_RESUME
+        ):
+            _RUNNING_TURNS.pop(session_id, None)
 
 
 def _goal_interrupted(session_id: str) -> bool:
     """True while continuation must not start: a user turn runs, a permission
-    interrupt is pending, a browser handoff is waiting on the human, or the
-    session vanished."""
-    from ..browser import waiting_human
-
+    interrupt is pending, or the session vanished."""
     return (
         session_id in _RUNNING_TURNS
         or session_id in _PENDING_RESUME
         or session_id not in _SESSIONS
-        or waiting_human(session_id)
     )
 
 
@@ -402,12 +395,7 @@ async def get_session_goal(session_id: str) -> dict:
     slug = _goal_slug(session_id)
     if not slug:
         return {"ok": False, "error": "unknown session"}
-    goal = goal_store.get_goal(slug, session_id)
-    if goal:
-        browser_state = _goal_browser_state(session_id)
-        if browser_state:
-            goal = {**goal, "browser_state": browser_state}
-    return {"ok": True, "goal": goal}
+    return {"ok": True, "goal": goal_store.get_goal(slug, session_id)}
 
 
 @router.put("/api/sessions/{session_id}/goal")
@@ -541,6 +529,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "workspace": workspace,
         "context_folders": folder_ids,
         "primary_folder": primary_id,
+        "workflow_id": req.workflow_id,
         "created": time.time(),
         "updated": time.time(),
     }
@@ -574,6 +563,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "context_dirs": context_dirs,
         "primary_folder": primary_id,
         "primary_path": primary_path or "",
+        "workflow_id": req.workflow_id,
     }
     # return the meta shape (with `id`) so the frontend SessionMeta matches
     return {**meta, "ok": True}
@@ -606,6 +596,7 @@ class PatchSessionRequest(BaseModel):
     agent_id: str | None = None
     provider: str | None = None
     model: str | None = None
+    workflow_id: str | None = None
 
 
 @router.patch("/api/sessions/{session_id}")
@@ -645,6 +636,8 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     title_auto = (cur or {}).get("title_auto", True)
     if patch.get("title") is not None:
         title_auto = False
+        # manual rename wins over a pending LLM subject title (title_gen)
+        patch["title_llm_pending"] = False
     patch["title_auto"] = title_auto
 
     updated = _session_meta_patch(slug, session_id, patch)
@@ -833,7 +826,9 @@ async def get_session_history(session_id: str) -> dict:
     last_error = (meta.get("last_error") or None) if isinstance(meta, dict) else None
     return {
         "ok": True,
-        "messages": _messages_to_ui(messages, agent_id, attached),
+        "messages": _messages_to_ui(
+            messages, agent_id, attached, project_slug=slug, session_id=session_id
+        ),
         "last_error": last_error or None,
     }
 
@@ -907,6 +902,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "context_dirs": context_dirs,
         "primary_folder": primary_id,
         "primary_path": primary_path or "",
+        "workflow_id": meta.get("workflow_id"),
     }
     _SESSIONS[session_id] = s
     return s

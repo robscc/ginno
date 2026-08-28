@@ -46,6 +46,11 @@ export function ModelApiSettings() {
   const [searchMsg, setSearchMsg] = useState<
     Record<string, { state: "idle" | "checking" | "ok" | "fail"; text?: string }>
   >({});
+  // System-proxy switch (settings.json top-level `use_system_proxy`, default
+  // on). null = not loaded yet. Kept here, not per-provider: the proxy is a
+  // property of the network environment, and the runtime applies it globally.
+  const [useSysProxy, setUseSysProxy] = useState<boolean | null>(null);
+  const [proxyMsg, setProxyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const loaded = useRef(false);
 
   useEffect(() => {
@@ -57,6 +62,16 @@ export function ModelApiSettings() {
       loaded.current = true;
     }
   }, [g.providers]);
+
+  useEffect(() => {
+    void api
+      .getSettings()
+      .then((s) => {
+        const v = (s as Record<string, unknown>).use_system_proxy;
+        setUseSysProxy(typeof v === "boolean" ? v : true);
+      })
+      .catch(() => setUseSysProxy(true));
+  }, []);
 
   const setField = (id: string, key: keyof ProviderConfig, value: unknown) =>
     setDraft((d) => ({ ...d, [id]: { ...d[id], [key]: value } }));
@@ -137,6 +152,23 @@ export function ModelApiSettings() {
     }
   };
 
+  // Reflect immediately; roll back if the write fails (sidecar down). The
+  // runtime applies the new mode + evicts cached LLM clients on change.
+  const onToggleSysProxy = async (next: boolean) => {
+    const prev = useSysProxy;
+    setUseSysProxy(next);
+    setProxyMsg(null);
+    try {
+      const s = (await api.getSettings()) as Record<string, unknown>;
+      s.use_system_proxy = next;
+      await api.putSettings(s);
+      setProxyMsg({ ok: true, text: "已保存" });
+    } catch {
+      setUseSysProxy(prev);
+      setProxyMsg({ ok: false, text: "保存失败：无法连接运行时" });
+    }
+  };
+
   return (
     <div className="mx-auto max-w-3xl px-8 py-7">
       <div className="flex items-baseline justify-between">
@@ -181,6 +213,30 @@ export function ModelApiSettings() {
             searchStatus={searchMsg[id] || { state: "idle" }}
           />
         ))}
+      </div>
+
+      <div className="mt-6 rounded-xl border border-line p-4">
+        <div className="flex items-center justify-between">
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              checked={useSysProxy === true}
+              disabled={useSysProxy === null}
+              onChange={(e) => void onToggleSysProxy(e.target.checked)}
+            />
+            使用系统代理
+          </label>
+          {proxyMsg && (
+            <span className={`text-xs ${proxyMsg.ok ? "text-faint" : "text-red"}`}>
+              {proxyMsg.text}
+            </span>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-faint">
+          开启时，模型请求遵循 macOS 系统代理设置；关闭后所有模型请求直连。本机地址
+          （127.0.0.1 / localhost）始终直连。若验证或对话报 502，通常是系统代理软件未放行
+          本地端口，可尝试关闭此开关。
+        </p>
       </div>
     </div>
   );

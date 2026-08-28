@@ -53,4 +53,3 @@ export async function notifyNative(n: NativeNotification): Promise<boolean> {
     return false;
   }
 }
-

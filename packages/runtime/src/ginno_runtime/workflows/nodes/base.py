@@ -226,9 +226,9 @@ class BaseNode:
         wall-clock cap, re-raise on failure.
 
         Control-flow exceptions are NEVER retried: ``CancelledError`` (cooperative
-        cancel), ``GraphInterrupt`` (human node / manual pause / browser handoff
-        suspensions — note it IS an ``Exception`` subclass in langgraph, so it
-        must be re-raised ahead of the generic handler), ``SupervisorAbort`` and
+        cancel), ``GraphInterrupt`` (human node / manual pause suspensions — note
+        it IS an ``Exception`` subclass in langgraph, so it must be re-raised
+        ahead of the generic handler), ``SupervisorAbort`` and
         ``GraphRecursionError`` (graph-level failures).
         """
         from langgraph.errors import GraphInterrupt, GraphRecursionError

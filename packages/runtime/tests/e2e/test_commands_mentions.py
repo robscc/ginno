@@ -165,6 +165,33 @@ def test_artifact_mention_attaches_file_without_dup_row(
     assert len(rows) == 1
 
 
+def test_bound_workflow_injects_current_dsl(create_session, ws_conv):
+    wf = wf_store.create_def(
+        {
+            "name": "cluster_checklist_review",
+            "description": "review a cluster checklist",
+            "dsl": {
+                "entry": "parse",
+                "nodes": [
+                    {"id": "parse", "type": "step", "agent": "research", "goal": "read"},
+                    {"id": "gate", "type": "human", "question": "确认继续？"},
+                ],
+                "edges": [{"from": "parse", "to": "gate"}],
+            },
+        }
+    )
+    model = CapturingModel(reply="这份流程有一个 human 确认节点 gate。")
+    sid = create_session(model, agent_id="workflow-dev", workflow_id=wf["id"])
+    with ws_conv(sid) as conv:
+        conv.invoke("有Human 确认节点吗？")
+        conv.recv_until("message.end", "error")
+    turn_ctx = turn_context_of(model)
+    assert "<bound_workflow>" in turn_ctx
+    assert wf["id"] in turn_ctx
+    assert "gate=human" in turn_ctx
+    assert "cluster_checklist_review" in turn_ctx
+
+
 def test_workflow_mention_injects_context(create_session, ws_conv):
     wf_store.create_def(
         {

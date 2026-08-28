@@ -73,6 +73,7 @@ export async function createSession(req: {
   icon?: string;
   provider?: string;
   model?: string;
+  workflow_id?: string;
 }) {
   return json<SessionMeta & { ok?: boolean; error?: string }>(`${BASE}/sessions`, {
     method: "POST",
@@ -398,160 +399,6 @@ export async function resumeWorkflowRun(run_id: string, value: Record<string, un
     body: JSON.stringify(value),
   });
 }
-export async function getBrowserState() {
-  return json<import("./types").BrowserState>(`${BASE}/browser/state`);
-}
-
-export async function createBrowserSpace(data: {
-  name?: string;
-  owner?: string;
-  session_id?: string;
-  run_id?: string;
-}) {
-  return json<{ ok: boolean; space?: import("./types").BrowserSpace; error?: string }>(
-    `${BASE}/browser/spaces`,
-    { method: "POST", headers: H, body: JSON.stringify(data) },
-  );
-}
-
-export async function navigateBrowserSpace(name: string, url: string, opts?: { human?: boolean }) {
-  return json<{ ok: boolean; space?: import("./types").BrowserSpace; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/navigate`,
-    { method: "POST", headers: H, body: JSON.stringify({ url, human: Boolean(opts?.human) }) },
-  );
-}
-
-export async function handoffBrowserSpace(name: string, reason = "") {
-  return json<{ ok: boolean; interrupt?: string; space?: string; url?: string; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/handoff`,
-    { method: "POST", headers: H, body: JSON.stringify({ reason }) },
-  );
-}
-
-export async function takeoverBrowserSpace(name: string) {
-  return json<{ ok: boolean; space?: import("./types").BrowserSpace; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/takeover`,
-    { method: "POST", headers: H, body: JSON.stringify({}) },
-  );
-}
-
-export async function completeBrowserSpace(name: string, keep = true) {
-  return json<{ ok: boolean; kept?: boolean; space?: unknown; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/complete`,
-    { method: "POST", headers: H, body: JSON.stringify({ keep }) },
-  );
-}
-
-export async function screenshotBrowserSpace(
-  name: string,
-  opts?: { session_id?: string; project_slug?: string },
-) {
-  return json<{ ok: boolean; path?: string; artifact?: unknown; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/screenshot`,
-    { method: "POST", headers: H, body: JSON.stringify(opts || {}) },
-  );
-}
-
-export async function resetBrowser() {
-  return json<{ ok: boolean }>(`${BASE}/browser/reset`, {
-    method: "POST",
-    headers: H,
-    body: JSON.stringify({}),
-  });
-}
-
-
-export async function listBrowserTabs(name: string) {
-  return json<{ ok: boolean; tabs?: import("./types").BrowserTab[]; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs`,
-  );
-}
-
-export async function openBrowserTab(name: string, url = "about:blank") {
-  return json<{ ok: boolean; tab?: import("./types").BrowserTab; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs`,
-    { method: "POST", headers: H, body: JSON.stringify({ url, human: true }) },
-  );
-}
-
-export async function activateBrowserTab(name: string, tabId: string) {
-  return json<{ ok: boolean; space?: import("./types").BrowserSpace; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs/${encodeURIComponent(tabId)}/activate`,
-    { method: "POST", headers: H, body: JSON.stringify({ human: true }) },
-  );
-}
-
-export async function closeBrowserTab(name: string, tabId: string) {
-  return json<{ ok: boolean; error?: string }>(
-    `${BASE}/browser/spaces/${encodeURIComponent(name)}/tabs/${encodeURIComponent(tabId)}/close`,
-    { method: "POST", headers: H, body: JSON.stringify({ human: true }) },
-  );
-}
-
-export async function activateBrowserSession(sessionId: string) {
-  return json<{ ok: boolean; error?: string }>(
-    `${BASE}/browser/session/${encodeURIComponent(sessionId)}/activate`,
-    { method: "POST", headers: H },
-  );
-}
-
-export async function hideBrowser() {
-  return json<{ ok: boolean; error?: string }>(`${BASE}/browser/hide`, {
-    method: "POST",
-    headers: H,
-  });
-}
-
-/** Query whether a companion browser window is currently shown. */
-export async function queryBrowserVisible() {
-  return json<{ ok: boolean; visible?: boolean }>(`${BASE}/browser/visible`);
-}
-
-/** Toggle companion visibility; returns the authoritative new state. */
-export async function toggleBrowser() {
-  return json<{ ok: boolean; visible?: boolean }>(`${BASE}/browser/toggle`, {
-    method: "POST",
-    headers: H,
-  });
-}
-
-export async function getBrowserFocus() {
-  return json<{ ok: boolean; active_space?: string | null }>(`${BASE}/browser/focus`);
-}
-
-export async function listBrowserDownloads(name?: string) {
-  const path = name
-    ? `${BASE}/browser/spaces/${encodeURIComponent(name)}/downloads`
-    : `${BASE}/browser/downloads`;
-  return json<{ ok: boolean; downloads?: import("./types").BrowserDownload[]; error?: string }>(path);
-}
-
-export async function getChromeImportStatus() {
-  return json<import("./types").ChromeImportStatus>(`${BASE}/browser/import-chrome`);
-}
-
-export async function importChromeProfile(data: {
-  profile?: string;
-  profile_id?: string;
-  include_extensions?: boolean;
-  force?: boolean;
-}) {
-  return json<{
-    ok: boolean;
-    error?: string;
-    chrome_running?: boolean;
-    from?: string;
-    to?: string;
-    copied?: string[];
-    skipped?: string[];
-    cookies_ok?: boolean;
-  }>(`${BASE}/browser/import-chrome`, {
-    method: "POST",
-    headers: H,
-    body: JSON.stringify(data),
-  });
-}
-
 export async function decideWorkflowRun(
   run_id: string,
   decision: string,
@@ -654,6 +501,9 @@ export interface SynthesisCaseSummary {
   status?: string;
   fail_stage?: string;
   attempts_used?: number;
+  // true while the in-process synthesis task is alive (no output.json yet).
+  // After a runtime restart, unfinished cases read running=false → "未完成".
+  running?: boolean;
   outcome?: {
     created?: boolean;
     workflow_id?: string;
@@ -704,10 +554,18 @@ export async function replaySynthesis(synthesis_id: string, provider?: string) {
   });
 }
 export async function summarizeSessionToDsl(session_id: string, provider?: string, last_n?: number) {
-  return json<
-    | { ok: true; dsl: Record<string, unknown>; source_session_id: string; synthesis_id?: string }
-    | { ok: false; error: string; raw?: string; dsl?: Record<string, unknown>; synthesis_id?: string }
-  >(`${BASE}/workflows/summarize-from-session`, {
+  // Async contract: the endpoint validates synchronously, spawns the synthesis
+  // in the background and returns immediately with {ok, synthesis_id,
+  // status:"started"} — the DSL arrives via synthesis.event WS frames / case
+  // polling once the task finishes. Validation failures are HTTPExceptions,
+  // whose body is {detail} (json() doesn't throw on HTTP errors).
+  return json<{
+    ok?: boolean;
+    synthesis_id?: string;
+    status?: string;
+    error?: string;
+    detail?: string;
+  }>(`${BASE}/workflows/summarize-from-session`, {
     method: "POST",
     headers: H,
     body: JSON.stringify({ session_id, provider, ...(last_n ? { last_n } : {}) }),
@@ -1093,6 +951,21 @@ export async function openExternal(url: string) {
     headers: H,
     body: JSON.stringify({ url }),
   });
+}
+
+/** Click handler for rendered external links: WKWebView silently ignores
+ *  target=_blank / window.open, so clicks route through the sidecar's
+ *  /api/open-external (which launches the OS default browser, with the
+ *  public-host guard). window.open stays as the fallback for a down
+ *  sidecar (covers plain-browser dev, where it actually works). */
+export function openLinkExternal(url: string) {
+  openExternal(url)
+    .then((r) => {
+      if (!r.ok) window.open(url, "_blank", "noopener");
+    })
+    .catch(() => {
+      window.open(url, "_blank", "noopener");
+    });
 }
 export async function getCitationUsage(sort = "cited", limit = 20) {
   return json<{ ok: boolean; rows: Array<Record<string, unknown>> }>(
