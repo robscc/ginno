@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Check, Loader2, Plus, RotateCcw, Trash2, Workflow, X } from "lucide-react";
+import { Bot, Check, FlaskConical, Loader2, Plus, RotateCcw, Trash2, Workflow, X } from "lucide-react";
+import * as api from "@/lib/runtime";
 import { WorkflowDag } from "@/components/workflow/WorkflowDag";
 
 type DslNode = { id: string; type?: string; title?: string; goal?: string; agent?: string; [k: string]: unknown };
@@ -37,6 +38,14 @@ export function SummarizeModal({
 }) {
   const [local, setLocal] = useState<Record<string, unknown>>(dsl);
   const [showJson, setShowJson] = useState(false);
+  // Stability plan P1d: zero-LLM 试运行 of the CURRENT edited draft (the
+  // endpoint never saves or executes anything). The receipt clears as soon as
+  // the draft changes again so it never vouches for stale content.
+  const [dry, setDry] = useState<{
+    busy: boolean;
+    result: api.DryRunResult | null;
+    err: string | null;
+  }>({ busy: false, result: null, err: null });
   // Raw-text mirror for the JSON editor: intermediate invalid states keep the
   // caret; the draft updates once the text parses again (ContextEditor pattern).
   const [rawJson, setRawJson] = useState(() => JSON.stringify(dsl, null, 2));
@@ -65,6 +74,22 @@ export function SummarizeModal({
     setRawJson(JSON.stringify(dsl, null, 2));
     setJsonErr(null);
   }, [dsl]);
+
+  // Any edit invalidates a previous dry-run receipt (it vouches for the exact
+  // DSL that was checked — nothing else).
+  useEffect(() => {
+    setDry((d) => (d.result || d.err ? { busy: false, result: null, err: null } : d));
+  }, [local]);
+
+  const runDry = async () => {
+    setDry({ busy: true, result: null, err: null });
+    try {
+      const r = await api.dryRunWorkflow(local);
+      setDry({ busy: false, result: r, err: null });
+    } catch (e) {
+      setDry({ busy: false, result: null, err: e instanceof Error ? e.message : "试运行请求失败" });
+    }
+  };
 
   const name = (local.name as string) || "新流程";
   const nodes = (local.nodes as DslNode[]) || [];
@@ -167,15 +192,26 @@ export function SummarizeModal({
                 edges?: Array<{ from: string; to: string }>;
               }}
             />
-            {onRetry && (
+            <div className="mt-auto flex flex-col items-start gap-1.5">
               <button
-                onClick={onRetry}
-                disabled={!!busy}
-                className="btn-press mt-auto flex items-center gap-1 self-start rounded-md border border-line px-2 py-1 text-[11px] text-faint hover:bg-card2 hover:text-muted disabled:opacity-50"
+                onClick={runDry}
+                disabled={!!busy || dry.busy}
+                title="零成本试跑当前草稿：不保存、不执行、不调 LLM，只做校验/数据流/编译/可达性检查"
+                className="btn-press flex items-center gap-1 self-start rounded-md border border-line px-2 py-1 text-[11px] text-faint hover:bg-card2 hover:text-muted disabled:opacity-50"
               >
-                <RotateCcw className="h-3 w-3" /> 重新总结
+                {dry.busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
+                {dry.busy ? "试跑中…" : "试运行"}
               </button>
-            )}
+              {onRetry && (
+                <button
+                  onClick={onRetry}
+                  disabled={!!busy}
+                  className="btn-press flex items-center gap-1 self-start rounded-md border border-line px-2 py-1 text-[11px] text-faint hover:bg-card2 hover:text-muted disabled:opacity-50"
+                >
+                  <RotateCcw className="h-3 w-3" /> 重新总结
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="flex-1 space-y-3 overflow-y-auto p-4">
@@ -292,6 +328,44 @@ export function SummarizeModal({
             </div>
           </div>
         </div>
+
+        {/* dry-run receipt (P1d): vouches for the exact draft on screen */}
+        {dry.result && !createdName && (
+          dry.result.ok ? (
+            <div className="mx-4 mb-2 space-y-0.5 rounded-md border border-green/30 bg-green/[0.06] px-2 py-1.5 text-xs text-green">
+              <div className="flex items-center gap-1.5">
+                <Check className="h-3.5 w-3.5 shrink-0" />
+                试运行通过：{dry.result.node_count} 个节点，校验 / 数据流 / 编译 / 可达性全过
+              </div>
+              {dry.result.warnings.length > 0 && (
+                <div className="pl-5 text-[11px] text-yellow">
+                  {dry.result.warnings.length} 条警告（不阻断）：
+                  {dry.result.warnings.map((w) => w.message).join("；")}
+                </div>
+              )}
+              {dry.result.unreachable.length > 0 && (
+                <div className="pl-5 text-[11px] text-yellow">
+                  不可达节点（永远不会执行）：{dry.result.unreachable.join(", ")}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="mx-4 mb-2 max-h-28 space-y-0.5 overflow-y-auto rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
+              <div>试运行未通过：</div>
+              {dry.result.errors.map((e, i) => (
+                <div key={`e${i}`} className="pl-3 text-[11px]">· {e}</div>
+              ))}
+              {dry.result.doctor_errors.map((e, i) => (
+                <div key={`d${i}`} className="pl-3 text-[11px]">· {e.message}</div>
+              ))}
+            </div>
+          )
+        )}
+        {dry.err && !createdName && (
+          <div className="mx-4 mb-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
+            {dry.err}
+          </div>
+        )}
 
         {createdName ? (
           <div className="mx-4 mb-2 flex items-center gap-1.5 rounded-md border border-green/30 bg-green/[0.06] px-2 py-1.5 text-xs text-green">

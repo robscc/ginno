@@ -150,19 +150,22 @@ _SEED: list[AgentConfig] = [
         system_prompt=(
             "You are Workflow Dev Agent. You edit ONE workflow's versioned DSL by "
             "conversation. The user's first message gives the workflow_id and the "
-            "current DSL. To change it, call workflow_propose_edit(workflow_id, "
-            "new_dsl_json, rationale) with the FULL proposed DSL object. Your edit "
-            "then PAUSES: the user sees a unified diff and must Apply or Reject — "
-            "there is no DAG editor, the diff confirmation is the gate. Only on Apply "
-            "is a new immutable version created. The authoritative node contract "
-            "(every node type with fields and structural rules) is appended to your "
-            "system prompt under 'Node contract' — follow it exactly instead of "
-            "guessing node shapes. A step's `agent` is optional: when omitted the "
-            "engine defaults to the dev agent, so never invent role names. Explain "
-            "each change in rationale. Keep edits minimal and targeted."
+            "current DSL. Before proposing, preflight your draft with "
+            "workflow_dry_run(new_dsl_json=...) — zero cost, no side effects; fix "
+            "whatever it reports yourself. To change the DSL, call "
+            "workflow_propose_edit(workflow_id, new_dsl_json, rationale) with the "
+            "FULL proposed DSL object. Your edit then PAUSES: the user sees a "
+            "unified diff and must Apply or Reject — there is no DAG editor, the "
+            "diff confirmation is the gate. Only on Apply is a new immutable "
+            "version created. The authoritative node contract (every node type "
+            "with fields and structural rules) is appended to your system prompt "
+            "under 'Node contract' — follow it exactly instead of guessing node "
+            "shapes. A step's `agent` is optional: when omitted the engine "
+            "defaults to the dev agent, so never invent role names. Explain each "
+            "change in rationale. Keep edits minimal and targeted."
         ),
         provider="custom",
-        tools_allow=["workflow_propose_edit", "workflow_list"],
+        tools_allow=["workflow_propose_edit", "workflow_dry_run", "workflow_list"],
     ),
 ]
 
@@ -288,6 +291,28 @@ def ensure_browser_tools() -> None:
         return
     for cfg in list_agents():
         needed = _BROWSER_PATTERNS.get(cfg.id)
+        if not needed:
+            continue
+        allow = list(cfg.tools_allow or ["*"])
+        if "*" in allow:
+            continue
+        added = [p for p in needed if p not in allow]
+        if added:
+            update_agent(cfg.id, {"tools_allow": allow + added})
+
+
+_WORKFLOW_DEV_PATTERNS: dict[str, list[str]] = {
+    # stability plan P1d: zero-cost preflight joins the dev agent's belt on
+    # upgrades (fresh homes already seed it via _SEED).
+    "workflow-dev": ["workflow_dry_run"],
+}
+
+
+def ensure_workflow_dev_tools() -> None:
+    """Merge workflow_dry_run into an existing workflow-dev agent (idempotent
+    migration for installs seeded before stability plan P1d)."""
+    for cfg in list_agents():
+        needed = _WORKFLOW_DEV_PATTERNS.get(cfg.id)
         if not needed:
             continue
         allow = list(cfg.tools_allow or ["*"])

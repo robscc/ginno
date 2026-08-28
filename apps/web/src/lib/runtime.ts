@@ -623,6 +623,28 @@ export async function doctorWorkflow(id: string) {
   }>(`${BASE}/workflows/${id}/doctor`);
 }
 
+// ---- workflow dry-run (stability plan P1d: zero-LLM preflight) ----
+export interface DryRunFinding {
+  rule: string;
+  node_id?: string;
+  message: string;
+}
+export interface DryRunResult {
+  ok: boolean;
+  errors: string[];
+  doctor_errors: DryRunFinding[];
+  warnings: DryRunFinding[];
+  unreachable: string[];
+  node_count?: number;
+}
+export async function dryRunWorkflow(dsl: Record<string, unknown>) {
+  return json<DryRunResult>(`${BASE}/workflows/dry-run`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ dsl }),
+  });
+}
+
 // ---- synthesis-case review (quality-plan §3.2) ----
 export interface SynthesisCaseSummary {
   synthesis_id: string;

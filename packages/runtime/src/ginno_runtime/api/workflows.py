@@ -140,64 +140,16 @@ async def doctor_workflow_endpoint(wf_id: str) -> dict:
 async def dry_run_workflow_endpoint(data: dict) -> dict:
     """Zero-LLM preflight for a DSL draft (stability plan P1d): normalize +
     validate + doctor + compile + entry-reachability. The SummarizeModal and
-    the doctor panel use it to trial a draft before it is saved or run; the
-    node callables are built but NEVER executed, so no provider is needed."""
+    the inspector use it to trial a draft before it is saved or run; the dev
+    agent's ``workflow_dry_run`` tool shares the same core (workflows/dryrun.py),
+    so the checks never drift. Node callables are built but NEVER executed, so
+    no provider is needed."""
     dsl = (data or {}).get("dsl")
     if not isinstance(dsl, dict):
         raise HTTPException(status_code=400, detail="dsl object required")
-    from ..workflows import compiler as wf_compiler
-    from ..workflows import doctor as wf_doctor
+    from ..workflows.dryrun import dry_run_dsl
 
-    d = wf_dsl.normalize_dsl(dsl)
-    errors = wf_dsl.validate_dsl(d)
-    doc = wf_doctor.run_doctor(d)
-    result = {
-        "ok": False,
-        "errors": errors,
-        "doctor_errors": doc.get("errors") or [],
-        "warnings": doc.get("warnings") or [],
-        "unreachable": [],
-    }
-    if errors or result["doctor_errors"]:
-        return result
-
-    class _DryRunModel:  # compile-time placeholder; never invoked here
-        def bind_tools(self, *a, **k):
-            return self
-
-        async def ainvoke(self, *a, **k):
-            raise RuntimeError("dry-run stub model must never be invoked")
-
-    try:
-        g = wf_compiler.compile_workflow(
-            d, _DryRunModel(), [], {"run_id": "dry-run", "events": []}
-        )
-    except Exception as e:
-        result["errors"] = [f"compile failed: {type(e).__name__}: {e}"]
-        return result
-
-    # Reachability: BFS from START over the compiled graph; anything unvisited
-    # is dead wiring the author should know about before saving the draft.
-    graph = g.get_graph()
-    adj: dict[str, list[str]] = {}
-    for e in graph.edges:
-        adj.setdefault(e.source, []).append(e.target)
-    seen = {"__start__"}
-    stack = ["__start__"]
-    while stack:
-        cur = stack.pop()
-        for nxt in adj.get(cur, []):
-            if nxt not in seen:
-                seen.add(nxt)
-                stack.append(nxt)
-    result["unreachable"] = sorted(
-        n for n in graph.nodes if n not in seen and n not in ("__start__", "__end__")
-    )
-    result["ok"] = True
-    result["node_count"] = sum(
-        1 for n in graph.nodes if n not in ("__start__", "__end__")
-    )
-    return result
+    return dry_run_dsl(dsl)
 
 
 # ---- P6: synthesize a workflow DSL draft from a session's conversation ----

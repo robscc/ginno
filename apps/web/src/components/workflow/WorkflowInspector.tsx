@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, ChevronDown, Loader2, Play, Shield, ShieldAlert, X } from "lucide-react";
+import { Check, ChevronDown, FlaskConical, Loader2, Play, Shield, ShieldAlert, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { WorkflowDef, WorkflowRun, WorkflowRunEvent } from "@/lib/types";
@@ -58,6 +58,13 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
     warnings: Array<{ rule: string; node_id?: string; message: string }>;
   } | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
+  // Stability plan P1d: zero-LLM 试运行 of the stored DSL (validate + doctor +
+  // compile + reachability; never saves or executes). Complement to the doctor
+  // badge: doctor lints dataflow, dry-run proves the graph actually compiles.
+  const [dryRun, setDryRun] = useState<{ busy: boolean; result: api.DryRunResult | null }>({
+    busy: false,
+    result: null,
+  });
 
   // All runs of THIS workflow, newest first (listWorkflowRuns ordering).
   const wfRuns = runs.filter((r) => r.workflow_id === wf.id);
@@ -71,7 +78,20 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
     setSelNode(null);
     setErrMsg(null);
     setDoctorOpen(false);
+    setDryRun({ busy: false, result: null });
   }, [wf.id]);
+
+  const runDry = async () => {
+    if (!wf.dsl) return;
+    setDryRun({ busy: true, result: null });
+    try {
+      const r = await api.dryRunWorkflow(wf.dsl);
+      setDryRun({ busy: false, result: r });
+    } catch {
+      setDryRun({ busy: false, result: null });
+      setErrMsg("试运行请求失败（sidecar 未响应）");
+    }
+  };
 
   // §4.2: run the dataflow lint whenever the definition/version changes.
   useEffect(() => {
@@ -87,6 +107,12 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
       alive = false;
     };
   }, [wf.id, wf.version]);
+
+  // A rollback/propose changes wf.version — the old receipt would vouch for
+  // the wrong DSL, so drop it.
+  useEffect(() => {
+    setDryRun((d) => (d.result ? { busy: false, result: null } : d));
+  }, [wf.version]);
 
   useEffect(() => {
     if (!activeId) {
@@ -248,6 +274,18 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         >
           开发会话
         </button>
+        {/* P1d: zero-LLM preflight of the stored DSL (never saves/executes). */}
+        {wf.dsl && (
+          <button
+            onClick={runDry}
+            disabled={dryRun.busy}
+            title="零成本试跑当前版本：不保存、不执行、不调 LLM，只做校验/数据流/编译/可达性检查"
+            className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2.5 py-1 text-xs text-muted hover:text-txt disabled:opacity-50"
+          >
+            {dryRun.busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
+            {dryRun.busy ? "试跑中…" : "试运行"}
+          </button>
+        )}
         {/* Historical-run selector: the latest run is the default; any older
             (e.g. failed) run can be opened for inspection. */}
         {wfRuns.length > 0 && (
@@ -319,6 +357,57 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
             </button>
           )}
         </div>
+      )}
+
+      {/* P1d dry-run receipt for the stored DSL (vouches for wf.version). */}
+      {dryRun.result && (
+        dryRun.result.ok ? (
+          <div className="space-y-0.5 rounded-lg border border-green/30 bg-green/[0.06] px-2.5 py-2 text-[11px] text-green">
+            <div className="flex items-center gap-1.5">
+              <Check className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                试运行通过（v{wf.version ?? 1}）：{dryRun.result.node_count} 个节点，
+                校验 / 数据流 / 编译 / 可达性全过
+              </span>
+              <button
+                onClick={() => setDryRun({ busy: false, result: null })}
+                className="ml-auto text-[10px] text-green/70 hover:text-green"
+              >
+                收起 ▴
+              </button>
+            </div>
+            {dryRun.result.warnings.length > 0 && (
+              <div className="pl-5 text-yellow">
+                {dryRun.result.warnings.length} 条警告（不阻断）：
+                {dryRun.result.warnings.map((w) => w.message).join("；")}
+              </div>
+            )}
+            {dryRun.result.unreachable.length > 0 && (
+              <div className="pl-5 text-yellow">
+                不可达节点（永远不会执行）：{dryRun.result.unreachable.join(", ")}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg border border-red/30 bg-red/[0.06] px-2.5 py-2 text-[11px] text-red">
+            <div className="flex items-center gap-1.5">
+              <X className="h-3.5 w-3.5 shrink-0" />
+              <span>试运行未通过（v{wf.version ?? 1}）：</span>
+              <button
+                onClick={() => setDryRun({ busy: false, result: null })}
+                className="ml-auto text-[10px] text-red/70 hover:text-red"
+              >
+                收起 ▴
+              </button>
+            </div>
+            {dryRun.result.errors.map((e, i) => (
+              <div key={`e${i}`} className="pl-5">· {e}</div>
+            ))}
+            {dryRun.result.doctor_errors.map((e, i) => (
+              <div key={`d${i}`} className="pl-5">· {e.message}</div>
+            ))}
+          </div>
+        )
       )}
 
       <WorkflowDag

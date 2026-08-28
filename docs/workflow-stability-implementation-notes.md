@@ -54,7 +54,49 @@
      body 会被整体跳过、剩余 item 永不执行。故进度通道对 pregel 隐藏、对适配器可见。
    - 测试：test_checkpointer_pending_writes（3）、test_parallel_resume_skips_done_items（2）。
 
+## Follow-ups（2026-08-28，收尾轮）
+
+对照批准计划的测试清单与 P1d 原文，补齐两处遗留：
+
+3. **测试清单 #23 落地** — 新 `tests/e2e/test_workflow_parallel_pipeline.py`：
+   prep（WRITE_JSON 快路径写 themes）→ parallel loop（gather，
+   max_concurrency:1 保证脚本序确定）→ 下游 step 消费。覆盖：单对
+   node_enter/exit 包整批、per-item loop_iter（parallel/of/index）、
+   两个 item 走 WRITE_JSON 快路径、**一个 item 只回散文 → per-item 内联
+   `extract_from_text` LLM 修正路径**（抽取 prompt 带来源文本，全链路恰好
+   一次）、index 序 array 合成（context.reports）、下游 goal 按序读到三个
+   标题。另含编译器形状断言：顺序节点注入 `__extract`、parallel body 跳过；
+   parallel DSL 经 API 建为 v1。
+4. **P1d 接线补齐**（原交付只有端点，UI/工具接线在 8/17 被静默落下）：
+   - 新 `workflows/dryrun.py::dry_run_dsl` 单一事实源；
+     `POST /api/workflows/dry-run` 改为薄封装（行为不变，既有 7 例 API 测试通过）。
+   - dev agent 新工具 `workflow_dry_run(workflow_id | new_dsl_json)`：
+     propose_edit 前自检草稿（零成本、无副作用、可自主调用——对齐借鉴清单
+     「允许自主 dry-run、禁止自主真跑」）。`WORKFLOW_DEV_TOOL_NAMES` /
+     `ALL_WORKFLOW_DEV_TOOLS` 收录；种子 prompt 更新；
+     `ensure_workflow_dev_tools()` 幂等迁移旧装机（新 `test_workflow_dry_run_tool.py` 8 例）。
+   - 前端：SummarizeModal「试运行」按钮（检查当前编辑草稿，绿/红回执；
+     草稿一改动回执自动失效）；WorkflowInspector「试运行」按钮（检查已存
+     DSL，回执带版本号，rollback/propose 后失效）。`lib/runtime.ts` 增
+     `dryRunWorkflow` + `DryRunResult`。
+5. **Debug 模式入库**（与本分支无关但同期遗留）：8/16 实现的浏览器
+   Debug 门控当时未提交，且 51ac613 意外卷走其中三文件的守卫、使 HEAD
+   悬空依赖未跟踪的 `debug.py`。29fad57 补齐：`debug.py` + 全部守卫 +
+   `test_debug_mode.py`（9 例）。
+
+## 验证（2026-08-28 收尾轮）
+
+- `uv run pytest tests`（unit+api+e2e 全量）：**997 passed, 1 skipped**。
+- `npx tsc --noEmit`（apps/web）：通过。
+- `make sidecar`（web 静态导出 + PyInstaller onedir bundle + staging）：通过。
+  `make app` 的 Tauri bundle 步骤需先退出正在运行的 Ginno.app（避免文件锁），
+  由用户择机执行。
+
 ## 已知保留（记录不修）
 
 - 并行 gather 的 usage 求和进单条 node_exit.usage；per-item 用量明细不入事件（成本核算粒度够用）。
 - replay 脚本需真实 provider（opt-in 评测工具，CI 不跑）。
+- 计划「验证」一节的真实-provider 冒烟（summarize→doctor 回喂、坏工具
+  retry→continue）与 Playwright 渲染抽查：前者被 synth_replay_batch（需真实
+  provider）覆盖为 opt-in；后者所需的事件渲染逻辑已有单测/时间线组件覆盖，
+  端到端抽查随下次 make app 一并做。

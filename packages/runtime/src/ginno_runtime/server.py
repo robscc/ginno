@@ -64,6 +64,7 @@ async def lifespan(app: FastAPI):
     agents_reg.ensure_research_discipline()
     agents_reg.ensure_goal_tools()
     agents_reg.ensure_web_tools()
+    agents_reg.ensure_workflow_dev_tools()
     if debug_enabled():
         agents_reg.ensure_browser_tools()
     # Upgraded installs never got the web tools in permissions.allow (defaults

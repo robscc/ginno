@@ -22,7 +22,9 @@ from ..workflows import dsl as wf_dsl
 WORKFLOW_TOOL_NAMES = {"workflow_list", "workflow_create", "workflow_run", "workflow_step"}
 # Gated to the workflow-dev agent (P5): editing tools that pause for a diff
 # confirmation via interrupt before mutating a versioned definition.
-WORKFLOW_DEV_TOOL_NAMES = {"workflow_propose_edit"}
+# workflow_dry_run (stability plan P1d): zero-cost preflight the agent may run
+# autonomously — unlike workflow_run, which stays a human action.
+WORKFLOW_DEV_TOOL_NAMES = {"workflow_propose_edit", "workflow_dry_run"}
 
 # run_id -> latest run snapshot (for the live-turn inline workflow block)
 RUN_CACHE: dict[str, dict] = {}
@@ -165,4 +167,55 @@ def workflow_propose_edit(workflow_id: str, new_dsl_json: str, rationale: str = 
     return "rejected: the human rejected this edit. Ask what to change and propose again."
 
 
-ALL_WORKFLOW_DEV_TOOLS = [workflow_propose_edit]
+@tool
+def workflow_dry_run(workflow_id: str = "", new_dsl_json: str = "") -> str:
+    """Zero-cost preflight of a workflow DSL: NO LLM, NO side effects, never
+    executes anything (stability plan P1d). Pass workflow_id to check that
+    workflow's stored current DSL, or new_dsl_json (the FULL proposed DSL
+    object as JSON) to check a draft BEFORE calling workflow_propose_edit —
+    catching validate/doctor/compile errors yourself first keeps the human's
+    diff clean. Returns ok/errors/dataflow findings/unreachable nodes."""
+    from ..workflows.dryrun import dry_run_dsl
+
+    if new_dsl_json:
+        try:
+            dsl = json.loads(new_dsl_json) if isinstance(new_dsl_json, str) else new_dsl_json
+        except json.JSONDecodeError:
+            return "error: new_dsl_json is not valid JSON"
+        if not isinstance(dsl, dict):
+            return "error: new_dsl_json must be a JSON object"
+    else:
+        wf = wf_store.get_def(workflow_id) if workflow_id else None
+        if not wf:
+            return (
+                "error: pass workflow_id (check a stored workflow) or "
+                "new_dsl_json (check a draft DSL)"
+            )
+        dsl = wf.get("dsl") or {}
+
+    r = dry_run_dsl(dsl)
+    lines: list[str] = []
+    if r["ok"]:
+        lines.append(
+            f"ok: DSL compiles cleanly — {r.get('node_count')} nodes, all reachable"
+        )
+    else:
+        lines.append("failed:")
+        lines.extend(f"- {e}" for e in r["errors"])
+        lines.extend(
+            f"- {e.get('rule')}: {e.get('message')}" for e in r["doctor_errors"]
+        )
+    if r["warnings"]:
+        lines.append("warnings (non-blocking):")
+        lines.extend(
+            f"- {w.get('rule')}: {w.get('message')}" for w in r["warnings"]
+        )
+    if r["unreachable"]:
+        lines.append(
+            "unreachable nodes (dead wiring, never executed): "
+            + ", ".join(r["unreachable"])
+        )
+    return "\n".join(lines)
+
+
+ALL_WORKFLOW_DEV_TOOLS = [workflow_propose_edit, workflow_dry_run]
