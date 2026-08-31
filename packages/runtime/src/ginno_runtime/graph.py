@@ -724,6 +724,7 @@ def build_all_tools(
     ``context_dirs`` / ``primary_path`` bind the session's mounted context
     folders into the builtin file/shell tools (context-folders-design.md).
     """
+    from .tools.external_agent import build_external_agent_tools
     from .tools.goal_tools import build_goal_tools
     from .tools.web_tools import build_web_tools
 
@@ -746,6 +747,10 @@ def build_all_tools(
         # Web search/fetch (citations-design.md §4.2) — [] when disabled in
         # settings; session_id binds citation source registration.
         + build_web_tools(session_id)
+        # Delegation to external coding agents (external-agents-design.md) —
+        # [] when disabled in settings; session_id/project_slug bind usage
+        # attribution. Deliberately NOT in the permission exempt set.
+        + build_external_agent_tools(workspace, session_id, project_slug)
     )
 
 

@@ -73,6 +73,10 @@ _CONTEXT_DEFAULTS = {
     # error. Parallel loops are opt-in behind this flag plus the DSL field.
     "workflow_strict_multi_edge": True,
     "workflow_parallel_loops": False,
+    # External coding-agent delegation (external-agents-design.md): spends
+    # money at external providers and can edit files, and the permission
+    # node's "ask" is dormant while bypass_permissions is on — so opt-in.
+    "external_agents_enabled": False,
 }
 
 
@@ -102,6 +106,20 @@ def workflow_parallel_enabled() -> bool:
     if env:
         return env in ("1", "true", "yes", "on")
     return bool(context_settings().get("workflow_parallel_loops"))
+
+
+def external_agents_enabled() -> bool:
+    """Gate for the delegate_agent tool (external-agents-design.md).
+
+    Default OFF — delegation spends money at external providers and can
+    edit files. ``GINNO_EXTERNAL_AGENTS`` overrides settings for tests/ops
+    (1/true/on vs 0/false/off); unset falls back to settings.context."""
+    import os
+
+    env = (os.environ.get("GINNO_EXTERNAL_AGENTS") or "").strip().lower()
+    if env:
+        return env in ("1", "true", "yes", "on")
+    return bool(context_settings().get("external_agents_enabled"))
 
 
 def _sha1(text: str) -> str:

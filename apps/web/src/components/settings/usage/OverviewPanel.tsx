@@ -250,6 +250,7 @@ const SOURCE_META: Record<string, { label: string; color: string }> = {
   memory: { label: "记忆", color: "#38bdf8" },
   kb: { label: "知识库", color: "#60a5fa" },
   probe: { label: "探测", color: "#9a9aa6" },
+  external: { label: "外部代理", color: "#f472b6" },
   other: { label: "其他", color: "#9a9aa6" },
 };
 
