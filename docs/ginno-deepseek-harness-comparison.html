@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ginno × DeepSeek Harness 深度特性对比</title>
+<style>
+/* ============ tokens ============ */
+:root{
+  --bg:#f4f4f8; --surface:#ffffff; --surface2:#ececf3;
+  --ink:#1d1d2b; --muted:#5c5c70; --faint:#8b8b9e;
+  --line:#dcdce8; --line2:#c9c9da;
+  --ginno:#6450d6; --ginno-soft:#eceaf9; --ginno-line:#c9c2ef;
+  --dsh:#3b55d6; --dsh-soft:#e8ecfa; --dsh-line:#b9c4ef;
+  --ok:#1e7a4d; --ok-soft:#e5f2ea;
+  --warn:#9c6a00; --warn-soft:#f7efdb;
+  --bad:#b23a30; --bad-soft:#f8e9e7;
+  --code-bg:#f0f0f6; --chip:#e8e8f1;
+  --shadow:0 1px 3px rgba(29,29,43,.07), 0 8px 24px rgba(29,29,43,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#131318; --surface:#1c1c25; --surface2:#232330;
+    --ink:#eaeaf4; --muted:#a4a4b8; --faint:#737387;
+    --line:#2f2f3e; --line2:#3d3d4f;
+    --ginno:#a493f7; --ginno-soft:#262341; --ginno-line:#4a4279;
+    --dsh:#8fa2ff; --dsh-soft:#1f2440; --dsh-line:#3d4a85;
+    --ok:#5fc48d; --ok-soft:#1b2c23;
+    --warn:#d9a94e; --warn-soft:#2e2714;
+    --bad:#e58a80; --bad-soft:#33201d;
+    --code-bg:#22222e; --chip:#2a2a38;
+    --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131318; --surface:#1c1c25; --surface2:#232330;
+  --ink:#eaeaf4; --muted:#a4a4b8; --faint:#737387;
+  --line:#2f2f3e; --line2:#3d3d4f;
+  --ginno:#a493f7; --ginno-soft:#262341; --ginno-line:#4a4279;
+  --dsh:#8fa2ff; --dsh-soft:#1f2440; --dsh-line:#3d4a85;
+  --ok:#5fc48d; --ok-soft:#1b2c23;
+  --warn:#d9a94e; --warn-soft:#2e2714;
+  --bad:#e58a80; --bad-soft:#33201d;
+  --code-bg:#22222e; --chip:#2a2a38;
+  --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+}
+/* ============ base ============ */
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  font-size:15px; line-height:1.75; -webkit-font-smoothing:antialiased;
+}
+.serif{font-family:Georgia,"Times New Roman","Songti SC","Noto Serif CJK SC","SimSun",serif}
+.mono,code,pre,kbd{font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+a{color:var(--ginno); text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--ginno); outline-offset:2px; border-radius:3px}
+/* ============ header ============ */
+header.masthead{
+  border-bottom:1px solid var(--line);
+  background:
+    linear-gradient(115deg, var(--ginno-soft) 0%, transparent 34%),
+    linear-gradient(245deg, var(--dsh-soft) 0%, transparent 34%),
+    var(--surface);
+}
+.masthead-inner{max-width:980px; margin:0 auto; padding:52px 24px 40px}
+.kicker{
+  display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+  font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+  font-weight:600; margin-bottom:18px;
+}
+.kicker .dot{width:7px;height:7px;border-radius:50%;background:var(--ginno)}
+.kicker .dot2{background:var(--dsh)}
+h1.title{
+  font-size:clamp(28px,4.6vw,44px); line-height:1.22; margin:0 0 16px;
+  font-weight:700; letter-spacing:.01em; text-wrap:balance;
+}
+h1.title .vs{color:var(--faint); font-weight:400; padding:0 .18em}
+h1.title .g{color:var(--ginno)} h1.title .d{color:var(--dsh)}
+.subtitle{max-width:780px; color:var(--muted); font-size:16px; margin:0 0 26px}
+.meta-row{display:flex; flex-wrap:wrap; gap:8px 18px; font-size:12.5px; color:var(--faint)}
+.meta-row b{color:var(--muted); font-weight:600}
+/* ============ nav ============ */
+nav.toc{
+  position:sticky; top:0; z-index:20;
+  background:var(--surface); border-bottom:1px solid var(--line);
+  box-shadow:0 1px 0 rgba(29,29,43,.02);
+}
+.toc-inner{max-width:980px; margin:0 auto; padding:0 24px; display:flex; gap:2px; overflow-x:auto; scrollbar-width:none}
+.toc-inner::-webkit-scrollbar{display:none}
+.toc a{
+  flex:none; padding:11px 12px; font-size:13px; color:var(--muted);
+  border-bottom:2px solid transparent; white-space:nowrap;
+}
+.toc a:hover{color:var(--ink); text-decoration:none; border-bottom-color:var(--line2)}
+.toc a b{font-weight:600; color:var(--faint); margin-right:5px; font-variant-numeric:tabular-nums}
+/* ============ layout ============ */
+main{max-width:980px; margin:0 auto; padding:8px 24px 80px}
+section{padding-top:44px}
+section + section{margin-top:12px}
+h2{
+  font-size:25px; line-height:1.35; margin:0 0 6px; font-weight:700;
+  display:flex; align-items:baseline; gap:12px; text-wrap:balance;
+}
+h2 .no{
+  font-family:Georgia,"Songti SC",serif; font-size:15px; color:var(--faint);
+  font-weight:400; font-variant-numeric:tabular-nums; letter-spacing:.06em; flex:none;
+}
+h3{font-size:18px; margin:34px 0 10px; font-weight:700; line-height:1.45}
+h4{font-size:15px; margin:24px 0 8px; font-weight:700}
+p{margin:10px 0}
+.lede{color:var(--muted); margin:6px 0 18px; max-width:820px}
+hr.sep{border:0; border-top:1px solid var(--line); margin:44px 0 0}
+/* ============ components ============ */
+.card{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:20px 22px; box-shadow:var(--shadow);
+}
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+.grid2>*{min-width:0}
+pre{max-width:100%}
+@media (max-width:760px){.grid2{grid-template-columns:1fr}}
+.side{border-top:3px solid var(--line2)}
+.side.g{border-top-color:var(--ginno)}
+.side.d{border-top-color:var(--dsh)}
+.side .tag{
+  display:inline-block; font-size:11.5px; font-weight:700; letter-spacing:.1em;
+  text-transform:uppercase; padding:2px 9px; border-radius:99px; margin-bottom:10px;
+}
+.side.g .tag{background:var(--ginno-soft); color:var(--ginno)}
+.side.d .tag{background:var(--dsh-soft); color:var(--dsh)}
+.side h5{margin:0 0 8px; font-size:15.5px}
+blockquote{
+  margin:12px 0; padding:10px 16px; border-left:3px solid var(--line2);
+  background:var(--surface2); border-radius:0 8px 8px 0;
+  color:var(--muted); font-size:13.8px; line-height:1.7;
+}
+blockquote .src{display:block; margin-top:6px; font-size:11.5px; color:var(--faint)}
+.verdict{
+  border:1px solid var(--line); border-left:4px solid var(--ginno);
+  background:var(--surface); border-radius:8px;
+  padding:14px 18px; margin:20px 0; font-size:14.2px;
+}
+.verdict b.vt{color:var(--ginno); font-weight:700}
+.verdict.dsh{border-left-color:var(--dsh)} .verdict.dsh b.vt{color:var(--dsh)}
+.verdict.split{border-left-color:var(--line2)} .verdict.split b.vt{color:var(--muted)}
+.chip{
+  display:inline-block; font-size:11.5px; font-weight:600; padding:1.5px 9px;
+  border-radius:99px; background:var(--chip); color:var(--muted); white-space:nowrap;
+}
+.chip.g{background:var(--ginno-soft); color:var(--ginno)}
+.chip.d{background:var(--dsh-soft); color:var(--dsh)}
+.chip.ok{background:var(--ok-soft); color:var(--ok)}
+.chip.warn{background:var(--warn-soft); color:var(--warn)}
+.chip.bad{background:var(--bad-soft); color:var(--bad)}
+.chip.lead{background:var(--ok-soft); color:var(--ok)}
+.chip.even{background:var(--chip); color:var(--muted)}
+.chip.gap{background:var(--bad-soft); color:var(--bad)}
+/* tables */
+.tbl-wrap{overflow-x:auto; margin:16px 0; border:1px solid var(--line); border-radius:10px; background:var(--surface)}
+table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:640px}
+th,td{padding:10px 14px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line)}
+thead th{
+  background:var(--surface2); font-size:12px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--muted); font-weight:700; white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:0}
+td .mono{font-size:12px}
+th.cg{color:var(--ginno)} th.cd{color:var(--dsh)}
+/* code */
+pre{
+  background:var(--code-bg); border:1px solid var(--line); border-radius:8px;
+  padding:14px 16px; overflow-x:auto; font-size:12.3px; line-height:1.65; margin:14px 0;
+}
+code{font-size:.88em; background:var(--code-bg); padding:1px 5px; border-radius:4px}
+pre code{background:none; padding:0}
+/* flow strips */
+.flow{display:flex; align-items:stretch; gap:0; flex-wrap:wrap; margin:12px 0 4px}
+.flow .fstep{
+  flex:1 1 0; min-width:96px; background:var(--surface); border:1px solid var(--line);
+  border-radius:8px; padding:8px 10px; font-size:12.3px; line-height:1.45;
+  display:flex; flex-direction:column; gap:3px; position:relative; margin-right:20px; margin-bottom:10px;
+}
+.flow .fstep:last-child{margin-right:0}
+.flow .fstep::after{
+  content:"→"; position:absolute; right:-17px; top:50%; transform:translateY(-50%);
+  color:var(--faint); font-size:14px;
+}
+.flow .fstep:last-child::after{content:""}
+.flow .fstep b{font-size:12.5px}
+.flow .fstep small{color:var(--faint); font-size:11px}
+.flow.g .fstep{border-top:2px solid var(--ginno)}
+.flow.d .fstep{border-top:2px solid var(--dsh)}
+/* borrow cards */
+.bcard{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:18px 20px; margin:14px 0; box-shadow:var(--shadow);
+}
+.bcard .bh{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px}
+.bcard .bh b{font-size:15.5px}
+.bcard .num{
+  font-family:Georgia,"Songti SC",serif; color:var(--faint); font-size:14px;
+  font-variant-numeric:tabular-nums; flex:none;
+}
+.bcard p{font-size:13.8px; margin:7px 0}
+.bcard .why{color:var(--muted)}
+.bcard .how{padding:9px 13px; background:var(--surface2); border-radius:7px; font-size:13px}
+.bcard .how b{font-size:12px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint)}
+/* misc */
+ul,ol{padding-left:22px; margin:10px 0}
+li{margin:5px 0}
+.small{font-size:12.8px; color:var(--muted)}
+.foot-note{font-size:12px; color:var(--faint)}
+.kv{display:grid; grid-template-columns:150px 1fr; gap:4px 14px; font-size:13.5px}
+.kv dt{color:var(--faint)} .kv dd{margin:0}
+.stat-row{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:16px 0}
+.stat{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px;
+}
+.stat .n{font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.2}
+.stat .l{font-size:12px; color:var(--muted); margin-top:3px}
+.stat.g .n{color:var(--ginno)} .stat.d .n{color:var(--dsh)}
+.legend{display:flex; gap:16px; flex-wrap:wrap; font-size:12.5px; color:var(--muted); margin:8px 0 0}
+.legend .sw{display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="kicker"><span class="dot"></span> Agent Harness 对比研究 <span class="dot2"></span> 2026-08-30</div>
+    <h1 class="title serif"><span class="g">Ginno</span><span class="vs">×</span><span class="d">DeepSeek Harness</span><br>深度特性对比</h1>
+    <p class="subtitle">一个是深耕六周的个人本地 agent，一个是 DeepSeek 官方开源、两周斩获 20 万星的「everything is a plugin」agent 底座。能力图谱惊人同构，实现路线彻底分叉。本报告对比定位、架构、能力、编排、安全与工程化六个维度，并给出 Ginno 借鉴清单。</p>
+    <div class="meta-row">
+      <span><b>Ginno</b> 本地仓库 @39066bc（2026-08-29 状态）</span>
+      <span><b>DeepSeek Harness (dsh)</b> @cd5ef81 · v0.1.2-alpha.1 · 204k★ · MIT</span>
+      <span><b>方法</b> 四路并行调研：Ginno 全仓 + dsh 文档/代码级深读</span>
+    </div>
+  </div>
+</header>
+
+<nav class="toc" aria-label="目录">
+  <div class="toc-inner">
+    <a href="#s0"><b>0</b>摘要</a>
+    <a href="#s1"><b>1</b>调研对象</a>
+    <a href="#s2"><b>2</b>定位</a>
+    <a href="#s3"><b>3</b>架构对比</a>
+    <a href="#s4"><b>4</b>能力矩阵</a>
+    <a href="#s5"><b>5</b>编排深潜</a>
+    <a href="#s6"><b>6</b>安全沙箱</a>
+    <a href="#s7"><b>7</b>工程化</a>
+    <a href="#s8"><b>8</b>模型生态</a>
+    <a href="#s9"><b>9</b>借鉴清单</a>
+    <a href="#s10"><b>10</b>结论</a>
+    <a href="#sA"><b>附A</b>全量矩阵</a>
+    <a href="#sB"><b>附B</b>包地图</a>
+    <a href="#sC"><b>附C</b>来源</a>
+  </div>
+</nav>
+
+<main>
+
+<!-- ================= 0 摘要 ================= -->
+<section id="s0">
+  <h2 class="serif"><span class="no">00</span>摘要</h2>
+  <p class="lede">四路独立调研（Ginno 本地全仓代码与文档；dsh 架构/功能/工程化三路代码级深读，浅克隆 @2026-08-30）后的核心判断：</p>
+
+  <div class="card" style="padding:6px 22px">
+    <ul>
+      <li><b>这不是同级竞技，而是两个量级的对话。</b>DeepSeek Harness（下称 dsh）是 DeepSeek 官方开源的 agent harness 平台：开仓 17 天 20.4 万 stars / 2.36 万 forks，3248 个 PR，51 个包、近 9000 文件，10 天 5 个 release。Ginno 是六周龄的个人本地 agent：141 commits、334 个源文件。对比的价值不在胜负，而在「能力图谱对照」与「工程实践借鉴」。</li>
+      <li><b>能力图谱惊人同构。</b>skill（都用 <span class="mono">SKILL.md</span> + frontmatter）、todo、goal、workflow、hooks、subagent、上下文压缩、MCP、权限审批——两边独立收敛到了同一张 agent 产品概念表。这本身验证了 Ginno 的产品判断与业界形态一致。</li>
+      <li><b>「workflow」同名不同种，这是对比的最大看点。</b>Ginno 的 workflow 是<b>持久化业务流程引擎</b>（DSL → LangGraph 编译、checkpoint 恢复、重试/超时、并行 gather、human 审批节点、dry-run、doctor、L0-L4 质量漏斗）；dsh 的 workflow 是<b>一次性 JS 编排脚本</b>（<span class="mono">agent()/pipeline()/parallel()/phase()</span>，无文件系统/网络、无持久化、无人机闸门）。在「可恢复、可审批、可度量」这条轴上，Ginno 反而显著领先。</li>
+      <li><b>Ginno 的独有资产在 dsh 里找不到对应物</b>：会话→workflow 自动合成（summarize-from-session）、L0-L4 合成质量漏斗与案例台账、todo 勾选即触发、<span class="mono">[sN]</span> 引用契约与 cite_rate 遥测、workflow 版本 diff 审批（version_propose）。</li>
+      <li><b>dsh 的绝对长板</b>：Cordis 全插件化（连 agent 循环本身都是可换插件）、三平台原生沙箱（含 ~300 行 C11 的 landlock 自限权 launcher）、五端形态（CLI/Web/Python SDK/TS SDK/ACP）、工程化基础设施（7 层测试金字塔、会话快照回放、per-file 100% 覆盖率门禁、门禁 DAG、双语 i18n 机器强制）、DeepSeek V4 深度集成（1M 上下文 / 256K 输出 / Files API）。</li>
+      <li><b>最值得 Ginno 借鉴的</b>不是架构的平台性，而是工程实践：<b>会话快照回放测试</b>（record/replay/refresh 三态，正面解决 LLM 应用测试贵且不确定——可直接用于 Ginno 的合成评测）、<b>自动生成的工具目录 + 完整性守卫</b>、<b>门禁 DAG</b>（本地复现 CI，Ginno 目前无 CI）、<b>defensive-patterns/postmortem 文档层</b>。全插件化 / profile 体系 / 品牌秩序则是平台玩法武器，个人产品不必跟。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 1 对象 ================= -->
+<section id="s1">
+  <h2 class="serif"><span class="no">01</span>调研对象与事实基础</h2>
+  <div class="stat-row">
+    <div class="stat d"><div class="n">203,973</div><div class="l">dsh stars（开仓 17 天）</div></div>
+    <div class="stat d"><div class="n">3,248</div><div class="l">dsh 已合并 PR</div></div>
+    <div class="stat d"><div class="n">51</div><div class="l">dsh packages 数量</div></div>
+    <div class="stat d"><div class="n">5</div><div class="l">dsh 十天内发布版本数</div></div>
+    <div class="stat g"><div class="n">141</div><div class="l">Ginno commits（6 周）</div></div>
+    <div class="stat g"><div class="n">1,030</div><div class="l">Ginno 测试函数</div></div>
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th></th><th class="cg">Ginno</th><th class="cd">DeepSeek Harness (dsh)</th></tr></thead>
+      <tbody>
+        <tr><td>定位</td><td>Personal AI Agent：本地桌面 agent，workflow 是核心执行原语（TODO / Workflow / Goal 三分法）</td><td>DeepSeek 官方开源 agent harness：「Everything is a Plugin」，模型厂商做的 agent 底座与生态平台</td></tr>
+        <tr><td>起始 / 状态</td><td>2026-07-18 启动，持续迭代中；私有项目</td><td>2026-08-13 开仓；<b>developer preview</b>，官方明示「会有破坏性变更」；截至 08-28 HEAD 仍在合流（<span class="mono">release/dsh-0.1.2-alpha.1</span>）</td></tr>
+        <tr><td>技术栈</td><td>Tauri 2（Rust 薄壳）+ Next.js 14 静态导出 + Python sidecar（FastAPI + LangGraph）；pnpm + uv</td><td>Node/TypeScript monorepo（pnpm，72 workspace）+ vendored Cordis 插件框架 + Python SDK wheel + ~300 行 C11（landlock-run）；TS 双面编译（host/client）</td></tr>
+        <tr><td>规模</td><td>334 个源文件；后端 ~1030 测试函数 / 134 测试文件</td><td>~8953 文件（含 1245 个 <span class="mono">*.zh.md</span>、1242 个 <span class="mono">*.i18n.yaml</span>、1624 篇 Agent Note）；TS 代码约 30MB</td></tr>
+        <tr><td>分发</td><td>macOS <span class="mono">.app</span>/dmg（PyInstaller onedir 打包 runtime，避开 endpoint-security 扫描）</td><td><span class="mono">npx @deepseek-ai/dsh web</span>（npm）+ GitLab PyPI wheel（4 平台）；每个 PR 全量 pack 证明可发布</td></tr>
+        <tr><td>入口形态</td><td>桌面单端（Tauri webview + sidecar）</td><td>单一 <span class="mono">dsh</span> CLI，一切皆 profile：web / headless / sdk / sdk-minimal / acp</td></tr>
+        <tr><td>贡献模式</td><td>个人 / 小团队</td><td>~40 contributors；<b>不接受外部 PR</b>（CONTRIBUTING 明说）；GitHub Discussions 收反馈；<b>商标注册</b>（BRAND_GUIDELINES：生态项目建议用 DSH 命名）</td></tr>
+        <tr><td>许可证</td><td>私有</td><td>MIT（代码）+ 商标限制（名称/品牌）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="foot-note">调研方式：Ginno 侧为本地仓库全量阅读（docs/ 全部设计文档 + runtime 全部模块 + 前端组件）；dsh 侧为浅克隆（@cd5ef81，2026-08-28）后的三路并行代码级深读——架构（cordis/agent-loop/session/llm/host）、功能（tool-catalog/51 个包/用户指南）、工程化（8 个 vitest 配置/CI/门禁/文档体系）。dsh 迭代极快，本报告的 dsh 结论均锚定该 commit。</p>
+</section>
+
+<!-- ================= 2 定位 ================= -->
+<section id="s2">
+  <h2 class="serif"><span class="no">02</span>产品定位：两个量级，两种打法</h2>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno</span>
+      <h5 class="serif">为一个人深耕的本地 agent</h5>
+      <p>Ginno 的产品重心是「把我的工作方式固化下来」：对话产出的好流程能蒸馏成 workflow（summarize-from-session），todo 勾选能直接触发自动化，知识以本地 wiki + 语义检索沉淀，引用有契约、用量有台账。本地优先（<span class="mono">~/.ginno/</span> 纯文件，无数据库、无服务端），隐私边界清晰。</p>
+      <p>workflow 三分法（TODO=要做什么 / Workflow=怎么做 / Goal=达成什么）与「运行回到对话」的体验设计，都服务于单人深度使用。</p>
+      <p class="small">来源：README、goal-design.md、workflow-dsl-design.md</p>
+    </div>
+    <div class="card side d">
+      <span class="tag">DeepSeek Harness</span>
+      <h5 class="serif">模型厂商的 agent 底座与生态宣言</h5>
+      <blockquote>「DeepSeek Harness (<span class="mono">dsh</span>) is an open-source agent harness developed by DeepSeek AI. It is built on an <b>everything-is-a-plugin</b> architecture and powered by Cordis.」<span class="src">README.md</span></blockquote>
+      <p>dsh 是 DeepSeek 对「agent 产品应该长什么样」的官方回答：无特权核心——模型适配器、工具注册表、会话日志、agent 循环本身全是插件，配置可换；一切经 profile 组合、补丁层叠加。配套商标指南、Discord、插件话题标签（<span class="mono">dsh-plugin</span>）——这是以品牌秩序运营的生态平台，不是个人工具。</p>
+      <p class="small">来源：README.md、BRAND_GUIDELINES.md、docs/architecture.md</p>
+    </div>
+  </div>
+  <div class="verdict split"><b class="vt">判断</b>　两者服务对象不同：Ginno 做「我的 agent」，dsh 做「所有人的 agent 地基」。这决定了后续所有差异的解读方式——dsh 的插件体系、多端形态、品牌机制是平台武器；Ginno 的会话蒸馏、质量漏斗、个人触发是深耕资产。跨量级对比的正确姿势是：从平台身上学工程与抽象，而不是复制平台形态。</div>
+</section>
+
+<!-- ================= 3 架构 ================= -->
+<section id="s3">
+  <h2 class="serif"><span class="no">03</span>架构对比：六个剖面</h2>
+
+  <h3 id="s3-1">3.1 扩展模型：全插件化 vs 注册表模式</h3>
+  <div class="grid2">
+    <div class="card side d">
+      <span class="tag">dsh · Cordis</span>
+      <h5>时空可组合性</h5>
+      <ul>
+        <li><b>五概念</b>：plugin=Service；Context 是服务仓库（<span class="mono">ctx.tools/ctx.llm/ctx.sessions</span>）；依赖经 <span class="mono">inject</span> 声明——所需服务就位才激活，以服务依赖取代启动排序；类型化事件（5 种派发：emit/waterfall/parallel/serial/bail）；注册皆为<b>可逆 effect</b>，卸载自动回卷。</li>
+        <li><b>无特权核心</b>：agent 循环（ReactLoopAgent）只是默认驱动插件，可整体替换。</li>
+        <li><b>空间组合</b>：Profile（命名组合）× Bundle（补丁层分发单元）；<span class="mono">--dump-config</span> 打印的每一行都可被 patch 替换；热重载。</li>
+        <li><b>Capability Seam</b>：fs/subprocess 抽象成 Provider/Consumer 三角色——换到 E2B 远程沙箱，Bash/PTY/LSP 跟着整体迁移（<span class="mono">packages/e2b/</span> 三个包实证）。</li>
+      </ul>
+      <p class="small">来源：docs/cordis-primer.md、architecture.md、capability-seams.md（Cordis 论文：arXiv 2608.25512）</p>
+    </div>
+    <div class="card side g">
+      <span class="tag">Ginno · 注册表</span>
+      <h5>产品级扩展点</h5>
+      <ul>
+        <li><b>节点注册表</b>：<span class="mono">@register_node</span> 装饰器插件化（<span class="mono">workflows/nodes/</span>），内置 8 类节点。</li>
+        <li><b>Agent 注册表</b>：<span class="mono">agents/registry.py</span> 四内置（dev/research/writer/workflow-dev），tools_allow 过滤，可 fork 自建。</li>
+        <li><b>Skill loader</b>：SKILL.md frontmatter 声明触发方式；<b>todo provider</b>：外部平台经 skill 声明 <span class="mono">todo_provider</span> 免写 adapter。</li>
+        <li><b>核心是特权的</b>：LangGraph 图结构、权限节点、主循环不可替换——扩展发生在预留的挂点上，而非任意树节点。</li>
+      </ul>
+      <p class="small">来源：packages/runtime/src/ginno_runtime/{workflows/nodes,agents,skills,todos}</p>
+    </div>
+  </div>
+  <div class="verdict dsh"><b class="vt">判断</b>　这是「平台级可组合性」与「产品级扩展点」的哲学差。dsh 的组合性有论文背书和真实收益（换沙箱搬走整个工具面）；代价是概念门槛与调试复杂度。Ginno 的注册表对个人产品是恰当复杂度——需要警惕的不是「不够插件化」，而是扩展点别变成一次性接口。</div>
+
+  <h3 id="s3-2">3.2 状态模型：事件溯源 vs 文件 checkpoint</h3>
+  <div class="grid2">
+    <div class="card side d">
+      <span class="tag">dsh</span>
+      <h5>会话 = append-only 事件日志</h5>
+      <p>事件溯源为单一事实源：<span class="mono">deriveMessages()</span> 投影出模型历史；不变式「<b>Model-visible means logged</b>」。fork / resume / transcript / 遥测全部从日志派生。双后端：JSONL + SQLite（<span class="mono">SESSION_FORMAT_VERSION=0</span>）。session 事件（持久事实）与 agent/* 事件（实时协调）双轨。</p>
+    </div>
+    <div class="card side g">
+      <span class="tag">Ginno</span>
+      <h5>checkpoint + 文件台账</h5>
+      <p><span class="mono">FileCheckpointer</span>（LangGraph checkpoint 落文件）支撑暂停/恢复/失败重试；用量走 <span class="mono">~/.ginno/usage/*.jsonl</span> 归一化台账；合成案例走 <span class="mono">~/.ginno/synthesis/</span> 台账。各域文件化、可读、可 grep，但没有统一的事件层。</p>
+    </div>
+  </div>
+  <div class="verdict split"><b class="vt">判断</b>　事件溯源让 dsh 免费获得会话搜索（5 个只读检索工具、SQLite FTS5）、fork、快照回放测试。Ginno 若未来做「会话内搜索」「运行分叉」，会自然走到这条路上——但现在文件台账的简单性仍是资产。</div>
+
+  <h3 id="s3-3">3.3 主循环</h3>
+  <p class="small">dsh 的一个 turn = 0..n 个 step（一次模型请求 + 其工具调用）； Ginno 的一轮 = LangGraph 超步。</p>
+  <div class="flow d">
+    <div class="fstep"><b>turn/start → claim</b><small>声明所有权</small></div>
+    <div class="fstep"><b>agent/pre-step</b><small>waterfall：可 reject/改写</small></div>
+    <div class="fstep"><b>assemble prompt → agent/request</b><small>组装并请求</small></div>
+    <div class="fstep"><b>llm/stream</b><small>适配器可拦截</small></div>
+    <div class="fstep"><b>tool/call</b><small>pre→guards→approval→execute→post</small></div>
+    <div class="fstep"><b>step/end → turn-stopping</b><small>判停</small></div>
+  </div>
+  <div class="flow g">
+    <div class="fstep"><b>agent</b><small>模型决策</small></div>
+    <div class="fstep"><b>permission</b><small>人机授权闸门</small></div>
+    <div class="fstep"><b>tools</b><small>按 agent 过滤执行</small></div>
+    <div class="fstep"><b>agent</b><small>回环；可 interrupt</small></div>
+  </div>
+  <div class="verdict split"><b class="vt">判断</b>　dsh 把拦截点做成事件瀑布（任何插件可在 pre-step / tools/pre 挂策略，无需 import 循环）；Ginno 把拦截点做成图节点（权限是一等节点，interrupt/resume 是引擎能力）。前者开放，后者显式。</div>
+
+  <h3 id="s3-4">3.4 LLM 接入层</h3>
+  <ul>
+    <li><b>dsh</b>：<span class="mono">ctx.llm</span> 适配器注册表 + 可 waterfall 拦截的流式调用。双适配器：llm-deepseek（官方协议：V4 Flash/Pro/Vision、thinking/reasoningEffort、默认 256K maxTokens / 1M context、Files API 上传卸载）与 llm-pi-ai（通用，接 openai/anthropic 等）。key/endpoint 按请求解析，改动下个请求即生效。</li>
+    <li><b>Ginno</b>：langchain-openai / langchain-anthropic / ollama，provider 中立；用量归一化（含 cache_read/creation token 形状）。</li>
+  </ul>
+
+  <h3 id="s3-5">3.5 多端形态：五端 vs 单端</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>形态</th><th class="cd">dsh</th><th class="cg">Ginno</th></tr></thead>
+      <tbody>
+        <tr><td>CLI</td><td>唯一入口 <span class="mono">dsh</span>；headless profile 供脚本化</td><td>无（桌面优先；文档规划过 ginno-cli）</td></tr>
+        <tr><td>Web UI</td><td><span class="mono">dsh web</span>（127.0.0.1:3080）：三栏布局、会话树、审批接管、goal bar、trajectory 事件表、插件设置</td><td>Next.js 静态导出嵌在 Tauri 内（kb / settings / workflows 三路由），非独立服务端</td></tr>
+        <tr><td>SDK</td><td>Python SDK（wheel 自带 dsh 可执行，无需 Node）+ TS SDK（client/protocol/jsonrpc-server）</td><td>FastAPI 面已具备，未产品化</td></tr>
+        <tr><td>自动化</td><td>ACP profile（automation-only JSON-RPC stdio）+ GitHub webhook overlay（签名 webhook → 自动建审查会话）</td><td>todo 平台集成（skill 声明 provider）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="s3-6">3.6 Host/Client 边界</h3>
+  <p>dsh 的 TS 按 host/client 双面编译；<b>Typert 网关</b>不是模型网关，而是 Host↔Client 的 RPC 网关：<span class="mono">@Remote</span> 装饰器 + 构建期从 <span class="mono">ts.Program</span> 提取双端契约，生成 <span class="mono">POST /api/&lt;ns&gt;/&lt;method&gt;</span>。客户端调 <span class="mono">ctx.remote.&lt;ns&gt;</span> 的具体生成函数——类型安全贯穿两端。Ginno 的对应物是 FastAPI 路由 + WebSocket 事件流（<span class="mono">workflow.emit</span> 等），手写契约。</p>
+  <div class="verdict dsh"><b class="vt">亮点</b>　dsh 有大量「文档/契约由 TS Program 自动生成并校验」的实践：工具目录、模块图、事件生产消费矩阵、capability 图（<span class="mono">scripts/gen-doc-graphs.ts</span>）——机器保证文档不漂移。这是本报告反复出现的主题：<b>把一致性从自觉变成机器强制</b>。</div>
+</section>
+
+<!-- ================= 4 能力矩阵 ================= -->
+<section id="s4">
+  <h2 class="serif"><span class="no">04</span>能力矩阵：逐项对照</h2>
+  <p class="lede">精选 20 个维度（全量见附A）。判定口径：<span class="chip lead">领先</span> 该维度明显更深；<span class="chip even">对等</span> 两边都有且形态相当；<span class="chip gap">缺口</span> 单边缺失；<span class="chip warn">异形</span> 两边都有但解决的不是同一问题。</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>维度</th><th class="cg">Ginno</th><th class="cd">dsh</th><th>判定</th></tr></thead>
+      <tbody>
+        <tr><td>内置工具</td><td>六大件（read/write/edit/bash/glob/grep）+ web/document/skill/goal/todo/artifact/render/workflow 工具族，路径硬 deny</td><td>~64 条目录：执行/终端/后台/Web/多智能体/编排/规划/知识/交互/调度/自指扩展，<b>目录脚本自动生成 + 完整性守卫</b></td><td><span class="chip d">dsh 面宽</span></td></tr>
+        <tr><td>文档解析</td><td>xlsx/csv/docx/pptx/pdf/text 提取器（懒加载 extra）</td><td>read / read_image / str_replace_editor（未见专用文档解析，倚重模型视觉）</td><td><span class="chip g">Ginno 领先</span></td></tr>
+        <tr><td>Web 检索与引用</td><td>web_search/web_fetch（DDG/SearXNG/Tavily 回退）+ <span class="mono">[sN]</span> 引用契约 + cite_rate 遥测</td><td>web_search（1-4 查询，后端可换 DeepSeek/Exa/Perplexity）+ web_fetch，未见引用契约</td><td><span class="chip warn">异形</span></td></tr>
+        <tr><td>知识管理</td><td>wiki 索引（backlinks/orphans/tags）+ LanceDB 语义检索 + context folders（rw/ro 硬约束）</td><td>会话历史检索 5 工具（SQLite FTS5）+ @file/@session 引用；无知识库概念</td><td><span class="chip warn">异形</span></td></tr>
+        <tr><td>Skill</td><td>SKILL.md frontmatter（<span class="mono">trigger: both/user-invocable/model-invocable</span>）+ installer</td><td>SKILL.md 目录包或扁平 md，frontmatter（name/description/whenToUse/user-invocable/disable-model-invocation），文件监听热更新</td><td><span class="chip even">对等</span></td></tr>
+        <tr><td>Todo</td><td>todo store + 外部 provider（skill 声明）+ <b>勾选触发 workflow</b></td><td><span class="mono">todo_write</span> 单工具全量替换，事件渲染 checklist</td><td><span class="chip g">Ginno 领先</span></td></tr>
+        <tr><td>Goal</td><td>goals store/events/templates，续跑/暂停/恢复</td><td>事件溯源同会话目标，<b>自动续轮</b>（goal-round-driver），仅直属人类根权限可创建</td><td><span class="chip even">对等</span></td></tr>
+        <tr><td>Plan 模式</td><td>无</td><td><span class="mono">/plan</span> 进入，<span class="mono">exit_plan_mode</span> 提交审批（指导性非强制）</td><td><span class="chip gap">Ginno 缺口</span></td></tr>
+        <tr><td>多智能体</td><td>agent 注册表 + 会话绑定 + workflow 节点角色分派；无独立子 agent 进程</td><td>subagent seam 五后端（进程内/ACP 子进程/dsh-sdk 子进程/<b>Claude Code SDK</b>/<b>Codex</b>）+ Agent Teams 实验十件套 + send_message/interrupt</td><td><span class="chip gap">Ginno 缺口</span></td></tr>
+        <tr><td>编排（workflow）</td><td>持久化 DSL 引擎（详见 §5）</td><td>一次性 JS 编排脚本（详见 §5）+ ralph（fresh-agent 轮询）</td><td><span class="chip warn">异形</span></td></tr>
+        <tr><td>权限审批</td><td>permission 图节点（工具调用前人审）+ workflow human 节点 + version_propose diff 审批</td><td>ctx.approval seam + permission-presets 产品级预设 + tools/pre 瀑布</td><td><span class="chip even">对等</span></td></tr>
+        <tr><td>沙箱</td><td>路径 deny 层（~/.ssh/Keychain 永禁）+ context folder rw/ro</td><td><b>三平台原生沙箱</b>（bwrap+landlock / Seatbelt / Windows ACL）+ 每次调用模式 + guard（详见 §6）</td><td><span class="chip gap">Ginno 缺口</span></td></tr>
+        <tr><td>上下文压缩</td><td>compaction / microcompact / truncation / tokens + strip_old_images</td><td>compaction（token 触发 + LLM 摘要 + /compact）+ spill（超长结果落盘）</td><td><span class="chip even">对等</span></td></tr>
+        <tr><td>Hooks</td><td>自有 dispatcher（钩子脚本）</td><td><b>兼容 Claude Code / Codex 的 hooks.json 协议</b>（共享协议包）</td><td><span class="chip d">dsh 生态位</span></td></tr>
+        <tr><td>MCP</td><td>mcp registry（stdio/live server），Playwright 以 MCP 提供</td><td>mcp-client 桥接（<span class="mono">mcp__&lt;server&gt;__&lt;tool&gt;</span>）</td><td><span class="chip even">对等</span></td></tr>
+        <tr><td>调度/触发</td><td>todo 勾选即触发 workflow（push/pull 全自动）</td><td>schedule（会话内提醒，≥300s 粒度，无 cron）+ webhook（GitHub 审查）；均不触发 workflow</td><td><span class="chip warn">异形</span></td></tr>
+        <tr><td>终端</td><td>bash 一次性执行</td><td>持久 PTY（terminal_open/send/read/signal）+ job 统一管理（后台 bash/PTY/subagent）</td><td><span class="chip gap">Ginno 缺口</span></td></tr>
+        <tr><td>LSP</td><td>无</td><td>lsp 工具（定义/引用/实现/hover）</td><td><span class="chip gap">Ginno 缺口</span></td></tr>
+        <tr><td>用量/遥测</td><td>usage 归一化台账（cache_read/creation）+ web_usage cite_rate</td><td>匿名 identity + 可选会话日志增量上传（<span class="mono">dsh_session_log</span>，默认关）</td><td><span class="chip warn">异形</span></td></tr>
+        <tr><td>inline 图片</td><td>bash 产图快照/diff，内联回对话（<span class="mono">snapshot_images/diff_images</span>）</td><td>read_image + 图像预算 + Files API 上传（128MiB/600 图）</td><td><span class="chip even">对等</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="legend"><span><span class="sw" style="background:var(--ginno)"></span>Ginno 领先 ×2（文档解析、Todo 触发）</span><span><span class="sw" style="background:var(--dsh)"></span>dsh 领先 ×5（工具面、多智能体、沙箱、终端、LSP）</span><span><span class="sw" style="background:var(--line2)"></span>对等 ×8 · 异形 ×5</span></div>
+  <div class="verdict"><b class="vt">解读</b>　面宽上 dsh 碾压并不意外（40 人 vs 1 人）。真正有信息量的是两处：① <b>概念收敛</b>——两边独立长出同一张概念表（连 SKILL.md 格式都撞车），说明 agent 产品的能力图谱已经业界收敛，Ginno 没有押错方向；② <b>Ginno 的两个领先项</b>（文档解析、todo 触发）都带强烈「个人工作流」气味——深耕单用户场景的差异化正是大平台不会做的。</div>
+</section>
+
+<!-- ================= 5 编排深潜 ================= -->
+<section id="s5">
+  <h2 class="serif"><span class="no">05</span>编排深潜：同名不同种的 workflow</h2>
+  <p class="lede">这是整份对比里最值得写的一节。两个项目都有叫「workflow」的一等能力，但它们解决的根本不是同一个问题。</p>
+
+  <h3 id="s5-1">5.1 两种形态</h3>
+  <div class="grid2">
+    <div class="card side g">
+      <span class="tag">Ginno · 持久化业务流程引擎</span>
+      <h5>「把这次好用的对话变成下次可重放的脚本」</h5>
+      <ul>
+        <li><b>载体</b>：JSON DSL（<span class="mono">dsl.py</span> 单一事实源，<span class="mono">dsl_version=1</span>），编译为 LangGraph StateGraph 流式执行。</li>
+        <li><b>节点</b>：step(agent) / llm / branch / loop / human / pass / python（确定性白名单）/ extract（编译器注入）。</li>
+        <li><b>可靠性</b>：每节点 retry（1-10 次，fixed/exponential backoff）+ timeout_s + on_error=stop/continue；显式 recursion_limit 防死循环。</li>
+        <li><b>并行</b>：<span class="mono">loop.parallel</span> + gather（max_concurrency 1-8，index 序合成，全局门控）。</li>
+        <li><b>持久化</b>：FileCheckpointer，支持 resume（interrupt 恢复）/ continue（失败重试）/ 手动暂停通道。</li>
+        <li><b>人机闸门</b>：human 是一等 interrupt 节点；supervisor intervene 可 patch DSL；version_propose 弹 diff 审批后才创建不可变新版本。</li>
+        <li><b>版本化</b>：versions / rollback / diff_versions。</li>
+      </ul>
+    </div>
+    <div class="card side d">
+      <span class="tag">dsh · 一次性编排脚本</span>
+      <h5>「把一群 subagent 的分工写成代码」</h5>
+      <ul>
+        <li><b>载体</b>：JS 脚本，API 为 <span class="mono">agent() / pipeline() / parallel() / phase()</span>；Workflow 工具确定性执行（<b>无文件系统、无网络</b>）。</li>
+        <li><b>单元</b>：agent() 起一个 subagent 跑 prompt 返回结构化结果；pipeline 串联、parallel 扇出、phase 分段。</li>
+        <li><b>生命周期</b>：随调随跑、跑完即弃。<b>无 checkpoint、无跨重启恢复、无版本、无人机闸门</b>（审批发生在工具层而非编排层）。</li>
+        <li><b>亲属</b>：ralph（fresh-agent 轮询循环）、run_code（TS 代码并发调工具）——都是「用代码驾驭 agent」的临时手段。</li>
+        <li><b>质量保障</b>：靠 schema 约束 agent() 返回 + 快照回放测试，无生成质量漏斗。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 id="s5-2">5.2 逐属性对照</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>属性</th><th class="cg">Ginno workflow</th><th class="cd">dsh workflow</th></tr></thead>
+      <tbody>
+        <tr><td>定义方式</td><td>JSON DSL（对话合成 / 手写 / 编辑审批）</td><td>JS 脚本（模型现写）</td></tr>
+        <tr><td>执行基座</td><td>LangGraph StateGraph（astream 事件流）</td><td>Workflow 工具内确定性解释器</td></tr>
+        <tr><td>持久化 / 恢复</td><td>checkpoint：暂停、中断恢复、失败续跑</td><td>无（一次性）</td></tr>
+        <tr><td>错误处理</td><td>节点级 retry/backoff/timeout/on_error</td><td>脚本级（JS 异常）</td></tr>
+        <tr><td>并行</td><td>loop.parallel + gather（1-8 并发）</td><td>parallel()（subagent 扇出）</td></tr>
+        <tr><td>人机协作</td><td>human interrupt 节点 / supervisor / diff 审批</td><td>无编排级闸门</td></tr>
+        <tr><td>预检</td><td>dry-run（零 LLM：校验+doctor+编译+可达性 BFS）</td><td>无</td></tr>
+        <tr><td>静态检查</td><td>doctor 数据流 lint（旗舰规则 loop.over.no_source）</td><td>无</td></tr>
+        <tr><td>版本</td><td>不可变版本 + rollback + diff</td><td>无</td></tr>
+        <tr><td>质量度量</td><td><b>L0-L4 漏斗</b>（触发→合法→被采用→首跑成功→保真）+ 案例台账 + replay</td><td>无（测试层有快照回放，但非生成质量评测）</td></tr>
+        <tr><td>创建方式</td><td>对话合成（synth-5，≤3 次自纠错）/ dev agent / 手写</td><td>模型按任务现写</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="s5-3">5.3 为什么会这样分叉</h3>
+  <p>dsh 的世界观里，<b>强单 agent + subagent 扇出</b>是主答案：复杂任务拆给一群一次性 subagent，编排代码是草稿纸，用完即扔；持久性交给会话日志（事件溯源），不交给流程。所以它不需要流程级的 checkpoint 和人审节点——审批在工具层（每次副作用调用都过 guards/approval）。</p>
+  <p>Ginno 的世界观里，<b>流程是资产</b>：用户把一次满意的协作蒸馏成配方，此后确定性重放、版本演进、失败可恢复。流程活得比会话久，所以必须有持久化、闸门和度量。</p>
+  <div class="verdict"><b class="vt">判断</b>　在「可恢复、可审批、可版本化、可度量」这条轴上，Ginno 的实现深度领先 dsh——这不是体量差距能解释的，是路线选择。dsh 的编排为「一次性多智能体任务」优化，Ginno 的编排为「重复发生的业务流程」优化。前者是业界主流叙事，后者是更窄但更深的生态位。<b>风险提醒</b>：这条轴的价值取决于「个人用户是否真的有重复流程要固化」——Ginno 的 L0-L4 漏斗本身就是回答这个问题的度量装置，值得持续盯住 L3/L0 与 L4/L3 两个比值。</div>
+
+  <h3 id="s5-4">5.4 触发器与无人值守：两边都还没过关</h3>
+  <p>上一份对比报告（Ginno × OpenHuman）指出「触发器 + 无人值守安全闸门」是 Ginno 的最大缺口。有趣的是，dsh 也没有给 workflow 配触发器：它的自动化答案是 schedule（会话内提醒，≥300s 粒度，<b>无 cron、不跑 workflow</b>）、webhook（GitHub 签名 webhook 自动建审查会话）与 goal 自动续轮。换句话说，<b>「无人值守跑完整业务流程」在两个项目里都还没有产品级答案</b>——这个空档既是行业共同的未竟之地，也再次印证触发器必须与安全闸门成对引入（自动触发的东西必须有审批边界）。</p>
+</section>
+
+<!-- ================= 6 安全 ================= -->
+<section id="s6">
+  <h2 class="serif"><span class="no">06</span>安全与沙箱：dsh 的绝对长板</h2>
+  <div class="grid2">
+    <div class="card side d">
+      <span class="tag">dsh</span>
+      <h5>三平台原生沙箱 + 多层防线</h5>
+      <ul>
+        <li><b>ctx.sandbox seam 三平台</b>：Linux bwrap + <b>landlock-run</b>（~300 行 C11 自限权 launcher，fail-closed，独立 npm 三包发布）；macOS Seatbelt；Windows ACL 受限令牌。</li>
+        <li><b>每次调用沙箱模式</b>：read-only / workspace-write，bash-sandbox 与 fs-sandbox 强制执行；拒绝报 <span class="mono">[sandbox: file access denied…]</span>。</li>
+        <li><b>guard 包</b>：重复工具调用提醒、超时策略。</li>
+        <li><b>审批</b>：ctx.approval seam + permission-presets 产品级权限预设。</li>
+        <li><b>诚实声明</b>：SAFETY.md 明示实验性、未审计、沙箱非保证、建议一次性 VM。</li>
+      </ul>
+    </div>
+    <div class="card side g">
+      <span class="tag">Ginno</span>
+      <h5>路径治理 + 权限闸门</h5>
+      <ul>
+        <li><b>路径硬 deny 层</b>：<span class="mono">~/.ssh</span>/Keychain 永禁、家目录默认禁、skill 树豁免。</li>
+        <li><b>permission 图节点</b>：工具调用前人审。</li>
+        <li><b>context folders</b>：rw/ro 挂载硬约束。</li>
+        <li>无系统级沙箱：bash 在用户权限下直接执行。</li>
+      </ul>
+    </div>
+  </div>
+  <div class="verdict dsh"><b class="vt">判断</b>　这是两边最悬殊的差距。对 Ginno 的务实解读：本地单用户桌面的威胁模型确实比开放平台小（没有陌生插件、没有远程会话），但只要保留 bash 工具，提示词注入→本地破坏的路径就存在。<b>低成本选项</b>：macOS Seatbelt profile 包裹 bash（dsh 的 seatbelt 实现可直接参考，MIT），把「路径治理」升级为「进程级边界」，与现有 deny 层互补。若未来 Ginno 要跑无人值守流程，这一步会从可选变为前置条件。</div>
+</section>
+
+<!-- ================= 7 工程化 ================= -->
+<section id="s7">
+  <h2 class="serif"><span class="no">07</span>工程化成熟度对比</h2>
+  <p class="lede">一个反直觉的数字：<b>两边的测试绝对量几乎相等</b>（Ginno ~1030 个测试函数，dsh ~1043 个单元 spec）。差距不在密度，在层次与门禁。</p>
+
+  <h3 id="s7-1">7.1 测试体系</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>层</th><th class="cd">dsh（8 个 vitest 配置 = 7 层）</th><th class="cg">Ginno（3 层 marker）</th></tr></thead>
+      <tbody>
+        <tr><td>单元</td><td>1043 个 spec；双池（thread-safe/process-bound）；<b>per-file 100% 覆盖率门禁</b>（豁免需注释理由）；「未覆盖行≈死代码」删除哲学</td><td>unit marker；fake model 替代 LLM；无覆盖率门禁</td></tr>
+        <tr><td>真实 API e2e</td><td>167 个 <span class="mono">*.e2e.ts</span> 打真实 DeepSeek 模型（无 key 自跳过、限并发、retry=2）</td><td>e2e marker 用 fake model（test_workflow_parallel_pipeline 等）</td></tr>
+        <tr><td>会话快照回放</td><td><b>record/replay/refresh 三态</b>；72 个场景（<span class="mono">snapshot.yml</span> 声明录制策略）；keyless、确定性、PR 强制只读门禁；「非平凡变更必须同 PR 加快照场景」</td><td>无对应物（合成评测靠案例台账 + 计划中的 golden set/LLM-judge）</td></tr>
+        <tr><td>前端</td><td>Chromium 快照比对（web）+ perf/stress（opt-in，--expose-gc 内存诊断）</td><td>Playwright 真浏览器打包 UI e2e（test_packaged_ui_playwright）</td></tr>
+        <tr><td>期望值装配</td><td>expected 层（keyless CLI 期望输出）</td><td>无对应物</td></tr>
+        <tr><td>Python 侧</td><td>pytest 仅 6 个（SDK 冒烟）；BENCHMARK.md 只 4 行——评测靠 SDK 外挂</td><td>主战场（1030 测试全在 Python）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="s7-2">7.2 静态门禁与 CI</h3>
+  <div class="grid2">
+    <div class="card side d">
+      <span class="tag">dsh</span>
+      <h5>门禁即代码</h5>
+      <ul>
+        <li>oxlint（typeAware，no-explicit-any 等全 error；<b>lint 规则自身有契约测试</b>）+ jscpd 重复检测 + knip 死代码（72 workspace）。</li>
+        <li>lefthook：pre-commit 做 staged lint / 翻译配对校验 / vendor manifest 守卫；pre-push typecheck。</li>
+        <li><b>46 个 verify-* 脚本 + 19 个 gen-* 生成器</b>，由 <span class="mono">run-gates.ts</span> 编排为带依赖的 DAG（11 种模式，本地 <span class="mono">check:all</span> 可复现 CI）。</li>
+        <li>CI：GitHub Actions 19 workflow——PR 门禁三路（static/coverage/snapshot）+ Windows 原生四路；self-hosted failover 变量；每 PR 全量 pack。</li>
+      </ul>
+    </div>
+    <div class="card side g">
+      <span class="tag">Ginno</span>
+      <h5>手动管线</h5>
+      <ul>
+        <li>Makefile targets（app/runtime/web/e2e-ui）+ 打包笔记；macOS codesign 自签。</li>
+        <li>全量测试 + tsc + cargo + sidecar 构建作为发布前手动校验（「997→1027 passed」的合并记录见实施笔记）。</li>
+        <li><b>无 CI 配置</b>（无 .github/）；无 lint 门禁、无覆盖率门禁。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 id="s7-3">7.3 文档工程化</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>实践</th><th class="cd">dsh</th><th class="cg">Ginno</th></tr></thead>
+      <tbody>
+        <tr><td>文档规模</td><td>1245 个 <span class="mono">*.zh.md</span> + 1242 个 <span class="mono">*.i18n.yaml</span>（记录双语双方最后一致状态的 blob hash，pre-commit 校验 + 专用 merge driver）——<b>中英同步是机器强制的</b></td><td>docs/ 20+ 篇设计文档（workflow 域 10+ 篇），中文为主</td></tr>
+        <tr><td>目录生成</td><td>tool-catalog（64 条）脚本自动生成 + 完整性守卫；模块图/事件矩阵/capability 图由 TS Program 生成</td><td>手写（设计文档质量高，但靠自觉同步）</td></tr>
+        <tr><td>决策记录</td><td><b>1624 篇 Agent Note</b>（implemented/proposed/rejected/archived 四态）+ <b>4 篇双语 postmortem</b> + defensive-patterns（bug-class 规则集，复盘直接改写测试政策）</td><td>implementation-notes 传统（workflow-stability-implementation-notes 等），无复盘分层</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="verdict dsh"><b class="vt">判断</b>　dsh 的工程化是教科书级的「把一致性从自觉变成机器强制」：覆盖率到文件级、文档自动生成带守卫、双语用 hash 配对、复盘沉淀为规则集、规则集本身被测试。Ginno 的测试密度并不弱（等量的测试支撑 1/26 的文件规模），缺的是层次（快照回放）与门禁（CI）。这是借鉴回报率最高的一章——因为工程实践可迁移，平台架构不可迁移。</div>
+</section>
+
+<!-- ================= 8 模型生态 ================= -->
+<section id="s8">
+  <h2 class="serif"><span class="no">08</span>模型与生态集成</h2>
+  <div class="grid2">
+    <div class="card side d">
+      <span class="tag">dsh · 垂直整合</span>
+      <h5>DeepSeek 亲儿子待遇</h5>
+      <ul>
+        <li>V4 目录：Flash / Pro / Flash Vision；thinking 开关 + reasoningEffort（off/low/high/max）；默认 <b>256K maxTokens / 1M context</b>。</li>
+        <li>Files API 上传卸载（128MiB / 600 图），图像预算内建。</li>
+        <li><b>私有 wire 扩展</b>：头 <span class="mono">x-deepseek-harness-*</span>；body 顶层 <span class="mono">dsh_plugin_packages</span>（活跃插件清单，默认开）与 <span class="mono">dsh_session_log</span>（会话日志后缀增量上传，默认关，不占输入 token）。</li>
+        <li>原生 web_search（Anthropic 兼容 API）；提供方级重试；匿名 identity 关联遥测/反馈。</li>
+      </ul>
+    </div>
+    <div class="card side g">
+      <span class="tag">Ginno · Provider 中立</span>
+      <h5>用谁家的模型都行</h5>
+      <ul>
+        <li>langchain-openai / anthropic / ollama（本地），任意 OpenAI 兼容端点。</li>
+        <li>用量归一化台账（cache_read/creation 形状统一）。</li>
+        <li>无任何模型厂商私有通道。</li>
+      </ul>
+    </div>
+  </div>
+  <div class="verdict split"><b class="vt">判断</b>　这是战略差而非能力差：dsh 是 DeepSeek 模型的展示橱窗（1M 上下文、reasoningEffort 这些只有自家模型给得了），Ginno 是用户侧的缝合层。Ginno 该留意的信号是：如果未来想蹭 DeepSeek 的长上下文低价，llm-pi-ai 这类通用适配层已经证明 dsh 的多提供方路线可行——Ginno 只需加一个 provider 配置即可接入，无需效仿 wire 扩展。</div>
+</section>
+
+<!-- ================= 9 借鉴清单 ================= -->
+<section id="s9">
+  <h2 class="serif"><span class="no">09</span>借鉴清单：dsh → Ginno 行动</h2>
+  <p class="lede">按成本分三层。筛选标准：可迁移性（个人产品用得上）× 回报率（解决的痛点真实存在）。</p>
+
+  <h3>9.1 第一层：低成本高回报（可立即排期）</h3>
+  <div class="bcard">
+    <div class="bh"><span class="num">01</span><b>会话快照回放测试（record / replay / refresh）</b><span class="chip ok">最高优先</span></div>
+    <p class="why">dsh 用它正面解决了「LLM 应用测试贵且不确定」：录制真实会话（输入 + 模型输出），回放时确定性 diff 组装请求/转录/持久化，keyless、可并行、PR 强制。Ginno 的两处直接受益点：① 合成链路（synth-5）的回归评测——目前靠案例台账手工回填，快照化后 L0-L4 漏斗的「合法率/采用率」可以自动跑；② e2e 从 fake model 升级为「录一次真模型，永久回放」。</p>
+    <div class="how"><b>落地</b> 在 tests/ 加第三态目录：录制脚本（一次性真跑，存 session.jsonl + 期望）→ 回放 runner（注入录制响应，断言事件序列）→ refresh 命令重录。先覆盖 1 个合成场景 + 1 个 workflow 运行场景。</div>
+  </div>
+  <div class="bcard">
+    <div class="bh"><span class="num">02</span><b>门禁 DAG + 最小 CI</b><span class="chip ok">高优先</span></div>
+    <p class="why">Ginno 目前无任何 CI，发布前校验靠手动跑全量。dsh 的 <span class="mono">run-gates.ts</span> 思路——把所有校验（测试、tsc、cargo、sidecar 构建、文档链接）编排成带依赖的 DAG，一条命令本地复现——把「记得跑」变成「一键跑」。哪怕不上 GitHub Actions（私有仓库），一个 <span class="mono">make check</span> 也有巨大价值。</p>
+    <div class="how"><b>落地</b> Makefile 增 <span class="mono">check</span> target 串联现有校验 + 新增文档链接检查；后续若仓库上私有 CI，直接复用同一 DAG。</div>
+  </div>
+  <div class="bcard">
+    <div class="bh"><span class="num">03</span><b>自动生成的工具/节点目录 + 完整性守卫</b></div>
+    <p class="why">dsh 的工具目录由脚本从注册表生成，CI 守卫「新工具不可能漏文档」。Ginno 的 8 类 workflow 节点、4 个内置 agent、工具族都在代码里，文档靠手写。生成 + 守卫的成本极低（一个脚本 + 一个测试），收益是文档永不漂移。</p>
+    <div class="how"><b>落地</b> 脚本遍历 <span class="mono">@register_node</span> / agents registry / builtin tools，生成 docs/tool-node-catalog.md；测试断言生成内容与文件一致。</div>
+  </div>
+  <div class="bcard">
+    <div class="bh"><span class="num">04</span><b>defensive-patterns + postmortem 文档层</b></div>
+    <p class="why">dsh 把 bug 复盘沉淀为两层文档：postmortem（事故叙事，如 0001 ACP default export 丢 inject → 催生「冒烟测试优先」政策）与 defensive-patterns（bug-class 规则集）。Ginno 已有 implementation-notes 传统与真实事故（2026-08 stock-workflow 的 loop.over.no_source），只差形式化：复盘直接改测试政策，规则集成为 doctor 规则与 code review 检查表的来源。</p>
+    <div class="how"><b>落地</b> docs/ 开 postmortem/ 目录（编号制），每篇必须含「政策变更」段；doctor 新规则注明对应复盘编号。</div>
+  </div>
+
+  <h3>9.2 第二层：与演进绑定</h3>
+  <div class="bcard">
+    <div class="bh"><span class="num">05</span><b>per-file 覆盖率门禁（渐进式）</b></div>
+    <p class="why">dsh 的哲学是「未覆盖的行≈死代码，删除或补测」，豁免必须写理由。Ginno 不必一步到位，但可以先对新增模块（如合成评测）上文件级门禁，把覆盖率从「总量好看」变成「无死角」。</p>
+    <div class="how"><b>落地</b> pytest --cov 配 <span class="mono">fail_under</span> 白名单制：新模块默认 100%，存量模块冻结线逐步抬升。</div>
+  </div>
+  <div class="bcard">
+    <div class="bh"><span class="num">06</span><b>hooks 协议向 Claude Code 格式看齐</b></div>
+    <p class="why">dsh 直接兼容 Claude Code / Codex 的 hooks.json——生态里已有的钩子脚本零成本可用。Ginno 的 hooks dispatcher 是自有格式；若向主流格式靠拢，等于免费接入一个现成生态。成本低（格式映射），但要先确认 Ginno 的事件点与对方语义能对齐。</p>
+    <div class="how"><b>落地</b> 调研 Claude Code hooks 的事件点集合，对照 Ginno dispatcher 现有事件，出兼容性映射文档再动手。</div>
+  </div>
+  <div class="bcard">
+    <div class="bh"><span class="num">07</span><b>bash 沙箱化（Seatbelt profile）</b></div>
+    <p class="why">见 §6：现有路径治理 + 进程级边界互补。dsh 的 macOS seatbelt 实现（含拒绝消息格式）是现成参考，MIT 许可。若 Ginno 启动无人值守议程，此项升级为前置条件。</p>
+    <div class="how"><b>落地</b> 参考 dsh packages/sandbox 的 seatbelt 实现，为 bash 工具包一层 <span class="mono">sandbox-exec</span> profile：workspace-write 模式 + 家目录只读白名单。</div>
+  </div>
+
+  <h3>9.3 第三层：长线选项</h3>
+  <div class="bcard">
+    <div class="bh"><span class="num">08</span><b>事件溯源的局部引入</b></div>
+    <p class="why">dsh 的会话搜索（5 个检索工具）与快照回放都建立在事件溯源上。Ginno 若未来做「搜历史会话」「运行分叉」，会自然走到这条路。现阶段可先不动架构，但在设计新功能时问一句：这个状态将来要不要被检索/回放？</p>
+    <div class="how"><b>落地</b> 不必现在动手；在 docs/architecture.md 记为已评估选项。</div>
+  </div>
+  <div class="bcard">
+    <div class="bh"><span class="num">09</span><b>runtime SDK 化</b></div>
+    <p class="why">dsh 证明 harness runtime 可以封装成 SDK（Python wheel 自带可执行）对外供给自动化场景。Ginno 的 FastAPI sidecar 天然适合做这一步——若出现「让别的程序调 Ginno 的 workflow」的需求，先出 SDK 而不是 UI。</p>
+    <div class="how"><b>落地</b> 等需求信号；先保持 API 面稳定即是最小准备。</div>
+  </div>
+
+  <h3>9.4 不建议跟的</h3>
+  <ul>
+    <li><b>全插件化 / profile-bundle 体系</b>：平台玩法的武器。个人产品引入「一切皆插件」只会把调试复杂度指数化——Ginno 的注册表扩展点是恰当复杂度。</li>
+    <li><b>多端齐发</b>：dsh 的五端服务生态占位；Ginno 的桌面单端是产品选择，别被「应该有 CLI/SDK/ACP」的完整性焦虑带偏。</li>
+    <li><b>会话日志上传（dsh_session_log）</b>：与 Ginno 本地优先哲学冲突，碰都不要碰。</li>
+    <li><b>品牌秩序类产物</b>（商标指南、插件话题标签运营）：生态位不同。</li>
+    <li><b>「无外部 PR」的开发模式</b>：那是深怕生态失控的平台策略；私有个人项目无所谓，但若将来开源，别学这条。</li>
+  </ul>
+</section>
+
+<!-- ================= 10 结论 ================= -->
+<section id="s10">
+  <h2 class="serif"><span class="no">10</span>结论</h2>
+  <div class="card" style="padding:6px 22px">
+    <ul>
+      <li><b>一句话定位</b>：dsh 是 DeepSeek 对「agent 操作系统」的官方答卷，Ginno 是为一个人深耕的「agent 手艺人作品」。前者赢在面、工程与生态位；后者赢在深——尤其是 workflow 的可靠性与质量度量。</li>
+      <li><b>判断一：能力图谱已经业界收敛。</b>两边独立长出同一张概念表（skill/todo/goal/workflow/hooks/subagent/compaction/MCP/审批，连 SKILL.md 格式都撞车）。Ginno 的产品方向不需要自我怀疑。</li>
+      <li><b>判断二：workflow 是 Ginno 的护城河，继续挖深。</b>dsh 用「强单 agent + 一次性编排」绕过了持久化流程的所有难题；Ginno 正面解决了它们（checkpoint/闸门/版本/漏斗）。只要「个人用户有重复流程要固化」这个前提成立，这条轴上的领先就是真实资产。用 L0-L4 比值持续验证前提本身。</li>
+      <li><b>判断三：学工程，不学形态。</b>dsh 最值得搬的是四件工程实践——快照回放测试、门禁 DAG、生成式目录 + 守卫、复盘文档层——全部低成本可迁移。全插件化、多端、生态运营属于平台的武器库，个人产品背上只会变慢。</li>
+      <li><b>未竟之地</b>：无人值守跑完整业务流程（触发器 + 安全闸门成对），两个项目都还没有答案。这既是共同的空档，也是 Ginno 若要做「自动驾驶」前必须先补的课——与上一份对比报告（Ginno × OpenHuman）的结论互相印证。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 附A ================= -->
+<section id="sA">
+  <h2 class="serif"><span class="no">附A</span>全量能力对比矩阵</h2>
+  <p class="lede">§4 精选表的完整版。✓=具备 · —=无 · ◐=部分/间接。</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>能力</th><th class="cg">Ginno</th><th class="cd">dsh</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td>对话主循环</td><td>✓ LangGraph StateGraph + permission 节点</td><td>✓ turn/step + pre-step waterfall + ReactLoopAgent（可换）</td><td>形态不同，均含拦截点</td></tr>
+        <tr><td>内置文件工具</td><td>✓ read/write/edit/glob/grep + 路径 deny</td><td>✓ read/write/edit/glob/grep（内嵌 ripgrep）+ str_replace_editor + read_image</td><td>dsh 另有 read-before-write 策略</td></tr>
+        <tr><td>bash 执行</td><td>✓ 一次性 + 图片快照</td><td>✓ 一次性 + run_in_background + 持久 PTY + pwsh（Windows）</td><td>dsh job 统一管理</td></tr>
+        <tr><td>文档解析</td><td>✓ xlsx/csv/docx/pptx/pdf/text</td><td>— （倚重模型视觉/Files API）</td><td>Ginno 领先</td></tr>
+        <tr><td>Web 检索</td><td>✓ 多引擎回退 + [sN] 引用契约</td><td>✓ 多后端可换 + DeepSeek 原生</td><td>Ginno 有引用遥测</td></tr>
+        <tr><td>知识库 / wiki</td><td>✓ 文件索引 + backlinks + LanceDB 语义</td><td>— （会话检索代替：5 工具 + FTS5）</td><td>异形：知识沉淀 vs 历史检索</td></tr>
+        <tr><td>Skill</td><td>✓ SKILL.md + trigger frontmatter + installer</td><td>✓ SKILL.md 目录包/扁平 + 热更新 + provider 可换</td><td>格式收敛</td></tr>
+        <tr><td>Todo</td><td>✓ store + 外部 provider + workflow 触发</td><td>✓ todo_write 全量替换</td><td>Ginno 触发链独有</td></tr>
+        <tr><td>Goal</td><td>✓ store/events/templates + 续跑暂停</td><td>✓ 事件溯源 + goal-round-driver 自动续轮</td><td>dsh 自动续轮更激进</td></tr>
+        <tr><td>Plan 模式</td><td>—</td><td>✓ /plan + exit_plan_mode 审批</td><td>指导性非强制</td></tr>
+        <tr><td>Subagent</td><td>◐ 注册表 + 节点角色分派（无进程级）</td><td>✓ 五后端（含 Claude Code SDK / Codex）+ Teams 实验</td><td>dsh 大幅领先</td></tr>
+        <tr><td>Workflow 编排</td><td>✓ 持久化 DSL 引擎（§5）</td><td>✓ 一次性 JS 脚本（§5）</td><td>同名不同种</td></tr>
+        <tr><td>Ralph / 轮询</td><td>—</td><td>✓ ralph fresh-agent 循环</td><td>—</td></tr>
+        <tr><td>人机审批</td><td>✓ permission 节点 + human interrupt + diff 审批</td><td>✓ ctx.approval + permission-presets + guards</td><td>Ginno 在流程级更深</td></tr>
+        <tr><td>沙箱</td><td>◐ 路径 deny（无系统级）</td><td>✓ 三平台原生 + landlock-run + 每调用模式</td><td>dsh 绝对领先</td></tr>
+        <tr><td>Hooks</td><td>✓ 自有 dispatcher</td><td>✓ 兼容 Claude Code/Codex hooks.json</td><td>dsh 生态兼容</td></tr>
+        <tr><td>MCP</td><td>✓ registry + Playwright MCP</td><td>✓ mcp-client 桥接</td><td>对等</td></tr>
+        <tr><td>上下文压缩</td><td>✓ compaction/microcompact/truncation + 图片剥离</td><td>✓ compaction + spill 落盘</td><td>spill 值得参考</td></tr>
+        <tr><td>调度</td><td>✓ todo 触发（事件驱动）</td><td>✓ schedule 提醒 + webhook（非流程触发）</td><td>异形</td></tr>
+        <tr><td>用量台账</td><td>✓ 归一化 + cache 形状 + cite_rate</td><td>◐ identity 遥测 + 可选日志上传</td><td>Ginno 更本地透明</td></tr>
+        <tr><td>多端</td><td>◐ 桌面单端（web 内嵌）</td><td>✓ CLI/Web/PySDK/TSSDK/ACP/webhook</td><td>dsh 平台面</td></tr>
+        <tr><td>模型深度集成</td><td>— provider 中立</td><td>✓ V4 目录/1M ctx/256K/Files API/wire 扩展</td><td>战略差</td></tr>
+        <tr><td>测试体系</td><td>✓ 1030 函数 / 3 层 / Playwright 打包 e2e</td><td>✓ 1043 spec / 7 层 / 快照回放 / 覆盖率门禁</td><td>量等层差</td></tr>
+        <tr><td>CI / 门禁</td><td>—（手动 Makefile）</td><td>✓ 19 workflow + run-gates DAG + 每 PR 全量 pack</td><td>Ginno 最大工程缺口</td></tr>
+        <tr><td>文档体系</td><td>✓ 设计文档传统（中文）</td><td>✓ 双语机器强制 + 生成目录 + 1624 Agent Notes + postmortem</td><td>dsh 体系化</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 附B ================= -->
+<section id="sB">
+  <h2 class="serif"><span class="no">附B</span>dsh 包地图（51 个包，按域分组）</h2>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>域</th><th>包</th><th>职责速览</th></tr></thead>
+      <tbody>
+        <tr><td>核心</td><td class="mono">core / host / boot / bundle / preset / settings</td><td>agent 接口与循环、宿主服务树、启动组合、bundle 分发、逐会话 preset 组装、配置</td></tr>
+        <tr><td>会话与状态</td><td class="mono">session / session-query / compaction / spill / storage / persistence</td><td>事件溯源日志、历史检索（FTS5）、压缩、超长结果落盘、存储后端</td></tr>
+        <tr><td>模型</td><td class="mono">llm（llm / llm-deepseek / llm-pi-ai）</td><td>适配器注册表、官方协议、通用多提供方</td></tr>
+        <tr><td>工具面</td><td class="mono">fs / shell / terminal / subprocess / lsp / attachment / code-runtime</td><td>文件、bash/PTY、持久终端、子进程、LSP、附件、run_code</td></tr>
+        <tr><td>多智能体</td><td class="mono">subagent / interaction / jobs</td><td>五后端子代理 + Agent Teams、审批与问答、后台 job 管理</td></tr>
+        <tr><td>编排与任务</td><td class="mono">workflow / plan / todo / goal / schedule</td><td>JS 编排、计划模式、todo、目标自动续轮、会话内提醒</td></tr>
+        <tr><td>安全</td><td class="mono">sandbox / guard / credentials / identity</td><td>三平台沙箱（+ e2b 远程）、重复/超时守卫、凭据、匿名身份</td></tr>
+        <tr><td>扩展生态</td><td class="mono">skill / hooks / mcp / extensions / feedback</td><td>技能、兼容 hooks、MCP 桥接、扩展点、消息级反馈</td></tr>
+        <tr><td>远程/云</td><td class="mono">e2b（e2b / fs-e2b / subprocess-e2b）</td><td>capability seam 换到 E2B 云沙箱的实证</td></tr>
+        <tr><td>接入面</td><td class="mono">web / client / api / acp / sdk / webhook / workspace / context</td><td>Web 服务端、浏览器客户端、Typert RPC、ACP、TS SDK、GitHub webhook、工作区、上下文注入</td></tr>
+        <tr><td>基础设施</td><td class="mono">runtime-diagnostics / test-support / typert / util / examples / experimental</td><td>诊断、测试支持、RPC 网关、工具库</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="foot-note">另：<span class="mono">apps/cli</span>、<span class="mono">apps/web</span>；<span class="mono">python/sdk</span>、<span class="mono">python/sdk-runtime</span>；<span class="mono">native/landlock-run</span>（~300 行 C11）；<span class="mono">vendor/</span>（Cordis 改名为 @deepseek-ai/* 的 vendored 层，见 docs/rescope.md）。</p>
+</section>
+
+<!-- ================= 附C ================= -->
+<section id="sC">
+  <h2 class="serif"><span class="no">附C</span>主要来源</h2>
+  <h4>dsh 侧（@cd5ef81，浅克隆 2026-08-30）</h4>
+  <ul class="small">
+    <li>定位与运行：README.md / README.zh.md、docs/user/guide/index.md、CONTRIBUTING.md、BRAND_GUIDELINES.md、SAFETY.md</li>
+    <li>架构：docs/architecture.md、cordis-primer.md、agent-lifecycle.md、event-producer-consumer.md、capability-seams.md、module-graph.md、graph-atlas.md、api-gateway.md、deepseek-llm-api-wire-extensions.md</li>
+    <li>功能：docs/tool-catalog.md（64 条）、tool-execution-pipeline.md、config-catalog.md、persistence-catalog.md、docs/user/guide/*（schedule/mcp-memory/github-review 等）、51 个包各自 README</li>
+    <li>工程化：docs/testing.md、8 个 vitest 配置、snapshots/（621 文件 / 72 场景）、.oxlintrc.json、knip.json、.jscpd.json、lefthook.yml、.gitlab-ci.yml、scripts/run-gates.ts、docs/defensive-patterns.md、docs/postmortem/*、docs/i18n/、.agents/notes/（1624 篇）</li>
+    <li>元数据：GitHub API（stars/forks/releases/contributors，抓取于 2026-08-30）</li>
+  </ul>
+  <h4>Ginno 侧（本地全仓 @39066bc）</h4>
+  <ul class="small">
+    <li>README.md、Makefile、docs/（architecture、workflow-dsl-design、workflow-master-plan、workflow-synthesis-quality-plan、workflow-summarize-eval-design、goal-design、inline-images-design、p3-packaging-notes 等 20+ 篇）</li>
+    <li>packages/runtime/src/ginno_runtime/：graph.py、workflows/（dsl/engine/doctor/synthesis/dryrun/checkpointer/supervisor/nodes/*）、tools/（builtin/web_tools/document_tools/workflow_tools 等）、agents/registry.py、knowledge/、files/、skills/、todos/、mcp/、hooks/、usage*.py</li>
+    <li>tests/（134 文件，1030 个测试函数实测计数）；apps/web、apps/desktop</li>
+    <li>前序报告：docs/workflow-openhuman-comparison.html（2026-08-16，触发器与无人值守结论互相印证）</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>
