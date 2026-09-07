@@ -2087,11 +2087,32 @@ export function ChatStream({
     storeRef.current[sid] = userMsgId
       ? // In-place retry: refresh the original bubble and insert the response
         // placeholder immediately after it — never duplicate the message.
-        (storeRef.current[sid] ?? []).flatMap((m) =>
-          m.id === userMsgId
-            ? [{ ...m, turnId, status: "sending" as const, failReason: undefined }, liveBubble]
-            : [m],
-        )
+        // If userMsgId is not found (original bubble was removed), fall back
+        // to appending a fresh bubble so the retry is not silently lost.
+        ((store) => {
+          const found = store.some((m) => m.id === userMsgId);
+          if (!found) {
+            // Fallback: append fresh user bubble + response placeholder
+            return [
+              ...store,
+              {
+                id: uid,
+                role: "user" as const,
+                blocks: userBlocks,
+                turnId,
+                agentId: payload.agentId,
+                status: "sending" as const,
+                sendPayload: payload,
+              },
+              liveBubble,
+            ];
+          }
+          return store.flatMap((m) =>
+            m.id === userMsgId
+              ? [{ ...m, turnId, status: "sending" as const, failReason: undefined }, liveBubble]
+              : [m],
+          );
+        })(storeRef.current[sid] ?? [])
       : [
           ...(storeRef.current[sid] ?? []),
           {
@@ -2198,6 +2219,38 @@ export function ChatStream({
       ? (storeRef.current[sid] ?? []).find((m) => m.id === card.sourceMsgId && m.role === "user")
       : undefined;
     attemptSend(sid, card.sendPayload, source?.id);
+  }
+
+  /** Retry from checkpoint: resume the failed turn from its latest checkpoint
+   * instead of re-executing from the start. Preserves tool calls and
+   * intermediate results. */
+  function retryFromCheckpoint(msgId: string) {
+    const sid = curSessionIdRef.current;
+    if (!sid || busyBySessionRef.current[sid]) return;
+    const list = storeRef.current[sid] ?? [];
+    const card = list.find((m) => m.id === msgId);
+    if (!card?.error) return;
+    // Remove the error card
+    storeRef.current[sid] = list.filter((m) => m.id !== msgId);
+    syncDisplay(sid);
+    // Mark as busy
+    busyBySessionRef.current[sid] = true;
+    const turnId = card.turnId || crypto.randomUUID();
+    const sock = socketsRef.current[sid];
+    if (!sock || sock.readyState !== WebSocket.OPEN) {
+      busyBySessionRef.current[sid] = false;
+      return;
+    }
+    try {
+      sock.send(
+        JSON.stringify({
+          type: "retry_from_checkpoint",
+          turn_id: turnId,
+        }),
+      );
+    } catch {
+      busyBySessionRef.current[sid] = false;
+    }
   }
 
   function respond(decision: "allow" | "deny") {
@@ -2841,6 +2894,7 @@ export function ChatStream({
                 canRetry={!!m.sendPayload && m.id === lastRetryableId}
                 busy={running}
                 onRetry={() => retryError(m.id)}
+                onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
               />
             ) : (
               <Fragment key={m.id}>
@@ -3139,12 +3193,14 @@ function ErrorCard({
   canRetry,
   busy,
   onRetry,
+  onRetryFromCheckpoint,
 }: {
   message: string;
   turnId?: string;
   canRetry: boolean;
   busy?: boolean;
   onRetry: () => void;
+  onRetryFromCheckpoint?: () => void;
 }) {
   return (
     <div className="rounded-xl border border-red/40 bg-red/10 px-4 py-3">
@@ -3159,14 +3215,26 @@ function ErrorCard({
         {message}
       </pre>
       {canRetry && (
-        <button
-          onClick={onRetry}
-          disabled={busy}
-          title="用原输入重新发起一次回合"
-          className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-        >
-          重试
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={onRetry}
+            disabled={busy}
+            title="用原输入从头重新发起一次回合"
+            className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            从头重试
+          </button>
+          {onRetryFromCheckpoint && (
+            <button
+              onClick={onRetryFromCheckpoint}
+              disabled={busy}
+              title="从最近的检查点继续，保留已完成的工具调用和中间结果"
+              className="rounded-lg border border-violet/40 bg-violet/10 px-3 py-1.5 text-xs font-medium text-violet transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              从断点继续
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

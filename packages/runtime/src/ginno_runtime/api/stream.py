@@ -472,6 +472,67 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     await ws.send_text(_ev("pong", {}))
                 except Exception:
                     return  # socket died between recv and send
+            elif kind == "retry_from_checkpoint":
+                # Retry the failed turn from its latest checkpoint (P2):
+                # instead of re-executing from the start, resume from the last
+                # successful state. This preserves tool calls and intermediate
+                # results, avoiding redundant work on long-running turns.
+                turn_id = msg.get("turn_id") or str(uuid.uuid4())
+                _busy = _TURN_TASKS.get(session_id)
+                if _busy is not None and not _busy.done():
+                    await ws.send_text(
+                        _ev("notice", {"message": "当前有回合正在进行，请等待其结束"}, turn_id)
+                    )
+                    continue
+                slug = session.get("project_slug")
+                # Clear last_error and announce the retry
+                _session_meta_patch(slug, session_id, {"last_error": {}})
+                _TURN_STOP.setdefault(session_id, asyncio.Event())
+                retry_agent = session.get("agent_id") or _first_agent_id()
+                retry_config = {
+                    **config,
+                    "configurable": {
+                        **config["configurable"],
+                        "agent_id": retry_agent,
+                        "turn_id": turn_id,
+                    },
+                }
+                _log.info(
+                    "retry_from_checkpoint session=%s turn=%s agent=%s",
+                    session_id, turn_id, retry_agent,
+                )
+
+                async def _checkpoint_retry_job(_cfg=retry_config, _tid=turn_id) -> None:
+                    try:
+                        await ws.send_text(
+                            _ev("turn.start", {"turn_id": _tid, "agent_id": retry_agent or "", "name": retry_agent or "Agent", "from_checkpoint": True})
+                        )
+                        async with _turn_lock(session_id):
+                            # Pass input_state=None to resume from latest checkpoint
+                            await _stream_graph(
+                                session["graph"],
+                                _cfg,
+                                input_state=None,  # Resume from checkpoint
+                                command=None,
+                            )
+                        _start_goal_driver(session_id)
+                    except Exception as e:
+                        _log.exception("checkpoint_retry_error session=%s turn=%s", session_id, _tid)
+                        await _push_session_event(
+                            session_id, "error", {"message": f"{type(e).__name__}: {e}"}
+                        )
+                    finally:
+                        if _TURN_TASKS.get(session_id) is asyncio.current_task():
+                            _TURN_TASKS.pop(session_id, None)
+                        _TURN_STOP.pop(session_id, None)
+
+                task = asyncio.create_task(_checkpoint_retry_job())
+                _TURN_TASKS[session_id] = task
+                task.add_done_callback(
+                    lambda t: _TURN_TASKS.pop(session_id, None)
+                    if _TURN_TASKS.get(session_id) is t
+                    else None
+                )
             else:
                 try:
                     await ws.send_text(_ev("error", {"message": f"unknown type: {kind}"}))
