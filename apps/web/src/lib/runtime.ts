@@ -931,14 +931,62 @@ export async function kbWikiPutConfig(data: object) {
   });
 }
 
-// ---- memory (P2) ----
+// ---- memory refinery (draft → review → apply; KB-aware promotion) ----
 export async function getMemory() {
-  return json<{ ok: boolean; content: string; pool_count: number }>(`${BASE}/memory`);
+  return json<{ ok: boolean; content: string; pool_count: number; draft_pending: boolean; kb_usable: boolean }>(
+    `${BASE}/memory`,
+  );
 }
 export async function summarizeMemory(provider?: string) {
-  return json<{ ok: boolean; summarized_chars?: number; pool_entries?: number; error?: string; message?: string }>(
-    `${BASE}/memory/summarize`,
-    { method: "POST", headers: H, body: JSON.stringify(provider ? { provider } : {}) },
+  return json<
+    {
+      ok: boolean;
+      draft_exists?: boolean;
+      error?: string;
+      message?: string;
+      skipped?: string;
+    } & import("./types").MemoryDraft
+  >(`${BASE}/memory/summarize`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(provider ? { provider } : {}),
+  });
+}
+export async function getMemoryDraft() {
+  return json<{ ok: boolean } & import("./types").MemoryDraft>(`${BASE}/memory/draft`);
+}
+export async function applyMemoryDraft(content?: string, force?: boolean) {
+  return json<{ ok: boolean; error?: string; summarized_chars?: number; pool_remaining?: number }>(
+    `${BASE}/memory/draft/apply`,
+    {
+      method: "POST",
+      headers: H,
+      body: JSON.stringify({ ...(content !== undefined ? { content } : {}), ...(force ? { force: true } : {}) }),
+    },
+  );
+}
+export async function discardMemoryDraft() {
+  return json<{ ok: boolean }>(`${BASE}/memory/draft/discard`, { method: "POST" });
+}
+export async function kbPromotePreview(text: string, title?: string) {
+  return json<import("./types").PromotePreview>(`${BASE}/kb/wiki/promote/preview`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ text, ...(title ? { title } : {}) }),
+  });
+}
+export async function kbPromoteApply(path: string, raw: string, removeFromMemory?: string[]) {
+  return json<{ ok: boolean; error?: string; path?: string; removed_from_memory?: number }>(
+    `${BASE}/kb/wiki/promote/apply`,
+    {
+      method: "POST",
+      headers: H,
+      body: JSON.stringify({
+        path,
+        raw,
+        ...(removeFromMemory?.length ? { remove_from_memory: removeFromMemory } : {}),
+      }),
+    },
   );
 }
 

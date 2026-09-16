@@ -495,6 +495,8 @@ clear_pool()
 
 > 建议从 **P0 → P2** 作为 MVP（读路径 + 写路径闭环），P1/P3/P4 增量迭代。
 
+**状态更新（2026-08-30，记忆×KB 质量门控打通）**：P2 升级为**门控版**并已落地——蒸馏不再静默覆写，改为「LLM 起草 → 差异审核 → 人批准」（`create_draft/apply_draft`）；阈值自动起草（A5b）与五个死配置复活；蒸馏感知 KB 使用台账（B1）；新增**记忆 → KB 提升路径**（`Ginno/Memory/` 落点 + 检索去重闸，见 §3.1 记忆副本区），即 P3「人工审核→晋升」理念在记忆域的落地（`tools/memory_tools` 与 experiences 独立存储仍未做）。对账见 `docs/memory-kb-gates-implementation-notes.md`。
+
 ---
 
 ## 8. 测试方案（复用已建成的测试框架）

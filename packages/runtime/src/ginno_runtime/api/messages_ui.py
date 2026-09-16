@@ -36,6 +36,83 @@ LEGACY_WS_UPDATE_MARKERS = (
     "Skills 已更新",
 )
 
+# Slash-skill turns: commands/resolver.substitute_skill replaces the leading
+# ``/name`` with the SKILL.md body wrapped in ``<skill name="...">`` (model
+# scaffolding, see wrap_skill_body). The persisted HumanMessage carries it,
+# but the user bubble must show what the user actually typed — the SKILL.md
+# injection is prompt plumbing, not conversation (same contract as the
+# TURN_CONTEXT hide and the citation-block strip).
+_SKILL_WRAP_RE = re.compile(
+    r'^\s*<skill name="([^"]+)">.*?</skill>\s*(.*)$', re.DOTALL
+)
+_SKILL_REQUEST_RE = re.compile(r"User request:\s*(.*)$", re.DOTALL)
+
+
+def parse_skill_wrap(text: Any) -> tuple[str, str] | None:
+    """``<skill name="X">body</skill> …`` → ``(name, user_request)``.
+
+    Returns ``None`` for ordinary text. ``user_request`` is the
+    ``User request:`` tail that wrap_skill_body appends (empty string when the
+    skill was invoked bare, e.g. just ``/todoist``).
+    """
+    if not isinstance(text, str):
+        return None
+    m = _SKILL_WRAP_RE.match(text)
+    if not m:
+        return None
+    tail = m.group(2) or ""
+    rm = _SKILL_REQUEST_RE.search(tail)
+    return m.group(1), (rm.group(1).strip() if rm else "")
+
+
+def skill_display_text(text: str) -> str | None:
+    """Skill-wrapped user message → the user-facing one-liner ``/name request``
+    (``None`` when *text* is not skill-wrapped). Feeds titles/seeds so the
+    sidebar never shows the raw SKILL.md injection."""
+    parsed = parse_skill_wrap(text)
+    if not parsed:
+        return None
+    name, req = parsed
+    return f"/{name} {req}" if req else f"/{name}"
+
+
+def _skill_block(parsed: tuple[str, str]) -> dict:
+    name, req = parsed
+    blk: dict = {"kind": "skill", "name": name}
+    if req:
+        blk["text"] = req
+    return blk
+
+
+def _human_ui_blocks(content: Any) -> list[dict]:
+    """HumanMessage content → UI blocks; a skill-wrapped slash-skill turn folds
+    into a compact ``skill`` block. Handles both plain-text and multimodal
+    content (image + skill text part)."""
+    if isinstance(content, str):
+        parsed = parse_skill_wrap(content)
+        if parsed:
+            return [_skill_block(parsed)]
+        return _content_ui_blocks(content)
+    if isinstance(content, list):
+        blocks: list[dict] = []
+        folded = False
+        for item in content:
+            text = (
+                item.get("text")
+                if isinstance(item, dict) and item.get("type") == "text"
+                else item if isinstance(item, str) else None
+            )
+            if not folded and isinstance(text, str):
+                parsed = parse_skill_wrap(text)
+                if parsed:
+                    blocks.append(_skill_block(parsed))
+                    folded = True
+                    continue
+            if isinstance(item, (dict, str)):
+                blocks.extend(_content_ui_blocks([item]))
+        return blocks
+    return _content_ui_blocks(content)
+
 
 def _image_block_url(b: dict) -> str | None:
     """Normalize a provider image block (OpenAI ``image_url`` / Anthropic
@@ -370,7 +447,7 @@ def _messages_to_ui(
                 )
                 continue
             flush_assistant()
-            blocks = _content_ui_blocks(content_raw)
+            blocks = _human_ui_blocks(content_raw)
             if attached_files and not ui:
                 # first user bubble carries the turn's file chips
                 file_blocks = [

@@ -367,6 +367,15 @@ def memory_pool_dir() -> Path:
     return home() / "memory" / "pool"
 
 
+def memory_draft_path() -> Path:
+    """Pending distillation draft (single slot, reviewed before apply)."""
+    return home() / "memory" / "draft.md"
+
+
+def memory_draft_meta_path() -> Path:
+    return home() / "memory" / "draft.json"
+
+
 def experiences_path() -> Path:
     return home() / "experiences.jsonl"
 

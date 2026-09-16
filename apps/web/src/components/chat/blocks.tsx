@@ -34,6 +34,9 @@ export type Block =
   // file-ledger `fileId` (+ mtime for cache-busting) resolved via imageUrl().
   | { kind: "image"; url?: string; fileId?: string; name?: string; mtime?: number }
   | { kind: "file"; fileId?: string; name: string; path?: string; fileKind?: string }
+  // Slash-skill invocation (/name …): the persisted HumanMessage carries the
+  // SKILL.md injection; history replay folds it into this chip + user request.
+  | { kind: "skill"; name: string; text?: string }
   | { kind: "widget"; widgetKind: string; data: unknown; renderId?: string }
   | { kind: "ref"; refKind: string; name: string; refId?: string }
   | { kind: "tool"; id?: string; name: string; content: string; pending: boolean; argsPreview?: string }
@@ -281,6 +284,28 @@ export function FileChips({ files }: { files: FileBlock[] }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+type SkillBlock = Extract<Block, { kind: "skill" }>;
+
+/** Slash-skill invocation chips (user bubble, replayed history). The SKILL.md
+    body is model scaffolding; the user sees "/name" + their request only. */
+export function SkillChips({ skills }: { skills: SkillBlock[] }) {
+  if (!skills.length) return null;
+  return (
+    <div className="mb-1 flex flex-wrap gap-1.5">
+      {skills.map((s, i) => (
+        <span
+          key={`${s.name}-${i}`}
+          title={`已调用技能 ${s.name}`}
+          className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-2 py-1 text-xs text-violet"
+        >
+          <Sparkles className="h-3 w-3 shrink-0" />
+          <span className="max-w-[220px] truncate font-medium">/{s.name}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -979,17 +1004,22 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
 /** User bubble content: attached images as a gallery, text kept verbatim. */
 export function UserBlocks({ blocks }: { blocks: Block[] }) {
   const files = blocks.filter((b): b is FileBlock => b.kind === "file");
+  const skills = blocks.filter((b): b is SkillBlock => b.kind === "skill");
   const imgs = blocks
     .filter((b): b is Extract<Block, { kind: "image" }> => b.kind === "image")
     .map(imageUrl);
   const texts = blocks
     .filter((b): b is Extract<Block, { kind: "text" }> => b.kind === "text")
     .map((b) => b.text);
+  // The user's own request rides the skill block on slash-skill turns.
+  const skillTexts = skills.map((s) => s.text ?? "").filter(Boolean);
+  const allTexts = [...texts, ...skillTexts];
   return (
     <>
       <FileChips files={files} />
+      <SkillChips skills={skills} />
       {imgs.length > 0 && <ImageGallery urls={imgs} />}
-      {texts.map((t, i) => (
+      {allTexts.map((t, i) => (
         <div key={i} className="whitespace-pre-wrap">
           {t}
         </div>

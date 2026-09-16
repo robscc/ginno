@@ -67,6 +67,8 @@ export default function KnowledgeBasePage() {
   const [query, setQuery] = useState("");
   const [searched, setSearched] = useState(false);
   const [view, setView] = useState<View>("all");
+  // 「仅记忆来源」过滤：由全局记忆沉淀的页面（frontmatter type: memory）。
+  const [onlyMemory, setOnlyMemory] = useState(false);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string>("");
   const [connError, setConnError] = useState<string>("");
@@ -449,8 +451,21 @@ export default function KnowledgeBasePage() {
                 (pages.length === 0 ? (
                   <div className="text-sm text-faint">还没有索引到任何页面（先点 Build wiki 编译 Raw）。</div>
                 ) : (
+                  <>
+                    {pages.some((p) => p.type === "memory") && (
+                      <button
+                        onClick={() => setOnlyMemory((v) => !v)}
+                        className={`pill border text-[11px] ${
+                          onlyMemory
+                            ? "border-violet/60 bg-violet/20 text-violet"
+                            : "border-line2 text-faint hover:text-txt"
+                        }`}
+                      >
+                        仅记忆来源
+                      </button>
+                    )}
                   <div className="overflow-hidden rounded-xl border border-line">
-                    {pages.map((p, i) => (
+                    {pages.filter((p) => !onlyMemory || p.type === "memory").map((p, i) => (
                       <button
                         key={i}
                         onClick={() => setOpenTarget({ path: p.path })}
@@ -460,11 +475,20 @@ export default function KnowledgeBasePage() {
                       >
                         <FileText className="h-4 w-4 shrink-0 text-muted" />
                         <span className="truncate text-sm text-txt">{p.title}</span>
+                        {p.type === "memory" && (
+                          <span
+                            className="pill border border-violet/40 bg-violet/10 text-violet"
+                            title="由全局记忆沉淀而来"
+                          >
+                            记忆
+                          </span>
+                        )}
                         <TagPills tags={p.tags} />
                         <span className="ml-auto truncate text-[11px] text-faint">{p.path}</span>
                       </button>
                     ))}
                   </div>
+                  </>
                 ))}
 
               {view === "discover" &&

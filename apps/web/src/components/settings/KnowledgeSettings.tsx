@@ -16,6 +16,12 @@ interface KBForm {
   use_semantic: boolean;
   embedding_model: string;
   semantic_weight: number;
+  // memory refinery (dead config revived: capture/auto-distill/budget)
+  capture: boolean;
+  auto_summarize: boolean;
+  pool_flush_threshold: number;
+  memory_budget_chars: number;
+  summarize_model: string;
 }
 
 const DEFAULTS: KBForm = {
@@ -30,6 +36,11 @@ const DEFAULTS: KBForm = {
   use_semantic: false,
   embedding_model: "",
   semantic_weight: 0.5,
+  capture: true,
+  auto_summarize: true,
+  pool_flush_threshold: 30,
+  memory_budget_chars: 3000,
+  summarize_model: "",
 };
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -212,6 +223,57 @@ export function KnowledgeSettings() {
             </p>
           </div>
         )}
+
+        <div className="rounded-lg border border-line bg-base/30 p-3">
+          <div className="mb-2 text-sm text-txt">记忆提炼（Memory Refinery）</div>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              checked={form.capture}
+              onChange={(e) => set("capture", e.target.checked)}
+            />
+            每轮对话结束后捕获 assistant 回复到记忆池
+          </label>
+          <label className="mt-2 flex items-center gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              checked={form.auto_summarize}
+              onChange={(e) => set("auto_summarize", e.target.checked)}
+            />
+            达到阈值时自动起草（草稿仍需人工审核，不会静默改写记忆）
+          </label>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <Field label="自动起草阈值（池内轮数）">
+              <input
+                type="number"
+                className="field"
+                value={form.pool_flush_threshold}
+                onChange={(e) => set("pool_flush_threshold", Number(e.target.value) || 0)}
+              />
+            </Field>
+            <Field label="记忆预算（字）">
+              <input
+                type="number"
+                className="field"
+                value={form.memory_budget_chars}
+                onChange={(e) => set("memory_budget_chars", Number(e.target.value) || 0)}
+              />
+            </Field>
+          </div>
+          <div className="mt-3">
+            <Field label="蒸馏模型（provider，留空=跟随默认）">
+              <input
+                className="field font-mono text-xs"
+                placeholder="留空使用默认 provider"
+                value={form.summarize_model}
+                onChange={(e) => set("summarize_model", e.target.value)}
+              />
+            </Field>
+          </div>
+          <p className="mt-2 text-xs text-faint">
+            蒸馏永远产出草稿：在右栏 Memory 面板审核差异、可编辑，采纳后才写入 MEMORY.md。
+          </p>
+        </div>
 
         <div className="flex items-center gap-2 pt-1">
           <button

@@ -157,6 +157,7 @@ interface GinnoState {
   notifyPreviewInvalidate: (fileId: string) => void;
   reloadAgents: () => Promise<void>;
   reloadSkills: () => Promise<void>;
+  reloadMemoryBadge: () => Promise<void>;
   reloadSessions: () => Promise<void>;
   reloadTodos: () => Promise<void>;
   reloadProviders: () => Promise<void>;
@@ -435,6 +436,16 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       // The web app is single-project ("default") — same convention as
       // listArtifacts. The server still merges project-scoped overrides.
       setSkills(await api.listSkills("default"));
+    } catch {
+      /* sidecar down */
+    }
+  }, []);
+  const reloadMemoryBadge = useCallback(async () => {
+    try {
+      const m = await api.getMemory();
+      // Single-slot refinery: badge is boolean-ish (0/1) — a pending draft
+      // awaits review in the Memory tab.
+      setPanelBadge((p) => ({ ...p, memory: m.draft_pending ? 1 : 0 }));
     } catch {
       /* sidecar down */
     }
@@ -934,6 +945,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     notifyPreviewInvalidate,
     reloadAgents,
     reloadSkills,
+    reloadMemoryBadge,
     reloadSessions,
     reloadTodos,
     reloadProviders,

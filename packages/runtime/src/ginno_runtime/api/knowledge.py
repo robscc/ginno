@@ -234,6 +234,8 @@ async def kb_wiki_list() -> dict:
             "tags": e.tags,
             "links": e.links,
             "modified": e.modified,
+            "type": e.type,
+            "confidence": e.confidence,
         }
         for e in idx.get_entries()
     ]
@@ -424,6 +426,154 @@ def kb_wiki_page_post(data: dict) -> dict:
     _kb_refresh(cfg)
     _maybe_build_semantic(cfg)
     return {"ok": True, "path": rel}
+
+
+# ---- promote memory → KB (quality gate 3) ----------------------------------
+# Distilled memory sections are promoted into the vault's landing zone
+# (`<namespace>/Memory/`, knowledge-and-wiki-design.md §3.1) so they become
+# searchable/injectable knowledge. The compiler never touches that dir
+# (compiler.py), retrieval indexes it (whole vault minus raw_dir), and every
+# write goes through an explicit user-confirmed apply — never automatically.
+
+
+def _memory_landing_dir(cfg) -> str:
+    """Vault-relative landing zone: sibling ``Memory`` of the configured wiki
+    namespace (``Ginno/Wiki`` → ``Ginno/Memory``; root wiki → ``Memory``)."""
+    wiki_dir = (cfg.wiki_dir or "").strip("/")
+    ns = wiki_dir.split("/", 1)[0] if "/" in wiki_dir else ""
+    return f"{ns}/Memory" if ns else "Memory"
+
+
+def _promote_slug(title: str) -> str:
+    import re as _re
+
+    s = _re.sub(r"[^\w一-鿿-]+", "-", title.strip(), flags=_re.UNICODE).strip("-")
+    return s or "memory"
+
+
+@router.post("/api/kb/wiki/promote/preview")
+def kb_wiki_promote_preview(data: dict) -> dict:
+    """Gate 3 preview (no LLM — fast and free): dedup-check the candidate text
+    against the vault, then draft the page (frontmatter + landing path) for
+    user confirmation. ``suggestion`` is ``merge`` when a near-duplicate page
+    exists (≥0.75, the discover merge-candidate precedent)."""
+    from ..knowledge.compiler import WikiCompiler, _iso_now
+    from ..memory import sanitize_for_memory
+
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    text = str((data or {}).get("text") or "").strip()
+    if not text:
+        return {"ok": False, "error": "text required"}
+    title = str((data or {}).get("title") or "").strip()
+    if not title:
+        first = next(
+            (ln.strip().lstrip("#-* ").strip() for ln in text.splitlines() if ln.strip()),
+            "记忆",
+        )
+        title = first[:40]
+
+    idx = _kb_indexer(cfg)
+    entries = idx.get_entries()
+    similar: list[dict] = []
+    try:
+        results = _WikiRetriever(entries).retrieve(
+            text,
+            top_k=3,
+            min_score=0.3,
+            semantic=_get_kb_semantic(cfg, entries),
+            semantic_weight=cfg.semantic_weight,
+        )
+        similar = [
+            {
+                "title": r.entry.title,
+                "path": r.entry.relative_path,
+                "score": round(r.score, 3),
+            }
+            for r in results
+        ]
+    except Exception:
+        pass  # dedup gate degrades to create — never block promotion
+    suggestion = "create"
+    merge_target = None
+    # Retriever scores saturate: title(+0.3) and summary(+0.15) each count once
+    # per query, so ≥0.5 means BOTH fields matched the candidate text — a
+    # strong duplicate signal (tag matches push it higher still).
+    if similar and similar[0]["score"] >= 0.5:
+        suggestion = "merge"
+        merge_target = similar[0]
+
+    body = sanitize_for_memory(text)
+    meta = {
+        "title": title,
+        "date": _iso_now(),
+        "type": "memory",
+        "confidence": "medium",
+        "tags": ["memory"],
+        "sources": ["ginno://memory"],
+    }
+    raw = WikiCompiler._dump_frontmatter(meta) + f"# {title}\n\n{body}\n"
+
+    landing = _memory_landing_dir(cfg)
+    slug = _promote_slug(title)
+    rel = f"{landing}/{slug}.md"
+    n = 1
+    resolved = _vault_resolve(cfg, rel)
+    while resolved is not None and resolved.exists():
+        n += 1
+        rel = f"{landing}/{slug}-{n}.md"
+        resolved = _vault_resolve(cfg, rel)
+    return {
+        "ok": True,
+        "suggestion": suggestion,
+        "merge_target": merge_target,
+        "similar": similar,
+        "draft": {"path": rel, "raw": raw, "title": title},
+    }
+
+
+@router.post("/api/kb/wiki/promote/apply")
+def kb_wiki_promote_apply(data: dict) -> dict:
+    """Write the confirmed promoted page into the vault landing zone, refresh
+    the index (the page becomes searchable/injectable immediately), and
+    optionally remove the promoted lines from MEMORY.md."""
+    cfg = _load_kb_cfg()
+    if not cfg.usable:
+        return _kb_not_configured()
+    rel = str((data or {}).get("path") or "")
+    raw = (data or {}).get("raw") or ""
+    if not rel or not rel.lower().endswith((".md", ".markdown")):
+        return {"ok": False, "error": "path must be a .md file"}
+    p = _vault_resolve(cfg, rel)
+    if p is None:
+        return {"ok": False, "error": "path outside vault"}
+    if p.exists():
+        return {"ok": False, "error": "already exists"}
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(raw if isinstance(raw, str) else "", encoding="utf-8")
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    _kb_refresh(cfg)
+    _maybe_build_semantic(cfg)
+
+    removed = 0
+    remove_lines = (data or {}).get("remove_from_memory") or []
+    if isinstance(remove_lines, list) and remove_lines:
+        from ..memory import remove_memory_lines
+
+        try:
+            removed = remove_memory_lines([str(x) for x in remove_lines])
+        except Exception:
+            removed = 0
+
+    async def _notify() -> None:
+        await shared._push_global_event("kb.changed", {})
+        await shared._push_global_event("memory.changed", {"draft": False})
+
+    shared.spawn_bg(_notify())
+    return {"ok": True, "path": rel, "removed_from_memory": removed}
 
 
 @router.post("/api/kb/wiki/index")

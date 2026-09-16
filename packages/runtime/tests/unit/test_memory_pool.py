@@ -72,3 +72,27 @@ def test_append_sanitizes(isolated_home):
     entries = read_pool()
     assert "<injected_memory>" not in entries[0]["content"]
     assert "good" in entries[0]["content"]
+
+
+def test_append_cited_signal_roundtrip(isolated_home):
+    # Gate 1: verified-citation quality signal travels with the pool entry.
+    append_to_pool("s", "a", "plain turn")
+    append_to_pool("s", "a", "cited turn", cited=True)
+    entries = read_pool()
+    assert entries[0]["cited"] is False
+    assert entries[1]["cited"] is True
+
+
+def test_clear_pool_cutoff_keeps_newer_entries(isolated_home):
+    import time
+
+    append_to_pool("s", "a", "old entry")
+    cutoff = time.time() + 0.01
+    # Pool filenames carry epoch-ms; sleep so the next entry is strictly newer.
+    time.sleep(0.02)
+    append_to_pool("s", "a", "new entry")
+    assert pool_count() == 2
+    clear_pool(before_ts=cutoff)
+    entries = read_pool()
+    assert pool_count() == 1
+    assert entries[0]["content"] == "new entry"

@@ -269,6 +269,11 @@ function payloadFromBlocks(blocks: Block[], agentId: string | null): SendPayload
   for (const b of blocks) {
     if (b.kind === "text") {
       payload.text = payload.text ? `${payload.text}\n${b.text}` : b.text;
+    } else if (b.kind === "skill") {
+      // History-replayed slash-skill turn: resend as the original invocation
+      // so the server re-runs the skill substitution.
+      const line = b.text ? `/${b.name} ${b.text}` : `/${b.name}`;
+      payload.text = payload.text ? `${payload.text}\n${line}` : line;
     } else if (b.kind === "file") {
       payload.files.push({
         id: b.fileId ?? "",
@@ -526,8 +531,21 @@ export function ChatStream({
   // graph survives as a failed bubble with its retry payload.
   function reconcileTurnFromHistory(sid: string) {
     getSessionHistory(sid).then((res) => {
+      // Skill blocks (history-replayed slash turns) normalize back to the
+      // "/name request" text the live bubble carries, or the two never match
+      // and a phantom "undelivered" duplicate appears.
       const textOf = (m: ChatMsg) =>
-        m.blocks.map((b) => (b.kind === "text" ? b.text : "")).join("\n");
+        m.blocks
+          .map((b) =>
+            b.kind === "text"
+              ? b.text
+              : b.kind === "skill"
+                ? (b.text ? `/${b.name} ${b.text}` : `/${b.name}`)
+                : "",
+          )
+          .join("\n")
+          .replace(/\s+/g, " ")
+          .trim();
       const pending = (storeRef.current[sid] ?? []).filter(
         (m) => m.role === "user" && m.status === "sending",
       );
@@ -1004,6 +1022,11 @@ export function ChatStream({
         // A turn (install_skills tool, bash) or the Settings page mutated
         // ~/.ginno/skills — refresh the slash menu's skill list live.
         g.reloadSkills();
+        break;
+      case "memory.changed":
+        // Memory refinery transition (auto-draft ready, applied, discarded) —
+        // refresh the Memory tab badge; the panel itself refetches on open.
+        g.reloadMemoryBadge();
         break;
       case "agents.changed":
         // Agent CRUD in Settings — keep the picker/mention list in sync.

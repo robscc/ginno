@@ -273,12 +273,15 @@ from .api.messages_ui import (  # noqa: E402, F401
     TOOL_OUTPUT_WS_LIMIT,
     _ai_content_blocks,
     _content_ui_blocks,
+    _human_ui_blocks,
     _image_block_url,
     _messages_to_ui,
     _run_id_in,
     _tool_args_preview,
     _tool_content_str,
     _truncate_for_ws,
+    parse_skill_wrap,
+    skill_display_text,
 )
 from .api.sessions import (  # noqa: E402, F401
     GOAL_GRACE_S,

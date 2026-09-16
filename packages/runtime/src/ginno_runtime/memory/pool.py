@@ -39,8 +39,15 @@ def _pool_dir() -> Path:
     return d
 
 
-def append_to_pool(session_id: str, agent_id: str | None, text: str) -> None:
-    """Append a sanitized assistant turn to the pool."""
+def append_to_pool(
+    session_id: str, agent_id: str | None, text: str, cited: bool = False
+) -> None:
+    """Append a sanitized assistant turn to the pool.
+
+    ``cited`` marks turns whose citations were verified against registered
+    sources — a quality signal the distiller weights when extracting knowledge
+    (evidence over hearsay).
+    """
     sanitized = sanitize_for_memory(text)
     if not sanitized:
         return
@@ -49,6 +56,7 @@ def append_to_pool(session_id: str, agent_id: str | None, text: str) -> None:
         "agent_id": agent_id,
         "timestamp": time.time(),
         "content": sanitized,
+        "cited": cited,
     }
     pool_file = _pool_dir() / f"{int(time.time() * 1000)}.jsonl"
     with open(pool_file, "a", encoding="utf-8") as f:
@@ -71,14 +79,36 @@ def read_pool() -> list[dict[str, Any]]:
     return entries
 
 
-def clear_pool() -> None:
-    """Delete all pool files after summarization."""
+def clear_pool(before_ts: float | None = None) -> None:
+    """Delete pool files after summarization.
+
+    With ``before_ts`` (the draft's pool cutoff), only entries captured at or
+    before that timestamp are removed — turns that arrived while the draft was
+    pending review survive and distill next round.
+    """
     pool_dir = paths.memory_pool_dir()
     if not pool_dir.exists():
         return
     for f in pool_dir.glob("*.jsonl"):
         try:
-            f.unlink()
+            if before_ts is None:
+                f.unlink()
+                continue
+            kept: list[str] = []
+            for line in f.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    kept.append(line)  # keep undecodable lines untouched
+                    continue
+                if float(entry.get("timestamp") or 0) > before_ts:
+                    kept.append(line)
+            if kept:
+                f.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            else:
+                f.unlink()
         except OSError:
             continue
 

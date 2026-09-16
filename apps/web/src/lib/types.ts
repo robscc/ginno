@@ -363,6 +363,37 @@ export interface WikiPage {
   tags: string[];
   links: string[];
   modified: number;
+  type?: string | null;
+  confidence?: string | null;
+}
+
+// ---- memory refinery (draft → review → apply) ----
+export interface MemoryDraft {
+  draft: string | null;
+  previous?: string;
+  diff?: string;
+  pool_entries?: number;
+  pool_cutoff?: number | null;
+  created_at?: number;
+  trigger?: string;
+  budget?: number;
+  chars?: number;
+  over_budget?: boolean;
+}
+
+export interface PromoteSimilar {
+  title: string;
+  path: string;
+  score: number;
+}
+
+export interface PromotePreview {
+  ok: boolean;
+  error?: string;
+  suggestion?: "create" | "merge";
+  merge_target?: PromoteSimilar | null;
+  similar?: PromoteSimilar[];
+  draft?: { path: string; raw: string; title: string };
 }
 
 export interface WikiPageDoc {

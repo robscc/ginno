@@ -42,6 +42,7 @@ from ..server_shared import (
     _ensure_turn_log,
     _ev,
     _log,
+    _push_global_event,
     _push_session_event,
     _try_send,
     _turn_lock,
@@ -62,7 +63,12 @@ from .files import (
     _register_artifact_file,
     _session_workspace,
 )
-from .messages_ui import _tool_args_preview, _tool_content_str, _truncate_for_ws
+from .messages_ui import (
+    _tool_args_preview,
+    _tool_content_str,
+    _truncate_for_ws,
+    skill_display_text,
+)
 from .sessions import _emit_goal_event, _ensure_session, _first_agent_id, _start_goal_driver
 from .workflows import _run_workflow_bg, _spawn_run_task
 
@@ -87,6 +93,9 @@ async def _touch_session_title(
     found = _find_meta(session_id)
     meta = found[0] if found else {}
     text = (user_text or "").strip()
+    # Slash-skill turns carry the SKILL.md injection as their text; title the
+    # user's actual invocation ("/name request") instead of the raw wrapper.
+    text = skill_display_text(text) or text
     if meta.get("title_auto", True) and text:
         title = text.replace("\n", " ")[:40]
         _session_meta_patch(
@@ -957,10 +966,56 @@ async def _run_resume(ws: WebSocket | None, graph, config: dict, resume_value: d
     await _stream_graph(graph, config, command=Command(resume=resume_value))
 
 
-async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> None:
+# Auto-distill (world-state-plan A5b, revived dead config): when the pool
+# reaches pool_flush_threshold, distill a DRAFT in the background. Draft mode
+# guarantees even the automatic path never silently overwrites MEMORY.md — the
+# user reviews the diff. Failures are throttled so a broken provider can't
+# burn tokens on every turn.
+_AUTO_DISTILL_FAIL_AT: float = 0.0
+_AUTO_DISTILL_THROTTLE_S = 600.0
+
+
+def _maybe_auto_distill(cfg) -> None:
+    global _AUTO_DISTILL_FAIL_AT
+    if not cfg.auto_summarize:
+        return
+    if time.time() < _AUTO_DISTILL_FAIL_AT:
+        return
+    try:
+        from ..memory import has_draft, pool_count
+
+        if has_draft():
+            return  # a draft is already awaiting review
+        if pool_count() < int(cfg.pool_flush_threshold or 30):
+            return
+    except Exception:
+        return
+
+    async def _auto_distill_task() -> None:
+        global _AUTO_DISTILL_FAIL_AT
+        try:
+            from ..memory import create_draft
+
+            result = await create_draft(trigger="auto")
+            if result.get("ok") and result.get("draft"):
+                await _push_global_event("memory.changed", {"draft": True})
+            elif not result.get("ok") and not result.get("skipped"):
+                _AUTO_DISTILL_FAIL_AT = time.time() + _AUTO_DISTILL_THROTTLE_S
+                _log.warning("auto_distill_failed error=%s", result.get("error"))
+        except Exception:
+            _AUTO_DISTILL_FAIL_AT = time.time() + _AUTO_DISTILL_THROTTLE_S
+            _log.exception("auto_distill_failed")
+
+    spawn_bg(_auto_distill_task())
+
+
+async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> int:
     """Parse the trailing ``<ginno_citations>`` block, validate it against the
     turn's registered sources, and record the wiki usage ledger
     (docs/citations-design.md §2-3). Telemetry-only: never raises outward.
+
+    Returns the number of verified citations — a quality signal for the
+    memory pool (cited turns carry more evidence weight when distilling).
     """
     from ..knowledge import citations as cit
     from ..knowledge import usage as kb_usage
@@ -969,13 +1024,13 @@ async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> N
 
     sources = cit.end_turn_sources(session_id)  # always pop — turn is over
     if not text:
-        return
+        return 0
     cfg = load_knowledge_config()
     if not getattr(cfg, "citations", True):
-        return
+        return 0
     entries = cit.parse_citation_block(text)
     if not entries:
-        return
+        return 0
 
     resolve_wiki = None
     if cfg.usable:
@@ -1021,14 +1076,16 @@ async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> N
                 _log.exception("web_usage_cited_failed session=%s", session_id)
     if invalid:
         kb_usage.record_invalid(invalid)
+    verified = sum(1 for i in validated if i.get("status") == "verified")
     _log.info(
         "turn_citations session=%s turn=%s entries=%d verified=%d invalid=%d",
         session_id,
         turn_id,
         len(validated),
-        sum(1 for i in validated if i.get("status") == "verified"),
+        verified,
         len(invalid),
     )
+    return verified
 
 
 # Max seconds between stream chunks before the stall watchdog aborts the turn
@@ -1608,20 +1665,27 @@ async def _stream_graph(
             # Citation framework: parse/validate the trailing block against the
             # turn's registered sources, record the usage ledger. Runs before
             # memory capture so the block can be stripped from the pool text.
+            _verified = 0
             try:
-                await _process_turn_citations(session_id, turn_id, _final_text)
+                _verified = await _process_turn_citations(session_id, turn_id, _final_text)
             except Exception:
                 _log.exception("citations_failed session=%s turn=%s", session_id, turn_id)
             # Capture sanitized assistant text for memory summarization (P2).
             # Also reused as the desktop notification body below (the web shell
             # shows a turn-done notification when the user looked away).
+            # Gate 1: `capture` config (revived) + verified-citation quality
+            # signal travels with the entry for evidence-weighted distilling.
             from ..knowledge.citations import strip_citation_block
 
             _clean_text = strip_citation_block(_final_text)
             if turn_text:
+                from ..knowledge.config import load_knowledge_config
                 from ..memory import append_to_pool
 
-                append_to_pool(session_id, agent_id, _clean_text)
+                _mem_cfg = load_knowledge_config()
+                if _mem_cfg.capture:
+                    append_to_pool(session_id, agent_id, _clean_text, cited=_verified > 0)
+                    _maybe_auto_distill(_mem_cfg)
             # LLM subject title (title_gen): armed by _touch_session_title on
             # the first invoke, fired by the first turn that completes without
             # an interrupt. Background + best-effort — failure keeps the

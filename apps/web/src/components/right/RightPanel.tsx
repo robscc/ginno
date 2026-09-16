@@ -85,12 +85,17 @@ export function RightPanel() {
             const showFailed = t.id === "workflow" && g.unseenFailedCount > 0;
             // 总结 tab: blue pulse dot while a synthesis case is in flight.
             const showSynthActive = t.id === "synthesis" && g.synthesisActiveCount > 0;
+            // Memory tab: violet pulse dot while a distillation draft awaits
+            // review (memory.changed WS event drives the badge).
+            const showMemoryDraft = t.id === "memory" && (g.panelBadge.memory ?? 0) > 0;
             const ariaExtra =
               t.id === "workflow" && (showHuman || showActive || showFailed)
                 ? `，${g.pendingHumanCount} 个等待输入，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
                 : showSynthActive
                   ? `，${g.synthesisActiveCount} 个总结进行中`
-                  : "";
+                  : showMemoryDraft
+                    ? "，有记忆草稿待审核"
+                    : "";
             return (
               <button
                 key={t.id}
@@ -133,6 +138,12 @@ export function RightPanel() {
                   <span
                     className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-blue"
                     title={`${g.synthesisActiveCount} 个总结进行中`}
+                  />
+                )}
+                {showMemoryDraft && (
+                  <span
+                    className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-violet"
+                    title="有记忆草稿待审核"
                   />
                 )}
               </button>
