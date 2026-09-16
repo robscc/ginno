@@ -132,6 +132,12 @@ export function ModelApiSettings() {
     void save(next);
   };
 
+  const onToggleThinking = (id: string) => {
+    const next = { ...draft, [id]: { ...draft[id], enable_thinking: !draft[id].enable_thinking } };
+    setDraft(next);
+    void save(next);
+  };
+
   const onTestSearch = async (id: string) => {
     const saved = await save(draft);
     if (!saved) {
@@ -209,6 +215,7 @@ export function ModelApiSettings() {
             onVerify={() => onVerify(id)}
             onSetDefault={() => onSetDefault(id)}
             onToggleSearch={() => onToggleSearch(id)}
+            onToggleThinking={() => onToggleThinking(id)}
             onTestSearch={() => onTestSearch(id)}
             searchStatus={searchMsg[id] || { state: "idle" }}
           />

@@ -130,6 +130,7 @@ export function ProviderCard({
   onVerify,
   onSetDefault,
   onToggleSearch,
+  onToggleThinking,
   onTestSearch,
   searchStatus,
 }: {
@@ -145,6 +146,7 @@ export function ProviderCard({
   onVerify: () => void;
   onSetDefault?: () => void;
   onToggleSearch?: () => void;
+  onToggleThinking?: () => void;
   onTestSearch?: () => void;
   searchStatus?: { state: "idle" | "checking" | "ok" | "fail"; text?: string };
 }) {
@@ -395,6 +397,18 @@ export function ProviderCard({
               {searchStatus.text}
             </pre>
           )}
+          <label className="mt-3 flex items-start gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={!!cfg.enable_thinking}
+              onChange={() => onToggleThinking?.()}
+            />
+            <span>
+              思考模式 — 混合思考模型（如通义千问 Qwen3 系）输出推理过程后再作答（需端点支持{" "}
+              <code className="font-mono text-xs">enable_thinking</code>，仅流式响应生效）。
+            </span>
+          </label>
         </div>
       )}
 

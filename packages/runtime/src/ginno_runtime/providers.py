@@ -51,6 +51,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
         "org_id": "",
         "max_tokens": 8192,
         "enable_search": False,
+        "enable_thinking": False,
     },
     "custom": {
         "enabled": False,
@@ -63,6 +64,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
         "temperature": 0.7,
         "timeout_s": 60,
         "enable_search": False,
+        "enable_thinking": False,
     },
 }
 

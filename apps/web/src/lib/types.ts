@@ -92,6 +92,10 @@ export interface ProviderConfig {
   // Ask OpenAI-compatible gateways (e.g. Qwen / DashScope) to use the model's
   // built-in web search (request body `enable_search: true`).
   enable_search?: boolean;
+  // Hybrid-thinking models (Qwen3 commercial line etc.) default to thinking
+  // OFF server-side; opt in via request body `enable_thinking: true` so the
+  // endpoint streams `reasoning_content` deltas (rendered as thinking blocks).
+  enable_thinking?: boolean;
 }
 
 export type Providers = Record<string, ProviderConfig>;

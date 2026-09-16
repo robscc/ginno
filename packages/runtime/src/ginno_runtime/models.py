@@ -28,6 +28,55 @@ CHAT_TIMEOUT_S = 180.0
 def _chat_timeout() -> float:
     return CHAT_TIMEOUT_S
 
+
+# Lazily-built (import-time work stays off the startup path like the rest of
+# this module) and cached: one ChatOpenAI subclass shared by every build.
+_REASONING_CLS: type | None = None
+
+
+def _reasoning_chat_openai() -> type:
+    """ChatOpenAI subclass that preserves third-party ``reasoning_content``.
+
+    langchain-openai 1.x targets the official OpenAI spec only and silently
+    drops non-standard streaming delta fields — notably ``reasoning_content``,
+    which Qwen/DashScope compatible-mode, DeepSeek and vLLM gateways use for
+    thinking-mode output. Ginno's UI pipeline reads that field from
+    ``additional_kwargs`` (api/stream.py → ``thinking.delta`` event;
+    api/messages_ui.py replays it into history), so re-attach it after the
+    base conversion. Chunk accumulation (AIMessageChunk + AIMessageChunk)
+    merges additional_kwargs, so the persisted message carries the full
+    reasoning text — same shape the 0.3.x era produced.
+    """
+    global _REASONING_CLS
+    if _REASONING_CLS is not None:
+        return _REASONING_CLS
+
+    from langchain_openai import ChatOpenAI
+
+    class ReasoningChatOpenAI(ChatOpenAI):
+        def _convert_chunk_to_generation_chunk(
+            self, chunk, default_chunk_class, base_generation_info
+        ):
+            gen_chunk = super()._convert_chunk_to_generation_chunk(
+                chunk, default_chunk_class, base_generation_info
+            )
+            if gen_chunk is None:
+                return None
+            try:
+                choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices") or []
+                delta = (choices[0].get("delta") or {}) if choices else {}
+            except (AttributeError, IndexError, TypeError):
+                delta = {}
+            rc = delta.get("reasoning_content")
+            if rc:
+                ak = getattr(gen_chunk.message, "additional_kwargs", None)
+                if ak is not None:
+                    ak["reasoning_content"] = rc
+            return gen_chunk
+
+    _REASONING_CLS = ReasoningChatOpenAI
+    return _REASONING_CLS
+
 def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     temperature = cfg.get("temperature")
     model_kwargs: dict[str, Any] = {}
@@ -96,8 +145,6 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
     key = cfg.get("api_key") or ""
     if proto == "openai" and not base_url:
         base_url = "https://api.openai.com/v1"
-    from langchain_openai import ChatOpenAI
-
     chat_kw: dict[str, Any] = dict(
         model=model or "gpt-4o",
         api_key=key or "not-needed",
@@ -107,14 +154,23 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         streaming=True,
         timeout=_chat_timeout(),
     )
-    # `enable_search` (None = follow the provider config) lets OpenAI-compatible
-    # gateways such as Qwen / DashScope compatible-mode run the model's built-in
-    # web search. langchain-openai forwards `extra_body` verbatim into the
-    # request body, so the agent can search the web on its own when it needs to.
+    # OpenAI-compatible gateway switches, forwarded verbatim into the request
+    # body via `extra_body` (langchain-openai passes it through untouched):
+    # - `enable_search` (None = follow the provider config) lets gateways such
+    #   as Qwen / DashScope compatible-mode run the model's built-in web search.
+    # - `enable_thinking` turns on thinking mode for hybrid-thinking models
+    #   (Qwen3 commercial line defaults to OFF server-side); the endpoint then
+    #   streams `reasoning_content` deltas, which ReasoningChatOpenAI below
+    #   re-attaches to additional_kwargs for the thinking.delta pipeline.
+    extra_body: dict[str, Any] = {}
     es = cfg.get("enable_search") if enable_search is None else enable_search
     if es:
-        chat_kw["extra_body"] = {"enable_search": True}
-    return ChatOpenAI(**chat_kw)
+        extra_body["enable_search"] = True
+    if cfg.get("enable_thinking"):
+        extra_body["enable_thinking"] = True
+    if extra_body:
+        chat_kw["extra_body"] = extra_body
+    return _reasoning_chat_openai()(**chat_kw)
 
 
 def build_model_by_name(model_name: str):
