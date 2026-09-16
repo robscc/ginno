@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Ginno · C+ 方向原型 — Chip 增强 + 消息归属</title>
+<style>
+  :root {
+    --bg: #0e1013;
+    --panel: #15181d;
+    --panel-2: #1b1f26;
+    --border: #262b34;
+    --text: #e6e9ee;
+    --text-dim: #8b93a1;
+    --text-faint: #5c6472;
+    --accent: #4f8cff;
+    --dev: #4f8cff;
+    --research: #ff9f43;
+    --writer: #34c77b;
+    --workflow: #a78bfa;
+    --radius: 10px;
+    font-size: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #08090b; color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ── 顶部演示说明 ── */
+  .demo-bar {
+    background: #1a1408; border-bottom: 1px solid #3a2f12;
+    color: #d8b45a; font-size: 12px; padding: 8px 16px;
+    display: flex; gap: 16px; align-items: center; flex-shrink: 0;
+  }
+  .demo-bar b { color: #f0d080; }
+  .demo-bar span { opacity: .85; }
+
+  /* ── 应用框架 ── */
+  .app { flex: 1; display: flex; min-height: 0; }
+
+  /* ── 侧边栏 ── */
+  .sidebar {
+    width: 264px; background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .side-head { padding: 14px 14px 8px; display: flex; align-items: center; justify-content: space-between; }
+  .side-head .proj { font-weight: 600; font-size: 13px; color: var(--text-dim); letter-spacing: .3px; }
+  .new-btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+  }
+  .new-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* 搜索入口 */
+  .search-row {
+    margin: 0 14px 8px; padding: 7px 10px; border-radius: 8px; cursor: pointer;
+    background: var(--panel-2); border: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-faint);
+  }
+  .search-row:hover { border-color: #3a4150; color: var(--text-dim); }
+  .search-row kbd {
+    margin-left: auto; font-size: 10px; border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 5px; font-family: inherit; color: var(--text-faint);
+  }
+
+  /* ⌘K 搜索弹窗 */
+  .modal-mask {
+    display: none; position: fixed; inset: 0; z-index: 50;
+    background: rgba(4,5,7,.55); backdrop-filter: blur(3px);
+    align-items: flex-start; justify-content: center; padding-top: 14vh;
+  }
+  .modal-mask.open { display: flex; }
+  .modal {
+    width: 560px; max-width: 90vw; background: var(--panel); border: 1px solid #333a46;
+    border-radius: 14px; box-shadow: 0 18px 60px rgba(0,0,0,.55); overflow: hidden;
+  }
+  .modal input {
+    width: 100%; background: transparent; border: none; outline: none;
+    color: var(--text); font-size: 15px; padding: 15px 18px; font-family: inherit;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal .results { max-height: 320px; overflow-y: auto; padding: 6px; }
+  .modal .r-row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; cursor: pointer;
+  }
+  .modal .r-row.sel { background: var(--panel-2); outline: 1px solid var(--border); }
+  .modal .r-row .icon {
+    width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 13px;
+  }
+  .modal .r-row .title { font-size: 13px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .modal .r-row .via {
+    font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+  }
+  .modal .empty { color: var(--text-faint); font-size: 12px; padding: 18px; text-align: center; }
+  .modal-foot {
+    border-top: 1px solid var(--border); padding: 8px 14px; font-size: 11px; color: var(--text-faint);
+  }
+
+  /* C+ ③ 会话列表 agent 筛选 */
+  .agent-filter { display: flex; gap: 6px; padding: 4px 14px 10px; flex-wrap: wrap; }
+  .agent-filter .f {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); color: var(--text-dim); background: transparent;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .agent-filter .f.on { background: var(--panel-2); color: var(--text); border-color: #3a4150; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+  .sess-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+  .sess {
+    padding: 9px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 2px;
+    display: flex; align-items: flex-start; gap: 9px;
+  }
+  .sess:hover { background: var(--panel-2); }
+  .sess.active { background: var(--panel-2); outline: 1px solid var(--border); }
+  .sess .icon {
+    width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; margin-top: 1px;
+    display: flex; align-items: center; justify-content: center; font-size: 13px;
+  }
+  .sess .meta { min-width: 0; flex: 1; }
+  .sess .title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* C+ ③ 会话行直接显示 agent 名 */
+  .sess .sub { font-size: 11px; color: var(--text-faint); margin-top: 2px; display: flex; gap: 5px; align-items: center; }
+
+  /* ── 主区 ── */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+  .topbar {
+    height: 46px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    display: flex; align-items: center; padding: 0 18px; gap: 10px;
+  }
+  .topbar .t { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar .agent-chip-mini {
+    font-size: 11px; color: var(--text-dim); border: 1px solid var(--border);
+    padding: 3px 9px; border-radius: 999px; display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+  }
+
+  .stream { flex: 1; overflow-y: auto; padding: 26px 0 12px; }
+  .inner { max-width: 760px; margin: 0 auto; padding: 0 28px; }
+
+  /* ── 首页 ── */
+  .home-hero { padding: 72px 0 28px; text-align: center; }
+  .home-hero h1 { font-size: 26px; font-weight: 650; letter-spacing: -.3px; }
+  .home-hero p { color: var(--text-dim); font-size: 13px; margin-top: 8px; }
+
+  /* ── 消息 ── */
+  .msg { margin-bottom: 22px; }
+  .msg .who { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
+  .msg.user .who { color: var(--text-faint); }
+  .msg .body { font-size: 14px; line-height: 1.7; color: var(--text); white-space: pre-wrap; }
+  .msg.user .body { color: #cfd5df; }
+  /* C+ ② 消息级归属徽标 */
+  .attr {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600;
+    padding: 1px 8px 1px 6px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  .attr .dot { width: 8px; height: 8px; }
+  .msg .time { font-size: 11px; color: var(--text-faint); }
+
+  /* C+ ② 中途接手续约线 */
+  .handoff {
+    display: flex; align-items: center; gap: 10px; margin: 18px 0 22px;
+    color: var(--text-dim); font-size: 12px;
+  }
+  .handoff::before, .handoff::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .handoff .pill {
+    display: flex; align-items: center; gap: 6px; border: 1px dashed #3a4150;
+    padding: 3px 11px; border-radius: 999px; background: var(--panel);
+  }
+
+  /* ── Composer 区 ── */
+  .composer-wrap { flex-shrink: 0; padding: 6px 28px 18px; }
+  .composer-inner { max-width: 760px; margin: 0 auto; }
+
+  /* C+ ① Agent chip 行 */
+  .chips { display: flex; gap: 8px; margin-bottom: 9px; flex-wrap: wrap; align-items: center; }
+  .chip {
+    display: flex; align-items: center; gap: 7px; padding: 6px 13px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text-dim);
+    font-size: 12.5px; cursor: pointer; position: relative; transition: all .15s ease;
+    user-select: none;
+  }
+  .chip:hover { border-color: #3a4150; color: var(--text); }
+  .chip.selected { color: var(--text); font-weight: 600; }
+  .chip .tag-rec {
+    font-size: 10px; padding: 1px 6px; border-radius: 999px; margin-left: 2px;
+    background: rgba(216, 180, 90, .14); color: #e8c56a; border: 1px solid rgba(216,180,90,.35);
+    display: none;
+  }
+  .chip.recommended { border-color: rgba(216,180,90,.55); }
+  .chip.recommended .tag-rec { display: inline-block; }
+  .chip .default-mark { font-size: 10px; color: var(--text-faint); border: 1px solid var(--border); padding: 0 5px; border-radius: 4px; }
+  .chips .hint { font-size: 11px; color: var(--text-faint); margin-left: auto; }
+
+  /* C+ ④ 切换预告条 */
+  .switch-notice {
+    display: none; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 8px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 12px; color: var(--text-dim);
+  }
+  .switch-notice.show { display: flex; }
+  .switch-notice .undo { color: var(--accent); cursor: pointer; margin-left: auto; font-size: 12px; }
+
+  .composer {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px;
+  }
+  .composer:focus-within { border-color: #3a4150; }
+  .composer textarea {
+    width: 100%; background: transparent; border: none; outline: none; resize: none;
+    color: var(--text); font-size: 14px; font-family: inherit; line-height: 1.5; min-height: 40px;
+  }
+  .composer .row { display: flex; align-items: center; margin-top: 6px; }
+  .model-chip {
+    font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 7px;
+    padding: 3px 9px; display: flex; gap: 6px; align-items: center; cursor: pointer;
+  }
+  .send-btn {
+    margin-left: auto; background: var(--accent); border: none; color: #fff; border-radius: 8px;
+    padding: 6px 16px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  .send-btn.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+
+  ::-webkit-scrollbar { width: 9px; }
+  ::-webkit-scrollbar-thumb { background: #2a303b; border-radius: 5px; }
+</style>
+</head>
+<body>
+
+<div class="demo-bar">
+  <b>原型演示脚本</b>
+  <span>① 在输入框打「帮我调研…」看 chip 推荐高亮</span>
+  <span>② 直接 Enter = 默认 Dev（逃生门）</span>
+  <span>③ 会话里点别的 chip → 出现切换预告，发送后看接手续约线</span>
+  <span>④ 左侧列表按 agent 筛选</span>
+  <span>⑤ ⌘K 搜索：输「research」试试 agent 名匹配</span>
+</div>
+
+<div class="app">
+  <!-- 侧边栏 -->
+  <div class="sidebar">
+    <div class="side-head">
+      <div class="proj">◇ ginno</div>
+      <button class="new-btn" onclick="goHome()">＋ 新建会话</button>
+    </div>
+    <div class="search-row" onclick="openSearch()">🔎 搜索会话 <kbd>⌘K</kbd></div>
+    <div class="agent-filter" id="agentFilter"></div>
+    <div class="sess-list" id="sessList"></div>
+  </div>
+
+  <!-- 主区 -->
+  <div class="main">
+    <div class="topbar">
+      <div class="t" id="topTitle">Ginno</div>
+      <div class="agent-chip-mini" id="topAgent"></div>
+    </div>
+    <div class="stream" id="stream"><div class="inner" id="inner"></div></div>
+    <div class="composer-wrap">
+      <div class="composer-inner">
+        <div class="switch-notice" id="switchNotice"></div>
+        <div class="chips" id="chips"></div>
+        <div class="composer">
+          <textarea id="input" rows="2" placeholder="输入消息…（⏎ 发送）" oninput="onType()" onkeydown="onKey(event)"></textarea>
+          <div class="row">
+            <div class="model-chip">⚡ Sonnet 4.5 <span style="opacity:.5">▾</span></div>
+            <button class="send-btn" id="sendBtn" onclick="send()">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-mask" id="searchMask" onclick="closeSearch()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <input id="searchInput" placeholder="搜索会话标题，或直接输 Agent 名…"
+           oninput="renderSearchResults()" onkeydown="onSearchKey(event)">
+    <div class="results" id="searchResults"></div>
+    <div class="modal-foot">↑↓ 选择 · ⏎ 打开 · esc 关闭 · 试试输入「research」或「周报」</div>
+  </div>
+</div>
+
+<script>
+const AGENTS = {
+  dev:        { name: "Dev Agent",        color: "var(--dev)",      hex: "#4f8cff", icon: ">_", desc: "写代码 · 跑命令" },
+  research:   { name: "Research Agent",   color: "var(--research)", hex: "#ff9f43", icon: "🔍", desc: "调研 · 只读 + 搜索" },
+  writer:     { name: "Writer Agent",     color: "var(--writer)",   hex: "#34c77b", icon: "✎",  desc: "写文档 · 整理内容" },
+  "workflow-dev": { name: "Workflow Dev", color: "var(--workflow)", hex: "#a78bfa", icon: "⑆",  desc: "编排工作流" },
+};
+const DEFAULT_AGENT = "dev";
+
+// C+① 关键词推荐（真实实现可换轻量模型推断，此处仅演示交互）
+const REC_RULES = [
+  { agent: "research", kws: ["调研","研究","查一下","搜","资料","对比","了解","分析市场","竞品"] },
+  { agent: "writer",   kws: ["写一篇","文档","文章","总结","润色","周报","邮件","大纲"] },
+  { agent: "workflow-dev", kws: ["工作流","workflow","流水线","自动化流程"] },
+  { agent: "dev",      kws: ["代码","bug","实现","修复","重构","报错","函数","部署"] },
+];
+
+const REPLIES = {
+  dev:      "好的，我先看一下相关代码结构，然后给出改动方案。\n（演示回复 · 由 Dev Agent 生成，工具集全开）",
+  research: "我会先做一轮只读检索和外部搜索，整理成带出处的结论，不改动任何文件。\n（演示回复 · 由 Research Agent 生成，只读工具）",
+  writer:   "收到，我先列个大纲跟你确认，再展开全文。\n（演示回复 · 由 Writer Agent 生成，文档工具）",
+  "workflow-dev": "我来拆解步骤并生成 workflow 定义。\n（演示回复 · 由 Workflow Dev 生成）",
+};
+
+// ── 假数据 ──
+let sessions = [
+  { id: 1, title: "修复 checkpointer delta 模式丢帧", agent: "dev", msgs: [
+    { role: "user", text: "delta 模式下恢复会话会丢最后一条消息，帮我看看" },
+    { role: "agent", agent: "dev", text: "定位到了：flush 时机在 yield 之后，竞态导致最后一帧没落盘。我改成先落盘再 yield。" },
+    { role: "agent", agent: "dev", text: "已修复并加了回归测试，跑一下 make app 验证。" },
+  ]},
+  { id: 2, title: "LangGraph vs 自研编排调研", agent: "research", msgs: [
+    { role: "user", text: "帮我调研一下 LangGraph 和自研状态机编排的取舍" },
+    { role: "agent", agent: "research", text: "我从 checkpoint 机制、可观测性、迁移成本三个维度整理了对比，结论附出处。" },
+    { role: "user", text: "把结论整理成给团队看的文档" },
+    { handoff: "writer" },
+    { role: "agent", agent: "writer", text: "已按「背景 → 对比表 → 建议」结构成稿，放在项目文档里了。" },
+  ]},
+  { id: 3, title: "周报 · 8 月第 2 周", agent: "writer", msgs: [
+    { role: "user", text: "帮我写这周的周报" },
+    { role: "agent", agent: "writer", text: "根据本周会话记录汇总了 3 项进展 + 2 项风险，需要你补充下周计划。" },
+  ]},
+];
+
+let state = { view: "home", sessionId: null, selected: null, filter: "all" };
+
+function curSession() { return sessions.find(s => s.id === state.sessionId); }
+function effectiveAgent() { return state.selected || (curSession()?.agent) || DEFAULT_AGENT; }
+
+// ── 渲染：侧边栏 ──
+function renderFilter() {
+  const el = document.getElementById("agentFilter");
+  const items = [["all","全部"], ...Object.entries(AGENTS).map(([id,a]) => [id, a.name.replace(" Agent","")])];
+  el.innerHTML = items.map(([id, label]) => {
+    const a = AGENTS[id];
+    return `<div class="f ${state.filter===id?'on':''}" onclick="setFilter('${id}')">
+      ${a ? `<span class="dot" style="background:${a.hex}"></span>` : ""}${label}</div>`;
+  }).join("");
+}
+function setFilter(f) { state.filter = f; renderSidebar(); }
+
+function renderSidebar() {
+  renderFilter();
+  const el = document.getElementById("sessList");
+  const list = sessions.filter(s => state.filter === "all" || s.agent === state.filter);
+  el.innerHTML = list.map(s => {
+    const a = AGENTS[s.agent];
+    return `<div class="sess ${s.id===state.sessionId?'active':''}" onclick="openSession(${s.id})">
+      <div class="icon" style="background:${a.hex}22;color:${a.hex}">${a.icon}</div>
+      <div class="meta">
+        <div class="title">${s.title}</div>
+        <div class="sub"><span class="dot" style="background:${a.hex}"></span>${a.name}</div>
+      </div>
+    </div>`;
+  }).join("") || `<div style="color:var(--text-faint);font-size:12px;padding:12px">没有匹配的会话</div>`;
+}
+
+// ── 渲染：chips ──
+function recommendAgent(text) {
+  for (const rule of REC_RULES) if (rule.kws.some(k => text.includes(k))) return rule.agent;
+  return null;
+}
+function renderChips() {
+  const el = document.getElementById("chips");
+  const input = document.getElementById("input").value;
+  const rec = recommendAgent(input);
+  const eff = effectiveAgent();
+  const isHome = state.view === "home";
+  el.innerHTML = Object.entries(AGENTS).map(([id, a]) => {
+    const selected = state.selected ? state.selected === id : (!isHome && curSession()?.agent === id);
+    const isDefault = !state.selected && id === DEFAULT_AGENT;
+    return `<div class="chip ${selected?'selected':''} ${rec===id?'recommended':''}"
+        style="${selected?`border-color:${a.hex};background:${a.hex}18;`:''}"
+        title="${a.desc}" onclick="pickChip('${id}')">
+      <span class="dot" style="background:${a.hex}"></span>
+      Ask ${a.name.replace(" Agent","")}
+      ${id===DEFAULT_AGENT && isHome ? '<span class="default-mark">默认</span>' : ''}
+      <span class="tag-rec">推荐</span>
+    </div>`;
+  }).join("") + `<span class="hint">${isHome ? "⏎ 直接发送 = 默认 Dev" : "点选后下一轮生效"}</span>`;
+}
+function pickChip(id) {
+  if (state.selected === id) { state.selected = null; }
+  else { state.selected = id; }
+  renderChips(); renderSwitchNotice(); renderTop();
+}
+
+// ── C+④ 切换预告 ──
+function renderSwitchNotice() {
+  const el = document.getElementById("switchNotice");
+  const s = curSession();
+  if (state.view === "session" && s && state.selected && state.selected !== s.agent) {
+    const a = AGENTS[state.selected];
+    el.className = "switch-notice show";
+    el.innerHTML = `<span class="dot" style="background:${a.hex}"></span>
+      下一条消息起由 <b style="color:${a.hex}">${a.name}</b> 应答 · 对话历史保留
+      <span class="undo" onclick="pickChip('${state.selected}')">撤销</span>`;
+  } else { el.className = "switch-notice"; }
+}
+
+// ── 渲染：顶栏 ──
+function renderTop() {
+  const s = curSession();
+  document.getElementById("topTitle").textContent = state.view === "home" ? "Ginno" : s.title;
+  const ta = document.getElementById("topAgent");
+  if (state.view === "home") { ta.style.display = "none"; return; }
+  ta.style.display = "flex";
+  const a = AGENTS[effectiveAgent()];
+  ta.innerHTML = `<span class="dot" style="background:${a.hex}"></span>${a.name}`;
+}
+
+// ── 渲染：消息流 ──
+function renderStream() {
+  const inner = document.getElementById("inner");
+  const stream = document.getElementById("stream");
+  if (state.view === "home") {
+    inner.innerHTML = `<div class="home-hero">
+        <h1>今天想做什么？</h1>
+        <p>直接输入即可，默认由 Dev Agent 应答；也可以先点上面的 chip 指定 Agent</p>
+      </div>`;
+    stream.scrollTop = 0;
+    return;
+  }
+  const s = curSession();
+  inner.innerHTML = s.msgs.map(m => {
+    if (m.handoff) {
+      const a = AGENTS[m.handoff];
+      return `<div class="handoff"><span class="pill">
+        <span class="dot" style="background:${a.hex}"></span>${a.name} 接手</span></div>`;
+    }
+    if (m.role === "user") {
+      return `<div class="msg user"><div class="who">你</div><div class="body">${m.text}</div></div>`;
+    }
+    const a = AGENTS[m.agent];
+    return `<div class="msg"><div class="who">
+        <span class="attr"><span class="dot" style="background:${a.hex}"></span>${a.name}</span>
+      </div><div class="body">${m.text}</div></div>`;
+  }).join("");
+  stream.scrollTop = stream.scrollHeight;
+}
+
+// ── 交互 ──
+function goHome() { state = { ...state, view: "home", sessionId: null, selected: null }; renderAll(); }
+function openSession(id) { state = { ...state, view: "session", sessionId: id, selected: null }; renderAll(); }
+function onType() { renderChips(); }
+function onKey(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }
+
+function send() {
+  const input = document.getElementById("input");
+  const text = input.value.trim();
+  if (!text) return;
+  const agentId = effectiveAgent();
+
+  if (state.view === "home") {
+    const s = { id: Date.now(), title: text.slice(0, 18) + (text.length > 18 ? "…" : ""),
+                agent: agentId, msgs: [{ role: "user", text }] };
+    sessions.unshift(s);
+    state.view = "session"; state.sessionId = s.id; state.selected = null;
+  } else {
+    const s = curSession();
+    if (state.selected && state.selected !== s.agent) {
+      s.msgs.push({ role: "user", text });
+      s.msgs.push({ handoff: state.selected });
+      s.agent = state.selected;
+      state.selected = null;
+    } else {
+      s.msgs.push({ role: "user", text });
+    }
+  }
+  input.value = "";
+  renderAll();
+  // 模拟回复
+  const target = curSession().agent;
+  setTimeout(() => {
+    curSession().msgs.push({ role: "agent", agent: target, text: REPLIES[target] });
+    renderStream();
+  }, 500);
+}
+
+function renderAll() { renderSidebar(); renderChips(); renderSwitchNotice(); renderTop(); renderStream(); }
+
+// ── ⌘K 会话搜索 ──
+let searchIdx = 0;
+function searchOpen() { return document.getElementById("searchMask").classList.contains("open"); }
+function openSearch() {
+  document.getElementById("searchMask").classList.add("open");
+  const inp = document.getElementById("searchInput");
+  inp.value = ""; searchIdx = 0; renderSearchResults();
+  setTimeout(() => inp.focus(), 0);
+}
+function closeSearch() { document.getElementById("searchMask").classList.remove("open"); }
+
+// C+③ 标题匹配 + agent 名匹配（输「research」能搜到所有调研会话）
+function searchMatches() {
+  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+  if (!q) return sessions;
+  return sessions.filter(s =>
+    s.title.toLowerCase().includes(q) ||
+    AGENTS[s.agent].name.toLowerCase().includes(q) ||
+    AGENTS[s.agent].name.replace(" Agent","").toLowerCase().includes(q)
+  );
+}
+function renderSearchResults() {
+  const ms = searchMatches();
+  searchIdx = Math.min(searchIdx, Math.max(0, ms.length - 1));
+  document.getElementById("searchResults").innerHTML = ms.length ? ms.map((s, i) => {
+    const a = AGENTS[s.agent];
+    return `<div class="r-row ${i===searchIdx?'sel':''}" onclick="openFromSearch(${s.id})"
+        onmouseenter="searchIdx=${i};renderSearchResults()">
+      <div class="icon" style="background:${a.hex}22;color:${a.hex}">${a.icon}</div>
+      <div class="title">${s.title}</div>
+      <div class="via"><span class="dot" style="background:${a.hex}"></span>${a.name}</div>
+    </div>`;
+  }).join("") : `<div class="empty">没有匹配的会话</div>`;
+}
+function onSearchKey(e) {
+  if (e.key === "ArrowDown") { e.preventDefault(); searchIdx++; renderSearchResults(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); searchIdx--; renderSearchResults(); }
+  else if (e.key === "Enter") { const ms = searchMatches(); if (ms[searchIdx]) openFromSearch(ms[searchIdx].id); }
+  else if (e.key === "Escape") { closeSearch(); }
+}
+function openFromSearch(id) { closeSearch(); openSession(id); }
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); }
+  else if (e.key === "Escape" && searchOpen()) { closeSearch(); }
+});
+
+document.getElementById("input").focus();
+renderAll();
+</script>
+</body>
+</html>

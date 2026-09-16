@@ -94,8 +94,8 @@ def test_run_llm_usage_recorded_as_source_workflow(client, monkeypatch):
     for row in req["rows"]:
         assert row["source"] == "workflow"
         assert row["turn_id"] == run_id
-        # normalized whole-prompt input: 100 + 40 + 0
-        assert row["input_tokens"] == 140
+        # langchain 1.x shape: input_tokens already whole-prompt, passes through
+        assert row["input_tokens"] == 100
         assert row["output_tokens"] == 10
         assert row["cache_read_tokens"] == 40
     assert client.get("/api/usage/requests?source=chat").json()["total"] == 0
@@ -104,8 +104,8 @@ def test_run_llm_usage_recorded_as_source_workflow(client, monkeypatch):
     ov = client.get("/api/usage/overview?days=7").json()
     srcs = {s["source"]: s for s in ov["sources"]}
     assert srcs["workflow"]["calls"] == 2
-    assert srcs["workflow"]["input_tokens"] == 280
-    assert ov["totals"]["input_tokens"] == 280
+    assert srcs["workflow"]["input_tokens"] == 200
+    assert ov["totals"]["input_tokens"] == 200
 
     # headless run (no present_in session) is not attributed to any session
     assert all(row["session_id"] is None for row in req["rows"])
@@ -114,7 +114,7 @@ def test_run_llm_usage_recorded_as_source_workflow(client, monkeypatch):
     evs = client.get(f"/api/workflow_runs/{run_id}/events").json()["events"]
     exits = [e for e in evs if e["kind"] == "node_exit" and e.get("usage")]
     assert len(exits) == 2
-    assert all(e["usage"]["input_tokens"] == 140 for e in exits)
+    assert all(e["usage"]["input_tokens"] == 100 for e in exits)
 
     usage_store.reset_cache()
 

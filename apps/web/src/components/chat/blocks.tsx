@@ -682,13 +682,16 @@ function RefChip({ refKind, name }: { refKind: string; name: string }) {
   );
 }
 
-// Tool outputs longer than this collapse to a compact header row by default;
-// expanding still keeps the content in a capped, internally scrolling box.
+// Every tool output is collapsible. Long outputs (over these thresholds)
+// default to a compact header row and expand into a capped, internally
+// scrolling box; short outputs default to expanded.
 const LONG_OUTPUT_LINES = 12;
 const LONG_OUTPUT_CHARS = 600;
 
 function ToolBlock({ name, content, pending, argsPreview }: { name: string; content: string; pending: boolean; argsPreview?: string }) {
-  const [open, setOpen] = useState(false);
+  // null = user hasn't toggled yet → default depends on output length
+  // (re-evaluated once content arrives, so pending→done stays correct).
+  const [open, setOpen] = useState<boolean | null>(null);
   const label = toolLabel(name);
   if (pending) {
     return (
@@ -706,22 +709,17 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
   }
   const lineCount = content.split("\n").length;
   const isLong = lineCount > LONG_OUTPUT_LINES || content.length > LONG_OUTPUT_CHARS;
+  const expanded = open ?? !isLong;
   return (
     <div className="my-1.5 overflow-hidden rounded-md border border-line bg-base/40 font-mono text-xs">
       <button
-        onClick={() => isLong && setOpen((o) => !o)}
-        className={`flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left ${
-          isLong ? "cursor-pointer transition-colors hover:bg-card2/50" : "cursor-default"
-        }`}
-        title={`${name}${isLong ? (open ? " — 收起" : " — 展开完整输出") : ""}`}
+        onClick={() => setOpen(!expanded)}
+        className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-card2/50"
+        title={`${name} — ${expanded ? "收起" : "展开完整输出"}`}
       >
-        {isLong ? (
-          <ChevronRight
-            className={`h-3 w-3 shrink-0 text-faint transition-transform ${open ? "rotate-90" : ""}`}
-          />
-        ) : (
-          <span className="w-3 shrink-0" />
-        )}
+        <ChevronRight
+          className={`h-3 w-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
+        />
         <span className="truncate text-faint" title={argsPreview || undefined}>
           tool · <span className="text-muted">{label}</span>
           {argsPreview && <span> · {argsPreview}</span>}
@@ -731,7 +729,7 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
           {lineCount} 行 · {content.length} 字符
         </span>
       </button>
-      {(open || !isLong) && (
+      {expanded && (
         <div className={`border-t border-line/60 ${isLong ? "max-h-80 overflow-y-auto" : ""}`}>
           <pre className="whitespace-pre-wrap px-2.5 py-1.5 text-faint">{content}</pre>
         </div>

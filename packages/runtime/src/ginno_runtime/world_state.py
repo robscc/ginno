@@ -57,6 +57,13 @@ WEEKDAYS_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", 
 # A6: skills index budget (chars) unless overridden in settings.context.
 DEFAULT_SKILLS_INDEX_MAX_CHARS = 1500
 
+# A5: memory injection budget (chars) — the global MEMORY.md + agent memory
+# used to ride the stable system layer IN FULL and are re-read from disk on
+# every call, so growth there silently enlarged the cache prefix (and every
+# edit invalidated it). Over-budget content is truncated with a pointer to
+# the files (budget deferred → implemented 2026-08 cache-rate fix).
+DEFAULT_MEMORY_MAX_CHARS = 8000
+
 _CONTEXT_DEFAULTS = {
     "world_state": True,
     "cache_control": True,
@@ -77,6 +84,7 @@ _CONTEXT_DEFAULTS = {
     # money at external providers and can edit files, and the permission
     # node's "ask" is dormant while bypass_permissions is on — so opt-in.
     "external_agents_enabled": False,
+    "memory_max_chars": DEFAULT_MEMORY_MAX_CHARS,
 }
 
 
@@ -520,8 +528,14 @@ class SkillsSection:
 
 
 class MemorySection:
-    """Memory change awareness (A5 budget is deferred by product decision —
-    content is still injected in full, as before)."""
+    """Memory change awareness + injection budget (A5).
+
+    The snapshot keeps the FULL texts (hash diffs power change
+    announcements), but rendering is capped at ``memory_max_chars`` — memory
+    files are re-read from disk on every call, so uncapped growth enlarged
+    the cached prefix and every edit invalidated it (2026-08 cache-rate
+    fix). Truncated content leaves a pointer so the model can read the files.
+    """
 
     id = "memory"
 
@@ -547,7 +561,14 @@ class MemorySection:
             parts.append("Your persistent memory (private to this agent):\n" + snap["agent"])
         if snap.get("global"):
             parts.append(wrap_context_section("injected_memory", snap["global"]))
-        return "\n".join(p for p in parts if p)
+        out = "\n".join(p for p in parts if p)
+        budget = int(context_settings().get("memory_max_chars", DEFAULT_MEMORY_MAX_CHARS))
+        if budget > 0 and len(out) > budget:
+            out = out[:budget] + (
+                "\n…（记忆内容超出注入预算已截断，如需完整内容请用文件工具读取 "
+                "ginno_home 下的 MEMORY.md 与角色记忆文件）"
+            )
+        return out
 
     def update_text(self, old: dict, new: dict) -> str | None:
         lines = []

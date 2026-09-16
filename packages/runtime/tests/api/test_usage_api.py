@@ -106,6 +106,8 @@ def test_session_usage_prefers_log(client):
 def test_turn_is_recorded_end_to_end(create_session, ws_conv, client):
     """A real turn through the graph writes a usage row with the session's
     provider/model and source=chat, visible via the usage APIs."""
+    # langchain 1.x shape: input_tokens is already the WHOLE prompt
+    # (non-cached 60 + cache_read 40); extraction passes it through.
     usage = {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
              "input_token_details": {"cache_read": 40, "cache_creation": 0}}
     sid = create_session([script(text="done", usage=usage)], agent_id="dev")
@@ -119,18 +121,18 @@ def test_turn_is_recorded_end_to_end(create_session, ws_conv, client):
     row = req["rows"][0]
     assert row["session_id"] == sid
     assert row["source"] == "chat"
-    # normalized whole-prompt input: 100 + 40 + 0
-    assert row["input_tokens"] == 140
+    # whole-prompt input passes through unchanged
+    assert row["input_tokens"] == 100
     assert row["cache_read_tokens"] == 40
     assert row["provider"] == "custom"  # nothing enabled -> fallthrough provider
 
     # session usage endpoint now sees the logged total
     data = client.get(f"/api/sessions/{sid}/usage").json()
-    assert data["usage"]["input_tokens"] == 140
+    assert data["usage"]["input_tokens"] == 100
     assert data["usage"]["calls"] == 1
 
     # and it survives an in-memory reset (simulated runtime restart)
     from ginno_runtime import server
     server._USAGE_BY_SESSION.clear()
     data = client.get(f"/api/sessions/{sid}/usage").json()
-    assert data["usage"]["input_tokens"] == 140
+    assert data["usage"]["input_tokens"] == 100

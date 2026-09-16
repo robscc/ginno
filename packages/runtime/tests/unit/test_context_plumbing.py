@@ -70,12 +70,39 @@ def test_extract_usage_basic():
 
 
 def test_extract_usage_cache_details_anthropic_normalizes_input():
-    # Anthropic reports input_tokens EXCLUDING cache; extraction rebuilds the
-    # whole-prompt count (usage-stats-design.md §3.5): 100 + 60 + 10 = 170.
-    u = extract_usage(_ai_with_usage(cache_read=60, cache_creation=10))
+    # langchain 1.x ChatAnthropic ALREADY rebuilds the whole-prompt count into
+    # input_tokens (raw 100 + 60 read + 10 creation = 170 before it reaches
+    # us), so extraction passes it through unchanged — adding the cache fields
+    # again double-counted every cached token (2026-08 cache-rate diagnosis).
+    meta = {"input_tokens": 170, "output_tokens": 20, "total_tokens": 190,
+            "input_token_details": {"cache_read": 60, "cache_creation": 10}}
+    u = extract_usage(AIMessage(content="x", usage_metadata=meta))
     assert u["input_tokens"] == 170
     assert u["cache_read_tokens"] == 60
     assert u["cache_creation_tokens"] == 10
+
+
+def test_extract_usage_ephemeral_creation_buckets():
+    # When the provider returns a cache_creation TTL breakdown, langchain
+    # zeroes the generic cache_creation field and moves the amounts into
+    # ephemeral_5m/1h keys — extraction must recover the write count from
+    # them (observed live against the local Qwen gateway: every write was
+    # logged as 0 before this was handled).
+    meta = {"input_tokens": 1897, "output_tokens": 12, "total_tokens": 1909,
+            "input_token_details": {"cache_creation": 0, "cache_read": 0,
+                                    "ephemeral_5m_input_tokens": 1891}}
+    u = extract_usage(AIMessage(content="x", usage_metadata=meta))
+    assert u["input_tokens"] == 1897
+    assert u["cache_read_tokens"] == 0
+    assert u["cache_creation_tokens"] == 1891
+
+    meta_1h = {"input_tokens": 500, "output_tokens": 5, "total_tokens": 505,
+               "input_token_details": {"cache_creation": 0, "cache_read": 100,
+                                       "ephemeral_5m_input_tokens": 200,
+                                       "ephemeral_1h_input_tokens": 50}}
+    u = extract_usage(AIMessage(content="x", usage_metadata=meta_1h))
+    assert u["cache_creation_tokens"] == 250
+    assert u["cache_read_tokens"] == 100
 
 
 def test_extract_usage_openai_cached_tokens():
@@ -231,3 +258,74 @@ def test_cache_control_only_for_anthropic():
 
     msg2 = _system_message("SYS", FakeOpenAI())
     assert msg2.content == "SYS"
+
+
+# --------------------------------------------------------------------------- #
+# B3-tail — rolling history cache breakpoints
+# --------------------------------------------------------------------------- #
+def test_cache_tail_marks_last_two_content_messages():
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    from ginno_runtime.graph import _mark_cache_tail
+
+    h = [
+        HumanMessage(content="first"),
+        ToolMessage(content="tool out", tool_call_id="c1", id="t1"),
+        HumanMessage(content="second", id="h2"),
+    ]
+    out = _mark_cache_tail(h)
+    # marks on the last two content-bearing messages, none on the first
+    assert out[0].content == "first"
+    assert out[1].content == [
+        {"type": "text", "text": "tool out", "cache_control": {"type": "ephemeral"}}
+    ]
+    assert out[2].content == [
+        {"type": "text", "text": "second", "cache_control": {"type": "ephemeral"}}
+    ]
+    # originals untouched (send-only copies, like strip_old_images)
+    assert h[1].content == "tool out" and h[2].content == "second"
+
+
+def test_cache_tail_skips_empty_content_and_list_blocks():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from ginno_runtime.graph import _mark_cache_tail
+
+    h = [
+        HumanMessage(content="early"),
+        AIMessage(content="", tool_calls=[
+            {"name": "bash", "args": {}, "id": "c1", "type": "tool_call"}]),
+        ToolMessage(content=[{"type": "text", "text": "result"}], tool_call_id="c1"),
+    ]
+    out = _mark_cache_tail(h)
+    # empty-content AI stub skipped; list content marked on its LAST block
+    assert out[1].content == ""
+    assert out[2].content == [
+        {"type": "text", "text": "result", "cache_control": {"type": "ephemeral"}}
+    ]
+    assert out[0].content == [
+        {"type": "text", "text": "early", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+def test_cache_tail_mark_copies_blocks():
+    from langchain_core.messages import HumanMessage
+
+    from ginno_runtime.graph import _mark_cache_tail
+
+    img = {"type": "image", "source": {"data": "abc"}}
+    orig = HumanMessage(content=[{"type": "text", "text": "look"}, img])
+    out = _mark_cache_tail([orig])
+    marked = out[0].content
+    assert marked[-1] == {"type": "image", "source": {"data": "abc"},
+                          "cache_control": {"type": "ephemeral"}}
+    # the original block dicts are not mutated in place
+    assert "cache_control" not in orig.content[0]
+    assert "cache_control" not in orig.content[1]
+    assert marked[0] is not orig.content[0]
+
+
+def test_cache_tail_empty_history():
+    from ginno_runtime.graph import _mark_cache_tail
+
+    assert _mark_cache_tail([]) == []

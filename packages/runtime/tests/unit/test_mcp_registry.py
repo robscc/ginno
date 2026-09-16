@@ -174,3 +174,21 @@ def test_wrapped_names_match_langchain_wrapper():
     live.tools = [_FakeTool("tool_a"), _FakeTool("tool_b")]
     wrapped = [t.name for t in live.to_langchain_tools()]
     assert wrapped == [_full_tool_name("s1", n) for n in ("tool_a", "tool_b")]
+
+
+def test_all_langchain_tools_sorted_regardless_of_connect_order(isolated_home):
+    """The tools array rides at the FRONT of the provider cache prefix, so its
+    order must not depend on server connect order — a reconnect reshuffle
+    would invalidate the whole prefix cache (2026-08 cache-rate diagnosis)."""
+    reg = MCPRegistry()
+    live_b = reg_mod._LiveServer(MCPServerConfig(name="beta", transport="http", url="http://x"))
+    live_b.tools = [_FakeTool("zeta"), _FakeTool("alpha")]
+    live_a = reg_mod._LiveServer(MCPServerConfig(name="alpha", transport="http", url="http://x"))
+    live_a.tools = [_FakeTool("mid")]
+    # insertion order deliberately NOT alphabetical
+    reg._live = {"beta": live_b, "alpha": live_a}
+    names = [t.name for t in reg.all_langchain_tools()]
+    assert names == sorted(names)
+    # and stable across a reshuffled reconnect order
+    reg._live = {"alpha": live_a, "beta": live_b}
+    assert [t.name for t in reg.all_langchain_tools()] == names

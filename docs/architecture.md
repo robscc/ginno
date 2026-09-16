@@ -173,7 +173,10 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 - **`agent` 节点**：每 turn 用 `build_stable_system` **重建** system prompt（不入 checkpoint →
   会话中途换 Agent 下一 turn 即生效）；按 `tools_allow`（fnmatch）过滤子集后 `bind_tools`；
   对历史副本 `strip_old_images`（只留最近 2 个用户轮，send-only 不落盘）；Anthropic 模型加
-  `cache_control: ephemeral` 前缀缓存断点。
+  `cache_control: ephemeral` 前缀缓存断点：**system 层 1 个 + 历史尾部滚动 2 个**
+  （`_mark_cache_tail`，挑最近 2 条有内容的消息、拷贝后挂标记，不动持久化状态）。
+  只有 system 断点时网关只会缓存 tools+system（~30k），200k+ 的历史每次全额计费
+  （2026-08 缓存诊断）；尾部断点让每次请求读取直至上一请求尾部的整段前缀。
 - **`permission` 节点**：判定顺序见 §6.9。
 - **`tools` 节点**：`ToolNode(all_tools, handle_tool_errors=True)` + 工具输出中段截断（§6.5 E2）。
 

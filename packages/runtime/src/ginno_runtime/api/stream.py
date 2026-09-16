@@ -1307,6 +1307,16 @@ async def _stream_graph(
         # batch gets its bubble (the old ``not index`` check only surfaced the
         # first, silently dropping the rest from the live view).
         started_tool_ids: set[str] = set()
+        # Track tool names by id so we can emit ``tool.args`` from the chunks
+        # stream (the first chunk carries the name, subsequent ones don't).
+        _tool_name_by_id: dict[str, str] = {}
+        # Accumulate tool_call args fragments from streaming chunks so we can
+        # emit ``tool.args`` (the command text) as soon as the JSON is complete
+        # — before the tool actually runs. Without this, ``tool.args`` only
+        # fires in ``updates`` mode (after the agent node finishes), which for
+        # some models arrives too late (or simultaneously with ``tool.end``).
+        _partial_tool_args: dict[str, str] = {}
+        _emitted_tool_args: set[str] = set()
         turn_text: list[str] = []  # accumulate assistant text for memory capture
         # Fresh turn (not a permission resume): announce the resolved agent so the
         # UI can label the assistant bubble authoritatively (never the generic
@@ -1422,21 +1432,51 @@ async def _stream_graph(
                 if tool_calls:
                     for tc in tool_calls:
                         tc_id = tc.get("id")
+                        tc_index = tc.get("index")
+                        tc_name = tc.get("name")
                         # Fire one tool.start per distinct tool_call id (the
                         # chunk that carries the name). See started_tool_ids —
                         # keying on id lets parallel tool calls each surface.
-                        if tc.get("name") and tc_id and tc_id not in started_tool_ids:
+                        if tc_name and tc_id and tc_id not in started_tool_ids:
                             started_tool_ids.add(tc_id)
+                            _tool_name_by_id[tc_id] = tc_name
                             if (
-                                tc["name"] in RENDER_TOOL_NAMES
-                                or tc["name"] in WORKFLOW_TOOL_NAMES
-                                or tc["name"] in ARTIFACT_TOOL_NAMES
+                                tc_name in RENDER_TOOL_NAMES
+                                or tc_name in WORKFLOW_TOOL_NAMES
+                                or tc_name in ARTIFACT_TOOL_NAMES
                             ):
-                                special_ids[tc_id] = tc["name"]
+                                special_ids[tc_id] = tc_name
                                 continue  # surfaced as widget/ref/workflow block, not a tool bubble
                             await safe_send(
-                                emit("tool.start", {"name": tc["name"], "id": tc_id})
+                                emit("tool.start", {"name": tc_name, "id": tc_id})
                             )
+                        # Accumulate args fragments from streaming chunks.
+                        # Streaming chunks only carry ``id`` on the first
+                        # fragment; subsequent ones use ``index``. Resolve
+                        # the id by matching the index to the most recent
+                        # tool call that hasn't yet received complete args.
+                        if not tc_id and tc_index is not None:
+                            for sid in reversed(list(started_tool_ids)):
+                                if sid not in _emitted_tool_args:
+                                    tc_id = sid
+                                    break
+                        args_frag = tc.get("args") or ""
+                        if tc_id and args_frag and tc_id not in _emitted_tool_args:
+                            _partial_tool_args[tc_id] = _partial_tool_args.get(tc_id, "") + args_frag
+                            raw = _partial_tool_args[tc_id]
+                            try:
+                                import json as _json
+                                parsed = _json.loads(raw)
+                                if isinstance(parsed, dict):
+                                    nm = _tool_name_by_id.get(tc_id, "")
+                                    preview = _tool_args_preview(nm, parsed)
+                                    if preview:
+                                        _emitted_tool_args.add(tc_id)
+                                        await safe_send(
+                                            emit("tool.args", {"id": tc_id, "preview": preview})
+                                        )
+                            except (ValueError, TypeError):
+                                pass  # incomplete JSON, keep accumulating
             elif mode == "updates":
                 # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
                 for node_name, delta in (payload or {}).items():
@@ -1498,11 +1538,14 @@ async def _stream_graph(
                                     # args (e.g. the bash command) on the pending
                                     # tool bubble. Fires from the agent update —
                                     # after args are complete, before the tool runs.
-                                    preview = _tool_args_preview(nm, args)
-                                    if preview:
-                                        await safe_send(
-                                            emit("tool.args", {"id": tc_id, "preview": preview})
-                                        )
+                                    # Skip if already emitted from the chunks stream
+                                    # (streaming args accumulation above).
+                                    if tc_id not in _emitted_tool_args:
+                                        preview = _tool_args_preview(nm, args)
+                                        if preview:
+                                            await safe_send(
+                                                emit("tool.args", {"id": tc_id, "preview": preview})
+                                            )
                                 if nm == "render_widget":
                                     await safe_send(
                                         emit("widget.emit", widget_event(args, tc_id))

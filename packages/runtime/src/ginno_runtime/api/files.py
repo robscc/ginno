@@ -512,6 +512,32 @@ async def save_file_to_downloads_endpoint(
     return {"ok": True, "path": str(dest), "name": dest.name}
 
 
+@router.post("/api/files/{file_id}/open-external")
+async def open_file_external_endpoint(file_id: str) -> dict:
+    """Open the file with the OS default application (Preview for PDFs,
+    Excel/Numbers for spreadsheets, etc.). Best-effort: returns ok=False when
+    the file is missing or the OS launcher fails to start."""
+    import subprocess
+    import sys
+
+    entry = files_mod.get_by_id(file_id)
+    if entry is None:
+        return {"ok": False, "error": f"file not found: {file_id}"}
+    p = Path(entry["path"])
+    if not p.is_file():
+        return {"ok": False, "error": "文件已被移动或删除"}
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(p)])
+        elif sys.platform.startswith("win"):
+            subprocess.Popen(["cmd", "/c", "start", "", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
+    except OSError as e:
+        return {"ok": False, "error": f"无法启动外部应用: {e}"}
+    return {"ok": True}
+
+
 # ---- session files management (Settings → 会话文件) ----
 def _session_file_guard(slug: str, session_id: str, sub: str | None) -> Path | None:
     """Resolve ``sub`` (a path relative to the session dir) and require it to
