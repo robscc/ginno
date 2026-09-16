@@ -17,6 +17,7 @@ const SRC_STYLE: Record<string, { bg: string; fg: string }> = {
   memory: { bg: "#38bdf822", fg: "#38bdf8" },
   kb: { bg: "#60a5fa22", fg: "#60a5fa" },
   probe: { bg: "#62626e22", fg: "#9a9aa6" },
+  external: { bg: "#ec489922", fg: "#f472b6" },
 };
 
 function SrcChip({ src }: { src: string }) {

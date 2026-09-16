@@ -33,7 +33,7 @@ _log = logging.getLogger("ginno.usage")
 
 RETENTION_DAYS = 90
 _FILE_PREFIX = "requests-"
-_SOURCES = {"chat", "goal", "compaction", "workflow", "memory", "kb", "probe", "other"}
+_SOURCES = {"chat", "goal", "compaction", "workflow", "memory", "kb", "probe", "external", "other"}
 
 # Parsed COMPLETED days are immutable, so cache them. Today's file is always
 # re-read (it keeps growing). Key: (path, mtime_ns, size).

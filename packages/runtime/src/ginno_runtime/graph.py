@@ -526,6 +526,70 @@ def _system_message(sys_text: str, model) -> SystemMessage:
     return SystemMessage(content=sys_text)
 
 
+# B3-tail — rolling history breakpoints. With only the system-layer
+# breakpoint the gateway cached just tools+system (~30k) while the growing
+# history (up to 200k+) re-billed in full every call — the 2026-08 diagnosis
+# showed cache_read frozen at the system+tools size for every session. Two
+# breakpoints on the last content-bearing messages extend the cached prefix to
+# the tail each call (total budget: system 1 + tail 2 = 3 of Anthropic's 4).
+CACHE_TAIL_MARKS = 2
+_CACHE_MARK = {"cache_control": {"type": "ephemeral"}}
+
+
+def _with_cache_mark(content):
+    """Copy of ``content`` with cache_control on its last block, or None when
+    it cannot carry a mark (empty / unknown block types)."""
+    if isinstance(content, str):
+        if not content.strip():
+            return None
+        return [{"type": "text", "text": content, **_CACHE_MARK}]
+    if isinstance(content, list) and content:
+        blocks: list = []
+        for b in content:
+            if isinstance(b, dict):
+                blocks.append(dict(b))
+            elif isinstance(b, str):
+                if b:
+                    blocks.append({"type": "text", "text": b})
+            else:
+                return None  # non-dict block object — leave this message alone
+        if not blocks:
+            return None
+        blocks[-1] = {**blocks[-1], **_CACHE_MARK}
+        return blocks
+    return None
+
+
+def _mark_cache_tail(history: list, marks: int = CACHE_TAIL_MARKS) -> list:
+    """Attach ephemeral cache_control breakpoints to the last content block of
+    up to ``marks`` of the most recent content-bearing messages (rolling tail,
+    Claude-Code style).
+
+    Every model call appends to the history, so request N's tail breakpoint
+    writes a prefix covering everything up to message M; request N+1 reads
+    that prefix (its new breakpoints sit further along) — steady state caches
+    the whole conversation except the newest append. Messages are COPIED
+    (never mutated) so the persisted state keeps no cache marks.
+
+    Marks must stay inside the region microcompact leaves alone (the most
+    recent ``compact_keep_turns`` turns): the tail walker only ever touches
+    the last few messages, so a turn-entry microcompact rewrite of OLDER
+    messages never collides with a mark position.
+    """
+    out = list(history)
+    remaining = marks
+    for i in range(len(out) - 1, -1, -1):
+        if remaining <= 0:
+            break
+        m = out[i]
+        new_content = _with_cache_mark(getattr(m, "content", None))
+        if new_content is None:
+            continue  # empty/unmarkable content (e.g. AI tool_call stubs)
+        out[i] = m.model_copy(update={"content": new_content})
+        remaining -= 1
+    return out
+
+
 def agent_node_factory(model, all_tools):
     async def agent_node(state: AgentState, config=None) -> dict:
         agent = _resolve_agent(_turn_agent_id(state, config))
@@ -563,6 +627,11 @@ def agent_node_factory(model, all_tools):
         # Hide code-generated-image markers from the model (display-only); the
         # persisted ToolMessages keep them for the WS layer / history builder.
         history = strip_tool_image_markers(history)
+        # B3-tail — rolling cache breakpoints so the growing history caches too
+        # (not just system+tools). Same gate as _system_message; the copy
+        # semantics match the strip_* steps above (persisted state untouched).
+        if _is_anthropic_model(model) and context_settings().get("cache_control", True):
+            history = _mark_cache_tail(history)
         response = await bound.ainvoke([sys_msg] + history)
         # Attribution tag for history replay (C+ plan): messages_ui reads this
         # to label each bubble with the agent that actually answered. Lives in
@@ -724,6 +793,7 @@ def build_all_tools(
     ``context_dirs`` / ``primary_path`` bind the session's mounted context
     folders into the builtin file/shell tools (context-folders-design.md).
     """
+    from .tools.external_agent import build_external_agent_tools
     from .tools.goal_tools import build_goal_tools
     from .tools.web_tools import build_web_tools
 
@@ -746,6 +816,10 @@ def build_all_tools(
         # Web search/fetch (citations-design.md §4.2) — [] when disabled in
         # settings; session_id binds citation source registration.
         + build_web_tools(session_id)
+        # Delegation to external coding agents (external-agents-design.md) —
+        # [] when disabled in settings; session_id/project_slug bind usage
+        # attribution. Deliberately NOT in the permission exempt set.
+        + build_external_agent_tools(workspace, session_id, project_slug)
     )
 
 

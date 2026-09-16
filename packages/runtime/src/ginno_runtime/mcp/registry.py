@@ -375,6 +375,12 @@ class MCPRegistry:
         tools: list[StructuredTool] = []
         for live in self._live.values():
             tools.extend(live.to_langchain_tools())
+        # Deterministic order regardless of server connect order: the tools
+        # array rides at the FRONT of the provider cache prefix, so a reorder
+        # on reconnect invalidates the whole prefix cache (2026-08 cache-rate
+        # diagnosis). Wrapped names carry the server prefix, so a plain
+        # name-sort is stable across reconnects.
+        tools.sort(key=lambda t: t.name)
         return tools
 
     def list_tools(self) -> list[str]:

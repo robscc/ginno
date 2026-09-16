@@ -724,6 +724,17 @@ export async function saveFileToDownloads(
   );
 }
 
+// Ask the sidecar to open the file with the OS default application
+// (Preview for PDFs, Excel/Numbers for spreadsheets, etc.).
+// Works in both desktop (Tauri) and dev (browser) modes — the sidecar always
+// runs on the same host, so it can invoke the OS launcher directly.
+export async function openFileExternal(fileId: string) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/files/${fileId}/open-external`,
+    { method: "POST", headers: H },
+  );
+}
+
 // ---- todo providers / sync (external TODO platforms) ----
 export async function listTodoProviders() {
   return json<{ ok: boolean; providers: import("./types").TodoProvider[] }>(`${BASE}/todo-providers`);

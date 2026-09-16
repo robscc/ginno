@@ -26,6 +26,7 @@ export const DEFAULT_TOOL_LABELS: Record<string, string> = {
   glob_files: "搜索文件中",
   grep_files: "搜索内容中",
   bash: "执行命令中",
+  delegate_agent: "委托外部代理中",
   parse_document: "解析文档中",
   analyze_table: "分析表格中",
 };

@@ -12,6 +12,7 @@ from ginno_runtime.world_state import (
     UPDATE_MSG_PREFIX,
     EnvironmentSection,
     McpSection,
+    MemorySection,
     PermissionsSection,
     SessionCtx,
     SkillsSection,
@@ -379,3 +380,40 @@ def test_context_settings_defaults_and_override(isolated_home):
     s2 = context_settings()
     assert s2["compact_threshold_tokens"] == 123
     assert "bogus_key" not in s2
+
+
+# --------------------------------------------------------------------------- #
+# memory section (A5 budget)
+# --------------------------------------------------------------------------- #
+def test_memory_render_budget_truncates(isolated_home):
+    """Memory rides the STABLE system layer and is re-read from disk every
+    call — uncapped growth enlarged the cache prefix on every edit. Rendering
+    must respect the budget and leave a pointer to the files."""
+    assert context_settings()["memory_max_chars"] == 8000
+    sec = MemorySection()
+    snap = {"global_hash": "h", "agent_hash": "h",
+            "global": "记" * 20000, "agent": ""}
+    out = sec.render(snap)
+    assert len(out) < 9000  # budget + truncation note
+    assert "截断" in out
+    # snapshot keeps the FULL text (change detection unaffected)
+    assert len(snap["global"]) == 20000
+
+
+def test_memory_render_under_budget_untouched(isolated_home):
+    sec = MemorySection()
+    snap = {"global_hash": "h", "agent_hash": "h",
+            "global": "small memory", "agent": ""}
+    out = sec.render(snap)
+    assert "small memory" in out and "截断" not in out
+
+
+def test_memory_budget_override(isolated_home):
+    paths.settings_path().write_text(
+        json.dumps({"context": {"memory_max_chars": 100}})
+    )
+    sec = MemorySection()
+    snap = {"global_hash": "h", "agent_hash": "h",
+            "global": "x" * 500, "agent": ""}
+    out = sec.render(snap)
+    assert len(out) < 200 and "截断" in out

@@ -7,6 +7,7 @@ import {
   Check,
   Copy,
   Download,
+  ExternalLink,
   FileSpreadsheet,
   FileText,
   Image as ImageIcon,
@@ -502,6 +503,23 @@ export function ArtifactsPanel() {
     }
   }
 
+  // Open the file with the OS default application (Preview, Excel, etc.).
+  // Works in both desktop and dev modes — the sidecar runs on the same host.
+  async function openExternalArtifact(e: React.MouseEvent, a: (typeof items)[number]) {
+    e.stopPropagation();
+    if ((a.kind !== "file" && a.kind !== "image") || !a.ref || busyId) return;
+    setBusyId(a.id);
+    try {
+      const entry = matchByRef(await api.listFiles(), a.ref);
+      if (!entry) return;
+      await api.openFileExternal(entry.id);
+    } catch {
+      /* sidecar hiccup — ignore */
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const confirmDelete = () => {
     if (deleteTarget) void g.removeArtifact(deleteTarget.id);
     setDeleteTarget(null);
@@ -552,17 +570,30 @@ export function ArtifactsPanel() {
               <span className="ml-auto flex shrink-0 items-center gap-0.5">
                 {clickable && (
                   <button
-                    onClick={(e) => void downloadArtifact(e, a)}
-                    title="下载到 Downloads"
+                    onClick={(e) => void openExternalArtifact(e, a)}
+                    title="用系统应用打开"
                     className={`rounded-md p-1 text-muted hover:bg-card2 hover:text-txt ${
-                      busyId === a.id || doneId === a.id
-                        ? "visible"
-                        : "invisible group-hover:visible"
+                      busyId === a.id ? "visible" : "invisible group-hover:visible"
                     }`}
                   >
                     {busyId === a.id ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : doneId === a.id ? (
+                    ) : (
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                )}
+                {clickable && (
+                  <button
+                    onClick={(e) => void downloadArtifact(e, a)}
+                    title="下载到 Downloads"
+                    className={`rounded-md p-1 text-muted hover:bg-card2 hover:text-txt ${
+                      doneId === a.id
+                        ? "visible"
+                        : "invisible group-hover:visible"
+                    }`}
+                  >
+                    {doneId === a.id ? (
                       <Check className="h-3.5 w-3.5 text-emerald-400" />
                     ) : (
                       <Download className="h-3.5 w-3.5" />

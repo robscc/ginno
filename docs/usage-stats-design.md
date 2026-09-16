@@ -170,7 +170,16 @@ Ginno 是单机个人 Agent，用户即机主。核心场景：
 | `input_tokens` | **整段提示词** = 非缓存输入 + 缓存读 + 缓存写 | `input + cache_read + cache_creation` | `prompt_tokens`（本就含 cached） |
 | `output_tokens` | 输出 | 原样 | 原样 |
 | `cache_read_tokens` | 缓存命中读 | `cache_read` | `prompt_tokens_details.cached_tokens` |
-| `cache_creation_tokens` | 缓存写入 | `cache_creation` | 0（OpenAI 无此概念） |
+| `cache_creation_tokens` | 缓存写入 | `cache_creation` + `ephemeral_5m/1h_input_tokens` | 0（OpenAI 无此概念） |
+
+> ⚠️ 实现注（2026-08-31）：langchain 1.x 的 `usage_metadata.input_tokens` **已经**是
+> 整段提示词口径（ChatAnthropic `_create_usage_metadata` 已把缓存部分加回；ChatOpenAI
+> 透传 `prompt_tokens`），因此 `extract_usage` 对 input **直接透传**，不再二次相加
+> （旧版 langchain 才需要加回；再加一次会双重计数——2026-08 缓存诊断发现日志 input
+> 虚高、命中率被低估约 9 个百分点）。另外，当 provider 返回 TTL 明细
+> （`cache_creation: {ephemeral_5m_input_tokens: …}`）时，langchain 会把通用
+> `cache_creation` 置 0、明细挪入 `ephemeral_5m/1h_input_tokens` 键，写入量必须把
+> 三者相加才能完整恢复（此前每次写入都被记成 0）。
 
 由此得到唯一定义的比率：
 

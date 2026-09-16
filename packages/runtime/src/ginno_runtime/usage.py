@@ -11,24 +11,39 @@ downstream consumer (WS events, TopBar, usage logs, aggregates) sees the SAME
 semantics:
 
 * ``input_tokens``          WHOLE prompt = non-cached input + cache read +
-                            cache creation. Anthropic's raw ``input_tokens``
-                            excludes the cached portions, so they are added
-                            back; OpenAI's ``prompt_tokens`` already includes
-                            cached tokens and passes through unchanged.
+                            cache creation. The langchain 1.x chat models
+                            already deliver this shape on BOTH providers:
+                            ChatAnthropic adds the cached portions back into
+                            ``input_tokens`` (see langchain_anthropic
+                            ``_create_usage_metadata``), and ChatOpenAI passes
+                            ``prompt_tokens`` through, which already includes
+                            the cached tokens. So extraction passes the value
+                            through unchanged. (Pre-1.0 langchain reported the
+                            Anthropic raw count that excluded cached portions —
+                            adding them back here would now double-count.)
 * ``output_tokens``         as reported.
 * ``cache_read_tokens``     prompt-cache hits (Anthropic ``cache_read`` or
                             OpenAI ``cached_tokens``).
-* ``cache_creation_tokens`` cache writes (Anthropic only; 0 elsewhere).
+* ``cache_creation_tokens`` cache writes. When the provider returns a TTL
+                            breakdown (``cache_creation`` dict), langchain
+                            zeroes the generic ``cache_creation`` field and
+                            moves the amounts into ``ephemeral_5m_input_tokens``
+                            / ``ephemeral_1h_input_tokens`` — so all three
+                            fields are summed here (2026-08 gateway diagnosis:
+                            reading only ``cache_creation`` logged every write
+                            as 0).
 
 With this shape the hit ratio ``cache_read / input`` is always in [0, 1] and
 comparable across providers (the pre-normalization Anthropic denominator
 excluded cache tokens, which could push the ratio past 100%).
 
-``usage_metadata`` shape (langchain-core)::
+``usage_metadata`` shape (langchain-core 1.x)::
 
     {"input_tokens": int, "output_tokens": int, "total_tokens": int,
      "input_token_details": {"cache_read": int|None, "cache_creation": int|None,
-                             "cached_tokens": int|None}}
+                             "cached_tokens": int|None,
+                             "ephemeral_5m_input_tokens": int|None,
+                             "ephemeral_1h_input_tokens": int|None}}
 """
 
 from __future__ import annotations
@@ -71,20 +86,21 @@ def extract_usage(message: Any) -> dict[str, int] | None:
     def _field(obj: Any, name: str) -> Any:
         return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
 
-    raw_input = _num(_field(um, "input_tokens"))
-    # Anthropic-style details carry cache_read / cache_creation; OpenAI-style
-    # carry cached_tokens (prompt_tokens already INCLUDES the cached part).
-    has_anthropic_details = (
-        _field(details, "cache_read") is not None
-        or _field(details, "cache_creation") is not None
-    )
+    # langchain 1.x already normalizes input_tokens to the WHOLE prompt for
+    # both providers (ChatAnthropic adds the cached portions back in
+    # _create_usage_metadata; ChatOpenAI passes prompt_tokens through, which
+    # includes cached_tokens). Passing through here — adding the cache fields
+    # again double-counted every cached token (2026-08 cache-rate diagnosis).
+    input_tokens = _num(_field(um, "input_tokens"))
     cache_read = _num(_field(details, "cache_read")) or _num(_field(details, "cached_tokens"))
-    cache_creation = _num(_field(details, "cache_creation"))
-    if has_anthropic_details:
-        # raw input excludes cached portions → rebuild the whole-prompt count
-        input_tokens = raw_input + cache_read + cache_creation
-    else:
-        input_tokens = raw_input
+    # Cache writes: when the provider reports a TTL breakdown, langchain zeroes
+    # the generic field and moves the amounts into the ephemeral_* keys — sum
+    # all three so writes are never lost.
+    cache_creation = (
+        _num(_field(details, "cache_creation"))
+        + _num(_field(details, "ephemeral_5m_input_tokens"))
+        + _num(_field(details, "ephemeral_1h_input_tokens"))
+    )
     return {
         "input_tokens": input_tokens,
         "output_tokens": _num(_field(um, "output_tokens")),

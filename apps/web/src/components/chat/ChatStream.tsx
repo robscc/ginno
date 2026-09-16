@@ -63,6 +63,9 @@ interface ChatMsg {
   // (model/provider failure etc.). blocks[0] holds the error text;
   // sendPayload carries the originating user turn for the retry button.
   error?: boolean;
+  // Assistant bubble that was streaming when the turn errored — rendered with
+  // a red border + "回复中断" label so it doesn't look like a normal reply.
+  failed?: boolean;
   // Error cards only: id of the originating user bubble. Retry operates on
   // THAT bubble in place — no duplicate message is appended.
   sourceMsgId?: string;
@@ -1404,19 +1407,22 @@ export function ChatStream({
             // An empty live bubble (error before any token) would render as a
             // confusing "（空回复）" right above the error card — drop it.
             .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
-            // Close out any in-flight tool blocks as interrupted so `running` unsticks.
-            .map((msg) =>
-              hasPendingTool(msg.blocks)
-                ? {
-                    ...msg,
-                    blocks: msg.blocks.map((b) =>
-                      b.kind === "tool" && b.pending
-                        ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
-                        : b,
-                    ),
-                  }
-                : msg,
-            ),
+            // Close out any in-flight tool blocks as interrupted so `running` unsticks,
+            // and mark the live bubble as `failed` so the UI can show a visual
+            // indicator (red border + "回复中断" label) instead of looking like
+            // a normal completed assistant reply.
+            .map((msg) => {
+              const marked = msg.id === liveMsgId ? { ...msg, failed: true } : msg;
+              if (!hasPendingTool(marked.blocks)) return marked;
+              return {
+                ...marked,
+                blocks: marked.blocks.map((b) =>
+                  b.kind === "tool" && b.pending
+                    ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
+                    : b,
+                ),
+              };
+            }),
           {
             id: mid(),
             role: "assistant" as const,
@@ -2108,13 +2114,36 @@ export function ChatStream({
       turnId,
     };
     storeRef.current[sid] = userMsgId
-      ? // In-place retry: refresh the original bubble and insert the response
-        // placeholder immediately after it — never duplicate the message.
-        (storeRef.current[sid] ?? []).flatMap((m) =>
-          m.id === userMsgId
-            ? [{ ...m, turnId, status: "sending" as const, failReason: undefined }, liveBubble]
-            : [m],
-        )
+      ? // Retry: keep the old user bubble and its response history untouched,
+        // append a NEW user bubble at the tail with the same payload, followed
+        // by a fresh assistant placeholder. This preserves the conversation
+        // trail instead of mutating history in place.
+        ((store) => {
+          const orig = store.find((m) => m.id === userMsgId);
+          if (!orig) {
+            // Original bubble gone — append fresh user + live
+            return [
+              ...store,
+              {
+                id: uid,
+                role: "user" as const,
+                blocks: userBlocks,
+                turnId,
+                agentId: payload.agentId,
+                status: "sending" as const,
+                sendPayload: payload,
+              },
+              liveBubble,
+            ];
+          }
+          // Append new user bubble + live bubble at the tail; leave everything
+          // before untouched (old turns stay in the conversation trail).
+          return [
+            ...store,
+            { ...orig, id: uid, turnId, status: "sending" as const, failReason: undefined },
+            liveBubble,
+          ];
+        })(storeRef.current[sid] ?? [])
       : [
           ...(storeRef.current[sid] ?? []),
           {
@@ -2206,21 +2235,50 @@ export function ChatStream({
     syncDisplay(sid);
   }
 
-  /** Retry on a turn-error card: drop the card and re-invoke the originating
-   * payload ON THE ORIGINAL user bubble in place (it flips back to "sending",
-   * the response slots in right after it) — no duplicate message. Only if the
-   * original bubble is somehow gone do we fall back to appending a fresh one. */
+  /** Retry on a turn-error card: keep the error card in place as a record of
+   * the failure, then append a brand-new user bubble + assistant placeholder
+   * at the tail of the chat. The new turn gets a fresh turnId so the server
+   * treats it as a new attempt (no checkpoint dedup collision). */
   function retryError(msgId: string) {
     const sid = curSessionIdRef.current;
     if (!sid || busyBySessionRef.current[sid]) return; // one turn at a time
     const list = storeRef.current[sid] ?? [];
     const card = list.find((m) => m.id === msgId);
     if (!card?.error || !card.sendPayload) return;
+    // Keep the error card — don't remove it. Just start a fresh turn at the bottom.
+    attemptSend(sid, card.sendPayload);
+  }
+
+  /** Retry from checkpoint: resume the failed turn from its latest checkpoint
+   * instead of re-executing from the start. Preserves tool calls and
+   * intermediate results. */
+  function retryFromCheckpoint(msgId: string) {
+    const sid = curSessionIdRef.current;
+    if (!sid || busyBySessionRef.current[sid]) return;
+    const list = storeRef.current[sid] ?? [];
+    const card = list.find((m) => m.id === msgId);
+    if (!card?.error) return;
+    // Remove the error card
     storeRef.current[sid] = list.filter((m) => m.id !== msgId);
-    const source = card.sourceMsgId
-      ? (storeRef.current[sid] ?? []).find((m) => m.id === card.sourceMsgId && m.role === "user")
-      : undefined;
-    attemptSend(sid, card.sendPayload, source?.id);
+    syncDisplay(sid);
+    // Mark as busy
+    busyBySessionRef.current[sid] = true;
+    const turnId = card.turnId || crypto.randomUUID();
+    const sock = socketsRef.current[sid];
+    if (!sock || sock.readyState !== WebSocket.OPEN) {
+      busyBySessionRef.current[sid] = false;
+      return;
+    }
+    try {
+      sock.send(
+        JSON.stringify({
+          type: "retry_from_checkpoint",
+          turn_id: turnId,
+        }),
+      );
+    } catch {
+      busyBySessionRef.current[sid] = false;
+    }
   }
 
   function respond(decision: "allow" | "deny") {
@@ -2864,6 +2922,7 @@ export function ChatStream({
                 canRetry={!!m.sendPayload && m.id === lastRetryableId}
                 busy={running}
                 onRetry={() => retryError(m.id)}
+                onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
               />
             ) : (
               <Fragment key={m.id}>
@@ -2876,6 +2935,7 @@ export function ChatStream({
                   blocks={m.blocks}
                   streaming={m.id === liveId}
                   turnId={m.turnId}
+                  failed={m.failed}
                 />
               </Fragment>
             ),
@@ -3162,12 +3222,14 @@ function ErrorCard({
   canRetry,
   busy,
   onRetry,
+  onRetryFromCheckpoint,
 }: {
   message: string;
   turnId?: string;
   canRetry: boolean;
   busy?: boolean;
   onRetry: () => void;
+  onRetryFromCheckpoint?: () => void;
 }) {
   return (
     <div className="rounded-xl border border-red/40 bg-red/10 px-4 py-3">
@@ -3182,14 +3244,26 @@ function ErrorCard({
         {message}
       </pre>
       {canRetry && (
-        <button
-          onClick={onRetry}
-          disabled={busy}
-          title="用原输入重新发起一次回合"
-          className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-        >
-          重试
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={onRetry}
+            disabled={busy}
+            title="用原输入从头重新发起一次回合"
+            className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            从头重试
+          </button>
+          {onRetryFromCheckpoint && (
+            <button
+              onClick={onRetryFromCheckpoint}
+              disabled={busy}
+              title="从最近的检查点继续，保留已完成的工具调用和中间结果"
+              className="rounded-lg border border-violet/40 bg-violet/10 px-3 py-1.5 text-xs font-medium text-violet transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              从断点继续
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -3220,16 +3294,37 @@ function AssistantBubble({
   blocks,
   streaming,
   turnId,
+  failed,
 }: {
   agent: AgentConfig | null;
   agentName?: string;
   blocks: Block[];
   streaming?: boolean;
   turnId?: string;
+  failed?: boolean;
 }) {
   const hex = agentHex(agent?.color);
   const displayName = agent?.name || agentName || "Agent";
   const hasInner = blocks.some((b) => b.kind !== "ref");
+
+  // Track elapsed time for dynamic status text during TTFT wait
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!streaming || hasInner) {
+      setElapsed(0);
+      return;
+    }
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(timer);
+  }, [streaming, hasInner]);
+
+  // Dynamic status text based on elapsed time
+  const statusText = useMemo(() => {
+    if (elapsed < 2) return "正在连接模型…";
+    if (elapsed < 10) return "模型思考中…";
+    return `还在想，可能需要一点时间… (${elapsed}s)`;
+  }, [elapsed]);
   return (
     <div className="min-w-0">
       {/* C+ 方案②归属徽标：agent 色 dot + 名字 pill（原型风格），替代原先的
@@ -3243,21 +3338,53 @@ function AssistantBubble({
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: hex }} />
           {displayName}
         </span>
-        <span className="text-xs text-faint">{streaming ? "thinking…" : "just now"}</span>
+        <span className="text-xs text-faint">{streaming ? statusText : "just now"}</span>
         <span className="ml-auto">
           <TurnIdChip turnId={turnId} />
         </span>
       </div>
-      <div className="rounded-xl border border-line bg-card px-4 py-3 text-sm leading-relaxed text-txt">
+      <div className={`rounded-xl border bg-card px-4 py-3 text-sm leading-relaxed text-txt transition-all duration-500 ${
+        failed
+          ? 'border-red/40 bg-red/[0.03]'
+          : 'border-line'
+      } ${streaming && !hasInner ? 'animate-pulse-subtle' : ''}`}>
+          {failed && (
+            <div className="mb-2 flex items-center gap-1.5 text-[11px] text-red/80">
+              <AlertCircle className="h-3 w-3 shrink-0" />
+              <span>回复中断 — 此条回复未完成，可点击下方错误卡片的「从头重试」重新发起</span>
+            </div>
+          )}
           {hasInner ? (
             <InnerBlocks blocks={blocks} streaming={streaming} />
           ) : streaming ? (
-            <span className="inline-flex items-center gap-1 text-muted">
-              <span className="flex gap-0.5">
-                <Dot /> <Dot d={150} /> <Dot d={300} />
-              </span>
-              <span className="ml-1 text-xs">Thinking…</span>
-            </span>
+            <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5">
+              <div className="flex items-center gap-2">
+                {/* Smaller animated wave dots */}
+                <div className="flex items-center gap-0.5">
+                  <WaveDot delay={0} color={hex} />
+                  <WaveDot delay={150} color={hex} />
+                  <WaveDot delay={300} color={hex} />
+                </div>
+                {/* Status text with fade transition */}
+                <span key={statusText} className="text-xs text-muted animate-fade-in">
+                  {statusText}
+                </span>
+                {/* Subtle progress bar for long waits */}
+                {elapsed >= 10 && (
+                  <div className="ml-auto flex-1 max-w-[80px]">
+                    <div className="h-0.5 overflow-hidden rounded-full bg-muted/20">
+                      <div
+                        className="h-full rounded-full transition-all duration-1000 ease-linear"
+                        style={{
+                          width: `${Math.min((elapsed - 10) * 3, 100)}%`,
+                          background: `linear-gradient(90deg, ${hex}40, ${hex})`
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           ) : (
             // A finished turn with no inner content (e.g. refs-only) must NOT keep
             // pulsing "Thinking…" — that read as a permanently-stuck indicator.
@@ -3274,6 +3401,19 @@ function Dot({ d = 0 }: { d?: number }) {
     <span
       className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted"
       style={{ animationDelay: `${d}ms` }}
+    />
+  );
+}
+
+function WaveDot({ delay, color }: { delay: number; color: string }) {
+  return (
+    <span
+      className="h-1.5 w-1.5 rounded-full animate-wave"
+      style={{
+        backgroundColor: color,
+        animationDelay: `${delay}ms`,
+        boxShadow: `0 0 6px ${color}60`
+      }}
     />
   );
 }

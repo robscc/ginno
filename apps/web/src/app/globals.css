@@ -311,11 +311,55 @@ html.light .hljs-name {
   animation: ginno-pulse-ring 1.2s ease-out 2;
 }
 
+/* ---- TTFT waiting indicator animations ---- */
+@keyframes ginno-wave {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+.animate-wave {
+  animation: ginno-wave 1.2s ease-in-out infinite;
+}
+
+@keyframes ginno-fade-in-text {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in {
+  animation: ginno-fade-in-text 0.3s ease-out;
+}
+
+@keyframes ginno-pulse-subtle {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+.animate-pulse-subtle {
+  animation: ginno-pulse-subtle 2s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .anim-success-flash,
   .anim-shake,
   .anim-slide-in,
-  .anim-pulse-ring {
+  .anim-pulse-ring,
+  .animate-wave,
+  .animate-fade-in,
+  .animate-pulse-subtle {
     animation: none;
   }
   .btn-press:active {
