@@ -955,7 +955,7 @@ export function ChatStream({
     if (focusLatestRef.current === sid) {
       focusLatestRef.current = null;
       stickRef.current = true;
-      scrollToBottomSoon();
+      pinToBottom();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
@@ -989,23 +989,27 @@ export function ChatStream({
   // Auto-scroll only while the user is parked near the bottom; otherwise a
   // streaming token (or a history load) yanks them back down mid-read.
   useEffect(() => {
-    if (stickRef.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    if (stickRef.current) pinToBottom();
   }, [messages]);
 
-  // Scroll-to-bottom that tolerates the container still having no layout
-  // (e.g. the route flipping back to "/" right after a notification click) —
-  // retries a few frames until scrollHeight is real.
-  function scrollToBottomSoon() {
-    let tries = 0;
+  // Pin the transcript to the bottom across a few frames instead of once.
+  //
+  // A transcript lays out progressively — markdown tables, collapsible thinking
+  // blocks, code blocks, images — so a single `scrollTop = scrollHeight` pins to
+  // whatever height the first frame happened to have. Opening a session into a
+  // short window then landed MID-TRANSCRIPT or even at the top (measured: the
+  // same session landed at scrollTop 0 in a 900px viewport and ~186 in a 560px
+  // one), and macOS overlay scrollbars give no hint that anything is above.
+  //
+  // stickRef flips false the moment the user scrolls away (:onScroll), which
+  // aborts the loop — so this never fights someone reading back.
+  function pinToBottom(frames = 12) {
+    let left = frames;
     const attempt = () => {
       const el = scrollRef.current;
-      if (el && el.scrollHeight > 0) {
-        el.scrollTop = el.scrollHeight;
-        return;
-      }
-      if (++tries < 20) requestAnimationFrame(attempt);
+      if (!el || !stickRef.current) return;
+      el.scrollTop = el.scrollHeight;
+      if (--left > 0) requestAnimationFrame(attempt);
     };
     requestAnimationFrame(attempt);
   }
@@ -1020,7 +1024,7 @@ export function ChatStream({
       if (!sid) return;
       focusLatestRef.current = sid;
       stickRef.current = true;
-      if (curSessionIdRef.current === sid) scrollToBottomSoon();
+      if (curSessionIdRef.current === sid) pinToBottom();
     };
     window.addEventListener("ginno:focus-latest", onFocusLatest);
     return () => window.removeEventListener("ginno:focus-latest", onFocusLatest);

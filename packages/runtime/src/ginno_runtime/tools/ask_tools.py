@@ -58,6 +58,44 @@ def reset_ask_budget(token: contextvars.Token) -> None:
     _BUDGET.reset(token)
 
 
+def normalize_options(raw: object) -> list[str]:
+    """Coerce an ``options`` argument into a list of labels.
+
+    Models routinely JSON-ENCODE an array argument instead of sending a real
+    array — observed live (2026-09-20, turn aa49c475): ``options`` arrived as
+    the string ``'["装进仓库", "装进全局"]'``. Rejecting that via schema
+    validation burned the model's whole ask budget on two retries before it
+    gave up and asked as free text; and anything that iterated the string
+    rendered one card option PER CHARACTER.
+
+    So: a list is taken as-is; a string is parsed as JSON when it looks like a
+    list, taken as ONE bare option otherwise; anything else is empty.
+    """
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            # An encoded array. A malformed one yields NOTHING rather than
+            # per-character garbage.
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError:
+                return []
+            raw = parsed if isinstance(parsed, list) else []
+        else:
+            # Anything else is one bare label (a single-option question).
+            raw = [s]
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for o in raw:
+        label = str(o).strip()
+        if label:
+            out.append(label)
+    return out
+
+
 def build_ask_tools(project_slug: str | None = None, session_id: str | None = None) -> list:
     """Built per session, like the skill tools.
 
@@ -72,7 +110,7 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
     @tool
     def ask_user(
         question: str,
-        options: list[str] | None = None,
+        options: list[str] | str | None = None,
         header: str = "",
         allow_free_text: bool = True,
         tool_call_id: Annotated[str, InjectedToolCallId] = "",
@@ -92,11 +130,15 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
 
         ``question``  — the body, markdown allowed. State the ambiguity
                         concretely, and name the candidates.
-        ``options``   — 2-5 user-facing choices. Omit entirely for a pure
-                        free-text question. Each entry must be a complete,
-                        self-explanatory label ("安装到 <repo>/.claude/skills
-                        （Claude Code 读取）"), because that exact string is
-                        what the user clicks and what you get back.
+        ``options``   — 2-5 user-facing choices, as a REAL JSON ARRAY. Omit
+                        entirely for a pure free-text question. Each entry must
+                        be a complete, self-explanatory label ("安装到
+                        <repo>/.claude/skills（Claude Code 读取）"), because that
+                        exact string is what the user clicks and what you get
+                        back. Do NOT pass a JSON-encoded string of an array
+                        (it is accepted, but a real array is clearer).
+                        Never write the choices as "1 / 2 / 3" inside
+                        ``question`` — put them here so they become buttons.
         ``header``    — 2-4 word card title, e.g. "选择安装位置".
         ``allow_free_text`` — also offer an "其他" field (default true).
 
@@ -109,7 +151,7 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
         q = (question or "").strip()
         if not q:
             return "[error] question is required"
-        opts = [str(o).strip() for o in (options or []) if str(o).strip()]
+        opts = normalize_options(options)
 
         if not _INTERACTIVE.get():
             return (

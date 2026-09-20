@@ -6,6 +6,31 @@ import { Markdown } from "@/components/chat/Markdown";
 import type { QuestionBlock } from "./blocks";
 
 /**
+ * Numbered/bulleted lines in a question BODY → quick-reply labels.
+ *
+ * Models sometimes inline their choices in the question text ("1. 装这里
+ * 2. 装那里") instead of passing `options` — observed live 2026-09-20 (turn
+ * aa49c475), where the model fell back to prose after its array argument was
+ * rejected twice. Without this the user has to TYPE a number to answer a
+ * question the model already laid out as a list.
+ *
+ * Purely presentational, and deliberately conservative: only used when the
+ * call carried no real `options`, needs 2-6 matches, and the reply sends the
+ * matched line as-is (free text — the intended `option_index` is unknowable,
+ * and a guess would name the wrong label in the receipt).
+ */
+export function parseInlineOptions(question: string): string[] {
+  const out: string[] = [];
+  for (const raw of (question || "").split("\n")) {
+    const m = /^(?:\*\*)?(?:[-*•]|\(?\d{1,2}[.)、）]|（\d{1,2}）)\s*(.+)$/.exec(raw.trim());
+    if (!m) continue;
+    const label = m[1].replace(/\*\*/g, "").trim();
+    if (label) out.push(label);
+  }
+  return out.length >= 2 && out.length <= 6 ? out : [];
+}
+
+/**
  * In-chat ask_user card — the agent hit an ambiguity and parked the turn on a
  * LangGraph interrupt. Lives inside the assistant bubble (sibling of
  * workflow/HumanInputCard: same "card in a bubble, answered over a resume
@@ -53,6 +78,14 @@ export function AskUserCard({
     const t = freeText.trim();
     if (t) send(t, null, false);
   };
+  // Real options win. Only a question that carried NONE gets buttons parsed out
+  // of its body — those reply as free text (index null), since the model never
+  // assigned them an option_index.
+  const real = block.options ?? [];
+  const choices: { label: string; index: number | null }[] =
+    real.length > 0
+      ? real.map((label, i) => ({ label, index: i }))
+      : parseInlineOptions(block.question).map((label) => ({ label, index: null }));
 
   return (
     <div
@@ -71,16 +104,16 @@ export function AskUserCard({
       <div className="mb-2 text-xs leading-relaxed text-txt [&_p]:my-1">
         <Markdown text={block.question} />
       </div>
-      {block.options.length > 0 && (
+      {choices.length > 0 && (
         <div className="mb-2 flex flex-col gap-1.5">
-          {block.options.map((opt, i) => (
+          {choices.map((c, i) => (
             <button
               key={i}
-              onClick={() => send(opt, i, false)}
+              onClick={() => send(c.label, c.index, false)}
               disabled={!interactive}
               className="btn-press w-full rounded-md border border-line bg-card px-2.5 py-1.5 text-left text-xs text-txt transition-colors hover:border-violet/60 hover:bg-violet/10 disabled:opacity-50 disabled:hover:border-line disabled:hover:bg-card"
             >
-              {opt}
+              {c.label}
             </button>
           ))}
         </div>

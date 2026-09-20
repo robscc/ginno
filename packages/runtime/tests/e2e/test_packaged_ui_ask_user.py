@@ -192,6 +192,33 @@ def _card(page):
     return page.locator(f"text={HEADER}").first
 
 
+def _transcript_scroll(page) -> dict:
+    """Where the transcript sits, found via the bubble's scrollable ancestor.
+
+    Walking up from a known bubble is the only reliable way to pick the message
+    list out of the several scrollable panels on the page.
+    """
+    return page.evaluate(
+        """(needle) => {
+          const node = Array.from(document.querySelectorAll('div'))
+            .find(d => d.children.length === 0 && d.textContent.trim() === needle);
+          if (!node) return {noBubble: true};
+          let el = node.parentElement, sc = null;
+          while (el) {
+            const s = getComputedStyle(el);
+            if ((s.overflowY === 'auto' || s.overflowY === 'scroll')
+                && el.scrollHeight > el.clientHeight + 10) { sc = el; break; }
+            el = el.parentElement;
+          }
+          if (!sc) return {noScroller: true};
+          return {scrollTop: Math.round(sc.scrollTop),
+                  maxScroll: sc.scrollHeight - sc.clientHeight,
+                  atBottom: sc.scrollHeight - sc.scrollTop - sc.clientHeight <= 2};
+        }""",
+        "导入 ponytail skill",
+    )
+
+
 @pytest.mark.parametrize("app", [PORTS[0]], indirect=True)
 def test_card_renders_answer_folds_and_survives_reload(app):
     page, _home = app
@@ -220,6 +247,17 @@ def test_card_renders_answer_folds_and_survives_reload(app):
     # …and it is a receipt, not a live question again
     assert page.locator(f"text={OPTION_A}").count() == 0
 
+    # Scroll landing is deterministic: whenever the transcript overflows it must
+    # sit at the BOTTOM. It used to depend on whether the pin frame beat the
+    # transcript's progressive layout — the same session landed at scrollTop 0
+    # in a tall viewport and mid-transcript in a short one, which is how a first
+    # message ends up invisible with no scrollbar hint that anything is above.
+    page.set_viewport_size({"width": 1100, "height": 560})
+    page.wait_for_timeout(1200)
+    scroll = _transcript_scroll(page)
+    if not scroll.get("noScroller"):
+        assert scroll["atBottom"], f"transcript must land at the bottom: {scroll}"
+
 
 @pytest.mark.parametrize("app", [PORTS[1]], indirect=True)
 def test_pending_card_survives_reload_and_is_still_answerable(app):
@@ -244,3 +282,115 @@ def test_pending_card_survives_reload_and_is_still_answerable(app):
     page.locator(f"text={OPTION_A}").first.click()
     page.locator(f"text=已选择：{OPTION_A}").first.wait_for(timeout=20_000)
     page.locator("text=好，按你选的位置装好了。").first.wait_for(timeout=20_000)
+
+# --------------------------------------------------------------------------- #
+# inline numbered choices (no `options` arg) → quick-reply buttons
+# --------------------------------------------------------------------------- #
+INLINE_Q = (
+    "你要把 skill 装到哪个位置？请直接回复 1 / 2 / 3：\n\n"
+    "1. 当前仓库 .claude/skills → ~/workspace/dev/demo/.claude/skills/\n"
+    "2. Ginno 全局 → ~/.ginno/skills/\n"
+    "3. 两个都装\n"
+)
+
+
+def _inline_scripts(path: Path) -> None:
+    """A question with NO options — the choices are numbered in the body.
+
+    This is the shape the model fell back to on 2026-09-20 after its array
+    argument was rejected twice; the card must still offer clickable choices
+    instead of making the user type a digit."""
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {"name": "ask_user", "args": {"question": INLINE_Q, "header": HEADER}}
+                    ],
+                },
+                {"content": "好，装到全局了。"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def app_inline(tmp_path, request):
+    """Same harness, an inline-choices script, its own port."""
+    if not RUNTIME_BIN.exists():
+        pytest.skip("packaged sidecar not built (run `make runtime`)")
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        pytest.skip("playwright not installed")
+    port = request.param
+    if _port_open(port):
+        pytest.skip(f"port {port} already in use")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "settings.json").write_text(json.dumps(_settings()))
+    scripts = tmp_path / "scripts.json"
+    _inline_scripts(scripts)
+
+    env = dict(
+        os.environ,
+        GINNO_HOME=str(home),
+        GINNO_FAKE_LLM="1",
+        GINNO_FAKE_LLM_SCRIPTS=str(scripts),
+        GINNO_RUNTIME_PORT=str(port),
+    )
+    proc = subprocess.Popen(
+        [str(RUNTIME_BIN)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    try:
+        _wait_health(port)
+        with sync_playwright() as pw:
+            browser = _launch_chromium(pw)
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="load")
+            page.wait_for_timeout(1500)
+            yield page, home
+            browser.close()
+    finally:
+        proc.terminate()
+
+
+@pytest.mark.parametrize("app_inline", [8895], indirect=True)
+def test_inline_numbered_choices_become_buttons(app_inline):
+    page, _home = app_inline
+
+    _send(page, "导入 skill")
+    _card(page).wait_for(timeout=20_000)
+
+    # Each numbered line is a BUTTON (getByRole excludes the body text, which
+    # renders the same lines as markdown).
+    b1 = page.get_by_role("button", name="当前仓库 .claude/skills")
+    b2 = page.get_by_role("button", name="Ginno 全局")
+    b3 = page.get_by_role("button", name="两个都装")
+    b1.wait_for(timeout=10_000)
+    assert b2.count() == 1 and b3.count() == 1
+
+    # One click replies for the user — no typing.
+    b2.click()
+    page.locator("text=已选择：").first.wait_for(timeout=20_000)
+    page.locator("text=好，装到全局了。").first.wait_for(timeout=20_000)
+
+    # …and the reply is the line text, so the model gets the full choice.
+    page.locator("text=Ginno 全局 →").first.wait_for(timeout=10_000)
+
+
+@pytest.mark.parametrize("app_inline", [8894], indirect=True)
+def test_inline_choices_survive_reload(app_inline):
+    page, _home = app_inline
+    _send(page, "导入 skill")
+    _card(page).wait_for(timeout=20_000)
+    page.reload(wait_until="load")
+    page.wait_for_timeout(2500)
+    # still pending, still clickable after the reload
+    b = page.get_by_role("button", name="两个都装")
+    b.wait_for(timeout=20_000)
+    b.click()
+    page.locator("text=已选择：").first.wait_for(timeout=20_000)

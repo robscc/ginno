@@ -322,16 +322,41 @@ def _json_or_none(text: str) -> dict | None:
     return v if isinstance(v, dict) else None
 
 
-def _question_block(tid: str | None, args: dict, result: str) -> dict:
-    """ask_user tool call → UI question block (the ask-user card's history
-    replay). No side store is needed: the checkpoint carries the card fields
-    in the tool-call args and the user's choice in the tool result — an empty
-    result means still parked (pending), ``(interrupted)`` means stopped while
-    parked (skipped), otherwise the result is the tool's JSON receipt."""
+def _ui_options(raw: object) -> list[str]:
+    """Coerce a tool-call ``options`` arg into card labels.
+
+    Models JSON-ENCODE array arguments — observed live 2026-09-20 (turn
+    aa49c475) as ``'["装进仓库", "装进全局"]'``. Iterating that string renders
+    ONE OPTION PER CHARACTER, so never iterate a raw value here."""
+    from ..tools.ask_tools import normalize_options
+
+    return normalize_options(raw)
+
+
+def _question_block(tid: str | None, args: dict, result: str) -> dict | None:
+    """ask_user tool call → UI question block, or None if it is not a card.
+
+    No side store is needed: the checkpoint carries the card fields in the
+    tool-call args and the user's choice in the tool result — an empty result
+    means still parked (pending), ``(interrupted)`` means stopped while parked
+    (skipped), otherwise the result is the tool's JSON receipt.
+
+    Returns None for a call that NEVER SHOWED A CARD: an input-validation
+    failure (the model stringified ``options``) or an ``[error]`` refusal (ask
+    budget spent / unattended turn). Those replay as ordinary tool bubbles,
+    matching what the live stream showed — rendering them as cards put two
+    junk cards (one per character!) into a real transcript.
+    """
+    res = (result or "").strip()
+    receipt = None
+    if res and res != "(interrupted)":
+        receipt = _json_or_none(res)
+        if not isinstance(receipt, dict) or "ok" not in receipt:
+            return None
     blk: dict = {
         "kind": "question",
         "question": str(args.get("question") or ""),
-        "options": [str(o) for o in (args.get("options") or [])],
+        "options": _ui_options(args.get("options")),
         "allowFreeText": bool(args.get("allow_free_text", True)),
         "status": "pending",
     }
@@ -340,20 +365,19 @@ def _question_block(tid: str | None, args: dict, result: str) -> dict:
     header = str(args.get("header") or "").strip()
     if header:
         blk["header"] = header
-    if not (result or "").strip():
-        return blk
-    r = None if result.strip() == "(interrupted)" else _json_or_none(result)
-    if r is None:
-        # Stopped mid-park (or an unparseable receipt) — never leave the card
-        # interactive on replay; a pending block reads as a live ask.
+    if not res:
+        return blk  # still parked
+    if receipt is None:
+        # Stopped mid-park: never leave the card interactive on replay — a
+        # pending block reads as a live ask.
         blk["status"] = "skipped"
         return blk
-    if r.get("skipped") or r.get("source") == "skipped":
+    if receipt.get("skipped") or receipt.get("source") == "skipped":
         blk["status"] = "skipped"
         return blk
     blk["status"] = "answered"
-    blk["answer"] = str(r.get("answer") or r.get("free_text") or "")
-    idx = r.get("option_index")
+    blk["answer"] = str(receipt.get("answer") or receipt.get("free_text") or "")
+    idx = receipt.get("option_index")
     blk["optionIndex"] = idx if isinstance(idx, int) else None
     return blk
 
@@ -556,12 +580,12 @@ def _messages_to_ui(
                             "kind": "tool", "id": tid, "name": nm, "content": res,
                             "pending": False, "argsPreview": _tool_args_preview(nm, args),
                         })
-                elif nm == "ask_user" and not res.strip().startswith("[error]"):
-                    # The question card IS the UI for this call. An "[error]"
-                    # refusal (ask budget spent / unattended turn) never parked
-                    # and replays as an ordinary tool bubble via the else
-                    # branch, matching what the live stream showed.
-                    step.append(_question_block(tid, args, res))
+                elif nm == "ask_user" and (_qb := _question_block(tid, args, res)):
+                    # The question card IS the UI for this call — but only for
+                    # a call that actually parked or returned a receipt;
+                    # _question_block returns None for an error result, which
+                    # falls through to the ordinary tool bubble below.
+                    step.append(_qb)
                 elif nm in ARTIFACT_TOOL_NAMES or nm in RENDER_TOOL_NAMES:
                     pass  # silent / already handled above
                 else:

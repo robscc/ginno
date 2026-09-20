@@ -150,3 +150,62 @@ def test_unarmed_budget_never_refuses(isolated_home, monkeypatch):
     tool = _tool()
     for _ in range(5):
         assert json.loads(_invoke(tool, {"question": "q"}))["ok"] is True
+
+# --------------------------------------------------------------------------- #
+# options normalization — models JSON-encode array args
+# --------------------------------------------------------------------------- #
+def test_stringified_options_are_parsed_not_iterated(isolated_home, monkeypatch):
+    """The 2026-09-20 failure (turn aa49c475): the model sent `options` as the
+    STRING '["a", "b"]', pydantic rejected it, and the model burned its whole
+    ask budget on retries. Anything that iterates the string renders one option
+    per character."""
+    seen = {}
+
+    def _fake(value):
+        seen.update(value)
+        return {"skip": True}
+
+    monkeypatch.setattr(at, "interrupt", _fake)
+    out = _invoke(_tool(), {
+        "question": "装哪？",
+        "options": '["装进当前仓库 .claude/skills", "装进 Ginno 全局"]',
+    })
+    assert json.loads(out)["ok"] is True
+    assert seen["options"] == ["装进当前仓库 .claude/skills", "装进 Ginno 全局"]
+
+
+def test_a_bare_string_is_one_option(isolated_home, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(at, "interrupt", lambda v: seen.update(v) or {"skip": True})
+    _invoke(_tool(), {"question": "q", "options": "就装到这个仓库"})
+    assert seen["options"] == ["就装到这个仓库"]
+
+
+def test_malformed_array_string_yields_no_garbage(isolated_home, monkeypatch):
+    """Better an empty list (a free-text question) than per-character options."""
+    seen = {}
+    monkeypatch.setattr(at, "interrupt", lambda v: seen.update(v) or {"skip": True})
+    _invoke(_tool(), {"question": "q", "options": '["未闭合'})
+    assert seen["options"] == []
+
+
+def test_option_index_still_maps_to_the_parsed_list(isolated_home, monkeypatch):
+    """The resume payload's index must index the PARSED list, or the receipt
+    names the wrong label."""
+    monkeypatch.setattr(
+        at, "interrupt", lambda v: {"answer": "b", "option_index": 1}
+    )
+    out = json.loads(
+        _invoke(_tool(), {"question": "q", "options": '["a", "b"]'})
+    )
+    assert out["source"] == "option" and out["answer"] == "b"
+
+
+def test_normalize_options_accepts_lists_and_rejects_junk():
+    assert at.normalize_options(None) == []
+    assert at.normalize_options([" a ", "", "b"]) == ["a", "b"]
+    assert at.normalize_options("[1, 2]") == ["1", "2"]
+    assert at.normalize_options(123) == []
+    # A non-array string is one bare label, JSON-looking or not.
+    assert at.normalize_options('{"a": 1}') == ['{"a": 1}']
+    assert at.normalize_options('["a", "b"') == []  # malformed array → nothing
