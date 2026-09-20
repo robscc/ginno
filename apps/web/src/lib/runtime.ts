@@ -74,6 +74,8 @@ export async function createSession(req: {
   provider?: string;
   model?: string;
   workflow_id?: string;
+  // "quick" marks floating quick-chat sessions (floating-window-design.md §1.1)
+  type?: string;
 }) {
   return json<SessionMeta & { ok?: boolean; error?: string }>(`${BASE}/sessions`, {
     method: "POST",

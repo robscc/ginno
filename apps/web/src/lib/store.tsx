@@ -275,6 +275,19 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     } catch {
       /* storage unavailable */
     }
+    // Floating quick-chat "follow" mode (docs/floating-window-design.md §2.3):
+    // announce the main window's active session so the pin window can mirror
+    // it. The pin's OWN provider instance must never rebroadcast — it would
+    // clobber the followed id with its (always null) activeSessionId.
+    if (typeof window !== "undefined" && window.location.pathname !== "/pin") {
+      try {
+        const bc = new BroadcastChannel("ginno-active-session");
+        bc.postMessage({ type: "active", sessionId: activeSessionId });
+        bc.close();
+      } catch {
+        /* BroadcastChannel unavailable */
+      }
+    }
   }, [activeSessionId]);
 
   // Right panel: tab is store-owned so chat events can auto-switch to

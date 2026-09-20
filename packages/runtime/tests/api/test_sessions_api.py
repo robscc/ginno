@@ -243,3 +243,26 @@ def test_rename_session_updates_title(client, patch_build_model):
     # persisted + reflected in the list
     listed = {s["id"]: s for s in client.get("/api/sessions").json()}
     assert listed[sid]["title"] == "My Renamed Session"
+
+
+def test_create_session_quick_type_persists(client, patch_build_model):
+    """type="quick" flows through response, on-disk index, and _SESSIONS."""
+    patch_build_model(script(text="ok"))
+    data = _post_session(client, type="quick").json()
+    assert data["ok"] is True
+    assert data["type"] == "quick"
+    index = json.loads(paths.session_index_path("default").read_text())
+    hit = next(m for m in index if m["id"] == data["id"])
+    assert hit["type"] == "quick"
+    from ginno_runtime.server_shared import _SESSIONS
+
+    assert _SESSIONS[data["id"]]["type"] == "quick"
+
+
+def test_create_session_regular_has_no_type(client, patch_build_model):
+    patch_build_model(script(text="ok"))
+    data = _post_session(client).json()
+    assert "type" not in data
+    index = json.loads(paths.session_index_path("default").read_text())
+    hit = next(m for m in index if m["id"] == data["id"])
+    assert "type" not in hit

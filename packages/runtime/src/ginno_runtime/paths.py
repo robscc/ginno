@@ -100,6 +100,30 @@ _DEFAULT_SETTINGS = {
         # A6: skills index budget (chars) inside the stable system layer
         "skills_index_max_chars": 1500,
     },
+    # Floating quick-chat window (docs/floating-window-design.md §1.2).
+    # Read by the desktop shell (via the frontend's pin_apply_prefs) and the
+    # settings UI; the Rust side never writes this file (PUT /api/settings is
+    # a full-document overwrite — window geometry lives in floating.json).
+    "floating": {
+        # global-shortcut crate syntax; registration failure degrades to the
+        # tray menu entry with a notice. ⇧⌘Space — deliberately NOT ⌃⌥Space
+        # (macOS "select previous input source", a guaranteed IME conflict);
+        # must match DEFAULT_HOTKEY in apps/desktop/src/lib.rs and
+        # DEFAULT_FLOATING in apps/web/src/lib/pinPrefs.ts.
+        "hotkey": "CommandOrControl+Shift+Space",
+        # "quick" = own lightweight session; "follow" = mirror main window's
+        # active session.
+        "default_mode": "quick",
+        # Opacity when the pin window is unfocused; 1.0 disables dimming.
+        "inactive_opacity": 0.7,
+        "visible_on_all_spaces": True,
+        # "avoid" (default) = macOS native behavior: never join other apps'
+        # fullscreen spaces; "overlay" = set FullScreenAuxiliary to cover them.
+        "fullscreen_policy": "avoid",
+        # Pill state only: ignore cursor events (pure status light).
+        "pill_click_through": False,
+        "show_on_launch": False,
+    },
     "knowledge": {
         "enabled": False,
         "vault_path": "",

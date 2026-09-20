@@ -17,6 +17,7 @@ export function generateStaticParams() {
     { tab: "usage" },
     { tab: "general" },
     { tab: "notifications" },
+    { tab: "floating" },
   ];
 }
 

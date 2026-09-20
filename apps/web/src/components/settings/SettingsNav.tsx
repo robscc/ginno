@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, Globe, ShieldCheck, Webhook, FolderOpen, FolderInput, BarChart3, Tags, TrendingUp } from "lucide-react";
+import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, Globe, ShieldCheck, Webhook, FolderOpen, FolderInput, BarChart3, Tags, TrendingUp, Pin } from "lucide-react";
 
 type Item = { id: string; label: string; icon: typeof Cpu; color: string };
 
@@ -25,6 +25,7 @@ const SAFE: Item[] = [
 const SYSTEM: Item[] = [
   { id: "general", label: "通用设置", icon: SlidersHorizontal, color: "#9ca3af" },
   { id: "notifications", label: "通知", icon: Bell, color: "#fbbf24" },
+  { id: "floating", label: "悬浮窗", icon: Pin, color: "#f472b6" },
   { id: "tool-labels", label: "工具标签", icon: Tags, color: "#818cf8" },
 ];
 

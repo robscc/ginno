@@ -53,6 +53,9 @@ class CreateSessionRequest(BaseModel):
     agent_id: str | None = None
     title: str | None = None
     icon: str | None = None
+    # Session kind (docs/floating-window-design.md §1.1): "quick" marks sessions
+    # created by the floating quick-chat window; None/absent = regular session.
+    type: str | None = None
     provider: str | None = None
     model: str | None = None
     # Context folder mounts (context-folders-design.md): library ids; the
@@ -533,6 +536,8 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "created": time.time(),
         "updated": time.time(),
     }
+    if req.type:
+        meta["type"] = req.type
     _session_meta_upsert(req.project_slug, meta)
     _log.info(
         "session_create session=%s agent=%s provider=%s model=%s title=%r folders=%d",
@@ -564,6 +569,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "primary_folder": primary_id,
         "primary_path": primary_path or "",
         "workflow_id": req.workflow_id,
+        "type": req.type,
     }
     # return the meta shape (with `id`) so the frontend SessionMeta matches
     return {**meta, "ok": True}

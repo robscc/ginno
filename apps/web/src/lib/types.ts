@@ -112,6 +112,9 @@ export interface SessionMeta {
   primary_folder?: string | null;
   // Bound workflow for workflow-dev refine sessions (injected every turn).
   workflow_id?: string | null;
+  // "quick" = created by the floating quick-chat window
+  // (docs/floating-window-design.md §1.1); regular sessions omit the field.
+  type?: "quick";
 }
 
 // A registered context folder (~/.ginno/folders.json entry).
