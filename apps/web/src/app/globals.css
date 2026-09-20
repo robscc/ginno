@@ -359,10 +359,52 @@ html.light .hljs-name {
   .anim-pulse-ring,
   .animate-wave,
   .animate-fade-in,
-  .animate-pulse-subtle {
+  .animate-pulse-subtle,
+  .pin-bounce {
     animation: none;
   }
   .btn-press:active {
     transform: none;
   }
+}
+
+/* ── Floating quick-chat window (docs/floating-window-design.md §3) ── */
+
+/* Compact rendering for the pin window: cap code blocks at ~3 lines so a
+   360px-wide mini window stays scannable. Scoped to the .pin-compact wrapper
+   so the main chat UI is untouched. */
+.pin-compact pre {
+  max-height: 72px;
+  overflow-y: auto;
+}
+
+/* Pill "needs confirmation" bounce — plays once per status transition to
+   orange (permission.request) so the pill draws the eye without looping. */
+@keyframes ginno-pill-bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-6px);
+  }
+  60% {
+    transform: translateY(-3px);
+  }
+}
+.pin-bounce {
+  animation: ginno-pill-bounce 0.6s ease 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pin-bounce {
+    animation: none;
+  }
+}
+
+/* The pin window is a transparent, decoration-less Tauri webview: the page
+   must not paint its own ground or the pill/mini card floats on an opaque
+   rectangle. PinApp adds .pin-window to <html> on mount. */
+html.pin-window,
+html.pin-window body {
+  background: transparent;
 }

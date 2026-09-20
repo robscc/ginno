@@ -8,6 +8,7 @@ import { AgentsSettings } from "./AgentsSettings";
 import { WorkflowsSettings } from "./WorkflowsSettings";
 import { GeneralSettings } from "./GeneralSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
+import { FloatingSettings } from "./FloatingSettings";
 import { KnowledgeSettings } from "./KnowledgeSettings";
 import { ContextFoldersSettings } from "./ContextFoldersSettings";
 import { WebSearchSettings } from "./WebSearchSettings";
@@ -38,8 +39,9 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "usage" && <UsageSettings />}
         {tab === "general" && <GeneralSettings />}
         {tab === "notifications" && <NotificationsSettings />}
+        {tab === "floating" && <FloatingSettings />}
         {tab === "tool-labels" && <ToolLabelsSettings />}
-        {!["model-api", "skills", "mcp", "agents", "workflows", "synthesis-quality", "knowledge", "folders", "web", "permissions", "hooks", "session-files", "usage", "general", "notifications", "tool-labels"].includes(tab) && (
+        {!["model-api", "skills", "mcp", "agents", "workflows", "synthesis-quality", "knowledge", "folders", "web", "permissions", "hooks", "session-files", "usage", "general", "notifications", "floating", "tool-labels"].includes(tab) && (
           <div className="px-8 py-10 text-sm text-faint">Unknown tab: {tab}</div>
         )}
       </div>

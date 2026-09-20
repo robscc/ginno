@@ -21,6 +21,14 @@
 //!      eval convention as `__ginnoFileDrop`). Closing the window hides it
 //!      (macOS convention) so the webview and its sockets survive to keep
 //!      receiving completion events.
+//!   6. Floating quick-chat window ("pin", docs/floating-window-design.md):
+//!      an always-on-top, undecorated, transparent second webview loading
+//!      `/pin` from the same origin. Two shapes ("mini" chat box ⇄ "pill"
+//!      status dot) toggled by a global hotkey, the tray icon, or the webview
+//!      via commands. Rust owns window mode/geometry (~/.ginno/floating.json)
+//!      and never writes settings.json (PUT /api/settings is a full-document
+//!      overwrite owned by the web UI); the web UI pushes `floating` prefs
+//!      down via `pin_apply_prefs`.
 //!
 //! In dev (`tauri dev`), the user runs `pnpm dev:runtime` in a separate
 //! terminal; this file only spawns the runtime in release builds.
@@ -31,9 +39,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{
-    DragDropEvent, Listener, Manager, WindowEvent,
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    DragDropEvent, Emitter, Listener, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
+    menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const SIDECAR_PORT: u16 = 8787;
 
@@ -665,12 +676,607 @@ fn focus_and_open(app: &tauri::AppHandle, kind: &str, id: &str) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Floating quick-chat window ("pin") — docs/floating-window-design.md §2/§4
+// ---------------------------------------------------------------------------
+
+const PIN_LABEL: &str = "pin";
+/// Pill (collapsed) shape, logical px. Just a status dot + name.
+const PILL_W: f64 = 148.0;
+const PILL_H: f64 = 44.0;
+/// Mini (chat box) default size, logical px.
+const MINI_W: f64 = 360.0;
+const MINI_H: f64 = 520.0;
+// ⇧⌘Space. NOT ⌃⌥Space: that one is macOS's "select previous input source"
+// and loses to the system shortcut (a guaranteed conflict for IME users).
+// Also avoids ⌘Space (Spotlight) and ⌥Space (Raycast/Alfred defaults).
+const DEFAULT_HOTKEY: &str = "CommandOrControl+Shift+Space";
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
+struct Geo {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Default)]
+struct PillGeo {
+    x: f64,
+    y: f64,
+}
+
+/// ~/.ginno/floating.json — Rust-owned window geometry (settings.json is
+/// full-document-overwritten by the web UI, so never touch it from here).
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct FloatingGeo {
+    #[serde(default)]
+    mini: Option<Geo>,
+    #[serde(default)]
+    pill: Option<PillGeo>,
+}
+
+/// Mirror of the `floating` key in settings.json (subset the shell acts on).
+/// Pushed by the web UI via `pin_apply_prefs`; also read once at startup so
+/// the hotkey works before any webview is up.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct PinPrefs {
+    #[serde(default = "default_hotkey")]
+    hotkey: String,
+    #[serde(default = "default_true")]
+    visible_on_all_spaces: bool,
+    /// "avoid" (default macOS behavior: never join other apps' fullscreen
+    /// spaces) | "overlay" (add FullScreenAuxiliary to float above them).
+    #[serde(default = "default_fullscreen_policy")]
+    fullscreen_policy: String,
+    #[serde(default)]
+    pill_click_through: bool,
+}
+
+fn default_hotkey() -> String {
+    DEFAULT_HOTKEY.to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_fullscreen_policy() -> String {
+    "avoid".to_string()
+}
+
+impl Default for PinPrefs {
+    fn default() -> Self {
+        Self {
+            hotkey: default_hotkey(),
+            visible_on_all_spaces: true,
+            fullscreen_policy: default_fullscreen_policy(),
+            pill_click_through: false,
+        }
+    }
+}
+
+struct PinState {
+    /// "mini" | "pill" — Rust is the source of truth; webview mirrors via
+    /// the `pin:mode` event / `pin_get_mode`.
+    mode: Mutex<String>,
+    geo: Mutex<FloatingGeo>,
+    geo_path: std::path::PathBuf,
+    prefs: Mutex<PinPrefs>,
+    /// Whether the CURRENT prefs hotkey is actually registered with the OS.
+    /// False = taken by another app / unparsable; tray menu still works.
+    /// Surfaced to Settings → 悬浮窗 via `pin_hotkey_status`.
+    hotkey_active: AtomicBool,
+}
+
+fn load_floating_geo(home: &std::path::Path) -> FloatingGeo {
+    std::fs::read_to_string(home.join("floating.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Read the `floating` prefs from settings.json, tolerating a missing key
+/// (existing users' settings.json predates it and PUT only rewrites on save).
+fn load_pin_prefs(home: &std::path::Path) -> PinPrefs {
+    let defaults = PinPrefs::default();
+    let Ok(text) = std::fs::read_to_string(home.join("settings.json")) else {
+        return defaults;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return defaults;
+    };
+    let Some(f) = v.get("floating") else {
+        return defaults;
+    };
+    PinPrefs {
+        hotkey: f
+            .get("hotkey")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from)
+            .unwrap_or(defaults.hotkey),
+        visible_on_all_spaces: f
+            .get("visible_on_all_spaces")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(defaults.visible_on_all_spaces),
+        fullscreen_policy: f
+            .get("fullscreen_policy")
+            .and_then(|x| x.as_str())
+            .map(String::from)
+            .unwrap_or(defaults.fullscreen_policy),
+        pill_click_through: f
+            .get("pill_click_through")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(defaults.pill_click_through),
+    }
+}
+
+fn floating_setting_bool(home: &std::path::Path, key: &str, default: bool) -> bool {
+    let Ok(text) = std::fs::read_to_string(home.join("settings.json")) else {
+        return default;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("floating").and_then(|f| f.get(key)).and_then(|x| x.as_bool()))
+        .unwrap_or(default)
+}
+
+fn persist_pin_geo(app: &tauri::AppHandle) {
+    let Some(st) = app.try_state::<PinState>() else {
+        return;
+    };
+    let text = {
+        let geo = st.geo.lock().unwrap();
+        serde_json::to_string_pretty(&*geo)
+    };
+    if let Ok(text) = text {
+        let _ = std::fs::write(&st.geo_path, text);
+    }
+}
+
+/// Current monitor bounds in logical px: (x, y, w, h).
+fn monitor_logical(w: &WebviewWindow) -> Option<(f64, f64, f64, f64)> {
+    let sf = w.scale_factor().ok()?;
+    let m = w
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.primary_monitor().ok().flatten())?;
+    Some((
+        m.position().x as f64 / sf,
+        m.position().y as f64 / sf,
+        m.size().width as f64 / sf,
+        m.size().height as f64 / sf,
+    ))
+}
+
+fn default_mini_geo(w: &WebviewWindow) -> Geo {
+    match monitor_logical(w) {
+        Some((mx, my, mw, mh)) => Geo {
+            x: mx + mw - MINI_W - 32.0,
+            y: my + 96.0,
+            w: MINI_W,
+            h: MINI_H.min(mh - 140.0),
+        },
+        None => Geo {
+            x: 120.0,
+            y: 120.0,
+            w: MINI_W,
+            h: MINI_H,
+        },
+    }
+}
+
+fn default_pill_geo(w: &WebviewWindow) -> PillGeo {
+    match monitor_logical(w) {
+        Some((mx, my, mw, mh)) => PillGeo {
+            x: mx + mw - PILL_W - 24.0,
+            y: my + mh - PILL_H - 24.0,
+        },
+        None => PillGeo { x: 200.0, y: 200.0 },
+    }
+}
+
+/// Edge snap + keep-on-screen clamp for the mini shape (16px snap zone;
+/// top snaps below the menu bar; the notch area is inside the menu bar band).
+fn snap_mini_geo(w: &WebviewWindow, g: &mut Geo) {
+    let Some((mx, my, mw, mh)) = monitor_logical(w) else {
+        return;
+    };
+    const SNAP: f64 = 16.0;
+    const MENU_BAR: f64 = 28.0;
+    if (g.x - mx).abs() < SNAP {
+        g.x = mx;
+    }
+    if (g.x + g.w - (mx + mw)).abs() < SNAP {
+        g.x = mx + mw - g.w;
+    }
+    if (g.y - my).abs() < SNAP {
+        g.y = my + MENU_BAR;
+    }
+    if (g.y + g.h - (my + mh)).abs() < SNAP {
+        g.y = my + mh - g.h;
+    }
+    g.x = g.x.clamp(mx - g.w + 100.0, mx + mw - 100.0);
+    g.y = g.y.clamp(my + MENU_BAR - 8.0, my + mh - 48.0);
+}
+
+/// Snapshot the live window geometry into the slot for the current mode.
+fn capture_pin_geo(w: &WebviewWindow, st: &PinState) {
+    let mode = st.mode.lock().unwrap().clone();
+    let (Ok(sf), Ok(pos), Ok(size)) = (w.scale_factor(), w.outer_position(), w.inner_size()) else {
+        return;
+    };
+    let x = pos.x as f64 / sf;
+    let y = pos.y as f64 / sf;
+    if mode == "pill" {
+        st.geo.lock().unwrap().pill = Some(PillGeo { x, y });
+    } else {
+        let mut g = Geo {
+            x,
+            y,
+            w: size.width as f64 / sf,
+            h: size.height as f64 / sf,
+        };
+        snap_mini_geo(w, &mut g);
+        st.geo.lock().unwrap().mini = Some(g);
+    }
+}
+
+fn apply_pin_mode_geometry(app: &tauri::AppHandle, w: &WebviewWindow) {
+    let Some(st) = app.try_state::<PinState>() else {
+        return;
+    };
+    let mode = st.mode.lock().unwrap().clone();
+    if mode == "pill" {
+        let pos = st
+            .geo
+            .lock()
+            .unwrap()
+            .pill
+            .unwrap_or_else(|| default_pill_geo(w));
+        let _ = w.set_resizable(false);
+        let _ = w.set_size(tauri::LogicalSize::new(PILL_W, PILL_H));
+        let _ = w.set_position(tauri::LogicalPosition::new(pos.x, pos.y));
+    } else {
+        let g = st
+            .geo
+            .lock()
+            .unwrap()
+            .mini
+            .unwrap_or_else(|| default_mini_geo(w));
+        let _ = w.set_resizable(true);
+        let _ = w.set_size(tauri::LogicalSize::new(g.w, g.h));
+        let _ = w.set_position(tauri::LogicalPosition::new(g.x, g.y));
+    }
+}
+
+/// Spaces/fullscreen behavior + pill click-through, per current prefs & mode.
+fn apply_pin_window_prefs(app: &tauri::AppHandle, w: &WebviewWindow) {
+    let Some(st) = app.try_state::<PinState>() else {
+        return;
+    };
+    let (mode, prefs) = {
+        (
+            st.mode.lock().unwrap().clone(),
+            st.prefs.lock().unwrap().clone(),
+        )
+    };
+    apply_window_collection_behavior(w, &prefs);
+    let _ = w.set_ignore_cursor_events(mode == "pill" && prefs.pill_click_through);
+}
+
+#[cfg(target_os = "macos")]
+fn apply_window_collection_behavior(w: &WebviewWindow, prefs: &PinPrefs) {
+    use objc::{msg_send, sel, sel_impl};
+    // NSWindowCollectionBehavior: CanJoinAllSpaces = 1<<0 (present on every
+    // regular space), FullScreenAuxiliary = 1<<8 (also float above other
+    // apps' fullscreen spaces — the "overlay" policy).
+    let Ok(ns) = w.ns_window() else {
+        return;
+    };
+    let ns = ns as *mut objc::runtime::Object;
+    if ns.is_null() {
+        return;
+    }
+    let mut behavior: u64 = 0;
+    if prefs.visible_on_all_spaces {
+        behavior |= 1 << 0;
+    }
+    if prefs.fullscreen_policy == "overlay" {
+        behavior |= 1 << 8;
+    }
+    unsafe {
+        let _: () = msg_send![ns, setCollectionBehavior: behavior];
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_window_collection_behavior(w: &WebviewWindow, prefs: &PinPrefs) {
+    let _ = w.set_visible_on_all_workspaces(prefs.visible_on_all_spaces);
+}
+
+/// Lazily create the pin window (hidden). Dev loads the Next dev server,
+/// release loads the sidecar origin — same split as `frontendDist`/`devUrl`.
+fn ensure_pin_window(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
+    if let Some(w) = app.get_webview_window(PIN_LABEL) {
+        return Ok(w);
+    }
+    let url = if cfg!(debug_assertions) {
+        "http://localhost:3000/pin"
+    } else {
+        "http://127.0.0.1:8787/pin"
+    };
+    let url = tauri::Url::parse(url).map_err(|e| tauri::Error::InvalidUrl(e))?;
+    let w = WebviewWindowBuilder::new(app, PIN_LABEL, WebviewUrl::External(url))
+        .title("Ginno 悬浮窗")
+        .inner_size(MINI_W, MINI_H)
+        .min_inner_size(280.0, 320.0)
+        .max_inner_size(480.0, 900.0)
+        .decorations(false)
+        .transparent(true)
+        .shadow(true)
+        .always_on_top(true)
+        .resizable(true)
+        .skip_taskbar(true)
+        .accept_first_mouse(true)
+        .visible(false)
+        .build()?;
+    apply_pin_window_prefs(app, &w);
+    Ok(w)
+}
+
+fn set_pin_mode(app: &tauri::AppHandle, mode: &str) {
+    if mode != "mini" && mode != "pill" {
+        return;
+    }
+    let Some(w) = app.get_webview_window(PIN_LABEL) else {
+        return;
+    };
+    let Some(st) = app.try_state::<PinState>() else {
+        return;
+    };
+    if st.mode.lock().unwrap().as_str() == mode {
+        return;
+    }
+    capture_pin_geo(&w, &st); // bank the outgoing shape's geometry first
+    *st.mode.lock().unwrap() = mode.to_string();
+    apply_pin_mode_geometry(app, &w);
+    apply_pin_window_prefs(app, &w);
+    let _ = w.emit("pin:mode", serde_json::json!({ "mode": mode }));
+    persist_pin_geo(app);
+    if mode == "mini" && w.is_visible().unwrap_or(false) {
+        let _ = w.set_focus();
+    }
+}
+
+fn toggle_pin_now(app: &tauri::AppHandle) {
+    let w = match ensure_pin_window(app) {
+        Ok(w) => w,
+        Err(e) => {
+            shell_log(app, &format!("ensure_pin_window FAILED: {e}"));
+            return;
+        }
+    };
+    if w.is_visible().unwrap_or(false) {
+        if let Some(st) = app.try_state::<PinState>() {
+            capture_pin_geo(&w, &st);
+        }
+        let _ = w.hide();
+        persist_pin_geo(app);
+        shell_log(app, "pin: hide");
+    } else {
+        apply_pin_mode_geometry(app, &w);
+        apply_pin_window_prefs(app, &w);
+        let _ = w.show();
+        let mode = app
+            .try_state::<PinState>()
+            .map(|s| s.mode.lock().unwrap().clone())
+            .unwrap_or_else(|| "mini".to_string());
+        if mode == "mini" {
+            let _ = w.set_focus();
+        }
+        shell_log(app, &format!("pin: show mode={mode}"));
+    }
+}
+
+fn toggle_pin(app: &tauri::AppHandle) {
+    // Release builds serve /pin from the sidecar; before it is up the window
+    // would paint a connection-refused page. Defer until the port accepts.
+    #[cfg(not(debug_assertions))]
+    if !sidecar_listening() {
+        shell_log(app, "pin toggle deferred: sidecar not up yet");
+        let h = app.clone();
+        std::thread::spawn(move || {
+            if wait_for_sidecar(Duration::from_secs(90)) {
+                let h2 = h.clone();
+                let _ = h.run_on_main_thread(move || toggle_pin_now(&h2));
+            }
+        });
+        return;
+    }
+    toggle_pin_now(app);
+}
+
+/// Register `hotkey`, recording the outcome in PinState::hotkey_active.
+/// Returns true when the shortcut is now live with the OS.
+fn register_pin_hotkey(app: &tauri::AppHandle, hotkey: &str) -> bool {
+    let ok = match hotkey.parse::<Shortcut>() {
+        Ok(sc) => match app.global_shortcut().register(sc) {
+            Ok(()) => {
+                shell_log(app, &format!("pin hotkey registered: {hotkey}"));
+                true
+            }
+            Err(e) => {
+                shell_log(
+                    app,
+                    &format!("pin hotkey register FAILED: {e} (tray menu still works; change it in Settings → 悬浮窗)"),
+                );
+                false
+            }
+        },
+        Err(e) => {
+            shell_log(app, &format!("pin hotkey parse FAILED: {hotkey}: {e}"));
+            false
+        }
+    };
+    if let Some(st) = app.try_state::<PinState>() {
+        st.hotkey_active.store(ok, Ordering::Relaxed);
+    }
+    ok
+}
+
+#[tauri::command]
+fn pin_toggle(app: tauri::AppHandle) {
+    toggle_pin(&app);
+}
+
+#[tauri::command]
+fn pin_set_mode(app: tauri::AppHandle, mode: String) {
+    set_pin_mode(&app, &mode);
+}
+
+#[tauri::command]
+fn pin_get_mode(app: tauri::AppHandle) -> String {
+    app.try_state::<PinState>()
+        .map(|s| s.mode.lock().unwrap().clone())
+        .unwrap_or_else(|| "mini".to_string())
+}
+
+#[tauri::command]
+fn pin_hide(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(PIN_LABEL) {
+        if let Some(st) = app.try_state::<PinState>() {
+            capture_pin_geo(&w, &st);
+        }
+        let _ = w.hide();
+        persist_pin_geo(&app);
+    }
+}
+
+/// ⌘↵ "take over": show + focus the main window, optionally navigating it
+/// to a session via the existing `__ginnoOpenSession` eval bridge.
+#[tauri::command]
+fn pin_open_main(app: tauri::AppHandle, session_id: Option<String>) {
+    match session_id.filter(|s| !s.is_empty()) {
+        Some(sid) => focus_and_open(&app, "session", &sid),
+        None => {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }
+    }
+}
+
+/// The web UI pushes its `floating` settings down (read-modify-write of
+/// settings.json stays entirely on the web side). Returns whether the
+/// (possibly new) hotkey is now live — the UI uses this to warn about
+/// conflicts (taken shortcut / bad syntax) instead of failing silently.
+#[tauri::command]
+fn pin_apply_prefs(app: tauri::AppHandle, prefs: PinPrefs) -> bool {
+    let Some(st) = app.try_state::<PinState>() else {
+        return false;
+    };
+    let old = {
+        let mut g = st.prefs.lock().unwrap();
+        std::mem::replace(&mut *g, prefs.clone())
+    };
+    // Re-register when the hotkey changed; also retry an unchanged one that
+    // never went live (e.g. it was taken at launch but has since been freed).
+    let hotkey_ok = if old.hotkey != prefs.hotkey {
+        if let Ok(sc) = old.hotkey.parse::<Shortcut>() {
+            let _ = app.global_shortcut().unregister(sc);
+        }
+        register_pin_hotkey(&app, &prefs.hotkey)
+    } else {
+        st.hotkey_active.load(Ordering::Relaxed)
+            || register_pin_hotkey(&app, &prefs.hotkey)
+    };
+    if let Some(w) = app.get_webview_window(PIN_LABEL) {
+        apply_pin_window_prefs(&app, &w);
+    }
+    hotkey_ok
+}
+
+/// Settings → 悬浮窗 reads this on load to show whether the current hotkey
+/// actually registered (false ⇒ occupied by another app or invalid).
+#[tauri::command]
+fn pin_hotkey_status(app: tauri::AppHandle) -> bool {
+    app.try_state::<PinState>()
+        .map(|st| st.hotkey_active.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+/// Menu-bar tray (decision Q4: tray icon + Dock stays). Left click toggles
+/// the pin window; the menu offers explicit entries + quit.
+fn install_tray(app: &tauri::App) -> tauri::Result<()> {
+    let toggle = MenuItem::with_id(app, "tray-pin-toggle", "显示/隐藏悬浮窗", true, None::<&str>)?;
+    let open_main = MenuItem::with_id(app, "tray-open-main", "打开主窗口", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray-quit", "退出 Ginno", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let items: &[&dyn IsMenuItem<tauri::Wry>] = &[&toggle, &open_main, &sep, &quit];
+    let menu = Menu::with_items(app, items)?;
+    let mut tray = TrayIconBuilder::with_id("ginno-tray")
+        .tooltip("Ginno")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray-pin-toggle" => toggle_pin(app),
+            "tray-open-main" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }
+            // app.exit runs ExitRequested (flips `quitting`) then Exit (kills
+            // the sidecar) — same path as ⌘Q.
+            "tray-quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_pin(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 pub fn run() {
     // Set while a real quit is in flight (⌘Q / menu / ExitRequested) so the
     // CloseRequested handler below destroys the window instead of hiding it.
     let quitting = Arc::new(AtomicBool::new(false));
 
     let app = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    // One app-wide hotkey (the pin toggle); ignore key-release.
+                    if event.state() == ShortcutState::Pressed {
+                        toggle_pin(app);
+                    }
+                })
+                .build(),
+        )
+        .invoke_handler(tauri::generate_handler![
+            pin_toggle,
+            pin_set_mode,
+            pin_get_mode,
+            pin_hide,
+            pin_open_main,
+            pin_apply_prefs,
+            pin_hotkey_status
+        ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             match id {
@@ -726,9 +1332,12 @@ pub fn run() {
         .on_window_event({
             let quitting = quitting.clone();
             move |window, event| {
+                let label = window.label();
                 match event {
                     WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) => {
-                        if paths.is_empty() {
+                        // File drops bridge into the main window's composer
+                        // only; the pin window has drag-drop disabled.
+                        if label != "main" || paths.is_empty() {
                             return;
                         }
                         if let Some(webview) = window.get_webview_window("main") {
@@ -747,12 +1356,46 @@ pub fn run() {
                     // sidecar is terminated on RunEvent::Exit as before.
                     WindowEvent::CloseRequested { api, .. } => {
                         if !quitting.load(Ordering::SeqCst) {
-                            shell_log(window, "close_requested -> hide");
+                            shell_log(window, &format!("close_requested -> hide ({label})"));
                             api.prevent_close();
+                            if label == PIN_LABEL {
+                                if let (Some(st), Some(wv)) = (
+                                    window.try_state::<PinState>(),
+                                    window.get_webview_window(PIN_LABEL),
+                                ) {
+                                    capture_pin_geo(&wv, &st);
+                                }
+                                persist_pin_geo(window.app_handle());
+                            }
                             let _ = window.hide();
                         }
                     }
                     _ => {}
+                }
+                // Pin window: track geometry as the user drags/resizes (memory
+                // only) and flush to ~/.ginno/floating.json when it loses
+                // focus — per-event disk writes during a drag are wasteful.
+                if label == PIN_LABEL {
+                    match event {
+                        WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                            if let (Some(st), Some(wv)) = (
+                                window.try_state::<PinState>(),
+                                window.get_webview_window(PIN_LABEL),
+                            ) {
+                                capture_pin_geo(&wv, &st);
+                            }
+                        }
+                        WindowEvent::Focused(false) => {
+                            if let (Some(st), Some(wv)) = (
+                                window.try_state::<PinState>(),
+                                window.get_webview_window(PIN_LABEL),
+                            ) {
+                                capture_pin_geo(&wv, &st);
+                            }
+                            persist_pin_geo(window.app_handle());
+                        }
+                        _ => {}
+                    }
                 }
             }
         })
@@ -761,6 +1404,43 @@ pub fn run() {
             app.manage(RestartLock(Mutex::new(())));
             if let Err(e) = install_debug_menu(app) {
                 shell_log(app, &format!("install_debug_menu FAILED: {e}"));
+            }
+
+            // Floating quick-chat window: state, tray, global hotkey.
+            let ginno_home = ginno_home_path(app);
+            let prefs = load_pin_prefs(&ginno_home);
+            let show_on_launch = floating_setting_bool(&ginno_home, "show_on_launch", false);
+            app.manage(PinState {
+                mode: Mutex::new("mini".to_string()),
+                geo: Mutex::new(load_floating_geo(&ginno_home)),
+                geo_path: ginno_home.join("floating.json"),
+                prefs: Mutex::new(prefs.clone()),
+                hotkey_active: AtomicBool::new(false),
+            });
+            if let Err(e) = install_tray(app) {
+                shell_log(app, &format!("install_tray FAILED: {e}"));
+            }
+            register_pin_hotkey(app.handle(), &prefs.hotkey);
+            if show_on_launch {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    // Release: /pin is served by the sidecar — wait for it.
+                    // Dev: give the Next dev server a moment to come up.
+                    #[cfg(not(debug_assertions))]
+                    wait_for_sidecar(Duration::from_secs(120));
+                    #[cfg(debug_assertions)]
+                    std::thread::sleep(Duration::from_secs(2));
+                    let h2 = h.clone();
+                    let _ = h.run_on_main_thread(move || {
+                        let visible = h2
+                            .get_webview_window(PIN_LABEL)
+                            .map(|w| w.is_visible().unwrap_or(false))
+                            .unwrap_or(false);
+                        if !visible {
+                            toggle_pin_now(&h2);
+                        }
+                    });
+                });
             }
 
             // Spawn the bundled runtime in release builds.
@@ -923,6 +1603,7 @@ pub fn run() {
             // hold the port (kill_stale_sidecar would reclaim it on the next
             // start, but a clean exit is cleaner).
             tauri::RunEvent::Exit => {
+                persist_pin_geo(app_handle);
                 if let Some(state) = app_handle.try_state::<RuntimeProcess>() {
                     if let Ok(mut guard) = state.0.lock() {
                         if let Some(child) = guard.as_mut() {

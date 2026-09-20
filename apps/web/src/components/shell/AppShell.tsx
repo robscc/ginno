@@ -251,6 +251,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 style={{ color: hex }}
               />
               <span className="truncate">{s.title || "Untitled"}</span>
+              {/* 悬浮速聊窗创建的 quick 会话角标（floating-window-design.md §1.1） */}
+              {s.type === "quick" && (
+                <span title="速聊会话（来自悬浮窗）" className="shrink-0 text-[10px] text-yellow">
+                  ⚡
+                </span>
+              )}
               {/* C+ 方案③：会话行 agent 名小标签（agent 已删除时不渲染） */}
               {rowAgent && (
                 <span
@@ -317,6 +323,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // search. Global on purpose: reachable from settings/kb/workflows too.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The /pin window mounts AppShell only for its hooks — navigation
+      // shortcuts must not hijack it (⌘↵/Esc belong to PinApp there).
+      if (window.location.pathname === "/pin") return;
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
       const k = e.key.toLowerCase();
       if (k === "n") {
@@ -331,6 +340,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [setActiveSessionForNav, router]);
+
+  // Floating quick-chat window (docs/floating-window-design.md §4 Phase 3):
+  // the /pin route renders PinApp bare — no sidebar, workspace, or ChatStream.
+  // Placed after every hook so the rules-of-hooks order is untouched; the
+  // effects above are inert on /pin (workspace-gated or bridge registration
+  // the pin window can also use).
+  if (pathname === "/pin") return <>{children}</>;
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-base text-txt">

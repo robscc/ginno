@@ -10,6 +10,7 @@
     "beforeBuildCommand": "pnpm --filter @ginno/web build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Ginno",

@@ -1,0 +1,611 @@
+<title>Ginno 悬浮速聊窗</title>
+<style>
+:root{
+  --bg:#F4F4F1; --surface:#FFFFFF; --surface-2:#ECECE8;
+  --ink:#1B1D22; --ink-2:#565A61; --ink-3:#8A8E96;
+  --line:#E1E1DC; --line-2:#C9C9C2;
+  --accent:#A96A00; --accent-ink:#8A5700; --accent-wash:#FAF0DC;
+  --ok:#2E7D4F; --warn:#B4552D;
+  /* mockup 固定暗色世界（mac 桌面，两种主题下不变） */
+  --mk-desk-1:#2A3A44; --mk-desk-2:#1B2830; --mk-glow:#41626E;
+  --mk-panel:#20232A; --mk-panel-2:#272B33; --mk-line:#343943;
+  --mk-ink:#ECEEF0; --mk-ink-2:#9AA1AB; --mk-ink-3:#6B7280;
+  --mk-user:#31414C; --mk-agent:#262A32;
+  --mk-accent:#E8A13C; --mk-ok:#5FBF85; --mk-red:#E5695E; --mk-yel:#E0B34E; --mk-grn:#67BF7B;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --serif:"Songti SC","STSong","Noto Serif CJK SC",Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#141619; --surface:#1C1F24; --surface-2:#22262C;
+    --ink:#E9E9E5; --ink-2:#A2A7AF; --ink-3:#6E737B;
+    --line:#2D3138; --line-2:#3D424B;
+    --accent:#E8A13C; --accent-ink:#F0B45E; --accent-wash:#2B2113;
+    --ok:#67C08B; --warn:#D98A63;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#141619; --surface:#1C1F24; --surface-2:#22262C;
+  --ink:#E9E9E5; --ink-2:#A2A7AF; --ink-3:#6E737B;
+  --line:#2D3138; --line-2:#3D424B;
+  --accent:#E8A13C; --accent-ink:#F0B45E; --accent-wash:#2B2113;
+  --ok:#67C08B; --warn:#D98A63;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.75;-webkit-font-smoothing:antialiased}
+a{color:var(--accent-ink)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.wrap{max-width:920px;margin:0 auto;padding:0 24px}
+
+/* ---------- 页头 ---------- */
+.doc-head{padding:64px 0 40px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent-ink)}
+h1{font-family:var(--serif);font-weight:700;font-size:clamp(30px,4.5vw,44px);line-height:1.25;margin:14px 0 10px;text-wrap:balance}
+.doc-head p.sub{color:var(--ink-2);max-width:60ch}
+.doc-head .meta{margin-top:18px;font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+
+/* ---------- 章节 ---------- */
+section{padding:44px 0;border-top:1px solid var(--line)}
+.sec-label{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:8px}
+h2{font-family:var(--serif);font-size:26px;font-weight:700;margin-bottom:8px;text-wrap:balance}
+h3{font-size:16px;font-weight:600;margin:26px 0 8px}
+section>p.lede{color:var(--ink-2);max-width:68ch;margin-bottom:24px}
+
+/* ---------- mockup 基础设施 ---------- */
+.mock-scroll{overflow-x:auto;border-radius:14px}
+.mac{container-type:inline-size;position:relative;min-width:640px;aspect-ratio:16/10;border-radius:14px;overflow:hidden;
+  background:radial-gradient(120% 90% at 78% 18%, var(--mk-glow) 0%, transparent 55%),
+             linear-gradient(150deg, var(--mk-desk-1) 0%, var(--mk-desk-2) 78%);
+  box-shadow:0 18px 50px rgba(0,0,0,.28), inset 0 0 0 1px rgba(255,255,255,.06)}
+.mac--short{aspect-ratio:16/9}
+.mac--bare{aspect-ratio:16/11}
+.menubar{position:absolute;top:0;left:0;right:0;height:3.4cqw;display:flex;align-items:center;gap:2cqw;
+  padding:0 1.4cqw;background:rgba(10,14,18,.45);backdrop-filter:blur(8px);
+  font-size:1.25cqw;color:rgba(255,255,255,.85);z-index:5}
+.menubar .sp{flex:1}
+.menubar .apple{font-size:1.5cqw}
+.menubar b{font-weight:600}
+
+/* 背景假 app（代码编辑器） */
+.bgapp{position:absolute;left:4%;top:12%;width:58%;bottom:10%;border-radius:1.2cqw;overflow:hidden;
+  background:rgba(17,20,25,.92);box-shadow:0 10px 30px rgba(0,0,0,.4), inset 0 0 0 1px rgba(255,255,255,.07)}
+.bgapp .bar{display:flex;align-items:center;gap:.7cqw;padding:1cqw 1.2cqw;background:rgba(255,255,255,.05)}
+.tl{width:1.1cqw;height:1.1cqw;border-radius:50%}
+.tl.r{background:var(--mk-red)} .tl.y{background:var(--mk-yel)} .tl.g{background:var(--mk-grn)}
+.bgapp .code{padding:1.4cqw 1.6cqw;display:flex;flex-direction:column;gap:.85cqw}
+.ln{height:.9cqw;border-radius:.45cqw;background:#2B313B}
+.ln.w1{width:72%}.ln.w2{width:48%}.ln.w3{width:85%}.ln.w4{width:36%}.ln.w5{width:64%}.ln.w6{width:55%}
+.ln.hi{background:#33414E}
+.ln.acc{background:rgba(232,161,60,.35)}
+
+/* ---------- 悬浮窗组件（cqw 版） ---------- */
+.fw{position:absolute;background:rgba(32,35,42,.96);backdrop-filter:blur(20px);border-radius:1.4cqw;
+  box-shadow:0 20px 60px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,255,255,.09);
+  display:flex;flex-direction:column;overflow:hidden;color:var(--mk-ink)}
+.fw--hero{right:5%;top:16%;width:36%;bottom:14%}
+.fw-title{display:flex;align-items:center;gap:1cqw;padding:1.1cqw 1.3cqw;background:rgba(255,255,255,.04);border-bottom:1px solid var(--mk-line)}
+.fw-title .dots{display:flex;gap:.55cqw}
+.fw-title .name{font-size:1.35cqw;font-weight:600;letter-spacing:.02em}
+.fw-title .mode{font-size:1.05cqw;color:var(--mk-ink-3);font-family:var(--mono)}
+.fw-title .sp{flex:1}
+.statuspill{display:flex;align-items:center;gap:.5cqw;font-size:1.05cqw;color:var(--mk-ok);
+  background:rgba(95,191,133,.12);border-radius:99px;padding:.25cqw .8cqw}
+.dot{width:.8cqw;height:.8cqw;border-radius:50%;background:var(--mk-ok);animation:pulse 1.6s ease-in-out infinite}
+.dot.idle{background:var(--mk-ink-3);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.ico{font-size:1.3cqw;color:var(--mk-ink-2);line-height:1}
+.fw-body{flex:1;padding:1.3cqw;display:flex;flex-direction:column;gap:1cqw;overflow:hidden}
+.msg{max-width:88%;font-size:1.3cqw;line-height:1.55;border-radius:1cqw;padding:.8cqw 1.1cqw}
+.msg.u{align-self:flex-end;background:var(--mk-user);border-bottom-right-radius:.3cqw}
+.msg.a{align-self:flex-start;background:var(--mk-agent);border-bottom-left-radius:.3cqw;box-shadow:inset 0 0 0 1px rgba(255,255,255,.05)}
+.msg code{font-family:var(--mono);font-size:.92em;background:rgba(255,255,255,.09);padding:.1em .4em;border-radius:.3em}
+.toolrow{align-self:flex-start;display:flex;align-items:center;gap:.6cqw;font-family:var(--mono);font-size:1.05cqw;
+  color:var(--mk-ink-2);background:rgba(255,255,255,.05);border-radius:.6cqw;padding:.45cqw .9cqw}
+.toolrow .ok{color:var(--mk-ok)}
+.confirm{align-self:flex-start;background:rgba(232,161,60,.1);border:1px solid rgba(232,161,60,.4);border-radius:1cqw;padding:.8cqw 1.1cqw;font-size:1.25cqw}
+.confirm .btns{display:flex;gap:.7cqw;margin-top:.7cqw}
+.btn{font-size:1.1cqw;border-radius:.6cqw;padding:.3cqw 1cqw;font-weight:600}
+.btn.allow{background:var(--mk-accent);color:#1B1D22}
+.btn.deny{background:rgba(255,255,255,.1);color:var(--mk-ink-2)}
+.cursor{display:inline-block;width:.7cqw;height:1.4cqw;background:var(--mk-accent);vertical-align:-.25cqw;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.fw-input{margin:0 1.2cqw 1.2cqw;display:flex;align-items:center;gap:.8cqw;background:rgba(255,255,255,.06);
+  border:1px solid var(--mk-line);border-radius:1cqw;padding:.85cqw 1.1cqw}
+.fw-input .ph{flex:1;font-size:1.25cqw;color:var(--mk-ink-3)}
+.fw-input kbd{font-family:var(--mono);font-size:1cqw;color:var(--mk-ink-2);border:1px solid var(--mk-line);border-radius:.4cqw;padding:0 .5cqw}
+.sendbtn{width:2.4cqw;height:2.4cqw;border-radius:50%;background:var(--mk-accent);color:#1B1D22;display:flex;align-items:center;justify-content:center;font-size:1.3cqw;font-weight:700}
+
+/* 胶囊态 */
+.pill{position:absolute;right:6%;bottom:8%;display:flex;align-items:center;gap:.7cqw;
+  background:rgba(24,27,32,.82);backdrop-filter:blur(14px);border-radius:99px;padding:.7cqw 1.4cqw;
+  box-shadow:0 8px 24px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.1);
+  font-size:1.3cqw;color:var(--mk-ink)}
+.pill .dot{width:.9cqw;height:.9cqw}
+
+/* 标注徽章 */
+.badge{position:absolute;width:2.2cqw;height:2.2cqw;border-radius:50%;background:var(--mk-accent);color:#1B1D22;
+  font-family:var(--mono);font-weight:700;font-size:1.3cqw;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 8px rgba(0,0,0,.5);z-index:9}
+
+/* ---------- 方案 A：速问条 ---------- */
+.qbar{position:absolute;top:14%;left:50%;transform:translateX(-50%);width:60%;background:rgba(32,35,42,.97);
+  backdrop-filter:blur(20px);border-radius:1.4cqw;box-shadow:0 24px 70px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.1);overflow:hidden}
+.qbar .row{display:flex;align-items:center;gap:1cqw;padding:1.4cqw 1.6cqw}
+.qbar .ginno-dot{width:1.6cqw;height:1.6cqw;border-radius:50%;background:var(--mk-accent);flex:none}
+.qbar .txt{flex:1;font-size:1.6cqw;color:var(--mk-ink)}
+.qbar kbd{font-family:var(--mono);font-size:1.1cqw;color:var(--mk-ink-2);border:1px solid var(--mk-line);border-radius:.5cqw;padding:.1cqw .7cqw}
+.qbar .answer{border-top:1px solid var(--mk-line);padding:1.3cqw 1.6cqw;font-size:1.3cqw;color:var(--mk-ink-2);display:flex;flex-direction:column;gap:.8cqw}
+.qbar .foot{display:flex;gap:1.5cqw;border-top:1px solid var(--mk-line);padding:.8cqw 1.6cqw;font-size:1.05cqw;color:var(--mk-ink-3);font-family:var(--mono)}
+
+/* ---------- 方案 C：边缘停靠条 ---------- */
+.dock{position:absolute;right:0;top:3.4cqw;bottom:0;width:27%;background:rgba(28,31,37,.95);backdrop-filter:blur(18px);
+  border-left:1px solid rgba(255,255,255,.09);box-shadow:-14px 0 40px rgba(0,0,0,.4);display:flex;flex-direction:column}
+.dock .hd{display:flex;align-items:center;gap:.8cqw;padding:1.2cqw 1.4cqw;border-bottom:1px solid var(--mk-line);font-size:1.3cqw;font-weight:600;color:var(--mk-ink)}
+.dock .body{flex:1;padding:1.2cqw;display:flex;flex-direction:column;gap:.9cqw}
+.dock .msg{font-size:1.15cqw;max-width:96%}
+.dock .fw-input{margin:0 1cqw 1cqw;padding:.7cqw .9cqw}
+.dock .fw-input .ph{font-size:1.1cqw}
+
+/* ---------- 场景卡 ---------- */
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.card .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent-ink)}
+.card p{margin-top:6px;font-size:13.5px;color:var(--ink-2)}
+
+/* ---------- 方案对比 ---------- */
+.option{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;margin-bottom:20px}
+.option.rec{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.opt-head{display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap}
+.opt-head h3{margin:0;font-family:var(--serif);font-size:20px}
+.verdict{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;border-radius:99px;padding:3px 12px;font-weight:700}
+.verdict.rec{background:var(--accent);color:#fff}
+.verdict.alt{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line)}
+.option>p.desc{color:var(--ink-2);font-size:14px;margin-bottom:16px;max-width:70ch}
+.opt-cols{display:flex;gap:22px;flex-wrap:wrap}
+.opt-cols .mock-scroll{flex:1 1 400px;min-width:0}
+.opt-cols .mac{min-width:400px}
+.pros{flex:1 1 240px;min-width:220px;font-size:13.5px}
+.pros ul{list-style:none;display:flex;flex-direction:column;gap:8px}
+.pros li{padding-left:22px;position:relative;color:var(--ink-2)}
+.pros li::before{position:absolute;left:0;top:0;font-weight:700}
+.pros li.p::before{content:"+";color:var(--ok)}
+.pros li.m::before{content:"−";color:var(--warn)}
+.callout{border-left:3px solid var(--accent);background:var(--accent-wash);border-radius:0 10px 10px 0;padding:14px 18px;margin:18px 0;font-size:14px;color:var(--ink)}
+
+/* ---------- 详设 ---------- */
+.detail-cols{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start}
+.detail-cols .mock-scroll{flex:1 1 420px;min-width:0}
+.legend{flex:1 1 280px;min-width:260px}
+.legend ol{list-style:none;display:flex;flex-direction:column;gap:10px;counter-reset:lg}
+.legend li{counter-increment:lg;position:relative;padding-left:34px;font-size:13.5px;color:var(--ink-2)}
+.legend li::before{content:counter(lg);position:absolute;left:0;top:1px;width:22px;height:22px;border-radius:50%;
+  background:var(--accent);color:#fff;font-family:var(--mono);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.legend li b{color:var(--ink)}
+
+.spec{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:8px}
+.spec th,.spec td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.spec th{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:500;white-space:nowrap}
+.spec td:first-child{white-space:nowrap;color:var(--ink);font-weight:600}
+.spec td{color:var(--ink-2)}
+.spec-scroll{overflow-x:auto}
+kbd{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);border:1px solid var(--line-2);border-bottom-width:2px;border-radius:5px;padding:1px 6px;color:var(--ink);white-space:nowrap}
+
+.svg-scroll{overflow-x:auto}
+.statemachine{min-width:700px;width:100%}
+.statemachine text{font-family:var(--sans)}
+.statemachine .mono{font-family:var(--mono)}
+
+.modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:12px}
+.mode{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.mode .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink)}
+.mode h4{font-size:15px;margin:4px 0 6px}
+.mode p{font-size:13px;color:var(--ink-2)}
+.mode.def{border-color:var(--accent)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.chip{font-size:12.5px;font-family:var(--mono);background:var(--surface-2);border:1px solid var(--line);border-radius:99px;padding:3px 12px;color:var(--ink-2)}
+
+/* ---------- 技术 ---------- */
+.tech-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.tech{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.tech h4{font-size:14px;margin-bottom:8px}
+.tech ul{list-style:none;display:flex;flex-direction:column;gap:7px}
+.tech li{font-size:13px;color:var(--ink-2);padding-left:16px;position:relative}
+.tech li::before{content:"·";position:absolute;left:2px;color:var(--accent);font-weight:900}
+.tech code{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--ink)}
+
+/* ---------- 开放问题 ---------- */
+.qlist{display:flex;flex-direction:column;gap:16px}
+.q{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.q .qhead{display:flex;gap:12px;align-items:baseline}
+.q .qid{font-family:var(--mono);font-weight:700;color:var(--accent-ink);font-size:13px;flex:none}
+.q h4{font-size:15.5px}
+.q p{font-size:13.5px;color:var(--ink-2);margin-top:6px}
+.q .rec-line{margin-top:10px;font-size:13px;display:flex;gap:8px;align-items:baseline}
+.q .rec-tag{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;background:var(--accent);color:#fff;border-radius:4px;padding:2px 8px;flex:none;font-weight:700}
+
+.pit{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px 22px}
+.pit ul{list-style:none;display:flex;flex-direction:column;gap:10px}
+.pit li{font-size:13.5px;color:var(--ink-2);padding-left:20px;position:relative}
+.pit li::before{content:"▲";position:absolute;left:0;font-size:10px;top:4px;color:var(--warn)}
+.pit li b{color:var(--ink)}
+
+footer{padding:40px 0 72px;border-top:1px solid var(--line);color:var(--ink-2);font-size:14px}
+footer .steps{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+footer .step{font-family:var(--mono);font-size:12px;background:var(--surface);border:1px solid var(--line-2);border-radius:8px;padding:6px 12px;color:var(--ink)}
+footer .arrow{align-self:center;color:var(--ink-3)}
+
+@media (prefers-reduced-motion:reduce){
+  .dot,.cursor{animation:none}
+}
+</style>
+
+<div class="wrap">
+
+<header class="doc-head">
+  <div class="eyebrow">Ginno · 产品设计提案 · 2026-09-19 · v0.1</div>
+  <h1>钉在屏幕上的聊天框</h1>
+  <p class="sub">Ginno 常驻置顶模式：一个永远浮在最上层、只有一个聊天框的迷你窗。不切窗口、不打断手头工作，随时把问题丢给本地 agent。本文给出三个形态方案（含视觉稿）、推荐方案的完整交互详设、技术可行性，以及需要你拍板的 5 个问题。</p>
+  <div class="meta">范围：仅产品设计，未动代码 · 平台：macOS（Tauri v2）· 前提：复用现有 runtime WS 流</div>
+</header>
+
+<!-- ============ HERO ============ -->
+<div class="mock-scroll" aria-label="推荐方案视觉稿：悬浮迷你窗叠在代码编辑器之上">
+  <div class="mac">
+    <div class="menubar">
+      <span class="apple"></span><b>Ginno</b><span>文件</span><span>编辑</span><span>窗口</span><span>帮助</span>
+      <span class="sp"></span><span>⌃ ⌥ 🔋</span><span>9月19日 周五 14:32</span>
+    </div>
+    <div class="bgapp" aria-hidden="true">
+      <div class="bar"><span class="tl r"></span><span class="tl y"></span><span class="tl g"></span></div>
+      <div class="code">
+        <div class="ln w2"></div><div class="ln w3 hi"></div><div class="ln w1"></div><div class="ln w5 acc"></div>
+        <div class="ln w4"></div><div class="ln w6"></div><div class="ln w3"></div><div class="ln w2 hi"></div>
+        <div class="ln w5"></div><div class="ln w1"></div><div class="ln w4"></div><div class="ln w6 hi"></div>
+        <div class="ln w3"></div><div class="ln w5"></div>
+      </div>
+    </div>
+    <div class="fw fw--hero" role="img" aria-label="悬浮速聊窗：正在排查 sidecar 日志">
+      <div class="fw-title">
+        <span class="dots"><span class="tl r"></span><span class="tl y"></span><span class="tl g"></span></span>
+        <span class="name">Ginno</span><span class="mode">/ 快速会话</span>
+        <span class="sp"></span>
+        <span class="statuspill"><span class="dot"></span>运行中</span>
+        <span class="ico">⌄</span><span class="ico">✕</span>
+      </div>
+      <div class="fw-body">
+        <div class="msg u">帮我看下 sidecar.log 最近有什么报错</div>
+        <div class="toolrow">⚙ tail -n 200 ~/.ginno/logs/sidecar.log <span class="ok">✓ 0.4s</span></div>
+        <div class="msg a">最近一条 ERROR 在 21:04：<code>zlib</code> 解压失败（microcompact 懒加载）。是 <code>make app</code> 重建 bundle 后没重启应用导致的，重启 Ginno 即可恢复。</div>
+        <div class="confirm">要运行 <code>make app</code> 重新构建吗？
+          <div class="btns"><span class="btn allow">允许一次</span><span class="btn deny">拒绝</span></div>
+        </div>
+        <div class="msg a">构建完成，正在验证签名<span class="cursor"></span></div>
+      </div>
+      <div class="fw-input"><span class="ph">问 Ginno 任何事…</span><kbd>↵</kbd><span class="sendbtn">↑</span></div>
+    </div>
+    <div class="pill" aria-label="胶囊态"><span class="dot"></span>Ginno</div>
+  </div>
+</div>
+<p style="font-size:12.5px;color:var(--ink-3);margin-top:10px;font-family:var(--mono)">▲ 推荐方案 B：悬浮迷你窗（右）+ 收起后的胶囊态（右下角）。左下为被压在下面的普通应用。</p>
+
+<!-- ============ 场景 ============ -->
+<section>
+  <div class="sec-label">定位</div>
+  <h2>它解决什么问题</h2>
+  <p class="lede">Ginno 主窗口是完整的 agent 工作台，但「切过去」这个动作本身就是打断。悬浮速聊窗把最小可用的一问一答钉在所有窗口之上——它是主工作台的<b>卫星</b>，不是替代品。</p>
+  <div class="grid2">
+    <div class="card"><div class="tag">边看边问</div><p>读网页 / PDF / 日志时，选中片段直接丢进悬浮窗提问，视线不离开当前内容。</p></div>
+    <div class="card"><div class="tag">长任务监工</div><p>主窗口里 agent 在跑构建、测试、批量修改；胶囊态绿点报状态，展开看进度、随时追加指令。</p></div>
+    <div class="card"><div class="tag">会议与演示</div><p>投屏时不切走窗口，让 agent 悄悄查个资料、算个数（注意：悬浮窗会被截屏录到，见「坑」）。</p></div>
+    <div class="card"><div class="tag">便签式 AI</div><p>翻译、改写、记一条想法。常驻置顶 = 零成本唤出，用完 Esc 收回去。</p></div>
+  </div>
+</section>
+
+<!-- ============ 三方案 ============ -->
+<section>
+  <div class="sec-label">形态方案</div>
+  <h2>三个候选，推荐 B</h2>
+  <p class="lede">你说「界面就简单地要一个聊天框」——三个方案里 B 是字面意义上的聊天框；A 更像搜索启动器；C 存在感过强。B 还能通过胶囊态吸收 C 的常驻监工诉求、通过快捷键唤起吸收 A 的召唤体验。</p>
+
+  <!-- 方案 A -->
+  <div class="option">
+    <div class="opt-head"><h3>方案 A · 速问条</h3><span class="verdict alt">备选</span></div>
+    <p class="desc">Raycast / Spotlight 式：快捷键唤出屏幕顶部输入条，回答在下方展开，Esc 即走。一问一答，不保留常驻对话。</p>
+    <div class="opt-cols">
+      <div class="mock-scroll">
+        <div class="mac mac--short" style="min-width:400px">
+          <div class="menubar"><span class="apple"></span><b>Finder</b><span class="sp"></span><span>14:32</span></div>
+          <div class="qbar">
+            <div class="row"><span class="ginno-dot"></span><span class="txt">把这段 zlib 报错解释一下</span><kbd>↵</kbd></div>
+            <div class="answer">
+              <span>这是 PyInstaller bundle 被替换后旧进程读到新归档偏移导致的解压失败，重启 Ginno 即可。</span>
+            </div>
+            <div class="foot"><span>↵ 在会话中继续</span><span>⌘C 复制</span><span>esc 关闭</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="pros"><ul>
+        <li class="p">干扰最小，唤出/消失最快</li>
+        <li class="p">实现成本最低（无窗口管理负担）</li>
+        <li class="m">没有持续对话流，不满足「聊天框」诉求</li>
+        <li class="m">无法监工长任务（关掉就看不见了）</li>
+      </ul></div>
+    </div>
+  </div>
+
+  <!-- 方案 B -->
+  <div class="option rec">
+    <div class="opt-head"><h3>方案 B · 悬浮迷你窗</h3><span class="verdict rec">推荐</span></div>
+    <p class="desc">一个可拖动、永远置顶的小窗（约 360×520）：简化消息流 + 输入框。不用时收起成一颗胶囊贴在屏幕角落，胶囊上只留一个状态点——既保持「随时在」，又不挡事。</p>
+    <div class="opt-cols">
+      <div class="mock-scroll">
+        <div class="mac mac--short" style="min-width:400px">
+          <div class="menubar"><span class="apple"></span><b>Safari</b><span class="sp"></span><span>14:32</span></div>
+          <div class="fw" style="right:8%;top:14%;width:44%;bottom:20%">
+            <div class="fw-title"><span class="dots"><span class="tl r"></span><span class="tl y"></span><span class="tl g"></span></span><span class="name">Ginno</span><span class="sp"></span><span class="statuspill"><span class="dot idle"></span>空闲</span><span class="ico">⌄</span><span class="ico">✕</span></div>
+            <div class="fw-body">
+              <div class="msg u">把这个报错翻译成中文</div>
+              <div class="msg a">「不正确的主数据校验」——通常是压缩数据头损坏<span class="cursor"></span></div>
+            </div>
+            <div class="fw-input"><span class="ph">问 Ginno 任何事…</span><span class="sendbtn">↑</span></div>
+          </div>
+          <div class="pill"><span class="dot idle"></span>Ginno</div>
+        </div>
+      </div>
+      <div class="pros"><ul>
+        <li class="p">字面满足「置顶 + 一个聊天框」</li>
+        <li class="p">有持续对话流，可监工 agent 长任务</li>
+        <li class="p">胶囊态 = 常驻但不遮挡（状态点：空闲/运行中/待确认）</li>
+        <li class="p">可内联处理工具确认（允许/拒绝），不跳窗</li>
+        <li class="m">需要管理遮挡：靠失焦半透明 + 贴边吸附 + Esc 收起解决</li>
+      </ul></div>
+    </div>
+  </div>
+
+  <!-- 方案 C -->
+  <div class="option">
+    <div class="opt-head"><h3>方案 C · 边缘停靠条</h3><span class="verdict alt">不推荐</span></div>
+    <p class="desc">屏幕右缘常驻一条窄面板（约屏宽 20%），始终可见、零唤出成本，像给桌面加了个 AI 侧栏。</p>
+    <div class="opt-cols">
+      <div class="mock-scroll">
+        <div class="mac mac--short" style="min-width:400px">
+          <div class="menubar"><span class="apple"></span><b>VS Code</b><span class="sp"></span><span>14:32</span></div>
+          <div class="dock">
+            <div class="hd"><span class="dot"></span>Ginno</div>
+            <div class="body">
+              <div class="msg u" style="align-self:flex-end;background:var(--mk-user);border-radius:1cqw;padding:.7cqw 1cqw">跑一下测试</div>
+              <div class="msg a" style="align-self:flex-start;background:var(--mk-agent);border-radius:1cqw;padding:.7cqw 1cqw">pnpm test 通过 42/42 ✓</div>
+            </div>
+            <div class="fw-input"><span class="ph">问 Ginno…</span><span class="sendbtn">↑</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="pros"><ul>
+        <li class="p">存在感最强，永远零操作可见</li>
+        <li class="m">永久占用屏幕右侧 ~20%，挤压所有其他应用</li>
+        <li class="m">与 macOS 分屏 / Stage Manager / 全屏 Space 冲突最多</li>
+        <li class="m">「简单一个聊天框」变成了「桌面改造」，过重</li>
+      </ul></div>
+    </div>
+  </div>
+
+  <div class="callout"><b>结论：</b>B 为主形态。B 的「胶囊态」覆盖 C 的常驻监工诉求，B 的「快捷键唤起/收起」覆盖 A 的召唤体验——一个方案吃掉三个场景。</div>
+</section>
+
+<!-- ============ 详设 ============ -->
+<section>
+  <div class="sec-label">推荐方案详设</div>
+  <h2>方案 B 交互详设</h2>
+
+  <h3>界面结构</h3>
+  <div class="detail-cols">
+    <div class="mock-scroll">
+      <div class="mac mac--bare" style="min-width:420px">
+        <div class="fw" style="left:14%;top:9%;width:46%;bottom:9%">
+          <div class="fw-title">
+            <span class="badge" style="left:-1cqw;top:-1cqw">1</span>
+            <span class="dots"><span class="tl r"></span><span class="tl y"></span><span class="tl g"></span></span>
+            <span class="name">Ginno</span><span class="mode">/ 快速会话</span>
+            <span class="badge" style="left:20cqw;top:-1cqw">2</span>
+            <span class="sp"></span>
+            <span class="statuspill"><span class="dot"></span>运行中</span>
+            <span class="badge" style="right:5.5cqw;top:-1cqw">3</span>
+            <span class="ico">⌄</span><span class="ico">✕</span>
+          </div>
+          <div class="fw-body">
+            <span class="badge" style="left:-1cqw;top:6cqw">4</span>
+            <div class="msg u">帮我确认重启后报错还在不在</div>
+            <span class="badge" style="left:-1cqw;top:15cqw">5</span>
+            <div class="toolrow">⚙ grep ERROR ~/.ginno/logs/sidecar.log <span class="ok">✓ 0.2s</span></div>
+            <div class="msg a">重启后没有新的 ERROR，zlib 报错已消失，会话数据完好。</div>
+            <span class="badge" style="left:-1cqw;bottom:9cqw">6</span>
+            <div class="confirm">要顺手清理旧的 usage 日志吗？
+              <div class="btns"><span class="btn allow">允许一次</span><span class="btn deny">拒绝</span></div>
+            </div>
+          </div>
+          <span class="badge" style="left:-1cqw;bottom:1.5cqw">7</span>
+          <span class="badge" style="right:-1cqw;bottom:1.5cqw">8</span>
+          <div class="fw-input"><span class="ph">问 Ginno 任何事…</span><kbd>↵</kbd><span class="sendbtn">↑</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="legend">
+      <ol>
+        <li><b>标题栏 / 拖拽区</b> — 整条可拖动窗口；双击任意空白处收起为胶囊。</li>
+        <li><b>会话标识</b> — 显示当前模式：「快速会话」或「跟随 · &lt;主窗口会话名&gt;」，点击切换（见会话模型）。</li>
+        <li><b>状态点</b> — 绿=agent 运行中，灰=空闲，橙=待你确认。胶囊态同样显示这颗点，这就是「监工」的最小界面。</li>
+        <li><b>消息流</b> — 流式 Markdown；代码块限高 3 行，点开展开；历史仅保留本会话，滚动加载。</li>
+        <li><b>工具调用行</b> — 折叠为一行「⚙ 命令 + 结果」，点击展开完整输出。悬浮窗寸土寸金，agent 的过程细节默认收起来。</li>
+        <li><b>内联确认</b> — 权限请求（运行命令/写文件）以按钮形式出现在消息流里，就地决策，不弹系统对话框、不跳主窗口。</li>
+        <li><b>输入框</b> — 自动增高 1–5 行；<kbd>↵</kbd> 发送，<kbd>⇧↵</kbd> 换行；支持粘贴图片/文本片段。</li>
+        <li><b>快捷键提示</b> — <kbd>⌘↵</kbd> 把当前对话移交主窗口继续。</li>
+      </ol>
+    </div>
+  </div>
+
+  <h3>状态机</h3>
+  <div class="svg-scroll">
+    <svg class="statemachine" viewBox="0 0 860 250" role="img" aria-label="悬浮窗状态机：隐藏、胶囊、迷你窗、主窗口之间的转换">
+      <defs>
+        <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 z" style="fill:var(--ink-3)"/></marker>
+        <marker id="arrA" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 z" style="fill:var(--accent)"/></marker>
+      </defs>
+      <!-- nodes -->
+      <g>
+        <rect x="30" y="96" width="130" height="58" rx="12" style="fill:var(--surface);stroke:var(--line-2)"/>
+        <text x="95" y="120" text-anchor="middle" style="fill:var(--ink);font-size:15px;font-weight:600">隐藏</text>
+        <text x="95" y="140" text-anchor="middle" style="fill:var(--ink-3);font-size:11px">窗口不存在/不显示</text>
+      </g>
+      <g>
+        <rect x="260" y="96" width="130" height="58" rx="12" style="fill:var(--surface);stroke:var(--accent);stroke-width:1.5"/>
+        <text x="325" y="120" text-anchor="middle" style="fill:var(--ink);font-size:15px;font-weight:600">胶囊 pill</text>
+        <text x="325" y="140" text-anchor="middle" style="fill:var(--ink-3);font-size:11px">仅状态点 · 可点击穿透</text>
+      </g>
+      <g>
+        <rect x="490" y="96" width="130" height="58" rx="12" style="fill:var(--surface);stroke:var(--accent);stroke-width:1.5"/>
+        <text x="555" y="120" text-anchor="middle" style="fill:var(--ink);font-size:15px;font-weight:600">迷你窗 mini</text>
+        <text x="555" y="140" text-anchor="middle" style="fill:var(--ink-3);font-size:11px">完整聊天框</text>
+      </g>
+      <g>
+        <rect x="700" y="96" width="130" height="58" rx="12" style="fill:var(--surface);stroke:var(--line-2)"/>
+        <text x="765" y="120" text-anchor="middle" style="fill:var(--ink);font-size:15px;font-weight:600">主窗口</text>
+        <text x="765" y="140" text-anchor="middle" style="fill:var(--ink-3);font-size:11px">完整工作台接管</text>
+      </g>
+      <!-- edges -->
+      <line x1="160" y1="112" x2="256" y2="112" style="stroke:var(--ink-3);stroke-width:1.5" marker-end="url(#arr)"/>
+      <text x="208" y="100" text-anchor="middle" class="mono" style="fill:var(--ink-2);font-size:11px">⌥⌘Space / 菜单栏</text>
+      <line x1="256" y1="140" x2="160" y2="140" style="stroke:var(--ink-3);stroke-width:1.5" marker-end="url(#arr)"/>
+      <text x="208" y="160" text-anchor="middle" class="mono" style="fill:var(--ink-2);font-size:11px">✕ 关闭</text>
+      <line x1="390" y1="112" x2="486" y2="112" style="stroke:var(--accent);stroke-width:2" marker-end="url(#arrA)"/>
+      <text x="438" y="100" text-anchor="middle" class="mono" style="fill:var(--accent-ink);font-size:11px">点击 / ⌥⌘Space</text>
+      <line x1="486" y1="140" x2="390" y2="140" style="stroke:var(--accent);stroke-width:2" marker-end="url(#arrA)"/>
+      <text x="438" y="160" text-anchor="middle" class="mono" style="fill:var(--accent-ink);font-size:11px">Esc / 收起 ⌄</text>
+      <line x1="620" y1="125" x2="696" y2="125" style="stroke:var(--ink-3);stroke-width:1.5" marker-end="url(#arr)"/>
+      <text x="658" y="112" text-anchor="middle" class="mono" style="fill:var(--ink-2);font-size:11px">⌘↵ 接管</text>
+      <path d="M 555 154 L 555 212 L 95 212 L 95 158" style="fill:none;stroke:var(--ink-3);stroke-width:1.5;stroke-dasharray:5 4" marker-end="url(#arr)"/>
+      <text x="325" y="230" text-anchor="middle" class="mono" style="fill:var(--ink-2);font-size:11px">✕ 直接关闭悬浮窗（会话保留，下次唤出恢复）</text>
+    </svg>
+  </div>
+
+  <h3>交互细则</h3>
+  <div class="spec-scroll">
+    <table class="spec">
+      <thead><tr><th>行为</th><th>规格</th></tr></thead>
+      <tbody>
+        <tr><td>唤起 / 隐藏</td><td>全局快捷键 <kbd>⌥⌘Space</kbd>（可自定义，默认避开 Raycast 的 <kbd>⌥Space</kbd> 与 Spotlight 的 <kbd>⌘Space</kbd>）；菜单栏图标「显示/隐藏悬浮窗」；主窗口标题栏图钉按钮弹出。</td></tr>
+        <tr><td>收起 / 展开</td><td><kbd>Esc</kbd> 或标题栏 <kbd>⌄</kbd> 收起为胶囊；点击胶囊或再按快捷键展开。agent 运行中收起后，胶囊状态点保持绿色脉动；出现待确认时胶囊变橙色并轻微弹跳一次。</td></tr>
+        <tr><td>拖动与吸附</td><td>标题栏及消息流空白处可拖；距屏幕边缘 16px 内自动吸附；位置与尺寸持久化到 <kbd>~/.ginno/settings.json</kbd>，多显示器分别记忆；避开刘海区域。</td></tr>
+        <tr><td>透明度</td><td>失焦时降到 ~70% 不抢注意力，鼠标悬停或聚焦恢复 100%；幅度可在设置中调。</td></tr>
+        <tr><td>置顶层级</td><td>NSWindow <kbd>.floating</kbd> 层级：压普通窗口，不压系统 UI。可选「在所有 Space 显示」（默认开）。对全屏 app 所在 Space 的策略见 Q3。</td></tr>
+        <tr><td>点击穿透</td><td>仅胶囊态提供可选的 click-through：钉在角落纯当状态灯，不拦截任何点击。</td></tr>
+        <tr><td>发送与输入</td><td><kbd>↵</kbd> 发送，<kbd>⇧↵</kbd> 换行，输入框自动增高 1–5 行；支持粘贴图片与选中文本片段。</td></tr>
+        <tr><td>移交主窗口</td><td><kbd>⌘↵</kbd> 或消息流右上角入口：唤起主窗口、打开对应会话并滚动到最新位置；快速会话在主窗口会话列表中带「⚡快速」标记。</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>会话模型</h3>
+  <div class="modes">
+    <div class="mode def"><div class="tag">默认</div><h4>快速会话</h4><p>悬浮窗自己的轻量上下文，随问随答，不污染主会话。可选择关联某个项目（读取其 GINNO.md 规则），也可完全白板。</p></div>
+    <div class="mode"><div class="tag">可选</div><h4>跟随主窗口</h4><p>镜像主窗口当前会话：实时看到 agent 在主会话里的流式输出，可插话追加指令、可中断——「监工」形态。</p></div>
+    <div class="mode"><div class="tag">出口</div><h4>主窗口接管</h4><p>聊深了需要完整能力（文件树、diff、workflow 视图）时，<kbd>⌘↵</kbd> 把对话整体迁移到主窗口继续。</p></div>
+  </div>
+
+  <h3>设置项（settings.json 新增 <code style="font-family:var(--mono);font-size:12px">floating</code> 键）</h3>
+  <div class="chips">
+    <span class="chip">快捷键</span><span class="chip">默认尺寸</span><span class="chip">失焦透明度</span>
+    <span class="chip">所有 Space 显示</span><span class="chip">全屏 app 时：避让 / 覆盖</span>
+    <span class="chip">胶囊点击穿透</span><span class="chip">启动时自动显示</span><span class="chip">默认会话模式</span>
+  </div>
+</section>
+
+<!-- ============ 技术 ============ -->
+<section>
+  <div class="sec-label">可行性</div>
+  <h2>技术要点（Tauri v2）</h2>
+  <p class="lede">结论：现有架构完全支撑，无需动 sidecar / PyInstaller 链路。悬浮窗是第二个 <code style="font-family:var(--mono);font-size:12.5px">WebviewWindow</code>（label: <code style="font-family:var(--mono);font-size:12.5px">pin</code>），加载同一前端的新路由 <code style="font-family:var(--mono);font-size:12.5px">/pin</code>，连同一条 <code style="font-family:var(--mono);font-size:12.5px">ws://127.0.0.1:8787</code> 流。</p>
+  <div class="tech-grid">
+    <div class="tech">
+      <h4>窗口壳（Rust 侧）</h4>
+      <ul>
+        <li><code>always_on_top(true)</code> + <code>decorations(false)</code> + <code>transparent(true)</code> + <code>shadow(true)</code>，<code>resizable(true)</code></li>
+        <li><code>set_visible_on_all_workspaces(true)</code>（Tauri v2 内置 macOS API）实现跨 Space</li>
+        <li>层级微调走 <code>NSWindowLevel</code>（<code>.floating</code>）；全屏 Space 避让策略需 <code>NSWindowCollectionBehavior</code> 定制</li>
+        <li>胶囊态点击穿透：<code>set_ignore_cursor_events(true)</code></li>
+        <li>全局快捷键：官方 <code>global-shortcut</code> 插件；注册失败（冲突）时降级为菜单栏入口并提示</li>
+      </ul>
+    </div>
+    <div class="tech">
+      <h4>前端与会话（复用为主）</h4>
+      <ul>
+        <li>新路由 <code>/pin</code>：复用现有聊天组件，新增 compact 变体（限高代码块、折叠工具行、内联确认按钮）</li>
+        <li>会话：runtime 新增 <code>session.type = "quick"</code>，checkpoint 走现有文件式 checkpointer，无 schema 变更</li>
+        <li>「接管」= 主窗口 deep link 到该 session id，消息历史天然连续</li>
+        <li><code>capabilities/</code> 需为 pin 窗口补多窗口与 shortcut 权限</li>
+        <li>主窗口与悬浮窗同时订阅同一会话时，WS 多路复用/去重需要设计（风险点）</li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout" style="margin-top:16px"><b>规模预估：</b>窗口壳与状态机 ~1 天，compact 聊天 UI ~1.5 天，快速会话与接管 ~1 天，设置/快捷键/打磨 ~1 天。属于一个独立 worktree 可完成的中型 feature。</div>
+</section>
+
+<!-- ============ 开放问题 ============ -->
+<section>
+  <div class="sec-label">需要你拍板</div>
+  <h2>5 个开放问题</h2>
+  <p class="lede">这些答案会直接改变实现方案，先定了再出实施计划。</p>
+  <div class="qlist">
+    <div class="q">
+      <div class="qhead"><span class="qid">Q1</span><h4>悬浮窗里的 agent 要多少能力？</h4></div>
+      <p>完整 agent（能跑命令、改文件，确认内联在悬浮窗里）？还是轻量问答（只聊天 + 只读查询，需要动手时提示移交主窗口）？这决定 confirm 交互和权限体系的复杂度。</p>
+      <div class="rec-line"><span class="rec-tag">建议</span>完整能力 + 内联确认——它是「卫星」不是「玩具」，能力阉割会让长任务监工场景落空。</div>
+    </div>
+    <div class="q">
+      <div class="qhead"><span class="qid">Q2</span><h4>默认会话模式是独立快速会话，还是跟随主窗口？</h4></div>
+      <p>独立 = 干净、随问随答；跟随 = 打开即见主窗口 agent 在干什么。两者都做（可切换）成本可控，但要定一个默认值。</p>
+      <div class="rec-line"><span class="rec-tag">建议</span>默认独立快速会话，「跟随」做成会话标识处的下拉切换。</div>
+    </div>
+    <div class="q">
+      <div class="qhead"><span class="qid">Q3</span><h4>其他 app 处于 macOS 全屏 Space 时，悬浮窗覆盖还是避让？</h4></div>
+      <p>macOS 特有决策：全屏 Space 里强行置顶技术上可行但极易挡事（比如全屏看视频）；自动避让则「永远置顶」名不副实。</p>
+      <div class="rec-line"><span class="rec-tag">建议</span>做成设置项，默认「避让全屏 Space、胶囊仍在」，想看时快捷键临时覆盖。</div>
+    </div>
+    <div class="q">
+      <div class="qhead"><span class="qid">Q4</span><h4>常驻形态：菜单栏图标 + Dock 隐藏，还是维持现状？</h4></div>
+      <p>若悬浮窗要「关主窗口也活着」，app 需要支持菜单栏常驻（甚至 LSUIElement 隐藏 Dock 图标），这是激活策略层面的改动。</p>
+      <div class="rec-line"><span class="rec-tag">建议</span>v1 先做菜单栏图标 + Dock 保留；LSUIElement 纯后台模式留到 v2。</div>
+    </div>
+    <div class="q">
+      <div class="qhead"><span class="qid">Q5</span><h4>胶囊态要不要点击穿透的「状态灯」模式？</h4></div>
+      <p>穿透后胶囊完全不拦截鼠标、纯当 agent 状态指示灯；代价是想展开必须先按快捷键。实现很便宜（一个开关）。</p>
+      <div class="rec-line"><span class="rec-tag">建议</span>做，默认关。长任务挂机场景下很好用。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 坑 ============ -->
+<section>
+  <div class="sec-label">盲区提示</div>
+  <h2>macOS 特有的坑（提前知道好过事后踩）</h2>
+  <div class="pit">
+    <ul>
+      <li><b>截屏 / 屏幕共享会录到悬浮窗</b>——置顶窗口出现在所有截图和投屏里。演示场景要么提前收起，要么后续考虑「截屏时自动隐藏」（macOS 有对应 API，v2 再说）。</li>
+      <li><b>快捷键冲突</b>——<kbd>⌥Space</kbd>（Raycast）、<kbd>⌘Space</kbd>（Spotlight）、<kbd>⌃Space</kbd>（输入法）都是雷区；默认值要避开且注册失败时优雅降级。</li>
+      <li><b>全屏 Space 与 Stage Manager</b>——always-on-top 窗口在这两种模式下的行为是 macOS 版本相关的老大难，Q3 的策略必须在真机上逐版本验证。</li>
+      <li><b>多显示器 + 刘海</b>——位置记忆要按显示器分别存；刘海下方是死区，吸附逻辑要避开。</li>
+      <li><b>透明窗口 + 圆角</b>——Tauri 透明窗在 macOS 上需要正确处理阴影与圆角裁剪，否则四角出现黑底。</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <b>下一步</b>：你拍板 Q1–Q5（或直接对三个形态方案给反馈）之后——
+  <div class="steps">
+    <span class="step">① 出实施计划（窗口协议 / 数据模型 / 组件拆分）</span><span class="arrow">→</span>
+    <span class="step">② 独立 worktree 开发</span><span class="arrow">→</span>
+    <span class="step">③ make app + 完全重启验证</span>
+  </div>
+</footer>
+
+</div>

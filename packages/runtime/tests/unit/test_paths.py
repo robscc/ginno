@@ -109,3 +109,20 @@ def test_session_dir_coexists_with_checkpoint_file(isolated_home):
     # the exact .json instead, so deleting the checkpoint leaves the dir intact
     (sess_dir / "sid123.json").unlink()
     assert fdir.is_dir()
+
+
+def test_default_settings_floating_key():
+    """Floating quick-chat defaults (docs/floating-window-design.md §1.2)."""
+    f = paths._DEFAULT_SETTINGS["floating"]
+    # ⇧⌘Space — NOT ⌃⌥Space (collides with macOS input-source switching).
+    # Must match DEFAULT_HOTKEY (lib.rs) and DEFAULT_FLOATING (pinPrefs.ts).
+    assert f["hotkey"] == "CommandOrControl+Shift+Space"
+    assert f["default_mode"] == "quick"
+    assert f["fullscreen_policy"] == "avoid"
+    assert f["pill_click_through"] is False
+    assert 0 < f["inactive_opacity"] <= 1.0
+
+
+def test_ensure_layout_seeds_floating_settings(seeded_home):
+    data = json.loads((paths.home() / "settings.json").read_text())
+    assert data["floating"]["visible_on_all_spaces"] is True
