@@ -212,6 +212,19 @@ class WSConversation:
     def respond_permission(self, decision: str) -> None:
         self.send({"type": "permission_response", "decision": decision})
 
+    def respond_answer(
+        self, answer: str = "", option_index: int | None = None, skip: bool = False
+    ) -> None:
+        """Answer a parked ask_user question (the ambiguity-resolution flow)."""
+        self.send(
+            {
+                "type": "user_answer",
+                "answer": answer,
+                "option_index": option_index,
+                "skip": skip,
+            }
+        )
+
     def recv_until(self, *terminal: str) -> list[dict]:
         """Receive events until one of the terminal event names is seen."""
         terminal_set = set(terminal)

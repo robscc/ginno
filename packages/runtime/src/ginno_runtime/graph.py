@@ -38,6 +38,7 @@ from .tools.workflow_tools import (
 from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 from .tools.document_tools import ALL_DOCUMENT_TOOLS
 from .tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools
+from .tools.ask_tools import ASK_TOOL_NAMES, build_ask_tools
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -64,6 +65,12 @@ def tool_allowed(agent, tool_name: str, extra_allow: list[str] | None = None) ->
     # tools (install/uninstall) stay gated by tools_allow so a read-only
     # agent cannot rewrite ~/.ginno/skills.
     if tool_name == "use_skill":
+        return True
+    # ask_user grants no capability — it only asks the human. An agent that
+    # cannot ask is an agent that guesses, so every role gets it. Note this is
+    # the OPPOSITE call from install_skills, which stays gated above so a
+    # read-only agent cannot rewrite ~/.ginno/skills.
+    if tool_name in ASK_TOOL_NAMES:
         return True
     if extra_allow and any(fnmatch.fnmatch(tool_name, p) for p in extra_allow):
         return True
@@ -258,12 +265,18 @@ def build_turn_context(
     attached_files: list[dict] | None = None,
     mention_context: list[dict] | None = None,
     bound_workflow: dict | None = None,
+    projects: list[dict] | None = None,
 ) -> str:
     """The PER-TURN volatile context (plan B1): wiki retrieval for this query,
-    attached files, @mentions, and (for workflow-dev sessions) the bound
-    workflow's current DSL. Returned as plain text for a turn-context
-    message appended right before the user's HumanMessage — never part of the
-    stable system prompt, so cached prefixes survive turn to turn.
+    attached files, @mentions, discovered project roots, and (for workflow-dev
+    sessions) the bound workflow's current DSL. Returned as plain text for a
+    turn-context message appended right before the user's HumanMessage — never
+    part of the stable system prompt, so cached prefixes survive turn to turn.
+
+    ``projects`` deliberately rides THIS layer rather than a world-state
+    section: roots appear mid-session, and a stable-layer change would
+    invalidate the whole cached prefix. It also survives compaction, which an
+    update-text announcement would not.
     """
     from .knowledge.injection import build_wiki_context, wrap_context_section
 
@@ -296,6 +309,25 @@ def build_turn_context(
             if summary:
                 content += "\n" + summary
             parts.append(wrap_context_section(f"mentioned_{kind}", content))
+    if projects:
+        lines = [
+            "本会话通过工具访问过以下本地项目目录（由绝对路径自动识别，无需用户挂载）："
+        ]
+        for pr in projects[:5]:
+            extra = (
+                f"，.claude/skills 下已有 {pr['claude_skills']} 个 skill"
+                if pr.get("claude_skills")
+                else ""
+            )
+            lines.append(f"- {pr.get('path')}（{', '.join(pr.get('markers') or [])}{extra}）")
+            if pr.get("claude_skills"):
+                lines.append(f"  → 该仓库的 skill 目录：{pr['path']}/.claude/skills")
+        lines.append(
+            "规则：当用户说「导入 / 安装 / 放到项目里 / 加到 skill 里」而没有指明位置时，"
+            "目标可能不止一个（Ginno 全局 ~/.ginno/skills、Ginno 项目 skills、某个仓库的 "
+            ".claude/skills）。先用 ask_user 让用户选，不要替用户假定。"
+        )
+        parts.append(wrap_context_section("projects", "\n".join(lines)))
     return "\n".join(parts)
 
 
@@ -704,13 +736,23 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
             # editing tools carry their OWN diff confirmation (interrupt), so they
             # must bypass the permission policy too — otherwise the policy's "ask"
             # would fire a permission.request before the tool's version_propose.
-            # Skill tools are the same class: they only manage Ginno's own
-            # storage (~/.ginno/skills), never the user's files or shell.
+            # Skill tools are the same class while they manage Ginno's own
+            # storage (~/.ginno/skills) — but install_skills(target="repo")
+            # writes into the USER'S repo, which is a file-write capability and
+            # must go through the policy like any other write.
+            # ask_user is the same class again: it carries its OWN interrupt,
+            # so a policy "ask" would fire a permission.request AHEAD of it and
+            # the user would answer two prompts for one question.
+            skill_owned = name in SKILL_TOOL_NAMES and not (
+                name == "install_skills"
+                and str(args.get("target") or "") == "repo"
+            )
             if (
                 name in WORKFLOW_TOOL_NAMES
                 or name in ARTIFACT_TOOL_NAMES
                 or name in WORKFLOW_DEV_TOOL_NAMES
-                or name in SKILL_TOOL_NAMES
+                or skill_owned
+                or name in ASK_TOOL_NAMES
             ):
                 continue
 
@@ -772,6 +814,38 @@ def route_after_agent(state: AgentState) -> Literal["permission", "__end__"]:
     return "permission" if state.get("pending_tool_calls") else END
 
 
+def _project_observer(project_slug: str | None, session_id: str | None):
+    """Build the project-discovery hook for the file/shell tools (projects.py).
+
+    Returns None without a session (workflow engine, listing endpoints) so
+    those callers keep the pre-2026-09 behaviour. The note is emitted ONCE per
+    project — ``record`` returns an entry only for a genuinely new root — so
+    ordinary repos the agent works in stay quiet, and only a Claude-style
+    project (``.claude`` / ``CLAUDE.md``) speaks up, because that is where the
+    "install into the repo or into Ginno?" ambiguity actually lives.
+    """
+    if not (project_slug and session_id):
+        return None
+    from . import projects as projects_mod
+
+    def _observe(p) -> str | None:
+        entry = projects_mod.record(project_slug, session_id, p)
+        if not entry or not entry.get("has_claude"):
+            return None
+        extra = (
+            f", .claude/skills×{entry['claude_skills']}"
+            if entry.get("claude_skills")
+            else ""
+        )
+        return (
+            f"\n\n[project] {entry['path']}（{', '.join(entry['markers'])}{extra}）"
+            "已记录为本会话的项目根目录；涉及「导入/安装到项目里」时，它可能才是"
+            "用户想的目标——先确认，不要默认装进 Ginno 自己的目录。"
+        )
+
+    return _observe
+
+
 def build_all_tools(
     mcp_tools: list | None = None,
     workspace: str | None = None,
@@ -803,8 +877,16 @@ def build_all_tools(
         else []
     )
     return (
-        build_builtin_tools(workspace, context_dirs=context_dirs, primary_path=primary_path)
-        + build_skill_tools(project_slug)
+        build_builtin_tools(
+            workspace,
+            context_dirs=context_dirs,
+            primary_path=primary_path,
+            observe_path=_project_observer(project_slug, session_id),
+        )
+        + build_skill_tools(project_slug, session_id, primary_path)
+        # [] without a session_id (workflow engine / listing endpoints): no
+        # socket to answer over, and a workflow has its own `human` node.
+        + build_ask_tools(project_slug, session_id)
         + (mcp_tools or [])
         + [render_widget, attach_ref]
         + ALL_TODO_TOOLS
@@ -918,4 +1000,10 @@ def build_graph(
     g.add_edge("permission", "tools")
     g.add_edge("tools", "agent")
 
+    # NOTE: pending_writes intentionally stay hidden from langgraph here (the
+    # checkpointer's default) — surfacing them changes resume semantics and,
+    # measured, does NOT help the reconnect path anyway: an interrupt raised
+    # inside the tools node gets one extra write-less checkpoint committed on
+    # top of it, so get_tuple's newest entry carries no `__interrupt__` either
+    # way. The reconnect path reads `get_pending_interrupt` instead.
     return g.compile(checkpointer=FileCheckpointer(project_slug=project_slug))

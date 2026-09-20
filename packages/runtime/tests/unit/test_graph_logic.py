@@ -43,6 +43,15 @@ def test_structured_tools_always_allowed():
     a = _agent(["read_file"])  # narrow allowlist
     assert tool_allowed(a, "render_widget") is True
     assert tool_allowed(a, "attach_ref") is True
+
+
+def test_ask_user_available_to_every_role():
+    """An agent that cannot ask is an agent that guesses — and this tool grants
+    no capability, so a narrow allowlist must not lock it out. Note the
+    deliberate contrast with install_skills, which stays gated."""
+    a = _agent(["read_file"])
+    assert tool_allowed(a, "ask_user") is True
+    assert tool_allowed(a, "install_skills") is False
     assert tool_allowed(a, "workflow_run") is True
     assert tool_allowed(a, "workflow_get") is True
     assert tool_allowed(a, "artifact_register") is True

@@ -24,6 +24,7 @@ import type { WorkflowRun } from "@/lib/types";
 import { fileDownloadUrl } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { Markdown } from "./Markdown";
+import { AskUserCard } from "./AskUserCard";
 import { toolLabel } from "@/lib/toolLabels";
 
 export type SourceItem = { kind: "wiki" | "web"; ref: string; note?: string };
@@ -40,6 +41,14 @@ export type Block =
   | { kind: "widget"; widgetKind: string; data: unknown; renderId?: string }
   | { kind: "ref"; refKind: string; name: string; refId?: string }
   | { kind: "tool"; id?: string; name: string; content: string; pending: boolean; argsPreview?: string }
+  // ask_user parked the turn on an ambiguity: the card REPLACES the pending
+  // ask_user tool bubble (same tool-call id), and the tool's JSON result folds
+  // back into status/answer on tool.end (a stop while parked → "skipped").
+  // History replay rebuilds it from the checkpoint (api/messages_ui.py).
+  | { kind: "question"; id?: string; question: string; header?: string;
+      options: string[]; allowFreeText: boolean;
+      status: "pending" | "answered" | "skipped";
+      answer?: string; optionIndex?: number | null }
   | { kind: "thinking"; text: string }
   | { kind: "workflow"; run: WorkflowRun }
   // WorldState change announcements (docs/design/world-state-plan.md §7):
@@ -49,6 +58,8 @@ export type Block =
   // model cited. Server emits this on history replay; live text blocks are
   // parsed client-side (the trailing <ginno_citations> block is machine meta).
   | { kind: "sources"; items: SourceItem[] };
+
+export type QuestionBlock = Extract<Block, { kind: "question" }>;
 
 /** Resolve an image block to a displayable URL.
 
@@ -939,8 +950,20 @@ export function ImageGallery({ urls }: { urls: string[] }) {
   );
 }
 
-/** Blocks rendered INSIDE the assistant card (everything except refs). */
-export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?: boolean }) {
+/** Blocks rendered INSIDE the assistant card (everything except refs).
+ * onAnswerQuestion/questionLive thread ChatStream's ask_user resume channel
+ * down to a pending question card; without them the card renders read-only. */
+export function InnerBlocks({
+  blocks,
+  streaming,
+  onAnswerQuestion,
+  questionLive,
+}: {
+  blocks: Block[];
+  streaming?: boolean;
+  onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
+  questionLive?: boolean;
+}) {
   const out: React.ReactNode[] = [];
   let i = 0;
   let key = 0;
@@ -988,6 +1011,15 @@ export function InnerBlocks({ blocks, streaming }: { blocks: Block[]; streaming?
       out.push(<WorkflowBlock key={key++} run={b.run} />);
     } else if (b.kind === "tool") {
       out.push(<ToolBlock key={key++} name={b.name} content={b.content} pending={b.pending} argsPreview={b.argsPreview} />);
+    } else if (b.kind === "question") {
+      out.push(
+        <AskUserCard
+          key={b.id || `q${key++}`}
+          block={b}
+          live={questionLive}
+          onAnswer={onAnswerQuestion}
+        />,
+      );
     } else if (b.kind === "thinking") {
       out.push(<ThinkingBlock key={key++} text={b.text} live={!!streaming && last} />);
     } else if (b.kind === "file") {
@@ -1040,5 +1072,9 @@ export function RefBlocks({ blocks }: { blocks: Block[] }) {
 }
 
 export function hasPendingTool(blocks: Block[]): boolean {
-  return blocks.some((b) => b.kind === "tool" && b.pending);
+  // A pending question card counts too: it REPLACED the ask_user tool bubble,
+  // so without this the working indicator would die the moment the card lands.
+  return blocks.some(
+    (b) => (b.kind === "tool" && b.pending) || (b.kind === "question" && b.status === "pending"),
+  );
 }

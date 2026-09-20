@@ -195,6 +195,48 @@ def test_skills_render_carries_install_context(isolated_home):
     assert "SKILL.md" in out and "frontmatter" in out
     # agent None → tools_allow ["*"] → management guidance present
     assert "install_skills" in out
+    # All three install targets are advertised, and the repo one names the
+    # parameter it needs so the model does not invent a path.
+    assert 'target="global"' in out
+    assert 'target="project"' in out
+    assert 'target="repo"' in out
+    assert "project_dir" in out
+    assert ".claude/skills" in out
+
+
+def test_skills_render_is_byte_stable(isolated_home):
+    """Prefix-cache guard: the discovered-project list is VOLATILE and must
+    never reach the stable layer. Two renders under different project
+    registries must be identical — the dynamic values belong in [turn
+    context], which is rebuilt per turn and never cached."""
+    paths.ensure_layout()
+    sec = SkillsSection()
+    before = sec.render(sec.snapshot(ctx(project_slug="default")))
+
+    # Populate a session's project registry directly (the render reads none of
+    # it — that is the assertion).
+    reg = paths.project_sessions_dir("default") / "s1.projects.json"
+    reg.parent.mkdir(parents=True, exist_ok=True)
+    reg.write_text(
+        json.dumps(
+            {
+                "roots": [
+                    {
+                        "path": "/Users/me/work/claude-agent-team",
+                        "name": "claude-agent-team",
+                        "markers": [".git", ".claude"],
+                        "has_claude": True,
+                        "claude_skills": 14,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    after = sec.render(sec.snapshot(ctx(project_slug="default")))
+    assert before == after
+    assert "claude-agent-team" not in after
 
 
 def test_skills_management_gated_by_tools_allow(isolated_home):

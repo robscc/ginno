@@ -32,6 +32,8 @@ from ..server_shared import (
     _push_session_event,
     _turn_lock,
 )
+from ..tools.ask_tools import reset_interactive as _reset_interactive_turn
+from ..tools.ask_tools import set_interactive as _set_interactive_turn
 from ..session_meta import (
     _find_meta,
     _resolve_session_meta,
@@ -237,9 +239,14 @@ async def _run_goal_turn(session: dict, goal: dict, turn_id: str) -> None:
     # Goal turns don't pass the WS loop, so this flag is the stop handler's
     # only liveness signal for them.
     _RUNNING_TURNS[session_id] = turn_id
+    # Nobody is watching a continuation turn. ask_user would park it until the
+    # stop signal with no one to answer, so the tool is told it is headless and
+    # refuses instead — the model decides and states its assumption.
+    ask_tok = _set_interactive_turn(False)
     try:
         await _stream_api._run_stream(None, session["graph"], config, text, session, agent_id)
     finally:
+        _reset_interactive_turn(ask_tok)
         # Normal/error paths already pop inside _stream_graph; a turn parked
         # at an interrupt must STAY registered (resume hasn't happened yet).
         if (

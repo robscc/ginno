@@ -11,7 +11,7 @@ import { greeting, relTime } from "@/lib/utils";
 import { notifyNative } from "@/lib/desktop";
 import { notifyPrefs } from "@/lib/notifyPrefs";
 import { Icon } from "@/components/icons";
-import { ContextBlocks, InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block } from "@/components/chat/blocks";
+import { ContextBlocks, InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
 import { DiffView } from "@/components/workflow/DiffView";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
@@ -264,9 +264,50 @@ function isEmptyToolResult(content: string): boolean {
   return EMPTY_TOOL_RESULT_RE.test(content);
 }
 
+/** ask_user tool.end content → the question card's final state. The receipt
+ * is JSON ({ok, skipped, source, option_index, answer, free_text}); a stop
+ * while parked persists the literal "(interrupted)" instead. Anything
+ * unparseable also reads as skipped — a card left "pending" would keep the
+ * session stuck in the running state (hasPendingTool counts it). */
+function foldQuestionResult(q: QuestionBlock, content: string): QuestionBlock {
+  if (content.trim() !== "(interrupted)") {
+    try {
+      const r = JSON.parse(content);
+      if (r && typeof r === "object") {
+        if (r.skipped || r.source === "skipped") return { ...q, status: "skipped" };
+        return {
+          ...q,
+          status: "answered",
+          answer: String(r.answer ?? r.free_text ?? ""),
+          optionIndex: typeof r.option_index === "number" ? r.option_index : null,
+        };
+      }
+    } catch {
+      /* not JSON — falls through to skipped */
+    }
+  }
+  return { ...q, status: "skipped" };
+}
+
+/** Close a dead turn's unfinished blocks so `running` unsticks: pending tool
+ * bubbles become "(interrupted)"; pending question cards flip to skipped via
+ * their own status field — mirroring what the backend's stop-heal persists
+ * ("(interrupted)" tool result), which history replay reads as skipped. */
+function closePendingBlocks(blocks: Block[]): Block[] {
+  return blocks.map((b) =>
+    b.kind === "tool" && b.pending
+      ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
+      : b.kind === "question" && b.status === "pending"
+        ? { ...b, status: "skipped" as const }
+        : b,
+  );
+}
+
 /** Rebuild a retry payload from a history user bubble's blocks — used to
  * re-surface a persisted turn-error card (with working retry) after a reload
- * or route/session switch. Image data URLs round-trip through the checkpoint. */
+ * or route/session switch. Image data URLs round-trip through the checkpoint.
+ * Assistant-side kinds (tool/question/widget/…) are ignored BY DESIGN — only
+ * user content round-trips into a retry; don't "complete" the switch. */
 function payloadFromBlocks(blocks: Block[], agentId: string | null): SendPayload {
   const payload: SendPayload = { text: "", images: [], files: [], mentions: [], agentId };
   for (const b of blocks) {
@@ -338,6 +379,16 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
       const id = ev.id as string | undefined;
       const name = ev.name as string | undefined;
       const content = ev.content as string;
+      // ask_user: the question card replaced the tool bubble, so the result
+      // folds into the card instead. Checked FIRST — the empty-result filter
+      // below must never get a chance at a question block (it only drops
+      // tool blocks, but the fold has to win before that anyway).
+      const qi = id ? blocks.findIndex((b) => b.kind === "question" && b.id === id) : -1;
+      if (qi >= 0) {
+        const next = blocks.slice();
+        next[qi] = foldQuestionResult(next[qi] as QuestionBlock, content);
+        return next;
+      }
       // Hide tool blocks that returned "no results" to reduce noise
       if (isEmptyToolResult(content)) {
         return blocks.filter((b) => {
@@ -356,6 +407,31 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
         }
         return b;
       });
+    }
+    case "user.question": {
+      // ask_user parked the turn: the card REPLACES the pending ask_user tool
+      // bubble with the same call id (the user sees "询问中…" first, then the
+      // card). Merging by id is what makes a reconnect re-emit a no-op instead
+      // of a duplicate card — an existing card may already carry an optimistic
+      // answer, so it is kept as-is.
+      const id = (ev.id as string | undefined) || undefined;
+      if (id && blocks.some((b) => b.kind === "question" && b.id === id)) return blocks;
+      const card: QuestionBlock = {
+        kind: "question",
+        id,
+        question: (ev.question as string) || "",
+        header: (ev.header as string) || undefined,
+        options: (ev.options as string[]) || [],
+        allowFreeText: ev.allow_free_text !== false,
+        status: "pending",
+      };
+      const ti = id ? blocks.findIndex((b) => b.kind === "tool" && b.id === id) : -1;
+      if (ti >= 0) {
+        const next = blocks.slice();
+        next[ti] = card;
+        return next;
+      }
+      return [...blocks, card];
     }
     case "widget.emit":
       return [
@@ -412,6 +488,11 @@ export function ChatStream({
   const [target, setTarget] = useState<string | null>(null);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [propose, setPropose] = useState<VersionPropose | null>(null);
+  // Last `turn.state` probe answer: the server says a turn runs/parks for
+  // this session. The non-circular liveness source for question cards rebuilt
+  // from history — after a full reload liveId is null, yet a parked ask_user
+  // still accepts answers (backend resumes them from ANY socket).
+  const [serverRunning, setServerRunning] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
@@ -472,6 +553,7 @@ export function ChatStream({
     liveBySessionRef.current[sid] = null;
     streamAgentRef.current[sid] = null;
     busyBySessionRef.current[sid] = false;
+    serverRunningRef.current[sid] = false;
     storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
       m.role === "user" && m.status === "sending"
         ? { ...m, status: "failed" as const, failReason: "连接中断，未送达" }
@@ -582,6 +664,8 @@ export function ChatStream({
   const permsRef         = useRef<Record<string, PermissionPrompt | null>>({});
   const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
   const busyBySessionRef = useRef<Record<string, boolean>>({});
+  // Per-session mirror of the `serverRunning` state (see syncDisplay).
+  const serverRunningRef = useRef<Record<string, boolean>>({});
   const streamAgentRef   = useRef<Record<string, string | null>>({});
   // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
   // (remount mid-turn — the user navigated to another page while a reply was
@@ -660,6 +744,7 @@ export function ChatStream({
     setPermission(permsRef.current[sid] ?? null);
     setPropose(proposeRef.current[sid] ?? null);
     setStreamAgent(streamAgentRef.current[sid] ?? null);
+    setServerRunning(!!serverRunningRef.current[sid]);
   };
 
   // Pre-load tool display labels from settings (cached at module level).
@@ -679,6 +764,7 @@ export function ChatStream({
         delete liveBySessionRef.current[id]; delete statusRef.current[id];
         delete permsRef.current[id];      delete proposeRef.current[id];
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
+        delete serverRunningRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
         delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
         delete lastSeenRef.current[id];   delete reconcileTimerRef.current[id];
@@ -718,13 +804,18 @@ export function ChatStream({
       g.setConnected(true);
       statusRef.current[sid] = "live";
       lastSeenRef.current[sid] = Date.now();
+      // ALWAYS probe, not only when this client believes a turn is in flight:
+      // after a full page reload no ref remembers the turn, yet the server may
+      // still be parked on an interrupt (ask_user). The answer is the
+      // server-sourced liveness flag that keeps a history-rebuilt question
+      // card interactive.
+      try { sock.send(JSON.stringify({ type: "turn_state" })); } catch { /* ignore */ }
       if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
         // A turn was in flight when this socket's predecessor dropped. Turn
         // events broadcast to EVERY socket of the session, so the running
-        // stream resumes into the same live bubble automatically. Ask the
-        // server whether the turn still exists; if not (it finished while we
-        // were gone, or the runtime restarted), reconcile from history.
-        try { sock.send(JSON.stringify({ type: "turn_state" })); } catch { /* ignore */ }
+        // stream resumes into the same live bubble automatically; if the
+        // server says it's gone (finished while we were away, or the runtime
+        // restarted), the answer's handler reconciles from history.
         if (reconcileTimerRef.current[sid]) clearTimeout(reconcileTimerRef.current[sid]!);
         reconcileTimerRef.current[sid] = setTimeout(() => {
           reconcileTimerRef.current[sid] = null;
@@ -828,7 +919,16 @@ export function ChatStream({
       storeRef.current[sid] = [];
       getSessionHistory(sid).then((res) => {
         if (!res?.messages?.length) return;
-        storeRef.current[sid] = mapHistory(res);
+        const mapped = mapHistory(res);
+        // A live event can land DURING the fetch (the parked-question re-emit
+        // on socket open, or in-flight tokens after a quick reload): keep the
+        // bubble ensureLive created instead of clobbering it — liveBySessionRef
+        // still points at it, and dropping it would silently discard every
+        // later event of the turn. The duplicate section is the known orphan
+        // cosmetic; message.end reconciles it away.
+        const lid = liveBySessionRef.current[sid];
+        const liveMsg = lid ? (storeRef.current[sid] ?? []).find((m) => m.id === lid) : null;
+        storeRef.current[sid] = liveMsg ? [...mapped, liveMsg] : mapped;
         syncDisplay(sid);
       });
     }
@@ -865,6 +965,14 @@ export function ChatStream({
   useEffect(() => {
     onRunningChange?.(running);
   }, [running, onRunningChange]);
+
+  // A pending ask_user card parks the turn on an interrupt exactly like a
+  // permission prompt: while parked, a stray Escape must not cancel it and
+  // the composer waits — the card's 跳过 is the deliberate exit.
+  const questionPending = messages.some((m) =>
+    m.blocks.some((b) => b.kind === "question" && b.status === "pending"),
+  );
+  const parked = !!permission || !!propose || questionPending;
 
   // Session goal (goal-design.md) — drives the stop=pause button and the
   // paused/blocked resume banner.
@@ -966,6 +1074,9 @@ export function ChatStream({
       case "tool.start":
       case "tool.args":
       case "tool.end":
+      // Transcript block, not a ref-based prompt like permission.request: the
+      // card lives (and is merged by id) inside the live bubble's blocks.
+      case "user.question":
       case "widget.emit":
       case "ref.emit":
       case "image.emit":
@@ -1266,8 +1377,25 @@ export function ChatStream({
           clearTimeout(reconcileTimerRef.current[sid]!);
           reconcileTimerRef.current[sid] = null;
         }
+        if (serverRunningRef.current[sid] !== !!ev.running) {
+          serverRunningRef.current[sid] = !!ev.running;
+          // Mirror into React state — this is what makes a history-rebuilt
+          // pending question card interactive after a reload (questionLive).
+          syncDisplay(sid);
+        }
         if (ev.running) break; // the broadcast stream resumes on this socket
-        reconcileTurnFromHistory(sid);
+        // Not running: rebuild from persisted history ONLY when this client
+        // believed a turn was in flight (the probe now fires on every open —
+        // an idle reconnect must not replace the loaded store). This is also
+        // what flips a pending question card of a genuinely dead turn into
+        // the checkpoint's healed "(interrupted)" → skipped replay.
+        if (
+          liveBySessionRef.current[sid] ||
+          busyBySessionRef.current[sid] ||
+          orphanStreamRef.current[sid]
+        ) {
+          reconcileTurnFromHistory(sid);
+        }
         break;
       }
       case "message.end": {
@@ -1277,6 +1405,7 @@ export function ChatStream({
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
+        serverRunningRef.current[sid] = false;
         // Orphaned continuation (remount mid-turn): the visible store holds a
         // history-rendered partial bubble PLUS a second live section. The
         // persisted history renders the whole turn as ONE merged bubble (with
@@ -1350,6 +1479,7 @@ export function ChatStream({
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
+        serverRunningRef.current[sid] = false;
         // Stop also clears a parked prompt (server heals those too) — every
         // tab of the session leaves the running state together.
         permsRef.current[sid] = null;
@@ -1365,17 +1495,12 @@ export function ChatStream({
           // An empty live bubble (stopped before the first token) would
           // render as a confusing "（空回复）" — drop it; streamed text stays.
           .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
-          // Close out any in-flight tool blocks so `running` unsticks.
+          // Close out any in-flight tool blocks (and pending question cards —
+          // the backend heals a parked ask_user to "(interrupted)" too, which
+          // replay reads as skipped) so `running` unsticks.
           .map((msg) =>
             hasPendingTool(msg.blocks)
-              ? {
-                  ...msg,
-                  blocks: msg.blocks.map((b) =>
-                    b.kind === "tool" && b.pending
-                      ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
-                      : b,
-                  ),
-                }
+              ? { ...msg, blocks: closePendingBlocks(msg.blocks) }
               : msg,
           );
         break;
@@ -1389,6 +1514,7 @@ export function ChatStream({
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
+        serverRunningRef.current[sid] = false;
         // Orphaned turn that failed: reconcile from history instead of
         // building a card on the split store — mapHistory re-surfaces the
         // persisted last_error as a proper error card with retry.
@@ -1414,14 +1540,7 @@ export function ChatStream({
             .map((msg) => {
               const marked = msg.id === liveMsgId ? { ...msg, failed: true } : msg;
               if (!hasPendingTool(marked.blocks)) return marked;
-              return {
-                ...marked,
-                blocks: marked.blocks.map((b) =>
-                  b.kind === "tool" && b.pending
-                    ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
-                    : b,
-                ),
-              };
+              return { ...marked, blocks: closePendingBlocks(marked.blocks) };
             }),
           {
             id: mid(),
@@ -2327,6 +2446,39 @@ export function ChatStream({
     }
   }
 
+  // Answer a parked ask_user card. The server ignores the message unless the
+  // session is actually parked on a user_question interrupt (stale/duplicate
+  // answers are dropped there, not here). The optimistic fold collapses EVERY
+  // pending copy of the card by id — a post-reload re-emit can briefly have
+  // the history card and a live one on screen; the authoritative receipt still
+  // arrives via the tool's tool.end.
+  function answerQuestion(id: string, answer: string, optionIndex: number | null, skip: boolean) {
+    const sid = curSessionIdRef.current;
+    if (!sid) return;
+    try {
+      socketsRef.current[sid]?.send(
+        JSON.stringify({ type: "user_answer", answer, option_index: optionIndex, skip }),
+      );
+    } catch {
+      /* socket gone — reconnect re-emits user.question if still parked */
+    }
+    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
+      m.blocks.some((b) => b.kind === "question" && b.id === id && b.status === "pending")
+        ? {
+            ...m,
+            blocks: m.blocks.map((b) =>
+              b.kind === "question" && b.id === id && b.status === "pending"
+                ? skip
+                  ? { ...b, status: "skipped" as const }
+                  : { ...b, status: "answered" as const, answer, optionIndex }
+                : b,
+            ),
+          }
+        : m,
+    );
+    syncDisplay(sid);
+  }
+
   // Drag the composer's top handle to resize the input area. Auto-grow (capped)
   // still applies while composerH is undefined; dragging switches to a fixed,
   // scrollable height. The flex layout (message list = flex-1) keeps the overall
@@ -2503,8 +2655,10 @@ export function ChatStream({
                   }
                 }
                 // Esc while a turn runs = stop it (same as the ⏹ button);
-                // only when the composer is focused and no prompt is up.
-                if (e.key === "Escape" && !composing && running && !permission && !propose) {
+                // only when the composer is focused and nothing is parked —
+                // a parked prompt's own card (Deny / 跳过) is the deliberate
+                // exit, a stray Escape must not cancel the whole turn.
+                if (e.key === "Escape" && !composing && running && !parked) {
                   e.preventDefault();
                   stopTurn();
                   return;
@@ -2631,7 +2785,7 @@ export function ChatStream({
               <div className="relative">
                 <button
                   type="button"
-                  disabled={running || !!permission}
+                  disabled={running || parked}
                   onClick={() => setModelOpen((v) => !v)}
                   title={session ? "切换本会话模型" : "选择新会话使用的模型"}
                   className="flex items-center gap-1.5 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted hover:border-line hover:bg-card2 hover:text-txt disabled:opacity-50"
@@ -2674,7 +2828,7 @@ export function ChatStream({
                   </>
                 )}
               </div>
-              {running && session && !permission ? (
+              {running && session && !parked ? (
                 <button
                   onClick={stopTurn}
                   title="停止当前回合（保留已输出的内容）"
@@ -2687,7 +2841,7 @@ export function ChatStream({
               <button
                 onClick={send}
                 disabled={
-                  !!permission ||
+                  parked ||
                   running ||
                   // In-session uploads run immediately and gate the send; on
                   // home they're deferred until lazy creation, so they must
@@ -2936,6 +3090,19 @@ export function ChatStream({
                   streaming={m.id === liveId}
                   turnId={m.turnId}
                   failed={m.failed}
+                  onAnswerQuestion={answerQuestion}
+                  // questionLive: is this session's turn actually alive? A
+                  // parked question keeps the server turn running WITHOUT a
+                  // message.end, so two signals cover it: `liveId` (this client
+                  // is watching the stream) and `serverRunning` (the answer to
+                  // the turn_state probe, which is the ONLY one that survives a
+                  // full reload — history rebuilds the card as pending, and
+                  // without the probe it would render disabled even though the
+                  // backend would accept the answer).
+                  // Deliberately not `running`: its questionPending term comes
+                  // from the card itself (circular — a stale pending card would
+                  // keep itself interactive forever).
+                  questionLive={liveId !== null || serverRunning}
                 />
               </Fragment>
             ),
@@ -3295,6 +3462,8 @@ function AssistantBubble({
   streaming,
   turnId,
   failed,
+  onAnswerQuestion,
+  questionLive,
 }: {
   agent: AgentConfig | null;
   agentName?: string;
@@ -3302,6 +3471,10 @@ function AssistantBubble({
   streaming?: boolean;
   turnId?: string;
   failed?: boolean;
+  // ask_user resume channel (see InnerBlocks): a parked question card is
+  // answered from inside the bubble, not from a bottom-docked prompt.
+  onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
+  questionLive?: boolean;
 }) {
   const hex = agentHex(agent?.color);
   const displayName = agent?.name || agentName || "Agent";
@@ -3355,7 +3528,12 @@ function AssistantBubble({
             </div>
           )}
           {hasInner ? (
-            <InnerBlocks blocks={blocks} streaming={streaming} />
+            <InnerBlocks
+              blocks={blocks}
+              streaming={streaming}
+              onAnswerQuestion={onAnswerQuestion}
+              questionLive={questionLive}
+            />
           ) : streaming ? (
             <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5">
               <div className="flex items-center gap-2">

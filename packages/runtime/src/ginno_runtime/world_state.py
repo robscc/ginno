@@ -57,6 +57,11 @@ WEEKDAYS_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", 
 # A6: skills index budget (chars) unless overridden in settings.context.
 DEFAULT_SKILLS_INDEX_MAX_CHARS = 1500
 
+# Anti-abuse cap on ask_user per turn segment. A model that can park the turn
+# cheaply will; past the cap the tool refuses and the model must decide and
+# state its assumption (tools/ask_tools.py).
+DEFAULT_ASK_MAX_PER_TURN = 3
+
 # A5: memory injection budget (chars) — the global MEMORY.md + agent memory
 # used to ride the stable system layer IN FULL and are re-read from disk on
 # every call, so growth there silently enlarged the cache prefix (and every
@@ -85,6 +90,8 @@ _CONTEXT_DEFAULTS = {
     # node's "ask" is dormant while bypass_permissions is on — so opt-in.
     "external_agents_enabled": False,
     "memory_max_chars": DEFAULT_MEMORY_MAX_CHARS,
+    # Anti-abuse cap on ask_user per turn segment (see tools/ask_tools.py).
+    "ask_user_max_per_turn": DEFAULT_ASK_MAX_PER_TURN,
 }
 
 
@@ -279,7 +286,7 @@ class EnvironmentSection:
 
 class FolderRulesSection:
     """Rule files of mounted context folders (docs/context-folders-design.md
-    §4.2): each ``load_rules`` mount contributes its AGENTS.md / GINNO.md
+    §4.2): each ``load_rules`` mount contributes its AGENTS.md / CLAUDE.md / GINNO.md
     text, namespaced by directory path (nearest-wins guidance on conflict).
     access ≠ config — ONLY the rule text is loaded from a mount, never its
     settings/hooks/skills. Char budgets: RULE_FILE_MAX_CHARS per file,
@@ -329,8 +336,8 @@ class FolderRulesSection:
 
     def update_text(self, old: dict, new: dict) -> str | None:
         if set(old or {}) != set(new or {}):
-            return "挂载目录的规则文件（AGENTS.md/GINNO.md）注入集合已变化。"
-        return "挂载目录的规则文件（AGENTS.md/GINNO.md）内容已更新。"
+            return "挂载目录的规则文件（AGENTS.md/CLAUDE.md/GINNO.md）注入集合已变化。"
+        return "挂载目录的规则文件（AGENTS.md/CLAUDE.md/GINNO.md）内容已更新。"
 
 
 class PermissionsSection:
@@ -504,10 +511,21 @@ class SkillsSection:
         ]
         if snap.get("can_manage"):
             lines.append(
-                "安装 skill：先把源码取到本地（如用 bash git clone 仓库到工作目录），"
-                "再调用 install_skills(path) —— path 是含一个或多个 <skill>/SKILL.md "
-                "子目录的目录，或单个 skill 目录；list_skills() 查看已安装，"
-                "uninstall_skill(name) 卸载。不要手写或猜测 skills 目录之外的安装位置。"
+                "安装 skill：先把源码取到本地（如用 bash git clone），再调用 install_skills。"
+                "path 是含一个或多个 <skill>/SKILL.md 子目录的目录，或单个 skill 目录。"
+                "目标有三个，默认 global：\n"
+                "- install_skills(path) / install_skills(path, target=\"global\")"
+                " → ~/.ginno/skills/<name>/SKILL.md，所有会话可见；\n"
+                "- install_skills(path, target=\"project\")"
+                " → ~/.ginno/projects/<本项目>/skills/<name>/SKILL.md，仅本项目，同名覆盖全局；\n"
+                "- install_skills(path, target=\"repo\", project_dir=\"<仓库根目录绝对路径>\")"
+                " → <仓库>/.claude/skills/<name>/SKILL.md，供 Claude Code 等外部 agent 使用；"
+                "Ginno 自己不加载那里的 skill（use_skill 够不到），但可以列出来。"
+                "project_dir 必须是本会话已识别或已挂载的仓库根目录——见每轮 [turn context] "
+                "的 <projects> 段。\n"
+                "当用户只说「导入/安装 skill」而没说装哪时，先 ask_user 让用户选，"
+                "不要默认装进 Ginno 自己的目录。"
+                "list_skills() 查看已安装（按 scope 标注），uninstall_skill(name) 卸载。"
             )
         lines.append("</skills_management>")
         return "\n".join(p for p in lines if p)

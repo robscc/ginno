@@ -195,8 +195,10 @@ def _truncate_for_ws(text: str) -> str:
 
 
 # Keys most likely to carry the "headline" argument of a tool call, in display
-# priority order. bash → command; file tools → path; search/fetch → query/url.
-_ARGS_PREVIEW_KEYS = ("command", "path", "pattern", "url", "query", "content")
+# priority order. ask_user → question (the brief tool-bubble preview before
+# the card lands reads the question text); bash → command; file tools → path;
+# search/fetch → query/url.
+_ARGS_PREVIEW_KEYS = ("question", "command", "path", "pattern", "url", "query", "content")
 _ARGS_PREVIEW_CAP = 500
 
 
@@ -308,6 +310,52 @@ def _ai_content_blocks(content: Any) -> list[dict]:
 def _run_id_in(text: str) -> str | None:
     m = re.search(r"run_id=([0-9a-f]{6,})", text or "")
     return m.group(1) if m else None
+
+
+def _json_or_none(text: str) -> dict | None:
+    """Tolerant JSON-object parse of a tool result (None when it is not a JSON
+    object — e.g. the literal ``(interrupted)`` a stopped turn writes)."""
+    try:
+        v = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return v if isinstance(v, dict) else None
+
+
+def _question_block(tid: str | None, args: dict, result: str) -> dict:
+    """ask_user tool call → UI question block (the ask-user card's history
+    replay). No side store is needed: the checkpoint carries the card fields
+    in the tool-call args and the user's choice in the tool result — an empty
+    result means still parked (pending), ``(interrupted)`` means stopped while
+    parked (skipped), otherwise the result is the tool's JSON receipt."""
+    blk: dict = {
+        "kind": "question",
+        "question": str(args.get("question") or ""),
+        "options": [str(o) for o in (args.get("options") or [])],
+        "allowFreeText": bool(args.get("allow_free_text", True)),
+        "status": "pending",
+    }
+    if tid:
+        blk["id"] = tid
+    header = str(args.get("header") or "").strip()
+    if header:
+        blk["header"] = header
+    if not (result or "").strip():
+        return blk
+    r = None if result.strip() == "(interrupted)" else _json_or_none(result)
+    if r is None:
+        # Stopped mid-park (or an unparseable receipt) — never leave the card
+        # interactive on replay; a pending block reads as a live ask.
+        blk["status"] = "skipped"
+        return blk
+    if r.get("skipped") or r.get("source") == "skipped":
+        blk["status"] = "skipped"
+        return blk
+    blk["status"] = "answered"
+    blk["answer"] = str(r.get("answer") or r.get("free_text") or "")
+    idx = r.get("option_index")
+    blk["optionIndex"] = idx if isinstance(idx, int) else None
+    return blk
 
 
 def _gen_image_blocks(
@@ -508,6 +556,12 @@ def _messages_to_ui(
                             "kind": "tool", "id": tid, "name": nm, "content": res,
                             "pending": False, "argsPreview": _tool_args_preview(nm, args),
                         })
+                elif nm == "ask_user" and not res.strip().startswith("[error]"):
+                    # The question card IS the UI for this call. An "[error]"
+                    # refusal (ask budget spent / unattended turn) never parked
+                    # and replays as an ordinary tool bubble via the else
+                    # branch, matching what the live stream showed.
+                    step.append(_question_block(tid, args, res))
                 elif nm in ARTIFACT_TOOL_NAMES or nm in RENDER_TOOL_NAMES:
                     pass  # silent / already handled above
                 else:

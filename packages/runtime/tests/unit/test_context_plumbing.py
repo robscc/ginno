@@ -230,6 +230,30 @@ def test_turn_context_carries_bound_workflow(isolated_home):
     assert '"type": "human"' in out
 
 
+def test_turn_context_carries_discovered_projects(isolated_home):
+    """A repo the agent only reached by absolute path must be visible, and the
+    ambiguity must be flagged before the model picks a target."""
+    from ginno_runtime.graph import build_turn_context
+
+    out = build_turn_context(
+        query="",
+        projects=[
+            {
+                "path": "/Users/me/work/claude-agent-team",
+                "name": "claude-agent-team",
+                "markers": [".git", ".claude", "CLAUDE.md"],
+                "has_claude": True,
+                "claude_skills": 14,
+            }
+        ],
+    )
+    assert "<projects>" in out
+    assert "/Users/me/work/claude-agent-team" in out
+    assert "14 个 skill" in out
+    assert "/Users/me/work/claude-agent-team/.claude/skills" in out
+    assert "ask_user" in out  # the ask-first rule
+
+
 def test_turn_context_empty_when_nothing(isolated_home):
     from ginno_runtime.graph import build_turn_context
 

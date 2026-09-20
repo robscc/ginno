@@ -17,6 +17,8 @@ Now:
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from conftest import events_of, script, script_tool_call
 
@@ -139,3 +141,73 @@ def test_second_permission_response_is_ignored(client, create_session, ws_conv, 
         assert evs[-1]["event"] == "pong"
 
     assert (paths.session_files_dir("default", sid) / "out.txt").read_text() == "x"
+
+
+# --------------------------------------------------------------------------- #
+# parked at an interrupt: the re-emit that un-orphans the turn
+# --------------------------------------------------------------------------- #
+def _await_parked_permission(sid: str, timeout: float = 10.0) -> list[str]:
+    """Poll the checkpoint until the permission interrupt is durable, and report
+    the kinds found. Reads through FileCheckpointer.get_pending_interrupt — the
+    same route the reconnect handler uses (graph.aget_state() does NOT surface a
+    tools-node interrupt; see that helper's docstring)."""
+    deadline = time.time() + timeout
+    sess = server_shared._SESSIONS[sid]
+    cfg = {"configurable": {"thread_id": sid, "project_slug": "default"}}
+    while time.time() < deadline:
+        pending = sess["graph"].checkpointer.get_pending_interrupt(cfg)
+        kinds = [(getattr(i, "value", None) or {}).get("kind") for i in pending or []]
+        if kinds:
+            return kinds
+        time.sleep(0.1)
+    return []
+
+
+def test_reconnect_reemits_a_parked_permission(client, create_session, ws_conv):
+    """A client that connects while the turn is parked at a permission prompt is
+    shown the prompt again. This is what re-arms _PENDING_RESUME after a runtime
+    restart (the in-memory guard dies with the process; the checkpoint does not),
+    so the turn can still be answered instead of being orphaned."""
+    model = [
+        script(tool_calls=[script_tool_call("write_file", {"path": "o.txt", "content": "x"})]),
+        script(text="wrote it"),
+    ]
+    sid = create_session(model, agent_id="dev")  # conftest client: bypass OFF
+
+    with ws_conv(sid) as conv1:
+        conv1.invoke("write a file")
+        assert events_of(conv1.recv_until("permission.request"), "permission.request")
+        assert _await_parked_permission(sid) == ["permission_request"]
+
+        with ws_conv(sid) as conv2:
+            again = conv2.recv_until("permission.request", "error")
+            assert not events_of(again, "error")
+            perm = events_of(again, "permission.request")[0]
+            assert perm["tool"] == "write_file"
+
+            conv2.respond_permission("allow")
+            rest = conv2.recv_until("message.end", "error")
+            assert not events_of(rest, "error")
+
+    assert (paths.session_files_dir("default", sid) / "o.txt").read_text() == "x"
+
+
+def test_resolved_interrupt_is_not_reemitted(client, create_session, ws_conv):
+    """Liveness rule: once the turn resumed, the stale __interrupt__ write must
+    never be replayed as a live prompt."""
+    model = [
+        script(tool_calls=[script_tool_call("write_file", {"path": "o.txt", "content": "x"})]),
+        script(text="wrote it"),
+    ]
+    sid = create_session(model, agent_id="dev")
+    with ws_conv(sid) as conv:
+        conv.invoke("write a file")
+        conv.recv_until("permission.request")
+        conv.respond_permission("allow")
+        conv.recv_until("message.end", "error")
+    assert _await_parked_permission(sid, timeout=0.5) == []
+    # a later reconnect shows nothing pending
+    with ws_conv(sid) as conv:
+        conv.send({"type": "turn_state"})
+        evs = conv.recv_until("turn.state", "permission.request", "error")
+        assert not events_of(evs, "permission.request")

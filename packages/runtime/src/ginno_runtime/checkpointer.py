@@ -56,6 +56,9 @@ _MESSAGES_CHANNEL = "messages"
 # writes as "already finished" and would skip the body node on resume.
 _APP_PENDING_CHANNELS = {"parallel_progress"}
 
+# langgraph records a raised interrupt() as a pending write on this channel.
+_INTERRUPT_CHANNEL = "__interrupt__"
+
 
 def _dump_typed(typed: tuple[str, bytes]) -> dict:
     """Serialize serde's (type_tag, bytes) tuple into JSON-safe dict."""
@@ -334,6 +337,44 @@ class FileCheckpointer(BaseCheckpointSaver):
             ),
             pending_writes=pending,
         )
+
+    def get_pending_interrupt(self, config: dict) -> list | None:
+        """The parked turn's interrupt(s), or None if the graph is not suspended.
+
+        Read-only companion for the reconnect re-emit in ``api/stream.py``. That
+        path used ``graph.aget_state().tasks[].interrupts``, which is unreliable
+        here for two independent reasons:
+
+        * ``get_tuple`` hides pending writes by default (see
+          ``surface_pending_writes``), so langgraph rebuilds no interrupts; and
+        * even with them surfaced it still misses the common case — an interrupt
+          raised inside the ``tools`` node gets one extra WRITE-LESS checkpoint
+          committed on top of it, so the newest entry carries no
+          ``__interrupt__``. (Measured: a permission-node interrupt lands on the
+          newest entry, a tools-node one — every ``ask_user``, and
+          ``workflow_propose_edit`` — lands one entry back.)
+
+        Liveness rule: walk back to the newest entry that has ANY pending
+        writes. ``__interrupt__`` there means the graph is still suspended; any
+        ordinary channel write means the turn moved on (resumed, or ran to the
+        next superstep) and a stale interrupt must never be replayed.
+        """
+        session_id = config["configurable"]["thread_id"]
+        record = self._read(session_id)
+        for entry in reversed(record.get("checkpoints") or []):
+            writes = entry.get("pending_writes") or []
+            if not writes:
+                continue
+            for w in writes:
+                if w.get("channel") != _INTERRUPT_CHANNEL:
+                    continue
+                try:
+                    return self.serde.loads_typed(_load_typed(w["value"]))
+                except Exception:
+                    return None
+            # Newest writes are ordinary channel updates → the turn is running.
+            return None
+        return None
 
     def get_app_pending(self, config: dict, channel: str) -> Any:
         """Latest app-level pending write for ``channel`` (last write wins).

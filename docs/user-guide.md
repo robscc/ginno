@@ -161,6 +161,15 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 - ⚠️ **特权模式默认开启**（见 9.6）：开启时**不会弹任何确认**，所有工具直接执行。要看到 Allow/Deny 弹窗，需先在 设置 → 通用 关闭特权模式。
 - 注：**工作流编辑的 diff 确认**（violet 卡片，见 9.5）复用同一通道但**不受权限/特权模式影响**——它由 `workflow_propose_edit` 的暂停触发，独立于权限策略。
 
+### 5.6.1 反问确认（Agent 让你选）✅
+当你的话有歧义、而猜错会白干时（典型：只说“导入 skill”，没说是装进 Ginno 还是装进你那个仓库的 `.claude/skills`），Agent 会**暂停本轮**并在回复气泡里放一张选择卡片，而不是替你猜：
+- **选项按钮**：说明完整的标签，点哪个就是哪个；
+- **其他**：自己输入（回车发送），选项不全时的出口；
+- **跳过 · 按你的判断继续**：不选，Agent 按最合理的默认继续，并**必须**在回复里写明它假定了什么，便于你纠正。
+- 卡片**留在对话记录里**：刷新页面、切走再切回都能看到（已答/已跳过的会收成一行回执）。暂停期间输入框禁用，Esc 也不会中断本轮——要退出就点“跳过”。
+- 与 5.6 的区别：这不是权限确认（不关特权模式的事），是 Agent 主动提问；卡片在气泡内、随历史保存，权限条在输入框上方、不保存。
+- 无人值守的自主续跑回合里不会出现（没有人能回答），Agent 会被要求自行决定并说明假定。
+
 ### 5.7 路由到指定 Agent ✅
 输入区上方的 **Ask Dev / Ask Research / Ask Writer** 按钮：点选后本轮由该 Agent 回答（再次点取消选择，回退到会话默认 Agent）。切换会同步更新会话的 Agent 与（自动标题时的）标题。
 
@@ -359,7 +368,13 @@ Agent 的文本块用完整 Markdown 渲染，覆盖以下特性：标题（h1�
 列表显示 `/<name>`、`trigger`（user-invocable / model-invocable / both）、描述、`tools`；非内置可 `delete`。
 - **New skill**：填 `name`(kebab-case) + 带 frontmatter 的正文，`Create`。
 - 触发：在聊天输入 `/<name>`（见 5.8）；Agent 也会在意图匹配时自动 `use_skill(name, request)`，不必再让用户打斜杠。
-- **让 Agent 安装**：直接说“安装 <仓库/目录> 里的 skill”。有工具权限的 Agent（如 Dev）会用 `install_skills(path)` 把含 `<skill>/SKILL.md` 的目录装进全局 skills 目录（远端仓库会先 `git clone` 到会话工作目录再安装）；`list_skills()` / `uninstall_skill(name)` 查看与卸载（内置技能不可卸载）。UI 的 `import-dir` 接口与其共享同一实现。
+- **让 Agent 安装**：直接说“安装 <仓库/目录> 里的 skill”。有工具权限的 Agent（如 Dev）会用 `install_skills(path)` 安装含 `<skill>/SKILL.md` 的目录（远端仓库会先 `git clone` 到会话工作目录再安装）。
+  装到哪由 `target` 决定，**默认 `global`**：
+  - `target="global"`（默认）→ `~/.ginno/skills`，所有会话可见；
+  - `target="project"` → `~/.ginno/projects/<slug>/skills`，仅本项目，同名覆盖全局；
+  - `target="repo"` → `<仓库>/.claude/skills`，供 Claude Code 等**外部 agent** 使用；需要 `project_dir`，且该仓库必须是本会话已识别（工具用绝对路径碰过）或已挂载的目录 —— Ginno 自己不加载这里的 skill。
+  - 用户只说“导入 skill”而没指明位置时是有歧义的，Agent 应先 `ask_user` 让用户选，不要默认装进 Ginno 自己的目录。
+  `list_skills()` 查看（按 `[claude:<repo>]` / `[project]` / `[global]` 标注）、`uninstall_skill(name)` 卸载（内置技能不可卸载）。UI 的 `import-dir` 接口与其共享同一实现，且只写全局目录。
 
 ### 9.3 MCP 工具 ✅
 - 顶部显示“已连接 N server(s)，M tool(s)”；

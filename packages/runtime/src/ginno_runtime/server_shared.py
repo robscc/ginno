@@ -86,6 +86,13 @@ _RUNNING_TURNS: dict[str, str] = {}
 # an already-resumed graph.
 _PENDING_RESUME: set[str] = set()
 
+# WHICH interrupt kind is parked for the session. The resume payload shape is
+# kind-specific (permission/version-propose → {"decision": ...}, ask_user →
+# {"kind": "user_answer", ...}), so a stale or duplicated client message must
+# not resume with the wrong shape. NOT a replacement for _PENDING_RESUME —
+# that set stays the single "a resume is in flight" guard; this only labels it.
+_PENDING_KIND: dict[str, str] = {}
+
 # Live turn tasks (session_id -> asyncio.Task for the invoke/resume job). The
 # WS receive loop no longer awaits turns inline (it must stay free to accept a
 # `stop` message mid-turn), so this registry answers "is a turn running here?"

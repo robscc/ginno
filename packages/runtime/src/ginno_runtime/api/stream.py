@@ -24,13 +24,14 @@ from .. import agents as agents_reg
 from .. import artifacts as art_store
 from .. import commands as _commands
 from .. import files as files_mod
-from .. import paths, usage_store
+from .. import paths, projects as projects_mod, usage_store
 from .. import server_shared as shared
 from .. import workflows as wf_store
 from ..checkpointer import ABANDONED_TURNS
 from ..goals import store as goal_store
 from ..graph import BLOCK_PREFIX, build_all_tools, build_graph, build_turn_context
 from ..server_shared import (
+    _PENDING_KIND,
     _PENDING_RESUME,
     _RUNNING_TURNS,
     _SESSION_WS,
@@ -51,6 +52,7 @@ from ..server_shared import (
 from ..session_meta import _find_meta, _session_meta_patch
 from ..todos import store as todo_store
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
+from ..tools.ask_tools import begin_ask_budget
 from ..tools.render_tools import RENDER_TOOL_NAMES, widget_event
 from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ..usage import add_usage, cache_hit_ratio, empty_usage, extract_usage
@@ -180,37 +182,53 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     # __interrupt__ handling in _run_stream below, so the client's existing
     # permission.request handler applies unchanged.
     try:
-        snap = await graph.aget_state(config)
-        for task in getattr(snap, "tasks", []) or []:
-            for intr in getattr(task, "interrupts", []) or []:
-                value = getattr(intr, "value", None) or intr
-                if isinstance(value, dict) and value.get("kind") == "permission_request":
-                    # Re-arm the resume guard: after a runtime restart the
-                    # in-memory flag is gone even though the interrupt persists.
-                    _PENDING_RESUME.add(session_id)
-                    _RUNNING_TURNS.setdefault(session_id, "")
-                    await ws.send_text(
-                        _ev(
-                            "permission.request",
-                            {"tool": value.get("tool"), "args": value.get("args")},
-                        )
-                    )
-                elif isinstance(value, dict) and value.get("kind") == "version_propose":
-                    # a workflow-dev diff proposal pending at disconnect: re-show it
-                    # so the turn isn't orphaned (same resume channel as permission).
-                    _PENDING_RESUME.add(session_id)
-                    _RUNNING_TURNS.setdefault(session_id, "")
-                    await ws.send_text(
-                        _ev(
-                            "version.propose",
-                            {
-                                "workflow_id": value.get("workflow_id"),
-                                "from_version": value.get("from_version"),
-                                "diff": value.get("diff"),
-                                "rationale": value.get("rationale"),
-                            },
-                        )
-                    )
+        # Read the parked interrupt straight off the checkpointer rather than
+        # via graph.aget_state().tasks[].interrupts: that route needs pending
+        # writes to be surfaced, and even then misses every interrupt raised
+        # inside the tools node (ask_user, workflow_propose_edit) because
+        # langgraph commits one extra write-less checkpoint on top of it. See
+        # FileCheckpointer.get_pending_interrupt.
+        _pending = graph.checkpointer.get_pending_interrupt(config)
+        for intr in _pending or []:
+            value = getattr(intr, "value", None) or intr
+            if not isinstance(value, dict):
+                continue
+            kind = value.get("kind")
+            payload: dict | None = None
+            if kind == "permission_request":
+                payload = {"tool": value.get("tool"), "args": value.get("args")}
+                event = "permission.request"
+            elif kind == "version_propose":
+                # A workflow-dev diff proposal pending at disconnect: re-show it
+                # so the turn isn't orphaned (same resume channel as permission).
+                payload = {
+                    "workflow_id": value.get("workflow_id"),
+                    "from_version": value.get("from_version"),
+                    "diff": value.get("diff"),
+                    "rationale": value.get("rationale"),
+                }
+                event = "version.propose"
+            elif kind == "user_question":
+                # An ask_user question parked at disconnect. The payload carries
+                # the tool_call id, which is what lets the client MERGE this
+                # re-emit into the block it already rebuilt from history instead
+                # of showing the question twice.
+                payload = {
+                    "id": value.get("id"),
+                    "question": value.get("question", ""),
+                    "header": value.get("header", ""),
+                    "options": value.get("options") or [],
+                    "allow_free_text": value.get("allow_free_text", True),
+                }
+                event = "user.question"
+            if payload is None:
+                continue
+            # Re-arm the resume guard: after a runtime restart the in-memory
+            # flags are gone even though the interrupt persists in the file.
+            _PENDING_RESUME.add(session_id)
+            _PENDING_KIND[session_id] = kind
+            _RUNNING_TURNS.setdefault(session_id, "")
+            await ws.send_text(_ev(event, payload))
     except Exception:
         # introspecting resume state must never stop the socket from opening
         pass
@@ -218,6 +236,53 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     # Cross-restart goal resume (design §4.3.3): an active goal re-arms its
     # continuation driver as soon as the session is loaded again.
     _start_goal_driver(session_id)
+
+    def _spawn_resume(resume_value: dict) -> None:
+        """Resume the parked graph as its own task.
+
+        Resume is a turn too — it must not block the receive loop (a `stop`
+        during a resumed turn has to get through). Shared by every interrupt
+        kind; only the resume payload differs.
+        """
+        # Resume under the agent that was active when the interrupt fired.
+        resume_agent = session.get("agent_id") or _first_agent_id()
+        resume_config = {
+            **config,
+            "configurable": {**config["configurable"], "agent_id": resume_agent},
+        }
+        _TURN_STOP.setdefault(session_id, asyncio.Event())
+
+        async def _resume_job(_cfg=resume_config, _val=resume_value) -> None:
+            try:
+                # Serialize behind _turn_lock: the paused turn's task may still
+                # be draining its stream generator, and the suspension
+                # checkpoint is only flushed during that drain. Resuming before
+                # it lands reads the PRE-interrupt checkpoint and re-runs the
+                # interrupted tool from scratch (it interrupts again — the turn
+                # never advances). The lock is held until the turn's
+                # _run_stream returns, i.e. after the drain. (The old inline
+                # receive loop got this serialization for free; task-ified
+                # turns need it explicitly.)
+                async with _turn_lock(session_id):
+                    await _run_resume(None, session["graph"], _cfg, _val)
+                _start_goal_driver(session_id)  # success path only
+            except Exception as e:
+                _log.exception("resume_error session=%s", session_id)
+                await _push_session_event(
+                    session_id, "error", {"message": f"{type(e).__name__}: {e}"}
+                )
+            finally:
+                if _TURN_TASKS.get(session_id) is asyncio.current_task():
+                    _TURN_TASKS.pop(session_id, None)
+                _TURN_STOP.pop(session_id, None)
+
+        task = asyncio.create_task(_resume_job())
+        _TURN_TASKS[session_id] = task
+        task.add_done_callback(
+            lambda t: _TURN_TASKS.pop(session_id, None)
+            if _TURN_TASKS.get(session_id) is t
+            else None
+        )
 
     try:
         while True:
@@ -370,54 +435,40 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 # resumed the graph — ignore it instead of double-resuming.
                 if session_id not in _PENDING_RESUME:
                     continue
+                # version.propose deliberately shares this resume channel, so
+                # accept both — but NOT a parked question, whose payload shape
+                # differs. Check WITHOUT popping: a mismatched message must
+                # leave the parked interrupt answerable.
+                if _PENDING_KIND.get(session_id) not in (
+                    "permission_request",
+                    "version_propose",
+                ):
+                    continue
                 _PENDING_RESUME.discard(session_id)
+                _PENDING_KIND.pop(session_id, None)
                 decision = msg.get("decision", "deny")
-                # resume under the agent that was active when the interrupt fired
-                resume_agent = session.get("agent_id") or _first_agent_id()
-                resume_config = {
-                    **config,
-                    "configurable": {
-                        **config["configurable"],
-                        "agent_id": resume_agent,
-                    },
-                }
-                # Resume is a turn too — it must not block the receive loop
-                # (a `stop` during a resumed turn must get through).
-                _TURN_STOP.setdefault(session_id, asyncio.Event())
-
-                async def _resume_job(_cfg=resume_config, _decision=decision) -> None:
-                    try:
-                        # Serialize behind _turn_lock: the paused turn's task
-                        # may still be draining its stream generator, and the
-                        # suspension checkpoint is only flushed during that
-                        # drain. Resuming before it lands reads the PRE-
-                        # interrupt checkpoint and re-runs the interrupted
-                        # tool from scratch (it interrupts again — the turn
-                        # never advances). The lock is held until the turn's
-                        # _run_stream returns, i.e. after the drain. (The old
-                        # inline receive loop got this serialization for
-                        # free; task-ified turns need it explicitly.)
-                        async with _turn_lock(session_id):
-                            await _run_resume(
-                                None, session["graph"], _cfg, {"decision": _decision}
-                            )
-                        _start_goal_driver(session_id)  # success path only
-                    except Exception as e:
-                        _log.exception("resume_error session=%s", session_id)
-                        await _push_session_event(
-                            session_id, "error", {"message": f"{type(e).__name__}: {e}"}
-                        )
-                    finally:
-                        if _TURN_TASKS.get(session_id) is asyncio.current_task():
-                            _TURN_TASKS.pop(session_id, None)
-                        _TURN_STOP.pop(session_id, None)
-
-                task = asyncio.create_task(_resume_job())
-                _TURN_TASKS[session_id] = task
-                task.add_done_callback(
-                    lambda t: _TURN_TASKS.pop(session_id, None)
-                    if _TURN_TASKS.get(session_id) is t
-                    else None
+                _spawn_resume({"decision": decision})
+            elif kind == "user_answer":
+                # An ask_user question is parked. A separate message type (not
+                # an extra field on permission_response) because the resume
+                # payload shape differs — overloading it would force the server
+                # to introspect the checkpoint to guess which shape it owes.
+                if session_id not in _PENDING_RESUME:
+                    continue
+                # Parked on something else (or already answered): never
+                # cross-resume one interrupt kind with another's payload. Peek
+                # rather than pop so a stale message leaves the question live.
+                if _PENDING_KIND.get(session_id) != "user_question":
+                    continue
+                _PENDING_RESUME.discard(session_id)
+                _PENDING_KIND.pop(session_id, None)
+                _spawn_resume(
+                    {
+                        "kind": "user_answer",
+                        "answer": str(msg.get("answer") or ""),
+                        "option_index": msg.get("option_index"),
+                        "skip": bool(msg.get("skip", False)),
+                    }
                 )
             elif kind == "stop":
                 # Stop the running turn (user hit ⏹). Semantics: hard stop —
@@ -444,10 +495,11 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 except Exception:
                     _log.exception("stop_goal_pause_failed session=%s", session_id)
                 if session_id in _PENDING_RESUME:
-                    # Parked at a permission/version interrupt: no live task —
-                    # heal + broadcast directly. Check-and-discard (sync, so
-                    # exactly one of two tabs wins; the loser no-ops).
+                    # Parked at a permission/version/ask_user interrupt: no
+                    # live task — heal + broadcast directly. Check-and-discard
+                    # (sync, so exactly one of two tabs wins; the loser no-ops).
                     _PENDING_RESUME.discard(session_id)
+                    _PENDING_KIND.pop(session_id, None)
                     tid = _RUNNING_TURNS.pop(session_id, "")
                     spawn_bg(_stop_parked_turn(session, session_id, tid))
                     continue
@@ -982,6 +1034,9 @@ async def _run_stream(
             attached_files=attached,
             mention_context=mention_context,
             bound_workflow=_bound_workflow_view(session),
+            # Repos the file/shell tools reached by absolute path this session
+            # (projects.py). Empty for a fresh session → zero-cost.
+            projects=projects_mod.known(slug, session_id),
         )
     finally:
         _citations_mod.CURRENT_TURN_SOURCES.reset(_src_token)
@@ -1234,7 +1289,7 @@ async def _heal_interrupted_turn(graph, config: dict, seg_text: str = "") -> Non
 
 
 async def _stop_parked_turn(session: dict, session_id: str, turn_id: str) -> None:
-    """Stop a turn parked at a permission/version-propose interrupt.
+    """Stop a turn parked at a permission/version-propose/ask_user interrupt.
 
     No live stream task exists — heal the persisted state (the aupdate_state
     also clears the pending interrupt, verified empirically) and broadcast
@@ -1271,6 +1326,11 @@ async def _stream_graph(
     command: Command | None = None,
 ) -> None:
     """Drive the graph and emit token / tool / permission events."""
+    # Arm the ask_user budget for this turn segment. Every segment (the invoke
+    # and each resume) funnels through here, and each runs in its own asyncio
+    # task whose context dies with it — so no reset is needed and a budget
+    # never leaks into an unrelated turn.
+    begin_ask_budget()
     # Pre-initialized so the finally-block bookkeeping below can never raise a
     # NameError that masks the original failure.
     saw_interrupt = False
@@ -1650,6 +1710,7 @@ async def _stream_graph(
                             if isinstance(value, dict) and value.get("kind") == "permission_request":
                                 saw_interrupt = True
                                 _PENDING_RESUME.add(session_id)
+                                _PENDING_KIND[session_id] = "permission_request"
                                 _log.info(
                                     "turn_interrupt session=%s turn=%s kind=%s",
                                     session_id, turn_id, value.get("kind"),
@@ -1666,6 +1727,7 @@ async def _stream_graph(
                                 # the same permission_response WS message.
                                 saw_interrupt = True
                                 _PENDING_RESUME.add(session_id)
+                                _PENDING_KIND[session_id] = "version_propose"
                                 _log.info(
                                     "turn_interrupt session=%s turn=%s kind=%s",
                                     session_id, turn_id, value.get("kind"),
@@ -1676,6 +1738,27 @@ async def _stream_graph(
                                         "from_version": value.get("from_version"),
                                         "diff": value.get("diff", ""),
                                         "rationale": value.get("rationale", ""),
+                                    })
+                                )
+                            elif isinstance(value, dict) and value.get("kind") == "user_question":
+                                # ask_user parked the turn on an ambiguity. The
+                                # card is a transcript block (not a ref like the
+                                # permission prompt), so this event carries the
+                                # tool_call id the client merges on.
+                                saw_interrupt = True
+                                _PENDING_RESUME.add(session_id)
+                                _PENDING_KIND[session_id] = "user_question"
+                                _log.info(
+                                    "turn_interrupt session=%s turn=%s kind=%s",
+                                    session_id, turn_id, value.get("kind"),
+                                )
+                                await safe_send(
+                                    emit("user.question", {
+                                        "id": value.get("id"),
+                                        "question": value.get("question", ""),
+                                        "header": value.get("header", ""),
+                                        "options": value.get("options") or [],
+                                        "allow_free_text": value.get("allow_free_text", True),
                                     })
                                 )
                     elif node_name == "tools":
@@ -1849,11 +1932,12 @@ async def _stream_graph(
         _TURN_STOP.pop(session_id, None)
         # Ended or errored (not paused at an interrupt): unregister so a client
         # `turn_state` query reports "not running". A turn parked at a
-        # permission/version-propose interrupt stays registered — its resume
-        # hasn't happened yet.
+        # permission/version-propose/ask_user interrupt stays registered — its
+        # resume hasn't happened yet.
         if not saw_interrupt:
             _RUNNING_TURNS.pop(session_id, None)
             _PENDING_RESUME.discard(session_id)
+            _PENDING_KIND.pop(session_id, None)
         if ws_closed:
             _log.info(
                 "turn_client_gone session=%s turn=%s (no live client socket at the "

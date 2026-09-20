@@ -108,19 +108,37 @@ def import_skills_from_dir(
     }
 
 
-def uninstall_skill(name: str, project_slug: str | None = None) -> dict:
-    """Remove an installed skill by name. The project-scoped copy goes first
-    (it is the effective one), then the global copy. ``{ok, removed: [scope]}``.
+def uninstall_skill(
+    name: str,
+    project_slug: str | None = None,
+    repo_dir: str | None = None,
+    scope: str = "auto",
+) -> dict:
+    """Remove an installed skill by name.
+
+    ``scope="auto"`` (default) removes the project-scoped copy first (it is
+    the effective one), then the global copy. An explicit scope removes only
+    that tier. ``repo_dir`` is a repo root whose ``.claude/skills/<name>`` is
+    the ``"repo"`` tier — that tree belongs to another agent, so it is only
+    ever touched when asked for by name. ``{ok, removed: [scope]}``.
 
     Built-in skills (shipped with the runtime) are never removable — if the
     only copy on disk is a built-in, report it as not found."""
-    proj = paths.project_skills_dir(project_slug) / name if project_slug else None
-    glob = paths.global_skills_dir() / name
+    repo = Path(repo_dir) / ".claude" / "skills" / name if repo_dir else None
+    proj = (
+        paths.project_skills_dir(project_slug) / name
+        if project_slug and scope in ("auto", "project")
+        else None
+    )
+    glob = paths.global_skills_dir() / name if scope in ("auto", "global") else None
     removed: list[str] = []
+    if scope in ("auto", "repo") and repo is not None and repo.is_dir():
+        shutil.rmtree(repo)
+        removed.append("repo")
     if proj is not None and proj.is_dir():
         shutil.rmtree(proj)
         removed.append("project")
-    if glob.is_dir():
+    if glob is not None and glob.is_dir():
         shutil.rmtree(glob)
         removed.append("global")
     if not removed:

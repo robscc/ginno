@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from ginno_runtime import paths
+from ginno_runtime import paths, projects
 from ginno_runtime.skills.installer import import_skills_from_dir, uninstall_skill
 from ginno_runtime.tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools
 
@@ -164,3 +164,159 @@ def test_install_skills_reports_bad_path_as_json():
     tools = {t.name: t for t in build_skill_tools("default")}
     out = json.loads(tools["install_skills"].invoke({"path": "/no/such/dir"}))
     assert out["ok"] is False and "error" in out
+
+
+# --------------------------------------------------------------------------- #
+# install targets (global / project / repo) — the 2026-09-17 fix
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """A Claude-style repo OUTSIDE Ginno's home, registered for the session."""
+    home = tmp_path / "ginno-home"
+    home.mkdir()
+    monkeypatch.setenv("GINNO_HOME", str(home))
+    r = tmp_path / "work" / "claude-agent-team"
+    (r / ".git").mkdir(parents=True)
+    r = r.resolve()
+    projects.record("default", "sess-1", r)
+    return r
+
+
+def _tools(session_id="sess-1", primary_path=None):
+    return {
+        t.name: t
+        for t in build_skill_tools("default", session_id, primary_path)
+    }
+
+
+def test_install_project_target(src, repo):
+    out = json.loads(
+        _tools()["install_skills"].invoke({"path": str(src), "target": "project"})
+    )
+    assert out["ok"] is True and len(out["imported"]) == 2
+    assert (paths.project_skills_dir("default") / "ponytail" / "SKILL.md").exists()
+    # …and NOT in the global dir — that is the whole point of the parameter.
+    assert not (paths.global_skills_dir() / "ponytail").exists()
+
+
+def test_install_repo_target_creates_the_claude_dir(src, repo):
+    out = json.loads(
+        _tools()["install_skills"].invoke(
+            {"path": str(src), "target": "repo", "project_dir": str(repo)}
+        )
+    )
+    assert out["ok"] is True and len(out["imported"]) == 2
+    assert (repo / ".claude" / "skills" / "ponytail" / "SKILL.md").exists()
+    assert not (paths.global_skills_dir() / "ponytail").exists()
+
+
+def test_install_repo_target_refuses_an_unregistered_dir(src, repo, tmp_path):
+    """A plausible-but-wrong guess is how an unlogged write happens."""
+    stranger = tmp_path / "work" / "some-other-repo"
+    stranger.mkdir()
+    out = json.loads(
+        _tools()["install_skills"].invoke(
+            {"path": str(src), "target": "repo", "project_dir": str(stranger)}
+        )
+    )
+    assert out["ok"] is False
+    assert str(repo) in out["error"]  # names the candidates
+    assert not (stranger / ".claude").exists()
+
+
+def test_install_repo_target_needs_an_absolute_dir(src, repo):
+    out = json.loads(
+        _tools()["install_skills"].invoke(
+            {"path": str(src), "target": "repo", "project_dir": "./relative"}
+        )
+    )
+    assert out["ok"] is False and "绝对路径" in out["error"]
+
+
+def test_install_repo_target_without_project_dir(src, repo):
+    out = json.loads(
+        _tools()["install_skills"].invoke({"path": str(src), "target": "repo"})
+    )
+    assert out["ok"] is False and "project_dir" in out["error"]
+
+
+def test_install_repo_target_accepts_a_primary_mount(src, tmp_path, monkeypatch):
+    """An explicitly mounted ★primary dir is a legitimate target too."""
+    home = tmp_path / "ginno-home"
+    home.mkdir()
+    monkeypatch.setenv("GINNO_HOME", str(home))
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    mounted = mounted.resolve()
+    tools = _tools(session_id="", primary_path=str(mounted))
+    out = json.loads(
+        tools["install_skills"].invoke(
+            {"path": str(src), "target": "repo", "project_dir": str(mounted)}
+        )
+    )
+    assert out["ok"] is True
+    assert (mounted / ".claude" / "skills" / "ponytail" / "SKILL.md").exists()
+
+
+def test_install_defaults_to_global_for_backward_compat(src, repo):
+    out = json.loads(_tools()["install_skills"].invoke({"path": str(src)}))
+    assert out["ok"] is True
+    assert (paths.global_skills_dir() / "ponytail" / "SKILL.md").exists()
+
+
+def test_list_skills_labels_the_repo_scope(src, repo):
+    _tools()["install_skills"].invoke(
+        {"path": str(src), "target": "repo", "project_dir": str(repo)}
+    )
+    listing = _tools()["list_skills"].invoke({})
+    assert "[claude:claude-agent-team]" in listing
+    # Repo skills belong to another agent — Ginno must not offer them for use.
+    assert "[global]" not in listing
+
+
+def test_repo_skills_are_not_loadable(src, repo):
+    """Write-only by design: installing into a repo must not put that skill
+    into Ginno's own index (any repo the agent touches could otherwise inject
+    instructions into every prompt)."""
+    _tools()["install_skills"].invoke(
+        {"path": str(src), "target": "repo", "project_dir": str(repo)}
+    )
+    from ginno_runtime.skills.loader import SkillLoader
+
+    assert SkillLoader(project_slug="default").get("ponytail") is None
+    assert _tools()["use_skill"].invoke({"name": "ponytail"}).startswith("[error]")
+
+
+def test_uninstall_repo_scope(src, repo):
+    tools = _tools()
+    tools["install_skills"].invoke(
+        {"path": str(src), "target": "repo", "project_dir": str(repo)}
+    )
+    out = json.loads(
+        tools["uninstall_skill"].invoke(
+            {"name": "ponytail", "scope": "repo", "project_dir": str(repo)}
+        )
+    )
+    assert out["ok"] is True and out["removed"] == ["repo"]
+    assert not (repo / ".claude" / "skills" / "ponytail").exists()
+
+
+def test_uninstall_repo_scope_is_allowlisted(src, repo, tmp_path):
+    stranger = tmp_path / "work" / "other"
+    stranger.mkdir()
+    out = json.loads(
+        _tools()["uninstall_skill"].invoke(
+            {"name": "ponytail", "scope": "repo", "project_dir": str(stranger)}
+        )
+    )
+    assert out["ok"] is False and "error" in out
+
+
+def test_uninstall_global_scope_leaves_the_project_copy(src, isolated_home):
+    import_skills_from_dir(str(src))  # global
+    _skill_dir(paths.project_skills_dir("default"), "ponytail", "project override")
+    out = json.loads(
+        _tools()["uninstall_skill"].invoke({"name": "ponytail", "scope": "global"})
+    )
+    assert out["removed"] == ["global"]
+    assert (paths.project_skills_dir("default") / "ponytail").exists()

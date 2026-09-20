@@ -99,6 +99,9 @@ _DEFAULT_SETTINGS = {
         "checkpoint_mode": "delta",
         # A6: skills index budget (chars) inside the stable system layer
         "skills_index_max_chars": 1500,
+        # Anti-abuse cap on ask_user per turn: a model that can park the turn
+        # cheaply will. Beyond it the tool refuses and the model must decide.
+        "ask_user_max_per_turn": 3,
     },
     "knowledge": {
         "enabled": False,

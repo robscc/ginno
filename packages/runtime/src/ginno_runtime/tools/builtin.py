@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -163,6 +164,7 @@ def build_builtin_tools(
     workspace: str | None = None,
     context_dirs: list[dict] | None = None,
     primary_path: str | None = None,
+    observe_path: Callable[[Path], str | None] | None = None,
 ) -> list:
     """Build the six file/shell tools with ``workspace`` (and optionally the
     session's mounted context dirs) bound in.
@@ -176,8 +178,22 @@ def build_builtin_tools(
     ``context_folders.resolve_session_dirs`` (path/access/missing); entries
     marked ``missing`` are ignored. ``primary_path`` (a mounted dir's path)
     switches the relative-path base + bash cwd to that dir.
+
+    ``observe_path`` is the project-discovery hook (see ``projects.py``): every
+    absolute path these tools touch is offered to it, and a non-empty return is
+    appended to the tool result. This is how a repo the agent only ever reached
+    by absolute path — never mounted — becomes visible in the SAME turn.
     """
     ws_root = _base(workspace)
+
+    def _observe(p) -> str:
+        """Never let discovery break a tool call."""
+        if observe_path is None:
+            return ""
+        try:
+            return observe_path(Path(p)) or ""
+        except Exception:
+            return ""
 
     # Mounts → [(resolved_path, access)] — most-specific match wins for
     # nested mounts (an rw dir inside an ro mount keeps its own tier).
@@ -237,7 +253,7 @@ def build_builtin_tools(
             p = _ws(base_dir, path)
             if _path_denied(p, base_dir, mount_roots):
                 return _deny_msg(path)
-            return p.read_text(encoding="utf-8", errors="replace")
+            return p.read_text(encoding="utf-8", errors="replace") + _observe(p)
         except FileNotFoundError:
             return f"[error] file not found: {path}"
         except OSError as e:
@@ -263,7 +279,7 @@ def build_builtin_tools(
             p.write_text(content, encoding="utf-8")
         except OSError as e:
             return f"[error] cannot write {p}: {type(e).__name__}: {e}"
-        return f"wrote {len(content)} bytes to {p}"
+        return f"wrote {len(content)} bytes to {p}" + _observe(p)
 
     def _resolve_search_root(root: str) -> Path | str:
         """Validate an explicit glob/grep root: it must sit inside the session
@@ -408,7 +424,7 @@ def build_builtin_tools(
             p.write_text(text.replace(old, new, 1), encoding="utf-8")
         except OSError as e:
             return f"[error] cannot write {path}: {type(e).__name__}: {e}"
-        return "ok"
+        return "ok" + _observe(_ws(base_dir, path))
 
     @tool
     def bash(command: str, timeout: int = 30) -> str:
@@ -421,6 +437,7 @@ def build_builtin_tools(
         # dynamically built paths bypass this; full bash policy is TBD.
         from pathlib import Path as _P
 
+        notes: list[str] = []
         for tok in command.split():
             tok = tok.strip("'\"`;|&")
             if not tok or not (tok.startswith("/") or tok.startswith("~")):
@@ -433,6 +450,12 @@ def build_builtin_tools(
                 continue
             if _path_denied(candidate, base_dir, mount_roots):
                 return _deny_msg(tok)
+            # Project discovery: a repo reached only by absolute path in a bash
+            # command is exactly the 2026-09-17 case (git clone into a repo the
+            # agent had scaffolded) — it must become visible in this same turn.
+            n = _observe(candidate)
+            if n and n not in notes:
+                notes.append(n)
         cwd = str(base_dir) if base_dir.is_dir() else None
         # Snapshot workspace images so we can detect pictures the command
         # generates (e.g. matplotlib savefig) and surface them inline in the
@@ -461,6 +484,6 @@ def build_builtin_tools(
             new_imgs = diff_images(img_before, snapshot_images(base_dir))
             if new_imgs:
                 out += "\n" + encode_images_marker(new_imgs)
-        return out
+        return out + "".join(notes)
 
     return [read_file, write_file, glob_files, grep_files, edit_file, bash]

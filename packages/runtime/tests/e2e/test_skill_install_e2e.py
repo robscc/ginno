@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 from conftest import events_of, script, script_tool_call
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import PrivateAttr
 
 from ginno_runtime import paths
@@ -112,8 +112,14 @@ def test_system_prompt_carries_workspace_and_skills_context(create_session, ws_c
     # skills install locations
     assert str(paths.global_skills_dir()) in prompt
     assert str(paths.project_skills_dir("default")) in prompt
-    # install guidance names the real tool
+    # install guidance names the real tool and ALL THREE targets, and tells the
+    # model to ask rather than assume when the user did not say which
+    # (2026-09-17: "导入 skill" silently went to Ginno's global dir)
     assert "install_skills" in prompt
+    assert 'target="global"' in prompt
+    assert 'target="project"' in prompt
+    assert 'target="repo"' in prompt
+    assert "ask_user" in prompt
     # the builtin tier always ships the `todo` skill, so the index is never
     # empty; the section must be present and list it
     assert "- todo:" in prompt
@@ -280,3 +286,162 @@ def test_hallucinated_tool_call_does_not_kill_turn(create_session, ws_conv, clie
     history = client.get(f"/api/sessions/{sid}/history").json()
     assert history["ok"] is True
     assert any("ghost_tool" in str(m.get("blocks")) for m in history["messages"])
+
+
+# --------------------------------------------------------------------------- #
+# 6. install targets: the repo's .claude/skills (2026-09-17 incident)
+# --------------------------------------------------------------------------- #
+def test_install_into_a_discovered_repo(
+    create_session, ws_conv, bypass_on, ponytail_repo, repo_outside_home
+):
+    """End to end: the agent works in a repo by ABSOLUTE path (never mounted),
+    then installs a skill into that repo's .claude/skills. The repo becomes
+    knowable because the tool layer observed it (projects.py), and
+    install_skills(target="repo") is allowlisted to it."""
+    home = paths.home()
+    repo = repo_outside_home / "claude-agent-team"
+    (repo / ".git").mkdir(parents=True)
+    # Claude-style markers, like the incident's repo: the same-turn [project]
+    # announcement is reserved for these (a plain .git repo is recorded
+    # silently — see graph._project_observer).
+    (repo / "CLAUDE.md").write_text("# 项目约定\\n")
+    repo = repo.resolve()
+
+    model = CapturingModel(
+        scripts=[
+            # 1) touch the repo by absolute path → discovery records it
+            script(tool_calls=[script_tool_call("bash", {"command": f"ls {repo}"})]),
+            # 2) install into it
+            script(
+                tool_calls=[
+                    script_tool_call(
+                        "install_skills",
+                        {"path": str(ponytail_repo / "skills"), "target": "repo",
+                         "project_dir": str(repo)},
+                    )
+                ]
+            ),
+            script(text="装到仓库的 .claude/skills 了。"),
+            script(text="不客气。"),  # a second user turn, for the context check
+        ]
+    )
+    sid = create_session(model, agent_id="dev")
+    with ws_conv(sid) as conv:
+        conv.invoke(f"把 ponytail skill 装到 {repo} 里")
+        evs = conv.recv_until("message.end", "error")
+        assert not events_of(evs, "error")
+
+        # same-turn signal: the tool result itself announces the discovery
+        notes = [e["content"] for e in events_of(evs, "tool.end")]
+        assert any("[project]" in c and str(repo) in c for c in notes), (
+            "the repo must be announced in the same turn it was touched"
+        )
+
+        conv.invoke("谢谢")
+        conv.recv_until("message.end", "error")
+
+    # landed in the repo, NOT in Ginno's own storage
+    assert (repo / ".claude" / "skills" / "ponytail" / "SKILL.md").exists()
+    assert (repo / ".claude" / "skills" / "ponytail-audit" / "SKILL.md").exists()
+    assert not (home / "skills" / "ponytail").exists()
+
+    # from the next turn on, the discovered repo rides [turn context] — never
+    # the stable system prompt (prefix-cache), and never the skills index
+    turn_texts = [
+        m.content if isinstance(m.content, str) else json.dumps(m.content, ensure_ascii=False)
+        for call in model._seen
+        for m in call
+        if isinstance(m, HumanMessage)
+    ]
+    assert any("<projects>" in t and str(repo) in t for t in turn_texts), (
+        "the discovered repo must appear in [turn context]"
+    )
+    for prompt in model.system_texts():
+        # prefix-cache: the discovered path is volatile and must stay out of
+        # the stable layer
+        assert str(repo) not in prompt
+        # write-only: a repo skill never enters Ginno's own index
+        assert "ponytail" not in prompt
+
+
+@pytest.fixture
+def repo_outside_home(tmp_path):
+    """A work dir for fake user repos, OUTSIDE GINNO_HOME.
+
+    projects.py refuses to treat ~/.ginno as a project, so the repo-under-test
+    cannot live under the isolated home. Moving GINNO_HOME instead would lose
+    the settings the client fixture seeded into it: a bare home falls back to
+    the PRODUCTION default (bypass_permissions=True, empty policy), so nothing
+    ever prompts and both the permission boundary and read_file's allow-listing
+    become invisible. A sibling of the isolated home keeps the seeded settings
+    intact.
+    """
+    work = tmp_path.parent / f"work-{tmp_path.name}"
+    work.mkdir(parents=True, exist_ok=True)
+    return work
+
+
+def test_repo_install_goes_through_the_permission_policy(
+    create_session, ws_conv, repo_outside_home
+):
+    """Security boundary: skill tools are exempt from the permission policy
+    because they only manage Ginno's own storage — but target="repo" writes
+    into the USER'S repo, so it must prompt like any other write. Approval mode
+    is where the difference is observable; production runs bypass=on, where
+    nothing prompts either way (same as write_file today).
+
+    Discovery is driven by read_file (in the default allow list) so the ONLY
+    prompt in this turn is the install itself — bash would be "ask" too and
+    would mask what is under test.
+    """
+    repo = repo_outside_home / "r"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "CLAUDE.md").write_text("# rules\n")
+    repo = repo.resolve()
+    src = repo_outside_home / "src" / "skills"
+    _skill_dir(src, "pkg", "a skill")
+
+    model = [
+        script(tool_calls=[script_tool_call("read_file", {"path": str(repo / "CLAUDE.md")})]),
+        script(
+            tool_calls=[
+                script_tool_call(
+                    "install_skills",
+                    {"path": str(src), "target": "repo", "project_dir": str(repo)},
+                )
+            ]
+        ),
+        script(text="ok"),
+    ]
+    sid = create_session(model, agent_id="dev")
+    with ws_conv(sid) as conv:
+        conv.invoke("装进仓库")
+        evs = conv.recv_until("permission.request", "message.end", "error")
+        perm = events_of(evs, "permission.request")
+        assert perm, "a write into the user's repo must be gated in approval mode"
+        assert perm[0]["tool"] == "install_skills"
+
+        conv.respond_permission("allow")
+        rest = conv.recv_until("message.end", "error")
+        assert not events_of(rest, "error")
+        assert not events_of(rest, "permission.request")
+    assert (repo / ".claude" / "skills" / "pkg" / "SKILL.md").exists()
+
+
+def test_global_install_is_not_gated(create_session, ws_conv, repo_outside_home):
+    """The contrast: Ginno's own storage is exempt, so no prompt — even in
+    approval mode, where every other write would be gated."""
+    src = repo_outside_home / "src" / "skills"
+    _skill_dir(src, "pkg", "a skill")
+
+    model = [
+        script(tool_calls=[script_tool_call("install_skills", {"path": str(src)})]),
+        script(text="ok"),
+    ]
+    sid = create_session(model, agent_id="dev")
+    with ws_conv(sid) as conv:
+        conv.invoke("装到全局")
+        evs = conv.recv_until("message.end", "error")
+        assert not events_of(evs, "permission.request")
+        assert not events_of(evs, "error")
+    assert (paths.global_skills_dir() / "pkg" / "SKILL.md").exists()

@@ -130,7 +130,7 @@ export function ContextFoldersSettings() {
                   {probe.rule_file ? (
                     <span style={{ color: "#4ade80" }}>检测到 {probe.rule_file}（将作为规则注入）</span>
                   ) : (
-                    <span className="text-faint">未发现 AGENTS.md / GINNO.md</span>
+                    <span className="text-faint">未发现 AGENTS.md / CLAUDE.md / GINNO.md</span>
                   )}
                   {probe.already_registered && <span style={{ color: "#fbbf24" }}> · 已在目录库中（将更新）</span>}
                 </div>
@@ -159,7 +159,7 @@ export function ContextFoldersSettings() {
               checked={loadRules}
               onChange={(e) => setLoadRules(e.target.checked)}
             />
-            加载其规则文件（AGENTS.md / GINNO.md）
+            加载其规则文件（AGENTS.md / CLAUDE.md / GINNO.md）
           </label>
           <button
             onClick={add}
@@ -197,7 +197,7 @@ export function ContextFoldersSettings() {
                 </div>
                 <label
                   className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
-                  title="是否将该目录的 AGENTS.md / GINNO.md 注入挂载它的会话"
+                  title="是否将该目录的 AGENTS.md / CLAUDE.md / GINNO.md 注入挂载它的会话"
                 >
                   <input
                     type="checkbox"

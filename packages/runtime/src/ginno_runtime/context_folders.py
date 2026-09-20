@@ -27,9 +27,11 @@ from pathlib import Path
 
 from . import paths
 
-# Recognized rule files, in precedence order (decision record #4: both are
-# honored; AGENTS.md — the cross-product standard — wins when both exist).
-RULE_FILES = ("AGENTS.md", "GINNO.md")
+# Recognized rule files, in precedence order. AGENTS.md — the cross-product
+# standard — wins; CLAUDE.md sits in the middle (it is the dominant convention
+# for exactly the repos users point Ginno at, and ignoring it was a silent
+# gap); GINNO.md is Ginno's own and loses to both.
+RULE_FILES = ("AGENTS.md", "CLAUDE.md", "GINNO.md")
 
 # Probe caps: never walk a huge tree synchronously on the API thread.
 _PROBE_FILE_CAP = 2000
@@ -200,6 +202,19 @@ def probe(raw_path: str) -> dict:
     except OSError:
         pass
     rule_file = next((n for n in RULE_FILES if (p / n).is_file()), None)
+    # Claude-style project markers: shown by the add-folder UI so the user can
+    # see Ginno recognized the repo (and that "install into .claude/skills" is
+    # even a possibility). Never loads anything from there — access ≠ config.
+    claude = p / ".claude"
+    claude_skills = 0
+    if (claude / "skills").is_dir():
+        try:
+            claude_skills = sum(
+                1 for c in (claude / "skills").iterdir()
+                if c.is_dir() and (c / "SKILL.md").is_file()
+            )
+        except OSError:
+            claude_skills = 0
     return {
         "ok": True,
         "path": real,
@@ -208,6 +223,8 @@ def probe(raw_path: str) -> dict:
         "file_count_truncated": truncated,
         "has_git": (p / ".git").exists(),
         "rule_file": rule_file,
+        "has_claude": (claude / "skills").is_dir() or (p / "CLAUDE.md").is_file(),
+        "claude_skills": claude_skills,
         "already_registered": find_by_path(real) is not None,
     }
 
