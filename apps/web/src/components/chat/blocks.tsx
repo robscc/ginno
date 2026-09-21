@@ -16,6 +16,7 @@ import {
   Globe,
   Link2,
   Loader2,
+  RotateCw,
   Sparkles,
   Workflow,
   X,
@@ -57,7 +58,13 @@ export type Block =
   // Answer provenance (docs/citations-design.md): wiki pages / web sources the
   // model cited. Server emits this on history replay; live text blocks are
   // parsed client-side (the trailing <ginno_citations> block is machine meta).
-  | { kind: "sources"; items: SourceItem[] };
+  | { kind: "sources"; items: SourceItem[] }
+  // Mid-turn steering (docs/steering-design.md §4.2): a message the user sent
+  // while the turn was running, absorbed at a tool-batch boundary. It renders
+  // as a full-width band INSIDE the assistant bubble it interrupted — one turn
+  // is one bubble, and the band is that injection point made visible. Claude
+  // Code shows the same thing as a full-width highlight (changelog 2.1.181).
+  | { kind: "steer"; text: string; steerId?: string | null; injectedAt?: number };
 
 export type QuestionBlock = Extract<Block, { kind: "question" }>;
 
@@ -1024,6 +1031,8 @@ export function InnerBlocks({
       out.push(<ThinkingBlock key={key++} text={b.text} live={!!streaming && last} />);
     } else if (b.kind === "file") {
       out.push(<FileChips key={key++} files={[b]} />);
+    } else if (b.kind === "steer") {
+      out.push(<SteerBand key={b.steerId || `st${key++}`} block={b} />);
     }
     // refs rendered outside
     i++;
@@ -1032,6 +1041,44 @@ export function InnerBlocks({
 }
 
 /** User bubble content: attached images as a gallery, text kept verbatim. */
+/** "09:41" from the server's epoch-seconds stamp ("" when absent). */
+function steerClock(at?: number): string {
+  if (!at) return "";
+  const d = new Date(at * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** A mid-turn steered message (docs/steering-design.md §4.2).
+ *
+ * Full-width band, not a right-aligned bubble: the user typed this INTO a
+ * running turn, so it reads as the injection point — sitting between the tool
+ * step that was running and the model's continuation — rather than as a turn
+ * of its own. Used both inside the assistant bubble (history replay and live
+ * absorption) and, on its own, in the "queue bar" above the composer.
+ */
+export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> }) {
+  const clock = steerClock(block.injectedAt);
+  // Deliberately NOT the thinking block's shape or colour: that block is violet
+  // with a header ROW of its own (blocks.tsx ThinkingBlock), and an early
+  // version of this band copied both — it read as a second thinking panel and
+  // as two lines of chrome for one line of text. Here the label is an inline
+  // chip on the same row as the words, and the accent is orange: unused
+  // elsewhere in the chat chrome, so it collides with nothing (violet =
+  // thinking/agent, blue = web citations, green = success, yellow = needs your
+  // attention, red = stop/error).
+  return (
+    <div className="my-1 flex items-start gap-2 rounded-r-md border-l-2 border-orange/70 bg-orange/[0.07] py-1 pl-2 pr-2">
+      <span className="mt-[3px] flex shrink-0 items-center gap-1 rounded bg-orange/15 px-1 py-[1px] text-[10px] font-medium leading-none text-orange">
+        <RotateCw className="h-2.5 w-2.5" aria-hidden />
+        运行中注入{clock ? ` · ${clock}` : ""}
+      </span>
+      <div className="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug text-txt">
+        {block.text}
+      </div>
+    </div>
+  );
+}
+
 export function UserBlocks({ blocks }: { blocks: Block[] }) {
   const files = blocks.filter((b): b is FileBlock => b.kind === "file");
   const skills = blocks.filter((b): b is SkillBlock => b.kind === "skill");

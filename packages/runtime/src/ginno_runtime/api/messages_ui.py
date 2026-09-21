@@ -473,6 +473,12 @@ def _messages_to_ui(
     # step produced them.
     acc_imgs: set[str] = set()
     acc_img_blocks: list[dict] = []
+    # Steer bands awaiting an assistant step to attach to (see the steered
+    # HumanMessage branch below): a band that lands before the turn's first
+    # AIMessage would otherwise have to render as a standalone row, and the live
+    # view (which inserts the band into the bubble it is already streaming into)
+    # would then diverge from the replay.
+    pending_bands: list[dict] = []
 
     def flush_assistant() -> None:
         nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks
@@ -489,6 +495,24 @@ def _messages_to_ui(
     for m in messages:
         if isinstance(m, HumanMessage):
             content_raw = getattr(m, "content", "")
+            # Mid-turn steered message (docs/steering-design.md §3.5): a REAL user
+            # message — never folded into a context row — but it must not break
+            # the assistant bubble either. One turn is ONE bubble, and the
+            # injection point renders as a full-width band inside it (§4.2/§4.3),
+            # so the band joins the open accumulator instead of flushing it.
+            steer_kw = (getattr(m, "additional_kwargs", None) or {}).get("ginno_steer")
+            if steer_kw:
+                band = {
+                    "kind": "steer",
+                    "text": content_raw if isinstance(content_raw, str) else "",
+                    "steerId": steer_kw.get("steer_id"),
+                    "injectedAt": steer_kw.get("injected_at") or 0,
+                }
+                if acc is not None:
+                    acc.append(band)
+                else:
+                    pending_bands.append(band)
+                continue
             # WorldState scaffolding messages (plan C2/E3/E4/B1): render the
             # user-facing ones as centered "context" rows (chips in the
             # transcript); hide the per-turn context bundle entirely — it is
@@ -539,6 +563,10 @@ def _messages_to_ui(
             if acc is None:
                 acc = []
                 acc_id = getattr(m, "id", None)
+                # Steer bands absorbed before this step lead the bubble.
+                if pending_bands:
+                    acc.extend(pending_bands)
+                    pending_bands.clear()
             if acc_agent is None:
                 acc_agent = (getattr(m, "additional_kwargs", None) or {}).get("agent_id")
             step = list(_ai_content_blocks(getattr(m, "content", "")))
@@ -611,5 +639,10 @@ def _messages_to_ui(
                     acc_img_blocks.append(blk)
             acc.extend(step)
         # ToolMessage: folded into the tool blocks above
+    # A steer band no assistant step ever followed (the transcript ends on it):
+    # render it as its own full-width row rather than dropping the user's words.
+    for band in pending_bands:
+        ui.append({"id": None, "role": "user", "blocks": [band]})
+    pending_bands.clear()
     flush_assistant()
     return ui

@@ -71,6 +71,18 @@ def _msg_line(m: BaseMessage) -> str:
     return f"{role}: {text}"
 
 
+def is_steered(m: BaseMessage) -> bool:
+    """True for a mid-turn steered message (docs/steering-design.md §3.6).
+
+    Such a message is absorbed INSIDE a running turn, so it does not start one.
+    Both compaction and microcompact keep the last ``compact_keep_turns`` user
+    turns verbatim, and counting a steer as a turn boundary would drag that
+    window forward by one turn per steer — a chatty user would watch their
+    older context get compacted sooner than they asked for.
+    """
+    return bool((getattr(m, "additional_kwargs", None) or {}).get("ginno_steer"))
+
+
 def find_split_index(messages: list[BaseMessage], keep_turns: int) -> int:
     """Index of the HumanMessage that starts the kept tail.
 
@@ -78,7 +90,11 @@ def find_split_index(messages: list[BaseMessage], keep_turns: int) -> int:
     and everything after it stays verbatim. Returns 0 when there is nothing
     worth compacting (fewer than keep_turns+1 user turns).
     """
-    human_idx = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    human_idx = [
+        i
+        for i, m in enumerate(messages)
+        if isinstance(m, HumanMessage) and not is_steered(m)
+    ]
     if len(human_idx) <= keep_turns:
         return 0
     return human_idx[-keep_turns]

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import fnmatch
 from typing import Literal
+from xml.sax.saxutils import escape as _xml_escape
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
@@ -22,6 +23,7 @@ from langgraph.types import Command, interrupt
 from . import agents as agents_reg
 from .checkpointer import FileCheckpointer
 from .permission.policy import PermissionPolicy, is_bypass_permissions
+from .server_shared import steer_drain
 from .state import AgentState
 from .truncation import truncate_tool_content
 from .world_state import SessionCtx, WorldState, context_settings
@@ -622,6 +624,40 @@ def _mark_cache_tail(history: list, marks: int = CACHE_TAIL_MARKS) -> list:
     return out
 
 
+# Model-facing wrapper for a mid-turn steered message (docs/steering-design.md
+# §3.5). Claude Code puts an equivalent sentence in the message CONTENT, which
+# forces its UI to parse the prefix back out; here the persisted HumanMessage
+# keeps the user's raw words (the transcript renders them verbatim and the
+# history builder matches it by ``ginno_steer.steer_id``) and only this
+# model-facing COPY carries the wrapper — the same copy-only convention as
+# strip_old_images / strip_tool_image_markers / _mark_cache_tail above.
+STEER_HEAD = (
+    "The user sent a new message while you were working. Treat it as the newest "
+    "instruction and adjust the current work accordingly."
+)
+
+
+def _wrap_steered_for_model(history: list) -> list:
+    out: list = []
+    for m in history:
+        steer = (getattr(m, "additional_kwargs", None) or {}).get("ginno_steer")
+        content = getattr(m, "content", None)
+        if not steer or not isinstance(content, str):
+            out.append(m)
+            continue
+        out.append(
+            m.model_copy(
+                update={
+                    "content": (
+                        f"<ginno_steer>\n{STEER_HEAD}\n<message>\n"
+                        f"{_xml_escape(content)}\n</message>\n</ginno_steer>"
+                    )
+                }
+            )
+        )
+    return out
+
+
 def agent_node_factory(model, all_tools):
     async def agent_node(state: AgentState, config=None) -> dict:
         agent = _resolve_agent(_turn_agent_id(state, config))
@@ -652,13 +688,61 @@ def agent_node_factory(model, all_tools):
             ),
             model,
         )
-        history = [m for m in state.get("messages", []) if not isinstance(m, SystemMessage)]
+        # Steering (docs/steering-design.md §3.2). This node runs at the head of
+        # every superstep — immediately before a model request — so a message the
+        # user sent while the turn was running is absorbed HERE and reaches the
+        # model within the SAME turn, positioned right after the tool results
+        # that were streaming when they typed it. The superstep boundary IS
+        # Claude Code's "as soon as those tool calls finish" moment.
+        #
+        # New ids only, never a reused turn id: the file checkpointer's delta
+        # compares message ids and never contents (checkpointer.py
+        # _try_messages_delta), so an id that already exists with different text
+        # makes the delta store nothing and leaves the OLD text in rebuilt
+        # history — silently.
+        sid = ((config or {}).get("configurable") or {}).get("thread_id", "")
+        _drained = steer_drain(sid) if sid else []
+        steered: list[HumanMessage] = []
+        for _entry in _drained:
+            _steer_id = _entry.get("steer_id")
+            _steer_text = (_entry.get("text") or "").strip()
+            if not _steer_id or not _steer_text:
+                continue  # malformed entry — the client re-sends it as a turn
+            steered.append(
+                HumanMessage(
+                    content=_steer_text,
+                    id=_steer_id,
+                    additional_kwargs={
+                        "ginno_steer": {
+                            "steer_id": _steer_id,
+                            "turn_id": _entry.get("turn_id") or "",
+                            "injected_at": _entry.get("injected_at") or 0,
+                        }
+                    },
+                )
+            )
+        if steered:
+            # Acknowledge at DRAIN time, through an emitter the stream layer
+            # injects into config (graph.py never touches the WebSocket itself).
+            # The timing is load-bearing: the ack positions the transcript band,
+            # which belongs at the injection point — right after the tool batch
+            # that was running — and this superstep's tokens stream immediately
+            # after. Acking at commit instead put the band AFTER the model's
+            # continuation (found by driving the real UI), and the replayed view
+            # reads the state order, so the two disagreed.
+            _ack = ((config or {}).get("configurable") or {}).get("steer_absorbed")
+            if callable(_ack):
+                await _ack(_drained)
+        base = [*state.get("messages", []), *steered]
+        history = [m for m in base if not isinstance(m, SystemMessage)]
         # Trim old turns' images on a COPY so the LLM context stays bounded while
         # the persisted state keeps every image (UI history / time-travel intact).
         history = strip_old_images(history)
         # Hide code-generated-image markers from the model (display-only); the
         # persisted ToolMessages keep them for the WS layer / history builder.
         history = strip_tool_image_markers(history)
+        # Tell the model that these arrived mid-turn (copy-only; see the helper).
+        history = _wrap_steered_for_model(history)
         # B3-tail — rolling cache breakpoints so the growing history caches too
         # (not just system+tools). Same gate as _system_message; the copy
         # semantics match the strip_* steps above (persisted state untouched).
@@ -680,7 +764,9 @@ def agent_node_factory(model, all_tools):
         if turn_imgs:
             response.additional_kwargs["ginno_images"] = turn_imgs
         tool_calls = getattr(response, "tool_calls", None) or []
-        return {"messages": [response], "pending_tool_calls": tool_calls}
+        # Steered messages ride out WITH the response so they commit to state in
+        # one update, ordered before it: [..., tool results, steer, response].
+        return {"messages": [*steered, response], "pending_tool_calls": tool_calls}
 
     return agent_node
 

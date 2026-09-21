@@ -11,7 +11,7 @@ import { greeting, relTime } from "@/lib/utils";
 import { notifyNative } from "@/lib/desktop";
 import { notifyPrefs } from "@/lib/notifyPrefs";
 import { Icon } from "@/components/icons";
-import { ContextBlocks, InnerBlocks, RefBlocks, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
+import { ContextBlocks, InnerBlocks, RefBlocks, SteerBand, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
 import { DiffView } from "@/components/workflow/DiffView";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
@@ -69,6 +69,26 @@ interface ChatMsg {
   // Error cards only: id of the originating user bubble. Retry operates on
   // THAT bubble in place — no duplicate message is appended.
   sourceMsgId?: string;
+}
+
+/** One queued mid-turn steering message (docs/steering-design.md §4.1).
+ *
+ * The CLIENT owns this queue. The server only ever absorbs into a running turn
+ * and acks what it durably committed, so an entry that never got an ack is
+ * re-sent by us: as a normal `invoke` when the turn ended (§3.3), or as `steer`
+ * again when we are about to resume a turn parked at an interrupt (§3.4).
+ * Server-side enqueue is idempotent by steer_id, so a re-send never duplicates.
+ */
+interface SteerItem {
+  steerId: string;
+  text: string;
+  /** The turn this rides ("" = let the server use its own running-turn id). */
+  turnId: string;
+  /** Captured at enqueue: the agent the message was composed against, so a
+   *  later re-send-as-invoke keeps the user's intent. */
+  agentId: string | null;
+  /** "sending" until the server accepts it into the stash. */
+  status: "sending" | "queued";
 }
 
 interface SendPayload {
@@ -498,6 +518,9 @@ export function ChatStream({
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
   // Command/mention autocomplete: open menu (items + active index + trigger).
   const [menu, setMenu] = useState<{ items: MenuItem[]; active: number; trigger: Trigger } | null>(null);
+  // Steer entries queued for the displayed session (mirrored from
+  // steerQueueRef by syncDisplay). Rendered as the queue bar above the composer.
+  const [steerQueue, setSteerQueue] = useState<SteerItem[]>([]);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
@@ -635,6 +658,10 @@ export function ChatStream({
         (m) => m.role === "user" && m.status === "sending",
       );
       const mapped = mapHistory(res ?? {});
+      // A steer_id present in history was absorbed even if the ack was lost to
+      // the socket drop that caused this reconcile — drop those entries instead
+      // of re-sending them (design §3.3, exactly-once).
+      dropAbsorbedSteers(sid, mapped);
       for (const p of pending) {
         const delivered = mapped.some(
           (m) => m.role === "user" && textOf(m) === textOf(p),
@@ -664,6 +691,10 @@ export function ChatStream({
   const permsRef         = useRef<Record<string, PermissionPrompt | null>>({});
   const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
   const busyBySessionRef = useRef<Record<string, boolean>>({});
+  // Mid-turn steering queue, per session (docs/steering-design.md §3.3). Kept
+  // in a ref like every other socket-fed store: the socket callbacks outlive
+  // session switches and must not read stale React state.
+  const steerQueueRef   = useRef<Record<string, SteerItem[]>>({});
   // Per-session mirror of the `serverRunning` state (see syncDisplay).
   const serverRunningRef = useRef<Record<string, boolean>>({});
   const streamAgentRef   = useRef<Record<string, string | null>>({});
@@ -681,6 +712,18 @@ export function ChatStream({
   const reconcileTimerRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const reconnTimerRef   = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const lastSeenRef      = useRef<Record<string, number>>({});
+  // Who spoke last on this session's socket — our `turn_state` probe or our
+  // invoke? A turn.state answer describes the session as of the moment the
+  // SERVER handled the probe, so a send that went out after the probe cannot be
+  // judged by it. Without this ordering, the first message of a brand-new
+  // session (socket opened by the send itself: probe at t0, invoke at t0+13ms,
+  // both before the turn registers server-side) is reconciled against a
+  // /history that has no checkpoint yet and stamped 「未送达」 while it is in
+  // fact running (2026-09-21, session 52d54d…). Monotonic counter, not
+  // Date.now() — the two can land in the same millisecond.
+  const ioSeqRef         = useRef(0);
+  const probeSeqRef      = useRef<Record<string, number>>({});
+  const sendSeqRef       = useRef<Record<string, number>>({});
   // Unsent input + attachments + resolved mentions saved per session on switch
   const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[]; mentions?: ResolvedMention[] }>>({});
   // Resolved @mentions picked from the autocomplete menu, keyed by session id.
@@ -745,6 +788,7 @@ export function ChatStream({
     setPropose(proposeRef.current[sid] ?? null);
     setStreamAgent(streamAgentRef.current[sid] ?? null);
     setServerRunning(!!serverRunningRef.current[sid]);
+    setSteerQueue([...(steerQueueRef.current[sid] ?? [])]);
   };
 
   // Pre-load tool display labels from settings (cached at module level).
@@ -764,10 +808,12 @@ export function ChatStream({
         delete liveBySessionRef.current[id]; delete statusRef.current[id];
         delete permsRef.current[id];      delete proposeRef.current[id];
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
+        delete steerQueueRef.current[id];
         delete serverRunningRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
         delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
         delete lastSeenRef.current[id];   delete reconcileTimerRef.current[id];
+        delete probeSeqRef.current[id];   delete sendSeqRef.current[id];
       }
     }
   }, [g.sessions]);
@@ -809,7 +855,10 @@ export function ChatStream({
       // still be parked on an interrupt (ask_user). The answer is the
       // server-sourced liveness flag that keeps a history-rebuilt question
       // card interactive.
-      try { sock.send(JSON.stringify({ type: "turn_state" })); } catch { /* ignore */ }
+      try {
+        probeSeqRef.current[sid] = ++ioSeqRef.current;
+        sock.send(JSON.stringify({ type: "turn_state" }));
+      } catch { /* ignore */ }
       if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
         // A turn was in flight when this socket's predecessor dropped. Turn
         // events broadcast to EVERY socket of the session, so the running
@@ -920,6 +969,10 @@ export function ChatStream({
       getSessionHistory(sid).then((res) => {
         if (!res?.messages?.length) return;
         const mapped = mapHistory(res);
+        // A reloaded session rebuilds from the checkpoint: entries whose
+        // steer_id is already in history were absorbed (their acks died with
+        // the old page), so drop them rather than re-sending (design §3.3).
+        dropAbsorbedSteers(sid, mapped);
         // A live event can land DURING the fetch (the parked-question re-emit
         // on socket open, or in-flight tokens after a quick reload): keep the
         // bubble ensureLive created instead of clobbering it — liveBySessionRef
@@ -1288,6 +1341,56 @@ export function ChatStream({
         // SheetViewer refetches if that file is the one being viewed.
         if (ev.file_id) g.notifyPreviewInvalidate(ev.file_id as string);
         break;
+      case "steer.accepted":
+        // The server stashed the entry (design §3.1). It stays in the queue bar
+        // until it is absorbed; this only flips it out of "sending".
+        if (ev.steer_id) {
+          const items = steerQueueRef.current[sid] ?? [];
+          if (items.some((i) => i.steerId === ev.steer_id)) {
+            setSteerQueueFor(
+              sid,
+              items.map((i) =>
+                i.steerId === ev.steer_id ? { ...i, status: "queued" as const } : i,
+              ),
+            );
+          }
+        }
+        break;
+      case "steer.absorbed": {
+        // The steered message COMMITTED with a superstep update, so it is
+        // durably in state: move it out of the queue bar into the transcript as
+        // a band at the injection point — appended to the live assistant bubble,
+        // because one turn is one bubble (design §4.2/§4.3).
+        const absorbedId = ev.steer_id as string | undefined;
+        if (!absorbedId) break;
+        const items = steerQueueRef.current[sid] ?? [];
+        const entry = items.find((i) => i.steerId === absorbedId);
+        if (!entry) break; // already dropped — a history reconcile got there first
+        setSteerQueueFor(sid, items.filter((i) => i.steerId !== absorbedId));
+        const band: Block = {
+          kind: "steer",
+          text: entry.text,
+          steerId: entry.steerId,
+          injectedAt: Number(ev.injected_at) || Math.floor(Date.now() / 1000),
+        };
+        const liveMsgId = liveBySessionRef.current[sid];
+        const store = storeRef.current[sid] ?? [];
+        if (liveMsgId && store.some((m) => m.id === liveMsgId)) {
+          storeRef.current[sid] = store.map((m) =>
+            m.id === liveMsgId ? { ...m, blocks: [...m.blocks, band] } : m,
+          );
+        } else {
+          // No live bubble of ours (adopted orphan / goal continuation): the
+          // band lands as its own full-width row, and the next history
+          // reconcile rebuilds the merged bubble from the checkpoint.
+          storeRef.current[sid] = [
+            ...store,
+            { id: mid(), role: "user" as const, blocks: [band], turnId: entry.turnId },
+          ];
+        }
+        syncDisplay(sid);
+        break;
+      }
       case "notice":
         // Built-in command reply (e.g. /help): no graph turn ran, so the server
         // pushes the rendered text directly into the live bubble as one delta.
@@ -1388,6 +1491,15 @@ export function ChatStream({
           syncDisplay(sid);
         }
         if (ev.running) break; // the broadcast stream resumes on this socket
+        // ...unless our newest send is NEWER than the probe this answers. The
+        // answer can only describe the session as it was when the server
+        // handled the probe; reconciling a send that postdates it reads a
+        // /history with no checkpoint yet and stamps the bubble 「未送达」 on a
+        // turn that is running fine (first message of a new session: the socket
+        // is opened by the send, probe at t0, invoke at t0+13ms). Wait for the
+        // stream instead — it always ends in message.end or error, both of
+        // which reconcile a genuinely dead turn.
+        if ((sendSeqRef.current[sid] ?? 0) > (probeSeqRef.current[sid] ?? 0)) break;
         // Not running: rebuild from persisted history ONLY when this client
         // believed a turn was in flight (the probe now fires on every open —
         // an idle reconnect must not replace the loaded store). This is also
@@ -1468,6 +1580,11 @@ export function ChatStream({
             });
           }
         }
+        // The turn ended with steer entries still unacknowledged: the oldest
+        // becomes the next turn (design §3.3). Skipped on the orphan path above
+        // — its history reconcile owns that decision, and flushing here could
+        // re-send an entry the reconcile is about to see as absorbed.
+        if (!wasOrphan) flushSteerQueue(sid);
         break;
       }
       case "turn.stopped": {
@@ -1484,6 +1601,10 @@ export function ChatStream({
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
         serverRunningRef.current[sid] = false;
+        // ⏹ means stop, so what was queued for absorption is handed back to the
+        // composer rather than discarded or auto-sent (design §4.1). Done here,
+        // in the event, so a stop from another tab recalls on this one too.
+        recallSteers(sid);
         // Stop also clears a parked prompt (server heals those too) — every
         // tab of the session leaves the running state together.
         permsRef.current[sid] = null;
@@ -1556,6 +1677,9 @@ export function ChatStream({
             sourceMsgId: lastUser?.id,
           },
         ];
+        // The turn died with entries still unacknowledged → the oldest becomes
+        // the next turn, same rule as a normal end (design §3.3).
+        flushSteerQueue(sid);
         break;
       }
     }
@@ -2133,6 +2257,166 @@ export function ChatStream({
     }
   }
 
+  // ─── Mid-turn steering (docs/steering-design.md) ──────────────────────────────
+  /** The running turn's id for a session (the steer rides it). Empty string
+   *  when unknown — the server then falls back to its own running-turn id,
+   *  which is the only correct answer for a turn nobody here invoked (an
+   *  adopted orphan, or a goal continuation). */
+  function liveTurnIdFor(sid: string): string {
+    const live = liveBySessionRef.current[sid];
+    const msg = live ? (storeRef.current[sid] ?? []).find((m) => m.id === live) : undefined;
+    return msg?.turnId ?? "";
+  }
+
+  /** Drop one queued entry (the ✕ on a queue-bar row). */
+  function dropSteer(sid: string, steerId: string) {
+    setSteerQueueFor(
+      sid,
+      (steerQueueRef.current[sid] ?? []).filter((i) => i.steerId !== steerId),
+    );
+  }
+
+  function setSteerQueueFor(sid: string, next: SteerItem[]) {
+    if (next.length) steerQueueRef.current[sid] = next;
+    else delete steerQueueRef.current[sid];
+    syncDisplay(sid);
+  }
+
+  /** Queue a message for absorption by the running turn. It is NOT a turn: the
+   *  composer clears and the entry lives in the queue bar until the server acks
+   *  it as absorbed. */
+  function enqueueSteer(sid: string, text: string, agentId: string | null) {
+    const item: SteerItem = {
+      steerId: mid(),
+      text,
+      turnId: liveTurnIdFor(sid),
+      agentId,
+      status: "sending",
+    };
+    setSteerQueueFor(sid, [...(steerQueueRef.current[sid] ?? []), item]);
+    sendSteer(sid, item);
+  }
+
+  function sendSteer(sid: string, item: SteerItem) {
+    try {
+      socketsRef.current[sid]?.send(
+        JSON.stringify({
+          type: "steer",
+          steer_id: item.steerId,
+          turn_id: item.turnId,
+          message: item.text,
+        }),
+      );
+    } catch {
+      // Socket gone: the entry stays queued and rides the next turn instead
+      // (the flush on message.end), so nothing the user typed is lost.
+    }
+  }
+
+  /** Re-send every queued entry as `steer` — done right before we resume a
+   *  parked turn, so an entry stashed in the segment that parked is not lost.
+   *  Safe to repeat: server-side enqueue replaces by steer_id (design §3.2). */
+  function requeueSteersOnResume(sid: string) {
+    for (const item of steerQueueRef.current[sid] ?? []) sendSteer(sid, item);
+  }
+
+  /** ⏹ means stop: hand what is still queued back to the composer — multi-line,
+   *  in order, ABOVE whatever is already typed (the ↑ recall's placement) —
+   *  rather than silently discarding what the user wrote (design §4.1). */
+  function recallSteers(sid: string) {
+    const items = steerQueueRef.current[sid] ?? [];
+    if (!items.length) return;
+    setSteerQueueFor(sid, []);
+    const recalled = items.map((i) => i.text).join("\n");
+    if (sid !== curSessionIdRef.current) {
+      // Background session: park it in that session's draft, so switching back
+      // shows it in the composer instead of dropping it on the floor.
+      const d = draftCacheRef.current[sid] ?? { input: "", attachments: [] };
+      draftCacheRef.current[sid] = {
+        ...d,
+        input: d.input ? `${recalled}\n${d.input}` : recalled,
+      };
+      return;
+    }
+    setInput((cur) => (cur ? `${recalled}\n${cur}` : recalled));
+  }
+
+  /** The turn ended with entries still unacknowledged: the OLDEST becomes the
+   *  next turn — Claude Code's rule verbatim ("when the turn ends with messages
+   *  still queued, Claude Code sends only the oldest as the next turn"). The
+   *  rest stay queued and follow the same rule on that turn's end (design §3.3). */
+  function flushSteerQueue(sid: string) {
+    const items = steerQueueRef.current[sid] ?? [];
+    if (!items.length) return;
+    const [head, ...rest] = items;
+    setSteerQueueFor(sid, rest);
+    attemptSend(sid, {
+      text: head.text,
+      images: [],
+      files: [],
+      mentions: [],
+      agentId: head.agentId,
+    });
+  }
+
+  /** History is authoritative: a steer_id it carries was absorbed even if the
+   *  ack was lost to a socket drop, so drop those entries instead of re-sending
+   *  them. This is what keeps delivery exactly-once (design §3.3). */
+  function dropAbsorbedSteers(sid: string, mapped: ChatMsg[]) {
+    const items = steerQueueRef.current[sid] ?? [];
+    if (!items.length) return;
+    const absorbed = new Set<string>();
+    for (const m of mapped) {
+      for (const b of m.blocks) {
+        if (b.kind === "steer" && b.steerId) absorbed.add(b.steerId);
+      }
+    }
+    if (!absorbed.size) return;
+    const next = items.filter((i) => !absorbed.has(i.steerId));
+    if (next.length !== items.length) setSteerQueueFor(sid, next);
+  }
+
+  /** The pending ask_user card of the displayed session, if any. */
+  function pendingQuestionBlock(): QuestionBlock | null {
+    for (const m of storeRef.current[curSessionIdRef.current ?? ""] ?? []) {
+      for (const b of m.blocks) {
+        if (b.kind === "question" && b.status === "pending") return b;
+      }
+    }
+    return null;
+  }
+
+  /** Typing at a parked card means "answer" or "change of mind" (design §3.4):
+   *  the turn is waiting on the user, not working, so this never queues. */
+  function handleParkedSend(sid: string, text: string, agentId: string | null) {
+    if (permission) {
+      // Change of mind: don't run this tool, do what I just said instead. The
+      // steer is stashed FIRST (one socket is FIFO), so the resumed segment
+      // absorbs it — the deny routes straight back to `agent` (graph.py), which
+      // is why the parked case needs no second injection mechanism.
+      enqueueSteer(sid, text, agentId);
+      respond("deny");
+      return;
+    }
+    if (propose) {
+      enqueueSteer(sid, text, agentId);
+      respondPropose("deny");
+      return;
+    }
+    const q = pendingQuestionBlock();
+    if (!q) return;
+    if (q.allowFreeText) {
+      // Answer: the typed text IS the answer. Never ALSO steer it — the model
+      // would see it twice.
+      answerQuestion(q.id ?? "", text, null, false);
+      return;
+    }
+    // Fixed choices only: skip the question and steer the text instead, as the
+    // instruction the user would rather give.
+    enqueueSteer(sid, text, agentId);
+    answerQuestion(q.id ?? "", "", null, true);
+  }
+
   function send() {
     const text = input.trim();
     const readyFiles = fileAttachments.filter((f) => !f.uploading);
@@ -2146,7 +2430,30 @@ export function ChatStream({
       return;
     }
     const sid = session.id;
-    if (busyBySessionRef.current[sid]) return; // one turn at a time
+    // Parked at a card: the user is answering or changing their mind, not
+    // queueing (design §3.4). Checked BEFORE the busy gate because a parked
+    // turn is still busy but must never receive a queue entry.
+    if (parked) {
+      if (!text) return;
+      handleParkedSend(sid, text, target ?? session.agent_id ?? g.agents[0]?.id ?? null);
+      setInput("");
+      setMenu(null);
+      return;
+    }
+    if (busyBySessionRef.current[sid]) {
+      // A turn is running → this is steering, not a new turn: queue it for the
+      // next superstep of the turn that is already going (design §3.1). Text
+      // only (v1): with attachments there is nothing safe to do, so the
+      // composer is left untouched for the user to send once the turn ends —
+      // attachments cannot ride a steer.
+      if (!text) return;
+      if (attachments.length || readyFiles.length) return;
+      enqueueSteer(sid, text, target ?? session.agent_id ?? g.agents[0]?.id ?? null);
+      setInput("");
+      setTarget(null);
+      setMenu(null);
+      return;
+    }
     if (!text && attachments.length === 0 && readyFiles.length === 0) return;
     if (readyFiles.length !== fileAttachments.length) return; // upload in flight
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
@@ -2296,6 +2603,10 @@ export function ChatStream({
             : {}),
         }),
       );
+      // Only a send that actually went out gets stamped — a turn.state answer
+      // to a probe we sent earlier is older than this turn and must not judge
+      // it (see probeSeqRef).
+      sendSeqRef.current[sid] = ++ioSeqRef.current;
     } catch {
       // sock.send throws when the socket flipped to CLOSING/CLOSED between the
       // readyState check and here. Drop the assistant placeholder and mark the
@@ -2407,6 +2718,10 @@ export function ChatStream({
   function respond(decision: "allow" | "deny") {
     const sid = curSessionIdRef.current;
     if (!sid) return;
+    // Anything still in the steer queue belongs to this turn: re-send it as
+    // `steer` BEFORE the resume, so the resumed segment absorbs it (design
+    // §3.4). Idempotent by steer_id, so a duplicate can't inject it twice.
+    requeueSteersOnResume(sid);
     try {
       socketsRef.current[sid]?.send(JSON.stringify({ type: "permission_response", decision }));
     } catch {
@@ -2434,6 +2749,7 @@ export function ChatStream({
     if (!sid) return;
     // Reuses the permission_response channel; the server resumes the proposal
     // interrupt with {decision}, and the propose_edit tool applies on allow.
+    requeueSteersOnResume(sid);
     try {
       socketsRef.current[sid]?.send(JSON.stringify({ type: "permission_response", decision }));
     } catch {
@@ -2459,6 +2775,9 @@ export function ChatStream({
   function answerQuestion(id: string, answer: string, optionIndex: number | null, skip: boolean) {
     const sid = curSessionIdRef.current;
     if (!sid) return;
+    // Same rule as the permission path: queued entries belong to this turn, so
+    // re-send them as `steer` before the answer resumes it (design §3.4).
+    requeueSteersOnResume(sid);
     try {
       socketsRef.current[sid]?.send(
         JSON.stringify({ type: "user_answer", answer, option_index: optionIndex, skip }),
@@ -2608,6 +2927,44 @@ export function ChatStream({
                 ))}
               </div>
             )}
+            {session && steerQueue.length > 0 && (
+              // Queue bar (design §4.1): what the user typed into a running turn,
+              // waiting for the next superstep to absorb it. Ordered, single-line,
+              // removable, and recallable with ↑ — Claude Code's shape.
+              <div className="mb-1 rounded-lg border border-line bg-card2/60 px-2 py-1.5">
+                <div className="flex items-center justify-between px-0.5 pb-1 text-[10px] text-muted">
+                  <span>待发送 ({steerQueue.length})</span>
+                  <span className="text-faint">↑ 取回编辑</span>
+                </div>
+                <ol className="space-y-0.5">
+                  {steerQueue.map((it, i) => (
+                    <li
+                      key={it.steerId}
+                      className="group flex items-start gap-1.5 px-0.5 text-xs text-txt"
+                    >
+                      <span className="mt-[1px] shrink-0 text-faint">{i + 1}</span>
+                      <span className="min-w-0 flex-1 truncate" title={it.text}>
+                        {it.text}
+                      </span>
+                      {it.status === "sending" && (
+                        <Loader2
+                          className="mt-[1px] h-3 w-3 shrink-0 animate-spin text-faint"
+                          aria-label="提交中"
+                        />
+                      )}
+                      <button
+                        onClick={() => dropSteer(session.id, it.steerId)}
+                        className="shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
+                        title="移除这条待发送消息"
+                        aria-label="移除待发送消息"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
             <textarea
               ref={textareaRef}
               value={input}
@@ -2662,6 +3019,15 @@ export function ChatStream({
                 // only when the composer is focused and nothing is parked —
                 // a parked prompt's own card (Deny / 跳过) is the deliberate
                 // exit, a stray Escape must not cancel the whole turn.
+                // ↑ on an EMPTY composer takes the queued steer entries back for editing —
+                // one per line, in order (Claude Code's "take back what you
+                // queued"). Guarded on empty input so it never steals the caret
+                // when there is text to navigate.
+                if (e.key === "ArrowUp" && !composing && !input && session && steerQueue.length > 0) {
+                  e.preventDefault();
+                  recallSteers(session.id);
+                  return;
+                }
                 if (e.key === "Escape" && !composing && running && !parked) {
                   e.preventDefault();
                   stopTurn();
@@ -3010,6 +3376,18 @@ export function ChatStream({
                 key={m.id}
                 blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
               />
+            ) : m.role === "user" && m.blocks.some((b) => b.kind === "steer") ? (
+              // A steered message with no assistant step to attach to (absorbed
+              // by the turn's first model request, or the transcript ended on
+              // it): a full-width band, not a right-aligned bubble — it is not a
+              // turn of its own (design §4.2).
+              <div key={m.id} className="flex flex-col gap-1">
+                {m.blocks
+                  .filter((b): b is Extract<Block, { kind: "steer" }> => b.kind === "steer")
+                  .map((b) => (
+                    <SteerBand key={b.steerId ?? m.id} block={b} />
+                  ))}
+              </div>
             ) : m.role === "user" ? (
               <div key={m.id} className="flex flex-col items-end gap-1">
                 <TurnIdChip turnId={m.turnId} />

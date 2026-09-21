@@ -106,6 +106,79 @@ _TURN_TASKS: dict[str, Any] = {}
 # set for an idle session — a stale set event would kill the next turn.
 _TURN_STOP: dict[str, Any] = {}
 
+# Steering stash (docs/steering-design.md §3.2): messages the user sent while a
+# turn was running, held here until the next `agent` superstep absorbs them.
+# graph.agent_node drains this at its entry — that node sits immediately before
+# every model request — so a stashed message reaches the model in the SAME turn,
+# right after the tool results that were streaming when the user typed it. This
+# is Claude Code's mid-turn "absorption" (interactive-mode.md §"When Claude Code
+# sends what you queued").
+#
+# Lifetime = ONE turn segment (invoke or resume): that segment's finally clears
+# it, so an entry which missed its absorption window can never leak into a later
+# turn. Dropping it is safe because the CLIENT owns the queue: it re-sends any
+# entry it never saw acknowledged (as a normal `invoke` when the turn ended, or
+# as `steer` again when it is about to resume a turn parked at an interrupt).
+# steer_enqueue REPLACES by steer_id, so such a re-send can never duplicate the
+# message.
+_STEER_STASH: dict[str, list[dict]] = {}
+
+
+def steer_enqueue(session_id: str, entry: dict) -> None:
+    """Stash one steered message, keyed by steer_id (idempotent re-send)."""
+    if not session_id:
+        return
+    lst = [
+        e
+        for e in _STEER_STASH.get(session_id, [])
+        if e.get("steer_id") != entry.get("steer_id")
+    ]
+    lst.append(entry)
+    _STEER_STASH[session_id] = lst
+
+
+def steer_drain(session_id: str) -> list[dict]:
+    """Pop every steered message awaiting absorption (graph.agent_node entry)."""
+    return _STEER_STASH.pop(session_id, None) or []
+
+
+def steer_clear(session_id: str) -> None:
+    """Drop the stash at the end of a turn segment (see the lifetime note above)."""
+    _STEER_STASH.pop(session_id, None)
+
+
+# Drained by an agent superstep but not yet COMMITTED with its update
+# (session_id -> entries). The window is the model call that is reading them:
+# the ack is sent at drain time so the client can place the transcript band at
+# the injection point (§3.2) — which means an ack no longer implies "durably in
+# state" on its own, and this list is what makes it true again:
+#   * the superstep's commit clears it (stream.py, updates/agent branch);
+#   * a turn stopped inside that window commits them from _heal_interrupted_turn,
+#     so the band the user already saw stays in the transcript;
+#   * a parked exit puts them back in the stash for the resumed segment.
+_STEER_INFLIGHT: dict[str, list[dict]] = {}
+
+
+def steer_mark_inflight(session_id: str, entries: list[dict]) -> None:
+    if session_id and entries:
+        _STEER_INFLIGHT[session_id] = [*(_STEER_INFLIGHT.get(session_id) or []), *entries]
+
+
+def steer_take_inflight(session_id: str) -> list[dict]:
+    """Pop the uncommitted drain (heal path: commit these)."""
+    return _STEER_INFLIGHT.pop(session_id, None) or []
+
+
+def steer_clear_inflight(session_id: str) -> None:
+    """Committed (or otherwise resolved): drop the uncommitted-drain record."""
+    _STEER_INFLIGHT.pop(session_id, None)
+
+
+def steer_restash_inflight(session_id: str) -> None:
+    """Put an uncommitted drain back for the resumed segment to absorb again."""
+    for entry in _STEER_INFLIGHT.pop(session_id, None) or []:
+        steer_enqueue(session_id, entry)
+
 # Fire-and-forget background tasks (MCP lazy retry etc.). asyncio keeps only
 # WEAK references to tasks, so an unreferenced create_task() can be garbage
 # collected mid-flight; hold strong refs until done.

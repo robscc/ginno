@@ -17,6 +17,7 @@ Now:
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -96,6 +97,41 @@ def test_turn_state_false_when_idle(create_session, ws_conv):
         conv.send({"type": "turn_state"})
         state = conv.recv_until("turn.state")[-1]
         assert state["running"] is False
+
+
+def test_turn_state_true_from_the_moment_invoke_is_accepted(create_session, ws_conv, monkeypatch):
+    """A probe landing between "invoke accepted" and "graph started" is running.
+
+    Regression for 2026-09-21 (session 52d54d…): the running entry used to be
+    written only once the graph started — ~250ms in (title touch, agent
+    resolution, world-state sync, MCP connect). The frontend probes on EVERY
+    socket open, and a brand-new session's socket is opened by its own first
+    send, so its probe goes out a few ms BEFORE the invoke. An answer of "not
+    running" made the client reconcile the just-sent message against a /history
+    that had no checkpoint yet, stamping the bubble 「发送失败：连接中断，未送达」
+    on a turn that was in fact running and completed normally.
+
+    Real time is stretched by a slow title touch: that call sits exactly in the
+    accept→graph window, so the probe below is guaranteed to arrive inside it
+    instead of racing the scheduler.
+    """
+    from ginno_runtime.api import stream
+
+    async def slow_title(*_a, **_kw):
+        await asyncio.sleep(0.5)
+
+    monkeypatch.setattr(stream, "_touch_session_title", slow_title)
+
+    sid = create_session([script(text="hi")], agent_id="dev")
+    with ws_conv(sid) as conv:
+        conv.invoke("hello")
+        # Same ordering the client produces: probe first, invoke right behind.
+        conv.send({"type": "turn_state"})
+        state = conv.recv_until("turn.state", "error")[-1]
+        assert state["event"] == "turn.state", state
+        assert state["running"] is True, state
+        # And the turn still completes normally on that same socket.
+        assert events_of(conv.recv_until("message.end", "error"), "message.end")
 
 
 def test_ping_after_turn_still_answered(create_session, ws_conv):

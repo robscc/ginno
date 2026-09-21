@@ -409,9 +409,36 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             if _TURN_TASKS.get(session_id) is asyncio.current_task():
                                 _TURN_TASKS.pop(session_id, None)
                             _TURN_STOP.pop(session_id, None)
+                            # (The steer stash is cleared by _stream_graph itself,
+                            # on the same not-parked gate — see the comment there.)
+                            # This job registered the turn at spawn (invoke
+                            # branch). If it dies before the graph ever starts,
+                            # nothing downstream will clear that entry and the
+                            # session reads "running" forever — every client probe
+                            # then waits on a stream that never comes. Identity-
+                            # checked, and skipped while a resume is pending: a
+                            # turn parked at an interrupt must STAY registered.
+                            if (
+                                _RUNNING_TURNS.get(session_id) == _tid
+                                and session_id not in _PENDING_RESUME
+                            ):
+                                _RUNNING_TURNS.pop(session_id, None)
 
                     task = asyncio.create_task(_turn_job())
                     _TURN_TASKS[session_id] = task
+                    # Register the turn as running the moment the invoke is
+                    # ACCEPTED — not when the graph happens to start. _stream_graph
+                    # only sets this ~250ms later (title touch, agent resolution,
+                    # world-state sync, MCP connect), and a client `turn_state`
+                    # probe answered inside that window says "not running": the
+                    # frontend then reconciles a brand-new session's just-sent
+                    # message against a /history that has no checkpoint yet and
+                    # stamps the bubble 「发送失败：连接中断，未送达」 although the
+                    # turn is fine (2026-09-21, session 52d54d…). _stream_graph
+                    # still owns the pop (it deliberately keeps it for a turn
+                    # parked at an interrupt); _turn_job drops it if the turn dies
+                    # before ever reaching the graph.
+                    _RUNNING_TURNS[session_id] = turn_id
                     # Identity-checked pop: never delete a SUCCESSOR task that a
                     # later invoke stored under the same session id.
                     task.add_done_callback(
@@ -429,6 +456,73 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         )
                     except Exception:
                         return  # socket died while reporting; nothing to do
+            elif kind == "steer":
+                # A message the user sent while a turn was running
+                # (docs/steering-design.md §3.2). NOT a turn: it is stashed and
+                # absorbed by the next `agent` superstep of the running turn, so
+                # this branch never spawns a task, never registers in
+                # _RUNNING_TURNS and NEVER touches _TURN_STOP — a set event here
+                # would instantly kill the NEXT turn (the invoke branch above
+                # warns about exactly that).
+                steer_id = str(msg.get("steer_id") or uuid.uuid4())
+                _steer_turn = msg.get("turn_id") or _RUNNING_TURNS.get(session_id) or ""
+                plan = _commands.resolve_turn(msg, session)
+                if plan.builtin_reply is not None:
+                    # Built-in commands answer immediately and never queue — the
+                    # same rule `invoke` gets for free (its builtin branch sits
+                    # BEFORE the busy check) and the same as Claude Code's
+                    # immediate commands.
+                    await ws.send_text(
+                        _ev("notice", {"message": plan.builtin_reply}, _steer_turn)
+                    )
+                    await ws.send_text(_ev("message.end", {}, _steer_turn))
+                    continue
+                # plan.mention_ctx / files_extra / agent_override are deliberately
+                # DROPPED (design §3.1, decided): v1 steers plain text only, so an
+                # @file in a mid-turn message reaches the model as literal text.
+                steer_text = (plan.text or "").strip()
+                if not steer_text:
+                    continue
+                # A turn parked at an interrupt counts as absorbable: the client
+                # sends `steer` and THEN the resume message, and the resumed
+                # segment's first agent_node drains it (design §3.4 — a permission
+                # deny routes back to `agent`; an ask_user answer re-enters via
+                # `tools → agent`).
+                _steer_task = _TURN_TASKS.get(session_id)
+                if session_id not in _RUNNING_TURNS and (
+                    _steer_task is None or _steer_task.done()
+                ):
+                    # Nothing to absorb into. The client gates on busy/parked, so
+                    # this is a race (the turn just ended): say so instead of
+                    # swallowing the message — the client falls back to `invoke`.
+                    await ws.send_text(
+                        _ev(
+                            "error",
+                            {"message": "当前没有正在进行的回合，请重新发送"},
+                            _steer_turn,
+                        )
+                    )
+                    continue
+                shared.steer_enqueue(
+                    session_id,
+                    {
+                        "steer_id": steer_id,
+                        "turn_id": _steer_turn,
+                        "text": steer_text,
+                        # Wall clock for the transcript label ("运行中注入 · 09:41").
+                        "injected_at": time.time(),
+                    },
+                )
+                _log.info(
+                    "steer_queued session=%s steer=%s turn=%s text=%r",
+                    session_id,
+                    steer_id,
+                    _steer_turn,
+                    steer_text[:120],
+                )
+                await ws.send_text(
+                    _ev("steer.accepted", {"steer_id": steer_id}, _steer_turn)
+                )
             elif kind == "permission_response":
                 # The prompt broadcasts to every socket of the session (tabs),
                 # so a second response can arrive after the first already
@@ -1239,7 +1333,32 @@ async def _heal_interrupted_turn(graph, config: dict, seg_text: str = "") -> Non
     try:
         snap = await graph.aget_state(config)
         msgs = list((getattr(snap, "values", None) or {}).get("messages") or [])
+        # 3. A steered message the agent superstep ABSORBED but never committed
+        # (the turn was stopped during the model call reading it). Its band is
+        # already on screen — acknowledged at drain time — so commit it, or the
+        # user's message would silently vanish from the transcript. Added first:
+        # it was absorbed after the tool results and before whatever the
+        # never-committed superstep would have produced.
+        _inflight = shared.steer_take_inflight(session_id)
         heal: list = []
+        for _e in _inflight:
+            _sid_steer = _e.get("steer_id")
+            _steer_text = (_e.get("text") or "").strip()
+            if not _sid_steer or not _steer_text:
+                continue
+            heal.append(
+                HumanMessage(
+                    content=_steer_text,
+                    id=_sid_steer,
+                    additional_kwargs={
+                        "ginno_steer": {
+                            "steer_id": _sid_steer,
+                            "turn_id": _e.get("turn_id") or "",
+                            "injected_at": _e.get("injected_at") or 0,
+                        }
+                    },
+                )
+            )
         if msgs and isinstance(msgs[-1], AIMessage):
             # Trailing AIMessage ⇒ nothing after it can answer its tool_calls:
             # every one is dangling and needs an "(interrupted)" placeholder.
@@ -1314,6 +1433,14 @@ async def _stop_parked_turn(session: dict, session_id: str, turn_id: str) -> Non
         async with _turn_lock(session_id):
             await _heal_interrupted_turn(graph, config)
         await _push_session_event(session_id, "turn.stopped", {}, turn_id or None)
+        # This is the one way a parked turn ends WITHOUT a resume, so it is the
+        # one place a parked segment's stash has to be dropped here: the segment
+        # itself ended on the not-parked gate's blind side (_stream_graph keeps
+        # the stash for a resume that will never come now), and the client sees
+        # turn.stopped and re-sends whatever it never saw acknowledged
+        # (steering-design §3.3). Without this the entry would sit until the
+        # session's next turn and be injected there.
+        shared.steer_clear(session_id)
         _log.info("turn_stopped_parked session=%s turn=%s", session_id, turn_id)
     except Exception:
         _log.exception("stop_parked_turn_failed session=%s", session_id)
@@ -1410,6 +1537,38 @@ async def _stream_graph(
         # to find the items the agent created/touched, and auto-link THIS
         # session to them (TODO panel → sessions association, docs "TODO 特性").
         _pre_turn_todos = todo_store.list_todos()
+
+        # Steering ack, injected into config so graph.agent_node can fire it at the
+        # exact moment it absorbs (docs/steering-design.md §3.2). Emitting it HERE
+        # rather than waiting for the superstep's update is what puts the client's
+        # transcript band at the injection point: the band must land right after
+        # the tool batch that was running, and the model's continuation tokens
+        # stream immediately after the drain. Acking at commit time put the band
+        # AFTER that continuation (caught by driving the real UI), and since the
+        # replayed view reads the state order, live and replay disagreed.
+        # In-flight bookkeeping below makes the ack durable again: it is cleared
+        # by the commit, committed by the heal if the turn is stopped first, and
+        # re-stashed when a parked exit means the resumed segment will re-drain.
+        async def _steer_absorbed(entries: list[dict]) -> None:
+            shared.steer_mark_inflight(session_id, entries)
+            for _e in entries:
+                _log.info(
+                    "steer_absorbed session=%s steer=%s turn=%s",
+                    session_id,
+                    _e.get("steer_id"),
+                    turn_id,
+                )
+                await safe_send(
+                    emit(
+                        "steer.absorbed",
+                        {
+                            "steer_id": _e.get("steer_id"),
+                            "injected_at": _e.get("injected_at"),
+                        },
+                    )
+                )
+
+        config.setdefault("configurable", {})["steer_absorbed"] = _steer_absorbed
 
         if command is not None:
             stream = graph.astream(command, config=config, stream_mode=["messages", "updates"])
@@ -1603,6 +1762,16 @@ async def _stream_graph(
                         # (a user stop only persists what's still uncommitted).
                         seg_text.clear()
                         for m in (delta or {}).get("messages", []):
+                            # A steered message COMMITTED with this superstep
+                            # (docs/steering-design.md §3.2): its ack was already
+                            # sent at drain time (see _steer_absorbed), so all
+                            # that is left is to retire the uncommitted-drain
+                            # record — from here on the message is in the
+                            # checkpoint, and the heal must not touch it again.
+                            if (getattr(m, "additional_kwargs", None) or {}).get(
+                                "ginno_steer"
+                            ):
+                                shared.steer_clear_inflight(session_id)
                             # D2 — per-call usage + session accumulator. Only
                             # complete AIMessages carry usage_metadata (never
                             # streamed chunks), so this fires once per LLM call.
@@ -1938,6 +2107,25 @@ async def _stream_graph(
             _RUNNING_TURNS.pop(session_id, None)
             _PENDING_RESUME.discard(session_id)
             _PENDING_KIND.pop(session_id, None)
+            # Steering entries live exactly one turn segment (steering-design
+            # §3.2, §6). Clearing on the SAME gate as the unregistering above is
+            # load-bearing: the client sends `steer` and the resume
+            # back-to-back, and that steer can land while this segment is still
+            # draining its generator — i.e. before this line runs. A parked exit
+            # must therefore KEEP the stash for the resumed segment to absorb
+            # (e2e test_steer_at_a_permission_card_redirects_the_turn catches the
+            # version that cleared here unconditionally). Dropping an unabsorbed
+            # entry is safe because the client re-sends it (design §3.3).
+            shared.steer_clear(session_id)
+            # The uncommitted-drain record is either retired by the commit or
+            # committed by the heal (both ran above) — never left behind.
+            shared.steer_clear_inflight(session_id)
+        else:
+            # Parked: the interrupt fires after the agent commit, so a pending
+            # drain should not exist — but if one ever did, the resumed segment
+            # re-runs the node that drains, so hand it back rather than dropping
+            # the user's message on the floor.
+            shared.steer_restash_inflight(session_id)
         if ws_closed:
             _log.info(
                 "turn_client_gone session=%s turn=%s (no live client socket at the "
