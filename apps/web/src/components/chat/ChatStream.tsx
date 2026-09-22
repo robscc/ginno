@@ -1144,6 +1144,11 @@ export function ChatStream({
       case "turn.start": {
         markDelivered(sid);
         seenTurnStartRef.current[sid] = true;
+        // Sidebar ordering (reactivated sessions float up): the runtime bumps
+        // `updated` on every invoke, but only this socket knows it happened —
+        // patch the store's copy so the day-group resort is live, not stale
+        // until the next full reload.
+        g.applySessionPatch(sid, { updated: Math.floor(Date.now() / 1000) });
         // authoritative agent for this turn (server-resolved, never null).
         // The server echoes the turn_id we sent (or mints one); adopt it as the
         // bubble's trace UUID so it matches the sidecar logs exactly.

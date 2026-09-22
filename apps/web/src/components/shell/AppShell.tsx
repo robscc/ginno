@@ -91,6 +91,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [g.activeSessionId]);
 
+  // Sidebar ordering (reactivated sessions float up): the runtime bumps each
+  // session's `updated` on every invoke, but a session reactivated from the
+  // PIN window or another client bumps only the server copy — this window's
+  // list would sit in its old day-group until restart. Cheap re-fetch on
+  // focus (the list is one JSON read).
+  useEffect(() => {
+    const onFocus = () => void g.reloadSessions();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [g.reloadSessions]);
+
   useEffect(() => {
     if (didInit.current) return;
     if (!g.ready) return;
