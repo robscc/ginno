@@ -21,7 +21,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import type { WorkflowRun } from "@/lib/types";
+import type { WikiPage, WorkflowRun } from "@/lib/types";
 import { fileDownloadUrl } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { Markdown } from "./Markdown";
@@ -201,12 +201,41 @@ function hostOf(ref: string): string {
   }
 }
 
+/** Normalize a wiki ref for matching — frontend mirror of the runtime's
+ * `_norm_wiki_ref`: `./` as a SEGMENT prefix, leading slashes, optional `.md`,
+ * case-insensitive (models cite paths or titles with drift). */
+export function normWikiRef(ref: string): string {
+  let r = ref.trim();
+  while (r.startsWith("./")) r = r.slice(2);
+  r = r.replace(/^\/+/, "");
+  if (r.toLowerCase().endsWith(".md")) r = r.slice(0, -3);
+  return r.toLowerCase();
+}
+
+/** Resolve a cited wiki ref against the KB page list (path first, then title —
+ * same precedence the runtime's validate_citations uses). Null = not in KB. */
+export function matchWikiPage(pages: WikiPage[], ref: string): WikiPage | null {
+  const key = normWikiRef(ref);
+  if (key) {
+    const byPath = pages.find((p) => normWikiRef(p.path) === key);
+    if (byPath) return byPath;
+  }
+  const titleKey = ref.trim().toLowerCase();
+  return pages.find((p) => p.title.trim().toLowerCase() === titleKey) ?? null;
+}
+
 /** Answer provenance: cited wiki pages + web sources (citations-design.md §5.2).
  * Collapsed to one line; expands to a list. Web rows open in the system
- * browser (via sidecar — WKWebView won't hand off external links itself). */
+ * browser (via sidecar — WKWebView won't hand off external links itself);
+ * wiki rows deep-link to /kb?page=<path> (resolved against the KB list —
+ * frontend-only, mirroring validate_citations' path-then-title matching).
+ * Unresolvable refs (index_only citations, deleted pages, model drift)
+ * degrade to the old plain row + 「未收录」 badge instead of navigating. */
 export function SourcesBlock({ items }: { items: SourceItem[] }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [missed, setMissed] = useState<ReadonlySet<string>>(new Set());
+  const router = useRouter();
   if (!items.length) return null;
 
   const openWeb = async (url: string) => {
@@ -217,6 +246,30 @@ export function SourcesBlock({ items }: { items: SourceItem[] }) {
       if (!r.ok) window.open(url, "_blank", "noopener");
     } catch {
       window.open(url, "_blank", "noopener");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openWiki = async (ref: string) => {
+    setBusy(ref);
+    try {
+      const { kbWikiList } = await import("@/lib/runtime");
+      const r = await kbWikiList();
+      const target = r.ok ? matchWikiPage(r.pages ?? [], ref) : null;
+      if (target) {
+        router.push(`/kb?page=${encodeURIComponent(target.path)}`);
+      } else {
+        // Only "list loaded, no match" is a real miss — a fetch error keeps
+        // the row clickable (the page may exist; retry later).
+        setMissed((prev) => {
+          const next = new Set(prev);
+          next.add(ref);
+          return next;
+        });
+      }
+    } catch {
+      /* sidecar unreachable — leave the row as-is */
     } finally {
       setBusy(null);
     }
@@ -237,6 +290,7 @@ export function SourcesBlock({ items }: { items: SourceItem[] }) {
         <div className="flex flex-col gap-0.5 border-t border-line/50 px-2 py-1.5">
           {items.map((s, i) => {
             const isWeb = s.kind === "web" && /^https?:\/\//i.test(s.ref);
+            const wikiMissed = s.kind === "wiki" && missed.has(s.ref);
             const label = s.kind === "web" ? hostOf(s.ref) : s.ref.split("/").pop() || s.ref;
             const Icon = s.kind === "web" ? Globe : BookMarked;
             return (
@@ -247,18 +301,34 @@ export function SourcesBlock({ items }: { items: SourceItem[] }) {
               >
                 <Icon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${s.kind === "web" ? "text-blue" : "text-violet"}`} />
                 <div className="min-w-0 flex-1">
-                  {isWeb ? (
-                    <button
-                      type="button"
-                      disabled={busy === s.ref}
-                      onClick={() => openWeb(s.ref)}
-                      className="max-w-full truncate text-left text-txt underline decoration-line underline-offset-2 hover:text-blue disabled:opacity-50"
-                    >
-                      {label}
-                    </button>
-                  ) : (
-                    <span className="block max-w-full truncate text-txt">{label}</span>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {isWeb ? (
+                      <button
+                        type="button"
+                        disabled={busy === s.ref}
+                        onClick={() => openWeb(s.ref)}
+                        className="max-w-full truncate text-left text-txt underline decoration-line underline-offset-2 hover:text-blue disabled:opacity-50"
+                      >
+                        {label}
+                      </button>
+                    ) : s.kind === "wiki" && !wikiMissed ? (
+                      <button
+                        type="button"
+                        disabled={busy === s.ref}
+                        onClick={() => openWiki(s.ref)}
+                        className="max-w-full truncate text-left text-txt underline decoration-line underline-offset-2 hover:text-violet disabled:opacity-50"
+                      >
+                        {label}
+                      </button>
+                    ) : (
+                      <span className="min-w-0 max-w-full truncate text-txt">{label}</span>
+                    )}
+                    {wikiMissed && (
+                      <span className="shrink-0 rounded border border-line px-1 text-[10px] leading-4 text-faint">
+                        未收录
+                      </span>
+                    )}
+                  </div>
                   {s.note && <div className="truncate text-faint">{s.note}</div>}
                 </div>
               </div>

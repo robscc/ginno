@@ -98,6 +98,17 @@ export default function KnowledgeBasePage() {
     loadAll();
   }, [loadAll]);
 
+  // Deep link from chat citations (SourcesBlock wiki rows): /kb?page=<path>.
+  // window.location rather than useSearchParams — /kb is statically exported
+  // and useSearchParams would force a Suspense boundary just for one param.
+  // Resolves once the list lands; a path that no longer exists (page deleted
+  // after the citation) is silently ignored.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("page");
+    if (!q || !pages.length) return;
+    if (pages.some((p) => p.path === q)) setOpenTarget({ path: q });
+  }, [pages]);
+
   useEffect(() => {
     if (view === "discover" && configured) {
       setDiscover(null);
