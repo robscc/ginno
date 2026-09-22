@@ -31,6 +31,20 @@ import {
 
 export type PinStreamStatus = "idle" | "busy" | "permission";
 
+/**
+ * DOM relay event: "put the caret in the composer now". Fired by PinApp when
+ * the shell signals a summon (the Tauri `pin:focus-input` event — global
+ * hotkey / tray show) and on every pill→mini expansion. A plain window-focus
+ * listener won't do: refocusing on EVERY activation would steal the user's
+ * transcript selection when they merely tab back. PinStream stays
+ * shell-agnostic by listening on `window` instead of Tauri directly.
+ */
+export const PIN_FOCUS_INPUT = "ginno-pin:focus-input";
+
+export function requestComposerFocus() {
+  window.dispatchEvent(new CustomEvent(PIN_FOCUS_INPUT));
+}
+
 interface PinMsg {
   id: string;
   // "system" = WorldState context chip rows (centered, not a bubble)
@@ -206,6 +220,20 @@ export function PinStream({
   // Tool display labels come from settings (module-cached — see toolLabels).
   useEffect(() => {
     loadToolLabels();
+  }, []);
+
+  // Summon-focus: the textarea's autoFocus only runs at FIRST mount, but this
+  // webview survives hide/show cycles — a hotkey-summoned window would have
+  // OS focus yet no caret, so typing went nowhere until a manual click.
+  // The offsetParent check skips the pill-shape's display:none mount, where
+  // focus() would silently no-op anyway.
+  useEffect(() => {
+    function onFocusInput() {
+      const el = textareaRef.current;
+      if (el && el.offsetParent !== null) el.focus({ preventScroll: true });
+    }
+    window.addEventListener(PIN_FOCUS_INPUT, onFocusInput);
+    return () => window.removeEventListener(PIN_FOCUS_INPUT, onFocusInput);
   }, []);
 
   const status: PinStreamStatus = permission ? "permission" : busy || liveId ? "busy" : "idle";

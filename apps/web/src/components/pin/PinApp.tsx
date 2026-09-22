@@ -32,7 +32,11 @@ import { LAST_SESSION_KEY, useGinno } from "@/lib/store";
 import { isDesktop } from "@/lib/desktop";
 import { loadPinPrefs, pinPrefs } from "@/lib/pinPrefs";
 import * as api from "@/lib/runtime";
-import { PinStream, type PinStreamStatus } from "@/components/pin/PinStream";
+import {
+  PinStream,
+  requestComposerFocus,
+  type PinStreamStatus,
+} from "@/components/pin/PinStream";
 
 type WinMode = "pill" | "mini";
 type SessMode = "quick" | "follow";
@@ -108,6 +112,18 @@ export function PinApp() {
       .catch(() => {
         /* events unavailable outside Tauri */
       });
+    // Summon → composer focus (docs §2.2 `pin:focus-input`): Rust focuses the
+    // WINDOW on hotkey/tray show; this relays "caret into the input" to
+    // PinStream, whose autoFocus only runs at first mount.
+    let unlistenFocus: (() => void) | null = null;
+    listen("pin:focus-input", () => requestComposerFocus())
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenFocus = fn;
+      })
+      .catch(() => {
+        /* events unavailable outside Tauri */
+      });
     // Dim when unfocused (§1.2 inactive_opacity; 1.0 = disabled).
     const win = getCurrentWindow();
     let unFocus: (() => void) | null = null;
@@ -123,9 +139,19 @@ export function PinApp() {
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenFocus?.();
       unFocus?.();
     };
   }, []);
+
+  // Belt-and-braces for pill→mini expansions: the shell's pin:focus-input can
+  // arrive before React commits the remount (the outgoing pill tree's hidden
+  // PinStream ignores it), so re-request the caret once the mini shape is
+  // active. The fresh PinStream registers its window listener in a child
+  // effect, which runs before this parent effect.
+  useEffect(() => {
+    if (winMode === "mini") requestComposerFocus();
+  }, [winMode]);
 
   // Follow mode: subscribe to the main window's active-session broadcast.
   // Seed from the shared last-session key (same-origin WKWebViews share

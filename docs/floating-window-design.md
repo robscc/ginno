@@ -57,7 +57,7 @@ runtime 仅加 `session.type="quick"` 字段与 settings `floating` 默认键。
 
 | 命令 | 作用 |
 |---|---|
-| `pin_toggle()` | 全局快捷键/tray 入口：隐藏↔上次形态；mini↔pill 视 mode 而定 |
+| `pin_toggle()` | tray/设置页入口：隐藏↔显示（上次形态）；mini 形态显示时发 `pin:focus-input` |
 | `pin_set_mode(mode: "mini"｜"pill")` | 前端收起/展开按钮调用；Rust 负责 resize/移动/几何保存/恢复 |
 | `pin_hide()` | ✕：隐藏窗口（会话保留），非销毁 |
 | `pin_open_main(session_id: Option<String>)` | ⌘↵ 接管：show+focus main，`eval __ginnoOpenSession('<sid>')`（复用现有全局钩子，lib.rs 已有该机制） |
@@ -66,7 +66,8 @@ runtime 仅加 `session.type="quick"` 字段与 settings `floating` 默认键。
 ### 2.2 Rust → pin webview 事件（状态源在 Rust）
 
 - `pin:mode` `{mode, reason}`：快捷键/tray 触发形态变化时通知前端切换视图（PillView ⇄ MiniView）。
-- 前端 → Rust 用命令；Rust → 前端仅此一个事件，避免双向状态漂移。
+- `pin:focus-input`：窗口唤出并 set_focus 后发出，前端把光标放进输入框（webview 常驻，textarea 的 autoFocus 只在首次挂载生效；仅靠窗口焦点不够——WKWebView 的 DOM focus 停在原处）。PinApp 收到后经 DOM 事件转给 PinStream，pill→mini 展开时 PinApp 也会补发一次。
+- 前端 → Rust 用命令；Rust → 前端仅此两个事件，避免双向状态漂移。
 
 ### 2.3 前端双窗口协调（同源 localStorage/BroadcastChannel 天然共享）
 
@@ -85,6 +86,7 @@ permission.request / message.end / turn.stopped / turn.state / error / notice / 
 ## 3. 用户可见行为（对照产品稿）
 
 - 唤起：`⌥⌘Space`（可改）/ tray「显示悬浮窗」/ 主窗口标题栏图钉按钮（后续可加）。
+- 全局快捷键 =「唤出输入框」：隐藏→显示迷你窗；胶囊→展开迷你窗（穿透胶囊唯一的唤出路径）；迷你窗→隐藏。唤出后光标自动落在输入框，可直接打字。tray 仍是纯显示/隐藏（上次形态）。
 - 三态：隐藏 ⇄ 胶囊（状态点：绿=运行中/灰=空闲/橙=待确认；橙时弹跳一次）⇄ 迷你窗 360×520（可拖、可resize 280–480 宽、距边 16px 吸附）。
 - Esc/⌄ 收胶囊；点胶囊展开；✕ 隐藏（会话保留，下次唤出恢复）；⌘↵ 移交主窗口并滚动到该会话。
 - 失焦 70% 透明（可关）；`.floating` 层级；默认所有 Space 可见；默认避让全屏 Space。

@@ -1049,6 +1049,17 @@ fn set_pin_mode(app: &tauri::AppHandle, mode: &str) {
     }
 }
 
+/// Shared hide branch: bank the outgoing geometry, hide, persist.
+fn hide_pin_now(app: &tauri::AppHandle, w: &WebviewWindow) {
+    if let Some(st) = app.try_state::<PinState>() {
+        capture_pin_geo(w, &st);
+    }
+    let _ = w.hide();
+    persist_pin_geo(app);
+    shell_log(app, "pin: hide");
+}
+
+/// Show in the last-used shape (tray / show-at-launch / Settings test button).
 fn toggle_pin_now(app: &tauri::AppHandle) {
     let w = match ensure_pin_window(app) {
         Ok(w) => w,
@@ -1058,12 +1069,7 @@ fn toggle_pin_now(app: &tauri::AppHandle) {
         }
     };
     if w.is_visible().unwrap_or(false) {
-        if let Some(st) = app.try_state::<PinState>() {
-            capture_pin_geo(&w, &st);
-        }
-        let _ = w.hide();
-        persist_pin_geo(app);
-        shell_log(app, "pin: hide");
+        hide_pin_now(app, &w);
     } else {
         apply_pin_mode_geometry(app, &w);
         apply_pin_window_prefs(app, &w);
@@ -1074,14 +1080,57 @@ fn toggle_pin_now(app: &tauri::AppHandle) {
             .unwrap_or_else(|| "mini".to_string());
         if mode == "mini" {
             let _ = w.set_focus();
+            // set_focus only makes the WINDOW key — WKWebView's DOM focus stays
+            // wherever it last was, and the composer's autoFocus ran at first
+            // mount (the webview survives hide/show). Tell the webview to put
+            // the caret in the input so a summoned mini is immediately typeable.
+            let _ = w.emit("pin:focus-input", ());
         }
         shell_log(app, &format!("pin: show mode={mode}"));
     }
 }
 
-fn toggle_pin(app: &tauri::AppHandle) {
-    // Release builds serve /pin from the sidecar; before it is up the window
-    // would paint a connection-refused page. Defer until the port accepts.
+/// Global-hotkey semantics — "summon the composer":
+///   hidden (any last shape) → show as mini; visible pill → expand to mini;
+///   visible mini → hide (toggle off).
+/// The hotkey's contract is that the user can TYPE right after it fires —
+/// a click-through pill is a pure status light that cannot be clicked, so
+/// the hotkey is its only expansion path (Settings → 悬浮窗 promises
+/// 「需用快捷键唤出」). Hence never land on a shape without an input box.
+fn summon_pin_now(app: &tauri::AppHandle) {
+    let w = match ensure_pin_window(app) {
+        Ok(w) => w,
+        Err(e) => {
+            shell_log(app, &format!("ensure_pin_window FAILED: {e}"));
+            return;
+        }
+    };
+    let mode = app
+        .try_state::<PinState>()
+        .map(|s| s.mode.lock().unwrap().clone())
+        .unwrap_or_else(|| "mini".to_string());
+    if w.is_visible().unwrap_or(false) && mode == "mini" {
+        hide_pin_now(app, &w);
+        return;
+    }
+    if mode != "mini" {
+        // Banks the pill geometry, applies the mini shape and notifies the
+        // webview (pin:mode → PinStream remounts with autoFocus).
+        set_pin_mode(app, "mini");
+    } else {
+        apply_pin_mode_geometry(app, &w);
+        apply_pin_window_prefs(app, &w);
+    }
+    let _ = w.show();
+    let _ = w.set_focus();
+    let _ = w.emit("pin:focus-input", ());
+    shell_log(app, "pin: summon mode=mini");
+}
+
+/// Run `now` on the main thread. Release builds serve /pin from the sidecar;
+/// before it is up the window would paint a connection-refused page, so defer
+/// until the port accepts.
+fn pin_invoke_deferred(app: &tauri::AppHandle, now: fn(&tauri::AppHandle)) {
     #[cfg(not(debug_assertions))]
     if !sidecar_listening() {
         shell_log(app, "pin toggle deferred: sidecar not up yet");
@@ -1089,12 +1138,20 @@ fn toggle_pin(app: &tauri::AppHandle) {
         std::thread::spawn(move || {
             if wait_for_sidecar(Duration::from_secs(90)) {
                 let h2 = h.clone();
-                let _ = h.run_on_main_thread(move || toggle_pin_now(&h2));
+                let _ = h.run_on_main_thread(move || now(&h2));
             }
         });
         return;
     }
-    toggle_pin_now(app);
+    now(app);
+}
+
+fn toggle_pin(app: &tauri::AppHandle) {
+    pin_invoke_deferred(app, toggle_pin_now);
+}
+
+fn summon_pin(app: &tauri::AppHandle) {
+    pin_invoke_deferred(app, summon_pin_now);
 }
 
 /// Register `hotkey`, recording the outcome in PinState::hotkey_active.
@@ -1261,9 +1318,11 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
-                    // One app-wide hotkey (the pin toggle); ignore key-release.
+                    // One app-wide hotkey (the pin summon); ignore key-release.
+                    // Summon, not plain toggle: the hotkey must end with the
+                    // composer on screen and focused (see summon_pin_now).
                     if event.state() == ShortcutState::Pressed {
-                        toggle_pin(app);
+                        summon_pin(app);
                     }
                 })
                 .build(),
