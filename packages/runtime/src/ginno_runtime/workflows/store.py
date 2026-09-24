@@ -357,15 +357,35 @@ def rollback(wf_id: str, to: int, commit: str = "") -> dict[str, Any] | None:
 TERMINAL_STATUSES = ("done", "failed", "cancelled", "interrupted")
 
 
-def list_runs() -> list[dict[str, Any]]:
+def list_runs(
+    workflow_id: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List runs, newest first. Optional filters (no args = every run):
+
+    * ``workflow_id``: exact match against the run's ``workflow_id``.
+    * ``status``: one status or a comma-separated list ("running,paused");
+      whitespace-tolerant, empty segments ignored.
+
+    Legacy run JSON missing a field simply never matches a filter on it."""
+    statuses = (
+        {s.strip() for s in status.split(",") if s.strip()}
+        if isinstance(status, str)
+        else None
+    )
     d = _runs_dir()
     if not d.exists():
         return []
     out = []
     for p in sorted(d.glob("*.json")):
         r = _read_json(p, None)
-        if isinstance(r, dict):
-            out.append(r)
+        if not isinstance(r, dict):
+            continue
+        if workflow_id is not None and r.get("workflow_id") != workflow_id:
+            continue
+        if statuses and r.get("status") not in statuses:
+            continue
+        out.append(r)
     out.sort(key=lambda r: r.get("started", 0), reverse=True)
     return out
 

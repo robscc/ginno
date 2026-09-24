@@ -10,7 +10,7 @@ import shutil
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from .. import agents as agents_reg
 from .. import paths
@@ -79,8 +79,13 @@ async def delete_workflow_endpoint(wf_id: str) -> dict:
 
 
 @router.get("/api/workflow_runs")
-async def list_workflow_runs_endpoint() -> list[dict]:
-    return wf_store.list_runs()
+async def list_workflow_runs_endpoint(
+    workflow_id: str | None = Query(None),
+    status: str | None = Query(None),
+) -> list[dict]:
+    """List runs, newest first. Optional filters: ``workflow_id`` (exact) and
+    ``status`` (single value or comma-separated list, e.g. "running,paused")."""
+    return wf_store.list_runs(workflow_id=workflow_id, status=status)
 
 
 @router.get("/api/workflows/{wf_id}")
