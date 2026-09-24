@@ -1,10 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
-
-type Node = { id: string; type: string; title?: string; goal?: string; agent?: string };
-type Edge = { from: string; to: string };
-type Dsl = { entry?: string; nodes?: Node[]; edges?: Edge[] };
+import {
+  computeLayout,
+  NW,
+  NH,
+  PREVIEW_BOX,
+  type DagDsl as Dsl,
+} from "./studio/canvasLayout";
 
 const STATUS_COLOR: Record<string, string> = {
   done: "#22c55e",
@@ -14,55 +17,6 @@ const STATUS_COLOR: Record<string, string> = {
   error: "#ef4444",
   pending: "#71717a",
 };
-
-const NW = 132;
-const NH = 40;
-const GX = 56;
-const GY = 60;
-
-/** BFS layering from entry → {nodeId: layer}; branch targets share a layer band. */
-function layerOrder(dsl: Dsl): Map<string, number> {
-  const nodes = dsl.nodes || [];
-  const adj = new Map<string, string[]>();
-  for (const e of dsl.edges || []) {
-    adj.set(e.from, [...(adj.get(e.from) || []), e.to]);
-  }
-  // include branch case targets as adjacency too
-  for (const n of nodes) {
-    if (n.type === "branch") {
-      const cs = ((n as unknown as { cases?: { then?: string }[] }).cases || [])
-        .map((c) => c.then)
-        .filter(Boolean) as string[];
-      const def = (n as unknown as { default?: string }).default;
-      adj.set(n.id, [...(adj.get(n.id) || []), ...cs, ...(def ? [def] : [])]);
-    }
-  }
-  const layer = new Map<string, number>();
-  const queue: string[] = [];
-  // A branch back-edge (retry/loop) makes longest-path layering diverge; clamp
-  // the layer and cap iterations so a cycle can never spin this BFS forever and
-  // freeze the tab.
-  const maxLayer = Math.max(1, nodes.length);
-  const cap = nodes.length * nodes.length + 16;
-  let guard = 0;
-  if (dsl.entry) {
-    layer.set(dsl.entry, 0);
-    queue.push(dsl.entry);
-  }
-  while (queue.length && guard++ < cap) {
-    const cur = queue.shift()!;
-    for (const nx of adj.get(cur) || []) {
-      const cand = Math.min((layer.get(cur) ?? 0) + 1, maxLayer);
-      if (!layer.has(nx) || layer.get(nx)! < cand) {
-        layer.set(nx, cand);
-        queue.push(nx);
-      }
-    }
-  }
-  // any unreached node (disconnected) gets its own trailing layer
-  for (const n of nodes) if (!layer.has(n.id)) layer.set(n.id, 0);
-  return layer;
-}
 
 export function WorkflowDag({
   dsl,
@@ -84,25 +38,7 @@ export function WorkflowDag({
     if (onSelect) onSelect(v);
     else setSel(v);
   };
-  const layout = useMemo(() => {
-    const nodes = dsl?.nodes || [];
-    const layer = layerOrder(dsl || {});
-    const columns = new Map<number, string[]>();
-    for (const n of nodes) {
-      const L = layer.get(n.id) ?? 0;
-      if (!columns.has(L)) columns.set(L, []);
-      columns.get(L)!.push(n.id);
-    }
-    const pos = new Map<string, { x: number; y: number }>();
-    let maxRows = 1;
-    for (const [, ids] of columns) maxRows = Math.max(maxRows, ids.length);
-    for (const [L, ids] of columns) {
-      ids.forEach((id, r) => pos.set(id, { x: 16 + L * (NW + GX), y: 16 + r * (NH + GY) }));
-    }
-    const width = 32 + (columns.size || 1) * (NW + GX);
-    const height = 32 + maxRows * (NH + GY);
-    return { pos, width, height };
-  }, [dsl]);
+  const layout = useMemo(() => computeLayout(dsl || {}, PREVIEW_BOX), [dsl]);
 
   if (!dsl?.nodes?.length) {
     return <div className="py-4 text-center text-xs text-faint">无 DSL 节点</div>;

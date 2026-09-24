@@ -323,8 +323,12 @@ export function openSessionSocket(session_id: string): WebSocket {
 export async function listWorkflows() {
   return json<import("./types").WorkflowDef[]>(`${BASE}/workflows`);
 }
-export async function listWorkflowRuns() {
-  return json<import("./types").WorkflowRun[]>(`${BASE}/workflow_runs`);
+export async function listWorkflowRuns(opts: { workflow_id?: string; status?: string } = {}) {
+  const q = new URLSearchParams();
+  if (opts.workflow_id) q.set("workflow_id", opts.workflow_id);
+  if (opts.status) q.set("status", opts.status);
+  const qs = q.toString();
+  return json<import("./types").WorkflowRun[]>(`${BASE}/workflow_runs${qs ? `?${qs}` : ""}`);
 }
 export async function createWorkflow(
   data: Partial<import("./types").WorkflowDef> & { synthesis_id?: string },
@@ -443,7 +447,10 @@ export async function cleanupWorkflowRuns(statuses?: string[]) {
     body: JSON.stringify(statuses ? { statuses } : {}),
   });
 }
-export async function updateWorkflow(id: string, data: Partial<import("./types").WorkflowDef>) {
+export async function updateWorkflow(
+  id: string,
+  data: Partial<import("./types").WorkflowDef> & { commit?: string },
+) {
   return json<{ ok: boolean; workflow?: import("./types").WorkflowDef }>(`${BASE}/workflows/${id}`, {
     method: "PUT",
     headers: H,
