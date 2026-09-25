@@ -360,12 +360,17 @@ TERMINAL_STATUSES = ("done", "failed", "cancelled", "interrupted")
 def list_runs(
     workflow_id: str | None = None,
     status: str | None = None,
+    supervisor_pending: bool | None = None,
 ) -> list[dict[str, Any]]:
     """List runs, newest first. Optional filters (no args = every run):
 
     * ``workflow_id``: exact match against the run's ``workflow_id``.
     * ``status``: one status or a comma-separated list ("running,paused");
       whitespace-tolerant, empty segments ignored.
+    * ``supervisor_pending``: paused runs waiting on a HUMAN decision —
+      ``status == "paused"`` and ``pending_interrupt.kind`` in
+      ("human", "supervisor"). Backs the Studio decision inbox (design B §8.5);
+      deliberately a run-JSON filter, never an event scan.
 
     Legacy run JSON missing a field simply never matches a filter on it."""
     statuses = (
@@ -385,6 +390,10 @@ def list_runs(
             continue
         if statuses and r.get("status") not in statuses:
             continue
+        if supervisor_pending:
+            pi = r.get("pending_interrupt") or {}
+            if r.get("status") != "paused" or pi.get("kind") not in ("human", "supervisor"):
+                continue
         out.append(r)
     out.sort(key=lambda r: r.get("started", 0), reverse=True)
     return out

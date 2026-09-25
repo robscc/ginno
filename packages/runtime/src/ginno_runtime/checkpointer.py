@@ -297,19 +297,9 @@ class FileCheckpointer(BaseCheckpointSaver):
             self._write(record)
         return {"configurable": {"thread_id": session_id, "checkpoint_id": cid}}
 
-    def get_tuple(self, config: dict) -> Any:
-        session_id = config["configurable"]["thread_id"]
-        record = self._read(session_id)
-        cps = record.get("checkpoints", [])
-        if not cps:
-            return None
-        target = config["configurable"].get("checkpoint_id")
-        if target:
-            entry = next((c for c in cps if c["checkpoint_id"] == target), None)
-        else:
-            entry = cps[-1]
-        if not entry:
-            return None
+    def _tuple_from(self, record: dict, session_id: str, entry: dict) -> Any:
+        """Build one CheckpointTuple from a stored entry (shared by get_tuple
+        and list)."""
         checkpoint = self._reconstruct_checkpoint(record, entry)
         metadata = self.serde.loads_typed(_load_typed(entry["metadata"]))
         pending = None
@@ -337,6 +327,21 @@ class FileCheckpointer(BaseCheckpointSaver):
             ),
             pending_writes=pending,
         )
+
+    def get_tuple(self, config: dict) -> Any:
+        session_id = config["configurable"]["thread_id"]
+        record = self._read(session_id)
+        cps = record.get("checkpoints", [])
+        if not cps:
+            return None
+        target = config["configurable"].get("checkpoint_id")
+        if target:
+            entry = next((c for c in cps if c["checkpoint_id"] == target), None)
+        else:
+            entry = cps[-1]
+        if not entry:
+            return None
+        return self._tuple_from(record, session_id, entry)
 
     def get_pending_interrupt(self, config: dict) -> list | None:
         """The parked turn's interrupt(s), or None if the graph is not suspended.
@@ -462,10 +467,36 @@ class FileCheckpointer(BaseCheckpointSaver):
     def list(
         self, config: dict, *, filter: dict | None = None, before: Any = None, limit: int | None = None
     ) -> Any:
-        # Minimal — no listing. Time-travel uses get_tuple(checkpoint_id).
-        return iter([])
+        """Checkpoint history, newest first (design B P2: run rerun-from-node).
+
+        The entries are already stored append-only with parent links, so a
+        listing is just a reverse walk with tuple materialization. ``before``
+        is exclusive (langgraph convention: stop at that checkpoint id);
+        ``limit`` counts yielded tuples. A broken delta chain skips that entry
+        rather than killing the whole listing — history consumers (rerun_from)
+        prefer a partial listing over none. ``filter`` (source/step metadata)
+        is not supported."""
+        session_id = config["configurable"]["thread_id"]
+        record = self._read(session_id)
+        before_id = None
+        if isinstance(before, dict):
+            before_id = (before.get("configurable") or before).get("checkpoint_id")
+        out: list[Any] = []
+        for entry in reversed(record.get("checkpoints", [])):
+            if before_id is not None and entry.get("checkpoint_id") == before_id:
+                break
+            try:
+                out.append(self._tuple_from(record, session_id, entry))
+            except Exception:
+                continue
+            if limit is not None and len(out) >= limit:
+                break
+        return iter(out)
 
     async def alist(
         self, config: dict, *, filter: dict | None = None, before: Any = None, limit: int | None = None
     ) -> Any:
-        return iter([])
+        for tup in await asyncio.to_thread(
+            self.list, config, filter=filter, before=before, limit=limit
+        ):
+            yield tup

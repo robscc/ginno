@@ -41,6 +41,37 @@ _MAX_RETRY_BACKOFF_MS = 30_000
 # lands "failed" instead of stuck. Module-level so tests can monkeypatch it.
 WORKFLOW_LLM_TIMEOUT_S = 300.0
 
+# Hard cap on ONE tool batch inside a workflow agent step (2026-09-25: an
+# agent's glob_files with reachable root "/" walked the entire filesystem —
+# the node never returned and the run sat in "running" forever). Bounded here
+# the node fails with an attributable timeout error → run "failed" → the
+# existing recovery paths (node retry, retry_from_checkpoint, rerun_from)
+# apply. Overridable per node via ``tool_timeout_s``.
+WORKFLOW_TOOL_TIMEOUT_S = 300.0
+
+
+class _BoundedTimeout(Exception):
+    """Internal marker: the bounded await REALLY timed out (never used for
+    errors raised by the awaited call itself — those must propagate as-is)."""
+
+
+async def _await_bounded(coro, timeout: float, what: str):
+    """Await with a timeout that ALWAYS raises, even if the inner swallows
+    cancellation (an httpx/openai client stuck on a dead socket can trap
+    CancelledError, which would leave ``asyncio.wait_for`` hanging forever —
+    the exact 假死 of 2026-09-25). Cancels, waits a short grace for the
+    cancellation to land, then raises regardless of the inner's state."""
+    task = asyncio.ensure_future(coro)
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    if task in done:
+        return task.result()
+    task.cancel()
+    try:
+        await asyncio.wait({task}, timeout=5.0)  # grace for a polite cancel
+    except Exception:
+        pass  # raising below is the point; a stuck task is abandoned
+    raise _BoundedTimeout(f"{what} timed out after {timeout:.0f}s")
+
 
 async def llm_invoke_with_timeout(coro, timeout: float | None = None):
     """Await a workflow LLM call, failing fast on a stalled provider.
@@ -50,11 +81,46 @@ async def llm_invoke_with_timeout(coro, timeout: float | None = None):
     """
     t = WORKFLOW_LLM_TIMEOUT_S if timeout is None else timeout
     try:
-        return await asyncio.wait_for(coro, timeout=t)
-    except asyncio.TimeoutError:
+        return await _await_bounded(coro, t, "workflow LLM call")
+    except _BoundedTimeout:
         raise RuntimeError(
             f"workflow LLM call timed out after {t:.0f}s (provider not responding)"
         ) from None
+
+
+async def tools_invoke_with_timeout(coro, timeout: float | None = None):
+    """Await one workflow tool batch under ``WORKFLOW_TOOL_TIMEOUT_S``."""
+    t = WORKFLOW_TOOL_TIMEOUT_S if timeout is None else timeout
+    try:
+        return await _await_bounded(coro, t, "workflow tool batch")
+    except _BoundedTimeout:
+        raise RuntimeError(
+            f"workflow tool batch timed out after {t:.0f}s "
+            "(tool hung — unbounded filesystem walk / dead external call?)"
+        ) from None
+
+def _overlay_patch(inputs: dict, patch: dict) -> dict:
+    """Overlay a resume context_patch onto the inputs channel: every input
+    snapshot (dict) that already carries a patched key sees the patched value.
+    Keys the snapshot doesn't carry are left alone — nodes render missing keys
+    from context, which the patch already reached."""
+    out = {}
+    for k, v in (inputs or {}).items():
+        hit = [pk for pk in patch if isinstance(v, dict) and pk in v]
+        out[k] = {**v, **{pk: patch[pk] for pk in hit}} if hit else v
+    return out
+
+
+def _apply_resume_patch(state: dict, patch: dict) -> dict:
+    """State as the resumed node should see it: context patched + the inputs
+    channel's stale pre-pause snapshots overlaid (see wrapped/_with_patch)."""
+    ctx = {**(state.get("context") or {}), **patch}
+    return {
+        **state,
+        "context": ctx,
+        "inputs": _overlay_patch(state.get("inputs") or {}, patch),
+    }
+
 
 _TYPE_CHECKS = {
     "string": lambda v: isinstance(v, str),
@@ -180,7 +246,16 @@ class BaseNode:
             # imports this module.
             from .. import engine as wf_engine
 
-            wf_engine.check_pause(cctx["run_ctx"], nid)
+            # Replay after a manual-pause resume returns the resume value's
+            # context_patch (design B P2) — see engine.check_pause. The patch
+            # must reach THREE places: context, this node's effective input
+            # (eff comes from the checkpoint's inputs channel, persisted
+            # pre-pause), and the successor inputs computed by _post — the
+            # studio e2e suite proved a context-only merge is invisible to a
+            # downstream node whose input snapshot shadows it.
+            patch = wf_engine.check_pause(cctx["run_ctx"], nid)
+            if patch:
+                state = _apply_resume_patch(state, patch)
             ctx = dict(state.get("context") or {})
             inputs = dict(state.get("inputs") or {})
             eff = inputs.get(nid)
@@ -193,7 +268,7 @@ class BaseNode:
                 if action == "abort":
                     raise wf_sup.SupervisorAbort(f"{nid}: {decision.get('reason', '')}")
                 if action == "skip":
-                    return cls._post(state, node, cctx, {})
+                    return _with_patch(cls._post(state, node, cctx, {}), patch, state)
                 eff = decision.get("input", eff)
             update = await cls._execute_resilient(node, cctx, state, config, eff)
             if update is None:
@@ -201,13 +276,31 @@ class BaseNode:
                 # event was emitted with handled:true and soft_failures bumped;
                 # proceed with an empty output so downstream still runs and the
                 # run can finish "done" (with a warnings count).
-                return cls._post(state, node, cctx, {})
+                return _with_patch(cls._post(state, node, cctx, {}), patch, state)
             output = update.pop("__output__", None) or {}
             node_inputs = update.pop("inputs", None)  # routing-time input adaptation (branch)
             post = cls._post(state, node, cctx, output)
             if node_inputs:
                 post = {**post, "inputs": {**post["inputs"], **node_inputs}}
-            return {**update, **post}
+            return _with_patch({**update, **post}, patch, state)
+
+        def _with_patch(final: dict, patch: dict | None, patched_state: dict) -> dict:
+            """Commit a manual-resume context_patch even when the node's own
+            update doesn't touch context (branch/pass), and make the patch WIN
+            over the node's own re-derived context. The win matters when the
+            resumed node is a synthesized <src>__extract re-committing its
+            PRE-pause extraction: the user's explicit patch (「改 context 后
+            继续」, same-key-overwrites semantics as the decision card) must not
+            be clobbered by the stale value. Successor inputs computed by _post
+            get the same overlay for the same reason."""
+            if not patch:
+                return final
+            base = dict(patched_state.get("context") or {})
+            merged = {**base, **(final.get("context") or {}), **patch}
+            out = {**final, "context": merged}
+            if isinstance(out.get("inputs"), dict):
+                out["inputs"] = _overlay_patch(out["inputs"], patch)
+            return out
 
         return wrapped
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import time
 
 from langchain_core.tools import tool
 from langgraph.types import interrupt
@@ -19,7 +20,7 @@ from langgraph.types import interrupt
 from .. import workflows as wf_store
 from ..workflows import dsl as wf_dsl
 
-WORKFLOW_TOOL_NAMES = {"workflow_list", "workflow_get", "workflow_create", "workflow_run", "workflow_step"}
+WORKFLOW_TOOL_NAMES = {"workflow_list", "workflow_get", "workflow_create", "workflow_run", "workflow_run_status", "workflow_step"}
 # Gated to the workflow-dev agent (P5): editing tools that pause for a diff
 # confirmation via interrupt before mutating a versioned definition.
 # workflow_dry_run (stability plan P1d): zero-cost preflight the agent may run
@@ -94,7 +95,11 @@ def workflow_create(name: str, description: str, steps_json: str) -> str:
 
 @tool
 def workflow_run(workflow_id: str = "", name: str = "") -> str:
-    """Start a run of a workflow (by id or name). Returns run_id + step ids."""
+    """Start a run of a workflow (by id or name). Returns run_id + step ids.
+
+    The run record starts with every step pending and the turn stream adopts
+    and drives it with the real engine (a forked agent per node) — check live
+    progress with workflow_run_status(run_id), NEVER from this snapshot."""
     wf = None
     if workflow_id:
         wf = wf_store.get_def(workflow_id)
@@ -114,6 +119,52 @@ def workflow_run(workflow_id: str = "", name: str = "") -> str:
 
 
 @tool
+def workflow_run_status(run_id: str = "", limit: int = 12) -> str:
+    """Live status of a workflow run: status, pending interrupt (a paused run
+    waits for the USER to answer — nothing you do advances it), step statuses
+    and the most recent events. Without run_id: the newest run. Always call
+    this before telling the user anything about a run's progress — the
+    creation-time snapshot (all pending) goes stale the moment the engine
+    adopts the run."""
+    from ..workflows import events as wf_events
+
+    run = wf_store.get_run(run_id) if run_id else None
+    if run is None:
+        runs = wf_store.list_runs()
+        run = runs[0] if runs else None
+    if run is None:
+        return "error: run not found"
+    rid = run["id"]
+    lines = [
+        f"run_id={rid} workflow={run.get('workflow_id')} "
+        f"v{run.get('dsl_version')} status={run.get('status')}"
+    ]
+    if run.get("retried_from"):
+        lines.append(f"retried_from={run['retried_from']}")
+    if run.get("error"):
+        lines.append(f"error: {str(run['error'])[:200]}")
+    pi = run.get("pending_interrupt") or {}
+    if pi:
+        lines.append(
+            f"waiting (user must answer): kind={pi.get('kind')} node={pi.get('node_id')} "
+            f"question={str(pi.get('question') or '')[:160]}"
+        )
+    lines.append(
+        "steps: " + "; ".join(f"[{s['id']}] {s.get('status')}" for s in run.get("steps", []))
+    )
+    evs = wf_events.read_events(rid)[-max(1, min(int(limit or 12), 50)):]
+    if evs:
+        lines.append("recent events:")
+        for e in evs:
+            ts = time.strftime("%H:%M:%S", time.localtime(e.get("ts") or 0))
+            extra = e.get("error") or e.get("message") or e.get("question") or ""
+            tail = f" {str(extra)[:110]}".rstrip()
+            node = f"@{e['node_id']} " if e.get("node_id") else ""
+            lines.append(f"  {ts} {e.get('kind')} {node}{tail}".rstrip())
+    return "\n".join(lines)
+
+
+@tool
 def workflow_step(run_id: str, step_id: str, status: str, output: str = "") -> str:
     """Mark a workflow run's step as running/done/failed. output optional."""
     if status not in ("running", "done", "failed"):
@@ -129,7 +180,14 @@ def workflow_step(run_id: str, step_id: str, status: str, output: str = "") -> s
     )
 
 
-ALL_WORKFLOW_TOOLS = [workflow_list, workflow_get, workflow_create, workflow_run, workflow_step]
+ALL_WORKFLOW_TOOLS = [
+    workflow_list,
+    workflow_get,
+    workflow_create,
+    workflow_run,
+    workflow_run_status,
+    workflow_step,
+]
 
 
 @tool

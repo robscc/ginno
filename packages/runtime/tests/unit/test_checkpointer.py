@@ -83,7 +83,9 @@ async def test_async_put_and_get(isolated_home):
     await cp.aput(_cfg(), checkpoint, {"source": "input", "step": 0, "writes": {}}, {})
     tup = await cp.aget_tuple(_cfg())
     assert tup.checkpoint["id"] == checkpoint["id"]
-    assert list(await cp.alist(_cfg())) == []
+    # alist yields the history newest-first (design B P2: rerun_from walks it)
+    tups = [t async for t in cp.alist(_cfg())]
+    assert len(tups) == 1 and tups[0].checkpoint["id"] == checkpoint["id"]
 
 
 # --------------------------------------------------------------------------- #

@@ -145,6 +145,9 @@ def validate_dsl(dsl: dict) -> list[str]:
         # The compiler synthesizes <id>__extract nodes; users must not collide.
         if isinstance(nid, str) and nid.endswith("__extract"):
             errs.append(f"node '{nid}' id must not end with '__extract' (reserved)")
+        # Same for the supervisor gates (design B §8.5).
+        if isinstance(nid, str) and nid.endswith("__sup"):
+            errs.append(f"node '{nid}' id must not end with '__sup' (reserved)")
         # writes / extract_model shape (master-plan §2.2.3)
         w = n.get("writes")
         if w is not None:
@@ -298,8 +301,52 @@ def validate_dsl(dsl: dict) -> list[str]:
     if sup is not None:
         if not isinstance(sup, dict):
             errs.append("supervisor must be an object")
-        elif sup.get("enabled") and sup.get("mode") not in ("auto", "human"):
-            errs.append("supervisor.mode must be 'auto' or 'human' when enabled")
+        elif sup.get("enabled"):
+            if sup.get("mode") not in ("auto", "human"):
+                errs.append("supervisor.mode must be 'auto' or 'human' when enabled")
+            errs.extend(_validate_supervisor_extra(sup))
+    return errs
+
+
+def _validate_supervisor_extra(sup: dict) -> list[str]:
+    """Design B §8.5 supervisor configuration (only checked when enabled).
+
+    ``checkpoints``: ``after_nodes`` (explicit id list) or ``every_step``
+    (bool, the default when neither is set); ``on_error`` gates are declared
+    but land with the auto adjudicator (P2.5). Budget fields (``retry_limit``,
+    ``max_interventions``, ``token_budget``, ``confidence_min``) gate the AUTO
+    path in P2.5 — validated now so a DSL that flips mode later doesn't break."""
+    errs: list[str] = []
+    ck = sup.get("checkpoints")
+    if ck is not None:
+        if not isinstance(ck, dict):
+            errs.append("supervisor.checkpoints must be an object")
+        else:
+            if ck.get("every_step") is not None and not isinstance(ck.get("every_step"), bool):
+                errs.append("supervisor.checkpoints.every_step must be a boolean")
+            an = ck.get("after_nodes")
+            if an is not None and (
+                not isinstance(an, list) or not all(isinstance(x, str) for x in an)
+            ):
+                errs.append("supervisor.checkpoints.after_nodes must be a list of node ids")
+            if ck.get("on_error") is not None and not isinstance(ck.get("on_error"), bool):
+                errs.append("supervisor.checkpoints.on_error must be a boolean")
+    for k in ("retry_limit", "max_interventions"):
+        v = sup.get(k)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v < 1):
+            errs.append(f"supervisor.{k} must be an integer >= 1")
+    tb = sup.get("token_budget")
+    if tb is not None and (isinstance(tb, bool) or not isinstance(tb, (int, float)) or tb <= 0):
+        errs.append("supervisor.token_budget must be a positive number")
+    cm = sup.get("confidence_min")
+    if cm is not None and (
+        isinstance(cm, bool) or not isinstance(cm, (int, float)) or not 0 <= cm <= 1
+    ):
+        errs.append("supervisor.confidence_min must be a number in 0..1")
+    for k in ("policy", "model", "prompt"):
+        v = sup.get(k)
+        if v is not None and not isinstance(v, str):
+            errs.append(f"supervisor.{k} must be a string")
     return errs
 
 

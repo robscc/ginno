@@ -80,6 +80,30 @@ _SESSION_WS: dict[str, list[Any]] = {}
 # "stream will resume" from "turn is gone — reconcile from history".
 _RUNNING_TURNS: dict[str, str] = {}
 
+# Live RUN-scoped WebSockets (run_id -> [WebSocket]); design B P2. The Studio
+# observer (and any headless-run watcher) subscribes by run_id — independent of
+# which session the run is presented in, unlike _SESSION_WS. Self-cleans on send
+# failure, same as the session registry. Every push that goes to the presenting
+# session also goes here (the driver calls both), so a run always has a live
+# channel even when present_in_session_id is None (todo-sync / headless).
+_RUN_WS: dict[str, list[Any]] = {}
+
+
+async def _push_run_event(run_id: str | None, event: str, data: dict) -> None:
+    """Best-effort push of a WS event to every live run-scoped socket.
+
+    Mirror of :func:`_push_session_event` for the run channel: broadcast to all
+    sockets of the run, prune the ones that fail. A run with no subscribers is
+    a no-op (the events.jsonl + run JSON remain the source of truth)."""
+    if not run_id:
+        return
+    socks = _RUN_WS.get(run_id) or []
+    alive: list[Any] = []
+    for w in socks:
+        if await _try_send(w, _ev(event, data)):
+            alive.append(w)
+    _RUN_WS[run_id] = alive
+
 # Sessions paused at a permission/version-propose interrupt awaiting a resume.
 # Turn events broadcast to EVERY socket, so two open tabs both show the prompt;
 # this flag lets the second permission_response be ignored instead of resuming

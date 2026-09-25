@@ -65,5 +65,9 @@ def test_run_with_python_node_completes(client, monkeypatch):
 def test_create_def_rejects_unknown_python_entry(client):
     bad = _dsl()
     bad["nodes"][0]["entry"] = "not_registered"
-    with pytest.raises(ValueError, match="unknown entry 'not_registered'"):
-        client.post("/api/workflows", json={"name": "Bad", "dsl": bad})
+    # Since the Studio P2 fix the endpoint answers 400 with the store's
+    # validation error instead of letting the ValueError escape (was: raises
+    # through TestClient / 500 on a raw server).
+    r = client.post("/api/workflows", json={"name": "Bad", "dsl": bad})
+    assert r.status_code == 400
+    assert "unknown entry 'not_registered'" in r.json()["detail"]

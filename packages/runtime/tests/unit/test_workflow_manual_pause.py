@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 from langchain_core.tools import tool
+from pydantic import PrivateAttr
 
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
 from ginno_runtime.workflows import engine
@@ -130,3 +131,63 @@ async def test_request_pause_without_live_run_returns_false():
     # the generator exhausted → its run_ctx was unregistered
     assert engine.request_pause("mp3") is False
     assert engine._RUN_CONTROLS == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_resume_applies_context_patch():
+    """「改 context 后继续」(design B P2): a context_patch sent with a manual
+    resume merges into graph state and reaches the resumed node's templates —
+    before the P2 fix the resume value was discarded and s2 rendered with the
+    stale (empty) value."""
+
+    class Recording(ScriptedChatModel):
+        """ScriptedChatModel that records the prompts it was invoked with.
+        (pydantic model — the list must be a PrivateAttr, not a plain attr.)"""
+
+        _prompts: list = PrivateAttr(default_factory=list)
+
+        def __init__(self):
+            super().__init__(scripts=[script(text="a"), script(text="b")])
+            self._prompts = []
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self._prompts.append("\n".join(str(getattr(m, "content", "")) for m in messages))
+            return super()._generate(messages, stop, run_manager, **kwargs)
+
+    dsl = {
+        "name": "mp-patch",
+        "entry": "s1",
+        "nodes": [
+            {"id": "s1", "type": "llm", "prompt": "first"},
+            {"id": "s2", "type": "llm", "prompt": "value={{context.tag}}", "output": "out"},
+        ],
+        "edges": [{"from": "s1", "to": "s2"}],
+    }
+    model = Recording()
+    agen = engine.run_workflow(
+        dsl, run_id="mp-patch", model=model, tools=[], project_slug="unit-mp"
+    )
+    events: list[dict] = []
+    async for ev in agen:
+        events.append(ev)
+        if ev["kind"] == "node_exit" and ev.get("node_id") == "s1":
+            assert engine.request_pause("mp-patch") is True
+            break
+    async for ev in agen:
+        events.append(ev)
+    assert events[-1]["kind"] == "paused"
+
+    events2: list[dict] = []
+    async for ev in engine.resume_workflow(
+        dsl, run_id="mp-patch", model=model, tools=[],
+        resume_value={"decision": "continue", "context_patch": {"tag": "zzz"}},
+        project_slug="unit-mp",
+        resume_nature="manual",
+    ):
+        events2.append(ev)
+    assert events2[-1]["kind"] == "done"
+    # s2's prompt was rendered with the PATCHED context, and the patch was
+    # committed so the llm node's own context store carries it forward.
+    assert any("value=zzz" in p for p in model._prompts), model._prompts
+    writes = [e for e in events2 if e.get("kind") == "context_write"]
+    assert writes and writes[-1].get("keys") == ["out"]

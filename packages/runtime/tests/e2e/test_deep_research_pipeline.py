@@ -396,14 +396,17 @@ async def test_human_sends_back_then_passes(isolated_home):
         resumed.append(ev)
 
     # Compiler-injected <id>__extract nodes are internal; the assertion below is
-    # about the logical node sequence, so filter them out.
+    # about the logical node sequence, so filter them out. Branch nodes (route,
+    # gate) DO leave node_enter footprints since the 2026-09-25 observability
+    # fix — they used to run silently and stay "pending" forever.
     r_enters = [
         e["node_id"]
         for e in resumed
         if e["kind"] == "node_enter" and not e["node_id"].endswith("__extract")
     ]
     # route default → revise; then judge scores 9 → gate case① → publish
-    assert r_enters[:2] == ["revise", "judge"]
+    assert r_enters[:3] == ["route", "revise", "judge"]
+    assert "gate" in r_enters
     assert "publish" in r_enters and "review" not in r_enters
     assert resumed[-1]["kind"] == "done"
 

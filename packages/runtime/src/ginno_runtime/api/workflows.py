@@ -10,7 +10,7 @@ import shutil
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from .. import agents as agents_reg
 from .. import paths
@@ -20,7 +20,15 @@ from .. import workflows as wf_store
 from ..checkpointer import FileCheckpointer
 from ..graph import build_all_tools, text_of_content
 from ..models import build_model
-from ..server_shared import _WF_RUN_TASKS, _log, _push_global_event, _push_session_event
+from ..server_shared import (
+    _RUN_WS,
+    _WF_RUN_TASKS,
+    _ev,
+    _log,
+    _push_global_event,
+    _push_run_event,
+    _push_session_event,
+)
 from ..session_meta import _session_slug
 from ..todos import sync_ledger
 from ..workflows import dsl as wf_dsl
@@ -40,7 +48,12 @@ async def list_workflows_endpoint() -> list[dict]:
 
 @router.post("/api/workflows")
 async def create_workflow_endpoint(data: dict) -> dict:
-    wf = wf_store.create_def(data)
+    try:
+        wf = wf_store.create_def(data)
+    except ValueError as exc:
+        # invalid DSL (store validates on write) — a 400 with the first
+        # validation error, never an uncaught 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     # Quality-plan §3.1: if this workflow came from a synthesis draft, backfill
     # the case outcome (adopted + workflow id) so the funnel sees L2 success.
     syn_id = (data or {}).get("synthesis_id")
@@ -62,7 +75,10 @@ async def create_workflow_endpoint(data: dict) -> dict:
 
 @router.put("/api/workflows/{wf_id}")
 async def update_workflow_endpoint(wf_id: str, data: dict) -> dict:
-    wf = wf_store.update_def(wf_id, data)
+    try:
+        wf = wf_store.update_def(wf_id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     if wf:
         await _push_global_event("workflows.changed", {})
     return {"ok": bool(wf), "workflow": wf}
@@ -82,10 +98,15 @@ async def delete_workflow_endpoint(wf_id: str) -> dict:
 async def list_workflow_runs_endpoint(
     workflow_id: str | None = Query(None),
     status: str | None = Query(None),
+    supervisor_pending: bool | None = Query(None),
 ) -> list[dict]:
-    """List runs, newest first. Optional filters: ``workflow_id`` (exact) and
-    ``status`` (single value or comma-separated list, e.g. "running,paused")."""
-    return wf_store.list_runs(workflow_id=workflow_id, status=status)
+    """List runs, newest first. Optional filters: ``workflow_id`` (exact),
+    ``status`` (single value or comma-separated list, e.g. "running,paused"),
+    and ``supervisor_pending=true`` (paused runs awaiting a human decision —
+    the Studio decision inbox)."""
+    return wf_store.list_runs(
+        workflow_id=workflow_id, status=status, supervisor_pending=supervisor_pending
+    )
 
 
 @router.get("/api/workflows/{wf_id}")
@@ -716,13 +737,20 @@ def _wf_mcp_tools() -> list:
         return []
 
 
-def _wf_build_deps(run_id: str, workflow_id: str):
+def _wf_build_deps(run_id: str, workflow_id: str, pinned_version: int | None = None):
     """Resolve (wf, dsl, model, tools, fork_id, usage_attr) for a run by forking
     its source agent. Returns a 6-tuple of None when the workflow def is missing.
 
     ``usage_attr`` carries the attribution (provider/model/agent/run) the LLM
     nodes stamp on their per-call usage records (source=workflow); the driver
     adds ``session_id`` (present_in) before handing it to the engine.
+
+    ``pinned_version``: CONTINUING a run (resume / retry-from-checkpoint /
+    rerun_from) must compile the version the run STARTED with — resuming on the
+    CURRENT def after an edit executes a different graph under the same run id
+    (2026-09-25: a v5 edit made run bb1b394c re-execute half its nodes on the
+    new topology and garble the step table). Raises ValueError when the pinned
+    version no longer exists (driver marks the run failed with that reason).
 
     NOTE: fork_agent/build_model can RAISE (unknown agent, disabled/keyless
     provider) — callers must invoke this inside a try/except that marks the run
@@ -731,7 +759,15 @@ def _wf_build_deps(run_id: str, workflow_id: str):
     wf = wf_store.get_def(workflow_id)
     if not wf:
         return None, None, None, None, None, None
-    dsl = wf["dsl"]
+    if pinned_version is not None:
+        dsl = wf_storemod.get_version(workflow_id, int(pinned_version))
+        if not dsl:
+            raise ValueError(
+                f"version v{pinned_version} of workflow '{workflow_id}' no longer "
+                "exists — start a new run of the current version"
+            )
+    else:
+        dsl = wf["dsl"]
     src_agent_id = None
     for n in dsl.get("nodes") or []:
         if n.get("agent"):
@@ -753,7 +789,12 @@ def _wf_build_deps(run_id: str, workflow_id: str):
         wf_events.append_event(run_id, "warning", message=agent_warn)
     fork = agents_reg.fork_agent(resolved.id, f"wf-{run_id[:8]}-{resolved.id}")
     model = build_model(fork.provider, fork.model or None)
-    tools = build_all_tools(_wf_mcp_tools())
+    # Bind the run's file tools to a REAL workspace. With no workspace the
+    # builtin tools fall back to the process cwd — for a packaged app that is
+    # "/" and an agent's glob_files then walked the ENTIRE filesystem
+    # (2026-09-25 incident). The Ginno home is always defined and its
+    # sensitive subdirs are hard-denied by the tool layer anyway.
+    tools = build_all_tools(_wf_mcp_tools(), workspace=str(paths.home()))
     usage_attr = {
         "provider": fork.provider or "",
         "model": fork.model or getattr(model, "model", None) or getattr(model, "model_name", "") or "",
@@ -845,6 +886,23 @@ def _backfill_first_run(workflow_id: str, run: dict) -> None:
         pass
 
 
+async def _push_both(
+    present_in: str | None, run_id: str, event: str, data: dict
+) -> None:
+    """One run event, two channels (design B P2): the presenting session's
+    sockets (in-chat rendering, design A) AND the run-scoped sockets (Studio
+    observer, headless watchers). Identical frame on both."""
+    await _push_session_event(present_in, event, data)
+    await _push_run_event(run_id, event, data)
+
+
+async def _push_run_status(present_in: str | None, run_id: str, data: dict) -> None:
+    """run.status frames also carry the fresh run JSON for run-scoped clients
+    (the observer needs the step table, not just the status word)."""
+    await _push_both(present_in, run_id, "run.status", data)
+    await _push_run_event(run_id, "run.snapshot", {"run": wf_store.get_run(run_id)})
+
+
 async def _mark_run_failed(run_id: str, exc: BaseException, present_in: str | None = None) -> None:
     """The one place a run failure is persisted: error event + run.error +
     ledger + run.status push (so chat/panel show the reason immediately).
@@ -856,7 +914,7 @@ async def _mark_run_failed(run_id: str, exc: BaseException, present_in: str | No
 
     err = f"{type(exc).__name__}: {exc}"
     tb = _trimmed_traceback(exc)
-    wf_events.append_event(run_id, "error", error=err, traceback=tb)
+    ev = wf_events.append_event(run_id, "error", error=err, traceback=tb)
     _set_run_status(
         run_id, "failed", error=err, error_detail={"node_id": None, "traceback": tb}
     )
@@ -865,6 +923,8 @@ async def _mark_run_failed(run_id: str, exc: BaseException, present_in: str | No
         present_in, "run.status",
         {"run_id": run_id, "status": "failed", "error": err, "node_id": None},
     )
+    await _push_run_event(run_id, "run.event", {"run_id": run_id, "payload": ev})
+    await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "failed", "error": err, "node_id": None})
 
 
 async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen) -> None:
@@ -882,17 +942,32 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
             loop_body[_n.get("id")] = _n["body"]
     last_interrupt: dict | None = None  # latest human-interrupt payload (P1)
     async for ev in agen:
-        wf_events.append_event(run_id, ev.get("kind", ""), **{
-            k: v for k, v in ev.items() if k not in ("kind", "run_id")
+        stored = wf_events.append_event(run_id, ev.get("kind", ""), **{
+            k: v for k, v in ev.items() if k not in ("kind", "run_id", "seq")
         })
         _touch_run(run_id)
-        await _push_session_event(present_in, "run.event", {"run_id": run_id, "payload": ev})
+        await _push_both(present_in, run_id, "run.event", {"run_id": run_id, "payload": stored})
         kind = ev.get("kind")
         nid = ev.get("node_id")
         if kind == "node_enter" and nid in node_to_step:
             wf_store.update_step(run_id, node_to_step[nid], "running")
+            # Step-status refresh on the run channel: the Studio observer
+            # renders run.steps from snapshots, and mid-run there are no
+            # status transitions — without this the step table stays at the
+            # connect-time snapshot (all pending) while events flow around it
+            # (2026-09-25: the「运行中的节点没有运行的标志」report). Deliberately
+            # a run.steps frame, NOT a run.snapshot: the full snapshot carries
+            # run.status, and update_step already recomputes "done" when the
+            # last step lands — a snapshot here would announce done before the
+            # engine's terminal event (and break snapshot ordering guarantees).
+            await _push_run_event(
+                run_id, "run.steps", {"steps": (wf_store.get_run(run_id) or {}).get("steps", [])}
+            )
         elif kind == "node_exit" and nid in node_to_step:
             wf_store.update_step(run_id, node_to_step[nid], "done" if ev.get("status") != "failed" else "failed")
+            await _push_run_event(
+                run_id, "run.steps", {"steps": (wf_store.get_run(run_id) or {}).get("steps", [])}
+            )
         elif kind == "loop_skip":
             # on_empty=skip: the loop finished with zero iterations. The loop
             # node's own step lands "done" via its node_exit; its body never ran,
@@ -942,18 +1017,29 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
             _set_run_status(run_id, "done", only_from=("running", "paused"))
             _fin = wf_store.get_run(run_id)
             _warn = int((_fin or {}).get("warnings") or 0)
-            await _push_session_event(
-                present_in, "run.status",
+            await _push_run_status(
+                present_in, run_id,
                 {"run_id": run_id, "status": "done", **({"warnings": _warn} if _warn else {})},
             )
             if _fin:
                 _backfill_first_run(wf.get("id"), _fin)
         elif kind == "paused":
-            _set_run_status(run_id, "paused", only_from=("running", "paused"))
-            await _push_session_event(
-                present_in, "run.status",
+            # "done" is allowed here deliberately: an end-of-graph supervisor
+            # gate (<N>__sup with continue_to=None) is not a step-table row, so
+            # the last real step's completion recomputes the run to "done"
+            # BEFORE the gate suspends the engine. The engine's paused event is
+            # authoritative over that premature done (studio e2e
+            # test_studio_supervisor: a run parked at its final gate must stay
+            # decidable — decide 409s on anything but "paused").
+            _set_run_status(run_id, "paused", only_from=("running", "paused", "done"))
+            await _push_run_status(
+                present_in, run_id,
                 {"run_id": run_id, "status": "paused", "pending_interrupt": last_interrupt},
             )
+            # Pause transitions must reach EVERY client (the decision inbox
+            # lists paused runs across recipes) — the session/run channels only
+            # reach subscribers of this run.
+            await _push_global_event("workflows.changed", {})
         elif kind == "error":
             # Mark the run failed FIRST: flipping a still-running step to
             # "failed" via update_step while the run were still "running" would
@@ -988,8 +1074,8 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
                     # Fail the attributed step (and any still-running step).
                     if s.get("id") == attr_nid or s.get("status") == "running":
                         wf_store.update_step(run_id, s["id"], "failed")
-            await _push_session_event(
-                present_in, "run.status",
+            await _push_run_status(
+                present_in, run_id,
                 {
                     "run_id": run_id,
                     "status": "failed",
@@ -1012,7 +1098,7 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id)
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=(wf_store.get_run(run_id) or {}).get("dsl_version"))
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
         if present_in:
@@ -1055,10 +1141,14 @@ async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict,
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id)
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=(wf_store.get_run(run_id) or {}).get("dsl_version"))
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
         _set_run_status(run_id, "running")
+        # paused→running must be ANNOUNCED: the chat run card (and any run-
+        # scoped observer) only learns of the flip from this push — the next
+        # terminal push would otherwise leave it showing 已暂停 the whole time.
+        await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
         # Manual pauses (#14) carry no node-side resume event — tell the engine
         # to emit it from the run's pending_interrupt nature instead.
         _nature = ((wf_store.get_run(run_id) or {}).get("pending_interrupt") or {}).get("kind")
@@ -1238,11 +1328,17 @@ async def cancel_workflow_run_endpoint(run_id: str) -> dict:
     task = _WF_RUN_TASKS.get(run_id)
     if task is not None and not task.done():
         task.cancel()
-    wf_events.append_event(run_id, "cancelled")
+    ev = wf_events.append_event(run_id, "cancelled")
     _set_run_pending_interrupt(run_id, None)
     _set_run_status(run_id, "cancelled", error="cancelled by user")
     sync_ledger.set_status(run_id, "cancelled", "cancelled by user")
-    await _push_session_event(run.get("present_in_session_id"), "run.status", {"run_id": run_id, "status": "cancelled"})
+    # the cancelled event is a real run event like any engine event — push it
+    # to the run channel too (studio e2e test_studio_run_ws: the channel must
+    # be complete without a REST refetch).
+    await _push_run_event(run_id, "run.event", {"run_id": run_id, "payload": ev})
+    await _push_run_status(
+        run.get("present_in_session_id"), run_id, {"run_id": run_id, "status": "cancelled"}
+    )
     return {"ok": True, "status": "cancelled"}
 
 
@@ -1304,6 +1400,53 @@ async def workflow_run_events_endpoint(
     run_id: str, node_id: str | None = None, kind: str | None = None
 ) -> dict:
     return {"ok": True, "events": wf_events.read_events(run_id, node_id=node_id, kind=kind)}
+
+
+@router.websocket("/api/ws/runs/{run_id}")
+async def run_ws_endpoint(ws: WebSocket, run_id: str) -> None:
+    """Run-scoped live channel (design B P2).
+
+    The Studio observer subscribes by run_id — independent of which session
+    the run is presented in, and the ONLY live channel for headless runs.
+    Contract:
+      * register FIRST (events emitted between snapshot and registration are
+        never lost), then send one ``run.snapshot`` {run, events, last_seq}
+        replayed from events.jsonl;
+      * afterwards ``run.event`` (payload carries ``seq``) and ``run.status`` +
+        ``run.snapshot`` frames are pushed by the drivers;
+      * a reconnect gets a fresh snapshot — the client drops payloads whose
+        seq is <= its last applied seq, so overlaps are harmless;
+      * inbound traffic is ping only; run control stays on REST (one
+        authoritative writer per control action)."""
+    await ws.accept()
+    run = wf_store.get_run(run_id)
+    if not run:
+        await ws.send_text(_ev("run.missing", {"run_id": run_id}))
+        await ws.close()
+        return
+    _RUN_WS.setdefault(run_id, []).append(ws)
+    try:
+        events = wf_events.read_events(run_id)
+        last_seq = events[-1].get("seq") if events else 0
+        await ws.send_text(_ev("run.snapshot", {
+            "run_id": run_id,
+            "run": run,
+            "events": events,
+            "last_seq": last_seq,
+        }))
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                msg = {}
+            if isinstance(msg, dict) and msg.get("type") == "ping":
+                await ws.send_text(_ev("run.pong", {"run_id": run_id}))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        socks = _RUN_WS.get(run_id) or []
+        _RUN_WS[run_id] = [w for w in socks if w is not ws]
 
 
 @router.post("/api/workflow_runs/{run_id}/_await")
@@ -1383,10 +1526,11 @@ async def _continue_run_bg(run_id: str, workflow_id: str, present_in: str | None
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id)
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=(wf_store.get_run(run_id) or {}).get("dsl_version"))
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
         _set_run_status(run_id, "running")
+        await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
         agen = wf_engine.continue_workflow(
             dsl, run_id=run_id, model=model, tools=tools,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
@@ -1462,6 +1606,163 @@ async def retry_from_checkpoint_endpoint(run_id: str) -> dict:
     _spawn_run_task(
         new["id"],
         _continue_run_bg(new["id"], run.get("workflow_id", ""), run.get("present_in_session_id")),
+    )
+    await _push_global_event("workflows.changed", {})
+    return {"ok": True, "run": new, "source_run_id": run_id}
+
+
+def _truncate_checkpoint_to(run_id: str, checkpoint_id: str) -> None:
+    """Trim the run's checkpoint record so its HEAD is ``checkpoint_id``
+    (rerun_from). Entries are append-only with parent links *within* the file,
+    so a prefix cut stays self-consistent for delta reconstruction — anything
+    after the cut (later supersteps, newer interrupts) simply ceases to exist
+    for this fork."""
+    p = _run_checkpoint_path(run_id)
+    try:
+        rec = json.loads(p.read_text() or "{}")
+    except Exception:
+        return
+    cps = rec.get("checkpoints") or []
+    idx = next((i for i, c in enumerate(cps) if c.get("checkpoint_id") == checkpoint_id), None)
+    if idx is None or idx == len(cps) - 1:
+        return
+    rec["checkpoints"] = cps[: idx + 1]
+    # Strip the head entry's pending_writes: they are the ORIGINAL superstep's
+    # completed-task outputs (put_writes land on the checkpoint that scheduled
+    # the node). surface_pending_writes would then tell langgraph "this task
+    # already finished" and SKIP the very node we were asked to re-run — the
+    # opposite of rerun_from. Dropping them forces re-execution from scratch.
+    rec["checkpoints"][-1].pop("pending_writes", None)
+    p.write_text(json.dumps(rec, ensure_ascii=False, default=str))
+
+
+async def _rerun_from_bg(
+    run_id: str, workflow_id: str, node_id: str, pinned_dsl: dict, present_in: str | None = None
+) -> None:
+    """Background driver for rerun-from-node (design B 屏2「从节点重跑」):
+
+    walks the copied checkpoint's state history (newest first) for the last
+    snapshot where ``node_id`` was scheduled, truncates the record so that
+    snapshot is the head, then continues like retry_from_checkpoint — only
+    the target node and its suffix re-execute, with the source run's context.
+
+    Fidelity limits (accepted, see the review doc): side effects after the
+    fork point re-fire; for loop bodies the LAST scheduling wins; the compiled
+    graph comes from the run's PINNED dsl_version (never the current one)."""
+    from ..checkpointer import FileCheckpointer
+    from ..workflows import compiler as wf_compiler
+    from ..workflows import engine as wf_engine
+
+    fork_id = None
+    try:
+        wf, _cur, model, tools, fork_id, usage_attr = _wf_build_deps(
+            run_id, workflow_id, pinned_version=int(pinned_dsl.get("dsl_version") or 0) or None
+        )
+        if not wf:
+            raise ValueError(f"workflow '{workflow_id}' not found")
+        _set_run_status(run_id, "running")
+        await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
+        graph = wf_compiler.compile_workflow(
+            pinned_dsl, model, tools, {"run_id": run_id, "events": []},
+            checkpointer=FileCheckpointer("default", surface_pending_writes=True),
+        )
+        target_cid: str | None = None
+        async for snap in graph.aget_state_history({"configurable": {"thread_id": run_id}}):
+            if node_id in (getattr(snap, "next", ()) or ()):
+                target_cid = (snap.config.get("configurable") or {}).get("checkpoint_id")
+                break  # newest first → the last time the node was scheduled
+        if not target_cid:
+            raise ValueError(f"节点 {node_id} 没有可回溯的检查点（未调度过，或检查点已清理）")
+        _truncate_checkpoint_to(run_id, target_cid)
+        agen = wf_engine.continue_workflow(
+            pinned_dsl, run_id=run_id, model=model, tools=tools,
+            usage_attr={**(usage_attr or {}), "session_id": present_in},
+        )
+        await _drive_run_events(run_id, present_in, wf, agen)
+        sync_ledger.set_status(run_id, "ok")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _log.exception("workflow_rerun_from_failed run=%s node=%s", run_id, node_id)
+        await _mark_run_failed(run_id, exc, present_in)
+    finally:
+        if fork_id:
+            try:
+                agents_reg.delete_agent(fork_id)
+            except Exception:
+                pass
+        await _push_global_event("workflows.changed", {})
+
+
+@router.post("/api/workflow_runs/{run_id}/rerun_from")
+async def rerun_from_endpoint(run_id: str, data: dict) -> dict:
+    """Fork a NEW run that re-executes from an arbitrary node of an existing
+    run (design B 屏2). Unlike ``retry_from_checkpoint`` (failed runs, failed
+    node only) this accepts any node that the source run ever scheduled and
+    any non-running source status. The fork compiles the run's PINNED
+    ``dsl_version`` — a version deleted from history is a 409, never a
+    silent behavior change."""
+    data = data or {}
+    node_id = data.get("node_id")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+    run = wf_store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.get("status") == "running":
+        raise HTTPException(
+            status_code=409, detail="cannot fork a running run — wait for it to finish or pause it"
+        )
+    if not _run_checkpoint_path(run_id).exists():
+        raise HTTPException(status_code=409, detail="no checkpoint available — retry from the start")
+    # def existence BEFORE version existence: delete_def removes the version
+    # files too, so a deleted workflow must answer 404, not "version missing".
+    wf = wf_store.get_def(run.get("workflow_id", ""))
+    if not wf:
+        raise HTTPException(status_code=404, detail="workflow definition no longer exists")
+    version = run.get("dsl_version") or 0
+    pinned = wf_storemod.get_version(run.get("workflow_id", ""), int(version)) if version else None
+    if not pinned:
+        raise HTTPException(
+            status_code=409, detail=f"version v{version} of this workflow no longer exists"
+        )
+    if node_id not in {n.get("id") for n in pinned.get("nodes") or []}:
+        raise HTTPException(status_code=409, detail=f"node '{node_id}' not in the run's DSL (v{version})")
+    # A pinned pseudo-view: create_run pins dsl_version from `version`.
+    new = wf_store.create_run(
+        {"id": wf["id"], "name": wf.get("name"), "dsl": pinned, "version": int(version)},
+        session_id=run.get("session_id"),
+        present_in_session_id=run.get("present_in_session_id"),
+        context_override=run.get("context_override"),
+        retried_from=run_id,
+    )
+    # Carry the source's completed prefix over so the fork doesn't read as
+    # 0/N with a forever-pending prefix.
+    src_status = {s.get("id"): s.get("status") for s in run.get("steps", [])}
+    idx = next((i for i, s in enumerate(new["steps"]) if s["id"] == node_id), None)
+    if idx:
+        for s in new["steps"][:idx]:
+            st = src_status.get(s["id"])
+            if st in ("done", "skipped", "failed"):
+                wf_store.update_step(new["id"], s["id"], st)
+    ckpt, new_ckpt = _run_checkpoint_path(run_id), _run_checkpoint_path(new["id"])
+    shutil.copyfile(ckpt, new_ckpt)
+    try:
+        rec = json.loads(new_ckpt.read_text() or "{}")
+        if isinstance(rec, dict):
+            rec["session_id"] = new["id"]
+            new_ckpt.write_text(json.dumps(rec, ensure_ascii=False, default=str))
+    except Exception:
+        _log.exception("checkpoint_clone_retag_failed run=%s new=%s", run_id, new["id"])
+    run["retry_run_id"] = new["id"]
+    run["updated"] = time.time()
+    wf_storemod._write_json(wf_storemod._run_path(run_id), run)
+    sync_ledger.clone_for_retry(run_id, new["id"])
+    _spawn_run_task(
+        new["id"],
+        _rerun_from_bg(
+            new["id"], run.get("workflow_id", ""), node_id, pinned, run.get("present_in_session_id")
+        ),
     )
     await _push_global_event("workflows.changed", {})
     return {"ok": True, "run": new, "source_run_id": run_id}

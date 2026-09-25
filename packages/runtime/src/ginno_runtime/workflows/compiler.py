@@ -104,6 +104,65 @@ def _inject_extract_nodes(dsl: dict) -> dict:
     return d
 
 
+def _inject_supervisor_gates(d: dict) -> dict:
+    """Insert a ``<N>__sup`` gate after selected nodes when supervisor is
+    enabled (design B §8.5). Runs AFTER extract injection so a gate follows
+    ``<N>__extract`` when present. No-op when disabled — every existing DSL
+    compiles to a byte-identical graph.
+
+    Gate sources: nodes with a normal forward out-edge (or END). Loop bodies
+    are excluded — their out-edge is the structural back-edge to the loop
+    head, and a gate there would END the loop instead of gating it. Branch
+    nodes route structurally via cases and are excluded the same way.
+    ``checkpoints.after_nodes`` (explicit list) wins over ``every_step``."""
+    sup = d.get("supervisor") or {}
+    if not sup.get("enabled"):
+        return d
+    nodes = d.get("nodes") or []
+    by_id = {n.get("id"): n for n in nodes if isinstance(n, dict)}
+    loop_bodies = {
+        n.get("body")
+        for n in nodes
+        if isinstance(n, dict) and n.get("type") == "loop" and n.get("body")
+    }
+    gateable_types = {"step", "agent", "llm", "human"}
+    ck = sup.get("checkpoints") if isinstance(sup.get("checkpoints"), dict) else {}
+    explicit = ck.get("after_nodes")
+    if isinstance(explicit, list) and explicit:
+        wanted = [n for n in explicit if isinstance(n, str)]
+    else:  # every_step (default): every gateable non-body node
+        wanted = [
+            n.get("id")
+            for n in nodes
+            if isinstance(n, dict)
+            and n.get("type") in gateable_types
+            and n.get("id") not in loop_bodies
+        ]
+    existing = set(by_id)
+    for src in wanted:
+        if src in loop_bodies or by_id.get(src, {}).get("type") not in gateable_types:
+            continue
+        # effective predecessor: the extract node when one was injected
+        pred = f"{src}__extract" if f"{src}__extract" in existing else src
+        gate_id = f"{src}__sup"
+        if gate_id in existing:  # defensive: id collision
+            continue
+        out = next((e for e in d.get("edges") or [] if e.get("from") == pred), None)
+        nxt = out.get("to") if out else None
+        if out:
+            d["edges"].remove(out)
+        d.setdefault("edges", []).append({"from": pred, "to": gate_id})
+        nodes.append({
+            "id": gate_id,
+            "type": "supervisor_gate",
+            "source_node": src,
+            "continue_to": nxt,
+        })
+        existing.add(gate_id)
+    d["nodes"] = nodes
+    return d
+
+
 def compile_workflow(dsl: dict, model, tools: list, run_ctx: dict, checkpointer=None):
     """Compile a validated DSL into a StateGraph bound to this run's deps."""
     wf_nodes.load_plugins()
@@ -116,12 +175,15 @@ def compile_workflow(dsl: dict, model, tools: list, run_ctx: dict, checkpointer=
     # injected nodes are validated-shaped (extract is a registered type) and are
     # re-derived each compile, so the stored DSL stays clean.
     d = _inject_extract_nodes(d)
+    # Supervisor gates ride on top of the extract layer (design B §8.5).
+    d = _inject_supervisor_gates(d)
 
     cctx = {
         "dsl": d,
         "model": model,
         "tools": tools,
         "run_ctx": run_ctx,
+        "supervisor": d.get("supervisor") or {},
         # Lets node adapters persist incremental bookkeeping (parallel gather
         # per-item progress) via put_writes and read it back on re-execution.
         "checkpointer": checkpointer,

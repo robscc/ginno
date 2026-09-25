@@ -32,6 +32,7 @@ from .registry import (
 from . import builtin  # noqa: F401,E402
 from . import extract  # noqa: F401,E402  (compiler-internal extract node)
 from . import python_node  # noqa: F401,E402  (deterministic whitelisted entries)
+from . import supervisor_gate  # noqa: F401,E402  (compiler-injected __sup gate, design B)
 
 __all__ = [
     "BaseNode",
@@ -47,4 +48,5 @@ __all__ = [
     "builtin",
     "extract",
     "python_node",
+    "supervisor_gate",
 ]

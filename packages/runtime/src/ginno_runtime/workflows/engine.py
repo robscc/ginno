@@ -12,6 +12,7 @@ graph but keep separate message histories inside their node closures.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import traceback
 from contextlib import contextmanager
@@ -54,7 +55,13 @@ def _recursion_limit(d: dict) -> int:
                 loop_iters += max(0, int(n.get("max_iters") or 0))
             except (TypeError, ValueError):
                 loop_iters += 100
-    return max(25, min(2000, 20 + 4 * node_count + 3 * loop_iters))
+    budget = 20 + 4 * node_count + 3 * loop_iters
+    # Supervisor gates (design B §8.5): each gate adds its own superstep and a
+    # retry decision adds a full node+gate cycle — 3 per gated node covers a
+    # retry round on every gate simultaneously (retry_limit caps the rest).
+    if isinstance(d.get("supervisor"), dict) and d["supervisor"].get("enabled"):
+        budget += 3 * node_count
+    return max(25, min(2000, budget))
 
 
 # --------------------------------------------------------------------------- #
@@ -79,15 +86,29 @@ def request_pause(run_id: str) -> bool:
     return True
 
 
-def check_pause(run_ctx: dict, node_id: str) -> None:
+def check_pause(run_ctx: dict, node_id: str) -> dict | None:
     """Suspend the graph if a manual pause was requested (one-shot: the flag is
     cleared before suspending so the re-executed node on resume does not
     re-pause). Emits an interrupt event with nature="manual" so the API/UI can
     tell it apart from a human question, then raises GraphInterrupt via
-    langgraph interrupt(). No-op when no pause was requested."""
+    langgraph interrupt(). No-op when no pause was requested.
+
+    Replay after a manual-pause RESUME (design B P2): ``resume_workflow`` presets
+    ``pause_requested + manual_resume`` so the re-executed node lands here again.
+    This time ``interrupt()`` RETURNS the resume value instead of suspending
+    (langgraph delivers resume values by interrupt call order — this is the
+    first call in the re-executed task). Its ``context_patch`` is returned so
+    the node wrapper (nodes/base.py) merges it into the state and the update —
+    previously the value was dropped on the floor and「改 context 后继续」was a
+    silent no-op."""
     if not run_ctx.get("pause_requested"):
-        return
+        return None
     run_ctx.pop("pause_requested", None)
+    if run_ctx.pop("manual_resume", None):
+        value = interrupt({"kind": "manual", "node": node_id})
+        if isinstance(value, dict) and isinstance(value.get("context_patch"), dict):
+            return value["context_patch"]
+        return None
     run_ctx["events"].append({
         "ts": time.time(),
         "run_id": run_ctx["run_id"],
@@ -96,6 +117,7 @@ def check_pause(run_ctx: dict, node_id: str) -> None:
         "nature": "manual",
     })
     interrupt({"kind": "manual", "node": node_id})
+    return None
 
 
 @contextmanager
@@ -108,6 +130,47 @@ def _run_control(run_id: str, run_ctx: dict):
     finally:
         if _RUN_CONTROLS.get(run_id) is run_ctx:
             _RUN_CONTROLS.pop(run_id, None)
+
+
+async def _drain(run_ctx: dict, ctr: dict):
+    """Yield every event appended since the last drain (shared counter)."""
+    evs = run_ctx["events"]
+    while ctr["i"] < len(evs):
+        yield evs[ctr["i"]]
+        ctr["i"] += 1
+
+
+async def _pump_events(graph, input_, config: dict, run_ctx: dict, ctr: dict):
+    """Consume the graph stream while yielding ``run_ctx['events']`` at ≤1s
+    latency (design B P2 observability fix, 2026-09-25).
+
+    Events used to be yielded only when astream produced a chunk — and one
+    step node = ONE superstep, so during a multi-minute model call its
+    node_enter/tool_call events sat in the buffer: the run JSON never flipped
+    the step to running, nothing was pushed, and the observer looked dead
+    (user-visible as「运行中的节点没有运行的标志」→ runs got cancelled as
+    stuck). This pump drains the buffer on a 1s beat between chunks.
+
+    ``asyncio.wait(..., timeout)`` is used deliberately: it does NOT cancel
+    the pending ``__anext__`` (a cancelled __anext__ can kill the underlying
+    astream generator). Raises whatever the stream raises; callers keep their
+    existing error handling. ``ctr`` is the shared yield counter the caller's
+    post-loop drains also use."""
+    aiter = graph.astream(input_, config=config, stream_mode=["updates"]).__aiter__()
+    task: asyncio.Task | None = None
+    while True:
+        async for ev in _drain(run_ctx, ctr):
+            yield ev
+        if task is None:
+            task = asyncio.ensure_future(aiter.__anext__())
+        done, _pending = await asyncio.wait({task}, timeout=1.0)
+        if not done:
+            continue  # mid-step: drain again on the next beat
+        try:
+            task.result()
+        except StopAsyncIteration:
+            return  # stream exhausted; the buffer was drained above
+        task = None  # chunk consumed — loop drains whatever it appended
 
 
 async def run_workflow(
@@ -128,6 +191,7 @@ async def run_workflow(
     # nodes when they record per-call usage into the global usage log
     # (source=workflow, usage-stats-design §3.6).
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
+    ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(
             d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True)
@@ -144,15 +208,9 @@ async def run_workflow(
             "outputs": {},
         }
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": _recursion_limit(d)}
-        yielded = 0
         try:
-            async for _mode, _payload in graph.astream(
-                state, config=config, stream_mode=["updates"]
-            ):
-                evs = run_ctx["events"]
-                while yielded < len(evs):
-                    yield evs[yielded]
-                    yielded += 1
+            async for ev in _pump_events(graph, state, config, run_ctx, ctr):
+                yield ev
         except Exception as exc:  # surface graph/step failures as an event, don't crash
             ev = {
                 "run_id": run_id,
@@ -164,15 +222,12 @@ async def run_workflow(
                 "traceback": _trimmed_traceback(exc),
             }
             run_ctx["events"].append(ev)
-            while yielded < len(run_ctx["events"]):
-                yield run_ctx["events"][yielded]
-                yielded += 1
+            async for ev in _drain(run_ctx, ctr):
+                yield ev
             return
         # flush anything appended by the last node
-        evs = run_ctx["events"]
-        while yielded < len(evs):
-            yield evs[yielded]
-            yielded += 1
+        async for ev in _drain(run_ctx, ctr):
+            yield ev
         # Defence in depth: workflow_* tools are now stripped from steps, but if the
         # graph is nonetheless paused on an interrupt, astream ends *normally* while
         # the step is incomplete — report an error instead of falsely marking the run
@@ -233,6 +288,7 @@ async def resume_workflow(
     not flip the re-executing step to "done")."""
     d = wf_dsl.normalize_dsl(dsl)
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
+    ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": _recursion_limit(d)}
@@ -250,15 +306,15 @@ async def resume_workflow(
                 "kind": "resume",
                 "nature": resume_nature,
             })
-        yielded = 0
+            if resume_nature == "manual":
+                # Route the re-executed node through check_pause's REPLAY branch
+                # so the resume value (context_patch) is consumed instead of
+                # dropped — see check_pause.
+                run_ctx["pause_requested"] = True
+                run_ctx["manual_resume"] = True
         try:
-            async for _mode, _payload in graph.astream(
-                Command(resume=resume_value), config=config, stream_mode=["updates"]
-            ):
-                evs = run_ctx["events"]
-                while yielded < len(evs):
-                    yield evs[yielded]
-                    yielded += 1
+            async for ev in _pump_events(graph, Command(resume=resume_value), config, run_ctx, ctr):
+                yield ev
         except Exception as exc:
             ev = {
                 "run_id": run_id,
@@ -268,14 +324,11 @@ async def resume_workflow(
                 "traceback": _trimmed_traceback(exc),
             }
             run_ctx["events"].append(ev)
-            while yielded < len(run_ctx["events"]):
-                yield run_ctx["events"][yielded]
-                yielded += 1
+            async for ev in _drain(run_ctx, ctr):
+                yield ev
             return
-        evs = run_ctx["events"]
-        while yielded < len(evs):
-            yield evs[yielded]
-            yielded += 1
+        async for ev in _drain(run_ctx, ctr):
+            yield ev
         # After resuming, the graph may reach another interrupt (pause again) or finish.
         paused = (await run_state(run_id, d, model, tools, project_slug))["paused"]
         if paused:
@@ -302,10 +355,10 @@ async def continue_workflow(
     to continue and this yields an error event."""
     d = wf_dsl.normalize_dsl(dsl)
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
+    ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": _recursion_limit(d)}
-        yielded = 0
         try:
             snap = await graph.aget_state(config)
             has_state = snap is not None and (
@@ -323,13 +376,8 @@ async def continue_workflow(
             }
             return
         try:
-            async for _mode, _payload in graph.astream(
-                None, config=config, stream_mode=["updates"]
-            ):
-                evs = run_ctx["events"]
-                while yielded < len(evs):
-                    yield evs[yielded]
-                    yielded += 1
+            async for ev in _pump_events(graph, None, config, run_ctx, ctr):
+                yield ev
         except Exception as exc:
             ev = {
                 "run_id": run_id,
@@ -339,14 +387,11 @@ async def continue_workflow(
                 "traceback": _trimmed_traceback(exc),
             }
             run_ctx["events"].append(ev)
-            while yielded < len(run_ctx["events"]):
-                yield run_ctx["events"][yielded]
-                yielded += 1
+            async for ev in _drain(run_ctx, ctr):
+                yield ev
             return
-        evs = run_ctx["events"]
-        while yielded < len(evs):
-            yield evs[yielded]
-            yielded += 1
+        async for ev in _drain(run_ctx, ctr):
+            yield ev
         paused = (await run_state(run_id, d, model, tools, project_slug))["paused"]
         if paused:
             yield {"run_id": run_id, "kind": "paused"}

@@ -25,8 +25,10 @@ Design notes (empirically validated against langchain-core 1.4.x + langgraph 1.2
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 import uuid
 from typing import Any
 
@@ -145,9 +147,25 @@ class ScriptedChatModel(BaseChatModel):
         return AIMessage(content=text)
 
     def _generate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:
+        # Test seam: GINNO_FAKE_LLM_DELAY=<seconds> sleeps per turn so a step
+        # can be observed MID-execution (long model call) instead of finishing
+        # in milliseconds. Sync path only — the async path sleeps without
+        # blocking the loop (see _agenerate).
+        delay = os.environ.get("GINNO_FAKE_LLM_DELAY")
+        if delay:
+            try:
+                time.sleep(max(0.0, float(delay)))
+            except ValueError:
+                pass
         return ChatResult(generations=[ChatGeneration(message=self._next(messages))])
 
     async def _agenerate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any) -> ChatResult:
+        delay = os.environ.get("GINNO_FAKE_LLM_DELAY")
+        if delay:
+            try:
+                await asyncio.sleep(max(0.0, float(delay)))
+            except ValueError:
+                pass
         return self._generate(messages, stop, run_manager, **kwargs)
 
     def _stream(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any):

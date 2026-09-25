@@ -18,7 +18,7 @@ from ... import agents as agents_reg
 from ...graph import text_of_content, tool_allowed
 from .. import expr as wf_expr
 from . import agent_helpers as ah
-from .base import BaseNode, llm_invoke_with_timeout
+from .base import BaseNode, llm_invoke_with_timeout, tools_invoke_with_timeout
 from .registry import register_node
 
 
@@ -118,7 +118,14 @@ async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dic
         })
         if tool_node is None:
             break
-        tres = await tool_node.ainvoke({"messages": [resp]})
+        # bounded tool execution: an unbounded tool (e.g. glob_files walking
+        # the whole filesystem from a "/" reachable root) must fail the NODE
+        # with an attributable timeout, not strand the run in running forever
+        tool_t = node.get("tool_timeout_s")
+        tres = await tools_invoke_with_timeout(
+            tool_node.ainvoke({"messages": [resp]}),
+            float(tool_t) if tool_t else None,
+        )
         tmsgs = tres["messages"] if isinstance(tres, dict) else tres
         for tm in tmsgs:
             c = text_of_content(tm.content)
@@ -461,6 +468,18 @@ class BranchNode(BaseNode):
     async def execute(node, cctx, state, config, eff) -> dict:
         from . import transforms as wf_transforms
 
+        run_ctx = cctx["run_ctx"]
+        events: list = []
+
+        def emit(ev):
+            ev.setdefault("ts", time.time())
+            events.append(ev)
+            run_ctx["events"].append(ev)
+
+        # Branch nodes used to run SILENTLY (no enter/exit) — invisible in the
+        # event timeline and stuck "pending" in the step table forever. Now they
+        # leave the same footprint as every other node (studio e2e, 2026-09-25).
+        emit({"run_id": run_ctx.get("run_id"), "node_id": node["id"], "kind": "node_enter", "node_type": "branch"})
         ctx = dict(state.get("context") or {})
         target = None
         transform = None
@@ -478,7 +497,8 @@ class BranchNode(BaseNode):
         inputs = {}
         if target:
             inputs[target] = wf_transforms.apply_transform(transform, {}, ctx)
-        return {"events": [], "inputs": inputs, "__output__": {}}
+        emit({"run_id": run_ctx.get("run_id"), "node_id": node["id"], "kind": "node_exit", "status": "done", "route": target})
+        return {"events": events, "inputs": inputs, "__output__": {}}
 
     @classmethod
     def add_edges(cls, g, node, d) -> None:

@@ -27,6 +27,7 @@ glob and killed the whole turn).
 from __future__ import annotations
 
 import os
+import time
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -39,6 +40,29 @@ from ..files.images import diff_images, encode_images_marker, snapshot_images
 # A runaway glob (e.g. ``**`` under a huge tree) used to stream the entire
 # filesystem listing into the context; cap it like grep_files does.
 GLOB_MAX_HITS = 500
+# Wall-clock + traversal budgets for glob/grep walks (2026-09-25: a pattern
+# matching NOTHING walks the entire root before giving up — with a bad cwd
+# (e.g. "/") that was the whole filesystem). Matches are capped separately;
+# these bound the WALK itself so a fruitless search returns partial+warning
+# instead of burning the tool timeout.
+GLOB_TIME_BUDGET_S = 10.0
+GLOB_MAX_DIRS = 20000
+
+
+def _fs_root_guard(search_root) -> str | None:
+    """Refuse to walk the filesystem root outright — even within budget it is
+    never what the caller wants; the model must name a real root."""
+    try:
+        import os as _os
+        if _os.path.realpath(search_root) == "/":
+            return (
+                "[error] refusing to search from the filesystem root — pass an "
+                "explicit root=<directory> (this session's working directory "
+                f"is {search_root!s})"
+            )
+    except Exception:
+        pass
+    return None
 
 
 def _always_deny_roots() -> list[str]:
@@ -321,10 +345,25 @@ def build_builtin_tools(
                 search_root = resolved
             if not search_root.is_dir():
                 return f"[error] workspace is not a directory: {search_root}"
+            guarded = _fs_root_guard(search_root)
+            if guarded:
+                return guarded
             hits: list[str] = []
             truncated = False
+            budget_note = ""
+            _t0 = time.monotonic()
+            _dirs_seen = 0
             try:
                 for r, dirs, files in os.walk(search_root):
+                    _dirs_seen += 1
+                    if _dirs_seen > GLOB_MAX_DIRS or time.monotonic() - _t0 > GLOB_TIME_BUDGET_S:
+                        truncated = True
+                        budget_note = (
+                            f"... (search budget exhausted after {_dirs_seen} dirs / "
+                            f"{time.monotonic() - _t0:.1f}s — narrow the pattern or pass a "
+                            "smaller root=)"
+                        )
+                        break
                     # Prune hard-denied directories so they are never traversed.
                     dirs[:] = [d for d in dirs if not _path_denied(Path(r) / d, base_dir, mount_roots)]
                     for name in files:
@@ -351,6 +390,8 @@ def build_builtin_tools(
             out = header + "\n".join(hits)
             if truncated:
                 out += f"\n... (truncated at {GLOB_MAX_HITS} matches)"
+            if budget_note:
+                out += f"\n{budget_note}"
             return out or "(no matches)"
         except Exception as e:  # noqa: BLE001 — last-resort guard: never raise
             return f"[error] glob failed: {type(e).__name__}: {e}"
@@ -377,9 +418,22 @@ def build_builtin_tools(
                 search_root = resolved
             if not search_root.is_dir():
                 return f"[error] workspace is not a directory: {search_root}"
+            guarded = _fs_root_guard(search_root)
+            if guarded:
+                return guarded
             out: list[str] = []
             header = f"(root: {search_root})" if str(search_root) != str(base_dir) else ""
+            _t0 = time.monotonic()
+            _dirs_seen = 0
             for r, dirs, files in os.walk(search_root):
+                _dirs_seen += 1
+                if _dirs_seen > GLOB_MAX_DIRS or time.monotonic() - _t0 > GLOB_TIME_BUDGET_S:
+                    out.append(
+                        f"... (search budget exhausted after {_dirs_seen} dirs / "
+                        f"{time.monotonic() - _t0:.1f}s — narrow the pattern or pass a "
+                        "smaller root=)"
+                    )
+                    return (header + "\n" if header else "") + "\n".join(out)
                 # Prune hard-denied directories (master-plan §2.3).
                 dirs[:] = [d for d in dirs if not _path_denied(Path(r) / d, base_dir, mount_roots)]
                 for name in files:
