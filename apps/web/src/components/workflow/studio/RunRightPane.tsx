@@ -5,6 +5,7 @@ import { Check, Loader2, MessageSquare, Shield, ShieldAlert, X } from "lucide-re
 import * as api from "@/lib/runtime";
 import type { WorkflowRun, WorkflowRunEvent } from "@/lib/types";
 import { HumanInputCard } from "../HumanInputCard";
+import { SupervisorDecisionCard } from "./SupervisorDecisionCard";
 
 /**
  * Right pane of the 运行 view: what the run is executing with, where it is
@@ -89,6 +90,13 @@ export function RunRightPane({
               runId={run.id}
               question={interrupt.question ?? null}
               nodeTitle={(interrupt.node_id as string) ?? undefined}
+            />
+          ) : interrupt.kind === "supervisor" ? (
+            <SupervisorDecisionCard
+              runId={run.id}
+              nodeId={interrupt.node_id}
+              question={interrupt.question ?? null}
+              onChanged={onChanged}
             />
           ) : (
             <div className="rounded-md border border-yellow/40 bg-yellow/[0.05] p-2.5">

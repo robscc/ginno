@@ -9,73 +9,182 @@ export interface NodeStat {
   tokens?: number;
 }
 
+type WsFrame = {
+  event?: string;
+  [k: string]: unknown;
+};
+
 /**
- * Live view of one run: status + event log + per-node telemetry.
+ * Live view of one run (design B P2): the run-scoped WebSocket is the primary
+ * transport — connect yields a full `run.snapshot` (run JSON + events.jsonl
+ * replay), then `run.event` frames append by `seq` (dedup makes a reconnect's
+ * fresh snapshot harmless). Falls back to 1.5s REST polling after two failed
+ * connects, so the observer survives an old sidecar or a blocked WS.
  *
- * Polls every 1.5s while the run is active (the pre-existing behaviour, shared
- * with the in-chat run cards) and stops as soon as the run reaches a terminal
- * status. Phase 2 replaces this polling with the run-scoped WebSocket; the
- * returned shape is what the observer renders either way.
+ * Returns the same shape the polling version did — RunObserver doesn't care
+ * which transport is live.
  */
 export function useRunInspector(runId: string | null) {
   const [run, setRun] = useState<WorkflowRun | null>(null);
   const [events, setEvents] = useState<WorkflowRunEvent[]>([]);
   const [loading, setLoading] = useState(false);
-  const aliveRef = useRef(true);
+  const [live, setLive] = useState(false);
+  const lastSeqRef = useRef(0);
 
-  useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
+  const applyEvents = useCallback((incoming: WorkflowRunEvent[]) => {
+    const fresh = incoming.filter((e) => (e.seq ?? 0) > lastSeqRef.current);
+    if (!fresh.length) return;
+    for (const e of fresh) lastSeqRef.current = Math.max(lastSeqRef.current, e.seq ?? 0);
+    setEvents((prev) => {
+      // A snapshot may interleave with live frames — merge by seq, keep order.
+      const seen = new Set(prev.map((e) => e.seq));
+      return [...prev, ...fresh.filter((e) => !seen.has(e.seq))].sort(
+        (a, b) => (a.seq ?? 0) - (b.seq ?? 0),
+      );
+    });
   }, []);
 
-  const refresh = useCallback(async () => {
-    if (!runId) return;
-    const [ev, one] = await Promise.all([
-      api.getWorkflowRunEvents(runId).catch(() => null),
-      api.getWorkflowRun(runId).catch(() => null),
-    ]);
-    if (!aliveRef.current) return;
-    if (ev) setEvents(ev.events || []);
-    if (one?.run) setRun(one.run);
-  }, [runId]);
+  const applyRun = useCallback((r: WorkflowRun | null | undefined) => {
+    if (r) setRun(r);
+  }, []);
 
   useEffect(() => {
     if (!runId) {
       setRun(null);
       setEvents([]);
+      setLive(false);
+      lastSeqRef.current = 0;
       return;
     }
     let alive = true;
-    let timer: ReturnType<typeof setInterval> | undefined;
+    let ws: WebSocket | null = null;
+    let reconnect: ReturnType<typeof setTimeout> | null = null;
+    let poll: ReturnType<typeof setInterval> | null = null;
+    let fails = 0;
     setLoading(true);
-    const tick = async () => {
-      try {
-        const [ev, one] = await Promise.all([
-          api.getWorkflowRunEvents(runId),
-          api.getWorkflowRun(runId),
-        ]);
-        if (!alive) return;
-        setEvents(ev.events || []);
-        const r = one.run ?? null;
-        setRun(r);
-        setLoading(false);
-        if (r && r.status !== "running" && timer) {
-          clearInterval(timer); // terminal → stop ticking
-          timer = undefined;
+
+    const stopPolling = () => {
+      if (poll) clearInterval(poll);
+      poll = null;
+    };
+    const startPolling = () => {
+      if (poll) return;
+      const tick = async () => {
+        try {
+          const [ev, one] = await Promise.all([
+            api.getWorkflowRunEvents(runId),
+            api.getWorkflowRun(runId),
+          ]);
+          if (!alive) return;
+          applyEvents(ev.events || []);
+          applyRun(one.run);
+          setLoading(false);
+          if (one.run && one.run.status !== "running" && one.run.status !== "paused") {
+            stopPolling(); // terminal → stop ticking (last snapshot stays)
+          }
+        } catch {
+          if (alive) setLoading(false); // sidecar down: keep the last snapshot
         }
-      } catch {
-        if (alive) setLoading(false); // sidecar down: keep the last snapshot
+      };
+      void tick();
+      poll = setInterval(tick, 1500);
+    };
+
+    const handle = (f: WsFrame) => {
+      switch (f.event) {
+        case "run.snapshot": {
+          if (f.run) setRun(f.run as WorkflowRun);
+          setEvents([]);
+          lastSeqRef.current = 0;
+          applyEvents((f.events as WorkflowRunEvent[]) || []);
+          setLoading(false);
+          break;
+        }
+        case "run.event":
+          applyEvents([f.payload as WorkflowRunEvent]);
+          break;
+        case "run.steps":
+          // mid-run step-status refresh (no status transitions happen while a
+          // step executes — without this the table sticks at the connect-time
+          // snapshot while events flow around it)
+          setRun((prev) => (prev ? { ...prev, steps: f.steps as WorkflowRun["steps"] } : prev));
+          break;
+        case "run.status":
+          // the full run JSON follows as run.snapshot; patch the essentials now
+          setRun((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: (f.status as string) ?? prev.status,
+                  error: (f.error as string | undefined) ?? prev.error,
+                  pending_interrupt: (f.pending_interrupt as WorkflowRun["pending_interrupt"]) ?? null,
+                }
+              : prev,
+          );
+          break;
+        default:
+          break; // run.pong / run.missing — nothing to render
       }
     };
-    void tick();
-    timer = setInterval(tick, 1500);
+
+    const connect = () => {
+      if (!alive) return;
+      try {
+        ws = api.openRunSocket(runId);
+      } catch {
+        fails += 1;
+        if (fails >= 2) startPolling();
+        else reconnect = setTimeout(connect, 3000);
+        return;
+      }
+      ws.onopen = () => {
+        if (!alive) return;
+        fails = 0;
+        setLive(true);
+        stopPolling(); // WS healthy again → polling standby
+      };
+      ws.onmessage = (m) => {
+        if (!alive) return;
+        try {
+          handle(JSON.parse(m.data as string) as WsFrame);
+        } catch {
+          /* malformed frame — ignore */
+        }
+      };
+      ws.onclose = () => {
+        if (!alive) return;
+        setLive(false);
+        fails += 1;
+        if (fails >= 2) startPolling();
+        else reconnect = setTimeout(connect, 3000);
+      };
+    };
+    connect();
+
     return () => {
       alive = false;
-      if (timer) clearInterval(timer);
+      stopPolling();
+      if (reconnect) clearTimeout(reconnect);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
     };
-  }, [runId]);
+  }, [runId, applyEvents, applyRun]);
+
+  const refresh = useCallback(async () => {
+    if (!runId) return;
+    try {
+      const [ev, one] = await Promise.all([
+        api.getWorkflowRunEvents(runId),
+        api.getWorkflowRun(runId),
+      ]);
+      applyEvents(ev.events || []);
+      applyRun(one.run);
+    } catch {
+      /* keep the last snapshot */
+    }
+  }, [runId, applyEvents, applyRun]);
 
   /** Status per node id, for colouring the canvas. */
   const nodeStatus = useMemo(() => {
@@ -102,5 +211,5 @@ export function useRunInspector(runId: string | null) {
     return stats;
   }, [events]);
 
-  return { run, events, loading, nodeStatus, nodeStats, refresh };
+  return { run, events, loading, live, nodeStatus, nodeStats, refresh };
 }

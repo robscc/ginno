@@ -760,7 +760,11 @@ function WorkflowBlock({ run }: { run: WorkflowRun }) {
   return (
     <div className="my-2 rounded-lg border border-line bg-base/50 p-3">
       <div
-        onClick={() => router.push("/workflows")}
+        onClick={() =>
+          // Deep-link to THIS run (same fix as RunBlocks — a bare /workflows
+          // lands on the Studio's first recipe, not the run's workflow).
+          router.push(`/workflows#wf=${run.workflow_id}&tab=run&run=${run.id}`)
+        }
         title="打开工作流详情"
         className="mb-2 flex cursor-pointer items-center gap-1.5 text-sm font-medium text-txt hover:text-violet"
       >
@@ -844,7 +848,7 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
       </button>
       {expanded && (
         <div className={`border-t border-line/60 ${isLong ? "max-h-80 overflow-y-auto" : ""}`}>
-          <pre className="whitespace-pre-wrap px-2.5 py-1.5 text-faint">{content}</pre>
+          <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 py-1.5 text-faint">{content}</pre>
         </div>
       )}
     </div>
@@ -911,7 +915,7 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
           onScroll={onScroll}
           className="max-h-60 overflow-y-auto border-t border-violet/15 px-3 py-2"
         >
-          <div className="whitespace-pre-wrap text-xs leading-relaxed text-muted">{text}</div>
+          <div className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">{text}</div>
         </div>
       )}
     </div>
@@ -1167,7 +1171,9 @@ export function UserBlocks({ blocks }: { blocks: Block[] }) {
       <SkillChips skills={skills} />
       {imgs.length > 0 && <ImageGallery urls={imgs} />}
       {allTexts.map((t, i) => (
-        <div key={i} className="whitespace-pre-wrap">
+        // break-words: pasted terminal output carries long unbroken paths —
+        // without it the transcript overflows the page into horizontal scroll
+        <div key={i} className="min-w-0 whitespace-pre-wrap break-words">
           {t}
         </div>
       ))}

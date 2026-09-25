@@ -13,6 +13,7 @@ import { NodeInspector } from "./NodeInspector";
 import { WorkflowPane } from "./WorkflowPane";
 import { RunObserver } from "./RunObserver";
 import { RunRightPane } from "./RunRightPane";
+import { SupervisorConsole } from "./SupervisorConsole";
 import { VersionsTab } from "./VersionsTab";
 import { useRunInspector } from "./useRunInspector";
 import { useStudioState, type StudioTab } from "./useStudioState";
@@ -20,6 +21,7 @@ import { useStudioState, type StudioTab } from "./useStudioState";
 const TABS: Array<[StudioTab, string]> = [
   ["design", "设计"],
   ["run", "运行"],
+  ["sup", "Supervisor"],
   ["versions", "版本"],
 ];
 
@@ -84,12 +86,34 @@ export function StudioShell() {
     };
   }, [wf?.id, runSig]);
 
-  const { run, events, nodeStatus, nodeStats, refresh } = useRunInspector(state.runId);
+  const { run, events, nodeStatus, nodeStats, refresh, live } = useRunInspector(state.runId);
 
   const reloadRuns = () => {
     void g.reloadWorkflowRuns();
     void refresh();
   };
+
+  // Decision inbox (design B §8.5): paused runs across ALL recipes awaiting a
+  // human decision. Re-fetched whenever any paused run's interrupt state moves.
+  const [inbox, setInbox] = useState<WorkflowRun[]>([]);
+  const inboxSig = useMemo(
+    () =>
+      g.workflowRuns
+        .filter((r) => r.status === "paused")
+        .map((r) => `${r.id}:${r.pending_interrupt?.kind || ""}`)
+        .join("|"),
+    [g.workflowRuns],
+  );
+  useEffect(() => {
+    let alive = true;
+    api
+      .listWorkflowRuns({ supervisor_pending: true })
+      .then((r) => alive && setInbox(r))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [inboxSig]);
 
   // Entering the 运行 tab with nothing selected lands on the newest run.
   useEffect(() => {
@@ -191,7 +215,9 @@ export function StudioShell() {
             unfilled={unfilled}
           />
         ))}
-      {state.tab === "run" && <RunRightPane run={run} events={events} onChanged={reloadRuns} />}
+      {(state.tab === "run" || state.tab === "sup") && (
+        <RunRightPane run={run} events={events} onChanged={reloadRuns} />
+      )}
       {state.tab === "versions" && (
         <div className="space-y-2 text-[11px] text-muted">
           <div className="text-[12.5px] font-semibold text-txt">关于版本</div>
@@ -214,6 +240,7 @@ export function StudioShell() {
           workflows={workflows}
           runs={runs}
           runsLoading={runsLoading}
+          inbox={inbox}
           selWfId={wf.id}
           selRunId={state.runId}
           onSelectWorkflow={(id) => {
@@ -222,6 +249,11 @@ export function StudioShell() {
           }}
           onSelectRun={(id) => {
             studio.selectRun(id);
+            studio.setTab("run");
+          }}
+          onOpenDecision={(wfId, runId) => {
+            studio.selectWorkflow(wfId);
+            studio.selectRun(runId);
             studio.setTab("run");
           }}
         />
@@ -312,9 +344,11 @@ export function StudioShell() {
                   onSelectNode={studio.selectNode}
                   onSelectRun={studio.selectRun}
                   onChanged={reloadRuns}
+                  live={live}
                 />
               </div>
             )}
+            {state.tab === "sup" && <SupervisorConsole wf={wf} events={events} />}
             {state.tab === "versions" && (
               <VersionsTab wf={wf} onChanged={() => void g.reloadWorkflows()} />
             )}

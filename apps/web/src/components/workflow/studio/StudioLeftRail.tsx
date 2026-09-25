@@ -30,23 +30,28 @@ function timeLabel(ts?: number): string {
 }
 
 /** Left rail: the recipe list on top, the runs of the selected recipe below
- *  (design B §3 — the rail is "配方 + Runs", not "会话"). */
+ *  (design B §3 — the rail is "配方 + Runs", not "会话"). Between them sits the
+ *  decision inbox: paused runs across ALL recipes awaiting a human decision. */
 export function StudioLeftRail({
   workflows,
   runs,
   runsLoading,
+  inbox,
   selWfId,
   selRunId,
   onSelectWorkflow,
   onSelectRun,
+  onOpenDecision,
 }: {
   workflows: WorkflowDef[];
   runs: WorkflowRun[];
   runsLoading?: boolean;
+  inbox: WorkflowRun[];
   selWfId: string | null;
   selRunId: string | null;
   onSelectWorkflow: (id: string) => void;
   onSelectRun: (id: string) => void;
+  onOpenDecision: (wfId: string, runId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<"all" | "system" | "user">("all");
@@ -144,6 +149,52 @@ export function StudioLeftRail({
           </div>
         )}
       </div>
+
+      {inbox.length > 0 && (
+        <div className="border-t border-line py-1.5">
+          <div className="flex items-center gap-1.5 px-3 pb-1">
+            <span className="text-[11px] font-semibold text-txt">决策收件箱</span>
+            <span className="rounded-full bg-orange/15 px-1.5 text-[10px] text-orange">
+              {inbox.length} 待裁决
+            </span>
+          </div>
+          {inbox.map((r) => {
+            const kind = r.pending_interrupt?.kind === "supervisor" ? "supervisor" : "human";
+            const wfName = workflows.find((w) => w.id === r.workflow_id)?.name || r.workflow_id;
+            return (
+              <button
+                key={r.id}
+                onClick={() => onOpenDecision(r.workflow_id, r.id)}
+                className={`block w-full border-l-2 px-3 py-1.5 text-left transition-colors ${
+                  r.id === selRunId
+                    ? "border-orange bg-card2/70"
+                    : "border-transparent hover:bg-card/60"
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`rounded px-1 py-px text-[9.5px] ${
+                      kind === "supervisor" ? "bg-violet/15 text-violet" : "bg-orange/15 text-orange"
+                    }`}
+                  >
+                    {kind}
+                  </span>
+                  <span className="truncate text-[11.5px] text-txt">{wfName}</span>
+                  <span className="ml-auto font-mono text-[10px] text-faint">
+                    #{r.id.slice(0, 6)}
+                  </span>
+                </div>
+                {r.pending_interrupt?.node_id && (
+                  <div className="mt-0.5 truncate text-[10px] text-faint">
+                    @{r.pending_interrupt.node_id}
+                    {r.pending_interrupt.question ? ` · ${r.pending_interrupt.question}` : ""}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="flex max-h-[45%] min-h-[110px] flex-col border-t border-line">
         <div className="flex items-center gap-1.5 px-3 py-2">

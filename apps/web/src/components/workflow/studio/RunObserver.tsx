@@ -42,6 +42,7 @@ export function RunObserver({
   onSelectNode,
   onSelectRun,
   onChanged,
+  live,
 }: {
   wf: WorkflowDef;
   run: WorkflowRun | null;
@@ -51,6 +52,7 @@ export function RunObserver({
   onSelectNode: (id: string | null) => void;
   onSelectRun: (id: string) => void;
   onChanged: () => void;
+  live?: boolean;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -63,6 +65,26 @@ export function RunObserver({
       onChanged();
     } catch {
       setErr("操作失败（运行时未响应）");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rerunFrom = async (nodeId: string) => {
+    if (busy) return;
+    setBusy(`rerun:${nodeId}`);
+    setErr(null);
+    try {
+      const r = await api.rerunWorkflowRunFrom(run!.id, nodeId);
+      const body = r as { ok?: boolean; run?: WorkflowRun; detail?: string };
+      if (body.ok && body.run) {
+        onSelectRun(body.run.id); // follow the fork
+        onChanged();
+      } else {
+        setErr(body.detail || "无法从该节点重跑");
+      }
+    } catch {
+      setErr("无法连接运行时");
     } finally {
       setBusy(null);
     }
@@ -96,6 +118,19 @@ export function RunObserver({
           {STATUS_LABEL[run.status] || run.status} · {done}/{run.steps.length} 步 ·{" "}
           {fmtDuration(duration)}
         </span>
+        {(running || paused) && (
+          <span
+            className={`flex items-center gap-1 rounded-full border px-1.5 py-px text-[9.5px] ${
+              live
+                ? "border-green/40 text-green"
+                : "border-line2 text-faint"
+            }`}
+            title={live ? "run 级 WebSocket 推送" : "REST 轮询兜底（WS 不可用）"}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-green" : "bg-faint"}`} />
+            {live ? "推送" : "轮询"}
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-1.5">
           {running && (
@@ -204,6 +239,19 @@ export function RunObserver({
                   <span className="shrink-0 tabular-nums text-faint" title="tokens (in+out)">
                     {st.tokens >= 1000 ? `${(st.tokens / 1000).toFixed(1)}K` : st.tokens}↑
                   </span>
+                )}
+                {terminal && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void rerunFrom(s.id);
+                    }}
+                    disabled={busy !== null}
+                    title="从该节点重跑：fork 一个新 run，只重执行此节点及其后继（用本 run 钉住的版本）"
+                    className="btn-press shrink-0 rounded border border-line2 px-1 py-px text-[9.5px] text-faint hover:border-violet/50 hover:text-violet disabled:opacity-40"
+                  >
+                    {busy === `rerun:${s.id}` ? "…" : "重跑"}
+                  </button>
                 )}
               </button>
             );

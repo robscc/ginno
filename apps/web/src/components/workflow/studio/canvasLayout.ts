@@ -30,14 +30,19 @@ export const PREVIEW_BOX: NodeBox = { nw: NW, nh: NH, gx: GX, gy: GY, pad: 16 };
 /** Studio canvas geometry: roomier cards with a title, type row and goal line. */
 export const STUDIO_BOX: NodeBox = { nw: 184, nh: 66, gx: 62, gy: 34, pad: 24 };
 
-/** BFS layering from entry → {nodeId: layer}; branch targets share a layer band. */
+/** BFS layering from entry → {nodeId: layer}; branch targets share a layer band.
+ *
+ *  Plain DISTANCE layering (first visit wins) — deliberately NOT longest-path:
+ *  a retry/back edge (human → entry, branch back-edge) makes max-layer
+ *  propagation diverge around the cycle until every node saturates at the
+ *  clamp layer, stacking the whole graph into one far column ("只看到一个
+ *  节点", 2026-09-25). Distance layering is stable on cycles by construction. */
 export function layerOrder(dsl: DagDsl): Map<string, number> {
   const nodes = dsl.nodes || [];
   const adj = new Map<string, string[]>();
   for (const e of dsl.edges || []) {
     adj.set(e.from, [...(adj.get(e.from) || []), e.to]);
   }
-  // include branch case targets as adjacency too
   for (const n of nodes) {
     if (n.type === "branch") {
       const cs = ((n as unknown as { cases?: { then?: string }[] }).cases || [])
@@ -46,27 +51,26 @@ export function layerOrder(dsl: DagDsl): Map<string, number> {
       const def = (n as unknown as { default?: string }).default;
       adj.set(n.id, [...(adj.get(n.id) || []), ...cs, ...(def ? [def] : [])]);
     }
+    // loop → body is a FORWARD structural edge (the body runs per iteration);
+    // body → loop is the back-edge and must NOT be added — the cycle would
+    // otherwise pull the loop head forward forever under max-layering and dump
+    // unreached bodies into column 0 under distance layering.
+    if (n.type === "loop" && (n as unknown as { body?: string }).body) {
+      adj.set(n.id, [...(adj.get(n.id) || []), (n as unknown as { body: string }).body]);
+    }
   }
   const layer = new Map<string, number>();
   const queue: string[] = [];
-  // A branch back-edge (retry/loop) makes longest-path layering diverge; clamp
-  // the layer and cap iterations so a cycle can never spin this BFS forever and
-  // freeze the tab.
-  const maxLayer = Math.max(1, nodes.length);
-  const cap = nodes.length * nodes.length + 16;
-  let guard = 0;
   if (dsl.entry) {
     layer.set(dsl.entry, 0);
     queue.push(dsl.entry);
   }
-  while (queue.length && guard++ < cap) {
+  while (queue.length) {
     const cur = queue.shift()!;
     for (const nx of adj.get(cur) || []) {
-      const cand = Math.min((layer.get(cur) ?? 0) + 1, maxLayer);
-      if (!layer.has(nx) || layer.get(nx)! < cand) {
-        layer.set(nx, cand);
-        queue.push(nx);
-      }
+      if (layer.has(nx)) continue; // first visit = shortest distance; cycles end here
+      layer.set(nx, (layer.get(cur) ?? 0) + 1);
+      queue.push(nx);
     }
   }
   // any unreached node (disconnected) gets its own trailing layer

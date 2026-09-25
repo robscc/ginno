@@ -234,6 +234,7 @@ export interface WorkflowRun {
 export interface WorkflowRunEvent {
   ts?: number;
   run_id?: string;
+  seq?: number; // monotonic per run (design B P2): WS dedup after a reconnect
   kind?: string; // node_enter | node_exit | tool_call | tool_result | context_write | loop_iter | loop_skip | loop_cap | interrupt | resume | error | done | paused | cancelled | interrupted
   node_id?: string | null;
   node_type?: string;

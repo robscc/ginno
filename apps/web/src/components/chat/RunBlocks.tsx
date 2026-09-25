@@ -154,7 +154,14 @@ export function LiveRunBlock({
       }`}
     >
       <div
-        onClick={() => router.push("/workflows")}
+        onClick={() =>
+          router.push(
+            // Deep-link to THIS run in the Studio observer (design B): without
+            // the hash the Studio falls back to its first recipe — a run of
+            // workflow X must open X's run view, not whatever is first.
+            `/workflows#wf=${run.workflow_id}&tab=run&run=${run.id}`,
+          )
+        }
         title="打开工作流详情"
         className="mb-2 flex cursor-pointer items-center gap-1.5 text-sm font-medium text-txt hover:text-violet"
       >

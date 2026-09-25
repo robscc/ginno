@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 
-export type StudioTab = "design" | "run" | "versions";
+export type StudioTab = "design" | "run" | "sup" | "versions";
 export type Pos = { x: number; y: number };
 
 export interface StudioState {
@@ -24,7 +24,7 @@ type Action =
   | { type: "pos"; id: string; pos: Pos }
   | { type: "restore"; state: Partial<StudioState> };
 
-const TABS: StudioTab[] = ["design", "run", "versions"];
+const TABS: StudioTab[] = ["design", "run", "sup", "versions"];
 
 function reducer(s: StudioState, a: Action): StudioState {
   switch (a.type) {

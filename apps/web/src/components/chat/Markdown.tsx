@@ -95,7 +95,7 @@ export function Markdown({
         code({ children }) {
           // Inline code only — block code is handled by the pre override above.
           return (
-            <code className="rounded border border-line bg-card2/70 px-1 py-0.5 font-mono text-[0.85em] text-[rgb(var(--inline-code))]">
+            <code className="break-all rounded border border-line bg-card2/70 px-1 py-0.5 font-mono text-[0.85em] text-[rgb(var(--inline-code))]">
               {children}
             </code>
           );

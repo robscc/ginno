@@ -24,8 +24,13 @@ import type {
 // non-default port (e.g. a dev sidecar on 8797) would fetch the wrong sidecar.
 // NEXT_PUBLIC_RUNTIME_PORT remains an opt-in override for the rare split-origin
 // dev setup (web :3000 talking to a sidecar elsewhere).
-const OVERRIDE_PORT =
-  typeof process !== "undefined" ? process.env.NEXT_PUBLIC_RUNTIME_PORT : undefined;
+//
+// Reference the env var DIRECTLY, no `typeof process` guard: Next statically
+// inlines NEXT_PUBLIC_* into a string literal at compile time, and a runtime
+// guard can silently discard that literal when a chunk executes without the
+// process shim — exactly the trap that had split-origin dev 404ing to
+// same-origin despite the port being correctly inlined (2026-09-25).
+const OVERRIDE_PORT = process.env.NEXT_PUBLIC_RUNTIME_PORT;
 
 function sameOriginBase(): string {
   if (typeof window !== "undefined") {
@@ -319,14 +324,31 @@ export function openSessionSocket(session_id: string): WebSocket {
   return new WebSocket(`${wsBase()}/${session_id}`);
 }
 
+/** Run-scoped live channel (design B P2): snapshot on connect, then
+ *  run.event (payload.seq) / run.status / run.snapshot frames. */
+export function openRunSocket(run_id: string): WebSocket {
+  const path = `/api/ws/runs/${run_id}`;
+  if (typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = OVERRIDE_PORT
+      ? `${window.location.hostname}:${OVERRIDE_PORT}`
+      : window.location.host;
+    return new WebSocket(`${proto}//${host}${path}`);
+  }
+  return new WebSocket(`ws://127.0.0.1:${OVERRIDE_PORT ?? 8787}${path}`);
+}
+
 // ---- workflows ----
 export async function listWorkflows() {
   return json<import("./types").WorkflowDef[]>(`${BASE}/workflows`);
 }
-export async function listWorkflowRuns(opts: { workflow_id?: string; status?: string } = {}) {
+export async function listWorkflowRuns(
+  opts: { workflow_id?: string; status?: string; supervisor_pending?: boolean } = {},
+) {
   const q = new URLSearchParams();
   if (opts.workflow_id) q.set("workflow_id", opts.workflow_id);
   if (opts.status) q.set("status", opts.status);
+  if (opts.supervisor_pending) q.set("supervisor_pending", "true");
   const qs = q.toString();
   return json<import("./types").WorkflowRun[]>(`${BASE}/workflow_runs${qs ? `?${qs}` : ""}`);
 }
@@ -435,6 +457,20 @@ export async function retryWorkflowRunFromCheckpoint(run_id: string) {
     method: "POST",
     headers: H,
     body: JSON.stringify({}),
+  });
+}
+export async function rerunWorkflowRunFrom(run_id: string, node_id: string) {
+  // Design B 屏2「从节点重跑」: fork a NEW run re-executing from an arbitrary
+  // scheduled node, compiled against the source run's pinned dsl_version.
+  return json<{
+    ok: boolean;
+    run?: import("./types").WorkflowRun;
+    source_run_id?: string;
+    detail?: string;
+  }>(`${BASE}/workflow_runs/${run_id}/rerun_from`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ node_id }),
   });
 }
 export async function deleteWorkflowRun(run_id: string) {
