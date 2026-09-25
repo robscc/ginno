@@ -1,6 +1,6 @@
 # Ginno Architecture
 
-> 本文描述 **当前主干代码的真实架构**（2026-08 重写并持续同步；最近一次全量核对 2026-08-08）。
+> 本文描述 **当前主干代码的真实架构**（2026-08 重写并持续同步；最近一次全量核对 2026-09-25，含 Studio 方案B 阶段1+2）。
 > Ginno 已从"单轮 ReAct 骨架"演进为：多 Agent 对话 + 工具/权限/技能/MCP/记忆/知识库
 > + Workflow DSL 引擎 + Goal 长程自主推进 + TODO 外部平台同步 + 内置 Web 搜索与引用溯源
 > 的个人 AI Agent 桌面应用。
@@ -64,17 +64,27 @@
 │   • 冷启动未就绪 → 先导航 data: URL 内嵌 splash，轮询 /api/health     │
 │   • 唯一 Rust→JS 桥：原生拖放 window.__ginnoFileDrop(paths)          │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  WKWebView ──► http://127.0.0.1:8787                          │   │
-│  └──────────────────────┬───────────────────────────────────────┘   │
+│  │  WKWebView ──► http://127.0.0.1:8787                         │   │
+│  │  路由：/ 聊天工作台 · /workflows Studio · /kb · /pin ·       │   │
+│  │  /settings/[tab]（静态导出无 searchParams，深链走 hash）     │   │
+│  │  Studio 三栏：左 配方+Runs+决策收件箱 · 中 设计画布/运行     │   │
+│  │  观察台/Supervisor 台/版本 · 右 节点检查器/运行上下文        │   │
+│  └────────────────────────┬────────────────────────────────────┘   │
 └─────────────────────────┼───────────────────────────────────────────┘
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  Python Sidecar  =  FastAPI app（server.py 壳 + api/ 路由包）         │
-│   • GET /_next/*、catch-all GET /{path}  → 托管 Next 静态导出        │
-│       打包时来自 sys._MEIPASS/web_out，开发时来自 apps/web/out       │
-│   • /api/**          → ~105 个 REST 端点（§7.1）                     │
-│   • /api/ws/sessions/{sid} → WebSocket（turn 流式 + HITL，§7.2）     │
-│   • 端口 8787（GINNO_RUNTIME_PORT 可改）                             │
+│  Python Sidecar  =  FastAPI app（server.py 壳 + api/ 路由包）       │
+│   • GET /_next/*、catch-all GET /{path}  → 托管 Next 静态导出       │
+│       打包时来自 sys._MEIPASS/web_out，开发时来自 apps/web/out      │
+│   • /api/**          → ~130 个 REST 端点（§7.1）                    │
+│   • 两条 WebSocket 通道（§7.2）：                                   │
+│     WS /api/ws/sessions/{sid} → 会话/turn 流（流式 + HITL）         │
+│         消费方：聊天工作台（run 卡片经 turn 流 adoption 驱动）      │
+│     WS /api/ws/runs/{run_id}  → run 流：连接即快照重放（run +       │
+│         events 带 seq），随后推送 run.event / run.status /          │
+│         run.snapshot；headless run 的唯一实时通道                   │
+│         消费方：Studio 运行观察台 / Supervisor 决策收件箱           │
+│   • 端口 8787（GINNO_RUNTIME_PORT 可改）                            │
 └──────────────────────────┬──────────────────────────────────────────┘
                            ▼
               ~/.ginno/   （全部状态 · 文件 · 无数据库）
@@ -111,7 +121,7 @@ ginno/
 │           ├── server_shared.py # 进程级可变状态（_SESSIONS/_SESSION_WS/…）+ 事件推送
 │           ├── session_meta.py  # sessions/_index.json 存取助手
 │           ├── api/             # 按域拆分的 APIRouter：sessions/stream/workflows/
-│           │                    #   files/knowledge/config/todos/usage/memory/messages_ui
+│           │                    #   files/folders/knowledge/config/todos/usage/memory/messages_ui
 │           ├── graph.py         # 聊天主图（agent/permission/tools）+ 系统提示分层
 │           ├── state.py         # 图状态 TypedDict
 │           ├── world_state.py   # WorldState 上下文工程（分节 + diff）
@@ -128,9 +138,9 @@ ginno/
 │           ├── knowledge/       # LLMWiki：indexer/retriever/semantic/injection/compiler/
 │           │                    #   association + citations/usage/web_usage（引用台账）
 │           ├── web/             # 内置网络搜索：config/engines/fetch（§6.13）
-│           ├── workflows/       # DSL/compiler/engine/nodes/supervisor/store/events
+│           ├── workflows/       # dsl/compiler/engine/nodes/supervisor/store/events/
+│           │                    #   synthesis/dryrun/doctor/expr/contracts/scripts
 │           ├── goals/           # goal store / 模板 / 事件桥
-│           ├── browser/         # BrowserSupervisor / Space 注册表 / CDP / handoff（§6.14）
 │           ├── todos/           # TODO store / providers / sync_ledger
 │           ├── artifacts/ files/ tools/ testing/
 ├── docs/               # 本文 + 各子系统设计与使用文档
@@ -206,12 +216,11 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 | 结构化输出（静默） | `render_widget, attach_ref` |
 | TODO | `todo_list, todo_create, todo_update, todo_done, todo_delete, todo_link` |
 | Goal | `goal_get, goal_create, goal_update`（仅有 session 时绑定） |
-| Workflow | `workflow_list, workflow_create, workflow_run, workflow_step` |
-| Workflow-dev | `workflow_propose_edit` |
+| Workflow | `workflow_list, workflow_get, workflow_create, workflow_run, workflow_run_status, workflow_step` |
+| Workflow-dev | `workflow_propose_edit, workflow_dry_run` |
 | Artifact | `artifact_register` |
 | 文档 | `parse_document, analyze_table` |
 | Web | `web_search, web_fetch`（引擎可插拔；`settings.web.enabled=false` 时不注册） |
-| Browser | `browser_eval`（内嵌浏览器 JS 执行；详见 §6.14） |
 | MCP | `mcp_{server}_{tool}`（动态，默认含 playwright） |
 
 > `render_widget` / `attach_ref` 是 **no-op 工具**，WS 层拦截其调用发 `widget.emit`/`ref.emit`
@@ -399,7 +408,7 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 
 ## 7. API 表面
 
-### 7.1 REST（~105 端点，前缀 `/api`，按组；路由分散在 `api/` 各 router + `server.py`）
+### 7.1 REST（~130 端点，前缀 `/api`，按组；路由分散在 `api/` 各 router + `server.py`）
 
 | 组 | 代表端点 |
 |---|---|
@@ -409,7 +418,7 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 | goals | `GET/PUT/DELETE /sessions/{sid}/goal` |
 | skills | `GET /skills` · `POST /skills` · `DELETE /skills/{name}` · `POST /skills/import-dir` |
 | workflows | CRUD + `/versions`、`/versions/diff`、`/rollback`、`/summarize-from-session` |
-| workflow_runs | `POST /workflow_runs`（绑定 session 后台跑）· `/{id}/cancel /resume /decide /events /_await` |
+| workflow_runs | `POST /workflow_runs`（绑定 session 后台跑，支持 `?workflow_id/status/supervisor_pending` 过滤）· `/{id}/cancel /pause /resume /decide /retry /retry_from_checkpoint /rerun_from /events /_await` |
 | todos | CRUD + `/todo-providers` · `/todos/sync-status` · `/todos/pull` · `/todos/{id}/push` |
 | artifacts | `GET /artifacts` · `/{id}/metadata` · `PUT /{id}` · `DELETE /{id}` |
 | files / session-files | `POST /files`（上传）· `/{id}/preview /download /save-to-downloads` · `attach-path` · session-files 浏览/reveal/删除 |
@@ -419,7 +428,9 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 | web / 外链 | `POST /web/test-search`（引擎探活）· `POST /open-external`（系统浏览器打开，公网守卫） |
 | 其他 | catch-all `GET /{path}`（SPA 兜底）· `WS /api/ws/sessions/{sid}` |
 
-### 7.2 WebSocket 协议（`/api/ws/sessions/{session_id}`）
+### 7.2 WebSocket 协议（两条通道）
+
+**会话通道 `WS /api/ws/sessions/{session_id}`**（`api/stream.py`）
 
 - **server→client** 帧为扁平 JSON `{"event", "turn_id"?, …}`。client→server 为 `{"type", …}`，
   type ∈ `invoke / permission_response / turn_state / ping`。
@@ -430,6 +441,16 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   agents.changed`、`preview.emit / preview.invalidate`、`run.bind / run.event / run.status`、
   `context.updated / context.microcompacted / context.compacted`、`goal.updated / goal.cleared`、
   `notice / turn.state / pong`。
+
+**Run 通道 `WS /api/ws/runs/{run_id}`**（`api/workflows.py`，Studio P2 新增）
+
+- Studio 运行观察台 / 决策收件箱按 **run_id** 订阅——与 run 被呈现进哪个 session 无关，
+  也是 **headless run 唯一的实时通道**。
+- **连接即注册、注册即快照**：先注册 socket 再发一帧 `run.snapshot`
+  `{run, events, last_seq}`（回放自 per-run `events.jsonl`，事件带 `seq`）；
+  随后由 run 驱动推送 `run.event`（payload 带 `seq`）/ `run.status` / `run.snapshot`。
+- **重连无害**：重连即重发全量快照，客户端丢弃 `seq ≤` 已应用值的负载。
+- 入站仅 `ping`；run 控制一律走 REST（每个控制动作单一权威写者）。
 
 ### 7.3 断线重连 / resume（关键设计）
 

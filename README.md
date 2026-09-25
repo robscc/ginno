@@ -19,11 +19,40 @@ ginno/
 │   └── web/            # Next.js UI (static export)
 ├── packages/
 │   └── runtime/        # Python: FastAPI + LangGraph + Skills/MCP/Hooks/Permissions
-├── docs/
-│   └── architecture.md
+├── docs/               # architecture.md + subsystem design docs
 └── scripts/
     └── dev.sh          # run all three processes in dev
 ```
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Tauri shell (Rust)  →  WKWebView                        │
+│    / chat · /workflows Studio · /kb · /pin · /settings   │
+│    Studio: left = recipes + runs + decision inbox;       │
+│      centre = design canvas / run observer /             │
+│      supervisor console / versions;                      │
+│      right = node inspector / run context                │
+└───────────────────────────┬──────────────────────────────┘
+                            ▼  http://127.0.0.1:8787 (same-origin)
+┌──────────────────────────────────────────────────────────┐
+│  Python sidecar — FastAPI (:8787)                        │
+│   • serves Next.js static export + REST /api/**          │
+│   • WS /api/ws/sessions/{sid}  session/turn stream       │
+│       → chat workspace run cards (turn stream)           │
+│   • WS /api/ws/runs/{run_id}   run snapshot replay       │
+│       + live push → Studio observer / decision inbox     │
+└───────────────────────────┬──────────────────────────────┘
+                            ▼
+        ~/.ginno/  (all state: plain files, no DB)
+```
+
+Both WebSocket channels are served same-origin by the sidecar: the session
+channel drives the chat workspace, the run channel (snapshot replay + live
+push) drives the Studio's run observer and supervisor decision inbox — it is
+also the only live channel for headless runs. Full details:
+[`docs/architecture.md`](docs/architecture.md).
 
 ## ~/.ginno layout
 
@@ -64,4 +93,4 @@ pnpm dev:desktop    # Tauri (loads web, spawns sidecar)
 
 ## Status
 
-Skeleton scaffold — see `docs/architecture.md` for the design and roadmap.
+In active daily use. See `docs/architecture.md` for the current architecture (Studio + workflow engine + sidecar).
