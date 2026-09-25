@@ -981,7 +981,32 @@ export function ChatStream({
         // cosmetic; message.end reconciles it away.
         const lid = liveBySessionRef.current[sid];
         const liveMsg = lid ? (storeRef.current[sid] ?? []).find((m) => m.id === lid) : null;
-        storeRef.current[sid] = liveMsg ? [...mapped, liveMsg] : mapped;
+        if (liveMsg) {
+          // The parked-question re-emit on socket open can create a live
+          // bubble for a turn history ALSO rebuilt (same question/tool-call
+          // id in both). Keeping both showed the ask_user card TWICE for as
+          // long as the turn stays parked — message.end never comes to
+          // reconcile. Adopt history's message as the live target instead
+          // (2026-09-25); genuinely in-flight turns (no matching question
+          // id) keep their live bubble as before.
+          const qId = (b: Block) => (b.kind === "question" ? b.id : undefined);
+          const liveQIds = new Set(
+            liveMsg.blocks.map(qId).filter((x): x is string => !!x)
+          );
+          const dupe = mapped.find(
+            (m) =>
+              m.id === liveMsg.id ||
+              m.blocks.some((b) => qId(b) !== undefined && liveQIds.has(qId(b)!))
+          );
+          if (dupe) {
+            liveBySessionRef.current[sid] = dupe.id;
+            storeRef.current[sid] = mapped;
+          } else {
+            storeRef.current[sid] = [...mapped, liveMsg];
+          }
+        } else {
+          storeRef.current[sid] = mapped;
+        }
         syncDisplay(sid);
       });
     }
@@ -1056,6 +1081,19 @@ export function ChatStream({
   //
   // stickRef flips false the moment the user scrolls away (:onScroll), which
   // aborts the loop — so this never fights someone reading back.
+  // A viewport resize reflows the transcript WITHOUT a [messages] change —
+  // the 12-frame pin window has long passed, so a shorter window left the
+  // latest message a few px (measured: 17) or a page above the fold with
+  // stickRef still true. Re-pin on resize while stuck (2026-09-25).
+  useEffect(() => {
+    const onResize = () => {
+      if (stickRef.current) pinToBottom();
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function pinToBottom(frames = 12) {
     let left = frames;
     const attempt = () => {
