@@ -20,6 +20,13 @@ import { DevSessionDrawer } from "./DevSessionDrawer";
 import { ImportFromSessionModal } from "./ImportFromSessionModal";
 import { useRunInspector } from "./useRunInspector";
 import { useStudioState, type StudioTab } from "./useStudioState";
+import { PanelResizer, usePanelWidth } from "./PanelResizer";
+
+// Resizable panel bounds. Defaults mirror the Tailwind fallback classes so a
+// double-click on a handle lands back on the stock layout.
+const RAIL = { def: 236, min: 180, max: 380 };
+const ASIDE = { def: 326, min: 280, max: 520 };
+const RUNLIST = { def: 224, min: 176, max: 400 };
 
 const TABS: Array<[StudioTab, string]> = [
   ["design", "设计"],
@@ -129,6 +136,12 @@ export function StudioShell() {
   const fb = useTriggerFeedback();
   const [triggerErr, setTriggerErr] = useState<string | null>(null);
   const [asideOpen, setAsideOpen] = useState(false);
+
+  // Draggable panel widths (persisted per browser; inline style overrides the
+  // Tailwind w-* classes, which remain the SSR/no-JS fallback).
+  const [railW, setRailW] = usePanelWidth("ginno:studio-rail-w", RAIL.def, RAIL.min, RAIL.max);
+  const [inspW, setInspW] = usePanelWidth("ginno:studio-insp-w", ASIDE.def, ASIDE.min, ASIDE.max);
+  const [runListW, setRunListW] = usePanelWidth("ginno:studio-runlist-w", RUNLIST.def, RUNLIST.min, RUNLIST.max);
 
   const unfilled = useMemo(() => {
     const keys = new Set<string>();
@@ -247,7 +260,7 @@ export function StudioShell() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      <div className="w-[196px] shrink-0 xl:w-[236px]">
+      <div className="w-[196px] shrink-0 xl:w-[236px]" style={{ width: railW }}>
         <StudioLeftRail
           workflows={workflows}
           inbox={inbox}
@@ -264,6 +277,11 @@ export function StudioShell() {
           }}
         />
       </div>
+      <PanelResizer
+        ariaLabel="调整左侧导航宽度"
+        onDrag={(dx) => setRailW((w) => w + dx)}
+        onReset={() => setRailW(RAIL.def)}
+      />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex flex-wrap items-center gap-2 border-b border-line bg-panel px-3 py-2">
@@ -356,7 +374,7 @@ export function StudioShell() {
               <div className="flex h-full min-h-0 gap-3">
                 {/* Run list column (≥1024px): recipe-scoped, replaced below
                     that by a horizontal chip strip so the observer keeps width. */}
-                <div className="hidden w-56 shrink-0 lg:block">
+                <div className="hidden w-56 shrink-0 lg:block" style={{ width: runListW }}>
                   <RunListColumn
                     runs={runs}
                     runsLoading={runsLoading}
@@ -364,6 +382,12 @@ export function StudioShell() {
                     onSelectRun={studio.selectRun}
                   />
                 </div>
+                <PanelResizer
+                  ariaLabel="调整运行列表宽度"
+                  onDrag={(dx) => setRunListW((w) => w + dx)}
+                  onReset={() => setRunListW(RUNLIST.def)}
+                  className="hidden lg:block"
+                />
                 <div className="flex min-w-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
                   <div className="lg:hidden">
                     <RunListColumn
@@ -403,7 +427,18 @@ export function StudioShell() {
             )}
           </div>
 
-          <aside className="hidden w-[326px] shrink-0 overflow-y-auto border-l border-line bg-panel p-3 xl:block">
+          {/* Docked inspector (≥1280px) is resizable; the <1280px overlay
+              drawer below keeps its fixed width and gets no handle. */}
+          <PanelResizer
+            ariaLabel="调整检查器宽度"
+            onDrag={(dx) => setInspW((w) => w - dx)}
+            onReset={() => setInspW(ASIDE.def)}
+            className="hidden xl:block"
+          />
+          <aside
+            className="hidden w-[326px] shrink-0 overflow-y-auto border-l border-line bg-panel p-3 xl:block"
+            style={{ width: inspW }}
+          >
             {asideContent}
           </aside>
 
