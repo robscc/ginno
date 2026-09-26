@@ -3,22 +3,33 @@
 import { useState } from "react";
 import { AlertTriangle, Check, ChevronDown, Loader2, RotateCcw, SkipForward, Square, Pencil } from "lucide-react";
 import * as api from "@/lib/runtime";
+import { FALLBACK_REASON_ZH } from "./SupervisorConsole";
 
 /**
  * Decision card for a run parked at an injected supervisor gate
  * (pending_interrupt.kind === "supervisor", design B §8.5). Six decisions:
  * 继续 / 重试该节点 / 跳过 / 改 context 后继续 / 保持暂停 / 中止.
  * All land on POST /decide {decision, context_patch}.
+ *
+ * When the parked interrupt carries fallback_reason/auto_suggestion the auto
+ * adjudicator escalated this gate to a human (P2.5) — shown as a banner above
+ * the question; the six decisions themselves are unchanged.
  */
 export function SupervisorDecisionCard({
   runId,
   nodeId,
   question,
+  fallbackReason,
+  autoSuggestion,
   onChanged,
 }: {
   runId: string;
   nodeId?: string | null;
   question?: string | null;
+  fallbackReason?: string | null;
+  /** The backend sends the adjudicator's FULL verdict object
+   *  {decision, confidence, reason}; tolerate a plain string too. */
+  autoSuggestion?: string | { decision?: string; confidence?: number; reason?: string } | null;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
@@ -80,6 +91,25 @@ export function SupervisorDecisionCard({
           保持暂停（收起）
         </button>
       </div>
+      {(fallbackReason || autoSuggestion) && (
+        <div className="mb-2 space-y-0.5 rounded border border-yellow/30 bg-yellow/[0.08] px-2 py-1.5">
+          {fallbackReason && (
+            <div className="text-[11px] text-yellow">
+              auto 转人工 · 原因：{FALLBACK_REASON_ZH[fallbackReason] || fallbackReason}
+            </div>
+          )}
+          {autoSuggestion && (
+            <div className="text-[11px] text-muted">
+              auto 建议：
+              {typeof autoSuggestion === "string"
+                ? autoSuggestion
+                : `${autoSuggestion.decision ?? "?"}${
+                    autoSuggestion.reason ? `（${autoSuggestion.reason}）` : ""
+                  }`}
+            </div>
+          )}
+        </div>
+      )}
       {question && (
         <div className="mb-2 text-xs leading-relaxed text-txt">{question}</div>
       )}

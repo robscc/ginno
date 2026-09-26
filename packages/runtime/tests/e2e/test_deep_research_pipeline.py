@@ -28,6 +28,26 @@ from ginno_runtime.workflows import engine
 pytestmark = pytest.mark.e2e
 
 
+@pytest.fixture(autouse=True)
+def _auto_supervisor_passes_through(monkeypatch):
+    """阶段3起 supervisor.enabled+auto 的门会真的调用 LLM 裁决器，每个门消耗
+    一个剧本回合、打乱本文件"script order = node order"的编排。这里的监督
+    不是被测对象（专属套件见 tests/api/test_workflow_supervisor_auto.py），
+    一律 mock 成 continue 放行。"""
+    from ginno_runtime.workflows import supervisor_runtime
+
+    async def _continue(**kwargs):
+        return {
+            "decision": "continue",
+            "confidence": 0.95,
+            "reason": "ok",
+            "context_patch": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    monkeypatch.setattr(supervisor_runtime, "adjudicate", _continue)
+
+
 def pipeline_dsl() -> dict:
     """The pure DSL (no test-only node types) — also what the API receives."""
     return {

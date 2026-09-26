@@ -123,9 +123,15 @@ def test_abort_ends_the_run(client, monkeypatch):
     assert steps["s2"] == "pending"  # the suffix never ran
 
 
-def test_auto_mode_pending_passes_through_visibly(client, monkeypatch):
-    """Until P2.5 lands the adjudicator, an enabled auto gate passes through —
-    never silently: each gate emits a supervisor_decision (auto-pending)."""
+def test_auto_mode_adjudicates_without_parking(client, monkeypatch):
+    """P2.5: an auto gate adjudicates instead of parking. The full ladder/
+    budget contract lives in test_workflow_supervisor_auto.py — here we pin
+    only that human mode's file still sees auto runs complete untouched."""
+    async def _continue(**kwargs):
+        return {"decision": "continue", "confidence": 0.95, "reason": "ok",
+                "context_patch": None, "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+    monkeypatch.setattr("ginno_runtime.workflows.supervisor_runtime.adjudicate", _continue)
     dsl = _gated_dsl()
     dsl["dsl"]["supervisor"]["mode"] = "auto"
     wf = store.create_def(dsl)
@@ -134,5 +140,5 @@ def test_auto_mode_pending_passes_through_visibly(client, monkeypatch):
     aw = client.post(f"/api/workflow_runs/{rid}/_await").json()
     assert aw["run"]["status"] == "done"
     evs = client.get(f"/api/workflow_runs/{rid}/events").json()["events"]
-    dec = [e for e in evs if e["kind"] == "supervisor_decision"]
-    assert dec and dec[-1]["mode"] == "auto-pending"
+    dec = [e for e in evs if e["kind"] == "sup_decision"]
+    assert dec and dec[-1]["mode"] == "auto" and dec[-1]["decision"] == "continue"

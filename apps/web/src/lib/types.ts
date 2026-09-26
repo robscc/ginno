@@ -221,9 +221,14 @@ export interface WorkflowRun {
   // the run transitions to "paused". kind "human" → show the question card;
   // "manual" → user pause (#14), generic 继续/取消 controls.
   pending_interrupt?: {
-    kind?: string; // "human" | "manual"
+    kind?: string; // "human" | "manual" | "supervisor"
     node_id?: string | null;
     question?: string | null;
+    // Present when auto-mode escalation parked the run at a supervisor gate
+    // (design B P2.5): why the adjudicator handed off to a human, plus what it
+    // would have done on its own.
+    fallback_reason?: string; // "low-confidence" | "interventions-exceeded" | "token-budget" | "retry-limit" | "judge-error"
+    auto_suggestion?: string | { decision?: string; confidence?: number; reason?: string } | null;
     [k: string]: unknown;
   } | null;
 }

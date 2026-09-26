@@ -417,6 +417,7 @@ def create_run(
     present_in_session_id: str | None = None,
     context_override: dict | None = None,
     retried_from: str | None = None,
+    supervisor_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     d, ver = _wf_dsl_and_version(wf)
@@ -456,6 +457,10 @@ def create_run(
         "context_override": context_override,
         # Retry provenance: which run this one re-executes (None on first run).
         "retried_from": retried_from,
+        # Config layer 2 (方案B 阶段3): supervisor overrides merged into the
+        # supervisor block by the drivers BEFORE compiling — persisted verbatim
+        # so resumes/reruns of this run re-apply the same overrides.
+        "supervisor_override": supervisor_override,
         # Last failure reason (surfaced by the UI without parsing events.jsonl);
         # cleared when the run reaches done.
         "error": None,

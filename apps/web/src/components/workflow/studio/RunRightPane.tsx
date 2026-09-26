@@ -96,6 +96,8 @@ export function RunRightPane({
               runId={run.id}
               nodeId={interrupt.node_id}
               question={interrupt.question ?? null}
+              fallbackReason={interrupt.fallback_reason ?? null}
+              autoSuggestion={interrupt.auto_suggestion ?? null}
               onChanged={onChanged}
             />
           ) : (

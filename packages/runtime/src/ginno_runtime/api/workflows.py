@@ -1086,6 +1086,19 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
             _backfill_first_run(wf.get("id"), wf_store.get_run(run_id) or {})
 
 
+def _apply_supervisor_override(run: dict | None, dsl: dict) -> dict:
+    """Config layer 2 (方案B 阶段3): merge the run's ``supervisor_override``
+    into the supervisor block BEFORE compiling. Deep-copies first — the stored
+    version snapshot (and the def) must NEVER be mutated: resuming later must
+    still see the pristine pinned DSL."""
+    ov = (run or {}).get("supervisor_override")
+    if not isinstance(ov, dict) or not ov:
+        return dsl
+    d = json.loads(json.dumps(dsl, ensure_ascii=False))
+    d["supervisor"] = {**(d.get("supervisor") or {}), **ov}
+    return d
+
+
 async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict | None, present_in: str | None = None) -> None:
     """Background driver: fork agent, stream the engine, persist + push events.
 
@@ -1098,9 +1111,11 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=(wf_store.get_run(run_id) or {}).get("dsl_version"))
+        run0 = wf_store.get_run(run_id) or {}
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=run0.get("dsl_version"))
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
+        dsl = _apply_supervisor_override(run0, dsl)
         if present_in:
             await _push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
         else:
@@ -1141,9 +1156,11 @@ async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict,
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=(wf_store.get_run(run_id) or {}).get("dsl_version"))
+        run0 = wf_store.get_run(run_id) or {}
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=run0.get("dsl_version"))
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
+        dsl = _apply_supervisor_override(run0, dsl)
         _set_run_status(run_id, "running")
         # paused→running must be ANNOUNCED: the chat run card (and any run-
         # scoped observer) only learns of the flip from this push — the next
@@ -1312,8 +1329,12 @@ async def create_workflow_run_endpoint(data: dict) -> dict:
     session_id = data.get("session_id")
     present_in = data.get("present_in_session_id") or session_id
     override = data.get("context_override")
+    sup_override = data.get("supervisor_override")
+    if sup_override is not None and not isinstance(sup_override, dict):
+        raise HTTPException(status_code=400, detail="supervisor_override must be an object")
     run = wf_store.create_run(
-        wf, session_id=session_id, present_in_session_id=present_in, context_override=override
+        wf, session_id=session_id, present_in_session_id=present_in, context_override=override,
+        supervisor_override=sup_override,
     )
     _spawn_run_task(run["id"], _run_workflow_bg(run["id"], workflow_id, override, present_in))
     return {"ok": True, "run": run}
@@ -1504,6 +1525,7 @@ async def retry_workflow_run_endpoint(run_id: str) -> dict:
         present_in_session_id=run.get("present_in_session_id"),
         context_override=override,
         retried_from=run_id,
+        supervisor_override=run.get("supervisor_override"),
     )
     # Stamp the original so the UI can show "已重试" and hide the retry button.
     run["retry_run_id"] = new["id"]
@@ -1526,9 +1548,11 @@ async def _continue_run_bg(run_id: str, workflow_id: str, present_in: str | None
 
     fork_id = None
     try:
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=(wf_store.get_run(run_id) or {}).get("dsl_version"))
+        run0 = wf_store.get_run(run_id) or {}
+        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=run0.get("dsl_version"))
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
+        dsl = _apply_supervisor_override(run0, dsl)
         _set_run_status(run_id, "running")
         await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
         agen = wf_engine.continue_workflow(
@@ -1583,6 +1607,7 @@ async def retry_from_checkpoint_endpoint(run_id: str) -> dict:
         present_in_session_id=run.get("present_in_session_id"),
         context_override=override,
         retried_from=run_id,
+        supervisor_override=run.get("supervisor_override"),
     )
     # The engine keys checkpoints by thread_id == run_id: clone the file so the
     # new run continues from the failed node instead of the entry. The record's
@@ -1660,6 +1685,7 @@ async def _rerun_from_bg(
         )
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
+        pinned_dsl = _apply_supervisor_override(wf_store.get_run(run_id), pinned_dsl)
         _set_run_status(run_id, "running")
         await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
         graph = wf_compiler.compile_workflow(
@@ -1735,6 +1761,7 @@ async def rerun_from_endpoint(run_id: str, data: dict) -> dict:
         present_in_session_id=run.get("present_in_session_id"),
         context_override=run.get("context_override"),
         retried_from=run_id,
+        supervisor_override=run.get("supervisor_override"),
     )
     # Carry the source's completed prefix over so the fork doesn't read as
     # 0/N with a forever-pending prefix.

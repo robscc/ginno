@@ -4,8 +4,9 @@ Drives the REAL engine through the API with the shared ``studio_lib`` builders:
 the compiler-injected ``<N>__sup`` checkpoints in human mode (park → /decide),
 the decision vocabulary (continue/skip/retry/abort + invalid fallback),
 ``context_patch`` reach, event ordering at a gate, config validation at CREATE,
-and the decision-inbox / run-list integration. Auto mode is covered only as the
-current visible pass-through (P2.5 replaces it).
+and the decision-inbox / run-list integration. Auto mode (P2.5) is covered as
+one adjudicated pass-through here; its ladder/budgets live in
+``tests/api/test_workflow_supervisor_auto.py``.
 
 Every run forks a FRESH scripted model that replays from index 0 on each
 run/resume, so script lists only need one entry per model call per invocation.
@@ -286,14 +287,34 @@ def test_16_two_sequential_gates(client, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 17: auto mode (current pass-through until P2.5)
+# 17: auto mode (P2.5: LLM adjudicator, decisions applied — ladder details in
+# tests/api/test_workflow_supervisor_auto.py)
 # --------------------------------------------------------------------------- #
-def test_17_auto_mode_passes_through_visibly(client, monkeypatch):
+def test_17_auto_mode_adjudicates_and_applies(client, monkeypatch):
+    async def _continue(**kwargs):
+        return {
+            "decision": "continue",
+            "confidence": 0.95,
+            "reason": "输出正常",
+            "context_patch": None,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+    monkeypatch.setattr("ginno_runtime.workflows.supervisor_runtime.adjudicate", _continue)
     run, rid = _park(client, monkeypatch, L.gated(L.dsl_linear(2), mode="auto"), ["one", "two"])
-    assert run["status"] == "done"  # never paused
-    dec = _sup_events(client, rid)
-    assert len(dec) == 2  # one per gate — never silent
-    assert all(d["mode"] == "auto-pending" and d["decision"] == "continue" for d in dec)
+    assert run["status"] == "done"  # adjudicated continue — never paused
+    dec = L.evs(client, rid, kind="sup_decision")
+    assert len(dec) == 2  # one per gate
+    for d in dec:
+        assert d["mode"] == "auto" and d["decision"] == "continue"
+        assert d["confidence"] == 0.95 and d["reason"] == "输出正常"
+        assert d["budget"]["interventions"] == 0
+    assert [d["budget"]["tokens"] for d in dec] == [15, 30]  # usage accumulates, rides events
+    ev = L.evs(client, rid, kind="sup_eval")
+    assert len(ev) == 2
+    assert all(e["verdict"] == "ok" and e["confidence_min"] == 0.7 for e in ev)
+    # the auto-PENDING pass-through placeholder is gone
+    assert L.evs(client, rid, kind="supervisor_decision") == []
 
 
 # --------------------------------------------------------------------------- #
