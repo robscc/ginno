@@ -88,19 +88,52 @@ export function useStudioState() {
     posOverrides: {},
   } as StudioState);
 
-  // Adopt a hash that was already present on mount (chat deep links land here).
+  // Adopt the pending deep link on mount. sessionStorage is the PRIMARY
+  // channel (written by the jump site, read-once): Next App Router mounts the
+  // target page BEFORE committing the pushed URL, so location.hash can still
+  // be empty at mount — reading it raced and let the first-recipe fallback
+  // overwrite the correct target (the「每次都跳到 rewrite」bug, 2026-09-26).
+  // location.hash stays as the secondary (reload/share) path.
   const booted = useRef(false);
+  // Set SYNCHRONOUSLY in the boot effect, before the restore dispatch commits:
+  // the shell's first-recipe fallback runs in the same commit and would
+  // otherwise clobber the pending restore (second half of the same bug).
+  const deepLinkRef = useRef<Partial<StudioState> | null>(null);
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
-    const restore = parseHash();
-    if (Object.keys(restore).length) dispatch({ type: "restore", state: restore });
+    let restore: Partial<StudioState> = {};
+    try {
+      const pending = sessionStorage.getItem("ginno:studio-deeplink");
+      if (pending) {
+        sessionStorage.removeItem("ginno:studio-deeplink");
+        const q = new URLSearchParams(pending.replace(/^#/, ""));
+        const wf = q.get("wf");
+        const run = q.get("run");
+        const node = q.get("node");
+        const tab = q.get("tab");
+        if (wf) restore.wfId = wf;
+        if (run) restore.runId = run;
+        if (node) restore.nodeId = node;
+        if (tab && (TABS as string[]).includes(tab)) restore.tab = tab as StudioTab;
+      }
+    } catch {
+      /* private mode — fall through to the hash */
+    }
+    if (!Object.keys(restore).length) restore = parseHash();
+    if (Object.keys(restore).length) {
+      deepLinkRef.current = restore;
+      dispatch({ type: "restore", state: restore });
+    }
   }, []);
 
   // Keep the hash in step with the selection so the view is shareable and the
   // browser back button moves within the Studio.
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Don't write before a workflow is chosen: the initial state would wipe
+    // the incoming hash to pathname-only, joining the mount race above.
+    if (!state.wfId) return;
     const next = studioHash(state);
     if (window.location.hash === next) return;
     window.history.replaceState(null, "", next || window.location.pathname);
@@ -116,6 +149,9 @@ export function useStudioState() {
   }, []);
 
   const actions = {
+    /** True when a deep link was consumed on mount — the shell's
+     *  first-recipe fallback must stand down for one commit. */
+    hasDeepLink: useCallback(() => deepLinkRef.current !== null, []),
     selectWorkflow: useCallback((id: string) => dispatch({ type: "selectWorkflow", id }), []),
     setTab: useCallback((tab: StudioTab) => dispatch({ type: "tab", tab }), []),
     selectRun: useCallback((id: string | null) => dispatch({ type: "run", id }), []),

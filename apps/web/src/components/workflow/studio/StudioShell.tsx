@@ -47,8 +47,11 @@ export function StudioShell() {
   const workflows = g.workflows;
   const wf = workflows.find((w) => w.id === state.wfId) || workflows[0] || null;
 
-  // Default to the first recipe once the store has loaded.
+  // Default to the first recipe once the store has loaded — but NEVER while
+  // a deep link's restore is pending (the dispatch commits a tick later; this
+  // fallback ran in the same commit and clobbered it —「每次都跳到 rewrite」).
   useEffect(() => {
+    if (studio.hasDeepLink()) return;
     if (!state.wfId && workflows[0]) studio.selectWorkflow(workflows[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflows, state.wfId]);

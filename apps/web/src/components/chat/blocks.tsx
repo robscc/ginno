@@ -760,11 +760,18 @@ function WorkflowBlock({ run }: { run: WorkflowRun }) {
   return (
     <div className="my-2 rounded-lg border border-line bg-base/50 p-3">
       <div
-        onClick={() =>
-          // Deep-link to THIS run (same fix as RunBlocks — a bare /workflows
-          // lands on the Studio's first recipe, not the run's workflow).
-          router.push(`/workflows#wf=${run.workflow_id}&tab=run&run=${run.id}`)
-        }
+        onClick={() => {
+          // Deep-link to THIS run (same fix as RunBlocks). sessionStorage
+          // carries the target past the App-Router mount/URL-commit race —
+          // see the note in RunBlocks.
+          const h = `#wf=${run.workflow_id}&tab=run&run=${run.id}`;
+          try {
+            sessionStorage.setItem("ginno:studio-deeplink", h);
+          } catch {
+            /* ignore */
+          }
+          router.push(`/workflows${h}`);
+        }}
         title="打开工作流详情"
         className="mb-2 flex cursor-pointer items-center gap-1.5 text-sm font-medium text-txt hover:text-violet"
       >

@@ -154,14 +154,22 @@ export function LiveRunBlock({
       }`}
     >
       <div
-        onClick={() =>
-          router.push(
-            // Deep-link to THIS run in the Studio observer (design B): without
-            // the hash the Studio falls back to its first recipe — a run of
-            // workflow X must open X's run view, not whatever is first.
-            `/workflows#wf=${run.workflow_id}&tab=run&run=${run.id}`,
-          )
-        }
+        onClick={() => {
+          // Deep-link to THIS run in the Studio observer (design B): without
+          // the hash the Studio falls back to its first recipe — a run of
+          // workflow X must open X's run view, not whatever is first.
+          // The hash rides in sessionStorage too: Next App Router commits the
+          // URL AFTER mounting the target page, so reading location.hash on
+          // mount races (observed: the correct push was then overwritten by
+          // the first-recipe fallback — the「每次都跳到 rewrite」bug).
+          const h = `#wf=${run.workflow_id}&tab=run&run=${run.id}`;
+          try {
+            sessionStorage.setItem("ginno:studio-deeplink", h);
+          } catch {
+            /* private mode etc. — hash fallback still applies */
+          }
+          router.push(`/workflows${h}`);
+        }}
         title="打开工作流详情"
         className="mb-2 flex cursor-pointer items-center gap-1.5 text-sm font-medium text-txt hover:text-violet"
       >
