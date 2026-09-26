@@ -959,6 +959,11 @@ export function ChatStream({
     }
 
     curSessionIdRef.current = sid;
+    // Entering a session always lands on the LATEST message. stickRef carries
+    // the PREVIOUS session's read position (scrolled up while reading back =
+    // false) — without this reset the [messages] auto-scroll skips the newly
+    // loaded history and the transcript opens at the TOP (用户反馈 2026-09-26).
+    stickRef.current = true;
     connectRef.current = () => connectSession(sid);
 
     connectSession(sid);
