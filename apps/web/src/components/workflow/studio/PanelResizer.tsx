@@ -163,15 +163,40 @@ export function PanelResizer({
       onKeyDown={onKeyDown}
       onDoubleClick={onReset}
       className={`group relative shrink-0 touch-none outline-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-violet/60 ${
-        vertical ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize"
+        vertical ? "w-2.5 cursor-col-resize" : "h-2.5 cursor-row-resize"
       } ${dragging ? "bg-violet/10" : ""} ${className ?? ""}`}
     >
+      {/* Always-visible affordance (2026-09-26: a fully invisible handle read
+          as "not draggable"): a faint line at rest, violet on hover/drag. */}
       <span
         aria-hidden
-        className={`pointer-events-none absolute rounded-full bg-violet/40 transition-opacity ${
+        className={`pointer-events-none absolute rounded-full transition-colors ${
           vertical ? "inset-y-1 left-1/2 w-0.5 -translate-x-1/2" : "inset-x-1 top-1/2 h-0.5 -translate-y-1/2"
-        } ${dragging ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+        } ${dragging ? "bg-violet" : "bg-line2 group-hover:bg-violet/60"}`}
       />
+      {/* Center grip dots: the universal "drag me" cue, visible at rest. */}
+      <span
+        aria-hidden
+        className={`pointer-events-none absolute flex items-center justify-center gap-[2px] rounded-full bg-card2/80 px-[3px] py-[5px] text-faint opacity-100 transition-opacity group-hover:opacity-0 ${
+          vertical
+            ? "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex-col"
+            : "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+        } ${dragging ? "opacity-0" : ""}`}
+      >
+        {vertical ? (
+          <>
+            <i className="block h-1 w-1 rounded-full bg-current" />
+            <i className="block h-1 w-1 rounded-full bg-current" />
+            <i className="block h-1 w-1 rounded-full bg-current" />
+          </>
+        ) : (
+          <>
+            <i className="block h-1 w-1 rounded-full bg-current" />
+            <i className="block h-1 w-1 rounded-full bg-current" />
+            <i className="block h-1 w-1 rounded-full bg-current" />
+          </>
+        )}
+      </span>
     </div>
   );
 }
