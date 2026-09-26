@@ -4,6 +4,7 @@ session bootstrap (_ensure_session), and the persisted-history endpoint."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from typing import Any
@@ -97,6 +98,34 @@ def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | 
         or prov_mod.model_for_provider(providers, provider)
     )
     return provider, model, (agent.id if agent else req.agent_id)
+
+
+def _build_model_with_fallback(provider: str, model_name: str | None):
+    """Build the session model, falling back to the global default config.
+
+    Decision Q3 runtime side: an agent may still carry a binding that no
+    longer resolves (config deleted/disabled, or its model left models[]).
+    That must degrade, not crash the session: log a warning and rebuild from
+    the default config + its default model. Re-raises only when the default
+    itself is broken (nothing to fall back to).
+    """
+    try:
+        return build_model(provider, model_name)
+    except ValueError as e:
+        dflt = prov_mod.get_default_provider()
+        dflt_model = prov_mod.model_for_provider(prov_mod.load_providers(), dflt)
+        if dflt == provider and (model_name or None) == (dflt_model or None):
+            raise
+        logging.getLogger(__name__).warning(
+            "model build failed for provider=%s model=%s (%s); "
+            "falling back to default config %s/%s",
+            provider,
+            model_name,
+            e,
+            dflt,
+            dflt_model,
+        )
+        return build_model(dflt, dflt_model)
 
 
 def _default_title(agent_id: str | None) -> str:
@@ -486,7 +515,7 @@ async def clear_session_goal(session_id: str) -> dict:
 async def create_session(req: CreateSessionRequest) -> dict:
     provider, model_name, agent_id = _resolve_provider_model(req)
     try:
-        model = build_model(provider, model_name)
+        model = _build_model_with_fallback(provider, model_name)
     except ValueError as e:
         return {"error": str(e), "ok": False}
 
@@ -870,7 +899,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         prov_mod.load_providers(), provider
     )
     try:
-        model = build_model(provider, model_name)
+        model = _build_model_with_fallback(provider, model_name)
     except ValueError:
         return None
     # Derive the workspace from paths (not meta) so legacy sessions whose meta

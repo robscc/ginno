@@ -77,6 +77,76 @@ def _reasoning_chat_openai() -> type:
     _REASONING_CLS = ReasoningChatOpenAI
     return _REASONING_CLS
 
+
+# Lazily-built Responses-API class shared by every build (same pattern as
+# ReasoningChatOpenAI above).
+_RESPONSES_CLS: type | None = None
+
+
+def bridge_responses_reasoning(gen_chunk):
+    """Re-attach Responses-API reasoning summaries as ``reasoning_content``.
+
+    The Responses API streams thinking output as official *reasoning summary*
+    events, which langchain-openai turns into content blocks shaped
+    ``{"type": "reasoning", "summary": [{"type": "summary_text", "text": ...}]}``
+    — NOT the third-party ``delta.reasoning_content`` field that
+    ReasoningChatOpenAI harvests on the chat-completions path. Ginno's
+    thinking pipeline (api/stream.py ``thinking.delta``; api/messages_ui.py
+    replay) reads ``additional_kwargs["reasoning_content"]``, so copy each
+    delta's summary text there. Chunk accumulation merges additional_kwargs,
+    so the persisted message ends up with the full reasoning text.
+    """
+    try:
+        content = gen_chunk.message.content
+        if isinstance(content, list):
+            texts = [
+                s.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "reasoning"
+                for s in (block.get("summary") or [])
+                if isinstance(s, dict)
+            ]
+            text = "".join(t for t in texts if t)
+            if text:
+                ak = getattr(gen_chunk.message, "additional_kwargs", None)
+                if ak is not None:
+                    ak["reasoning_content"] = text
+    except (AttributeError, TypeError):
+        pass
+    return gen_chunk
+
+
+def _responses_chat_openai() -> type:
+    """ChatOpenAI pinned to the Responses API, with the reasoning bridge.
+
+    ``use_responses_api=True`` sends everything to ``POST /v1/responses``;
+    the LangChain message interface is unchanged, so the stream/graph/usage
+    pipeline needs zero edits (design doc §3.3 — P2's cheap win). The
+    subclass only re-routes reasoning summaries into the field the rest of
+    Ginno expects.
+    """
+    global _RESPONSES_CLS
+    if _RESPONSES_CLS is not None:
+        return _RESPONSES_CLS
+
+    from langchain_openai import ChatOpenAI
+
+    class ResponsesReasoningChatOpenAI(ChatOpenAI):
+        def _stream_responses(self, messages, stop=None, run_manager=None, **kwargs):
+            for gen in super()._stream_responses(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            ):
+                yield bridge_responses_reasoning(gen)
+
+        async def _astream_responses(self, messages, stop=None, run_manager=None, **kwargs):
+            async for gen in super()._astream_responses(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            ):
+                yield bridge_responses_reasoning(gen)
+
+    _RESPONSES_CLS = ResponsesReasoningChatOpenAI
+    return _RESPONSES_CLS
+
 def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     temperature = cfg.get("temperature")
     model_kwargs: dict[str, Any] = {}
@@ -115,7 +185,13 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         raise ValueError(f"provider {provider_id} is disabled (enable it in Settings)")
 
     proto = cfg.get("protocol")
-    model = model_name or prov_mod.model_for_provider(all_prov, provider_id)
+    # unified name resolution: explicit override → default_model/model field →
+    # first entry of models[] (the v2 list form)
+    model = (
+        model_name
+        or prov_mod.model_for_provider(all_prov, provider_id)
+        or prov_mod.model_for_config(cfg)
+    )
     temperature, model_kwargs = _sampling(cfg)
     base_url = cfg.get("base_url") or None
 
@@ -140,6 +216,25 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         if cfg.get("bearer_auth"):
             chat_kwargs["default_headers"] = {"Authorization": f"Bearer {key}"}
         return ChatAnthropic(**chat_kwargs)
+
+    if proto == "openai-responses":
+        # Official OpenAI Responses API (and Responses-compatible gateways).
+        # org_id → openai_organization (official OpenAI only); the compat
+        # extra_body switches (enable_search/enable_thinking) have no
+        # Responses equivalent here.
+        chat_kw: dict[str, Any] = dict(
+            model=model or "gpt-4o",
+            api_key=cfg.get("api_key") or "not-needed",
+            base_url=base_url or "https://api.openai.com/v1",
+            temperature=temperature if temperature is not None else 0.7,
+            model_kwargs=model_kwargs or {"max_tokens": 8192},
+            streaming=True,
+            timeout=_chat_timeout(),
+            use_responses_api=True,
+        )
+        if cfg.get("org_id"):
+            chat_kw["openai_organization"] = cfg["org_id"]
+        return _responses_chat_openai()(**chat_kw)
 
     # openai / openai-compatible
     key = cfg.get("api_key") or ""
@@ -177,14 +272,22 @@ def build_model_by_name(model_name: str):
     """Build a chat model from a bare model name (master-plan §2.2 checklist M).
 
     ``extract_model`` in a DSL node is a single string (e.g. a cheap model id),
-    but ``build_model`` keys on provider id. Resolve the name to a provider:
-    (1) an enabled provider whose configured ``model`` equals the name,
-    (2) an enabled provider whose *id* equals the name,
-    (3) the default provider with the name passed as a model override.
+    but ``build_model`` keys on config id. Resolve the name to a config:
+    (1) an enabled config that lists the name in its ``models[]`` (or as its
+        default model — covers legacy records that only carry ``model``/
+        ``default_model`` without a list),
+    (2) an enabled config whose *id* equals the name,
+    (3) the default config with the name passed as a model override.
     """
     all_prov = prov_mod.load_providers()
     for pid, cfg in all_prov.items():
-        if cfg.get("enabled") and cfg.get("model") == model_name:
+        if not cfg.get("enabled"):
+            continue
+        known = set(cfg.get("models") or [])
+        for key in ("default_model", "model"):
+            if cfg.get(key):
+                known.add(cfg[key])
+        if model_name in known:
             return build_model(pid, model_name)
     if model_name in all_prov and all_prov[model_name].get("enabled"):
         return build_model(model_name)

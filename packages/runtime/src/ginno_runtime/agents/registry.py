@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
+from .. import providers as prov_mod
 from .memory import ensure_agent_memory
 
 
@@ -183,6 +184,35 @@ _SEED: list[AgentConfig] = [
 
 def _agent_path(agent_id: str) -> Path:
     return paths.agents_dir() / f"{agent_id}.json"
+
+
+class AgentModelBindingError(ValueError):
+    """The agent's model is not a member of its bound config's ``models[]``.
+
+    Decision Q3: the model binding is a HARD constraint on the selected
+    config's model list (when that list is non-empty). The API layer maps
+    this to HTTP 400 with the allowed values in the message.
+    """
+
+
+def validate_model_binding(provider: str | None, model: str | None) -> None:
+    """Enforce model ∈ config.models[] (decision Q3).
+
+    Skipped when: no model bound (empty → provider default), the config is
+    unknown (legacy / deleted id — the edit page flags it instead), or the
+    config lists no models (nothing to constrain against).
+    """
+    if not provider or not model:
+        return
+    cfg = prov_mod.get_config(provider)
+    if not cfg:
+        return
+    models = cfg.get("models") or []
+    if models and model not in models:
+        raise AgentModelBindingError(
+            f"模型 {model!r} 不属于配置 {cfg.get('name') or provider!r}，"
+            f"可选值: {', '.join(models)}"
+        )
 
 
 def _read(agent_id: str) -> AgentConfig | None:
@@ -362,6 +392,7 @@ def create_agent(data: dict[str, Any]) -> AgentConfig:
         raise ValueError("agent id required")
     if _agent_path(cfg.id).exists():
         raise ValueError(f"agent {cfg.id} already exists")
+    validate_model_binding(cfg.provider, cfg.model)
     _write(cfg)
     return cfg
 
@@ -374,6 +405,7 @@ def update_agent(agent_id: str, data: dict[str, Any]) -> AgentConfig:
     merged.update({k: v for k, v in data.items() if k in AgentConfig.__dataclass_fields__})
     merged["id"] = agent_id  # id immutable
     cfg = AgentConfig(**merged)
+    validate_model_binding(cfg.provider, cfg.model)
     _write(cfg)
     return cfg
 

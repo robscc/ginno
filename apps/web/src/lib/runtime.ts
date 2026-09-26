@@ -7,6 +7,8 @@ import type {
   AgentConfig,
   Goal,
   GoalStatus,
+  ModelConfig,
+  ModelConfigRefs,
   Providers,
   SessionMeta,
   SessionUsage,
@@ -267,6 +269,44 @@ export async function searchProbeProvider(id: string) {
     `${BASE}/providers/${id}/search_probe`,
     { method: "POST" },
   );
+}
+
+// ---- model configs (multi-provider-model-config.md §2) ----
+// The settings tab's Model API section talks ONLY to these endpoints; the
+// legacy /providers functions above stay exported for their other consumers
+// (store, AgentsSettings, GeneralSettings, ChatStream) until the backend
+// swap completes.
+
+export async function listModelConfigs() {
+  return json<{ ok: boolean; configs: ModelConfig[]; default_config: string }>(
+    `${BASE}/model_configs`,
+  );
+}
+
+// Full-replacement write. Deletion is a PUT with the entry removed
+// client-side (no DELETE endpoint). Refusals (still default / still
+// referenced) come back HTTP 200 with ok:false + refs (Q8).
+export async function putModelConfigs(configs: ModelConfig[], default_config: string) {
+  return json<{ ok: boolean; error?: string; refs?: ModelConfigRefs; default_config?: string }>(
+    `${BASE}/model_configs`,
+    { method: "PUT", headers: H, body: JSON.stringify({ configs, default_config }) },
+  );
+}
+
+// Q4: a passing probe is persisted server-side immediately — the returned
+// `config` IS the saved record (merge it into the local list; no extra PUT).
+// For edits pass the existing id so the backend updates in place; new drafts
+// omit it and get a server-generated id back. Failures are HTTP 200
+// {ok:false, error, refs?}.
+export async function verifyModelConfig(draft: Partial<ModelConfig>) {
+  return json<
+    | { ok: true; config: ModelConfig; latency_ms: number }
+    | { ok: false; error: string; refs?: ModelConfigRefs }
+  >(`${BASE}/model_configs/verify`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(draft),
+  });
 }
 
 // ---- agents ----

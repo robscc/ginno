@@ -100,6 +100,44 @@ export interface ProviderConfig {
 
 export type Providers = Record<string, ProviderConfig>;
 
+// ---- multi-provider model configs (multi-provider-model-config.md §3.1) ----
+// New array-shaped settings key `model_configs`; protocol enum is kebab-case.
+// The three built-in legacy ids (anthropic/openai/custom) survive as ordinary
+// config ids so existing agent/session/usage references stay valid.
+export type ModelProtocol = "anthropic" | "openai-compatible" | "openai-responses";
+
+export interface ModelConfig {
+  id: string; // stable key ("anthropic"/"openai"/"custom" for migrated slots, "prov_*" for new)
+  name: string; // user-readable, required
+  protocol: ModelProtocol;
+  base_url: string;
+  api_key: string;
+  org_id?: string; // openai-responses only
+  bearer_auth?: boolean; // anthropic only: Authorization: Bearer instead of x-api-key
+  models: string[]; // replaces the old single model/default_model field
+  default_model: string; // must be a member of models
+  max_tokens: number;
+  temperature: number;
+  timeout_s: number;
+  enable_search?: boolean; // openai-compatible private body param (Qwen/DashScope…)
+  enable_thinking?: boolean; // openai-compatible hybrid-thinking opt-in
+  enabled: boolean;
+  // Unix seconds of the last successful verify (persisted server-side);
+  // null/absent = never verified. last_error holds the most recent failure.
+  verified_at?: number | null;
+  last_error?: string | null;
+}
+
+// Refusal detail returned by PUT/verify when the target config is the global
+// default or still referenced (Q8). Values are counts or id lists depending
+// on the backend — render defensively (see describeRefs).
+export interface ModelConfigRefs {
+  agents?: number | string[];
+  sessions?: number | string[];
+  workflows?: number | string[];
+  [k: string]: unknown;
+}
+
 export interface SessionMeta {
   id: string;
   title: string;

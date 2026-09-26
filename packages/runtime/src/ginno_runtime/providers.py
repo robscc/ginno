@@ -1,22 +1,30 @@
-"""Model provider registry — multi-provider settings + connectivity verify.
+"""Model provider registry — multi-provider model configs + connectivity verify.
 
-settings.json shape (under `providers`):
+settings.json carries TWO generations of the provider registry (design:
+docs/design/multi-provider-model-config.md, decision Q1):
 
-    {
-      "default_provider": "custom",
-      "providers": {
-        "anthropic": {enabled, protocol, api_key, default_model, base_url,
-                      max_tokens, temperature, timeout_s},
-        "openai":    {enabled, protocol, api_key, default_model, base_url,
-                      org_id, max_tokens},
-        "custom":    {enabled, protocol:"openai-compatible", name, api_key,
-                      base_url, model, max_tokens, temperature, timeout_s}
-      }
-    }
+* ``model_configs``  — the v2 array (new writes ONLY land here)::
 
-Reads merge stored values over PROVIDER_DEFAULTS so newly-added fields
-always have a sane value. Old single-`model`+`env` settings are migrated
-by paths.ensure_layout() before this module sees them.
+      "model_configs": [
+        {"id": "prov_main", "name": "中转站 A", "protocol": "openai-compatible",
+         "base_url": "...", "api_key": "...", "models": ["qwen-plus"],
+         "default_model": "qwen-plus", "max_tokens": 8192, "temperature": 0.7,
+         "timeout_s": 60, "enabled": true, "verified_at": 1758860000, ...}
+      ],
+      "default_config": "prov_main"
+
+* ``providers`` — the legacy v1 dict ({pid: cfg}); FROZEN: never written,
+  never deleted. When ``model_configs`` is absent the read layer lazily maps
+  the legacy slots into an equivalent config array (no disk write), so a
+  never-migrated settings.json keeps working and a rollback to an old binary
+  is always safe.
+
+Legacy ``default_provider`` is honoured as a fallback for ``default_config``.
+
+Reads merge stored values over CONFIG_DEFAULTS so newly-added fields always
+have a sane value. The dict-view wrappers (``load_providers`` /
+``save_providers`` / ``get_default_provider``) keep the pre-v2 call signature
+for the many existing callers.
 """
 
 from __future__ import annotations
@@ -68,8 +76,236 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
     },
 }
 
+# ---- v2 model-config layer -------------------------------------------------
 
-# ---- system-proxy switch (settings.json top-level `use_system_proxy`) ----
+# Wire protocol enums (decision Q6: keep the legacy kebab strings).
+CONFIG_PROTOCOLS = ("anthropic", "openai-compatible", "openai-responses")
+
+# Legacy protocol strings → canonical v2 protocols. The legacy "openai" slot
+# builds models through the exact same ChatOpenAI path as "openai-compatible"
+# (models.py), so it collapses into it.
+_PROTOCOL_ALIASES = {
+    "anthropic": "anthropic",
+    "openai": "openai-compatible",
+    "openai-compatible": "openai-compatible",
+    "openai_compatible": "openai-compatible",
+    "openai-responses": "openai-responses",
+    "openai_responses": "openai-responses",
+}
+
+# Legacy slot id → default display name (doc §2.6: empty custom name →
+# 「自定义端点」).
+_LEGACY_SLOT_NAMES = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "custom": "自定义端点",
+}
+
+CONFIG_DEFAULTS: dict[str, Any] = {
+    "name": "",
+    "protocol": "openai-compatible",
+    "base_url": "",
+    "api_key": "",
+    "org_id": "",
+    "bearer_auth": False,
+    "models": [],
+    "default_model": "",
+    "max_tokens": 8192,
+    "temperature": 0.7,
+    "timeout_s": 60,
+    "enable_search": False,
+    "enable_thinking": False,
+    "enabled": False,
+    "verified_at": None,
+    "last_error": None,
+}
+
+
+def _coerce_models(value: Any) -> list[str]:
+    """models[] is a list of non-empty strings; drop junk, keep order."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [str(m).strip() for m in value if str(m).strip()]
+
+
+def normalize_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge a config over CONFIG_DEFAULTS (unknown keys preserved verbatim)."""
+    out = deepcopy(CONFIG_DEFAULTS)
+    out.update(cfg or {})
+    out["models"] = _coerce_models(out.get("models"))
+    out["enabled"] = bool(out.get("enabled"))
+    return out
+
+
+def legacy_providers_to_configs(stored: dict[str, Any]) -> list[dict[str, Any]]:
+    """Lazily map the frozen legacy ``providers`` dict into v2 config array.
+
+    The three builtin ids come first (defaults merged, exactly like the old
+    ``load_providers``); any extra ids the user hand-added follow in stored
+    order. Pure function — never touches disk.
+    """
+    stored = stored or {}
+    ordered = list(PROVIDER_IDS) + [pid for pid in stored if pid not in PROVIDER_IDS]
+    out: list[dict[str, Any]] = []
+    for pid in ordered:
+        raw = stored.get(pid)
+        if raw is None and pid not in PROVIDER_IDS:
+            continue
+        merged = deepcopy(PROVIDER_DEFAULTS.get(pid, {}))
+        merged.update(raw or {})
+        proto = _PROTOCOL_ALIASES.get(str(merged.get("protocol") or ""), None) or (
+            "openai-compatible"
+        )
+        model = str(merged.get("default_model") or merged.get("model") or "").strip()
+        models = _coerce_models(merged.get("models")) or ([model] if model else [])
+        name = str(merged.get("name") or "").strip() or _LEGACY_SLOT_NAMES.get(pid, pid)
+        cfg = normalize_config(merged)
+        cfg.update(
+            {
+                "id": pid,
+                "name": name,
+                "protocol": proto,
+                "models": models,
+                "default_model": model or (models[0] if models else ""),
+            }
+        )
+        # legacy single-value model field must not leak into the v2 record
+        cfg.pop("model", None)
+        out.append(cfg)
+    return out
+
+
+def load_configs(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Return the v2 config array.
+
+    Source of truth is ``settings["model_configs"]``; when absent (legacy
+    install) the frozen ``providers`` dict is lazily mapped instead — read
+    only, nothing is written back to disk (decision Q1).
+    """
+    settings = settings if settings is not None else _read_settings()
+    stored = settings.get("model_configs")
+    if isinstance(stored, list):
+        return [
+            normalize_config(c) for c in stored if isinstance(c, dict) and c.get("id")
+        ]
+    return legacy_providers_to_configs(settings.get("providers") or {})
+
+
+def validate_configs(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize a full config array for storage; ValueError on bad input."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for raw in configs:
+        cfg = normalize_config(raw)
+        cid = str(cfg.get("id") or "").strip()
+        if not cid:
+            raise ValueError("配置缺少 id")
+        if cid in seen:
+            raise ValueError(f"配置 id 重复: {cid}")
+        seen.add(cid)
+        if cfg["protocol"] not in CONFIG_PROTOCOLS:
+            raise ValueError(
+                f"配置 {cid} 协议非法: {cfg['protocol']!r}，"
+                f"可选值: {', '.join(CONFIG_PROTOCOLS)}"
+            )
+        if cfg["default_model"] and cfg["models"] and cfg["default_model"] not in cfg["models"]:
+            raise ValueError(
+                f"配置 {cid} 的 default_model {cfg['default_model']!r} "
+                f"不在 models 内: {', '.join(cfg['models'])}"
+            )
+        cfg["id"] = cid
+        out.append(cfg)
+    return out
+
+
+def save_configs(
+    configs: list[dict[str, Any]], default_config: str | None = None
+) -> list[dict[str, Any]]:
+    """Persist the v2 array (full replacement) under ``model_configs``.
+
+    The legacy ``providers`` / ``default_provider`` keys are NEVER touched
+    (decision Q1: frozen for read-only compat with old binaries).
+    """
+    normalized = validate_configs(configs)
+    settings = _read_settings()
+    settings["model_configs"] = normalized
+    if default_config is not None:
+        settings["default_config"] = default_config
+    _write_settings(settings)
+    return normalized
+
+
+def get_config(config_id: str, settings: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    for cfg in load_configs(settings):
+        if cfg["id"] == config_id:
+            return cfg
+    return None
+
+
+def get_default_config(settings: dict[str, Any] | None = None) -> str:
+    """The global default config id.
+
+    Explicit ``default_config`` (falling back to legacy ``default_provider``)
+    if it names an enabled config; otherwise the first enabled config —
+    scanning the WHOLE array, not just the three legacy slots; otherwise the
+    configured choice as-is (it will surface as an error later, same as before).
+    """
+    settings = settings if settings is not None else _read_settings()
+    configs = load_configs(settings)
+    by_id = {c["id"]: c for c in configs}
+    chosen = settings.get("default_config") or settings.get("default_provider")
+    if chosen in by_id and by_id[chosen].get("enabled"):
+        return chosen
+    for cfg in configs:
+        if cfg.get("enabled"):
+            return cfg["id"]
+    return chosen or "custom"
+
+
+def model_for_config(cfg: dict[str, Any] | None) -> str:
+    """The config's default model (``default_model``, then ``models[0]``)."""
+    if not cfg:
+        return ""
+    models = cfg.get("models") or []
+    return cfg.get("default_model") or (models[0] if models else "")
+
+
+# ---- legacy dict view (thin wrappers over the v2 layer) ---------------------
+
+
+def load_providers(settings: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """Pre-v2 dict view {config_id: config} of :func:`load_configs`.
+
+    Kept as a thin wrapper so every existing caller (sessions.py, config.py,
+    models.py, …) and its monkeypatch-based tests keep working unchanged.
+    """
+    return {cfg["id"]: cfg for cfg in load_configs(settings)}
+
+
+def save_providers(providers: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Legacy dict-form save: converts the payload to configs and MERGES it
+    into the stored array by id (configs absent from the payload survive —
+    the legacy dict form cannot express them)."""
+    drafts = legacy_providers_to_configs(providers)
+    merged = {cfg["id"]: cfg for cfg in load_configs()}
+    for cfg in drafts:
+        merged[cfg["id"]] = cfg
+    saved = save_configs(list(merged.values()))
+    return {cfg["id"]: cfg for cfg in saved}
+
+
+def get_default_provider(settings: dict[str, Any] | None = None) -> str:
+    return get_default_config(settings)
+
+
+def model_for_provider(providers: dict[str, dict[str, Any]], pid: str) -> str:
+    cfg = providers.get(pid, {})
+    return cfg.get("default_model") or cfg.get("model") or ""
+
+
+# ---- system-proxy switch (settings.json top-level `use_system_proxy`) ------
 
 
 def use_system_proxy(settings: dict[str, Any] | None = None) -> bool:
@@ -134,59 +370,15 @@ def _write_settings(settings: dict[str, Any]) -> None:
     )
 
 
-def load_providers(settings: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
-    """Return the providers map with defaults merged in for every known id."""
-    settings = settings if settings is not None else _read_settings()
-    stored = settings.get("providers", {}) or {}
-    out: dict[str, dict[str, Any]] = {}
-    for pid in PROVIDER_IDS:
-        merged = deepcopy(PROVIDER_DEFAULTS[pid])
-        merged.update(stored.get(pid, {}) or {})
-        out[pid] = merged
-    # preserve any extra custom ids the user added beyond the builtin three
-    for pid, cfg in stored.items():
-        if pid not in out:
-            out[pid] = cfg
-    return out
+# ---- connectivity verify ----------------------------------------------------
 
 
-def save_providers(providers: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    settings = _read_settings()
-    # merge over defaults so partial writes still yield full records
-    normalized: dict[str, dict[str, Any]] = {}
-    for pid, cfg in providers.items():
-        base = deepcopy(PROVIDER_DEFAULTS.get(pid, {}))
-        base.update(cfg or {})
-        normalized[pid] = base
-    settings["providers"] = normalized
-    _write_settings(settings)
-    return normalized
+def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Probe one config (draft or saved) with the cheapest possible call.
 
-
-def get_default_provider(settings: dict[str, Any] | None = None) -> str:
-    settings = settings if settings is not None else _read_settings()
-    providers = load_providers(settings)
-    chosen = settings.get("default_provider")
-    if chosen in providers and providers[chosen].get("enabled"):
-        return chosen
-    for pid in PROVIDER_IDS:
-        if providers[pid].get("enabled"):
-            return pid
-    # nothing enabled — fall back to default_provider anyway (will surface as error later)
-    return chosen or "custom"
-
-
-def model_for_provider(providers: dict[str, dict[str, Any]], pid: str) -> str:
-    cfg = providers.get(pid, {})
-    return cfg.get("default_model") or cfg.get("model") or ""
-
-
-def verify(provider_id: str) -> dict[str, Any]:
-    """Probe a provider with the cheapest possible call. Never raises."""
-    providers = load_providers()
-    cfg = providers.get(provider_id)
-    if not cfg:
-        return {"ok": False, "error": f"unknown provider: {provider_id}"}
+    The network seam for tests — monkeypatch this (or the SDK clients it
+    imports inside the branches). Never raises.
+    """
     proto = cfg.get("protocol")
     timeout = float(cfg.get("timeout_s") or 60)
     t0 = time.time()
@@ -210,17 +402,36 @@ def verify(provider_id: str) -> dict[str, Any]:
                 client_kw["api_key"] = cfg["api_key"]  # x-api-key
             client = anthropic.Anthropic(**client_kw)
             client.messages.create(
-                model=model_for_provider(providers, provider_id) or "claude-3-7-sonnet-20250219",
+                model=model_for_config(cfg) or "claude-3-7-sonnet-20250219",
                 max_tokens=1,
                 messages=[{"role": "user", "content": "ping"}],
             )
             return {"ok": True, "latency_ms": _latency()}
 
-        # openai / openai-compatible
+        if proto == "openai-responses":
+            import openai
+
+            base = cfg.get("base_url") or "https://api.openai.com/v1"
+            client = openai.OpenAI(
+                api_key=cfg.get("api_key") or "not-needed",
+                base_url=base,
+                timeout=timeout,
+                **({"organization": cfg["org_id"]} if cfg.get("org_id") else {}),
+            )
+            # Responses API has no /models listing — one minimal generation
+            # (max_output_tokens=16) is the cheapest liveness probe.
+            client.responses.create(
+                model=model_for_config(cfg) or "gpt-4o",
+                max_output_tokens=16,
+                input="ping",
+            )
+            return {"ok": True, "latency_ms": _latency()}
+
+        # openai-compatible (and the legacy "openai" slot, same wire family)
         import openai
 
         base = cfg.get("base_url") or None
-        if proto == "openai" and not base:
+        if not base:
             base = "https://api.openai.com/v1"
         client = openai.OpenAI(
             api_key=cfg.get("api_key") or "not-needed",
@@ -232,7 +443,7 @@ def verify(provider_id: str) -> dict[str, Any]:
         except Exception:
             # some compatible endpoints lack /models — fall back to a 1-token chat
             client.chat.completions.create(
-                model=model_for_provider(providers, provider_id) or "gpt-4o",
+                model=model_for_config(cfg) or "gpt-4o",
                 max_tokens=1,
                 messages=[{"role": "user", "content": "ping"}],
             )
@@ -241,14 +452,26 @@ def verify(provider_id: str) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "latency_ms": _latency()}
 
 
+def verify_config_draft(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Verify a config DRAFT (not yet saved). Never raises, never writes."""
+    return _verify_config(normalize_config(cfg))
+
+
+def verify(provider_id: str) -> dict[str, Any]:
+    """Probe a saved provider/config with the cheapest possible call. Never raises."""
+    cfg = get_config(provider_id)
+    if not cfg:
+        return {"ok": False, "error": f"unknown provider: {provider_id}"}
+    return _verify_config(cfg)
+
+
 def search_probe(provider_id: str) -> dict[str, Any]:
     """Send one time-sensitive question with ``enable_search`` forced on and
     return the model's reply, so the user can see whether the provider's model
     actually searches the web. Never raises. Only meaningful for protocols that
-    honour ``enable_search`` (OpenAI / OpenAI-compatible); on others the model
-    simply answers from its own knowledge (which the user can eyeball)."""
-    providers = load_providers()
-    cfg = providers.get(provider_id)
+    honour ``enable_search`` (OpenAI-compatible); on others the model simply
+    answers from its own knowledge (which the user can eyeball)."""
+    cfg = get_config(provider_id)
     if not cfg:
         return {"ok": False, "error": f"unknown provider: {provider_id}"}
     if not cfg.get("enabled"):
