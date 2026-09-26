@@ -35,12 +35,15 @@ export function RunMiniDag({
   events,
   selNode,
   onSelectNode,
+  height = 84,
 }: {
   dsl?: DagDsl;
   run: WorkflowRun | null;
   events: WorkflowRunEvent[];
   selNode: string | null;
   onSelectNode: (id: string | null) => void;
+  /** Panel height; >120px switches the strip to a wrapping multi-row flow. */
+  height?: number;
 }) {
   const stepStatus = useMemo(() => {
     const m = new Map<string, string>();
@@ -90,9 +93,20 @@ export function RunMiniDag({
 
   if (!nodes.length || !run) return null;
 
+  // Caller-controlled panel height (drag handle below the strip): taller than
+  // ~120px switches to a WRAPPING multi-row flow — one long row squeezes
+  // everything; wrapping at height is what makes a big graph readable.
+  const wrap = height > 120;
+
   return (
-    <div className="overflow-x-auto rounded-lg border border-line bg-base/40 px-2 py-1.5">
-      <div className="flex min-h-[28px] items-start gap-0.5" style={{ maxHeight: 84 }}>
+    <div
+      className="overflow-auto rounded-lg border border-line bg-base/40 px-2 py-1.5"
+      style={{ height }}
+    >
+      <div
+        className={`flex items-start gap-0.5 ${wrap ? "flex-wrap" : ""}`}
+        style={{ minHeight: 28 }}
+      >
         {nodes.map((n, i) => {
           // the parked node's step still reads "running" mid-interrupt — the
           // ⏸ pause wins so the strip reads "waiting", not "spinning"

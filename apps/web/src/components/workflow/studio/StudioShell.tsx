@@ -136,6 +136,10 @@ export function StudioShell() {
   const fb = useTriggerFeedback();
   const [triggerErr, setTriggerErr] = useState<string | null>(null);
   const [asideOpen, setAsideOpen] = useState(false);
+  // DAG panel height: persisted, drag to grow — the 84px single-row default
+  // squeezed big graphs; >120px wraps into readable rows.
+  const DEFAULT_DAG_H = 84;
+  const [dagH, setDagH] = usePanelWidth("ginno:studio-minidag-h", DEFAULT_DAG_H, 64, 360);
 
   // Draggable panel widths (persisted per browser; inline style overrides the
   // Tailwind w-* classes, which remain the SSR/no-JS fallback).
@@ -409,13 +413,25 @@ export function StudioShell() {
                     onChanged={reloadRuns}
                     live={live}
                     miniDag={
-                      <RunMiniDag
-                        dsl={wf.dsl as never}
-                        run={run}
-                        events={events}
-                        selNode={state.nodeId}
-                        onSelectNode={studio.selectNode}
-                      />
+                      /* DAG panel height is drag-adjustable (handle below):
+                         taller than 120px the strip wraps into rows — the
+                         default single-row cap made bigger graphs unreadable. */
+                      <>
+                        <RunMiniDag
+                          dsl={wf.dsl as never}
+                          run={run}
+                          events={events}
+                          selNode={state.nodeId}
+                          onSelectNode={studio.selectNode}
+                          height={dagH}
+                        />
+                        <PanelResizer
+                          orientation="horizontal"
+                          ariaLabel="调整 DAG 面板高度"
+                          onDrag={(d) => setDagH((prev) => prev + d)}
+                          onReset={() => setDagH(DEFAULT_DAG_H)}
+                        />
+                      </>
                     }
                   />
                 </div>
