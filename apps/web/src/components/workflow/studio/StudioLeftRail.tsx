@@ -1,56 +1,25 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import type { WorkflowDef, WorkflowRun } from "@/lib/types";
-import { STATUS_LABEL } from "@/components/chat/RunBlocks";
 
-const RUN_COLOR: Record<string, string> = {
-  running: "#3b82f6",
-  paused: "#f59e0b",
-  done: "#22c55e",
-  failed: "#ef4444",
-  cancelled: "#71717a",
-  interrupted: "#f97316",
-};
-
-function pillClass(status: string): string {
-  if (status === "running") return "bg-blue/15 text-blue";
-  if (status === "paused") return "bg-orange/15 text-orange";
-  if (status === "done") return "bg-green/15 text-green";
-  if (status === "failed") return "bg-red/15 text-red";
-  return "bg-card2 text-faint";
-}
-
-function timeLabel(ts?: number): string {
-  if (!ts) return "";
-  const d = new Date(ts * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-/** Left rail: the recipe list on top, the runs of the selected recipe below
- *  (design B §3 — the rail is "配方 + Runs", not "会话"). Between them sits the
- *  decision inbox: paused runs across ALL recipes awaiting a human decision. */
+/** Left rail: the recipe list (full height since 方案B 打磨 moved the runs into
+ *  the 运行 tab's own column) plus the decision inbox — paused runs across ALL
+ *  recipes awaiting a human decision, which is cross-recipe and stays here. */
 export function StudioLeftRail({
   workflows,
-  runs,
-  runsLoading,
   inbox,
   selWfId,
   selRunId,
   onSelectWorkflow,
-  onSelectRun,
   onOpenDecision,
 }: {
   workflows: WorkflowDef[];
-  runs: WorkflowRun[];
-  runsLoading?: boolean;
   inbox: WorkflowRun[];
   selWfId: string | null;
   selRunId: string | null;
   onSelectWorkflow: (id: string) => void;
-  onSelectRun: (id: string) => void;
   onOpenDecision: (wfId: string, runId: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -67,8 +36,6 @@ export function StudioLeftRail({
       }),
     [workflows, query, scope],
   );
-
-  const activeRuns = runs.filter((r) => r.status === "running" || r.status === "paused").length;
 
   return (
     <div className="flex h-full w-full flex-col border-r border-line bg-panel">
@@ -195,57 +162,6 @@ export function StudioLeftRail({
           })}
         </div>
       )}
-
-      <div className="flex max-h-[45%] min-h-[110px] flex-col border-t border-line">
-        <div className="flex items-center gap-1.5 px-3 py-2">
-          <span className="text-[11px] font-semibold text-txt">运行</span>
-          {activeRuns > 0 && (
-            <span className="rounded-full bg-blue/15 px-1.5 text-[10px] text-blue">{activeRuns} 进行中</span>
-          )}
-          {runsLoading && <Loader2 className="h-3 w-3 animate-spin text-faint" />}
-          <span className="ml-auto font-mono text-[10px] text-faint">{runs.length}</span>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto pb-1">
-          {runs.map((r) => {
-            const on = r.id === selRunId;
-            const done = r.steps.filter((s) => s.status === "done").length;
-            return (
-              <button
-                key={r.id}
-                onClick={() => onSelectRun(r.id)}
-                className={`block w-full border-l-2 px-3 py-1.5 text-left transition-colors ${
-                  on ? "border-blue bg-card2/70" : "border-transparent hover:bg-card/60"
-                }`}
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className={`rounded px-1.5 py-px text-[9.5px] ${pillClass(r.status)}`}>
-                    {STATUS_LABEL[r.status] || r.status}
-                  </span>
-                  <span className="font-mono text-[10.5px] text-muted">#{r.id.slice(0, 6)}</span>
-                  <span className="ml-auto font-mono text-[10px] text-faint">{timeLabel(r.started)}</span>
-                </div>
-                <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-faint">
-                  <span className="tabular-nums">
-                    {done}/{r.steps.length} 步
-                  </span>
-                  <span>· v{r.dsl_version ?? "?"}</span>
-                  {r.status === "paused" && r.pending_interrupt?.node_id && (
-                    <span className="text-orange">@{r.pending_interrupt.node_id}</span>
-                  )}
-                  {r.error_detail?.node_id && r.status === "failed" && (
-                    <span className="text-red">@{r.error_detail.node_id}</span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
-          {!runs.length && (
-            <div className="px-3 py-3 text-[11px] text-faint">
-              {selWfId ? "该配方还没有运行记录" : "选择一个配方"}
-            </div>
-          )}
-        </div>
-      </div>
     </div>
   );
 }

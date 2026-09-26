@@ -11,6 +11,8 @@ import { StudioLeftRail } from "./StudioLeftRail";
 import { NodeInspector } from "./NodeInspector";
 import { WorkflowPane } from "./WorkflowPane";
 import { RunObserver } from "./RunObserver";
+import { RunListColumn } from "./RunListColumn";
+import { RunMiniDag } from "./RunMiniDag";
 import { RunRightPane } from "./RunRightPane";
 import { SupervisorConsole } from "./SupervisorConsole";
 import { VersionsTab } from "./VersionsTab";
@@ -32,8 +34,8 @@ type DagNode = Record<string, unknown> & { id: string; type: string };
  * The Studio (design B): a three-pane workspace where the workflow — not the
  * conversation — is the primary object.
  *
- *   left   recipes + their runs        (配方 + Runs)
- *   centre canvas / run observer / versions
+ *   left   recipes + decision inbox    (runs live in the 运行 tab since 方案B 打磨)
+ *   centre canvas / run observer (run list + mini-DAG + steps/timeline) / versions
  *   right  node inspector / run context / recipe meta
  *
  * Selection lives in the URL hash (see useStudioState) so a chat deep link or
@@ -57,8 +59,8 @@ export function StudioShell() {
   }, [workflows, state.wfId]);
 
   // Runs of the selected recipe, via the filtered endpoint. Re-fetch whenever
-  // the store sees one of them change, so the rail tracks status without
-  // polling the whole collection itself.
+  // the store sees one of them change, so the 运行 tab's run column tracks
+  // status without polling the whole collection itself.
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const runSig = useMemo(
@@ -248,18 +250,12 @@ export function StudioShell() {
       <div className="w-[196px] shrink-0 xl:w-[236px]">
         <StudioLeftRail
           workflows={workflows}
-          runs={runs}
-          runsLoading={runsLoading}
           inbox={inbox}
           selWfId={wf.id}
           selRunId={state.runId}
           onSelectWorkflow={(id) => {
             studio.selectWorkflow(id);
             studio.setTab("design");
-          }}
-          onSelectRun={(id) => {
-            studio.selectRun(id);
-            studio.setTab("run");
           }}
           onOpenDecision={(wfId, runId) => {
             studio.selectWorkflow(wfId);
@@ -357,18 +353,48 @@ export function StudioShell() {
               />
             )}
             {state.tab === "run" && (
-              <div className="h-full overflow-y-auto pr-1">
-                <RunObserver
-                  wf={wf}
-                  run={run}
-                  events={events}
-                  nodeStats={nodeStats}
-                  selNode={state.nodeId}
-                  onSelectNode={studio.selectNode}
-                  onSelectRun={studio.selectRun}
-                  onChanged={reloadRuns}
-                  live={live}
-                />
+              <div className="flex h-full min-h-0 gap-3">
+                {/* Run list column (≥1024px): recipe-scoped, replaced below
+                    that by a horizontal chip strip so the observer keeps width. */}
+                <div className="hidden w-56 shrink-0 lg:block">
+                  <RunListColumn
+                    runs={runs}
+                    runsLoading={runsLoading}
+                    selRunId={state.runId}
+                    onSelectRun={studio.selectRun}
+                  />
+                </div>
+                <div className="flex min-w-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+                  <div className="lg:hidden">
+                    <RunListColumn
+                      variant="strip"
+                      runs={runs}
+                      runsLoading={runsLoading}
+                      selRunId={state.runId}
+                      onSelectRun={studio.selectRun}
+                    />
+                  </div>
+                  <RunObserver
+                    wf={wf}
+                    run={run}
+                    events={events}
+                    nodeStats={nodeStats}
+                    selNode={state.nodeId}
+                    onSelectNode={studio.selectNode}
+                    onSelectRun={studio.selectRun}
+                    onChanged={reloadRuns}
+                    live={live}
+                    miniDag={
+                      <RunMiniDag
+                        dsl={wf.dsl as never}
+                        run={run}
+                        events={events}
+                        selNode={state.nodeId}
+                        onSelectNode={studio.selectNode}
+                      />
+                    }
+                  />
+                </div>
               </div>
             )}
             {state.tab === "sup" && <SupervisorConsole wf={wf} events={events} />}

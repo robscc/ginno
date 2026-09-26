@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, MessagesSquare, Pause, Play, RotateCcw, Square } from "lucide-react";
 import * as api from "@/lib/runtime";
@@ -45,6 +45,7 @@ export function RunObserver({
   onSelectRun,
   onChanged,
   live,
+  miniDag,
 }: {
   wf: WorkflowDef;
   run: WorkflowRun | null;
@@ -55,6 +56,8 @@ export function RunObserver({
   onSelectRun: (id: string) => void;
   onChanged: () => void;
   live?: boolean;
+  /** The mini-DAG strip (RunMiniDag), slotted between the header and the body. */
+  miniDag?: ReactNode;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -119,7 +122,7 @@ export function RunObserver({
   if (!run) {
     return (
       <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-line px-6 text-center text-xs text-faint">
-        {wf ? "选择左侧一次运行，或点上方「运行」发起一次。" : "先选一个配方。"}
+        {wf ? "从左侧运行列表选择一次运行，或点上方「运行」发起一次。" : "先选一个配方。"}
       </div>
     );
   }
@@ -225,6 +228,8 @@ export function RunObserver({
         <div className="rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red">{err}</div>
       )}
 
+      {miniDag}
+
       <RunErrorBox
         run={run}
         onRetryFromCheckpoint={async () => {
@@ -237,19 +242,21 @@ export function RunObserver({
         }}
       />
 
-      <div>
-        <div className="mb-1 flex items-center gap-1.5">
-          <span className="text-[11.5px] font-semibold text-txt">步骤</span>
-          {selNode && (
-            <button
-              onClick={() => onSelectNode(null)}
-              className="rounded border border-line2 px-1.5 py-px text-[10px] text-faint hover:text-muted"
-            >
-              清除过滤 [{selNode}]
-            </button>
-          )}
-        </div>
-        <div className="space-y-0.5">
+      {/* 方案B 打磨: steps left / event stream right — below 900px they stack. */}
+      <div className="flex flex-col gap-3 min-[900px]:flex-row min-[900px]:items-start">
+        <div className="w-full shrink-0 min-[900px]:w-64">
+          <div className="mb-1 flex items-center gap-1.5">
+            <span className="text-[11.5px] font-semibold text-txt">步骤</span>
+            {selNode && (
+              <button
+                onClick={() => onSelectNode(null)}
+                className="rounded border border-line2 px-1.5 py-px text-[10px] text-faint hover:text-muted"
+              >
+                清除过滤 [{selNode}]
+              </button>
+            )}
+          </div>
+          <div className="space-y-0.5">
           {run.steps.map((s) => {
             const st = nodeStats[s.id] || {};
             const on = selNode === s.id;
@@ -295,14 +302,15 @@ export function RunObserver({
               </button>
             );
           })}
+          </div>
         </div>
-      </div>
 
-      <div>
-        <div className="mb-1 text-[11.5px] font-semibold text-txt">
-          事件流{selNode ? ` · 节点 ${selNode}` : ""}
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 text-[11.5px] font-semibold text-txt">
+            事件流{selNode ? ` · 节点 ${selNode}` : ""}
+          </div>
+          <WorkflowLogTimeline events={filtered} filters />
         </div>
-        <WorkflowLogTimeline events={filtered} filters />
       </div>
     </div>
   );
