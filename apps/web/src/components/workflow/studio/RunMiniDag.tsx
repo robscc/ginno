@@ -3,7 +3,11 @@
 import { useMemo } from "react";
 import { Hexagon } from "lucide-react";
 import type { WorkflowRun, WorkflowRunEvent } from "@/lib/types";
-import { branchTargets, layerOrder, type DagDsl } from "./canvasLayout";
+import { StudioCanvas } from "./StudioCanvas";
+import { STUDIO_BOX, branchTargets, layerOrder, type DagDsl, type NodeBox } from "./canvasLayout";
+
+/** Compact node geometry for the embedded run canvas. */
+const MINI_BOX: NodeBox = { nw: 148, nh: 54, gx: 46, gy: 26, pad: 20 };
 
 const STATUS_COLOR: Record<string, string> = {
   done: "#22c55e",
@@ -93,9 +97,32 @@ export function RunMiniDag({
 
   if (!nodes.length || !run) return null;
 
-  // Caller-controlled panel height (drag handle below the strip): taller than
-  // ~120px switches to a WRAPPING multi-row flow — one long row squeezes
-  // everything; wrapping at height is what makes a big graph readable.
+  // Caller-controlled panel height (drag handle below the strip). Two tiers:
+  // small → the compact strip; tall (>150px) → the REAL Studio canvas with
+  // wheel-zoom / pan / fit (用户要求：运行 DAG 跟设计画布一样可缩放放大).
+  // The canvas draws true edges (incl. back-edges) and colours nodes by run
+  // status — strictly more readable than the strip once there's room.
+  if (height > 150 && dsl?.nodes?.length) {
+    const st: Record<string, string> = {};
+    for (const s of run.steps || []) st[s.id] = s.status;
+    if (run.status === "paused" && run.pending_interrupt?.node_id) {
+      const pid = run.pending_interrupt.node_id.replace(/__sup$/, "");
+      if (st[pid]) st[pid] = "paused";
+    }
+    return (
+      <div className="rounded-lg border border-line bg-base/40" style={{ height }}>
+        <StudioCanvas
+          dsl={dsl}
+          status={st}
+          selected={selNode}
+          onSelect={onSelectNode}
+          box={MINI_BOX}
+          className="h-full w-full"
+        />
+      </div>
+    );
+  }
+
   const wrap = height > 120;
 
   return (

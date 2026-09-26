@@ -136,9 +136,10 @@ export function StudioShell() {
   const fb = useTriggerFeedback();
   const [triggerErr, setTriggerErr] = useState<string | null>(null);
   const [asideOpen, setAsideOpen] = useState(false);
-  // DAG panel height: persisted, drag to grow — the 84px single-row default
-  // squeezed big graphs; >120px wraps into readable rows.
-  const DEFAULT_DAG_H = 84;
+  // DAG panel height: persisted, drag to grow. >150px renders the REAL
+  // zoomable canvas (设计一致：滚轮缩放/平移/适配)；default 170 opens there;
+  // shrink below 150 for the compact one-row strip.
+  const DEFAULT_DAG_H = 170;
   const [dagH, setDagH] = usePanelWidth("ginno:studio-minidag-h", DEFAULT_DAG_H, 64, 360);
 
   // Draggable panel widths (persisted per browser; inline style overrides the
