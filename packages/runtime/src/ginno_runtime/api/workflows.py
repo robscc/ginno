@@ -46,8 +46,48 @@ async def list_workflows_endpoint() -> list[dict]:
     return wf_store.list_defs()
 
 
+def _backfill_synthesis_adopted(syn_id: str | None, wf: dict | None) -> None:
+    """Quality-plan §3.1: when a workflow was created (or updated, 方案B 阶段4)
+    from a synthesis draft, backfill the case outcome (adopted + workflow id)
+    so the funnel sees L2 success. Best-effort, never blocks the request."""
+    if not (wf and syn_id):
+        return
+    try:
+        from ..workflows import synthesis as wf_synth
+
+        wf_synth.backfill_outcome(
+            wf_synth.find_case_by_synthesis_id(syn_id),
+            created=True,
+            workflow_id=wf.get("id"),
+            created_at=time.time(),
+        )
+    except Exception:
+        pass
+
+
 @router.post("/api/workflows")
 async def create_workflow_endpoint(data: dict) -> dict:
+    data = data or {}
+    # 方案B 阶段4「从会话导入」: with ``workflow_id`` the draft DSL is applied
+    # to an EXISTING recipe as v(N+1) (PUT semantics via update_def) instead of
+    # creating a new one. Same synthesis-adoption backfill as the create path.
+    target_id = data.get("workflow_id")
+    if target_id:
+        if not wf_store.get_def(target_id):
+            raise HTTPException(status_code=404, detail="workflow not found")
+        if not isinstance(data.get("dsl"), dict):
+            raise HTTPException(status_code=400, detail="dsl object required")
+        try:
+            wf = wf_store.update_def(target_id, {"dsl": data["dsl"]})
+        except ValueError as exc:
+            # invalid DSL (store validates on write) — a 400 with the first
+            # validation error, never an uncaught 500.
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        if not wf:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        _backfill_synthesis_adopted(data.get("synthesis_id"), wf)
+        await _push_global_event("workflows.changed", {})
+        return {"ok": True, "workflow": wf}
     try:
         wf = wf_store.create_def(data)
     except ValueError as exc:
@@ -56,19 +96,7 @@ async def create_workflow_endpoint(data: dict) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     # Quality-plan §3.1: if this workflow came from a synthesis draft, backfill
     # the case outcome (adopted + workflow id) so the funnel sees L2 success.
-    syn_id = (data or {}).get("synthesis_id")
-    if wf and syn_id:
-        try:
-            from ..workflows import synthesis as wf_synth
-
-            wf_synth.backfill_outcome(
-                wf_synth.find_case_by_synthesis_id(syn_id),
-                created=True,
-                workflow_id=wf.get("id"),
-                created_at=time.time(),
-            )
-        except Exception:
-            pass
+    _backfill_synthesis_adopted(data.get("synthesis_id"), wf)
     await _push_global_event("workflows.changed", {})
     return {"ok": True, "workflow": wf}
 
@@ -238,6 +266,38 @@ def _synthesize_prompt() -> str:
     )
 
 
+def _resolve_trace_window(
+    messages: list, data: dict
+) -> tuple[list, dict | None]:
+    """Resolve the ``last_n`` / ``range`` selection of a summarize request into
+    (sliced messages, descriptor recorded on the synthesis case).
+
+    方案B 阶段4: ``range`` = ``{start?, end?}`` — INCLUSIVE indices into the
+    session's checkpoint message list (the same indexing
+    ``/api/workflows/summarize-trace/{sid}`` previews). ``start`` clamps to 0,
+    ``end`` clamps to the last index. Back-compat: ``last_n`` (tail window)
+    wins when both are given. Raises 400 when the selection is empty (no
+    messages at all, or a range that clamps past itself)."""
+    last_n = data.get("last_n")
+    last_n = last_n if isinstance(last_n, int) and not isinstance(last_n, bool) and last_n > 0 else None
+    if last_n:
+        return messages[-last_n:], {"last_n": last_n}
+    rng = data.get("range")
+    if isinstance(rng, dict):
+        n = len(messages)
+        start = rng.get("start")
+        end = rng.get("end")
+        lo = max(0, start) if isinstance(start, int) and not isinstance(start, bool) else 0
+        hi = min(n - 1, end) if isinstance(end, int) and not isinstance(end, bool) else n - 1
+        if lo > hi:
+            raise HTTPException(
+                status_code=400,
+                detail=f"range selects no messages (session has {n}; got start={start}, end={end})",
+            )
+        return messages[lo : hi + 1], {"start": lo, "end": hi}
+    return messages, None
+
+
 def _trace_text(messages, last_n: int | None = None) -> str:
     """Compact readable trace of a session for the synthesizer.
 
@@ -245,7 +305,9 @@ def _trace_text(messages, last_n: int | None = None) -> str:
     collapsed to their first lines (the full content never helps synthesis),
     other long outputs keep head + tail (endings carry the conclusion), plain
     messages keep their first 500 chars. ``last_n`` limits the trace to the
-    most recent N messages (S5 range control)."""
+    most recent N messages (S5 range control). Callers pass an ALREADY-sliced
+    message list for the 阶段4 ``range`` selection — see
+    ``_resolve_trace_window``."""
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
     FILE_READ_TOOLS = {"read_file", "Read", "cat", "head", "tail", "view_file"}
@@ -552,10 +614,14 @@ async def summarize_session_to_dsl(data: dict) -> dict:
     messages = (tup.checkpoint.get("channel_values") or {}).get("messages") if tup and tup.checkpoint else []
     if not messages:
         raise HTTPException(status_code=400, detail="session has no messages")
-    last_n = (data or {}).get("last_n")
-    last_n = last_n if isinstance(last_n, int) and last_n > 0 else None
-    trace = _trace_text(messages, last_n)
-    provider = (data or {}).get("provider") or prov_mod.get_default_provider()
+    data = data or {}
+    last_n = data.get("last_n")
+    last_n = last_n if isinstance(last_n, int) and not isinstance(last_n, bool) and last_n > 0 else None
+    # 方案B 阶段4: optional contiguous message-range selection (inclusively
+    # indexed into the checkpoint message list). last_n keeps precedence.
+    sel_msgs, msg_range = _resolve_trace_window(messages, data)
+    trace = _trace_text(sel_msgs, last_n)
+    provider = data.get("provider") or prov_mod.get_default_provider()
     try:
         model = build_model(provider)
     except ValueError as e:
@@ -571,6 +637,7 @@ async def summarize_session_to_dsl(data: dict) -> dict:
         provider=provider,
         model=getattr(model, "model", None) or getattr(model, "model_name", "") or "",
         last_n=last_n,
+        msg_range=msg_range,
         trace=trace,
         session_stats=session_stats,
         prompt_version=SYNTH_PROMPT_VERSION,
@@ -593,6 +660,46 @@ async def summarize_session_to_dsl(data: dict) -> dict:
         }),
     )
     return {"ok": True, "synthesis_id": synthesis_id, "status": "started"}
+
+
+@router.get("/api/workflows/summarize-trace/{session_id}")
+async def summarize_trace_endpoint(session_id: str) -> dict:
+    """Numbered trace rows for the Studio「从会话导入」picker (方案B 阶段4).
+
+    One row per CHECKPOINT message — the EXACT indexing the ``range`` param of
+    ``summarize-from-session`` slices — so the UI's start/end row selection
+    maps 1:1. (``/api/sessions/{sid}/history`` merges consecutive assistant
+    steps into one bubble and therefore cannot be indexed.) Text is truncated
+    to 200 chars; this is a selection preview, not a reader."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    slug = _session_slug(session_id)
+    if not slug:
+        raise HTTPException(status_code=404, detail="session not found")
+    tup = await FileCheckpointer(slug).aget_tuple({"configurable": {"thread_id": session_id}})
+    messages = (tup.checkpoint.get("channel_values") or {}).get("messages") if tup and tup.checkpoint else []
+    rows: list[dict] = []
+    for i, m in enumerate(messages or []):
+        if isinstance(m, HumanMessage):
+            rows.append({"i": i, "role": "user", "text": text_of_content(m.content)[:200]})
+        elif isinstance(m, AIMessage):
+            rows.append({
+                "i": i,
+                "role": "assistant",
+                "text": text_of_content(m.content)[:200],
+                "tools": [tc.get("name") for tc in getattr(m, "tool_calls", None) or []],
+            })
+        elif isinstance(m, ToolMessage):
+            c = m.content if isinstance(m.content, str) else str(m.content)
+            rows.append({
+                "i": i,
+                "role": "tool",
+                "name": getattr(m, "name", "tool") or "tool",
+                "text": c[:200],
+            })
+        else:
+            rows.append({"i": i, "role": "system", "text": text_of_content(getattr(m, "content", ""))[:200]})
+    return {"ok": True, "rows": rows, "count": len(messages or [])}
 
 
 # ---- synthesis-case review API (quality-plan §3.2, UI in Settings) ----
@@ -1413,6 +1520,32 @@ async def get_workflow_run_endpoint(run_id: str) -> dict:
     run = wf_store.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="run not found")
+    return {"ok": True, "run": run}
+
+
+@router.post("/api/workflow_runs/{run_id}/present")
+async def present_workflow_run_endpoint(run_id: str, data: dict) -> dict:
+    """Bind a run to a presenting session (设计B「聊天打开本次运行」): subsequent
+    run.* events stream into that session's sockets, so a chat can follow a run
+    that started elsewhere (Studio trigger, headless). Re-presenting re-binds;
+    an empty ``session_id`` on the run is backfilled with the presenter."""
+    data = data or {}
+    sid = data.get("session_id")
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id required")
+    run = wf_store.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    if not run.get("session_id"):
+        run["session_id"] = sid
+    run["present_in_session_id"] = sid
+    wf_storemod._write_json(wf_storemod._run_path(run_id), run)
+    await _push_session_event(
+        sid,
+        "run.bind",
+        {"run_id": run_id, "workflow_id": run.get("workflow_id"), "present_in_session_id": sid},
+    )
+    await _push_global_event("workflows.changed", {})
     return {"ok": True, "run": run}
 
 

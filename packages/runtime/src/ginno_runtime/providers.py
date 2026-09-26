@@ -457,6 +457,93 @@ def verify_config_draft(cfg: dict[str, Any]) -> dict[str, Any]:
     return _verify_config(normalize_config(cfg))
 
 
+# ---- model listing (「从 API 拉取模型」) -------------------------------------
+
+
+def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Fetch a config's model catalogue from its list-models endpoint.
+
+    The network seam for tests — monkeypatch this (or ``httpx.get``).
+    Normalizes the wire responses into ``{id, owned_by}`` rows sorted by id
+    (anthropic's ``display_name`` rides along as ``owned_by`` — it is the
+    only secondary label that protocol offers). Never raises; failures come
+    back as ``{ok: False, error}`` with a one-line Chinese message, same
+    convention as :func:`_verify_config`. Fixed short timeout: this is an
+    interactive settings-page call, not LLM traffic.
+    """
+    import httpx
+
+    t0 = time.time()
+
+    def _latency() -> int:
+        return int((time.time() - t0) * 1000)
+
+    proto = cfg.get("protocol")
+    key = str(cfg.get("api_key") or "").strip()
+    if not key:
+        return {"ok": False, "error": "API Key 为空", "latency_ms": _latency()}
+    # trailing "/" would double up in the f-string below
+    base = str(cfg.get("base_url") or "").strip().rstrip("/")
+    headers: dict[str, str] = {}
+    if proto == "anthropic":
+        base = base or "https://api.anthropic.com"
+        # gateways may or may not include /v1 in base_url — never double-append
+        if not base.endswith("/v1"):
+            base += "/v1"
+        url = f"{base}/models"
+        if cfg.get("bearer_auth"):
+            headers["Authorization"] = f"Bearer {key}"  # same switch as verify
+        else:
+            headers["x-api-key"] = key
+        headers["anthropic-version"] = "2023-06-01"
+    else:
+        # openai-compatible + openai-responses share the OpenAI /models shape
+        base = base or "https://api.openai.com/v1"
+        url = f"{base}/models"
+        headers["Authorization"] = f"Bearer {key}"
+        if cfg.get("org_id"):
+            headers["OpenAI-Organization"] = str(cfg["org_id"])
+
+    try:
+        resp = httpx.get(url, headers=headers, timeout=8.0)
+        if resp.status_code != 200:
+            return {
+                "ok": False,
+                "error": f"拉取模型列表失败（HTTP {resp.status_code}）",
+                "latency_ms": _latency(),
+            }
+        payload = resp.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return {
+                "ok": False,
+                "error": "拉取模型列表失败：响应缺少 data 列表，无法解析",
+                "latency_ms": _latency(),
+            }
+        models: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            mid = str(row.get("id") or "").strip()
+            if not mid:
+                continue
+            owned = str(row.get("owned_by") or row.get("display_name") or "").strip()
+            models.append({"id": mid, "owned_by": owned or None})
+        models.sort(key=lambda m: m["id"])
+        return {"ok": True, "models": models, "latency_ms": _latency()}
+    except Exception as e:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": f"拉取模型列表失败：{type(e).__name__}: {e}",
+            "latency_ms": _latency(),
+        }
+
+
+def list_models_draft(cfg: dict[str, Any]) -> dict[str, Any]:
+    """List models for a config DRAFT (not yet saved). Never raises, never writes."""
+    return _list_models(normalize_config(cfg))
+
+
 def verify(provider_id: str) -> dict[str, Any]:
     """Probe a saved provider/config with the cheapest possible call. Never raises."""
     cfg = get_config(provider_id)

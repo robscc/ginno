@@ -489,3 +489,187 @@ def test_agent_model_binding_runtime_fallback_no_loop(monkeypatch):
     # the fallback target IS the failing pair → re-raise instead of looping
     with pytest.raises(ValueError):
         S._build_model_with_fallback("alive", "m-alive")
+
+
+# ------------------------ list models (从 API 拉取) ------------------------- #
+
+
+class _FakeResp:
+    def __init__(self, status_code=200, payload=None, json_error=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {"data": []}
+        self._json_error = json_error
+
+    def json(self):
+        if self._json_error is not None:
+            raise self._json_error
+        return self._payload
+
+
+def _patch_httpx_get(monkeypatch, resp=None, exc=None):
+    import httpx
+
+    calls: dict = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.update(url=url, headers=headers, timeout=timeout)
+        if exc is not None:
+            raise exc
+        return resp
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    return calls
+
+
+def test_list_models_seam_openai_compatible(monkeypatch):
+    calls = _patch_httpx_get(
+        monkeypatch,
+        _FakeResp(
+            payload={"data": [{"id": "b-model", "owned_by": "org-x"}, {"id": "a-model"}]}
+        ),
+    )
+    r = prov_mod._list_models(
+        {
+            "protocol": "openai-compatible",
+            "base_url": "https://relay.example.com/v1/",
+            "api_key": "sk-x",
+        }
+    )
+    assert r["ok"] is True
+    assert [m["id"] for m in r["models"]] == ["a-model", "b-model"]  # sorted by id
+    assert r["models"][0]["owned_by"] is None
+    assert r["models"][1]["owned_by"] == "org-x"
+    # trailing "/" stripped, /models appended once
+    assert calls["url"] == "https://relay.example.com/v1/models"
+    assert calls["headers"]["Authorization"] == "Bearer sk-x"
+    assert calls["timeout"] <= 8
+    assert isinstance(r["latency_ms"], int)
+
+
+def test_list_models_seam_responses_org_header(monkeypatch):
+    calls = _patch_httpx_get(monkeypatch, _FakeResp(payload={"data": [{"id": "gpt-x"}]}))
+    r = prov_mod._list_models(
+        {"protocol": "openai-responses", "api_key": "sk-r", "org_id": "org-1"}
+    )
+    assert r["ok"] is True
+    # no base_url → official default; org rides the OpenAI-Organization header
+    assert calls["url"] == "https://api.openai.com/v1/models"
+    assert calls["headers"]["OpenAI-Organization"] == "org-1"
+
+
+def test_list_models_seam_anthropic_base_url_variants(monkeypatch):
+    cases = [
+        ("https://api.anthropic.com", "https://api.anthropic.com/v1/models"),
+        ("https://api.anthropic.com/v1", "https://api.anthropic.com/v1/models"),
+        ("https://gw.example.com/v1/", "https://gw.example.com/v1/models"),
+    ]
+    for base, expected in cases:
+        calls = _patch_httpx_get(
+            monkeypatch,
+            _FakeResp(payload={"data": [{"id": "claude-x", "display_name": "Claude X"}]}),
+        )
+        r = prov_mod._list_models(
+            {"protocol": "anthropic", "base_url": base, "api_key": "sk-ant"}
+        )
+        assert r["ok"] is True, base
+        # /v1 appended exactly once, display_name rides along as the label
+        assert calls["url"] == expected, base
+        assert calls["headers"]["x-api-key"] == "sk-ant"
+        assert calls["headers"]["anthropic-version"] == "2023-06-01"
+        assert "Authorization" not in calls["headers"]
+        assert r["models"] == [{"id": "claude-x", "owned_by": "Claude X"}]
+
+
+def test_list_models_seam_anthropic_bearer_auth(monkeypatch):
+    calls = _patch_httpx_get(monkeypatch, _FakeResp(payload={"data": []}))
+    r = prov_mod._list_models(
+        {
+            "protocol": "anthropic",
+            "base_url": "https://gw.example.com",
+            "api_key": "k",
+            "bearer_auth": True,
+        }
+    )
+    assert r["ok"] is True
+    assert calls["headers"]["Authorization"] == "Bearer k"
+    assert "x-api-key" not in calls["headers"]
+
+
+def test_list_models_seam_non_200(monkeypatch):
+    _patch_httpx_get(monkeypatch, _FakeResp(status_code=401, payload={"error": {}}))
+    r = prov_mod._list_models(
+        {"protocol": "openai-compatible", "base_url": "https://x/v1", "api_key": "bad"}
+    )
+    assert r["ok"] is False
+    assert "401" in r["error"]
+    assert isinstance(r["latency_ms"], int)
+
+
+def test_list_models_seam_connection_error(monkeypatch):
+    import httpx
+
+    _patch_httpx_get(monkeypatch, exc=httpx.ConnectError("connection refused"))
+    r = prov_mod._list_models(
+        {"protocol": "openai-compatible", "base_url": "https://x/v1", "api_key": "k"}
+    )
+    assert r["ok"] is False
+    assert "ConnectError" in r["error"]
+
+
+def test_list_models_seam_unparsable(monkeypatch):
+    # no data list in the payload
+    _patch_httpx_get(monkeypatch, _FakeResp(payload={"object": "list"}))
+    r = prov_mod._list_models(
+        {"protocol": "openai-compatible", "base_url": "https://x/v1", "api_key": "k"}
+    )
+    assert r["ok"] is False
+    # body is not JSON at all
+    _patch_httpx_get(
+        monkeypatch, _FakeResp(payload=None, json_error=ValueError("not json"))
+    )
+    r2 = prov_mod._list_models(
+        {"protocol": "openai-compatible", "base_url": "https://x/v1", "api_key": "k"}
+    )
+    assert r2["ok"] is False
+
+
+def test_list_models_seam_empty_key(monkeypatch):
+    r = prov_mod._list_models(
+        {"protocol": "openai-compatible", "base_url": "https://x/v1", "api_key": "  "}
+    )
+    assert r["ok"] is False and "API Key" in r["error"]
+
+
+def test_list_models_endpoint_ok(client, monkeypatch):
+    monkeypatch.setattr(
+        prov_mod,
+        "_list_models",
+        lambda cfg: {
+            "ok": True,
+            "models": [{"id": "m1", "owned_by": "org"}],
+            "latency_ms": 33,
+        },
+    )
+    r = client.post(
+        "/api/model_configs/list_models",
+        json={"protocol": "openai-compatible", "base_url": "https://x/v1", "api_key": "k"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["latency_ms"] == 33
+    assert body["models"] == [{"id": "m1", "owned_by": "org"}]
+    # draft only — nothing persisted
+    assert "model_configs" not in _read_settings()
+
+
+def test_list_models_endpoint_error_is_200(client, monkeypatch):
+    monkeypatch.setattr(
+        prov_mod,
+        "_list_models",
+        lambda cfg: {"ok": False, "error": "拉取模型列表失败（HTTP 401）", "latency_ms": 7},
+    )
+    r = client.post("/api/model_configs/list_models", json={"protocol": "anthropic"})
+    # same convention as verify: HTTP 200 + ok:false so the UI shows the banner
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "401" in r.json()["error"]

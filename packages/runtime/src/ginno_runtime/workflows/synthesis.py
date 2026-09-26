@@ -52,9 +52,14 @@ def new_case(
     trace: str,
     session_stats: dict,
     prompt_version: str,
+    msg_range: dict | None = None,
 ) -> tuple[Path, str] | tuple[None, None]:
     """Create a fresh case directory and write input.json. Returns
-    (case_dir, synthesis_id) or (None, None) on any failure."""
+    (case_dir, synthesis_id) or (None, None) on any failure.
+
+    ``msg_range`` (方案B 阶段4): the resolved message-range selection
+    (``{"start": lo, "end": hi}``) that produced the trace; None = full
+    session (or a ``last_n`` tail window, which keeps its own field)."""
     try:
         ts = time.time()
         stamp = datetime.fromtimestamp(ts).strftime("%Y%m%d-%H%M%S")
@@ -71,6 +76,7 @@ def new_case(
                 "provider": provider,
                 "model": model,
                 "last_n": last_n,
+                "msg_range": msg_range,
                 "session_stats": session_stats,
                 "trace": trace,
             },

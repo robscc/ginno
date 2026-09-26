@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Pause, Play, RotateCcw, Square } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Loader2, MessagesSquare, Pause, Play, RotateCcw, Square } from "lucide-react";
 import * as api from "@/lib/runtime";
+import { useGinno } from "@/lib/store";
 import type { WorkflowDef, WorkflowRun, WorkflowRunEvent } from "@/lib/types";
 import { STATUS_LABEL } from "@/components/chat/RunBlocks";
 import { RunErrorBox } from "../RunErrorBox";
@@ -56,6 +58,30 @@ export function RunObserver({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const g = useGinno();
+  const router = useRouter();
+
+  // 聊天打开本次运行 (阶段5): create a chat session, present the run into it
+  // (POST /present re-binds present_in_session_id so run.* events stream into
+  // that chat), then jump to the conversation.
+  const openInChat = async () => {
+    if (!run || busy) return;
+    setBusy("present");
+    setErr(null);
+    try {
+      const s = await g.newSession("dev", { title: `运行观察：${run.name || wf.name}` });
+      if (!s?.id) {
+        setErr("新建会话失败：请检查模型提供商设置");
+        return;
+      }
+      await api.presentWorkflowRun(run.id, s.id);
+      router.push("/");
+    } catch {
+      setErr("无法连接运行时");
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const act = async (kind: string, fn: () => Promise<unknown>) => {
     setBusy(kind);
@@ -133,6 +159,19 @@ export function RunObserver({
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
+          <button
+            onClick={() => void openInChat()}
+            disabled={busy === "present"}
+            title="新建一个聊天会话并绑定本次 run，run 事件会流进该会话"
+            className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt disabled:opacity-50"
+          >
+            {busy === "present" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <MessagesSquare className="h-3 w-3" />
+            )}
+            聊天打开本次运行
+          </button>
           {running && (
             <button
               onClick={() => void act("pause", () => api.pauseWorkflowRun(run.id))}

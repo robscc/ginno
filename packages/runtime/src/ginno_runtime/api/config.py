@@ -305,6 +305,15 @@ async def verify_model_config_endpoint(cfg: dict) -> dict:
     }
 
 
+@router.post("/api/model_configs/list_models")
+def list_model_config_models(cfg: dict) -> dict:
+    """Fetch a config DRAFT's model catalogue from its provider (「从 API 拉取
+    模型」). Nothing is saved — id not required. Sync so the network round-trip
+    runs in the threadpool; HTTP 200 always, ok:false carries the error, same
+    convention as the verify endpoint."""
+    return prov_mod.list_models_draft(cfg)
+
+
 @router.delete("/api/model_configs/{config_id}")
 async def delete_model_config(config_id: str):
     stored = {c["id"]: c for c in prov_mod.load_configs()}

@@ -393,7 +393,12 @@ export async function listWorkflowRuns(
   return json<import("./types").WorkflowRun[]>(`${BASE}/workflow_runs${qs ? `?${qs}` : ""}`);
 }
 export async function createWorkflow(
-  data: Partial<import("./types").WorkflowDef> & { synthesis_id?: string },
+  data: Partial<import("./types").WorkflowDef> & {
+    synthesis_id?: string;
+    // 方案B 阶段4: importing a draft into an EXISTING recipe — applies the dsl
+    // as v(N+1) of that recipe instead of creating a new one (404 when unknown).
+    workflow_id?: string;
+  },
 ) {
   return json<{ ok: boolean; workflow?: import("./types").WorkflowDef }>(`${BASE}/workflows`, {
     method: "POST",
@@ -440,6 +445,15 @@ export async function triggerWorkflowRun(
       present_in_session_id: session_id,
     }),
   });
+}
+export async function presentWorkflowRun(run_id: string, session_id: string) {
+  // 设计B「聊天打开本次运行」: re-bind the run's presenting session so run.*
+  // events stream into an existing chat (a run triggered in the Studio or
+  // headless becomes followable from a conversation).
+  return json<{ ok: boolean; run?: import("./types").WorkflowRun }>(
+    `${BASE}/workflow_runs/${run_id}/present`,
+    { method: "POST", headers: H, body: JSON.stringify({ session_id }) },
+  );
 }
 export async function getWorkflowRun(run_id: string) {
   return json<{ ok: boolean; run: import("./types").WorkflowRun | null }>(
@@ -638,12 +652,19 @@ export async function replaySynthesis(synthesis_id: string, provider?: string) {
     body: JSON.stringify(provider ? { provider } : {}),
   });
 }
-export async function summarizeSessionToDsl(session_id: string, provider?: string, last_n?: number) {
+export async function summarizeSessionToDsl(
+  session_id: string,
+  provider?: string,
+  last_n?: number,
+  range?: { start?: number; end?: number },
+) {
   // Async contract: the endpoint validates synchronously, spawns the synthesis
   // in the background and returns immediately with {ok, synthesis_id,
   // status:"started"} — the DSL arrives via synthesis.event WS frames / case
   // polling once the task finishes. Validation failures are HTTPExceptions,
   // whose body is {detail} (json() doesn't throw on HTTP errors).
+  // ``range`` (方案B 阶段4): inclusive indices into the checkpoint message
+  // list, as previewed by getSummarizeTrace; last_n wins when both are sent.
   return json<{
     ok?: boolean;
     synthesis_id?: string;
@@ -653,8 +674,31 @@ export async function summarizeSessionToDsl(session_id: string, provider?: strin
   }>(`${BASE}/workflows/summarize-from-session`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ session_id, provider, ...(last_n ? { last_n } : {}) }),
+    body: JSON.stringify({
+      session_id,
+      provider,
+      ...(last_n ? { last_n } : {}),
+      ...(range ? { range } : {}),
+    }),
   });
+}
+
+// Numbered trace rows for the「从会话导入」picker: one row per CHECKPOINT
+// message — the exact indexing summarize's `range` slices (history merges
+// assistant steps into bubbles, so its rows cannot be indexed).
+export interface SynthesisTraceRow {
+  i: number;
+  role: "user" | "assistant" | "tool" | "system";
+  text: string;
+  name?: string;
+  tools?: string[];
+}
+export async function getSummarizeTrace(session_id: string) {
+  return json<{
+    ok: boolean;
+    rows: SynthesisTraceRow[];
+    count: number;
+  }>(`${BASE}/workflows/summarize-trace/${encodeURIComponent(session_id)}`);
 }
 
 // ---- artifacts ----
@@ -1130,5 +1174,18 @@ export async function testWebSearch(engine: string) {
     method: "POST",
     headers: H,
     body: JSON.stringify({ engine }),
+  });
+}
+// 模型列表「从 API 拉取」: probes the provider's list-models endpoint with a
+// config DRAFT (nothing is saved — id not required). HTTP 200 always;
+// ok:false carries the error, same convention as verifyModelConfig.
+export async function listModelsForConfig(draft: Partial<ModelConfig>) {
+  return json<
+    | { ok: true; models: Array<{ id: string; owned_by: string | null }>; latency_ms: number }
+    | { ok: false; error: string }
+  >(`${BASE}/model_configs/list_models`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(draft),
   });
 }

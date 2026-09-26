@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Loader2, MessagesSquare, Play } from "lucide-react";
+import { FileInput, Loader2, MessagesSquare, Play } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { WorkflowRun } from "@/lib/types";
@@ -15,6 +14,8 @@ import { RunObserver } from "./RunObserver";
 import { RunRightPane } from "./RunRightPane";
 import { SupervisorConsole } from "./SupervisorConsole";
 import { VersionsTab } from "./VersionsTab";
+import { DevSessionDrawer } from "./DevSessionDrawer";
+import { ImportFromSessionModal } from "./ImportFromSessionModal";
 import { useRunInspector } from "./useRunInspector";
 import { useStudioState, type StudioTab } from "./useStudioState";
 
@@ -40,7 +41,6 @@ type DagNode = Record<string, unknown> & { id: string; type: string };
  */
 export function StudioShell() {
   const g = useGinno();
-  const router = useRouter();
   const studio = useStudioState();
   const { state } = studio;
 
@@ -167,11 +167,18 @@ export function StudioShell() {
     }
   };
 
-  const openDevSession = async () => {
-    if (!wf) return;
-    await g.newSession("workflow-dev", { title: `精炼流程：${wf.name}`, workflow_id: wf.id });
-    router.push("/");
-  };
+  // 开发会话 now opens the in-Studio drawer (阶段5) instead of navigating away;
+  // the drawer itself reuses the bound workflow-dev session or creates one.
+  const [devDrawerOpen, setDevDrawerOpen] = useState(false);
+  // 从会话导入 (阶段4): picker modal + a transient green success receipt (the
+  // modal closes itself on success and hands the message over).
+  const [importOpen, setImportOpen] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!importNotice) return;
+    const t = setTimeout(() => setImportNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [importNotice]);
 
   const node = useMemo(() => {
     const nodes = ((wf?.dsl as { nodes?: DagNode[] } | undefined)?.nodes || []) as DagNode[];
@@ -287,12 +294,20 @@ export function StudioShell() {
               检查器
             </button>
             <button
-              onClick={() => void openDevSession()}
-              title="打开绑定该配方的 workflow-dev 会话，用对话改 DSL（带 diff 确认）"
+              onClick={() => setDevDrawerOpen(true)}
+              title="在 Studio 内打开绑定该配方的 workflow-dev 会话，用对话改 DSL（带 diff 确认）"
               className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt"
             >
               <MessagesSquare className="h-3 w-3" />
               开发会话
+            </button>
+            <button
+              onClick={() => setImportOpen(true)}
+              title="把某个会话（或其中一段消息范围）总结成流程：创建新配方，或并入当前配方作为新版本"
+              className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt"
+            >
+              <FileInput className="h-3 w-3" />
+              从会话导入
             </button>
             <button
               onClick={() => void trigger()}
@@ -313,6 +328,11 @@ export function StudioShell() {
         {triggerErr && (
           <div className="border-b border-red/30 bg-red/[0.06] px-3 py-1.5 text-[11px] text-red">
             {triggerErr}
+          </div>
+        )}
+        {importNotice && (
+          <div className="border-b border-green/30 bg-green/[0.06] px-3 py-1.5 text-[11px] text-green">
+            {importNotice}
           </div>
         )}
 
@@ -373,6 +393,15 @@ export function StudioShell() {
                 {asideContent}
               </div>
             </div>
+          )}
+
+          {devDrawerOpen && <DevSessionDrawer wf={wf} onClose={() => setDevDrawerOpen(false)} />}
+          {importOpen && (
+            <ImportFromSessionModal
+              wf={wf}
+              onClose={() => setImportOpen(false)}
+              onDone={(msg) => setImportNotice(msg)}
+            />
           )}
         </div>
       </div>

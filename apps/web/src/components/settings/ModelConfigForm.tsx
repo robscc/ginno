@@ -1,13 +1,14 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { ModelConfig, ModelConfigRefs, ModelProtocol } from "@/lib/types";
 import {
   blankConfig,
   describeRefs,
   domainRecommendations,
+  mergeModelIds,
   parseModelsText,
   PROTOCOLS,
   PROTOCOL_LABEL,
@@ -45,6 +46,13 @@ export function ModelConfigForm({
   const [error, setError] = useState<string | null>(null);
   const [refs, setRefs] = useState<ModelConfigRefs | undefined>(undefined);
 
+  // 「从 API 拉取」 panel: fetched catalogue + ticked ids + search filter.
+  const [fetching, setFetching] = useState(false);
+  const [fetched, setFetched] = useState<Array<{ id: string; owned_by: string | null }> | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [modelSearch, setModelSearch] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+
   const set = <K extends keyof ModelConfig>(key: K, value: ModelConfig[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
@@ -56,6 +64,47 @@ export function ModelConfigForm({
     () => (isCompat ? domainRecommendations(draft.base_url) : []),
     [isCompat, draft.base_url],
   );
+
+  const canFetchModels = !!(draft.protocol && draft.base_url.trim() && draft.api_key.trim());
+
+  const filteredFetched = useMemo(() => {
+    const q = modelSearch.trim().toLowerCase();
+    return (fetched ?? []).filter((m) => m.id.toLowerCase().includes(q));
+  }, [fetched, modelSearch]);
+
+  const fetchModels = async () => {
+    setFetchError(null);
+    setFetching(true);
+    try {
+      const r = await api.listModelsForConfig({
+        protocol: draft.protocol,
+        base_url: draft.base_url,
+        api_key: draft.api_key,
+        org_id: draft.org_id,
+        bearer_auth: draft.bearer_auth,
+      });
+      if (r.ok) {
+        setFetched(r.models);
+        // models already in the list start checked (merging them is a no-op)
+        setPicked(new Set(draft.models));
+        setModelSearch("");
+      } else {
+        setFetchError(r.error || "拉取失败：未知错误");
+      }
+    } catch {
+      setFetchError("无法连接运行时");
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const applyPicked = () => {
+    if (!picked.size) return;
+    // route through onModelsText so the default_model fallback rule applies
+    onModelsText(mergeModelIds(draft.models, [...picked]).join("\n"));
+    setFetched(null);
+    setPicked(new Set());
+  };
 
   const onModelsText = (text: string) => {
     const models = parseModelsText(text);
@@ -252,6 +301,90 @@ export function ModelConfigForm({
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="模型列表 *" hint="每行一个模型 id，也可用逗号分隔">
+            <div className="mb-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void fetchModels()}
+                disabled={!canFetchModels || fetching}
+                className="pill inline-flex shrink-0 items-center gap-1.5 border border-blue/50 text-blue transition-colors hover:bg-blue/10 disabled:opacity-50"
+              >
+                {fetching && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {fetching ? "拉取中…" : "从 API 拉取模型"}
+              </button>
+              {!canFetchModels && (
+                <span className="text-[11px] text-faint">填写 Base URL 和 API Key 后可拉取</span>
+              )}
+            </div>
+            {fetchError && (
+              <div className="mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
+                拉取失败：{fetchError}
+              </div>
+            )}
+            {fetched && (
+              // Ticker-style picker over the provider's catalogue.
+              <div className="mb-2 space-y-2 rounded-xl border border-line p-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    className="field flex-1"
+                    placeholder="搜索模型 id…"
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFetched(null);
+                      setPicked(new Set());
+                    }}
+                    className="shrink-0 rounded-lg px-3 py-2 text-xs text-muted transition-colors hover:text-txt"
+                  >
+                    取消
+                  </button>
+                </div>
+                <div className="max-h-56 overflow-y-auto rounded-lg border border-line">
+                  {filteredFetched.map((m) => (
+                    <label
+                      key={m.id}
+                      className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-card2"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={picked.has(m.id)}
+                        onChange={(e) =>
+                          setPicked((p) => {
+                            const n = new Set(p);
+                            if (e.target.checked) n.add(m.id);
+                            else n.delete(m.id);
+                            return n;
+                          })
+                        }
+                      />
+                      <span className="truncate font-mono">{m.id}</span>
+                      {m.owned_by && (
+                        <span className="ml-auto shrink-0 text-[11px] text-faint">{m.owned_by}</span>
+                      )}
+                    </label>
+                  ))}
+                  {!filteredFetched.length && (
+                    <div className="px-3 py-3 text-center text-xs text-faint">无匹配模型</div>
+                  )}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-faint">
+                    共 {filteredFetched.length} 个 · 已勾选 {picked.size} 个
+                  </span>
+                  <button
+                    type="button"
+                    onClick={applyPicked}
+                    disabled={!picked.size}
+                    className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    添加所选 ({picked.size})
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="mb-1 text-[11px] text-faint">或手动添加（每行一个）</div>
             <textarea
               className="field font-mono text-xs"
               rows={4}
@@ -262,7 +395,29 @@ export function ModelConfigForm({
           </Field>
           <div className="space-y-3">
             <Field label="默认模型 *">
-              {draft.models.length ? (
+              {draft.models.length > 12 ? (
+                // Long list → searchable combobox (native datalist keeps it
+                // dependency-free); the out-of-list warning stays as a chip.
+                <div>
+                  <input
+                    className="field font-mono text-xs"
+                    list="mc-default-model-options"
+                    value={draft.default_model}
+                    onChange={(e) => set("default_model", e.target.value)}
+                    placeholder="输入或从列表选择模型 id"
+                  />
+                  <datalist id="mc-default-model-options">
+                    {draft.models.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                  {!draft.models.includes(draft.default_model) && draft.default_model && (
+                    <p className="mt-1 text-[11px] text-yellow">
+                      {draft.default_model} 不在模型列表中
+                    </p>
+                  )}
+                </div>
+              ) : draft.models.length ? (
                 <select
                   className="field"
                   value={draft.default_model}

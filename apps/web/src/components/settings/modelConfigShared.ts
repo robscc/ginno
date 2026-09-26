@@ -102,3 +102,11 @@ export function parseModelsText(text: string): string[] {
   }
   return [...seen];
 }
+
+// Merge ids picked from the 「从 API 拉取」 panel into the manual list:
+// existing order preserved, new ids appended sorted, duplicates dropped.
+export function mergeModelIds(existing: string[], picked: string[]): string[] {
+  const have = new Set(existing);
+  const fresh = [...new Set(picked)].filter((id) => !have.has(id)).sort();
+  return [...existing, ...fresh];
+}
