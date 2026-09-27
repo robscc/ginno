@@ -52,4 +52,4 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
   - `checkpointer.py` — 文件式 LangGraph checkpointer（full/delta 两种模式）
   - `compaction.py` / `microcompact.py` — 上下文压缩（语义压缩，非 zlib）
   - `server.py` — FastAPI 装配
-- `apps/web/src/` — Next.js 前端；`apps/desktop/src-tauri/` — Tauri 壳
+- `apps/web/src/` — Next.js 前端；`apps/desktop/` — Tauri 壳（Rust 源码在 `apps/desktop/src/`，Cargo.toml / tauri.conf.json 直接在此目录）
