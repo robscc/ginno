@@ -134,7 +134,6 @@ export function CodePanel() {
   const wide = panelWidth >= WIDE_PX;
   // Below 600px "side" is not allowed — the tree becomes a drawer instead.
   const effectiveMode: "file" | "side" = wide ? g.codePanelMode : "file";
-  const treeVisible = effectiveMode === "side" && g.codeTreeOpen;
 
   const {
     codeRootId,
@@ -150,6 +149,13 @@ export function CodePanel() {
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [readNonce, setReadNonce] = useState(0);
   const [tabs, setTabs] = useState<EditorTab[]>([]);
+  // BROWSING = nothing open. The panel's job then is to show the tree: an empty
+  // editor beside a collapsed tree is a dead pane, and since the default panel
+  // (380px) is below WIDE_PX the auto-sizing below would otherwise open "file"
+  // mode with the tree shut — i.e. the whole tab looking empty on entry.
+  // Declared here, not with `effectiveMode`, because it reads `tabs`.
+  const browsing = tabs.length === 0;
+  const treeVisible = browsing || (effectiveMode === "side" && g.codeTreeOpen);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [reads, setReads] = useState<Record<string, ReadState>>({});
   const [jump, setJump] = useState<Jump | null>(null);
@@ -324,7 +330,14 @@ export function CodePanel() {
 
   // Pick a root once roots arrive (primary folder first is the server's order).
   useEffect(() => {
-    if (!codeRootId && roots.length) setCodeRootId(roots[0].id);
+    if (codeRootId || !roots.length) return;
+    // Default to the SESSION WORKSPACE rather than `roots[0]`: the server orders
+    // mounts first, so `roots[0]` is a mounted project folder when one exists —
+    // but the session workspace always exists and is where the agent's own
+    // output lands, so it is never an empty pane. A project folder is one click
+    // away in the switcher.
+    const preferred = roots.find((r) => r.id === "session") ?? roots[0];
+    setCodeRootId(preferred.id);
   }, [codeRootId, roots, setCodeRootId]);
 
   // ---- layout auto-sizing ---------------------------------------------------
@@ -1009,19 +1022,22 @@ export function CodePanel() {
         ) : (
           <Breadcrumb crumbs={crumbs} onJump={jumpToDir} />
         )}
-        <div className="ml-auto flex shrink-0 items-center gap-0.5">
-          <ToolButton title="文件树（⌘B）" active={g.codeTreeOpen} onClick={toggleTree}>
-            <FolderTree className="h-3.5 w-3.5" />
-          </ToolButton>
-          {wide && (
-            <ToolButton
-              title={effectiveMode === "side" ? "切换为文件优先" : "切换为并排"}
-              onClick={toggleMode}
-            >
-              <Columns2 className="h-3.5 w-3.5" />
+        {/* While browsing there is nothing to toggle: the tree IS the panel. */}
+        {browsing ? null : (
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            <ToolButton title="文件树（⌘B）" active={g.codeTreeOpen} onClick={toggleTree}>
+              <FolderTree className="h-3.5 w-3.5" />
             </ToolButton>
-          )}
-        </div>
+            {wide && (
+              <ToolButton
+                title={effectiveMode === "side" ? "切换为文件优先" : "切换为并排"}
+                onClick={toggleMode}
+              >
+                <Columns2 className="h-3.5 w-3.5" />
+              </ToolButton>
+            )}
+          </div>
+        )}
       </div>
 
       {notice ? (
@@ -1034,15 +1050,22 @@ export function CodePanel() {
       <div className="relative flex min-h-0 flex-1">
         {treeVisible ? (
           <div
-            className="flex min-h-0 shrink-0 flex-col border-r border-line bg-panel"
-            style={{ width: TREE_PX }}
+            className={cn(
+              "flex min-h-0 shrink-0 flex-col bg-panel",
+              // While browsing the tree gets the whole panel: there is no editor
+              // to share with, so a fixed 260px column would leave dead space.
+              browsing ? "flex-1" : "border-r border-line",
+            )}
+            style={browsing ? undefined : { width: TREE_PX }}
           >
             {treeColumn}
           </div>
         ) : null}
 
-        {/* Editor column */}
-        <div className="flex min-h-0 flex-1 flex-col">
+        {/* Editor column — hidden while BROWSING (no tab open). With nothing to
+            show it would only be an empty hint, and on the default 380px panel
+            that hint plus a collapsed tree IS the whole tab. */}
+        <div className={cn("min-h-0 flex-1 flex-col", browsing ? "hidden" : "flex")}>
           <EditorTabs
             tabs={tabs.map((t) => {
               const m = tabMeta[codeTabKey(t)];
@@ -1162,8 +1185,10 @@ export function CodePanel() {
           </div>
         </div>
 
-        {/* Overlay drawer: only in "file" mode, so the editor keeps its width. */}
-        {effectiveMode === "file" && g.codeTreeOpen ? (
+        {/* Overlay drawer: the tree's fallback when it is NOT docked — "file"
+            mode with the tree switched on, so the editor keeps its width. While
+            browsing the tree IS the panel, so there is no drawer. */}
+        {!treeVisible && g.codeTreeOpen ? (
           <>
             <div
               className="absolute inset-0 z-10 bg-black/20"
