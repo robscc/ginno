@@ -12,14 +12,30 @@ function clamp(v: number, min: number, max: number) {
  * value is read after mount (avoids a hydration mismatch on the inline style)
  * and every write is clamped to [min, max]. When storage is unavailable
  * (private mode, blocked site data) the value simply degrades to in-memory.
+ *
+ * `max` may be a number or a getter `() => number`, evaluated lazily at read /
+ * clamp time. The getter form lets a panel that can grow with the window (e.g.
+ * the code tab, capped at min(50vw, 1100px)) resolve its ceiling per drag
+ * without the caller threading window listeners. Callers that pass a plain
+ * number are unaffected.
  */
 export function usePanelWidth(
   storageKey: string,
   defaultWidth: number,
   min: number,
-  max: number,
+  max: number | (() => number),
 ): [number, (v: number | ((prev: number) => number)) => void] {
   const [width, setWidth] = useState(defaultWidth);
+
+  // Mirror `max` into a ref and read it lazily. An inline getter changes
+  // identity every render; depending on it directly would re-run the hydrate
+  // effect below on each render and clobber an in-progress drag.
+  const maxRef = useRef(max);
+  maxRef.current = max;
+  const readMax = useCallback(() => {
+    const m = maxRef.current;
+    return typeof m === "function" ? m() : m;
+  }, []);
 
   // Read the stored value once it's safe to touch localStorage (client only).
   useEffect(() => {
@@ -27,12 +43,12 @@ export function usePanelWidth(
       const raw = window.localStorage.getItem(storageKey);
       if (raw != null) {
         const n = Number(raw);
-        if (Number.isFinite(n)) setWidth(clamp(n, min, max));
+        if (Number.isFinite(n)) setWidth(clamp(n, min, readMax()));
       }
     } catch {
       // storage unavailable: keep the default
     }
-  }, [storageKey, min, max]);
+  }, [storageKey, min, readMax]);
 
   // Accepts an updater so drag handlers never apply a delta onto a stale
   // width when two pointermove events land in one batch. The persist inside
@@ -40,7 +56,7 @@ export function usePanelWidth(
   const set = useCallback(
     (v: number | ((prev: number) => number)) => {
       setWidth((prev) => {
-        const next = clamp(typeof v === "function" ? v(prev) : v, min, max);
+        const next = clamp(typeof v === "function" ? v(prev) : v, min, readMax());
         try {
           window.localStorage.setItem(storageKey, String(next));
         } catch {
@@ -49,7 +65,7 @@ export function usePanelWidth(
         return next;
       });
     },
-    [storageKey, min, max],
+    [storageKey, min, readMax],
   );
 
   return [width, set];

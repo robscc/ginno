@@ -10,20 +10,62 @@ import {
   type ReactNode,
 } from "react";
 import * as api from "./runtime";
+import { ALL_RIGHT_TAB_IDS, canonicalTabOrder, visibleTabOrder } from "./rightTabs";
 import type { SynthesisCaseSummary } from "./runtime";
 import { notifyNative } from "./desktop";
 import { loadNotifyPrefs, notifyPrefs } from "./notifyPrefs";
 import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, Todo, WorkflowDef, WorkflowRun } from "./types";
 
-export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis";
+export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis" | "code";
+
+/** An agent write/edit observed on the session socket (design §4.7 S3). */
+export interface CodeTouch {
+  op: "write" | "edit";
+  /** The file's version right after the agent's write (``size:mtime_ns``). The
+   *  code panel reuses it as the conflict baseline for a DIRTY tab, which is
+   *  why the WS event carries it at all (S3 brief §0). */
+  version: string;
+  /** Epoch ms — newest-wins when several changes land in one turn. */
+  at: number;
+}
 
 // Right panel width bounds (right-panel-redesign.md §3.4). The panel renders
 // at `rightPanelWidth`; dragging clamps into this range, double-click resets.
 export const PANEL_WIDTH_MIN = 280;
 export const PANEL_WIDTH_MAX = 560;
 export const PANEL_WIDTH_DEFAULT = 380;
+// The code tab is allowed a much wider panel — it holds a tree + editor
+// (docs/code-panel-design.md §4.5): min(50vw, this cap).
+export const PANEL_WIDTH_MAX_CODE = 1100;
 
-// localStorage key for the persisted right-panel prefs ({open, width}).
+/** Per-tab right-panel widths, all starting at the shared default. Width is
+ *  remembered per tab (design §4.5) so switching tabs restores that tab's own
+ *  width instead of forcing one global number. */
+export function defaultPanelWidths(): Record<RightTab, number> {
+  return {
+    todo: PANEL_WIDTH_DEFAULT,
+    workflow: PANEL_WIDTH_DEFAULT,
+    artifacts: PANEL_WIDTH_DEFAULT,
+    memory: PANEL_WIDTH_DEFAULT,
+    synthesis: PANEL_WIDTH_DEFAULT,
+    code: PANEL_WIDTH_DEFAULT,
+  };
+}
+
+/** Max right-panel width for a tab (design §4.5): the code tab may grow to
+ *  half the viewport (capped at PANEL_WIDTH_MAX_CODE); every other tab keeps
+ *  the historical 560px cap. Evaluated on demand so it tracks the window size
+ *  while dragging. */
+export function panelWidthMax(tab: RightTab): number {
+  if (tab !== "code") return PANEL_WIDTH_MAX;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 0;
+  if (!vw) return PANEL_WIDTH_MAX_CODE;
+  return Math.max(PANEL_WIDTH_MIN, Math.min(0.5 * vw, PANEL_WIDTH_MAX_CODE));
+}
+
+// localStorage key for the persisted right-panel prefs.
+// Current shape: {open, widths: {tab: px}}. Legacy {open, width} is still read
+// (the single width migrates onto the tab active at hydration time).
 const PANEL_PREFS_KEY = "ginno-right-panel";
 // Last active session, restored on boot (open-experience redesign). Only real
 // ids are stored; visiting home (null) keeps the previous id so a relaunch
@@ -36,6 +78,18 @@ export interface PreviewFile {
   path: string;
   kind?: string;
   mtime?: number;
+}
+
+/** A pending "open this file in the code panel" request, published by the chat
+ *  jump path (openInCode) and consumed by the panel (docs/code-panel-design.md
+ *  §3.4). The nonce bumps on every call so re-opening the same path still
+ *  re-triggers reveal/line positioning. `line` is S1-only state: the panel
+ *  records it and Monaco highlights it once wired. */
+export interface CodeOpenRequest {
+  rootId: string;
+  path: string;
+  line?: number;
+  nonce: number;
 }
 
 /** Live in-flight tool call for a workflow run step (workflow-ux-redesign P1):
@@ -146,12 +200,48 @@ interface GinnoState {
   setRightTab: (tab: RightTab, opts?: { manual?: boolean }) => void;
   // ---- right panel open/width/badges (right-panel-redesign.md) ----
   rightPanelOpen: boolean;
-  rightPanelWidth: number; // px, clamped to [PANEL_WIDTH_MIN, PANEL_WIDTH_MAX]
+  rightPanelWidth: number; // px, clamped to [PANEL_WIDTH_MIN, panelWidthMax(tab)]
+  // Per-tab widths (design §4.5): switching tabs restores that tab's width.
+  // `rightPanelWidth` mirrors the active tab's entry for existing consumers.
+  rightPanelWidthByTab: Record<RightTab, number>;
   // Unread counts accumulated while the panel was collapsed (v1: artifacts).
   panelBadge: Partial<Record<RightTab, number>>;
   setRightPanelOpen: (open: boolean) => void;
   setRightPanelWidth: (w: number) => void;
   clearPanelBadge: (tab?: RightTab) => void; // omit tab → clear all
+  // ---- right panel tab order / visibility (Settings → 通用设置) ----
+  /** Full order, hidden tabs included — this is what the settings list reorders. */
+  rightTabOrder: RightTab[];
+  rightTabsHidden: RightTab[];
+  /** Derived: ordered AND visible — what the tab strip and the dock render. */
+  visibleRightTabs: RightTab[];
+  setRightTabOrder: (order: RightTab[]) => void;
+  setRightTabHidden: (id: RightTab, hidden: boolean) => void;
+  resetRightTabs: () => void;
+  // ---- code panel (docs/code-panel-design.md) ----
+  // Root currently selected in the tree; null until the panel picks one.
+  codeRootId: string | null;
+  // Panel layout within the tab: "file" = editor-first (tree collapsed to a
+  // breadcrumb, ⌘B expands); "side" = tree + editor side by side.
+  codePanelMode: "file" | "side";
+  // Whether the tree drawer/sidebar is shown in "file" mode (⌘B).
+  codeTreeOpen: boolean;
+  setCodeRootId: (id: string) => void;
+  setCodePanelMode: (m: "file" | "side") => void;
+  setCodeTreeOpen: (v: boolean) => void;
+  // Pending open request from the chat-jump path; consumed by the panel.
+  codeOpenRequest: CodeOpenRequest | null;
+  clearCodeOpenRequest: () => void;
+  openInCode: (target: { rootId: string; path: string; line?: number }) => void;
+  // ---- agent file changes (design §4.7 S3) ----
+  /** Absolute path → the agent's last write/edit, from `code.changed`. Feeds
+   *  the tree's agent marks (cumulative). */
+  codeTouched: Record<string, CodeTouch>;
+  /** Only the NEWEST change, so a consumer can react once per event instead of
+   *  re-scanning the cumulative map (and without diffing it). */
+  codeLastChange: (CodeTouch & { path: string; nonce: number }) | null;
+  /** Called by the session socket handler when `code.changed` arrives. */
+  notifyCodeChange: (change: { path: string; op: "write" | "edit"; version: string }) => void;
   openPreview: (f: PreviewFile) => void;
   closePreview: () => void;
   notifyPreviewInvalidate: (fileId: string) => void;
@@ -310,10 +400,55 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   // Defaults match the pre-redesign behavior (open, 380px) so upgrading users
   // see no sudden change. Persisted as one JSON blob (`ginno-right-panel`).
   const [rightPanelOpen, setRightPanelOpenState] = useState(true);
-  const [rightPanelWidth, setRightPanelWidthState] = useState(PANEL_WIDTH_DEFAULT);
+  // Width is per tab (design §4.5): the active tab's entry is what the panel
+  // renders, so a switch reads the new tab's remembered width. The ref mirrors
+  // the record for the persist callback (writes must not read stale state).
+  const [rightPanelWidthByTab, setRightPanelWidthByTab] = useState<Record<RightTab, number>>(
+    defaultPanelWidths,
+  );
+  const rightPanelWidth = rightPanelWidthByTab[rightTab];
   const [panelBadge, setPanelBadge] = useState<Partial<Record<RightTab, number>>>({});
+  // Tab order + visibility (Settings → 通用设置). The order holds EVERY tab —
+  // a hidden one keeps its slot, so unhiding restores its position instead of
+  // dropping it at the end. Visibility is a separate set.
+  const [rightTabOrder, setRightTabOrderState] = useState<RightTab[]>(ALL_RIGHT_TAB_IDS);
+  const [rightTabsHidden, setRightTabsHiddenState] = useState<RightTab[]>([]);
+  const rightTabOrderRef = useRef<RightTab[]>(ALL_RIGHT_TAB_IDS);
+  const rightTabsHiddenRef = useRef<RightTab[]>([]);
+  // Cheap enough to recompute per render (six ids) — no memo needed.
+  const visibleRightTabs = visibleTabOrder(rightTabOrder, rightTabsHidden);
   const rightPanelOpenRef = useRef(true);
-  const rightPanelWidthRef = useRef(PANEL_WIDTH_DEFAULT);
+  const rightPanelWidthByTabRef = useRef<Record<RightTab, number>>(rightPanelWidthByTab);
+  // Active tab mirror for callbacks that act on "the current tab" without
+  // re-creating on every tab switch (persist / setWidth / legacy migration).
+  const rightTabRef = useRef<RightTab>(rightTab);
+  useEffect(() => {
+    rightTabRef.current = rightTab;
+  }, [rightTab]);
+
+  // ---- code panel (docs/code-panel-design.md §4.5) ----
+  const [codeRootId, setCodeRootIdState] = useState<string | null>(null);
+  const [codePanelMode, setCodePanelModeState] = useState<"file" | "side">("file");
+  const [codeTreeOpen, setCodeTreeOpenState] = useState(false);
+  const [codeOpenRequest, setCodeOpenRequest] = useState<CodeOpenRequest | null>(null);
+  // Agent file changes, pushed over the session socket (design §4.7 S3). The
+  // cumulative map feeds the tree's marks; `codeLastChange` exists so a
+  // consumer reacts once per event rather than rescanning the map.
+  const [codeTouched, setCodeTouched] = useState<Record<string, CodeTouch>>({});
+  const [codeLastChange, setCodeLastChange] = useState<
+    (CodeTouch & { path: string; nonce: number }) | null
+  >(null);
+  const codeChangeNonceRef = useRef(0);
+  const notifyCodeChange = useCallback(
+    (change: { path: string; op: "write" | "edit"; version: string }) => {
+      const touch: CodeTouch = { op: change.op, version: change.version, at: Date.now() };
+      setCodeTouched((prev) => ({ ...prev, [change.path]: touch }));
+      codeChangeNonceRef.current += 1;
+      setCodeLastChange({ ...touch, path: change.path, nonce: codeChangeNonceRef.current });
+    },
+    [],
+  );
+  const codeOpenNonceRef = useRef(0);
   // Artifact ids that arrived while collapsed — replayed as a pulse on reopen
   // so the highlight isn't lost to the hidden window.
   const pendingFlashRef = useRef<string[]>([]);
@@ -322,7 +457,12 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     try {
       localStorage.setItem(
         PANEL_PREFS_KEY,
-        JSON.stringify({ open: rightPanelOpenRef.current, width: rightPanelWidthRef.current }),
+        JSON.stringify({
+          open: rightPanelOpenRef.current,
+          widths: rightPanelWidthByTabRef.current,
+          order: rightTabOrderRef.current,
+          hidden: rightTabsHiddenRef.current,
+        }),
       );
     } catch {
       /* storage unavailable */
@@ -335,15 +475,55 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     try {
       const raw = localStorage.getItem(PANEL_PREFS_KEY);
       if (!raw) return;
-      const v = JSON.parse(raw) as { open?: unknown; width?: unknown };
+      const v = JSON.parse(raw) as {
+        open?: unknown;
+        width?: unknown;
+        widths?: unknown;
+        order?: unknown;
+        hidden?: unknown;
+      };
       if (typeof v.open === "boolean") {
         rightPanelOpenRef.current = v.open;
         setRightPanelOpenState(v.open);
       }
-      if (typeof v.width === "number") {
-        const w = Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, v.width));
-        rightPanelWidthRef.current = w;
-        setRightPanelWidthState(w);
+      if (v.widths && typeof v.widths === "object") {
+        // Current format {open, widths:{tab:px}}.
+        const saved = v.widths as Partial<Record<RightTab, number>>;
+        const next = defaultPanelWidths();
+        (Object.keys(next) as RightTab[]).forEach((tab) => {
+          const w = saved[tab];
+          if (typeof w === "number" && Number.isFinite(w)) {
+            next[tab] = Math.min(panelWidthMax(tab), Math.max(PANEL_WIDTH_MIN, Math.round(w)));
+          }
+        });
+        rightPanelWidthByTabRef.current = next;
+        setRightPanelWidthByTab(next);
+      } else if (typeof v.width === "number") {
+        // Legacy format {open, width}: one width for every tab. Migrate it onto
+        // the tab active at hydration time so the user keeps their setting;
+        // the other tabs start at the default.
+        const w = Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, Math.round(v.width)));
+        const tab = rightTabRef.current;
+        const next = { ...rightPanelWidthByTabRef.current, [tab]: w };
+        rightPanelWidthByTabRef.current = next;
+        setRightPanelWidthByTab(next);
+      }
+      // Tab order/visibility. Canonicalised, so a stale preference (a tab that
+      // no longer exists, or one shipped since it was saved) resolves safely.
+      const order = canonicalTabOrder(v.order);
+      const hidden = Array.isArray(v.hidden)
+        ? v.hidden.filter((h): h is RightTab => typeof h === "string")
+        : [];
+      rightTabOrderRef.current = order;
+      rightTabsHiddenRef.current = hidden;
+      setRightTabOrderState(order);
+      setRightTabsHiddenState(hidden);
+      // The default tab may be hidden — land on the first visible one, or the
+      // panel would open onto an empty strip.
+      const vis = visibleTabOrder(order, hidden);
+      if (!vis.includes(rightTabRef.current)) {
+        rightTabRef.current = vis[0];
+        setRightTabState(vis[0]);
       }
     } catch {
       /* corrupted prefs — keep defaults */
@@ -371,9 +551,12 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
 
   const setRightPanelWidth = useCallback(
     (w: number) => {
-      const cw = Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, Math.round(w)));
-      rightPanelWidthRef.current = cw;
-      setRightPanelWidthState(cw);
+      const tab = rightTabRef.current;
+      const cw = Math.min(panelWidthMax(tab), Math.max(PANEL_WIDTH_MIN, Math.round(w)));
+      // Update the ref eagerly (persistPanelPrefs reads it synchronously).
+      const next = { ...rightPanelWidthByTabRef.current, [tab]: cw };
+      rightPanelWidthByTabRef.current = next;
+      setRightPanelWidthByTab(next);
       persistPanelPrefs();
     },
     [persistPanelPrefs],
@@ -388,6 +571,74 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       return next;
     });
   }, []);
+
+  /** Persist a new tab order. Canonicalised, so callers may pass a partial or
+   *  stale list safely (the settings UI always passes a complete one). */
+  const setRightTabOrder = useCallback(
+    (order: RightTab[]) => {
+      const next = canonicalTabOrder(order);
+      rightTabOrderRef.current = next;
+      setRightTabOrderState(next);
+      persistPanelPrefs();
+    },
+    [persistPanelPrefs],
+  );
+
+  const setRightTabHidden = useCallback(
+    (id: RightTab, hidden: boolean) => {
+      const visibleNow = visibleTabOrder(rightTabOrderRef.current, rightTabsHiddenRef.current);
+      // Refuse to hide the last visible tab: an empty strip leaves the panel
+      // with nothing to click, so it could never be brought back.
+      if (hidden && visibleNow.length <= 1 && visibleNow[0] === id) return;
+      const next = hidden
+        ? Array.from(new Set([...rightTabsHiddenRef.current, id]))
+        : rightTabsHiddenRef.current.filter((t) => t !== id);
+      rightTabsHiddenRef.current = next;
+      setRightTabsHiddenState(next);
+      // A hidden tab must not stay active, or the body would render a panel
+      // whose tab is no longer in the strip.
+      if (hidden && rightTabRef.current === id) {
+        const fallback = visibleTabOrder(rightTabOrderRef.current, next)[0];
+        rightTabRef.current = fallback;
+        setRightTabState(fallback);
+      }
+      persistPanelPrefs();
+    },
+    [persistPanelPrefs],
+  );
+
+  /** Back to the shipped order with every tab shown. */
+  const resetRightTabs = useCallback(() => {
+    rightTabOrderRef.current = ALL_RIGHT_TAB_IDS;
+    rightTabsHiddenRef.current = [];
+    setRightTabOrderState(ALL_RIGHT_TAB_IDS);
+    setRightTabsHiddenState([]);
+    persistPanelPrefs();
+  }, [persistPanelPrefs]);
+
+  /**
+   * Activate a tab, un-hiding it first if the user had hidden it.
+   *
+   * Every PROGRAMMATIC switch goes through here (chat jump, notification click,
+   * artifacts auto-follow). Activating a hidden tab would render a panel body
+   * whose tab is absent from the strip, leaving the strip with no selection at
+   * all. An explicit jump is a strong enough signal of intent that re-showing
+   * the tab is the right resolution — silently doing nothing would be worse.
+   * User clicks from the strip always name a visible tab, so this is a no-op
+   * on that path.
+   */
+  const activateRightTab = useCallback(
+    (tab: RightTab) => {
+      if (rightTabsHiddenRef.current.includes(tab)) {
+        const next = rightTabsHiddenRef.current.filter((t) => t !== tab);
+        rightTabsHiddenRef.current = next;
+        setRightTabsHiddenState(next);
+        persistPanelPrefs();
+      }
+      setRightTabState(tab);
+    },
+    [persistPanelPrefs],
+  );
 
   const activeSessionRef = useRef<string | null>(null);
   useEffect(() => {
@@ -419,9 +670,38 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         setArtifactsFollow(tab === "artifacts");
       }
       if (tab === "workflow") markFailedRunsSeen();
-      setRightTabState(tab);
+      activateRightTab(tab);
     },
-    [markFailedRunsSeen],
+    [markFailedRunsSeen, activateRightTab],
+  );
+
+  // ---- code panel actions (docs/code-panel-design.md §3.4) ----
+  const setCodeRootId = useCallback((id: string) => {
+    setCodeRootIdState(id);
+  }, []);
+  const setCodePanelMode = useCallback((m: "file" | "side") => {
+    setCodePanelModeState(m);
+  }, []);
+  const setCodeTreeOpen = useCallback((v: boolean) => {
+    setCodeTreeOpenState(v);
+  }, []);
+  const clearCodeOpenRequest = useCallback(() => {
+    setCodeOpenRequest(null);
+  }, []);
+  // Unified jump-from-chat entry point: switch to the code tab, open the panel
+  // if collapsed, and publish an open request. Deliberately does NOT touch the
+  // width (design §3.4: respecting the user's width; the tree auto-collapses so
+  // a narrow panel stays usable). The panel expands the tree to the file and
+  // opens it; `line` rides along for Monaco's reveal.
+  const openInCode = useCallback(
+    (target: { rootId: string; path: string; line?: number }) => {
+      setCodeRootIdState(target.rootId);
+      setRightTab("code");
+      if (!rightPanelOpenRef.current) setRightPanelOpen(true);
+      codeOpenNonceRef.current += 1;
+      setCodeOpenRequest({ ...target, nonce: codeOpenNonceRef.current });
+    },
+    [setRightTab, setRightPanelOpen],
   );
 
   const openPreview = useCallback((f: PreviewFile) => {
@@ -502,7 +782,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       // miss. Permission is requested lazily the first time any run goes
       // active (never a cold-start prompt). Clicking opens the Workflow tab.
       notifyRunTransitions(runs, () => {
-        setRightTabState("workflow");
+        // Explicit user intent (they clicked the notification) — reveal the
+        // tab even if they had hidden it. Contrast reloadArtifacts below,
+        // where a BACKGROUND event must respect the hidden preference.
+        activateRightTab("workflow");
         if (!rightPanelOpenRef.current) setRightPanelOpen(true);
       });
       // Prune stale tool-activity entries (deleted runs / runs that finished
@@ -583,9 +866,14 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
           }));
           pendingFlashRef.current.push(...mine.map((a) => a.id));
         }
-        if (artifactsFollowRef.current) {
+        if (artifactsFollowRef.current && !rightTabsHiddenRef.current.includes("artifacts")) {
           // Silent when collapsed: pre-select the tab so expanding lands on
           // Artifacts, but never yank the panel open.
+          //
+          // A HIDDEN Artifacts tab stays hidden: this is a background arrival,
+          // not user intent, so un-hiding here would silently undo a
+          // deliberate preference. The badge/flash path above still carries
+          // the signal.
           setRightTabState("artifacts");
           if (rightPanelOpenRef.current) {
             setFlashArtifactIds(mine.map((a) => a.id));
@@ -949,10 +1237,29 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     setRightTab,
     rightPanelOpen,
     rightPanelWidth,
+    rightPanelWidthByTab,
     panelBadge,
     setRightPanelOpen,
     setRightPanelWidth,
     clearPanelBadge,
+    rightTabOrder,
+    rightTabsHidden,
+    visibleRightTabs,
+    setRightTabOrder,
+    setRightTabHidden,
+    resetRightTabs,
+    codeRootId,
+    codePanelMode,
+    codeTreeOpen,
+    setCodeRootId,
+    setCodePanelMode,
+    setCodeTreeOpen,
+    codeOpenRequest,
+    codeTouched,
+    codeLastChange,
+    notifyCodeChange,
+    clearCodeOpenRequest,
+    openInCode,
     openPreview,
     closePreview,
     notifyPreviewInvalidate,

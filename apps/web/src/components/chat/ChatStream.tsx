@@ -1372,6 +1372,19 @@ export function ChatStream({
       case "artifacts.changed":
         g.reloadArtifacts();
         break;
+      case "code.changed":
+        // The agent wrote or edited a file (design §4.7 S3). The event carries
+        // the POST-WRITE version, which is what lets the code panel reuse its
+        // conflict bar for a dirty buffer instead of inventing a second UI —
+        // see the S3 brief §0.
+        if (typeof ev.path === "string" && (ev.op === "write" || ev.op === "edit")) {
+          g.notifyCodeChange({
+            path: ev.path,
+            op: ev.op as "write" | "edit",
+            version: typeof ev.version === "string" ? ev.version : "",
+          });
+        }
+        break;
       case "preview.emit":
         // Agent produced a previewable file (e.g. analysis result) → open it.
         if (ev.open && ev.file_id) {

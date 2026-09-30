@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useGinno, type RightTab } from "@/lib/store";
-import { RIGHT_TABS } from "./RightPanel";
+import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
 
 /**
  * Collapsed-state affordance for the right panel (right-panel-redesign.md
@@ -76,7 +76,8 @@ export function RightDock() {
           hover ? "translate-x-0 opacity-100" : "pointer-events-none translate-x-2 opacity-0"
         }`}
       >
-        {RIGHT_TABS.map((t) => {
+        {g.visibleRightTabs.map((id) => {
+          const t = RIGHT_TAB_BY_ID[id];
           const Ic = t.icon;
           const n = t.id === "artifacts" ? unreadArtifacts : 0;
           // Mirror the tab-bar workflow badges so the collapsed dock carries
