@@ -367,7 +367,7 @@ instruction and adjust the current work accordingly.
 
 1. **队列是内存态**：刷新页面会丢未吸收的排队条目（已吸收的仍在历史里）。持久化需把 `steerQueueRef` 落到 localStorage 或后端，并处理跨标签页去重。
 2. ~~**轮中不支持附件 / `@mention`**~~ → **附件已于 2026-09-30 支持**（见文末「实现记录（2026-09-30）」）；`@mention` 仍不解析。
-3. **`PinStream.tsx` 速聊窗未跟进**（含附件）：行为与主窗口不一致——它有独立的 busy 门控与 invoke 副本，所以速聊窗里运行中带附件仍会拒绝。跟进时应抽出共享的队列组件。
+3. ~~**`PinStream.tsx` 速聊窗未跟进**~~ → **已于 2026-09-30 跟进**（见文末实现记录「续」）：steer 队列抽成共享钩子 `lib/steerQueue.ts`，两窗共用；浮动窗补上了 📎 选文件与轮中注入。**仍未对齐的两点**：`applyBlock`/socket 生命周期仍是两份刻意的重复（只统一了队列）；浮动窗的「重试」仍只重发文本。
 4. **文档类 steer 的 `[turn context]` 消息会计入 `compact_keep_turns`**：`compaction.py` 的 `is_steered` 只豁免带 `ginno_steer` 标记的消息，新加的 `ginno_steer_context` 没有豁免，所以一条带文档的 steer 会多占一个 turn 位。**量级与既有的 turn 起点 `[turn context]` 消息相同**（那条本来也计入），属既有模式的延续而非新引入的回归。未修：改 `compaction.py` 会同时改变既有压缩行为，不该作为附件功能的副作用发生。
 5. **goal 续轮**：清理走 `_stream_graph` 的同一道闸门，因此无需单独处理；其可吸收性依赖 `_run_goal_turn` 提前注册 `_RUNNING_TURNS`（`api/sessions.py:244`）。
 | 取舍 | 原方案 | 决议 | 理由 |
@@ -413,4 +413,25 @@ instruction and adjust the current work accordingly.
 
 **验证**：`tests/unit` **1036 通过**（+15）· `tests/api` + `tests/e2e` 576 通过 · `test_steering_ws.py` 8 通过 · **变异测试 3 处**（`strip_old_images` 豁免 / str-only 包装 / 丢弃 `context_text`），每处都被捕获并逐字节还原（sha256 比对）。
 
-**未验证**：真实 webview 里的注入时序与波段渲染**无法无头验证**，需实机确认。`PinStream.tsx` 未跟进（见「已知限制」3）。
+**未验证**：真实 webview 里的注入时序与波段渲染**无法无头验证**，需实机确认。
+
+### 续：浮动速聊窗对齐（2026-09-30）
+
+用户接着要求浮动窗也支持。勘察后发现**浮动窗既无 steering 也无附件**（`steer`/`attachments`/`readImage`/`uploadFile`/`type="file"`/`onDrop` 全为 0 次）——所以这不是「给 steer 加附件」，而是补上两样它完全没有的东西。
+
+**已做**：
+
+- **抽共享队列**：`apps/web/src/lib/steerQueue.ts`（`useSteerQueue`）——队列状态机、入队、帧构造、ack/absorb 处理、退回、重连重发。`ChatStream` 改为使用它（**搬运而非重写**，含完整的「原行号 → 新位置」映射，ack 时机与顺序逐条保持）。
+- **抽共享附件逻辑**：`apps/web/src/lib/composerAttachments.ts`（`readImage` 的压缩阈值一字未改、`uploadDoc`、`isFileImage`、类型）。
+- **浮动窗**：📎 选文件（用户已定不做拖入/粘贴）、附件 chips、在途的**可见**提示（不静默）、轮中注入（纯文本与带附件都入队）、紧凑的 `⏳ 待注入 N` 指示、stop 时连附件一起退回输入框。
+
+**边界（重要，别再试图"统一"）**：
+
+- 共享的是**队列状态机与原语**（`itemsFor`/`enqueue`/`recall`/`onResume`/`handleEvent`/`remove`/`takeOldest`/`clear`）。
+- **「取出最旧的那条之后交给哪条发送路径」故意留给各窗口**：ChatStream 走 `attemptSend`（带 draft cache / mentions / agentId），浮动窗走自己的 socket 与 `fromQueue` 兜底。把它塞进钩子会让钩子反过来依赖各窗口的发送路径——更差。
+- **`applyBlock` 与 socket 生命周期仍是两份刻意的重复**（`PinStream.tsx` 头部注释写明了 `Deliberate duplication over abstraction`）。本次**只统一队列**，不动那两处。
+- 浮动窗**复用** `@/components/chat/blocks` 的渲染器，所以 steer 波段无需改渲染层即可出现。
+
+**验证与风险**：`apps/web` **没有测试运行器**，所以这次重构的**行为保持性只经 `tsc --noEmit`（零错误）与代码审查**，**未经运行验证**。而这个区域有过一个**只有真浏览器才暴露**的 ack 时机 bug（见上文「实现期推翻的一处设计假设」）——因此**主窗口的轮中注入必须实机复验**，尤其看波段的**位置**（应落在工具结果与续写之间、且在同一 assistant 气泡内）。
+
+**已知未对齐**：浮动窗的「重试」仍只重发**文本**，失败回合上的附件不会被恢复（既有行为，本次未动）。
