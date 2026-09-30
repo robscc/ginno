@@ -34,6 +34,7 @@
 //! terminal; this file only spawns the runtime in release builds.
 
 use std::net::{SocketAddr, TcpStream};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1265,6 +1266,73 @@ fn pin_hotkey_status(app: tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+// ---------------------------------------------------------------------------
+// Code panel file operations — docs/code-panel-design.md §4.4, brief §3.3.
+//
+// These are the shell's first non-pin commands. Each takes an ABSOLUTE `root`
+// and an ABSOLUTE `path` (the webview composes them from `/api/code/roots`),
+// resolves the path itself, and refuses anything that lands outside the root.
+// ---------------------------------------------------------------------------
+
+/// Second, independent containment check — neither substitute nor courtesy.
+///
+/// The sidecar already refused a path outside its root, but everything arriving
+/// over IPC from the webview is untrusted input: a bug (or a compromised page)
+/// could invoke these commands with any two strings, so the shell re-derives the
+/// boundary on its own. ``canonicalize`` dereferences symlinks, so a
+/// lexically-contained link pointing out of the root is refused here exactly as
+/// S1's fence gate 3 refuses it in Python (design §4.6).
+///
+/// Returns ``(root_real, path_real)``. Both must exist — every command below
+/// acts on real bytes on disk (reveal / open / trash), so a path that cannot be
+/// canonicalized is an error rather than something to guess around.
+fn code_resolve_in_root(root: &str, path: &str) -> Result<(PathBuf, PathBuf), String> {
+    let root_real = std::fs::canonicalize(root)
+        .map_err(|e| format!("工作区根无法解析：{root}（{e}）"))?;
+    let path_real = std::fs::canonicalize(path)
+        .map_err(|e| format!("路径无法解析（可能已不存在）：{path}（{e}）"))?;
+    if path_real != root_real && !path_real.starts_with(&root_real) {
+        return Err(format!("路径不在工作区根内：{path}"));
+    }
+    Ok((root_real, path_real))
+}
+
+/// Reveal a workspace entry in Finder / Explorer (design §4.4).
+#[tauri::command]
+fn code_reveal(root: String, path: String) -> Result<(), String> {
+    let (_root_real, target) = code_resolve_in_root(&root, &path)?;
+    tauri_plugin_opener::reveal_item_in_dir(&target)
+        .map_err(|e| format!("无法在文件管理器中显示：{e}"))
+}
+
+/// Open a workspace file with the OS default application (design §4.4).
+///
+/// Files only: "open a directory in its default app" is a Finder action, and
+/// the panel already has `code_reveal` for that.
+#[tauri::command]
+fn code_open_external(root: String, path: String) -> Result<(), String> {
+    let (_root_real, target) = code_resolve_in_root(&root, &path)?;
+    if !target.is_file() {
+        return Err(format!("只能打开文件，不能打开目录：{path}"));
+    }
+    tauri_plugin_opener::open_path(&target, None::<&str>)
+        .map_err(|e| format!("无法用默认应用打开：{e}"))
+}
+
+/// Delete = move to the OS trash (design D6) — never a permanent unlink.
+///
+/// This is the real delete path in the app; the server endpoint's `.trash-*`
+/// fallback (api/code_fsops.py) only runs in the browser / dev build.
+#[tauri::command]
+fn code_trash(root: String, path: String) -> Result<(), String> {
+    let (root_real, target) = code_resolve_in_root(&root, &path)?;
+    // A root is never deletable (design §4.6), same rule the sidecar enforces.
+    if target == root_real {
+        return Err("工作区根自身不可删除".to_string());
+    }
+    trash::delete(&target).map_err(|e| format!("移入废纸篓失败：{e}"))
+}
+
 /// Menu-bar tray (decision Q4: tray icon + Dock stays). Left click toggles
 /// the pin window; the menu offers explicit entries + quit.
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -1327,6 +1395,22 @@ pub fn run() {
                 })
                 .build(),
         )
+        // Code panel: Finder reveal / open-with-default-app (design §4.4).
+        //
+        // Registered, but deliberately WITHOUT its JS link-interception script
+        // and WITHOUT any `opener:*` permission for the webview:
+        //   * the panel reaches the opener only through `code_reveal` /
+        //     `code_open_external`, which do their own containment check — so
+        //     there is no reason to also let the page call the plugin command
+        //     directly and skip that check;
+        //   * the injected script would re-route the app's existing
+        //     `window.open(url, "_blank")` calls (ChatStream, runtime.ts),
+        //     i.e. change behaviour that already works today.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             pin_toggle,
             pin_set_mode,
@@ -1334,7 +1418,10 @@ pub fn run() {
             pin_hide,
             pin_open_main,
             pin_apply_prefs,
-            pin_hotkey_status
+            pin_hotkey_status,
+            code_reveal,
+            code_open_external,
+            code_trash
         ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
