@@ -148,6 +148,15 @@ _TURN_STOP: dict[str, Any] = {}
 _STEER_STASH: dict[str, list[dict]] = {}
 
 
+# Key marking the companion message that carries a steered message's attached
+# documents (the ``[turn context]`` body prepared at enqueue time). It is what
+# lets the image-retention window (graph.strip_old_images) tell such a message
+# apart from a real turn start without also matching the ``ginno_steer`` key —
+# which the replay builder renders as a band, so the context message must NOT
+# carry it.
+STEER_CONTEXT_KEY = "ginno_steer_context"
+
+
 def steer_enqueue(session_id: str, entry: dict) -> None:
     """Stash one steered message, keyed by steer_id (idempotent re-send)."""
     if not session_id:
@@ -202,6 +211,87 @@ def steer_restash_inflight(session_id: str) -> None:
     """Put an uncommitted drain back for the resumed segment to absorb again."""
     for entry in _STEER_INFLIGHT.pop(session_id, None) or []:
         steer_enqueue(session_id, entry)
+
+
+def steer_messages(entries: list[dict]) -> list:
+    """Persisted HumanMessages for drained steered entries (one or two each).
+
+    ONE builder for the two places that turn a stash entry into state — the
+    absorbing ``graph.agent_node`` and the stop-path repair
+    ``stream._heal_interrupted_turn``. They must agree byte for byte (a message
+    committed by the heal has to look exactly like the one the drain would have
+    produced) and the attachment payloads make the mapping fiddly enough that
+    two copies would drift.
+
+    Per entry:
+
+    * the steered message itself — ``content_blocks`` (text + ``image_url``
+      blocks, converted at enqueue time by ``stream._prepare_steer_payload``)
+      when the user attached images, else the raw text. Its id is the
+      ``steer_id`` and NEVER a reused turn id: the file checkpointer's delta
+      compares ids only, so an id that already exists with different content
+      makes the delta store nothing and leaves the OLD content in rebuilt
+      history, silently (checkpointer.py ``_try_messages_delta``).
+    * when ``context_text`` is present, a SECOND message holding the attached
+      documents' ``[turn context]`` body — the same shape ``_run_stream``
+      appends at a turn's start — under a derived ``{steer_id}:ctx`` id (new,
+      same reason) and the ``STEER_CONTEXT_KEY`` marker.
+
+    Attachment chips for the transcript ride ``additional_kwargs["ginno_steer"]``
+    as the METADATA-ONLY summaries ``files`` (``{id, name, path, kind}``) and
+    ``images`` (``{name, media_type}``) — the same shape the LIVE band is built
+    from, so one renderer serves both. No image payload is stored here: the
+    bytes are already in the injected content's ``image_url`` block, and the
+    checkpointer rewrites the whole session file per step, so a second copy
+    would double every steered message. They are NOT written to the state's
+    ``attached_files`` channel either: that one is last-value-wins with no
+    reducer and the replay builder hangs its chips on the first user bubble it
+    emits, so writing it for a mid-turn message would silently move the
+    session's chips onto the wrong bubble.
+    """
+    # Local imports: this module is imported very early (graph / api.* / server)
+    # and must stay cycle-free, while world_state pulls in the skills/memory
+    # stack. Both are sys.modules hits after the first drain.
+    from langchain_core.messages import HumanMessage
+
+    from .world_state import TURN_CONTEXT_PREFIX
+
+    out: list = []
+    for entry in entries or []:
+        steer_id = entry.get("steer_id")
+        text = (entry.get("text") or "").strip()
+        if not steer_id or not text:
+            continue  # malformed entry — the client re-sends it as a turn
+        kwargs: dict = {
+            "steer_id": steer_id,
+            "turn_id": entry.get("turn_id") or "",
+            "injected_at": entry.get("injected_at") or 0,
+        }
+        files = entry.get("files")
+        if files:
+            kwargs["files"] = files
+        images = entry.get("images")
+        if images:
+            kwargs["images"] = images
+        blocks = entry.get("content_blocks")
+        out.append(
+            HumanMessage(
+                content=blocks if isinstance(blocks, list) and blocks else text,
+                id=steer_id,
+                additional_kwargs={"ginno_steer": kwargs},
+            )
+        )
+        context_text = (entry.get("context_text") or "").strip()
+        if context_text:
+            out.append(
+                HumanMessage(
+                    content=f"{TURN_CONTEXT_PREFIX}\n{context_text}",
+                    id=f"{steer_id}:ctx",
+                    additional_kwargs={STEER_CONTEXT_KEY: {"steer_id": steer_id}},
+                )
+            )
+    return out
+
 
 # Fire-and-forget background tasks (MCP lazy retry etc.). asyncio keeps only
 # WEAK references to tasks, so an unreferenced create_task() can be garbage

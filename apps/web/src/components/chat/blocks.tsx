@@ -27,6 +27,7 @@ import type { CodeRoot } from "@/lib/codeTypes";
 import { fileDownloadUrl, listCodeRoots } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { Markdown } from "./Markdown";
+import { cn } from "@/lib/utils";
 import { AskUserCard } from "./AskUserCard";
 import { toolLabel } from "@/lib/toolLabels";
 
@@ -66,7 +67,22 @@ export type Block =
   // as a full-width band INSIDE the assistant bubble it interrupted — one turn
   // is one bubble, and the band is that injection point made visible. Claude
   // Code shows the same thing as a full-width highlight (changelog 2.1.181).
-  | { kind: "steer"; text: string; steerId?: string | null; injectedAt?: number };
+  // Attachments ride the band (steer-attachments v2). Both the live absorbed
+  // band (ChatStream) and the server's replay summary use this shape: images
+  // carry a display URL (data URL) when available, files a name (+ optional
+  // id/path/kind). Kept tolerant — a summary may omit the image payload.
+  | { kind: "steer"; text: string; steerId?: string | null; injectedAt?: number;
+      images?: SteerBandImage[]; files?: SteerBandFile[] };
+
+/** One attachment chip shown inside a steer band. */
+export type SteerBandImage = {
+  name?: string;
+  url?: string;
+  data?: string;
+  mediaType?: string;
+  media_type?: string;
+};
+export type SteerBandFile = { id?: string; name: string; path?: string; kind?: string };
 
 export type QuestionBlock = Extract<Block, { kind: "question" }>;
 
@@ -1221,6 +1237,14 @@ function steerClock(at?: number): string {
  * of its own. Used both inside the assistant bubble (history replay and live
  * absorption) and, on its own, in the "queue bar" above the composer.
  */
+/** Resolve a band image to a displayable URL (direct `url`, or a data: URL
+ *  rebuilt from a base64 summary). "" when the summary carries no payload. */
+function steerImgUrl(img: SteerBandImage): string {
+  if (img.url) return img.url;
+  if (img.data) return `data:${img.mediaType || img.media_type || "image/png"};base64,${img.data}`;
+  return "";
+}
+
 export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> }) {
   const clock = steerClock(block.injectedAt);
   // Deliberately NOT the thinking block's shape or colour: that block is violet
@@ -1231,6 +1255,16 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
   // elsewhere in the chat chrome, so it collides with nothing (violet =
   // thinking/agent, blue = web citations, green = success, yellow = needs your
   // attention, red = stop/error).
+  // Attachment chips are capped at MAX_VISIBLE with a "+N" tail: the band is a
+  // narrow single-line layout (design §4.2), so a long attachment list must
+  // truncate gracefully rather than blow the row out.
+  const imgs = block.images ?? [];
+  const files = block.files ?? [];
+  const total = imgs.length + files.length;
+  const MAX_VISIBLE = 3;
+  const shownImgs = imgs.slice(0, MAX_VISIBLE);
+  const shownFiles = files.slice(0, Math.max(0, MAX_VISIBLE - shownImgs.length));
+  const overflow = total - shownImgs.length - shownFiles.length;
   return (
     <div className="my-1 flex items-start gap-2 rounded-r-md border-l-2 border-orange/70 bg-orange/[0.07] py-1 pl-2 pr-2">
       <span className="mt-[3px] flex shrink-0 items-center gap-1 rounded bg-orange/15 px-1 py-[1px] text-[10px] font-medium leading-none text-orange">
@@ -1240,6 +1274,47 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
       <div className="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug text-txt">
         {block.text}
       </div>
+      {total > 0 && (
+        <span className="mt-[2px] flex shrink-0 items-center gap-1">
+          {shownImgs.map((img, i) => {
+            const url = steerImgUrl(img);
+            return url ? (
+              <img
+                key={`i${i}`}
+                src={url}
+                alt={img.name ?? "图片"}
+                title={img.name}
+                className="h-4 w-4 shrink-0 rounded border border-orange/40 object-cover"
+              />
+            ) : (
+              <span key={`i${i}`} title={img.name} className="text-[11px] leading-none">
+                🖼️
+              </span>
+            );
+          })}
+          {shownFiles.map((f, i) => (
+            <span
+              key={`f${i}`}
+              title={f.path ?? f.name}
+              className={cn(
+                "flex max-w-[96px] items-center gap-0.5 rounded bg-orange/10 px-1 py-px",
+                "text-[10px] leading-none text-orange",
+              )}
+            >
+              <span aria-hidden>{TABLE_KINDS.has(f.kind ?? "") ? "📊" : "📄"}</span>
+              <span className="truncate">{f.name}</span>
+            </span>
+          ))}
+          {overflow > 0 && (
+            <span
+              title={`另有 ${overflow} 个附件`}
+              className="shrink-0 rounded bg-orange/15 px-1 py-px text-[10px] leading-none text-orange"
+            >
+              +{overflow}
+            </span>
+          )}
+        </span>
+      )}
     </div>
   );
 }

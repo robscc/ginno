@@ -23,7 +23,7 @@ from langgraph.types import Command, interrupt
 from . import agents as agents_reg
 from .checkpointer import FileCheckpointer
 from .permission.policy import PermissionPolicy, is_bypass_permissions
-from .server_shared import steer_drain
+from .server_shared import STEER_CONTEXT_KEY, steer_drain, steer_messages
 from .state import AgentState
 from .truncation import truncate_tool_content
 from .world_state import SessionCtx, WorldState, context_settings
@@ -435,19 +435,54 @@ def _is_image_block(b) -> bool:
     return isinstance(b, dict) and b.get("type") in ("image_url", "image")
 
 
+def is_midturn_injected(m) -> bool:
+    """True for a HumanMessage that steering absorbed INSIDE a running turn:
+    either the steered message itself or the companion carrying its attached
+    documents (``server_shared.STEER_CONTEXT_KEY``, the very shape a turn-start
+    ``[turn context]`` message has).
+
+    Neither starts a turn, so neither may count as one.
+    """
+    kwargs = getattr(m, "additional_kwargs", None) or {}
+    return bool(kwargs.get("ginno_steer") or kwargs.get(STEER_CONTEXT_KEY))
+
+
 def strip_old_images(messages, keep_turns: int = IMAGE_KEEP_TURNS):
     """Return a copy of ``messages`` with old turns' images stripped.
 
-    The most recent ``keep_turns`` HumanMessages keep their image blocks; any
+    The most recent ``keep_turns`` user turns keep their image blocks; any
     older HumanMessage has its image blocks replaced by a single text
     placeholder noting how many were dropped. Text blocks are preserved.
+
+    Mid-turn injected HumanMessages (see :func:`is_midturn_injected`) are not
+    turn boundaries: they are skipped when counting, and the retained window is
+    the whole suffix from the N-th-from-last real turn on — so they keep their
+    own images too (they are newer than the window's first kept turn).
+    Counting them was a silent regression: one turn that absorbed two steered
+    messages pushed the window two entries forward and stripped the images of
+    the very user message that turn had started with.
 
     NEVER mutates the input — a fresh list of fresh message objects is returned,
     so the persisted state (checkpointer → UI history / time-travel) keeps full
     image fidelity; only the LLM call sees the trimmed copy.
     """
-    human_idx = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
-    keep = set(human_idx[-keep_turns:]) if keep_turns > 0 else set()
+    human_idx = [
+        i
+        for i, m in enumerate(messages)
+        if isinstance(m, HumanMessage) and not is_midturn_injected(m)
+    ]
+    if keep_turns > 0 and human_idx:
+        start = human_idx[-min(keep_turns, len(human_idx))]
+        # Everything from that index on stays verbatim — identical to
+        # ``human_idx[-keep_turns:]`` for a history with no injected messages,
+        # and correct for one that has them.
+        keep = {
+            i
+            for i, m in enumerate(messages)
+            if isinstance(m, HumanMessage) and i >= start
+        }
+    else:
+        keep = set()
     out = []
     for i, m in enumerate(messages):
         content = getattr(m, "content", "")
@@ -677,24 +712,64 @@ STEER_HEAD = (
 )
 
 
+def _steer_wrapped_text(text: str) -> str:
+    return (
+        f"<ginno_steer>\n{STEER_HEAD}\n<message>\n"
+        f"{_xml_escape(text)}\n</message>\n</ginno_steer>"
+    )
+
+
 def _wrap_steered_for_model(history: list) -> list:
+    """Copy-only: give each steered message the model-facing mid-turn wrapper.
+
+    Two content shapes reach here. A plain steer is a str. A steer the user
+    attached images to is a multimodal list (``[{"type": "text", …}, {"type":
+    "image_url", …}]``), and there the wrapper may only replace the TEXT block —
+    splicing the marker into an image block would corrupt the provider payload,
+    and an image-only steer has nothing to wrap at all and is passed through
+    untouched.
+    """
     out: list = []
     for m in history:
         steer = (getattr(m, "additional_kwargs", None) or {}).get("ginno_steer")
         content = getattr(m, "content", None)
-        if not steer or not isinstance(content, str):
+        if not steer:
             out.append(m)
             continue
-        out.append(
-            m.model_copy(
-                update={
-                    "content": (
-                        f"<ginno_steer>\n{STEER_HEAD}\n<message>\n"
-                        f"{_xml_escape(content)}\n</message>\n</ginno_steer>"
-                    )
-                }
+        if isinstance(content, str):
+            out.append(m.model_copy(update={"content": _steer_wrapped_text(content)}))
+            continue
+        if isinstance(content, list):
+            texts: list[str] = []
+            rest: list = []
+            for b in content:
+                if isinstance(b, str):
+                    if b:
+                        texts.append(b)
+                    continue
+                if (
+                    isinstance(b, dict)
+                    and b.get("type") == "text"
+                    and (b.get("text") or "").strip()
+                ):
+                    texts.append(str(b["text"]))
+                    continue
+                rest.append(b)
+            if not texts:
+                out.append(m)  # image-only steer: nothing to wrap
+                continue
+            out.append(
+                m.model_copy(
+                    update={
+                        "content": [
+                            {"type": "text", "text": _steer_wrapped_text("\n".join(texts))},
+                            *rest,
+                        ]
+                    }
+                )
             )
-        )
+            continue
+        out.append(m)
     return out
 
 
@@ -742,25 +817,15 @@ def agent_node_factory(model, all_tools):
         # history — silently.
         sid = ((config or {}).get("configurable") or {}).get("thread_id", "")
         _drained = steer_drain(sid) if sid else []
-        steered: list[HumanMessage] = []
-        for _entry in _drained:
-            _steer_id = _entry.get("steer_id")
-            _steer_text = (_entry.get("text") or "").strip()
-            if not _steer_id or not _steer_text:
-                continue  # malformed entry — the client re-sends it as a turn
-            steered.append(
-                HumanMessage(
-                    content=_steer_text,
-                    id=_steer_id,
-                    additional_kwargs={
-                        "ginno_steer": {
-                            "steer_id": _steer_id,
-                            "turn_id": _entry.get("turn_id") or "",
-                            "injected_at": _entry.get("injected_at") or 0,
-                        }
-                    },
-                )
-            )
+        # Attachments were converted to their MODEL-facing shapes at enqueue
+        # time (stream._prepare_steer_payload) and ride the entry as
+        # ``content_blocks`` / ``context_text``; this node only assembles them.
+        # Nothing here may reach for the file registry: a node that ran file IO
+        # would block the event loop inside the graph, and importing
+        # api.stream from here would be an import cycle (stream imports graph).
+        # The one shape both this node and the heal path must produce lives in
+        # server_shared.steer_messages.
+        steered: list[HumanMessage] = steer_messages(_drained)
         if steered:
             # Acknowledge at DRAIN time, through an emitter the stream layer
             # injects into config (graph.py never touches the WebSocket itself).

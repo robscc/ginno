@@ -130,6 +130,44 @@ def _image_block_url(b: dict) -> str | None:
     return None
 
 
+def _steer_band_blocks(content: Any, steer_kw: dict) -> list[dict]:
+    """UI blocks for a mid-turn steered message: its band, then its attachments.
+
+    The band text comes from the PERSISTED content — a str for a plain steer, or
+    the multimodal list a steer the user attached images to carries (text blocks
+    joined; image blocks become the usual gallery). The file chips come from the
+    metadata-only ``files`` summary that ``server_shared.steer_messages`` stamps
+    into ``additional_kwargs["ginno_steer"]``; the documents themselves were
+    injected as a separate ``[turn context]`` message that is not reachable from
+    here, and ``state["attached_files"]`` must never be used for them — it is
+    last-value-wins with no reducer and the code below hangs its chips on the
+    FIRST user bubble of the session.
+
+    Images render from the CONTENT blocks, not from the ``images`` summary: the
+    summary is metadata only (no payload — see steer_messages), while the
+    content block where the picture actually lives is right here.
+    """
+    blocks = _content_ui_blocks(content)
+    band = {
+        "kind": "steer",
+        "text": "\n".join(b["text"] for b in blocks if b["kind"] == "text"),
+        "steerId": steer_kw.get("steer_id"),
+        "injectedAt": steer_kw.get("injected_at") or 0,
+    }
+    chips = [
+        {
+            "kind": "file",
+            "fileId": f.get("id"),
+            "name": f.get("name"),
+            "path": f.get("path"),
+            "fileKind": f.get("kind"),
+        }
+        for f in (steer_kw.get("files") or [])
+        if isinstance(f, dict)
+    ]
+    return [band, *chips, *(b for b in blocks if b["kind"] == "image")]
+
+
 def _content_ui_blocks(content: Any) -> list[dict]:
     """Message content (str or multimodal list) -> UI text/image blocks."""
     blocks: list[dict] = []
@@ -484,8 +522,10 @@ def _messages_to_ui(
     # HumanMessage branch below): a band that lands before the turn's first
     # AIMessage would otherwise have to render as a standalone row, and the live
     # view (which inserts the band into the bubble it is already streaming into)
-    # would then diverge from the replay.
-    pending_bands: list[dict] = []
+    # would then diverge from the replay. One GROUP per steered message — the
+    # band plus its attachment chips/gallery — so a standalone row stays one
+    # message even when a turn absorbed several.
+    pending_bands: list[list[dict]] = []
 
     def flush_assistant() -> None:
         nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks
@@ -509,16 +549,11 @@ def _messages_to_ui(
             # so the band joins the open accumulator instead of flushing it.
             steer_kw = (getattr(m, "additional_kwargs", None) or {}).get("ginno_steer")
             if steer_kw:
-                band = {
-                    "kind": "steer",
-                    "text": content_raw if isinstance(content_raw, str) else "",
-                    "steerId": steer_kw.get("steer_id"),
-                    "injectedAt": steer_kw.get("injected_at") or 0,
-                }
+                group = _steer_band_blocks(content_raw, steer_kw)
                 if acc is not None:
-                    acc.append(band)
+                    acc.extend(group)
                 else:
-                    pending_bands.append(band)
+                    pending_bands.append(group)
                 continue
             # WorldState scaffolding messages (plan C2/E3/E4/B1): render the
             # user-facing ones as centered "context" rows (chips in the
@@ -572,7 +607,8 @@ def _messages_to_ui(
                 acc_id = getattr(m, "id", None)
                 # Steer bands absorbed before this step lead the bubble.
                 if pending_bands:
-                    acc.extend(pending_bands)
+                    for _group in pending_bands:
+                        acc.extend(_group)
                     pending_bands.clear()
             if acc_agent is None:
                 acc_agent = (getattr(m, "additional_kwargs", None) or {}).get("agent_id")
@@ -648,8 +684,8 @@ def _messages_to_ui(
         # ToolMessage: folded into the tool blocks above
     # A steer band no assistant step ever followed (the transcript ends on it):
     # render it as its own full-width row rather than dropping the user's words.
-    for band in pending_bands:
-        ui.append({"id": None, "role": "user", "blocks": [band]})
+    for group in pending_bands:
+        ui.append({"id": None, "role": "user", "blocks": group})
     pending_bands.clear()
     flush_assistant()
     return ui

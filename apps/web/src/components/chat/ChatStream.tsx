@@ -89,6 +89,11 @@ interface SteerItem {
   agentId: string | null;
   /** "sending" until the server accepts it into the stash. */
   status: "sending" | "queued";
+  /** Attachments travel WITH the entry (steer-attachments v2): they ride the
+   *  steer frame, survive every re-send, and are handed back to the composer on
+   *  recall — otherwise the user silently loses them. */
+  images: Attachment[];
+  files: FileAttachment[];
 }
 
 interface SendPayload {
@@ -521,6 +526,14 @@ export function ChatStream({
   // Steer entries queued for the displayed session (mirrored from
   // steerQueueRef by syncDisplay). Rendered as the queue bar above the composer.
   const [steerQueue, setSteerQueue] = useState<SteerItem[]>([]);
+  // Images currently being read/compressed by readImage. The Attachment only
+  // reaches `attachments` when that async read resolves, so a send fired in the
+  // meantime would silently drop the picture. This counter gates the send.
+  const [imagesReading, setImagesReading] = useState(0);
+  // Visible feedback for a send blocked by an in-flight attachment (image
+  // compression / document upload). Both paths used to return silently — the
+  // user pressed send and NOTHING happened. Auto-clears after a few seconds.
+  const [composerHint, setComposerHint] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
@@ -695,6 +708,8 @@ export function ChatStream({
   // in a ref like every other socket-fed store: the socket callbacks outlive
   // session switches and must not read stale React state.
   const steerQueueRef   = useRef<Record<string, SteerItem[]>>({});
+  // Auto-clear timer for the composer hint (one timer, hint is composer-global).
+  const hintTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Per-session mirror of the `serverRunning` state (see syncDisplay).
   const serverRunningRef = useRef<Record<string, boolean>>({});
   const streamAgentRef   = useRef<Record<string, string | null>>({});
@@ -724,8 +739,11 @@ export function ChatStream({
   const ioSeqRef         = useRef(0);
   const probeSeqRef      = useRef<Record<string, number>>({});
   const sendSeqRef       = useRef<Record<string, number>>({});
-  // Unsent input + attachments + resolved mentions saved per session on switch
-  const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[]; mentions?: ResolvedMention[] }>>({});
+  // Unsent input + attachments + resolved mentions saved per session on switch.
+  // `files` joined the draft with steer-attachments v2: a recalled steer whose
+  // session is not the displayed one parks its file chips here too, so switching
+  // back restores them instead of dropping them on the floor.
+  const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[]; files?: FileAttachment[]; mentions?: ResolvedMention[] }>>({});
   // Resolved @mentions picked from the autocomplete menu, keyed by session id.
   // Pruned on every input change (edited-away token → dropped mention) and
   // sent along with the invoke payload as the authoritative structured list.
@@ -925,6 +943,7 @@ export function ChatStream({
       draftCacheRef.current[prevSlot] = {
         input,
         attachments,
+        files: fileAttachments,
         mentions: pruneMentions(
           mentionsRef.current[prevSlot === HOME_SLOT ? "" : prevSlot] ?? [],
           input,
@@ -1026,6 +1045,9 @@ export function ChatStream({
     if (draft) {
       setInput(draft.input);
       setAttachments(draft.attachments);
+      // File chips come back with the draft too — a recalled steer parked in
+      // this session's draft must reappear, not vanish.
+      setFileAttachments(draft.files ?? []);
       mentionsRef.current[sid] = pruneMentions(draft.mentions ?? [], draft.input);
     }
 
@@ -1433,6 +1455,22 @@ export function ChatStream({
           text: entry.text,
           steerId: entry.steerId,
           injectedAt: Number(ev.injected_at) || Math.floor(Date.now() / 1000),
+          // Attachments ride the band so the injection point shows what the
+          // user actually sent. Images arrive as display URLs (data URL), files
+          // as name/path chips — mirroring the replay shape the server emits.
+          ...(entry.images.length
+            ? { images: entry.images.map((a) => ({ name: a.name, url: a.preview })) }
+            : {}),
+          ...(entry.files.length
+            ? {
+                files: entry.files.map((f) => ({
+                  id: f.id,
+                  name: f.name,
+                  path: f.path,
+                  kind: f.kind,
+                })),
+              }
+            : {}),
         };
         const liveMsgId = liveBySessionRef.current[sid];
         const store = storeRef.current[sid] ?? [];
@@ -1799,9 +1837,17 @@ export function ChatStream({
     const docs = list.filter((f) => !f.type.startsWith("image/"));
     void debugLog({ where: "addFiles:split", images: images.length, docs: docs.length });
     if (images.length) {
-      const items = await Promise.all(images.map(readImage));
-      const ok = items.filter((x): x is Attachment => !!x);
-      if (ok.length) setAttachments((a) => [...a, ...ok]);
+      // Bracket the async read so send() can gate on it: until this resolves,
+      // `attachments` does not contain these pictures and sending would drop
+      // them silently (see imagesReading).
+      setImagesReading((n) => n + 1);
+      try {
+        const items = await Promise.all(images.map(readImage));
+        const ok = items.filter((x): x is Attachment => !!x);
+        if (ok.length) setAttachments((a) => [...a, ...ok]);
+      } finally {
+        setImagesReading((n) => Math.max(0, n - 1));
+      }
     }
     for (const f of docs) {
       // optimistic chip (uploading state) so the user gets instant feedback
@@ -2346,13 +2392,28 @@ export function ChatStream({
   /** Queue a message for absorption by the running turn. It is NOT a turn: the
    *  composer clears and the entry lives in the queue bar until the server acks
    *  it as absorbed. */
-  function enqueueSteer(sid: string, text: string, agentId: string | null) {
+  /** Transient, visible feedback in the composer (never a silent no-op). */
+  function showComposerHint(msg: string) {
+    setComposerHint(msg);
+    if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
+    hintTimerRef.current = setTimeout(() => setComposerHint(null), 4000);
+  }
+
+  function enqueueSteer(
+    sid: string,
+    text: string,
+    agentId: string | null,
+    images: Attachment[] = [],
+    files: FileAttachment[] = [],
+  ) {
     const item: SteerItem = {
       steerId: mid(),
       text,
       turnId: liveTurnIdFor(sid),
       agentId,
       status: "sending",
+      images,
+      files,
     };
     setSteerQueueFor(sid, [...(steerQueueRef.current[sid] ?? []), item]);
     sendSteer(sid, item);
@@ -2366,6 +2427,14 @@ export function ChatStream({
           steer_id: item.steerId,
           turn_id: item.turnId,
           message: item.text,
+          // Same shape as the invoke frame (steer-attachments v2, brief §5.1) —
+          // only sent when present, so a text-only steer stays byte-identical.
+          ...(item.images.length
+            ? { images: item.images.map((a) => ({ data: a.data, media_type: a.mediaType })) }
+            : {}),
+          ...(item.files.length
+            ? { files: item.files.map((f) => ({ id: f.id, name: f.name, path: f.path })) }
+            : {}),
         }),
       );
     } catch {
@@ -2389,6 +2458,10 @@ export function ChatStream({
     if (!items.length) return;
     setSteerQueueFor(sid, []);
     const recalled = items.map((i) => i.text).join("\n");
+    // Attachments come back too — a recalled steer must not lose its pictures
+    // or file chips (the whole reason they are kept on the entry, brief §5.1).
+    const recalledImgs = items.flatMap((i) => i.images);
+    const recalledFiles = items.flatMap((i) => i.files);
     if (sid !== curSessionIdRef.current) {
       // Background session: park it in that session's draft, so switching back
       // shows it in the composer instead of dropping it on the floor.
@@ -2396,10 +2469,14 @@ export function ChatStream({
       draftCacheRef.current[sid] = {
         ...d,
         input: d.input ? `${recalled}\n${d.input}` : recalled,
+        attachments: [...recalledImgs, ...d.attachments],
+        files: [...recalledFiles, ...(d.files ?? [])],
       };
       return;
     }
     setInput((cur) => (cur ? `${recalled}\n${cur}` : recalled));
+    if (recalledImgs.length) setAttachments((a) => [...recalledImgs, ...a]);
+    if (recalledFiles.length) setFileAttachments((f) => [...recalledFiles, ...f]);
   }
 
   /** The turn ended with entries still unacknowledged: the OLDEST becomes the
@@ -2413,8 +2490,10 @@ export function ChatStream({
     setSteerQueueFor(sid, rest);
     attemptSend(sid, {
       text: head.text,
-      images: [],
-      files: [],
+      // The entry's attachments ride the invoke that becomes the next turn —
+      // dropping them here is the other half of the silent-loss bug.
+      images: head.images,
+      files: head.files,
       mentions: [],
       agentId: head.agentId,
     });
@@ -2481,6 +2560,13 @@ export function ChatStream({
   function send() {
     const text = input.trim();
     const readyFiles = fileAttachments.filter((f) => !f.uploading);
+    // In-flight gate, image half (pre-existing bug, both plain sends and
+    // steers): readImage is async, so `attachments` lags a just-dropped image.
+    // Sending now would silently drop it. Visible hint instead of a no-op.
+    if (imagesReading > 0) {
+      showComposerHint("注意：图片处理中，请稍候再发送");
+      return;
+    }
     if (!session) {
       // Home: dropped-file chips are intentionally deferred until the session
       // exists (pendingDocsRef / pendingPathsRef) — they must NOT count as
@@ -2493,7 +2579,8 @@ export function ChatStream({
     const sid = session.id;
     // Parked at a card: the user is answering or changing their mind, not
     // queueing (design §3.4). Checked BEFORE the busy gate because a parked
-    // turn is still busy but must never receive a queue entry.
+    // turn is still busy but must never receive a queue entry. (Answering is
+    // deliberately not gated on attachments — it carries text only.)
     if (parked) {
       if (!text) return;
       handleParkedSend(sid, text, target ?? session.agent_id ?? g.agents[0]?.id ?? null);
@@ -2501,22 +2588,34 @@ export function ChatStream({
       setMenu(null);
       return;
     }
+    // In-flight gate, document half: a chip still uploading is not in
+    // `readyFiles`, so this used to return SILENTLY — send appeared dead. Show
+    // why instead (brief §3).
+    if (readyFiles.length !== fileAttachments.length) {
+      showComposerHint("注意：文件上传中，请稍候再发送");
+      return;
+    }
     if (busyBySessionRef.current[sid]) {
       // A turn is running → this is steering, not a new turn: queue it for the
       // next superstep of the turn that is already going (design §3.1). Text
-      // only (v1): with attachments there is nothing safe to do, so the
-      // composer is left untouched for the user to send once the turn ends —
-      // attachments cannot ride a steer.
-      if (!text) return;
-      if (attachments.length || readyFiles.length) return;
-      enqueueSteer(sid, text, target ?? session.agent_id ?? g.agents[0]?.id ?? null);
+      // AND attachments ride the steer (steer-attachments v2) — with nothing to
+      // send, do nothing.
+      if (!text && attachments.length === 0 && readyFiles.length === 0) return;
+      enqueueSteer(
+        sid,
+        text,
+        target ?? session.agent_id ?? g.agents[0]?.id ?? null,
+        attachments,
+        readyFiles,
+      );
       setInput("");
+      setAttachments([]);
+      setFileAttachments([]);
       setTarget(null);
       setMenu(null);
       return;
     }
     if (!text && attachments.length === 0 && readyFiles.length === 0) return;
-    if (readyFiles.length !== fileAttachments.length) return; // upload in flight
     const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
     if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
     // Final prune against the raw (untrimmed) input, deduped — only mentions
@@ -2942,6 +3041,20 @@ export function ChatStream({
                 onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
               />
             )}
+            {composerHint && (
+              // Blocked send, made visible. A silent return here read as a
+              // dead send button (the original bug report).
+              <div className="mb-2 flex items-center gap-1.5 rounded-lg border border-yellow/40 bg-yellow/10 px-2.5 py-1.5 text-xs text-yellow">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                <span>{composerHint}</span>
+              </div>
+            )}
+            {imagesReading > 0 && (
+              <div className="mb-2 flex items-center gap-1.5 text-xs text-faint">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span>图片处理中…</span>
+              </div>
+            )}
             {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {attachments.map((a, i) => (
@@ -3005,8 +3118,19 @@ export function ChatStream({
                     >
                       <span className="mt-[1px] shrink-0 text-faint">{i + 1}</span>
                       <span className="min-w-0 flex-1 truncate" title={it.text}>
-                        {it.text}
+                        {it.text || (it.images.length + it.files.length ? "（仅附件）" : "")}
                       </span>
+                      {it.images.length + it.files.length > 0 && (
+                        // The queued entry carries attachments too — surface the
+                        // count so the row is not read as text-only.
+                        <span
+                          className="mt-[1px] flex shrink-0 items-center gap-0.5 text-faint"
+                          title={`${it.images.length} 张图片 · ${it.files.length} 个文件`}
+                        >
+                          <Paperclip className="h-3 w-3" />
+                          {it.images.length + it.files.length}
+                        </span>
+                      )}
                       {it.status === "sending" && (
                         <Loader2
                           className="mt-[1px] h-3 w-3 shrink-0 animate-spin text-faint"

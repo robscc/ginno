@@ -535,8 +535,19 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 # plan.mention_ctx / files_extra / agent_override are deliberately
                 # DROPPED (design §3.1, decided): v1 steers plain text only, so an
                 # @file in a mid-turn message reaches the model as literal text.
+                # (Attachments are a separate, explicit channel since
+                # steer-attachments-brief.md — they arrive as images/files.)
                 steer_text = (plan.text or "").strip()
-                if not steer_text:
+                _steer_imgs = [
+                    i
+                    for i in (msg.get("images") or [])
+                    if isinstance(i, dict) and i.get("data")
+                ]
+                _steer_files = [f for f in (msg.get("files") or []) if isinstance(f, dict)]
+                # Attachments ALONE are a valid steer: a user may send only a
+                # file / screenshot ("have a look at this"). Only a frame with
+                # neither words nor attachments is dropped.
+                if not steer_text and not _steer_imgs and not _steer_files:
                     continue
                 # A turn parked at an interrupt counts as absorbable: the client
                 # sends `steer` and THEN the resume message, and the resumed
@@ -558,22 +569,59 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         )
                     )
                     continue
+                try:
+                    _payload = await _prepare_steer_payload(
+                        steer_text,
+                        _steer_imgs,
+                        _steer_files,
+                        session.get("project_slug") or "default",
+                        session_id,
+                    )
+                except Exception:
+                    # Attachments are best-effort; the user's words are not. Fall
+                    # back to the plain text (and the default intent when there is
+                    # none) rather than losing the message to a bad file.
+                    _log.exception(
+                        "steer_attach_failed session=%s steer=%s", session_id, steer_id
+                    )
+                    _payload = {
+                        "text": steer_text or _ATTACH_ONLY_TEXT,
+                        "content_blocks": None,
+                        "context_text": None,
+                        "files": [],
+                        "images": [],
+                    }
                 shared.steer_enqueue(
                     session_id,
                     {
                         "steer_id": steer_id,
                         "turn_id": _steer_turn,
-                        "text": steer_text,
+                        "text": _payload["text"],
                         # Wall clock for the transcript label ("运行中注入 · 09:41").
                         "injected_at": time.time(),
+                        # Model-facing payloads, built HERE (see
+                        # _prepare_steer_payload). Every path the entry travels —
+                        # drain, in-flight, restash-on-park, heal — moves the whole
+                        # dict, so the attachments survive all of them.
+                        "content_blocks": _payload["content_blocks"],
+                        "context_text": _payload["context_text"],
+                        # Compact chip summaries for REPLAY. Deliberately NOT
+                        # written to state["attached_files"]: that channel is
+                        # last-value-wins with no reducer and the replay hangs its
+                        # chips on the first user bubble of the session, so a
+                        # mid-turn write would attach them to the wrong message.
+                        "files": _payload["files"],
+                        "images": _payload["images"],
                     },
                 )
                 _log.info(
-                    "steer_queued session=%s steer=%s turn=%s text=%r",
+                    "steer_queued session=%s steer=%s turn=%s imgs=%d files=%d text=%r",
                     session_id,
                     steer_id,
                     _steer_turn,
-                    steer_text[:120],
+                    len(_steer_imgs),
+                    len(_payload["files"]),
+                    _payload["text"][:120],
                 )
                 await ws.send_text(
                     _ev("steer.accepted", {"steer_id": steer_id}, _steer_turn)
@@ -772,6 +820,103 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         _SESSION_WS[session_id] = [
             w for w in (_SESSION_WS.get(session_id) or []) if w is not ws
         ]
+
+
+# Default intent for an attachment-only send (no text typed): the picture or
+# document IS the request. Same wording as the turn-start fallback in
+# _run_stream — a mid-turn steer must not behave differently just because it
+# happened while the agent was working.
+_ATTACH_ONLY_TEXT = "请概览我附加的文件：结构、数据质量与关键指标，并给出简短结论。"
+
+
+async def _prepare_steer_payload(
+    text: str,
+    images: list | None,
+    files: list | None,
+    slug: str,
+    session_id: str,
+) -> dict:
+    """Turn a steered message's attachments into MODEL-facing payloads.
+
+    Why here, and not in ``graph.agent_node``: the model only ever sees
+    attachments through shapes built at the START of a turn — images are merged
+    into that turn's entry HumanMessage multimodal content, documents become a
+    ``[turn context]`` message via :func:`build_turn_context` — and the node
+    that absorbs a mid-turn message cannot rebuild either for it. The node also
+    cannot import this module (stream imports graph → cycle), so the conversion
+    happens here, at enqueue time, and rides the stash entry as plain data (the
+    brief's "path B").
+
+    This is SYNC FILE IO (registry lookups, schema extraction, artifact
+    writes), so it MUST be awaited OFF the WebSocket receive loop — see the
+    ``asyncio.to_thread`` below: run inline it would stall keepalive and the
+    ``stop`` handler for every socket of the session.
+
+    Returns the stash-entry fields: ``text`` (the user's words, or the default
+    intent when attachments came alone), ``content_blocks`` (multimodal content
+    list — text first, then OpenAI-style ``image_url`` blocks — or None for a
+    plain-text steer), ``context_text`` (the ``[turn context]`` body for the
+    attached documents, without the prefix, or None) and the transcript
+    summaries ``files`` / ``images``.
+
+    The summaries carry METADATA ONLY — deliberately no image payload. The bytes
+    are already in the injected HumanMessage's ``image_url`` block, and the
+    checkpointer rewrites the whole session file per step, so a second copy in
+    ``additional_kwargs`` would double every steered message for good (the same
+    reason the frontend downsizes images before sending them). A replay that
+    wants a thumbnail takes it from the content block.
+    """
+    imgs = [i for i in (images or []) if isinstance(i, dict) and i.get("data")]
+    wanted = [f for f in (files or []) if isinstance(f, dict)]
+    text = (text or "").strip()
+    if not text and (imgs or wanted):
+        text = _ATTACH_ONLY_TEXT
+
+    content_blocks: list[dict] | None = None
+    if imgs:
+        parts: list[dict] = [{"type": "text", "text": text}] if text else []
+        for img in imgs:
+            media = img.get("media_type") or "image/png"
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{media};base64,{img['data']}"},
+                }
+            )
+        content_blocks = parts
+
+    attached: list[dict] = []
+    if wanted:
+        # Off the receive loop: this touches the file registry, the artifact
+        # store and (for spreadsheet/table kinds) the file itself for the schema
+        # summary — enough to freeze a turn's worth of ping/stop handling.
+        attached = await asyncio.to_thread(
+            _resolve_attached_files, wanted, slug, session_id
+        )
+    context_text = build_turn_context(attached_files=attached) if attached else None
+    return {
+        "text": text,
+        "content_blocks": content_blocks,
+        "context_text": context_text,
+        # Replay summaries, shaped to match the LIVE band the frontend builds
+        # from its own queue item ({files: [{id,name,path,kind}], images:
+        # [{name, url}]}) so one renderer serves both. ``kind`` comes from the
+        # registry / kind classifier inside _resolve_attached_files, so it
+        # agrees with the file chips the turn-start bubble renders.
+        "files": [
+            {
+                "id": a.get("id"),
+                "name": a.get("name"),
+                "path": a.get("path"),
+                "kind": a.get("kind"),
+            }
+            for a in attached
+        ],
+        "images": [
+            {"name": i.get("name") or "", "media_type": i.get("media_type") or "image/png"}
+            for i in imgs
+        ],
+    }
 
 
 def _resolve_attached_files(
@@ -1122,7 +1267,9 @@ async def _run_stream(
     )
     if attached and not (user_text or "").strip():
         # Drop with no text: synthesize a default intent so the turn still runs.
-        content = "请概览我附加的文件：结构、数据质量与关键指标，并给出简短结论。"
+        # Shared with the mid-turn steer path (_prepare_steer_payload) so an
+        # attachment-only send reads the same either way.
+        content = _ATTACH_ONLY_TEXT
 
     session_id = session.get("session_id", "")
     slug = session["project_slug"]
@@ -1530,25 +1677,12 @@ async def _heal_interrupted_turn(graph, config: dict, seg_text: str = "") -> Non
         # it was absorbed after the tool results and before whatever the
         # never-committed superstep would have produced.
         _inflight = shared.steer_take_inflight(session_id)
-        heal: list = []
-        for _e in _inflight:
-            _sid_steer = _e.get("steer_id")
-            _steer_text = (_e.get("text") or "").strip()
-            if not _sid_steer or not _steer_text:
-                continue
-            heal.append(
-                HumanMessage(
-                    content=_steer_text,
-                    id=_sid_steer,
-                    additional_kwargs={
-                        "ginno_steer": {
-                            "steer_id": _sid_steer,
-                            "turn_id": _e.get("turn_id") or "",
-                            "injected_at": _e.get("injected_at") or 0,
-                        }
-                    },
-                )
-            )
+        # Same builder the absorbing agent_node uses, so a message committed by
+        # the heal is byte-identical to the one the drain would have produced
+        # (attachments included: the steered message keeps its multimodal
+        # content, and a document steer's companion [turn context] message is
+        # reconstructed with it under its own derived id).
+        heal: list = shared.steer_messages(_inflight)
         if msgs and isinstance(msgs[-1], AIMessage):
             # Trailing AIMessage ⇒ nothing after it can answer its tool_calls:
             # every one is dangling and needs an "(interrupted)" placeholder.
