@@ -313,6 +313,48 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                     # Slash commands + @mentions → TurnPlan (docs §commands).
                     plan = _commands.resolve_turn(msg, session)
+                    if plan.builtin_async is not None:
+                        # Async builtin (e.g. /compact): awaits real server
+                        # work (LLM summary + thread-state rewrite) then
+                        # answers as a notice — still no graph turn. UNLIKE the
+                        # sync builtins this is busy-gated: a state rewrite
+                        # must never race a live turn's supersteps. Check BOTH
+                        # registries — _TURN_TASKS misses goal-driver turns
+                        # (they run inline under _turn_lock with no task
+                        # entry), _RUNNING_TURNS covers every streaming turn.
+                        _busy = _TURN_TASKS.get(session_id)
+                        if session_id in _RUNNING_TURNS or (
+                            _busy is not None and not _busy.done()
+                        ):
+                            await ws.send_text(
+                                _ev(
+                                    "notice",
+                                    {"message": f"当前有回合正在进行，请等待其结束再执行 /{plan.builtin_async}"},
+                                    turn_id,
+                                )
+                            )
+                            await ws.send_text(_ev("message.end", {}, turn_id))
+                            continue
+                        try:
+                            _reply = await _commands.BUILTINS[
+                                plan.builtin_async
+                            ].async_handler(
+                                session.get("project_slug"),
+                                session,
+                                plan.builtin_args,
+                            )
+                        except Exception as _ce:
+                            _log.exception(
+                                "builtin_async_failed name=%s session=%s",
+                                plan.builtin_async, session_id,
+                            )
+                            _reply = (
+                                f"/{plan.builtin_async} 执行失败："
+                                f"{type(_ce).__name__}: {_ce}"
+                            )
+                        await ws.send_text(_ev("notice", {"message": _reply}, turn_id))
+                        await ws.send_text(_ev("message.end", {}, turn_id))
+                        continue
                     if plan.builtin_reply is not None:
                         # Built-in command: reply directly, no graph turn, no agent
                         # persistence, no checkpoint write (ephemeral by design).
@@ -467,6 +509,19 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 steer_id = str(msg.get("steer_id") or uuid.uuid4())
                 _steer_turn = msg.get("turn_id") or _RUNNING_TURNS.get(session_id) or ""
                 plan = _commands.resolve_turn(msg, session)
+                if plan.builtin_async is not None:
+                    # State-rewriting commands (/compact) can NEVER run here:
+                    # the steer branch by definition has a live turn whose
+                    # supersteps would race the rewrite. Tell the user to wait.
+                    await ws.send_text(
+                        _ev(
+                            "notice",
+                            {"message": f"/{plan.builtin_async} 需要在回合结束后执行"},
+                            _steer_turn,
+                        )
+                    )
+                    await ws.send_text(_ev("message.end", {}, _steer_turn))
+                    continue
                 if plan.builtin_reply is not None:
                     # Built-in commands answer immediately and never queue — the
                     # same rule `invoke` gets for free (its builtin branch sits
@@ -633,6 +688,16 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 # successful state. This preserves tool calls and intermediate
                 # results, avoiding redundant work on long-running turns.
                 turn_id = msg.get("turn_id") or str(uuid.uuid4())
+                # Client-facing id (the error card's retry round-trips it). If
+                # the failed attempt was ABANDONED (stall watchdog / user stop)
+                # its id is poisoned for checkpoint writes — FileCheckpointer
+                # would silently refuse ALL state from this retry, so the retry
+                # would run yet persist nothing. Execute under a derived id and
+                # carry _ui_turn_id so every client-facing surface (events,
+                # last_error) stays on the original.
+                ui_turn_id_r = turn_id
+                if turn_id in ABANDONED_TURNS:
+                    turn_id = f"{ui_turn_id_r}--r{uuid.uuid4().hex[:6]}"
                 _busy = _TURN_TASKS.get(session_id)
                 if _busy is not None and not _busy.done():
                     await ws.send_text(
@@ -650,17 +715,20 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         **config["configurable"],
                         "agent_id": retry_agent,
                         "turn_id": turn_id,
+                        "_ui_turn_id": ui_turn_id_r,
                     },
                 }
                 _log.info(
-                    "retry_from_checkpoint session=%s turn=%s agent=%s",
-                    session_id, turn_id, retry_agent,
+                    "retry_from_checkpoint session=%s turn=%s ui_turn=%s agent=%s",
+                    session_id, turn_id, ui_turn_id_r, retry_agent,
                 )
 
-                async def _checkpoint_retry_job(_cfg=retry_config, _tid=turn_id) -> None:
+                async def _checkpoint_retry_job(
+                    _cfg=retry_config, _tid=turn_id, _ui_tid=ui_turn_id_r
+                ) -> None:
                     try:
                         await ws.send_text(
-                            _ev("turn.start", {"turn_id": _tid, "agent_id": retry_agent or "", "name": retry_agent or "Agent", "from_checkpoint": True})
+                            _ev("turn.start", {"turn_id": _ui_tid, "agent_id": retry_agent or "", "name": retry_agent or "Agent", "from_checkpoint": True})
                         )
                         async with _turn_lock(session_id):
                             # Pass input_state=None to resume from latest checkpoint
@@ -894,6 +962,57 @@ async def _tool_file_effects(
             await safe_send(
                 emit("preview.invalidate", {"file_id": e["id"], "reason": f"tool:{name}"})
             )
+
+
+async def _emit_code_changes(safe_send, emit, slug: str, session_id: str, content) -> None:
+    """Broadcast ``code.changed`` for every file a tool result just wrote.
+
+    ``write_file`` / ``edit_file`` append a
+    ``<!--ginno-code:[{path,op,version}]-->`` trailer (``files/code_changes.py``,
+    code-panel S3 design §4.2-3). One event per file: the tree marks it, an open
+    CLEAN tab reloads, an open DIRTY tab fills S2's conflict bar (never
+    auto-overwritten, brief §1-5) — which is why the event carries the
+    post-write ``version`` (brief §0).
+
+    ``root_id`` is best-effort: longest prefix against the session's roots, or
+    ``null`` when the file sits outside every root (the panel then has nowhere
+    to place it). Decoration must never break a turn, so the lookup is guarded.
+    """
+    from ..files.code_changes import match_root_id, parse_code_marker
+
+    changes = parse_code_marker(content)
+    if not changes:
+        return
+
+    roots: list[dict] = []
+    try:
+        # Read-only reuse of the code panel's own session context — the exact
+        # root list the panel serves to the frontend, so both sides agree on
+        # what "the roots" are. Imported lazily like the other feature-local
+        # imports in this module: a module-level import would couple the WS
+        # layer to the router module for one best-effort lookup.
+        from . import code as code_panel
+
+        ctx = code_panel._session_ctx(slug, session_id) if slug and session_id else None
+        if ctx is not None:
+            roots = code_panel._list_roots(ctx)
+    except Exception as e:  # noqa: BLE001 — decoration only: never fail the turn
+        _log.warning("code_changed_root_lookup session=%s err=%s", session_id, e)
+        roots = []
+
+    for ch in changes:
+        await safe_send(
+            emit(
+                "code.changed",
+                {
+                    "session_id": session_id,
+                    "path": ch["path"],
+                    "op": ch["op"],
+                    "version": ch.get("version") or "",
+                    "root_id": match_root_id(ch["path"], roots),
+                },
+            )
+        )
 
 
 def _maybe_refresh_session_graph(session: dict) -> None:
@@ -1302,6 +1421,77 @@ async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> i
 # (see chunked_stream in _stream_graph). Module-level so tests can shrink it.
 CHUNK_TIMEOUT_S = 180.0
 
+# --- Turn-level auto retry for TRANSIENT provider/network failures ----------
+# 2026-09-29 incident (turn f50a6304): a 100k-token-context turn died twice in
+# a row — first ssl SSLV3_ALERT_BAD_RECORD_MAC mid-stream, then the manual
+# checkpoint retry stalled 180s in prefill — while the endpoint itself was
+# healthy minutes later (verified by replaying a 123k-token stream). Same
+# "model/stream stall" pattern on 09-09/09-10 with a DIFFERENT provider, so the
+# common factor is big-context fragility (long prefill + long-lived TLS
+# stream), not one bad network. The SDK already retries connection errors
+# internally (max_retries=2, seconds apart); when that fails the provider is
+# usually briefly degraded, and a turn-level retry after a longer backoff —
+# resuming from the last checkpoint, so tool work is preserved — recovers
+# without the user babysitting the error card. Module-level so tests can tune.
+AUTO_RETRY_MAX = 2
+AUTO_RETRY_BACKOFF_S = (5.0, 20.0)
+
+# Matched by CLASS NAME (not import) so one classifier covers the openai,
+# anthropic and httpx stacks without hard imports. Covers: SDK connection
+# wrappers (APIConnectionError — what an ssl.SSLError surfaces as), SDK
+# timeouts, httpx transport errors (ConnectError/ReadTimeout/RemoteProtocol…),
+# bare ssl/socket errors, and the stall watchdog's RuntimeError (checked by
+# message). 429/5xx APIStatusErrors are also retried (via status_code below):
+# the SDK already exhausted its fast internal retries by the time we see them,
+# and a longer backoff is exactly what an overloaded provider needs.
+_TRANSIENT_EXC_NAMES = frozenset({
+    "APIConnectionError",
+    "APITimeoutError",
+    "TransportError",
+    "ConnectError",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+    "RemoteProtocolError",
+    "SSLError",
+    # NOTE: deliberately NOT bare "TimeoutError" (== asyncio.TimeoutError):
+    # tool-internal asyncio.wait_for timeouts would falsely retry the whole
+    # turn. Network timeouts arrive as httpx ReadTimeout / openai
+    # APITimeoutError / anthropic APITimeoutError — all covered by name.
+    "ConnectionError",
+    "ConnectionResetError",
+    "ChunkedEncodingError",
+    "IncompleteRead",
+})
+
+
+def _is_transient_model_error(exc: BaseException) -> bool:
+    """True when a turn failure looks like a transient provider/network issue.
+
+    Walks the __cause__/__context__ chain: langgraph surfaces the model error
+    directly, but wrappers (RetryError, task groups) can nest the real one.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        e = stack.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, RuntimeError) and "model/stream stall" in str(e):
+            return True  # CHUNK_TIMEOUT_S watchdog (see chunked_stream)
+        if any(cls.__name__ in _TRANSIENT_EXC_NAMES for cls in type(e).__mro__):
+            return True
+        sc = getattr(e, "status_code", None)
+        if isinstance(sc, int) and (sc == 408 or sc == 429 or sc >= 500):
+            return True
+        if e.__cause__ is not None:
+            stack.append(e.__cause__)
+        if e.__context__ is not None:
+            stack.append(e.__context__)
+    return False
+
 
 class TurnStopped(Exception):
     """Raised inside the chunked stream loop when the user stops the turn.
@@ -1467,17 +1657,34 @@ async def _stream_graph(
     seg_text: list[str] = []
     stop_waiter: Any = None
     session_id = (config.get("configurable") or {}).get("thread_id", "")
+    # Pre-init so the except/finally blocks below can never NameError-mask the
+    # original failure when the error lands before the try-body assigns them.
+    # (The placeholder Event is replaced by the session's shared stop event
+    # inside the try; a fresh one simply reads as "no stop requested".)
+    _cfg_conf: dict = config.get("configurable") or {}
+    turn_id = _cfg_conf.get("turn_id") or ""
+    ui_turn_id = turn_id
+    stop_evt = asyncio.Event()
     try:
         # Per-turn trace id (from invoke, or fresh on a bare resume). `emit`
         # wraps _ev so EVERY event of this turn carries it — the frontend shows
         # it on the bubble and we log it, so a user-supplied UUID greps the logs.
+        #
+        # turn_id here is the EXECUTION id: an auto/checkpoint retry of an
+        # abandoned turn runs under a derived id ("…--a1"/"…--r<hex>") because
+        # the original sits in ABANDONED_TURNS, where FileCheckpointer would
+        # silently refuse every checkpoint write of the retry (the retry would
+        # run but persist nothing). ui_turn_id is the stable CLIENT-facing id:
+        # events, last_error and _RUNNING_TURNS keep carrying it so the
+        # frontend sees one continuous turn and its retry button round-trips.
         _cfg_conf = config.get("configurable") or {}
         turn_id = _cfg_conf.get("turn_id") or str(uuid.uuid4())
         _cfg_conf["turn_id"] = turn_id
+        ui_turn_id = _cfg_conf.get("_ui_turn_id") or turn_id
         config["configurable"] = _cfg_conf
 
         def emit(event: str, data: dict) -> str:
-            return _ev(event, data, turn_id)
+            return _ev(event, data, ui_turn_id)
 
         _ensure_turn_log()  # (re)point the trace file handler at the active home
 
@@ -1487,7 +1694,7 @@ async def _stream_graph(
         # Usage telemetry: continuation turns are tagged by the goal driver;
         # everything else is user-driven "chat" (usage-stats-design.md §3.6).
         usage_source = (config.get("configurable") or {}).get("usage_source") or "chat"
-        _RUNNING_TURNS[session_id] = turn_id
+        _RUNNING_TURNS[session_id] = ui_turn_id
         # Cooperative stop signal: setdefault so an event pre-armed by the WS
         # loop (created before this task spawned) is never clobbered.
         stop_evt = _TURN_STOP.setdefault(session_id, asyncio.Event())
@@ -1609,7 +1816,7 @@ async def _stream_graph(
                 ((config.get("configurable") or {}).get("user_text") or "")[:120],
             )
             await safe_send(
-                emit("turn.start", {"turn_id": turn_id, "agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
+                emit("turn.start", {"turn_id": ui_turn_id, "agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
             )
         else:
             _log.info("turn_resume session=%s turn=%s agent=%s", session_id, turn_id, agent_id)
@@ -1983,6 +2190,12 @@ async def _stream_graph(
                                     safe_send, emit, slug, session_id,
                                     tool_args_by_id.get(tc_id), raw,
                                 )
+                                # Code-panel S3: agent file writes/edits →
+                                # ``code.changed`` (parsed from the marker
+                                # write_file / edit_file append to their own
+                                # result; there is no Hook for this — its
+                                # PostToolUse is declared but never dispatched).
+                                await _emit_code_changes(safe_send, emit, slug, session_id, raw)
                     elif node_name == "permission":
                         # resolve "running" tool bubbles that were denied by
                         # tools_allow / hooks / policy / user (not streamed)
@@ -2078,15 +2291,81 @@ async def _stream_graph(
         )
         await safe_send(emit("turn.stopped", {}))
     except Exception as e:
+        # Transient provider/network failure (SSL drop, connection error,
+        # 429/5xx, stall watchdog): auto-retry from the latest checkpoint with
+        # a backoff instead of failing the turn — see AUTO_RETRY_MAX notes.
+        # The retry runs under a DERIVED exec turn_id (the abandoned original
+        # would have its checkpoint writes refused) while every client-facing
+        # surface keeps ui_turn_id. The caller still holds _turn_lock, so the
+        # recursive call must NOT re-acquire it (it doesn't — the lock lives in
+        # the job wrappers). A user stop during the backoff aborts the retry.
+        if not stop_evt.is_set() and _is_transient_model_error(e):
+            _attempt = int(_cfg_conf.get("_auto_retry_attempt") or 0)
+            if _attempt < AUTO_RETRY_MAX:
+                _backoff = AUTO_RETRY_BACKOFF_S[
+                    min(_attempt, len(AUTO_RETRY_BACKOFF_S) - 1)
+                ]
+                _log.warning(
+                    "turn_auto_retry session=%s turn=%s attempt=%d/%d backoff=%.0fs err=%s: %s",
+                    session_id, turn_id, _attempt + 1, AUTO_RETRY_MAX,
+                    _backoff, type(e).__name__, str(e)[:200],
+                )
+                await safe_send(
+                    emit(
+                        "notice",
+                        {
+                            "message": (
+                                f"模型连接异常（{type(e).__name__}），"
+                                f"{_backoff:.0f} 秒后自动重试"
+                                f"（{_attempt + 1}/{AUTO_RETRY_MAX}）…"
+                            )
+                        },
+                    )
+                )
+                await asyncio.sleep(_backoff)
+                if not stop_evt.is_set():
+                    _retry_conf = {
+                        **config,
+                        "configurable": {
+                            **_cfg_conf,
+                            # Random suffix: a later retry chain of the same
+                            # ui turn must never collide with an earlier
+                            # chain's abandoned exec id (exact-match gate in
+                            # FileCheckpointer.aput/aput_writes).
+                            "turn_id": f"{ui_turn_id}--a{_attempt + 1}-{uuid.uuid4().hex[:6]}",
+                            "_ui_turn_id": ui_turn_id,
+                            "_auto_retry_attempt": _attempt + 1,
+                        },
+                    }
+                    # Resume from the latest checkpoint when one exists (tool
+                    # work preserved). A failure on the FIRST model call of a
+                    # fresh session commits nothing — resuming with None would
+                    # die on EmptyInputError — so re-run the original input
+                    # instead. Neither available: fall through to the error.
+                    try:
+                        _snap = await graph.aget_state(config)
+                        _has_ckpt = bool(getattr(_snap, "values", None) or {})
+                    except Exception:
+                        _has_ckpt = False
+                    if _has_ckpt or input_state is not None:
+                        await _stream_graph(
+                            graph,
+                            _retry_conf,
+                            input_state=None if _has_ckpt else input_state,
+                            command=None,
+                        )
+                        return
         _log.exception("turn_error session=%s turn=%s", session_id, turn_id)
         err_msg = f"{type(e).__name__}: {e}"
         # Persist the failure on the session meta so the error card (with its
         # retry action) survives webview reloads and route/session switches —
-        # the history endpoint re-surfaces it as the last message.
+        # the history endpoint re-surfaces it as the last message. The retry
+        # button round-trips ui_turn_id; the handler derives a fresh exec id
+        # when this turn was abandoned.
         _session_meta_patch(
             slug,
             session_id,
-            {"last_error": {"turn_id": turn_id, "message": err_msg, "at": time.time()}},
+            {"last_error": {"turn_id": ui_turn_id, "message": err_msg, "at": time.time()}},
         )
         await safe_send(emit("error", {"message": err_msg}))
     finally:

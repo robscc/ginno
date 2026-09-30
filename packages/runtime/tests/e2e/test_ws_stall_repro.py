@@ -128,9 +128,12 @@ def test_keepalive_flows_during_stall(client, patch_build_model, monkeypatch):
 
 def test_stall_watchdog_fails_fast(client, patch_build_model, monkeypatch):
     """Mode-B fix: the per-chunk stall watchdog aborts a silent stall FAST with an
-    `error` event, instead of the SDK's ~600s hang (the 7m49s symptom)."""
+    `error` event, instead of the SDK's ~600s hang (the 7m49s symptom).
+    Auto-retry is disabled here to isolate the watchdog; retry is covered by
+    test_stall_auto_retry_recovers below."""
     patch_build_model(StallModel())
     monkeypatch.setattr("ginno_runtime.api.stream.CHUNK_TIMEOUT_S", 3.0)  # fires during the 20s stall
+    monkeypatch.setattr("ginno_runtime.api.stream.AUTO_RETRY_MAX", 0)  # watchdog only
     sid = client.post(
         "/api/sessions", json={"project_slug": "default", "workspace": "/tmp/wf-ws"}
     ).json()["id"]
@@ -142,3 +145,55 @@ def test_stall_watchdog_fails_fast(client, patch_build_model, monkeypatch):
     assert end_k == "error", f"stall should surface an error, got {end_k}; frames={kinds}"
     assert end_t < 12, f"turn hung {end_t}s (watchdog did not fire); frames={kinds}"
     assert token_times and token_times[0] < 3, f"first token not immediate: {token_times}"
+
+
+class StallOnceModel(BaseChatModel):
+    """Gateway-style stall on the FIRST call only; healthy afterwards.
+
+    Reproduces the 2026-09-29 incident shape: a transient provider/network
+    failure mid-turn that a checkpoint retry rides through.
+    """
+
+    calls: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "stall-once"
+
+    def bind_tools(self, *a, **k):
+        return self
+
+    async def _astream(self, *a, **k) -> AsyncIterator[ChatGenerationChunk]:
+        self.calls += 1
+        if self.calls == 1:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="partial "))
+            await asyncio.sleep(30)  # abandoned by the watchdog; yields the loop
+            yield ChatGenerationChunk(message=AIMessageChunk(content="never"))
+        yield ChatGenerationChunk(message=AIMessageChunk(content="recovered"))
+
+    def _stream(self, *a, **k):  # pragma: no cover - sync fallback
+        yield ChatGenerationChunk(message=AIMessageChunk(content="x"))
+
+    def _generate(self, *a, **k):
+        return ChatGeneration(message=AIMessage(content="recovered"))
+
+
+def test_stall_auto_retry_recovers(client, patch_build_model, monkeypatch):
+    """Transient stall -> automatic checkpoint retry with backoff -> turn
+    COMPLETES without ever surfacing an error card (2026-09-29 incident:
+    SSL bad-record-mac + 180s prefill stall killed a healthy turn twice)."""
+    model = StallOnceModel()
+    patch_build_model(model)
+    monkeypatch.setattr("ginno_runtime.api.stream.CHUNK_TIMEOUT_S", 2.0)
+    monkeypatch.setattr("ginno_runtime.api.stream.AUTO_RETRY_BACKOFF_S", (0.3, 0.6))
+    sid = client.post(
+        "/api/sessions", json={"project_slug": "default", "workspace": "/tmp/wf-ws"}
+    ).json()["id"]
+    kinds = [(round(t, 1), k) for t, k in _run_and_collect(client, sid)]
+    events = [k for _, k in kinds]
+    assert "error" not in events, f"auto-retry should have recovered; frames={kinds}"
+    assert "notice" in events, f"no retry notice emitted; frames={kinds}"
+    assert "message.end" in events, f"turn never completed; frames={kinds}"
+    # order: stall -> notice -> retry -> completion
+    assert events.index("notice") < events.index("message.end")
+    assert model.calls >= 2, f"model was not re-invoked after the stall (calls={model.calls})"
