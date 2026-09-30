@@ -9,6 +9,7 @@ overrides routing; raw @kind:label tokens resolve without a structured list.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,45 @@ def test_help_short_circuits_without_model(create_session, ws_conv, isolated_hom
     notice = events_of(events, "notice")[0]
     assert "/help" in notice["message"]
     assert "/summarize-notes" in notice["message"]
+
+
+# --------------------------------------------------------------------------- #
+# /compact (async builtin — forced E3 compaction)
+# --------------------------------------------------------------------------- #
+def test_compact_empty_session_reports_nothing(create_session, ws_conv):
+    model = CapturingModel(reply="ok")
+    sid = create_session(model, agent_id="dev")
+    with ws_conv(sid) as conv:
+        conv.invoke("/compact")
+        events = conv.recv_until("message.end", "error")
+    assert event_names(events) == ["notice", "message.end"]
+    assert "没有可压缩" in events_of(events, "notice")[0]["message"]
+    assert not model._captured  # no graph turn, no model call
+
+
+def test_compact_forces_summary_regardless_of_threshold(
+    create_session, ws_conv, isolated_home
+):
+    # keep_turns=1 so a 2-turn history already has a compactable prefix; the
+    # token threshold stays at its huge default — only the force path can fire.
+    (isolated_home / "settings.json").write_text(
+        json.dumps({"context": {"compact_keep_turns": 1}})
+    )
+    model = CapturingModel(reply="ok")
+    sid = create_session(model, agent_id="dev")
+    with ws_conv(sid) as conv:
+        conv.invoke("第一个问题")
+        conv.recv_until("message.end", "error")
+        conv.invoke("第二个问题")
+        conv.recv_until("message.end", "error")
+        conv.invoke("/compact")
+        events = conv.recv_until("message.end", "error")
+    assert event_names(events) == ["notice", "message.end"]
+    notice = events_of(events, "notice")[0]["message"]
+    assert "已压缩" in notice
+    assert "tokens" in notice  # before → after estimate reported
+    # 2 turn calls + 1 summarizer call (the summary SystemMessage is captured)
+    assert len(model._captured) >= 3
 
 
 # --------------------------------------------------------------------------- #

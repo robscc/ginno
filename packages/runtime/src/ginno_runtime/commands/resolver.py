@@ -52,6 +52,11 @@ _SLASH_RE = re.compile(r"^\s*/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$")
 class TurnPlan:
     text: str  # final HumanMessage text (skill-substituted when applicable)
     builtin_reply: str | None = None  # set → skip the graph entirely
+    # Async builtin (e.g. /compact): the WS handler must await
+    # BUILTINS[builtin_async].async_handler(slug, session, builtin_args) and
+    # deliver the reply as a notice. Mutually exclusive with builtin_reply.
+    builtin_async: str | None = None
+    builtin_args: str = ""
     mention_ctx: list[dict] = field(default_factory=list)  # {kind,id,name,summary}
     agent_override: str | None = None  # first resolved @agent mention
     files_extra: list[dict] = field(default_factory=list)  # [{"artifact_id": id}]
@@ -235,8 +240,14 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
     if cmd and cmd[0] in BUILTINS:
         name, tail = cmd
         _log.info("builtin_cmd name=%s slug=%s", name, slug)
+        builtin = BUILTINS[name]
+        if builtin.async_handler is not None:
+            # Executed by the (async) WS handler, not here — resolve_turn is
+            # sync and the command does real server work (LLM call, state
+            # rewrite). Still short-circuits the graph turn.
+            return TurnPlan(text=text, builtin_async=name, builtin_args=tail)
         return TurnPlan(
-            text=text, builtin_reply=BUILTINS[name].handler(slug, session, tail)
+            text=text, builtin_reply=builtin.handler(slug, session, tail)
         )
 
     # 2) Mentions (structured authoritative + text fallback).

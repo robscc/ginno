@@ -128,17 +128,23 @@ async def maybe_compact_history(
     session: dict[str, Any],
     config: dict,
     ctx_factory=None,
+    force: bool = False,
 ) -> dict | None:
     """Check threshold and compact. Returns stats dict or None.
 
     ``session`` is the server's in-memory session dict (needs "graph",
     "model", "project_slug", "session_id"). ``ctx_factory`` builds the
     SessionCtx for the E4 world re-injection text.
+
+    ``force=True`` is the manual ``/compact`` path: explicit user intent, so
+    it bypasses the token threshold AND the ``compaction_enabled`` auto flag.
+    The interrupt guard below still applies — never rewrite state of a turn
+    parked at a permission prompt.
     """
     from .world_state import context_settings
 
     settings = context_settings()
-    if not settings.get("compaction_enabled", True):
+    if not force and not settings.get("compaction_enabled", True):
         return None
 
     graph = session["graph"]
@@ -147,7 +153,7 @@ async def maybe_compact_history(
         return None  # nothing stored, or paused at an interrupt — leave alone
     messages = list((state.values or {}).get("messages", []))
     threshold = int(settings.get("compact_threshold_tokens", 500000))
-    if estimate_messages_tokens(messages) < threshold:
+    if not force and estimate_messages_tokens(messages) < threshold:
         return None
 
     keep_turns = max(1, int(settings.get("compact_keep_turns", 3)))

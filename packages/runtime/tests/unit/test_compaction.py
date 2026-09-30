@@ -119,6 +119,44 @@ async def test_maybe_compact_rewrites_history(isolated_home):
     assert "第一个问题" not in joined
 
 
+async def test_force_compact_bypasses_threshold_and_disabled_flag(isolated_home):
+    """/compact's force path: runs even with auto compaction OFF and an
+    unreachable threshold (manual = explicit user intent)."""
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    settings = {
+        "context": {
+            "compaction_enabled": False,
+            "compact_threshold_tokens": 999_999_999,
+            "compact_keep_turns": 1,
+        }
+    }
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+    model = ScriptedChatModel(
+        scripts=[script(text="r0"), script(text="r1"), script(text="手动压缩摘要。")]
+    )
+    graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
+    config = {"configurable": {"thread_id": "comp-force", "project_slug": "default"}}
+    for q in ("问题一", "问题二"):
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
+        )
+    session = {"graph": graph, "model": model, "project_slug": "default", "session_id": "comp-force"}
+
+    # auto path stays blocked (disabled flag + threshold)
+    assert await maybe_compact_history(session, config) is None
+    # force path compacts anyway
+    stats = await maybe_compact_history(session, config, force=True)
+    assert stats is not None
+    assert stats["compacted_messages"] >= 2
+    state = await graph.aget_state(config)
+    joined = "\n".join(str(getattr(m, "content", "")) for m in state.values["messages"])
+    assert "手动压缩摘要" in joined
+    assert "问题一" not in joined  # compacted prefix is gone
+    assert "问题二" in joined  # kept tail survives
+
+
 async def test_compaction_respects_disabled_flag(isolated_home):
     from ginno_runtime.graph import build_graph
     from ginno_runtime.testing.fake_model import ScriptedChatModel, script

@@ -41,10 +41,11 @@ export interface MenuItem {
   insert: string;
 }
 
-/** Client mirror of the server's builtin registry (only /help for now).
+/** Client mirror of the server's builtin registry (discoverability subset).
  *  The server registry stays authoritative for parsing. */
 export const BUILTIN_COMMANDS: Array<{ name: string; description: string }> = [
   { name: "help", description: "列出可用命令与技能" },
+  { name: "compact", description: "手动压缩会话上下文（LLM 摘要旧消息，释放 tokens）" },
 ];
 
 const MENTION_KIND_META: Record<MentionKind, { group: string; description: string }> = {

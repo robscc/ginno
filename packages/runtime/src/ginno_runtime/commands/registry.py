@@ -11,12 +11,15 @@ in docs/commands-and-mentions-design.md).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ..goals import store as goal_store
 from ..goals.events import notify_goal_changed
 from ..skills.loader import SkillLoader
+
+_log = logging.getLogger("ginno.commands")
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,12 @@ class BuiltinCommand:
     # (project_slug, session, args) -> reply text. session/args may be None
     # for commands that need no session context.
     handler: Callable[..., str]
+    # Optional async variant for commands that do real server work (LLM
+    # calls, state rewrites). When set, the resolver routes the command to
+    # the async path (TurnPlan.builtin_async) and the WS invoke handler
+    # awaits it — busy-gated, because unlike a pure sync reply it can touch
+    # thread state that must never race a live turn.
+    async_handler: Callable[..., Awaitable[str]] | None = None
 
 
 def _help_handler(project_slug: str | None = None, session=None, args=None) -> str:
@@ -286,11 +295,103 @@ def _primary_handler(project_slug: str | None = None, session=None, args=None) -
     return f"主工作目录已设为 `{pp}`（bash 的 cwd 与相对路径基准）\n\n" + _fmt_mounts(session)
 
 
+def _compact_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    # Never reached through the resolver (async_handler routes it); kept so
+    # the registry entry is well-formed and direct sync calls get a hint.
+    return "请使用异步入口执行 /compact（WS invoke）"
+
+
+async def _compact_async_handler(
+    project_slug: str | None = None, session=None, args=None
+) -> str:
+    """/compact — force the E3 history compaction NOW (manual trigger).
+
+    Same machinery as the automatic turn-entry compaction (microcompact the
+    stale tool outputs first, then LLM-summarize the old prefix), but with
+    ``force=True``: no token threshold, works even when auto compaction is
+    off. Long sessions run at 100k+ tokens are exactly where provider streams
+    get fragile (2026-09-29 incident), so users need an on-demand lever.
+    """
+    if not session:
+        return "（/compact 需要在会话中使用）"
+    sid = session.get("session_id") or ""
+    graph = session.get("graph")
+    if graph is None or not sid:
+        return "会话尚未就绪，请稍后再试"
+    slug = session.get("project_slug") or project_slug or "default"
+    config = {"configurable": {"thread_id": sid, "project_slug": slug}}
+
+    from ..compaction import maybe_compact_history
+    from ..microcompact import maybe_microcompact_history
+    from ..tokens import estimate_messages_tokens
+
+    try:
+        snap = await graph.aget_state(config)
+    except Exception:
+        snap = None
+    msgs = list((getattr(snap, "values", None) or {}).get("messages") or [])
+    if not msgs:
+        return "本会话还没有可压缩的历史消息"
+    if getattr(snap, "next", None):
+        return "当前回合暂停在待确认步骤（权限 / 提问），处理完成后再执行 /compact"
+    before_tokens = estimate_messages_tokens(msgs)
+
+    notes: list[str] = []
+    # Rung below E3: clear stale tool outputs first (pure state rewrite, no
+    # LLM). Frees the most bytes per fidelity lost, same order as turn entry.
+    try:
+        micro = await maybe_microcompact_history(session, config)
+        if micro:
+            notes.append(
+                f"清理过期工具输出 {micro.get('cleared_tool_outputs', 0)} 条"
+                f"（释放 ~{micro.get('chars_freed', 0)} 字符）"
+            )
+    except Exception:
+        _log.exception("compact_cmd_microcompact_failed session=%s", sid)
+
+    try:
+        stats = await maybe_compact_history(session, config, force=True)
+    except Exception as e:
+        _log.exception("compact_cmd_failed session=%s", sid)
+        return f"压缩失败：{type(e).__name__}: {e}"
+
+    if not stats:
+        # No user-turn boundary to split at (history shorter than
+        # compact_keep_turns) or the summarizer returned nothing.
+        tail = "；".join(notes)
+        msg = "历史还不够长：完整回合数未超过保留阈值（compact_keep_turns），暂无可摘要的旧消息"
+        return f"{msg}（{tail}）" if tail else msg
+
+    try:
+        snap2 = await graph.aget_state(config)
+        after_tokens = estimate_messages_tokens(
+            list((getattr(snap2, "values", None) or {}).get("messages") or [])
+        )
+    except Exception:
+        after_tokens = None
+
+    lines = [
+        "✅ 上下文已压缩",
+        f"- LLM 摘要旧消息 {stats['compacted_messages']} 条"
+        f"（摘要 {stats['summary_chars']} 字符），保留最近 {stats['kept_messages']} 条",
+    ]
+    if after_tokens is not None:
+        lines.append(f"- 历史 tokens ~{before_tokens} → ~{after_tokens}")
+    lines.extend(f"- {n}" for n in notes)
+    return "\n".join(lines)
+
+
 BUILTINS: dict[str, BuiltinCommand] = {
     "help": BuiltinCommand(
         name="help",
         description="列出可用命令与技能",
         handler=_help_handler,
+    ),
+    "compact": BuiltinCommand(
+        name="compact",
+        description="手动压缩会话上下文（LLM 摘要旧消息，释放 tokens）",
+        handler=_compact_handler,
+        async_handler=_compact_async_handler,
     ),
     "goal": BuiltinCommand(
         name="goal",
