@@ -79,3 +79,51 @@ def test_verify_anthropic_missing_key_no_network(isolated_home):
     result = providers.verify("anthropic")
     assert result["ok"] is False
     assert "API Key" in result["error"]
+
+
+# ---- validate_configs: the `default_model ∈ models` gate ---------------------
+# This gate runs on every PUT of the config list, so a rejection here makes the
+# whole settings form unsaveable — the user sees an error and has no way forward.
+
+
+def _cfg(**over):
+    """A minimal config that passes normalization."""
+    base = {
+        "id": "c1",
+        "name": "C",
+        "protocol": "openai-compatible",
+        "base_url": "https://example.invalid/v1",
+        "api_key": "k",
+        "models": [],
+    }
+    base.update(over)
+    return base
+
+
+def test_validate_repairs_a_case_only_default_model_mismatch():
+    """A case-only mismatch must be REPAIRED, not rejected.
+
+    Model ids are lowercase on several gateways while a hand-written or migrated
+    config may use mixed case (``GLM-5.3-Flash`` vs ``glm-5.3-flash``). Raising
+    made the provider's default permanently unsaveable from the UI, so the value
+    is normalized to the spelling that is actually in the list.
+    """
+    out = providers.validate_configs(
+        [_cfg(models=["glm-5.3-flash", "glm-5.3"], default_model="GLM-5.3-Flash")]
+    )
+    assert out[0]["default_model"] == "glm-5.3-flash"
+
+
+def test_validate_still_rejects_a_default_model_that_is_not_listed():
+    """The repair covers case only. A genuinely absent model is a real
+    misconfiguration (it would fail at the gateway), so it stays an error."""
+    with pytest.raises(ValueError, match="不在 models 内"):
+        providers.validate_configs([_cfg(models=["glm-5.3"], default_model="gpt-4o")])
+
+
+def test_validate_accepts_an_unlisted_default_when_there_is_no_list():
+    """A legacy config stores only `model` (no `models[]`), so the gate's
+    `cfg["models"]` guard must let it through — otherwise every legacy provider
+    would be unsaveable."""
+    out = providers.validate_configs([_cfg(models=[], default_model="GLM-5.3-Flash")])
+    assert out[0]["default_model"] == "GLM-5.3-Flash"

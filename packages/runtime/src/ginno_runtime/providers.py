@@ -211,10 +211,22 @@ def validate_configs(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 f"可选值: {', '.join(CONFIG_PROTOCOLS)}"
             )
         if cfg["default_model"] and cfg["models"] and cfg["default_model"] not in cfg["models"]:
-            raise ValueError(
-                f"配置 {cid} 的 default_model {cfg['default_model']!r} "
-                f"不在 models 内: {', '.join(cfg['models'])}"
+            # Case-only mismatch → REPAIR to the listed spelling instead of
+            # refusing the save. Model ids are lowercase on several gateways while
+            # a hand-written or migrated config may use mixed case; rejecting the
+            # whole PUT left the provider's default permanently unsaveable from
+            # the UI (settings shows the error, nothing the user can do about it).
+            _matched = next(
+                (m for m in cfg["models"] if m.lower() == cfg["default_model"].lower()),
+                None,
             )
+            if _matched is not None:
+                cfg["default_model"] = _matched
+            else:
+                raise ValueError(
+                    f"配置 {cid} 的 default_model {cfg['default_model']!r} "
+                    f"不在 models 内: {', '.join(cfg['models'])}"
+                )
         cfg["id"] = cid
         out.append(cfg)
     return out

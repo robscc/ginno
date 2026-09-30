@@ -395,29 +395,10 @@ export function ModelConfigForm({
           </Field>
           <div className="space-y-3">
             <Field label="默认模型 *">
-              {draft.models.length > 12 ? (
-                // Long list → searchable combobox (native datalist keeps it
-                // dependency-free); the out-of-list warning stays as a chip.
-                <div>
-                  <input
-                    className="field font-mono text-xs"
-                    list="mc-default-model-options"
-                    value={draft.default_model}
-                    onChange={(e) => set("default_model", e.target.value)}
-                    placeholder="输入或从列表选择模型 id"
-                  />
-                  <datalist id="mc-default-model-options">
-                    {draft.models.map((m) => (
-                      <option key={m} value={m} />
-                    ))}
-                  </datalist>
-                  {!draft.models.includes(draft.default_model) && draft.default_model && (
-                    <p className="mt-1 text-[11px] text-yellow">
-                      {draft.default_model} 不在模型列表中
-                    </p>
-                  )}
-                </div>
-              ) : draft.models.length ? (
+              {draft.models.length > 0 && draft.models.length <= 12 ? (
+                // Short list → a select. The current value is added as an option
+                // when it is not in the list, so a mismatch is visible and
+                // fixable instead of being unrepresentable.
                 <select
                   className="field"
                   value={draft.default_model}
@@ -433,7 +414,40 @@ export function ModelConfigForm({
                   ))}
                 </select>
               ) : (
-                <input className="field" disabled placeholder="先在左侧添加模型" />
+                // Free text, for a LONG list and for NO list at all. The empty
+                // case is a legacy config (it stores only `model`, no `models[]`)
+                // — such a provider still HAS a model (the chat works, and the
+                // server synthesizes the list from `model`), so this input must
+                // stay editable. It used to be `disabled` here, which left the
+                // default model of every legacy-config provider permanently
+                // unsettable ("默认模型不能改"). Native datalist keeps it
+                // dependency-free.
+                <div>
+                  <input
+                    className="field font-mono text-xs"
+                    list="mc-default-model-options"
+                    value={draft.default_model}
+                    onChange={(e) => set("default_model", e.target.value)}
+                    placeholder="输入模型 id（如 glm-5.3-flash）"
+                  />
+                  <datalist id="mc-default-model-options">
+                    {draft.models.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                  {draft.models.length === 0 ? (
+                    <p className="mt-1 text-[11px] text-faint">
+                      此提供商还没有模型列表——可直接填写模型 id，或在左侧「模型列表」里逐行添加
+                    </p>
+                  ) : (
+                    !draft.models.includes(draft.default_model) &&
+                    draft.default_model && (
+                      <p className="mt-1 text-[11px] text-yellow">
+                        {draft.default_model} 不在模型列表中
+                      </p>
+                    )
+                  )}
+                </div>
               )}
             </Field>
             <div className="grid grid-cols-3 gap-3">
