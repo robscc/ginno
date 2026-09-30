@@ -62,8 +62,8 @@
 | **stash** | runtime 侧 per-session 待吸收队列（内存态） |
 | **未吸收（unabsorbed）** | turn 结束时仍留在 stash / 或已 drain 但未提交的消息 |
 
-**范围内**：纯文本 steer；内置 `/` 命令的立即响应；轮中吸收；parked 答复/改主意；三态 UI；stop 与队列的关系。
-**范围外**（**已确认**）：图片/文件附件；`@mention` 展开（见 §3.1 —— steered 消息里的 `@file` 按字面文本交给模型，不做文件引用解析）；`Ctrl+Enter` 发送即中断；subagent 内部的 steering；`PinStream.tsx` 速聊窗（v1 只做 ChatStream，§5 列为跟进）。
+**范围内**：纯文本 steer；**图片 / 文件附件（2026-09-30 加入，见 §7）**；内置 `/` 命令的立即响应；轮中吸收；parked 答复/改主意；三态 UI；stop 与队列的关系。
+**范围外**：`@mention` 展开（见 §3.1 —— steered 消息里的 `@file` 按字面文本交给模型，不做文件引用解析）；`Ctrl+Enter` 发送即中断；subagent 内部的 steering；`PinStream.tsx` 速聊窗（v1 只做 ChatStream，§5 列为跟进）。
 
 ---
 
@@ -331,7 +331,7 @@ instruction and adjust the current work accordingly.
 | 3 | 同 turn 内**同一 assistant 气泡** + 分隔线 | §4.3 |
 | 4 | **不做** `Ctrl+Enter` 发送即中断；失败重试**继续复用** turnId | §1.3、§2 |
 | 5 | ⏹ 时队列条目**退回输入框**、多行拼接、可编辑 | §4.1 |
-| 6 | 附件与 `@mention` **不进**轮中，按字面文本交给模型 | §2、§3.1 |
+| 6 | ~~附件与 `@mention` **不进**轮中~~ → **附件已支持（§7）**；`@mention` 仍按字面文本交给模型 | §2、§3.1、§7 |
 | 7 | UI：队列条（输入框上方）+ 全宽高亮注入态 + 同气泡分隔线 | §4.1–4.3 |
 | 8 | `editResend` 复用 turnId 的既有隐患（§6 陷阱 3）**单开任务**，本次 `checkpointer.py` 不动 | §5、§6 |
 
@@ -366,7 +366,51 @@ instruction and adjust the current work accordingly.
 **已知限制**（不在本次范围）：
 
 1. **队列是内存态**：刷新页面会丢未吸收的排队条目（已吸收的仍在历史里）。持久化需把 `steerQueueRef` 落到 localStorage 或后端，并处理跨标签页去重。
-2. **轮中不支持附件 / `@mention`**（已确认）：带附件的输入在运行中不排队，composer 原样保留，等 turn 结束再发。
-3. **`PinStream.tsx` 速聊窗未跟进**：行为与主窗口不一致；跟进时应抽出共享的队列组件。
-4. **goal 续轮**：清理走 `_stream_graph` 的同一道闸门，因此无需单独处理；其可吸收性依赖 `_run_goal_turn` 提前注册 `_RUNNING_TURNS`（`api/sessions.py:244`）。
-| `@mention` / 附件 | 排队消息照常解析 | v1 不解析，按字面文本进上下文（已确认） | 收窄轮中注入面，避开与图片裁剪 / 文件注入的时序耦合 |
+2. ~~**轮中不支持附件 / `@mention`**~~ → **附件已于 2026-09-30 支持**（见文末「实现记录（2026-09-30）」）；`@mention` 仍不解析。
+3. **`PinStream.tsx` 速聊窗未跟进**（含附件）：行为与主窗口不一致——它有独立的 busy 门控与 invoke 副本，所以速聊窗里运行中带附件仍会拒绝。跟进时应抽出共享的队列组件。
+4. **文档类 steer 的 `[turn context]` 消息会计入 `compact_keep_turns`**：`compaction.py` 的 `is_steered` 只豁免带 `ginno_steer` 标记的消息，新加的 `ginno_steer_context` 没有豁免，所以一条带文档的 steer 会多占一个 turn 位。**量级与既有的 turn 起点 `[turn context]` 消息相同**（那条本来也计入），属既有模式的延续而非新引入的回归。未修：改 `compaction.py` 会同时改变既有压缩行为，不该作为附件功能的副作用发生。
+5. **goal 续轮**：清理走 `_stream_graph` 的同一道闸门，因此无需单独处理；其可吸收性依赖 `_run_goal_turn` 提前注册 `_RUNNING_TURNS`（`api/sessions.py:244`）。
+| 取舍 | 原方案 | 决议 | 理由 |
+|---|---|---|---|
+| `@mention` | 排队消息照常解析 | v1 不解析，按字面文本进上下文（已确认） | 收窄轮中注入面 |
+| **附件** | ~~排队消息照常解析~~ → **已改为支持**（2026-09-30） | 图片 + 文档均可随 steer 注入 | 原决议「避开与图片裁剪 / 文件注入的时序耦合」经深读后确认**不是架构障碍**，而是职责位置错配：附件的模型面表达写死在 turn 起点，steer 在 graph 内——改为在 steer 分支预先构造即可（见文末实现记录） |
+
+---
+
+## 实现记录（2026-09-30）：运行中注入支持附件
+
+**背景**：用户报「带文件的运行中注入目前不支持」。这原本是 §3.1 明确的范围外项，理由写的是「避开与图片裁剪 / 文件注入的时序耦合」。
+
+**深读结论：耦合是真的，但性质不是架构障碍，而是职责位置错配。**
+
+- 附件的**模型面表达**写死在 turn 起点的 `_run_stream` 里——图片拼进该轮起点那条 HumanMessage 的多模态 content，文档拼成一条 `[turn context]` 消息。
+- `state["attached_files"]` **只服务回放 UI，模型侧不读它**；`_resolve_attached_files` 在整个 graph 里**没有任何调用点**。
+- 所以「把文件塞进 stash」是不够的：**模型什么都看不到**。
+- state 在 turn 中途**并非不可写**（LangGraph LastValue；`_heal_interrupted_turn` 已有 `aupdate_state` 先例）——不存在「必须改架构」的约束。
+
+**采用的实现（路径 B）**：在 `stream.py` 的 steer 分支**预先**解析并构造好模型面内容（图片块 + 文档 context 文本）写进 stash 条目；`graph.py` 的 `agent_node` 只做组装。这样避开 `graph.py` 反向 import `api/stream.py` 的**环**（`stream.py` 已 import graph），也不在 graph 里做文件 IO。解析走 `asyncio.to_thread`——registry / artifact / schema 读是同步文件 IO，直接在 WS receive loop 里跑会冻住 keepalive 与 `stop` 的接收。
+
+**五个必须处理的坑（不处理都会静默出错）**：
+
+1. **`strip_old_images` 把 HumanMessage 当 turn 边界** → 一轮注入 2 条 steer 会把**本轮原始用户消息的图片**替换成占位符。现由 `is_midturn_injected()` 豁免中途注入的消息（含那条 context 消息），窗口改为**转录后缀**。**有变异测试守住**：去掉豁免 → 回归失败，断言里能看到 `[1 张历史图片已省略]`。
+2. **`_wrap_steered_for_model` 跳过非 str content** → 带图片的 steer 用 list content，需支持且**不能把 `<ginno_steer>` 包进图片块**（只包文本块）。
+3. **不能写 `state["attached_files"]`** → 它 last-value-wins 且无 reducer，而回放把 chip 挂在**映射出的第一个** user 气泡上；给中途消息写它会把整个会话的 chip 挪到错的气泡。附件摘要只记在 `additional_kwargs["ginno_steer"]`。
+4. **checkpointer 的 delta 按 message id 比对** → 新增的 context 消息铸新 id（`{steer_id}:ctx`），否则 delta 静默留旧内容。
+5. **inflight / restash / heal 三条路径都要带上新字段** → 否则 stop 时丢附件。drain 与 heal 现在共用 `server_shared.steer_messages()` 一个构造器，避免两边漂移。
+
+**摘要形状（实时与回放共用一套，前端一个渲染器服务两者）**：
+
+- `files: [{id, name, path, kind}]`（`kind` 由服务端从 registry 补，前端据此选图标）
+- `images: [{name, media_type}]` —— **不带 base64**：字节已经在注入内容的 `image_url` 块里，而 checkpointer 每步重写整个 session 文件，再存一份会让每条 steer 消息大一倍。要缩略图就从 `image_url` 块取。
+- 配套的 context 消息带 `ginno_steer_context`（不是 `ginno_steer`），回放据此把它渲染成 turn-context 行，而不是画一个空波段。
+- 仅附件、无文字的 steer 是合法形态：入 stash 时用 `_ATTACH_ONLY_TEXT` 补默认意图，**该常量同时被 turn 起点复用**（一个常量、两条路，避免漂移）。
+
+**顺带修掉的三个静默失效**（本次报障的根源；其中第 2、3 条**普通发送也中招**）：
+
+1. 运行中带附件发送时 `send()` **直接 return** —— 连文本都不发、也无任何提示。现在带附件也入队。
+2. 文档在途上传时的 `return` 也是静默的 → 改为可见提示。
+3. **图片压缩在途时发送会静默少图**（`readImage` 是异步的，而闸门只判文档不判图片）→ 加 `imagesReading` 闸门与加载态。**这是既有 bug，普通发送同样会丢图。**
+
+**验证**：`tests/unit` **1036 通过**（+15）· `tests/api` + `tests/e2e` 576 通过 · `test_steering_ws.py` 8 通过 · **变异测试 3 处**（`strip_old_images` 豁免 / str-only 包装 / 丢弃 `context_text`），每处都被捕获并逐字节还原（sha256 比对）。
+
+**未验证**：真实 webview 里的注入时序与波段渲染**无法无头验证**，需实机确认。`PinStream.tsx` 未跟进（见「已知限制」3）。
