@@ -489,6 +489,34 @@ def strip_tool_image_markers(messages):
     return out if changed else messages
 
 
+def strip_tool_code_markers(messages):
+    """Return a copy with code-panel change markers removed from ToolMessage
+    bodies (send-only; the persisted ToolMessages keep the markers).
+
+    ``write_file`` / ``edit_file`` append a ``<!--ginno-code:[...]-->`` trailer so
+    the WS layer can broadcast ``code.changed`` (code-panel S3, design §4.2-3).
+    It is machine metadata: the model must not see its own marker, let alone
+    echo it back into a tool result. Same copy-only convention as
+    ``strip_tool_image_markers`` above.
+    """
+    from .files.code_changes import strip_code_marker
+
+    out = []
+    changed = False
+    for m in messages:
+        content = getattr(m, "content", "")
+        if (
+            isinstance(m, ToolMessage)
+            and isinstance(content, str)
+            and "<!--ginno-code:" in content
+        ):
+            out.append(m.model_copy(update={"content": strip_code_marker(content)}))
+            changed = True
+        else:
+            out.append(m)
+    return out if changed else messages
+
+
 def collect_turn_images(messages) -> list[str]:
     """Absolute paths of code-generated images produced in the current turn.
 
@@ -753,6 +781,9 @@ def agent_node_factory(model, all_tools):
         # Hide code-generated-image markers from the model (display-only); the
         # persisted ToolMessages keep them for the WS layer / history builder.
         history = strip_tool_image_markers(history)
+        # Same for the code-panel change trailer (write_file / edit_file):
+        # machine metadata, display/transport only.
+        history = strip_tool_code_markers(history)
         # Tell the model that these arrived mid-turn (copy-only; see the helper).
         history = _wrap_steered_for_model(history)
         # B3-tail — rolling cache breakpoints so the growing history caches too

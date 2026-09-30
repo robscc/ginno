@@ -86,8 +86,12 @@ def test_grep_no_match(tools):
 
 def test_edit_unique_match(tools):
     tools["write_file"].invoke({"path": "a.txt", "content": "foo bar foo"})
-    # 'bar' is unique
-    assert tools["edit_file"].invoke({"path": "a.txt", "old": "bar", "new": "BAZ"}) == "ok"
+    # 'bar' is unique; the result is "ok" + the code-panel change trailer
+    # (``<!--ginno-code:-->``, stripped everywhere a human/model reads it —
+    # see tests/unit/test_code_changes.py).
+    assert tools["edit_file"].invoke(
+        {"path": "a.txt", "old": "bar", "new": "BAZ"}
+    ).startswith("ok")
     assert tools["read_file"].invoke({"path": "a.txt"}) == "foo BAZ foo"
 
 

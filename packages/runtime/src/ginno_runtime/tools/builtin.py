@@ -35,6 +35,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from .. import paths
+from ..files.code_changes import encode_code_marker
 from ..files.images import diff_images, encode_images_marker, snapshot_images
 
 # A runaway glob (e.g. ``**`` under a huge tree) used to stream the entire
@@ -184,6 +185,69 @@ def _ws(base: Path, p: str) -> Path:
     return (base / p).resolve() if not Path(p).is_absolute() else Path(p)
 
 
+def _code_marker(p: Path, op: str) -> str:
+    """``<!--ginno-code:[...]-->`` trailer for a file this tool just wrote.
+
+    Code-panel S3 (design §4.2-3): the marker is the transport for
+    ``code.changed`` — the WS layer parses it, everyone else strips it (agent
+    node, tool bubbles). ``op`` distinguishes ``write_file`` from ``edit_file``.
+
+    ``version`` is re-``stat``-ed HERE, after the write, as
+    ``f"{size}:{st_mtime_ns}"`` — byte-identical to what ``api/code.py``'s
+    ``read``/``write`` return, which is what lets the panel reuse its conflict
+    bar for a pushed change (brief §0). ``""`` when the stat fails (the tree
+    mark is still worth emitting; the panel is merely conservative).
+    """
+    try:
+        st = p.stat()
+        version = f"{st.st_size}:{st.st_mtime_ns}"
+    except OSError:
+        version = ""
+    return "\n" + encode_code_marker([{"path": str(p), "op": op, "version": version}])
+
+
+def resolve_mounts(context_dirs: list[dict] | None) -> list[tuple[Path, str]]:
+    """Turn serializable context-dir dicts into ``[(resolved_path, access)]``.
+
+    ``missing`` entries and blank paths are skipped; the tier is ``rw`` only
+    when explicitly requested, so an unknown value degrades to the safe ``ro``.
+    Module-level (not a closure) so the code panel resolves the exact same
+    mount set as the tools do — one implementation, no drift.
+    """
+    mounts: list[tuple[Path, str]] = []
+    for d in context_dirs or []:
+        if not isinstance(d, dict) or d.get("missing"):
+            continue
+        raw = (d.get("path") or "").strip()
+        if not raw:
+            continue
+        try:
+            rp = Path(raw).expanduser().resolve()
+        except OSError:
+            continue
+        mounts.append((rp, "rw" if d.get("access") == "rw" else "ro"))
+    return mounts
+
+
+def mount_access(p: Path, mounts: list[tuple[Path, str]]) -> str | None:
+    """Access tier of the MOST SPECIFIC mount containing ``p`` (or None).
+
+    Nested mounts keep their own tier: an ``rw`` dir inside an ``ro`` mount
+    wins for paths under it because the longest matching prefix is chosen.
+    """
+    try:
+        real = os.path.realpath(p)
+    except OSError:
+        return None
+    best: str | None = None
+    best_len = -1
+    for mp, acc in mounts:
+        r = str(mp)
+        if _inside(real, r) and len(r) > best_len:
+            best, best_len = acc, len(r)
+    return best
+
+
 def build_builtin_tools(
     workspace: str | None = None,
     context_dirs: list[dict] | None = None,
@@ -221,18 +285,7 @@ def build_builtin_tools(
 
     # Mounts → [(resolved_path, access)] — most-specific match wins for
     # nested mounts (an rw dir inside an ro mount keeps its own tier).
-    mounts: list[tuple[Path, str]] = []
-    for d in context_dirs or []:
-        if not isinstance(d, dict) or d.get("missing"):
-            continue
-        raw = (d.get("path") or "").strip()
-        if not raw:
-            continue
-        try:
-            rp = Path(raw).expanduser().resolve()
-        except OSError:
-            continue
-        mounts.append((rp, "rw" if d.get("access") == "rw" else "ro"))
+    mounts: list[tuple[Path, str]] = resolve_mounts(context_dirs)
 
     base_dir = ws_root
     if primary_path:
@@ -247,20 +300,6 @@ def build_builtin_tools(
     mount_roots: list[Path] = [p for p, _ in mounts]
     # Workspace + mounts: used only to validate an explicit glob/grep `root=`.
     search_roots: list[Path] = [ws_root] + mount_roots
-
-    def _mount_access(p: Path) -> str | None:
-        """Access tier of the MOST SPECIFIC mount containing ``p`` (or None)."""
-        try:
-            real = os.path.realpath(p)
-        except OSError:
-            return None
-        best: str | None = None
-        best_len = -1
-        for mp, acc in mounts:
-            r = str(mp)
-            if _inside(real, r) and len(r) > best_len:
-                best, best_len = acc, len(r)
-        return best
 
     def _ro_write_msg(p: str) -> str:
         return (
@@ -296,14 +335,16 @@ def build_builtin_tools(
         p = _ws(base_dir, path)
         if _path_denied(p, base_dir, mount_roots):
             return _deny_msg(path)
-        if _mount_access(p) == "ro":
+        if mount_access(p, mounts) == "ro":
             return _ro_write_msg(path)
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
         except OSError as e:
             return f"[error] cannot write {p}: {type(e).__name__}: {e}"
-        return f"wrote {len(content)} bytes to {p}" + _observe(p)
+        # ``_code_marker`` before the discovery notes, like bash's image marker:
+        # it describes THIS call's effect, the notes are a side-channel.
+        return f"wrote {len(content)} bytes to {p}" + _code_marker(p, "write") + _observe(p)
 
     def _resolve_search_root(root: str) -> Path | str:
         """Validate an explicit glob/grep root: it must sit inside the session
@@ -462,7 +503,7 @@ def build_builtin_tools(
         p = _ws(base_dir, path)
         if _path_denied(p, base_dir, mount_roots):
             return _deny_msg(path)
-        if _mount_access(p) == "ro":
+        if mount_access(p, mounts) == "ro":
             return _ro_write_msg(path)
         try:
             text = p.read_text(encoding="utf-8")
@@ -478,7 +519,9 @@ def build_builtin_tools(
             p.write_text(text.replace(old, new, 1), encoding="utf-8")
         except OSError as e:
             return f"[error] cannot write {path}: {type(e).__name__}: {e}"
-        return "ok" + _observe(_ws(base_dir, path))
+        # Same ``<!--ginno-code:-->`` trailer as write_file, with op="edit" so
+        # the panel can tell an in-place edit from a full overwrite.
+        return "ok" + _code_marker(p, "edit") + _observe(p)
 
     @tool
     def bash(command: str, timeout: int = 30) -> str:

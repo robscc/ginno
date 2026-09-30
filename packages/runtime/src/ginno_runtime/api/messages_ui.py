@@ -156,13 +156,18 @@ def _content_ui_blocks(content: Any) -> list[dict]:
 
 def _tool_content_str(content: Any) -> str:
     """ToolMessage.content (str or list of provider blocks) -> plain text for
-    the UI tool bubble. Image parts become an ``[image]`` marker. The
-    code-generated-image trailer (bash) is stripped — it is machine metadata
-    rendered as real image blocks instead (see _messages_to_ui)."""
+    the UI tool bubble. Image parts become an ``[image]`` marker. Two machine
+    trailers are stripped — they are metadata, not user-visible text: the
+    code-generated-image one (bash; rendered as real image blocks instead, see
+    _messages_to_ui) and the code-panel change one (write_file / edit_file;
+    turned into ``code.changed`` WS events by stream.py). This single helper is
+    what keeps the marker out of BOTH the replayed history bubbles and the live
+    ``tool.end`` payload."""
+    from ..files.code_changes import strip_code_marker
     from ..files.images import strip_images_marker
 
     if isinstance(content, str):
-        return strip_images_marker(content)
+        return strip_code_marker(strip_images_marker(content))
     if isinstance(content, list):
         parts: list[str] = []
         for b in content:
@@ -176,10 +181,12 @@ def _tool_content_str(content: Any) -> str:
                     parts.append("[image]")
                 else:
                     parts.append(json.dumps(b, ensure_ascii=False, default=str))
-        return strip_images_marker("\n".join(p for p in parts if p))
+        return strip_code_marker(strip_images_marker("\n".join(p for p in parts if p)))
     if content is None:
         return ""
-    return strip_images_marker(json.dumps(content, ensure_ascii=False, default=str))
+    return strip_code_marker(
+        strip_images_marker(json.dumps(content, ensure_ascii=False, default=str))
+    )
 
 
 # Live WS tool outputs are capped to keep frames small; the history endpoint
