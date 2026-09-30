@@ -83,6 +83,14 @@ export interface ProviderConfig {
   default_model?: string;
   model?: string;
   name?: string;
+  /** The provider's model list (``models[]`` on the wire). The chat's model
+   *  picker enumerates THIS — one row per entry — since a session can be pinned
+   *  to any of them; ``default_model`` is only the pre-selected one.
+   *
+   *  Missing from this type until now, which is why the picker was written
+   *  provider-by-provider against ``default_model`` alone and every extra model
+   *  was unreachable from chat. */
+  models?: string[];
   max_tokens?: number;
   temperature?: number;
   timeout_s?: number;

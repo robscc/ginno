@@ -2227,6 +2227,11 @@ export function ChatStream({
   }
   async function pickModel(pid: string, model: string) {
     setModelOpen(false);
+    // Never select an empty model. The chip label falls back to the provider id
+    // (`model || provider`), so an empty model leaves the label unchanged and the
+    // click reads as "nothing happened" — the exact shape of the "cannot pick a
+    // model" report. The menu cannot produce one; this is the guard behind it.
+    if (!model) return;
     if (!session) {
       setHomeModel({ provider: pid, model });
       return;
@@ -2244,9 +2249,19 @@ export function ChatStream({
     }
   }
   const enabledProviders = Object.entries(g.providers).filter(([, p]) => p.enabled);
+  // At home nothing is chosen yet, so the chip should name what WOULD be used —
+// the default provider's own model — not the provider id. A bare "custom" there
+// reads as a model name and looks unchangeable (the "default is customer"
+// report), and the id is the one thing the user cannot act on.
+  const defaultProviderCfg = g.providers[g.defaultProvider];
   const modelChipLabel = session
     ? session.model || session.provider
-    : homeModel?.model || homeModel?.provider || g.defaultProvider;
+    : homeModel?.model ||
+      homeModel?.provider ||
+      defaultProviderCfg?.default_model ||
+      defaultProviderCfg?.model ||
+      defaultProviderCfg?.name ||
+      g.defaultProvider;
 
   /** Lazy creation: home composer send creates the session, flushes buffered
    *  attachments, awaits the socket, then posts the turn. */
@@ -3261,21 +3276,46 @@ export function ChatStream({
                         </div>
                       )}
                       {enabledProviders.map(([pid, p]) => {
-                        const m = p.default_model || p.model || "";
-                        const on = (session ? session.provider : homeModel?.provider) === pid;
+                        // One row per MODEL, not per provider. The store keeps a
+                        // list (`models`) and a session can be pinned to any entry,
+                        // but showing only `default_model` left every extra model
+                        // unreachable from chat — which is exactly the "I cannot
+                        // pick GLM" report. Grouped by provider instead, and the
+                        // dangling `· ` disappears along with the single-row shape.
+                        const models = (
+                          Array.isArray(p.models) && p.models.length
+                            ? p.models
+                            : [p.default_model || p.model || ""]
+                        ).filter((m): m is string => !!m);
+                        const curProvider = session ? session.provider : homeModel?.provider;
+                        const curModel = session ? session.model : homeModel?.model;
                         return (
-                          <button
-                            key={pid}
-                            onClick={() => void pickModel(pid, m)}
-                            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
-                              on ? "text-txt" : "text-muted"
-                            }`}
-                          >
-                            <span className={on ? "" : "opacity-0"}>✓</span>
-                            <span className="min-w-0 flex-1 truncate">
-                              {p.name || pid} · {m}
-                            </span>
-                          </button>
+                          <div key={pid}>
+                            <div className="px-3 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wider text-faint">
+                              {p.name || pid}
+                            </div>
+                            {models.length === 0 ? (
+                              <div className="px-3 py-1 text-[11px] text-faint">
+                                此提供商未配置模型 — 去 设置 → 模型 API 添加
+                              </div>
+                            ) : (
+                              models.map((m) => {
+                                const on = curProvider === pid && curModel === m;
+                                return (
+                                  <button
+                                    key={`${pid}:${m}`}
+                                    onClick={() => void pickModel(pid, m)}
+                                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
+                                      on ? "text-txt" : "text-muted"
+                                    }`}
+                                  >
+                                    <span className={on ? "" : "opacity-0"}>✓</span>
+                                    <span className="min-w-0 flex-1 truncate">{m}</span>
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
                         );
                       })}
                       <div className="mt-1 border-t border-line px-3 pt-1 text-[10px] text-faint">
