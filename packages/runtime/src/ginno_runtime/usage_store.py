@@ -223,6 +223,22 @@ def _with_ratio(acc: dict[str, int]) -> dict:
     return {**acc, "cache_hit_ratio": cache_hit_ratio(acc)}
 
 
+def _model_rows(models: dict[str, dict]) -> list[dict]:
+    """Per-model SKU rows sorted by total tokens desc. The acc dicts carry
+    provider/model keys stuffed in by the caller (same trick as the global
+    model breakdown in aggregate_overview)."""
+    return [
+        _with_ratio(a)
+        for _, a in sorted(
+            models.items(), key=lambda kv: -(kv[1]["input_tokens"] + kv[1]["output_tokens"])
+        )
+    ]
+
+
+def _model_key(e: dict) -> str:
+    return f"{e.get('provider') or '?'}/{e.get('model') or '?'}"
+
+
 # --------------------------------------------------------------------------- #
 # Aggregates (design §5)
 # --------------------------------------------------------------------------- #
@@ -238,24 +254,27 @@ def aggregate_overview(days: int) -> dict:
     sessions_seen: set[str] = set()
     for ds in dates:
         day_acc = _acc()
+        day_models: dict[str, dict] = {}
         for e in load_day(ds):
             _add(day_acc, e)
             _add(totals, e)
             p = e.get("provider") or "?"
             pa = providers.setdefault(p, _acc())
             _add(pa, e)
-            mkey = f"{p}/{e.get('model') or '?'}"
-            ma = models.setdefault(mkey, _acc())
-            _add(ma, e)
-            ma["provider"] = p  # type: ignore[assignment]
-            ma["model"] = e.get("model") or "?"  # type: ignore[assignment]
+            mkey = _model_key(e)
+            for bucket in (models, day_models):
+                ma = bucket.setdefault(mkey, _acc())
+                _add(ma, e)
+                ma["provider"] = p  # type: ignore[assignment]
+                ma["model"] = e.get("model") or "?"  # type: ignore[assignment]
             # source split (design §3.6): totals stay whole-account; the
             # breakdown answers chat vs workflow vs background work.
             sa = sources.setdefault(e.get("source") or "other", _acc())
             _add(sa, e)
             if e.get("session_id"):
                 sessions_seen.add(e["session_id"])
-        daily.append({"date": ds, **_with_ratio(day_acc)})
+        # per-day model×SKU rows power the bar-hover breakdown in the UI
+        daily.append({"date": ds, **_with_ratio(day_acc), "models": _model_rows(day_models)})
     today_str = dates[-1]
     today_acc = _acc()
     for e in load_day(today_str):
@@ -270,10 +289,7 @@ def aggregate_overview(days: int) -> dict:
             {"provider": p, **_with_ratio(a)}
             for p, a in sorted(providers.items(), key=lambda kv: -(kv[1]["input_tokens"] + kv[1]["output_tokens"]))
         ],
-        "models": [
-            _with_ratio(a)
-            for _, a in sorted(models.items(), key=lambda kv: -(kv[1]["input_tokens"] + kv[1]["output_tokens"]))
-        ],
+        "models": _model_rows(models),
         "sources": [
             {"source": s, **_with_ratio(a)}
             for s, a in sorted(sources.items(), key=lambda kv: -(kv[1]["input_tokens"] + kv[1]["output_tokens"]))
@@ -282,18 +298,25 @@ def aggregate_overview(days: int) -> dict:
 
 
 def aggregate_hourly(date_str: str | None = None) -> dict:
+    """Per-hour counters + model×SKU rows (same shape as the daily buckets:
+    full _acc fields incl. cache_creation_tokens, plus cache_hit_ratio)."""
     ds = _parse_date(date_str, _today())
-    hours = [{
-        "hour": h, "input_tokens": 0, "output_tokens": 0,
-        "cache_read_tokens": 0, "calls": 0,
-    } for h in range(24)]
+    accs = [_acc() for _ in range(24)]
+    hour_models: list[dict[str, dict]] = [{} for _ in range(24)]
     for e in load_day(ds):
         h = int(time.localtime(float(e.get("ts") or 0)).tm_hour)
-        b = hours[h]
-        b["input_tokens"] += int(e.get("input_tokens") or 0)
-        b["output_tokens"] += int(e.get("output_tokens") or 0)
-        b["cache_read_tokens"] += int(e.get("cache_read_tokens") or 0)
-        b["calls"] += 1
+        if not (0 <= h < 24):
+            continue
+        _add(accs[h], e)
+        p = e.get("provider") or "?"
+        ma = hour_models[h].setdefault(_model_key(e), _acc())
+        _add(ma, e)
+        ma["provider"] = p  # type: ignore[assignment]
+        ma["model"] = e.get("model") or "?"  # type: ignore[assignment]
+    hours = [
+        {"hour": h, **_with_ratio(accs[h]), "models": _model_rows(hour_models[h])}
+        for h in range(24)
+    ]
     return {"date": ds, "hours": hours}
 
 

@@ -509,6 +509,8 @@ export interface UsageCounters {
 }
 export interface UsageDailyPoint extends UsageCounters {
   date: string; // YYYY-MM-DD
+  /** Per-model SKU rows for the day (bar-hover breakdown), tokens desc. */
+  models?: UsageModelAgg[];
 }
 export interface UsageProviderAgg extends UsageCounters {
   provider: string;
@@ -531,12 +533,10 @@ export interface UsageOverview {
   models: UsageModelAgg[];
   sources?: UsageSourceAgg[];
 }
-export interface UsageHourPoint {
+export interface UsageHourPoint extends UsageCounters {
   hour: number;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  calls: number;
+  /** Per-model SKU rows for the hour (bar-hover breakdown), tokens desc. */
+  models?: UsageModelAgg[];
 }
 export interface UsageHourly {
   ok: boolean;

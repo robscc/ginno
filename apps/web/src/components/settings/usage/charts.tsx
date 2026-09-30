@@ -28,6 +28,15 @@ export function fmt(n: number): string {
   return String(Math.round(n));
 }
 
+/** Exact thousands-separated number — tooltips show billing-grade digits. */
+export function exact(n: number | undefined | null): string {
+  return Math.round(n || 0).toLocaleString("en-US");
+}
+
+/** 缓存写 (cache creation) — a billing SKU of its own; not drawn in the
+ * stacked bars (input net excludes it) but always listed in tooltips. */
+export const CACHE_WRITE_COLOR = "#d9a93e";
+
 export function pct(x: number): string {
   return `${Math.round(x * 100)}%`;
 }
@@ -72,7 +81,7 @@ export function useTip() {
     <div
       ref={ref}
       role="tooltip"
-      className="pointer-events-none fixed z-50 max-w-[260px] rounded-lg border border-line2 bg-[#101018]/95 px-3 py-2 text-[11.5px] leading-relaxed text-muted shadow-xl"
+      className="pointer-events-none fixed z-50 max-w-[320px] rounded-lg border border-line2 bg-[#101018]/95 px-3 py-2 text-[11.5px] leading-relaxed text-muted shadow-xl"
       style={{ display: content ? "block" : "none" }}
     >
       {content}
@@ -90,6 +99,76 @@ export function TipRow({ label, value, swatch }: { label: string; value: string;
       </span>
       <b className="tabular-nums text-txt">{value}</b>
     </div>
+  );
+}
+
+/* ---- per-model SKU breakdown (bar tooltips) ---- */
+export interface SkuRow {
+  provider: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens?: number;
+  calls: number;
+}
+
+const SKU_MAX_MODELS = 6; // beyond this the tail merges into 「其他 N 个模型」
+
+/** Every billing SKU (输入非缓存 / 缓存写 / 缓存读 / 输出) per model, in exact
+ * digits — mirrors the provider bill line items for reconciliation. */
+export function SkuBreakdown({ models }: { models: SkuRow[] }) {
+  const live = (models || []).filter(
+    (m) => m.input_tokens + m.output_tokens + (m.cache_creation_tokens || 0) > 0,
+  );
+  if (!live.length) return null;
+  let shown = live;
+  if (live.length > SKU_MAX_MODELS) {
+    const head = live.slice(0, SKU_MAX_MODELS - 1);
+    const rest = live.slice(SKU_MAX_MODELS - 1);
+    const merged: SkuRow = rest.reduce(
+      (a, m) => ({
+        provider: "",
+        model: `其他 ${rest.length} 个模型`,
+        input_tokens: a.input_tokens + m.input_tokens,
+        output_tokens: a.output_tokens + m.output_tokens,
+        cache_read_tokens: a.cache_read_tokens + m.cache_read_tokens,
+        cache_creation_tokens: (a.cache_creation_tokens || 0) + (m.cache_creation_tokens || 0),
+        calls: a.calls + m.calls,
+      }),
+      { provider: "", model: "", input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, calls: 0 },
+    );
+    shown = [...head, merged];
+  }
+  return (
+    <>
+      {shown.map((m) => {
+        const cw = m.cache_creation_tokens || 0;
+        const net = Math.max(0, m.input_tokens - m.cache_read_tokens - cw);
+        const rows: Array<[string, number, string]> = [
+          ["输入（非缓存）", net, SERIES.input],
+          ["缓存写", cw, CACHE_WRITE_COLOR],
+          ["缓存读", m.cache_read_tokens, SERIES.cache],
+          ["输出", m.output_tokens, SERIES.output],
+        ];
+        return (
+          <div key={`${m.provider}/${m.model}`} className="mt-1.5">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="truncate font-medium text-txt">{m.model}</span>
+              <span className="flex-none text-faint">
+                {m.provider ? `${m.provider} · ` : ""}
+                {m.calls} 次
+              </span>
+            </div>
+            {rows
+              .filter(([, v]) => v > 0)
+              .map(([label, v, sw]) => (
+                <TipRow key={label} label={label} value={exact(v)} swatch={sw} />
+              ))}
+          </div>
+        );
+      })}
+    </>
   );
 }
 

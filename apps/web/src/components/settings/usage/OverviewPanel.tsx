@@ -7,7 +7,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { UsageHourly, UsageOverview } from "@/lib/types";
-import { fmt, pct, providerColor, SERIES, SeriesLegend, StackedBars, TipRow, useTip } from "./charts";
+import {
+  CACHE_WRITE_COLOR,
+  exact,
+  fmt,
+  pct,
+  providerColor,
+  SERIES,
+  SeriesLegend,
+  SkuBreakdown,
+  StackedBars,
+  TipRow,
+  useTip,
+} from "./charts";
 
 function Delta({ v, suffix = "", goodUp = true }: { v: number; suffix?: string; goodUp?: boolean }) {
   const up = v >= 0;
@@ -167,10 +179,20 @@ export function OverviewPanel() {
                 return (
                   <>
                     <b className="text-txt">{p.date}</b> · {p.calls} 次请求 · 命中 {pct(p.cache_hit_ratio)}
-                    <TipRow label="总 Tokens" value={fmt(p.input_tokens + p.output_tokens)} />
-                    <TipRow label="缓存读" value={fmt(p.cache_read_tokens)} swatch={SERIES.cache} />
-                    <TipRow label="输入（非缓存）" value={fmt(Math.max(0, p.input_tokens - p.cache_read_tokens - p.cache_creation_tokens))} swatch={SERIES.input} />
-                    <TipRow label="输出" value={fmt(p.output_tokens)} swatch={SERIES.output} />
+                    {p.models?.length ? (
+                      <SkuBreakdown models={p.models} />
+                    ) : (
+                      /* 旧 runtime 无 per-model 明细 — 退回按天聚合（精确数字） */
+                      <>
+                        <TipRow label="输入（非缓存）" value={exact(Math.max(0, p.input_tokens - p.cache_read_tokens - p.cache_creation_tokens))} swatch={SERIES.input} />
+                        <TipRow label="缓存写" value={exact(p.cache_creation_tokens)} swatch={CACHE_WRITE_COLOR} />
+                        <TipRow label="缓存读" value={exact(p.cache_read_tokens)} swatch={SERIES.cache} />
+                        <TipRow label="输出" value={exact(p.output_tokens)} swatch={SERIES.output} />
+                      </>
+                    )}
+                    <div className="mt-1.5 border-t border-white/10 pt-1">
+                      <TipRow label="总 Tokens" value={exact(p.input_tokens + p.output_tokens)} />
+                    </div>
                     <div className="mt-0.5 text-faint">点击查看该日小时分布</div>
                   </>
                 );
@@ -193,7 +215,7 @@ export function OverviewPanel() {
                   </button>
                 ))}
               </div>
-              <span className="text-[11px] text-faint">悬停看该小时 in / out / cache / 请求数</span>
+              <span className="text-[11px] text-faint">悬停看该小时各模型 SKU 明细（精确数字）</span>
               <SeriesLegend />
             </div>
             {hourly && hourly.date === hourDate ? (
@@ -205,20 +227,29 @@ export function OverviewPanel() {
                   key: String(h.hour),
                   label: `${h.hour}时`,
                   cache: h.cache_read_tokens,
-                  inputNet: Math.max(0, h.input_tokens - h.cache_read_tokens),
+                  inputNet: Math.max(0, h.input_tokens - h.cache_read_tokens - (h.cache_creation_tokens ?? 0)),
                   output: h.output_tokens,
                 }))}
                 tipFor={(d) => {
                   const h = hourly.hours[Number(d.key)];
-                  const tot = h.input_tokens + h.output_tokens;
+                  const cw = h.cache_creation_tokens ?? 0;
                   return (
                     <>
-                      <b className="text-txt">{hourDate} {String(h.hour).padStart(2, "0")}:00–{String(h.hour).padStart(2, "0")}:59</b>
-                      <TipRow label="总 Tokens" value={fmt(tot)} />
-                      <TipRow label="缓存读" value={fmt(h.cache_read_tokens)} swatch={SERIES.cache} />
-                      <TipRow label="输入（非缓存）" value={fmt(Math.max(0, h.input_tokens - h.cache_read_tokens))} swatch={SERIES.input} />
-                      <TipRow label="输出" value={fmt(h.output_tokens)} swatch={SERIES.output} />
-                      <TipRow label="请求数" value={String(h.calls)} />
+                      <b className="text-txt">{hourDate} {String(h.hour).padStart(2, "0")}:00–{String(h.hour).padStart(2, "0")}:59</b> · {h.calls} 次请求
+                      {h.models?.length ? (
+                        <SkuBreakdown models={h.models} />
+                      ) : (
+                        /* 旧 runtime 无 per-model 明细 — 退回按小时聚合（精确数字） */
+                        <>
+                          <TipRow label="输入（非缓存）" value={exact(Math.max(0, h.input_tokens - h.cache_read_tokens - cw))} swatch={SERIES.input} />
+                          <TipRow label="缓存写" value={exact(cw)} swatch={CACHE_WRITE_COLOR} />
+                          <TipRow label="缓存读" value={exact(h.cache_read_tokens)} swatch={SERIES.cache} />
+                          <TipRow label="输出" value={exact(h.output_tokens)} swatch={SERIES.output} />
+                        </>
+                      )}
+                      <div className="mt-1.5 border-t border-white/10 pt-1">
+                        <TipRow label="总 Tokens" value={exact(h.input_tokens + h.output_tokens)} />
+                      </div>
                     </>
                   );
                 }}

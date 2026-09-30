@@ -90,6 +90,40 @@ def test_overview_window_clamps_to_data(isolated_home):
     assert ov30["totals"]["calls"] == 1         # inside the 30-day window
 
 
+def test_daily_and_hourly_model_sku_breakdown(isolated_home):
+    """Bar-hover breakdown: per-day / per-hour model×SKU rows with exact
+    counters (incl. cache_creation, which the old hourly aggregate dropped)."""
+    _record(input_tokens=1000, output_tokens=100, cache_read_tokens=600,
+            cache_creation_tokens=50, provider="anthropic", model="claude-x")
+    _record(input_tokens=500, output_tokens=50, cache_read_tokens=0,
+            provider="custom", model="glm-flash")
+
+    ov = usage_store.aggregate_overview(7)
+    day = ov["daily"][-1]
+    assert [m["model"] for m in day["models"]] == ["claude-x", "glm-flash"]  # tokens desc
+    top = day["models"][0]
+    assert top["provider"] == "anthropic"
+    assert top["input_tokens"] == 1000
+    assert top["output_tokens"] == 100
+    assert top["cache_read_tokens"] == 600
+    assert top["cache_creation_tokens"] == 50
+    assert top["calls"] == 1
+    assert top["cache_hit_ratio"] == 0.6
+    # a day without records still carries an empty breakdown (stable shape)
+    assert ov["daily"][0]["models"] == []
+
+    h = usage_store.aggregate_hourly()
+    now_hour = time.localtime().tm_hour
+    b = h["hours"][now_hour]
+    assert b["cache_creation_tokens"] == 50
+    assert b["calls"] == 2
+    assert [m["model"] for m in b["models"]] == ["claude-x", "glm-flash"]
+    assert b["models"][1]["cache_creation_tokens"] == 0
+    # empty hours keep the stable shape
+    empty = h["hours"][(now_hour + 12) % 24]
+    assert empty["calls"] == 0 and empty["models"] == []
+
+
 def test_hourly_buckets_by_local_hour(isolated_home):
     _record()
     _record()
