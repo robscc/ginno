@@ -4,7 +4,15 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, FileEdit, Check, RotateCcw, Globe } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
-import { openSessionSocket, getSessionHistory, uploadFile, debugLog, attachFilePath } from "@/lib/runtime";
+import { openSessionSocket, getSessionHistory, debugLog, attachFilePath } from "@/lib/runtime";
+import { useSteerQueue } from "@/lib/steerQueue";
+import {
+  readImage,
+  uploadDoc,
+  isImageFile,
+  type ComposerImage,
+  type ComposerFile,
+} from "@/lib/composerAttachments";
 import { loadToolLabels } from "@/lib/toolLabels";
 import { agentHex } from "@/lib/theme";
 import { greeting, relTime } from "@/lib/utils";
@@ -71,30 +79,9 @@ interface ChatMsg {
   sourceMsgId?: string;
 }
 
-/** One queued mid-turn steering message (docs/steering-design.md §4.1).
- *
- * The CLIENT owns this queue. The server only ever absorbs into a running turn
- * and acks what it durably committed, so an entry that never got an ack is
- * re-sent by us: as a normal `invoke` when the turn ended (§3.3), or as `steer`
- * again when we are about to resume a turn parked at an interrupt (§3.4).
- * Server-side enqueue is idempotent by steer_id, so a re-send never duplicates.
- */
-interface SteerItem {
-  steerId: string;
-  text: string;
-  /** The turn this rides ("" = let the server use its own running-turn id). */
-  turnId: string;
-  /** Captured at enqueue: the agent the message was composed against, so a
-   *  later re-send-as-invoke keeps the user's intent. */
-  agentId: string | null;
-  /** "sending" until the server accepts it into the stash. */
-  status: "sending" | "queued";
-  /** Attachments travel WITH the entry (steer-attachments v2): they ride the
-   *  steer frame, survive every re-send, and are handed back to the composer on
-   *  recall — otherwise the user silently loses them. */
-  images: Attachment[];
-  files: FileAttachment[];
-}
+// The mid-turn steering queue state machine (SteerItem, the per-session queue,
+// send / recall / ack handling) now lives in @/lib/steerQueue, shared with the
+// floating quick-chat window (steer-queue-shared-brief §3.1).
 
 interface SendPayload {
   text: string;
@@ -223,60 +210,15 @@ function toolArgsPreview(args: unknown): string {
   return "";
 }
 
-interface Attachment {
-  data: string; // base64 payload (no data-url prefix)
-  mediaType: string;
-  preview: string; // full data URL for local display
-  name: string;
-}
-
-/** Non-image attachment: uploaded to the sidecar, referenced by registry id. */
-interface FileAttachment {
-  id: string;
-  name: string;
-  path: string;
-  kind: string; // spreadsheet | table | document | presentation | pdf | …
-  uploading?: boolean;
-}
+// Composer attachment shapes now live in @/lib/composerAttachments (shared with
+// the floating quick-chat window). Aliased so the rest of this file is unchanged.
+type Attachment = ComposerImage;
+type FileAttachment = ComposerFile;
 
 const TABLE_KINDS = new Set(["spreadsheet", "table"]);
 
-/**
- * Read an image file as a data URL. Files over ~400KB are re-encoded through a
- * canvas (max 1600px, JPEG 0.85) — the checkpointer rewrites the whole session
- * file on every step, so keeping embedded images small matters.
- */
-function readImage(file: File): Promise<Attachment | null> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const src = String(reader.result || "");
-      const finish = (url: string) => {
-        const m = /^data:([^;]+);base64,(.*)$/.exec(url);
-        resolve(m ? { data: m[2], mediaType: m[1], preview: url, name: file.name } : null);
-      };
-      if (file.size <= 400_000) return finish(src);
-      const img = new Image();
-      img.onload = () => {
-        const MAX = 1600;
-        const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return finish(src);
-        ctx.drawImage(img, 0, 0, w, h);
-        finish(canvas.toDataURL("image/jpeg", 0.85));
-      };
-      img.onerror = () => finish(src);
-      img.src = src;
-    };
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(file);
-  });
-}
+// readImage now lives in @/lib/composerAttachments (shared with the floating
+// window). Its 400KB / 1600px / JPEG 0.85 thresholds are unchanged.
 
 // Patterns that indicate a tool returned "no results" — hide these blocks to reduce noise.
 // Covers both the builtin tool phrasing ("(no matches)") and the MCP filesystem
@@ -523,9 +465,10 @@ export function ChatStream({
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
   // Command/mention autocomplete: open menu (items + active index + trigger).
   const [menu, setMenu] = useState<{ items: MenuItem[]; active: number; trigger: Trigger } | null>(null);
-  // Steer entries queued for the displayed session (mirrored from
-  // steerQueueRef by syncDisplay). Rendered as the queue bar above the composer.
-  const [steerQueue, setSteerQueue] = useState<SteerItem[]>([]);
+  // Mid-turn steering queue (docs/steering-design.md). Shared with the floating
+  // quick-chat window; the hook owns the queue + acks, this component renders
+  // it. `steerItems` (below) is read during render.
+  const steerQ = useSteerQueue();
   // Images currently being read/compressed by readImage. The Attachment only
   // reaches `attachments` when that async read resolves, so a send fired in the
   // meantime would silently drop the picture. This counter gates the send.
@@ -704,10 +647,7 @@ export function ChatStream({
   const permsRef         = useRef<Record<string, PermissionPrompt | null>>({});
   const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
   const busyBySessionRef = useRef<Record<string, boolean>>({});
-  // Mid-turn steering queue, per session (docs/steering-design.md §3.3). Kept
-  // in a ref like every other socket-fed store: the socket callbacks outlive
-  // session switches and must not read stale React state.
-  const steerQueueRef   = useRef<Record<string, SteerItem[]>>({});
+  // (The per-session steer queue ref now lives inside useSteerQueue.)
   // Auto-clear timer for the composer hint (one timer, hint is composer-global).
   const hintTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Per-session mirror of the `serverRunning` state (see syncDisplay).
@@ -806,7 +746,8 @@ export function ChatStream({
     setPropose(proposeRef.current[sid] ?? null);
     setStreamAgent(streamAgentRef.current[sid] ?? null);
     setServerRunning(!!serverRunningRef.current[sid]);
-    setSteerQueue([...(steerQueueRef.current[sid] ?? [])]);
+    // The steer queue is no longer mirrored here — useSteerQueue re-renders the
+    // component itself when the queue changes, and `steerItems` reads it live.
   };
 
   // Pre-load tool display labels from settings (cached at module level).
@@ -826,7 +767,7 @@ export function ChatStream({
         delete liveBySessionRef.current[id]; delete statusRef.current[id];
         delete permsRef.current[id];      delete proposeRef.current[id];
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
-        delete steerQueueRef.current[id];
+        steerQ.clear(id);
         delete serverRunningRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
         delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
@@ -1078,6 +1019,10 @@ export function ChatStream({
     m.blocks.some((b) => b.kind === "question" && b.status === "pending"),
   );
   const parked = !!permission || !!propose || questionPending;
+
+  // The displayed session's queued steer entries, read live from the shared hook
+  // (it re-renders this component whenever the queue changes).
+  const steerItems = session ? steerQ.itemsFor(session.id) : [];
 
   // Session goal (goal-design.md) — drives the stop=pause button and the
   // paused/blocked resume banner.
@@ -1426,30 +1371,23 @@ export function ChatStream({
         break;
       case "steer.accepted":
         // The server stashed the entry (design §3.1). It stays in the queue bar
-        // until it is absorbed; this only flips it out of "sending".
-        if (ev.steer_id) {
-          const items = steerQueueRef.current[sid] ?? [];
-          if (items.some((i) => i.steerId === ev.steer_id)) {
-            setSteerQueueFor(
-              sid,
-              items.map((i) =>
-                i.steerId === ev.steer_id ? { ...i, status: "queued" as const } : i,
-              ),
-            );
-          }
-        }
+        // until it is absorbed; this only flips it out of "sending" (the shared
+        // hook owns that queue mutation).
+        steerQ.handleEvent(ev, sid);
         break;
       case "steer.absorbed": {
-        // The steered message COMMITTED with a superstep update, so it is
-        // durably in state: move it out of the queue bar into the transcript as
-        // a band at the injection point — appended to the live assistant bubble,
-        // because one turn is one bubble (design §4.2/§4.3).
+        // The steered message was DRAINED into state (the server acks at drain
+        // time, not at superstep commit — see docs/steering-design.md): move it
+        // out of the queue bar into the transcript as a band at the injection
+        // point — appended to the live assistant bubble, because one turn is one
+        // bubble (design §4.2/§4.3).
         const absorbedId = ev.steer_id as string | undefined;
         if (!absorbedId) break;
-        const items = steerQueueRef.current[sid] ?? [];
-        const entry = items.find((i) => i.steerId === absorbedId);
+        // Capture the entry BEFORE delegating — the hook drops it from the queue.
+        const entry = steerQ.itemsFor(sid).find((i) => i.steerId === absorbedId);
         if (!entry) break; // already dropped — a history reconcile got there first
-        setSteerQueueFor(sid, items.filter((i) => i.steerId !== absorbedId));
+        // Same timing/order as before: remove from the queue first, then render.
+        steerQ.handleEvent(ev, sid);
         const band: Block = {
           kind: "steer",
           text: entry.text,
@@ -1792,27 +1730,22 @@ export function ChatStream({
 
   async function uploadOneDoc(sid: string, f: File, tmpId: string): Promise<FileAttachment | null> {
     try {
-      const r = await uploadFile(sid, f);
-      void debugLog({ where: "addFiles:upload-resp", name: f.name, ok: r?.ok, hasFile: !!r?.file, error: r?.error });
-      if (r.ok && r.file) {
-        const entry = r.file;
-        setFileAttachments((a) =>
-          a.map((x) =>
-            x.id === tmpId
-              ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
-              : x,
-          ),
-        );
-        // spreadsheets/tables auto-open the preview on drop
-        if (TABLE_KINDS.has(entry.kind)) {
-          g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
-        }
-        g.reloadArtifacts();
-        return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
-      } else {
-        setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
-        return null;
+      // The upload + response telemetry live in the shared composerAttachments
+      // module (used by the floating window too); it throws on failure.
+      const entry = await uploadDoc(sid, f);
+      setFileAttachments((a) =>
+        a.map((x) =>
+          x.id === tmpId
+            ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
+            : x,
+        ),
+      );
+      // spreadsheets/tables auto-open the preview on drop
+      if (TABLE_KINDS.has(entry.kind)) {
+        g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
       }
+      g.reloadArtifacts();
+      return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
     } catch (e) {
       void debugLog({ where: "addFiles:upload-error", name: f.name, error: String(e) });
       setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
@@ -1833,8 +1766,8 @@ export function ChatStream({
     const list = Array.from(files);
     // Images keep the base64 → multimodal path; everything else is uploaded
     // to the sidecar and attached by registry ref (docs §7.2).
-    const images = list.filter((f) => f.type.startsWith("image/"));
-    const docs = list.filter((f) => !f.type.startsWith("image/"));
+    const images = list.filter(isImageFile);
+    const docs = list.filter((f) => !isImageFile(f));
     void debugLog({ where: "addFiles:split", images: images.length, docs: docs.length });
     if (images.length) {
       // Bracket the async read so send() can gate on it: until this resolves,
@@ -2377,21 +2310,9 @@ export function ChatStream({
 
   /** Drop one queued entry (the ✕ on a queue-bar row). */
   function dropSteer(sid: string, steerId: string) {
-    setSteerQueueFor(
-      sid,
-      (steerQueueRef.current[sid] ?? []).filter((i) => i.steerId !== steerId),
-    );
+    steerQ.remove(sid, [steerId]);
   }
 
-  function setSteerQueueFor(sid: string, next: SteerItem[]) {
-    if (next.length) steerQueueRef.current[sid] = next;
-    else delete steerQueueRef.current[sid];
-    syncDisplay(sid);
-  }
-
-  /** Queue a message for absorption by the running turn. It is NOT a turn: the
-   *  composer clears and the entry lives in the queue bar until the server acks
-   *  it as absorbed. */
   /** Transient, visible feedback in the composer (never a silent no-op). */
   function showComposerHint(msg: string) {
     setComposerHint(msg);
@@ -2406,57 +2327,39 @@ export function ChatStream({
     images: Attachment[] = [],
     files: FileAttachment[] = [],
   ) {
-    const item: SteerItem = {
-      steerId: mid(),
-      text,
+    steerQ.enqueue({
+      sessionId: sid,
       turnId: liveTurnIdFor(sid),
-      agentId,
-      status: "sending",
+      text,
       images,
       files,
-    };
-    setSteerQueueFor(sid, [...(steerQueueRef.current[sid] ?? []), item]);
-    sendSteer(sid, item);
+      agentId,
+      send: steerFrameSender(sid),
+    });
   }
 
-  function sendSteer(sid: string, item: SteerItem) {
-    try {
-      socketsRef.current[sid]?.send(
-        JSON.stringify({
-          type: "steer",
-          steer_id: item.steerId,
-          turn_id: item.turnId,
-          message: item.text,
-          // Same shape as the invoke frame (steer-attachments v2, brief §5.1) —
-          // only sent when present, so a text-only steer stays byte-identical.
-          ...(item.images.length
-            ? { images: item.images.map((a) => ({ data: a.data, media_type: a.mediaType })) }
-            : {}),
-          ...(item.files.length
-            ? { files: item.files.map((f) => ({ id: f.id, name: f.name, path: f.path })) }
-            : {}),
-        }),
-      );
-    } catch {
-      // Socket gone: the entry stays queued and rides the next turn instead
-      // (the flush on message.end), so nothing the user typed is lost.
-    }
+  /** Raw-frame sender for a session's socket, handed to the shared queue (which
+   *  owns the frame shape and swallows a dead socket so the entry stays queued).
+   *  Each window passes its own socket here — the pin has its own. */
+  function steerFrameSender(sid: string): (frame: unknown) => void {
+    return (frame) => {
+      socketsRef.current[sid]?.send(JSON.stringify(frame));
+    };
   }
 
   /** Re-send every queued entry as `steer` — done right before we resume a
    *  parked turn, so an entry stashed in the segment that parked is not lost.
    *  Safe to repeat: server-side enqueue replaces by steer_id (design §3.2). */
   function requeueSteersOnResume(sid: string) {
-    for (const item of steerQueueRef.current[sid] ?? []) sendSteer(sid, item);
+    steerQ.onResume(sid, steerFrameSender(sid));
   }
 
   /** ⏹ means stop: hand what is still queued back to the composer — multi-line,
    *  in order, ABOVE whatever is already typed (the ↑ recall's placement) —
    *  rather than silently discarding what the user wrote (design §4.1). */
   function recallSteers(sid: string) {
-    const items = steerQueueRef.current[sid] ?? [];
+    const items = steerQ.recall(sid);
     if (!items.length) return;
-    setSteerQueueFor(sid, []);
     const recalled = items.map((i) => i.text).join("\n");
     // Attachments come back too — a recalled steer must not lose its pictures
     // or file chips (the whole reason they are kept on the entry, brief §5.1).
@@ -2484,10 +2387,11 @@ export function ChatStream({
    *  still queued, Claude Code sends only the oldest as the next turn"). The
    *  rest stay queued and follow the same rule on that turn's end (design §3.3). */
   function flushSteerQueue(sid: string) {
-    const items = steerQueueRef.current[sid] ?? [];
-    if (!items.length) return;
-    const [head, ...rest] = items;
-    setSteerQueueFor(sid, rest);
+    // Pop the oldest out of the queue (the shared hook owns the ref write), then
+    // promote it to the next turn here — turning it into a turn is this window's
+    // concern, not the queue's.
+    const head = steerQ.takeOldest(sid);
+    if (!head) return;
     attemptSend(sid, {
       text: head.text,
       // The entry's attachments ride the invoke that becomes the next turn —
@@ -2501,19 +2405,17 @@ export function ChatStream({
 
   /** History is authoritative: a steer_id it carries was absorbed even if the
    *  ack was lost to a socket drop, so drop those entries instead of re-sending
-   *  them. This is what keeps delivery exactly-once (design §3.3). */
+   *  them. This is what keeps delivery exactly-once (design §3.3). The history
+   *  scan stays here (it reads this window's mapped bubbles); the hook does the
+   *  queue write. */
   function dropAbsorbedSteers(sid: string, mapped: ChatMsg[]) {
-    const items = steerQueueRef.current[sid] ?? [];
-    if (!items.length) return;
     const absorbed = new Set<string>();
     for (const m of mapped) {
       for (const b of m.blocks) {
         if (b.kind === "steer" && b.steerId) absorbed.add(b.steerId);
       }
     }
-    if (!absorbed.size) return;
-    const next = items.filter((i) => !absorbed.has(i.steerId));
-    if (next.length !== items.length) setSteerQueueFor(sid, next);
+    if (absorbed.size) steerQ.remove(sid, absorbed);
   }
 
   /** The pending ask_user card of the displayed session, if any. */
@@ -3101,17 +3003,17 @@ export function ChatStream({
                 ))}
               </div>
             )}
-            {session && steerQueue.length > 0 && (
+            {session && steerItems.length > 0 && (
               // Queue bar (design §4.1): what the user typed into a running turn,
               // waiting for the next superstep to absorb it. Ordered, single-line,
               // removable, and recallable with ↑ — Claude Code's shape.
               <div className="mb-1 rounded-lg border border-line bg-card2/60 px-2 py-1.5">
                 <div className="flex items-center justify-between px-0.5 pb-1 text-[10px] text-muted">
-                  <span>待发送 ({steerQueue.length})</span>
+                  <span>待发送 ({steerItems.length})</span>
                   <span className="text-faint">↑ 取回编辑</span>
                 </div>
                 <ol className="space-y-0.5">
-                  {steerQueue.map((it, i) => (
+                  {steerItems.map((it, i) => (
                     <li
                       key={it.steerId}
                       className="group flex items-start gap-1.5 px-0.5 text-xs text-txt"
@@ -3208,7 +3110,7 @@ export function ChatStream({
                 // one per line, in order (Claude Code's "take back what you
                 // queued"). Guarded on empty input so it never steals the caret
                 // when there is text to navigate.
-                if (e.key === "ArrowUp" && !composing && !input && session && steerQueue.length > 0) {
+                if (e.key === "ArrowUp" && !composing && !input && session && steerItems.length > 0) {
                   e.preventDefault();
                   recallSteers(session.id);
                   return;

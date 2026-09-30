@@ -5,22 +5,35 @@
  * (docs/floating-window-design.md §2.4 / §4 Phase 3).
  *
  * A deliberately lightweight sibling of ChatStream: ONE session per mount
- * (the parent keys the component by session id), the 13-event WS subset, and
- * text-only sends. The wire protocol is 100% unchanged — the runtime already
- * broadcasts every turn to ALL sockets of a session, so the pin window and
- * the main window can watch (and answer permission prompts for) the same
- * turn; `_PENDING_RESUME` dedupes the responses.
+ * (the parent keys the component by session id) and the 13-event WS subset.
+ * The wire protocol is 100% unchanged — the runtime already broadcasts every
+ * turn to ALL sockets of a session, so the pin window and the main window can
+ * watch (and answer permission prompts for) the same turn; `_PENDING_RESUME`
+ * dedupes the responses.
  *
  * Deliberate duplication over abstraction: applyBlock / socket lifecycle
  * mirror ChatStream's semantics (3s reconnect, 20s ping, 45s silence close,
  * post-reconnect `turn_state` probe with a 6s reconcile fallback) without
  * touching the 3400-line monolith.
+ *
+ * NOT duplicated: the steer queue and the composer's attachment plumbing come
+ * from the shared modules (`lib/steerQueue`, `lib/composerAttachments`) — a
+ * third copy of the ack-timing-sensitive queue is exactly what we are not
+ * doing (steer-queue-shared-brief §1).
  */
 
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, ArrowUp, Loader2, RotateCcw, Square } from "lucide-react";
+import { AlertCircle, ArrowUp, Loader2, Paperclip, RotateCcw, Square, X } from "lucide-react";
 import { getSessionHistory, openSessionSocket } from "@/lib/runtime";
 import { loadToolLabels, toolLabel } from "@/lib/toolLabels";
+import { useSteerQueue, type SteerItem } from "@/lib/steerQueue";
+import {
+  readImage,
+  uploadDoc,
+  isImageFile,
+  type ComposerImage,
+  type ComposerFile,
+} from "@/lib/composerAttachments";
 import {
   ContextBlocks,
   InnerBlocks,
@@ -201,8 +214,36 @@ export function PinStream({
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting">("connecting");
   const [input, setInput] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
+  // Composer attachments. Images ride the turn as base64 (multimodal); docs are
+  // uploaded to the sidecar first and referenced by registry id.
+  const [images, setImages] = useState<ComposerImage[]>([]);
+  const [files, setFiles] = useState<ComposerFile[]>([]);
+  /** readImage() in flight — `images` lags until it resolves, so sending now
+   *  would silently drop the picture (the main window's original bug). */
+  const [imagesReading, setImagesReading] = useState(0);
+  /** Transient, visible composer feedback for a blocked send (never a silent
+   *  no-op — brief §4.3). Auto-clears; the ⏹-hint strip is the same slot. */
+  const [hint, setHint] = useState<string | null>(null);
+
+  // Shared steer queue (brief §3.1): the pin owns only how it is DISPLAYED
+  // (a compact `⏳ 待注入 N` line) and where a recalled entry goes (back into
+  // this composer). Acks, re-sends and the flush-on-turn-end live in the hook.
+  const steer = useSteerQueue();
+  // Socket callbacks outlive renders (the socket is created once per mount), so
+  // they read the hook through a ref: whatever memoisation Q chose, the pin
+  // never calls a stale queue API.
+  const steerRef = useRef(steer);
+  useEffect(() => {
+    steerRef.current = steer;
+  });
+  const steerItems = steer.itemsFor(sessionId);
 
   const sockRef = useRef<WebSocket | null>(null);
+  // The turn the composer is writing into; "" lets the server use its own
+  // running-turn id (SteerItem.turnId contract).
+  const turnIdRef = useRef("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveRef = useRef<string | null>(null);
   const busyRef = useRef(false);
   const reconnRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -265,6 +306,9 @@ export function PinStream({
     setLiveId(null);
     busyRef.current = false;
     setBusy(false);
+    // No live turn → the next steer has no turn to ride (mirrors ChatStream's
+    // liveTurnIdFor returning "").
+    turnIdRef.current = "";
     setMessages((prev) => {
       let next = prev;
       if (id) {
@@ -305,7 +349,51 @@ export function PinStream({
       });
   }
 
+  /** Park an absorbed steer in the live bubble as a `steer` band. The hook
+   *  drops the entry from the queue when it sees `steer.absorbed`, so the entry
+   *  is captured BEFORE delegating; the band itself is display, which brief
+   *  §3.1 leaves to the caller (blocks.tsx already renders `kind: "steer"`). */
+  function appendSteerBand(entry: SteerItem, ev: { [k: string]: unknown }) {
+    const id = ensureLive();
+    const band: Block = {
+      kind: "steer",
+      text: entry.text,
+      steerId: entry.steerId,
+      injectedAt: Number(ev.injected_at) || Math.floor(Date.now() / 1000),
+      ...(entry.images.length
+        ? { images: entry.images.map((a) => ({ name: a.name, url: a.preview })) }
+        : {}),
+      ...(entry.files.length
+        ? {
+            files: entry.files.map((f) => ({
+              id: f.id,
+              name: f.name,
+              path: f.path,
+              kind: f.kind,
+            })),
+          }
+        : {}),
+    };
+    setMessages((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, blocks: [...m.blocks, band] } : m)),
+    );
+  }
+
   function handle(ev: { event: string; [k: string]: unknown }) {
+    // Every frame is fed to the shared queue: it owns the steer acks (and only
+    // those two events — it returns false for the rest). The pin deliberately
+    // does NOT early-return on its `true` ("this event is the queue's"): the
+    // hook only ever touches its own queue state, never this component's
+    // messages, so both can observe the frame.
+    // steer.absorbed: the hook drops the entry, so capture it first — the band
+    // is display, which brief §3.1 leaves to the caller.
+    const absorbedEntry =
+      ev.event === "steer.absorbed" && ev.steer_id
+        ? steerRef.current.itemsFor(sessionId).find((i) => i.steerId === ev.steer_id)
+        : undefined;
+    steerRef.current.handleEvent(ev, sessionId);
+    if (absorbedEntry) appendSteerBand(absorbedEntry, ev);
+
     switch (ev.event) {
       case "turn.start": {
         busyRef.current = true;
@@ -313,6 +401,9 @@ export function PinStream({
         setSendError(null);
         const id = ensureLive();
         const srvTurn = ev.turn_id as string | undefined;
+        // The server's turn id: a queued steer rides this turn (the pin keeps
+        // no per-session turn map — one session per mount).
+        if (srvTurn) turnIdRef.current = srvTurn;
         setMessages((prev) =>
           prev.map((m) => (m.id === id && srvTurn ? { ...m, turnId: srvTurn } : m)),
         );
@@ -372,8 +463,16 @@ export function PinStream({
         // The turn is over — any parked prompt is moot (it may even have been
         // answered from the main window; `_PENDING_RESUME` dedupes server-side).
         setPermission(null);
+        // Still-queued entries were never absorbed: the oldest becomes the next
+        // turn (design §3.3), the rest follow on that turn's end.
+        flushSteerQueue();
         break;
       case "turn.stopped":
+        // ⏹ means stop: hand anything queued for absorption back to the
+        // composer — text AND attachments — instead of discarding it. Done in
+        // the event (like ChatStream) so a stop issued from the main window
+        // recalls here too.
+        recallSteers();
         closeLive(true);
         setPermission(null);
         break;
@@ -391,6 +490,9 @@ export function PinStream({
             retryText: lastUserTextRef.current ?? undefined,
           },
         ]);
+        // The turn died with entries still unacknowledged → the oldest becomes
+        // the next turn, same rule as a normal end (design §3.3).
+        flushSteerQueue();
         break;
       }
       default:
@@ -420,6 +522,9 @@ export function PinStream({
       setWsStatus("live");
       setSendError(null);
       lastSeenRef.current = Date.now();
+      // Re-send what is still queued (brief §3.1): a reconnect is exactly when
+      // an entry stashed into a dropped socket would otherwise be lost.
+      steerRef.current.onResume(sessionId, sendFrame);
       if (liveRef.current || busyRef.current) {
         // Remounted mid-turn: ask whether the turn still exists; if the
         // server never answers (older runtime), reconcile from history.
@@ -507,7 +612,9 @@ export function PinStream({
       if (pingRef.current) clearInterval(pingRef.current);
       if (watchRef.current) clearInterval(watchRef.current);
       if (reconcileRef.current) clearTimeout(reconcileRef.current);
+      if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
       reconnRef.current = pingRef.current = watchRef.current = reconcileRef.current = null;
+      hintTimerRef.current = null;
       const sock = sockRef.current;
       sockRef.current = null; // detach first: onclose must not schedule a reconnect
       if (sock) {
@@ -532,13 +639,142 @@ export function PinStream({
     stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
   }
 
-  function sendText(raw: string) {
-    const text = raw.trim();
-    if (!text || busyRef.current) return;
+  /** Transient, visible composer feedback (never a silent no-op). */
+  function showHint(msg: string) {
+    setHint(msg);
+    if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
+    hintTimerRef.current = setTimeout(() => setHint(null), 4000);
+  }
+
+  /** Raw-frame sender handed to the shared queue — the pin's own socket
+   *  (brief §3.1: `send` is per-window). A dead socket is reported, not
+   *  swallowed: the entry stays queued and rides the next turn / reconnect. */
+  function sendFrame(frame: unknown) {
     const sock = sockRef.current;
     if (!sock || sock.readyState !== WebSocket.OPEN) {
-      // No silent no-op: tell the user and KEEP the input (the reconnect
-      // loop runs in the background; they can press Enter again).
+      setSendError("连接未就绪，正在重连…");
+      return;
+    }
+    try {
+      sock.send(JSON.stringify(frame));
+    } catch {
+      setSendError("发送失败，请重试");
+    }
+  }
+
+  /** ⏹ recall: put what is still queued back into THIS composer — text (in
+   *  order, above whatever is typed) and the attachments that rode the entry,
+   *  which would otherwise be lost silently (brief §4.4 / design §4.1). */
+  function recallSteers() {
+    const recalled = steerRef.current.recall(sessionId);
+    if (!recalled.length) return;
+    const joined = recalled.map((i) => i.text).join("\n");
+    if (joined) setInput((cur) => (cur ? `${joined}\n${cur}` : joined));
+    const imgs = recalled.flatMap((i) => i.images);
+    const fs = recalled.flatMap((i) => i.files);
+    if (imgs.length) setImages((a) => [...imgs, ...a]);
+    if (fs.length) setFiles((a) => [...fs, ...a]);
+  }
+
+  /** 📎 picker → read/compress images, upload docs. No drag & drop and no
+   *  clipboard paste here (user decision, brief §4.1). */
+  async function addFiles(list: FileList | File[] | null) {
+    if (!list?.length) return;
+    const arr = Array.from(list);
+    const imgs = arr.filter(isImageFile);
+    const docs = arr.filter((f) => !isImageFile(f));
+    if (imgs.length) {
+      // Bracket the async read so sendText() can gate on it (see imagesReading).
+      setImagesReading((n) => n + 1);
+      try {
+        const items = await Promise.all(imgs.map((f) => readImage(f)));
+        const ok = items.filter((x): x is ComposerImage => !!x);
+        if (ok.length) setImages((a) => [...a, ...ok]);
+      } catch {
+        showHint("图片读取失败，请重试");
+      } finally {
+        setImagesReading((n) => Math.max(0, n - 1));
+      }
+    }
+    for (const f of docs) {
+      // Optimistic chip (uploading) for instant feedback; uploadDoc() resolves
+      // to the registered entry. The pin always has a session, so docs upload
+      // immediately — no deferred-until-created path is needed.
+      const tmpId = `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      setFiles((a) => [...a, { id: tmpId, name: f.name, path: "", kind: "", uploading: true }]);
+      try {
+        const entry = await uploadDoc(sessionId, f);
+        setFiles((a) => a.map((x) => (x.id === tmpId ? { ...entry } : x)));
+      } catch {
+        setFiles((a) => a.filter((x) => x.id !== tmpId));
+        showHint(`附件上传失败：${f.name}`);
+      }
+    }
+  }
+
+  function sendText(raw: string) {
+    const text = raw.trim();
+    const readyFiles = files.filter((f) => !f.uploading);
+    // ── in-flight gate (brief §4.3). Both halves used to be a silent return in
+    // the main window and read as a dead send button; say why instead. ──
+    if (imagesReading > 0) {
+      showHint("注意：图片处理中，请稍候再发送");
+      return;
+    }
+    if (readyFiles.length !== files.length) {
+      showHint("注意：文件上传中，请稍候再发送");
+      return;
+    }
+    if (!text && images.length === 0 && readyFiles.length === 0) return;
+
+    if (busyRef.current) {
+      // A turn is running → this is a mid-turn injection, not a new turn: the
+      // shared queue owns the frame, the acks and the re-sends. Text AND
+      // attachments ride the steer (brief §4.4); an empty-text steer is legal.
+      steerRef.current.enqueue({
+        sessionId,
+        turnId: turnIdRef.current,
+        text,
+        images,
+        files: readyFiles,
+        send: sendFrame,
+      });
+      setInput("");
+      setImages([]);
+      setFiles([]);
+      requestAnimationFrame(() => {
+        if (textareaRef.current) textareaRef.current.style.height = "auto";
+      });
+      return;
+    }
+
+    postTurn(text, images, readyFiles);
+  }
+
+  /** Post one real turn. Called by the composer AND by the queue's flush (the
+   *  turn ended with an entry still unacknowledged → the OLDEST becomes the
+   *  next turn, design §3.3). The socket check lives here so both callers get
+   *  the same no-silent-loss treatment.
+   *
+   *  `fromQueue`: a flushed entry has ALREADY left the queue, so a dead socket
+   *  must put it back into the composer or it is gone. The composer's own send
+   *  needs no such restore — nothing was cleared yet, and re-appending the text
+   *  on top of itself would duplicate the input. */
+  function postTurn(
+    text: string,
+    imgs: ComposerImage[],
+    readyFiles: ComposerFile[],
+    fromQueue = false,
+  ) {
+    const sock = sockRef.current;
+    if (!sock || sock.readyState !== WebSocket.OPEN) {
+      // No silent no-op: tell the user and keep the content (the reconnect loop
+      // runs in the background; they can press Enter again).
+      if (fromQueue) {
+        if (text) setInput((cur) => (cur ? `${text}\n${cur}` : text));
+        if (imgs.length) setImages((a) => [...imgs, ...a]);
+        if (readyFiles.length) setFiles((a) => [...readyFiles, ...a]);
+      }
       setSendError("连接未就绪，正在重连…");
       return;
     }
@@ -546,6 +782,7 @@ export function PinStream({
     const uid = mid();
     const lid = mid();
     lastUserTextRef.current = text;
+    turnIdRef.current = turnId;
     busyRef.current = true;
     setBusy(true);
     liveRef.current = lid;
@@ -553,10 +790,27 @@ export function PinStream({
     setSendError(null);
     setMessages((prev) => [
       ...prev,
-      { id: uid, role: "user", blocks: [{ kind: "text", text }], turnId },
+      {
+        id: uid,
+        role: "user",
+        blocks: [
+          ...readyFiles.map((f) => ({
+            kind: "file" as const,
+            fileId: f.id,
+            name: f.name,
+            path: f.path,
+            fileKind: f.kind,
+          })),
+          ...imgs.map((a) => ({ kind: "image" as const, url: a.preview })),
+          ...(text ? [{ kind: "text" as const, text }] : []),
+        ],
+        turnId,
+      },
       { id: lid, role: "assistant", blocks: [] },
     ]);
     setInput("");
+    setImages([]);
+    setFiles([]);
     requestAnimationFrame(() => {
       if (textareaRef.current) textareaRef.current.style.height = "auto";
     });
@@ -567,8 +821,8 @@ export function PinStream({
           message: text,
           agent_id: null,
           turn_id: turnId,
-          images: [],
-          files: [],
+          images: imgs.map((a) => ({ data: a.data, media_type: a.mediaType })),
+          files: readyFiles.map((f) => ({ id: f.id, name: f.name, path: f.path })),
         }),
       );
     } catch {
@@ -577,10 +831,24 @@ export function PinStream({
       setBusy(false);
       liveRef.current = null;
       setLiveId(null);
+      turnIdRef.current = "";
       setMessages((prev) => prev.filter((m) => m.id !== lid && m.id !== uid));
-      setInput(text);
+      // Hand text and attachments back — a failed send must not eat them.
+      if (text) setInput((cur) => (cur ? `${text}\n${cur}` : text));
+      if (imgs.length) setImages((a) => [...imgs, ...a]);
+      if (readyFiles.length) setFiles((a) => [...readyFiles, ...a]);
       setSendError("发送失败，请重试");
     }
+  }
+
+  /** The turn ended (or died) with entries still unacknowledged: promote the
+   *  OLDEST to the next turn — Claude Code's rule verbatim, same as ChatStream
+   *  (design §3.3). The hook pops the head; SENDING it is the caller's half
+   *  (the hook has no socket). Attachments ride it, or they would be lost. */
+  function flushSteerQueue() {
+    const head = steerRef.current.takeOldest(sessionId);
+    if (!head) return;
+    postTurn(head.text, head.images, head.files, true);
   }
 
   function stopTurn() {
@@ -592,6 +860,11 @@ export function PinStream({
   }
 
   function respond(decision: "allow" | "deny") {
+    // Anything still queued belongs to this turn: re-send it as `steer` BEFORE
+    // the resume, so the resumed segment absorbs it (same rule as ChatStream's
+    // respond — idempotent by steer_id server-side). The pin has no
+    // change-of-mind/deny-and-steer path; only the re-send rule is mirrored.
+    steerRef.current.onResume(sessionId, sendFrame);
     try {
       sockRef.current?.send(JSON.stringify({ type: "permission_response", decision }));
     } catch {
@@ -616,6 +889,8 @@ export function PinStream({
   }
 
   const connecting = wsStatus !== "live";
+  // A text-less send is legal when an attachment rides along (brief §3.3).
+  const canSend = !!input.trim() || images.length > 0 || files.length > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -709,15 +984,87 @@ export function PinStream({
       )}
 
       {/* connection / send hint strip */}
-      {(connecting || sendError) && (
+      {(connecting || sendError || hint) && (
         <div className="flex items-center gap-1.5 px-3 pb-1 text-[11px] text-faint">
           {connecting && <Loader2 className="h-3 w-3 animate-spin" />}
-          {sendError ?? (wsStatus === "reconnecting" ? "连接断开，重连中…" : "连接中…")}
+          {sendError ?? hint ?? (wsStatus === "reconnecting" ? "连接断开，重连中…" : "连接中…")}
         </div>
       )}
 
       {/* composer */}
       <div className="border-t border-line px-2.5 py-2">
+        {/* attachments — same chip look as the main composer, sized for the pin */}
+        {images.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {images.map((a, i) => (
+              <div key={i} className="group relative">
+                <img
+                  src={a.preview}
+                  alt={a.name ?? "图片"}
+                  title={a.name ?? "图片"}
+                  className="h-10 w-10 rounded-lg border border-line object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={() => setImages((l) => l.filter((_, j) => j !== i))}
+                  aria-label={`移除 ${a.name ?? "图片"}`}
+                  className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {files.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1.5">
+            {files.map((f, i) => (
+              <div
+                key={f.id}
+                className="group relative flex items-center gap-1 rounded-lg border border-line bg-card2 px-2 py-1 text-[11px] text-txt"
+              >
+                <Paperclip className="h-3 w-3 shrink-0 text-faint" />
+                <span className="max-w-[130px] truncate" title={f.name}>
+                  {f.name}
+                </span>
+                {f.uploading && <span className="text-faint">上传中…</span>}
+                <button
+                  type="button"
+                  onClick={() => setFiles((l) => l.filter((_, j) => j !== i))}
+                  aria-label={`移除 ${f.name}`}
+                  className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {imagesReading > 0 && (
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-faint">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            图片处理中…
+          </div>
+        )}
+        {steerItems.length > 0 && (
+          // Compact queue badge — the main window's full queue bar is too wide
+          // for the pin (brief §4.4). Details live in the tooltip; ⏹ takes them
+          // back.
+          <div
+            className="mb-1.5 flex items-center gap-1.5 px-0.5 text-[11px] text-muted"
+            title={`待注入 ${steerItems.length} 条 · 停止可取回\n${steerItems
+              .map((it) => it.text || "（仅附件）")
+              .join("\n")}`}
+          >
+            {steerItems.some((it) => it.status === "sending") ? (
+              <Loader2 className="h-3 w-3 shrink-0 animate-spin text-faint" />
+            ) : (
+              <span className="shrink-0">⏳</span>
+            )}
+            <span className="truncate">待注入 {steerItems.length}</span>
+            <span className="shrink-0 text-faint">停止可取回</span>
+          </div>
+        )}
         <div className="flex items-end gap-1.5 rounded-xl border border-line2 bg-card px-2.5 py-1.5 transition-colors focus-within:border-violet/60">
           <textarea
             ref={textareaRef}
@@ -729,7 +1076,40 @@ export function PinStream({
             placeholder="问点什么…（Enter 发送，Esc 收起）"
             className="max-h-28 min-h-[24px] flex-1 resize-none bg-transparent text-[13px] leading-6 text-txt outline-none placeholder:text-faint"
           />
-          {busy ? (
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,.xlsx,.xls,.xlsm,.csv,.tsv,.docx,.pptx,.pdf,.json,.xml,.txt,.md"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              void addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          {/* The pin is always mounted with a session (PinApp renders it keyed
+              by activeId), so the picker never has to create one. */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            title="添加附件（图片 / Excel / Word / PPT / PDF）"
+            aria-label="添加附件"
+            className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-faint transition-colors hover:bg-card2 hover:text-muted"
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+          </button>
+          {/* Send stays available while busy: that is the mid-turn injection
+              (brief §4.4), and hiding it behind Enter made it undiscoverable. */}
+          <button
+            type="button"
+            onClick={() => sendText(input)}
+            disabled={!canSend}
+            title={busy ? "注入本轮（Enter）" : "发送"}
+            className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-30"
+          >
+            <ArrowUp className="h-3.5 w-3.5" />
+          </button>
+          {busy && (
             <button
               type="button"
               onClick={stopTurn}
@@ -737,16 +1117,6 @@ export function PinStream({
               className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-red/15 text-red transition-colors hover:bg-red/25"
             >
               <Square className="h-3 w-3" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => sendText(input)}
-              disabled={!input.trim()}
-              title="发送"
-              className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-30"
-            >
-              <ArrowUp className="h-3.5 w-3.5" />
             </button>
           )}
         </div>
