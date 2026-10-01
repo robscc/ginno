@@ -59,10 +59,15 @@ def _clean_subagent_state():
         server_shared._TURN_STOP,
         server_shared._TURN_TASKS,
         sched._FINALIZING,
+        sched._PENDING_INJECTIONS,
+        sched._INJECTION_WAKING,
     )
     for r in regs:
         r.clear()
     yield
+    for t in list(sched._INJECTION_FLUSH_TASKS.values()):
+        t.cancel()
+    sched._INJECTION_FLUSH_TASKS.clear()
     for r in regs:
         r.clear()
 
@@ -165,7 +170,7 @@ async def test_spawn_creates_child_meta_brief_and_event(
         parent_session, "调研 OAuth 库", constraints="只读", acceptance="给出选型结论"
     )
     assert res["ok"] and res["depth"] == 0
-    await asyncio.sleep(0)  # let the spawn_bg turn task (faked) run
+    await _ticks()  # let the spawn_bg turn task (faked) run
     child = res["session_id"]
 
     meta, _ = sched._find_meta(child)
@@ -264,7 +269,7 @@ async def test_gate_last_descendant_done_finalizes_the_whole_chain(
 
     # the last descendant finishes: done + its result wakes the waiting parent
     await sched.on_turn_settled("G")
-    await asyncio.sleep(0)  # let the spawn_bg wake task run
+    await _ticks()  # let the spawn_bg wake task run
     gmeta, _ = sched._find_meta("G")
     assert gmeta["subagent"]["status"] == "done"
     assert gmeta["subagent"]["result_summary"]  # fallback summary, still set
@@ -277,7 +282,7 @@ async def test_gate_last_descendant_done_finalizes_the_whole_chain(
     # the woken parent finishes its wrap-up turn: now it is really done and
     # ITS result flows up to the main conversation
     await sched.on_turn_settled("C")
-    await asyncio.sleep(0)
+    await _ticks()
     cmeta, _ = sched._find_meta("C")
     assert cmeta["subagent"]["status"] == "done"
     assert len(capture["wakes"]) == 2
@@ -337,7 +342,7 @@ async def test_failed_turn_reports_failure_without_summary(isolated_home, captur
     ]
     assert status and status[0]["status"] == "failed" and "Boom" in status[0]["error"]
     # failure notice rides the wake channel (P idle), clearly NOT a summary
-    await asyncio.sleep(0)
+    await _ticks()
     assert capture["wakes"] and "失败" in capture["wakes"][0][1]
 
 
@@ -346,7 +351,7 @@ async def test_all_descendants_stopped_wakes_waiting_parent(isolated_home, captu
     _put_meta(_sub_meta("G2", parent="C2", depth=1, status="stopped"))
 
     await sched._reevaluate_waiting_parent("C2")
-    await asyncio.sleep(0)
+    await _ticks()
     # design §5.6 anti-starvation: the waiting parent gets one wrap-up wake
     assert capture["wakes"] and capture["wakes"][0][0] == "C2"
     assert "均已被用户停止" in capture["wakes"][0][1]
@@ -516,7 +521,7 @@ async def test_reconcile_redelivers_unabsorbed_subagent_injection(
     )
     n = sched.reconcile_stash_injections("RP")
     assert n == 1
-    await asyncio.sleep(0)  # let the spawn_bg wake task run
+    await _ticks()  # let the spawn_bg wake task run
     assert len(capture["wakes"]) == 1
     pid, text, extra = capture["wakes"][0]
     assert pid == "RP" and 'session="RC"' in text
@@ -531,7 +536,7 @@ async def test_settle_hook_reconciles_restashed_injection(isolated_home, capture
     by the settle-side reconciliation instead of sitting in the stash forever."""
     _stash_injection("SP", "SC")
     await sched.on_turn_settled("SP")  # main conversation — only reconcile runs
-    await asyncio.sleep(0)
+    await _ticks()
     assert capture["wakes"] and capture["wakes"][0][0] == "SP"
     assert server_shared._STEER_STASH.get("SP") is None
 
@@ -560,7 +565,7 @@ async def test_parked_stop_reconciles_before_steer_clear(
         {"graph": None, "project_slug": SLUG}, "PP", "turn-pp"
     )
     assert redelivered == ["PP"]
-    await asyncio.sleep(0)
+    await _ticks()
     assert capture["wakes"] and capture["wakes"][0][0] == "PP"
 
 
@@ -572,7 +577,7 @@ async def test_mixed_terminal_descendants_wake_waiting_parent(isolated_home, cap
     _put_meta(_sub_meta("MS", parent="MP", depth=0, status="stopped"))
 
     await sched._reevaluate_waiting_parent("MP")
-    await asyncio.sleep(0)
+    await _ticks()
     assert capture["wakes"] and capture["wakes"][0][0] == "MP"
     assert "已被用户停止" in capture["wakes"][0][1]
 
@@ -584,7 +589,7 @@ async def test_all_done_descendants_do_not_double_wake(isolated_home, capture):
     _put_meta(_sub_meta("ND1", parent="NP", depth=0, status="done"))
     _put_meta(_sub_meta("ND2", parent="NP", depth=0, status="failed"))
     await sched._reevaluate_waiting_parent("NP")
-    await asyncio.sleep(0)
+    await _ticks()
     assert capture["wakes"] == []
 
 
@@ -595,7 +600,7 @@ async def test_result_not_injected_into_terminal_parent(isolated_home, capture):
     _put_meta(_sub_meta("TC", parent="TP", depth=1, status="running"))
 
     await sched.on_turn_settled("TC")
-    await asyncio.sleep(0)
+    await _ticks()
     meta, _ = sched._find_meta("TC")
     assert meta["subagent"]["status"] == "done"  # the child itself finalizes
     assert capture["wakes"] == []
@@ -676,7 +681,7 @@ async def test_delete_live_child_wakes_waiting_parent(isolated_home, capture):
     await sched.finalize_for_delete("WC5")
     meta, _ = sched._find_meta("WC5")
     assert meta["subagent"]["status"] == "stopped"
-    await asyncio.sleep(0)
+    await _ticks()
     assert capture["wakes"] and capture["wakes"][0][0] == "WP5"
 
 
@@ -691,7 +696,7 @@ async def test_delete_waiting_parent_reevaluates_its_ancestor(
     _put_meta(_sub_meta("K6", parent="W6", depth=2, status="done"))
 
     await sched.finalize_for_delete("W6")
-    await asyncio.sleep(0)
+    await _ticks()
     wmeta, _ = sched._find_meta("W6")
     assert wmeta["subagent"]["status"] == "stopped"
     assert capture["wakes"] and capture["wakes"][0][0] == "GP6"
@@ -853,6 +858,14 @@ async def _drain(state: dict, timeout_s: float = 5.0) -> None:
         if snap == seen:
             return
         seen = snap
+
+
+async def _ticks(n: int = 6) -> None:
+    """Pump the loop a few turns — the merged-injection queue added an async
+    hop (queue -> flush -> wake), so a single sleep(0) no longer reaches the
+    wake in tests."""
+    for _ in range(n):
+        await asyncio.sleep(0)
 
 
 def _stream_count(state: dict, sid: str) -> int:
@@ -1076,7 +1089,7 @@ def yielding_push(monkeypatch):
         state["sent"].append((session_id, event, data))
         for hook in list(hooks):
             await hook(session_id, event, data)
-        await asyncio.sleep(0)  # the real WS send always suspends
+        await _ticks()  # the real WS send always suspends
 
     monkeypatch.setattr(sched, "_push_session_event", push)
     monkeypatch.setattr(stream_mod, "_push_session_event", push)
@@ -1292,7 +1305,7 @@ async def test_concurrent_settles_finalize_once(isolated_home, capture, monkeypa
     await sched.on_turn_settled("DC")  # the racing second gate
     release.set()
     await first
-    await asyncio.sleep(0)  # let the spawn_bg wake run
+    await _ticks()  # let the spawn_bg wake run
 
     # count frames DELIVERED TO the parent (push_both also sends one to the
     # child's own sockets — see _status_events)
@@ -1381,3 +1394,49 @@ async def test_turn_recursion_limit_sources(monkeypatch, isolated_home):
 
     monkeypatch.setenv("GINNO_RECURSION_LIMIT", "5000")
     assert engine.turn_recursion_limit() == 1000
+
+
+async def test_idle_injections_coalesce_into_one_wake(monkeypatch, isolated_home, fake_stream):
+    """Merged injection (open question 3, revised): two children of an idle
+    MAIN parent finish back-to-back while a third is still live — the results
+    must arrive as ONE wake turn carrying both, not two piecemeal summaries
+    (pre-fix: each result woke the parent separately)."""
+    monkeypatch.setattr(sched, "INJECTION_COALESCE_S", 0.01)
+    _put_meta(_sub_meta("ROOT"))
+    _put_meta(_sub_meta("C1", parent="ROOT", depth=0, status="done"))
+    _put_meta(_sub_meta("C2", parent="ROOT", depth=0, status="done"))
+    _put_meta(_sub_meta("C3", parent="ROOT", depth=0, status="running"))
+    server_shared._SESSIONS["ROOT"] = _sess("ROOT")
+
+    # C3 live → first injection takes the coalesce timer, second rides it.
+    await sched._inject_result("ROOT", sched.format_subagent_result("C1", "g1", "结论 A"), "C1")
+    await sched._inject_result("ROOT", sched.format_subagent_result("C2", "g2", "结论 B"), "C2")
+    await _drain(fake_stream, timeout_s=3.0)
+
+    # C3 still running → only the timer flush happened: ONE merged wake.
+    assert _stream_count(fake_stream, "ROOT") == 1
+    wake_text = next(t for s, t in fake_stream["streams"] if s == "ROOT")
+    assert "结论 A" in wake_text and "结论 B" in wake_text
+    assert "2 个子代理的回传" in wake_text
+    assert not sched._PENDING_INJECTIONS.get("ROOT")
+
+
+async def test_flush_routes_to_steer_when_parent_went_live(monkeypatch, isolated_home, fake_stream):
+    """A queued flush that finds the parent RUNNING must steer (one entry
+    each) instead of opening a second turn."""
+    monkeypatch.setattr(sched, "INJECTION_COALESCE_S", 0.01)
+    _put_meta(_sub_meta("ROOT"))
+    _put_meta(_sub_meta("C1", parent="ROOT", depth=0, status="done"))
+    _put_meta(_sub_meta("C2", parent="ROOT", depth=0, status="running"))
+    server_shared._SESSIONS["ROOT"] = _sess("ROOT")
+
+    await sched._inject_result("ROOT", sched.format_subagent_result("C1", "g1", "结论 A"), "C1")
+    # The user starts typing before the timer fires.
+    server_shared._RUNNING_TURNS["ROOT"] = "turn-live"
+    await _drain(fake_stream, timeout_s=3.0)
+
+    assert _stream_count(fake_stream, "ROOT") == 0  # no wake turn opened
+    stashed = server_shared._STEER_STASH.get("ROOT") or []
+    assert len(stashed) == 1
+    assert stashed[0]["extra_kwargs"]["ginno_subagent_result"] == "C1"
+    assert stashed[0]["turn_id"] == "turn-live"

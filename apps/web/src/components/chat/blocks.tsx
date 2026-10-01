@@ -216,23 +216,43 @@ export function parseSubagentBrief(
 
 /** 历史重放用：把持久化的注入消息（HumanMessage 原文）折成结果卡片块，
  *  避免原始 XML 标签以用户气泡形式出现在主对话里；子会话的
- *  <ginno_subagent_brief> 简报消息同样折成简报卡片。 */
+ *  <ginno_subagent_brief> 简报消息同样折成简报卡片。合并注入（同一 wake
+ *  turn 携带多个子代理回传）时一条消息里有多个结果标签——全局提取，
+ *  每个标签一张卡片，标签间的合并头文字丢弃。 */
+const SUBAGENT_RESULT_GLOBAL_RE =
+  /<\s*ginno_subagent_result\b([^>]*)>([\s\S]*?)<\s*\/\s*ginno_subagent_result\s*>/gi;
+
 export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
-  return blocks.map((b) => {
-    if (b.kind !== "text") return b;
-    const r = parseSubagentResult(b.text);
-    if (r) {
-      return {
-        kind: "subagent_result",
-        sessionId: r.sessionId,
-        goal: r.goal,
-        summary: r.summary,
-      };
+  const out: Block[] = [];
+  for (const b of blocks) {
+    if (b.kind !== "text" || !b.text.trimStart().startsWith("<")) {
+      out.push(b);
+      continue;
     }
     const br = parseSubagentBrief(b.text);
-    if (br) return { kind: "subagent_brief", ...br };
-    return b;
-  });
+    if (br) {
+      out.push({ kind: "subagent_brief", ...br });
+      continue;
+    }
+    const matches = [...b.text.matchAll(SUBAGENT_RESULT_GLOBAL_RE)];
+    if (!matches.length) {
+      out.push(b);
+      continue;
+    }
+    for (const m of matches) {
+      const attr = (name: string) =>
+        unescapeAttr(
+          new RegExp(`${name}\\s*=\\s*"([^"]*)"`, "i").exec(m[1])?.[1] ?? "",
+        );
+      out.push({
+        kind: "subagent_result",
+        sessionId: attr("session"),
+        goal: attr("goal") || undefined,
+        summary: m[2].trim(),
+      });
+    }
+  }
+  return out;
 }
 
 export type SubagentCardBlock =

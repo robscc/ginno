@@ -26,6 +26,7 @@ import json
 import os
 import time
 import uuid
+from typing import Any
 
 from . import paths
 from . import server_shared
@@ -72,6 +73,20 @@ _RECURSION_WRAP_TEXT = (
     "立即基于已收集的材料输出最终报告：结论 + 证据（来源/文件，编号引用）"
     "+ 与验收标准的逐条对照。材料不足的部分如实写明「未覆盖」，不要编造。"
 )
+
+# ---- merged result injection (design open question 3, revised 2026-10-01) ----
+# Waking an idle parent once PER child result made the main conversation
+# summarize piecemeal in live use (a failed child woke it mid-flight; every
+# later finish woke it again, each wake re-restating partial state). Idle-
+# parent injections now coalesce per parent into ONE wake turn: flush
+# immediately when no live descendants remain (last-result latency is
+# unchanged), else after INJECTION_COALESCE_S. A flush that finds the parent
+# gone live routes through the steer stash instead (the running channel
+# batches at the superstep drain anyway).
+_PENDING_INJECTIONS: dict[str, list[dict]] = {}
+_INJECTION_FLUSH_TASKS: dict[str, asyncio.Task] = {}
+_INJECTION_WAKING: set[str] = set()
+INJECTION_COALESCE_S = 10.0
 
 # P3 contract 4 — soft-budget warning thresholds (notice event, once per
 # session per kind; 软引导，不硬拦).
@@ -1191,9 +1206,108 @@ async def _inject_result(parent_id: str, text: str, child_id: str) -> None:
         )
         _log.info("subagent_result_steer parent=%s child=%s", parent_id, child_id)
     else:
-        spawn_bg(
-            _wake_parent_turn(parent_id, text, {"ginno_subagent_result": child_id})
+        _queue_injection(parent_id, text, child_id)
+
+
+def _queue_injection(parent_id: str, text: str, child_id: str) -> None:
+    """Idle-parent result: coalesce (see the merged-injection note above)."""
+    _PENDING_INJECTIONS.setdefault(parent_id, []).append(
+        {"text": text, "child_id": child_id}
+    )
+    if parent_id in _INJECTION_FLUSH_TASKS:
+        return  # already scheduled — this entry rides the pending flush
+    pfound = _find_meta(parent_id)
+    if not pfound:
+        _PENDING_INJECTIONS.pop(parent_id, None)
+        return
+    if parent_id in _INJECTION_WAKING:
+        # A flush's wake is lifting off (its lock section hasn't registered
+        # _RUNNING_TURNS yet). Don't race it with a second immediate wake —
+        # schedule the timer; by then the parent is live and the flush steers.
+        _INJECTION_FLUSH_TASKS[parent_id] = spawn_bg(
+            _injection_flush_timer(parent_id)
         )
+        return
+    if not _live_descendants(pfound[1], parent_id):
+        spawn_bg(_flush_injections(parent_id))
+        return
+    _INJECTION_FLUSH_TASKS[parent_id] = spawn_bg(_injection_flush_timer(parent_id))
+
+
+async def _injection_flush_timer(parent_id: str) -> None:
+    try:
+        await asyncio.sleep(INJECTION_COALESCE_S)
+    finally:
+        _INJECTION_FLUSH_TASKS.pop(parent_id, None)
+    await _flush_injections(parent_id)
+
+
+async def _flush_injections(parent_id: str) -> None:
+    if parent_id in _INJECTION_WAKING:
+        if parent_id not in _INJECTION_FLUSH_TASKS:
+            _INJECTION_FLUSH_TASKS[parent_id] = spawn_bg(
+                _injection_flush_timer(parent_id)
+            )
+        return
+    entries = _PENDING_INJECTIONS.pop(parent_id, [])
+    if not entries:
+        return
+    pfound = _find_meta(parent_id)
+    if not pfound:
+        _log.info("subagent_inject_dropped_no_meta parent=%s", parent_id)
+        return
+    meta = pfound[0]
+    if _is_subagent(meta) and _subagent_status(meta) in TERMINAL_STATUSES:
+        _log.warning(
+            "subagent_inject_refused_terminal_parent parent=%s children=%s",
+            parent_id, ",".join(e["child_id"] for e in entries),
+        )
+        return
+    task = _TURN_TASKS.get(parent_id)
+    parent_live = parent_id in _RUNNING_TURNS or (
+        task is not None and not task.done()
+    )
+    if parent_live:
+        # The parent went live while the queue waited (user spoke / an
+        # earlier wake won): same shape as _inject_result's running branch,
+        # one stash entry each — the superstep drain batches them.
+        for e in entries:
+            steer_enqueue(
+                parent_id,
+                {
+                    "steer_id": f"subagent-{e['child_id']}-{uuid.uuid4().hex[:8]}",
+                    "turn_id": _RUNNING_TURNS.get(parent_id) or "",
+                    "text": e["text"],
+                    "injected_at": time.time(),
+                    "extra_kwargs": {"ginno_subagent_result": e["child_id"]},
+                },
+            )
+        _log.info(
+            "subagent_result_steer parent=%s children=%s",
+            parent_id, ",".join(e["child_id"] for e in entries),
+        )
+        return
+    texts = [e["text"] for e in entries]
+    ids = ",".join(e["child_id"] for e in entries)
+    merged = texts[0] if len(texts) == 1 else (
+        f"以下是 {len(texts)} 个子代理的回传（结果与失败报告）：\n\n"
+        + "\n\n".join(texts)
+    )
+    _log.info(
+        "subagent_result_wake parent=%s children=%s merged=%d",
+        parent_id, ids, len(entries),
+    )
+    _INJECTION_WAKING.add(parent_id)
+    try:
+        t = spawn_bg(_wake_parent_turn(parent_id, merged, {"ginno_subagent_result": ids}))
+
+        def _wake_done(_f: Any, pid: str = parent_id) -> None:
+            _INJECTION_WAKING.discard(pid)
+
+        t.add_done_callback(_wake_done)
+    except Exception:
+        _INJECTION_WAKING.discard(parent_id)
+        raise
 
 
 async def _wake_parent_turn(
@@ -1381,6 +1495,18 @@ async def _reevaluate_waiting_parent(parent_id: str | None) -> None:
         if not descendants or stopped == len(descendants)
         else "你的部分子任务已被用户停止，其余已完成。请直接收尾：整合已完成子任务的结果，并说明被停止的部分。"
     )
+    # Fold any queued result injections into this wrap-up wake: one turn, one
+    # message (the merged-injection queue owns idle wakes for results).
+    entries = _PENDING_INJECTIONS.pop(parent_id, [])
+    if entries:
+        _t = _INJECTION_FLUSH_TASKS.pop(parent_id, None)
+        if _t is not None:
+            _t.cancel()
+        _log.info(
+            "subagent_inject_merged_into_wrapup parent=%s children=%s",
+            parent_id, ",".join(e["child_id"] for e in entries),
+        )
+        wrap_up = "\n\n".join([e["text"] for e in entries] + [wrap_up])
     spawn_bg(
         _wake_parent_turn(
             parent_id,
