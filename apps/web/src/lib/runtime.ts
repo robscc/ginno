@@ -1619,3 +1619,80 @@ export async function searchCode(
     elapsedMs: r.elapsed_ms ?? 0,
   };
 }
+
+// ---- connectors (connector-module-design.md §5) ----
+
+export type ConnectorStatus =
+  | "not_installed"
+  | "installing"
+  | "connected"
+  | "disconnected"
+  | "error"
+  | "disabled";
+
+export interface ConnectorInfo {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  status: ConnectorStatus;
+  statusDetail: string;
+  version: string | null;
+  capabilities: string[];
+  enabled: boolean;
+  extra?: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  configSchema?: Record<string, unknown>;
+  installSteps?: InstallStep[];
+}
+
+export interface InstallStep {
+  key: string;
+  title: string;
+  body: string;
+  action?: string;   // "reveal_folder"
+  copy?: string;     // value to copy to clipboard
+  waitConnect?: boolean;
+}
+
+export interface ConnectorsPayload {
+  connectors: ConnectorInfo[];
+  aggregateDot: string; // "" | "warn" | "error"
+}
+
+export async function listConnectors(): Promise<ConnectorsPayload> {
+  return json<ConnectorsPayload>(`${BASE}/api/connectors`);
+}
+
+export async function getConnector(id: string): Promise<ConnectorInfo> {
+  return json<ConnectorInfo>(`${BASE}/api/connectors/${encodeURIComponent(id)}`);
+}
+
+export async function patchConnectorConfig(
+  id: string,
+  config: Record<string, unknown>,
+): Promise<{ ok: boolean; config?: Record<string, unknown>; error?: string }> {
+  return json(`${BASE}/api/connectors/${encodeURIComponent(id)}/config`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+}
+
+export async function connectorAction(
+  id: string,
+  action: string,
+  extra: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  return json(`${BASE}/api/connectors/${encodeURIComponent(id)}/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...extra }),
+  });
+}
+
+export async function getHandoffStatus(): Promise<{
+  active: { tabId: string }[];
+}> {
+  return json(`${BASE}/api/connectors/browser/handoff`);
+}

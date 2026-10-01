@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   BookOpen,
+  Cable,
   ChevronDown,
   Settings as SettingsIcon,
   Plus,
@@ -194,6 +195,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onSettings = pathname.startsWith("/settings");
   const onKb = pathname.startsWith("/kb");
   const onWorkflows = pathname.startsWith("/workflows");
+  const onConnectors = pathname.startsWith("/connectors");
+
+  // Connector 聚合状态点(connector-module §2.1):有断连→黄,有错误→红,
+  // 全部正常/未启用→不显示。10s 轮询即可——dot 只是个入口提示。
+  const [connectorDot, setConnectorDot] = useState("");
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const r = await import("@/lib/runtime").then((m) => m.listConnectors());
+        if (alive) setConnectorDot(r.aggregateDot || "");
+      } catch { /* sidecar 未起时静默 */ }
+    };
+    tick();
+    const t = setInterval(tick, 10000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
 
   // Sidebar sessions: activity-day groups, newest activity first. `updated`
   // is bumped per turn server-side, so it tracks last use, not creation.
@@ -710,6 +731,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* footer nav */}
         <div className="border-t border-line px-2.5 py-3">
+          <Link href="/connectors" className={`nav-item ${onConnectors ? "nav-item-active" : ""}`}>
+            <Cable className="h-4 w-4 shrink-0" />
+            <span className="truncate">Connectors</span>
+            {connectorDot === "error" ? (
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-red-500" title="连接器错误" />
+            ) : connectorDot === "warn" ? (
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-yellow-500" title="有连接器未连接" />
+            ) : null}
+          </Link>
           <Link href="/kb" className={`nav-item ${onKb ? "nav-item-active" : ""}`}>
             <BookOpen className="h-4 w-4 shrink-0" />
             <span className="truncate">Knowledge Base</span>
