@@ -274,11 +274,17 @@ def steer_messages(entries: list[dict]) -> list:
         if images:
             kwargs["images"] = images
         blocks = entry.get("content_blocks")
+        # ``extra_kwargs``: machine metadata from SYSTEM-side injections (the
+        # subagent scheduler's result injection rides the same stash; contract:
+        # the persisted HumanMessage carries
+        # additional_kwargs["ginno_subagent_result"] = child_id next to
+        # ``ginno_steer``). User steers never set it, so the shape is unchanged.
+        extra = entry.get("extra_kwargs") or {}
         out.append(
             HumanMessage(
                 content=blocks if isinstance(blocks, list) and blocks else text,
                 id=steer_id,
-                additional_kwargs={"ginno_steer": kwargs},
+                additional_kwargs={"ginno_steer": kwargs, **extra},
             )
         )
         context_text = (entry.get("context_text") or "").strip()
@@ -297,6 +303,43 @@ def steer_messages(entries: list[dict]) -> list:
 # WEAK references to tasks, so an unreferenced create_task() can be garbage
 # collected mid-flight; hold strong refs until done.
 _BG_TASKS: set[Any] = set()
+
+# Subagent parent -> children reverse index (subagent-design.md §4/§5.8). An
+# in-memory mirror of the ``parent_session_id`` links on the session metas
+# (the disk index stays the source of truth — it is what survives restarts);
+# maintained by the session create/delete paths for O(1) child lookups.
+_SESSION_CHILDREN: dict[str, list[str]] = {}
+
+
+def subagent_link_child(parent_id: str, child_id: str) -> None:
+    if parent_id and child_id:
+        lst = _SESSION_CHILDREN.setdefault(parent_id, [])
+        if child_id not in lst:
+            lst.append(child_id)
+
+
+def subagent_unlink_child(parent_id: str | None, child_id: str) -> None:
+    if parent_id and child_id:
+        lst = [c for c in _SESSION_CHILDREN.get(parent_id, []) if c != child_id]
+        if lst:
+            _SESSION_CHILDREN[parent_id] = lst
+        else:
+            _SESSION_CHILDREN.pop(parent_id, None)
+
+
+def subagent_unlink_any(child_id: str) -> None:
+    """Remove a child id from every parent list (the parent id may be unknown
+    at delete time — the meta row is already gone)."""
+    for pid in list(_SESSION_CHILDREN):
+        lst = [c for c in _SESSION_CHILDREN[pid] if c != child_id]
+        if lst:
+            _SESSION_CHILDREN[pid] = lst
+        else:
+            _SESSION_CHILDREN.pop(pid, None)
+
+
+def subagent_children(parent_id: str) -> list[str]:
+    return list(_SESSION_CHILDREN.get(parent_id, []))
 
 # Main event loop, recorded in server.lifespan so sync (threadpool) handlers can
 # still schedule coroutines (WS broadcasts) onto it.

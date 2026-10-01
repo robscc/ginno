@@ -83,6 +83,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("web permissions migration failed (continuing)")
     wf_store.ensure_seeded()
+    # Reconcile subagent metas left live (running/waiting) by the previous
+    # process (subagent-design.md §5.7): their turn/wake/settle tasks all died
+    # with it, and a ghost "running" meta would consume a concurrency slot
+    # forever. Best-effort; never blocks startup.
+    try:
+        from .subagent_scheduler import reconcile_orphan_subagents
+
+        reconcile_orphan_subagents()
+    except Exception:
+        _log.exception("subagent_reconciliation_failed")
     # Reconcile workflow runs left "running" by a previous crash/quit: at this
     # point no background task can be alive, so every "running" run is an orphan
     # that would otherwise stay stuck forever. Best-effort; never blocks startup.

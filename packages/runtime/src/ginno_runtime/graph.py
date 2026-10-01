@@ -25,22 +25,22 @@ from .checkpointer import FileCheckpointer
 from .permission.policy import PermissionPolicy, is_bypass_permissions
 from .server_shared import STEER_CONTEXT_KEY, steer_drain, steer_messages
 from .state import AgentState
-from .truncation import truncate_tool_content
-from .world_state import SessionCtx, WorldState, context_settings
+from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
+from .tools.ask_tools import ASK_TOOL_NAMES, build_ask_tools
 from .tools.builtin import build_builtin_tools
-from .tools.render_tools import RENDER_TOOL_NAMES, attach_ref, render_widget
-from .tools.todo_tools import ALL_TODO_TOOLS, TODO_TOOL_NAMES
+from .tools.document_tools import ALL_DOCUMENT_TOOLS
 from .tools.goal_tools import GOAL_TOOL_NAMES
+from .tools.render_tools import RENDER_TOOL_NAMES, attach_ref, render_widget
+from .tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools
+from .tools.todo_tools import ALL_TODO_TOOLS, TODO_TOOL_NAMES
 from .tools.workflow_tools import (
     ALL_WORKFLOW_DEV_TOOLS,
     ALL_WORKFLOW_TOOLS,
     WORKFLOW_DEV_TOOL_NAMES,
     WORKFLOW_TOOL_NAMES,
 )
-from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
-from .tools.document_tools import ALL_DOCUMENT_TOOLS
-from .tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools
-from .tools.ask_tools import ASK_TOOL_NAMES, build_ask_tools
+from .truncation import truncate_tool_content
+from .world_state import SessionCtx, WorldState, context_settings
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -233,6 +233,26 @@ def build_stable_system(
                 "linked (badge in the panel). When you complete a todo on the platform, "
                 "mirror it with todo_done on the local item whose ext matches. Completing a "
                 "local ext item auto-syncs back to the platform — no manual platform call."
+            )
+    if "spawn_subagent" in allowed:
+        # Subagent type registry (P3 contract 1): the stable layer names the
+        # available types so the main agent can route spawn_subagent's
+        # agent_type by description. Registry reads are dir-stat cached; the
+        # section only changes when a type file actually changed.
+        try:
+            from .subagent_types import describe_types
+
+            _types = describe_types()
+        except Exception:
+            _types = []
+        if _types:
+            listing = "；".join(
+                f"{t['name']}（{t['description'] or '无描述'}）" for t in _types
+            )
+            parts.append(
+                "Subagent 类型注册表：spawn_subagent 支持 agent_type 参数，可用类型——"
+                f"{listing}。按描述路由：任务与某类型的职责匹配时指定它；"
+                "不指定则使用默认 persona。未知类型会返回可用清单。"
             )
     if any(n.startswith("workflow_") for n in allowed):
         if "workflow_propose_edit" in allowed:
@@ -1047,6 +1067,8 @@ def build_all_tools(
     session_id: str | None = None,
     context_dirs: list[dict] | None = None,
     primary_path: str | None = None,
+    subagent_depth: int | None = None,
+    restrict_tools: list[str] | None = None,
 ) -> list:
     """The union toolset shared by the main chat graph and the workflow engine.
 
@@ -1056,13 +1078,25 @@ def build_all_tools(
     and those tools keep the process-cwd fallback.
 
     ``session_id`` (with ``project_slug``) additionally binds the per-session
-    goal tools (goal-design.md §4.2); callers without a session omit them.
+    goal tools (goal-design.md §4.2) and the subagent tools; callers without a
+    session omit them.
+
+    ``subagent_depth`` is THIS session's subagent depth (None = main
+    conversation). At depth >= 2 ``spawn_subagent`` is structurally absent
+    (subagent-design.md §4.2) — the cap is the toolset, not a runtime error.
 
     ``context_dirs`` / ``primary_path`` bind the session's mounted context
     folders into the builtin file/shell tools (context-folders-design.md).
+
+    ``restrict_tools`` (P3 contract 1): fnmatch patterns a matched subagent
+    type imposes on top of the parent persona's tools_allow — filtered from
+    the BOUND toolset here (the persona filter itself keeps running at
+    request time in agent_node/permission_node), so a restricted child never
+    binds, advertises, or can reach the excluded tools at all.
     """
     from .tools.external_agent import build_external_agent_tools
     from .tools.goal_tools import build_goal_tools
+    from .tools.subagent import build_subagent_tools
     from .tools.web_tools import build_web_tools
 
     goal_tools = (
@@ -1070,7 +1104,7 @@ def build_all_tools(
         if (project_slug and session_id)
         else []
     )
-    return (
+    tools = (
         build_builtin_tools(
             workspace,
             context_dirs=context_dirs,
@@ -1096,7 +1130,21 @@ def build_all_tools(
         # [] when disabled in settings; session_id/project_slug bind usage
         # attribution. Deliberately NOT in the permission exempt set.
         + build_external_agent_tools(workspace, session_id, project_slug)
+        # Subagent lifecycle tools (subagent-design.md §5) — [] without a
+        # session_id (workflow engine / listing endpoints); spawn_subagent is
+        # dropped at depth >= 2 (structural cap). Also deliberately NOT in the
+        # permission exempt set, same delegate_agent precedent: the user
+        # approves the goal itself (policy default "ask").
+        + build_subagent_tools(session_id, project_slug, subagent_depth=subagent_depth)
     )
+    patterns = [p for p in (restrict_tools or []) if isinstance(p, str) and p.strip()]
+    if patterns:
+        tools = [
+            t
+            for t in tools
+            if any(fnmatch.fnmatch(t.name, p) for p in patterns)
+        ]
+    return tools
 
 
 def _tools_node_factory(all_tools):

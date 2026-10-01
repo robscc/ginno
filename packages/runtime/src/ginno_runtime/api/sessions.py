@@ -26,15 +26,17 @@ from ..graph import build_all_tools, build_graph
 from ..models import build_model
 from ..server_shared import (
     _GOAL_DRIVERS,
+    _PENDING_KIND,
     _PENDING_RESUME,
     _RUNNING_TURNS,
     _SESSIONS,
+    _TURN_STOP,
+    _TURN_TASKS,
     _log,
     _push_session_event,
     _turn_lock,
+    spawn_bg,
 )
-from ..tools.ask_tools import reset_interactive as _reset_interactive_turn
-from ..tools.ask_tools import set_interactive as _set_interactive_turn
 from ..session_meta import (
     _find_meta,
     _resolve_session_meta,
@@ -43,7 +45,16 @@ from ..session_meta import (
     _session_meta_remove,
     _session_meta_upsert,
     _session_slug,
+    subagent_depth_of,
 )
+from ..subagent_scheduler import (
+    SUBAGENT_MAX_DEPTH,
+    _is_subagent,
+    _subagent_status,
+    stop_subagent_tree,
+)
+from ..tools.ask_tools import reset_interactive as _reset_interactive_turn
+from ..tools.ask_tools import set_interactive as _set_interactive_turn
 from .config import _agent_lookup
 from .messages_ui import _messages_to_ui
 
@@ -68,6 +79,16 @@ class CreateSessionRequest(BaseModel):
     # Bound workflow for workflow-dev refine sessions (docs/workflow-dsl-design.md
     # §8.3). Injected into every turn's [turn context] as the current DSL.
     workflow_id: str | None = None
+    # Subagent parentage (subagent-design.md §4). Set by the runtime scheduler
+    # (subagent_scheduler.create_subagent), never by ordinary clients: the child
+    # inherits the parent's slug-context and its depth caps the toolset.
+    parent_session_id: str | None = None
+    subagent: dict | None = None
+    # Subagent type-registry tightening (P3 contract 1): fnmatch patterns the
+    # matched type imposes ON TOP of the parent persona's tools_allow (the
+    # persona filter keeps running at request time; this one filters the bound
+    # toolset at graph-build time). Set only by the scheduler's spawn path.
+    restrict_tools: list[str] = []
     # legacy aliases
     model_provider: str | None = None
     model_name: str | None = None
@@ -521,6 +542,20 @@ async def create_session(req: CreateSessionRequest) -> dict:
 
     mcp_tools = shared._mcp.all_langchain_tools() if shared._mcp else []
     session_id = uuid.uuid4().hex
+    # Subagent depth (subagent-design.md §4.2): one above the parent's; the
+    # depth caps the toolset STRUCTURALLY (a depth-2 child never gets
+    # spawn_subagent) and is rejected outright beyond it.
+    sub_depth: int | None = None
+    if req.parent_session_id:
+        parent_meta, _ = _find_meta(req.parent_session_id) or ({}, None)
+        sub_depth = subagent_depth_of(parent_meta) + 1
+        if sub_depth > SUBAGENT_MAX_DEPTH:
+            return {
+                "ok": False,
+                "error": (
+                    f"subagent 嵌套深度已达上限（{SUBAGENT_MAX_DEPTH + 1} 层）"
+                ),
+            }
     # Every session gets its own files directory, created now and PRESERVED on
     # delete. It supersedes the client-supplied `workspace` (a shared, non-
     # session-scoped path) as the authoritative home for this session's files.
@@ -542,6 +577,8 @@ async def create_session(req: CreateSessionRequest) -> dict:
         session_id=session_id,
         context_dirs=context_dirs,
         primary_path=primary_path,
+        subagent_depth=sub_depth,
+        restrict_tools=req.restrict_tools,
     )
     graph = build_graph(
         model=model,
@@ -574,6 +611,20 @@ async def create_session(req: CreateSessionRequest) -> dict:
     }
     if req.type:
         meta["type"] = req.type
+    if sub_depth is not None:
+        # Subagent meta (contract 1): the parent link + the subagent payload
+        # are part of the session meta the list API and the frontend read.
+        meta["type"] = "subagent"
+        meta["parent_session_id"] = req.parent_session_id
+        meta["depth"] = sub_depth
+        meta["subagent"] = req.subagent or {
+            "goal": "",
+            "constraints": "",
+            "acceptance": "",
+            "origin": "agent",
+            "status": "running",
+            "result_summary": "",
+        }
     _session_meta_upsert(req.project_slug, meta)
     _log.info(
         "session_create session=%s agent=%s provider=%s model=%s title=%r folders=%d",
@@ -584,7 +635,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         title,
         len(folder_ids),
     )
-    _SESSIONS[session_id] = {
+    s_entry = {
         "session_id": session_id,
         "project_slug": req.project_slug,
         "workspace": workspace,
@@ -606,7 +657,16 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "primary_path": primary_path or "",
         "workflow_id": req.workflow_id,
         "type": req.type,
+        # Type-registry tightening survives graph rebuilds via this entry
+        # (turn.py's WorldState roster re-reads it too).
+        "restrict_tools": [p for p in (req.restrict_tools or []) if isinstance(p, str) and p.strip()],
     }
+    if sub_depth is not None:
+        s_entry["parent_session_id"] = req.parent_session_id
+        s_entry["depth"] = sub_depth
+        # reverse index for the scheduler's tree walks (server_shared)
+        shared.subagent_link_child(req.parent_session_id or "", session_id)
+    _SESSIONS[session_id] = s_entry
     # return the meta shape (with `id`) so the frontend SessionMeta matches
     return {**meta, "ok": True}
 
@@ -698,9 +758,14 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
 
 
 @router.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str) -> dict:
+async def delete_session(session_id: str, cascade: bool = False) -> dict:
     """Delete a session: its index entry, on-disk checkpoint history, and any
     in-memory graph cache. Returns ok=True even if the id was already gone.
+
+    ``cascade`` (=1, sent by the web shell for a parent with descendants,
+    subagent-design.md §5.8) is DECLARED for contract visibility: subagent
+    descendants are always cascade-deleted/stopped regardless, so the flag
+    only documents the client's intent (and the confirm-dialog count).
 
     The session's files directory (`sessions/<session_id>/`) is intentionally
     PRESERVED — only the conversation (checkpoint + index row) is removed. The
@@ -710,6 +775,15 @@ async def delete_session(session_id: str) -> dict:
     """
     s = _SESSIONS.pop(session_id, None)
     slug = s["project_slug"] if s else None
+    # Settle a live subagent BEFORE its meta disappears (major-5): once the
+    # index row is gone the completion gate's _find_meta finds nothing and no
+    # one would re-evaluate a WAITING ancestor left behind by the removal.
+    try:
+        from ..subagent_scheduler import finalize_for_delete
+
+        await finalize_for_delete(session_id)
+    except Exception:
+        _log.exception("subagent_delete_finalize_failed session=%s", session_id)
     removed = False
     # find the slug from the on-disk index if not known from memory
     for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
@@ -717,6 +791,20 @@ async def delete_session(session_id: str) -> dict:
         if _session_meta_remove(cand, session_id):
             removed = True
             slug = slug or cand
+    # Subagent cascade delete (subagent-design.md §5.8): cooperative-stop the
+    # session + all descendants, WAIT for the turn tasks to unwind, then remove
+    # each descendant's meta + checkpoint — never the reverse, or a live turn
+    # would write its checkpoint back after the unlink.
+    if slug:
+        try:
+            from ..subagent_scheduler import delete_subagent_tree
+
+            cascade = await delete_subagent_tree(slug, session_id)
+            if cascade:
+                removed = True
+        except Exception:
+            _log.exception("subagent_cascade_delete_failed session=%s", session_id)
+        shared.subagent_unlink_any(session_id)
     # drop the checkpoint file (the full conversation history)
     files_dir = None
     if slug:
@@ -741,7 +829,121 @@ async def delete_session(session_id: str) -> dict:
     return {"ok": True, "removed": removed, "files_dir": files_dir}
 
 
-# ---- session context folders (context-folders-design.md §4.3) -------------
+# ---- session stop (P2 contract 4) ------------------------------------------
+
+
+@router.post("/api/sessions/{session_id}/stop", status_code=202)
+async def stop_session(session_id: str) -> dict:
+    """Stop whatever the session is doing; ALWAYS 202 ``{"stopped": true}``.
+
+    Four shapes (P2 shared contract 4):
+
+    * running turn → the cooperative-stop semantics of the WS ``stop`` branch:
+      pause an active goal first, set the session's ``_TURN_STOP`` event (the
+      turn's own machinery unwinds + settles it), and for a subagent session
+      cascade-stop the descendants + settle a waiting meta;
+    * parked at a permission/ask_user interrupt → heal + broadcast via the
+      same ``_stop_parked_turn`` path the WS branch uses;
+    * waiting subagent (no live turn of its own) → ``stop_subagent_tree``:
+      finalize it stopped and cascade over every descendant;
+    * idle → a no-op that still answers 202 (idempotent UX).
+    """
+    from .stream import _stop_parked_turn  # lazy: api.stream imports this module
+
+    s = _SESSIONS.get(session_id)
+    slug = s["project_slug"] if s else _session_slug(session_id)
+    mode = "idle"
+
+    if session_id in _PENDING_RESUME:
+        # Parked at an interrupt: no live task — heal + broadcast directly
+        # (check-and-discard, so a racing second stop no-ops).
+        mode = "parked"
+        _PENDING_RESUME.discard(session_id)
+        _PENDING_KIND.pop(session_id, None)
+        tid = _RUNNING_TURNS.pop(session_id, "")
+        sess = s or _ensure_session(session_id)
+        if sess is not None:
+            spawn_bg(_stop_parked_turn(sess, session_id, tid))
+        # Subagent cascade (§5.6 配套规则): the WS stop branch runs it for a
+        # parked subagent too — the heal above settles the session itself
+        # "stopped" (via _stop_parked_turn → on_turn_stopped), and a stopped
+        # subagent must take its running descendants with it. Without this the
+        # HTTP path left them alive under a stopped parent: their results are
+        # later refused at the terminal-parent gate and silently lost.
+        stype = (s or {}).get("type")
+        if stype is None:
+            _pf = _find_meta(session_id)
+            stype = (_pf[0] or {}).get("type") if _pf else None
+        if stype == "subagent":
+            from ..subagent_scheduler import on_stop_if_waiting, stop_descendants
+
+            async def _stop_cascade(_sid: str = session_id) -> None:
+                try:
+                    await stop_descendants(_sid)
+                except Exception:
+                    _log.exception("stop_session_cascade_failed session=%s", _sid)
+
+            spawn_bg(_stop_cascade())
+            spawn_bg(on_stop_if_waiting(session_id))
+    elif session_id in _RUNNING_TURNS or (
+        (t := _TURN_TASKS.get(session_id)) is not None and not t.done()
+    ):
+        mode = "running"
+        # Goal parity with the WS stop branch: an active goal would
+        # auto-continue ~3s after the turn unwinds — pause it first.
+        if slug:
+            try:
+                goal = goal_store.get_goal(slug, session_id)
+                if goal and goal.get("status") == goal_store.STATUS_ACTIVE:
+                    paused = goal_store.update_status(
+                        slug,
+                        session_id,
+                        goal_store.STATUS_PAUSED,
+                        expected_goal_id=goal.get("goal_id"),
+                    )
+                    if paused:
+                        await _emit_goal_event(slug, session_id, paused)
+            except Exception:
+                _log.exception("stop_session_goal_pause_failed session=%s", session_id)
+        evt = _TURN_STOP.get(session_id)
+        if evt is None:
+            evt = _TURN_STOP[session_id] = asyncio.Event()
+        evt.set()
+        # Subagent cascade (§5.6 配套规则): a stopped running/waiting subagent
+        # takes its descendants with it; a waiting meta with no live turn is
+        # settled here. Main conversations keep their subagents running.
+        stype = (s or {}).get("type")
+        if stype is None:
+            found = _find_meta(session_id)
+            stype = (found[0] or {}).get("type") if found else None
+        if stype == "subagent":
+            from ..subagent_scheduler import on_stop_if_waiting, stop_descendants
+
+            async def _stop_cascade(_sid: str = session_id) -> None:
+                try:
+                    await stop_descendants(_sid)
+                except Exception:
+                    _log.exception("stop_session_cascade_failed session=%s", _sid)
+
+            spawn_bg(_stop_cascade())
+            spawn_bg(on_stop_if_waiting(session_id))
+    else:
+        found = _find_meta(session_id)
+        if found and _is_subagent(found[0]) and _subagent_status(found[0]) == "waiting":
+            # A waiting subagent holds no turn: finalize it stopped and
+            # cascade over the still-running descendants.
+            mode = "waiting"
+            try:
+                await stop_subagent_tree(session_id, include_self=True)
+            except Exception:
+                _log.exception("stop_session_waiting_failed session=%s", session_id)
+        # else: idle — no-op, still 202 (never leave a set event behind).
+
+    _log.info("session_stop session=%s mode=%s", session_id, mode)
+    return {"stopped": True, "mode": mode}
+
+
+# ---- session context folders (context-folders-design.md §4.3) ---------------
 
 
 class PutSessionContextRequest(BaseModel):
@@ -766,6 +968,10 @@ def _apply_context_to_live_session(
         session_id=s.get("session_id", ""),
         context_dirs=dirs,
         primary_path=primary_path,
+        # Keep the structural spawn cap across rebuilds (subagent-design.md §4.2).
+        subagent_depth=s.get("depth") if s.get("type") == "subagent" else None,
+        # And the type-registry tightening (P3 contract 1).
+        restrict_tools=s.get("restrict_tools") or [],
     )
     s["graph"] = build_graph(
         model=s["model"],
@@ -912,6 +1118,17 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
     primary_id = meta.get("primary_folder") or None
     context_dirs, primary_path = cf.resolve_session_dirs(folder_ids, primary_id)
     mcp_tools = shared._mcp.all_langchain_tools() if shared._mcp else []
+    # Restore the subagent depth so the structural spawn cap survives a runtime
+    # restart (subagent-design.md §4.2) — the meta is the source of truth.
+    sub_depth = meta.get("depth") if meta.get("type") == "subagent" else None
+    # Re-derive the type-registry tightening (P3 contract 1) from the meta's
+    # recorded agent_type: a type edited since spawn re-tightens; a type
+    # DELETED since spawn loosens back to the parent persona (documented).
+    restrict_tools: list[str] = []
+    if sub_depth is not None:
+        from ..subagent_types import restrict_for_meta
+
+        restrict_tools = restrict_for_meta(meta)
     all_tools = build_all_tools(
         mcp_tools,
         workspace=workspace,
@@ -919,6 +1136,8 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         session_id=session_id,
         context_dirs=context_dirs,
         primary_path=primary_path,
+        subagent_depth=sub_depth,
+        restrict_tools=restrict_tools,
     )
     graph = build_graph(
         model=model,
@@ -945,6 +1164,12 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         "primary_folder": primary_id,
         "primary_path": primary_path or "",
         "workflow_id": meta.get("workflow_id"),
+        "restrict_tools": restrict_tools,
     }
+    if sub_depth is not None:
+        s["type"] = "subagent"
+        s["parent_session_id"] = meta.get("parent_session_id")
+        s["depth"] = sub_depth
+        shared.subagent_link_child(meta.get("parent_session_id") or "", session_id)
     _SESSIONS[session_id] = s
     return s

@@ -381,6 +381,83 @@ async def _compact_async_handler(
     return "\n".join(lines)
 
 
+_SUBAGENT_USAGE = (
+    "**Subagent 用法**\n"
+    "- `/subagent <goal>` — 立即创建 1 个 subagent（约束/验收留空，"
+    "可在子会话里用 steering 补充）\n"
+    "- `/subagent 拆分 <任务描述>` — 先用当前模型做任务分解，"
+    "生成拆分方案卡片，确认后批量启动\n"
+    "- `/subagent-split <任务描述>` — 同拆分型（别名）\n"
+    "未确认前再次拆分会覆盖旧方案；每个 subagent 结果完成后自动回传本对话。"
+)
+
+
+def _subagent_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    # Never reached through the resolver (async_handler routes /subagent); kept
+    # so the registry entry is well-formed and direct sync calls get a hint.
+    return "请使用异步入口执行 /subagent（WS invoke）"
+
+
+def _is_split_form(args: str) -> bool:
+    """`/subagent 拆分 <任务>` — the split keyword is the leading token; the
+    task description is everything after it (colon/space separators tolerated)."""
+    return (args or "").lstrip().startswith("拆分")
+
+
+async def _subagent_async_handler(
+    project_slug: str | None = None, session=None, args=None
+) -> str:
+    """/subagent — direct form spawns ONE subagent immediately (origin=user);
+    split form (拆分) runs the LLM decompose → subagent.plan card (P2 contract
+    3). Busy-gated like /compact: the decompose LLM call must not race a live
+    turn's supersteps, and the direct spawn path creates a session + graph."""
+    if not session:
+        return _SUBAGENT_USAGE
+    args = (args or "").strip()
+    if not args:
+        return _SUBAGENT_USAGE
+    if _is_split_form(args):
+        task = args[2:].lstrip(" ：:　")
+        if not task:
+            return _SUBAGENT_USAGE
+        from ..subagent_plan import decompose_and_issue
+
+        try:
+            return await decompose_and_issue(session, task)
+        except ValueError as e:
+            return f"拆分失败：{e}"
+    from ..subagent_scheduler import create_subagent  # lazy: cycle
+
+    res = await create_subagent(
+        session.get("session_id") or "", args, "", "", origin="user"
+    )
+    if not res.get("ok"):
+        return str(res.get("error") or "[error] spawn 失败")
+    return (
+        f"✅ subagent 已启动 session_id={res['session_id']}"
+        f" 标题={res['title']} depth={res['depth']}\n"
+        "它在后台独立运行，结果完成后自动回传本对话。"
+    )
+
+
+async def _subagent_split_async_handler(
+    project_slug: str | None = None, session=None, args=None
+) -> str:
+    """/subagent-split <任务> — the split form under an explicit alias; the
+    whole tail is the task description (no 拆分 keyword needed)."""
+    if not session:
+        return _SUBAGENT_USAGE
+    task = (args or "").strip()
+    if not task:
+        return _SUBAGENT_USAGE
+    from ..subagent_plan import decompose_and_issue
+
+    try:
+        return await decompose_and_issue(session, task)
+    except ValueError as e:
+        return f"拆分失败：{e}"
+
+
 BUILTINS: dict[str, BuiltinCommand] = {
     "help": BuiltinCommand(
         name="help",
@@ -417,5 +494,20 @@ BUILTINS: dict[str, BuiltinCommand] = {
         name="primary",
         description="设置主工作目录（bash cwd）；/primary clear 取消",
         handler=_primary_handler,
+    ),
+    "subagent": BuiltinCommand(
+        name="subagent",
+        description=(
+            "创建 subagent（/subagent <goal> 直接启动；"
+            "/subagent 拆分 <任务> 先 LLM 拆分再确认）"
+        ),
+        handler=_subagent_handler,
+        async_handler=_subagent_async_handler,
+    ),
+    "subagent-split": BuiltinCommand(
+        name="subagent-split",
+        description="拆分任务为多个 subagent（/subagent-split <任务>，同 /subagent 拆分）",
+        handler=_subagent_handler,
+        async_handler=_subagent_split_async_handler,
     ),
 }

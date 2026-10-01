@@ -21,12 +21,22 @@ from . import providers as prov_mod
 # httpx.Timeout object), so we pass seconds. The *generator-level* stall (model
 # stuck mid-generation, not a network read) is handled separately by the
 # per-chunk stall watchdog in server._stream_graph (CHUNK_TIMEOUT_S).
-# Module-level so tests can monkeypatch a short value.
+# Module-level so tests can monkeypatch a short value. P2 contract 7: this is
+# now the FALLBACK — the provider config's ``timeout_s`` (default 300, merged
+# by normalize_config) overrides it per provider, so long replies are bounded
+# by the value the settings UI actually shows.
 CHAT_TIMEOUT_S = 180.0
 
 
-def _chat_timeout() -> float:
-    return CHAT_TIMEOUT_S
+def _chat_timeout(cfg: dict[str, Any] | None = None) -> float:
+    """Per-request timeout: the provider config's ``timeout_s`` when set (P2
+    contract 7), else the module default. A malformed stored value degrades to
+    the default instead of poisoning model construction."""
+    try:
+        t = float((cfg or {}).get("timeout_s") or 0)
+    except (TypeError, ValueError):
+        t = 0.0
+    return t if t > 0 else CHAT_TIMEOUT_S
 
 
 # Lazily-built (import-time work stays off the startup path like the rest of
@@ -208,7 +218,7 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
             temperature=temperature if temperature is not None else 0.7,
             model_kwargs=model_kwargs or {"max_tokens": 4096},
             streaming=True,
-            timeout=_chat_timeout(),
+            timeout=_chat_timeout(cfg),
         )
         # Some Anthropic-compatible gateways (corporate model hubs / proxies) expect
         # the token in `Authorization: Bearer ...` instead of `x-api-key`. The official
@@ -229,7 +239,7 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
             temperature=temperature if temperature is not None else 0.7,
             model_kwargs=model_kwargs or {"max_tokens": 8192},
             streaming=True,
-            timeout=_chat_timeout(),
+            timeout=_chat_timeout(cfg),
             use_responses_api=True,
         )
         if cfg.get("org_id"):
@@ -247,7 +257,7 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         temperature=temperature if temperature is not None else 0.7,
         model_kwargs=model_kwargs or {"max_tokens": 8192},
         streaming=True,
-        timeout=_chat_timeout(),
+        timeout=_chat_timeout(cfg),
     )
     # OpenAI-compatible gateway switches, forwarded verbatim into the request
     # body via `extra_body` (langchain-openai passes it through untouched):

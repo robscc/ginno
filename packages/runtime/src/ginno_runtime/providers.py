@@ -9,7 +9,7 @@ docs/design/multi-provider-model-config.md, decision Q1):
         {"id": "prov_main", "name": "中转站 A", "protocol": "openai-compatible",
          "base_url": "...", "api_key": "...", "models": ["qwen-plus"],
          "default_model": "qwen-plus", "max_tokens": 8192, "temperature": 0.7,
-         "timeout_s": 60, "enabled": true, "verified_at": 1758860000, ...}
+         "timeout_s": 300, "enabled": true, "verified_at": 1758860000, ...}
       ],
       "default_config": "prov_main"
 
@@ -47,7 +47,9 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
         "base_url": "",
         "max_tokens": 4096,
         "temperature": 0.7,
-        "timeout_s": 60,
+        # 300s default (P2 contract 7): LLM 长回复不再被 60s 掐断；per-provider
+        # settings 覆盖能力保留（normalize_config merges stored over defaults）。
+        "timeout_s": 300,
         "enable_search": False,
     },
     "openai": {
@@ -70,7 +72,7 @@ PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
         "model": "",
         "max_tokens": 8192,
         "temperature": 0.7,
-        "timeout_s": 60,
+        "timeout_s": 300,
         "enable_search": False,
         "enable_thinking": False,
     },
@@ -112,7 +114,9 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "default_model": "",
     "max_tokens": 8192,
     "temperature": 0.7,
-    "timeout_s": 60,
+    # 300s default (P2 contract 7): a stored per-config ``timeout_s`` in
+    # settings.json overrides this via normalize_config's merge.
+    "timeout_s": 300,
     "enable_search": False,
     "enable_thinking": False,
     "enabled": False,
@@ -392,7 +396,12 @@ def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
     imports inside the branches). Never raises.
     """
     proto = cfg.get("protocol")
-    timeout = float(cfg.get("timeout_s") or 60)
+    # Interactive settings-page probe: bounded independently of the chat
+    # timeout — this runs synchronously inside the asyncio event loop
+    # (api/config.py verify_model_config_endpoint), so the P2 default of 300s
+    # against a black-holed base_url would freeze EVERY session for 5 minutes.
+    # 60s preserves the pre-P2 effective bound.
+    timeout = min(float(cfg.get("timeout_s") or 300), 60.0)
     t0 = time.time()
 
     def _latency() -> int:

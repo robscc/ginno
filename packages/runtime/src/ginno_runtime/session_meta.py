@@ -60,6 +60,40 @@ def _session_meta_remove(slug: str, session_id: str) -> bool:
     return True
 
 
+def _session_meta_children(slug: str, session_id: str) -> list[dict]:
+    """Direct subagent children (``parent_session_id == session_id``) from the
+    on-disk index — the source of truth for the parent links (subagent-design.md
+    §4); the in-memory ``_SESSION_CHILDREN`` mirror is only a fast path."""
+    return [
+        m for m in _session_meta_list(slug) if m.get("parent_session_id") == session_id
+    ]
+
+
+def _session_meta_descendants(slug: str, session_id: str) -> list[dict]:
+    """All subagent descendants, depth-first (parent/child links form a tree —
+    the depth cap guarantees acyclicity)."""
+    out: list[dict] = []
+
+    def _walk(pid: str) -> None:
+        for m in _session_meta_children(slug, pid):
+            out.append(m)
+            _walk(m["id"])
+
+    _walk(session_id)
+    return out
+
+
+def subagent_depth_of(meta: dict | None) -> int:
+    """Subagent depth encoded in a session meta: 0/1/2 for subagent sessions,
+    -1 for a main conversation (no subagent fields)."""
+    if not meta or meta.get("type") != "subagent":
+        return -1
+    try:
+        return int(meta.get("depth"))
+    except (TypeError, ValueError):
+        return -1
+
+
 def _find_meta(session_id: str) -> tuple[dict, str] | None:
     for slug_dir in paths.home().glob("projects/*/sessions/_index.json"):
         slug = slug_dir.parent.parent.name

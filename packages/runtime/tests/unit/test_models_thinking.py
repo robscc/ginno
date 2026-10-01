@@ -47,6 +47,28 @@ def _et(model) -> bool:
 # ---- layer 1: config → request body ----
 
 
+def test_provider_timeout_s_bounds_request(monkeypatch):
+    """P2 contract 7: the provider config's ``timeout_s`` (the value the
+    settings UI shows) is the per-request chat timeout — not a dead field that
+    only the verify probe read while chat stayed on the global constant."""
+    from ginno_runtime.models import CHAT_TIMEOUT_S
+
+    monkeypatch.setattr(
+        prov_mod, "load_providers", lambda: {"custom": _cfg(timeout_s=45)}
+    )
+    assert int(build_model("custom").request_timeout) == 45
+
+    # malformed / missing value degrades to the module fallback
+    monkeypatch.setattr(
+        prov_mod, "load_providers", lambda: {"custom": _cfg(timeout_s="abc")}
+    )
+    assert int(build_model("custom").request_timeout) == int(CHAT_TIMEOUT_S)
+    cfg = _cfg()
+    cfg.pop("timeout_s")
+    monkeypatch.setattr(prov_mod, "load_providers", lambda: {"custom": cfg})
+    assert int(build_model("custom").request_timeout) == int(CHAT_TIMEOUT_S)
+
+
 def test_enable_thinking_sets_extra_body(monkeypatch):
     monkeypatch.setattr(
         prov_mod, "load_providers", lambda: {"custom": _cfg(enable_thinking=True)}
