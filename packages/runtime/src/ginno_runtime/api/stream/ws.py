@@ -826,10 +826,12 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 except Exception:
                     return  # socket died between recv and send
             elif kind == "client_diag":
-                # Client-reported anomaly (2026-10-01 跨会话渲染串线排查）：
-                # release webviews have no readable console, so the client
-                # reports its own detection here and it lands in sidecar.log
-                # where the developer can read it.
+                # Client-reported anomaly channel (permanent): the packaged
+                # webview has no readable console, so the client reports its
+                # own detection (frame-ownership mismatch, stream landing in a
+                # foreign turn's bubble) and it lands in sidecar.log where it
+                # can actually be read. Rare by construction — see the guard in
+                # useChatStreamEngine.
                 _log.warning(
                     "client_diag session=%s kind=%s detail=%s",
                     session_id, msg.get("diag_kind"), str(msg.get("detail"))[:400],

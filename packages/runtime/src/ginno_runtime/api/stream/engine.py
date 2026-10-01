@@ -701,20 +701,6 @@ async def _stream_graph(
         async def safe_send(data: str) -> None:
             nonlocal ws_closed
             socks = _SESSION_WS.get(session_id) or []
-            # DIAGNOSTIC (2026-10-01 跨会话渲染串线): thinking frames are the
-            # leaked content, so trace where each one lands — which session's
-            # turn emitted it and to how many sockets. Cheap (thinking frames
-            # are rare); remove once the leak is pinned.
-            if "thinking.delta" in data:
-                try:
-                    _d = json.loads(data)
-                    _log.info(
-                        "diag_thinking session=%s turn=%s socks=%d head=%r",
-                        session_id, _d.get("turn_id"), len(socks),
-                        str(_d.get("content"))[:50],
-                    )
-                except Exception:
-                    pass
             alive: list[Any] = []
             for w in socks:
                 if await _try_send(w, data):
@@ -817,6 +803,15 @@ async def _stream_graph(
         _partial_tool_args: dict[str, str] = {}
         _emitted_tool_args: set[str] = set()
         turn_text: list[str] = []  # accumulate assistant text for memory capture
+        # TEMP DIAG (2026-10-01 thinking/正文顺序存疑): 记 K/T 增量游程序列，
+        # 轮末压缩成一行日志——用来证实/证伪「模型在正文之间零星吐 thinking」。
+        _delta_seq: list[list] = []
+
+        def _mark(kind: str) -> None:
+            if _delta_seq and _delta_seq[-1][0] == kind:
+                _delta_seq[-1][1] += 1
+            else:
+                _delta_seq.append([kind, 1])
         # Fresh turn (not a permission resume): announce the resolved agent so the
         # UI can label the assistant bubble authoritatively (never the generic
         # "Agent" fallback).
@@ -830,12 +825,6 @@ async def _stream_graph(
                 "turn_start session=%s turn=%s agent=%s text=%r",
                 session_id, turn_id, _aid,
                 ((config.get("configurable") or {}).get("user_text") or "")[:120],
-            )
-            # DIAGNOSTIC (2026-10-01 串线排查): pair with diag_thinking to see
-            # which turn's frames a session's sockets received.
-            _log.info(
-                "diag_turn_start session=%s turn=%s socks=%d",
-                session_id, ui_turn_id, len(_SESSION_WS.get(session_id) or []),
             )
             await safe_send(
                 emit("turn.start", {"turn_id": ui_turn_id, "agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
@@ -919,19 +908,23 @@ async def _stream_graph(
                         if btype == "thinking":
                             txt = b.get("thinking") or b.get("text") or ""
                             if txt:
+                                _mark("K")
                                 await safe_send(emit("thinking.delta", {"content": txt}))
                         elif btype == "text":
                             txt = b.get("text") or ""
                             if txt:
                                 turn_text.append(txt)
                                 seg_text.append(txt)
+                                _mark("T")
                                 await safe_send(emit("token.delta", {"content": txt}))
                 elif isinstance(content, str) and content:
                     turn_text.append(content)
                     seg_text.append(content)
+                    _mark("T")
                     await safe_send(emit("token.delta", {"content": content}))
                 rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
                 if rk:
+                    _mark("K")
                     await safe_send(emit("thinking.delta", {"content": rk}))
                 tool_calls = getattr(chunk, "tool_call_chunks", None)
                 if tool_calls:
@@ -1318,6 +1311,11 @@ async def _stream_graph(
                 session_id, turn_id, len("".join(turn_text)),
             )
             # Empty text (tool-only turn) → the UI falls back to a generic body.
+            _log.info(
+                "delta_seq session=%s turn=%s seq=%s",
+                session_id, turn_id,
+                " ".join(f"{k}×{n}" for k, n in _delta_seq) or "(none)",
+            )
             await safe_send(emit("message.end", {"text": _clean_text.strip()[:200]}))
         else:
             _log.info(

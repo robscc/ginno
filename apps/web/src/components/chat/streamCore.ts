@@ -208,27 +208,43 @@ for (const b of blocks) {
 }
 return payload;
 }
+/** 追加文本/思考增量，与服务端 AIMessageChunk 的「按 content block 索引合并」
+ *  对齐：模型会在正文之间零星吐出 thinking 片段（反之亦然），若只在末尾同类才
+ *  合并，实时视图会把它们渲染成夹在正文中的独立小卡片，而重放视图（历史）是
+ *  合并后的样子——两者不一致（用户反馈 2026-10-01：thinking 与 content 顺序
+ *  看起来不对）。合并范围限定在「最近一个非文本/思考块之后」，工具气泡、
+ *  steering 带、卡片等仍然是边界。 */
+function appendStreamDelta(
+  blocks: Block[],
+  kind: "text" | "thinking",
+  t: string,
+): Block[] {
+  if (!t) return blocks;
+  let start = 0;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const k = blocks[i].kind;
+    if (k !== "text" && k !== "thinking") {
+      start = i + 1;
+      break;
+    }
+  }
+  for (let i = blocks.length - 1; i >= start; i--) {
+    if (blocks[i].kind === kind) {
+      const next = blocks.slice();
+      const cur = next[i] as { kind: "text" | "thinking"; text: string };
+      next[i] = { kind, text: cur.text + t };
+      return next;
+    }
+  }
+  return [...blocks, { kind, text: t }];
+}
+
 export function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }): Block[] {
-const last = blocks[blocks.length - 1];
 switch (ev.event) {
-  case "token.delta": {
-    const t = (ev.content as string) || "";
-    if (last && last.kind === "text") {
-      const next = blocks.slice();
-      next[next.length - 1] = { kind: "text", text: last.text + t };
-      return next;
-    }
-    return [...blocks, { kind: "text", text: t }];
-  }
-  case "thinking.delta": {
-    const t = (ev.content as string) || "";
-    if (last && last.kind === "thinking") {
-      const next = blocks.slice();
-      next[next.length - 1] = { kind: "thinking", text: last.text + t };
-      return next;
-    }
-    return [...blocks, { kind: "thinking", text: t }];
-  }
+  case "token.delta":
+    return appendStreamDelta(blocks, "text", (ev.content as string) || "");
+  case "thinking.delta":
+    return appendStreamDelta(blocks, "thinking", (ev.content as string) || "");
   case "tool.start":
     return [...blocks, { kind: "tool", id: ev.id as string | undefined, name: ev.name as string, content: "…", pending: true }];
   case "tool.args": {
