@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, Check, RotateCcw, Globe } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
@@ -15,7 +15,7 @@ import { loadToolLabels } from "@/lib/toolLabels";
 import { agentHex } from "@/lib/theme";
 import { greeting, relTime } from "@/lib/utils";
 import { Icon } from "@/components/icons";
-import { ContextBlocks, SteerBand, SubagentBlocks, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
+import { ContextBlocks, SteerBand, SubagentBlocks, SubagentGroupCard, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
@@ -41,6 +41,7 @@ import {
 import type { WorkflowRun } from "@/lib/types";
 import type { SessionMeta, SessionUsage } from "@/lib/types";
 import {
+  foldConsecutiveSpawnCards,
   mid,
   newTurnId,
   recommendAgentId,
@@ -77,6 +78,9 @@ export function ChatStream({
 }) {
   const g = useGinno();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
+  // 连续的子代理发起卡并成一张委派卡（2026-10-01 空间优化）：并行委派 3 个
+  // 子代理时，主对话原本出现 3 张同构卡，把主 agent 的内容挤下去。
+  const spawnFold = useMemo(() => foldConsecutiveSpawnCards(messages), [messages]);
   const [liveId, setLiveId] = useState<string | null>(null);
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -1523,7 +1527,19 @@ export function ChatStream({
           )}
 
           {messages.map((m, idx) =>
-            m.role === "system" ? (
+            spawnFold.hide.has(m.id) ? null : spawnFold.groupAt[m.id] ? (
+              <div key={m.id} className="flex flex-col items-center gap-2">
+                <div className="w-full max-w-[85%]">
+                  <SubagentGroupCard
+                    rows={
+                      spawnFold.groupAt[m.id] as unknown as Array<
+                        Extract<Block, { kind: "subagent_spawn" }>
+                      >
+                    }
+                  />
+                </div>
+              </div>
+            ) : m.role === "system" ? (
               <div key={m.id} className="flex flex-col items-center gap-2">
                 <ContextBlocks
                   blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}

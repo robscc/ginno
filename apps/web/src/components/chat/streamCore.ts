@@ -353,3 +353,44 @@ switch (ev.event) {
     return blocks;
 }
 }
+
+/** 归并连续的子代理发起卡（2026-10-01 空间优化）。
+ *
+ *  并行委派时 runtime 会为每个子代理发一条 subagent.spawned，客户端各追加一条
+ *  system 消息——主对话里就出现 N 张几乎同构的卡片，把主 agent 的内容挤下去。
+ *  这里把「连续且只含发起卡」的消息并成一组，由调用方在首条位置渲染一张委派卡
+ *  （一行一个子任务），其余消息跳过。
+ *
+ *  返回 groupAt：首条消息 id → 该组的发起卡块列表；hide：需要跳过渲染的消息 id。
+ *  结果卡、简报卡、方案卡不参与归并（它们各自承载内容与操作）。 */
+export function foldConsecutiveSpawnCards(
+  messages: Array<{ id: string; role: string; blocks: Array<{ kind: string }> }>,
+): {
+  groupAt: Record<string, Array<Record<string, unknown>>>;
+  hide: Set<string>;
+} {
+  const groupAt: Record<string, Array<Record<string, unknown>>> = {};
+  const hide = new Set<string>();
+  const isPureSpawn = (m: { role: string; blocks: Array<{ kind: string }> }) =>
+    m.role === "system" && m.blocks.length > 0 && m.blocks.every((b) => b.kind === "subagent_spawn");
+
+  let i = 0;
+  while (i < messages.length) {
+    if (!isPureSpawn(messages[i])) {
+      i++;
+      continue;
+    }
+    const rows: Array<Record<string, unknown>> = [];
+    const ids: string[] = [];
+    let j = i;
+    while (j < messages.length && isPureSpawn(messages[j])) {
+      rows.push(...(messages[j].blocks as Array<Record<string, unknown>>));
+      ids.push(messages[j].id);
+      j++;
+    }
+    groupAt[ids[0]] = rows;
+    for (const id of ids.slice(1)) hide.add(id);
+    i = j;
+  }
+  return { groupAt, hide };
+}

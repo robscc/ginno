@@ -1118,7 +1118,13 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
     );
   }
   const lineCount = content.split("\n").length;
-  const isLong = lineCount > LONG_OUTPUT_LINES || content.length > LONG_OUTPUT_CHARS;
+  // spawn_subagent 的回执是固定模板（"已启动 session_id=… / 它在后台独立运行…"），
+  // 每次委派都全展开会把主 agent 的内容挤下去——默认只留标题行，点开看全文
+  // （2026-10-01 空间优化）。模型侧拿到的仍是全文，这里只影响显示。
+  const isLong =
+    name === "spawn_subagent" ||
+    lineCount > LONG_OUTPUT_LINES ||
+    content.length > LONG_OUTPUT_CHARS;
   const expanded = open ?? !isLong;
   return (
     <div className="my-1.5 overflow-hidden rounded-md border border-line bg-base/40 font-mono text-xs">
@@ -1859,6 +1865,122 @@ export function SubagentBriefCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 委派卡：同一轮并行发起的多个子代理合并成一张（设计 §6.3，2026-10-01 空间
+ *  优化）。每行一个子任务——状态点 + 类型徽标（组内类型一致时收进组头）+
+ *  标题 + 已运行时长；点行展开 goal/约束/验收与「查看完整对话」。
+ *
+ *  旧的单张发起卡（SubagentSpawnCard）仍保留：历史重放、单独一条等场景沿用。 */
+export function SubagentGroupCard({
+  rows,
+}: {
+  rows: Array<Extract<Block, { kind: "subagent_spawn" }>>;
+}) {
+  const g = useGinno();
+  const router = useRouter();
+  const [openId, setOpenId] = useState<string | null>(null);
+  if (!rows.length) return null;
+
+  // 类型徽标：组内一致 → 收到组头；混合 → 每行各自标注（用户指出的场景）。
+  const types = rows.map((r) => {
+    const live = g.sessions.find((s) => s.id === r.sessionId);
+    return String((live?.subagent as { agent_type?: string } | undefined)?.agent_type ?? "").trim();
+  });
+  const nonEmpty = [...new Set(types.filter(Boolean))];
+  const uniformType = nonEmpty.length === 1 ? nonEmpty[0] : "";
+  const mixed = nonEmpty.length > 1;
+
+  const openChild = (sid: string) => {
+    g.setActiveSession(sid);
+    if (window.location.pathname !== "/") router.push("/");
+    window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: sid }));
+  };
+
+  return (
+    <div className="rounded-lg border border-line bg-card/60 px-3 py-2 text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0">🧭</span>
+        <span className="min-w-0 truncate font-medium text-txt">
+          已委派 {rows.length} 个子代理
+        </span>
+        {uniformType && (
+          <span
+            className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet"
+            title={`子代理类型：${uniformType}`}
+          >
+            {uniformType}
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 flex flex-col">
+        {rows.map((r, i) => {
+          const live = g.sessions.find((s) => s.id === r.sessionId);
+          const sub = live?.subagent;
+          const status = sub?.status ?? "running";
+          const meta = subagentStatusMeta(status);
+          const active = status === "running" || status === "waiting";
+          const title = r.title || sub?.goal || r.goal || "子任务";
+          const expanded = openId === r.sessionId;
+          const type = types[i];
+          return (
+            <div key={r.sessionId} className={`border-t border-line/40 first:border-t-0 ${!active ? "opacity-60" : ""}`}>
+              <button
+                onClick={() => setOpenId(expanded ? null : r.sessionId)}
+                className="flex w-full items-center gap-2 py-1 text-left transition-colors hover:bg-card2/40"
+                title={sub?.goal || r.goal}
+              >
+                <span className="shrink-0" title={`状态：${meta.label}`}>{meta.glyph}</span>
+                {mixed && type && (
+                  <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet">
+                    {type}
+                  </span>
+                )}
+                <span className="min-w-0 flex-1 truncate text-muted">{title}</span>
+                {r.spawnedAt && active && (
+                  <span className="shrink-0 text-[10px] text-faint">
+                    已运行 {subagentElapsed(r.spawnedAt)}
+                  </span>
+                )}
+                <ChevronRight
+                  className={`h-3 w-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
+                />
+              </button>
+              {expanded && (
+                <div className="pb-2 pl-5 pr-1">
+                  {(sub?.goal || r.goal) && (
+                    <div className="whitespace-pre-wrap break-words leading-relaxed text-muted">
+                      目标：{sub?.goal || r.goal}
+                    </div>
+                  )}
+                  {(sub?.constraints || r.constraints) && (
+                    <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
+                      约束：{sub?.constraints || r.constraints}
+                    </div>
+                  )}
+                  {(sub?.acceptance || r.acceptance) && (
+                    <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
+                      验收：{sub?.acceptance || r.acceptance}
+                    </div>
+                  )}
+                  <div className="mt-1.5 flex items-center gap-2 text-[10px] text-faint">
+                    <button
+                      onClick={() => openChild(r.sessionId)}
+                      className="rounded-md border border-line2 px-1.5 py-0.5 text-muted transition-colors hover:border-violet/50 hover:text-violet"
+                    >
+                      查看完整对话
+                    </button>
+                    <span>{r.origin === "user" ? "用户发起" : "主代理发起"}</span>
+                    {typeof r.depth === "number" && <span>第 {r.depth + 1} 层</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
