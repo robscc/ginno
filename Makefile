@@ -84,6 +84,8 @@ runtime: web
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
 	  --collect-all docx --collect-all pptx --collect-all pypdf \
 	  --add-data "$(WEB_OUT):web_out" \
+	  --add-data "$(ROOT)/packages/extension/src:extension_src" \
+	  --add-data "$(ROOT)/packages/extension/native-host:extension_src_native_host" \
 	  bin/ginno-runtime.py
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 

@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Ginno Browser Connector",
+  "version": "1.0.0",
+  "description": "让 Ginno 在你自己的 Chrome 里替你干活——登录态共享、动作可见、可随时叫停。",
+  "default_locale": "en",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "tabGroups",
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Ginno Browser Connector",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content-scripts/accessibility-tree.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content-scripts/page-bridge.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content-scripts/visual-indicator.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw0JB2a89ClhbaEd5pf/nmsEQvtnEqfsTMOpMb5DJYWbFlCfpYFH1nvx3BYhBSr3sOlguMll7Na0/ae/eJkS/+qSNNsZEXB+hblvtMeiU/9yOTX+/12r7ND8ZQjaYben/pnhmonD3K9P+DRbXkU5WniA/E2FEY0la7INn8pJCAqq1LM3E7t8wnEO/fs3IfsdPPncUHEoth2S3+zRJCDIbFE6SaBO5P/fFw1SBG246OeXla2IdI63ByetW6qpPc/wrHlWj2U+GEBXoDUKoxhk5g+39aJK5nxAYWTKySEAhx9HNqBq3nadC7LqBPYaFaOLC1unHVC+5GyyikBI2IBAsSwIDAQAB"
+}

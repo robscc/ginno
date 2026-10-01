@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    width: 300px; margin: 0; padding: 14px;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #999; flex: none; }
+  .dot.ok { background: #22c55e; } .dot.err { background: #ef4444; }
+  .row { margin: 10px 0; }
+  label { display: block; color: inherit; opacity: .75; font-size: 12px; margin-bottom: 4px; }
+  input[type=number] {
+    width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 8px;
+    border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit;
+  }
+  button {
+    width: 100%; padding: 8px; border: 0; border-radius: 8px; cursor: pointer;
+    background: #7c5cfa; color: #fff; font-weight: 600; margin-top: 6px;
+  }
+  button:hover { background: #6d4ee6; }
+  .meta { opacity: .7; font-size: 12px; margin-top: 10px; word-break: break-all; }
+  .help { font-size: 12px; opacity: .75; margin-top: 10px; }
+  a { color: #7c5cfa; }
+</style>
+</head>
+<body>
+  <h1><span id="dot" class="dot"></span> Ginno 浏览器连接器</h1>
+  <div class="row">
+    <div id="status">检查连接状态…</div>
+  </div>
+  <div class="row">
+    <label for="port">Ginno 端口(通常无需修改;留空使用自动发现)</label>
+    <input id="port" type="number" min="1024" max="65535" placeholder="8787" />
+    <button id="save">保存并重连</button>
+  </div>
+  <div class="meta" id="meta"></div>
+  <div class="help">
+    没连上?确认 Ginno 桌面应用正在运行,并在 Ginno 的
+    <b>连接器</b> 页面查看安装指引。
+  </div>
+<script src="popup.js"></script>
+</body>
+</html>
