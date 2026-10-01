@@ -440,6 +440,13 @@ export function useChatStreamEngine(deps: EngineDeps) {
           console.warn(
             `[ginno] 丢弃跨会话帧 event=${ev.event} frame_session=${ev.session_id} socket_session=${sid}`,
           );
+          try {
+            sock.send(JSON.stringify({
+              type: "client_diag",
+              diag_kind: "frame_owner_mismatch",
+              detail: { event: ev.event, frame_session: ev.session_id, socket_session: sid },
+            }));
+          } catch { /* socket may be closing */ }
           return;
         }
         handle(sid, ev);
@@ -635,6 +642,26 @@ export function useChatStreamEngine(deps: EngineDeps) {
 
   function mutateLive(sid: string, ev: { event: string; [k: string]: unknown }) {
     const id = ensureLive(sid);
+    // 气泡归属体检（2026-10-01 串线排查）：流事件带的 turn_id 必须与它落入的
+    // 气泡 turnId 一致；不一致说明内容串进了别轮的气泡。release webview 没有
+    // 可读控制台，所以同时上报服务端日志（client_diag）留证。
+    const evTurn = ev.turn_id as string | undefined;
+    const bubble = (storeRef.current[sid] ?? []).find((m) => m.id === id);
+    if (evTurn && bubble?.turnId && evTurn !== bubble.turnId) {
+      const detail = {
+        event: ev.event,
+        ev_turn: evTurn,
+        bubble_turn: bubble.turnId,
+        session: sid,
+        head: String((ev.content as string) ?? "").slice(0, 40),
+      };
+      console.warn("[ginno] 流事件落入他轮气泡", detail);
+      try {
+        socketsRef.current[sid]?.send(
+          JSON.stringify({ type: "client_diag", diag_kind: "bubble_turn_mismatch", detail }),
+        );
+      } catch { /* socket may be closing */ }
+    }
     storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
       msg.id === id ? { ...msg, blocks: applyBlock(msg.blocks, ev) } : msg,
     );

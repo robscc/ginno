@@ -825,6 +825,15 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     await ws.send_text(_ev("pong", {}))
                 except Exception:
                     return  # socket died between recv and send
+            elif kind == "client_diag":
+                # Client-reported anomaly (2026-10-01 跨会话渲染串线排查）：
+                # release webviews have no readable console, so the client
+                # reports its own detection here and it lands in sidecar.log
+                # where the developer can read it.
+                _log.warning(
+                    "client_diag session=%s kind=%s detail=%s",
+                    session_id, msg.get("diag_kind"), str(msg.get("detail"))[:400],
+                )
             elif kind == "retry_from_checkpoint":
                 # Retry the failed turn from its latest checkpoint (P2):
                 # instead of re-executing from the start, resume from the last
