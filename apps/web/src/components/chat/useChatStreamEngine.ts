@@ -290,6 +290,8 @@ export function useChatStreamEngine(deps: EngineDeps) {
   // creates would render as a SECOND section next to the history-rendered
   // partial bubble; message.end heals the split by reconciling from history.
   const orphanStreamRef  = useRef<Record<string, boolean>>({});
+  // 孤儿流是否已认领服务端 turn id（见 mutateLive 的认领逻辑）
+  const adoptedTurnRef   = useRef<Record<string, boolean>>({});
   const seenTurnStartRef = useRef<Record<string, boolean>>({});
   const pingTimerRef     = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
   const watchTimerRef    = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
@@ -647,7 +649,19 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // 可读控制台，所以同时上报服务端日志（client_diag）留证。
     const evTurn = ev.turn_id as string | undefined;
     const bubble = (storeRef.current[sid] ?? []).find((m) => m.id === id);
-    if (evTurn && bubble?.turnId && evTurn !== bubble.turnId) {
+    // 孤儿流认领（2026-10-01 串线排查）：客户端在 turn 进行中途才连上 socket
+    // （子会话常态——spawn 后隔几十秒才被打开），拿不到 turn.start，气泡带着
+    // 本地占位 turnId。首个带 turn_id 的事件到来时认领服务端 id，否则该会话的
+    // 每个事件都对不上气泡、（更要紧）steer 帧会带一个服务端不认的 turn_id。
+    if (evTurn && bubble && bubble.turnId !== evTurn) {
+      if (orphanStreamRef.current[sid] && !adoptedTurnRef.current[sid]) {
+        adoptedTurnRef.current[sid] = true;
+        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
+          m.id === id ? { ...m, turnId: evTurn } : m,
+        );
+      }
+    }
+    if (evTurn && bubble?.turnId && evTurn !== bubble.turnId && !orphanStreamRef.current[sid]) {
       const detail = {
         event: ev.event,
         ev_turn: evTurn,
@@ -1230,6 +1244,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         markDelivered(sid);
         const wasOrphan = !!orphanStreamRef.current[sid];
         orphanStreamRef.current[sid] = false;
+        adoptedTurnRef.current[sid] = false;
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
         busyBySessionRef.current[sid] = false;
@@ -1308,6 +1323,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         markDelivered(sid);
         const wasOrphan = !!orphanStreamRef.current[sid];
         orphanStreamRef.current[sid] = false;
+        adoptedTurnRef.current[sid] = false;
         const liveMsgId = liveBySessionRef.current[sid];
         liveBySessionRef.current[sid] = null;
         streamAgentRef.current[sid] = null;
@@ -1357,6 +1373,8 @@ export function useChatStreamEngine(deps: EngineDeps) {
         // persisted last_error as a proper error card with retry.
         if (orphanStreamRef.current[sid]) {
           orphanStreamRef.current[sid] = false;
+          adoptedTurnRef.current[sid] = false;
+        adoptedTurnRef.current[sid] = false;
           reconcileTurnFromHistory(sid);
           break;
         }
