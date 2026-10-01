@@ -164,7 +164,75 @@ export interface SessionMeta {
   workflow_id?: string | null;
   // "quick" = created by the floating quick-chat window
   // (docs/floating-window-design.md §1.1); regular sessions omit the field.
-  type?: "quick";
+  // "subagent" = a spawned child session (subagent-design.md §4.1); the parent
+  // linkage lives in parent_session_id/depth/subagent below.
+  type?: "quick" | "subagent";
+  // ---- subagent (subagent-design.md §4.1；与共享契约 1 同形) ----
+  // Parent session (main conversation or an upper-layer subagent).
+  parent_session_id?: string;
+  // 0/1/2 — main conversations and plain sessions omit the field.
+  depth?: number;
+  subagent?: SubagentMeta;
+}
+
+export type SubagentStatus = "running" | "waiting" | "done" | "failed" | "stopped";
+
+export interface SubagentMeta {
+  goal: string;
+  constraints: string;
+  acceptance: string;
+  origin: "user" | "agent";
+  status: SubagentStatus;
+  result_summary: string;
+  // P3 共享契约 2：spawn 模式。"standard" = 全新上下文（默认）；"fork" = 初始
+  // 历史为父对话 checkpoint 副本。P1/P2 存量无此字段，视为 "standard"。
+  mode?: "standard" | "fork";
+}
+
+// WS 帧 subagent.spawned（契约 2）——广播到父 session 与子 session 的所有 socket。
+export interface SubagentSpawnEvent {
+  session_id: string;
+  parent_session_id: string;
+  goal: string;
+  constraints?: string;
+  acceptance?: string;
+  depth?: number;
+  origin?: "user" | "agent";
+  title?: string;
+}
+
+// WS 帧 subagent.status（契约 2）。
+export interface SubagentStatusEvent {
+  session_id: string;
+  parent_session_id: string;
+  status: SubagentStatus;
+  result_summary?: string;
+  error?: string;
+}
+
+// ---- 拆分方案（P2 共享契约 1/2，subagent-design.md §5.1/§5.2）----------------
+// WS 下行 subagent.plan：LLM 拆分结果，广播到当前 session 的 socket。用户在
+// 拆分方案卡片里确认/编辑后才批量 spawn（防泛滥闸门，设计 §5.2）。
+export interface SubagentPlanSubtask {
+  goal: string;
+  constraints?: string;
+  acceptance?: string;
+  // 委派理由（附录 A.7）：用户快速判断拆分是否合理的主要审阅物。
+  reason?: string;
+}
+
+export interface SubagentPlanEvent {
+  plan_id: string;
+  session_id: string;
+  task: string;
+  subtasks: SubagentPlanSubtask[];
+}
+
+// WS 下行 subagent.plan.cancelled（P3 共享契约 5）：另一个窗口（或 runtime 侧
+// 主动）取消了一个还在 pending 的拆分方案——本窗口把对应卡片翻成已取消态。
+export interface SubagentPlanCancelledEvent {
+  plan_id: string;
+  session_id?: string;
 }
 
 // A registered context folder (~/.ginno/folders.json entry).

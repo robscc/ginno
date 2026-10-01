@@ -248,6 +248,9 @@ export function GeneralSettings() {
   const [theme, setTheme] = useState<string>("dark");
   const [msg, setMsg] = useState("");
   const [bypass, setBypass] = useState(true);
+  // subagent 并发上限（P3 共享契约 3）：settings 键 subagent.max_concurrent，
+  // 默认 5、范围 1-16；runtime 调度器动态读取，保存后即生效。
+  const [subMax, setSubMax] = useState("5");
 
   useEffect(() => {
     let t = "dark";
@@ -260,7 +263,13 @@ export function GeneralSettings() {
     applyTheme(t);
     api
       .getSettings()
-      .then((s) => setBypass((s as Record<string, unknown>).bypass_permissions !== false))
+      .then((s) => {
+        setBypass((s as Record<string, unknown>).bypass_permissions !== false);
+        const sub = (s as Record<string, unknown>).subagent as
+          | { max_concurrent?: unknown }
+          | undefined;
+        if (typeof sub?.max_concurrent === "number") setSubMax(String(sub.max_concurrent));
+      })
       .catch(() => {});
   }, []);
 
@@ -280,6 +289,24 @@ export function GeneralSettings() {
       await api.putSettings(s);
       setBypass(v);
       setMsg(v ? "特权模式已开启：所有工具直接执行，不再询问" : "特权模式已关闭：按权限策略询问 / 拦截");
+    } catch {
+      setMsg("保存失败");
+    }
+  }
+  // 保存 subagent 并发上限：走既有 get→改→put 链路（同 toggleBypass），键为
+  // 嵌套的 settings.subagent.max_concurrent，其余 subagent 字段原样保留。
+  async function saveSubagentMax(raw: string) {
+    const n = Math.round(Number(raw));
+    const clamped = Number.isFinite(n) ? Math.min(16, Math.max(1, n)) : 5;
+    setSubMax(String(clamped));
+    if (Number.isFinite(n) && n !== clamped) setMsg(`超出范围，已收敛到 ${clamped}（允许 1-16）`);
+    try {
+      const s = (await api.getSettings()) as Record<string, unknown>;
+      const sub = (s.subagent as Record<string, unknown> | undefined) ?? {};
+      sub.max_concurrent = clamped;
+      s.subagent = sub;
+      await api.putSettings(s);
+      setMsg(`subagent 并发上限已保存：${clamped}`);
     } catch {
       setMsg("保存失败");
     }
@@ -324,6 +351,31 @@ export function GeneralSettings() {
           </label>
           <p className="mt-1 text-xs text-faint">
             开启后 Agent 调用任何工具都不再询问、不被权限策略拦截（含 Bash/Write 等危险操作）。默认开启；关闭后按权限策略询问/拦截。注意：你配置的 PreToolUse hook 仍会执行（hook 是自定义规则，始终生效）。
+          </p>
+        </div>
+        <div>
+          <label className="field-label">Subagent 并发上限</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              max={16}
+              value={subMax}
+              onChange={(e) => setSubMax(e.target.value)}
+              onBlur={(e) => void saveSubagentMax(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void saveSubagentMax((e.target as HTMLInputElement).value);
+                }
+              }}
+              className="field w-24"
+              aria-label="subagent 并发上限（1-16）"
+            />
+            <span className="text-xs text-faint">允许 1-16，默认 5；保存后立即生效</span>
+          </div>
+          <p className="mt-1 text-xs text-faint">
+            同一父会话同时运行的 subagent 数量硬上限；超出时发起会被拒绝并提示当前在跑清单。
           </p>
         </div>
         <div>

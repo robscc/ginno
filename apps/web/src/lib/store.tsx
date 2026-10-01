@@ -14,7 +14,7 @@ import { ALL_RIGHT_TAB_IDS, canonicalTabOrder, visibleTabOrder } from "./rightTa
 import type { SynthesisCaseSummary } from "./runtime";
 import { notifyNative } from "./desktop";
 import { loadNotifyPrefs, notifyPrefs } from "./notifyPrefs";
-import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, Todo, WorkflowDef, WorkflowRun } from "./types";
+import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, SubagentSpawnEvent, SubagentStatusEvent, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis" | "code";
 
@@ -276,11 +276,17 @@ interface GinnoState {
     opts?: { title?: string; provider?: string; model?: string; workflow_id?: string },
   ) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
-  removeSession: (id: string) => Promise<void>;
+  removeSession: (id: string, opts?: { cascade?: boolean }) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
   // Merge a server-pushed or optimistic partial into one session's meta
   // (session_title WS events, model-switch reconcile).
   applySessionPatch: (id: string, patch: Partial<SessionMeta>) => void;
+  // ---- subagent (subagent-design.md §4.1/§6.1；由 ChatStream 的 WS 分发调用) ----
+  // subagent.spawned：upsert 子会话行（列表里还没有时合成一行占位，meta 由
+  // 事件字段拼出；随后的 reloadSessions 会以服务端权威数据覆盖）。
+  notifySubagentSpawned: (ev: SubagentSpawnEvent) => void;
+  // subagent.status：回填子会话的 status / result_summary。
+  notifySubagentStatus: (ev: SubagentStatusEvent) => void;
   patchTodo: (id: string, patch: Partial<Todo>) => Promise<void>;
   addTodo: (data: Partial<Todo>) => Promise<void>;
   removeTodo: (id: string) => Promise<void>;
@@ -1061,19 +1067,34 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
-  const removeSession = useCallback(async (id: string) => {
+  const removeSession = useCallback(async (id: string, opts?: { cascade?: boolean }) => {
     // optimistic remove; if it was active, land on home (lazy creation will
-    // make the next send start a fresh session — no phantom auto-session)
+    // make the next send start a fresh session — no phantom auto-session).
+    // 级联删除（subagent-design.md §5.8）时把全部后代一并从列表移除——后端沿
+    // parent_session_id 反向索引删除，前端这里只做 UI 即时一致性。
     setSessions((prev) => {
-      const next = prev.filter((s) => s.id !== id);
+      const doomed = new Set<string>([id]);
+      if (opts?.cascade) {
+        let grew = true;
+        while (grew) {
+          grew = false;
+          for (const s of prev) {
+            if (s.parent_session_id && doomed.has(s.parent_session_id) && !doomed.has(s.id)) {
+              doomed.add(s.id);
+              grew = true;
+            }
+          }
+        }
+      }
+      const next = prev.filter((s) => !doomed.has(s.id));
       setActiveSessionId((cur) => {
-        if (cur !== id) return cur;
+        if (cur !== id && !(cur && doomed.has(cur))) return cur;
         return null;
       });
       return next;
     });
     try {
-      await api.deleteSession(id);
+      await api.deleteSession(id, opts?.cascade);
     } catch {
       /* ignore — reconcile on next reload */
     }
@@ -1097,6 +1118,72 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
 
   const applySessionPatch = useCallback((id: string, patch: Partial<SessionMeta>) => {
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }, []);
+
+  // ---- subagent（subagent-design.md §4.1/§6.1）----
+  const notifySubagentSpawned = useCallback((ev: SubagentSpawnEvent) => {
+    if (!ev.session_id) return;
+    const now = Date.now() / 1000;
+    setSessions((prev) => {
+      const idx = prev.findIndex((s) => s.id === ev.session_id);
+      const patch: Partial<SessionMeta> = {
+        type: "subagent",
+        parent_session_id: ev.parent_session_id,
+        depth: typeof ev.depth === "number" ? ev.depth : 0,
+        subagent: {
+          goal: ev.goal ?? "",
+          constraints: ev.constraints ?? "",
+          acceptance: ev.acceptance ?? "",
+          origin: ev.origin ?? "agent",
+          status: "running",
+          result_summary: "",
+        },
+      };
+      if (idx >= 0) {
+        // 已在列表（boot reload 先到）：只叠加子代字段与标题。
+        return prev.map((s, i) =>
+          i === idx ? { ...s, ...patch, title: ev.title || s.title } : s,
+        );
+      }
+      // 即时事件先于任何 reload：合成一行占位，服务端字段（provider/model 等）
+      // 由下一次 reloadSessions 补齐。图标用 boxes（子代理组语义），渲染时子行
+      // 以状态 emoji 为主，图标只是兜底。
+      return [
+        {
+          id: ev.session_id,
+          title: ev.title || ev.goal || "子任务",
+          icon: "boxes",
+          agent_id: null,
+          provider: "",
+          model: "",
+          created: now,
+          updated: now,
+          ...patch,
+        },
+        ...prev,
+      ];
+    });
+  }, []);
+
+  const notifySubagentStatus = useCallback((ev: SubagentStatusEvent) => {
+    if (!ev.session_id || !ev.status) return;
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === ev.session_id
+          ? {
+              ...s,
+              updated: Date.now() / 1000,
+              subagent: s.subagent
+                ? {
+                    ...s.subagent,
+                    status: ev.status,
+                    result_summary: ev.result_summary ?? s.subagent.result_summary,
+                  }
+                : s.subagent,
+            }
+          : s,
+      ),
+    );
   }, []);
 
   const addTodo = useCallback(async (data: Partial<Todo>) => {
@@ -1289,6 +1376,8 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     removeSession,
     renameSession,
     applySessionPatch,
+    notifySubagentSpawned,
+    notifySubagentStatus,
     patchTodo,
     addTodo,
     removeTodo,

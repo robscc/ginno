@@ -5,11 +5,13 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   BookOpen,
+  ChevronDown,
   Settings as SettingsIcon,
   Plus,
   Search,
   Workflow as WorkflowIcon,
   Pencil,
+  Square,
   Trash2,
 } from "lucide-react";
 import { GoalEditor } from "@/components/shell/GoalChip";
@@ -23,6 +25,7 @@ import { applyTheme } from "@/components/settings/GeneralSettings";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { ChatStream } from "@/components/chat/ChatStream";
+import { SUBAGENT_STATUS_META, SubagentKindBadges } from "@/components/chat/blocks";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
@@ -38,11 +41,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const cancelRename = useRef(false);
   const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
   const confirmDelete = () => {
-    if (deleteTarget) g.removeSession(deleteTarget.id);
+    // 有后代时级联删除（subagent-design.md §5.8）：后端沿 parent_session_id
+    // 一并停止/删除；store 的乐观移除同步清掉后代行。
+    if (deleteTarget) {
+      g.removeSession(deleteTarget.id, { cascade: descendantCount(deleteTarget.id) > 0 });
+    }
     setDeleteTarget(null);
   };
   // C+ 方案③：侧边栏按 agent 筛选会话（null = 全部，再点一次取消）
   const [agentFilter, setAgentFilter] = useState<string | null>(null);
+  // 子会话树的展开/折叠覆盖（subagent-design.md §6.1）：undefined = 跟随默认
+  // （有运行中/等待子代 → 展开，全部结束 → 折叠）；用户点过 chevron 后固定。
+  const [treeCollapsed, setTreeCollapsed] = useState<Record<string, boolean>>({});
 
   // Goal-first session (goal-design.md P2): create a session titled by the
   // objective and immediately set it as the active goal so the driver starts.
@@ -186,8 +196,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Sidebar sessions: activity-day groups, newest activity first. `updated`
   // is bumped per turn server-side, so it tracks last use, not creation.
   // C+ 方案③：agent 筛选作用于分组前的列表，分组/排序逻辑不变。
-  const sortedSessions = [...g.sessions]
-    .filter((s) => !agentFilter || s.agent_id === agentFilter)
+  //
+  // subagent 树（subagent-design.md §6.1）：先按活动日分主行，再把子会话
+  // （type==="subagent"）按 parent_session_id 挂到父行下嵌套渲染。子会话不进
+  // 天分组——它的活动不应顶起父会话的排序（设计文档开放问题 2 的 UI 侧答案）。
+  const visibleSessions = g.sessions.filter(
+    (s) => !agentFilter || s.agent_id === agentFilter,
+  );
+  // 父 id → 直属子会话（按创建时间正序）。
+  const childrenOf = new Map<string, SessionMeta[]>();
+  for (const s of visibleSessions) {
+    if (s.type !== "subagent" || !s.parent_session_id) continue;
+    const list = childrenOf.get(s.parent_session_id) ?? [];
+    list.push(s);
+    childrenOf.set(s.parent_session_id, list);
+  }
+  for (const list of childrenOf.values()) {
+    list.sort((a, b) => (a.created ?? 0) - (b.created ?? 0));
+  }
+  // 全部后代数（嵌套子代理的 +N 尾标与级联删除确认文案共用）。
+  const descendantCount = (id: string): number => {
+    let n = 0;
+    const walk = (pid: string) => {
+      for (const c of childrenOf.get(pid) ?? []) {
+        n++;
+        walk(c.id);
+      }
+    };
+    walk(id);
+    return n;
+  };
+  // 父在本列表可见（未被筛选掉/未删除）的子会话才嵌套；孤儿子会话退回
+  // 天分组顶层渲染，避免凭空消失。
+  const hasVisibleParent = (s: SessionMeta) =>
+    s.type === "subagent" && !!s.parent_session_id &&
+    visibleSessions.some((p) => p.id === s.parent_session_id);
+  const sortedSessions = [...visibleSessions]
+    .filter((s) => !hasVisibleParent(s))
     .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
   const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const todayMs = dayStart(new Date());
@@ -203,110 +248,214 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     ["更早", sortedSessions.filter((s) => groupOf(s) === "更早")],
   ];
 
-  const renderSessionRow = (s: SessionMeta) => {
+  const renderSessionRow = (s: SessionMeta, depth = 0, childRows: SessionMeta[] = []) => {
     const sel = onWorkspace && s.id === g.activeSessionId;
     const rowAgent = g.agents.find((a) => a.id === s.agent_id) ?? null;
     const hex = agentHex(rowAgent?.color);
     const editing = editingId === s.id;
+    const isSub = s.type === "subagent";
+    const subStatus = s.subagent?.status;
+    const subMeta = subStatus ? SUBAGENT_STATUS_META[subStatus] : null;
+    const subActive = subStatus === "running" || subStatus === "waiting";
+    const hasKids = childRows.length > 0;
+    const activeKids = childRows.filter(
+      (c) => c.subagent?.status === "running" || c.subagent?.status === "waiting",
+    ).length;
+    // 默认展开运行中的子树；全部结束折叠；用户点过 chevron 后以其为准。
+    const expanded = treeCollapsed[s.id] === undefined ? activeKids > 0 : !treeCollapsed[s.id];
+    const openChild = () => {
+      g.setActiveSession(s.id);
+      if (!onWorkspace) router.push("/");
+    };
     return (
-      <div
-        key={s.id}
-        className={`nav-item group ${sel ? "text-txt" : ""}`}
-        style={sel ? { background: "rgba(99,102,241,0.14)" } : undefined}
-      >
-        {editing ? (
-          <input
-            autoFocus
-            value={editTitle}
-            onChange={(e) => setEditTitle(e.target.value)}
-            onBlur={() => {
-              if (cancelRename.current) {
-                cancelRename.current = false;
-                setEditingId(null);
-                return;
-              }
-              g.renameSession(s.id, editTitle);
-              setEditingId(null);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
+      <div key={s.id}>
+        <div
+          className={`nav-item group ${sel ? "text-txt" : ""} ${
+            isSub && !subActive && !sel ? "opacity-60" : ""
+          }`}
+          style={{
+            ...(sel ? { background: "rgba(99,102,241,0.14)" } : undefined),
+            ...(depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined),
+          }}
+        >
+          {editing ? (
+            <input
+              autoFocus
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              onBlur={() => {
+                if (cancelRename.current) {
+                  cancelRename.current = false;
+                  setEditingId(null);
+                  return;
+                }
                 g.renameSession(s.id, editTitle);
                 setEditingId(null);
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                cancelRename.current = true; // suppress the onBlur commit
-                setEditingId(null);
-              }
-            }}
-            onClick={(e) => e.stopPropagation()}
-            className="min-w-0 flex-1 rounded border border-line2 bg-base/60 px-1 text-sm text-txt outline-none focus:border-violet"
-          />
-        ) : (
-          <>
-            <button
-              onClick={() => {
-                g.setActiveSession(s.id);
-                if (!onWorkspace) router.push("/");
               }}
-              onDoubleClick={(e) => {
-                e.stopPropagation();
-                setEditTitle(s.title || "");
-                setEditingId(s.id);
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  g.renameSession(s.id, editTitle);
+                  setEditingId(null);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelRename.current = true; // suppress the onBlur commit
+                  setEditingId(null);
+                }
               }}
-              className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-            >
-              <Icon
-                name={s.icon || "message-square"}
-                className="h-4 w-4 shrink-0"
-                style={{ color: hex }}
-              />
-              <span className="truncate">{s.title || "Untitled"}</span>
-              {/* 悬浮速聊窗创建的 quick 会话角标（floating-window-design.md §1.1） */}
-              {s.type === "quick" && (
-                <span title="速聊会话（来自悬浮窗）" className="shrink-0 text-[10px] text-yellow">
-                  ⚡
-                </span>
-              )}
-              {/* C+ 方案③：会话行 agent 名小标签（agent 已删除时不渲染） */}
-              {rowAgent && (
-                <span
-                  className="shrink-0 rounded-full border px-1.5 text-[10px] leading-4"
-                  style={{ borderColor: hex + "44", background: hex + "14", color: hex }}
-                >
-                  {rowAgent.name}
-                </span>
-              )}
-              <span className="ml-auto shrink-0 text-[10px] text-faint">
-                {relTime(s.updated ?? s.created)}
-              </span>
-            </button>
-            <span className="flex shrink-0 items-center gap-0.5">
+              onClick={(e) => e.stopPropagation()}
+              className="min-w-0 flex-1 rounded border border-line2 bg-base/60 px-1 text-sm text-txt outline-none focus:border-violet"
+            />
+          ) : (
+            <>
               <button
-                onClick={(e) => {
+                onClick={openChild}
+                onDoubleClick={(e) => {
                   e.stopPropagation();
                   setEditTitle(s.title || "");
                   setEditingId(s.id);
                 }}
-                aria-label="重命名会话"
-                title="重命名（也可双击标题）"
-                className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
+                className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
               >
-                <Pencil className="h-3.5 w-3.5" />
+                {isSub && subMeta ? (
+                  // 子会话行：状态 emoji 取代会话图标（subagent-design.md §6.1）
+                  <span
+                    className="shrink-0 text-[11px] leading-none"
+                    title={`状态：${subMeta.label}`}
+                  >
+                    {subMeta.glyph}
+                  </span>
+                ) : (
+                  <Icon
+                    name={s.icon || "message-square"}
+                    className="h-4 w-4 shrink-0"
+                    style={{ color: hex }}
+                  />
+                )}
+                <span className="truncate">{s.title || "Untitled"}</span>
+                {/* fork / 子代理类型徽标（P3 范围 3）：仅子会话行渲染 */}
+                {isSub && <SubagentKindBadges sub={s.subagent} />}
+                {/* 悬浮速聊窗创建的 quick 会话角标（floating-window-design.md §1.1） */}
+                {s.type === "quick" && (
+                  <span title="速聊会话（来自悬浮窗）" className="shrink-0 text-[10px] text-yellow">
+                    ⚡
+                  </span>
+                )}
+                {/* C+ 方案③：会话行 agent 名小标签（agent 已删除时不渲染） */}
+                {rowAgent && (
+                  <span
+                    className="shrink-0 rounded-full border px-1.5 text-[10px] leading-4"
+                    style={{ borderColor: hex + "44", background: hex + "14", color: hex }}
+                  >
+                    {rowAgent.name}
+                  </span>
+                )}
+                {/* 子树还有更深的后代：行尾 +N 尾标（设计 §6.1） */}
+                {hasKids && descendantCount(s.id) > childRows.length && (
+                  <span
+                    className="shrink-0 text-[10px] text-faint"
+                    title={`还有 ${descendantCount(s.id) - childRows.length} 个嵌套子任务`}
+                  >
+                    +{descendantCount(s.id) - childRows.length}
+                  </span>
+                )}
+                <span className="ml-auto shrink-0 text-[10px] text-faint">
+                  {relTime(s.updated ?? s.created)}
+                </span>
               </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDeleteTarget(s);
-                }}
-                aria-label="删除会话"
-                title="删除会话"
-                className="rounded p-1 text-muted hover:bg-card2 hover:text-red"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </span>
-          </>
+              {/* 父行徽标：运行中子代理数量（设计 §6.1 的「● 2 agents」） */}
+              {hasKids && activeKids > 0 && (
+                <span
+                  className="flex shrink-0 items-center gap-1 rounded-full border border-line2 px-1.5 text-[10px] leading-4 text-muted"
+                  title={`${activeKids} 个子任务运行中`}
+                >
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green" />
+                  {activeKids}
+                </span>
+              )}
+              <span className="flex shrink-0 items-center gap-0.5">
+                {hasKids && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTreeCollapsed((prev) => ({ ...prev, [s.id]: !!expanded }));
+                    }}
+                    aria-label={expanded ? "折叠子任务" : "展开子任务"}
+                    title={expanded ? "折叠子任务" : "展开子任务"}
+                    className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
+                  >
+                    <ChevronDown
+                      className={`h-3.5 w-3.5 transition-transform ${expanded ? "" : "-rotate-90"}`}
+                    />
+                  </button>
+                )}
+                {isSub ? (
+                  // 子会话行 hover 入口（P2 共享契约 4）：运行中/等待 → 停止
+                  // （HTTP 端点，running 走协作式停止、waiting 级联停后代；
+                  // 状态刷新依赖既有 subagent.status 事件）；结束态 → 清除行
+                  // （删除该子会话）。
+                  subActive ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void api.stopSession(s.id).catch(() => {
+                          /* 端点不可达——状态仍以 subagent.status 事件为准 */
+                        });
+                      }}
+                      aria-label="停止子任务"
+                      title="停止子任务（含其运行中的后代）"
+                      className="rounded p-1 text-muted opacity-0 transition-opacity hover:bg-card2 hover:text-yellow group-hover:opacity-100"
+                    >
+                      <Square className="h-3 w-3" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void g.removeSession(s.id);
+                      }}
+                      aria-label="清除已结束的子任务"
+                      title="清除（删除该子会话行）"
+                      className="rounded p-1 text-muted opacity-0 transition-opacity hover:bg-card2 hover:text-red group-hover:opacity-100"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )
+                ) : (
+                  <>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditTitle(s.title || "");
+                        setEditingId(s.id);
+                      }}
+                      aria-label="重命名会话"
+                      title="重命名（也可双击标题）"
+                      className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteTarget(s);
+                      }}
+                      aria-label="删除会话"
+                      title="删除会话"
+                      className="rounded p-1 text-muted hover:bg-card2 hover:text-red"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                )}
+              </span>
+            </>
+          )}
+        </div>
+        {hasKids && expanded && (
+          <div className="space-y-0.5">
+            {childRows.map((c) => renderSessionRow(c, depth + 1, childrenOf.get(c.id) ?? []))}
+          </div>
         )}
       </div>
     );
@@ -411,7 +560,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             rows.length ? (
               <div key={label} className="mb-1">
                 <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-faint">{label}</div>
-                <div className="space-y-0.5">{rows.map(renderSessionRow)}</div>
+                <div className="space-y-0.5">
+                  {rows.map((s) => renderSessionRow(s, 0, childrenOf.get(s.id) ?? []))}
+                </div>
               </div>
             ) : null,
           )}
@@ -508,7 +659,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {deleteTarget && (
         <ConfirmModal
           title="删除会话"
-          message={`确定删除会话「${deleteTarget.title || "Untitled"}」？其对话历史将被删除且无法恢复；会话产生的文件会保留，可在 设置 → 会话文件 中查看或清理。`}
+          message={`确定删除会话「${deleteTarget.title || "Untitled"}」？其对话历史将被删除且无法恢复；会话产生的文件会保留，可在 设置 → 会话文件 中查看或清理。${
+            descendantCount(deleteTarget.id) > 0
+              ? ` 将同时删除它的 ${descendantCount(deleteTarget.id)} 个子 agent 会话（运行中的会先协作式停止）。`
+              : ""
+          }`}
           confirmLabel="删除"
           onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}

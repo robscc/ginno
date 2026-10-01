@@ -1,26 +1,21 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, FileEdit, Check, RotateCcw, Globe } from "lucide-react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, Check, RotateCcw, Globe } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
-import { openSessionSocket, getSessionHistory, debugLog, attachFilePath } from "@/lib/runtime";
+import { debugLog, attachFilePath } from "@/lib/runtime";
 import { useSteerQueue } from "@/lib/steerQueue";
 import {
   readImage,
   uploadDoc,
   isImageFile,
-  type ComposerImage,
-  type ComposerFile,
 } from "@/lib/composerAttachments";
 import { loadToolLabels } from "@/lib/toolLabels";
 import { agentHex } from "@/lib/theme";
 import { greeting, relTime } from "@/lib/utils";
-import { notifyNative } from "@/lib/desktop";
-import { notifyPrefs } from "@/lib/notifyPrefs";
 import { Icon } from "@/components/icons";
-import { ContextBlocks, InnerBlocks, RefBlocks, SteerBand, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
-import { DiffView } from "@/components/workflow/DiffView";
+import { ContextBlocks, SteerBand, SubagentBlocks, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
@@ -37,401 +32,37 @@ import {
 } from "@/components/chat/commandMenu";
 import {
   cancelWorkflowRun,
-  createWorkflow,
   decideWorkflowRun,
   deleteWorkflowRun,
-  getSynthesisCase,
-  getWorkflowRun,
   pauseWorkflowRun,
   retryWorkflowRun,
   retryWorkflowRunFromCheckpoint,
-  summarizeSessionToDsl,
-  triggerWorkflowRun,
 } from "@/lib/runtime";
 import type { WorkflowRun } from "@/lib/types";
-import type { AgentConfig, ContextChange, Goal, SessionMeta, SessionUsage } from "@/lib/types";
-
-interface ChatMsg {
-  id: string;
-  // "system" = WorldState context chip rows (centered, not a bubble)
-  role: "user" | "assistant" | "system";
-  blocks: Block[];
-  agentId?: string | null;
-  agentName?: string;
-  turnId?: string; // per-turn trace UUID (shown on the bubble, greppable in sidecar logs)
-  // Delivery state — user bubbles only. "sending" = in flight to the sidecar;
-  // "failed" = never delivered (red ❗, click to retry). Successful delivery
-  // clears it back to undefined.
-  status?: "sending" | "failed";
-  failReason?: string;
-  // Immutable snapshot of everything the turn carries, kept on the bubble so
-  // a failed send can be retried or re-edited without losing content.
-  sendPayload?: SendPayload;
-  // Assistant turn-error card: the input WAS delivered but the run errored
-  // (model/provider failure etc.). blocks[0] holds the error text;
-  // sendPayload carries the originating user turn for the retry button.
-  error?: boolean;
-  // Assistant bubble that was streaming when the turn errored — rendered with
-  // a red border + "回复中断" label so it doesn't look like a normal reply.
-  failed?: boolean;
-  // Error cards only: id of the originating user bubble. Retry operates on
-  // THAT bubble in place — no duplicate message is appended.
-  sourceMsgId?: string;
-}
-
-// The mid-turn steering queue state machine (SteerItem, the per-session queue,
-// send / recall / ack handling) now lives in @/lib/steerQueue, shared with the
-// floating quick-chat window (steer-queue-shared-brief §3.1).
-
-interface SendPayload {
-  text: string;
-  images: Attachment[];
-  files: FileAttachment[];
-  mentions: ResolvedMention[];
-  agentId: string | null;
-}
-
-const newTurnId = () =>
-  typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-
-async function copyText(t: string) {
-  try {
-    await navigator.clipboard.writeText(t);
-    return true;
-  } catch {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = t;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(ta);
-      return ok;
-    } catch {
-      return false;
-    }
-  }
-}
-
-/** Click-to-copy per-turn trace UUID. The full id is what you grep the sidecar
- *  logs for (`turn=...`); we show a short prefix to keep the bubble tidy. */
-function TurnIdChip({ turnId }: { turnId?: string }) {
-  const [copied, setCopied] = useState(false);
-  if (!turnId) return null;
-  const short = turnId.slice(0, 8);
-  return (
-    <button
-      onClick={async () => {
-        if (await copyText(turnId)) {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        }
-      }}
-      title={`turn ${turnId}（点击复制，用于日志定位）`}
-      className="rounded border border-line2 px-1 py-px font-mono text-[9px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
-    >
-      {copied ? "copied" : `#${short}`}
-    </button>
-  );
-}
-
-// C+ 方案①：composer chip 的轻量关键词推荐（原型 REC_RULES）。纯客户端
-// 启发式，顺序敏感——命中第一条规则即停；只展示「推荐」小标签，绝不自动选中。
-const AGENT_REC_RULES: Array<{ agentId: string; kws: string[] }> = [
-  { agentId: "research", kws: ["调研", "研究", "查一下", "搜", "资料", "对比", "了解", "竞品"] },
-  { agentId: "writer", kws: ["写一篇", "文档", "文章", "总结", "润色", "周报", "邮件", "大纲"] },
-  { agentId: "workflow-dev", kws: ["工作流", "workflow", "流水线"] },
-  { agentId: "dev", kws: ["代码", "bug", "实现", "修复", "重构", "报错", "函数", "部署"] },
-];
-
-function recommendAgentId(text: string, existing: ReadonlySet<string>): string | null {
-  const t = text.toLowerCase();
-  for (const rule of AGENT_REC_RULES) {
-    if (!existing.has(rule.agentId)) continue; // 自定义/已删除的 agent 不参与推荐
-    if (rule.kws.some((k) => t.includes(k))) return rule.agentId;
-  }
-  return null;
-}
-
-interface PermissionPrompt {
-  tool: string;
-  args: unknown;
-}
-
-interface VersionPropose {
-  workflow_id: string;
-  from_version: number;
-  diff: string;
-  rationale: string;
-}
-
-let _mid = 0;
-const mid = () => `m${++_mid}`;
-
-// S6: localStorage key for the unsaved summarize draft (24h TTL, see openSummarize).
-const SUMMARIZE_DRAFT_KEY = "ginno-summarize-draft";
-const SUMMARIZE_DRAFT_TTL = 24 * 3600 * 1000;
-
-interface SummarizeDraft {
-  dsl: Record<string, unknown>;
-  sourceSessionId?: string;
-  sourceLabel?: string;
-  savedAt: number;
-}
-
-function readSummarizeDraft(): SummarizeDraft | null {
-  try {
-    const raw = localStorage.getItem(SUMMARIZE_DRAFT_KEY);
-    if (!raw) return null;
-    const d = JSON.parse(raw) as SummarizeDraft;
-    if (d?.dsl && typeof d.savedAt === "number" && Date.now() - d.savedAt < SUMMARIZE_DRAFT_TTL) {
-      return d;
-    }
-  } catch {
-    /* corrupted draft */
-  }
-  return null;
-}
-
-/** One-line summary of a tool call's args for the live-run tool row
- *  (workflow-ux-redesign P1): first string-ish value, truncated to 50 chars. */
-function toolArgsPreview(args: unknown): string {
-  if (!args || typeof args !== "object") return "";
-  for (const v of Object.values(args as Record<string, unknown>)) {
-    if (typeof v === "string" && v.trim()) {
-      const t = v.trim();
-      return t.length > 50 ? t.slice(0, 49) + "…" : t;
-    }
-  }
-  return "";
-}
-
-// Composer attachment shapes now live in @/lib/composerAttachments (shared with
-// the floating quick-chat window). Aliased so the rest of this file is unchanged.
-type Attachment = ComposerImage;
-type FileAttachment = ComposerFile;
-
-const TABLE_KINDS = new Set(["spreadsheet", "table"]);
-
-// readImage now lives in @/lib/composerAttachments (shared with the floating
-// window). Its 400KB / 1600px / JPEG 0.85 thresholds are unchanged.
-
-// Patterns that indicate a tool returned "no results" — hide these blocks to reduce noise.
-// Covers both the builtin tool phrasing ("(no matches)") and the MCP filesystem
-// server's phrasing ("No matches found"), so empty search results don't pile up
-// as collapsed panels the agent already explains in prose.
-const EMPTY_TOOL_RESULT_RE =
-  /^\s*(\(no matches\)|\(no files found\)|\(empty\)|no results|no files matched|no matches found|no files found|\(nothing found\))\s*$/i;
-
-function isEmptyToolResult(content: string): boolean {
-  return EMPTY_TOOL_RESULT_RE.test(content);
-}
-
-/** ask_user tool.end content → the question card's final state. The receipt
- * is JSON ({ok, skipped, source, option_index, answer, free_text}); a stop
- * while parked persists the literal "(interrupted)" instead. Anything
- * unparseable also reads as skipped — a card left "pending" would keep the
- * session stuck in the running state (hasPendingTool counts it). */
-function foldQuestionResult(q: QuestionBlock, content: string): QuestionBlock {
-  if (content.trim() !== "(interrupted)") {
-    try {
-      const r = JSON.parse(content);
-      if (r && typeof r === "object") {
-        if (r.skipped || r.source === "skipped") return { ...q, status: "skipped" };
-        return {
-          ...q,
-          status: "answered",
-          answer: String(r.answer ?? r.free_text ?? ""),
-          optionIndex: typeof r.option_index === "number" ? r.option_index : null,
-        };
-      }
-    } catch {
-      /* not JSON — falls through to skipped */
-    }
-  }
-  return { ...q, status: "skipped" };
-}
-
-/** Close a dead turn's unfinished blocks so `running` unsticks: pending tool
- * bubbles become "(interrupted)"; pending question cards flip to skipped via
- * their own status field — mirroring what the backend's stop-heal persists
- * ("(interrupted)" tool result), which history replay reads as skipped. */
-function closePendingBlocks(blocks: Block[]): Block[] {
-  return blocks.map((b) =>
-    b.kind === "tool" && b.pending
-      ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
-      : b.kind === "question" && b.status === "pending"
-        ? { ...b, status: "skipped" as const }
-        : b,
-  );
-}
-
-/** Rebuild a retry payload from a history user bubble's blocks — used to
- * re-surface a persisted turn-error card (with working retry) after a reload
- * or route/session switch. Image data URLs round-trip through the checkpoint.
- * Assistant-side kinds (tool/question/widget/…) are ignored BY DESIGN — only
- * user content round-trips into a retry; don't "complete" the switch. */
-function payloadFromBlocks(blocks: Block[], agentId: string | null): SendPayload {
-  const payload: SendPayload = { text: "", images: [], files: [], mentions: [], agentId };
-  for (const b of blocks) {
-    if (b.kind === "text") {
-      payload.text = payload.text ? `${payload.text}\n${b.text}` : b.text;
-    } else if (b.kind === "skill") {
-      // History-replayed slash-skill turn: resend as the original invocation
-      // so the server re-runs the skill substitution.
-      const line = b.text ? `/${b.name} ${b.text}` : `/${b.name}`;
-      payload.text = payload.text ? `${payload.text}\n${line}` : line;
-    } else if (b.kind === "file") {
-      payload.files.push({
-        id: b.fileId ?? "",
-        name: b.name,
-        path: b.path ?? "",
-        kind: b.fileKind ?? "",
-      });
-    } else if (b.kind === "image") {
-      // Only user-upload data URLs round-trip into a retry payload; generated
-      // images (fileId-based) are display-only and skipped here.
-      if (!b.url) continue;
-      const m = /^data:([^;]+);base64,(.*)$/.exec(b.url);
-      if (m) payload.images.push({ data: m[2], mediaType: m[1], preview: b.url, name: "image" });
-    }
-  }
-  return payload;
-}
-
-function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }): Block[] {
-  const last = blocks[blocks.length - 1];
-  switch (ev.event) {
-    case "token.delta": {
-      const t = (ev.content as string) || "";
-      if (last && last.kind === "text") {
-        const next = blocks.slice();
-        next[next.length - 1] = { kind: "text", text: last.text + t };
-        return next;
-      }
-      return [...blocks, { kind: "text", text: t }];
-    }
-    case "thinking.delta": {
-      const t = (ev.content as string) || "";
-      if (last && last.kind === "thinking") {
-        const next = blocks.slice();
-        next[next.length - 1] = { kind: "thinking", text: last.text + t };
-        return next;
-      }
-      return [...blocks, { kind: "thinking", text: t }];
-    }
-    case "tool.start":
-      return [...blocks, { kind: "tool", id: ev.id as string | undefined, name: ev.name as string, content: "…", pending: true }];
-    case "tool.args": {
-      // Attach the tool call's args preview (e.g. the bash command) to the
-      // pending bubble so the user sees WHAT is running, not just the label.
-      const id = ev.id as string | undefined;
-      const preview = ev.preview as string;
-      if (!id || !preview) return blocks;
-      let matched = false;
-      return blocks.map((b) => {
-        if (b.kind !== "tool") return b;
-        if (!matched && b.id === id) {
-          matched = true;
-          return { ...b, argsPreview: preview };
-        }
-        return b;
-      });
-    }
-    case "tool.end": {
-      const id = ev.id as string | undefined;
-      const name = ev.name as string | undefined;
-      const content = ev.content as string;
-      // ask_user: the question card replaced the tool bubble, so the result
-      // folds into the card instead. Checked FIRST — the empty-result filter
-      // below must never get a chance at a question block (it only drops
-      // tool blocks, but the fold has to win before that anyway).
-      const qi = id ? blocks.findIndex((b) => b.kind === "question" && b.id === id) : -1;
-      if (qi >= 0) {
-        const next = blocks.slice();
-        next[qi] = foldQuestionResult(next[qi] as QuestionBlock, content);
-        return next;
-      }
-      // Hide tool blocks that returned "no results" to reduce noise
-      if (isEmptyToolResult(content)) {
-        return blocks.filter((b) => {
-          if (b.kind !== "tool") return true;
-          const matches = id ? b.id === id : name ? b.name === name : b.pending;
-          return !matches;
-        });
-      }
-      let found = false;
-      return blocks.map((b) => {
-        if (b.kind !== "tool") return b;
-        const matches = !found && (id ? b.id === id : name ? b.name === name : b.pending);
-        if (matches) {
-          found = true;
-          return { ...b, content, pending: false };
-        }
-        return b;
-      });
-    }
-    case "user.question": {
-      // ask_user parked the turn: the card REPLACES the pending ask_user tool
-      // bubble with the same call id (the user sees "询问中…" first, then the
-      // card). Merging by id is what makes a reconnect re-emit a no-op instead
-      // of a duplicate card — an existing card may already carry an optimistic
-      // answer, so it is kept as-is.
-      const id = (ev.id as string | undefined) || undefined;
-      if (id && blocks.some((b) => b.kind === "question" && b.id === id)) return blocks;
-      const card: QuestionBlock = {
-        kind: "question",
-        id,
-        question: (ev.question as string) || "",
-        header: (ev.header as string) || undefined,
-        options: (ev.options as string[]) || [],
-        allowFreeText: ev.allow_free_text !== false,
-        status: "pending",
-      };
-      const ti = id ? blocks.findIndex((b) => b.kind === "tool" && b.id === id) : -1;
-      if (ti >= 0) {
-        const next = blocks.slice();
-        next[ti] = card;
-        return next;
-      }
-      return [...blocks, card];
-    }
-    case "widget.emit":
-      return [
-        ...blocks,
-        {
-          kind: "widget",
-          widgetKind: ev.kind as string,
-          data: ev.data,
-          renderId: (ev.render_id as string | undefined) || undefined,
-        },
-      ];
-    case "workflow.emit":
-      return [...blocks, { kind: "workflow", run: ev.run as import("@/lib/types").WorkflowRun }];
-    case "ref.emit":
-      return [
-        ...blocks,
-        { kind: "ref", refKind: ev.kind as string, name: ev.name as string, refId: ev.ref_id as string | undefined },
-      ];
-    case "image.emit":
-      // Code-generated image (bash) surfaced inline; URL resolved from fileId.
-      return [
-        ...blocks,
-        {
-          kind: "image",
-          fileId: ev.file_id as string,
-          name: ev.name as string | undefined,
-          mtime: ev.mtime as number | undefined,
-        },
-      ];
-    default:
-      return blocks;
-  }
-}
+import type { SessionMeta, SessionUsage } from "@/lib/types";
+import {
+  mid,
+  newTurnId,
+  recommendAgentId,
+  TABLE_KINDS,
+  type Attachment,
+  type ChatMsg,
+  type FileAttachment,
+  type PermissionPrompt,
+  type SendPayload,
+  type VersionPropose,
+} from "./streamCore";
+import {
+  AssistantBubble,
+  ErrorCard,
+  HandoffDivider,
+  ProposeCard,
+  SubagentTopBar,
+  TurnIdChip,
+} from "./streamCards";
+import { useChatStreamEngine } from "./useChatStreamEngine";
+import { useSummarizeFlow } from "./useSummarizeFlow";
+import { SubagentPlanCard } from "./subagentPlanCard";
 
 export function ChatStream({
   session,
@@ -484,527 +115,60 @@ export function ChatStream({
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
-  // liveIdRef mirrors liveId state for use inside callbacks without closure staleness
-  const liveIdRef = useRef<string | null>(null);
   // connectRef: the reconnect button always calls this; updated on each session switch
   const connectRef = useRef<() => void>(() => {});
-  // Socket callbacks outlive session switches (per-session sockets stay open),
-  // so they capture stale context — anything they need live must come from refs.
-  const activeSidRef = useRef<string | null>(g.activeSessionId);
-  activeSidRef.current = g.activeSessionId;
   // Set when a notification click asked to land on a session's latest message;
   // consumed by the session-switch effect / focus-latest listener below.
   const focusLatestRef = useRef<string | null>(null);
-  // socket-ready promises per sid (lazy-creation send awaits the socket).
-  const socketReadyRef = useRef<
-    Record<string, { promise: Promise<void>; resolve: () => void; reject: (e: unknown) => void }>
-  >({});
-  // Draft-slot tracking incl. the landing home ("__home__"); see switch effect.
-  const prevSlotRef = useRef<string | null>(null);
-  function armSocketReady(sid: string) {
-    let resolve!: () => void;
-    let reject!: (e: unknown) => void;
-    const promise = new Promise<void>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    promise.catch(() => {}); // closes without a waiter are normal
-    socketReadyRef.current[sid] = { promise, resolve, reject };
-  }
-  /** Resolves true once the sid's socket is OPEN; false on timeout/close. */
-  function waitForSocketOpen(sid: string, timeoutMs = 8000): Promise<boolean> {
-    const sock = socketsRef.current[sid];
-    if (sock?.readyState === WebSocket.OPEN) return Promise.resolve(true);
-    const entry = socketReadyRef.current[sid];
-    if (!entry) return Promise.resolve(false);
-    return Promise.race([
-      entry.promise.then(
-        () => true,
-        () => false,
-      ),
-      new Promise<boolean>((res) => setTimeout(() => res(false), timeoutMs)),
-    ]);
-  }
-
-  // Abandon an in-flight turn after a socket drop that the server cannot
-  // answer for (legacy fallback): the user bubble keeps its retry payload.
-  function abandonLiveTurn(sid: string) {
-    liveBySessionRef.current[sid] = null;
-    streamAgentRef.current[sid] = null;
-    busyBySessionRef.current[sid] = false;
-    serverRunningRef.current[sid] = false;
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
-      m.role === "user" && m.status === "sending"
-        ? { ...m, status: "failed" as const, failReason: "连接中断，未送达" }
-        : m,
-    );
-    syncDisplay(sid);
-  }
-
-  // Map a /history response into chat bubbles (shared by the initial load and
-  // the post-reconnect reconciliation).
-  function mapHistory(res: {
-    messages?: Array<{
-      id?: string;
-      role: ChatMsg["role"];
-      blocks: Block[];
-      agentId?: string | null;
-      turnId?: string;
-    }>;
-    last_error?: { message?: string; turn_id?: string } | null;
-  }): ChatMsg[] {
-    const mapped: ChatMsg[] = (res.messages ?? []).map((m) => ({
-      id: m.id ?? mid(),
-      role: m.role,
-      blocks: m.blocks,
-      agentId: m.agentId,
-      turnId: m.turnId ?? (m.role === "user" ? m.id : undefined),
-      // Rebuild the retry payload for history user bubbles too — without
-      // it, a retry that fails again would produce an error card with no
-      // payload (no retry button), and the error handler's "last user with
-      // payload" lookup would come up empty.
-      sendPayload:
-        m.role === "user"
-          ? payloadFromBlocks(m.blocks, m.agentId ?? session?.agent_id ?? null)
-          : undefined,
-    }));
-    // Re-surface a persisted turn failure as an error card (with retry)
-    // so the last error survives reloads and route/session switches.
-    const err = res.last_error;
-    if (err?.message) {
-      const lastUser = [...mapped].reverse().find((m) => m.role === "user");
-      mapped.push({
-        id: mid(),
-        role: "assistant",
-        blocks: [{ kind: "text", text: err.message }],
-        turnId: err.turn_id ?? lastUser?.turnId,
-        error: true,
-        sendPayload: lastUser
-          ? payloadFromBlocks(lastUser.blocks, lastUser.agentId ?? session?.agent_id ?? null)
-          : undefined,
-        sourceMsgId: lastUser?.id,
-      });
-    }
-    return mapped;
-  }
-
-  // The server says no turn is running for this session (post-reconnect
-  // turn_state probe): the stream will not resume. Reload persisted history —
-  // a turn that FINISHED while we were disconnected is fully restored from
-  // the checkpoint. A user bubble still "sending" that never reached the
-  // graph survives as a failed bubble with its retry payload.
-  function reconcileTurnFromHistory(sid: string) {
-    getSessionHistory(sid).then((res) => {
-      // Skill blocks (history-replayed slash turns) normalize back to the
-      // "/name request" text the live bubble carries, or the two never match
-      // and a phantom "undelivered" duplicate appears.
-      const textOf = (m: ChatMsg) =>
-        m.blocks
-          .map((b) =>
-            b.kind === "text"
-              ? b.text
-              : b.kind === "skill"
-                ? (b.text ? `/${b.name} ${b.text}` : `/${b.name}`)
-                : "",
-          )
-          .join("\n")
-          .replace(/\s+/g, " ")
-          .trim();
-      const pending = (storeRef.current[sid] ?? []).filter(
-        (m) => m.role === "user" && m.status === "sending",
-      );
-      const mapped = mapHistory(res ?? {});
-      // A steer_id present in history was absorbed even if the ack was lost to
-      // the socket drop that caused this reconcile — drop those entries instead
-      // of re-sending them (design §3.3, exactly-once).
-      dropAbsorbedSteers(sid, mapped);
-      for (const p of pending) {
-        const delivered = mapped.some(
-          (m) => m.role === "user" && textOf(m) === textOf(p),
-        );
-        if (!delivered) {
-          mapped.push({ ...p, status: "failed" as const, failReason: "连接中断，未送达" });
-        }
-      }
-      storeRef.current[sid] = mapped;
-      liveBySessionRef.current[sid] = null;
-      streamAgentRef.current[sid] = null;
-      busyBySessionRef.current[sid] = false;
-      syncDisplay(sid);
-    });
-  }
-  // Which session is currently shown; used by syncDisplay to skip background updates
-  const curSessionIdRef = useRef<string | null>(null);
-  // ─── Per-session persistent stores ─────────────────────────────────────────
-  // Sockets stay open across session switches; only closed on unmount or delete.
-  // Background sockets keep feeding their session's store; syncDisplay() mirrors
-  // that into React state only when the session is currently displayed — so
-  // switching back mid-reply shows the stream continuing live.
-  const storeRef         = useRef<Record<string, ChatMsg[]>>({});
-  const liveBySessionRef = useRef<Record<string, string | null>>({});
-  const socketsRef       = useRef<Record<string, WebSocket>>({});
-  const statusRef        = useRef<Record<string, "connecting" | "live" | "reconnecting" | "offline">>({});
-  const permsRef         = useRef<Record<string, PermissionPrompt | null>>({});
-  const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
-  const busyBySessionRef = useRef<Record<string, boolean>>({});
-  // (The per-session steer queue ref now lives inside useSteerQueue.)
-  // Auto-clear timer for the composer hint (one timer, hint is composer-global).
-  const hintTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Per-session mirror of the `serverRunning` state (see syncDisplay).
-  const serverRunningRef = useRef<Record<string, boolean>>({});
-  const streamAgentRef   = useRef<Record<string, string | null>>({});
-  // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
-  // (remount mid-turn — the user navigated to another page while a reply was
-  // streaming). Its turn.start is never seen, so the live bubble ensureLive
-  // creates would render as a SECOND section next to the history-rendered
-  // partial bubble; message.end heals the split by reconciling from history.
-  const orphanStreamRef  = useRef<Record<string, boolean>>({});
-  const seenTurnStartRef = useRef<Record<string, boolean>>({});
-  const pingTimerRef     = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
-  const watchTimerRef    = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
-  // Post-reconnect turn_state fallback: if the server never answers (older
-  // runtime), the in-flight turn is abandoned after a grace period.
-  const reconcileTimerRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
-  const reconnTimerRef   = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
-  const lastSeenRef      = useRef<Record<string, number>>({});
-  // Who spoke last on this session's socket — our `turn_state` probe or our
-  // invoke? A turn.state answer describes the session as of the moment the
-  // SERVER handled the probe, so a send that went out after the probe cannot be
-  // judged by it. Without this ordering, the first message of a brand-new
-  // session (socket opened by the send itself: probe at t0, invoke at t0+13ms,
-  // both before the turn registers server-side) is reconciled against a
-  // /history that has no checkpoint yet and stamped 「未送达」 while it is in
-  // fact running (2026-09-21, session 52d54d…). Monotonic counter, not
-  // Date.now() — the two can land in the same millisecond.
-  const ioSeqRef         = useRef(0);
-  const probeSeqRef      = useRef<Record<string, number>>({});
-  const sendSeqRef       = useRef<Record<string, number>>({});
-  // Unsent input + attachments + resolved mentions saved per session on switch.
-  // `files` joined the draft with steer-attachments v2: a recalled steer whose
-  // session is not the displayed one parks its file chips here too, so switching
-  // back restores them instead of dropping them on the floor.
-  const draftCacheRef    = useRef<Record<string, { input: string; attachments: Attachment[]; files?: FileAttachment[]; mentions?: ResolvedMention[] }>>({});
-  // Resolved @mentions picked from the autocomplete menu, keyed by session id.
-  // Pruned on every input change (edited-away token → dropped mention) and
-  // sent along with the invoke payload as the authoritative structured list.
-  const mentionsRef      = useRef<Record<string, ResolvedMention[]>>({});
-  // In-chat live workflow runs bound to each session (design A: run 回到对话)
-  const runsBySessionRef = useRef<Record<string, WorkflowRun[]>>({});
   const [runs, setRuns]   = useState<WorkflowRun[]>([]);
   // Run id pending delete confirmation (ConfirmModal guards the destructive op).
   const [confirmDelRun, setConfirmDelRun] = useState<string | null>(null);
-  // 「总结成流程」draft + busy state + inline failure reason (modal stays open)
-  const [summarize, setSummarize] = useState<Record<string, unknown> | null>(null);
-  const [sumBusy, setSumBusy]     = useState<"create" | "run" | "dev" | null>(null);
-  const [sumErr, setSumErr]       = useState<string | null>(null);
-  // Create-only success receipt: keeps the modal open with an explicit
-  // "已创建 <name>" confirmation (so the user never wonders whether the
-  // workflow was added). 创建并运行 closes and the run card animates in instead.
-  const [sumCreated, setSumCreated] = useState<string | null>(null);
-  // S1: summarize API call in flight + which session the draft came from (the
-  // modal's retry button and header label need both).
-  const [sumLoading, setSumLoading] = useState(false);
-  const [sumSource, setSumSource] = useState<{ id: string; label: string } | null>(null);
-  // quality-plan §3.1: synthesis case id for outcome backfill (adoption/first-run).
-  const [sumSynthesisId, setSumSynthesisId] = useState<string | null>(null);
-  // The synthesis case the UI is waiting on (background summarization). The WS
-  // synthesis.event(finished) frame and the 2s polling fallback both resolve
-  // through finishSynthesisWait; the ref mirror lets the WS handler and the
-  // idempotency guard read it synchronously.
-  const [sumPendingId, setSumPendingId] = useState<string | null>(null);
   const sumPendingRef = useRef<string | null>(null);
-  const [sumMenuOpen, setSumMenuOpen] = useState(false);
-  // S5: trace range — null = full session; 5/10/20 = last N messages.
-  const [sumLastN, setSumLastN] = useState<number | null>(null);
-  // S6: bump to re-read the localStorage draft (after restore/delete/save). The
-  // draft is exposed as an OPT-IN row in the summarize dropdown — it must never
-  // block a fresh summarize (a leftover draft from another session used to wedge
-  // the button and prevent creating any workflow).
-  const [draftTick, setDraftTick] = useState(0);
-  // Re-read the localStorage draft when it may have changed (open/save/delete).
-  const savedDraft = useMemo(
-    () => (sumMenuOpen ? readSummarizeDraft() : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sumMenuOpen, draftTick],
-  );
   // Receipt shown briefly after a version_propose decision (card already unmounted).
   const [proposeResult, setProposeResult] = useState<
     { decision: "allow" | "deny"; workflowId: string; fromVersion: number } | null
   >(null);
 
-  // Push the given session's ref state into React display state.
-  // No-op when sid is not the currently displayed session (background socket).
-  const syncDisplay = (sid: string) => {
-    if (sid !== curSessionIdRef.current) return;
-    const lid = liveBySessionRef.current[sid] ?? null;
-    setMessages([...(storeRef.current[sid] ?? [])]);
-    setRuns([...(runsBySessionRef.current[sid] ?? [])]);
-    setLiveId(lid);
-    liveIdRef.current = lid;
-    setWsStatus(statusRef.current[sid] ?? "connecting");
-    setPermission(permsRef.current[sid] ?? null);
-    setPropose(proposeRef.current[sid] ?? null);
-    setStreamAgent(streamAgentRef.current[sid] ?? null);
-    setServerRunning(!!serverRunningRef.current[sid]);
-    // The steer queue is no longer mirrored here — useSteerQueue re-renders the
-    // component itself when the queue changes, and `steerItems` reads it live.
-  };
+  const {
+    activeSidRef, curSessionIdRef, storeRef, liveBySessionRef,
+    socketsRef, permsRef, proposeRef, busyBySessionRef, streamAgentRef,
+    seenTurnStartRef, ioSeqRef, sendSeqRef, draftCacheRef, mentionsRef,
+    runsBySessionRef, pendingDocsRef, pendingPathsRef,
+    syncDisplay, connectSession, cycleSessionSocket, waitForSocketOpen,
+    dropSteer, showComposerHint, enqueueSteer, recallSteers,
+    respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
+    retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
+  } = useChatStreamEngine({
+    g, steerQ, session, onUsageChange, propose,
+    input, attachments, fileAttachments,
+    setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
+    setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
+    setFileAttachments, setComposerHint, setProposeResult,
+    stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
+    pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
+    finishSynthesisWait,
+  });
+  const sumFlow = useSummarizeFlow({
+    g, session, sumPendingRef, runsBySessionRef, syncDisplay,
+  });
+  const {
+    summarize, sumBusy, sumErr, sumCreated, sumLoading, sumSource,
+    sumMenuOpen, setSumMenuOpen, sumLastN, setSumLastN, savedDraft,
+    freshSummarize, openSummarize, openDraftModal, deleteDraft,
+    closeSummarize, createFromSummarize, openDevFromSummarize,
+  } = sumFlow;
+  // summarize hook 在 engine 之后调用，而 engine 的 synthesis.event 分支要
+  // 触发它的 resolver：这里包一层提升声明的桥（运行时才调用，无 TDZ 问题）。
+  function finishSynthesisWait(id: string) {
+    return sumFlow.finishSynthesisWait(id);
+  }
+
 
   // Pre-load tool display labels from settings (cached at module level).
   useEffect(() => { loadToolLabels(); }, []);
 
-  // Drop per-session state for deleted sessions to prevent memory leaks.
-  useEffect(() => {
-    const live = new Set(g.sessions.map((s) => s.id));
-    for (const id of Object.keys(storeRef.current)) {
-      if (!live.has(id)) {
-        if (reconnTimerRef.current[id]) clearTimeout(reconnTimerRef.current[id]!);
-        if (pingTimerRef.current[id])   clearInterval(pingTimerRef.current[id]!);
-        if (watchTimerRef.current[id])  clearInterval(watchTimerRef.current[id]!);
-        if (reconcileTimerRef.current[id]) clearTimeout(reconcileTimerRef.current[id]!);
-        try { socketsRef.current[id]?.close(); } catch { /* ignore */ }
-        delete socketsRef.current[id];    delete storeRef.current[id];
-        delete liveBySessionRef.current[id]; delete statusRef.current[id];
-        delete permsRef.current[id];      delete proposeRef.current[id];
-        delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
-        steerQ.clear(id);
-        delete serverRunningRef.current[id];
-        delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
-        delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
-        delete lastSeenRef.current[id];   delete reconcileTimerRef.current[id];
-        delete probeSeqRef.current[id];   delete sendSeqRef.current[id];
-      }
-    }
-  }, [g.sessions]);
 
-  // Close all persistent sockets on component unmount.
-  useEffect(() => {
-    return () => {
-      for (const sid of Object.keys(socketsRef.current)) {
-        if (reconnTimerRef.current[sid]) clearTimeout(reconnTimerRef.current[sid]!);
-        if (pingTimerRef.current[sid])   clearInterval(pingTimerRef.current[sid]!);
-        if (watchTimerRef.current[sid])  clearInterval(watchTimerRef.current[sid]!);
-        if (reconcileTimerRef.current[sid]) clearTimeout(reconcileTimerRef.current[sid]!);
-        try { socketsRef.current[sid].close(); } catch { /* ignore */ }
-      }
-    };
-  }, []);
 
-  // Open (or reuse) a per-session WebSocket. Sockets stay open when the user
-  // switches sessions; they are only closed on unmount or session delete.
-  function connectSession(sid: string) {
-    const existing = socketsRef.current[sid];
-    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return;
-    if (reconnTimerRef.current[sid]) { clearTimeout(reconnTimerRef.current[sid]!); reconnTimerRef.current[sid] = null; }
-    statusRef.current[sid] = "connecting";
-    syncDisplay(sid);
-    const sock = openSessionSocket(sid);
-    socketsRef.current[sid] = sock;
-    // socket-ready promise: lazy creation (home → first send) must be able to
-    // await the socket instead of racing it into a "连接未就绪" failed bubble.
-    armSocketReady(sid);
-    sock.onopen = () => {
-      if (socketsRef.current[sid] !== sock) return;
-      socketReadyRef.current[sid]?.resolve();
-      g.setConnected(true);
-      statusRef.current[sid] = "live";
-      lastSeenRef.current[sid] = Date.now();
-      // ALWAYS probe, not only when this client believes a turn is in flight:
-      // after a full page reload no ref remembers the turn, yet the server may
-      // still be parked on an interrupt (ask_user). The answer is the
-      // server-sourced liveness flag that keeps a history-rebuilt question
-      // card interactive.
-      try {
-        probeSeqRef.current[sid] = ++ioSeqRef.current;
-        sock.send(JSON.stringify({ type: "turn_state" }));
-      } catch { /* ignore */ }
-      if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
-        // A turn was in flight when this socket's predecessor dropped. Turn
-        // events broadcast to EVERY socket of the session, so the running
-        // stream resumes into the same live bubble automatically; if the
-        // server says it's gone (finished while we were away, or the runtime
-        // restarted), the answer's handler reconciles from history.
-        if (reconcileTimerRef.current[sid]) clearTimeout(reconcileTimerRef.current[sid]!);
-        reconcileTimerRef.current[sid] = setTimeout(() => {
-          reconcileTimerRef.current[sid] = null;
-          // No turn.state answer (older runtime): legacy abandon path.
-          if (liveBySessionRef.current[sid]) abandonLiveTurn(sid);
-        }, 6000);
-      }
-      syncDisplay(sid);
-      pingTimerRef.current[sid] = setInterval(() => {
-        const s = socketsRef.current[sid];
-        if (s?.readyState === WebSocket.OPEN) {
-          try { s.send(JSON.stringify({ type: "ping" })); } catch { /* ignore */ }
-        }
-      }, 20000);
-      watchTimerRef.current[sid] = setInterval(() => {
-        if (Date.now() - (lastSeenRef.current[sid] ?? Date.now()) > 45000) {
-          try { socketsRef.current[sid]?.close(); } catch { /* ignore */ }
-        }
-      }, 10000);
-    };
-    sock.onmessage = (e) => {
-      if (socketsRef.current[sid] !== sock) return;
-      lastSeenRef.current[sid] = Date.now();
-      try { handle(sid, JSON.parse(e.data)); } catch { /* ignore */ }
-    };
-    sock.onerror = () => {
-      if (socketsRef.current[sid] !== sock) return;
-      socketReadyRef.current[sid]?.reject(new Error("socket error"));
-      try { sock.close(); } catch { /* ignore */ }
-    };
-    sock.onclose = () => {
-      if (pingTimerRef.current[sid]) { clearInterval(pingTimerRef.current[sid]!); pingTimerRef.current[sid] = null; }
-      if (watchTimerRef.current[sid]) { clearInterval(watchTimerRef.current[sid]!); watchTimerRef.current[sid] = null; }
-      if (socketsRef.current[sid] !== sock) return;
-      socketReadyRef.current[sid]?.reject(new Error("socket closed"));
-      delete socketsRef.current[sid];
-      statusRef.current[sid] = "reconnecting";
-      syncDisplay(sid);
-      reconnTimerRef.current[sid] = setTimeout(() => {
-        reconnTimerRef.current[sid] = null;
-        connectSession(sid);
-      }, 3000);
-    };
-  }
-
-  // When the active session changes: save draft, restore draft, connect socket,
-  // load history, and sync display state from refs → React state.
-  useEffect(() => {
-    const sid = session?.id ?? null;
-    // Draft slots include the landing home so ⌘N → type → open session → ⌘N
-    // round-trips keep the text.
-    const HOME_SLOT = "__home__";
-    const prevSlot = prevSlotRef.current;
-    const nextSlot = sid ?? HOME_SLOT;
-
-    // Save outgoing draft (before any early return)
-    if (prevSlot && prevSlot !== nextSlot) {
-      draftCacheRef.current[prevSlot] = {
-        input,
-        attachments,
-        files: fileAttachments,
-        mentions: pruneMentions(
-          mentionsRef.current[prevSlot === HOME_SLOT ? "" : prevSlot] ?? [],
-          input,
-        ),
-      };
-      setInput("");
-      setAttachments([]);
-      setTarget(null);
-      setMenu(null); // menu is composer-global state; never leak across sessions
-      // Deferred home attachments follow the user into the session they land
-      // in: start the uploads now so the chips flip to ready instead of
-      // blocking sends forever (they can only flush into a real session).
-      if (prevSlot === HOME_SLOT && sid) {
-        const docs = pendingDocsRef.current;
-        pendingDocsRef.current = [];
-        for (const d of docs) void uploadOneDoc(sid, d.file, d.tmpId);
-        const natives = pendingPathsRef.current;
-        pendingPathsRef.current = [];
-        for (const n of natives) void attachOne(sid, n.path, n.tmpId);
-      }
-    }
-    prevSlotRef.current = nextSlot;
-
-    if (!session || !sid) {
-      curSessionIdRef.current = null;
-      const draft = draftCacheRef.current[HOME_SLOT];
-      if (draft) {
-        setInput(draft.input);
-        setAttachments(draft.attachments);
-      }
-      return;
-    }
-
-    curSessionIdRef.current = sid;
-    // Entering a session always lands on the LATEST message. stickRef carries
-    // the PREVIOUS session's read position (scrolled up while reading back =
-    // false) — without this reset the [messages] auto-scroll skips the newly
-    // loaded history and the transcript opens at the TOP (用户反馈 2026-09-26).
-    stickRef.current = true;
-    connectRef.current = () => connectSession(sid);
-
-    connectSession(sid);
-
-    // Load history if this session has no messages yet
-    if (!storeRef.current[sid]) {
-      storeRef.current[sid] = [];
-      getSessionHistory(sid).then((res) => {
-        if (!res?.messages?.length) return;
-        const mapped = mapHistory(res);
-        // A reloaded session rebuilds from the checkpoint: entries whose
-        // steer_id is already in history were absorbed (their acks died with
-        // the old page), so drop them rather than re-sending (design §3.3).
-        dropAbsorbedSteers(sid, mapped);
-        // A live event can land DURING the fetch (the parked-question re-emit
-        // on socket open, or in-flight tokens after a quick reload): keep the
-        // bubble ensureLive created instead of clobbering it — liveBySessionRef
-        // still points at it, and dropping it would silently discard every
-        // later event of the turn. The duplicate section is the known orphan
-        // cosmetic; message.end reconciles it away.
-        const lid = liveBySessionRef.current[sid];
-        const liveMsg = lid ? (storeRef.current[sid] ?? []).find((m) => m.id === lid) : null;
-        if (liveMsg) {
-          // The parked-question re-emit on socket open can create a live
-          // bubble for a turn history ALSO rebuilt (same question/tool-call
-          // id in both). Keeping both showed the ask_user card TWICE for as
-          // long as the turn stays parked — message.end never comes to
-          // reconcile. Adopt history's message as the live target instead
-          // (2026-09-25); genuinely in-flight turns (no matching question
-          // id) keep their live bubble as before.
-          const qId = (b: Block) => (b.kind === "question" ? b.id : undefined);
-          const liveQIds = new Set(
-            liveMsg.blocks.map(qId).filter((x): x is string => !!x)
-          );
-          const dupe = mapped.find(
-            (m) =>
-              m.id === liveMsg.id ||
-              m.blocks.some((b) => qId(b) !== undefined && liveQIds.has(qId(b)!))
-          );
-          if (dupe) {
-            liveBySessionRef.current[sid] = dupe.id;
-            storeRef.current[sid] = mapped;
-          } else {
-            storeRef.current[sid] = [...mapped, liveMsg];
-          }
-        } else {
-          storeRef.current[sid] = mapped;
-        }
-        syncDisplay(sid);
-      });
-    }
-
-    // Load the session's goal snapshot for the TopBar chip (goal-design.md).
-    // Live updates then arrive via goal.updated / goal.cleared WS events.
-    g.loadGoal(sid);
-
-    // Restore draft if any (mentions re-pruned against the restored text so a
-    // token the user deleted before switching stays deleted)
-    const draft = draftCacheRef.current[sid];
-    if (draft) {
-      setInput(draft.input);
-      setAttachments(draft.attachments);
-      // File chips come back with the draft too — a recalled steer parked in
-      // this session's draft must reappear, not vanish.
-      setFileAttachments(draft.files ?? []);
-      mentionsRef.current[sid] = pruneMentions(draft.mentions ?? [], draft.input);
-    }
-
-    syncDisplay(sid);
-
-    // Notification-click jump: land on the latest message regardless of the
-    // parked scroll position. For uncached sessions the async history load
-    // re-syncs display later; stickRef=true lets the [messages] auto-scroll
-    // effect finish the job then.
-    if (focusLatestRef.current === sid) {
-      focusLatestRef.current = null;
-      stickRef.current = true;
-      pinToBottom();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.id]);
 
   const running =
     liveId !== null || !!permission || !!propose || messages.some((m) => hasPendingTool(m.blocks));
@@ -1094,639 +258,55 @@ export function ChatStream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Delivery confirmed (the server started or finished the turn) → clear the
-  // "sending" marker off user bubbles.
-  function markDelivered(sid: string) {
-    const list = storeRef.current[sid];
-    if (!list?.some((m) => m.status === "sending")) return;
-    storeRef.current[sid] = list.map((m) =>
-      m.status === "sending" ? { ...m, status: undefined, failReason: undefined } : m,
-    );
-  }
-
-  // The server is streaming a turn this component instance never saw start
-  // (remount mid-turn after navigating away). Mark the stream orphaned so the
-  // split self-heals on message.end, and backfill the session's agent so the
-  // continuation bubble's header shows the right name instead of "Agent".
-  function adoptOrphanStream(sid: string) {
-    if (seenTurnStartRef.current[sid] || orphanStreamRef.current[sid]) return;
-    orphanStreamRef.current[sid] = true;
-    busyBySessionRef.current[sid] = true;
-    if (!streamAgentRef.current[sid]) streamAgentRef.current[sid] = session?.agent_id ?? null;
-  }
-
-  function ensureLive(sid: string): string {
-    const existing = liveBySessionRef.current[sid];
-    if (existing) return existing;
-    const id = mid();
-    storeRef.current[sid] = [
-      ...(storeRef.current[sid] ?? []),
-      { id, role: "assistant", blocks: [], agentId: streamAgentRef.current[sid], turnId: newTurnId() },
-    ];
-    liveBySessionRef.current[sid] = id;
-    return id;
-  }
-
-  function mutateLive(sid: string, ev: { event: string; [k: string]: unknown }) {
-    const id = ensureLive(sid);
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
-      msg.id === id ? { ...msg, blocks: applyBlock(msg.blocks, ev) } : msg,
-    );
-  }
-
-  function handle(sid: string, ev: { event: string; [k: string]: unknown }) {
-    switch (ev.event) {
-      case "token.delta":
-      case "thinking.delta":
-      case "tool.start":
-      case "tool.args":
-      case "tool.end":
-      // Transcript block, not a ref-based prompt like permission.request: the
-      // card lives (and is merged by id) inside the live bubble's blocks.
-      case "user.question":
-      case "widget.emit":
-      case "ref.emit":
-      case "image.emit":
-      case "workflow.emit":
-        adoptOrphanStream(sid);
-        mutateLive(sid, ev);
-        break;
-      case "turn.start": {
-        markDelivered(sid);
-        seenTurnStartRef.current[sid] = true;
-        // Sidebar ordering (reactivated sessions float up): the runtime bumps
-        // `updated` on every invoke, but only this socket knows it happened —
-        // patch the store's copy so the day-group resort is live, not stale
-        // until the next full reload.
-        g.applySessionPatch(sid, { updated: Math.floor(Date.now() / 1000) });
-        // authoritative agent for this turn (server-resolved, never null).
-        // The server echoes the turn_id we sent (or mints one); adopt it as the
-        // bubble's trace UUID so it matches the sidecar logs exactly.
-        const srvTurn = ev.turn_id as string | undefined;
-        const evAgent = (ev.agent_id as string) || null;
-        // Headless (goal continuation) turns have NO client bubble yet — the
-        // first token.delta would otherwise create one with a null agent and
-        // render the generic "Agent". Prime the bubble here so the
-        // server-provided agent name is kept (bug: continuation showed "Agent").
-        if (evAgent) streamAgentRef.current[sid] = evAgent;
-        const id = liveBySessionRef.current[sid] ?? ensureLive(sid);
-        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
-          msg.id === id
-            ? {
-                ...msg,
-                agentId: evAgent,
-                agentName: (ev.name as string) || undefined,
-                turnId: srvTurn || msg.turnId,
-              }
-            : msg,
-        );
-        // keep the user bubble's UUID in sync with the server's authoritative one
-        if (srvTurn) {
-          storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg, i, arr) =>
-            msg.role === "user" && !msg.turnId && i === arr.length - 2
-              ? { ...msg, turnId: srvTurn }
-              : msg,
-          );
-        }
-        break;
-      }
-      case "permission.request":
-        permsRef.current[sid] = { tool: ev.tool as string, args: ev.args };
-        break;
-      case "version.propose":
-        proposeRef.current[sid] = {
-          workflow_id: ev.workflow_id as string,
-          from_version: (ev.from_version as number) ?? 0,
-          diff: (ev.diff as string) ?? "",
-          rationale: (ev.rationale as string) ?? "",
+  // 子代理结果卡「去子会话纠偏」的输入框预填（P2 任务 3）。目标会话正在展示
+  // 就直接进 composer；不在展示（刚点跳转、切换 effect 还没跑）就停进该会话
+  // 的草稿槽——切换 effect 恢复草稿时自然带出来，文本永不丢。
+  useEffect(() => {
+    const onPrefill = (e: Event) => {
+      const d = (e as CustomEvent<{ sessionId?: string; text?: string }>).detail;
+      if (!d?.sessionId || !d.text) return;
+      if (curSessionIdRef.current === d.sessionId) {
+        setInput((cur) => (cur ? `${cur}\n${d.text}` : d.text!));
+        requestAnimationFrame(() => textareaRef.current?.focus());
+      } else {
+        const prev = draftCacheRef.current[d.sessionId];
+        draftCacheRef.current[d.sessionId] = {
+          input: prev?.input ? `${prev.input}\n${d.text}` : d.text!,
+          attachments: prev?.attachments ?? [],
+          files: prev?.files ?? [],
+          mentions: prev?.mentions ?? [],
         };
-        break;
-      case "todos.changed":
-        g.reloadTodos();
-        break;
-      case "skills.changed":
-        // A turn (install_skills tool, bash) or the Settings page mutated
-        // ~/.ginno/skills — refresh the slash menu's skill list live.
-        g.reloadSkills();
-        break;
-      case "memory.changed":
-        // Memory refinery transition (auto-draft ready, applied, discarded) —
-        // refresh the Memory tab badge; the panel itself refetches on open.
-        g.reloadMemoryBadge();
-        break;
-      case "agents.changed":
-        // Agent CRUD in Settings — keep the picker/mention list in sync.
-        g.reloadAgents();
-        break;
-      case "workflows.changed":
-        g.reloadWorkflows();
-        g.reloadWorkflowRuns();
-        break;
-      case "synthesis.event":
-        // Background summarization progressed — refresh the 总结 panel list
-        // (started/attempt/finished all change what it shows). If THIS is the
-        // case the summarize button is waiting on, resolve the wait (the ref
-        // guard inside finishSynthesisWait dedupes vs the polling fallback).
-        void g.reloadSynthesisCases();
-        if (ev.kind === "finished" && ev.synthesis_id === sumPendingRef.current) {
-          void finishSynthesisWait(ev.synthesis_id as string);
-        }
-        break;
-      case "run.bind": {
-        const runId = ev.run_id as string;
-        getWorkflowRun(runId).then((r) => {
-          if (!r?.run) return;
-          const list = runsBySessionRef.current[sid] ?? [];
-          if (!list.some((x) => x.id === runId)) list.push(r.run);
-          runsBySessionRef.current[sid] = [...list];
-          syncDisplay(sid);
-        });
-        break;
       }
-      case "run.event": {
-        const runId = ev.run_id as string;
-        const inner = (ev.payload ?? {}) as Record<string, unknown>;
-        const list = runsBySessionRef.current[sid] ?? [];
-        const run = list.find((x) => x.id === runId);
-        // Live tool-call visibility (workflow-ux-redesign P1): show the
-        // in-flight tool under the running step; results/exit clear it.
-        const innerKind = inner.kind as string | undefined;
-        if (innerKind === "tool_call") {
-          const calls = (inner.calls as Array<{ name?: string; args?: unknown }>) ?? [];
-          const latest = calls[calls.length - 1]; // batched calls: show the newest
-          if (latest?.name) {
-            g.notifyRunToolActivity(runId, {
-              nodeId: (inner.node_id as string) ?? "",
-              toolName: latest.name,
-              argsPreview: toolArgsPreview(latest.args),
-            });
-          }
-        } else if (
-          innerKind === "tool_result" || innerKind === "node_exit" ||
-          innerKind === "error" || innerKind === "done"
-        ) {
-          g.notifyRunToolActivity(runId, null);
-        }
-        if (run) {
-          const nid = inner.node_id as string | undefined;
-          const kind2 = inner.kind as string | undefined;
-          // Mirror the server's per-event _touch_run: without this the in-chat
-          // card's adaptive stuck check fires during long steps that DO emit
-          // tool traffic (the 1.5s panel poll doesn't cover the chat list).
-          run.updated = Date.now() / 1000;
-          if (nid && (kind2 === "node_enter" || kind2 === "node_exit")) {
-            // node_exit carries the step's real outcome — a failed step must not
-            // render as done (green) in the live card.
-            const stepStatus =
-              kind2 === "node_enter" ? "running" : inner.status === "failed" ? "failed" : "done";
-            run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: stepStatus } : s));
-            runsBySessionRef.current[sid] = [...list];
-          } else if (kind2 === "interrupt") {
-            // A node suspended the graph (P1): stamp the payload so the card
-            // renders immediately, without waiting for the reload round-trip.
-            // nature: "human" (question card) vs "manual" (user pause, #14);
-            // HumanNode events carry no nature and default to human. The step
-            // flips to running (done on resume — except manual pauses, whose
-            // step re-executes and settles via node_enter/exit).
-            run.pending_interrupt = {
-              ...(inner as object),
-              kind: (inner.nature as string) || "human",
-            } as typeof run.pending_interrupt;
-            if (nid) run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "running" } : s));
-            runsBySessionRef.current[sid] = [...list];
-          } else if (kind2 === "resume") {
-            run.pending_interrupt = null;
-            if (nid && inner.nature !== "manual") {
-              run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "done" } : s));
-            }
-            runsBySessionRef.current[sid] = [...list];
-          } else if (kind2 === "error") {
-            // Show the failure one beat before run.status lands, and stamp the
-            // structured diagnostic so RunErrorBox renders without a lazy fetch.
-            if (typeof inner.error === "string") run.error = inner.error;
-            run.error_detail = {
-              node_id: (inner.node_id as string | null) ?? null,
-              traceback: (inner.traceback as string | undefined) ?? null,
-            };
-            runsBySessionRef.current[sid] = [...list];
-          }
-          syncDisplay(sid);
-        }
-        break;
-      }
-      case "run.status": {
-        const runId = ev.run_id as string;
-        const status = ev.status as string;
-        const list = runsBySessionRef.current[sid] ?? [];
-        const run = list.find((x) => x.id === runId);
-        if (run) {
-          run.status = status;
-          if (typeof ev.error === "string") run.error = ev.error;
-          // P1: the paused push carries WHY (human question); terminal states
-          // and fresh resumes clear it.
-          if (status === "paused") {
-            run.pending_interrupt =
-              (ev.pending_interrupt as typeof run.pending_interrupt) ?? run.pending_interrupt ?? null;
-          } else {
-            run.pending_interrupt = null;
-          }
-          runsBySessionRef.current[sid] = [...list];
-        }
-        syncDisplay(sid);
-        g.reloadWorkflowRuns();
-        break;
-      }
-      case "artifacts.changed":
-        g.reloadArtifacts();
-        break;
-      case "code.changed":
-        // The agent wrote or edited a file (design §4.7 S3). The event carries
-        // the POST-WRITE version, which is what lets the code panel reuse its
-        // conflict bar for a dirty buffer instead of inventing a second UI —
-        // see the S3 brief §0.
-        if (typeof ev.path === "string" && (ev.op === "write" || ev.op === "edit")) {
-          g.notifyCodeChange({
-            path: ev.path,
-            op: ev.op as "write" | "edit",
-            version: typeof ev.version === "string" ? ev.version : "",
-          });
-        }
-        break;
-      case "preview.emit":
-        // Agent produced a previewable file (e.g. analysis result) → open it.
-        if (ev.open && ev.file_id) {
-          g.openPreview({
-            id: ev.file_id as string,
-            name: (ev.name as string) || "result",
-            path: (ev.path as string) || "",
-            kind: ev.kind as string | undefined,
-          });
-        }
-        g.reloadArtifacts();
-        break;
-      case "preview.invalidate":
-        // A tracked file changed (tool wrote it / mtime watcher) → the
-        // SheetViewer refetches if that file is the one being viewed.
-        if (ev.file_id) g.notifyPreviewInvalidate(ev.file_id as string);
-        break;
-      case "steer.accepted":
-        // The server stashed the entry (design §3.1). It stays in the queue bar
-        // until it is absorbed; this only flips it out of "sending" (the shared
-        // hook owns that queue mutation).
-        steerQ.handleEvent(ev, sid);
-        break;
-      case "steer.absorbed": {
-        // The steered message was DRAINED into state (the server acks at drain
-        // time, not at superstep commit — see docs/steering-design.md): move it
-        // out of the queue bar into the transcript as a band at the injection
-        // point — appended to the live assistant bubble, because one turn is one
-        // bubble (design §4.2/§4.3).
-        const absorbedId = ev.steer_id as string | undefined;
-        if (!absorbedId) break;
-        // Capture the entry BEFORE delegating — the hook drops it from the queue.
-        const entry = steerQ.itemsFor(sid).find((i) => i.steerId === absorbedId);
-        if (!entry) break; // already dropped — a history reconcile got there first
-        // Same timing/order as before: remove from the queue first, then render.
-        steerQ.handleEvent(ev, sid);
-        const band: Block = {
-          kind: "steer",
-          text: entry.text,
-          steerId: entry.steerId,
-          injectedAt: Number(ev.injected_at) || Math.floor(Date.now() / 1000),
-          // Attachments ride the band so the injection point shows what the
-          // user actually sent. Images arrive as display URLs (data URL), files
-          // as name/path chips — mirroring the replay shape the server emits.
-          ...(entry.images.length
-            ? { images: entry.images.map((a) => ({ name: a.name, url: a.preview })) }
-            : {}),
-          ...(entry.files.length
-            ? {
-                files: entry.files.map((f) => ({
-                  id: f.id,
-                  name: f.name,
-                  path: f.path,
-                  kind: f.kind,
-                })),
-              }
-            : {}),
-        };
-        const liveMsgId = liveBySessionRef.current[sid];
-        const store = storeRef.current[sid] ?? [];
-        if (liveMsgId && store.some((m) => m.id === liveMsgId)) {
-          storeRef.current[sid] = store.map((m) =>
-            m.id === liveMsgId ? { ...m, blocks: [...m.blocks, band] } : m,
-          );
-        } else {
-          // No live bubble of ours (adopted orphan / goal continuation): the
-          // band lands as its own full-width row, and the next history
-          // reconcile rebuilds the merged bubble from the checkpoint.
-          storeRef.current[sid] = [
-            ...store,
-            { id: mid(), role: "user" as const, blocks: [band], turnId: entry.turnId },
-          ];
-        }
-        syncDisplay(sid);
-        break;
-      }
-      case "notice":
-        // Built-in command reply (e.g. /help): no graph turn ran, so the server
-        // pushes the rendered text directly into the live bubble as one delta.
-        markDelivered(sid);
-        mutateLive(sid, { event: "token.delta", content: (ev.message as string) || "" });
-        break;
-      case "goal.updated":
-        // Live goal snapshot (created/status/accounting) → TopBar chip.
-        g.notifyGoal(sid, (ev.goal as Goal) ?? null);
-        break;
-      case "goal.cleared":
-        g.notifyGoal(sid, null);
-        break;
-      case "session_title":
-        // Auto-title from the first user message (runtime _touch_session_title):
-        // sidebar + TopBar rename live without a sessions reload.
-        g.applySessionPatch(sid, { title: (ev.title as string) ?? "", title_auto: false });
-        break;
-      case "session.context":
-        // Mount set changed server-side (context-folders-design.md): /mount
-        // command or another client ran PUT /sessions/{id}/context. Patch the
-        // store so the TopBar chip re-renders without a full reload.
-        g.applySessionPatch(sid, {
-          context_folders: ((ev.context_folders as string[]) ?? []),
-          primary_folder: (ev.primary_folder as string | null) ?? null,
-        });
-        break;
-      case "context.updated": {
-        // WorldState change announcement (world-state-plan §7). Chip display
-        // level table: environment-only changes (date rollover) stay SILENT in
-        // the UI; everything else gets a centered context row.
-        const changes = ((ev.changes as ContextChange[]) || []).filter(Boolean);
-        const visible = changes.filter((c) => c.section !== "environment");
-        if (!visible.length) break; // environment-only (date rollover) = silent
-        const rows = visible.map((c): Block => ({ kind: "context", text: c.summary }));
-        storeRef.current[sid] = [
-          ...(storeRef.current[sid] ?? []),
-          { id: mid(), role: "system" as const, blocks: rows },
-        ];
-        syncDisplay(sid);
-        break;
-      }
-      case "context.microcompacted": {
-        // Stale tool outputs cleared to placeholders (E2.5) — always visible.
-        const n = Number(ev.cleared_tool_outputs ?? 0);
-        storeRef.current[sid] = [
-          ...(storeRef.current[sid] ?? []),
-          {
-            id: mid(),
-            role: "system" as const,
-            blocks: [
-              {
-                kind: "context",
-                text: `已清理 ${n} 条较早的工具输出以节省上下文，需要时可重新调用工具获取。`,
-              },
-            ],
-          },
-        ];
-        syncDisplay(sid);
-        break;
-      }
-      case "context.compacted": {
-        // History compaction announcement (E3) — always visible.
-        const n = Number(ev.compacted_messages ?? 0);
-        storeRef.current[sid] = [
-          ...(storeRef.current[sid] ?? []),
-          {
-            id: mid(),
-            role: "system" as const,
-            blocks: [
-              {
-                kind: "context",
-                text: `对话已压缩：${n} 条较早的消息被摘要替代，最近的对话原样保留。`,
-              },
-            ],
-          },
-        ];
-        syncDisplay(sid);
-        break;
-      }
-      case "usage": {
-        // Session-cumulative model usage (D2) → TopBar counter via callback.
-        const s = ev.session as SessionUsage | undefined;
-        if (s && typeof s.input_tokens === "number") onUsageChange?.(s);
-        break;
-      }
-      case "turn.state": {
-        // Answer to the post-reconnect probe: is a turn still running (or
-        // parked at an interrupt) for this session?
-        if (reconcileTimerRef.current[sid]) {
-          clearTimeout(reconcileTimerRef.current[sid]!);
-          reconcileTimerRef.current[sid] = null;
-        }
-        if (serverRunningRef.current[sid] !== !!ev.running) {
-          serverRunningRef.current[sid] = !!ev.running;
-          // Mirror into React state — this is what makes a history-rebuilt
-          // pending question card interactive after a reload (questionLive).
-          syncDisplay(sid);
-        }
-        if (ev.running) break; // the broadcast stream resumes on this socket
-        // ...unless our newest send is NEWER than the probe this answers. The
-        // answer can only describe the session as it was when the server
-        // handled the probe; reconciling a send that postdates it reads a
-        // /history with no checkpoint yet and stamps the bubble 「未送达」 on a
-        // turn that is running fine (first message of a new session: the socket
-        // is opened by the send, probe at t0, invoke at t0+13ms). Wait for the
-        // stream instead — it always ends in message.end or error, both of
-        // which reconcile a genuinely dead turn.
-        if ((sendSeqRef.current[sid] ?? 0) > (probeSeqRef.current[sid] ?? 0)) break;
-        // Not running: rebuild from persisted history ONLY when this client
-        // believed a turn was in flight (the probe now fires on every open —
-        // an idle reconnect must not replace the loaded store). This is also
-        // what flips a pending question card of a genuinely dead turn into
-        // the checkpoint's healed "(interrupted)" → skipped replay.
-        if (
-          liveBySessionRef.current[sid] ||
-          busyBySessionRef.current[sid] ||
-          orphanStreamRef.current[sid]
-        ) {
-          reconcileTurnFromHistory(sid);
-        }
-        break;
-      }
-      case "message.end": {
-        markDelivered(sid);
-        const wasOrphan = !!orphanStreamRef.current[sid];
-        orphanStreamRef.current[sid] = false;
-        liveBySessionRef.current[sid] = null;
-        streamAgentRef.current[sid] = null;
-        busyBySessionRef.current[sid] = false;
-        serverRunningRef.current[sid] = false;
-        // Orphaned continuation (remount mid-turn): the visible store holds a
-        // history-rendered partial bubble PLUS a second live section. The
-        // persisted history renders the whole turn as ONE merged bubble (with
-        // the right agent name) — rebuild from it to heal the split.
-        if (wasOrphan) reconcileTurnFromHistory(sid);
-        // Turn done → desktop notification unless the user is watching this
-        // exact session right now (visible ∧ workspace route ∧ active session).
-        // Socket callbacks capture stale closures (sockets outlive session
-        // switches) — read refs / live values only. The session title may be
-        // stale too (rename after connect); cosmetic, accepted.
-        {
-          // Settings → Notifications (settings.json; sync cache — see
-          // lib/notifyPrefs.ts for why this isn't React state).
-          const np = notifyPrefs();
-          const watching =
-            document.visibilityState === "visible" &&
-            window.location.pathname === "/" &&
-            activeSidRef.current === sid;
-          if (np.enabled && !watching) {
-            const title = g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
-            const raw = typeof ev.text === "string" ? ev.text.trim() : "";
-            const body = raw || "回复已完成";
-            void notifyNative({
-              kind: "session",
-              id: sid,
-              title,
-              body,
-              sound: np.sound ? np.soundName : undefined,
-            }).then((sent) => {
-              if (sent) return;
-              // Plain-browser dev fallback — WKWebView has no Notification API,
-              // so inside the packaged app this branch is a silent no-op.
-              if (typeof Notification === "undefined") return;
-              if (Notification.permission === "default") {
-                try {
-                  void Notification.requestPermission();
-                } catch {
-                  /* unsupported */
-                }
-                return;
-              }
-              if (Notification.permission !== "granted") return;
-              try {
-                const n = new Notification(title, { body });
-                n.onclick = () => {
-                  window.focus();
-                  g.setActiveSession(sid); // stable setter — stale closure safe
-                  window.dispatchEvent(
-                    new CustomEvent("ginno:focus-latest", { detail: sid }),
-                  );
-                  n.close();
-                };
-              } catch {
-                /* blocked/unsupported */
-              }
-            });
-          }
-        }
-        // The turn ended with steer entries still unacknowledged: the oldest
-        // becomes the next turn (design §3.3). Skipped on the orphan path above
-        // — its history reconcile owns that decision, and flushing here could
-        // re-send an entry the reconcile is about to see as absorbed.
-        if (!wasOrphan) flushSteerQueue(sid);
-        break;
-      }
-      case "turn.stopped": {
-        // User pressed stop: the server abandoned the in-flight step and
-        // healed the persisted state; everything already streamed is kept.
-        // Close out the live stream like message.end, force-close pending
-        // tool blocks like the error handler — but no error card and no
-        // "turn done" notification (the turn didn't complete).
-        markDelivered(sid);
-        const wasOrphan = !!orphanStreamRef.current[sid];
-        orphanStreamRef.current[sid] = false;
-        const liveMsgId = liveBySessionRef.current[sid];
-        liveBySessionRef.current[sid] = null;
-        streamAgentRef.current[sid] = null;
-        busyBySessionRef.current[sid] = false;
-        serverRunningRef.current[sid] = false;
-        // ⏹ means stop, so what was queued for absorption is handed back to the
-        // composer rather than discarded or auto-sent (design §4.1). Done here,
-        // in the event, so a stop from another tab recalls on this one too.
-        recallSteers(sid);
-        // Stop also clears a parked prompt (server heals those too) — every
-        // tab of the session leaves the running state together.
-        permsRef.current[sid] = null;
-        proposeRef.current[sid] = null;
-        setPermission(null);
-        setPropose(null);
-        if (wasOrphan) {
-          reconcileTurnFromHistory(sid);
-          break;
-        }
-        const list = storeRef.current[sid] ?? [];
-        storeRef.current[sid] = list
-          // An empty live bubble (stopped before the first token) would
-          // render as a confusing "（空回复）" — drop it; streamed text stays.
-          .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
-          // Close out any in-flight tool blocks (and pending question cards —
-          // the backend heals a parked ask_user to "(interrupted)" too, which
-          // replay reads as skipped) so `running` unsticks.
-          .map((msg) =>
-            hasPendingTool(msg.blocks)
-              ? { ...msg, blocks: closePendingBlocks(msg.blocks) }
-              : msg,
-          );
-        break;
-      }
-      case "error": {
-        // The turn reached the server (it is the run, not the delivery, that
-        // failed) → the user bubble counts as delivered; the failure becomes
-        // a dedicated error card with a retry action.
-        markDelivered(sid);
-        const liveMsgId = liveBySessionRef.current[sid];
-        liveBySessionRef.current[sid] = null;
-        streamAgentRef.current[sid] = null;
-        busyBySessionRef.current[sid] = false;
-        serverRunningRef.current[sid] = false;
-        // Orphaned turn that failed: reconcile from history instead of
-        // building a card on the split store — mapHistory re-surfaces the
-        // persisted last_error as a proper error card with retry.
-        if (orphanStreamRef.current[sid]) {
-          orphanStreamRef.current[sid] = false;
-          reconcileTurnFromHistory(sid);
-          break;
-        }
-        const list = storeRef.current[sid] ?? [];
-        const liveBubble = list.find((m) => m.id === liveMsgId);
-        // Retry payload: the originating user turn's snapshot (live turns
-        // always carry one). Absent → the card renders without a retry button.
-        const lastUser = [...list].reverse().find((m) => m.role === "user" && m.sendPayload);
-        storeRef.current[sid] = [
-          ...list
-            // An empty live bubble (error before any token) would render as a
-            // confusing "（空回复）" right above the error card — drop it.
-            .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
-            // Close out any in-flight tool blocks as interrupted so `running` unsticks,
-            // and mark the live bubble as `failed` so the UI can show a visual
-            // indicator (red border + "回复中断" label) instead of looking like
-            // a normal completed assistant reply.
-            .map((msg) => {
-              const marked = msg.id === liveMsgId ? { ...msg, failed: true } : msg;
-              if (!hasPendingTool(marked.blocks)) return marked;
-              return { ...marked, blocks: closePendingBlocks(marked.blocks) };
-            }),
-          {
-            id: mid(),
-            role: "assistant" as const,
-            blocks: [{ kind: "text", text: String(ev.message || "") || "未知错误" }],
-            turnId: liveBubble?.turnId,
-            error: true,
-            sendPayload: lastUser?.sendPayload,
-            sourceMsgId: lastUser?.id,
-          },
-        ];
-        // The turn died with entries still unacknowledged → the oldest becomes
-        // the next turn, same rule as a normal end (design §3.3).
-        flushSteerQueue(sid);
-        break;
-      }
-    }
-    syncDisplay(sid);
-  }
+    };
+    window.addEventListener("ginno:prefill-input", onPrefill);
+    return () => window.removeEventListener("ginno:prefill-input", onPrefill);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Docs/native paths dropped while on the landing home (no session yet):
-  // buffered with optimistic chips, uploaded right after lazy creation.
-  const pendingDocsRef = useRef<Array<{ file: File; tmpId: string }>>([]);
-  const pendingPathsRef = useRef<Array<{ path: string; tmpId: string }>>([]);
+  // 子代理结果卡「让主对话处理」：在当前（主）会话以一条引用该结果的消息开工。
+  // 忙时走 steer 队列（既有注入管线），闲时 invoke 开新 turn——与用户手打的
+  // 消息完全同一条路径。agentId 置 null = 会话默认 agent。
+  useEffect(() => {
+    const onEscalate = (e: Event) => {
+      const d = (e as CustomEvent<{ sessionId?: string; goal?: string; summary?: string }>).detail;
+      const sid = curSessionIdRef.current;
+      if (!sid || !d?.sessionId) return;
+      const goal = d.goal || "子任务";
+      const brief = (d.summary || "").trim().slice(0, 300);
+      const text = `子代理任务「${goal}」（session ${d.sessionId}）的结果经人工检查有问题。请核对该子代理的结论并决定下一步（重新拆分、在原会话追问，或自己接手）。其结果摘要：${brief}${brief.length >= 300 ? "…" : ""}`;
+      if (busyBySessionRef.current[sid]) {
+        enqueueSteer(sid, text, null);
+      } else {
+        attemptSend(sid, { text, images: [], files: [], mentions: [], agentId: null });
+      }
+    };
+    window.addEventListener("ginno:subagent-escalate", onEscalate);
+    return () => window.removeEventListener("ginno:subagent-escalate", onEscalate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+
+
 
   async function uploadOneDoc(sid: string, f: File, tmpId: string): Promise<FileAttachment | null> {
     try {
@@ -1856,259 +436,6 @@ export function ChatStream({
     }
   }
 
-  // ─── 闭环 (design A): 总结成流程 + 对话内运行块控制 ─────────────────────────
-  // The actual LLM summarization path (also used by the modal's ↺ retry).
-  // Async contract (G2): the endpoint validates synchronously, spawns the
-  // synthesis in the background and returns {ok, synthesis_id, status:"started"}
-  // immediately. The DSL then arrives via finishSynthesisWait — resolved either
-  // by the WS synthesis.event(finished) frame or the 2s polling fallback,
-  // whichever wins the idempotency guard. sumLoading stays true until the
-  // terminal state so the button ("正在总结…") doubles as the double-click
-  // guard and the modal never opens on a half-finished case.
-  async function freshSummarize(sessionId?: string) {
-    if (sumLoading) return; // a synthesis is already in flight
-    setSumMenuOpen(false);
-    const targetId = sessionId || session?.id;
-    if (!targetId) return;
-    const label =
-      targetId === session?.id
-        ? session?.title || "当前会话"
-        : g.sessions.find((s) => s.id === targetId)?.title || "历史会话";
-    setSumLoading(true);
-    setSumErr(null);
-    setSumCreated(null);
-    try {
-      const r = await summarizeSessionToDsl(targetId, undefined, sumLastN ?? undefined);
-      if (r.ok && r.synthesis_id) {
-        setSumSource({ id: targetId, label });
-        setSumSynthesisId(r.synthesis_id);
-        setSumPendingId(r.synthesis_id);
-        sumPendingRef.current = r.synthesis_id;
-        // NOTE: no setSummarize / setSumLoading(false) here — the wait state
-        // machine below resolves the draft once the case finishes.
-      } else {
-        // Synchronous validation failure (400/404/500) — HTTPException bodies
-        // carry {detail}; json() doesn't throw on HTTP errors.
-        setSumErr(`总结失败：${r.error ?? r.detail ?? "unknown"}`);
-        setSummarize({}); // keep the modal open so the reason is visible
-        setSumLoading(false);
-      }
-    } catch {
-      setSumErr("总结失败：无法连接运行时");
-      setSummarize({});
-      setSumLoading(false);
-    }
-  }
-
-  // Idempotent resolver for a finished synthesis wait. Both the WS handler and
-  // the polling fallback call this; the ref guard makes the second caller a
-  // no-op. Fetches the case detail (the finished event deliberately omits the
-  // DSL) and drives the same success/error states the old sync path did.
-  async function finishSynthesisWait(id: string) {
-    if (sumPendingRef.current !== id) return; // already resolved / abandoned
-    sumPendingRef.current = null;
-    setSumPendingId(null);
-    try {
-      const r = await getSynthesisCase(id);
-      const out = r.case?.output;
-      if (r.ok && out?.status === "ok" && out.dsl) {
-        setSummarize(out.dsl as Record<string, unknown>);
-      } else {
-        setSumErr(
-          `总结失败：${out?.fail_stage || "unknown"}（案例 ${id}，~/.ginno/synthesis/${id}）`,
-        );
-        setSummarize({});
-      }
-    } catch {
-      setSumErr("总结失败：无法连接运行时");
-      setSummarize({});
-    } finally {
-      setSumLoading(false);
-      void g.reloadSynthesisCases();
-    }
-  }
-
-  // Polling fallback for the pending synthesis: the WS frame is the fast path,
-  // but a session switch (per-session sockets) or a dropped frame must not
-  // strand the wait. 2s interval, 180s hard timeout with the case id in the
-  // message so the on-disk trace is locatable.
-  useEffect(() => {
-    if (!sumPendingId) return;
-    const started = Date.now();
-    const id = sumPendingId;
-    const t = setInterval(() => {
-      if (sumPendingRef.current !== id) {
-        clearInterval(t); // resolved via WS or abandoned
-        return;
-      }
-      if (Date.now() - started > 180_000) {
-        clearInterval(t);
-        sumPendingRef.current = null;
-        setSumPendingId(null);
-        setSumErr(`总结失败：等待超时（案例 ${id}，~/.ginno/synthesis/${id}）`);
-        setSummarize({});
-        setSumLoading(false);
-        return;
-      }
-      getSynthesisCase(id)
-        .then((r) => {
-          if (r.ok && r.case.output) void finishSynthesisWait(id);
-        })
-        .catch(() => {
-          /* transient — retry on the next tick */
-        });
-    }, 2000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sumPendingId]);
-
-  // Summarize is the primary action and must ALWAYS run fresh — a leftover
-  // draft (possibly from another session) must never intercept it. Draft
-  // recovery is an explicit opt-in row in the dropdown (openDraftModal).
-  async function openSummarize(sessionId?: string) {
-    await freshSummarize(sessionId);
-  }
-
-  function openDraftModal() {
-    const draft = readSummarizeDraft();
-    if (!draft) return;
-    setSumMenuOpen(false);
-    setSumSource({
-      id: draft.sourceSessionId || "",
-      label: draft.sourceLabel || "上次草稿",
-    });
-    setSummarize(draft.dsl);
-    setSumErr(null);
-    setSumCreated(null);
-  }
-
-  function deleteDraft() {
-    try {
-      localStorage.removeItem(SUMMARIZE_DRAFT_KEY);
-    } catch {
-      /* ignore */
-    }
-    setDraftTick((n) => n + 1); // refresh the dropdown's draft row
-  }
-
-  function closeSummarize(saveDraft: boolean) {
-    // S6: closing without creating keeps the draft recoverable for 24h
-    // (sourceSessionId travels with it so ↺重新总结 works after restore). Only
-    // non-trivial drafts are saved — an empty/failed `{}` must not become a
-    // "restorable" draft that later confuses the user.
-    const hasNodes = Array.isArray(summarize?.nodes) && (summarize!.nodes as unknown[]).length > 0;
-    try {
-      if (saveDraft && summarize && hasNodes) {
-        localStorage.setItem(
-          SUMMARIZE_DRAFT_KEY,
-          JSON.stringify({
-            dsl: summarize,
-            sourceSessionId: sumSource?.id || undefined,
-            sourceLabel: sumSource?.label,
-            savedAt: Date.now(),
-          }),
-        );
-      } else {
-        localStorage.removeItem(SUMMARIZE_DRAFT_KEY);
-      }
-    } catch {
-      /* storage unavailable */
-    }
-    setDraftTick((n) => n + 1);
-    setSummarize(null);
-    setSumErr(null);
-    setSumCreated(null);
-    // Abandon any in-flight synthesis wait — the server-side case keeps
-    // running and stays visible in the 总结 panel; only the UI stops waiting.
-    sumPendingRef.current = null;
-    setSumPendingId(null);
-    setSumLoading(false);
-  }
-
-  async function createFromSummarize(run: boolean, editedDsl: Record<string, unknown>) {
-    if (!session) return;
-    setSumBusy(run ? "run" : "create");
-    setSumErr(null);
-    try {
-      const cw = await createWorkflow({
-        name: (editedDsl.name as string) || "新流程",
-        description: (editedDsl.description as string) || "",
-        dsl: editedDsl,
-        ...(sumSynthesisId ? { synthesis_id: sumSynthesisId } : {}),
-      });
-      const cwBody = cw as { ok?: boolean; workflow?: import("@/lib/types").WorkflowDef; detail?: string };
-      if (!cwBody.workflow) {
-        // json() doesn't throw on HTTP errors — surface the reason inline and
-        // KEEP the modal open so the draft isn't lost.
-        setSumErr(cwBody.detail || "创建工作流失败");
-        return;
-      }
-      await g.reloadWorkflows(); // list reflects the new workflow immediately
-      setDraftTick((n) => n + 1);
-      try {
-        localStorage.removeItem(SUMMARIZE_DRAFT_KEY); // created → draft consumed
-      } catch { /* ignore */ }
-      if (run) {
-        const tr = await triggerWorkflowRun(cwBody.workflow.id, undefined, session.id);
-        const trBody = tr as { ok?: boolean; run?: import("@/lib/types").WorkflowRun; detail?: string };
-        if (trBody.run) {
-          const list = runsBySessionRef.current[session.id] ?? [];
-          if (!list.some((x) => x.id === trBody.run!.id)) list.push(trBody.run);
-          runsBySessionRef.current[session.id] = [...list];
-          syncDisplay(session.id);
-        } else {
-          // Created but not started: still a partial success — report inline.
-          setSumErr(`已创建，但运行触发失败：${trBody.detail || "未知错误"}`);
-          return;
-        }
-        setSummarize(null); // run card animates in — close the modal
-      } else {
-        // Create-only: keep the modal open with an explicit receipt so it is
-        // unambiguous that the workflow was added (then 完成 closes it).
-        setSumErr(null);
-        setSumCreated(cwBody.workflow.name || "新流程");
-      }
-    } catch {
-      setSumErr("无法连接运行时");
-    } finally {
-      setSumBusy(null);
-    }
-  }
-
-  // S2: 进入开发会话精炼 — create the draft as v1 first, then open a
-  // workflow-dev session where the agent can propose further edits.
-  async function openDevFromSummarize(editedDsl: Record<string, unknown>) {
-    setSumBusy("dev");
-    setSumErr(null);
-    try {
-      const cw = await createWorkflow({
-        name: (editedDsl.name as string) || "新流程",
-        description: (editedDsl.description as string) || "",
-        dsl: editedDsl,
-        ...(sumSynthesisId ? { synthesis_id: sumSynthesisId } : {}),
-      });
-      const cwBody = cw as { ok?: boolean; workflow?: import("@/lib/types").WorkflowDef; detail?: string };
-      if (!cwBody.workflow) {
-        setSumErr(cwBody.detail || "创建工作流失败");
-        return;
-      }
-      await g.reloadWorkflows();
-      setDraftTick((n) => n + 1);
-      try {
-        localStorage.removeItem(SUMMARIZE_DRAFT_KEY);
-      } catch { /* ignore */ }
-      setSummarize(null);
-      setSumCreated(null);
-      await g.newSession("workflow-dev", {
-        title: `精炼流程：${cwBody.workflow.name}`,
-        workflow_id: cwBody.workflow.id,
-      });
-    } catch {
-      setSumErr("无法连接运行时");
-    } finally {
-      setSumBusy(null);
-    }
-  }
 
   function cancelRun(runId: string) {
     cancelWorkflowRun(runId);
@@ -2213,18 +540,6 @@ export function ChatStream({
   // Model chip = per-session provider/model switch (server drops the graph,
   // next WS connect rebuilds).
   const [modelOpen, setModelOpen] = useState(false);
-  function cycleSessionSocket(sid: string) {
-    const old = socketsRef.current[sid];
-    if (old) {
-      try {
-        old.close();
-      } catch {
-        /* ignore */
-      }
-    }
-    delete socketsRef.current[sid];
-    connectSession(sid);
-  }
   async function pickModel(pid: string, model: string) {
     setModelOpen(false);
     // Never select an empty model. The chip label falls back to the provider id
@@ -2312,126 +627,6 @@ export function ChatStream({
     }
   }
 
-  // ─── Mid-turn steering (docs/steering-design.md) ──────────────────────────────
-  /** The running turn's id for a session (the steer rides it). Empty string
-   *  when unknown — the server then falls back to its own running-turn id,
-   *  which is the only correct answer for a turn nobody here invoked (an
-   *  adopted orphan, or a goal continuation). */
-  function liveTurnIdFor(sid: string): string {
-    const live = liveBySessionRef.current[sid];
-    const msg = live ? (storeRef.current[sid] ?? []).find((m) => m.id === live) : undefined;
-    return msg?.turnId ?? "";
-  }
-
-  /** Drop one queued entry (the ✕ on a queue-bar row). */
-  function dropSteer(sid: string, steerId: string) {
-    steerQ.remove(sid, [steerId]);
-  }
-
-  /** Transient, visible feedback in the composer (never a silent no-op). */
-  function showComposerHint(msg: string) {
-    setComposerHint(msg);
-    if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
-    hintTimerRef.current = setTimeout(() => setComposerHint(null), 4000);
-  }
-
-  function enqueueSteer(
-    sid: string,
-    text: string,
-    agentId: string | null,
-    images: Attachment[] = [],
-    files: FileAttachment[] = [],
-  ) {
-    steerQ.enqueue({
-      sessionId: sid,
-      turnId: liveTurnIdFor(sid),
-      text,
-      images,
-      files,
-      agentId,
-      send: steerFrameSender(sid),
-    });
-  }
-
-  /** Raw-frame sender for a session's socket, handed to the shared queue (which
-   *  owns the frame shape and swallows a dead socket so the entry stays queued).
-   *  Each window passes its own socket here — the pin has its own. */
-  function steerFrameSender(sid: string): (frame: unknown) => void {
-    return (frame) => {
-      socketsRef.current[sid]?.send(JSON.stringify(frame));
-    };
-  }
-
-  /** Re-send every queued entry as `steer` — done right before we resume a
-   *  parked turn, so an entry stashed in the segment that parked is not lost.
-   *  Safe to repeat: server-side enqueue replaces by steer_id (design §3.2). */
-  function requeueSteersOnResume(sid: string) {
-    steerQ.onResume(sid, steerFrameSender(sid));
-  }
-
-  /** ⏹ means stop: hand what is still queued back to the composer — multi-line,
-   *  in order, ABOVE whatever is already typed (the ↑ recall's placement) —
-   *  rather than silently discarding what the user wrote (design §4.1). */
-  function recallSteers(sid: string) {
-    const items = steerQ.recall(sid);
-    if (!items.length) return;
-    const recalled = items.map((i) => i.text).join("\n");
-    // Attachments come back too — a recalled steer must not lose its pictures
-    // or file chips (the whole reason they are kept on the entry, brief §5.1).
-    const recalledImgs = items.flatMap((i) => i.images);
-    const recalledFiles = items.flatMap((i) => i.files);
-    if (sid !== curSessionIdRef.current) {
-      // Background session: park it in that session's draft, so switching back
-      // shows it in the composer instead of dropping it on the floor.
-      const d = draftCacheRef.current[sid] ?? { input: "", attachments: [] };
-      draftCacheRef.current[sid] = {
-        ...d,
-        input: d.input ? `${recalled}\n${d.input}` : recalled,
-        attachments: [...recalledImgs, ...d.attachments],
-        files: [...recalledFiles, ...(d.files ?? [])],
-      };
-      return;
-    }
-    setInput((cur) => (cur ? `${recalled}\n${cur}` : recalled));
-    if (recalledImgs.length) setAttachments((a) => [...recalledImgs, ...a]);
-    if (recalledFiles.length) setFileAttachments((f) => [...recalledFiles, ...f]);
-  }
-
-  /** The turn ended with entries still unacknowledged: the OLDEST becomes the
-   *  next turn — Claude Code's rule verbatim ("when the turn ends with messages
-   *  still queued, Claude Code sends only the oldest as the next turn"). The
-   *  rest stay queued and follow the same rule on that turn's end (design §3.3). */
-  function flushSteerQueue(sid: string) {
-    // Pop the oldest out of the queue (the shared hook owns the ref write), then
-    // promote it to the next turn here — turning it into a turn is this window's
-    // concern, not the queue's.
-    const head = steerQ.takeOldest(sid);
-    if (!head) return;
-    attemptSend(sid, {
-      text: head.text,
-      // The entry's attachments ride the invoke that becomes the next turn —
-      // dropping them here is the other half of the silent-loss bug.
-      images: head.images,
-      files: head.files,
-      mentions: [],
-      agentId: head.agentId,
-    });
-  }
-
-  /** History is authoritative: a steer_id it carries was absorbed even if the
-   *  ack was lost to a socket drop, so drop those entries instead of re-sending
-   *  them. This is what keeps delivery exactly-once (design §3.3). The history
-   *  scan stays here (it reads this window's mapped bubbles); the hook does the
-   *  queue write. */
-  function dropAbsorbedSteers(sid: string, mapped: ChatMsg[]) {
-    const absorbed = new Set<string>();
-    for (const m of mapped) {
-      for (const b of m.blocks) {
-        if (b.kind === "steer" && b.steerId) absorbed.add(b.steerId);
-      }
-    }
-    if (absorbed.size) steerQ.remove(sid, absorbed);
-  }
 
   /** The pending ask_user card of the displayed session, if any. */
   function pendingQuestionBlock(): QuestionBlock | null {
@@ -2699,185 +894,6 @@ export function ChatStream({
     }
   }
 
-  /** Click on the red ❗: resend the exact payload with a fresh turn id (a
-   * retry is a genuinely new turn). Operates on the failed bubble IN PLACE —
-   * the bubble flips back to "sending" and the response slots in right after
-   * it; no duplicate message is appended. */
-  function retryFailed(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid || busyBySessionRef.current[sid]) return; // one turn at a time
-    const list = storeRef.current[sid] ?? [];
-    const msg = list.find((m) => m.id === msgId);
-    if (!msg || msg.role !== "user" || msg.status !== "failed" || !msg.sendPayload) return;
-    attemptSend(sid, msg.sendPayload, msg.id);
-  }
-
-  /** Pull the failed payload back into the composer (text, images, files,
-   * mentions, target agent) and drop the bubble — content is never lost. */
-  function editResend(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    const msg = (storeRef.current[sid] ?? []).find((m) => m.id === msgId);
-    if (!msg || msg.status !== "failed" || !msg.sendPayload) return;
-    const p = msg.sendPayload;
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).filter((m) => m.id !== msgId);
-    setInput(p.text);
-    setAttachments(p.images);
-    setFileAttachments(p.files);
-    setTarget(p.agentId);
-    mentionsRef.current[sid] = p.mentions;
-    syncDisplay(sid);
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(p.text.length, p.text.length);
-      }
-      recomputeMenu(p.text);
-    });
-  }
-
-  function dismissFailed(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).filter(
-      (m) => !(m.id === msgId && m.status === "failed"),
-    );
-    syncDisplay(sid);
-  }
-
-  /** Retry on a turn-error card: keep the error card in place as a record of
-   * the failure, then append a brand-new user bubble + assistant placeholder
-   * at the tail of the chat. The new turn gets a fresh turnId so the server
-   * treats it as a new attempt (no checkpoint dedup collision). */
-  function retryError(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid || busyBySessionRef.current[sid]) return; // one turn at a time
-    const list = storeRef.current[sid] ?? [];
-    const card = list.find((m) => m.id === msgId);
-    if (!card?.error || !card.sendPayload) return;
-    // Keep the error card — don't remove it. Just start a fresh turn at the bottom.
-    attemptSend(sid, card.sendPayload);
-  }
-
-  /** Retry from checkpoint: resume the failed turn from its latest checkpoint
-   * instead of re-executing from the start. Preserves tool calls and
-   * intermediate results. */
-  function retryFromCheckpoint(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid || busyBySessionRef.current[sid]) return;
-    const list = storeRef.current[sid] ?? [];
-    const card = list.find((m) => m.id === msgId);
-    if (!card?.error) return;
-    // Remove the error card
-    storeRef.current[sid] = list.filter((m) => m.id !== msgId);
-    syncDisplay(sid);
-    // Mark as busy
-    busyBySessionRef.current[sid] = true;
-    const turnId = card.turnId || crypto.randomUUID();
-    const sock = socketsRef.current[sid];
-    if (!sock || sock.readyState !== WebSocket.OPEN) {
-      busyBySessionRef.current[sid] = false;
-      return;
-    }
-    try {
-      sock.send(
-        JSON.stringify({
-          type: "retry_from_checkpoint",
-          turn_id: turnId,
-        }),
-      );
-    } catch {
-      busyBySessionRef.current[sid] = false;
-    }
-  }
-
-  function respond(decision: "allow" | "deny") {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    // Anything still in the steer queue belongs to this turn: re-send it as
-    // `steer` BEFORE the resume, so the resumed segment absorbs it (design
-    // §3.4). Idempotent by steer_id, so a duplicate can't inject it twice.
-    requeueSteersOnResume(sid);
-    try {
-      socketsRef.current[sid]?.send(JSON.stringify({ type: "permission_response", decision }));
-    } catch {
-      /* socket gone — reconnect re-emits the prompt if still pending */
-    }
-    permsRef.current[sid] = null;
-    setPermission(null);
-  }
-
-  function stopTurn() {
-    // Hard-stop the running turn (server abandons the in-flight step, keeps
-    // what already streamed, heals state). Idempotent server-side; a stopped
-    // turn ends with a turn.stopped broadcast that clears `running`.
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    try {
-      socketsRef.current[sid]?.send(JSON.stringify({ type: "stop" }));
-    } catch {
-      /* socket gone — reconnect reconciles via turn_state */
-    }
-  }
-
-  function respondPropose(decision: "allow" | "deny") {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    // Reuses the permission_response channel; the server resumes the proposal
-    // interrupt with {decision}, and the propose_edit tool applies on allow.
-    requeueSteersOnResume(sid);
-    try {
-      socketsRef.current[sid]?.send(JSON.stringify({ type: "permission_response", decision }));
-    } catch {
-      /* socket gone — reconnect re-emits version.propose if still pending */
-    }
-    const p = propose;
-    proposeRef.current[sid] = null;
-    setPropose(null);
-    // P0 polish: the card unmounts on decide, so leave a short receipt line
-    // ("已应用 · v3 → 新版本" / "已拒绝") where the card used to be.
-    if (p) {
-      setProposeResult({ decision, workflowId: p.workflow_id, fromVersion: p.from_version });
-      window.setTimeout(() => setProposeResult(null), 4000);
-    }
-  }
-
-  // Answer a parked ask_user card. The server ignores the message unless the
-  // session is actually parked on a user_question interrupt (stale/duplicate
-  // answers are dropped there, not here). The optimistic fold collapses EVERY
-  // pending copy of the card by id — a post-reload re-emit can briefly have
-  // the history card and a live one on screen; the authoritative receipt still
-  // arrives via the tool's tool.end.
-  function answerQuestion(id: string, answer: string, optionIndex: number | null, skip: boolean) {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    // Same rule as the permission path: queued entries belong to this turn, so
-    // re-send them as `steer` before the answer resumes it (design §3.4).
-    requeueSteersOnResume(sid);
-    try {
-      socketsRef.current[sid]?.send(
-        JSON.stringify({ type: "user_answer", answer, option_index: optionIndex, skip }),
-      );
-    } catch {
-      /* socket gone — reconnect re-emits user.question if still parked */
-    }
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
-      m.blocks.some((b) => b.kind === "question" && b.id === id && b.status === "pending")
-        ? {
-            ...m,
-            blocks: m.blocks.map((b) =>
-              b.kind === "question" && b.id === id && b.status === "pending"
-                ? skip
-                  ? { ...b, status: "skipped" as const }
-                  : { ...b, status: "answered" as const, answer, optionIndex }
-                : b,
-            ),
-          }
-        : m,
-    );
-    syncDisplay(sid);
-  }
 
   // Drag the composer's top handle to resize the input area. Auto-grow (capped)
   // still applies while composerH is undefined; dragging switches to a fixed,
@@ -3016,6 +1032,14 @@ export function ChatStream({
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+            {session?.type === "subagent" && running && (
+              // 子任务视图的输入语义（subagent-design.md §6.2）：running 时的输入
+              // 走既有 steering 通道（useSteerQueue，同主对话），这里只把语义标出来。
+              <div className="mb-1 flex items-center gap-1.5 px-0.5 text-[10px] text-faint">
+                <RotateCcw className="h-3 w-3 shrink-0 animate-pulse" aria-hidden />
+                <span>子任务运行中 · 发送将在下个工具边界注入（steering）</span>
               </div>
             )}
             {session && steerItems.length > 0 && (
@@ -3460,6 +1484,7 @@ export function ChatStream({
         </div>
       ) : (
         <>
+      {session.type === "subagent" && <SubagentTopBar session={session} />}
       {goal && goalStalled && !resumeDismissed && (
         <div className="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />
@@ -3499,10 +1524,41 @@ export function ChatStream({
 
           {messages.map((m, idx) =>
             m.role === "system" ? (
-              <ContextBlocks
-                key={m.id}
-                blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
-              />
+              <div key={m.id} className="flex flex-col items-center gap-2">
+                <ContextBlocks
+                  blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
+                />
+                {/* 子代理发起/结果卡片行（subagent-design.md §6.3）：与 context
+                    chips 同层——不是任何一方的气泡，是事件驱动的系统行。拆分方案
+                    卡片（P2）同层渲染，决定回调走 engine 的 socket 发送。 */}
+                <div className="flex w-full max-w-[85%] flex-col gap-2">
+                  {m.blocks
+                    .filter((b): b is Extract<Block, { kind: "subagent_plan" }> => b.kind === "subagent_plan")
+                    .map((b) => (
+                      <SubagentPlanCard key={b.planId} block={b} onDecide={decideSubagentPlan} />
+                    ))}
+                  <SubagentBlocks
+                    blocks={m.blocks.filter(
+                      (b): b is Extract<Block, { kind: "subagent_spawn" }> | Extract<Block, { kind: "subagent_result" }> =>
+                        b.kind === "subagent_spawn" || b.kind === "subagent_result",
+                    )}
+                  />
+                </div>
+              </div>
+            ) : m.role === "user" && m.blocks.some((b) => b.kind === "subagent_result") ? (
+              // runtime 注入的子代理结果（契约 3）在历史重放中是 HumanMessage，
+              // 重载后以 user 角色回来：折成结果卡片系统行渲染，而不是落到
+              // UserBlocks（它不认识 subagent_result 块，会渲染成空气泡）。
+              <div key={m.id} className="flex flex-col items-center gap-2">
+                <div className="w-full max-w-[85%]">
+                  <SubagentBlocks
+                    blocks={m.blocks.filter(
+                      (b): b is Extract<Block, { kind: "subagent_result" }> =>
+                        b.kind === "subagent_result",
+                    )}
+                  />
+                </div>
+              </div>
             ) : m.role === "user" && m.blocks.some((b) => b.kind === "steer") ? (
               // A steered message with no assistant step to attach to (absorbed
               // by the turn's first model request, or the transcript ended on
@@ -3827,280 +1883,3 @@ export function ChatStream({
   );
 }
 
-/** workflow_propose_edit diff confirmation card (workflow-ux-redesign P0
- *  polish): busy buttons + collapsed-by-default diff with hunk count. The
- *  session graph is paused at the tool's interrupt until the user decides. */
-function ProposeCard({
-  propose,
-  onDecide,
-}: {
-  propose: VersionPropose;
-  onDecide: (decision: "allow" | "deny") => void;
-}) {
-  const [busy, setBusy] = useState<null | "allow" | "deny">(null);
-  const [diffOpen, setDiffOpen] = useState(false);
-  const hunks = (propose.diff.match(/^@@/gm) || []).length;
-  const decide = (d: "allow" | "deny") => {
-    if (busy) return;
-    setBusy(d);
-    onDecide(d); // the card unmounts when the server clears the pending propose
-  };
-  return (
-    <div className="mx-auto w-full max-w-3xl px-6">
-      <div className="mb-2 rounded-xl border border-yellow/30 bg-yellow/[0.04] p-3">
-        <div className="mb-1 flex items-center gap-2 text-sm font-medium text-yellow">
-          <FileEdit className="h-3.5 w-3.5" />
-          DSL 变更提案
-          <span className="rounded border border-yellow/40 px-1.5 py-0.5 text-[10px] font-normal text-muted">
-            {propose.workflow_id} · v{propose.from_version} → 新版本
-          </span>
-        </div>
-        {propose.rationale && (
-          <div className="mb-2 text-xs text-muted">理由：{propose.rationale}</div>
-        )}
-        <button
-          onClick={() => setDiffOpen((v) => !v)}
-          className="mb-2 flex items-center gap-1 text-[11px] text-faint hover:text-muted"
-        >
-          <ChevronDown className={`h-3 w-3 transition-transform ${diffOpen ? "" : "-rotate-90"}`} />
-          {diffOpen ? "收起 diff" : `查看完整 diff（${hunks} 处改动）`}
-        </button>
-        {diffOpen && <DiffView diff={propose.diff} />}
-        <div className="mt-3 flex gap-2">
-          <button
-            onClick={() => decide("allow")}
-            disabled={!!busy}
-            className="btn-press flex items-center gap-1 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-          >
-            {busy === "allow" && <Loader2 className="h-3 w-3 animate-spin" />}
-            {busy === "allow" ? "应用中…" : "应用变更（创建新版本）"}
-          </button>
-          <button
-            onClick={() => decide("deny")}
-            disabled={!!busy}
-            className="btn-press flex items-center gap-1 rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:bg-red/10 hover:text-red disabled:opacity-50"
-          >
-            {busy === "deny" && <Loader2 className="h-3 w-3 animate-spin" />}
-            拒绝
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Turn failed at runtime: the input was delivered, the run errored (model /
- * provider failure, stall watchdog, …). Rendered as a dedicated red card with
- * a retry action instead of a plain "[error]" text bubble. */
-function ErrorCard({
-  message,
-  turnId,
-  canRetry,
-  busy,
-  onRetry,
-  onRetryFromCheckpoint,
-}: {
-  message: string;
-  turnId?: string;
-  canRetry: boolean;
-  busy?: boolean;
-  onRetry: () => void;
-  onRetryFromCheckpoint?: () => void;
-}) {
-  return (
-    <div className="rounded-xl border border-red/40 bg-red/10 px-4 py-3">
-      <div className="mb-1.5 flex items-center gap-2">
-        <AlertCircle className="h-4 w-4 shrink-0 text-red" />
-        <span className="text-sm font-medium text-red">请求失败</span>
-        <span className="ml-auto">
-          <TurnIdChip turnId={turnId} />
-        </span>
-      </div>
-      <pre className="mb-3 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-muted">
-        {message}
-      </pre>
-      {canRetry && (
-        <div className="flex gap-2">
-          <button
-            onClick={onRetry}
-            disabled={busy}
-            title="用原输入从头重新发起一次回合"
-            className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-          >
-            从头重试
-          </button>
-          {onRetryFromCheckpoint && (
-            <button
-              onClick={onRetryFromCheckpoint}
-              disabled={busy}
-              title="从最近的检查点继续，保留已完成的工具调用和中间结果"
-              className="rounded-lg border border-violet/40 bg-violet/10 px-3 py-1.5 text-xs font-medium text-violet transition-opacity hover:opacity-90 disabled:opacity-40"
-            >
-              从断点继续
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** C+ 方案②：虚线 pill 分隔线——下一个气泡由哪个 agent 接手。 */
-function HandoffDivider({ agent, agentName }: { agent: AgentConfig | null; agentName?: string }) {
-  const hex = agentHex(agent?.color);
-  const name = agent?.name || agentName || "Agent";
-  return (
-    <div className="-my-1 flex items-center gap-2 text-xs">
-      <div className="h-px flex-1 border-t border-dashed border-line" />
-      <span
-        className="inline-flex items-center gap-1.5 rounded-full border border-dashed bg-card px-2.5 py-0.5"
-        style={{ borderColor: hex + "55", color: hex }}
-      >
-        <span className="h-1.5 w-1.5 rounded-full" style={{ background: hex }} />
-        {name} 接手
-      </span>
-      <div className="h-px flex-1 border-t border-dashed border-line" />
-    </div>
-  );
-}
-
-function AssistantBubble({
-  agent,
-  agentName,
-  blocks,
-  streaming,
-  turnId,
-  failed,
-  onAnswerQuestion,
-  questionLive,
-}: {
-  agent: AgentConfig | null;
-  agentName?: string;
-  blocks: Block[];
-  streaming?: boolean;
-  turnId?: string;
-  failed?: boolean;
-  // ask_user resume channel (see InnerBlocks): a parked question card is
-  // answered from inside the bubble, not from a bottom-docked prompt.
-  onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
-  questionLive?: boolean;
-}) {
-  const hex = agentHex(agent?.color);
-  const displayName = agent?.name || agentName || "Agent";
-  const hasInner = blocks.some((b) => b.kind !== "ref");
-
-  // Track elapsed time for dynamic status text during TTFT wait
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    if (!streaming || hasInner) {
-      setElapsed(0);
-      return;
-    }
-    setElapsed(0);
-    const timer = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(timer);
-  }, [streaming, hasInner]);
-
-  // Dynamic status text based on elapsed time
-  const statusText = useMemo(() => {
-    if (elapsed < 2) return "正在连接模型…";
-    if (elapsed < 10) return "模型思考中…";
-    return `还在想，可能需要一点时间… (${elapsed}s)`;
-  }, [elapsed]);
-  return (
-    <div className="min-w-0">
-      {/* C+ 方案②归属徽标：agent 色 dot + 名字 pill（原型风格），替代原先的
-          头像方块——归属信息一眼可见，且与「X 接手」分隔线同一视觉语言。 */}
-      <div className="mb-1 flex items-center gap-2">
-        <span
-          className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium"
-          style={{ borderColor: hex + "55", background: hex + "1a", color: hex }}
-          title={displayName}
-        >
-          <span className="h-1.5 w-1.5 rounded-full" style={{ background: hex }} />
-          {displayName}
-        </span>
-        <span className="text-xs text-faint">{streaming ? statusText : "just now"}</span>
-        <span className="ml-auto">
-          <TurnIdChip turnId={turnId} />
-        </span>
-      </div>
-      <div className={`rounded-xl border bg-card px-4 py-3 text-sm leading-relaxed text-txt transition-all duration-500 ${
-        failed
-          ? 'border-red/40 bg-red/[0.03]'
-          : 'border-line'
-      } ${streaming && !hasInner ? 'animate-pulse-subtle' : ''}`}>
-          {failed && (
-            <div className="mb-2 flex items-center gap-1.5 text-[11px] text-red/80">
-              <AlertCircle className="h-3 w-3 shrink-0" />
-              <span>回复中断 — 此条回复未完成，可点击下方错误卡片的「从头重试」重新发起</span>
-            </div>
-          )}
-          {hasInner ? (
-            <InnerBlocks
-              blocks={blocks}
-              streaming={streaming}
-              onAnswerQuestion={onAnswerQuestion}
-              questionLive={questionLive}
-            />
-          ) : streaming ? (
-            <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5">
-              <div className="flex items-center gap-2">
-                {/* Smaller animated wave dots */}
-                <div className="flex items-center gap-0.5">
-                  <WaveDot delay={0} color={hex} />
-                  <WaveDot delay={150} color={hex} />
-                  <WaveDot delay={300} color={hex} />
-                </div>
-                {/* Status text with fade transition */}
-                <span key={statusText} className="text-xs text-muted animate-fade-in">
-                  {statusText}
-                </span>
-                {/* Subtle progress bar for long waits */}
-                {elapsed >= 10 && (
-                  <div className="ml-auto flex-1 max-w-[80px]">
-                    <div className="h-0.5 overflow-hidden rounded-full bg-muted/20">
-                      <div
-                        className="h-full rounded-full transition-all duration-1000 ease-linear"
-                        style={{
-                          width: `${Math.min((elapsed - 10) * 3, 100)}%`,
-                          background: `linear-gradient(90deg, ${hex}40, ${hex})`
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            // A finished turn with no inner content (e.g. refs-only) must NOT keep
-            // pulsing "Thinking…" — that read as a permanently-stuck indicator.
-            <span className="text-xs text-faint">（空回复）</span>
-          )}
-        </div>
-        <RefBlocks blocks={blocks} />
-      </div>
-  );
-}
-
-function Dot({ d = 0 }: { d?: number }) {
-  return (
-    <span
-      className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted"
-      style={{ animationDelay: `${d}ms` }}
-    />
-  );
-}
-
-function WaveDot({ delay, color }: { delay: number; color: string }) {
-  return (
-    <span
-      className="h-1.5 w-1.5 rounded-full animate-wave"
-      style={{
-        backgroundColor: color,
-        animationDelay: `${delay}ms`,
-        boxShadow: `0 0 6px ${color}60`
-      }}
-    />
-  );
-}

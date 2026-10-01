@@ -108,10 +108,16 @@ export async function patchSession(id: string, patch: Partial<SessionMeta>) {
   });
 }
 
-export async function deleteSession(id: string) {
-  return json<{ ok: boolean; removed: boolean }>(`${BASE}/sessions/${id}`, {
-    method: "DELETE",
-  });
+export async function deleteSession(id: string, cascade = false) {
+  // cascade=1（subagent-design.md §5.8）：删除父会话时由后端沿 parent_session_id
+  // 级联删除全部后代（先协作式停止运行中的，再删 checkpoint）。前端只负责传参，
+  // 后代清点仅用于确认文案与乐观移除。
+  return json<{ ok: boolean; removed: boolean }>(
+    `${BASE}/sessions/${id}${cascade ? "?cascade=1" : ""}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function getSessionHistory(id: string) {
@@ -128,6 +134,19 @@ export async function getSessionHistory(id: string) {
     // error card so the retry affordance survives reloads / switches.
     last_error?: { turn_id?: string; message?: string } | null;
   }>(`${BASE}/sessions/${id}/history`);
+}
+
+// 停止一个会话（P2 共享契约 4）。POST /api/sessions/{id}/stop → 202 { stopped: true }。
+// 语义由后端定：running turn 走协作式停止；waiting subagent 级联 stop 全部运行中
+// 后代；idle 会话是 no-op，同样返回 202。侧栏子会话行不持有子会话的 socket
+// （socket 归 ChatStream 且只给已打开的会话开），所以停止子任务只能走 HTTP；
+// 成功后的状态刷新依赖既有 subagent.status WS 事件，这里不做乐观改写。
+export async function stopSession(id: string) {
+  return json<{ stopped: boolean }>(`${BASE}/sessions/${id}/stop`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({}),
+  });
 }
 
 // Per-session cumulative model usage (TopBar counter). The live `usage` WS
@@ -371,6 +390,29 @@ export async function listSkills(project_slug?: string) {
 
 export function openSessionSocket(session_id: string): WebSocket {
   return new WebSocket(`${wsBase()}/${session_id}`);
+}
+
+// ---- subagent 拆分方案（P2 共享契约 2）：WS 上行帧的发送辅助 --------------
+// 帧在会话 socket 上发送（ChatStream 的 engine 持有 per-session 连接），这里
+// 只负责帧形状——与 /subagent 拆分命令的下行 subagent.plan 事件配对。
+export type SubagentPlanFrame =
+  | { type: "subagent.plan.confirm"; plan_id: string; subtasks?: import("./types").SubagentPlanSubtask[] }
+  | { type: "subagent.plan.cancel"; plan_id: string };
+
+/** 确认拆分方案。`subtasks` 传用户在卡片里编辑过的版本（缺省 = 原样采纳）；
+ *  runtime 逐个 spawn，走既有 spawn 流程与 subagent.spawned 事件。 */
+export function subagentPlanConfirmFrame(
+  plan_id: string,
+  subtasks?: import("./types").SubagentPlanSubtask[],
+): SubagentPlanFrame {
+  return subtasks?.length
+    ? { type: "subagent.plan.confirm", plan_id, subtasks }
+    : { type: "subagent.plan.confirm", plan_id };
+}
+
+/** 丢弃拆分方案（卡片上的「取消」）。 */
+export function subagentPlanCancelFrame(plan_id: string): SubagentPlanFrame {
+  return { type: "subagent.plan.cancel", plan_id };
 }
 
 /** Run-scoped live channel (design B P2): snapshot on connect, then

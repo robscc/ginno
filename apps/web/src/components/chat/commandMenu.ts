@@ -46,6 +46,11 @@ export interface MenuItem {
 export const BUILTIN_COMMANDS: Array<{ name: string; description: string }> = [
   { name: "help", description: "列出可用命令与技能" },
   { name: "compact", description: "手动压缩会话上下文（LLM 摘要旧消息，释放 tokens）" },
+  {
+    name: "subagent",
+    description:
+      "发起子代理：/subagent <目标> 直接发起 1 个；/subagent 拆分 <任务> 先 LLM 拆分，卡片确认后批量发起",
+  },
 ];
 
 const MENTION_KIND_META: Record<MentionKind, { group: string; description: string }> = {

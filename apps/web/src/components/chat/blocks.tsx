@@ -26,6 +26,7 @@ import type { WikiPage, WorkflowRun } from "@/lib/types";
 import type { CodeRoot } from "@/lib/codeTypes";
 import { fileDownloadUrl, listCodeRoots } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
+import { isSubagentConfirmed, markSubagentConfirmed } from "@/lib/subagentConfirm";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
 import { AskUserCard } from "./AskUserCard";
@@ -72,7 +73,123 @@ export type Block =
   // carry a display URL (data URL) when available, files a name (+ optional
   // id/path/kind). Kept tolerant — a summary may omit the image payload.
   | { kind: "steer"; text: string; steerId?: string | null; injectedAt?: number;
-      images?: SteerBandImage[]; files?: SteerBandFile[] };
+      images?: SteerBandImage[]; files?: SteerBandFile[] }
+  // ---- subagent（subagent-design.md §6.3，P1 web 侧）----
+  // 发起卡片：由 subagent.spawned WS 事件驱动（live 追加，不持久化——持久层
+  // 里的 spawn_subagent 工具气泡仍然可见）。状态从 store 的会话元数据实时读。
+  | { kind: "subagent_spawn"; sessionId: string; goal: string; constraints?: string;
+      acceptance?: string; title?: string; depth?: number;
+      origin?: "user" | "agent"; spawnedAt?: number }
+  // 结果卡片：由注入的 <ginno_subagent_result> 消息（历史重放折行）与
+  // subagent.status 终态事件（live 追加）驱动。
+  | { kind: "subagent_result"; sessionId: string; goal?: string; summary: string;
+      error?: string }
+  // 拆分方案卡片（P2 共享契约 1/2）：由 subagent.plan WS 事件驱动（live 追加，
+  // 不持久化——未确认的方案没有落 checkpoint 的意义）。组件本体在
+  // subagentPlanCard.tsx（本文件已超 1600 行，卡片不再往里塞）。
+  | { kind: "subagent_plan"; planId: string; task: string;
+      subtasks: import("@/lib/types").SubagentPlanSubtask[];
+      status: "pending" | "confirmed" | "cancelled" };
+
+/** 子代状态点（契约用 emoji：🟢 running / ⏳ waiting / ✅ done / ⚠ failed / ⛔ stopped）。
+ *  侧栏行与卡片共用同一份映射。 */
+export const SUBAGENT_STATUS_META: Record<
+  string,
+  { glyph: string; label: string; color: string }
+> = {
+  running: { glyph: "🟢", label: "运行中", color: "#22c55e" },
+  waiting: { glyph: "⏳", label: "等待子任务", color: "#eab308" },
+  done: { glyph: "✅", label: "已完成", color: "#22c55e" },
+  failed: { glyph: "⚠️", label: "失败", color: "#ef4444" },
+  stopped: { glyph: "⛔", label: "已停止", color: "#71717a" },
+};
+
+export function subagentStatusMeta(status?: string) {
+  return SUBAGENT_STATUS_META[status ?? ""] ?? SUBAGENT_STATUS_META.running;
+}
+
+/** 子代理的 fork / 类型小徽标（P3 范围 3）：meta.subagent.mode === "fork" 时
+ *  显示 fork 徽标；agent_type 仅在 runtime 侧确实把类型名记进了 meta 时渲染
+ *  （防御性读取，不造字段——没记就什么都不显示）。发起卡片、结果卡片与侧栏
+ *  子会话行共用同一份渲染。 */
+export function SubagentKindBadges({
+  sub,
+}: { sub?: import("@/lib/types").SubagentMeta | null }) {
+  if (!sub) return null;
+  const agentType = (sub as { agent_type?: unknown }).agent_type;
+  return (
+    <>
+      {sub.mode === "fork" && (
+        <span
+          className="shrink-0 rounded-md border border-violet/40 bg-violet/10 px-1 py-px text-[10px] leading-4 text-violet"
+          title="fork：从父对话的完整上下文分出的并行分支"
+        >
+          fork
+        </span>
+      )}
+      {typeof agentType === "string" && agentType && (
+        <span
+          className="shrink-0 rounded-md border border-line2 bg-card2/60 px-1 py-px text-[10px] leading-4 text-muted"
+          title={`子代理类型：${agentType}`}
+        >
+          {agentType}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** 解析契约 3 的注入消息文本（整个 text 块恰为一个结果标签时才算命中）。
+ *  属性名容忍乱序；正文是 result_summary 原文。属性值经 runtime 侧
+ *  _xml_attr 转义（goal 是模型自由文本，引号不转义会截断属性），在此还原。 */
+const SUBAGENT_RESULT_RE =
+  /^<\s*ginno_subagent_result\b([^>]*)>([\s\S]*?)<\s*\/\s*ginno_subagent_result\s*>$/i;
+
+const ATTR_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  "#39": "'",
+};
+
+function unescapeAttr(value: string): string {
+  return value.replace(/&(amp|lt|gt|quot|#39);/g, (_, ent: string) =>
+    ent in ATTR_ENTITIES ? ATTR_ENTITIES[ent] : ent,
+  );
+}
+
+export function parseSubagentResult(
+  text: string,
+): { sessionId: string; goal: string; summary: string } | null {
+  const m = SUBAGENT_RESULT_RE.exec(text.trim());
+  if (!m) return null;
+  const attr = (name: string) =>
+    unescapeAttr(
+      new RegExp(`${name}\\s*=\\s*"([^"]*)"`, "i").exec(m[1])?.[1] ?? "",
+    );
+  return { sessionId: attr("session"), goal: attr("goal"), summary: m[2].trim() };
+}
+
+/** 历史重放用：把持久化的注入消息（HumanMessage 原文）折成结果卡片块，
+ *  避免原始 XML 标签以用户气泡形式出现在主对话里。 */
+export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
+  return blocks.map((b) => {
+    if (b.kind !== "text") return b;
+    const r = parseSubagentResult(b.text);
+    if (!r) return b;
+    return {
+      kind: "subagent_result",
+      sessionId: r.sessionId,
+      goal: r.goal,
+      summary: r.summary,
+    };
+  });
+}
+
+export type SubagentCardBlock =
+  | Extract<Block, { kind: "subagent_spawn" }>
+  | Extract<Block, { kind: "subagent_result" }>;
 
 /** One attachment chip shown inside a steer band. */
 export type SteerBandImage = {
@@ -1214,6 +1331,10 @@ export function InnerBlocks({
       out.push(<FileChips key={key++} files={[b]} />);
     } else if (b.kind === "steer") {
       out.push(<SteerBand key={b.steerId || `st${key++}`} block={b} />);
+    } else if (b.kind === "subagent_spawn") {
+      out.push(<SubagentSpawnCard key={`sa-spawn-${b.sessionId}-${key++}`} block={b} />);
+    } else if (b.kind === "subagent_result") {
+      out.push(<SubagentResultCard key={`sa-result-${b.sessionId}-${key++}`} block={b} />);
     }
     // refs rendered outside
     i++;
@@ -1314,6 +1435,247 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
             </span>
           )}
         </span>
+      )}
+    </div>
+  );
+}
+
+// ---- subagent 卡片（subagent-design.md §6.3）--------------------------------
+// 主对话里的发起卡片 / 结果卡片。状态永远从 store 的会话元数据实时读——
+// subagent.status 事件刷新 store，卡片随之换挡，无需自己的事件订阅。
+
+function subagentElapsed(from?: number): string {
+  if (!from) return "";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - from));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/** 发起卡片：goal / 约束 / 验收 / 状态脉搏 / 「查看对话」入口。 */
+export function SubagentSpawnCard({
+  block,
+}: {
+  block: Extract<Block, { kind: "subagent_spawn" }>;
+}) {
+  const g = useGinno();
+  const router = useRouter();
+  const live = g.sessions.find((s) => s.id === block.sessionId);
+  const sub = live?.subagent;
+  const status = sub?.status ?? "running";
+  const meta = subagentStatusMeta(status);
+  const active = status === "running" || status === "waiting";
+  const openChild = () => {
+    // 与通知点击同一条路径：切会话 + 落到最新消息。
+    g.setActiveSession(block.sessionId);
+    if (window.location.pathname !== "/") router.push("/");
+    window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: block.sessionId }));
+  };
+  return (
+    <div className="rounded-lg border border-line bg-base/50 px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0">🤖</span>
+        <span className="min-w-0 flex-1 truncate font-medium text-txt" title={sub?.goal || block.goal}>
+          {block.title || sub?.goal || block.goal || "子任务"}
+        </span>
+        <SubagentKindBadges sub={sub} />
+        {active && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full" style={{ background: meta.color }} />}
+        <span className="shrink-0" title={`状态：${meta.label}`}>
+          {meta.glyph} {meta.label}
+        </span>
+        <button
+          onClick={openChild}
+          className="shrink-0 rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+        >
+          查看对话
+        </button>
+      </div>
+      {(sub?.goal || block.goal) && (
+        <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
+          目标:{sub?.goal || block.goal}
+        </div>
+      )}
+      {(sub?.constraints || block.constraints) && (
+        <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
+          约束:{sub?.constraints || block.constraints}
+        </div>
+      )}
+      {(sub?.acceptance || block.acceptance) && (
+        <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
+          验收:{sub?.acceptance || block.acceptance}
+        </div>
+      )}
+      <div className="mt-1.5 flex items-center gap-2 text-[10px] text-faint">
+        <span>{block.origin === "user" ? "用户发起" : "主代理发起"}</span>
+        {typeof block.depth === "number" && <span>第 {block.depth + 1} 层</span>}
+        {block.spawnedAt && <span>已运行 {subagentElapsed(block.spawnedAt)}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** 结果卡片：摘要 + 状态 + 验收区 + 确认/纠偏操作（P2）。
+ *
+ * 确认 = 卡片定稿归档（本地态，localStorage 记忆，见 lib/subagentConfirm）；
+ * 有问题 = 两个出口：去子会话纠偏（steering，设计 §5.4）或让主对话处理
+ * （invoke/steer 一条引用该结果的消息，主 agent 决定重拆/追问/接手）。
+ * 验收判定不在这里解析——runtime 会在注入消息里引导主 agent 逐条对照
+ * acceptance 给出一行判定（P2 共享契约 5），卡片只展示 acceptance 原文。 */
+export function SubagentResultCard({
+  block,
+}: {
+  block: Extract<Block, { kind: "subagent_result" }>;
+}) {
+  const g = useGinno();
+  const router = useRouter();
+  const live = g.sessions.find((s) => s.id === block.sessionId);
+  const sub = live?.subagent;
+  const status = sub?.status ?? "done";
+  const meta = subagentStatusMeta(status);
+  const goal = sub?.goal || block.goal || "子任务";
+  const [confirmed, setConfirmed] = useState(() => isSubagentConfirmed(block.sessionId));
+  const [problemOpen, setProblemOpen] = useState(false);
+  const openChild = () => {
+    g.setActiveSession(block.sessionId);
+    if (window.location.pathname !== "/") router.push("/");
+    window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: block.sessionId }));
+  };
+  const confirm = () => {
+    markSubagentConfirmed(block.sessionId);
+    setConfirmed(true);
+  };
+  // 出口一：跳进子会话，输入框预填纠偏 steering 提示（运行中走注入，idle 时
+  // 是普通消息——预填的只是文本，发送语义由 ChatStream 的既有管线决定）。
+  const goToChild = () => {
+    openChild();
+    window.dispatchEvent(
+      new CustomEvent("ginno:prefill-input", {
+        detail: {
+          sessionId: block.sessionId,
+          text: `【纠偏】关于本子任务的目标「${goal}」，结果存在以下问题：`,
+        },
+      }),
+    );
+  };
+  // 出口二：以一条引用该结果的消息回到当前（主）会话——ChatStream 侧按
+  // 会话忙闲决定 invoke 还是 steer（ginno:subagent-escalate 监听）。
+  const escalate = () => {
+    window.dispatchEvent(
+      new CustomEvent("ginno:subagent-escalate", {
+        detail: {
+          sessionId: block.sessionId,
+          goal,
+          summary: block.summary || sub?.result_summary || "",
+        },
+      }),
+    );
+    setProblemOpen(false);
+  };
+  return (
+    <div className="rounded-lg border border-line bg-card/60 px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0">🤖</span>
+        <span className="min-w-0 flex-1 truncate font-medium text-txt" title={goal}>
+          子代理结果 · {goal}
+        </span>
+        <SubagentKindBadges sub={sub} />
+        <span className="shrink-0" title={`状态：${meta.label}`}>
+          {meta.glyph} {meta.label}
+        </span>
+      </div>
+      {(block.summary || sub?.result_summary) && (
+        <div className="mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-muted">
+          {block.summary || sub?.result_summary}
+        </div>
+      )}
+      {block.error && (
+        <div className="mt-1.5 whitespace-pre-wrap break-words text-red/90">错误:{block.error}</div>
+      )}
+      {/* 验收区（P2 共享契约 5）：acceptance 非空时展示原文；逐条判定由主 agent
+          在汇报里给出（runtime 注入消息已引导），卡片不重复解析。 */}
+      {sub?.acceptance && (
+        <div className="mt-2 rounded-md border border-violet/25 bg-violet/[0.05] px-2 py-1.5">
+          <div className="text-[10px] font-medium text-violet">验收标准</div>
+          <div className="mt-0.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
+            {sub.acceptance}
+          </div>
+          <div className="mt-1 text-[10px] text-faint">
+            主代理汇报时将逐条对照给出判定（通过 / 有缺口 + 说明）
+          </div>
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-line/60 pt-1.5">
+        <button
+          onClick={openChild}
+          className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+        >
+          查看完整对话
+        </button>
+        {confirmed ? (
+          <span
+            className="rounded-md border border-green/40 bg-green/10 px-1.5 py-0.5 text-[10px] text-green"
+            title="已确认该结果，卡片定稿归档"
+          >
+            ✅ 已确认
+          </span>
+        ) : (
+          <button
+            onClick={confirm}
+            title="确认该结果，卡片定稿归档"
+            className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-green/50 hover:text-green"
+          >
+            ✅ 确认
+          </button>
+        )}
+        {!confirmed && (
+          <button
+            onClick={() => setProblemOpen((v) => !v)}
+            className={`rounded-md border px-1.5 py-0.5 text-[10px] transition-colors ${
+              problemOpen
+                ? "border-yellow/50 bg-yellow/10 text-yellow"
+                : "border-line2 text-muted hover:border-yellow/50 hover:text-yellow"
+            }`}
+          >
+            ↩ 有问题
+          </button>
+        )}
+        {problemOpen && !confirmed && (
+          <>
+            <button
+              onClick={goToChild}
+              title="跳转到该子会话，输入框预填纠偏提示（steering / 继续对话）"
+              className="rounded-md border border-yellow/40 bg-yellow/10 px-1.5 py-0.5 text-[10px] text-yellow transition-colors hover:bg-yellow/20"
+            >
+              去子会话纠偏
+            </button>
+            <button
+              onClick={escalate}
+              title="在当前会话发一条引用该结果的消息，由主对话决定如何处理"
+              className="rounded-md border border-yellow/40 bg-yellow/10 px-1.5 py-0.5 text-[10px] text-yellow transition-colors hover:bg-yellow/20"
+            >
+              让主对话处理
+            </button>
+          </>
+        )}
+        {sub?.acceptance && (
+          <span className="ml-auto text-[10px] text-faint">验收判定见主代理汇报</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 子代卡片行集（系统行渲染入口）。 */
+export function SubagentBlocks({ blocks }: { blocks: SubagentCardBlock[] }) {
+  if (!blocks.length) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      {blocks.map((b, i) =>
+        b.kind === "subagent_spawn" ? (
+          <SubagentSpawnCard key={`${b.sessionId}-${i}`} block={b} />
+        ) : (
+          <SubagentResultCard key={`${b.sessionId}-${i}`} block={b} />
+        ),
       )}
     </div>
   );
