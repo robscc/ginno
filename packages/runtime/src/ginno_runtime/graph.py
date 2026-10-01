@@ -235,6 +235,13 @@ def build_stable_system(
                 "local ext item auto-syncs back to the platform — no manual platform call."
             )
     if "spawn_subagent" in allowed:
+        parts.append(
+            "Subagent 委派纪律（硬规则）：spawn 完所有子任务后，输出一两句话说明"
+            "委派了什么，然后立即结束回合——不要调用 wait_subagents 阻塞等待"
+            "（那会占住本轮、用户只能看着转圈），也不要自己去做已委派的工作。"
+            "子代理完成后其结果会自动注入本对话并唤醒你，届时再汇总。"
+            "只有用户明确要求「等全部结果一次性回答」时才允许 wait_subagents。"
+        )
         # Subagent type registry (P3 contract 1): the stable layer names the
         # available types so the main agent can route spawn_subagent's
         # agent_type by description. Registry reads are dir-stat cached; the

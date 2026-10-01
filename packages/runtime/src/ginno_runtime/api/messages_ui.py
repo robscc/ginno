@@ -257,6 +257,12 @@ def _tool_args_preview(name: str, args: dict) -> str:
     """
     if not isinstance(args, dict):
         return ""
+    if name == "spawn_subagent":
+        # The goal is a full standalone brief (can be several KB); the bubble
+        # only needs the task's first line so a parallel spawn batch doesn't
+        # flood the transcript with three essays.
+        _g = " ".join(str(args.get("goal") or "").split())
+        return _g[:119] + "…" if len(_g) > 120 else _g
     for key in _ARGS_PREVIEW_KEYS:
         v = args.get(key)
         if isinstance(v, str) and v.strip():
