@@ -87,7 +87,8 @@ export type Block =
   // 任务简报卡片：子会话首条消息是 <ginno_subagent_brief> 原文（后接报告
   // 格式与输出纪律两段附录），历史重放折成卡片，避免裸 XML 长文刷屏。
   | { kind: "subagent_brief"; goal: string; constraints?: string;
-      acceptance?: string; fork?: boolean; notes?: string }
+      acceptance?: string; fork?: boolean; extra?: string; persona?: string;
+      notes?: string }
   // 拆分方案卡片（P2 共享契约 1/2）：由 subagent.plan WS 事件驱动（live 追加，
   // 不持久化——未确认的方案没有落 checkpoint 的意义）。组件本体在
   // subagentPlanCard.tsx（本文件已超 1600 行，卡片不再往里塞）。
@@ -146,42 +147,44 @@ export function SubagentKindBadges({
 /** 解析契约 3 的注入消息文本（整个 text 块恰为一个结果标签时才算命中）。
  *  属性名容忍乱序；正文是 result_summary 原文。属性值经 runtime 侧
  *  _xml_attr 转义（goal 是模型自由文本，引号不转义会截断属性），在此还原。 */
-const SUBAGENT_RESULT_RE =
-  /^<\s*ginno_subagent_result\b([^>]*)>([\s\S]*?)<\s*\/\s*ginno_subagent_result\s*>$/i;
-
-const ATTR_ENTITIES: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  "#39": "'",
-};
-
-function unescapeAttr(value: string): string {
-  return value.replace(/&(amp|lt|gt|quot|#39);/g, (_, ent: string) =>
-    ent in ATTR_ENTITIES ? ATTR_ENTITIES[ent] : ent,
-  );
+function parseEnvelope(text: string): Document | null {
+  if (typeof DOMParser === "undefined") return null;
+  try {
+    return new DOMParser().parseFromString(text, "text/html");
+  } catch {
+    return null;
+  }
 }
 
+/** 契约 3：注入消息里的全部 <ginno_subagent_result>（合并注入时一条消息可能带
+ *  多个）。属性 session/goal 由 runtime 转义，DOMParser 会自行解码。 */
+export function parseSubagentResults(
+  text: string,
+): Array<{ sessionId: string; goal: string; summary: string }> {
+  const doc = parseEnvelope(text);
+  if (!doc) return [];
+  const out: Array<{ sessionId: string; goal: string; summary: string }> = [];
+  for (const el of Array.from(doc.getElementsByTagName("ginno_subagent_result"))) {
+    out.push({
+      sessionId: el.getAttribute("session") ?? "",
+      goal: el.getAttribute("goal") ?? "",
+      summary: (el.textContent ?? "").trim(),
+    });
+  }
+  return out;
+}
+
+/** 单条结果标签（非合并场景）。 */
 export function parseSubagentResult(
   text: string,
 ): { sessionId: string; goal: string; summary: string } | null {
-  const m = SUBAGENT_RESULT_RE.exec(text.trim());
-  if (!m) return null;
-  const attr = (name: string) =>
-    unescapeAttr(
-      new RegExp(`${name}\\s*=\\s*"([^"]*)"`, "i").exec(m[1])?.[1] ?? "",
-    );
-  return { sessionId: attr("session"), goal: attr("goal"), summary: m[2].trim() };
+  const all = parseSubagentResults(text);
+  return all.length ? all[0] : null;
 }
 
-/** 子会话首条消息的简报标签（runtime subagent_scheduler._build_brief）。
- *  消息主体是 <ginno_subagent_brief> 块 + 报告格式/输出纪律两段附录；
- *  标签外的剩余文本（附录）收进 notes 折叠展示。字段是行式的
- *  「目标：/约束：/验收标准：」，不是 XML 属性，无需转义还原。 */
-const SUBAGENT_BRIEF_RE =
-  /<\s*ginno_subagent_brief\s*>([\s\S]*?)<\s*\/\s*ginno_subagent_brief\s*>/i;
-
+/** 子会话首条消息的 <ginno_subagent_brief>：段标签取内容（段名与 spawn_subagent
+ *  的参数面一一对应），persona（agent_type 的正文）在标签外，报告格式与输出纪律
+ *  在标签内的对应段。解析一律 DOMParser，不再用正则切文本（2026-10-01）。 */
 export function parseSubagentBrief(
   text: string,
 ): {
@@ -189,66 +192,67 @@ export function parseSubagentBrief(
   constraints?: string;
   acceptance?: string;
   fork?: boolean;
+  extra?: string;
+  persona?: string;
   notes?: string;
 } | null {
-  const t = text.trim();
-  // 廉价护栏：简报消息以标签开头，避免对普通含标签文本误伤。
-  if (!t.startsWith("<")) return null;
-  const m = SUBAGENT_BRIEF_RE.exec(t);
-  if (!m) return null;
-  const inner = m[1];
-  const field = (label: string) =>
-    new RegExp(`^\\s*${label}：(.*)$`, "m").exec(inner)?.[1]?.trim() ?? "";
-  const goal = field("目标");
+  const doc = parseEnvelope(text);
+  if (!doc) return null;
+  const brief = doc.getElementsByTagName("ginno_subagent_brief")[0];
+  if (!brief) return null;
+  const section = (tag: string) =>
+    (brief.getElementsByTagName(tag)[0]?.textContent ?? "").trim();
+  const goal = section("goal");
   if (!goal) return null;
-  const notes = [t.slice(0, m.index), t.slice(m.index + m[0].length)]
-    .map((s) => s.trim())
+  const extra = section("other");
+  const notes = [section("report_format"), section("output_discipline")]
     .filter(Boolean)
     .join("\n\n");
+  // 标签外的前置文本：命中 agent_type 时是类型 persona 正文
+  let before = "";
+  for (const node of Array.from(brief.parentNode?.childNodes ?? [])) {
+    if (node === brief) break;
+    before += node.textContent ?? "";
+  }
+  before = before.trim();
   return {
     goal,
-    constraints: field("约束") || undefined,
-    acceptance: field("验收标准") || undefined,
-    fork: inner.includes("并行分支（fork）"),
+    constraints: section("constraints") || undefined,
+    acceptance: section("acceptance") || undefined,
+    fork: `${extra}\n${before}`.includes("并行分支（fork）"),
+    extra: extra || undefined,
+    persona: before || undefined,
     notes: notes || undefined,
   };
 }
 
-/** 历史重放用：把持久化的注入消息（HumanMessage 原文）折成结果卡片块，
- *  避免原始 XML 标签以用户气泡形式出现在主对话里；子会话的
- *  <ginno_subagent_brief> 简报消息同样折成简报卡片。合并注入（同一 wake
- *  turn 携带多个子代理回传）时一条消息里有多个结果标签——全局提取，
- *  每个标签一张卡片，标签间的合并头文字丢弃。 */
-const SUBAGENT_RESULT_GLOBAL_RE =
-  /<\s*ginno_subagent_result\b([^>]*)>([\s\S]*?)<\s*\/\s*ginno_subagent_result\s*>/gi;
-
+/** 历史重放用：把持久化的注入消息（HumanMessage 原文）折成结果卡片块，避免原始
+ *  XML 标签以用户气泡形式出现；子会话首条 <ginno_subagent_brief> 同样折成简报卡。
+ *  合并注入（同一 wake turn 携带多个子代理回传）时一条消息里有多个结果标签——
+ *  每个标签一张卡片，标签之间的合并头文字丢弃。解析一律走 DOMParser。 */
 export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
   const out: Block[] = [];
   for (const b of blocks) {
-    if (b.kind !== "text" || !b.text.trimStart().startsWith("<")) {
+    if (b.kind !== "text") {
       out.push(b);
       continue;
     }
-    const br = parseSubagentBrief(b.text);
-    if (br) {
-      out.push({ kind: "subagent_brief", ...br });
+    const brief = parseSubagentBrief(b.text);
+    if (brief) {
+      out.push({ kind: "subagent_brief", ...brief });
       continue;
     }
-    const matches = [...b.text.matchAll(SUBAGENT_RESULT_GLOBAL_RE)];
-    if (!matches.length) {
+    const results = parseSubagentResults(b.text);
+    if (!results.length) {
       out.push(b);
       continue;
     }
-    for (const m of matches) {
-      const attr = (name: string) =>
-        unescapeAttr(
-          new RegExp(`${name}\\s*=\\s*"([^"]*)"`, "i").exec(m[1])?.[1] ?? "",
-        );
+    for (const r of results) {
       out.push({
         kind: "subagent_result",
-        sessionId: attr("session"),
-        goal: attr("goal") || undefined,
-        summary: m[2].trim(),
+        sessionId: r.sessionId,
+        goal: r.goal || undefined,
+        summary: r.summary,
       });
     }
   }
@@ -1743,7 +1747,14 @@ export function SubagentResultCard({
 }
 
 /** 子代卡片行集（系统行渲染入口）。 */
-export function SubagentBlocks({ blocks }: { blocks: SubagentCardBlock[] }) {
+export function SubagentBlocks({
+  blocks,
+  agentType,
+}: {
+  blocks: SubagentCardBlock[];
+  /** 子代理类型名：子会话视图传入，用于简报卡的类型徽标 */
+  agentType?: string;
+}) {
   if (!blocks.length) return null;
   return (
     <div className="flex flex-col gap-2">
@@ -1753,7 +1764,7 @@ export function SubagentBlocks({ blocks }: { blocks: SubagentCardBlock[] }) {
         ) : b.kind === "subagent_result" ? (
           <SubagentResultCard key={`${b.sessionId}-${i}`} block={b} />
         ) : (
-          <SubagentBriefCard key={`sa-brief-row-${i}`} block={b} />
+          <SubagentBriefCard key={`sa-brief-row-${i}`} block={b} agentType={agentType} />
         ),
       )}
     </div>
@@ -1813,15 +1824,35 @@ export function hasPendingTool(blocks: Block[]): boolean {
  *  一屏可读，报告格式与输出纪律两段附录（notes）收进折叠区。 */
 export function SubagentBriefCard({
   block,
+  agentType,
 }: {
   block: Extract<Block, { kind: "subagent_brief" }>;
+  /** 子代理类型名（子会话视图传入）：与 spawn_subagent 的 agent_type 参数对应 */
+  agentType?: string;
 }) {
   const [notesOpen, setNotesOpen] = useState(false);
+  // 四段与 spawn_subagent 的参数面对齐：目标 / 约束 / 验收标准 / 其他
+  // （其他 = brief 内其余行 + 类型职责 persona + 报告格式与输出纪律）。
+  const rows: Array<[string, string | undefined, string]> = [
+    ["目标", block.goal, "text-txt"],
+    ["约束", block.constraints, "text-muted"],
+    ["验收标准", block.acceptance, "text-muted"],
+    ["其他", block.extra, "text-muted"],
+  ];
+  const type = (agentType || "").trim();
   return (
     <div className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2.5 text-xs">
       <div className="flex items-center gap-1.5">
         <span className="shrink-0">🧭</span>
         <span className="shrink-0 font-medium text-violet">任务简报</span>
+        {type && (
+          <span
+            className="rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet"
+            title={`子代理类型：${type}`}
+          >
+            {type}
+          </span>
+        )}
         {block.fork && (
           <span
             className="rounded-md border border-violet/40 bg-violet/10 px-1.5 py-0.5 text-[10px] text-violet"
@@ -1831,35 +1862,33 @@ export function SubagentBriefCard({
           </span>
         )}
       </div>
-      <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-txt">
-        {block.goal}
-      </div>
-      {block.constraints && (
-        <div className="mt-1.5">
-          <span className="text-[10px] font-medium text-muted">约束：</span>
-          <span className="whitespace-pre-wrap break-words leading-relaxed text-muted">
-            {block.constraints}
-          </span>
-        </div>
+      {rows.map(([label, value, cls]) =>
+        value ? (
+          <div key={label} className="mt-1.5">
+            <span className="text-[10px] font-medium text-muted">{label}</span>
+            <div className={`whitespace-pre-wrap break-words leading-relaxed ${cls}`}>
+              {value}
+            </div>
+          </div>
+        ) : null,
       )}
-      {block.acceptance && (
-        <div className="mt-1">
-          <span className="text-[10px] font-medium text-muted">验收标准：</span>
-          <span className="whitespace-pre-wrap break-words leading-relaxed text-muted">
-            {block.acceptance}
-          </span>
-        </div>
-      )}
-      {block.notes && (
+      {(block.persona || block.notes) && (
         <div className="mt-2 border-t border-line/60 pt-1.5">
           <button
             onClick={() => setNotesOpen((v) => !v)}
             className="text-[10px] text-faint transition-colors hover:text-muted"
           >
-            {notesOpen ? "▾" : "▸"} 报告格式与输出纪律
+            {notesOpen ? "▾" : "▸"} 类型职责与报告格式
           </button>
           {notesOpen && (
             <div className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-faint">
+              {block.persona && (
+                <>
+                  <div className="mb-1 text-[10px] text-violet">类型职责（persona）</div>
+                  {block.persona}
+                </>
+              )}
+              {block.persona && block.notes && <div className="my-1.5 border-t border-line/60" />}
               {block.notes}
             </div>
           )}

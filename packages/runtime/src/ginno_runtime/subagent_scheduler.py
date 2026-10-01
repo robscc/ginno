@@ -145,6 +145,18 @@ LIVE_STATUSES = ("running", "waiting")
 # (steer entry "extra_kwargs" / wake turn "user_extra_kwargs").
 
 
+def _xml_text(value: str) -> str:
+    """XML-escape element TEXT content (goal/约束/验收/persona 都是模型自由文本，
+    可能含 < > &）。前端用 DOMParser 解析，实体由浏览器解码——两侧不必手写
+    反转义（2026-10-01 结构化简报）。"""
+    return (
+        (value or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _xml_attr(value: str) -> str:
     """XML-escape an attribute value. The goal is model-authored free text: an
     unescaped quote would end the attribute early and the frontend's
@@ -177,7 +189,9 @@ def format_subagent_result(
     return (
         f'<ginno_subagent_result session="{_xml_attr(child_id)}"'
         f' goal="{_xml_attr(goal)}">\n'
-        f"{body}\n"
+        # 正文转义：前端改用 DOMParser 解析信封，正文里若出现裸 < 会被当成标签
+        # 吞掉内容（报告是模型自由文本）。实体由浏览器解码，显示不变。
+        f"{_xml_text(body)}\n"
         "</ginno_subagent_result>"
     )
 
@@ -189,7 +203,7 @@ def format_subagent_failure(child_id: str, goal: str, error: str) -> str:
         f'<ginno_subagent_result session="{_xml_attr(child_id)}"'
         f' goal="{_xml_attr(goal)}">\n'
         "状态：失败（自动重试已耗尽）\n"
-        f"错误：{error}\n"
+        f"错误：{_xml_text(error)}\n"
         "本条是失败上报，不包含结果摘要；可用 list_subagents 查看，或重新 spawn。\n"
         "</ginno_subagent_result>"
     )
@@ -224,26 +238,34 @@ def build_subagent_brief(
         # P3 contract 1: a matched registry type prepends its markdown body
         # (persona 补充系统提示) BEFORE the brief envelope.
         parts.append(persona_body.strip())
-    lines = ["<ginno_subagent_brief>"]
+    # 结构化简报：每段一个标签，前端用 DOMParser 取（不再靠正则切文本），
+    # 段名与 spawn_subagent 的参数面对齐（goal/constraints/acceptance + other）。
+    other = [
+        "工作目录与上下文目录：继承父 session，直接使用。",
+        f"你是第 {depth + 1} 层 subagent，"
+        f"{'还可以' if can_spawn else '不可以'}再委派子任务。",
+    ]
     if fork:
-        lines.append(
+        other.insert(
+            0,
             "你是从父对话分出的并行分支（fork），上方已继承父对话的完整上下文；"
-            "父对话此后的进展不会自动同步，请独立完成你的目标。"
+            "父对话此后的进展不会自动同步，请独立完成你的目标。",
         )
-    lines.extend(
-        [
-            f"目标：{(goal or '').strip()}",
-            f"约束：{(constraints or '').strip() or '（无）'}",
-            f"验收标准：{(acceptance or '').strip() or '（无）'}",
-            "工作目录与上下文目录：继承父 session，直接使用。",
-            f"你是第 {depth + 1} 层 subagent，"
-            f"{'还可以' if can_spawn else '不可以'}再委派子任务。",
-            "完成后输出最终报告：结论 + 关键产出物路径 + 与验收标准的对照"
-            "（证据化格式见下，输出纪律见文末）。",
-            "</ginno_subagent_brief>",
-        ]
-    )
-    parts.extend(["\n".join(lines), _REPORT_FORMAT, _OUTPUT_DISCIPLINE])
+    lines = [
+        "<ginno_subagent_brief>",
+        f"<goal>{_xml_text((goal or '').strip())}</goal>",
+        f"<constraints>{_xml_text((constraints or '').strip())}</constraints>",
+        f"<acceptance>{_xml_text((acceptance or '').strip())}</acceptance>",
+        f"<other>{_xml_text(chr(10).join(other))}</other>",
+        "<report_format>",
+        _xml_text(_REPORT_FORMAT),
+        "</report_format>",
+        "<output_discipline>",
+        _xml_text(_OUTPUT_DISCIPLINE),
+        "</output_discipline>",
+        "</ginno_subagent_brief>",
+    ]
+    parts.append("\n".join(lines))
     return "\n\n".join(parts)
 
 

@@ -187,11 +187,15 @@ async def test_spawn_creates_child_meta_brief_and_event(
     # the brief ran as the child's first turn (design §5.3 + A.4 + A.6)
     assert capture["turns"] and capture["turns"][0][0] == child
     brief = capture["turns"][0][1]
+    # 结构化简报（2026-10-01）：每段一个标签，段名与 spawn_subagent 参数对齐，
+    # 前端用 DOMParser 取而非正则切文本
     assert "<ginno_subagent_brief>" in brief and "</ginno_subagent_brief>" in brief
-    assert "目标：调研 OAuth 库" in brief and "约束：只读" in brief
-    assert "验收标准：给出选型结论" in brief
-    assert "第 1 层 subagent" in brief and "还可以再委派" in brief
-    assert "最终报告格式" in brief and "输出纪律" in brief
+    assert "<goal>调研 OAuth 库</goal>" in brief
+    assert "<constraints>只读</constraints>" in brief
+    assert "<acceptance>给出选型结论</acceptance>" in brief
+    assert "<other>" in brief and "第 1 层 subagent" in brief and "还可以再委派" in brief
+    assert "<report_format>" in brief and "最终报告格式" in brief
+    assert "<output_discipline>" in brief and "输出纪律" in brief
     # contract 2: subagent.spawned broadcast to the parent (and the child)
     spawned = [d for _, e, d in capture["sent"] if e == "subagent.spawned"]
     assert spawned and spawned[0]["session_id"] == child
@@ -202,6 +206,15 @@ async def test_spawn_creates_child_meta_brief_and_event(
 async def test_brief_forbids_delegation_at_max_depth(isolated_home):
     brief = sched.build_subagent_brief("g", "", "", sched.SUBAGENT_MAX_DEPTH)
     assert "不可以再委派" in brief
+
+
+async def test_brief_sections_are_xml_escaped(isolated_home):
+    """段内容可能含 < > &（模型自由文本），必须转义——否则 DOMParser 解析失败，
+    前端整条简报退回原文显示。"""
+    brief = sched.build_subagent_brief("a<b & c>d", "x<y", "p&q", 0)
+    assert "<goal>a&lt;b &amp; c&gt;d</goal>" in brief
+    assert "<constraints>x&lt;y</constraints>" in brief
+    assert "<acceptance>p&amp;q</acceptance>" in brief
 
 
 async def test_spawn_rejects_depth_overflow(isolated_home, parent_session):
