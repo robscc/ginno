@@ -49,7 +49,16 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
 
 - `packages/runtime/src/ginno_runtime/` — Python 运行时全部源码
   - `api/stream.py` — turn 执行/WS 流（microcompact、compaction 的懒加载入口）
+  - `browser/` — 浏览器双轨（browser-companion-extension-design.md）：`executor.py`
+    B 轨专用 profile Chrome + CDP;`relay.py` 扩展轨 WS 端点;`scripts.py` 是
+    双轨共用的页面注入脚本（扩展 content scripts 由此生成,单一来源）;
+    `native_host.py` 物化扩展到 `~/.ginno/browser-extension/` + 端口发现
+  - `connectors/` — 连接器模块（connector-module-design.md）：registry + 内置
+    chrome-extension / browser-profile 连接器;API 在 `api/connectors.py`
   - `checkpointer.py` — 文件式 LangGraph checkpointer（full/delta 两种模式）
   - `compaction.py` / `microcompact.py` — 上下文压缩（语义压缩，非 zlib）
   - `server.py` — FastAPI 装配
+- `packages/extension/` — Ginno Chrome 扩展源码（manifest 带固定 key,
+  ID `jlmheiiglpdikeihgjefjhmoakfllhkm`）;`build.py` 构建/物化;扩展排障看
+  popup 连接状态 + `chrome://extensions` 错误按钮
 - `apps/web/src/` — Next.js 前端；`apps/desktop/` — Tauri 壳（Rust 源码在 `apps/desktop/src/`，Cargo.toml / tauri.conf.json 直接在此目录）
