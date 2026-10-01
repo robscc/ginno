@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 import uuid
@@ -356,6 +357,38 @@ async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> i
 # Max seconds between stream chunks before the stall watchdog aborts the turn
 # (see chunked_stream in _stream_graph). Module-level so tests can shrink it.
 CHUNK_TIMEOUT_S = 180.0
+
+# LangGraph superstep budget per turn. The framework default (25) caps a turn
+# at roughly a dozen tool rounds — research-style subagent turns (many
+# web_search/fetch rounds) blow through it and die with GraphRecursionError.
+# Applied as a default in _stream_graph so every path (WS invoke/resume/retry,
+# scheduler-managed subagent turns, wake turns) gets it. Config: env
+# GINNO_RECURSION_LIMIT wins (tests), else settings runtime.recursion_limit,
+# else 128. Read per turn so a settings write takes effect without restart.
+TURN_RECURSION_LIMIT_DEFAULT = 128
+
+
+def turn_recursion_limit() -> int:
+    raw: str | None = os.environ.get("GINNO_RECURSION_LIMIT")
+    if raw and raw.strip():
+        try:
+            return max(25, min(1000, int(raw.strip())))
+        except ValueError:
+            _log.warning("recursion_limit_env_invalid value=%r", raw)
+    try:
+        p = paths.settings_path()
+        if p.exists():
+            settings = json.loads(p.read_text() or "{}")
+            val = (
+                (settings.get("runtime") or {})
+                if isinstance(settings, dict)
+                else {}
+            ).get("recursion_limit")
+            if val is not None:
+                return max(25, min(1000, int(val)))
+    except (OSError, ValueError, TypeError):
+        _log.info("recursion_limit_settings_unreadable", exc_info=True)
+    return TURN_RECURSION_LIMIT_DEFAULT
 
 # --- Turn-level auto retry for TRANSIENT provider/network failures ----------
 # 2026-09-29 incident (turn f50a6304): a 100k-token-context turn died twice in
@@ -726,12 +759,27 @@ async def _stream_graph(
                 )
 
         config.setdefault("configurable", {})["steer_absorbed"] = _steer_absorbed
+        # Superstep budget — see turn_recursion_limit above.
+        config.setdefault("recursion_limit", turn_recursion_limit())
 
         if command is not None:
             stream = graph.astream(command, config=config, stream_mode=["messages", "updates"])
         else:
             stream = graph.astream(input_state, config=config, stream_mode=["messages", "updates"])
         saw_interrupt = False
+        # Recursion-budget pre-warn (subagent sessions only): once the consumed
+        # supersteps get within _RECURSION_WARN_MARGIN of the limit, one
+        # synthetic steer tells the model to stop calling tools and write its
+        # final report — most recursion deaths are then avoided outright; the
+        # ones that still hit the limit are salvaged by the scheduler's
+        # wrap-up continuation (subagent_scheduler on_turn_settled).
+        _r_limit = int(config.get("recursion_limit") or 0)
+        _r_warned = False
+        _agent_steps = 0
+        _found_meta = _find_meta(session_id)
+        _is_subagent_session = bool(
+            _found_meta and _found_meta[0].get("type") == "subagent"
+        )
         special_ids: dict[str, str] = {}  # tool_call id -> special tool name (no bubble)
         tool_args_by_id: dict[str, tuple[str, dict]] = {}  # id -> (name, args)
         # tool_call ids that already emitted a tool.start bubble. Parallel tool
@@ -914,6 +962,29 @@ async def _stream_graph(
                 # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
                 for node_name, delta in (payload or {}).items():
                     if node_name == "agent":
+                        # Recursion pre-warn: agent supersteps ≈ half the
+                        # budget (each round is agent + tools), warn once when
+                        # the remainder narrows to the margin.
+                        _agent_steps += 1
+                        if (
+                            _is_subagent_session
+                            and _r_limit
+                            and not _r_warned
+                            and 2 * _agent_steps >= _r_limit - 10
+                        ):
+                            _r_warned = True
+                            shared.steer_enqueue(
+                                session_id,
+                                {
+                                    "steer_id": f"recursion-warn-{turn_id}",
+                                    "text": (
+                                        "【系统提醒】本回合即将达到步数上限"
+                                        f"（已用约 {2 * _agent_steps}/{_r_limit} 步）。"
+                                        "请停止发起新的工具调用，基于已有材料"
+                                        "立即输出最终报告。"
+                                    ),
+                                },
+                            )
                         # Superstep COMMIT point: everything streamed so far is
                         # checkpointed, so the uncommitted segment restarts here
                         # (a user stop only persists what's still uncommitted).

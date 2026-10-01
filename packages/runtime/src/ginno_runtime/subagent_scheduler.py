@@ -63,6 +63,16 @@ SUBAGENT_MAX_CONCURRENT = 5
 SUBAGENT_MIN_CONCURRENT = 1
 SUBAGENT_MAX_CONCURRENT_LIMIT = 16
 
+# One-shot wrap-up instruction for a subagent whose turn died on the LangGraph
+# recursion limit (engine.py turn_recursion_limit): salvage a final report from
+# the material it already gathered instead of failing with summary_len=0.
+_RECURSION_WRAP_TEXT = (
+    "【系统提示】你上一轮因步数上限被中断，材料已经收集得差不多了。"
+    "现在不要再调用任何工具（包括 web_search / web_fetch / 文件读取），"
+    "立即基于已收集的材料输出最终报告：结论 + 证据（来源/文件，编号引用）"
+    "+ 与验收标准的逐条对照。材料不足的部分如实写明「未覆盖」，不要编造。"
+)
+
 # P3 contract 4 — soft-budget warning thresholds (notice event, once per
 # session per kind; 软引导，不硬拦).
 WARN_RUNNING_RATIO = 0.8
@@ -923,6 +933,30 @@ async def on_turn_settled(
 
         err = _turn_last_error(session_id, turn_id)
     if err is not None:
+        # A recursion-limited subagent gets ONE wrap-up continuation instead of
+        # an empty-handed failure: the child already did the work, it just never
+        # got to write the final report. The continuation instructs it to answer
+        # from gathered material with no tool calls; its own settle then
+        # finalizes done. Guarded once per subagent via the meta flag (a
+        # disobedient wrap-up that hits the limit again fails for real).
+        _err_text = str(err.get("message") if isinstance(err, dict) else err or "")
+        _sub = dict(meta.get("subagent") or {})
+        if "GraphRecursionError" in _err_text and not _sub.get("recursion_wrapped"):
+            _sub["recursion_wrapped"] = True
+            _session_meta_patch(slug, session_id, {"subagent": _sub})
+            _log.info(
+                "subagent_recursion_wrap session=%s parent=%s", session_id, meta.get("parent_session_id")
+            )
+            _TURN_STOP.pop(session_id, None)
+            spawn_bg(
+                _run_managed_turn(
+                    session_id,
+                    _RECURSION_WRAP_TEXT,
+                    {"ginno_system_note": "recursion-wrap"},
+                    asyncio.Event(),
+                )
+            )
+            return
         # AUTO_RETRY exhausted upstream; the error is NOT mixed into any summary
         # (design §5.7) — it rides the failure report only.
         await _finalize_subagent(slug, meta, "failed", error=err)

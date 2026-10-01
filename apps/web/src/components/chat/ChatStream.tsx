@@ -1545,16 +1545,25 @@ export function ChatStream({
                   />
                 </div>
               </div>
-            ) : m.role === "user" && m.blocks.some((b) => b.kind === "subagent_result") ? (
-              // runtime 注入的子代理结果（契约 3）在历史重放中是 HumanMessage，
-              // 重载后以 user 角色回来：折成结果卡片系统行渲染，而不是落到
-              // UserBlocks（它不认识 subagent_result 块，会渲染成空气泡）。
+            ) : m.role === "user" &&
+              m.blocks.some(
+                (b) => b.kind === "subagent_result" || b.kind === "subagent_brief",
+              ) ? (
+              // runtime 注入的子代理结果（契约 3）与子会话首条任务简报
+              // （<ginno_subagent_brief>）在历史重放中是 HumanMessage，重载后以
+              // user 角色回来：折成卡片系统行渲染，而不是落到 UserBlocks
+              // （它不认识这些块，会渲染成空气泡）。
               <div key={m.id} className="flex flex-col items-center gap-2">
                 <div className="w-full max-w-[85%]">
                   <SubagentBlocks
                     blocks={m.blocks.filter(
-                      (b): b is Extract<Block, { kind: "subagent_result" }> =>
-                        b.kind === "subagent_result",
+                      (
+                        b,
+                      ): b is Extract<
+                        Block,
+                        { kind: "subagent_result" | "subagent_brief" }
+                      > =>
+                        b.kind === "subagent_result" || b.kind === "subagent_brief",
                     )}
                   />
                 </div>

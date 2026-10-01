@@ -34,6 +34,7 @@ from ginno_runtime.api import stream as stream_mod
 from ginno_runtime.server_shared import spawn_bg
 from ginno_runtime.session_meta import (
     _session_meta_list,
+    _session_meta_patch,
     _session_meta_upsert,
     subagent_depth_of,
 )
@@ -1305,3 +1306,78 @@ async def test_concurrent_settles_finalize_once(isolated_home, capture, monkeypa
     assert len(capture["wakes"]) == 1  # one upward injection, not two
     meta, _ = sched._find_meta("DC")
     assert meta["subagent"]["status"] == "done"
+
+
+# --------------------------------------------------------------------------- #
+# recursion budget: the scheduler salvage (engine's pre-warn steer is a plain
+# steer_enqueue call — its shape is covered by the stash tests above)
+# --------------------------------------------------------------------------- #
+async def test_recursion_error_salvages_wrap_turn_then_done(isolated_home, fake_stream):
+    """A subagent turn dying on GraphRecursionError gets ONE continuation turn
+    whose instruction forbids tool calls; that wrap turn settles clean and
+    finalizes done with its report injected into the parent (pre-fix: failed
+    with summary_len=0 and only an error riding the failure report)."""
+    _put_meta(_sub_meta("ROOT"))
+    _put_meta(_sub_meta("CR", parent="ROOT", depth=0, status="running"))
+    server_shared._SESSIONS["ROOT"] = _sess("ROOT")
+    server_shared._SESSIONS["CR"] = _sess("CR", type_="subagent")
+    _meta, slug = sched._find_meta("CR")
+    _session_meta_patch(slug, "CR", {"last_error": {
+        "turn_id": "t-cr1",
+        "message": "GraphRecursionError: Recursion limit of 128 reached without hitting a stop condition.",
+        "at": time.time(),
+    }})
+    await sched.on_turn_settled("CR", None, "t-cr1")
+    await _drain(fake_stream)
+
+    cr, _ = sched._find_meta("CR")
+    assert cr["subagent"]["status"] == "done"
+    assert cr["subagent"].get("recursion_wrapped") is True
+    assert _stream_count(fake_stream, "CR") == 1  # exactly the wrap turn
+    wrap_text = next(t for s, t in fake_stream["streams"] if s == "CR")
+    assert "步数上限" in wrap_text and "不要再调用任何工具" in wrap_text
+    assert len(_status_events(fake_stream, "ROOT", "CR", "done")) == 1
+
+
+async def test_recursion_wrap_is_one_shot(isolated_home, fake_stream):
+    """A wrap-up continuation that ITSELF dies on the limit fails for real:
+    the meta's recursion_wrapped flag blocks a second salvage."""
+    _put_meta(_sub_meta("ROOT"))
+    base = _sub_meta("CW", parent="ROOT", depth=0, status="running")
+    base["subagent"]["recursion_wrapped"] = True
+    _put_meta(base)
+    server_shared._SESSIONS["ROOT"] = _sess("ROOT")
+    server_shared._SESSIONS["CW"] = _sess("CW", type_="subagent")
+    _meta, slug = sched._find_meta("CW")
+    _session_meta_patch(slug, "CW", {"last_error": {
+        "turn_id": "t-cw2",
+        "message": "GraphRecursionError: Recursion limit of 128 reached without hitting a stop condition.",
+        "at": time.time(),
+    }})
+    await sched.on_turn_settled("CW", None, "t-cw2")
+    await _drain(fake_stream)
+
+    cw, _ = sched._find_meta("CW")
+    assert cw["subagent"]["status"] == "failed"
+    assert _stream_count(fake_stream, "CW") == 0  # no second salvage turn
+
+
+async def test_turn_recursion_limit_sources(monkeypatch, isolated_home):
+    """turn_recursion_limit: default 128, settings runtime.recursion_limit,
+    GINNO_RECURSION_LIMIT wins, clamped to [25, 1000]."""
+    from ginno_runtime.api.stream import engine
+
+    monkeypatch.delenv("GINNO_RECURSION_LIMIT", raising=False)
+    p = paths.settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{}")
+    assert engine.turn_recursion_limit() == 128
+
+    p.write_text(json.dumps({"runtime": {"recursion_limit": 200}}))
+    assert engine.turn_recursion_limit() == 200
+
+    monkeypatch.setenv("GINNO_RECURSION_LIMIT", "300")
+    assert engine.turn_recursion_limit() == 300
+
+    monkeypatch.setenv("GINNO_RECURSION_LIMIT", "5000")
+    assert engine.turn_recursion_limit() == 1000

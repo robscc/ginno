@@ -84,6 +84,10 @@ export type Block =
   // subagent.status 终态事件（live 追加）驱动。
   | { kind: "subagent_result"; sessionId: string; goal?: string; summary: string;
       error?: string }
+  // 任务简报卡片：子会话首条消息是 <ginno_subagent_brief> 原文（后接报告
+  // 格式与输出纪律两段附录），历史重放折成卡片，避免裸 XML 长文刷屏。
+  | { kind: "subagent_brief"; goal: string; constraints?: string;
+      acceptance?: string; fork?: boolean; notes?: string }
   // 拆分方案卡片（P2 共享契约 1/2）：由 subagent.plan WS 事件驱动（live 追加，
   // 不持久化——未确认的方案没有落 checkpoint 的意义）。组件本体在
   // subagentPlanCard.tsx（本文件已超 1600 行，卡片不再往里塞）。
@@ -171,25 +175,70 @@ export function parseSubagentResult(
   return { sessionId: attr("session"), goal: attr("goal"), summary: m[2].trim() };
 }
 
+/** 子会话首条消息的简报标签（runtime subagent_scheduler._build_brief）。
+ *  消息主体是 <ginno_subagent_brief> 块 + 报告格式/输出纪律两段附录；
+ *  标签外的剩余文本（附录）收进 notes 折叠展示。字段是行式的
+ *  「目标：/约束：/验收标准：」，不是 XML 属性，无需转义还原。 */
+const SUBAGENT_BRIEF_RE =
+  /<\s*ginno_subagent_brief\s*>([\s\S]*?)<\s*\/\s*ginno_subagent_brief\s*>/i;
+
+export function parseSubagentBrief(
+  text: string,
+): {
+  goal: string;
+  constraints?: string;
+  acceptance?: string;
+  fork?: boolean;
+  notes?: string;
+} | null {
+  const t = text.trim();
+  // 廉价护栏：简报消息以标签开头，避免对普通含标签文本误伤。
+  if (!t.startsWith("<")) return null;
+  const m = SUBAGENT_BRIEF_RE.exec(t);
+  if (!m) return null;
+  const inner = m[1];
+  const field = (label: string) =>
+    new RegExp(`^\\s*${label}：(.*)$`, "m").exec(inner)?.[1]?.trim() ?? "";
+  const goal = field("目标");
+  if (!goal) return null;
+  const notes = [t.slice(0, m.index), t.slice(m.index + m[0].length)]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  return {
+    goal,
+    constraints: field("约束") || undefined,
+    acceptance: field("验收标准") || undefined,
+    fork: inner.includes("并行分支（fork）"),
+    notes: notes || undefined,
+  };
+}
+
 /** 历史重放用：把持久化的注入消息（HumanMessage 原文）折成结果卡片块，
- *  避免原始 XML 标签以用户气泡形式出现在主对话里。 */
+ *  避免原始 XML 标签以用户气泡形式出现在主对话里；子会话的
+ *  <ginno_subagent_brief> 简报消息同样折成简报卡片。 */
 export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
   return blocks.map((b) => {
     if (b.kind !== "text") return b;
     const r = parseSubagentResult(b.text);
-    if (!r) return b;
-    return {
-      kind: "subagent_result",
-      sessionId: r.sessionId,
-      goal: r.goal,
-      summary: r.summary,
-    };
+    if (r) {
+      return {
+        kind: "subagent_result",
+        sessionId: r.sessionId,
+        goal: r.goal,
+        summary: r.summary,
+      };
+    }
+    const br = parseSubagentBrief(b.text);
+    if (br) return { kind: "subagent_brief", ...br };
+    return b;
   });
 }
 
 export type SubagentCardBlock =
   | Extract<Block, { kind: "subagent_spawn" }>
-  | Extract<Block, { kind: "subagent_result" }>;
+  | Extract<Block, { kind: "subagent_result" }>
+  | Extract<Block, { kind: "subagent_brief" }>;
 
 /** One attachment chip shown inside a steer band. */
 export type SteerBandImage = {
@@ -1335,6 +1384,8 @@ export function InnerBlocks({
       out.push(<SubagentSpawnCard key={`sa-spawn-${b.sessionId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_result") {
       out.push(<SubagentResultCard key={`sa-result-${b.sessionId}-${key++}`} block={b} />);
+    } else if (b.kind === "subagent_brief") {
+      out.push(<SubagentBriefCard key={`sa-brief-${key++}`} block={b} />);
     }
     // refs rendered outside
     i++;
@@ -1673,8 +1724,10 @@ export function SubagentBlocks({ blocks }: { blocks: SubagentCardBlock[] }) {
       {blocks.map((b, i) =>
         b.kind === "subagent_spawn" ? (
           <SubagentSpawnCard key={`${b.sessionId}-${i}`} block={b} />
-        ) : (
+        ) : b.kind === "subagent_result" ? (
           <SubagentResultCard key={`${b.sessionId}-${i}`} block={b} />
+        ) : (
+          <SubagentBriefCard key={`sa-brief-row-${i}`} block={b} />
         ),
       )}
     </div>
@@ -1727,5 +1780,65 @@ export function hasPendingTool(blocks: Block[]): boolean {
   // so without this the working indicator would die the moment the card lands.
   return blocks.some(
     (b) => (b.kind === "tool" && b.pending) || (b.kind === "question" && b.status === "pending"),
+  );
+}
+
+/** 子会话首条 <ginno_subagent_brief> 消息折出的任务简报卡：goal/约束/验收
+ *  一屏可读，报告格式与输出纪律两段附录（notes）收进折叠区。 */
+export function SubagentBriefCard({
+  block,
+}: {
+  block: Extract<Block, { kind: "subagent_brief" }>;
+}) {
+  const [notesOpen, setNotesOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0">🧭</span>
+        <span className="shrink-0 font-medium text-violet">任务简报</span>
+        {block.fork && (
+          <span
+            className="rounded-md border border-violet/40 bg-violet/10 px-1.5 py-0.5 text-[10px] text-violet"
+            title="从父对话分出的并行分支，已继承父对话完整上下文"
+          >
+            fork
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-txt">
+        {block.goal}
+      </div>
+      {block.constraints && (
+        <div className="mt-1.5">
+          <span className="text-[10px] font-medium text-muted">约束：</span>
+          <span className="whitespace-pre-wrap break-words leading-relaxed text-muted">
+            {block.constraints}
+          </span>
+        </div>
+      )}
+      {block.acceptance && (
+        <div className="mt-1">
+          <span className="text-[10px] font-medium text-muted">验收标准：</span>
+          <span className="whitespace-pre-wrap break-words leading-relaxed text-muted">
+            {block.acceptance}
+          </span>
+        </div>
+      )}
+      {block.notes && (
+        <div className="mt-2 border-t border-line/60 pt-1.5">
+          <button
+            onClick={() => setNotesOpen((v) => !v)}
+            className="text-[10px] text-faint transition-colors hover:text-muted"
+          >
+            {notesOpen ? "▾" : "▸"} 报告格式与输出纪律
+          </button>
+          {notesOpen && (
+            <div className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-faint">
+              {block.notes}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
