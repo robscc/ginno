@@ -13,6 +13,7 @@ live in ``session_meta``. The many re-exports at the bottom keep historical
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -68,6 +69,30 @@ async def lifespan(app: FastAPI):
         _log.exception("session-files migration failed (continuing)")
     shared._hooks = HookDispatcher.from_settings()
     todo_store.ensure_seeded()
+    # Connector registry (connector-module-design.md): seed the built-in
+    # connectors so /api/connectors answers from the very first request.
+    try:
+        from .connectors import ensure_builtin_connectors as _seed_connectors
+
+        _seed_connectors()
+    except Exception:
+        _log.exception("connector seed failed (continuing)")
+    # Browser connector setup (browser-companion design §7.3): materialize the
+    # companion extension into ~/.ginno/browser-extension (the folder the user
+    # loads via chrome://extensions), install the native-messaging host
+    # manifests, and publish the relay port for the host script. Best-effort.
+    try:
+        from .browser.native_host import (
+            install_host,
+            materialize_extension,
+            write_port_file,
+        )
+
+        materialize_extension()
+        install_host()
+        write_port_file(int(os.environ.get("GINNO_RUNTIME_PORT", "8787")))
+    except Exception:
+        _log.exception("browser connector setup failed (continuing)")
     agents_reg.ensure_todo_tools()
     agents_reg.ensure_research_discipline()
     agents_reg.ensure_goal_tools()
@@ -77,9 +102,10 @@ async def lifespan(app: FastAPI):
     # Upgraded installs never got the web tools in permissions.allow (defaults
     # seed only fresh homes) — migrate so they don't fall through to `ask`.
     try:
-        from .permission.policy import ensure_web_permissions
+        from .permission.policy import ensure_browser_permissions, ensure_web_permissions
 
         ensure_web_permissions()
+        ensure_browser_permissions()
     except Exception:
         _log.exception("web permissions migration failed (continuing)")
     wf_store.ensure_seeded()
@@ -192,6 +218,7 @@ from .api import code_fsops as _code_fsops_api  # noqa: E402
 from .api import config as _config_api  # noqa: E402
 from .api import files as _files_api  # noqa: E402
 from .api import folders as _folders_api  # noqa: E402
+from .api import connectors as _connectors_api  # noqa: E402
 from .api import knowledge as _knowledge_api  # noqa: E402
 from .api import memory as _memory_api  # noqa: E402
 from .api import sessions as _sessions_api  # noqa: E402
@@ -201,6 +228,7 @@ from .api import usage as _usage_api  # noqa: E402
 from .api import workflows as _workflows_api  # noqa: E402
 
 app.include_router(_code_api.router)
+app.include_router(_connectors_api.router)
 app.include_router(_code_fsops_api.router)
 app.include_router(_config_api.router)
 app.include_router(_files_api.router)

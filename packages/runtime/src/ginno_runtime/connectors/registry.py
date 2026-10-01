@@ -1,0 +1,226 @@
+"""Connector registry (connector-module-design.md §3-4).
+
+The single source of truth for「连没连、怎么装、怎么配」across every external
+capability. Connectors report status transitions here; the registry debounces,
+aggregates (sidebar status dot) and broadcasts ``connector_status_changed`` to
+the UI. Config lives in ``settings.json`` under ``connectors.<id>``.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+from .. import paths
+
+log = logging.getLogger("ginno.connectors")
+
+# 状态机 §4: not_installed → installing → connected ⇄ disconnected → error/disabled
+STATUS_NOT_INSTALLED = "not_installed"
+STATUS_INSTALLING = "installing"
+STATUS_CONNECTED = "connected"
+STATUS_DISCONNECTED = "disconnected"
+STATUS_ERROR = "error"
+STATUS_DISABLED = "disabled"
+
+_AGGREGATE_ORDER = [STATUS_ERROR, STATUS_DISCONNECTED, STATUS_INSTALLING,
+                    STATUS_NOT_INSTALLED, STATUS_CONNECTED, STATUS_DISABLED]
+_DEBOUNCE_S = 3.0  # 断连 3s 内重连不闪黄(设计 §4)
+
+
+@dataclass
+class ConnectorState:
+    status: str = STATUS_NOT_INSTALLED
+    status_detail: str = ""
+    version: str | None = None
+    capabilities: list[str] = field(default_factory=list)
+    extra: dict = field(default_factory=dict)
+    # debounce bookkeeping
+    _pending_status: str | None = None
+    _pending_at: float = 0.0
+
+
+class Connector:
+    """Base connector: identity + config plumbing. Subclasses own their
+    connection lifecycle and call ``registry.report`` on transitions."""
+
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    icon: str = "plug"           # frontend lucide icon name
+    order: int = 100
+
+    def default_config(self) -> dict:
+        return {"enabled": True}
+
+    def config_schema(self) -> dict:
+        return {"type": "object", "properties": {
+            "enabled": {"type": "boolean", "title": "启用"}},
+        }
+
+    def install_steps(self) -> list[dict]:
+        """Steps the module's install wizard renders (设计 §2.3)."""
+        return []
+
+    async def apply_config(self, cfg: dict) -> None:
+        """React to a config change (subclasses override as needed)."""
+
+
+class ConnectorRegistry:
+    def __init__(self) -> None:
+        self._connectors: dict[str, Connector] = {}
+        self._states: dict[str, ConnectorState] = {}
+        self._listeners: list[Callable[[str, dict], None]] = []
+        self._lock = threading.Lock()
+
+    # ---- registration ------------------------------------------------------
+
+    def register(self, conn: Connector) -> None:
+        with self._lock:
+            self._connectors[conn.id] = conn
+            self._states.setdefault(conn.id, ConnectorState())
+            if not self.read_config(conn.id):
+                self.write_config(conn.id, conn.default_config())
+
+    def get(self, cid: str) -> Connector | None:
+        return self._connectors.get(cid)
+
+    def all(self) -> list[Connector]:
+        return sorted(self._connectors.values(), key=lambda c: (c.order, c.id))
+
+    # ---- status --------------------------------------------------------------
+
+    def report(self, cid: str, status: str, detail: str = "", **kw: Any) -> None:
+        """A connector reports a status transition (debounced, 设计 §4).
+
+        reconnect within the debounce window keeps `connected` (no UI flicker).
+        """
+        with self._lock:
+            st = self._states.setdefault(cid, ConnectorState())
+            now = time.time()
+            for k in ("version", "capabilities", "extra"):
+                if k in kw:
+                    setattr(st, k, kw[k])
+            if status == st.status:
+                st._pending_status = None
+                st.status_detail = detail
+                return
+            if (st.status == STATUS_DISCONNECTED and status == STATUS_CONNECTED
+                    and st._pending_status == STATUS_CONNECTED
+                    and now - st._pending_at < _DEBOUNCE_S):
+                # transient blip during a pending disconnect — keep connected
+                st._pending_status = None
+                return
+            st.status = status
+            st.status_detail = detail
+            st._pending_status = None
+            snapshot = self._snapshot_locked(cid)
+        self._notify(snapshot)
+
+    def report_meta(self, cid: str, **kw: Any) -> None:
+        """Update version/capabilities/extra without a status transition."""
+        with self._lock:
+            st = self._states.setdefault(cid, ConnectorState())
+            for k in ("version", "capabilities", "extra"):
+                if k in kw:
+                    setattr(st, k, kw[k])
+            snapshot = self._snapshot_locked(cid)
+        self._notify(snapshot)
+
+    def status_of(self, cid: str) -> dict:
+        with self._lock:
+            return self._snapshot_locked(cid)
+
+    def aggregate_dot(self) -> str:
+        """Sidebar 聚合状态点 (§2.1): '' none / 'warn' / 'error'.
+
+        Connectors whose extra["idle"] is true (按需启动的 B 轨实例未运行
+        属正常态) don't count towards the dot."""
+        with self._lock:
+            active = [
+                s.status for s in self._states.values()
+                if s.status != STATUS_DISABLED and not (s.extra or {}).get("idle")
+            ]
+        if STATUS_ERROR in active:
+            return "error"
+        if STATUS_DISCONNECTED in active or STATUS_INSTALLING in active:
+            return "warn"
+        return ""
+
+    # ---- config (settings.json → connectors.<id>) ------------------------------
+
+    def read_config(self, cid: str) -> dict:
+        try:
+            settings = json.loads(paths.settings_path().read_text() or "{}")
+        except (OSError, json.JSONDecodeError):
+            return {}
+        stored = (settings.get("connectors") or {}).get(cid) or {}
+        cfg = self._connectors.get(cid)
+        defaults = cfg.default_config() if cfg else {"enabled": True}
+        merged = dict(defaults)
+        merged.update(stored)
+        return merged
+
+    def write_config(self, cid: str, cfg: dict) -> None:
+        settings_path = paths.settings_path()
+        try:
+            settings = json.loads(settings_path.read_text() or "{}")
+        except (OSError, json.JSONDecodeError):
+            settings = {}
+        conns = settings.get("connectors") or {}
+        base = self.read_config(cid)
+        base.update({k: v for k, v in cfg.items() if v is not None})
+        conns[cid] = base
+        settings["connectors"] = conns
+        settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2))
+
+    # ---- events -----------------------------------------------------------------
+
+    def subscribe(self, fn: Callable[[str, dict], None]) -> None:
+        self._listeners.append(fn)
+
+    def _snapshot_locked(self, cid: str) -> dict:
+        conn = self._connectors.get(cid)
+        st = self._states.get(cid) or ConnectorState()
+        return {
+            "id": cid,
+            "name": conn.name if conn else cid,
+            "icon": conn.icon if conn else "plug",
+            "description": conn.description if conn else "",
+            "status": st.status,
+            "statusDetail": st.status_detail,
+            "version": st.version,
+            "capabilities": st.capabilities,
+            "enabled": self.read_config(cid).get("enabled", True),
+            "extra": st.extra,
+        }
+
+    def _notify(self, snapshot: dict) -> None:
+        for fn in list(self._listeners):
+            try:
+                fn("connector_status_changed", snapshot)
+            except Exception:  # noqa: BLE001 — listeners must not break us
+                log.exception("connector listener failed")
+
+    def list_payload(self) -> dict:
+        with self._lock:
+            ids = [c.id for c in self.all()]
+        return {"connectors": [self.status_of(i) for i in ids],
+                "aggregateDot": self.aggregate_dot()}
+
+
+# ---- module singleton ------------------------------------------------------------
+
+_registry: ConnectorRegistry | None = None
+
+
+def registry() -> ConnectorRegistry:
+    global _registry
+    if _registry is None:
+        _registry = ConnectorRegistry()
+    return _registry
