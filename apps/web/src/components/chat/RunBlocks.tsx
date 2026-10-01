@@ -8,7 +8,7 @@ import { useGinno } from "@/lib/store";
 import { RunErrorBox } from "@/components/workflow/RunErrorBox";
 import { HumanInputCard } from "@/components/workflow/HumanInputCard";
 
-const STATUS_COLOR: Record<string, string> = {
+export const STATUS_COLOR: Record<string, string> = {
   done: "#22c55e",
   ok: "#22c55e",
   running: "#3b82f6",
@@ -32,6 +32,20 @@ export const STATUS_LABEL: Record<string, string> = {
   skipped: "已跳过",
 };
 
+/** Run 级状态 meta（运行子会话视图顶栏用；色值与上方 STATUS_COLOR 同源）。
+ *  语义对齐 blocks.tsx 的 SUBAGENT_STATUS_META（emoji 契约 + 中文标签）。 */
+export const RUN_STATUS_META: Record<
+  string,
+  { emoji: string; label: string; color: string }
+> = {
+  running: { emoji: "🟢", label: "运行中", color: STATUS_COLOR.running },
+  paused: { emoji: "⏳", label: "已暂停", color: STATUS_COLOR.paused },
+  done: { emoji: "✅", label: "已完成", color: STATUS_COLOR.done },
+  failed: { emoji: "⚠️", label: "失败", color: STATUS_COLOR.failed },
+  cancelled: { emoji: "⛔", label: "已取消", color: STATUS_COLOR.cancelled },
+  interrupted: { emoji: "⚠️", label: "已中断", color: STATUS_COLOR.interrupted },
+};
+
 function Glyph({ status }: { status?: string }) {
   const c = STATUS_COLOR[status || "pending"] || STATUS_COLOR.pending;
   if (status === "done" || status === "ok") return <Check className="h-3.5 w-3.5" style={{ color: c }} />;
@@ -40,19 +54,19 @@ function Glyph({ status }: { status?: string }) {
   return <Circle className="h-3.5 w-3.5" style={{ color: c }} />;
 }
 
-// Paused-at-human-step glyph (workflow-ux-redesign P1): a waiting step is not
-// "spinning work" — it's waiting for YOU. Pulsing yellow speech bubble.
-function HumanWaitGlyph() {
-  return <MessageSquare className="h-3.5 w-3.5 animate-pulse text-yellow" />;
-}
-
-function fmtElapsed(seconds: number): string {
+export function fmtElapsed(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
+}
+
+// Paused-at-human-step glyph (workflow-ux-redesign P1): a waiting step is not
+// "spinning work" — it's waiting for YOU. Pulsing yellow speech bubble.
+function HumanWaitGlyph() {
+  return <MessageSquare className="h-3.5 w-3.5 animate-pulse text-yellow" />;
 }
 
 const TERMINAL = new Set(["done", "failed", "cancelled", "interrupted"]);
@@ -175,6 +189,20 @@ export function LiveRunBlock({
       >
         {humanInterrupt ? <MessageSquare className="h-3.5 w-3.5 text-yellow" /> : <Workflow className="h-3.5 w-3.5 text-violet" />}
         {run.name || "Workflow"}
+        {/* 运行子会话视图入口（run view 方案）：卡片本体仍是 Studio deep-link
+            （行为不变），这个独立小按钮原地打开全屏运行视图——已在 "/" 时
+            （聊天页/右侧 Workflow 面板）不换路由，其它页面先切回去。 */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation(); // 别触发整行的 Studio deep-link
+            g.openRunView(run.id);
+            if (window.location.pathname !== "/") router.push("/");
+          }}
+          title="打开运行视图（步骤遥测 / 事件流 / 干预面板）"
+          className="ml-1 shrink-0 rounded border border-line2 px-1 py-px text-[10px] font-normal text-faint transition-colors hover:border-violet/50 hover:text-violet"
+        >
+          查看运行
+        </button>
         <span className="ml-auto flex items-center gap-1.5 text-xs font-normal" style={{ color: c }}>
           {elapsed !== null && <span className="text-faint">⏱ {fmtElapsed(elapsed)}</span>}
           {stuck && (

@@ -26,10 +26,12 @@ import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { SUBAGENT_STATUS_META, SubagentKindBadges } from "@/components/chat/blocks";
+import { RunSubSessionView } from "@/components/chat/RunSubSessionView";
+import { RUN_STATUS_META } from "@/components/chat/RunBlocks";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
-import type { SessionMeta, SessionUsage } from "@/lib/types";
+import type { SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const g = useGinno();
@@ -50,9 +52,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   };
   // C+ 方案③：侧边栏按 agent 筛选会话（null = 全部，再点一次取消）
   const [agentFilter, setAgentFilter] = useState<string | null>(null);
-  // 子会话树的展开/折叠覆盖（subagent-design.md §6.1）：undefined = 跟随默认
-  // （有运行中/等待子代 → 展开，全部结束 → 折叠）；用户点过 chevron 后固定。
-  const [treeCollapsed, setTreeCollapsed] = useState<Record<string, boolean>>({});
+  // 子会话树的展开/折叠覆盖（subagent-design.md §6.1）已上收到 store
+  // （g.treeCollapsed / g.setTreeCollapsed，ginno-sidebar-tree 持久化）；
+  // 语义不变：undefined = 跟随默认，true = 用户折叠，false = 用户显式展开。
 
   // Goal-first session (goal-design.md P2): create a session titled by the
   // objective and immediately set it as the active goal so the driver starts.
@@ -214,6 +216,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   for (const list of childrenOf.values()) {
     list.sort((a, b) => (a.created ?? 0) - (b.created ?? 0));
   }
+  // workflow 运行伪条目：把 present_in_session_id 指向可见父会话的运行挂在
+  // 父行下（孤儿运行/被筛选掉的父会话不渲染），按开始时间正序，与子会话行
+  // 的排列方式一致。
+  const runsOf = new Map<string, WorkflowRun[]>();
+  for (const r of g.workflowRuns) {
+    if (!r.present_in_session_id) continue;
+    if (!visibleSessions.some((p) => p.id === r.present_in_session_id)) continue;
+    const list = runsOf.get(r.present_in_session_id) ?? [];
+    list.push(r);
+    runsOf.set(r.present_in_session_id, list);
+  }
+  for (const list of runsOf.values()) {
+    list.sort((a, b) => a.started - b.started);
+  }
   // 全部后代数（嵌套子代理的 +N 尾标与级联删除确认文案共用）。
   const descendantCount = (id: string): number => {
     let n = 0;
@@ -248,6 +264,85 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     ["更早", sortedSessions.filter((s) => groupOf(s) === "更早")],
   ];
 
+  // workflow 运行行（侧栏运行伪条目）：glyph/标签来自 RUN_STATUS_META，标题
+  // 优先 run.name、缺省退回 workflow 定义名；点击进入中央 run 视图（与选中
+  // 会话行同款高亮）。hover 入口对齐子会话行：运行中/暂停 → 取消，结束态 →
+  // 删除运行记录（正在查看时一并退出 run 视图）。
+  const renderRunRow = (r: WorkflowRun, depth: number) => {
+    const sel = onWorkspace && g.activeRunId === r.id;
+    const meta = RUN_STATUS_META[r.status];
+    const active = r.status === "running" || r.status === "paused";
+    const wfName = g.workflows.find((w) => w.id === r.workflow_id)?.name;
+    return (
+      <div
+        key={r.id}
+        className={`nav-item group ${sel ? "text-txt" : ""} ${active ? "" : "opacity-60"}`}
+        style={{
+          ...(sel ? { background: "rgba(99,102,241,0.14)" } : undefined),
+          ...(depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined),
+        }}
+      >
+        <button
+          onClick={() => {
+            g.openRunView(r.id);
+            if (!onWorkspace) router.push("/");
+          }}
+          className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+        >
+          {meta ? (
+            <span className="shrink-0 text-[11px] leading-none" title={`状态：${meta.label}`}>
+              {meta.emoji}
+            </span>
+          ) : (
+            <WorkflowIcon className="h-4 w-4 shrink-0 text-muted" />
+          )}
+          <span className="truncate">{r.name || wfName || "Workflow"}</span>
+          <span className="ml-auto shrink-0 text-[10px] text-faint">{relTime(r.started)}</span>
+        </button>
+        <span className="flex shrink-0 items-center gap-0.5">
+          {active ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                void api
+                  .cancelWorkflowRun(r.id)
+                  .then(() => g.reloadWorkflowRuns())
+                  .catch(() => {
+                    /* 端点不可达——状态以 run.status 事件/轮询为准 */
+                  });
+              }}
+              aria-label="取消运行"
+              title="取消该运行"
+              className="rounded p-1 text-muted opacity-0 transition-opacity hover:bg-card2 hover:text-yellow group-hover:opacity-100"
+            >
+              <Square className="h-3 w-3" />
+            </button>
+          ) : (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                void api
+                  .deleteWorkflowRun(r.id)
+                  .then(async () => {
+                    if (g.activeRunId === r.id) g.closeRunView();
+                    await g.reloadWorkflowRuns();
+                  })
+                  .catch(() => {
+                    /* ignore — reconcile on next reload */
+                  });
+              }}
+              aria-label="删除运行记录"
+              title="删除该运行记录"
+              className="rounded p-1 text-muted opacity-0 transition-opacity hover:bg-card2 hover:text-red group-hover:opacity-100"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </span>
+      </div>
+    );
+  };
+
   const renderSessionRow = (s: SessionMeta, depth = 0, childRows: SessionMeta[] = []) => {
     const sel = onWorkspace && s.id === g.activeSessionId;
     const rowAgent = g.agents.find((a) => a.id === s.agent_id) ?? null;
@@ -260,14 +355,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const subStatus = s.subagent?.status;
     const subMeta = subStatus ? SUBAGENT_STATUS_META[subStatus] : null;
     const subActive = subStatus === "running" || subStatus === "waiting";
-    const hasKids = childRows.length > 0;
-    const activeKids = childRows.filter(
-      (c) => c.subagent?.status === "running" || c.subagent?.status === "waiting",
-    ).length;
+    const runRows = runsOf.get(s.id) ?? [];
+    const hasKids = childRows.length > 0 || runRows.length > 0;
+    const activeKids =
+      childRows.filter(
+        (c) => c.subagent?.status === "running" || c.subagent?.status === "waiting",
+      ).length +
+      runRows.filter((r) => r.status === "running" || r.status === "paused").length;
     // 默认展开有子会话的子树——已完成的子会话继续留在列表里可供回看
     // （用户反馈 2026-10-01：全部跑完后子树自动折叠、子会话像消失了一样）；
-    // 折叠只在用户点过 chevron 后生效。
-    const expanded = treeCollapsed[s.id] === undefined ? hasKids : !treeCollapsed[s.id];
+    // 折叠只在用户点过 chevron 后生效（覆盖持久化在 store）。
+    const expanded = g.treeCollapsed[s.id] === undefined ? hasKids : !g.treeCollapsed[s.id];
     const openChild = () => {
       g.setActiveSession(s.id);
       if (!onWorkspace) router.push("/");
@@ -378,11 +476,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   {relTime(s.updated ?? s.created)}
                 </span>
               </button>
-              {/* 父行徽标：运行中子代理数量（设计 §6.1 的「● 2 agents」） */}
+              {/* 父行徽标：运行中子代理/运行数量（设计 §6.1 的「● 2 agents」） */}
               {hasKids && activeKids > 0 && (
                 <span
                   className="flex shrink-0 items-center gap-1 rounded-full border border-line2 px-1.5 text-[10px] leading-4 text-muted"
-                  title={`${activeKids} 个子任务运行中`}
+                  title={`${activeKids} 个子任务/运行进行中`}
                 >
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green" />
                   {activeKids}
@@ -393,7 +491,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      setTreeCollapsed((prev) => ({ ...prev, [s.id]: !!expanded }));
+                      // 存的是「新的折叠态」：当前展开 → 收起（true）。
+                      g.setTreeCollapsed(s.id, expanded);
                     }}
                     aria-label={expanded ? "折叠子任务" : "展开子任务"}
                     title={expanded ? "折叠子任务" : "展开子任务"}
@@ -470,6 +569,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {hasKids && expanded && (
           <div className="space-y-0.5">
             {childRows.map((c) => renderSessionRow(c, depth + 1, childrenOf.get(c.id) ?? []))}
+            {runRows.map((r) => renderRunRow(r, depth + 1))}
           </div>
         )}
       </div>
@@ -630,9 +730,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* main */}
       <main className="flex min-w-0 flex-1">
         {/* Workspace: always mounted so ChatStream refs (WS, store, error cards)
-            survive navigating to /settings or /kb and back. Hidden off-route. */}
+            survive navigating to /settings or /kb and back. Hidden off-route.
+            打开 run 视图时同样用 hidden（不卸载）——会话流的 WS/草稿等 ref 状态
+            在回看运行期间保持存活。 */}
         <div className={`flex min-w-0 flex-1 ${onWorkspace ? "" : "hidden"}`}>
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className={`flex min-w-0 flex-1 flex-col ${g.activeRunId ? "hidden" : ""}`}>
             {session && (
               <TopBar session={session} agent={agent} running={running} usage={usage} />
             )}
@@ -643,6 +745,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               onOpenGoal={() => setGoalSessionModal(true)}
             />
           </div>
+          {/* run 视图：workflow 运行的中央回看区（RunSubSessionView 自取数据） */}
+          {g.activeRunId && onWorkspace && (
+            <div className="flex min-w-0 flex-1 flex-col">
+              <RunSubSessionView runId={g.activeRunId} />
+            </div>
+          )}
           {/* Right panel or its collapsed edge dock (right-panel-redesign.md) */}
           {g.rightPanelOpen ? <RightPanel /> : <RightDock />}
           <SheetViewer />

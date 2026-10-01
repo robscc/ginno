@@ -287,17 +287,21 @@ export function RunObserver({
                   </span>
                 )}
                 {terminal && (
-                  <button
+                  // span 而非 button：外层步骤行已是 button，嵌套 button 会触发
+                  // React hydration 警告（HTML 不允许 button 嵌套）。
+                  <span
+                    role="button"
+                    tabIndex={0}
                     onClick={(e) => {
                       e.stopPropagation();
                       void rerunFrom(s.id);
                     }}
-                    disabled={busy !== null}
+                    aria-disabled={busy !== null}
                     title="从该节点重跑：fork 一个新 run，只重执行此节点及其后继（用本 run 钉住的版本）"
-                    className="btn-press shrink-0 rounded border border-line2 px-1 py-px text-[9.5px] text-faint hover:border-violet/50 hover:text-violet disabled:opacity-40"
+                    className="btn-press shrink-0 cursor-pointer rounded border border-line2 px-1 py-px text-[9.5px] text-faint hover:border-violet/50 hover:text-violet aria-disabled:opacity-40"
                   >
                     {busy === `rerun:${s.id}` ? "…" : "重跑"}
-                  </button>
+                  </span>
                 )}
               </button>
             );

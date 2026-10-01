@@ -803,6 +803,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
         break;
       case "run.bind": {
         const runId = ev.run_id as string;
+        // 侧栏伪条目即时出现（run view 方案）：in-chat 卡片走下面的拉取，
+        // store 的全量运行列表也同步刷新，工作流面板/角标不用等 30s 轮询。
+        void g.reloadWorkflowRuns();
         getWorkflowRun(runId).then((r) => {
           if (!r?.run) return;
           const list = runsBySessionRef.current[sid] ?? [];

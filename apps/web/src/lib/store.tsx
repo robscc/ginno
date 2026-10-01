@@ -71,6 +71,9 @@ const PANEL_PREFS_KEY = "ginno-right-panel";
 // ids are stored; visiting home (null) keeps the previous id so a relaunch
 // still resumes where the user left off.
 export const LAST_SESSION_KEY = "ginno-last-session";
+// 侧栏子树折叠覆盖（subagent-design.md §6.1，从 AppShell 本地状态上收持久化）。
+// shape: {session_id: boolean}——只存用户显式点过 chevron 的会话，其余走默认。
+const TREE_COLLAPSED_KEY = "ginno-sidebar-tree";
 
 export interface PreviewFile {
   id: string;
@@ -303,6 +306,17 @@ interface GinnoState {
   ) => Promise<{ ok: boolean; needs_confirm?: boolean; error?: string }>;
   setGoalStatus: (sessionId: string, status: GoalStatus) => Promise<{ ok: boolean; error?: string }>;
   clearGoal: (sessionId: string) => Promise<void>;
+  // ---- workflow run 视图（侧栏运行伪条目的点击目标）----
+  // 中央区当前打开的 run；null = 正常会话视图。每窗口临时状态，不持久化，
+  // 切换/清空会话时一并清掉（见 setActiveSession / removeSession）。
+  activeRunId: string | null;
+  openRunView: (runId: string) => void;
+  closeRunView: () => void;
+  // ---- 侧栏子树折叠覆盖（从 AppShell 上收，localStorage 持久化）----
+  // 语义与原 AppShell 本地状态一致：undefined = 默认（有子代 → 展开），
+  // true = 用户折叠，false = 用户显式展开。键为会话 id。
+  treeCollapsed: Record<string, boolean>;
+  setTreeCollapsed: (id: string, collapsed: boolean) => void;
 }
 
 const Ctx = createContext<GinnoState | null>(null);
@@ -360,6 +374,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const [providers, setProviders] = useState<Providers>({});
   const [defaultProvider, setDefaultProvider] = useState("custom");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // 中央区当前打开的 workflow run（侧栏运行伪条目）。窗口内临时状态：不持久
+  // 化，随会话切换/清空一起清掉。
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [ready, setReady] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -536,6 +553,62 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // ---- 侧栏子树折叠覆盖（ginno-sidebar-tree，自 AppShell 本地状态上收）----
+  const [treeCollapsed, setTreeCollapsedState] = useState<Record<string, boolean>>({});
+  // Ref mirror for write-time reads（persist/prune 不能读过期 state——与
+  // rightPanelWidthByTabRef 同理），外加一份 sessions 镜像供写时裁剪。
+  const treeCollapsedRef = useRef<Record<string, boolean>>({});
+  const sessionsRef = useRef<SessionMeta[]>([]);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  // Hydrate once on mount（与上方面板偏好同一模式：SSR 渲染默认值，挂载后修）。
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TREE_COLLAPSED_KEY);
+      if (!raw) return;
+      const v = JSON.parse(raw) as Record<string, unknown>;
+      if (!v || typeof v !== "object") return;
+      const next: Record<string, boolean> = {};
+      for (const [k, val] of Object.entries(v)) {
+        if (typeof val === "boolean") next[k] = val;
+      }
+      treeCollapsedRef.current = next;
+      setTreeCollapsedState(next);
+    } catch {
+      /* corrupted prefs — keep defaults */
+    }
+  }, []);
+
+  // Persist a write，顺带裁掉已不存在的会话键（删除后不留陈旧残留）。boot 尚未
+  // 拿到会话列表时跳过裁剪——空镜像会把整张表清光。
+  const persistTreeCollapsed = useCallback((map: Record<string, boolean>) => {
+    let next = map;
+    if (sessionsRef.current.length) {
+      const alive = new Set(sessionsRef.current.map((s) => s.id));
+      const pruned: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(map)) {
+        if (alive.has(k)) pruned[k] = v;
+      }
+      next = pruned;
+    }
+    treeCollapsedRef.current = next;
+    setTreeCollapsedState(next);
+    try {
+      localStorage.setItem(TREE_COLLAPSED_KEY, JSON.stringify(next));
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+
+  const setTreeCollapsed = useCallback(
+    (id: string, collapsed: boolean) => {
+      persistTreeCollapsed({ ...treeCollapsedRef.current, [id]: collapsed });
+    },
+    [persistTreeCollapsed],
+  );
+
   const setRightPanelOpen = useCallback(
     (open: boolean) => {
       rightPanelOpenRef.current = open;
@@ -650,6 +723,18 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  // ---- workflow run 视图 ----
+  const openRunView = useCallback((runId: string) => setActiveRunId(runId), []);
+  const closeRunView = useCallback(() => setActiveRunId(null), []);
+
+  // Consumer-facing setter：切换/清空会话时同步关掉 run 视图（中央区二选一）。
+  // 内部 boot 路径仍用裸 setActiveSessionId；newSession / removeSession 里也
+  // 各自清一次。
+  const setActiveSession = useCallback((id: string | null) => {
+    setActiveSessionId(id);
+    setActiveRunId(null);
+  }, []);
 
   // The session scope artifacts were last loaded for. When the scope changes
   // (session switch/create/delete) the whole list swaps, which must NOT trigger
@@ -1012,6 +1097,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         if (s && s.ok !== false && s.id) {
           setSessions((prev) => [s, ...prev.filter((x) => x.id !== s.id)]);
           setActiveSessionId(s.id);
+          setActiveRunId(null); // 视图切到新会话，run 视图一并关闭
           setSessionError(null);
           return s;
         }
@@ -1072,27 +1158,46 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     // make the next send start a fresh session — no phantom auto-session).
     // 级联删除（subagent-design.md §5.8）时把全部后代一并从列表移除——后端沿
     // parent_session_id 反向索引删除，前端这里只做 UI 即时一致性。
-    setSessions((prev) => {
-      const doomed = new Set<string>([id]);
-      if (opts?.cascade) {
-        let grew = true;
-        while (grew) {
-          grew = false;
-          for (const s of prev) {
-            if (s.parent_session_id && doomed.has(s.parent_session_id) && !doomed.has(s.id)) {
-              doomed.add(s.id);
-              grew = true;
-            }
+    // 被删集合先在 sessions 镜像上算出（含嵌套后代）——折叠覆盖的清理复用它。
+    const doomed = new Set<string>([id]);
+    if (opts?.cascade) {
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const s of sessionsRef.current) {
+          if (s.parent_session_id && doomed.has(s.parent_session_id) && !doomed.has(s.id)) {
+            doomed.add(s.id);
+            grew = true;
           }
         }
       }
+    }
+    // 被删会话的折叠覆盖键一并剪掉并持久化（不走 persistTreeCollapsed：它按
+    // sessions 镜像裁剪，而镜像此刻还没更新，会把待删键又加回来）。
+    const doomedKeys = Object.keys(treeCollapsedRef.current).filter((k) => doomed.has(k));
+    if (doomedKeys.length) {
+      const next = { ...treeCollapsedRef.current };
+      for (const k of doomedKeys) delete next[k];
+      treeCollapsedRef.current = next;
+      setTreeCollapsedState(next);
+      try {
+        localStorage.setItem(TREE_COLLAPSED_KEY, JSON.stringify(next));
+      } catch {
+        /* storage unavailable */
+      }
+    }
+    // 正在查看的会话（或其祖先被级联删除）没了，run 视图也一并关闭。
+    const cur = activeSessionRef.current;
+    const activeDoomed = !!cur && (doomed.has(cur) || cur === id);
+    setSessions((prev) => {
       const next = prev.filter((s) => !doomed.has(s.id));
-      setActiveSessionId((cur) => {
-        if (cur !== id && !(cur && doomed.has(cur))) return cur;
+      setActiveSessionId((current) => {
+        if (current !== id && !(current && doomed.has(current))) return current;
         return null;
       });
       return next;
     });
+    if (activeDoomed) setActiveRunId(null);
     try {
       await api.deleteSession(id, opts?.cascade);
     } catch {
@@ -1321,7 +1426,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     previewFile,
     previewNonce,
     setConnected,
-    setActiveSession: setActiveSessionId,
+    setActiveSession,
+    activeRunId,
+    openRunView,
+    closeRunView,
     setRightTab,
     rightPanelOpen,
     rightPanelWidth,
@@ -1375,6 +1483,8 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     newSession,
     setSessionAgent,
     removeSession,
+    treeCollapsed,
+    setTreeCollapsed,
     renameSession,
     applySessionPatch,
     notifySubagentSpawned,

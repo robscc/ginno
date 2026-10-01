@@ -167,6 +167,22 @@ export function ChatStream({
     return sumFlow.finishSynthesisWait(id);
   }
 
+  // 页面刷新后的 run 卡片水合（run view 方案）：runsBySessionRef 只由
+  // run.bind 推送填充，刷新后历史绑定会丢。store 的 workflowRuns 是全量
+  // 列表——在该会话的条目还「不存在」时播种一次（复制数组，绝不覆盖已有
+  // 条目；之后的增量仍走 engine 里 run.bind / run.event 的原地变更路径）。
+  // store 首次加载完成前不播种（空列表播种会把这个会话永久钉成无绑定）。
+  useEffect(() => {
+    const sid = session?.id;
+    if (!sid || !g.workflowRuns.length) return;
+    if (runsBySessionRef.current[sid] !== undefined) return;
+    runsBySessionRef.current[sid] = g.workflowRuns.filter(
+      (r) => r.present_in_session_id === sid,
+    );
+    syncDisplay(sid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, g.workflowRuns]);
+
 
   // Pre-load tool display labels from settings (cached at module level).
   useEffect(() => { loadToolLabels(); }, []);
