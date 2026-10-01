@@ -1137,6 +1137,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
           origin: ev.origin ?? "agent",
           status: "running",
           result_summary: "",
+          agent_type: ev.agent_type ?? "",
         },
       };
       if (idx >= 0) {

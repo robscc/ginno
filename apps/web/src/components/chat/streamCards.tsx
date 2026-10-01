@@ -245,6 +245,7 @@ return (
 }
 
 export function AssistantBubble({
+  subagentTypeName,
 agent,
 agentName,
 blocks,
@@ -256,6 +257,8 @@ questionLive,
 }: {
 agent: AgentConfig | null;
 agentName?: string;
+/** 子代理类型名（子会话视图传入）：优先于继承来的 persona 名显示 */
+subagentTypeName?: string;
 blocks: Block[];
 streaming?: boolean;
 turnId?: string;
@@ -266,7 +269,9 @@ onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip
 questionLive?: boolean;
 }) {
 const hex = agentHex(agent?.color);
-const displayName = agent?.name || agentName || "Agent";
+// 子会话的 persona 是继承父会话的（Dev Agent），标注没有信息量——子代理类型
+// 才是它的身份，与侧栏行/子会话顶栏/主对话卡片保持一致（用户反馈 2026-10-01）。
+const displayName = subagentTypeName || agent?.name || agentName || "Agent";
 const hasInner = blocks.some((b) => b.kind !== "ref");
 
 // Track elapsed time for dynamic status text during TTFT wait

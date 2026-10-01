@@ -254,6 +254,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const hex = agentHex(rowAgent?.color);
     const editing = editingId === s.id;
     const isSub = s.type === "subagent";
+    const subTypeName = isSub
+      ? String((s.subagent as { agent_type?: unknown } | undefined)?.agent_type ?? "").trim()
+      : "";
     const subStatus = s.subagent?.status;
     const subMeta = subStatus ? SUBAGENT_STATUS_META[subStatus] : null;
     const subActive = subStatus === "running" || subStatus === "waiting";
@@ -343,15 +346,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     ⚡
                   </span>
                 )}
-                {/* C+ 方案③：会话行 agent 名小标签（agent 已删除时不渲染） */}
-                {rowAgent && (
+                {/* C+ 方案③：会话行 agent 名小标签（agent 已删除时不渲染）。
+                    子会话例外：persona 是继承父会话的（永远是 Dev Agent），用它
+                    标注没有信息量——改显示子代理类型（与主对话卡片、子会话顶栏
+                    一致）；没有类型才退回 persona 名。 */}
+                {isSub && subTypeName ? (
+                  <span
+                    className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet"
+                    title={`子代理类型：${subTypeName}`}
+                  >
+                    {subTypeName}
+                  </span>
+                ) : rowAgent ? (
                   <span
                     className="shrink-0 rounded-full border px-1.5 text-[10px] leading-4"
                     style={{ borderColor: hex + "44", background: hex + "14", color: hex }}
                   >
                     {rowAgent.name}
                   </span>
-                )}
+                ) : null}
                 {/* 子树还有更深的后代：行尾 +N 尾标（设计 §6.1） */}
                 {hasKids && descendantCount(s.id) > childRows.length && (
                   <span

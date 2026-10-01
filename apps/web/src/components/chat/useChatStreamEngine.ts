@@ -182,14 +182,21 @@ export function useChatStreamEngine(deps: EngineDeps) {
     }>;
     last_error?: { message?: string; turn_id?: string } | null;
   }): ChatMsg[] {
-    const mapped: ChatMsg[] = (res.messages ?? []).map((m) => ({
+    // 服务端只给 user 消息带 turnId；assistant 消息继承其前一条 user 消息的
+    // turnId——中途接入的实时流要靠它认领「历史里本轮已存在的半截气泡」
+    // （否则同一轮渲染成两块，2026-10-01 子会话渲染问题）。
+    let carryTurn: string | undefined;
+    const mapped: ChatMsg[] = (res.messages ?? []).map((m) => {
+      const own = m.turnId ?? (m.role === "user" ? m.id : undefined);
+      if (m.role === "user" && own) carryTurn = own;
+      return {
       id: m.id ?? mid(),
       role: m.role,
       // 运行时注入的子代理结果（契约 3：<ginno_subagent_result> 包裹的
       // HumanMessage）在重放时折成结果卡片块，避免原始标签以文本气泡出现。
       blocks: foldSubagentResultBlocks(m.blocks),
       agentId: m.agentId,
-      turnId: m.turnId ?? (m.role === "user" ? m.id : undefined),
+      turnId: own ?? (m.role === "assistant" ? carryTurn : undefined),
       // Rebuild the retry payload for history user bubbles too — without
       // it, a retry that fails again would produce an error card with no
       // payload (no retry button), and the error handler's "last user with
@@ -198,7 +205,8 @@ export function useChatStreamEngine(deps: EngineDeps) {
         m.role === "user"
           ? payloadFromBlocks(m.blocks, m.agentId ?? session?.agent_id ?? null)
           : undefined,
-    }));
+      };
+    });
     // Re-surface a persisted turn failure as an error card (with retry)
     // so the last error survives reloads and route/session switches.
     const err = res.last_error;
@@ -630,20 +638,35 @@ export function useChatStreamEngine(deps: EngineDeps) {
     if (!streamAgentRef.current[sid]) streamAgentRef.current[sid] = session?.agent_id ?? null;
   }
 
-  function ensureLive(sid: string): string {
+  function ensureLive(sid: string, evTurn?: string): string {
     const existing = liveBySessionRef.current[sid];
     if (existing) return existing;
+    // 承接本轮已存在的气泡（2026-10-01 子会话渲染成两块）：socket 在 turn 中途
+    // 才连上时，历史重放里已经有这一轮的半截气泡（带正确的 agent 名与 turnId），
+    // 若此时新建气泡，同一轮会渲染成「历史半截 + 无 agent 的实时块」两块。流事件
+    // 应当认领承载同一 turnId 的气泡——没有 turnId 可比时才新建。
+    if (evTurn) {
+      const rows = storeRef.current[sid] ?? [];
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const m = rows[i];
+        if (m.role === "assistant" && m.turnId === evTurn) {
+          liveBySessionRef.current[sid] = m.id;
+          if (!streamAgentRef.current[sid]) streamAgentRef.current[sid] = m.agentId ?? null;
+          return m.id;
+        }
+      }
+    }
     const id = mid();
     storeRef.current[sid] = [
       ...(storeRef.current[sid] ?? []),
-      { id, role: "assistant", blocks: [], agentId: streamAgentRef.current[sid], turnId: newTurnId() },
+      { id, role: "assistant", blocks: [], agentId: streamAgentRef.current[sid], turnId: evTurn || newTurnId() },
     ];
     liveBySessionRef.current[sid] = id;
     return id;
   }
 
   function mutateLive(sid: string, ev: { event: string; [k: string]: unknown }) {
-    const id = ensureLive(sid);
+    const id = ensureLive(sid, ev.turn_id as string | undefined);
     // 气泡归属体检（2026-10-01 串线排查）：流事件带的 turn_id 必须与它落入的
     // 气泡 turnId 一致；不一致说明内容串进了别轮的气泡。release webview 没有
     // 可读控制台，所以同时上报服务端日志（client_diag）留证。

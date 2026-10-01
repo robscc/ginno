@@ -187,6 +187,9 @@ export interface SubagentMeta {
   // P3 共享契约 2：spawn 模式。"standard" = 全新上下文（默认）；"fork" = 初始
   // 历史为父对话 checkpoint 副本。P1/P2 存量无此字段，视为 "standard"。
   mode?: "standard" | "fork";
+  // P3 契约 1：命中的子代理类型名（空 = 默认 persona）。UI 用它替代继承来的
+  // persona 名（子会话的 persona 永远是父会话那个，标注没有信息量）。
+  agent_type?: string;
 }
 
 // WS 帧 subagent.spawned（契约 2）——广播到父 session 与子 session 的所有 socket。
@@ -199,6 +202,8 @@ export interface SubagentSpawnEvent {
   depth?: number;
   origin?: "user" | "agent";
   title?: string;
+  /** 命中的子代理类型名（~/.ginno/agents/subagents/*.md），空 = 默认 persona */
+  agent_type?: string;
 }
 
 // WS 帧 subagent.status（契约 2）。

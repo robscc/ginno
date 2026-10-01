@@ -1660,6 +1660,11 @@ export function ChatStream({
                 <AssistantBubble
                   agent={agentById(m.agentId)}
                   agentName={m.agentName}
+                  subagentTypeName={
+                    session?.type === "subagent"
+                      ? (session.subagent as { agent_type?: string } | undefined)?.agent_type
+                      : undefined
+                  }
                   blocks={m.blocks}
                   streaming={m.id === liveId}
                   turnId={m.turnId}
