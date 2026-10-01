@@ -26,6 +26,7 @@ import type { WikiPage, WorkflowRun } from "@/lib/types";
 import type { CodeRoot } from "@/lib/codeTypes";
 import { fileDownloadUrl, listCodeRoots } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
+import type { SessionMeta } from "@/lib/types";
 import { isSubagentConfirmed, markSubagentConfirmed } from "@/lib/subagentConfirm";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
@@ -1749,11 +1750,11 @@ export function SubagentResultCard({
 /** 子代卡片行集（系统行渲染入口）。 */
 export function SubagentBlocks({
   blocks,
-  agentType,
+  session,
 }: {
   blocks: SubagentCardBlock[];
-  /** 子代理类型名：子会话视图传入，用于简报卡的类型徽标 */
-  agentType?: string;
+  /** 子会话视图传入：简报卡据此读 spawn_subagent 的实际参数（以它为准） */
+  session?: SessionMeta;
 }) {
   if (!blocks.length) return null;
   return (
@@ -1764,7 +1765,7 @@ export function SubagentBlocks({
         ) : b.kind === "subagent_result" ? (
           <SubagentResultCard key={`${b.sessionId}-${i}`} block={b} />
         ) : (
-          <SubagentBriefCard key={`sa-brief-row-${i}`} block={b} agentType={agentType} />
+          <SubagentBriefCard key={`sa-brief-row-${i}`} block={b} session={session} />
         ),
       )}
     </div>
@@ -1824,22 +1825,30 @@ export function hasPendingTool(blocks: Block[]): boolean {
  *  一屏可读，报告格式与输出纪律两段附录（notes）收进折叠区。 */
 export function SubagentBriefCard({
   block,
-  agentType,
+  session,
 }: {
   block: Extract<Block, { kind: "subagent_brief" }>;
-  /** 子代理类型名（子会话视图传入）：与 spawn_subagent 的 agent_type 参数对应 */
-  agentType?: string;
+  /** 子会话的会话元数据：goal/constraints/acceptance/agent_type/mode 是
+   *  spawn_subagent 创建时写入的**实际参数**——以它为准（文本只补「其他」），
+   *  这样子会话里的简报与主对话的发起卡不会出现两套说法。 */
+  session?: SessionMeta;
 }) {
   const [notesOpen, setNotesOpen] = useState(false);
-  // 四段与 spawn_subagent 的参数面对齐：目标 / 约束 / 验收标准 / 其他
-  // （其他 = brief 内其余行 + 类型职责 persona + 报告格式与输出纪律）。
-  const rows: Array<[string, string | undefined, string]> = [
-    ["目标", block.goal, "text-txt"],
-    ["约束", block.constraints, "text-muted"],
-    ["验收标准", block.acceptance, "text-muted"],
+  const meta = session?.subagent;
+  const type = String(
+    (meta as { agent_type?: string } | undefined)?.agent_type ?? "",
+  ).trim();
+  const isFork = meta ? meta.mode === "fork" : !!block.fork;
+  // 参数为准：meta 有值就用 meta（与发起卡同源），没有才退回简报文本。
+  const goal = meta?.goal || block.goal;
+  const constraints = meta?.constraints || block.constraints;
+  const acceptance = meta?.acceptance || block.acceptance;
+  const sections: Array<[string, string | undefined, string]> = [
+    ["目标", goal, "text-txt"],
+    ["约束", constraints, "text-muted"],
+    ["验收标准", acceptance, "text-muted"],
     ["其他", block.extra, "text-muted"],
   ];
-  const type = (agentType || "").trim();
   return (
     <div className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2.5 text-xs">
       <div className="flex items-center gap-1.5">
@@ -1853,7 +1862,7 @@ export function SubagentBriefCard({
             {type}
           </span>
         )}
-        {block.fork && (
+        {isFork && (
           <span
             className="rounded-md border border-violet/40 bg-violet/10 px-1.5 py-0.5 text-[10px] text-violet"
             title="从父对话分出的并行分支，已继承父对话完整上下文"
@@ -1862,7 +1871,7 @@ export function SubagentBriefCard({
           </span>
         )}
       </div>
-      {rows.map(([label, value, cls]) =>
+      {sections.map(([label, value, cls]) =>
         value ? (
           <div key={label} className="mt-1.5">
             <span className="text-[10px] font-medium text-muted">{label}</span>

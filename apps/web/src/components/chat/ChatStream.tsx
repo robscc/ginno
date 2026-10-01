@@ -1572,11 +1572,7 @@ export function ChatStream({
               <div key={m.id} className="flex flex-col items-center gap-2">
                 <div className="w-full max-w-[85%]">
                   <SubagentBlocks
-                    agentType={
-                      session?.type === "subagent"
-                        ? (session.subagent as { agent_type?: string } | undefined)?.agent_type
-                        : undefined
-                    }
+                    session={session?.type === "subagent" ? session : undefined}
                     blocks={m.blocks.filter(
                       (
                         b,
