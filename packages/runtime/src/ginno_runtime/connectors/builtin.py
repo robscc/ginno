@@ -91,6 +91,12 @@ class ChromeExtensionConnector(Connector):
                     "title": "受保护域名",
                     "description": "这些域名上的浏览器动作需要你确认(支付/邮箱/云控制台)",
                 },
+                "confirmed_domains": {
+                    "type": "array", "items": {"type": "string"},
+                    "title": "受保护域名确认",
+                    "description": ("你已同意 agent 在这些受保护域名上操作"
+                                    "(agent 请求确认后在此加入;每行一个)"),
+                },
                 "auto_open_group": {
                     "type": "boolean", "title": "新标签时把 Chrome 带到前台",
                 },

@@ -70,7 +70,7 @@ def _jpeg_size(data: bytes) -> tuple[int, int] | None:
     """Parse JPEG SOFn dimensions (screenshot pixel size, for coord mapping)."""
     i = 2
     n = len(data)
-    while i + 9 < n:
+    while i + 8 < n:
         if data[i] != 0xFF:
             i += 1
             continue

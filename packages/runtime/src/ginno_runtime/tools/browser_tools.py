@@ -15,6 +15,7 @@ trimming old ones).
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,13 @@ async def _dispatch(tool_name: str, args: dict, slow: bool = False) -> Any:
     # B 轨 fallback
     if cfg.fallback_profile_mode == "off":
         raise RelayError(_fallback_note(cfg))
+    if cfg.fallback_profile_mode == "ask":
+        # 「提示一次」(设计 §3):首降提示,经事件通道出 toast;工具照常执行
+        # —— 不阻塞 agent,用户知情后可在连接器页改 off/auto。
+        _emit_event("browser_fallback_used", {
+            "tool": tool_name,
+            "hint": "未安装扩展,已使用 Ginno 自带浏览器实例(可在 连接器 设置更改)",
+        })
     backend = get_profile_backend()
     backend.cfg = cfg
     try:
@@ -115,6 +123,53 @@ async def _dispatch(tool_name: str, args: dict, slow: bool = False) -> Any:
         raise
     _report_profile("connected", "运行中")
     return out
+
+
+def _emit_event(type_: str, data: dict) -> None:
+    try:
+        from ..connectors.events import connector_events
+
+        connector_events().emit(type_, data)
+    except Exception:  # noqa: BLE001 — 事件绝不影响工具执行
+        pass
+
+
+# ---- 受保护域名的动作类拦截(设计 §6) ----------------------------------
+# browser_computer 等动作先查当前 tab URL(2s 缓存的 tabs 快照,双轨同源),
+# 命中受保护域名且未确认 → 教学式错误,引导用户到连接器页确认。
+_TABS_CACHE: dict = {"at": 0.0, "rows": []}
+
+_ACTION_TOOLS = {
+    "browser_computer", "browser_form_input", "browser_js",
+    "browser_file_upload", "browser_navigate",
+}
+
+
+async def _sensitive_action_guard(tool_name: str, args: dict) -> str | None:
+    if tool_name not in _ACTION_TOOLS:
+        return None
+    cfg = load_browser_config()
+    if not cfg.sensitive_domains:
+        return None
+    tab_id = args.get("tabId")
+    if tool_name == "browser_navigate":
+        return _sensitive_guard(cfg, str(args.get("url") or ""))
+    if not isinstance(tab_id, int):
+        return None
+    now = time.time()
+    if now - _TABS_CACHE["at"] > 2.0:
+        try:
+            rows = await _dispatch("browser_tabs_context", {})
+        except Exception:  # noqa: BLE001 — 快照失败不拦截动作
+            rows = None
+        _TABS_CACHE["at"] = now
+        _TABS_CACHE["rows"] = rows if isinstance(rows, str) else ""
+    snap = _TABS_CACHE["rows"]
+    if snap:
+        for line in snap.splitlines():
+            if f"tabId={tab_id}" in line:
+                return _sensitive_guard(cfg, line)
+    return None
 
 
 def _report_profile(status: str, detail: str) -> None:
@@ -307,7 +362,7 @@ def _normalize_url(url: str) -> str:
     if not url:
         raise CDPError("url 不能为空")
     import re
-    if re.match(r"^[a-z][a-z0-9+.-]*://", url, re.I) or url in ("about:blank",):
+    if re.match(r"^[a-z][a-z0-9+.-]*:", url, re.I):
         u = url
     else:
         u = "https://" + url
@@ -362,8 +417,10 @@ def _sensitive_guard(cfg, url: str) -> str | None:
         confirmed = []
     if d in confirmed:
         return None
-    return (f"[error] 该站点({d})在受保护域名列表中(支付/邮箱/云控制台)。"
-            "请先用 ask_user 征得用户明确同意;用户在 连接器 页面确认后即可重试。")
+    return (f"[error] 该站点({d})在受保护域名列表中(支付/邮箱/云控制台),"
+            "浏览器动作需要用户确认。请用 ask_user 征得用户明确同意;"
+            "用户在 连接器 → Chrome 浏览器扩展 → 配置 → 受保护域名确认 "
+            f"中加入 {d} 后即可重试。")
 
 
 def build_browser_tools(session_id: str | None = None,
@@ -438,6 +495,13 @@ def build_browser_tools(session_id: str | None = None,
                       "triple_click", "scroll") and coordinate and len(coordinate) < 2:
             return "[error] coordinate 必须是 [x, y] 两个数。"
         try:
+            guard = await _sensitive_action_guard(
+                "browser_computer", {"tabId": tabId, "action": action})
+            if guard:
+                return guard
+        except Exception:  # noqa: BLE001 — 守卫失败不拦动作
+            pass
+        try:
             slow = action in ("screenshot", "zoom")
             return await _dispatch("browser_computer", {
                 "action": action, "tabId": tabId,
@@ -503,6 +567,10 @@ def build_browser_tools(session_id: str | None = None,
         framework-compatible events (React/Vue safe). For file inputs use
         browser_file_upload instead."""
         try:
+            guard = await _sensitive_action_guard(
+                "browser_form_input", {"ref": ref, "tabId": tabId})
+            if guard:
+                return guard
             return await _dispatch("browser_form_input",
                                    {"ref": ref, "value": value, "tabId": tabId})
         except (CDPError, RelayError) as e:
@@ -545,6 +613,9 @@ def build_browser_tools(session_id: str | None = None,
         Arbitrary code execution: requires user approval per permission
         settings."""
         try:
+            guard = await _sensitive_action_guard("browser_js", {"text": text, "tabId": tabId})
+            if guard:
+                return guard
             return await _dispatch("browser_js", {"text": text, "tabId": tabId})
         except (CDPError, RelayError) as e:
             return _err("browser_js", e)
@@ -596,6 +667,10 @@ def build_browser_tools(session_id: str | None = None,
         the input actually received the files; use browser_network afterwards
         to confirm the site consumed them."""
         try:
+            guard = await _sensitive_action_guard(
+                "browser_file_upload", {"paths": paths, "tabId": tabId})
+            if guard:
+                return guard
             return await _dispatch("browser_file_upload", {
                 "paths": paths, "tabId": tabId,
                 **({"ref": ref} if ref else {}),
@@ -653,6 +728,7 @@ def build_browser_tools(session_id: str | None = None,
         key = str(tabId)
         ev = asyncio.Event()
         _handoff_events[key] = ev
+        _emit_event("handoff_changed", {"active": sorted(_handoff_events.keys())})
         try:
             await asyncio.wait_for(ev.wait(), timeout=300)
             return ("用户已完成操作并交回控制权。用 browser_computer 的 "
@@ -685,7 +761,16 @@ def build_browser_tools(session_id: str | None = None,
     ]
 
 
-def release_handoff(tab_id: int | str) -> bool:
+def release_handoff(tab_id: int | str | None = None) -> bool:
+    """Release one pending handoff, or ALL when no tabId given (the chat card
+    doesn't carry the id — a single pending takeover at a time is the norm)."""
+    if tab_id is None or str(tab_id) == "chrome-extension":
+        keys = list(_handoff_events.keys())
+        if not keys:
+            return False
+        for k in keys:
+            _handoff_events[k].set()
+        return True
     ev = _handoff_events.get(str(tab_id))
     if ev:
         ev.set()

@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,9 +39,12 @@ class ConnectorState:
     version: str | None = None
     capabilities: list[str] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
-    # debounce bookkeeping
+    # debounce bookkeeping: a disconnect reported within _DEBOUNCE_S of the
+    # last transition is held pending; a reconnect cancels it, a read after
+    # the window applies it (设计 §4:断连 3s 内重连不闪黄).
     _pending_status: str | None = None
     _pending_at: float = 0.0
+    _last_change: float = 0.0
 
 
 class Connector:
@@ -98,26 +100,33 @@ class ConnectorRegistry:
     def report(self, cid: str, status: str, detail: str = "", **kw: Any) -> None:
         """A connector reports a status transition (debounced, 设计 §4).
 
-        reconnect within the debounce window keeps `connected` (no UI flicker).
+        A disconnect landing within _DEBOUNCE_S of the previous transition is
+        held pending — a reconnect in that window cancels it (no UI flicker);
+        a status read after the window applies it.
         """
+        import time as _time
+
         with self._lock:
             st = self._states.setdefault(cid, ConnectorState())
-            now = time.time()
+            now = _time.time()
             for k in ("version", "capabilities", "extra"):
                 if k in kw:
                     setattr(st, k, kw[k])
             if status == st.status:
-                st._pending_status = None
+                st._pending_status = None  # reconnect within window: cancel
                 st.status_detail = detail
                 return
-            if (st.status == STATUS_DISCONNECTED and status == STATUS_CONNECTED
-                    and st._pending_status == STATUS_CONNECTED
-                    and now - st._pending_at < _DEBOUNCE_S):
-                # transient blip during a pending disconnect — keep connected
-                st._pending_status = None
-                return
+            if (status == STATUS_DISCONNECTED
+                    and st.status == STATUS_CONNECTED
+                    and not kw.get("force")
+                    and st._last_change
+                    and now - st._last_change < _DEBOUNCE_S):
+                st._pending_status = STATUS_DISCONNECTED
+                st._pending_at = now
+                return  # hold `connected` until the window passes
             st.status = status
             st.status_detail = detail
+            st._last_change = now
             st._pending_status = None
             snapshot = self._snapshot_locked(cid)
         self._notify(snapshot)
@@ -133,7 +142,14 @@ class ConnectorRegistry:
         self._notify(snapshot)
 
     def status_of(self, cid: str) -> dict:
+        import time as _time
+
         with self._lock:
+            st = self._states.get(cid)
+            if st and st._pending_status and _time.time() - st._pending_at >= _DEBOUNCE_S:
+                st.status = st._pending_status
+                st._pending_status = None
+                st._last_change = _time.time()
             return self._snapshot_locked(cid)
 
     def aggregate_dot(self) -> str:

@@ -202,6 +202,21 @@ async def extension_endpoint(ws: WebSocket) -> None:
                 continue
             elif method == "stopToolExecution":
                 request_stop()
+            elif method == "openInChat":
+                # popup「发送此页面」(设计 §7.2 M2):把用户当前浏览的页面
+                # 推给 Ginno —— 广播给前端,连接器页出卡片,可预填进聊天。
+                try:
+                    from ..connectors.events import connector_events
+
+                    p = msg.get("params") or {}
+                    connector_events().emit("page_pushed", {
+                        "url": p.get("url") or "",
+                        "title": p.get("title") or "",
+                        "favIconUrl": p.get("favIconUrl") or "",
+                        "pushedAt": time.time(),
+                    })
+                except Exception:  # noqa: BLE001
+                    log.exception("openInChat handling failed")
             elif method == "tools/progress":
                 if _state._progress_cb:
                     try:

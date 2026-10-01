@@ -42,3 +42,25 @@ $("save").onclick = async () => {
   $("status").textContent = "已保存,正在重连…";
   setTimeout(refresh, 800);
 };
+
+// 发送此页面(设计 §7.2 M2 反向入口):background 转发 openInChat,
+// Ginno 连接器页出卡片,可一键预填进聊天。
+$("send").onclick = () => {
+  $("sendMsg").style.display = "block";
+  $("sendMsg").textContent = "发送中…";
+  chrome.runtime.sendMessage({ type: "GINNO_SEND_PAGE" }, () => {
+    if (chrome.runtime.lastError) {
+      $("sendMsg").textContent = "发送失败:" + chrome.runtime.lastError.message;
+      return;
+    }
+  });
+};
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.type === "GINNO_SEND_PAGE_ACK") {
+    $("sendMsg").style.display = "block";
+    $("sendMsg").textContent = msg.ok
+      ? "✅ 已发送——到 Ginno 的 连接器 页面查看"
+      : "❌ " + (msg.error || "发送失败");
+  }
+  return false;
+});

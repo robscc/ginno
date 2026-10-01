@@ -402,12 +402,19 @@ def _refresh_session_metas() -> None:
         changed = False
         for m in metas:
             ag = _agent_lookup(m.get("agent_id"))
+            # Same precedence as _resolve_provider_model (2026-10-02 fix):
+            # the agent's provider counts only as a DELIBERATE choice — one
+            # differing from the global default. The seed placeholder
+            # (provider == default) must not shadow the user's 默认模型提供商.
+            default_pid = prov_mod.get_default_provider()
+            from ..agents.registry import provider_is_deliberate
+
             provider = next(
                 (
                     c
                     for c in [
-                        ag.provider if ag else None,
-                        prov_mod.get_default_provider(),
+                        (ag.provider if provider_is_deliberate(ag) else None),
+                        default_pid,
                     ]
                     if _enabled(c)
                 ),

@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 from .. import paths
@@ -60,21 +61,39 @@ def interpreter() -> str | None:
 
 def install_host(force: bool = False) -> bool:
     """Install/refresh the native messaging manifests. Returns True if any
-    manifest was written. Best-effort — never raises."""
+    manifest was written. Best-effort — never raises.
+
+    Entry the manifest points at:
+    - dev: the materialized shim with a python shebang (sidecar venv has
+      ginno_runtime importable)
+    - frozen: a tiny .sh wrapper exec-ing the bundled binary with
+      ``--native-host`` (the binary's sys.executable IS the app — a python
+      shebang would be wrong there)
+    """
+    import json
     import platform
 
     script = host_script_target()
     if not script.exists():
         return False
-    py = interpreter()
-    if not py:
-        return False
-    # make the host executable with a shebang
+    frozen = bool(getattr(sys, "frozen", False))
     try:
-        body = script.read_text()
-        if not body.startswith("#!"):
-            script.write_text(f"#!{py}\n{body}")
-            script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        if frozen:
+            target = script.parent / "ginno_browser_host.sh"
+            target.write_text(
+                f"#!/bin/sh\nexec \"{sys.executable}\" --native-host\n")
+            target.chmod(target.stat().st_mode
+                         | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        else:
+            py = interpreter()
+            if not py:
+                return False
+            target = script
+            body = script.read_text()
+            if not body.startswith("#!"):
+                script.write_text(f"#!{py}\n{body}")
+                script.chmod(script.stat().st_mode
+                             | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     except OSError:
         return False
     dirs = [d.expanduser() for d in
@@ -82,12 +101,10 @@ def install_host(force: bool = False) -> bool:
     manifest = {
         "name": HOST_NAME,
         "description": "Ginno Browser Connector port discovery",
-        "path": str(script),
+        "path": str(target),
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{EXTENSION_ID}/"],
     }
-    import json
-
     wrote = False
     for d in dirs:
         try:
@@ -99,19 +116,34 @@ def install_host(force: bool = False) -> bool:
         except OSError:
             continue
     if wrote:
-        log.info("native messaging host manifests installed (%s)", HOST_NAME)
+        log.info("native messaging host manifests installed (%s → %s)",
+                 HOST_NAME, target)
     return wrote
+
+
+def _materialize_candidates() -> list[Path]:
+    """Materialization roots (dev 带 src/ 子层,frozen 平铺)."""
+    meipass = getattr(sys, "_MEIPASS", "")
+    return [
+        # dev checkout (…/packages/runtime/src/ginno_runtime/browser → packages/extension)
+        Path(__file__).resolve().parents[4] / "extension",
+        # frozen bundle (spec datas: extension_src/ + extension_src_native_host/)
+        *([Path(meipass) / "extension_src"] if meipass else []),
+    ]
+
+
+def _source_candidates() -> list[Path]:
+    """Extension source roots, dev checkout first, frozen bundle second."""
+    meipass = getattr(sys, "_MEIPASS", "")
+    return [
+        Path(__file__).resolve().parents[4] / "extension" / "src",
+        *([Path(meipass) / "extension_src"] if meipass else []),
+    ]
 
 
 def _bundled_version() -> str | None:
     """Version of the extension bundled with THIS build (None = unknown)."""
-    import sys
-
-    meipass = getattr(sys, "_MEIPASS", "")
-    candidates = [
-        Path(__file__).resolve().parents[4] / "extension" / "src",
-        *([Path(meipass) / "extension_src"] if meipass else []),
-    ]
+    candidates = _source_candidates()
     for d in candidates:
         mf = d / "manifest.json"
         if mf.exists():
@@ -149,13 +181,7 @@ def materialize_extension() -> Path | None:
                  current, src_version, out)
     import sys
 
-    meipass = getattr(sys, "_MEIPASS", "")
-    candidates = [
-        # dev checkout (…/packages/runtime/src/ginno_runtime/browser → packages/extension)
-        Path(__file__).resolve().parents[4] / "extension",
-        # frozen bundle (spec datas: extension_src/ + extension_src_native_host/)
-        *([Path(meipass) / "extension_src"] if meipass else []),
-    ]
+    candidates = _materialize_candidates()
     for src_root in candidates:
         frozen = (src_root / "manifest.json").exists()
         src_dir = src_root if frozen else src_root / "src"
@@ -168,7 +194,8 @@ def materialize_extension() -> Path | None:
             out.mkdir(parents=True, exist_ok=True)
             (out / "content-scripts").mkdir(exist_ok=True)
             for name in ("background.js", "popup.html", "popup.js", "manifest.json"):
-                shutil.copy2(src_dir / name, out / name)
+                if (src_dir / name).exists():
+                    shutil.copy2(src_dir / name, out / name)
             shutil.copy2(src_dir / "content-scripts" / "visual-indicator.js",
                          out / "content-scripts" / "visual-indicator.js")
             if scripts_py.exists():
@@ -178,8 +205,9 @@ def materialize_extension() -> Path | None:
                 (out / "content-scripts" / "page-bridge.js").write_text(
                     ns["PAGE_BRIDGE_JS"])
             nh = src_root / "native-host" / "ginno_browser_host.py"
-            if not nh.exists() and meipass:
-                nh = Path(meipass) / "extension_src_native_host" / "ginno_browser_host.py"
+            if not nh.exists():
+                nh = (Path(getattr(sys, "_MEIPASS", "")) / "extension_src_native_host"
+                      / "ginno_browser_host.py")
             if nh.exists():
                 shutil.copy2(nh, out / "ginno_browser_host.py")
             import json
@@ -192,3 +220,15 @@ def materialize_extension() -> Path | None:
             log.exception("extension materialization failed")
             return None
     return None
+
+
+def run_host_entry() -> None:
+    """``ginno-runtime --native-host``: run the host protocol IN-PROCESS.
+
+    The frozen binary's sys.executable is the app itself — spawning it with a
+    script arg would boot the server, so we import the protocol module
+    directly (same code the dev-mode standalone shim imports).
+    """
+    from .host_protocol import main as _host_main
+
+    _host_main()

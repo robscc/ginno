@@ -79,10 +79,94 @@ async function resolvePort() {
   return saved || DEFAULT_PORTS[0];
 }
 
+/* Transport layer: WS 主通道,native messaging 备用(设计 §2 —— WS 连不上
+ * 时把 native host 整体降级为传输通道,帧协议一致,分块突破消息上限)。 */
+let transport = null;        // {send(str), close()} | null
+let transportKind = "";      // "websocket" | "native"
+
 function send(obj) {
-  if (S.ws && S.ws.readyState === WebSocket.OPEN) {
-    try { S.ws.send(JSON.stringify(obj)); } catch (e) { log("send failed", e); }
+  if (transport) {
+    try { transport.send(JSON.stringify(obj)); } catch (e) { log("send failed", e); }
   }
+}
+
+function onFrame(text) {
+  let msg;
+  try { msg = JSON.parse(text); } catch (e) { return; }
+  if (msg.method === "ping") return send({ method: "pong" });
+  if (msg.method === "stopToolExecution") {
+    S.stopRequested = true;
+    return;
+  }
+  if (typeof msg.id === "number" && msg.method === "tools/invoke") {
+    enqueue(msg.id, msg.params || {});
+  }
+}
+
+function wsTransport(port) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/extension/v2`);
+  const t = {
+    kind: "websocket",
+    send: (s) => { if (ws.readyState === WebSocket.OPEN) ws.send(s); },
+    close: () => { try { ws.close(); } catch (e) {} },
+    ws,
+  };
+  return t;
+}
+
+/* native transport: relayData 帧 + relayDataChunk 分块重排(双向) */
+const NATIVE_CHUNK = 256 * 1024;
+
+function nativeTransport() {
+  const port = chrome.runtime.connectNative(NATIVE_HOST);
+  const chunks = new Map();    // messageId -> {count, parts: []}
+  let nextId = 1;
+  port.postMessage({ type: "relayConnect" });   // 打开到 sidecar 的桥
+  const t = {
+    kind: "native",
+    send: (text) => {
+      const id = `nm-${Date.now()}-${nextId++}`;
+      const n = Math.ceil(text.length / NATIVE_CHUNK);
+      if (n <= 1) {
+        port.postMessage({ type: "relayData", messageId: id, encoding: "utf8", data: text });
+        return;
+      }
+      for (let i = 0; i < n; i++) {
+        port.postMessage({
+          type: "relayDataChunk", messageId: id,
+          chunkIndex: i, chunkCount: n, encoding: "utf8",
+          data: text.slice(i * NATIVE_CHUNK, (i + 1) * NATIVE_CHUNK),
+        });
+      }
+    },
+    close: () => { try { port.disconnect(); } catch (e) {} },
+    port,
+  };
+  port.onMessage.addListener((msg) => {
+    if (!msg || typeof msg !== "object") return;
+    if (msg.type === "relayData" && typeof msg.data === "string") {
+      onFrame(msg.data);
+    } else if (msg.type === "relayDataChunk") {
+      let entry = chunks.get(msg.messageId);
+      if (!entry) {
+        entry = { count: msg.chunkCount, parts: [] };
+        chunks.set(msg.messageId, entry);
+      }
+      entry.parts[msg.chunkIndex] = msg.data || "";
+      if (entry.parts.filter(Boolean).length >= entry.count) {
+        chunks.delete(msg.messageId);
+        onFrame(entry.parts.join(""));
+      }
+    } else if (msg.error) {
+      log("native transport error:", msg.error);
+      t.close();
+      onTransportClosed();
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    if (transport === t) onTransportClosed();
+  });
+  return t;
 }
 
 function sendResult(id, content) {
@@ -99,63 +183,82 @@ function textBlock(text) { return { type: "text", text }; }
 function imageBlock(data, mime) { return { type: "image", data, mimeType: mime || "image/jpeg" }; }
 
 async function connectRelay() {
-  if (S.ws && (S.ws.readyState === WebSocket.OPEN || S.ws.readyState === WebSocket.CONNECTING)) return;
+  if (transport) return;   // already up (or connecting)
   const port = await resolvePort();
-  if (!port) return scheduleReconnect();
-  const url = `ws://127.0.0.1:${port}/extension/v2`;
-  let ws;
+  // Ladder: WS → native transport → backoff. Native transport works even
+  // when the WS port is blocked (browser policies / port conflicts).
+  if (port) {
+    const t = wsTransport(port);
+    S.ws = t.ws;           // kept for status checks
+    S.port = port;
+    transport = t;
+    transportKind = "websocket";
+    let opened = false;
+    t.ws.onopen = async () => {
+      opened = true;
+      S.reconnectAttempt = 0;
+      log("relay connected via websocket on port", port);
+      await announce();
+    };
+    t.ws.onmessage = (ev) => onFrame(String(ev.data));
+    t.ws.onclose = () => { if (transport === t) onTransportClosed(); };
+    t.ws.onerror = () => {};
+    setTimeout(async () => {
+      if (transport === t && !opened) {
+        log("ws failed, trying native transport");
+        t.close();
+        transport = null;
+        S.ws = null;
+        tryNativeTransport();
+      }
+    }, 2500);
+    return;
+  }
+  tryNativeTransport();
+}
+
+function tryNativeTransport() {
+  if (transport) return;
+  let t = null;
   try {
-    ws = new WebSocket(url);
+    t = nativeTransport();
   } catch (e) {
     return scheduleReconnect();
   }
-  S.ws = ws;
-  S.port = port;
-  ws.onopen = async () => {
-    S.reconnectAttempt = 0;
-    log("relay connected on port", port);
-    send({
-      method: "extensionInfo",
-      params: {
-        version: chrome.runtime.getManifest().version,
-        browserType: detectBrowser(),
-        browserClientId: await browserClientId(),
-        capabilities: ["mcp-tools", "fifo-command-queue", "tool-progress"],
-      },
-    });
-    await chrome.action.setBadgeText({ text: "" });
-    await chrome.action.setTitle({ title: "Ginno Browser Connector · 已连接" });
-    await chrome.storage.local.set({
-      relayStatus: { connected: true, port, connectedAt: Date.now(),
-                     version: chrome.runtime.getManifest().version,
-                     browserType: detectBrowser() },
-    });
-  };
-  ws.onmessage = (ev) => {
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch (e) { return; }
-    if (msg.method === "ping") return send({ method: "pong" });
-    if (msg.method === "stopToolExecution") {
-      S.stopRequested = true;
-      return;
-    }
-    if (typeof msg.id === "number" && msg.method === "tools/invoke") {
-      enqueue(msg.id, msg.params || {});
-    }
-  };
-  ws.onclose = () => {
-    if (S.ws === ws) S.ws = null;
-    chrome.storage.local.set({ relayStatus: { connected: false } });
-    scheduleReconnect();
-  };
-  ws.onerror = () => {};
-  // 端口探测失败时标注 badge,便于用户发现配置问题
-  setTimeout(() => {
-    if (S.ws === ws && ws.readyState !== WebSocket.OPEN) {
-      chrome.action.setBadgeText({ text: "!" });
-      chrome.action.setTitle({ title: "Ginno Browser Connector · 未连接(检查 Ginno 是否在运行)" });
-    }
-  }, 2500);
+  transport = t;
+  transportKind = "native";
+  log("relay via native messaging transport");
+  announce();
+}
+
+async function announce() {
+  send({
+    method: "extensionInfo",
+    params: {
+      version: chrome.runtime.getManifest().version,
+      browserType: detectBrowser(),
+      browserClientId: await browserClientId(),
+      capabilities: ["mcp-tools", "fifo-command-queue", "tool-progress"],
+      transport: transportKind,
+    },
+  });
+  await chrome.action.setBadgeText({ text: "" });
+  await chrome.action.setTitle({ title: "Ginno Browser Connector · 已连接" });
+  await chrome.storage.local.set({
+    relayStatus: { connected: true, port: S.port, transport: transportKind,
+                   connectedAt: Date.now(),
+                   version: chrome.runtime.getManifest().version,
+                   browserType: detectBrowser() },
+  });
+  if (transportKind === "native") S.reconnectAttempt = 0;
+}
+
+function onTransportClosed() {
+  transport = null;
+  transportKind = "";
+  S.ws = null;
+  chrome.storage.local.set({ relayStatus: { connected: false } });
+  scheduleReconnect();
 }
 
 function scheduleReconnect() {
@@ -306,6 +409,9 @@ chrome.debugger.onEvent.addListener(async (src, method, params) => {
         break;
       }
     }
+  } else if (method === "Page.navigatedWithinDocument") {
+    // SPA 软导航:坐标映射短时失效即清(设计 §5.2)
+    S.screenshotCtx.delete(tabId);
   } else if (method === "Page.javascriptDialogOpening") {
     const pol = S.beforeunload.get(tabId) || { policy: "dismiss" };
     const accept = params.type === "beforeunload" ? pol.policy === "accept" : true;
@@ -728,32 +834,89 @@ async function fileUpload(tabId, a) {
     if (!check || !check.ok) throw new Error((check && check.error) || "文件选择校验失败");
     return `Files selected: ${check.files.map((f) => `${f.name} (${f.size}B)`).join(", ")}`;
   }
-  // triggerRef mode: intercept the file chooser (设计 §4.5)
+  // triggerRef mode: intercept the file chooser (设计 §4.5)。两跳场景:按钮先弹
+  // 菜单(「上传文件/上传文件夹/…」)再开文件选择器 —— 与 chooser 竞速轮询
+  // 菜单候选,命中则代点「上传文件」项,避开文件夹/目录选项(QwenWork 同款策略)。
   if (!a.triggerRef) throw new Error("需要 ref(input[type=file])或 triggerRef(上传按钮)");
   await cdp(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
   try {
-    const chooserP = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { chrome.debugger.onEvent.removeListener(h); reject(new Error("10s 内没有文件选择器打开")); }, 10000);
-      function h(src, method, p) {
-        if (src.tabId === tabId && method === "Page.fileChooserOpened") {
-          clearTimeout(timer);
-          chrome.debugger.onEvent.removeListener(h);
-          resolve(p || {});
-        }
-      }
-      chrome.debugger.onEvent.addListener(h);
-    });
+    const chooserP = waitForFileChooser(tabId, 15000);
     const c = await resolveRef(tabId, a.triggerRef);
     await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: c.x, y: c.y });
     await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: c.x, y: c.y, button: "left", clickCount: 1 });
     await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: c.x, y: c.y, button: "left", clickCount: 1 });
-    const chooser = await chooserP;
+    // 竞速:chooser 直接开 → 用之;菜单候选先出现 → 代点后再等 chooser
+    const raced = await Promise.race([
+      chooserP.then((ch) => ({ kind: "chooser", ch })),
+      findUploadMenuItem(tabId, 4000).then((m) => ({ kind: "menu", m })),
+    ]);
+    let chooser;
+    if (raced.kind === "menu" && raced.m) {
+      const mc = await resolveRef(tabId, raced.m.ref);
+      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: mc.x, y: mc.y });
+      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", x: mc.x, y: mc.y, button: "left", clickCount: 1 });
+      await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: mc.x, y: mc.y, button: "left", clickCount: 1 });
+      chooser = await chooserP;
+    } else {
+      chooser = await chooserP;
+    }
     if (!chooser.backendNodeId) throw new Error("文件选择器打开了,但没有目标文件输入框");
     await cdp(tabId, "DOM.setFileInputFiles", { files: paths, backendNodeId: chooser.backendNodeId });
-    return `Files selected via file-chooser interception: ${paths.join(", ")}`;
+    const via = raced.kind === "menu" && raced.m ? `(经菜单「${raced.m.text}」)` : "";
+    return `Files selected via file-chooser interception${via}: ${paths.join(", ")}`;
   } finally {
     await cdp(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
   }
+}
+
+function waitForFileChooser(tabId, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.debugger.onEvent.removeListener(h);
+      reject(new Error(`${Math.round(timeoutMs / 1000)}s 内没有文件选择器打开。`
+        + "请确认 triggerRef 指向的是打开文件选择器的按钮。"));
+    }, timeoutMs);
+    function h(src, method, p) {
+      if (src.tabId === tabId && method === "Page.fileChooserOpened") {
+        clearTimeout(timer);
+        chrome.debugger.onEvent.removeListener(h);
+        resolve(p || {});
+      }
+    }
+    chrome.debugger.onEvent.addListener(h);
+  });
+}
+
+/* 轮询可见的「上传文件」菜单项(排除文件夹/目录),返回 {ref, text}。 */
+async function findUploadMenuItem(tabId, timeoutMs) {
+  await ensureScripts(tabId);
+  const t0 = Date.now();
+  const expr = `(function(){
+    var up = /(upload\s*file|上传文件|选择文件|select\s*file|upload\s*document|上传文档)/i;
+    var no = /(folder|文件夹|directory|目录|批量|batch)/i;
+    var els = document.querySelectorAll('li,div[role="menuitem"],button,a,span');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var txt = ((el.getAttribute && (el.getAttribute('aria-label') || el.title)) ||
+                 (el.textContent || '')).trim().slice(0, 60);
+      if (!txt || !up.test(txt) || no.test(txt)) continue;
+      var r = el.getBoundingClientRect();
+      var cs = window.getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none' || r.width < 4 || r.height < 4) continue;
+      var at = globalThis.__ginnoAT;
+      if (!at) return null;
+      return { ref: at.refFor(el), text: txt };
+    }
+    return null;
+  })()`;
+  while (Date.now() - t0 < timeoutMs) {
+    try {
+      const hit = await evalInPage(tabId, expr);
+      if (hit && hit.ref) return hit;
+    } catch (e) { /* 页面还在变化 */ }
+    await sleep(150);
+  }
+  return null;
 }
 
 async function resizeWindow(tabId, a) {
@@ -837,8 +1000,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     send({ method: "stopToolExecution" });
     sendResponse({ ok: true });
   }
+  if (msg && msg.type === "GINNO_SEND_PAGE") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab || !tab.url || !/^https?:/i.test(tab.url)) {
+          try { chrome.runtime.sendMessage({ type: "GINNO_SEND_PAGE_ACK", ok: false,
+            error: "当前页面不是 http(s),无法发送" }); } catch (e) {}
+          return;
+        }
+        send({ method: "openInChat", params: {
+          url: tab.url, title: tab.title || "", favIconUrl: tab.favIconUrl || "" } });
+        try { chrome.runtime.sendMessage({ type: "GINNO_SEND_PAGE_ACK", ok: true }); } catch (e) {}
+      } catch (e) {
+        try { chrome.runtime.sendMessage({ type: "GINNO_SEND_PAGE_ACK", ok: false,
+          error: String(e) }); } catch (e2) {}
+      }
+    })();
+  }
   if (msg && msg.type === "GINNO_RECONNECT") {
-    if (S.ws) { try { S.ws.close(); } catch (e) {} }  // onclose → reconnect with new port
+    transport && transport.close();   // onTransportClosed → 重连(新端口生效)
     connectRelay();
   }
   if (msg && msg.type === "GINNO_STATUS_QUERY") {

@@ -12,7 +12,7 @@ from __future__ import annotations
 import subprocess
 from typing import Any
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from .. import paths
@@ -35,6 +35,53 @@ async def extension_relay(ws: WebSocket) -> None:
     from ..browser.relay import extension_endpoint
 
     await extension_endpoint(ws)
+
+
+# ---- 连接器事件通道(connector §5 的推送半边;轮询自此降级为兜底) ------
+
+@router.websocket("/api/ws/connectors")
+async def connectors_events_ws(ws: WebSocket) -> None:
+    import asyncio
+
+    from ..connectors.events import connector_events, wire_default_producers
+
+    ensure_builtin_connectors()
+    wire_default_producers()
+    await ws.accept()
+    ev_bus = connector_events()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _listener(type_: str, data: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, {"type": type_, **data})
+
+    ev_bus.subscribe(_listener)
+    try:
+        # snapshot first: list + latest pushed page + latest progress
+        reg = conn_registry()
+        await ws.send_json({
+            "type": "snapshot",
+            "connectors": reg.list_payload(),
+            "latestPage": ev_bus.latest_page,
+            "latestProgress": ev_bus.latest_progress,
+        })
+        while True:
+            msg = await queue.get()
+            await ws.send_json(msg)
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001 — client vanished mid-send
+        pass
+    finally:
+        ev_bus.unsubscribe(_listener)
+
+
+@router.get("/api/connectors/browser/pushed-page")
+async def pushed_page() -> dict:
+    from ..connectors.events import connector_events, wire_default_producers
+
+    wire_default_producers()
+    return {"page": connector_events().latest_page}
 
 
 @router.get("/api/connectors")

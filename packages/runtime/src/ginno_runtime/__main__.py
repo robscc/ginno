@@ -13,6 +13,15 @@ if "--analyze" in sys.argv:
     _analyze_run()
     raise SystemExit(0)
 
+# Native messaging host mode (browser-companion design §2 备用传输): Chrome
+# spawns the frozen binary with --native-host; speak the length-prefixed JSON
+# stdio protocol (port discovery + WS bridge) and exit when stdin closes.
+if "--native-host" in sys.argv:
+    from .browser import native_host as _nh
+
+    _nh.run_host_entry()
+    raise SystemExit(0)
+
 from . import _frozen_imports  # noqa: F401  (kept for entry compatibility; now a no-op)
 from .server import main
 
