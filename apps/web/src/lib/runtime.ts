@@ -1696,3 +1696,38 @@ export async function getHandoffStatus(): Promise<{
 }> {
   return json(`${BASE}/api/connectors/browser/handoff`);
 }
+
+// ---- connectors: event stream (connector-module §5 push half) ----
+
+export interface ConnectorEvent {
+  type:
+    | "snapshot"
+    | "connector_status_changed"
+    | "tool_progress"
+    | "browser_fallback_used"
+    | "handoff_changed"
+    | "page_pushed";
+  [k: string]: unknown;
+}
+
+export interface PushedPage {
+  url: string;
+  title: string;
+  favIconUrl?: string;
+  pushedAt?: number;
+}
+
+export function wsConnectorsUrl(): string {
+  const proto = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
+  if (typeof window !== "undefined") {
+    const host = OVERRIDE_PORT
+      ? `${window.location.hostname}:${OVERRIDE_PORT}`
+      : window.location.host;
+    return `${proto}//${host}/api/ws/connectors`;
+  }
+  return `ws://127.0.0.1:${OVERRIDE_PORT ?? 8787}/api/ws/connectors`;
+}
+
+export async function getPushedPage(): Promise<{ page: PushedPage | null }> {
+  return json(`${BASE}/api/connectors/browser/pushed-page`);
+}

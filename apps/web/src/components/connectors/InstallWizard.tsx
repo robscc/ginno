@@ -10,6 +10,8 @@ import * as api from "@/lib/runtime";
 import type { InstallStep } from "@/lib/runtime";
 import { Check, Copy, ExternalLink, FolderOpen, Loader2, X } from "lucide-react";
 
+const WIZARD_STEP_KEY = "ginno-wizard-step";
+
 export function InstallWizard({
   connectorId,
   onClose,
@@ -18,7 +20,21 @@ export function InstallWizard({
   onClose: () => void;
 }) {
   const [steps, setSteps] = useState<InstallStep[]>([]);
-  const [i, setI] = useState(0);
+  const [i, setI] = useState(() => {
+    // 重入(设计 §2.3):进度存 localStorage,刷新/重开不从头来;
+    // 完成过向导(连接成功)则清零。
+    try {
+      const saved = localStorage.getItem(`${WIZARD_STEP_KEY}:${connectorId}`);
+      return saved ? Math.max(0, parseInt(saved, 10) || 0) : 0;
+    } catch {
+      return 0;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(`${WIZARD_STEP_KEY}:${connectorId}`, String(i));
+    } catch { /* storage 不可用 */ }
+  }, [connectorId, i]);
   const [connected, setConnected] = useState(false);
   const [copied, setCopied] = useState(false);
   const [waited, setWaited] = useState(0);
@@ -29,7 +45,12 @@ export function InstallWizard({
       try {
         const r = await api.listConnectors();
         const c = (r.connectors || []).find((x) => x.id === connectorId);
-        if (c?.status === "connected") setConnected(true);
+        if (c?.status === "connected") {
+          setConnected(true);
+          try {
+            localStorage.removeItem(`${WIZARD_STEP_KEY}:${connectorId}`);
+          } catch { /* ignore */ }
+        }
       } catch { /* ignore */ }
     }, 1200);
     return () => clearInterval(t);

@@ -14,13 +14,17 @@ import {
   CheckCircle2,
   CircleDashed,
   CircleOff,
+  ExternalLink,
   Globe,
   Loader2,
   Monitor,
   RefreshCw,
+  Send,
   TriangleAlert,
   XCircle,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import type { ConnectorEvent, PushedPage } from "@/lib/runtime";
 
 const POLL_MS = 5000; // M1 polling fallback (设计 §5);事件通道接好后可替换
 
@@ -59,6 +63,13 @@ export default function ConnectorsPage() {
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [handoff, setHandoff] = useState<{ tabId: string }[]>([]);
+  const [progress, setProgress] = useState<{
+    tool: string;
+    stage: string;
+    elapsedMs?: number;
+  } | null>(null);
+  const [pushedPage, setPushedPage] = useState<PushedPage | null>(null);
+  const router = useRouter();
 
   const refresh = useCallback(async () => {
     try {
@@ -80,6 +91,47 @@ export default function ConnectorsPage() {
     timer.current = setInterval(refresh, POLL_MS);
     return () => {
       if (timer.current) clearInterval(timer.current);
+    };
+  }, [refresh]);
+
+  // 事件通道(connector §5 推送):状态变化/进度/推送页即时到达,轮询只做兜底。
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(api.wsConnectorsUrl());
+    } catch {
+      return; // 预渲染环境
+    }
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data) as ConnectorEvent;
+        if (msg.type === "snapshot") {
+          const snap = msg as unknown as {
+            connectors?: { connectors?: ConnectorInfo[] };
+            latestPage?: PushedPage | null;
+          };
+          setConnectors(snap.connectors?.connectors || []);
+          setPushedPage(snap.latestPage || null);
+        } else if (msg.type === "connector_status_changed") {
+          refresh();
+        } else if (msg.type === "tool_progress") {
+          setProgress({
+            tool: String(msg.tool || ""),
+            stage: String(msg.stage || ""),
+            elapsedMs: typeof msg.elapsedMs === "number" ? msg.elapsedMs : undefined,
+          });
+          if (String(msg.stage || "").endsWith("completed")) {
+            setTimeout(() => setProgress(null), 1500);
+          }
+        } else if (msg.type === "handoff_changed") {
+          refresh();
+        } else if (msg.type === "page_pushed") {
+          setPushedPage(msg as unknown as PushedPage);
+        }
+      } catch { /* 非 JSON 帧 */ }
+    };
+    return () => {
+      try { ws?.close(); } catch { /* noop */ }
     };
   }, [refresh]);
 
@@ -108,6 +160,48 @@ export default function ConnectorsPage() {
           <RefreshCw className="h-4 w-4" />
         </button>
       </header>
+
+      {/* 浏览器工具进度(browser §5.1):慢操作永远有反馈 */}
+      {progress && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-line bg-card px-4 py-2.5 text-xs text-faint">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />
+          <span className="font-mono">{progress.tool}</span>
+          <span>· {progress.stage}</span>
+          {progress.elapsedMs !== undefined && (
+            <span className="text-faint">· {(progress.elapsedMs / 1000).toFixed(1)}s</span>
+          )}
+        </div>
+      )}
+
+      {/* 浏览器推送页(popup「发送此页面」→ 连接器页 → 预填进聊天) */}
+      {pushedPage?.url && (
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-line bg-card p-4">
+          <ExternalLink className="h-4 w-4 shrink-0 text-faint" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium text-txt">
+              来自浏览器的页面{pushedPage.title ? `:${pushedPage.title}` : ""}
+            </div>
+            <div className="mt-0.5 truncate text-xs text-faint">{pushedPage.url}</div>
+          </div>
+          <button
+            onClick={() => {
+              // 预填进聊天(既有 ginno:prefill-input 机制)并跳回工作区
+              window.dispatchEvent(
+                new CustomEvent("ginno:prefill-input", {
+                  detail: {
+                    text: `请帮我处理这个浏览器页面:${pushedPage.title || pushedPage.url}\n${pushedPage.url}`,
+                  },
+                }),
+              );
+              router.push("/");
+            }}
+            className="shrink-0 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
+          >
+            <Send className="mr-1 inline h-3 w-3" />
+            发给 Ginno
+          </button>
+        </div>
+      )}
 
       {/* 接管横幅(设计 M3):browser_handoff 工具阻塞等待时在此释放 */}
       {handoff.length > 0 && (

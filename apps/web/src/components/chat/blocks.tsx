@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import type { WikiPage, WorkflowRun } from "@/lib/types";
 import type { CodeRoot } from "@/lib/codeTypes";
-import { fileDownloadUrl, listCodeRoots } from "@/lib/runtime";
+import { connectorAction, fileDownloadUrl, listCodeRoots } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type { SessionMeta } from "@/lib/types";
 import { isSubagentConfirmed, markSubagentConfirmed } from "@/lib/subagentConfirm";
@@ -1103,11 +1103,42 @@ function RefChip({ refKind, name }: { refKind: string; name: string }) {
 const LONG_OUTPUT_LINES = 12;
 const LONG_OUTPUT_CHARS = 600;
 
+/** 接管等待卡(browser-companion §7.2 M3):browser_handoff 阻塞期间替换
+ * 工具气泡。释放走连接器 action(release-all 语义,无需解析 args)。 */
+function BrowserHandoffCard() {
+  const [released, setReleased] = useState(false);
+  return (
+    <div className="my-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2.5 text-xs">
+      <div className="font-medium text-txt">浏览器已交给你接管</div>
+      <div className="mt-0.5 text-faint">
+        登录、验证码或付款确认完成后点下方按钮,把控制权交回 Ginno 继续任务。
+      </div>
+      <button
+        disabled={released}
+        onClick={async () => {
+          setReleased(true);
+          try {
+            await connectorAction("chrome-extension", "browser_handoff_release");
+          } catch { /* sidecar 未起时仅置灰 */ }
+        }}
+        className="mt-2 rounded-lg bg-violet-600 px-3 py-1.5 font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+      >
+        {released ? "已交回,等待 Ginno…" : "已接管,继续"}
+      </button>
+    </div>
+  );
+}
+
 function ToolBlock({ name, content, pending, argsPreview }: { name: string; content: string; pending: boolean; argsPreview?: string }) {
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
   const [open, setOpen] = useState<boolean | null>(null);
   const label = toolLabel(name);
+  if (pending && name === "browser_handoff") {
+    // 接管卡(browser-companion §7.2 M3):工具在阻塞等待用户,气泡换成
+    // 可操作卡片——点「已接管,继续」释放,tool.end 自然接棒。
+    return <BrowserHandoffCard />;
+  }
   if (pending) {
     return (
       <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5 font-mono text-xs">

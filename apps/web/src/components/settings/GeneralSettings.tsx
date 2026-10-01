@@ -320,12 +320,16 @@ export function GeneralSettings() {
           <label className="field-label">默认模型提供商</label>
           <select className="field" value={g.defaultProvider} onChange={(e) => setDefault(e.target.value)}>
             {Object.keys(g.providers).map((p) => (
-              <option key={p} value={p}>
+              <option key={p} value={p} disabled={!g.providers[p].enabled}>
                 {p}
-                {g.providers[p].enabled ? "" : " (disabled)"}
+                {g.providers[p].enabled ? "" : " (未启用)"}
               </option>
             ))}
           </select>
+          <p className="mt-1 text-xs text-faint">
+            新会话与未单独绑定供应商的 agent 使用此供应商;在 设置 → Agents
+            里给某个 agent 绑定不同的供应商可覆盖它。
+          </p>
         </div>
         <div>
           <label className="field-label">主题</label>

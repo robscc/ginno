@@ -457,7 +457,21 @@ progress 流全部与执行器无关。M1 用 CDP 执行器打通全部资产(�
 
 验证:B 轨 headless Chrome E2E(建页/read_page/find/填表/截图/键入/console)✓;
 relay 协议闭环(模拟扩展连入→extensionInfo→工具路由)✓;MCP 端点(16 工具 +
-真实调用)✓;runtime 1743 测试全过;web `tsc` + `next build` 绿。
+真实调用)✓;runtime 测试全过(1743 + 20 新增单测);web `tsc` + `next build` 绿。
+
+### 9.1 补齐清单(2026-10-02 第二轮)
+
+初版实现说明中简化/未落的项已全部补齐:连接器 WS 事件通道
+(`/api/ws/connectors`,轮询降级为兜底)、tools/progress 前端呈现(连接器页
+进度条)、popup「发送此页面」反向入口(openInChat → page_pushed → 连接器页
+卡片 → ginno:prefill-input 预填聊天)、聊天流 handoff 卡(ToolBlock 特判 +
+release-all 语义)、受保护页面的动作类拦截(computer/form_input/js/
+file_upload 先查 tab URL,confirmed_domains 在连接器配置可编辑)、B 轨 ask
+模式的「提示一次」toast、file_upload 两跳菜单场景(上传菜单项候选竞速)、
+native messaging 备用传输(relayData/分块双向桥,dev 用 venv python shebang,
+frozen 用 .sh wrapper 调 `ginno-runtime --native-host`)、向导步数 localStorage
+重入、SPA 软导航清 screenshotCtx。multi-relaw 多实例共存按设计 §3 的
+「协议字段保留」状态维持单连接。
 
 已知边界(与设计一致):`--load-extension` 在 Chrome 137+ 正式版已移除,扩展必须
 开发者模式手动加载(§7.3 向导);`browser_handoff` 在扩展轨由 sidecar 工具层承载
