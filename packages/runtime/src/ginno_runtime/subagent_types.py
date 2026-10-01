@@ -202,3 +202,103 @@ def resolve_type_model(st: SubagentType | None, fallback: tuple[str, str]) -> tu
             st.name, raw,
         )
     return provider, raw
+
+
+# --------------------------------------------------------------------------- #
+# 种子类型（开箱可用；只在目录不存在或为空时写入）
+# --------------------------------------------------------------------------- #
+# 与 agents 注册表（dev/research/writer 种子）同一惯例：空注册表不是「加载
+# 失败」而是「没定义过任何类型」，出厂就该有可用的默认形态。工具名取
+# build_builtin_tools 的六个内置（read_file/write_file/edit_file/glob_files/
+# grep_files/bash）+ web_search/web_fetch。
+_SEED_TYPES: dict[str, str] = {
+    "explore": """---
+name: explore
+description: 只读调研。代码库探查、资料搜集、定位实现与依赖关系，只读不改动任何文件。适合「先摸清现状再决定怎么做」的委派。
+tools_allow:
+  - read_file
+  - glob_files
+  - grep_files
+  - web_search
+  - web_fetch
+---
+你是只读调研型子代理：只使用读取类工具（read_file / glob_files / grep_files
+/ web_search / web_fetch）。不要尝试写文件或执行会改变文件系统的命令。
+
+工作方式：先广后深——先定位相关文件与入口，再逐个读关键片段确认，最后给出
+带文件路径与行号的结论。拿不准的地方明确标注「未验证」，不要用推测填空。
+""",
+    "researcher": """---
+name: researcher
+description: 联网研究。跨来源检索、交叉验证、带引用地汇总某个主题的最新信息。适合需要时效性与多方来源的委派。
+tools_allow:
+  - web_search
+  - web_fetch
+  - read_file
+  - glob_files
+  - grep_files
+---
+你是联网研究型子代理：以 web_search / web_fetch 为主获取信息，用多个独立来源
+交叉验证后再下结论。
+
+纪律：每条结论标注来源（标题 + 链接）与时间；来源单一或时效不明时显式标注
+不确定性；检索失败（限流/被拦）时换引擎或改走直接抓取，并在报告里说明哪部分
+没能覆盖。不要编造数据。
+""",
+    "reviewer": """---
+name: reviewer
+description: 代码/方案评审。只读审查实现或设计，给出可核对的问题清单与结论；可以跑测试或 lint 取证，但不改动代码。
+tools_allow:
+  - read_file
+  - glob_files
+  - grep_files
+  - bash
+---
+你是评审型子代理：找出正确性问题（不是风格偏好），每条给出位置（文件:行）、
+失败场景与严重度。可以运行测试/lint/类型检查来取证，但不要修改任何文件。
+
+结论先行：先给整体判断，再列问题清单（按严重度排序）。没有问题就明说「未发现
+问题」，不要为了凑数报无关紧要的观感。
+""",
+    "implementer": """---
+name: implementer
+description: 并行实现。在明确的文件范围内独立完成一块编码任务（新增文件或改动约定好的模块），适合可切分且互不冲突的实现工作。
+tools_allow:
+  - read_file
+  - write_file
+  - edit_file
+  - glob_files
+  - grep_files
+  - bash
+---
+你是实现型子代理：在 goal 约定的范围内直接改代码，完成后自测（跑相关测试或
+最小验证），并在最终报告里给出：改了哪些文件、关键取舍、验证方式与结果、
+遗留问题。
+
+边界纪律：只动 goal 指定范围内的文件；发现需要改动范围外的代码时，在报告里
+说明而不是直接改。与其它并行子代理共同工作时，避免碰不属于你的文件。
+""",
+}
+
+
+def ensure_seeded() -> None:
+    """把种子类型落到磁盘——只在目录不存在或没有任何 ``*.md`` 时写入。
+
+    幂等：用户删掉某个种子文件后不会被重新写回（目录非空即跳过），
+    与 agents 注册表的 ensure_seeded 同语义。"""
+    d = subagents_dir()
+    try:
+        if d.is_dir() and any(d.glob("*.md")):
+            return
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _log.warning("subagent_types_seed_mkdir_failed dir=%s", d, exc_info=True)
+        return
+    for name, content in _SEED_TYPES.items():
+        p = d / f"{name}.md"
+        try:
+            if not p.exists():
+                p.write_text(content, encoding="utf-8")
+                _log.info("subagent_type_seeded name=%s path=%s", name, p)
+        except OSError:
+            _log.warning("subagent_type_seed_write_failed name=%s", name, exc_info=True)

@@ -83,6 +83,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("web permissions migration failed (continuing)")
     wf_store.ensure_seeded()
+    # Subagent type registry seed (P3): an empty registry is "no types defined",
+    # not a load failure — ship the default set so agent_type works out of the
+    # box (same convention as the agents registry seeds).
+    try:
+        from . import subagent_types
+
+        subagent_types.ensure_seeded()
+    except Exception:
+        _log.exception("subagent type seed failed (continuing)")
     # Reconcile subagent metas left live (running/waiting) by the previous
     # process (subagent-design.md §5.7): their turn/wake/settle tasks all died
     # with it, and a ghost "running" meta would consume a concurrency slot

@@ -59,7 +59,6 @@ def _clean_state():
         server_shared._TURN_LOCKS,
         sched._FINALIZING,
         sched._WARNED_CONCURRENCY,
-        sched._WARNED_TOKENS,
         plan_mod._PENDING_PLANS,
     )
     for r in regs:
@@ -453,63 +452,6 @@ async def test_concurrency_warning_at_80pct_once(isolated_home, parent_session, 
     assert len(_notices(radio)) == 2
 
 
-async def test_usage_warning_at_500k_once(isolated_home, radio):
-    _put_meta(_main_meta("ROOT"))
-    _put_meta(_sub_meta("UC", parent="ROOT", status="done"))
-    _put_meta(_sub_meta("UG", parent="UC", depth=1, status="done"))
-    from ginno_runtime.usage_store import record
-
-    record(
-        input_tokens=300_000, output_tokens=250_000, provider="p", model="m",
-        source="subagent", session_id="UC", project_slug=SLUG,
-    )
-    record(
-        input_tokens=10_000, output_tokens=5_000, provider="p", model="m",
-        source="subagent", session_id="UG", project_slug=SLUG,
-    )
-
-    fired = await sched._maybe_warn_usage("ROOT", SLUG)
-    assert fired
-    notices = _notices(radio)
-    assert len(notices) == 1
-    assert "565000" in notices[0].replace(",", "")  # 300k+250k+10k+5k
-    assert "500000" in notices[0].replace(",", "")
-    # once per session: the repeat call no-ops the notice
-    assert await sched._maybe_warn_usage("ROOT", SLUG) is False
-    assert len(_notices(radio)) == 1
-    # below threshold: quiet
-    _put_meta(_main_meta("ROOT2"))
-    _put_meta(_sub_meta("UC2", parent="ROOT2", status="done"))
-    record(
-        input_tokens=100, output_tokens=100, provider="p", model="m",
-        source="subagent", session_id="UC2", project_slug=SLUG,
-    )
-    assert await sched._maybe_warn_usage("ROOT2", SLUG) is False
-    assert len(_notices(radio)) == 1
-
-
-async def test_done_finalize_checks_usage_warning(isolated_home, radio, monkeypatch):
-    """The trigger is wired into the completion gate: a child finalizing done
-    re-checks its owner's cumulative usage."""
-    monkeypatch.setattr(
-        "ginno_runtime.models.build_model", lambda *a, **k: _text_model("标题")
-    )
-    _put_meta(_main_meta("ROOT"))
-    _put_meta(_sub_meta("UF", parent="ROOT", status="running"))
-    from ginno_runtime.usage_store import record
-
-    record(
-        input_tokens=490_000, output_tokens=20_000, provider="p", model="m",
-        source="subagent", session_id="UF", project_slug=SLUG,
-    )
-    await sched.on_turn_settled("UF")
-    notices = _notices(radio)
-    assert any("510000" in n.replace(",", "") for n in notices)
-
-
-# --------------------------------------------------------------------------- #
-# contract 5: P2 leftovers
-# --------------------------------------------------------------------------- #
 async def test_background_command_does_not_block_caller(monkeypatch, radio):
     """run_background_command = the WS branch's job: the handler (a decompose
     LLM call in production) runs while the CALLER keeps executing — the

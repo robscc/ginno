@@ -157,3 +157,26 @@ def test_settings_file_shape_unrelated(isolated_home):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"subagent": {"max_concurrent": 3}}), encoding="utf-8")
     assert st.load_subagent_types() == {}
+
+
+def test_ensure_seeded_writes_defaults_once(isolated_home):
+    """空注册表不是「加载失败」而是「没定义过类型」——启动播种一组默认类型
+    （explore/researcher/reviewer/implementer），且只播一次：用户删掉某个种子
+    文件后不会被写回（目录非空即跳过）。"""
+    from ginno_runtime import subagent_types as st
+
+    assert st.subagents_dir().is_dir() is False
+    st.ensure_seeded()
+    names = set(st.load_subagent_types(force=True))
+    assert {"explore", "researcher", "reviewer", "implementer"} <= names
+
+    # 每个种子都能被解析出 description（路由依据）与可用的工具白名单。
+    for t in st.load_subagent_types(force=True).values():
+        assert t.description, t.name
+        assert t.tools_allow, t.name
+
+    # 用户删除一个种子 → 再播种不写回（目录非空）。
+    (st.subagents_dir() / "reviewer.md").unlink()
+    st.ensure_seeded()
+    assert "reviewer" not in st.load_subagent_types(force=True)
+    assert "explore" in st.load_subagent_types(force=True)

@@ -88,15 +88,15 @@ _INJECTION_FLUSH_TASKS: dict[str, asyncio.Task] = {}
 _INJECTION_WAKING: set[str] = set()
 INJECTION_COALESCE_S = 10.0
 
-# P3 contract 4 — soft-budget warning thresholds (notice event, once per
-# session per kind; 软引导，不硬拦).
+# P3 contract 4 — soft-budget warning threshold (notice event, once per
+# session; 软引导，不硬拦). The cumulative-token variant (500k) was removed on
+# user feedback 2026-10-01: the notice fired on normal multi-subagent research
+# runs and read as noise.
 WARN_RUNNING_RATIO = 0.8
-WARN_TOTAL_TOKENS = 500_000
 
 # Sessions already warned (per kind). Process-lifetime: a session is warned
 # once per runtime run, which matches the "不重复刷" contract.
 _WARNED_CONCURRENCY: set[str] = set()
-_WARNED_TOKENS: set[str] = set()
 
 
 def max_concurrent() -> int:
@@ -748,36 +748,6 @@ async def _maybe_warn_concurrency(owner_session_id: str) -> bool:
     )
 
 
-def _subagent_tree_tokens(owner_session_id: str, slug: str) -> int:
-    """input+output tokens recorded under every descendant session id of the
-    owner (the 既有 usage 记账 — subagent turns tag usage_source="subagent",
-    and the records key on the child's own session_id)."""
-    from .usage_store import session_totals
-
-    total = 0
-    for m in _session_meta_descendants(slug, owner_session_id):
-        try:
-            t = session_totals(m["id"])
-        except Exception:
-            continue
-        if t:
-            total += int(t.get("input_tokens") or 0) + int(t.get("output_tokens") or 0)
-    return total
-
-
-async def _maybe_warn_usage(owner_session_id: str, slug: str) -> bool:
-    """Trigger 2: the owner's subagent tree crossed 500k cumulative tokens."""
-    total = _subagent_tree_tokens(owner_session_id, slug)
-    if total < WARN_TOTAL_TOKENS:
-        return False
-    return await _warn_once(
-        owner_session_id,
-        _WARNED_TOKENS,
-        f"提示：本会话的 subagent 累计 token 用量已达 {total}"
-        f"（超过 {WARN_TOTAL_TOKENS} 阈值）。请注意拆分成本。",
-    )
-
-
 # --------------------------------------------------------------------------- #
 # turn runner (background; pattern: _run_goal_turn / _WF_RUN_TASKS)
 # --------------------------------------------------------------------------- #
@@ -1127,15 +1097,6 @@ async def _finalize_subagent_locked(
         "subagent_finalized session=%s status=%s parent=%s summary_len=%d",
         child_id, status, parent_id, len(summary),
     )
-    # P3 contract 4, trigger 2: after a DONE finalize the child's tokens have
-    # just landed in the usage log — re-check the owner's cumulative subagent
-    # usage. Once per owning session.
-    if status == "done" and parent_id:
-        try:
-            await _maybe_warn_usage(parent_id, slug)
-        except Exception:
-            _log.exception("subagent_usage_warn_failed parent=%s", parent_id)
-
     # LLM title (P2 contract 6): after the FIRST completed turn, one auxiliary
     # call with the session's own model replaces the goal[:40] placeholder with
     # a short verb-phrase title (≤16 chars), refreshed through the existing
