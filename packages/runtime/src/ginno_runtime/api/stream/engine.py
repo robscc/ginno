@@ -803,15 +803,6 @@ async def _stream_graph(
         _partial_tool_args: dict[str, str] = {}
         _emitted_tool_args: set[str] = set()
         turn_text: list[str] = []  # accumulate assistant text for memory capture
-        # TEMP DIAG (2026-10-01 thinking/正文顺序存疑): 记 K/T 增量游程序列，
-        # 轮末压缩成一行日志——用来证实/证伪「模型在正文之间零星吐 thinking」。
-        _delta_seq: list[list] = []
-
-        def _mark(kind: str) -> None:
-            if _delta_seq and _delta_seq[-1][0] == kind:
-                _delta_seq[-1][1] += 1
-            else:
-                _delta_seq.append([kind, 1])
         # Fresh turn (not a permission resume): announce the resolved agent so the
         # UI can label the assistant bubble authoritatively (never the generic
         # "Agent" fallback).
@@ -908,23 +899,19 @@ async def _stream_graph(
                         if btype == "thinking":
                             txt = b.get("thinking") or b.get("text") or ""
                             if txt:
-                                _mark("K")
                                 await safe_send(emit("thinking.delta", {"content": txt}))
                         elif btype == "text":
                             txt = b.get("text") or ""
                             if txt:
                                 turn_text.append(txt)
                                 seg_text.append(txt)
-                                _mark("T")
                                 await safe_send(emit("token.delta", {"content": txt}))
                 elif isinstance(content, str) and content:
                     turn_text.append(content)
                     seg_text.append(content)
-                    _mark("T")
                     await safe_send(emit("token.delta", {"content": content}))
                 rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
                 if rk:
-                    _mark("K")
                     await safe_send(emit("thinking.delta", {"content": rk}))
                 tool_calls = getattr(chunk, "tool_call_chunks", None)
                 if tool_calls:
@@ -1311,11 +1298,6 @@ async def _stream_graph(
                 session_id, turn_id, len("".join(turn_text)),
             )
             # Empty text (tool-only turn) → the UI falls back to a generic body.
-            _log.info(
-                "delta_seq session=%s turn=%s seq=%s",
-                session_id, turn_id,
-                " ".join(f"{k}×{n}" for k, n in _delta_seq) or "(none)",
-            )
             await safe_send(emit("message.end", {"text": _clean_text.strip()[:200]}))
         else:
             _log.info(
