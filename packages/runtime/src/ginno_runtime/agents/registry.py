@@ -38,6 +38,9 @@ class AgentConfig:
     color: str = "blue"
     system_prompt: str = ""
     provider: str = "custom"
+    # True = 用户在 Agents 设置里显式选过 provider(跟随全局默认 vs 刻意绑定的
+    # 判据,2026-10-02)。未标记的历史值用 provider != "custom" 兼容推断。
+    provider_explicit: bool = False
     model: str = ""
     tools_allow: list[str] = field(default_factory=lambda: ["*"])
     memory_scope: str = "agent"
@@ -403,6 +406,10 @@ def update_agent(agent_id: str, data: dict[str, Any]) -> AgentConfig:
         raise ValueError(f"agent {agent_id} not found")
     merged = existing.to_dict()
     merged.update({k: v for k, v in data.items() if k in AgentConfig.__dataclass_fields__})
+    # 带着 provider 字段的更新都来自用户编辑 → 刻意绑定(跟随全局默认的语义
+    # 见 _resolve_provider_model,2026-10-02 默认供应商修复)。
+    if "provider" in data:
+        merged["provider_explicit"] = True
     merged["id"] = agent_id  # id immutable
     cfg = AgentConfig(**merged)
     validate_model_binding(cfg.provider, cfg.model)
@@ -439,3 +446,19 @@ def fork_agent(src_id: str, new_id: str, name: str | None = None) -> AgentConfig
         if existing:
             return existing
         raise
+
+
+def provider_is_deliberate(agent: "AgentConfig | None") -> bool:
+    """Whether the agent's provider is a DELIBERATE binding (outranks the
+    global 默认模型提供商) rather than the seed placeholder.
+
+    判据:显式标记(经 Agents 设置保存过 provider),或历史兼容启发 ——
+    provider != 种子值 "custom"(内置 agent 全部以 custom 播种,任何非 custom
+    值都是用户改出来的)。残留歧义:刻意把 agent 绑回 custom 且默认是别的
+    供应商 —— 会被视为跟随默认,需在 Agents 里再保存一次打上标记。
+    """
+    if agent is None or not getattr(agent, "provider", ""):
+        return False
+    if getattr(agent, "provider_explicit", False):
+        return True
+    return agent.provider != "custom"

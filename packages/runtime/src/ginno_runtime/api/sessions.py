@@ -101,15 +101,24 @@ def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | 
     def _enabled(pid: str | None) -> bool:
         return bool(pid) and bool((providers.get(pid) or {}).get("enabled"))
 
-    # Prefer an *enabled* provider. The seed agents default to provider "custom",
-    # which is disabled until configured; that must NOT block session creation —
-    # fall through to the enabled global default so "enable a provider and use it"
-    # just works without editing every agent.
+    # Prefer an *enabled* provider, in this order:
+    #   1. explicit request (newSession opts / pin app)
+    #   2. the agent's DELIBERATE provider choice — i.e. one that DIFFERS from
+    #      the global default (设置 → 通用 → 默认模型提供商). Seed agents carry
+    #      provider="custom", which equals the seeded default; letting that
+    #      placeholder outrank the user's global choice made the General
+    #      Settings selector dead (2026-10-02 fix). An agent binding that
+    #      matches the default is the same outcome either way.
+    #   3. the enabled global default ("enable a provider and use it" without
+    #      editing every agent still works).
+    default_pid = prov_mod.get_default_provider()
+    from ..agents.registry import provider_is_deliberate
+
     candidates = [
         req.provider,
         req.model_provider,
-        agent.provider if agent else None,
-        prov_mod.get_default_provider(),
+        (agent.provider if provider_is_deliberate(agent) else None),
+        default_pid,
     ]
     provider = next((c for c in candidates if _enabled(c)), None) or prov_mod.get_default_provider()
     model = (
