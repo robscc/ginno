@@ -700,6 +700,20 @@ async def _stream_graph(
         async def safe_send(data: str) -> None:
             nonlocal ws_closed
             socks = _SESSION_WS.get(session_id) or []
+            # DIAGNOSTIC (2026-10-01 跨会话渲染串线): thinking frames are the
+            # leaked content, so trace where each one lands — which session's
+            # turn emitted it and to how many sockets. Cheap (thinking frames
+            # are rare); remove once the leak is pinned.
+            if "thinking.delta" in data:
+                try:
+                    _d = json.loads(data)
+                    _log.info(
+                        "diag_thinking session=%s turn=%s socks=%d head=%r",
+                        session_id, _d.get("turn_id"), len(socks),
+                        str(_d.get("content"))[:50],
+                    )
+                except Exception:
+                    pass
             alive: list[Any] = []
             for w in socks:
                 if await _try_send(w, data):
@@ -815,6 +829,12 @@ async def _stream_graph(
                 "turn_start session=%s turn=%s agent=%s text=%r",
                 session_id, turn_id, _aid,
                 ((config.get("configurable") or {}).get("user_text") or "")[:120],
+            )
+            # DIAGNOSTIC (2026-10-01 串线排查): pair with diag_thinking to see
+            # which turn's frames a session's sockets received.
+            _log.info(
+                "diag_turn_start session=%s turn=%s socks=%d",
+                session_id, ui_turn_id, len(_SESSION_WS.get(session_id) or []),
             )
             await safe_send(
                 emit("turn.start", {"turn_id": ui_turn_id, "agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
