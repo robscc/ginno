@@ -49,6 +49,13 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+# browser/executor.py: %-formatting deliberately builds JS literals for
+# Runtime.evaluate (repr/quoting) — f-string conversion would break quoting.
+"src/ginno_runtime/browser/executor.py" = ["UP031"]
+# scripts.py embeds JS strings; long lines are readable as-is.
+"src/ginno_runtime/browser/scripts.py" = ["E501"]
+
 [dependency-groups]
 dev = [
     "pyinstaller>=6.21.0",

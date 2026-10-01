@@ -124,3 +124,40 @@ def ensure_web_permissions() -> None:
     perms["allow"] = allow + added
     settings["permissions"] = perms
     p.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+
+# Browser tools (browser-companion-extension-design.md §6): read tools and
+# visible action tools land in allow; browser_js (arbitrary code execution)
+# and browser_file_upload (files leaving through the browser) deliberately
+# stay OUT — they fall through to the default ask, which surfaces the
+# permission prompt. browser_handoff/browser_stop are side-effect-free waits.
+_BROWSER_ALLOW_TOOLS = (
+    "browser_computer", "browser_read_page", "browser_find",
+    "browser_form_input", "browser_navigate", "browser_page_text",
+    "browser_console", "browser_network", "browser_resize_window",
+    "browser_tabs_context", "browser_tabs_create", "browser_tabs_close",
+    "browser_handoff", "browser_stop",
+)
+
+
+def ensure_browser_permissions() -> None:
+    """Idempotent migration, same contract as ensure_web_permissions."""
+    p = paths.settings_path()
+    if not p.exists():
+        return
+    try:
+        settings = json.loads(p.read_text() or "{}")
+    except json.JSONDecodeError:
+        return
+    perms = settings.get("permissions")
+    if not isinstance(perms, dict):
+        return
+    existing = " ".join(
+        str(x) for bucket in ("allow", "deny", "ask") for x in perms.get(bucket, []) or []
+    ).lower()
+    allow = list(perms.get("allow") or [])
+    added = [n for n in _BROWSER_ALLOW_TOOLS if n not in existing and n not in allow]
+    if not added:
+        return
+    perms["allow"] = allow + added
+    settings["permissions"] = perms
+    p.write_text(json.dumps(settings, indent=2, ensure_ascii=False))

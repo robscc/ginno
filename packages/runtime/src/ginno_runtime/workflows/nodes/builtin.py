@@ -409,6 +409,38 @@ class AgentNode(BaseNode):
 
 
 @register_node
+class BrowserNode(AgentNode):
+    """Workflow `browser` node (browser-companion design §7.2 M3): an agent
+    step with a browser-flavoured goal prefix — the underlying tool surface is
+    the shared build_all_tools set, which already carries the browser_* family
+    on whichever track is live (extension relay preferred, dedicated-profile
+    Chrome fallback)."""
+
+    type = "browser"
+    aliases = ()
+
+    @staticmethod
+    async def execute(node, cctx, state, config, eff) -> dict:
+        from .. import dsl as wf_dsl
+
+        owner = wf_dsl.parallel_loop_owner(cctx.get("dsl") or {}, node["id"])
+        if owner is not None and (
+            (state.get("loop_iters") or {}).get(owner["id"]) or {}
+        ).get("parallel"):
+            return await _execute_parallel_body(node, owner, cctx, state, eff, config)
+        # browser-flavoured prefix rides in via the node dict copy — the
+        # shared _run_agent_turn renders goal from it unchanged otherwise.
+        patched = dict(node)
+        goal = patched.get("goal") or patched.get("title") or ""
+        patched["goal"] = (
+            "用浏览器完成以下任务(browser_* 工具;先用 browser_tabs_context "
+            "拿 tabId,截图确认页面状态后再操作,敏感操作用 browser_handoff "
+            f"交给用户):\n{goal}"
+        )
+        return await AgentNode.execute(patched, cctx, state, config, eff)
+
+
+@register_node
 class LLMNode(BaseNode):
     """Pure generation node (no tools): render a prompt, optionally store to context."""
 

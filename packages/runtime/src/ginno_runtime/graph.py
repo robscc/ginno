@@ -520,7 +520,13 @@ def strip_old_images(messages, keep_turns: int = IMAGE_KEEP_TURNS):
         text_blocks = [b for b in content if not _is_image_block(b)]
         placeholder = {"type": "text", "text": f"[{n_img} 张历史图片已省略]"}
         new_content = text_blocks + [placeholder] if text_blocks else [placeholder]
-        out.append(HumanMessage(content=new_content, id=m.id))
+        if isinstance(m, HumanMessage):
+            out.append(HumanMessage(content=new_content, id=m.id))
+        else:
+            # e.g. a browser screenshot ToolMessage ([text, image_url] blocks):
+            # strip the old image but PRESERVE the message class — rebuilding
+            # it as HumanMessage would corrupt the tool-call pairing.
+            out.append(m.model_copy(update={"content": new_content}))
     return out
 
 
@@ -1101,6 +1107,7 @@ def build_all_tools(
     request time in agent_node/permission_node), so a restricted child never
     binds, advertises, or can reach the excluded tools at all.
     """
+    from .tools.browser_tools import build_browser_tools
     from .tools.external_agent import build_external_agent_tools
     from .tools.goal_tools import build_goal_tools
     from .tools.subagent import build_subagent_tools
@@ -1133,6 +1140,11 @@ def build_all_tools(
         # Web search/fetch (citations-design.md §4.2) — [] when disabled in
         # settings; session_id binds citation source registration.
         + build_web_tools(session_id)
+        # Browser tools (browser-companion-extension-design.md §4) — [] when
+        # disabled in settings; extension relay preferred, dedicated-profile
+        # Chrome as fallback. browser_js / browser_file_upload deliberately
+        # NOT in the permission exempt set (default ask).
+        + build_browser_tools(session_id, workspace, context_dirs)
         # Delegation to external coding agents (external-agents-design.md) —
         # [] when disabled in settings; session_id/project_slug bind usage
         # attribution. Deliberately NOT in the permission exempt set.
