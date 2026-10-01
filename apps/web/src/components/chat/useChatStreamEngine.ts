@@ -107,6 +107,10 @@ type WsStatus = "connecting" | "live" | "reconnecting" | "offline";
 interface MenuState { items: MenuItem[]; active: number; trigger: Trigger }
 interface ProposeResult { decision: "allow" | "deny"; workflowId: string; fromVersion: number }
 
+// Draft slot id for the session-less landing view (ChatStream 共用：上传完成的
+// 文件回执要按 slot 归还，不能串会话）。
+export const HOME_SLOT = "__home__";
+
 export function useChatStreamEngine(deps: EngineDeps) {
   const {
     g, steerQ, session, onUsageChange, propose,
@@ -487,7 +491,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     const sid = session?.id ?? null;
     // Draft slots include the landing home so ⌘N → type → open session → ⌘N
     // round-trips keep the text.
-    const HOME_SLOT = "__home__";
     const prevSlot = prevSlotRef.current;
     const nextSlot = sid ?? HOME_SLOT;
 
@@ -504,6 +507,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
       };
       setInput("");
       setAttachments([]);
+      setFileAttachments([]); // file chips belong to their session's draft, never leak across
       setTarget(null);
       setMenu(null); // menu is composer-global state; never leak across sessions
       // Deferred home attachments follow the user into the session they land
@@ -512,9 +516,27 @@ export function useChatStreamEngine(deps: EngineDeps) {
       if (prevSlot === HOME_SLOT && sid) {
         const docs = pendingDocsRef.current;
         pendingDocsRef.current = [];
-        for (const d of docs) void uploadOneDoc(sid, d.file, d.tmpId);
         const natives = pendingPathsRef.current;
         pendingPathsRef.current = [];
+        // The chips ride along too: move them from the home draft into the
+        // landing session's draft so the restore below shows them (upload
+        // completions target sid and flip them ready there). pendingRefs are
+        // the source of truth — the home-creating send (ChatStream) drains
+        // them itself, so merging by those ids can't resurrect sent chips.
+        const pendingIds = new Set([
+          ...docs.map((d) => d.tmpId),
+          ...natives.map((n) => n.tmpId),
+        ]);
+        const home = draftCacheRef.current[HOME_SLOT];
+        if (home?.files?.length && pendingIds.size) {
+          const moving = home.files.filter((f) => pendingIds.has(f.id));
+          const d = draftCacheRef.current[sid] ?? (draftCacheRef.current[sid] = {
+            input: "", attachments: [],
+          });
+          d.files = [...(d.files ?? []), ...moving];
+          home.files = home.files.filter((f) => !pendingIds.has(f.id));
+        }
+        for (const d of docs) void uploadOneDoc(sid, d.file, d.tmpId);
         for (const n of natives) void attachOne(sid, n.path, n.tmpId);
       }
     }
@@ -526,6 +548,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
       if (draft) {
         setInput(draft.input);
         setAttachments(draft.attachments);
+        setFileAttachments(draft.files ?? []);
       }
       return;
     }

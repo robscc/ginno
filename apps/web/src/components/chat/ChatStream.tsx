@@ -61,7 +61,7 @@ import {
   SubagentTopBar,
   TurnIdChip,
 } from "./streamCards";
-import { useChatStreamEngine } from "./useChatStreamEngine";
+import { useChatStreamEngine, HOME_SLOT } from "./useChatStreamEngine";
 import { useSummarizeFlow } from "./useSummarizeFlow";
 import { SubagentPlanCard } from "./subagentPlanCard";
 
@@ -328,12 +328,33 @@ export function ChatStream({
 
 
 
+  // 上传/挂载是异步的：等待期间用户可能已切走会话。完成回执必须落回文件
+  // 所属的那个 slot——用户还在就更新 state，切走了就写它的草稿，切回来时
+  // 芯片已是就绪态。直接 setFileAttachments 会把文件串进当前会话（或让
+  // 旧会话草稿里的芯片永远停在「上传中」）。
+  function landFile(slot: string, fn: (a: FileAttachment[]) => FileAttachment[]) {
+    const cur = curSessionIdRef.current ?? HOME_SLOT;
+    if (cur === slot) {
+      setFileAttachments(fn);
+      return;
+    }
+    const d = draftCacheRef.current[slot];
+    if (d) d.files = fn(d.files ?? []);
+  }
+  // 表格类文件落盘后自动开预览——但仅当用户还在文件所属的会话里；切走后
+  // 弹预览只会打断别的会话。
+  function maybeAutoPreview(slot: string, entry: { id: string; name: string; path: string; kind: string }) {
+    if (TABLE_KINDS.has(entry.kind) && (curSessionIdRef.current ?? HOME_SLOT) === slot) {
+      g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
+    }
+  }
+
   async function uploadOneDoc(sid: string, f: File, tmpId: string): Promise<FileAttachment | null> {
     try {
       // The upload + response telemetry live in the shared composerAttachments
       // module (used by the floating window too); it throws on failure.
       const entry = await uploadDoc(sid, f);
-      setFileAttachments((a) =>
+      landFile(sid, (a) =>
         a.map((x) =>
           x.id === tmpId
             ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
@@ -341,14 +362,12 @@ export function ChatStream({
         ),
       );
       // spreadsheets/tables auto-open the preview on drop
-      if (TABLE_KINDS.has(entry.kind)) {
-        g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
-      }
+      maybeAutoPreview(sid, entry);
       g.reloadArtifacts();
       return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
     } catch (e) {
       void debugLog({ where: "addFiles:upload-error", name: f.name, error: String(e) });
-      setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
       return null;
     }
   }
@@ -417,25 +436,23 @@ export function ChatStream({
       void debugLog({ where: "attachPaths:resp", name, ok: r?.ok, error: r?.error });
       if (r.ok && r.file) {
         const entry = r.file;
-        setFileAttachments((a) =>
+        landFile(sid, (a) =>
           a.map((x) =>
             x.id === tmpId
               ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
               : x,
           ),
         );
-        if (TABLE_KINDS.has(entry.kind)) {
-          g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
-        }
+        maybeAutoPreview(sid, entry);
         g.reloadArtifacts();
         return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
       } else {
-        setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+        landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
         return null;
       }
     } catch (e) {
       void debugLog({ where: "attachPaths:error", name, error: String(e) });
-      setFileAttachments((a) => a.filter((x) => x.id !== tmpId));
+      landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
       return null;
     }
   }
