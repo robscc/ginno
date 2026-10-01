@@ -150,3 +150,146 @@ def test_retry_of_abandoned_failed_subagent_stays_failed(
         # missed last_error (keyed on the ui id) and treated the failed retry
         # as a success.
         assert status == "failed", status
+
+
+def test_parent_socket_receives_no_child_turn_frames(client, create_session, monkeypatch):
+    """Leak guard (2026-10-01 report): while a child's turn streams, the
+    PARENT's socket must receive only subagent.* frames — never the child's
+    token/thinking/tool frames. Any turn-stream frame on the parent socket
+    before the parent's own wake turn started would render the child's
+    reasoning inside the parent's bubble."""
+    model = ScriptedChatModel(
+        scripts=[
+            script(text="子报告：完成。"),
+            script(text="父回复：已收到。"),
+        ]
+    )
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: model)
+    monkeypatch.setattr(sched, "_SPAWN_LOCK", asyncio.Lock())
+    parent = create_session(model, agent_id="dev")
+
+    with client.websocket_connect(f"/api/ws/sessions/{parent}") as ws:
+        res = client.portal.call(sched.create_subagent, parent, "独立小任务")
+        assert res["ok"]
+
+        events = []
+        while True:
+            ev = ws.receive_json()
+            events.append(ev)
+            if ev.get("event") in ("message.end", "error"):
+                break
+
+    stream_events = ("token.delta", "thinking.delta", "tool.start", "tool.args", "tool.end")
+    first_turn_start = next(
+        (i for i, e in enumerate(events) if e.get("event") == "turn.start"), None
+    )
+    assert first_turn_start is not None, "the parent wake turn never started"
+    leaked = [
+        e
+        for e in events[:first_turn_start]
+        if e.get("event") in stream_events
+    ]
+    assert not leaked, f"child turn frames leaked into the parent socket: {leaked[:3]}"
+
+
+def test_concurrent_child_stream_never_lands_on_parent_socket(
+    client, create_session, monkeypatch
+):
+    """Structural invariant, concurrent shape: while the parent's own turn is
+    streaming AND its child streams at the same time, every turn-stream frame
+    on the parent's socket must carry a turn_id the parent's own run minted.
+    (2026-10-01 report: a child's thinking showed up inside the parent's
+    bubble — this pins the runtime half of that contract with real sockets.)
+    """
+    from ginno_runtime import server_shared
+
+    class _FakeWS:
+        def __init__(self):
+            self.frames = []
+
+        async def send_text(self, data):
+            self.frames.append(json.loads(data))
+
+    model = ScriptedChatModel(
+        scripts=[
+            script(text="父轮的长回复文本。" * 40),
+            script(text="子报告：完成。"),
+            script(text="父：已收到。"),
+        ]
+    )
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: model)
+    monkeypatch.setattr(sched, "_SPAWN_LOCK", asyncio.Lock())
+    parent = create_session(model, agent_id="dev")
+
+    sock = _FakeWS()
+    server_shared._SESSION_WS[parent] = [sock]
+
+    async def drive():
+        from ginno_runtime.api.sessions import _ensure_session
+        from ginno_runtime.api.stream import _run_stream
+
+        p_session = _ensure_session(parent)
+        p_turn = "turn-parent-concurrent"
+        cfg = {
+            "configurable": {
+                "thread_id": parent,
+                "project_slug": p_session["project_slug"],
+                "agent_id": "dev",
+                "turn_id": p_turn,
+            }
+        }
+        server_shared._RUNNING_TURNS[parent] = p_turn
+        try:
+            await _run_stream(None, p_session["graph"], cfg, "父轮", p_session, "dev")
+        finally:
+            server_shared._RUNNING_TURNS.pop(parent, None)
+        return p_turn
+
+    async def main():
+        p_turn = await drive_impl()
+        return p_turn
+
+    async def drive_impl():
+        import asyncio as _a
+
+        from ginno_runtime.api.sessions import _ensure_session
+        from ginno_runtime.api.stream import _run_stream
+
+        p_session = _ensure_session(parent)
+        p_turn = "turn-parent-concurrent"
+        cfg = {
+            "configurable": {
+                "thread_id": parent,
+                "project_slug": p_session["project_slug"],
+                "agent_id": "dev",
+                "turn_id": p_turn,
+            }
+        }
+        server_shared._RUNNING_TURNS[parent] = p_turn
+        parent_task = _a.create_task(
+            _run_stream(None, p_session["graph"], cfg, "父轮", p_session, "dev")
+        )
+        # A real child turn streams concurrently with the parent's.
+        res = await sched.create_subagent(parent, "并发子任务")
+        assert res["ok"]
+        await parent_task
+        # let the child's turn (spawned in background) finish too
+        await _a.sleep(0.5)
+        server_shared._RUNNING_TURNS.pop(parent, None)
+        return p_turn
+
+    p_turn = client.portal.call(main)
+
+    stream_events = ("token.delta", "thinking.delta", "tool.start", "tool.args", "tool.end")
+    started = {
+        f.get("turn_id") for f in sock.frames if f.get("event") == "turn.start"
+    }
+    started.add(p_turn)  # our hand-driven parent turn announces itself via _ev too
+    foreign = [
+        f
+        for f in sock.frames
+        if f.get("event") in stream_events
+        and f.get("turn_id") is not None
+        and f.get("turn_id") not in started
+    ]
+    assert not foreign, f"foreign-turn frames on the parent socket: {foreign[:3]}"

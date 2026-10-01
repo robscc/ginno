@@ -431,7 +431,19 @@ export function useChatStreamEngine(deps: EngineDeps) {
     sock.onmessage = (e) => {
       if (socketsRef.current[sid] !== sock) return;
       lastSeenRef.current[sid] = Date.now();
-      try { handle(sid, JSON.parse(e.data)); } catch { /* ignore */ }
+      try {
+        const ev = JSON.parse(e.data) as { event: string; session_id?: string };
+        // Frame-ownership guard (2026-10-01 渲染串线报告）：runtime 在每帧带上
+        // session_id；不属于本会话的帧一律丢弃并告警，杜绝跨会话内容渲染进
+        // 当前对话（不依赖上游路由是否出错）。
+        if (ev.session_id && sid && ev.session_id !== sid) {
+          console.warn(
+            `[ginno] 丢弃跨会话帧 event=${ev.event} frame_session=${ev.session_id} socket_session=${sid}`,
+          );
+          return;
+        }
+        handle(sid, ev);
+      } catch { /* ignore */ }
     };
     sock.onerror = () => {
       if (socketsRef.current[sid] !== sock) return;

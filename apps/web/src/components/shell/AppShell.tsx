@@ -261,8 +261,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const activeKids = childRows.filter(
       (c) => c.subagent?.status === "running" || c.subagent?.status === "waiting",
     ).length;
-    // 默认展开运行中的子树；全部结束折叠；用户点过 chevron 后以其为准。
-    const expanded = treeCollapsed[s.id] === undefined ? activeKids > 0 : !treeCollapsed[s.id];
+    // 默认展开有子会话的子树——已完成的子会话继续留在列表里可供回看
+    // （用户反馈 2026-10-01：全部跑完后子树自动折叠、子会话像消失了一样）；
+    // 折叠只在用户点过 chevron 后生效。
+    const expanded = treeCollapsed[s.id] === undefined ? hasKids : !treeCollapsed[s.id];
     const openChild = () => {
       g.setActiveSession(s.id);
       if (!onWorkspace) router.push("/");

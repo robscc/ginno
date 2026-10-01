@@ -414,7 +414,12 @@ async def _push_session_event(
     socks = _SESSION_WS.get(session_id) or []
     alive: list[Any] = []
     for w in socks:
-        if await _try_send(w, _ev(event, data, turn_id)):
+        # session_id rides every session-scoped frame so the client can assert
+        # frame ownership (a cross-session frame must never render in another
+        # conversation — 2026-10-01 rendering-leak report).
+        if await _try_send(
+            w, _ev(event, {"session_id": session_id, **data}, turn_id)
+        ):
             alive.append(w)
     _SESSION_WS[session_id] = alive
 

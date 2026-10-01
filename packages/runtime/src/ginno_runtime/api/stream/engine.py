@@ -667,7 +667,10 @@ async def _stream_graph(
         config["configurable"] = _cfg_conf
 
         def emit(event: str, data: dict) -> str:
-            return _ev(event, data, ui_turn_id)
+            # session_id is stamped on every turn frame: the client drops any
+            # frame whose session_id isn't the socket's own session, making a
+            # cross-session render leak structurally impossible (2026-10-01).
+            return _ev(event, {"session_id": session_id, **data}, ui_turn_id)
 
         _ensure_turn_log()  # (re)point the trace file handler at the active home
 
