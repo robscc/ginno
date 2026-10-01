@@ -562,11 +562,11 @@ export function PinStream({
       if (sockRef.current !== sock) return;
       lastSeenRef.current = Date.now();
       try {
-        const ev = JSON.parse(e.data) as { event: string; session_id?: string };
+        const ev = JSON.parse(e.data) as { event: string; frame_session?: string };
         // Frame-ownership guard (2026-10-01 渲染串线报告), same as ChatStream.
-        if (ev.session_id && sessionId && ev.session_id !== sessionId) {
+        if (ev.frame_session && sessionId && ev.frame_session !== sessionId) {
           console.warn(
-            `[ginno] 丢弃跨会话帧 event=${ev.event} frame_session=${ev.session_id} socket_session=${sessionId}`,
+            `[ginno] 丢弃跨会话帧 event=${ev.event} frame_session=${ev.frame_session} socket_session=${sessionId}`,
           );
           return;
         }

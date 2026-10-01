@@ -351,23 +351,53 @@ def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
     _MAIN_LOOP = loop
 
 
+def clear_inherited_llm_context() -> None:
+    """Drop the caller's LangChain run config from the current context.
+
+    ``asyncio.create_task`` copies the calling context's contextvars, so a
+    background task spawned INSIDE a running turn (a subagent's turn started by
+    the ``spawn_subagent`` tool, a wake turn) inherits that turn's
+    ``var_child_runnable_config``. The parent's ``astream(stream_mode="messages")``
+    then surfaces the CHILD's LLM tokens as the parent's own stream — the child's
+    thinking and tool calls rendered inside the parent conversation's bubble
+    (2026-10-01 串线事故，父会话日志里同一思考片段同时挂在父子两个 session 上）。
+
+    Every background task must start from a clean run context; the task's own
+    ``astream`` installs its own callbacks."""
+    try:
+        from langchain_core.runnables.config import var_child_runnable_config
+
+        var_child_runnable_config.set(None)
+    except Exception:  # never let context hygiene break scheduling
+        pass
+
+
+async def _run_bg_isolated(coro: Any) -> Any:
+    clear_inherited_llm_context()
+    return await coro
+
+
 def spawn_bg(coro: Any) -> Any:
     """Schedule a coroutine, keeping a strong reference until completion.
 
     Works both from the event loop (create_task) and from threadpool workers
     (run_coroutine_threadsafe onto the recorded main loop) — sync REST handlers
-    call this via _broadcast and must not raise "no running event loop"."""
+    call this via _broadcast and must not raise "no running event loop".
+
+    The task runs with a CLEARED LLM run context (see
+    :func:`clear_inherited_llm_context`): background work must never be streamed
+    into the turn that happened to spawn it."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
     if loop is not None:
-        t = loop.create_task(coro)
+        t = loop.create_task(_run_bg_isolated(coro))
         _BG_TASKS.add(t)
         t.add_done_callback(_BG_TASKS.discard)
         return t
     if _MAIN_LOOP is not None and not _MAIN_LOOP.is_closed():
-        fut = asyncio.run_coroutine_threadsafe(coro, _MAIN_LOOP)
+        fut = asyncio.run_coroutine_threadsafe(_run_bg_isolated(coro), _MAIN_LOOP)
         _BG_TASKS.add(fut)
         fut.add_done_callback(_BG_TASKS.discard)
         return fut
@@ -414,11 +444,13 @@ async def _push_session_event(
     socks = _SESSION_WS.get(session_id) or []
     alive: list[Any] = []
     for w in socks:
-        # session_id rides every session-scoped frame so the client can assert
-        # frame ownership (a cross-session frame must never render in another
-        # conversation — 2026-10-01 rendering-leak report).
+        # frame_session rides every session-scoped frame so the client can
+        # assert frame ownership (a cross-session frame must never render in
+        # another conversation — 2026-10-01 rendering-leak report). A SEPARATE
+        # key on purpose: subagent.* payloads use "session_id" for the CHILD
+        # the event is about, and broadcasting to ancestors is by design.
         if await _try_send(
-            w, _ev(event, {"session_id": session_id, **data}, turn_id)
+            w, _ev(event, {"frame_session": session_id, **data}, turn_id)
         ):
             alive.append(w)
     _SESSION_WS[session_id] = alive

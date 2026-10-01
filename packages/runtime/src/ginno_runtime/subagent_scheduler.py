@@ -764,6 +764,11 @@ async def _run_managed_turn(
     from .api.sessions import _ensure_session, _first_agent_id  # lazy: cycle
     from .api.stream import _run_stream  # lazy: cycle
 
+    # A managed turn must never run inside the spawning turn's LLM run context
+    # (2026-10-01 串线：父 turn 的 messages 流会把子代理的 token 当自己的推出去).
+    # spawn_bg already clears it; this covers direct callers too.
+    server_shared.clear_inherited_llm_context()
+
     session = _SESSIONS.get(session_id) or _ensure_session(session_id)
     if session is None:
         _log.error("subagent_turn_missing_session session=%s", session_id)
@@ -1383,6 +1388,8 @@ async def _run_managed_turn_locked(
     """_run_managed_turn for a caller already holding the turn lock."""
     from .api.sessions import _ensure_session, _first_agent_id  # lazy: cycle
     from .api.stream import _run_stream
+
+    server_shared.clear_inherited_llm_context()
 
     session = _SESSIONS.get(session_id) or _ensure_session(session_id)
     if session is None:

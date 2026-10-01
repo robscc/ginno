@@ -1440,3 +1440,56 @@ async def test_flush_routes_to_steer_when_parent_went_live(monkeypatch, isolated
     assert len(stashed) == 1
     assert stashed[0]["extra_kwargs"]["ginno_subagent_result"] == "C1"
     assert stashed[0]["turn_id"] == "turn-live"
+
+
+# --------------------------------------------------------------------------- #
+# spawned background work must not inherit the spawning turn's LLM run context
+# (2026-10-01 串线事故：父 turn 的 astream 把子代理的 token 当自己的流推了出来)
+# --------------------------------------------------------------------------- #
+async def test_spawn_bg_clears_inherited_llm_context(isolated_home):
+    """A task spawned from inside a turn must not inherit that turn's
+    ``var_child_runnable_config`` — otherwise the spawning turn's
+    ``stream_mode="messages"`` surfaces the child's LLM tokens as its own."""
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    seen: dict = {}
+
+    async def background():
+        seen["cfg"] = var_child_runnable_config.get()
+
+    token = var_child_runnable_config.set({"callbacks": ["parent-run"]})
+    try:
+        task = spawn_bg(background())
+        await task
+    finally:
+        var_child_runnable_config.reset(token)
+
+    assert seen["cfg"] is None, "background task inherited the parent's run config"
+
+
+async def test_child_turn_does_not_inherit_parent_llm_context(
+    isolated_home, fake_stream, monkeypatch
+):
+    """The scheduler path end to end: with a parent run context active, the
+    child's managed turn starts from a clean context."""
+    from langchain_core.runnables.config import var_child_runnable_config
+
+    _put_meta(_sub_meta("ROOT"))
+    _put_meta(_sub_meta("CX", parent="ROOT", depth=0, status="running"))
+    server_shared._SESSIONS["ROOT"] = _sess("ROOT")
+    server_shared._SESSIONS["CX"] = _sess("CX", type_="subagent")
+
+    seen: dict = {}
+
+    async def probing_run_stream(*a, **kw):
+        seen["cfg"] = var_child_runnable_config.get()
+
+    monkeypatch.setattr(stream_mod, "_run_stream", probing_run_stream)
+
+    token = var_child_runnable_config.set({"callbacks": ["parent-run"]})
+    try:
+        await sched._run_managed_turn("CX", "子任务", None, asyncio.Event())
+    finally:
+        var_child_runnable_config.reset(token)
+
+    assert seen.get("cfg") is None, "child turn inherited the parent's run config"

@@ -434,19 +434,19 @@ export function useChatStreamEngine(deps: EngineDeps) {
       if (socketsRef.current[sid] !== sock) return;
       lastSeenRef.current[sid] = Date.now();
       try {
-        const ev = JSON.parse(e.data) as { event: string; session_id?: string };
+        const ev = JSON.parse(e.data) as { event: string; frame_session?: string };
         // Frame-ownership guard (2026-10-01 渲染串线报告）：runtime 在每帧带上
-        // session_id；不属于本会话的帧一律丢弃并告警，杜绝跨会话内容渲染进
-        // 当前对话（不依赖上游路由是否出错）。
-        if (ev.session_id && sid && ev.session_id !== sid) {
+        // frame_session（独立键——subagent 事件的 session_id 表示事件主题的
+        // 子会话，不能混用）；不属于本会话的帧一律丢弃并告警。
+        if (ev.frame_session && sid && ev.frame_session !== sid) {
           console.warn(
-            `[ginno] 丢弃跨会话帧 event=${ev.event} frame_session=${ev.session_id} socket_session=${sid}`,
+            `[ginno] 丢弃跨会话帧 event=${ev.event} frame_session=${ev.frame_session} socket_session=${sid}`,
           );
           try {
             sock.send(JSON.stringify({
               type: "client_diag",
               diag_kind: "frame_owner_mismatch",
-              detail: { event: ev.event, frame_session: ev.session_id, socket_session: sid },
+              detail: { event: ev.event, frame_session: ev.frame_session, socket_session: sid },
             }));
           } catch { /* socket may be closing */ }
           return;
