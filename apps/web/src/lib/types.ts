@@ -166,7 +166,11 @@ export interface SessionMeta {
   // (docs/floating-window-design.md §1.1); regular sessions omit the field.
   // "subagent" = a spawned child session (subagent-design.md §4.1); the parent
   // linkage lives in parent_session_id/depth/subagent below.
-  type?: "quick" | "subagent";
+  // "scheduled" = 定时任务影子会话（scheduled-tasks-design.md §4.3）；列表与
+  // 搜索均整类隐藏（§10 决议 5），只能从 /scheduled 的执行记录/时间条进入回放。
+  type?: "quick" | "subagent" | "scheduled";
+  // 影子会话所属的执行记录 run_id（§4.3）；普通会话缺省。
+  schedule_run_id?: string;
   // ---- subagent (subagent-design.md §4.1；与共享契约 1 同形) ----
   // Parent session (main conversation or an upper-layer subagent).
   parent_session_id?: string;
@@ -336,6 +340,9 @@ export interface WorkflowRun {
   retry_run_id?: string | null; // set on the original once it has been retried
   session_id?: string | null;
   present_in_session_id?: string | null;
+  // 触发来源（scheduled-tasks-design §5.3）：调度器创建的 run 打
+  // "schedule"，Workflows 运行列表据此显示「⏰ 定时」徽标；手动/会话内运行缺省。
+  origin?: string | null;
   // Why the run is paused (workflow-ux-redesign P1): stamped by the server when
   // the run transitions to "paused". kind "human" → show the question card;
   // "manual" → user pause (#14), generic 继续/取消 controls.
@@ -663,4 +670,106 @@ export interface UsageRequests {
   page: number;
   page_size: number;
   rows: UsageRequest[];
+}
+
+// ---- 定时任务（docs/scheduled-tasks-design.md §4；字段名是跨 agent 契约）----
+export type ScheduleTargetType = "prompt" | "workflow";
+
+/** prompt 目标：每次触发新建影子会话跑一轮（§4.1）。 */
+export interface ScheduleTargetPrompt {
+  type: "prompt";
+  prompt: string;
+  agent_id?: string | null;
+  project_slug?: string | null;
+}
+
+/** workflow 目标：headless run，输入落 context_override（§4.1）。 */
+export interface ScheduleTargetWorkflow {
+  type: "workflow";
+  workflow_id: string;
+  context_override?: Record<string, unknown> | null;
+}
+
+export type ScheduleTarget = ScheduleTargetPrompt | ScheduleTargetWorkflow;
+
+/** 四种预置计划（§4.1）。weekly.weekday 0=周日；once.at 为本地时间字符串。 */
+export type SchedulePlan =
+  | { kind: "interval"; minutes: number }
+  | { kind: "daily"; at: string }
+  | { kind: "weekly"; weekday: number; at: string }
+  | { kind: "once"; at: string };
+
+/** 冗余展示字段：最近一次执行的摘要（§4.1 last_run）。 */
+export interface ScheduleLastRun {
+  run_id: string;
+  status: string;
+  started?: number | null;
+  finished?: number | null;
+}
+
+export interface ScheduleTask {
+  id: string;
+  name: string;
+  target: ScheduleTarget;
+  schedule: SchedulePlan;
+  enabled: boolean;
+  notify?: boolean; // P1
+  created: number;
+  updated: number;
+  /** 调度器回写（epoch 秒）；UI 冷启动即有值。null/缺省 = 暂停或单次已完成。 */
+  next_run_at?: number | null;
+  last_run?: ScheduleLastRun | null;
+}
+
+/** GET /api/schedule → 全局配置 + 任务列表。keep_awake 是唯一真值（§3.3）。 */
+export interface ScheduleConfig {
+  enabled: boolean;
+  keep_awake: boolean;
+  tasks: ScheduleTask[];
+}
+
+/** 执行记录行（§4.2 jsonl，同 run_id 末行胜出；API 已去重）。 */
+export interface ScheduleRun {
+  run_id: string;
+  task_id: string;
+  task_name: string;
+  target_type: ScheduleTargetType;
+  trigger: "schedule" | "manual" | string;
+  status: "running" | "ok" | "error" | "skipped_overlap" | "missed" | string;
+  scheduled_at: number | null;
+  started_at: number | null;
+  finished_at: number | null;
+  /** prompt 目标：影子会话 id；workflow 目标：null。 */
+  session_id: string | null;
+  /** workflow 目标；prompt 为 null。 */
+  workflow_id: string | null;
+  workflow_run_id: string | null;
+  summary: string | null;
+  error: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+}
+
+/** GET /api/schedule/runs → 分页行（store.query_runs 的返回形状：``rows``）。
+ *  timeline 接口的字段才是 ``runs``，两处不同名——字段名以 runtime 实现为准。 */
+export interface ScheduleRunsPage {
+  ok?: boolean;
+  date?: string;
+  rows: ScheduleRun[];
+  total?: number;
+  page?: number;
+  page_size?: number;
+}
+
+/** GET /api/schedule/timeline → 已执行 + 当天剩余计划点（§5.1）。 */
+export interface ScheduleTimeline {
+  ok?: boolean;
+  runs: ScheduleRun[];
+  planned: Array<{ task_id: string; task_name: string; at: number }>;
+}
+
+/** WS /api/ws/schedule 下行事件（§5.1）。载荷开放；收到即重拉数据。 */
+export interface ScheduleWsEvent {
+  type: "run_started" | "run_finished" | "task_updated" | "missed" | string;
+  [k: string]: unknown;
 }

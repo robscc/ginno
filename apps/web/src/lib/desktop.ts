@@ -53,3 +53,23 @@ export async function notifyNative(n: NativeNotification): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Ask the Tauri shell to hold / release a `caffeinate -i` child
+ * (scheduled-tasks-design.md §3.3). Only blocks idle system sleep — the screen
+ * may still dim/lock; lid close and manual sleep win regardless.
+ *
+ * Returns true when the command reached the shell. Not desktop (dev in a plain
+ * browser) or the bridge is unavailable → false; callers degrade gracefully
+ * (the runtime's keep_awake flag stays the source of truth either way).
+ */
+export async function setKeepAwake(enabled: boolean): Promise<boolean> {
+  if (!isDesktop()) return false;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("set_keep_awake", { enabled });
+    return true;
+  } catch {
+    return false;
+  }
+}

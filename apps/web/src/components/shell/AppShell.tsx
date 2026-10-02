@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  AlarmClock,
   BookOpen,
   Cable,
   ChevronDown,
@@ -17,7 +18,8 @@ import {
 } from "lucide-react";
 import { GoalEditor } from "@/components/shell/GoalChip";
 import { useGinno, LAST_SESSION_KEY } from "@/lib/store";
-import { wsConnectorsUrl } from "@/lib/runtime";
+import { wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
+import { setKeepAwake } from "@/lib/desktop";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { relTime } from "@/lib/utils";
@@ -29,6 +31,7 @@ import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { ChatStream } from "@/components/chat/ChatStream";
 import { SUBAGENT_STATUS_META, SubagentKindBadges } from "@/components/chat/blocks";
 import { RunSubSessionView } from "@/components/chat/RunSubSessionView";
+import { ScheduleRunView } from "@/components/chat/ScheduleRunView";
 import { RUN_STATUS_META } from "@/components/chat/RunBlocks";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
@@ -197,6 +200,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onKb = pathname.startsWith("/kb");
   const onWorkflows = pathname.startsWith("/workflows");
   const onConnectors = pathname.startsWith("/connectors");
+  const onScheduled = pathname.startsWith("/scheduled");
 
   // Connector 聚合状态点(connector-module §2.1):有断连→黄,有错误→红,
   // 全部正常/未启用→不显示。10s 轮询即可——dot 只是个入口提示。
@@ -248,6 +252,82 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // 定时任务状态点（scheduled-tasks-design §3.1/§6）：红 = 最近一次执行失败或
+  // 近 7 天存在 missed；灰 = 全局关闭；无点 = 正常。冷数据 GET 兜底（60s），
+  // 运行中由 /api/ws/schedule 的 run_finished/missed/task_updated 事件即时刷新；
+  // 挂这一条轻量 WS 只为状态点，页面级订阅归 /scheduled 自己（§6）。
+  const [scheduleDot, setScheduleDot] = useState<"" | "off" | "error">("");
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const cfg = await api.listSchedule();
+        if (!alive) return;
+        if (!cfg?.enabled) {
+          setScheduleDot("off");
+          return;
+        }
+        let bad = (cfg.tasks ?? []).some((t) => t.last_run?.status === "error");
+        if (!bad) {
+          const r = await api.listScheduleRuns({ status: "missed", sort: "desc", page: 1 });
+          if (!alive) return;
+          const cutoff = Date.now() / 1000 - 7 * 86400;
+          bad = (r.rows ?? []).some((x) => (x.scheduled_at ?? x.started_at ?? 0) >= cutoff);
+        }
+        if (alive) setScheduleDot(bad ? "error" : "");
+      } catch {
+        /* sidecar 未起时静默——保持上次状态 */
+      }
+    };
+    tick();
+    const iv = setInterval(tick, 60000);
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(wsScheduleUrl());
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data) as { type?: string };
+          if (msg.type === "run_finished" || msg.type === "missed" || msg.type === "task_updated") {
+            void tick();
+          }
+        } catch {
+          /* 非 JSON 帧 */
+        }
+      };
+      ws.onclose = () => {
+        /* 状态点非关键路径，不重连（60s 轮询兜底） */
+      };
+    } catch {
+      /* WebSocket 不可用（静态导出预渲染） */
+    }
+    return () => {
+      alive = false;
+      clearInterval(iv);
+      try {
+        ws?.close();
+      } catch {
+        /* already closed */
+      }
+    };
+  }, []);
+
+  // keep_awake 状态同步（scheduled-tasks-design §3.3）：runtime 的
+  // schedules.json 是唯一真值；壳重启而 runtime 未动时由 web 启动加载后向壳
+  // 同步一次。纯 web/dev 无 Tauri 时 setKeepAwake 直接返回 false，优雅降级。
+  useEffect(() => {
+    if (!g.ready) return;
+    api
+      .listSchedule()
+      .then((cfg) => {
+        // 无条件断言到真值（command 幂等）：false 时顺带清掉壳内可能残留的
+        // caffeinate 子进程。
+        if (cfg) void setKeepAwake(!!cfg.keep_awake);
+      })
+      .catch(() => {
+        /* sidecar 未起 */
+      });
+  }, [g.ready]);
+
   // Sidebar sessions: activity-day groups, newest activity first. `updated`
   // is bumped per turn server-side, so it tracks last use, not creation.
   // C+ 方案③：agent 筛选作用于分组前的列表，分组/排序逻辑不变。
@@ -256,7 +336,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // （type==="subagent"）按 parent_session_id 挂到父行下嵌套渲染。子会话不进
   // 天分组——它的活动不应顶起父会话的排序（设计文档开放问题 2 的 UI 侧答案）。
   const visibleSessions = g.sessions.filter(
-    (s) => !agentFilter || s.agent_id === agentFilter,
+    (s) =>
+      // 影子会话整类隐藏（scheduled-tasks-design §3.6/§10 决议 5）：不进列表
+      // 也不进搜索，只能从 /scheduled 的执行记录/时间条进入回放。
+      s.type !== "scheduled" &&
+      (!agentFilter || s.agent_id === agentFilter),
   );
   // 父 id → 直属子会话（按创建时间正序）。
   const childrenOf = new Map<string, SessionMeta[]>();
@@ -772,6 +856,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-yellow-500" title="有连接器未连接" />
             ) : null}
           </Link>
+          {/* 定时任务（scheduled-tasks-design §3.1）：Connectors 之下、KB 之上 */}
+          <Link href="/scheduled" className={`nav-item ${onScheduled ? "nav-item-active" : ""}`}>
+            <AlarmClock className="h-4 w-4 shrink-0" />
+            <span className="truncate">定时任务</span>
+            {scheduleDot === "error" ? (
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-red-500" title="最近执行失败或有错过的计划点" />
+            ) : scheduleDot === "off" ? (
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-faint" title="定时任务已全局关闭" />
+            ) : null}
+          </Link>
           <Link href="/kb" className={`nav-item ${onKb ? "nav-item-active" : ""}`}>
             <BookOpen className="h-4 w-4 shrink-0" />
             <span className="truncate">Knowledge Base</span>
@@ -796,7 +890,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             打开 run 视图时同样用 hidden（不卸载）——会话流的 WS/草稿等 ref 状态
             在回看运行期间保持存活。 */}
         <div className={`flex min-w-0 flex-1 ${onWorkspace ? "" : "hidden"}`}>
-          <div className={`flex min-w-0 flex-1 flex-col ${g.activeRunId ? "hidden" : ""}`}>
+          <div className={`flex min-w-0 flex-1 flex-col ${g.activeRunId || g.activeScheduleRunId ? "hidden" : ""}`}>
             {session && (
               <TopBar session={session} agent={agent} running={running} usage={usage} />
             )}
@@ -817,8 +911,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {g.rightPanelOpen ? <RightPanel /> : <RightDock />}
           <SheetViewer />
         </div>
-        {/* Non-workspace routes (settings, kb, workflows) */}
-        {!onWorkspace && <div className="flex min-w-0 flex-1">{children}</div>}
+        {/* Non-workspace routes (settings, kb, workflows, scheduled)。定时回放期间
+            用 CSS hidden（不卸载）——/scheduled 的页签/过滤/时间条日期在「返回」后
+            无缝还原（同工作区的 hidden 不卸载骨架，§3.6）。 */}
+        {!onWorkspace && (
+          <div className={`flex min-w-0 flex-1 ${g.activeScheduleRunId ? "hidden" : ""}`}>{children}</div>
+        )}
+        {/* 定时任务回放（scheduled-tasks-design §3.6）：与 run 视图互斥，挂载在
+            main 顶层——/scheduled 里点执行记录也直接全屏回看，不离开当前路由；
+            返回即还原（children/工作区都只是被 hidden，状态无损）。 */}
+        {g.activeScheduleRunId && g.activeScheduleRun && (
+          <div className="flex min-w-0 flex-1 flex-col">
+            <ScheduleRunView run={g.activeScheduleRun} />
+          </div>
+        )}
       </main>
 
       {/* B 轨 fallback「提示一次」toast(connector #6) */}

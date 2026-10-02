@@ -24,7 +24,10 @@ export function SessionSearchModal({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const results = useMemo(() => {
-    const sorted = [...g.sessions].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
+    // 影子会话整类不进搜索（scheduled-tasks-design §3.6/§10 决议 5）。
+    const sorted = [...g.sessions]
+      .filter((s) => s.type !== "scheduled")
+      .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
     const needle = q.trim().toLowerCase();
     if (!needle) return sorted;
     // C+ 方案⑤：标题 ∪ Agent 名匹配——直接输「调研」能找到该 agent 经手的

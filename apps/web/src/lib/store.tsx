@@ -312,6 +312,14 @@ interface GinnoState {
   activeRunId: string | null;
   openRunView: (runId: string) => void;
   closeRunView: () => void;
+  // ---- 定时任务回放（scheduled-tasks-design.md §3.6）----
+  // 影子会话不进会话列表，回放由 /scheduled 的时间条/执行记录经
+  // openScheduleRun 打开；挂载骨架与 activeRunId 分支互斥（AppShell）。
+  // 快照随 id 一起存——执行记录没有单条 GET，顶栏的任务名/状态直接取快照。
+  activeScheduleRunId: string | null;
+  activeScheduleRun: import("./types").ScheduleRun | null;
+  openScheduleRun: (run: import("./types").ScheduleRun) => void;
+  closeScheduleRun: () => void;
   // ---- 侧栏子树折叠覆盖（从 AppShell 上收，localStorage 持久化）----
   // 语义与原 AppShell 本地状态一致：undefined = 默认（有子代 → 展开），
   // true = 用户折叠，false = 用户显式展开。键为会话 id。
@@ -728,12 +736,21 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const openRunView = useCallback((runId: string) => setActiveRunId(runId), []);
   const closeRunView = useCallback(() => setActiveRunId(null), []);
 
+  // ---- 定时任务回放（与 run 视图互斥：互相打开时关掉对方）----
+  const [scheduleRun, setScheduleRun] = useState<import("./types").ScheduleRun | null>(null);
+  const openScheduleRun = useCallback((run: import("./types").ScheduleRun) => {
+    setScheduleRun(run);
+    setActiveRunId(null);
+  }, []);
+  const closeScheduleRun = useCallback(() => setScheduleRun(null), []);
+
   // Consumer-facing setter：切换/清空会话时同步关掉 run 视图（中央区二选一）。
   // 内部 boot 路径仍用裸 setActiveSessionId；newSession / removeSession 里也
   // 各自清一次。
   const setActiveSession = useCallback((id: string | null) => {
     setActiveSessionId(id);
     setActiveRunId(null);
+    setScheduleRun(null);
   }, []);
 
   // The session scope artifacts were last loaded for. When the scope changes
@@ -1097,7 +1114,8 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         if (s && s.ok !== false && s.id) {
           setSessions((prev) => [s, ...prev.filter((x) => x.id !== s.id)]);
           setActiveSessionId(s.id);
-          setActiveRunId(null); // 视图切到新会话，run 视图一并关闭
+          setActiveRunId(null); // 视图切到新会话，run 视图/定时回放一并关闭
+          setScheduleRun(null);
           setSessionError(null);
           return s;
         }
@@ -1198,6 +1216,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       return next;
     });
     if (activeDoomed) setActiveRunId(null);
+    if (activeDoomed) setScheduleRun(null);
     try {
       await api.deleteSession(id, opts?.cascade);
     } catch {
@@ -1430,6 +1449,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     activeRunId,
     openRunView,
     closeRunView,
+    activeScheduleRunId: scheduleRun?.run_id ?? null,
+    activeScheduleRun: scheduleRun,
+    openScheduleRun,
+    closeScheduleRun,
     setRightTab,
     rightPanelOpen,
     rightPanelWidth,
