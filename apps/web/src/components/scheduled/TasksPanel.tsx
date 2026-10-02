@@ -83,7 +83,7 @@ export function TasksPanel({
         <div className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-faint">
           No scheduled tasks yet.
           <br />
-          Click "New Task" to set up your first one — a prompt or a workflow.
+          Click &quot;New Task&quot; to set up your first one — a prompt or a workflow.
         </div>
       ) : (
         <div className={`space-y-2 transition-opacity ${cfg.enabled ? "" : "opacity-50"}`}>
