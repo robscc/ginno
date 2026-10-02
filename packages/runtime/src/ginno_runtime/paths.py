@@ -235,6 +235,7 @@ def ensure_layout() -> None:
         "workflows",
         "knowledge",
         "usage",
+        "schedule-runs",
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
@@ -361,6 +362,19 @@ def usage_dir() -> Path:
     Append-only per-day JSONL request logs live here:
     ``requests-YYYY-MM-DD.jsonl`` (local-time dates)."""
     return home() / "usage"
+
+
+def schedules_path() -> Path:
+    """定时任务配置（scheduled-tasks-design.md §4.1）：任务定义 + 全局开关。"""
+    return home() / "schedules.json"
+
+
+def schedule_runs_dir() -> Path:
+    """定时任务执行记录（scheduled-tasks-design.md §4.2）。
+
+    Append-only per-day JSONL execution logs live here:
+    ``runs-YYYY-MM-DD.jsonl`` (local-time dates)."""
+    return home() / "schedule-runs"
 
 
 def session_files_dir(slug: str, session_id: str) -> Path:

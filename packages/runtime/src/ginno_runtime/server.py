@@ -146,11 +146,33 @@ async def lifespan(app: FastAPI):
     # before connections finish simply starts without those tools (the
     # /api/mcp/reload endpoint or a new session picks them up once ready).
     mcp_connect_task = asyncio.create_task(_connect_mcp_background())
+    # 定时任务调度器（scheduled-tasks-design.md §3.7）：启动对账（孤儿 running 行
+    # → error("interrupted")）+ 单例 30s tick 循环，随 lifespan cancel。
+    scheduler_task = None
+    try:
+        from . import schedule_store as _sched_store
+        from . import scheduler as _scheduler
+
+        try:
+            _sched_store.cleanup()
+        except Exception:
+            _log.exception("schedule cleanup failed (continuing)")
+        scheduler_task = _scheduler.start()
+    except Exception:
+        _log.exception("scheduler start failed (continuing)")
     try:
         yield
     finally:
         if not mcp_connect_task.done():
             mcp_connect_task.cancel()
+        # 取消调度循环 + 在途执行协程（契约同 Goal driver / _connect_mcp_background）。
+        if scheduler_task is not None:
+            try:
+                from . import scheduler as _scheduler
+
+                await _scheduler.stop()
+            except Exception:
+                _log.exception("scheduler_shutdown_failed")
         # Cancel live workflow-run tasks and mark any still-running run
         # interrupted so a clean quit never strands a "running" run. A hard
         # kill -9 skips this; startup reconciliation is the backstop.
@@ -221,6 +243,7 @@ from .api import folders as _folders_api  # noqa: E402
 from .api import connectors as _connectors_api  # noqa: E402
 from .api import knowledge as _knowledge_api  # noqa: E402
 from .api import memory as _memory_api  # noqa: E402
+from .api import schedule as _schedule_api  # noqa: E402
 from .api import sessions as _sessions_api  # noqa: E402
 from .api import stream as _stream_api  # noqa: E402
 from .api import todos as _todos_api  # noqa: E402
@@ -235,6 +258,7 @@ app.include_router(_files_api.router)
 app.include_router(_folders_api.router)
 app.include_router(_knowledge_api.router)
 app.include_router(_memory_api.router)
+app.include_router(_schedule_api.router)
 app.include_router(_sessions_api.router)
 app.include_router(_stream_api.router)
 app.include_router(_todos_api.router)

@@ -418,6 +418,7 @@ def create_run(
     context_override: dict | None = None,
     retried_from: str | None = None,
     supervisor_override: dict[str, Any] | None = None,
+    origin: str | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     d, ver = _wf_dsl_and_version(wf)
@@ -476,6 +477,10 @@ def create_run(
         "started": now,
         "updated": now,
     }
+    # 触发来源标记（scheduled-tasks-design.md §3.6）：定时调度器创建的 run 打
+    # "schedule"，Workflows 页运行列表据此显示「⏰ 定时」徽标；普通路径不落此字段。
+    if origin:
+        run["origin"] = origin
     _write_json(_run_path(run["id"]), run)
     return run
 
