@@ -15,12 +15,13 @@ import { useTip } from "@/components/settings/usage/charts";
 import { dateStr, fmtClock, fmtDuration, runClickable, statusMeta } from "./shared";
 
 // SVG 几何：等比 viewBox，宽度固定 1000；上下留白 + lane 高度。
+// 尺寸刻意偏大（更醒目）：条高 12 + 背景轨道 + 4h 网格，整体读作一条厚时间带。
 const W = 1000;
-const PAD_X = 8;
-const LANE_H = 12;
-const BAR_H = 8;
-const TOP = 14;
-const AXIS_H = 18;
+const PAD_X = 10;
+const LANE_H = 17;
+const BAR_H = 12;
+const TOP = 20;
+const AXIS_H = 22;
 const MAX_LANES = 3;
 
 const msOf = (sec: number) => {
@@ -151,8 +152,8 @@ export function DayTimeline({
   const axisTicks = [0, 4, 8, 12, 16, 20, 24];
 
   return (
-    <div className="rounded-xl border border-line bg-card p-3">
-      <div className="mb-1 flex items-center gap-2 text-xs">
+    <div className="rounded-xl border border-line bg-card p-4">
+      <div className="mb-2 flex items-center gap-2 text-xs">
         <span className="font-medium text-txt">{isToday ? "Today" : date}</span>
         <button
           onClick={() => shiftDate(-1)}
@@ -174,53 +175,80 @@ export function DayTimeline({
             Back to today
           </button>
         )}
-        {/* 图例（§3.1 头部示意） */}
-        <span className="ml-auto flex items-center gap-3 text-[10px] text-faint">
-          <span className="flex items-center gap-1">
-            <i className="inline-block h-2 w-3 rounded-[2px]" style={{ background: "#14b8a6" }} /> OK
+        {/* 图例（§3.1 头部示意；色块加大与主体条同高） */}
+        <span className="ml-auto flex items-center gap-3 text-[10.5px] text-faint">
+          <span className="flex items-center gap-1.5">
+            <i className="inline-block h-3 w-4 rounded-[3px]" style={{ background: "#14b8a6" }} /> OK
           </span>
-          <span className="flex items-center gap-1">
-            <i className="inline-block h-2 w-3 rounded-[2px]" style={{ background: "#ef4444" }} /> Error
+          <span className="flex items-center gap-1.5">
+            <i className="inline-block h-3 w-4 rounded-[3px]" style={{ background: "#ef4444" }} /> Error
           </span>
-          <span className="flex items-center gap-1">
-            <i className="inline-block h-2 w-3 animate-pulse rounded-[2px]" style={{ background: "#14b8a6" }} />{" "}
-            Running
+          <span className="flex items-center gap-1.5">
+            <i className="inline-block h-3 w-4 animate-pulse rounded-[3px]" style={{ background: "#14b8a6" }} /> Running
           </span>
-          <span className="flex items-center gap-1">
-            <i className="inline-block h-2 w-2 border border-faint" /> Planned
+          <span className="flex items-center gap-1.5">
+            <i className="inline-block h-3 w-3 rotate-45 rounded-[2px] border-[1.6px] border-violet bg-card" /> Planned
+          </span>
+          <span className="flex items-center gap-1.5">
+            <i className="inline-block h-3 w-1.5 rounded-[2px] border-[1.4px] border-dashed border-amber-500" /> Missed
           </span>
         </span>
       </div>
 
       <svg viewBox={`0 0 ${W} ${height}`} className="w-full" role="img" aria-label="Daily run timeline">
+        {/* 背景轨道：整条时间带铺底，让空时段也有「条」的实体感 */}
+        <rect
+          x={PAD_X}
+          y={TOP - 5}
+          width={W - PAD_X * 2}
+          height={LANE_H * MAX_LANES + 10}
+          rx={8}
+          fill="var(--base, #101014)"
+          opacity={0.55}
+        />
+        {/* 4h 交替底纹 + 整点竖网格：给时间带节拍感，白天/工作时段一眼可辨 */}
+        {axisTicks.slice(0, -1).map((h, i) =>
+          i % 2 === 1 ? (
+            <rect
+              key={`shade-${h}`}
+              x={xOfMs(h * 3600000)}
+              y={TOP - 5}
+              width={xOfMs((h + 4) * 3600000) - xOfMs(h * 3600000)}
+              height={LANE_H * MAX_LANES + 10}
+              fill="var(--line)"
+              opacity={0.28}
+            />
+          ) : null,
+        )}
+        {axisTicks.map((h) => {
+          const x = xOfMs(h * 3600000);
+          return (
+            <line
+              key={`grid-${h}`}
+              x1={x}
+              y1={TOP - 5}
+              x2={x}
+              y2={height - AXIS_H + 2}
+              stroke="var(--line2)"
+              strokeWidth={h % 12 === 0 ? 1 : 0.6}
+              opacity={0.7}
+            />
+          );
+        })}
+
         {/* 轴线与刻度 */}
-        <line x1={PAD_X} y1={height - AXIS_H} x2={W - PAD_X} y2={height - AXIS_H} stroke="var(--line)" strokeWidth={1} />
+        <line x1={PAD_X} y1={height - AXIS_H} x2={W - PAD_X} y2={height - AXIS_H} stroke="var(--line2)" strokeWidth={1.2} />
         {axisTicks.map((h) => {
           const x = xOfMs(h * 3600000);
           return (
             <g key={h}>
               <line x1={x} y1={height - AXIS_H} x2={x} y2={height - AXIS_H + 4} stroke="var(--line2)" strokeWidth={1} />
-              <text x={x} y={height - 4} textAnchor="middle" fontSize={10} fill="var(--faint)">
-                {h}
+              <text x={x} y={height - 6} textAnchor="middle" fontSize={10.5} fill="var(--faint)">
+                {h === 24 ? "24h" : `${h}`}
               </text>
             </g>
           );
         })}
-
-        {/* lane 基线（淡） */}
-        {Array.from({ length: MAX_LANES }).map((_, i) => (
-          <line
-            key={i}
-            x1={PAD_X}
-            y1={TOP + i * LANE_H + BAR_H / 2}
-            x2={W - PAD_X}
-            y2={TOP + i * LANE_H + BAR_H / 2}
-            stroke="var(--line)"
-            strokeWidth={0.5}
-            strokeDasharray="2 6"
-            opacity={0.5}
-          />
-        ))}
 
         {/* 已执行时段 */}
         {(tl?.runs ?? []).map((r) => {
@@ -228,26 +256,21 @@ export function DayTimeline({
           const y = TOP + (lane ?? 0) * LANE_H;
           const meta = statusMeta(r.status);
           if (r.status === "missed") {
-            // missed 无时长：画在计划点的空心短刻度（§3.4），不可点。
+            // missed 无时长：画在计划点的琥珀色空心竖标（§3.4，比灰更显眼），不可点。
             const at = r.scheduled_at;
             if (at == null || new Date(at * 1000).toDateString() !== new Date(date + "T00:00:00").toDateString())
               return null;
             const x = xOfMs(msOf(at));
             return (
-              <rect
+              <g
                 key={r.run_id}
-                x={x - 2}
-                y={y}
-                width={4}
-                height={BAR_H}
-                fill="none"
-                stroke={meta.color}
-                strokeWidth={1}
-                rx={1}
                 onMouseEnter={hoverRun(r)}
                 onMouseMove={hoverRun(r)}
                 onMouseLeave={hide}
-              />
+              >
+                <rect x={x - 2.5} y={TOP - 3} width={5} height={LANE_H * MAX_LANES + 6} fill="#f59e0b" opacity={0.14} rx={2} />
+                <rect x={x - 2} y={TOP - 3} width={4} height={LANE_H * MAX_LANES + 6} fill="none" stroke="#f59e0b" strokeWidth={1.4} strokeDasharray="3 2" rx={2} />
+              </g>
             );
           }
           if (lane === undefined) return null;
@@ -256,70 +279,82 @@ export function DayTimeline({
           const startMs = msOf(startSec);
           const endMs = r.finished_at ? msOf(r.finished_at) : r.status === "running" && isToday ? nowMs : startMs + 60000;
           const x = xOfMs(startMs);
-          const w = Math.max(3, xOfMs(endMs) - x);
+          const w = Math.max(4, xOfMs(endMs) - x);
           const clickable = runClickable(r);
+          const running = r.status === "running";
           return (
-            <rect
-              key={r.run_id}
-              x={x}
-              y={y}
-              width={w}
-              height={BAR_H}
-              rx={3}
-              fill={meta.color}
-              opacity={r.status === "skipped_overlap" ? 0.45 : r.status === "error" ? 0.85 : 0.9}
-              className={r.status === "running" ? "animate-pulse" : undefined}
-              onMouseEnter={hoverRun(r)}
-              onMouseMove={hoverRun(r)}
-              onMouseLeave={hide}
-              onClick={() => clickRun(r)}
-              style={{ cursor: clickable ? "pointer" : "default" }}
-            />
+            <g key={r.run_id}>
+              {/* 状态色主体条：满不透明 + 卡片色描边分层，长条内加同色系渐变提亮 */}
+              <rect
+                x={x}
+                y={y}
+                width={w}
+                height={BAR_H}
+                rx={4}
+                fill={meta.color}
+                stroke="var(--card, #17171c)"
+                strokeWidth={1}
+                opacity={r.status === "skipped_overlap" ? 0.5 : 1}
+                onMouseEnter={hoverRun(r)}
+                onMouseMove={hoverRun(r)}
+                onMouseLeave={hide}
+                onClick={() => clickRun(r)}
+                className={running ? "animate-pulse" : undefined}
+                style={{ cursor: clickable ? "pointer" : "default" }}
+              />
+              {/* 高光层：上缘细亮线，让条有厚度 */}
+              {!running && r.status !== "skipped_overlap" && (
+                <rect x={x + 1} y={y + 1.5} width={Math.max(0, w - 2)} height={2.5} rx={1.25} fill="#ffffff" opacity={0.22} pointerEvents="none" />
+              )}
+              {/* running 尾端游标：呼吸的小三角，指示「还在跑」 */}
+              {running && (
+                <polygon
+                  points={`${x + w},${y + BAR_H / 2 - 4} ${x + w + 6},${y + BAR_H / 2} ${x + w},${y + BAR_H / 2 + 4}`}
+                  fill={meta.color}
+                  className="animate-pulse"
+                  pointerEvents="none"
+                />
+              )}
+            </g>
           );
         })}
 
-        {/* 未到计划点：enabled 任务 + 全局开的当天剩余触发（§3.4 空心小方块） */}
+        {/* 未到计划点：enabled 任务 + 全局开的当天剩余触发（§3.4，紫色空心菱形，
+            居中压在时间带上——比角落小方块显眼得多） */}
         {(tl?.planned ?? []).map((p, i) => {
           const x = xOfMs(msOf(p.at));
           if (x < PAD_X || x > W - PAD_X) return null;
+          const cy = TOP + (MAX_LANES * LANE_H) / 2;
+          const tip = (
+            <div>
+              <div className="font-medium text-txt">{p.task_name}</div>
+              <div className="mt-0.5">Due {fmtClock(p.at)}</div>
+            </div>
+          );
           return (
             <rect
               key={`p-${p.task_id}-${i}`}
-              x={x - 3}
-              y={TOP + (MAX_LANES - 1) * LANE_H}
-              width={6}
-              height={6}
-              fill="none"
-              stroke="var(--faint)"
-              strokeWidth={1}
-              onMouseEnter={(ev) =>
-                show(
-                  <div>
-                    <div className="font-medium text-txt">{p.task_name}</div>
-                    <div className="mt-0.5">Due {fmtClock(p.at)}</div>
-                  </div>,
-                  ev,
-                )
-              }
-              onMouseMove={(ev) =>
-                show(
-                  <div>
-                    <div className="font-medium text-txt">{p.task_name}</div>
-                    <div className="mt-0.5">Due {fmtClock(p.at)}</div>
-                  </div>,
-                  ev,
-                )
-              }
+              x={x - 4.5}
+              y={cy - 4.5}
+              width={9}
+              height={9}
+              fill="var(--card, #17171c)"
+              stroke="#8b5cf6"
+              strokeWidth={1.6}
+              transform={`rotate(45 ${x} ${cy})`}
+              onMouseEnter={(ev) => show(tip, ev)}
+              onMouseMove={(ev) => show(tip, ev)}
               onMouseLeave={hide}
             />
           );
         })}
 
-        {/* 现在线（仅今天） */}
+        {/* 现在线（仅今天）：加粗 + 顶端圆点 + 时间标签 */}
         {isToday && (
           <g>
-            <line x1={xOfMs(nowMs)} y1={4} x2={xOfMs(nowMs)} y2={height - AXIS_H} stroke="var(--violet, #8b5cf6)" strokeWidth={1} />
-            <text x={xOfMs(nowMs) + 3} y={10} fontSize={9} fill="#8b5cf6">
+            <line x1={xOfMs(nowMs)} y1={6} x2={xOfMs(nowMs)} y2={height - AXIS_H} stroke="#8b5cf6" strokeWidth={1.6} />
+            <circle cx={xOfMs(nowMs)} cy={7} r={3} fill="#8b5cf6" />
+            <text x={xOfMs(nowMs) + 5} y={11} fontSize={9.5} fontWeight={600} fill="#8b5cf6">
               {fmtClock(Date.now() / 1000)}
             </text>
           </g>
