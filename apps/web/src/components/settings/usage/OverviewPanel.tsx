@@ -291,7 +291,7 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
   const total = sources.reduce((a, s) => a + s.input_tokens + s.output_tokens, 0) || 1;
   const vmax = Math.max(...sources.map((s) => s.input_tokens + s.output_tokens), 1);
   return (
-    <div className="rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
+    <div className="min-w-0 overflow-hidden rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
         <h3 className="text-[13px] font-semibold">Source distribution</h3>
         <span className="text-[11px] text-faint">Chat · workflows · background</span>
@@ -303,7 +303,7 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
         return (
           <div
             key={s.source}
-            className="grid grid-cols-[96px_1fr_118px] items-center gap-2.5 border-b border-white/5 py-2 last:border-b-0"
+            className="border-b border-white/5 py-2 last:border-b-0"
             onMouseEnter={(e) =>
               show(
                 <>
@@ -320,16 +320,18 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
             onMouseMove={move}
             onMouseLeave={hide}
           >
-            <span className="flex items-center gap-2 text-[12.5px] text-muted">
-              <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: meta.color }} />
-              {meta.label}
-            </span>
-            <span className="h-2.5 overflow-hidden rounded-full bg-card2">
-              <span className="block h-full rounded-full" style={{ width: `${(v / vmax) * 100}%`, background: meta.color }} />
-            </span>
-            <span className="text-right text-xs tabular-nums text-muted">
-              <b className="text-txt">{pct(v / total)}</b> · {fmt(v)}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted" title={meta.label}>
+                <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: meta.color }} />
+                <span className="truncate">{meta.label}</span>
+              </span>
+              <span className="ml-auto flex-none whitespace-nowrap text-xs tabular-nums text-muted">
+                <b className="text-txt">{pct(v / total)}</b> · {fmt(v)}
+              </span>
+            </div>
+            <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-card2">
+              <div className="h-full rounded-full" style={{ width: `${(v / vmax) * 100}%`, background: meta.color }} />
+            </div>
           </div>
         );
       })}
@@ -343,7 +345,7 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
   const total = ov.providers.reduce((a, p) => a + p.input_tokens + p.output_tokens, 0) || 1;
   const vmax = Math.max(...ov.providers.map((p) => p.input_tokens + p.output_tokens), 1);
   return (
-    <div className="rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
+    <div className="min-w-0 overflow-hidden rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
         <h3 className="text-[13px] font-semibold">Provider distribution</h3>
         <span className="text-[11px] text-faint">Share within window</span>
@@ -354,7 +356,7 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
         return (
           <div
             key={p.provider}
-            className="grid grid-cols-[96px_1fr_118px] items-center gap-2.5 border-b border-white/5 py-2 last:border-b-0"
+            className="border-b border-white/5 py-2 last:border-b-0"
             onMouseEnter={(e) =>
               show(
                 <>
@@ -372,16 +374,18 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
             onMouseMove={move}
             onMouseLeave={hide}
           >
-            <span className="flex items-center gap-2 text-[12.5px] text-muted">
-              <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: providerColor(p.provider) }} />
-              {p.provider}
-            </span>
-            <span className="h-2.5 overflow-hidden rounded-full bg-card2">
-              <span className="block h-full rounded-full" style={{ width: `${(v / vmax) * 100}%`, background: providerColor(p.provider) }} />
-            </span>
-            <span className="text-right text-xs tabular-nums text-muted">
-              <b className="text-txt">{pct(v / total)}</b> · {fmt(v)}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted" title={p.provider}>
+                <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: providerColor(p.provider) }} />
+                <span className="truncate">{p.provider}</span>
+              </span>
+              <span className="ml-auto flex-none whitespace-nowrap text-xs tabular-nums text-muted">
+                <b className="text-txt">{pct(v / total)}</b> · {fmt(v)}
+              </span>
+            </div>
+            <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-card2">
+              <div className="h-full rounded-full" style={{ width: `${(v / vmax) * 100}%`, background: providerColor(p.provider) }} />
+            </div>
           </div>
         );
       })}
@@ -393,32 +397,28 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
 function ModelRank({ ov }: { ov: UsageOverview }) {
   const total = ov.models.reduce((a, m) => a + m.input_tokens + m.output_tokens, 0) || 1;
   return (
-    <div className="rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
+    <div className="min-w-0 overflow-hidden rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
         <h3 className="text-[13px] font-semibold">Model ranking</h3>
         <span className="text-[11px] text-faint">By total tokens</span>
       </div>
-      <div className="grid grid-cols-[14px_1.35fr_0.8fr_0.55fr_0.6fr] gap-2 pb-1.5 text-[11px] text-faint">
-        <span />
+      <div className="flex items-baseline gap-2 pb-1.5 text-[11px] text-faint">
         <span>Model</span>
-        <span className="text-right">Tokens</span>
-        <span className="text-right">Share</span>
-        <span className="text-right">Hit</span>
+        <span className="ml-auto whitespace-nowrap">Tokens · Share · Hit</span>
       </div>
       {ov.models.length === 0 && <div className="py-6 text-center text-xs text-faint">No data</div>}
       {ov.models.map((m) => {
         const v = m.input_tokens + m.output_tokens;
         const hit = m.cache_read_tokens > 0 || m.cache_hit_ratio > 0 ? pct(m.cache_hit_ratio) : "—";
         return (
-          <div key={`${m.provider}/${m.model}`} className="grid grid-cols-[14px_1.35fr_0.8fr_0.55fr_0.6fr] items-center gap-2 border-b border-white/5 py-2 text-[12.5px] last:border-b-0">
-            <i className="h-2 w-2 rounded-[2.5px]" style={{ background: providerColor(m.provider) }} />
-            <span>
-              <span className="text-txt">{m.model}</span> <span className="text-[11.5px] text-faint">· {m.provider}</span>
+          <div key={`${m.provider}/${m.model}`} className="flex items-start gap-2 border-b border-white/5 py-2 text-[12.5px] last:border-b-0">
+            <i className="mt-1.5 h-2 w-2 flex-none rounded-[2.5px]" style={{ background: providerColor(m.provider) }} />
+            <span className="min-w-0 flex-1 break-words text-txt">
+              {m.model} <span className="text-[11.5px] text-faint">· {m.provider}</span>
             </span>
-            <span className="text-right tabular-nums"><b>{fmt(v)}</b></span>
-            <span className="text-right tabular-nums text-muted">{pct(v / total)}</span>
-            <span className="text-right tabular-nums" style={{ color: hit === "—" ? undefined : "#4ade80" }}>
-              {hit === "—" ? "—" : `⚡${hit}`}
+            <span className="flex-none whitespace-nowrap text-right tabular-nums text-muted">
+              <b className="text-txt">{fmt(v)}</b> · {pct(v / total)} ·{" "}
+              <span style={{ color: hit === "—" ? undefined : "#4ade80" }}>{hit === "—" ? "—" : `⚡${hit}`}</span>
             </span>
           </div>
         );
