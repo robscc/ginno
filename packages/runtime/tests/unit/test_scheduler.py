@@ -315,6 +315,41 @@ async def test_prompt_target_dispatch(isolated_home, monkeypatch):
     assert scheduler._RUNNING.get(task["id"]) is None  # 释放重叠槽
 
 
+async def test_prompt_running_row_has_session_id(isolated_home, monkeypatch):
+    """运行中即可回放：影子会话创建后 session_id 立即回填 running 行（末行胜出）。"""
+    from ginno_runtime import server_shared as shared
+    from ginno_runtime.session_meta import _session_meta_upsert
+
+    sid = "shadow456"
+    seen = {}
+
+    async def fake_create_session(req):
+        shared._SESSIONS[sid] = {
+            "session_id": sid, "project_slug": req.project_slug,
+            "graph": object(), "agent_id": "dev",
+        }
+        _session_meta_upsert(req.project_slug, {"id": sid, "type": req.type, "title": req.title})
+        return {"id": sid, "ok": True, "type": req.type}
+
+    async def fake_run_stream(ws, graph, config, text, session, agent_id):
+        # 执行仍在跑：此刻落盘的末行应已带 session_id 且 status=running
+        rows = store.dedupe_runs(store.load_day(store._today()))
+        seen["row"] = next(r for r in rows if r.get("session_id") == sid)
+
+    monkeypatch.setattr("ginno_runtime.api.sessions.create_session", fake_create_session)
+    monkeypatch.setattr("ginno_runtime.api.stream._run_stream", fake_run_stream)
+    monkeypatch.setattr("ginno_runtime.api.sessions._turn_last_error", lambda s, t: None)
+
+    async def fake_last_text(session_id, slug):
+        return "done"
+
+    monkeypatch.setattr(scheduler, "_last_assistant_text", fake_last_text)
+    rid = scheduler.trigger_task(_task(), trigger="manual")
+    await scheduler._RUN_TASKS[rid]
+    assert seen["row"]["status"] == "running"
+    assert seen["row"]["session_id"] == sid
+
+
 async def test_workflow_missing_records_error(isolated_home):
     task = _task(target={"type": "workflow", "workflow_id": "gone-wf"})
     rid = scheduler.trigger_task(task, trigger="manual")

@@ -393,6 +393,10 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
         return {"ok": False, "error": str(meta.get("error") or "会话创建失败"), "text": ""}
     session_id = meta["id"]
     row["session_id"] = session_id
+    # 运行中即可回放：把 session_id 回填进 running 行（jsonl 末行胜出），并广播
+    # 让前端刷新拿到可点行。
+    store.record_run(row)
+    schedule_events().emit("run_started", {"run": row})
     # meta 标 schedule_run_id（§4.3）；type 已由 CreateSessionRequest.type 落盘
     from .session_meta import _session_meta_patch
 

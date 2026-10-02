@@ -56,28 +56,39 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
     return () => clearInterval(t);
   }, [run.status, run.task_id, run.run_id]);
 
-  // 拉影子会话全量消息（只读，一次性）。
+  // 拉影子会话全量消息（只读）。运行中每 5s 重拉——消息随执行流式落地，终态即停。
   useEffect(() => {
     if (!run.session_id) {
       setMessages([]);
       return;
     }
+    let stopped = false;
+    const fetchOnce = () =>
+      api
+        .getSessionHistory(run.session_id!)
+        .then((h) => {
+          if (!alive.current || stopped) return;
+          // ok:false 或空消息 = 会话已删（§4.2：记录保留、回放给「已删除」空态）。
+          if (h?.ok === false) setHistoryError(true);
+          setMessages(h?.messages ?? []);
+        })
+        .catch(() => {
+          if (!alive.current || stopped) return;
+          setHistoryError(true);
+          setMessages([]);
+        });
     setMessages(null);
     setHistoryError(false);
-    api
-      .getSessionHistory(run.session_id)
-      .then((h) => {
-        if (!alive.current) return;
-        // ok:false 或空消息 = 会话已删（§4.2：记录保留、回放给「已删除」空态）。
-        if (h?.ok === false) setHistoryError(true);
-        setMessages(h?.messages ?? []);
-      })
-      .catch(() => {
-        if (!alive.current) return;
-        setHistoryError(true);
-        setMessages([]);
-      });
-  }, [run.session_id]);
+    void fetchOnce();
+    let timer: number | undefined;
+    if (run.status === "running") {
+      timer = window.setInterval(fetchOnce, 5000);
+    }
+    return () => {
+      stopped = true;
+      if (timer !== undefined) clearInterval(timer);
+    };
+  }, [run.session_id, run.status]);
 
   const meta = statusMeta(run.status);
   const dur =

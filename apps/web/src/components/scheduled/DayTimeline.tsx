@@ -279,7 +279,8 @@ export function DayTimeline({
           const startMs = msOf(startSec);
           const endMs = r.finished_at ? msOf(r.finished_at) : r.status === "running" && isToday ? nowMs : startMs + 60000;
           const x = xOfMs(startMs);
-          const w = Math.max(4, xOfMs(endMs) - x);
+          // 最小宽度 12px（≈17 分钟视觉宽度）：秒级短任务在 24h 条上也可见可点。
+          const w = Math.max(12, xOfMs(endMs) - x);
           const clickable = runClickable(r);
           const running = r.status === "running";
           return (
