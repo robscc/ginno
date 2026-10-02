@@ -45,40 +45,41 @@ export function SynthesisQualitySettings() {
     <div className="px-8 py-7">
       <div className="flex items-center gap-2">
         <TrendingUp className="h-5 w-5 text-violet" />
-        <h2 className="text-lg font-semibold text-txt">总结质量</h2>
+        <h2 className="text-lg font-semibold text-txt">Synthesis Quality</h2>
         <div className="ml-auto flex items-center gap-2">
           <select
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
             className="rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted outline-none"
           >
-            <option value={7}>最近 7 天</option>
-            <option value={30}>最近 30 天</option>
-            <option value={90}>最近 90 天</option>
+            <option value={7}>Last 7 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
           </select>
           <button
             onClick={() => void load()}
             className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-xs text-muted hover:text-txt"
           >
             {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-            刷新
+            Refresh
           </button>
         </div>
       </div>
       <p className="mt-1 text-sm text-muted">
-        「总结成流程」的成功率与准确率漏斗。成功率 = 首跑完成 / 触发总数；准确率依赖案例回放与反馈。
+        Success-rate and accuracy funnel for &quot;synthesize into a workflow&quot;. Success rate =
+        first runs completed / total triggered; accuracy relies on case replay and feedback.
       </p>
 
       {/* funnel metric cards */}
       {stats && (
         <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <MetricCard label="L1 生成成功" value={`${pct(stats.l1_generated, stats.total)}%`} sub={`${stats.l1_generated}/${stats.total} 次`} color="#a78bfa" />
-          <MetricCard label="L2 被采用" value={`${pct(stats.l2_adopted, stats.l1_generated)}%`} sub={`${stats.l2_adopted}/${stats.l1_generated} 创建`} color="#60a5fa" />
-          <MetricCard label="L3 首跑完成" value={`${pct(stats.l3_first_run_done, stats.l2_adopted)}%`} sub={`${stats.l3_first_run_done}/${stats.l2_adopted} 跑通`} color="#4ade80" />
+          <MetricCard label="L1 generated" value={`${pct(stats.l1_generated, stats.total)}%`} sub={`${stats.l1_generated}/${stats.total} runs`} color="#a78bfa" />
+          <MetricCard label="L2 adopted" value={`${pct(stats.l2_adopted, stats.l1_generated)}%`} sub={`${stats.l2_adopted}/${stats.l1_generated} created`} color="#60a5fa" />
+          <MetricCard label="L3 first run done" value={`${pct(stats.l3_first_run_done, stats.l2_adopted)}%`} sub={`${stats.l3_first_run_done}/${stats.l2_adopted} completed`} color="#4ade80" />
           <MetricCard
-            label="平均草稿改动"
+            label="Avg draft edits"
             value={stats.avg_edit_distance === null ? "—" : String(stats.avg_edit_distance)}
-            sub="edit_distance 均值"
+            sub="edit_distance mean"
             color="#f59e0b"
           />
         </div>
@@ -87,7 +88,7 @@ export function SynthesisQualitySettings() {
       {/* top failure labels */}
       {stats && stats.top_fail_labels.length > 0 && (
         <div className="mt-4">
-          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Top 失败标签</div>
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">Top failure labels</div>
           <div className="flex flex-wrap gap-1.5">
             {stats.top_fail_labels.map((f) => (
               <span key={f.label} className="rounded-full border border-line px-2 py-0.5 font-mono text-[10px] text-faint">
@@ -101,10 +102,10 @@ export function SynthesisQualitySettings() {
       {/* case list */}
       <div className="mt-5">
         <div className="mb-2 flex items-center gap-3">
-          <span className="text-xs font-medium text-txt">案例（{visible.length}）</span>
+          <span className="text-xs font-medium text-txt">Cases ({visible.length})</span>
           <label className="flex items-center gap-1.5 text-[11px] text-muted">
             <input type="checkbox" checked={onlyFailed} onChange={(e) => setOnlyFailed(e.target.checked)} className="accent-violet" />
-            仅看失败 / 未跑通
+            Failed / incomplete only
           </label>
         </div>
         <div className="space-y-1">
@@ -113,7 +114,8 @@ export function SynthesisQualitySettings() {
           ))}
           {visible.length === 0 && !loading && (
             <div className="rounded-lg border border-dashed border-line p-6 text-center text-xs text-faint">
-              暂无记录。在聊天页点「总结成流程」后会自动积累案例。
+              No records yet. Cases accumulate automatically after you click &quot;synthesize into
+              a workflow&quot; in a chat page.
             </div>
           )}
         </div>
@@ -146,20 +148,20 @@ function CaseRow({ c, onOpen }: { c: SynthesisCaseSummary; onOpen: () => void })
     // runtime exited before it finished (未完成 — trace preserved on disk).
     if (c.running) {
       icon = <Loader2 className="h-3.5 w-3.5 animate-spin text-blue" />;
-      label = "进行中";
+      label = "In progress";
     } else {
       icon = <X className="h-3.5 w-3.5 text-yellow" />;
-      label = "未完成";
+      label = "Incomplete";
     }
   } else if (c.status !== "ok") {
     icon = <X className="h-3.5 w-3.5 text-red" />;
-    label = c.fail_stage || "生成失败";
+    label = c.fail_stage || "Generation failed";
   } else if (runFailed) {
     icon = <X className="h-3.5 w-3.5 text-red" />;
-    label = `首跑失败 @ ${c.outcome?.first_run?.failed_node || "?"}`;
+    label = `First run failed @ ${c.outcome?.first_run?.failed_node || "?"}`;
   } else {
     icon = <Check className={`h-3.5 w-3.5 ${adopted ? "text-green" : "text-faint"}`} />;
-    label = adopted ? "已采用 · 首跑成功" : "已生成";
+    label = adopted ? "Adopted · first run succeeded" : "Generated";
   }
   const when = c.ts ? new Date(c.ts * 1000).toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
   return (
@@ -170,7 +172,7 @@ function CaseRow({ c, onOpen }: { c: SynthesisCaseSummary; onOpen: () => void })
       {icon}
       <span className="min-w-0 flex-1 truncate text-xs text-txt">{label}</span>
       {c.session_stats?.messages !== undefined && (
-        <span className="shrink-0 text-[10px] text-faint">{c.session_stats.messages} 消息</span>
+        <span className="shrink-0 text-[10px] text-faint">{c.session_stats.messages} messages</span>
       )}
       {c.prompt_version && <span className="shrink-0 rounded border border-line px-1.5 text-[10px] font-mono text-faint">{c.prompt_version}</span>}
       <span className="shrink-0 text-[10px] text-faint">{when}</span>

@@ -19,7 +19,7 @@ export function ToolLabelsSettings() {
         const user = (s.tool_labels as Record<string, string>) || {};
         setLabels({ ...DEFAULT_TOOL_LABELS, ...user });
       })
-      .catch(() => setMsg("加载失败"));
+      .catch(() => setMsg("Failed to load"));
   }, []);
 
   async function save(next: Record<string, string>) {
@@ -29,10 +29,10 @@ export function ToolLabelsSettings() {
       await api.putSettings(s);
       setLabels(next);
       await refreshToolLabels();
-      setMsg("已保存");
+      setMsg("Saved");
       setTimeout(() => setMsg(""), 2000);
     } catch {
-      setMsg("保存失败");
+      setMsg("Failed to save");
     }
   }
 
@@ -52,7 +52,7 @@ export function ToolLabelsSettings() {
     const v = newVal.trim();
     if (!k || !v) return;
     if (labels[k]) {
-      setMsg(`"${k}" 已存在`);
+      setMsg(`"${k}" already exists`);
       return;
     }
     const next = { ...labels, [k]: v };
@@ -65,9 +65,11 @@ export function ToolLabelsSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">工具标签</h2>
+      <h2 className="text-lg font-semibold text-txt">Tool Labels</h2>
       <p className="mt-1 text-xs text-faint">
-        自定义工具调用气泡的显示名称。MCP 工具（以 <code className="text-muted">mcp_</code> 开头）未配置时自动显示为&ldquo;正在调用MCP：&#123;server&#125;&rdquo;。
+        Customize the display names of tool-call bubbles. MCP tools (starting with{" "}
+        <code className="text-muted">mcp_</code>) default to &ldquo;Calling MCP: &#123;server&#125;&rdquo; when not
+        configured.
       </p>
 
       <div className="mt-5 max-w-lg">
@@ -87,7 +89,7 @@ export function ToolLabelsSettings() {
               <button
                 onClick={() => removeLabel(key)}
                 className="shrink-0 rounded px-1.5 py-0.5 text-xs text-faint hover:bg-card2 hover:text-txt"
-                title="删除"
+                title="Delete"
               >
                 ✕
               </button>
@@ -99,14 +101,14 @@ export function ToolLabelsSettings() {
         <div className="mt-4 flex items-center gap-2">
           <input
             className="field w-36 shrink-0 !py-1 text-xs"
-            placeholder="工具名"
+            placeholder="Tool name"
             value={newKey}
             onChange={(e) => setNewKey(e.target.value)}
           />
           <span className="text-faint">→</span>
           <input
             className="field flex-1 !py-1 text-xs"
-            placeholder="显示名称"
+            placeholder="Display name"
             value={newVal}
             onChange={(e) => setNewVal(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addLabel()}
@@ -115,7 +117,7 @@ export function ToolLabelsSettings() {
             onClick={addLabel}
             className="shrink-0 rounded-lg border border-violet/40 px-2.5 py-1 text-xs text-violet hover:bg-violet/10"
           >
-            添加
+            Add
           </button>
         </div>
 

@@ -37,8 +37,8 @@ export const DOMAIN_RECOMMEND: Array<{
   flag: "enable_search" | "enable_thinking";
   why: string;
 }> = [
-  { host: "dashscope.aliyuncs.com", flag: "enable_search", why: "通义千问 compatible-mode 支持服务端联网搜索" },
-  { host: "deepseek.com", flag: "enable_thinking", why: "DeepSeek 支持思考模式输出推理过程" },
+  { host: "dashscope.aliyuncs.com", flag: "enable_search", why: "Qwen compatible-mode supports server-side web search" },
+  { host: "deepseek.com", flag: "enable_thinking", why: "DeepSeek supports thinking mode with reasoning output" },
 ];
 
 export function domainRecommendations(base_url: string) {
@@ -51,16 +51,15 @@ export function domainRecommendations(base_url: string) {
 // id lists; unknown keys pass through as-is.
 export function describeRefs(refs?: ModelConfigRefs): string {
   if (!refs) return "";
-  const LABEL: Record<string, string> = { agents: "Agent", sessions: "会话", workflows: "Workflow" };
+  const LABEL: Record<string, string> = { agents: "agents", sessions: "sessions", workflows: "workflows" };
   const parts: string[] = [];
   for (const [key, value] of Object.entries(refs)) {
     const n = Array.isArray(value) ? value.length : typeof value === "number" ? value : 0;
     if (!n) continue;
     const label = LABEL[key] ?? key;
-    // Space only reads well before an ASCII label ("3 个 Agent" vs "12 个会话").
-    parts.push(/[\x00-\x7f]/.test(label[0]) ? `${n} 个 ${label}` : `${n} 个${label}`);
+    parts.push(`${n} ${label}`);
   }
-  return parts.join("、");
+  return parts.join(", ");
 }
 
 export function blankConfig(): ModelConfig {
@@ -86,10 +85,10 @@ export function normalizeConfig(raw: ModelConfig): ModelConfig {
 
 export function relTime(ts: number): string {
   const d = Math.max(0, Date.now() / 1000 - ts);
-  if (d < 90) return "刚刚";
-  if (d < 3600) return `${Math.round(d / 60)} 分钟前`;
-  if (d < 86400) return `${Math.round(d / 3600)} 小时前`;
-  return `${Math.round(d / 86400)} 天前`;
+  if (d < 90) return "just now";
+  if (d < 3600) return `${Math.round(d / 60)} min ago`;
+  if (d < 86400) return `${Math.round(d / 3600)} h ago`;
+  return `${Math.round(d / 86400)} d ago`;
 }
 
 // Parse the free-form models textarea: newline- or comma-separated ids,

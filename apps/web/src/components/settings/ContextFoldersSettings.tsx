@@ -15,14 +15,14 @@ function AccessToggle({
   return (
     <button
       onClick={() => onChange(access === "rw" ? "ro" : "rw")}
-      title="点击切换访问级：rw 可读写 / ro 只读（工具层硬约束）"
+      title="Click to toggle access level: rw read-write / ro read-only (hard constraint at the tool layer)"
       className="rounded border border-line2 px-1.5 py-0.5 font-mono text-[11px] transition-colors"
       style={{
         color: access === "rw" ? "#4ade80" : "#fbbf24",
         background: access === "rw" ? "#22c55e14" : "#f59e0b14",
       }}
     >
-      {access === "rw" ? "读写" : "只读"}
+      {access === "rw" ? "rw" : "ro"}
     </button>
   );
 }
@@ -48,7 +48,7 @@ export function ContextFoldersSettings() {
     setProbe(null);
     setMsg("");
     if (!path.trim()) {
-      setMsg("请先填写目录路径");
+      setMsg("Enter a folder path first");
       return;
     }
     setProbe(await api.probeFolder(path.trim()));
@@ -60,10 +60,10 @@ export function ContextFoldersSettings() {
     try {
       const r = await api.createFolder({ path: path.trim(), access, load_rules: loadRules });
       if (!r.ok) {
-        setMsg(r.error || "添加失败");
+        setMsg(r.error || "Failed to add");
         return;
       }
-      setMsg(`已加入目录库：${r.folder?.name}`);
+      setMsg(`Added to the folder library: ${r.folder?.name}`);
       setPath("");
       setProbe(null);
       reload();
@@ -78,7 +78,7 @@ export function ContextFoldersSettings() {
   }
 
   async function remove(f: FolderEntry) {
-    if (!window.confirm(`从目录库移除「${f.name}」？已挂载它的会话会显示为缺失。`)) return;
+    if (!window.confirm(`Remove "${f.name}" from the folder library? Sessions that mounted it will show it as missing.`)) return;
     await api.deleteFolder(f.id);
     reload();
   }
@@ -86,18 +86,19 @@ export function ContextFoldersSettings() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-7">
       <h2 className="flex items-center gap-2 text-lg font-semibold text-txt">
-        <FolderInput className="h-5 w-5 text-violet" /> 上下文目录
+        <FolderInput className="h-5 w-5 text-violet" /> Context Folders
       </h2>
       <p className="mt-1 text-sm text-muted">
-        把本地目录（代码仓库、笔记、文档）注册进目录库，然后在会话中挂载（TopBar 的 📁 菜单或{" "}
-        <code className="text-txt">/mount</code> 命令）。挂载后 Agent
-        可以直接读写其中的文件；目录内的 <code className="text-txt">AGENTS.md</code> /{" "}
-        <code className="text-txt">GINNO.md</code> 会作为该目录的规则注入。
+        Register local folders (repos, notes, docs) into the folder library, then mount them in a
+        session (the TopBar 📁 menu or the <code className="text-txt">/mount</code> command). Once
+        mounted, the Agent can read and write the files directly;{" "}
+        <code className="text-txt">AGENTS.md</code> / <code className="text-txt">GINNO.md</code>{" "}
+        inside the folder are injected as that folder&apos;s rules.
       </p>
 
       {/* ---- add form ---- */}
       <div className="mt-6 rounded-xl border border-line bg-card p-4">
-        <div className="text-sm font-medium text-txt">添加目录</div>
+        <div className="text-sm font-medium text-txt">Add a folder</div>
         <div className="mt-3 flex gap-2">
           <input
             value={path}
@@ -106,14 +107,14 @@ export function ContextFoldersSettings() {
               setProbe(null);
             }}
             onKeyDown={(e) => e.key === "Enter" && doProbe()}
-            placeholder="绝对路径，如 ~/workspace/my-repo"
+            placeholder="Absolute path, e.g. ~/workspace/my-repo"
             className="field flex-1"
           />
           <button
             onClick={doProbe}
             className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-3 py-1.5 text-xs text-muted hover:text-txt"
           >
-            <Search className="h-3.5 w-3.5" /> 检测
+            <Search className="h-3.5 w-3.5" /> Probe
           </button>
         </div>
 
@@ -123,16 +124,16 @@ export function ContextFoldersSettings() {
               <div className="space-y-1 text-muted">
                 <div>
                   <span className="text-txt">{probe.path}</span> · {probe.file_count}
-                  {probe.file_count_truncated ? "+" : ""} 个文件
-                  {probe.has_git ? " · git 仓库" : ""}
+                  {probe.file_count_truncated ? "+" : ""} files
+                  {probe.has_git ? " · git repository" : ""}
                 </div>
                 <div>
                   {probe.rule_file ? (
-                    <span style={{ color: "#4ade80" }}>检测到 {probe.rule_file}（将作为规则注入）</span>
+                    <span style={{ color: "#4ade80" }}>Found {probe.rule_file} (will be injected as rules)</span>
                   ) : (
-                    <span className="text-faint">未发现 AGENTS.md / CLAUDE.md / GINNO.md</span>
+                    <span className="text-faint">No AGENTS.md / CLAUDE.md / GINNO.md found</span>
                   )}
-                  {probe.already_registered && <span style={{ color: "#fbbf24" }}> · 已在目录库中（将更新）</span>}
+                  {probe.already_registered && <span style={{ color: "#fbbf24" }}> · already in the library (will be updated)</span>}
                 </div>
               </div>
             ) : (
@@ -143,14 +144,14 @@ export function ContextFoldersSettings() {
 
         <div className="mt-3 flex items-center gap-4 text-sm text-muted">
           <label className="flex items-center gap-2">
-            访问级
+            Access level
             <select
               value={access}
               onChange={(e) => setAccess(e.target.value as "ro" | "rw")}
               className="field w-auto py-1"
             >
-              <option value="rw">读写（rw）</option>
-              <option value="ro">只读（ro）</option>
+              <option value="rw">Read-write (rw)</option>
+              <option value="ro">Read-only (ro)</option>
             </select>
           </label>
           <label className="flex items-center gap-1.5">
@@ -159,14 +160,14 @@ export function ContextFoldersSettings() {
               checked={loadRules}
               onChange={(e) => setLoadRules(e.target.checked)}
             />
-            加载其规则文件（AGENTS.md / CLAUDE.md / GINNO.md）
+            Load its rule files (AGENTS.md / CLAUDE.md / GINNO.md)
           </label>
           <button
             onClick={add}
             disabled={busy || !path.trim()}
             className="ml-auto flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            <Plus className="h-3.5 w-3.5" /> 加入目录库
+            <Plus className="h-3.5 w-3.5" /> Add to library
           </button>
         </div>
         {msg && <div className="mt-2 text-xs text-muted">{msg}</div>}
@@ -174,10 +175,10 @@ export function ContextFoldersSettings() {
 
       {/* ---- library list ---- */}
       <div className="mt-6">
-        <div className="mb-2 text-sm font-medium text-txt">目录库（{folders.length}）</div>
+        <div className="mb-2 text-sm font-medium text-txt">Folder library ({folders.length})</div>
         {folders.length === 0 ? (
           <div className="rounded-xl border border-dashed border-line2 px-4 py-8 text-center text-sm text-faint">
-            还没有注册任何目录。添加后即可在会话中挂载。
+            No folders registered yet. Add one to mount it in sessions.
           </div>
         ) : (
           <div className="space-y-2">
@@ -197,19 +198,19 @@ export function ContextFoldersSettings() {
                 </div>
                 <label
                   className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
-                  title="是否将该目录的 AGENTS.md / CLAUDE.md / GINNO.md 注入挂载它的会话"
+                  title="Whether to inject this folder's AGENTS.md / CLAUDE.md / GINNO.md into sessions that mount it"
                 >
                   <input
                     type="checkbox"
                     checked={f.load_rules}
                     onChange={(e) => patch(f.id, { load_rules: e.target.checked })}
                   />
-                  规则
+                  Rules
                 </label>
                 <button
                   onClick={() => remove(f)}
                   className="shrink-0 rounded-lg p-1.5 text-faint hover:bg-card2 hover:text-red-400"
-                  title="从目录库移除"
+                  title="Remove from library"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -218,8 +219,9 @@ export function ContextFoldersSettings() {
           </div>
         )}
         <p className="mt-3 text-xs text-faint">
-          安全边界：挂载只授予文件访问权 —— 目录内的 settings / hooks / skills 永不加载（access ≠
-          config）；只读级是工具层硬约束，与特权模式无关。
+          Security boundary: mounting only grants file access — a folder&apos;s settings / hooks /
+          skills are never loaded (access ≠ config); the read-only level is a hard constraint at the
+          tool layer, independent of Privileged Mode.
         </p>
       </div>
     </div>

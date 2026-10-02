@@ -32,10 +32,10 @@ export function NotificationsSettings() {
     try {
       const p = await saveNotifyPrefs(patch);
       setPrefs(p);
-      setMsg("已保存");
+      setMsg("Saved");
     } catch {
       setPrefs(prefs);
-      setMsg("保存失败");
+      setMsg("Failed to save");
     }
   }
 
@@ -44,21 +44,21 @@ export function NotificationsSettings() {
     void notifyNative({
       kind: "test",
       id: "test",
-      title: "Ginno 测试通知",
-      body: prefs.sound ? `提示音:${prefs.soundName}` : "这是一条测试通知(无声)",
+      title: "Ginno Test Notification",
+      body: prefs.sound ? `Sound: ${prefs.soundName}` : "This is a test notification (silent)",
       sound: prefs.sound ? prefs.soundName : undefined,
     }).then((sent) => {
       // Plain-browser dev fallback (WKWebView has no Notification API, so in
       // the packaged app notifyNative is the only path anyway).
       if (sent) return;
       if (typeof Notification === "undefined") {
-        setMsg("当前环境无法发送测试通知");
+        setMsg("Cannot send a test notification in this environment");
         return;
       }
       try {
-        new Notification("Ginno 测试通知", { body: "浏览器通知(开发环境)" });
+        new Notification("Ginno Test Notification", { body: "Browser notification (dev environment)" });
       } catch {
-        setMsg("当前环境无法发送测试通知");
+        setMsg("Cannot send a test notification in this environment");
       }
     });
   }
@@ -66,17 +66,19 @@ export function NotificationsSettings() {
   if (!prefs) {
     return (
       <div className="px-8 py-7">
-        <h2 className="text-lg font-semibold text-txt">通知</h2>
-        <p className="mt-4 text-sm text-faint">加载中…</p>
+        <h2 className="text-lg font-semibold text-txt">Notifications</h2>
+        <p className="mt-4 text-sm text-faint">Loading…</p>
       </div>
     );
   }
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">通知</h2>
+      <h2 className="text-lg font-semibold text-txt">Notifications</h2>
       <p className="mt-1 text-sm text-muted">
-        会话回复完成、Workflow 运行完成时发送系统通知;点击通知跳转到对应内容。仅在你没有查看对应内容时才提醒。
+        Send system notifications when a session reply or a Workflow run completes; clicking a
+        notification jumps to the corresponding content. You are only notified when you have not
+        viewed it yet.
       </p>
       <div className="mt-4 max-w-md space-y-4">
         <div>
@@ -86,10 +88,11 @@ export function NotificationsSettings() {
               checked={prefs.enabled}
               onChange={(e) => void save({ enabled: e.target.checked })}
             />
-            启用桌面提醒
+            Enable desktop notifications
           </label>
           <p className="mt-1 text-xs text-faint">
-            桌面端首次通知时系统会请求通知权限(若被拒绝,需在 系统设置 → 通知 → Ginno 中手动开启)。
+            The system asks for notification permission on the first desktop notification (if
+            denied, enable it manually in System Settings → Notifications → Ginno).
           </p>
         </div>
         <div>
@@ -99,11 +102,11 @@ export function NotificationsSettings() {
               checked={prefs.sound}
               onChange={(e) => void save({ sound: e.target.checked })}
             />
-            提示音
+            Sound
           </label>
         </div>
         <div>
-          <label className="field-label">提示音声音</label>
+          <label className="field-label">Sound name</label>
           <select
             className="field"
             value={prefs.soundName}
@@ -122,10 +125,11 @@ export function NotificationsSettings() {
             onClick={testNotify}
             className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:border-violet hover:text-txt"
           >
-            发送测试通知
+            Send test notification
           </button>
           <p className="mt-1 text-xs text-faint">
-            不受「启用桌面提醒」开关影响,用于验证通知权限和提示音效果。
+            Not affected by the desktop notification toggle; used to verify notification permission
+            and the sound effect.
           </p>
         </div>
         {msg && <div className="text-xs text-muted">{msg}</div>}

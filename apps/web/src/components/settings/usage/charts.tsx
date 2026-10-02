@@ -129,7 +129,7 @@ export function SkuBreakdown({ models }: { models: SkuRow[] }) {
     const merged: SkuRow = rest.reduce(
       (a, m) => ({
         provider: "",
-        model: `其他 ${rest.length} 个模型`,
+        model: `${rest.length} other models`,
         input_tokens: a.input_tokens + m.input_tokens,
         output_tokens: a.output_tokens + m.output_tokens,
         cache_read_tokens: a.cache_read_tokens + m.cache_read_tokens,
@@ -146,10 +146,10 @@ export function SkuBreakdown({ models }: { models: SkuRow[] }) {
         const cw = m.cache_creation_tokens || 0;
         const net = Math.max(0, m.input_tokens - m.cache_read_tokens - cw);
         const rows: Array<[string, number, string]> = [
-          ["输入（非缓存）", net, SERIES.input],
-          ["缓存写", cw, CACHE_WRITE_COLOR],
-          ["缓存读", m.cache_read_tokens, SERIES.cache],
-          ["输出", m.output_tokens, SERIES.output],
+          ["Input (non-cache)", net, SERIES.input],
+          ["Cache write", cw, CACHE_WRITE_COLOR],
+          ["Cache read", m.cache_read_tokens, SERIES.cache],
+          ["Output", m.output_tokens, SERIES.output],
         ];
         return (
           <div key={`${m.provider}/${m.model}`} className="mt-1.5">
@@ -157,7 +157,7 @@ export function SkuBreakdown({ models }: { models: SkuRow[] }) {
               <span className="truncate font-medium text-txt">{m.model}</span>
               <span className="flex-none text-faint">
                 {m.provider ? `${m.provider} · ` : ""}
-                {m.calls} 次
+                {m.calls} calls
               </span>
             </div>
             {rows
@@ -320,9 +320,9 @@ export function StackedBars({
 export function SeriesLegend() {
   return (
     <div className="ml-auto flex gap-3.5 text-[11.5px] text-muted">
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.cache }} />缓存读</span>
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.input }} />输入（非缓存）</span>
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.output }} />输出</span>
+      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.cache }} />Cache read</span>
+      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.input }} />Input (non-cache)</span>
+      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.output }} />Output</span>
     </div>
   );
 }

@@ -50,7 +50,7 @@ export function ModelApiSettings() {
       setDefaultConfig(r.default_config ?? "");
       setLoadError(null);
     } catch {
-      setLoadError("无法连接运行时，配置列表不可用");
+      setLoadError("Cannot connect to the runtime; the config list is unavailable");
     } finally {
       setLoading(false);
     }
@@ -78,9 +78,9 @@ export function ModelApiSettings() {
         if (okText) setNotice({ kind: "ok", text: okText });
         return true;
       }
-      setNotice({ kind: "error", text: r.error || "保存失败", refs: r.refs });
+      setNotice({ kind: "error", text: r.error || "Failed to save", refs: r.refs });
     } catch {
-      setNotice({ kind: "error", text: "保存失败：无法连接运行时" });
+      setNotice({ kind: "error", text: "Failed to save: cannot connect to the runtime" });
     } finally {
       setBusy(false);
     }
@@ -89,23 +89,23 @@ export function ModelApiSettings() {
 
   const onToggle = (cfg: ModelConfig) => {
     const next = configs.map((c) => (c.id === cfg.id ? { ...c, enabled: !c.enabled } : c));
-    void applyPut(next, defaultConfig, `已${cfg.enabled ? "停用" : "启用"}「${cfg.name || cfg.id}」`);
+    void applyPut(next, defaultConfig, `${cfg.enabled ? "Disabled" : "Enabled"} "${cfg.name || cfg.id}"`);
   };
 
   const onSetDefault = (id: string) => {
-    void applyPut(configs, id, "已设为默认");
+    void applyPut(configs, id, "Set as default");
   };
 
   const onDelete = (id: string) => {
     const cfg = configs.find((c) => c.id === id);
     let dc = defaultConfig;
-    let okText = `已删除「${cfg?.name || id}」`;
+    let okText = `Deleted "${cfg?.name || id}"`;
     // Removing the default: re-point the default at the first remaining
     // enabled config in the same PUT (mirrors the backend fallback chain);
     // if none remains, clear it and let the backend decide.
     if (cfg && dc === id) {
       dc = nextEnabledAfterRemoval(configs, id);
-      if (dc) okText += `，默认已切换到「${configs.find((c) => c.id === dc)?.name ?? dc}」`;
+      if (dc) okText += `, default switched to "${configs.find((c) => c.id === dc)?.name ?? dc}"`;
     }
     void applyPut(
       configs.filter((c) => c.id !== id),
@@ -126,7 +126,7 @@ export function ModelApiSettings() {
       return next;
     });
     setEditing(null);
-    setNotice({ kind: "ok", text: `「${saved.name || saved.id}」已验证并保存 · ${latencyMs} ms` });
+    setNotice({ kind: "ok", text: `"${saved.name || saved.id}" verified and saved · ${latencyMs} ms` });
     g.reloadProviders();
     g.reloadSessions();
   };
@@ -135,7 +135,7 @@ export function ModelApiSettings() {
   const sorted = [...configs].sort((a, b) => {
     if (a.id === defaultConfig) return -1;
     if (b.id === defaultConfig) return 1;
-    return (a.name || a.id).localeCompare(b.name || b.id, "zh");
+    return (a.name || a.id).localeCompare(b.name || b.id);
   });
 
   const visible = showAll || editing === "new" ? sorted : sorted.slice(0, COLLAPSE_AT);
@@ -144,10 +144,11 @@ export function ModelApiSettings() {
     <div className="mx-auto max-w-3xl px-8 py-7">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-txt">模型 API 配置</h2>
+          <h2 className="text-lg font-semibold text-txt">Model API</h2>
           <p className="mt-1 text-sm text-muted">
-            接入任意数量的模型端点：Anthropic 协议、OpenAI 兼容端点（DeepSeek / 通义千问 / Ollama 等）、
-            以及 OpenAI Responses API，用于驱动 Agent 推理能力。
+            Connect any number of model endpoints: Anthropic protocol, OpenAI-compatible endpoints
+            (DeepSeek / Qwen / Ollama etc.), and the OpenAI Responses API — powering Agent
+            reasoning.
           </p>
         </div>
         <button
@@ -156,7 +157,7 @@ export function ModelApiSettings() {
           className="flex shrink-0 items-center gap-1.5 rounded-lg bg-violet px-3 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           <Plus className="h-3.5 w-3.5" />
-          新增配置
+          Add config
         </button>
       </div>
 
@@ -170,13 +171,13 @@ export function ModelApiSettings() {
         >
           {notice.text}
           {notice.kind === "error" && describeRefs(notice.refs) && (
-            <div className="mt-1">仍被引用：{describeRefs(notice.refs)}（请先改绑 Agent / 会话后再删除）</div>
+            <div className="mt-1">Still referenced by: {describeRefs(notice.refs)} (rebind the agents / sessions first, then delete)</div>
           )}
         </div>
       )}
 
       {loading ? (
-        <div className="mt-6 text-sm text-faint">加载中…</div>
+        <div className="mt-6 text-sm text-faint">Loading…</div>
       ) : loadError ? (
         <div className="mt-6 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
           {loadError}
@@ -189,10 +190,11 @@ export function ModelApiSettings() {
 
           {sorted.length === 0 && editing !== "new" && (
             <div className="rounded-2xl border border-dashed border-line2 p-8 text-center">
-              <p className="text-sm text-muted">还没有模型配置</p>
+              <p className="text-sm text-muted">No model configs yet</p>
               <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-faint">
-                点击右上角「新增配置」，填入 Base URL 与 API Key 并验证即可。
-                Anthropic 官方、DeepSeek、通义千问、Kimi、本地 Ollama 等 OpenAI 兼容端点均可接入。
+                Click &quot;Add config&quot; in the top right, fill in the Base URL and API key,
+                then verify. Anthropic official, DeepSeek, Qwen, Kimi, local Ollama and other
+                OpenAI-compatible endpoints all work.
               </p>
             </div>
           )}
@@ -225,7 +227,7 @@ export function ModelApiSettings() {
               onClick={() => setShowAll((v) => !v)}
               className="w-full rounded-xl border border-line py-2 text-xs text-muted transition-colors hover:text-txt"
             >
-              {showAll ? "收起" : `显示全部 ${sorted.length} 条`}
+              {showAll ? "Collapse" : `Show all ${sorted.length}`}
             </button>
           )}
         </div>
@@ -240,16 +242,17 @@ export function ModelApiSettings() {
               disabled={useSysProxy === null}
               onChange={(e) => void onToggleSysProxy(e.target.checked)}
             />
-            使用系统代理
+            Use system proxy
           </label>
           {proxyMsg && (
             <span className={`text-xs ${proxyMsg.ok ? "text-faint" : "text-red"}`}>{proxyMsg.text}</span>
           )}
         </div>
         <p className="mt-1 text-xs text-faint">
-          开启时，模型请求遵循 macOS 系统代理设置；关闭后所有模型请求直连。本机地址
-          （127.0.0.1 / localhost）始终直连。若验证或对话报 502，通常是系统代理软件未放行
-          本地端口，可尝试关闭此开关。
+          When on, model requests follow the macOS system proxy settings; when off, all model
+          requests connect directly. Local addresses (127.0.0.1 / localhost) always connect
+          directly. If verification or chat returns 502, your proxy software is usually blocking
+          the local port — try turning this off.
         </p>
       </div>
     </div>
@@ -268,10 +271,10 @@ export function ModelApiSettings() {
       const s = (await api.getSettings()) as Record<string, unknown>;
       s.use_system_proxy = next;
       await api.putSettings(s);
-      setProxyMsg({ ok: true, text: "已保存" });
+      setProxyMsg({ ok: true, text: "Saved" });
     } catch {
       setUseSysProxy(prev);
-      setProxyMsg({ ok: false, text: "保存失败：无法连接运行时" });
+      setProxyMsg({ ok: false, text: "Failed to save: cannot connect to the runtime" });
     }
   }
 }

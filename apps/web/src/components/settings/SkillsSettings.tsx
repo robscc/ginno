@@ -49,7 +49,7 @@ export function SkillsSettings() {
   async function onImport() {
     const p = importPath.trim();
     if (!p) {
-      setImportMsg("请填写目录路径");
+      setImportMsg("Enter a directory path");
       return;
     }
     setImportBusy(true);
@@ -57,16 +57,16 @@ export function SkillsSettings() {
     try {
       const r = await api.importSkillsDir(p, overwrite);
       if (!r.ok) {
-        setImportMsg(r.error || "导入失败");
+        setImportMsg(r.error || "Import failed");
         return;
       }
       const n = (r.imported || []).length;
       const sk = (r.skipped || []).length;
       const er = (r.errors || []).length;
       setImportMsg(
-        `扫描 ${r.scanned ?? 0}，导入 ${n}` +
-          (sk ? `，跳过 ${sk}` : "") +
-          (er ? `，失败 ${er}` : ""),
+        `Scanned ${r.scanned ?? 0}, imported ${n}` +
+          (sk ? `, skipped ${sk}` : "") +
+          (er ? `, failed ${er}` : ""),
       );
       if (n > 0) {
         load();
@@ -80,18 +80,18 @@ export function SkillsSettings() {
   return (
     <div className="px-8 py-7">
       <h2 className="text-lg font-semibold text-txt">Skills</h2>
-      <p className="mt-1 text-sm text-muted">一次性指令模板（/&lt;name&gt; 触发）。存于 ~/.ginno/skills/。</p>
+      <p className="mt-1 text-sm text-muted">One-shot instruction templates (triggered via /&lt;name&gt;). Stored in ~/.ginno/skills/.</p>
       <div className="mt-4 space-y-2">
         {skills.map((s) => (
           <div key={s.name} className="rounded-xl border border-line bg-card p-3">
             <div className="flex items-center gap-2">
               <span className="font-mono text-sm text-violet">/{s.name}</span>
               {s.builtin && (
-                <span className="pill border border-violet/40 bg-violet/10 text-violet">内置</span>
+                <span className="pill border border-violet/40 bg-violet/10 text-violet">built-in</span>
               )}
               <span className="pill border border-line2 text-muted">{s.trigger}</span>
               {s.builtin ? (
-                <span className="ml-auto text-xs text-faint" title="内置技能不可删除">built-in</span>
+                <span className="ml-auto text-xs text-faint" title="Built-in skills cannot be deleted">built-in</span>
               ) : (
                 <button onClick={() => del(s.name)} className="ml-auto text-xs text-faint hover:text-red">
                   delete
@@ -107,10 +107,12 @@ export function SkillsSettings() {
         {skills.length === 0 && <div className="text-xs text-faint">No skills yet.</div>}
       </div>
       <div className="mt-5 rounded-xl border border-line bg-card p-3">
-        <div className="mb-2 text-sm font-medium text-txt">从本地目录导入</div>
+        <div className="mb-2 text-sm font-medium text-txt">Import from a local directory</div>
         <p className="mb-2 text-xs text-muted">
-          指向一个 skills 目录（每个子目录含 <code className="text-txt">SKILL.md</code>，兼容小写{" "}
-          <code className="text-txt">skill.md</code>）。会复制整个子目录（脚本/参考文档一并导入）。
+          Point to a skills directory (each subdirectory contains a{" "}
+          <code className="text-txt">SKILL.md</code>; lowercase{" "}
+          <code className="text-txt">skill.md</code> is also accepted). The whole subdirectory is
+          copied (scripts and reference docs included).
         </p>
         <div className="flex gap-2">
           <input
@@ -124,12 +126,12 @@ export function SkillsSettings() {
             disabled={importBusy}
             className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            导入
+            Import
           </button>
         </div>
         <label className="mt-2 flex items-center gap-2 text-xs text-muted">
           <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
-          覆盖已存在的同名 skill
+          Overwrite an existing skill with the same name
         </label>
         {importMsg && <div className="mt-2 text-xs text-violet">{importMsg}</div>}
       </div>

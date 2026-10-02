@@ -26,9 +26,9 @@ const DEFAULTS: WebForm = {
 };
 
 const ENGINES = [
-  { id: "duckduckgo", label: "DuckDuckGo（免 Key）" },
-  { id: "searxng", label: "SearXNG（自建实例）" },
-  { id: "tavily", label: "Tavily（API Key）" },
+  { id: "duckduckgo", label: "DuckDuckGo (no key required)" },
+  { id: "searxng", label: "SearXNG (self-hosted)" },
+  { id: "tavily", label: "Tavily (API key)" },
 ];
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
@@ -84,7 +84,7 @@ export function WebSearchSettings() {
       // ensure_layout always seeds a non-empty settings.json, so an empty read
       // means a failed/corrupt GET — refusing is safer than wiping config.
       if (!cur || typeof cur !== "object" || Object.keys(cur).length === 0) {
-        setMsg("读取现有设置失败，已中止保存（避免覆盖其它配置），请重试。");
+        setMsg("Failed to read existing settings; save aborted (to avoid overwriting other config). Please retry.");
         return;
       }
       const engines: Record<string, Record<string, string>> = {};
@@ -100,9 +100,9 @@ export function WebSearchSettings() {
           engines,
         },
       });
-      setMsg("已保存。新会话生效（已打开的会话沿用创建时的工具集）。");
+      setMsg("Saved. Takes effect for new sessions (open sessions keep the tool set they were created with).");
     } catch (e) {
-      setMsg(`保存失败: ${String(e)}`);
+      setMsg(`Failed to save: ${String(e)}`);
     } finally {
       setBusy(false);
     }
@@ -113,10 +113,10 @@ export function WebSearchSettings() {
     setMsg("");
     try {
       const r = await api.testWebSearch(form.default_engine);
-      setMsg(r.ok ? `✅ 引擎 ${form.default_engine} 可用，返回 ${r.results} 条结果` : `❌ ${r.error || "搜索失败"}`);
+      setMsg(r.ok ? `✅ Engine ${form.default_engine} works, returned ${r.results} results` : `❌ ${r.error || "Search failed"}`);
       reloadUsage();
     } catch (e) {
-      setMsg(`测试失败: ${String(e)}`);
+      setMsg(`Test failed: ${String(e)}`);
     } finally {
       setTesting(false);
     }
@@ -126,7 +126,7 @@ export function WebSearchSettings() {
     <div className="mx-auto max-w-2xl px-8 py-8">
       <div className="mb-6 flex items-center gap-2">
         <Globe className="h-5 w-5 text-blue" />
-        <h2 className="text-[1rem] font-semibold">Web 搜索</h2>
+        <h2 className="text-[1rem] font-semibold">Web Search</h2>
       </div>
 
       <div className="flex flex-col gap-5">
@@ -136,10 +136,10 @@ export function WebSearchSettings() {
             checked={form.enabled}
             onChange={(e) => set("enabled", e.target.checked)}
           />
-          启用内置网络搜索（web_search / web_fetch 工具）
+          Enable built-in web search (web_search / web_fetch tools)
         </label>
 
-        <Field label="默认引擎">
+        <Field label="Default engine">
           <select
             className="field"
             value={form.default_engine}
@@ -154,7 +154,7 @@ export function WebSearchSettings() {
         </Field>
 
         {form.default_engine === "searxng" && (
-          <Field label="SearXNG 实例地址" hint="自建实例的 base URL，如 http://127.0.0.1:8888">
+          <Field label="SearXNG instance URL" hint="Base URL of your self-hosted instance, e.g. http://127.0.0.1:8888">
             <input
               className="field"
               value={form.searxng_base_url}
@@ -176,7 +176,7 @@ export function WebSearchSettings() {
         )}
 
         <div className="grid grid-cols-2 gap-4">
-          <Field label="每次返回结果数">
+          <Field label="Results per search">
             <input
               className="field"
               type="number"
@@ -186,7 +186,7 @@ export function WebSearchSettings() {
               onChange={(e) => set("max_results", Math.max(1, Math.min(10, Number(e.target.value) || 5)))}
             />
           </Field>
-          <Field label="超时（秒）">
+          <Field label="Timeout (seconds)">
             <input
               className="field"
               type="number"
@@ -204,14 +204,14 @@ export function WebSearchSettings() {
             onClick={save}
             disabled={busy}
           >
-            <Save className="h-4 w-4" /> 保存
+            <Save className="h-4 w-4" /> Save
           </button>
           <button
             className="flex items-center gap-1.5 rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt disabled:opacity-50"
             onClick={testSearch}
             disabled={testing || !form.enabled}
           >
-            <FlaskConical className="h-4 w-4" /> {testing ? "测试中…" : "测试搜索"}
+            <FlaskConical className="h-4 w-4" /> {testing ? "Testing…" : "Test search"}
           </button>
         </div>
         {msg && <p className="text-xs text-muted">{msg}</p>}
@@ -219,16 +219,16 @@ export function WebSearchSettings() {
         {usage && (usage.total_searches > 0 || usage.total_cited > 0) && (
           <div className="mt-4 rounded-lg border border-line/60 p-4 text-xs">
             <div className="mb-2 font-medium text-muted">
-              搜索遥测 · 共 {usage.total_searches} 次搜索，{usage.total_cited} 次被引用
+              Search telemetry · {usage.total_searches} searches, {usage.total_cited} cited
             </div>
             {usage.engines.length > 0 && (
               <table className="w-full text-left">
                 <thead>
                   <tr className="text-faint">
-                    <th className="py-1 font-normal">引擎</th>
-                    <th className="py-1 font-normal">搜索</th>
-                    <th className="py-1 font-normal">命中被引用</th>
-                    <th className="py-1 font-normal">被引率</th>
+                    <th className="py-1 font-normal">Engine</th>
+                    <th className="py-1 font-normal">Searches</th>
+                    <th className="py-1 font-normal">Hits cited</th>
+                    <th className="py-1 font-normal">Cite rate</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -245,7 +245,7 @@ export function WebSearchSettings() {
             )}
             {usage.top_domains.length > 0 && (
               <div className="mt-3 text-faint">
-                高频引用域名：
+                Top cited domains:
                 {usage.top_domains.slice(0, 8).map((d) => (
                   <span key={d.domain} className="ml-1.5 rounded bg-panel px-1.5 py-0.5 text-muted">
                     {d.domain} ×{d.cited}
@@ -257,8 +257,10 @@ export function WebSearchSettings() {
         )}
 
         <p className="text-xs leading-relaxed text-faint">
-          搜索结果会登记为本轮来源，回答按引用规范标注 [sN] 出处；被引用的来源在气泡下方「来源」卡中展示（🌐
-          网页可点击打开，📓 为知识库页）。web_fetch 仅允许公网 http/https 地址。
+          Search results are registered as sources for the turn, and answers cite them as [sN]
+          per the citation convention; cited sources appear in the &quot;Sources&quot; card under
+          the bubble (🌐 web pages are clickable, 📓 are knowledge-base pages). web_fetch only
+          allows public http/https addresses.
         </p>
       </div>
     </div>

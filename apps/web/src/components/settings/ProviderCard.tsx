@@ -21,19 +21,19 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 function StatusPill({ cfg, status }: { cfg: ProviderConfig; status: VerifyState }) {
   let color = "#71717a";
-  let text = "未配置";
+  let text = "Not configured";
   if (status.state === "checking") {
     color = "#eab308";
-    text = "验证中";
+    text = "Verifying";
   } else if (status.state === "ok") {
     color = "#22c55e";
-    text = "已连接";
+    text = "Connected";
   } else if (status.state === "fail") {
     color = "#ef4444";
-    text = "失败";
+    text = "Failed";
   } else if (cfg.enabled && (cfg.api_key || cfg.base_url)) {
     color = "#60a5fa";
-    text = "已配置";
+    text = "Configured";
   }
   return (
     <span className="pill" style={{ background: color + "1f", color }} title={status.msg}>
@@ -94,7 +94,7 @@ function KeyInput({
       <button
         type="button"
         onClick={onToggleShow}
-        aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+        aria-label={showKey ? "Hide API key" : "Show API key"}
         className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-muted"
       >
         {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -105,12 +105,12 @@ function KeyInput({
 
 function VerifyFeedback({ status }: { status: VerifyState }) {
   if (status.state === "fail") {
-    return <div className="mt-1.5 text-xs text-red">验证失败：{status.msg || "未知错误"}</div>;
+    return <div className="mt-1.5 text-xs text-red">Verification failed: {status.msg || "unknown error"}</div>;
   }
   if (status.state === "ok") {
     return (
       <div className="mt-1.5 text-xs text-green">
-        已连接{status.latency != null ? ` · ${status.latency} ms` : ""}
+        Connected{status.latency != null ? ` · ${status.latency} ms` : ""}
       </div>
     );
   }
@@ -159,11 +159,11 @@ export function ProviderCard({
   const missing = !cfg.enabled
     ? ""
     : cfg.protocol === "anthropic" && !cfg.api_key
-      ? "需要 API Key 才能调用 Anthropic。"
+      ? "An API key is required to call Anthropic."
       : cfg.protocol === "openai" && !cfg.api_key
-        ? "未填写 API Key，调用 OpenAI 会失败。"
+        ? "Calls to OpenAI will fail without an API key."
         : cfg.protocol === "openai-compatible" && !cfg.base_url
-          ? "缺少 Base URL，无法连接到自定义端点。"
+          ? "Base URL is missing; cannot connect to the custom endpoint."
           : "";
 
   // Empty input = omit the field entirely, so the backend falls back to its
@@ -181,7 +181,7 @@ export function ProviderCard({
       disabled={status.state === "checking"}
       className="shrink-0 rounded-lg border border-line2 px-3 py-2 text-xs text-muted hover:text-txt disabled:opacity-50"
     >
-      {status.state === "checking" ? "验证中…" : "验证"}
+      {status.state === "checking" ? "Verifying…" : "Verify"}
     </button>
   );
 
@@ -197,9 +197,9 @@ export function ProviderCard({
           {isDefault ? (
             <span
               className="pill border border-violet/50 text-violet"
-              title="新会话默认使用此提供商（可在通用设置修改）"
+              title="New sessions use this provider by default (changeable in General)"
             >
-              默认
+              Default
             </span>
           ) : (
             cfg.enabled &&
@@ -207,14 +207,14 @@ export function ProviderCard({
               <button
                 onClick={onSetDefault}
                 className="pill border border-line2 text-faint transition-colors hover:text-muted"
-                title="设为默认提供商"
+                title="Set as the default provider"
               >
-                设为默认
+                Set default
               </button>
             )
           )}
           <StatusPill cfg={cfg} status={status} />
-          <Toggle on={cfg.enabled} onClick={onToggle} label={`启用 ${name}`} />
+          <Toggle on={cfg.enabled} onClick={onToggle} label={`Enable ${name}`} />
         </div>
       </div>
 
@@ -238,7 +238,7 @@ export function ProviderCard({
       {isCompat ? (
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="端点名称">
+            <Field label="Endpoint name">
               <input
                 className="field"
                 placeholder="My Local LLM"
@@ -267,7 +267,7 @@ export function ProviderCard({
                 onBlur={onBlurSave}
               />
             </Field>
-            <Field label="API Key (可选)">
+            <Field label="API Key (optional)">
               <div className="flex items-center gap-2">
                 <KeyInput
                   value={cfg.api_key}
@@ -275,7 +275,7 @@ export function ProviderCard({
                   onToggleShow={() => setShowKey((v) => !v)}
                   onChange={(e) => setField("api_key", e.target.value)}
                   onBlur={onBlurSave}
-                  placeholder="本地端点可留空"
+                  placeholder="Leave empty for local endpoints"
                 />
                 {verifyBtn}
               </div>
@@ -286,7 +286,7 @@ export function ProviderCard({
       ) : (
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="默认模型">
+            <Field label="Default model">
               <input
                 className="field"
                 value={cfg.default_model || ""}
@@ -294,7 +294,7 @@ export function ProviderCard({
                 onBlur={onBlurSave}
               />
             </Field>
-            <Field label={cfg.protocol === "openai" ? "Base URL (可选代理)" : "Base URL (可选)"}>
+            <Field label={cfg.protocol === "openai" ? "Base URL (optional proxy)" : "Base URL (optional)"}>
               <input
                 className="field"
                 placeholder={
@@ -329,7 +329,7 @@ export function ProviderCard({
                     onBlur={onBlurSave}
                   />
                 </Field>
-                <Field label="Timeout (s) · 仅用于验证">
+                <Field label="Timeout (s) · verification only">
                   <input
                     type="number"
                     className="field"
@@ -347,7 +347,7 @@ export function ProviderCard({
                   onChange={(e) => setField("bearer_auth", e.target.checked)}
                   onBlur={onBlurSave}
                 />
-                <span>Bearer 认证 — 第三方 Anthropic 兼容网关用 Authorization: Bearer 代替 x-api-key</span>
+                <span>Bearer auth — third-party Anthropic-compatible gateways use Authorization: Bearer instead of x-api-key</span>
               </label>
             </>
           ) : (
@@ -376,8 +376,9 @@ export function ProviderCard({
               onChange={() => onToggleSearch?.()}
             />
             <span>
-              联网搜索 — 开启后模型会在需要时自动联网（需端点支持，如通义千问 compatible-mode 的{" "}
-              <code className="font-mono text-xs">enable_search</code>）。
+              Web search — when enabled, the model goes online automatically when needed (requires
+              endpoint support, e.g. Qwen compatible-mode&apos;s{" "}
+              <code className="font-mono text-xs">enable_search</code>).
             </span>
           </label>
           <div className="mt-2 flex items-center gap-2">
@@ -386,10 +387,10 @@ export function ProviderCard({
               disabled={!cfg.enabled || searchStatus?.state === "checking"}
               className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt disabled:opacity-50"
             >
-              {searchStatus?.state === "checking" ? "测试中…" : "测试联网"}
+              {searchStatus?.state === "checking" ? "Testing…" : "Test web search"}
             </button>
             {searchStatus?.state === "fail" && (
-              <span className="text-xs text-red">失败：{searchStatus.text}</span>
+              <span className="text-xs text-red">Failed: {searchStatus.text}</span>
             )}
           </div>
           {searchStatus?.state === "ok" && searchStatus?.text && (
@@ -405,8 +406,9 @@ export function ProviderCard({
               onChange={() => onToggleThinking?.()}
             />
             <span>
-              思考模式 — 混合思考模型（如通义千问 Qwen3 系）输出推理过程后再作答（需端点支持{" "}
-              <code className="font-mono text-xs">enable_thinking</code>，仅流式响应生效）。
+              Thinking mode — hybrid thinking models (e.g. the Qwen3 series) output their reasoning
+              process before the answer (requires endpoint support for{" "}
+              <code className="font-mono text-xs">enable_thinking</code>; streaming responses only).
             </span>
           </label>
         </div>

@@ -7,12 +7,12 @@ import type { WorkflowDef } from "@/lib/types";
 import { WorkflowInspector } from "@/components/workflow/WorkflowInspector";
 
 const DSL_TEMPLATE = `{
-  "name": "新流程",
+  "name": "New Workflow",
   "description": "",
   "entry": "s1",
   "context": { "schema": { "type": "object", "properties": {} }, "initial": {} },
   "nodes": [
-    { "id": "s1", "type": "step", "agent": "dev", "goal": "在这里写这一步要做什么" }
+    { "id": "s1", "type": "step", "agent": "dev", "goal": "Describe what this step should do here" }
   ],
   "edges": []
 }`;
@@ -26,7 +26,7 @@ function DslPreview({ wf }: { wf: WorkflowDef }) {
         onClick={() => setOpen((o) => !o)}
         className="text-[11px] text-faint transition-colors hover:text-muted"
       >
-        {open ? "收起 DSL" : "查看 DSL"}
+        {open ? "Hide DSL" : "View DSL"}
       </button>
       {open && (
         <pre className="mt-1 max-h-56 overflow-auto rounded-md border border-line bg-base/50 p-2 font-mono text-[11px] text-muted">
@@ -52,16 +52,16 @@ export function WorkflowsSettings() {
     try {
       v = JSON.parse(dslText);
     } catch (e) {
-      return { ok: false as const, msg: `JSON 语法错误：${e instanceof Error ? e.message : "无法解析"}` };
+      return { ok: false as const, msg: `JSON syntax error: ${e instanceof Error ? e.message : "cannot parse"}` };
     }
-    if (typeof v !== "object" || v === null || Array.isArray(v)) return { ok: false as const, msg: "DSL 必须是 JSON 对象" };
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return { ok: false as const, msg: "DSL must be a JSON object" };
     const d = v as Record<string, unknown>;
     if (!Array.isArray(d.nodes) || !(d.nodes as unknown[]).length)
-      return { ok: false as const, msg: "缺少 nodes 数组（至少一个节点）" };
-    if (typeof d.entry !== "string") return { ok: false as const, msg: "缺少 entry（入口节点 id）" };
+      return { ok: false as const, msg: "Missing nodes array (at least one node)" };
+    if (typeof d.entry !== "string") return { ok: false as const, msg: "Missing entry (entry node id)" };
     const ids = new Set((d.nodes as Array<{ id?: string }>).map((n) => n.id));
-    if (!ids.has(d.entry)) return { ok: false as const, msg: `entry "${d.entry}" 不在 nodes 里` };
-    return { ok: true as const, msg: `DSL 结构正常 · ${(d.nodes as unknown[]).length} 个节点` };
+    if (!ids.has(d.entry)) return { ok: false as const, msg: `entry "${d.entry}" is not in nodes` };
+    return { ok: true as const, msg: `DSL structure OK · ${(d.nodes as unknown[]).length} nodes` };
   }, [dslText]);
 
   async function create() {
@@ -72,7 +72,7 @@ export function WorkflowsSettings() {
     const dsl = JSON.parse(dslText) as Record<string, unknown>;
     if (name.trim()) dsl.name = name.trim();
     if (desc.trim()) dsl.description = desc.trim();
-    const r = await api.createWorkflow({ name: (dsl.name as string) || name || "新流程", description: desc, dsl: dsl as never });
+    const r = await api.createWorkflow({ name: (dsl.name as string) || name || "New Workflow", description: desc, dsl: dsl as never });
     const body = r as { ok?: boolean; detail?: string };
     setMsg(body.ok ? "created" : body.detail || "error");
     if (body.ok) {
@@ -91,7 +91,10 @@ export function WorkflowsSettings() {
     <div className="px-8 py-7">
       <h2 className="text-lg font-semibold text-txt">Workflows</h2>
       <p className="mt-1 text-sm text-muted">
-        多步流程配方（版本化 DSL，由 LangGraph 图执行）。点「详情」查看执行图 / 上下文 / 日志并触发运行；完整的两栏视图见左导航 <span className="text-txt">Workflows</span> 页。
+        Multi-step flow recipes (versioned DSL, executed as a LangGraph graph). Click
+        &quot;Details&quot; to view the execution graph / context / logs and trigger runs; for the
+        full two-pane view, see the <span className="text-txt">Workflows</span> page in the left
+        navigation.
       </p>
       <div className="mt-4 space-y-2">
         {g.workflows.map((w) => (
@@ -109,7 +112,7 @@ export function WorkflowsSettings() {
                   onClick={() => setOpenId((o) => (o === w.id ? null : w.id))}
                   className="text-xs text-faint transition-colors hover:text-txt"
                 >
-                  {openId === w.id ? "收起" : "详情"}
+                  {openId === w.id ? "Hide" : "Details"}
                 </button>
                 <button onClick={() => del(w.id)} className="text-xs text-faint hover:text-red">
                   delete
@@ -130,7 +133,7 @@ export function WorkflowsSettings() {
       </div>
       <div className="mt-5 rounded-xl border border-line bg-card p-3">
         <div className="mb-2 text-sm font-medium text-txt">New workflow</div>
-        <input className="field mb-2" placeholder="name（覆盖 DSL 内的 name）" value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="field mb-2" placeholder="name (overrides the name in the DSL)" value={name} onChange={(e) => setName(e.target.value)} />
         <input className="field mb-2" placeholder="description" value={desc} onChange={(e) => setDesc(e.target.value)} />
         <textarea
           className={`field mb-1 font-mono text-xs ${dslHint.ok ? "" : "border-red/50"}`}

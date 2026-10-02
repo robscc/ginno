@@ -6,27 +6,27 @@ import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen
 type Item = { id: string; label: string; icon: typeof Cpu; color: string };
 
 const MAIN: Item[] = [
-  { id: "model-api", label: "模型 API", icon: Cpu, color: "#a78bfa" },
+  { id: "model-api", label: "Model API", icon: Cpu, color: "#a78bfa" },
   { id: "skills", label: "Skills", icon: Sparkles, color: "#c084fc" },
-  { id: "mcp", label: "MCP 工具", icon: Plug, color: "#34d399" },
-  { id: "agents", label: "Agent 管理", icon: Users, color: "#fb923c" },
+  { id: "mcp", label: "MCP Tools", icon: Plug, color: "#34d399" },
+  { id: "agents", label: "Agents", icon: Users, color: "#fb923c" },
   { id: "workflows", label: "Workflows", icon: Workflow, color: "#4ade80" },
-  { id: "synthesis-quality", label: "总结质量", icon: TrendingUp, color: "#a78bfa" },
-  { id: "knowledge", label: "知识库", icon: BookOpen, color: "#60a5fa" },
-  { id: "folders", label: "上下文目录", icon: FolderInput, color: "#34d399" },
-  { id: "web", label: "Web 搜索", icon: Globe, color: "#3b82f6" },
-  { id: "session-files", label: "会话文件", icon: FolderOpen, color: "#38bdf8" },
-  { id: "usage", label: "用量统计", icon: BarChart3, color: "#2dd4bf" },
+  { id: "synthesis-quality", label: "Synthesis Quality", icon: TrendingUp, color: "#a78bfa" },
+  { id: "knowledge", label: "Knowledge Base", icon: BookOpen, color: "#60a5fa" },
+  { id: "folders", label: "Context Folders", icon: FolderInput, color: "#34d399" },
+  { id: "web", label: "Web Search", icon: Globe, color: "#3b82f6" },
+  { id: "session-files", label: "Session Files", icon: FolderOpen, color: "#38bdf8" },
+  { id: "usage", label: "Usage", icon: BarChart3, color: "#2dd4bf" },
 ];
 const SAFE: Item[] = [
-  { id: "permissions", label: "权限策略", icon: ShieldCheck, color: "#f87171" },
+  { id: "permissions", label: "Permissions", icon: ShieldCheck, color: "#f87171" },
   { id: "hooks", label: "Hooks", icon: Webhook, color: "#f59e0b" },
 ];
 const SYSTEM: Item[] = [
-  { id: "general", label: "通用设置", icon: SlidersHorizontal, color: "#9ca3af" },
-  { id: "notifications", label: "通知", icon: Bell, color: "#fbbf24" },
-  { id: "floating", label: "悬浮窗", icon: Pin, color: "#f472b6" },
-  { id: "tool-labels", label: "工具标签", icon: Tags, color: "#818cf8" },
+  { id: "general", label: "General", icon: SlidersHorizontal, color: "#9ca3af" },
+  { id: "notifications", label: "Notifications", icon: Bell, color: "#fbbf24" },
+  { id: "floating", label: "Floating Window", icon: Pin, color: "#f472b6" },
+  { id: "tool-labels", label: "Tool Labels", icon: Tags, color: "#818cf8" },
 ];
 
 export function SettingsNav({ active }: { active: string }) {
@@ -56,7 +56,7 @@ export function SettingsNav({ active }: { active: string }) {
         ))}
       </div>
       <div className="mb-1.5 mt-4 px-3 text-[11px] font-semibold uppercase tracking-wider text-faint">
-        安全
+        Security
       </div>
       <div className="space-y-0.5">
         {SAFE.map((m) => (
@@ -64,7 +64,7 @@ export function SettingsNav({ active }: { active: string }) {
         ))}
       </div>
       <div className="mb-1.5 mt-4 px-3 text-[11px] font-semibold uppercase tracking-wider text-faint">
-        系统
+        System
       </div>
       <div className="space-y-0.5">
         {SYSTEM.map((m) => (

@@ -47,12 +47,12 @@ export function FloatingSettings() {
         if ("hotkey" in patch) setHotkeyActive(hotkeyOk);
         setMsg(
           "hotkey" in patch && !hotkeyOk
-            ? "已保存，但该快捷键注册失败——可能被系统或其他应用占用，请换一个"
-            : "已保存",
+            ? "Saved, but the hotkey failed to register — it may already be used by the system or another app. Try a different one."
+            : "Saved",
         );
       } catch {
         setPrefs(prev);
-        setMsg("保存失败");
+        setMsg("Failed to save");
       }
     },
     [prefs],
@@ -60,34 +60,37 @@ export function FloatingSettings() {
 
   function toggleNow() {
     if (!isDesktop()) {
-      setMsg("仅在桌面应用中可用");
+      setMsg("Only available in the desktop app");
       return;
     }
-    invoke("pin_toggle").catch(() => setMsg("悬浮窗不可用（旧版桌面壳？）"));
+    invoke("pin_toggle").catch(() => setMsg("Floating window unavailable (older desktop shell?)"));
   }
 
   if (!prefs) {
     return (
       <div className="px-8 py-7">
-        <h2 className="text-lg font-semibold text-txt">悬浮窗</h2>
-        <p className="mt-4 text-sm text-faint">加载中…</p>
+        <h2 className="text-lg font-semibold text-txt">Floating Window</h2>
+        <p className="mt-4 text-sm text-faint">Loading…</p>
       </div>
     );
   }
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">悬浮窗</h2>
+      <h2 className="text-lg font-semibold text-txt">Floating Window</h2>
       <p className="mt-1 text-sm text-muted">
-        置顶速聊窗：全局快捷键唤出，胶囊常驻、聊天框速问速答。完整 Agent 能力，权限确认在窗内内联完成。
+        An always-on-top quick chat window: summon it with a global hotkey, with a pill kept on
+        screen and a chat box for quick questions and answers. Full Agent capabilities, with
+        permission confirmations handled inline in the window.
       </p>
       <div className="mt-4 max-w-md space-y-5">
         {!hotkeyActive && (
           <div className="flex items-start gap-2 rounded-lg border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs leading-relaxed text-yellow">
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              当前快捷键（{formatAccelerator(prefs.hotkey)}）未能注册，可能已被系统或其他应用占用。
-              菜单栏图标仍可唤出悬浮窗；建议重新录入一个快捷键。
+              The current hotkey ({formatAccelerator(prefs.hotkey)}) failed to register; it may
+              already be used by the system or another app. The menu bar icon can still open the
+              floating window; we recommend recording a new hotkey.
             </span>
           </div>
         )}
@@ -96,14 +99,15 @@ export function FloatingSettings() {
             onClick={toggleNow}
             className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:border-violet hover:text-txt"
           >
-            显示 / 隐藏悬浮窗
+            Show / hide floating window
           </button>
           <p className="mt-1 text-xs text-faint">
-            等效于菜单栏图标的「显示悬浮窗」，用于立刻预览下面的设置效果。
+            Same as the menu bar icon&apos;s &quot;Show floating window&quot;; useful for instantly
+            previewing the settings below.
           </p>
         </div>
         <div>
-          <label className="field-label">全局快捷键</label>
+          <label className="field-label">Global hotkey</label>
           <div className="flex items-center gap-2">
             <HotkeyRecorder
               value={prefs.hotkey}
@@ -111,21 +115,22 @@ export function FloatingSettings() {
             />
             <button
               onClick={() => void save({ hotkey: DEFAULT_FLOATING.hotkey })}
-              title={`恢复默认（${formatAccelerator(DEFAULT_FLOATING.hotkey)}）`}
+              title={`Reset to default (${formatAccelerator(DEFAULT_FLOATING.hotkey)})`}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line text-faint transition-colors hover:border-line2 hover:text-txt"
             >
               <RotateCcw className="h-3.5 w-3.5" />
             </button>
           </div>
           <p className="mt-1 text-xs text-faint">
-            点输入框后直接按下组合键即可（需包含 ⌘/⌃/⌥ 之一，或单独的 F 功能键）；Esc
-            取消。默认 {formatAccelerator(DEFAULT_FLOATING.hotkey)}
-            ——旧版的 ⌃⌥Space 会和 macOS「切换输入法」冲突，已弃用。
+            Click the input, then press the key combination (it must include ⌘/⌃/⌥ or be a
+            standalone function key); Esc to cancel. Default{" "}
+            {formatAccelerator(DEFAULT_FLOATING.hotkey)} — the legacy ⌃⌥Space conflicts with
+            macOS&apos;s &quot;switch input source&quot; shortcut and has been deprecated.
           </p>
         </div>
         <div>
           <label className="field-label" htmlFor="pin-default-mode">
-            默认会话模式
+            Default session mode
           </label>
           <select
             id="pin-default-mode"
@@ -133,16 +138,17 @@ export function FloatingSettings() {
             value={prefs.defaultMode}
             onChange={(e) => void save({ defaultMode: e.target.value as FloatingPrefs["defaultMode"] })}
           >
-            <option value="quick">速聊（独立会话）</option>
-            <option value="follow">跟随主窗口的当前会话</option>
+            <option value="quick">Quick chat (independent session)</option>
+            <option value="follow">Follow the main window&apos;s current session</option>
           </select>
           <p className="mt-1 text-xs text-faint">
-            窗口内随时可在标题栏下拉切换；此设置只决定打开时的初始模式。
+            You can switch anytime from the title bar dropdown; this setting only decides the
+            initial mode when opened.
           </p>
         </div>
         <div>
           <label className="field-label" htmlFor="pin-opacity">
-            失焦透明度：{prefs.inactiveOpacity.toFixed(2)}
+            Inactive opacity: {prefs.inactiveOpacity.toFixed(2)}
           </label>
           <input
             id="pin-opacity"
@@ -154,7 +160,7 @@ export function FloatingSettings() {
             onChange={(e) => void save({ inactiveOpacity: Number(e.target.value) })}
             className="w-full accent-violet"
           />
-          <p className="mt-1 text-xs text-faint">拉到 1.00 即关闭失焦变暗。</p>
+          <p className="mt-1 text-xs text-faint">Slide to 1.00 to disable dimming on focus loss.</p>
         </div>
         <div>
           <label className="flex items-center gap-2 text-sm text-txt">
@@ -163,12 +169,12 @@ export function FloatingSettings() {
               checked={prefs.visibleOnAllSpaces}
               onChange={(e) => void save({ visibleOnAllSpaces: e.target.checked })}
             />
-            在所有桌面空间显示
+            Show on all desktop spaces
           </label>
         </div>
         <div>
           <label className="field-label" htmlFor="pin-fullscreen">
-            全屏应用策略
+            Fullscreen app policy
           </label>
           <select
             id="pin-fullscreen"
@@ -178,8 +184,8 @@ export function FloatingSettings() {
               void save({ fullscreenPolicy: e.target.value as FloatingPrefs["fullscreenPolicy"] })
             }
           >
-            <option value="avoid">避让（默认）：不遮挡全屏应用</option>
-            <option value="overlay">覆盖：悬浮在全屏应用之上</option>
+            <option value="avoid">Avoid (default): do not cover fullscreen apps</option>
+            <option value="overlay">Overlay: float above fullscreen apps</option>
           </select>
         </div>
         <div>
@@ -189,10 +195,11 @@ export function FloatingSettings() {
               checked={prefs.pillClickThrough}
               onChange={(e) => void save({ pillClickThrough: e.target.checked })}
             />
-            胶囊状态穿透点击
+            Click-through collapsed pill
           </label>
           <p className="mt-1 text-xs text-faint">
-            开启后收起的胶囊变成纯状态灯，鼠标事件穿透到下层应用（无法点击展开，需用快捷键唤出）。
+            When enabled, the collapsed pill becomes a pure status light and mouse events pass
+            through to the app below (it cannot be clicked to expand; use the hotkey instead).
           </p>
         </div>
         <div>
@@ -202,7 +209,7 @@ export function FloatingSettings() {
               checked={prefs.showOnLaunch}
               onChange={(e) => void save({ showOnLaunch: e.target.checked })}
             />
-            启动时自动显示悬浮窗
+            Show floating window on launch
           </label>
         </div>
         {msg && <div className="text-xs text-muted">{msg}</div>}
@@ -265,7 +272,7 @@ function HotkeyRecorder({
     >
       <Keyboard className="h-3.5 w-3.5 shrink-0 text-faint" />
       {recording ? (
-        <span className="text-xs text-violet">按下新快捷键…（Esc 取消）</span>
+        <span className="text-xs text-violet">Press the new hotkey… (Esc to cancel)</span>
       ) : (
         <span className="font-medium tracking-wide">{formatAccelerator(value)}</span>
       )}

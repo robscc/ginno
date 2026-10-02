@@ -89,10 +89,10 @@ export function ModelConfigForm({
         setPicked(new Set(draft.models));
         setModelSearch("");
       } else {
-        setFetchError(r.error || "拉取失败：未知错误");
+        setFetchError(r.error || "Fetch failed: unknown error");
       }
     } catch {
-      setFetchError("无法连接运行时");
+      setFetchError("Cannot connect to the runtime");
     } finally {
       setFetching(false);
     }
@@ -125,12 +125,12 @@ export function ModelConfigForm({
   };
 
   const validate = (): string | null => {
-    if (!draft.name.trim()) return "请填写配置名称。";
-    if (isCompat && !draft.base_url.trim()) return "OpenAI Compatible 端点必须填写 Base URL。";
-    if (!isCompat && !draft.api_key.trim()) return "该协议需要 API Key（Compatible 端点才可留空）。";
-    if (!draft.models.length) return "请至少添加一个模型 id。";
+    if (!draft.name.trim()) return "Enter a config name.";
+    if (isCompat && !draft.base_url.trim()) return "An OpenAI Compatible endpoint requires a Base URL.";
+    if (!isCompat && !draft.api_key.trim()) return "This protocol requires an API key (only compatible endpoints may leave it empty).";
+    if (!draft.models.length) return "Add at least one model id.";
     if (!draft.default_model || !draft.models.includes(draft.default_model))
-      return "默认模型必须是模型列表中的一员。";
+      return "The default model must be one of the models in the list.";
     return null;
   };
 
@@ -152,10 +152,10 @@ export function ModelConfigForm({
         onSaved(r.config, r.latency_ms);
         return;
       }
-      setError(r.error || "验证失败：未知错误");
+      setError(r.error || "Verification failed: unknown error");
       setRefs(r.refs);
     } catch {
-      setError("无法连接运行时");
+      setError("Cannot connect to the runtime");
     } finally {
       setChecking(false);
     }
@@ -164,22 +164,22 @@ export function ModelConfigForm({
   return (
     <div className="rounded-2xl border border-indigo/40 bg-card p-5">
       <div className="mb-4 text-sm font-semibold text-txt">
-        {isNew ? "新增模型配置" : `编辑「${initial.name || initial.id}」`}
+        {isNew ? "Add a model config" : `Edit "${initial.name || initial.id}"`}
       </div>
 
       <div className="space-y-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="名称 *">
+          <Field label="Name *">
             <input
               className="field"
-              placeholder="如：中转站 A / DeepSeek / 本地 Ollama"
+              placeholder="e.g. Relay A / DeepSeek / Local Ollama"
               value={draft.name}
               onChange={(e) => set("name", e.target.value)}
               autoFocus={isNew}
             />
           </Field>
           <div className="sm:col-span-2">
-            <label className="field-label">协议</label>
+            <label className="field-label">Protocol</label>
             <div className="flex rounded-lg border border-line p-0.5">
               {PROTOCOLS.map((p) => (
                 <button
@@ -196,7 +196,8 @@ export function ModelConfigForm({
             </div>
             {isCompat && (
               <p className="mt-1 text-[11px] text-faint">
-                自定义 base_url 的 OpenAI 兼容端点：DeepSeek、通义千问、Kimi、中转站、Ollama 等都归这类。
+                OpenAI-compatible endpoints with a custom base_url: DeepSeek, Qwen, Kimi, relay
+                stations, Ollama, etc.
               </p>
             )}
           </div>
@@ -204,8 +205,8 @@ export function ModelConfigForm({
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
-            label={isCompat ? "Base URL *（必填）" : "Base URL（可选，默认官方）"}
-            hint={isResponses ? "默认 https://api.openai.com/v1" : isAnthropic ? "默认 https://api.anthropic.com" : undefined}
+            label={isCompat ? "Base URL * (required)" : "Base URL (optional; defaults to official)"}
+            hint={isResponses ? "Defaults to https://api.openai.com/v1" : isAnthropic ? "Defaults to https://api.anthropic.com" : undefined}
           >
             <input
               className="field"
@@ -214,7 +215,7 @@ export function ModelConfigForm({
               onChange={(e) => set("base_url", e.target.value)}
             />
           </Field>
-          <Field label={isCompat ? "API Key（可选，本地端点留空）" : "API Key *"}>
+          <Field label={isCompat ? "API key (optional; leave empty for local endpoints)" : "API Key *"}>
             <div className="relative">
               <input
                 type={showKey ? "text" : "password"}
@@ -226,7 +227,7 @@ export function ModelConfigForm({
               <button
                 type="button"
                 onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+                aria-label={showKey ? "Hide API key" : "Show API key"}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-muted"
               >
                 {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -243,12 +244,12 @@ export function ModelConfigForm({
               checked={!!draft.bearer_auth}
               onChange={(e) => set("bearer_auth", e.target.checked)}
             />
-            <span>Bearer 认证 — 第三方 Anthropic 兼容网关用 Authorization: Bearer 代替 x-api-key</span>
+            <span>Bearer auth — third-party Anthropic-compatible gateways use Authorization: Bearer instead of x-api-key</span>
           </label>
         )}
 
         {isResponses && (
-          <Field label="Org ID（可选）" hint="官方 OpenAI 组织 id，仅 Responses API 生效">
+          <Field label="Org ID (optional)" hint="Official OpenAI organization id; only applies to the Responses API">
             <input
               className="field"
               placeholder="org-..."
@@ -260,12 +261,12 @@ export function ModelConfigForm({
 
         {isCompat && (
           <div className="space-y-2 rounded-xl border border-line p-3">
-            <div className="text-xs font-medium text-muted">兼容端点私有开关（高级）</div>
+            <div className="text-xs font-medium text-muted">Compatible-endpoint private switches (advanced)</div>
             <div className="flex flex-col gap-2">
               {(
                 [
-                  ["enable_search", "联网搜索 — 需要端点支持，如通义千问 compatible-mode 的 enable_search"],
-                  ["enable_thinking", "思考模式 — 混合思考模型（如 Qwen3）先输出推理过程再作答，仅流式生效"],
+                  ["enable_search", "Web search — requires endpoint support, e.g. Qwen compatible-mode's enable_search"],
+                  ["enable_thinking", "Thinking mode — hybrid thinking models (e.g. Qwen3) output reasoning before the answer; streaming only"],
                 ] as const
               ).map(([flag, text]) => {
                 const rec = recommendations.find((r) => r.flag === flag);
@@ -286,10 +287,10 @@ export function ModelConfigForm({
                       <button
                         type="button"
                         onClick={() => set(flag, true)}
-                        title={`${rec.why}（点击应用推荐）`}
+                        title={`${rec.why} (click to apply)`}
                         className="pill shrink-0 border border-blue/50 text-blue transition-colors hover:bg-blue/10"
                       >
-                        推荐
+                        Recommended
                       </button>
                     )}
                   </div>
@@ -300,7 +301,7 @@ export function ModelConfigForm({
         )}
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="模型列表 *" hint="每行一个模型 id，也可用逗号分隔">
+          <Field label="Model list *" hint="One model id per line, or comma-separated">
             <div className="mb-2 flex items-center gap-2">
               <button
                 type="button"
@@ -309,15 +310,15 @@ export function ModelConfigForm({
                 className="pill inline-flex shrink-0 items-center gap-1.5 border border-blue/50 text-blue transition-colors hover:bg-blue/10 disabled:opacity-50"
               >
                 {fetching && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {fetching ? "拉取中…" : "从 API 拉取模型"}
+                {fetching ? "Fetching…" : "Fetch models from API"}
               </button>
               {!canFetchModels && (
-                <span className="text-[11px] text-faint">填写 Base URL 和 API Key 后可拉取</span>
+                <span className="text-[11px] text-faint">Fill in the Base URL and API key to fetch</span>
               )}
             </div>
             {fetchError && (
               <div className="mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-                拉取失败：{fetchError}
+                Fetch failed: {fetchError}
               </div>
             )}
             {fetched && (
@@ -326,7 +327,7 @@ export function ModelConfigForm({
                 <div className="flex items-center gap-2">
                   <input
                     className="field flex-1"
-                    placeholder="搜索模型 id…"
+                    placeholder="Search model ids…"
                     value={modelSearch}
                     onChange={(e) => setModelSearch(e.target.value)}
                   />
@@ -338,7 +339,7 @@ export function ModelConfigForm({
                     }}
                     className="shrink-0 rounded-lg px-3 py-2 text-xs text-muted transition-colors hover:text-txt"
                   >
-                    取消
+                    Cancel
                   </button>
                 </div>
                 <div className="max-h-56 overflow-y-auto rounded-lg border border-line">
@@ -366,12 +367,12 @@ export function ModelConfigForm({
                     </label>
                   ))}
                   {!filteredFetched.length && (
-                    <div className="px-3 py-3 text-center text-xs text-faint">无匹配模型</div>
+                    <div className="px-3 py-3 text-center text-xs text-faint">No matching models</div>
                   )}
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] text-faint">
-                    共 {filteredFetched.length} 个 · 已勾选 {picked.size} 个
+                    {filteredFetched.length} total · {picked.size} selected
                   </span>
                   <button
                     type="button"
@@ -379,12 +380,12 @@ export function ModelConfigForm({
                     disabled={!picked.size}
                     className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                   >
-                    添加所选 ({picked.size})
+                    Add selected ({picked.size})
                   </button>
                 </div>
               </div>
             )}
-            <div className="mb-1 text-[11px] text-faint">或手动添加（每行一个）</div>
+            <div className="mb-1 text-[11px] text-faint">Or add manually (one per line)</div>
             <textarea
               className="field font-mono text-xs"
               rows={4}
@@ -394,7 +395,7 @@ export function ModelConfigForm({
             />
           </Field>
           <div className="space-y-3">
-            <Field label="默认模型 *">
+            <Field label="Default model *">
               {draft.models.length > 0 && draft.models.length <= 12 ? (
                 // Short list → a select. The current value is added as an option
                 // when it is not in the list, so a mismatch is visible and
@@ -405,7 +406,7 @@ export function ModelConfigForm({
                   onChange={(e) => set("default_model", e.target.value)}
                 >
                   {!draft.models.includes(draft.default_model) && draft.default_model && (
-                    <option value={draft.default_model}>{draft.default_model}（不在列表中）</option>
+                    <option value={draft.default_model}>{draft.default_model} (not in list)</option>
                   )}
                   {draft.models.map((m) => (
                     <option key={m} value={m}>
@@ -428,7 +429,7 @@ export function ModelConfigForm({
                     list="mc-default-model-options"
                     value={draft.default_model}
                     onChange={(e) => set("default_model", e.target.value)}
-                    placeholder="输入模型 id（如 glm-5.3-flash）"
+                    placeholder="Enter a model id (e.g. glm-5.3-flash)"
                   />
                   <datalist id="mc-default-model-options">
                     {draft.models.map((m) => (
@@ -437,13 +438,14 @@ export function ModelConfigForm({
                   </datalist>
                   {draft.models.length === 0 ? (
                     <p className="mt-1 text-[11px] text-faint">
-                      此提供商还没有模型列表——可直接填写模型 id，或在左侧「模型列表」里逐行添加
+                      This provider has no model list yet — enter a model id directly, or add them
+                      line by line in the &quot;Model list&quot; field on the left
                     </p>
                   ) : (
                     !draft.models.includes(draft.default_model) &&
                     draft.default_model && (
                       <p className="mt-1 text-[11px] text-yellow">
-                        {draft.default_model} 不在模型列表中
+                        {draft.default_model} is not in the model list
                       </p>
                     )
                   )}
@@ -485,7 +487,7 @@ export function ModelConfigForm({
         // Yellow bar for verify refusal / validation problems (Q8 refs list).
         <div className="mt-4 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
           {error}
-          {describeRefs(refs) && <div className="mt-1">仍被引用：{describeRefs(refs)}（请先改绑后再试）</div>}
+          {describeRefs(refs) && <div className="mt-1">Still referenced by: {describeRefs(refs)} (rebind first, then retry)</div>}
         </div>
       )}
 
@@ -494,14 +496,14 @@ export function ModelConfigForm({
           onClick={onCancel}
           className="rounded-lg px-3 py-2 text-xs text-muted transition-colors hover:text-txt"
         >
-          取消
+          Cancel
         </button>
         <button
           onClick={() => void submit()}
           disabled={checking}
           className="rounded-lg bg-violet px-4 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {checking ? "验证中…" : "验证并保存"}
+          {checking ? "Verifying…" : "Verify & Save"}
         </button>
       </div>
     </div>

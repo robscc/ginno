@@ -35,7 +35,7 @@ function VerifyDot({ cfg }: { cfg: ModelConfig }) {
     return (
       <span className="flex items-center gap-1.5 text-faint" title={cfg.last_error}>
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red" />
-        上次验证失败
+        Last verification failed
       </span>
     );
   }
@@ -44,17 +44,17 @@ function VerifyDot({ cfg }: { cfg: ModelConfig }) {
     return (
       <span
         className={`flex items-center gap-1.5 ${stale ? "text-yellow" : "text-faint"}`}
-        title={stale ? `上次验证于 ${relTime(cfg.verified_at)}` : undefined}
+        title={stale ? `Last verified ${relTime(cfg.verified_at)}` : undefined}
       >
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${stale ? "bg-yellow" : "bg-green"}`} />
-        {stale ? "建议重新验证" : `${relTime(cfg.verified_at)}验证`}
+        {stale ? "Re-verification recommended" : `Verified ${relTime(cfg.verified_at)}`}
       </span>
     );
   }
   return (
     <span className="flex items-center gap-1.5 text-faint">
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#71717a" }} />
-      未验证
+      Not verified
     </span>
   );
 }
@@ -78,7 +78,7 @@ export function ModelConfigCard({
 }) {
   const [confirming, setConfirming] = useState(false);
   const badge = protocolBadge(cfg);
-  const host = hostOf(cfg.base_url) || "官方端点";
+  const host = hostOf(cfg.base_url) || "official endpoint";
   const models = cfg.models ?? [];
   const chips = models.slice(0, 6);
 
@@ -88,7 +88,7 @@ export function ModelConfigCard({
         <span
           className="pill"
           style={{ background: `${badge.color}1f`, color: badge.color }}
-          title={`协议：${PROTOCOL_LABEL[cfg.protocol]}`}
+          title={`Protocol: ${PROTOCOL_LABEL[cfg.protocol]}`}
         >
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: badge.color }} />
           {badge.label}
@@ -97,8 +97,8 @@ export function ModelConfigCard({
           {cfg.name || cfg.id}
         </span>
         {isDefault && (
-          <span className="pill border border-violet/50 text-violet" title="新会话默认使用此配置">
-            默认
+          <span className="pill border border-violet/50 text-violet" title="New sessions use this config by default">
+            Default
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -108,34 +108,34 @@ export function ModelConfigCard({
                 onClick={onSetDefault}
                 disabled={busy}
                 className="pill border border-line2 text-faint transition-colors hover:text-muted disabled:opacity-50"
-                title="设为默认配置"
+                title="Set as the default config"
               >
-                设为默认
+                Set default
               </button>
             )}
           <button
             onClick={onEdit}
-            aria-label={`编辑 ${cfg.name}`}
+            aria-label={`Edit ${cfg.name}`}
             className="rounded-md p-1.5 text-faint transition-colors hover:bg-card2 hover:text-muted"
           >
             <Pencil className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={() => setConfirming(true)}
-            aria-label={`删除 ${cfg.name}`}
+            aria-label={`Delete ${cfg.name}`}
             className="rounded-md p-1.5 text-faint transition-colors hover:bg-card2 hover:text-red"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
-          <Toggle on={cfg.enabled} onClick={onToggle} label={`启用 ${cfg.name}`} />
+          <Toggle on={cfg.enabled} onClick={onToggle} label={`Enable ${cfg.name}`} />
         </div>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-faint">
-        <span>{badge.label === "OpenAI" ? "官方 API" : host}</span>
+        <span>{badge.label === "OpenAI" ? "official API" : host}</span>
         <span>·</span>
         <span>
-          {models.length} 个模型{cfg.default_model ? ` · 默认 ${cfg.default_model}` : ""}
+          {models.length} models{cfg.default_model ? ` · default ${cfg.default_model}` : ""}
         </span>
         <span>·</span>
         <VerifyDot cfg={cfg} />
@@ -149,7 +149,7 @@ export function ModelConfigCard({
               className={`pill border font-mono ${
                 m === cfg.default_model ? "border-violet/50 text-violet" : "border-line2 text-muted"
               }`}
-              title={m === cfg.default_model ? "该配置的默认模型" : undefined}
+              title={m === cfg.default_model ? "Default model of this config" : undefined}
             >
               {m === cfg.default_model && <Star className="h-2.5 w-2.5 fill-violet" />}
               {m}
@@ -165,8 +165,9 @@ export function ModelConfigCard({
         // Q8: single yellow bar inline, no second dialog. If the backend still
         // refuses (default / referenced), the parent shows the refs list.
         <div className="mt-3 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-          {isDefault ? "该配置是全局默认，删除后默认将切换到第一个启用配置。" : ""}
-          确定删除「{cfg.name || cfg.id}」？引用它的 Agent 将显示为已删除，历史会话回退到默认配置。
+          {isDefault ? "This config is the global default; after deletion the default switches to the first enabled config. " : ""}
+          Delete &quot;{cfg.name || cfg.id}&quot;? Agents referencing it will show as deleted, and
+          historical sessions fall back to the default config.
           <div className="mt-2 flex gap-2">
             <button
               onClick={() => {
@@ -175,13 +176,13 @@ export function ModelConfigCard({
               }}
               className="rounded-md border border-yellow/50 px-2.5 py-1 font-medium transition-colors hover:bg-yellow/20"
             >
-              确认删除
+              Delete
             </button>
             <button
               onClick={() => setConfirming(false)}
               className="rounded-md px-2.5 py-1 text-muted transition-colors hover:text-txt"
             >
-              取消
+              Cancel
             </button>
           </div>
         </div>

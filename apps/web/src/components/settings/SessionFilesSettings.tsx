@@ -96,14 +96,14 @@ export function SessionFilesSettings() {
     try {
       if (t.kind === "file") {
         const r = await api.deleteSessionFile(t.slug, t.sid, t.path);
-        setMsg(r.ok ? `已删除 ${t.label}` : r.error || "删除失败");
+        setMsg(r.ok ? `Deleted ${t.label}` : r.error || "Failed to delete");
       } else {
         const r = await api.deleteSessionDir(t.slug, t.sid, t.path || undefined);
-        setMsg(r.ok ? `已删除 ${t.label}` : r.error || "删除失败");
+        setMsg(r.ok ? `Deleted ${t.label}` : r.error || "Failed to delete");
       }
       await reloadOpen();
     } catch {
-      setMsg("删除失败");
+      setMsg("Failed to delete");
     }
   }
 
@@ -120,7 +120,7 @@ export function SessionFilesSettings() {
     if (!entries.length)
       return (
         <div className="py-1 text-xs text-faint" style={{ paddingLeft: depth * 18 + 26 }}>
-          （空）
+          (empty)
         </div>
       );
     return (
@@ -158,15 +158,15 @@ export function SessionFilesSettings() {
               <span className="min-w-0 flex-1 truncate">{e.name}</span>
               <span className="shrink-0 text-[10px] text-faint">{fmtBytes(e.size)}</span>
               <button
-                title="在 Finder 中显示"
+                title="Reveal in Finder"
                 onClick={() => reveal(slug, sid, subPath)}
                 className="shrink-0 rounded px-1 text-[10px] text-faint opacity-0 transition-opacity hover:text-txt group-hover:opacity-100"
               >
-                显示
+                Reveal
               </button>
               {orphaned && (
                 <button
-                  title="删除文件"
+                  title="Delete file"
                   onClick={() =>
                     setConfirm({ kind: "file", slug, sid, path: subPath, label: e.name, parentKey: k })
                   }
@@ -184,14 +184,16 @@ export function SessionFilesSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">会话文件</h2>
+      <h2 className="text-lg font-semibold text-txt">Session Files</h2>
       <p className="mt-1 text-sm text-muted">
-        每个会话都有一个专属文件目录，创建会话时自动生成；删除会话只清除对话历史，文件会保留在这里，可浏览或手动清理。
+        Each session owns a dedicated files directory, created automatically with the session;
+        deleting a session only clears the conversation history — the files are kept here for
+        browsing or manual cleanup.
       </p>
 
       {dirs.length === 0 ? (
         <div className="mt-6 rounded-xl border border-line bg-card p-6 text-center text-sm text-faint">
-          暂无会话文件目录
+          No session file directories
         </div>
       ) : (
         <div className="mt-4 space-y-2">
@@ -212,28 +214,28 @@ export function SessionFilesSettings() {
                     )}
                     <FolderOpen className="h-4 w-4 shrink-0" style={{ color: "#38bdf8" }} />
                     <span className="truncate text-sm text-txt">
-                      {d.title || "(未命名会话)"}
+                      {d.title || "(untitled session)"}
                     </span>
                     <span className="truncate font-mono text-[10px] text-faint">{d.session_id}</span>
                     {d.orphaned && (
                       <span className="shrink-0 rounded-full bg-amber/15 px-2 py-0.5 text-[10px] font-medium text-amber">
-                        已删除会话
+                        deleted session
                       </span>
                     )}
                   </button>
                   <span className="shrink-0 text-[11px] text-faint">
-                    {d.file_count} 个文件 · {fmtBytes(d.total_bytes)} · {fmtTime(d.mtime)}
+                    {d.file_count} files · {fmtBytes(d.total_bytes)} · {fmtTime(d.mtime)}
                   </span>
                   <button
-                    title="在 Finder 中显示"
+                    title="Reveal in Finder"
                     onClick={() => reveal(d.project_slug, d.session_id, "")}
                     className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-muted hover:text-txt"
                   >
-                    打开
+                    Open
                   </button>
                   {d.orphaned ? (
                     <button
-                      title="删除整个会话目录"
+                      title="Delete the whole session directory"
                       onClick={() =>
                         setConfirm({
                           kind: "dir",
@@ -249,10 +251,10 @@ export function SessionFilesSettings() {
                     </button>
                   ) : (
                     <span
-                      title="进行中的会话文件受保护，不能在这里删除；删除会话后其文件才可清理"
+                      title="Files of an active session are protected and cannot be deleted here; they become cleanable after the session is deleted"
                       className="shrink-0 rounded-full bg-line2/60 px-2 py-0.5 text-[10px] text-faint"
                     >
-                      使用中
+                      In use
                     </span>
                   )}
                 </div>
@@ -267,13 +269,13 @@ export function SessionFilesSettings() {
 
       {confirm && (
         <ConfirmModal
-          title={confirm.kind === "file" ? "删除文件" : "删除会话目录"}
+          title={confirm.kind === "file" ? "Delete file" : "Delete session directory"}
           message={
             confirm.kind === "file"
-              ? `确定删除文件「${confirm.label}」？磁盘上的文件将被移除，且无法恢复。`
-              : `确定删除「${confirm.label}」的整个文件目录？其中所有文件将被移除，且无法恢复。对话历史不受影响。`
+              ? `Delete the file "${confirm.label}"? It will be removed from disk and cannot be recovered.`
+              : `Delete the whole file directory of "${confirm.label}"? All files inside will be removed and cannot be recovered. Conversation history is unaffected.`
           }
-          confirmLabel="删除"
+          confirmLabel="Delete"
           onConfirm={() => doDelete(confirm)}
           onCancel={() => setConfirm(null)}
         />

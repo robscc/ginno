@@ -61,7 +61,7 @@ export function OverviewPanel() {
         api.getUsageHourly(o.window.to).then((h) => alive.current && setHourly(h)).catch(() => {});
       }
     } catch {
-      if (alive.current) setErr("用量数据加载失败（runtime 未连接？）");
+      if (alive.current) setErr("Failed to load usage data (runtime not connected?)");
     }
   }, [hourDate]);
 
@@ -90,7 +90,7 @@ export function OverviewPanel() {
   }
 
   if (err) return <div className="py-10 text-center text-sm text-faint">{err}</div>;
-  if (!ov) return <div className="py-10 text-center text-sm text-faint">加载中…</div>;
+  if (!ov) return <div className="py-10 text-center text-sm text-faint">Loading…</div>;
 
   const t = ov.today;
   const daily = ov.daily;
@@ -107,7 +107,7 @@ export function OverviewPanel() {
   return (
     <div>
       <div className="mb-3 flex items-center gap-2.5">
-        <span className="text-[11.5px] text-faint">统计窗口只影响本页趋势与分布；会话 / 请求日志各有自己的时间过滤</span>
+        <span className="text-[11.5px] text-faint">The stats window only affects this page&apos;s trends and distributions; sessions / request log have their own time filters</span>
         <div className="flex-1" />
         <div className="flex rounded-lg border border-line bg-card p-0.5">
           {[7, 30, 90].map((d) => (
@@ -116,13 +116,13 @@ export function OverviewPanel() {
               onClick={() => setRange(d)}
               className={`rounded-md px-3 py-1 text-xs transition-colors ${range === d ? "bg-card2 text-txt" : "text-muted hover:text-txt"}`}
             >
-              近 {d} 天
+              Last {d}d
             </button>
           ))}
         </div>
         <button
           className="flex h-7 w-7 items-center justify-center rounded-lg border border-line text-muted hover:bg-card"
-          title="刷新"
+          title="Refresh"
           onClick={() => { load(range); if (hourDate) loadHour(hourDate); }}
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -131,39 +131,39 @@ export function OverviewPanel() {
 
       {empty ? (
         <div className="rounded-xl border border-line bg-card px-6 py-14 text-center text-sm text-faint">
-          开始对话后，这里会出现 Token 用量数据。
+          Token usage data will appear here once you start chatting.
         </div>
       ) : (
         <>
           {/* KPI */}
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             <Kpi
-              label="今日 Tokens"
+              label="Tokens today"
               value={fmt(t.input_tokens + t.output_tokens)}
               sub={<>↑ {fmt(t.input_tokens)} · ↓ {fmt(t.output_tokens)} · <Delta v={dTokens} suffix="%" /></>}
             />
-            <Kpi label="今日请求" value={`${t.calls} 次`} sub={<>较昨日 <Delta v={dCalls} /> 次</>} />
+            <Kpi label="Requests today" value={`${t.calls}`} sub={<>vs yesterday <Delta v={dCalls} /></>} />
             <Kpi
-              label="今日缓存命中率"
+              label="Cache hit rate today"
               value={<><span style={{ color: "#4ade80" }}>⚡</span> {pct(t.cache_hit_ratio)}</>}
-              sub={<>较昨日 {dHit >= 0 ? "+" : ""}{dHit.toFixed(1)} pt（缓存读按折扣计费）</>}
+              sub={<>vs yesterday {dHit >= 0 ? "+" : ""}{dHit.toFixed(1)} pt (cache reads are billed at a discount)</>}
             />
             <Kpi
-              label={`近 ${range} 天 Tokens`}
+              label={`Tokens, last ${range}d`}
               value={fmt(ov.totals.input_tokens + ov.totals.output_tokens)}
-              sub={<>{ov.sessions_active} 个会话 · {ov.providers.length} 个 Provider</>}
+              sub={<>{ov.sessions_active} sessions · {ov.providers.length} providers</>}
             />
           </div>
 
           {/* 每日趋势 */}
           <div className="mt-3 rounded-xl border border-line bg-card px-4 pb-2 pt-3.5">
             <div className="mb-2 flex flex-wrap items-baseline gap-3">
-              <h3 className="text-[13px] font-semibold">每日趋势</h3>
-              <span className="text-[11px] text-faint">点击某天 → 下方小时分布切换；悬停看明细</span>
+              <h3 className="text-[13px] font-semibold">Daily trend</h3>
+              <span className="text-[11px] text-faint">Click a day to switch the hourly distribution below; hover for details</span>
               <SeriesLegend />
             </div>
             <StackedBars
-              ariaLabel="每日 Token 趋势堆叠柱状图"
+              ariaLabel="Daily token trend stacked bar chart"
               data={daily.map((d) => ({
                 key: d.date,
                 label: d.date.slice(5),
@@ -178,22 +178,22 @@ export function OverviewPanel() {
                 if (!p) return null;
                 return (
                   <>
-                    <b className="text-txt">{p.date}</b> · {p.calls} 次请求 · 命中 {pct(p.cache_hit_ratio)}
+                    <b className="text-txt">{p.date}</b> · {p.calls} requests · hit {pct(p.cache_hit_ratio)}
                     {p.models?.length ? (
                       <SkuBreakdown models={p.models} />
                     ) : (
                       /* 旧 runtime 无 per-model 明细 — 退回按天聚合（精确数字） */
                       <>
-                        <TipRow label="输入（非缓存）" value={exact(Math.max(0, p.input_tokens - p.cache_read_tokens - p.cache_creation_tokens))} swatch={SERIES.input} />
-                        <TipRow label="缓存写" value={exact(p.cache_creation_tokens)} swatch={CACHE_WRITE_COLOR} />
-                        <TipRow label="缓存读" value={exact(p.cache_read_tokens)} swatch={SERIES.cache} />
-                        <TipRow label="输出" value={exact(p.output_tokens)} swatch={SERIES.output} />
+                        <TipRow label="Input (non-cache)" value={exact(Math.max(0, p.input_tokens - p.cache_read_tokens - p.cache_creation_tokens))} swatch={SERIES.input} />
+                        <TipRow label="Cache write" value={exact(p.cache_creation_tokens)} swatch={CACHE_WRITE_COLOR} />
+                        <TipRow label="Cache read" value={exact(p.cache_read_tokens)} swatch={SERIES.cache} />
+                        <TipRow label="Output" value={exact(p.output_tokens)} swatch={SERIES.output} />
                       </>
                     )}
                     <div className="mt-1.5 border-t border-white/10 pt-1">
-                      <TipRow label="总 Tokens" value={exact(p.input_tokens + p.output_tokens)} />
+                      <TipRow label="Total tokens" value={exact(p.input_tokens + p.output_tokens)} />
                     </div>
-                    <div className="mt-0.5 text-faint">点击查看该日小时分布</div>
+                    <div className="mt-0.5 text-faint">Click to view the hourly distribution for that day</div>
                   </>
                 );
               }}
@@ -203,7 +203,7 @@ export function OverviewPanel() {
           {/* 小时分布 */}
           <div className="mt-3 rounded-xl border border-line bg-card px-4 pb-2 pt-3.5">
             <div className="mb-2 flex flex-wrap items-baseline gap-3">
-              <h3 className="text-[13px] font-semibold">小时分布</h3>
+              <h3 className="text-[13px] font-semibold">Hourly distribution</h3>
               <div className="flex items-center gap-1.5">
                 {daily.slice(-5).map((d) => (
                   <button
@@ -215,17 +215,17 @@ export function OverviewPanel() {
                   </button>
                 ))}
               </div>
-              <span className="text-[11px] text-faint">悬停看该小时各模型 SKU 明细（精确数字）</span>
+              <span className="text-[11px] text-faint">Hover for per-model SKU details of that hour (exact numbers)</span>
               <SeriesLegend />
             </div>
             {hourly && hourly.date === hourDate ? (
               <StackedBars
-                ariaLabel={`${hourDate} 小时分布`}
+                ariaLabel={`Hourly distribution, ${hourDate}`}
                 height={210}
                 xEvery={3}
                 data={hourly.hours.map((h) => ({
                   key: String(h.hour),
-                  label: `${h.hour}时`,
+                  label: `${h.hour}h`,
                   cache: h.cache_read_tokens,
                   inputNet: Math.max(0, h.input_tokens - h.cache_read_tokens - (h.cache_creation_tokens ?? 0)),
                   output: h.output_tokens,
@@ -235,27 +235,27 @@ export function OverviewPanel() {
                   const cw = h.cache_creation_tokens ?? 0;
                   return (
                     <>
-                      <b className="text-txt">{hourDate} {String(h.hour).padStart(2, "0")}:00–{String(h.hour).padStart(2, "0")}:59</b> · {h.calls} 次请求
+                      <b className="text-txt">{hourDate} {String(h.hour).padStart(2, "0")}:00–{String(h.hour).padStart(2, "0")}:59</b> · {h.calls} requests
                       {h.models?.length ? (
                         <SkuBreakdown models={h.models} />
                       ) : (
                         /* 旧 runtime 无 per-model 明细 — 退回按小时聚合（精确数字） */
                         <>
-                          <TipRow label="输入（非缓存）" value={exact(Math.max(0, h.input_tokens - h.cache_read_tokens - cw))} swatch={SERIES.input} />
-                          <TipRow label="缓存写" value={exact(cw)} swatch={CACHE_WRITE_COLOR} />
-                          <TipRow label="缓存读" value={exact(h.cache_read_tokens)} swatch={SERIES.cache} />
-                          <TipRow label="输出" value={exact(h.output_tokens)} swatch={SERIES.output} />
+                          <TipRow label="Input (non-cache)" value={exact(Math.max(0, h.input_tokens - h.cache_read_tokens - cw))} swatch={SERIES.input} />
+                          <TipRow label="Cache write" value={exact(cw)} swatch={CACHE_WRITE_COLOR} />
+                          <TipRow label="Cache read" value={exact(h.cache_read_tokens)} swatch={SERIES.cache} />
+                          <TipRow label="Output" value={exact(h.output_tokens)} swatch={SERIES.output} />
                         </>
                       )}
                       <div className="mt-1.5 border-t border-white/10 pt-1">
-                        <TipRow label="总 Tokens" value={exact(h.input_tokens + h.output_tokens)} />
+                        <TipRow label="Total tokens" value={exact(h.input_tokens + h.output_tokens)} />
                       </div>
                     </>
                   );
                 }}
               />
             ) : (
-              <div className="py-12 text-center text-xs text-faint">加载中…</div>
+              <div className="py-12 text-center text-xs text-faint">Loading…</div>
             )}
           </div>
 
@@ -274,15 +274,15 @@ export function OverviewPanel() {
 /** 来源（usage-stats-design §3.6）：对话 vs 工作流 vs 后台任务。
  * 颜色与请求日志的 SrcChip 保持一致（RequestsPanel.SRC_STYLE 的 fg 列）。 */
 const SOURCE_META: Record<string, { label: string; color: string }> = {
-  chat: { label: "对话", color: "#8d90f8" },
-  goal: { label: "Goal 续轮", color: "#b39df9" },
-  compaction: { label: "历史压缩", color: "#d9a93e" },
-  workflow: { label: "工作流", color: "#4ade80" },
-  memory: { label: "记忆", color: "#38bdf8" },
-  kb: { label: "知识库", color: "#60a5fa" },
-  probe: { label: "探测", color: "#9a9aa6" },
-  external: { label: "外部代理", color: "#f472b6" },
-  other: { label: "其他", color: "#9a9aa6" },
+  chat: { label: "Chat", color: "#8d90f8" },
+  goal: { label: "Goal follow-up", color: "#b39df9" },
+  compaction: { label: "Compaction", color: "#d9a93e" },
+  workflow: { label: "Workflow", color: "#4ade80" },
+  memory: { label: "Memory", color: "#38bdf8" },
+  kb: { label: "Knowledge Base", color: "#60a5fa" },
+  probe: { label: "Probe", color: "#9a9aa6" },
+  external: { label: "External agents", color: "#f472b6" },
+  other: { label: "Other", color: "#9a9aa6" },
 };
 
 function SourceDist({ ov }: { ov: UsageOverview }) {
@@ -293,10 +293,10 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
   return (
     <div className="rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
-        <h3 className="text-[13px] font-semibold">来源分布</h3>
-        <span className="text-[11px] text-faint">对话 · 工作流 · 后台</span>
+        <h3 className="text-[13px] font-semibold">Source distribution</h3>
+        <span className="text-[11px] text-faint">Chat · workflows · background</span>
       </div>
-      {sources.length === 0 && <div className="py-6 text-center text-xs text-faint">暂无数据</div>}
+      {sources.length === 0 && <div className="py-6 text-center text-xs text-faint">No data</div>}
       {sources.map((s) => {
         const meta = SOURCE_META[s.source] || { label: s.source, color: "#9a9aa6" };
         const v = s.input_tokens + s.output_tokens;
@@ -307,12 +307,12 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
             onMouseEnter={(e) =>
               show(
                 <>
-                  <b className="text-txt">{meta.label}</b>（{s.source}）· 窗口内
+                  <b className="text-txt">{meta.label}</b> ({s.source}) · in window
                   <TipRow label="Tokens" value={fmt(v)} />
-                  <TipRow label="输入" value={fmt(s.input_tokens)} />
-                  <TipRow label="输出" value={fmt(s.output_tokens)} />
-                  <TipRow label="缓存读" value={fmt(s.cache_read_tokens)} swatch={SERIES.cache} />
-                  <TipRow label="请求数" value={String(s.calls)} />
+                  <TipRow label="Input" value={fmt(s.input_tokens)} />
+                  <TipRow label="Output" value={fmt(s.output_tokens)} />
+                  <TipRow label="Cache read" value={fmt(s.cache_read_tokens)} swatch={SERIES.cache} />
+                  <TipRow label="Requests" value={String(s.calls)} />
                 </>,
                 e,
               )
@@ -345,10 +345,10 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
   return (
     <div className="rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
-        <h3 className="text-[13px] font-semibold">Provider 分布</h3>
-        <span className="text-[11px] text-faint">窗口内占比</span>
+        <h3 className="text-[13px] font-semibold">Provider distribution</h3>
+        <span className="text-[11px] text-faint">Share within window</span>
       </div>
-      {ov.providers.length === 0 && <div className="py-6 text-center text-xs text-faint">暂无数据</div>}
+      {ov.providers.length === 0 && <div className="py-6 text-center text-xs text-faint">No data</div>}
       {ov.providers.map((p) => {
         const v = p.input_tokens + p.output_tokens;
         return (
@@ -358,13 +358,13 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
             onMouseEnter={(e) =>
               show(
                 <>
-                  <b className="text-txt">{p.provider}</b> · 窗口内
+                  <b className="text-txt">{p.provider}</b> · in window
                   <TipRow label="Tokens" value={fmt(v)} />
-                  <TipRow label="输入" value={fmt(p.input_tokens)} />
-                  <TipRow label="输出" value={fmt(p.output_tokens)} />
-                  <TipRow label="缓存读" value={fmt(p.cache_read_tokens)} swatch={SERIES.cache} />
-                  <TipRow label="命中率" value={p.input_tokens > 0 ? pct(p.cache_hit_ratio) : "—"} />
-                  <TipRow label="请求数" value={String(p.calls)} />
+                  <TipRow label="Input" value={fmt(p.input_tokens)} />
+                  <TipRow label="Output" value={fmt(p.output_tokens)} />
+                  <TipRow label="Cache read" value={fmt(p.cache_read_tokens)} swatch={SERIES.cache} />
+                  <TipRow label="Hit rate" value={p.input_tokens > 0 ? pct(p.cache_hit_ratio) : "—"} />
+                  <TipRow label="Requests" value={String(p.calls)} />
                 </>,
                 e,
               )
@@ -395,17 +395,17 @@ function ModelRank({ ov }: { ov: UsageOverview }) {
   return (
     <div className="rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
-        <h3 className="text-[13px] font-semibold">模型排行</h3>
-        <span className="text-[11px] text-faint">按总 Tokens</span>
+        <h3 className="text-[13px] font-semibold">Model ranking</h3>
+        <span className="text-[11px] text-faint">By total tokens</span>
       </div>
       <div className="grid grid-cols-[14px_1.35fr_0.8fr_0.55fr_0.6fr] gap-2 pb-1.5 text-[11px] text-faint">
         <span />
-        <span>模型</span>
+        <span>Model</span>
         <span className="text-right">Tokens</span>
-        <span className="text-right">占比</span>
-        <span className="text-right">命中</span>
+        <span className="text-right">Share</span>
+        <span className="text-right">Hit</span>
       </div>
-      {ov.models.length === 0 && <div className="py-6 text-center text-xs text-faint">暂无数据</div>}
+      {ov.models.length === 0 && <div className="py-6 text-center text-xs text-faint">No data</div>}
       {ov.models.map((m) => {
         const v = m.input_tokens + m.output_tokens;
         const hit = m.cache_read_tokens > 0 || m.cache_hit_ratio > 0 ? pct(m.cache_hit_ratio) : "—";

@@ -79,7 +79,7 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
   function toggle(id: RightTab) {
     const isHidden = hidden.has(id);
     if (!isHidden && !canHide) {
-      onMsg("至少要保留一个标签");
+      onMsg("At least one tab must stay visible");
       return;
     }
     g.setRightTabHidden(id, !isHidden);
@@ -148,11 +148,12 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
 
   return (
     <div>
-      <label className="field-label">右栏标签</label>
+      <label className="field-label">Right-panel tabs</label>
       <p className="text-xs text-faint">
-        拖动左侧手柄调整顺序，点击眼睛图标显示 / 隐藏。隐藏的标签会保留位置，随时可以重新显示。
+        Drag the handle on the left to reorder; click the eye icon to show / hide. Hidden tabs keep
+        their position and can be shown again anytime.
       </p>
-      <div role="list" aria-label="右栏标签顺序" className="relative mt-2 flex flex-col gap-1">
+      <div role="list" aria-label="Right-panel tab order" className="relative mt-2 flex flex-col gap-1">
         {order.map((id, i) => {
           const meta = RIGHT_TAB_BY_ID[id];
           const Icon = meta.icon;
@@ -172,9 +173,9 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
                 }}
                 role="listitem"
                 tabIndex={0}
-                aria-label={`${meta.label} 标签（第 ${i + 1} / ${order.length} 个，${
-                  isHidden ? "已隐藏" : "显示中"
-                }）`}
+                aria-label={`${meta.label} tab (${i + 1} / ${order.length}, ${
+                  isHidden ? "hidden" : "visible"
+                })`}
                 onKeyDown={(e) => onRowKeyDown(e, id, i)}
                 className={cn(
                   "flex items-center gap-2 rounded-lg border bg-base/40 px-2 py-1.5 outline-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-violet/60",
@@ -184,7 +185,7 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
                 <span
                   role="button"
                   tabIndex={-1}
-                  aria-label={`拖动排序：${meta.label}`}
+                  aria-label={`Drag to reorder: ${meta.label}`}
                   onPointerDown={(e) => startDrag(e, id)}
                   onPointerMove={moveDrag}
                   onPointerUp={(e) => endDrag(e, false)}
@@ -203,8 +204,8 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
                 <button
                   type="button"
                   disabled={locked}
-                  title={locked ? "至少要保留一个标签" : undefined}
-                  aria-label={isHidden ? `显示 ${meta.label} 标签` : `隐藏 ${meta.label} 标签`}
+                  title={locked ? "At least one tab must stay visible" : undefined}
+                  aria-label={isHidden ? `Show ${meta.label} tab` : `Hide ${meta.label} tab`}
                   onClick={() => toggle(id)}
                   className={cn(
                     "shrink-0 rounded p-1 transition-colors",
@@ -229,14 +230,14 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
           type="button"
           onClick={() => {
             g.resetRightTabs();
-            onMsg("已恢复默认标签顺序");
+            onMsg("Default tab order restored");
           }}
           className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted transition-colors hover:text-txt"
         >
-          恢复默认
+          Reset to default
         </button>
         <span className="text-xs text-faint">
-          {g.visibleRightTabs.length} / {order.length} 个标签显示中
+          {g.visibleRightTabs.length} / {order.length} tabs visible
         </span>
       </div>
     </div>
@@ -288,9 +289,9 @@ export function GeneralSettings() {
       s.bypass_permissions = v;
       await api.putSettings(s);
       setBypass(v);
-      setMsg(v ? "特权模式已开启：所有工具直接执行，不再询问" : "特权模式已关闭：按权限策略询问 / 拦截");
+      setMsg(v ? "Privileged Mode on: all tools run directly without asking" : "Privileged Mode off: ask / block per the permission policy");
     } catch {
-      setMsg("保存失败");
+      setMsg("Failed to save");
     }
   }
   // 保存 subagent 并发上限：走既有 get→改→put 链路（同 toggleBypass），键为
@@ -299,40 +300,40 @@ export function GeneralSettings() {
     const n = Math.round(Number(raw));
     const clamped = Number.isFinite(n) ? Math.min(16, Math.max(1, n)) : 5;
     setSubMax(String(clamped));
-    if (Number.isFinite(n) && n !== clamped) setMsg(`超出范围，已收敛到 ${clamped}（允许 1-16）`);
+    if (Number.isFinite(n) && n !== clamped) setMsg(`Out of range, clamped to ${clamped} (allowed 1-16)`);
     try {
       const s = (await api.getSettings()) as Record<string, unknown>;
       const sub = (s.subagent as Record<string, unknown> | undefined) ?? {};
       sub.max_concurrent = clamped;
       s.subagent = sub;
       await api.putSettings(s);
-      setMsg(`subagent 并发上限已保存：${clamped}`);
+      setMsg(`Subagent concurrency cap saved: ${clamped}`);
     } catch {
-      setMsg("保存失败");
+      setMsg("Failed to save");
     }
   }
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">通用设置</h2>
+      <h2 className="text-lg font-semibold text-txt">General</h2>
       <div className="mt-4 max-w-md space-y-4">
         <div>
-          <label className="field-label">默认模型提供商</label>
+          <label className="field-label">Default model provider</label>
           <select className="field" value={g.defaultProvider} onChange={(e) => setDefault(e.target.value)}>
             {Object.keys(g.providers).map((p) => (
               <option key={p} value={p} disabled={!g.providers[p].enabled}>
                 {p}
-                {g.providers[p].enabled ? "" : " (未启用)"}
+                {g.providers[p].enabled ? "" : " (disabled)"}
               </option>
             ))}
           </select>
           <p className="mt-1 text-xs text-faint">
-            新会话与未单独绑定供应商的 agent 使用此供应商;在 设置 → Agents
-            里给某个 agent 绑定不同的供应商可覆盖它。
+            New sessions and agents without their own provider use this provider; bind a different
+            provider to an agent in Settings → Agents to override it.
           </p>
         </div>
         <div>
-          <label className="field-label">主题</label>
+          <label className="field-label">Theme</label>
           <div className="flex gap-2">
             {["dark", "light"].map((t) => (
               <button
@@ -351,14 +352,17 @@ export function GeneralSettings() {
         <div>
           <label className="flex items-center gap-2 text-sm text-txt">
             <input type="checkbox" checked={bypass} onChange={(e) => toggleBypass(e.target.checked)} />
-            特权模式（跳过所有权限确认，允许执行一切命令）
+            Privileged Mode (skip all permission confirmations, allow any command)
           </label>
           <p className="mt-1 text-xs text-faint">
-            开启后 Agent 调用任何工具都不再询问、不被权限策略拦截（含 Bash/Write 等危险操作）。默认开启；关闭后按权限策略询问/拦截。注意：你配置的 PreToolUse hook 仍会执行（hook 是自定义规则，始终生效）。
+            When on, the Agent can call any tool without asking and the permission policy cannot
+            block it (including Bash/Write and other dangerous operations). On by default; when
+            off, asks / blocks per the permission policy. Note: your PreToolUse hooks still run
+            (hooks are custom rules and always apply).
           </p>
         </div>
         <div>
-          <label className="field-label">Subagent 并发上限</label>
+          <label className="field-label">Subagent concurrency cap</label>
           <div className="flex items-center gap-2">
             <input
               type="number"
@@ -374,18 +378,19 @@ export function GeneralSettings() {
                 }
               }}
               className="field w-24"
-              aria-label="subagent 并发上限（1-16）"
+              aria-label="Subagent concurrency cap (1-16)"
             />
-            <span className="text-xs text-faint">允许 1-16，默认 5；保存后立即生效</span>
+            <span className="text-xs text-faint">Allowed 1-16, default 5; takes effect right after saving</span>
           </div>
           <p className="mt-1 text-xs text-faint">
-            同一父会话同时运行的 subagent 数量硬上限；超出时发起会被拒绝并提示当前在跑清单。
+            Hard cap on subagents running concurrently under the same parent session; requests over
+            the cap are rejected with a list of the currently running ones.
           </p>
         </div>
         <div>
-          <label className="field-label">工作目录</label>
+          <label className="field-label">Working directory</label>
           <div className="field bg-base/40 text-muted">
-            ~/workspace/&lt;project&gt; （Agent 元数据在 ~/.ginno/projects/）
+            ~/workspace/&lt;project&gt; (agent metadata in ~/.ginno/projects/)
           </div>
         </div>
         <RightTabsSection onMsg={setMsg} />

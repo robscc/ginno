@@ -8,11 +8,11 @@ type Ev = (typeof EVENTS)[number];
 type Hook = { matcher: string; command: string };
 
 const HELP: Record<Ev, string> = {
-  PreToolUse: "工具调用前；matcher = 工具名（如 Bash）。",
-  PostToolUse: "工具调用后；matcher = 工具名。",
-  UserPromptSubmit: "用户提交消息时。",
-  Stop: "一轮结束时。",
-  SessionStart: "会话开始时。",
+  PreToolUse: "Before a tool call; matcher = tool name (e.g. Bash).",
+  PostToolUse: "After a tool call; matcher = tool name.",
+  UserPromptSubmit: "When the user submits a message.",
+  Stop: "At the end of each turn.",
+  SessionStart: "When a session starts.",
 };
 
 const norm = (h: unknown): Hook => {
@@ -35,7 +35,7 @@ export function HooksSettings() {
         for (const e of EVENTS) out[e] = Array.isArray(raw[e]) ? raw[e].map(norm) : [];
         setHooks(out);
       })
-      .catch(() => setMsg("加载失败：运行时未连接"));
+      .catch(() => setMsg("Failed to load: runtime not connected"));
   };
   useEffect(load, []);
 
@@ -58,9 +58,9 @@ export function HooksSettings() {
       }
       s.hooks = cleaned;
       const r = await api.putSettings(s);
-      setMsg(r.ok ? "已保存（下一次匹配的事件即生效，hook 不受特权模式影响）" : "保存失败");
+      setMsg(r.ok ? "Saved (takes effect on the next matching event; hooks are unaffected by Privileged Mode)" : "Failed to save");
     } catch {
-      setMsg("保存失败：运行时未连接");
+      setMsg("Failed to save: runtime not connected");
     } finally {
       setBusy(false);
     }
@@ -70,8 +70,8 @@ export function HooksSettings() {
     <div className="px-8 py-7">
       <h2 className="text-lg font-semibold text-txt">Hooks</h2>
       <p className="mt-1 max-w-2xl text-sm text-muted">
-        在生命周期事件触发自定义命令；命令通过 stdin 收到 JSON 载荷（含 event / tool_name 等）。hook
-        始终执行，不受特权模式影响。
+        Run custom commands on lifecycle events; commands receive a JSON payload on stdin (including
+        event / tool_name, etc.). Hooks always run and are unaffected by Privileged Mode.
       </p>
       <div className="mt-5 max-w-2xl space-y-6">
         {EVENTS.map((e) => (
@@ -88,7 +88,7 @@ export function HooksSettings() {
                 <div key={i} className="flex gap-2">
                   <input
                     className="field w-40 font-mono text-xs"
-                    placeholder="matcher (可选)"
+                    placeholder="matcher (optional)"
                     value={h.matcher}
                     onChange={(ev) =>
                       update(
@@ -99,7 +99,7 @@ export function HooksSettings() {
                   />
                   <input
                     className="field flex-1 font-mono text-xs"
-                    placeholder="command，如 python ~/.ginno/hooks/x.py"
+                    placeholder="command, e.g. python ~/.ginno/hooks/x.py"
                     value={h.command}
                     onChange={(ev) =>
                       update(
@@ -110,7 +110,7 @@ export function HooksSettings() {
                   />
                   <button
                     onClick={() => update(e, (hooks[e] || []).filter((_, j) => j !== i))}
-                    aria-label="删除 hook"
+                    aria-label="Delete hook"
                     className="rounded-lg border border-line px-2 text-muted hover:text-red"
                   >
                     ×
@@ -121,7 +121,7 @@ export function HooksSettings() {
                 onClick={() => update(e, [...(hooks[e] || []), { matcher: "", command: "" }])}
                 className="rounded-lg border border-line2 px-3 py-1 text-xs text-muted hover:text-txt"
               >
-                + 添加 hook
+                + Add hook
               </button>
             </div>
           </div>
@@ -132,13 +132,13 @@ export function HooksSettings() {
             disabled={busy}
             className="rounded-lg bg-violet px-4 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            保存
+            Save
           </button>
           <button
             onClick={load}
             className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-txt"
           >
-            重新加载
+            Reload
           </button>
           {msg && <span className="text-xs text-muted">{msg}</span>}
         </div>

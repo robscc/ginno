@@ -13,9 +13,9 @@ import { RequestsPanel } from "./usage/RequestsPanel";
 type Tab = "overview" | "sessions" | "requests";
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: "overview", label: "概览" },
-  { id: "sessions", label: "会话" },
-  { id: "requests", label: "请求日志" },
+  { id: "overview", label: "Overview" },
+  { id: "sessions", label: "Sessions" },
+  { id: "requests", label: "Request Log" },
 ];
 
 export function UsageSettings() {
@@ -30,8 +30,8 @@ export function UsageSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">用量统计</h2>
-      <p className="mt-1 text-xs text-faint">全局 Token 用量 · 缓存命中 · 请求审计（纯本地记录，默认保留 90 天）</p>
+      <h2 className="text-lg font-semibold text-txt">Usage</h2>
+      <p className="mt-1 text-xs text-faint">Global token usage · cache hits · request audit (local records only, retained for 90 days by default)</p>
 
       <div className="mt-4 flex gap-1 border-b border-line" role="tablist">
         {TABS.map((t) => (

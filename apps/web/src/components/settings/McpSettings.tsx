@@ -36,9 +36,10 @@ export function McpSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">MCP 工具</h2>
+      <h2 className="text-lg font-semibold text-txt">MCP Tools</h2>
       <p className="mt-1 text-sm text-muted">
-        已连接 {info.servers.length} server(s)，{info.tools.length} tool(s)。编辑 mcp.json 后保存并重载。
+        Connected to {info.servers.length} server(s) and {info.tools.length} tool(s). Edit mcp.json,
+        then save and reload.
       </p>
       <textarea
         className="field mt-4 font-mono text-xs"

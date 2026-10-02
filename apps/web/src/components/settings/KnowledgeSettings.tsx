@@ -74,12 +74,12 @@ export function KnowledgeSettings() {
   async function detect() {
     setProbe("");
     if (!form.vault_path.trim()) {
-      setProbe("请先填写 vault 路径");
+      setProbe("Enter a vault path first");
       return;
     }
     const r = await api.kbWikiProbe(form.vault_path.trim());
     if (!r.ok) {
-      setProbe(r.error || "检测失败");
+      setProbe(r.error || "Detection failed");
       return;
     }
     const d = r.detected;
@@ -87,8 +87,8 @@ export function KnowledgeSettings() {
     if (d?.raw_dir) set("raw_dir", d.raw_dir);
     setProbe(
       d?.namespace
-        ? `检测到命名空间「${d.namespace}」：Wiki ${r.wiki_pages} 页${r.has_index ? "（含 INDEX）" : ""} / Raw ${r.raw_pages} 篇`
-        : `未检测到 */Wiki 目录（将把整个 vault 作为知识库索引，共 ${r.total_md} 篇）`,
+        ? `Detected namespace "${d.namespace}": Wiki ${r.wiki_pages} pages${r.has_index ? " (with INDEX)" : ""} / Raw ${r.raw_pages} notes`
+        : `No */Wiki directory detected (the whole vault will be indexed as the knowledge base, ${r.total_md} notes in total)`,
     );
   }
 
@@ -98,14 +98,14 @@ export function KnowledgeSettings() {
     try {
       const r = await api.kbWikiPutConfig(form);
       if (!r.ok) {
-        setMsg("保存失败");
+        setMsg("Failed to save");
         return;
       }
       if (andIndex) {
         const ix = await api.kbWikiReindex();
-        setMsg(ix.ok ? `已保存并索引 ${ix.indexed} 页` : "已保存，但索引失败");
+        setMsg(ix.ok ? `Saved and indexed ${ix.indexed} pages` : "Saved, but indexing failed");
       } else {
-        setMsg("已保存");
+        setMsg("Saved");
       }
     } finally {
       setBusy(false);
@@ -115,14 +115,15 @@ export function KnowledgeSettings() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-7">
       <h2 className="flex items-center gap-2 text-lg font-semibold text-txt">
-        <BookOpen className="h-5 w-5 text-violet" /> 知识库
+        <BookOpen className="h-5 w-5 text-violet" /> Knowledge Base
       </h2>
       <p className="mt-1 text-sm text-muted">
-        指向一个 Obsidian vault。已有编译好的 LLM Wiki（如 <code className="text-txt">Molly/Wiki</code>）会被直接索引，无需重新编译。
+        Point to an Obsidian vault. An existing compiled LLM Wiki (e.g.{" "}
+        <code className="text-txt">Molly/Wiki</code>) is indexed directly, no recompilation needed.
       </p>
 
       <div className="mt-5 space-y-4">
-        <Field label="Vault 路径（绝对路径）">
+        <Field label="Vault path (absolute)">
           <div className="flex gap-2">
             <input
               className="field flex-1"
@@ -134,24 +135,24 @@ export function KnowledgeSettings() {
               onClick={detect}
               className="flex items-center gap-1.5 rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt"
             >
-              <Search className="h-3.5 w-3.5" /> 检测
+              <Search className="h-3.5 w-3.5" /> Detect
             </button>
           </div>
           {probe && <div className="mt-1 text-xs text-violet">{probe}</div>}
         </Field>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Wiki 目录（可检索知识；相对 vault）">
+          <Field label="Wiki directory (searchable knowledge; relative to vault)">
             <input className="field" value={form.wiki_dir} onChange={(e) => set("wiki_dir", e.target.value)} />
           </Field>
-          <Field label="Raw 目录（编译源；相对 vault）">
+          <Field label="Raw directory (compilation source; relative to vault)">
             <input className="field" value={form.raw_dir} onChange={(e) => set("raw_dir", e.target.value)} />
           </Field>
         </div>
 
         <label className="flex items-center gap-2 text-sm text-txt">
           <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
-          启用知识库
+          Enable knowledge base
         </label>
         <label className="flex items-center gap-2 text-sm text-txt">
           <input
@@ -159,11 +160,11 @@ export function KnowledgeSettings() {
             checked={form.auto_inject}
             onChange={(e) => set("auto_inject", e.target.checked)}
           />
-          每轮对话按相关性自动注入
+          Auto-inject relevant content into each turn
         </label>
 
         <div className="grid grid-cols-3 gap-3">
-          <Field label="注入 top-K">
+          <Field label="Inject top-K">
             <input
               type="number"
               className="field"
@@ -171,7 +172,7 @@ export function KnowledgeSettings() {
               onChange={(e) => set("inject_top_k", Number(e.target.value) || 0)}
             />
           </Field>
-          <Field label="最小相关度">
+          <Field label="Minimum relevance score">
             <input
               type="number"
               step="0.05"
@@ -180,7 +181,7 @@ export function KnowledgeSettings() {
               onChange={(e) => set("inject_min_score", Number(e.target.value) || 0)}
             />
           </Field>
-          <Field label="索引刷新间隔(秒)">
+          <Field label="Index refresh interval (seconds)">
             <input
               type="number"
               className="field"
@@ -196,11 +197,12 @@ export function KnowledgeSettings() {
             checked={form.use_semantic}
             onChange={(e) => set("use_semantic", e.target.checked)}
           />
-          语义检索（本地 embedding，需 <code className="font-mono text-xs">uv sync --extra rag</code>）
+          Semantic retrieval (local embeddings, requires{" "}
+          <code className="font-mono text-xs">uv sync --extra rag</code>)
         </label>
         {form.use_semantic && (
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-line bg-base/30 p-3">
-            <Field label="Embedding 模型（sentence-transformers，留空=多语默认）">
+            <Field label="Embedding model (sentence-transformers; empty = multilingual default)">
               <input
                 className="field font-mono text-xs"
                 placeholder="…paraphrase-multilingual-MiniLM-L12-v2"
@@ -208,7 +210,7 @@ export function KnowledgeSettings() {
                 onChange={(e) => set("embedding_model", e.target.value)}
               />
             </Field>
-            <Field label="语义权重（叠加到词法分）">
+            <Field label="Semantic weight (added to the lexical score)">
               <input
                 type="number"
                 step="0.1"
@@ -218,21 +220,22 @@ export function KnowledgeSettings() {
               />
             </Field>
             <p className="col-span-2 text-xs text-faint">
-              开启后，点「保存并索引」/ Build wiki 会对 Wiki 页编码（首次会下载模型）。未装 rag
-              依赖、模型下载或编码失败时自动退回纯词法检索，不会报错。
+              When enabled, &quot;Save &amp; Index&quot; / Build wiki embeds the Wiki pages (the
+              model is downloaded on first use). If the rag dependencies are missing, or the model
+              download or encoding fails, it silently falls back to pure lexical retrieval.
             </p>
           </div>
         )}
 
         <div className="rounded-lg border border-line bg-base/30 p-3">
-          <div className="mb-2 text-sm text-txt">记忆提炼（Memory Refinery）</div>
+          <div className="mb-2 text-sm text-txt">Memory Refinery</div>
           <label className="flex items-center gap-2 text-sm text-txt">
             <input
               type="checkbox"
               checked={form.capture}
               onChange={(e) => set("capture", e.target.checked)}
             />
-            每轮对话结束后捕获 assistant 回复到记忆池
+            Capture assistant replies into the memory pool after each turn
           </label>
           <label className="mt-2 flex items-center gap-2 text-sm text-txt">
             <input
@@ -240,10 +243,11 @@ export function KnowledgeSettings() {
               checked={form.auto_summarize}
               onChange={(e) => set("auto_summarize", e.target.checked)}
             />
-            达到阈值时自动起草（草稿仍需人工审核，不会静默改写记忆）
+            Draft automatically when the threshold is reached (drafts still require manual review;
+            memory is never rewritten silently)
           </label>
           <div className="mt-3 grid grid-cols-2 gap-3">
-            <Field label="自动起草阈值（池内轮数）">
+            <Field label="Auto-draft threshold (turns in pool)">
               <input
                 type="number"
                 className="field"
@@ -251,7 +255,7 @@ export function KnowledgeSettings() {
                 onChange={(e) => set("pool_flush_threshold", Number(e.target.value) || 0)}
               />
             </Field>
-            <Field label="记忆预算（字）">
+            <Field label="Memory budget (chars)">
               <input
                 type="number"
                 className="field"
@@ -261,17 +265,18 @@ export function KnowledgeSettings() {
             </Field>
           </div>
           <div className="mt-3">
-            <Field label="蒸馏模型（provider，留空=跟随默认）">
+            <Field label="Distillation model (provider; empty = follow default)">
               <input
                 className="field font-mono text-xs"
-                placeholder="留空使用默认 provider"
+                placeholder="Leave empty to use the default provider"
                 value={form.summarize_model}
                 onChange={(e) => set("summarize_model", e.target.value)}
               />
             </Field>
           </div>
           <p className="mt-2 text-xs text-faint">
-            蒸馏永远产出草稿：在右栏 Memory 面板审核差异、可编辑，采纳后才写入 MEMORY.md。
+            Distillation always produces drafts: review and edit the diff in the right-column Memory
+            panel; only adopted drafts are written to MEMORY.md.
           </p>
         </div>
 
@@ -281,14 +286,14 @@ export function KnowledgeSettings() {
             disabled={busy}
             className="flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            <Download className="h-3.5 w-3.5" /> 保存并索引
+            <Download className="h-3.5 w-3.5" /> Save &amp; Index
           </button>
           <button
             onClick={() => save(false)}
             disabled={busy}
             className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-3 py-1.5 text-xs text-muted hover:text-txt disabled:opacity-50"
           >
-            <Save className="h-3.5 w-3.5" /> 仅保存
+            <Save className="h-3.5 w-3.5" /> Save only
           </button>
           {msg && <span className="text-xs text-violet">{msg}</span>}
         </div>

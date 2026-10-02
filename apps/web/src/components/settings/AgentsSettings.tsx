@@ -102,13 +102,13 @@ export function AgentsSettings() {
       // The backend always returns HTTP 200; failures are {ok:false, error}.
       const r = await api.updateAgent(a.id, data);
       if (r.ok) {
-        setMsg((m) => ({ ...m, [a.id]: { text: "已保存", ok: true } }));
+        setMsg((m) => ({ ...m, [a.id]: { text: "Saved", ok: true } }));
         g.reloadAgents();
       } else {
-        setMsg((m) => ({ ...m, [a.id]: { text: r.error || "保存失败", ok: false } }));
+        setMsg((m) => ({ ...m, [a.id]: { text: r.error || "Failed to save", ok: false } }));
       }
     } catch {
-      setMsg((m) => ({ ...m, [a.id]: { text: "无法连接运行时（sidecar 未启动？）", ok: false } }));
+      setMsg((m) => ({ ...m, [a.id]: { text: "Cannot connect to the runtime (sidecar not started?)", ok: false } }));
     } finally {
       setBusy((b) => ({ ...b, [a.id]: false }));
     }
@@ -125,17 +125,17 @@ export function AgentsSettings() {
       if (r.ok) {
         g.reloadAgents();
       } else {
-        setMsg((m) => ({ ...m, [id]: { text: "删除失败", ok: false } }));
+        setMsg((m) => ({ ...m, [id]: { text: "Failed to delete", ok: false } }));
       }
     } catch {
-      setMsg((m) => ({ ...m, [id]: { text: "无法连接运行时（sidecar 未启动？）", ok: false } }));
+      setMsg((m) => ({ ...m, [id]: { text: "Cannot connect to the runtime (sidecar not started?)", ok: false } }));
     }
   }
 
   const trimmedId = newId.trim();
   const idError =
     trimmedId && !ID_RE.test(trimmedId)
-      ? "id 仅支持小写字母、数字、- 和 _，且以字母或数字开头"
+      ? "id only supports lowercase letters, digits, - and _, and must start with a letter or digit"
       : "";
 
   async function create() {
@@ -148,13 +148,13 @@ export function AgentsSettings() {
       if (r.ok) {
         setNewId("");
         setNewName("");
-        setCreateMsg({ text: "已创建", ok: true });
+        setCreateMsg({ text: "Created", ok: true });
         g.reloadAgents();
       } else {
-        setCreateMsg({ text: r.error || "创建失败", ok: false });
+        setCreateMsg({ text: r.error || "Failed to create", ok: false });
       }
     } catch {
-      setCreateMsg({ text: "无法连接运行时（sidecar 未启动？）", ok: false });
+      setCreateMsg({ text: "Cannot connect to the runtime (sidecar not started?)", ok: false });
     } finally {
       setCreateBusy(false);
     }
@@ -162,9 +162,9 @@ export function AgentsSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Agent 管理</h2>
-      <p className="mt-1 text-sm text-muted">每个 Agent 独立的 persona / 工具子集 / 模型 / 外观。</p>
-      <p className="mt-0.5 text-xs text-faint">存于 ~/.ginno/agents/&lt;id&gt;.json。</p>
+      <h2 className="text-lg font-semibold text-txt">Agents</h2>
+      <p className="mt-1 text-sm text-muted">Per-agent persona / tool subset / model / appearance.</p>
+      <p className="mt-0.5 text-xs text-faint">Stored in ~/.ginno/agents/&lt;id&gt;.json.</p>
       <div className="mt-4 space-y-3">
         {g.agents.map((a) => {
           const cur = {
@@ -181,7 +181,7 @@ export function AgentsSettings() {
           // _resolve_provider_model) — surface that instead of hiding it.
           const providerWarn =
             cur.provider && !enabledProviders.has(cur.provider)
-              ? `provider「${cur.provider}」未启用，新会话将回退到默认（${g.defaultProvider || "custom"}）`
+              ? `provider "${cur.provider}" is not enabled; new sessions will fall back to the default (${g.defaultProvider || "custom"})`
               : "";
           const iconOptions = AGENT_ICONS.includes(cur.icon)
             ? AGENT_ICONS
@@ -215,7 +215,8 @@ export function AgentsSettings() {
                 onChange={(e) => set(a.id, "system_prompt", e.target.value)}
               />
               <div className="mt-0.5 text-[11px] text-faint">
-                名称 / System prompt / 工具白名单保存后对所有会话的下一轮立即生效。
+                Name / System prompt / tool allowlist take effect for the next turn of all sessions
+                right after saving.
               </div>
               <label className="field-label mt-2">tools_allow</label>
               <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-line px-2 py-1.5">
@@ -229,7 +230,7 @@ export function AgentsSettings() {
                     <button
                       onClick={() => setTools(a.id, tools.filter((x) => x !== t))}
                       className="opacity-60 hover:opacity-100"
-                      title="移除"
+                      title="Remove"
                     >
                       ×
                     </button>
@@ -237,7 +238,7 @@ export function AgentsSettings() {
                 ))}
                 <input
                   className="min-w-[7rem] flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-faint"
-                  placeholder={tools.length ? "添加 pattern…" : "留空 = 允许所有工具"}
+                  placeholder={tools.length ? "Add pattern…" : "Empty = allow all tools"}
                   list={`tools-${a.id}`}
                   value={toolInput[a.id] || ""}
                   onChange={(e) => setToolInput((t) => ({ ...t, [a.id]: e.target.value }))}
@@ -258,7 +259,8 @@ export function AgentsSettings() {
                 </datalist>
               </div>
               <div className="mt-0.5 text-[11px] text-faint">
-                支持 glob（如 mcp_*、todo_*）；render / workflow / artifact 类工具始终可用，不受此限制。
+                Globs are supported (e.g. mcp_*, todo_*); render / workflow / artifact tools are
+                always available regardless of this list.
               </div>
               <div className="mt-2 grid grid-cols-3 gap-2">
                 <div>
@@ -268,14 +270,14 @@ export function AgentsSettings() {
                     value={cur.provider}
                     onChange={(e) => set(a.id, "provider", e.target.value)}
                   >
-                    <option value="">跟随默认（{g.defaultProvider || "custom"}）</option>
+                    <option value="">Follow default ({g.defaultProvider || "custom"})</option>
                     {cur.provider && !(cur.provider in g.providers) && (
                       <option value={cur.provider}>{cur.provider}</option>
                     )}
                     {Object.entries(g.providers).map(([id, p]) => (
                       <option key={id} value={id}>
                         {id}
-                        {p.enabled ? "" : "（未启用）"}
+                        {p.enabled ? "" : " (disabled)"}
                       </option>
                     ))}
                   </select>
@@ -285,7 +287,7 @@ export function AgentsSettings() {
                   <input
                     className="field"
                     value={get(a.id, "model", a.model)}
-                    placeholder={g.providers[cur.provider]?.default_model || "provider 默认模型"}
+                    placeholder={g.providers[cur.provider]?.default_model || "provider default model"}
                     onChange={(e) => set(a.id, "model", e.target.value)}
                   />
                 </div>
@@ -324,7 +326,8 @@ export function AgentsSettings() {
                 ))}
               </div>
               <div className="mt-1.5 text-[11px] text-faint">
-                provider / model 仅对之后新建的会话生效；颜色、图标即时生效（已有会话的图标沿用创建时的）。
+                provider / model only apply to sessions created afterwards; color and icon apply
+                immediately (existing sessions keep the icon they were created with).
               </div>
               <div className="mt-2 flex items-center">
                 <button
@@ -343,7 +346,8 @@ export function AgentsSettings() {
         })}
         {g.agents.length === 0 && (
           <div className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-xs text-faint">
-            暂无 Agent — 可能运行时未就绪；删除最后一个 Agent 后会自动恢复默认的 dev / research / writer。
+            No agents — the runtime may not be ready yet; after deleting the last agent, the
+            default dev / research / writer are restored automatically.
           </div>
         )}
       </div>
@@ -382,15 +386,15 @@ export function AgentsSettings() {
 
       {deleteTarget && (
         <ConfirmModal
-          title="删除 Agent"
+          title="Delete agent"
           message={
-            `删除 Agent「${deleteTarget}」？\n` +
-            `其记忆目录 ~/.ginno/agents/${deleteTarget}/ 不会被删除。` +
+            `Delete agent "${deleteTarget}"?\n` +
+            `Its memory directory ~/.ginno/agents/${deleteTarget}/ will not be deleted.` +
             (g.agents.length <= 1
-              ? "\n这是最后一个 Agent，删除后会自动恢复默认的 dev / research / writer。"
+              ? "\nThis is the last agent; after deletion the default dev / research / writer are restored automatically."
               : "")
           }
-          confirmLabel="删除"
+          confirmLabel="Delete"
           onConfirm={() => {
             const id = deleteTarget;
             setDeleteTarget(null);
