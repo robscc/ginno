@@ -221,6 +221,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // 定时回放不跟随路由(ScheduleRunView 挂在 main 顶层)——切到 Connectors/KB
+  // 等其他页面时自动收起,否则回放挡住新页面、看起来像「跳转失灵」。打开回放
+  // 本身不换路由,此 effect 不会误伤;workflow 分流的 push("/") 在 openRunView
+  // 里已互斥清掉回放。ref 防止 store 重建导致的意外收起。
+  const closeScheduleRunRef = useRef(g.closeScheduleRun);
+  closeScheduleRunRef.current = g.closeScheduleRun;
+  useEffect(() => {
+    closeScheduleRunRef.current();
+  }, [pathname]);
+
   // 连接器事件通道(#6「提示一次」):B 轨 fallback 首次发生时弹一条 toast,
   // 用户知情后可在 连接器 设置里改 off/auto。WS 断了静默——提示不是关键路径。
   const [fallbackToast, setFallbackToast] = useState<string | null>(null);
