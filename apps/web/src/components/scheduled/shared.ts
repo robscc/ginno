@@ -57,11 +57,11 @@ export const RUN_STATUS_META: Record<
   string,
   { label: string; color: string; hollow?: boolean; glyph: string }
 > = {
-  ok: { label: "OK", color: "#14b8a6", glyph: "✓" }, // 青绿
-  running: { label: "Running", color: "#14b8a6", glyph: "▨" },
-  error: { label: "Error", color: "#ef4444", glyph: "✕" },
+  ok: { label: "OK", color: "#8b5cf6", glyph: "✓" }, // 品牌紫
+  running: { label: "Running", color: "#22d3ee", glyph: "▨" },
+  error: { label: "Error", color: "#f43f5e", glyph: "✕" },
   skipped_overlap: { label: "Skipped (overlap)", color: "#71717a", glyph: "◌" },
-  missed: { label: "Missed", color: "#71717a", hollow: true, glyph: "◌" },
+  missed: { label: "Missed", color: "#f59e0b", hollow: true, glyph: "◌" },
 };
 
 export function statusMeta(status: string) {

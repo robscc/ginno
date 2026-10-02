@@ -178,16 +178,16 @@ export function DayTimeline({
         {/* 图例（§3.1 头部示意；色块加大与主体条同高） */}
         <span className="ml-auto flex items-center gap-3 text-[10.5px] text-faint">
           <span className="flex items-center gap-1.5">
-            <i className="inline-block h-3 w-4 rounded-[3px]" style={{ background: "#14b8a6" }} /> OK
+            <i className="inline-block h-3 w-4 rounded-[3px]" style={{ background: "#8b5cf6" }} /> OK
           </span>
           <span className="flex items-center gap-1.5">
-            <i className="inline-block h-3 w-4 rounded-[3px]" style={{ background: "#ef4444" }} /> Error
+            <i className="inline-block h-3 w-4 rounded-[3px]" style={{ background: "#f43f5e" }} /> Error
           </span>
           <span className="flex items-center gap-1.5">
-            <i className="inline-block h-3 w-4 animate-pulse rounded-[3px]" style={{ background: "#14b8a6" }} /> Running
+            <i className="inline-block h-3 w-4 animate-pulse rounded-[3px]" style={{ background: "#22d3ee" }} /> Running
           </span>
           <span className="flex items-center gap-1.5">
-            <i className="inline-block h-3 w-3 rotate-45 rounded-[2px] border-[1.6px] border-violet bg-card" /> Planned
+            <i className="inline-block h-3 w-3 rotate-45 rounded-[2px] border-[1.6px] border-sky-400 bg-card" /> Planned
           </span>
           <span className="flex items-center gap-1.5">
             <i className="inline-block h-3 w-1.5 rounded-[2px] border-[1.4px] border-dashed border-amber-500" /> Missed
@@ -339,7 +339,7 @@ export function DayTimeline({
               width={9}
               height={9}
               fill="var(--card, #17171c)"
-              stroke="#8b5cf6"
+              stroke="#38bdf8"
               strokeWidth={1.6}
               transform={`rotate(45 ${x} ${cy})`}
               onMouseEnter={(ev) => show(tip, ev)}
@@ -352,9 +352,9 @@ export function DayTimeline({
         {/* 现在线（仅今天）：加粗 + 顶端圆点 + 时间标签 */}
         {isToday && (
           <g>
-            <line x1={xOfMs(nowMs)} y1={6} x2={xOfMs(nowMs)} y2={height - AXIS_H} stroke="#8b5cf6" strokeWidth={1.6} />
-            <circle cx={xOfMs(nowMs)} cy={7} r={3} fill="#8b5cf6" />
-            <text x={xOfMs(nowMs) + 5} y={11} fontSize={9.5} fontWeight={600} fill="#8b5cf6">
+            <line x1={xOfMs(nowMs)} y1={6} x2={xOfMs(nowMs)} y2={height - AXIS_H} stroke="#e2e8f0" strokeWidth={1.6} />
+            <circle cx={xOfMs(nowMs)} cy={7} r={3} fill="#e2e8f0" />
+            <text x={xOfMs(nowMs) + 5} y={11} fontSize={9.5} fontWeight={600} fill="#e2e8f0">
               {fmtClock(Date.now() / 1000)}
             </text>
           </g>
