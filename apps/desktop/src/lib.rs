@@ -57,6 +57,12 @@ struct RuntimeProcess(Mutex<Option<Child>>);
 /// Serialize Debug → Restart Runtime so a double-click cannot spawn two sidecars.
 struct RestartLock(Mutex<()>);
 
+/// 定时任务 keep-awake（docs/scheduled-tasks-design.md §3.8）：常驻
+/// `caffeinate -i` 子进程，只挡闲置系统睡眠（屏幕可暗可锁）。真值在 runtime 的
+/// schedules.json —— web 启动加载后 invoke `set_keep_awake` 同步一次；壳只负责
+/// 持有/回收这个子进程（随壳退出自动释放，Exit 钩子里再显式 kill 一下）。
+struct KeepAwake(Mutex<Option<Child>>);
+
 /// Payload of the `ginno:notify` event emitted by the web UI (see
 /// `notifyNative` in apps/web/src/lib/desktop.ts) when a session turn or
 /// workflow run finishes while the user isn't looking at it.
@@ -1333,6 +1339,72 @@ fn code_trash(root: String, path: String) -> Result<(), String> {
     trash::delete(&target).map_err(|e| format!("移入废纸篓失败：{e}"))
 }
 
+// ---------------------------------------------------------------------------
+// Scheduled-tasks keep-awake — docs/scheduled-tasks-design.md §3.8.
+//
+// `caffeinate -i` 只挡闲置系统睡眠（不是屏幕变暗/锁定，也不是合盖）。开关的
+// 真值是 runtime 侧 schedules.json 的 keep_awake 字段；web 在加载 /scheduled
+// 数据后同步一次，壳端这两个 command 只是进程的持有者。子进程随壳退出自动
+// 回收（RunEvent::Exit 里也会显式 kill），无需额外退出钩子。
+// ---------------------------------------------------------------------------
+
+/// 开 = 未持有活着的 caffeinate 就 spawn 并持有；关 = kill 并清理。幂等：
+/// 重复开不动已有的子进程（但里面死掉的先回收再重开）。
+#[tauri::command]
+fn set_keep_awake(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let Some(state) = app.try_state::<KeepAwake>() else {
+        return Err("keep-awake 状态未初始化".to_string());
+    };
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "keep-awake 状态锁不可用".to_string())?;
+    let alive = guard
+        .as_mut()
+        .map(|c| matches!(c.try_wait(), Ok(None)))
+        .unwrap_or(false);
+    if enabled {
+        if alive {
+            return Ok(());
+        }
+        // 回收已死（或僵尸）的旧子进程再开新的。
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let child = Command::new("/usr/bin/caffeinate")
+            .arg("-i")
+            .stdin(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("启动 caffeinate 失败：{e}"))?;
+        *guard = Some(child);
+    } else if let Some(mut child) = guard.take() {
+        // 只在真的持有过时才 kill；已死/不存在都当成功（幂等关）。
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
+}
+
+/// 子进程是否存活（UI 回显 / 诊断用）。状态未托管或子进程已退出都算关。
+#[tauri::command]
+fn get_keep_awake(app: tauri::AppHandle) -> bool {
+    app.try_state::<KeepAwake>()
+        .and_then(|state| {
+            state
+                .0
+                .lock()
+                .ok()
+                .map(|mut guard| {
+                    guard
+                        .as_mut()
+                        .map(|c| matches!(c.try_wait(), Ok(None)))
+                        .unwrap_or(false)
+                })
+        })
+        .unwrap_or(false)
+}
+
 /// Menu-bar tray (decision Q4: tray icon + Dock stays). Left click toggles
 /// the pin window; the menu offers explicit entries + quit.
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -1421,7 +1493,9 @@ pub fn run() {
             pin_hotkey_status,
             code_reveal,
             code_open_external,
-            code_trash
+            code_trash,
+            set_keep_awake,
+            get_keep_awake
         ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
@@ -1548,6 +1622,7 @@ pub fn run() {
         .setup(|app| {
             app.manage(RuntimeProcess(Mutex::new(None)));
             app.manage(RestartLock(Mutex::new(())));
+            app.manage(KeepAwake(Mutex::new(None)));
             if let Err(e) = install_debug_menu(app) {
                 shell_log(app, &format!("install_debug_menu FAILED: {e}"));
             }
@@ -1753,6 +1828,15 @@ pub fn run() {
                 if let Some(state) = app_handle.try_state::<RuntimeProcess>() {
                     if let Ok(mut guard) = state.0.lock() {
                         if let Some(child) = guard.as_mut() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                    }
+                }
+                // keep-awake 的 caffeinate 本会随父退出，这里显式回收干净些。
+                if let Some(state) = app_handle.try_state::<KeepAwake>() {
+                    if let Ok(mut guard) = state.0.lock() {
+                        if let Some(mut child) = guard.take() {
                             let _ = child.kill();
                             let _ = child.wait();
                         }
