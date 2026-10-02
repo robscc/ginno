@@ -93,6 +93,45 @@ body {
   }
 }
 
+/* ---- 原生 select 全站统一外观：去掉 OS 默认箭头，换中灰 chevron；
+     弹层配色由 :root 的 color-scheme 跟随明暗主题。箭头色用中间灰，
+     两种主题底色上都可读；focus 态换成品牌紫。 ---- */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  /* 保证箭头不压文字：右内边距统一（!important 压过各处 px-* 工具类） */
+  padding-right: 1.9rem !important;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8b96' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+  background-size: 0.7rem;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+select:not([multiple]):hover {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23c5c5cf' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+select:not([multiple]):focus-visible {
+  outline: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b5cf6' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+select:not([multiple]):disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+/* 非 macOS 引擎的弹层底色兜底（macOS WKWebView 原生弹层跟随 color-scheme） */
+select option {
+  background: rgb(var(--card));
+  color: rgb(var(--txt));
+}
+/* .field 系 select 的交互强化（hover 提边、focus 描边与 chevron 同步） */
+select.field:hover {
+  border-color: rgb(var(--line2));
+}
+select.field:focus {
+  border-color: #6d5bd0;
+}
+
 /* ---- code highlighting (hljs) — theme-aware token palette ---- */
 .hljs {
   color: rgb(var(--txt));
