@@ -194,7 +194,7 @@ export function RunsPanel({
                   <tr
                     key={r.run_id}
                     onClick={() => openRun(r)}
-                    className={`border-b border-line/60 last:border-0 ${
+                    className={`group border-b border-line/60 last:border-0 ${
                       clickable ? "cursor-pointer transition-colors hover:bg-card2/60" : ""
                     }`}
                     title={clickable ? "Click to view the run" : r.status === "missed" ? "Missed (machine asleep or app not running)" : undefined}
@@ -222,8 +222,16 @@ export function RunsPanel({
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 text-faint tabular-nums">{dur}</td>
                     <td className="max-w-[280px] px-3 py-2 text-muted">
-                      <div className="truncate" title={r.summary ?? undefined}>
-                        {r.summary ?? (r.error ? <span className="text-red">{r.error}</span> : "—")}
+                      <div className="flex items-center gap-1.5">
+                        <div className="min-w-0 flex-1 truncate" title={r.summary ?? undefined}>
+                          {r.summary ?? (r.error ? <span className="text-red">{r.error}</span> : "—")}
+                        </div>
+                        {/* 显式回放入口：hover 才出现，让「整行可点」可被发现 */}
+                        {clickable && (
+                          <span className="shrink-0 rounded-md border border-violet/40 px-1.5 py-px text-[10px] text-violet opacity-0 transition-opacity group-hover:opacity-100">
+                            Open ↗
+                          </span>
+                        )}
                       </div>
                     </td>
                   </tr>
