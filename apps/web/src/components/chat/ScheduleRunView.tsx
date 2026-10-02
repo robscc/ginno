@@ -101,7 +101,7 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
           <span
             className="flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px"
             style={{ borderColor: meta.color + "55", color: meta.color }}
-            title={`状态：${meta.label}`}
+            title={`Status: ${meta.label}`}
           >
             {run.status === "running" && (
               <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: meta.color }} />
@@ -109,21 +109,21 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
             {meta.glyph} {meta.label}
           </span>
           <span className="shrink-0 text-faint">
-            计划 {fmtDayPrefix(run.scheduled_at)} {fmtClock(run.scheduled_at)}
-            {run.trigger === "manual" && " · 手动"}
+            Due {fmtDayPrefix(run.scheduled_at)} {fmtClock(run.scheduled_at)}
+            {run.trigger === "manual" && " · manual"}
           </span>
           <span className="shrink-0 text-faint">
-            开始 {fmtClock(run.started_at)}
-            {run.finished_at ? ` · 结束 ${fmtClock(run.finished_at)}` : ""}
+            Start {fmtClock(run.started_at)}
+            {run.finished_at ? ` · End ${fmtClock(run.finished_at)}` : ""}
           </span>
           {dur && <span className="shrink-0 text-faint">⏱ {dur}</span>}
-          {tokens && <span className="shrink-0 text-faint" title="输入 / 输出 tokens">⇅ {tokens}</span>}
+          {tokens && <span className="shrink-0 text-faint" title="Input / output tokens">⇅ {tokens}</span>}
           <button
             onClick={() => g.closeScheduleRun()}
-            title="返回之前的视图"
+            title="Back to previous view"
             className="ml-auto flex shrink-0 items-center gap-1 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
           >
-            <ArrowLeft className="h-3 w-3" /> 返回
+            <ArrowLeft className="h-3 w-3" /> Back
           </button>
         </div>
         {run.error && (
@@ -142,11 +142,11 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
             </div>
           ) : historyError ? (
             <div className="py-16 text-center text-sm text-faint">
-              会话已删除或无法读取——执行记录仍保留（§4.2 回放数据解耦）。
+              The session was deleted or cannot be read — the run record is kept.
             </div>
           ) : messages.length === 0 ? (
             <div className="py-16 text-center text-sm text-faint">
-              {run.status === "running" ? "影子会话正在生成，稍后重开查看…" : "没有可回放的消息。"}
+              {run.status === "running" ? "The shadow session is still running — reopen later…" : "No messages to replay."}
             </div>
           ) : (
             messages.map((m) => {

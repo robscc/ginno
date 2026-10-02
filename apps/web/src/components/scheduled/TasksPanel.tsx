@@ -75,15 +75,15 @@ export function TasksPanel({
           onClick={() => onEdit("new")}
           className="flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:bg-violet/90"
         >
-          <Plus className="h-3.5 w-3.5" /> 新建任务
+          <Plus className="h-3.5 w-3.5" /> New Task
         </button>
       </div>
 
       {tasks.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-faint">
-          还没有 Scheduled Task。
+          No scheduled tasks yet.
           <br />
-          点「新建任务」配置第一个计划——对话或 Workflow 都可以。
+          Click "New Task" to set up your first one — a prompt or a workflow.
         </div>
       ) : (
         <div className={`space-y-2 transition-opacity ${cfg.enabled ? "" : "opacity-50"}`}>
@@ -108,7 +108,7 @@ export function TasksPanel({
                 }`}
               >
                 <div className="flex items-center gap-2.5">
-                  <span className="shrink-0 text-base leading-none" title={isWf ? "Workflow 目标" : "对话目标"}>
+                  <span className="shrink-0 text-base leading-none" title={isWf ? "Workflow target" : "Prompt target"}>
                     {isWf ? "⚡" : "💬"}
                   </span>
                   <span className="min-w-0 truncate text-sm font-medium text-txt">{t.name}</span>
@@ -116,17 +116,17 @@ export function TasksPanel({
                   {!isWf && (
                     <span className="hidden shrink-0 text-xs text-faint sm:inline">
                       {agent ? `agent: ${agent}` : ""}
-                      {promptTarget?.project_slug ? ` · 项目: ${promptTarget.project_slug}` : ""}
+                      {promptTarget?.project_slug ? ` · project: ${promptTarget.project_slug}` : ""}
                     </span>
                   )}
                   {wfMissing && (
                     <span className="shrink-0 rounded-full border border-red/40 bg-red/10 px-1.5 text-[10px] leading-4 text-red">
-                      配方已删除
+                      Recipe deleted
                     </span>
                   )}
                   {onceDone && (
                     <span className="shrink-0 rounded-full border border-green/40 bg-green/10 px-1.5 text-[10px] leading-4 text-green">
-                      已完成
+                      Done
                     </span>
                   )}
 
@@ -134,7 +134,7 @@ export function TasksPanel({
                     <button
                       onClick={() => toggle(t)}
                       disabled={!cfg.enabled || busyId === t.id}
-                      title={t.enabled ? "暂停该任务" : "启用该任务"}
+                      title={t.enabled ? "Pause this task" : "Enable this task"}
                       className={`text-lg leading-none transition-colors disabled:cursor-not-allowed ${
                         t.enabled ? "text-green" : "text-faint"
                       } ${cfg.enabled ? "hover:opacity-80" : ""}`}
@@ -144,22 +144,22 @@ export function TasksPanel({
                     <button
                       onClick={() => runNow(t)}
                       disabled={busyId === t.id}
-                      title="立即执行一次（不计入计划）"
+                      title="Run once now (does not advance the schedule)"
                       className="flex items-center rounded-lg border border-line px-2 py-1 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet disabled:opacity-40"
                     >
                       <Play className="h-3 w-3" />
-                      <span className="ml-1 hidden md:inline">立即执行</span>
+                      <span className="ml-1 hidden md:inline">Run now</span>
                     </button>
                     <button
                       onClick={() => onEdit(t)}
-                      title="编辑任务"
+                      title="Edit task"
                       className="rounded-lg border border-line p-1.5 text-muted transition-colors hover:border-line2 hover:text-txt"
                     >
                       <Pencil className="h-3 w-3" />
                     </button>
                     <button
                       onClick={() => setDeleteTarget(t)}
-                      title="删除任务（执行记录与会话保留）"
+                      title="Delete task (runs and sessions are kept)"
                       className="rounded-lg border border-line p-1.5 text-muted transition-colors hover:border-red/50 hover:text-red"
                     >
                       <Trash2 className="h-3 w-3" />
@@ -171,27 +171,27 @@ export function TasksPanel({
                     <span>
                       workflow:{" "}
                       {g.workflows.find((w) => w.id === wfTarget?.workflow_id)?.name ??
-                        (wfMissing ? "已删除" : wfTarget?.workflow_id)}
+                        (wfMissing ? "deleted" : wfTarget?.workflow_id)}
                     </span>
                   ) : null}
                   <span>
-                    上次:{" "}
+                    Last:{" "}
                     {last
                       ? `${fmtDayPrefix(last.started)} ${fmtClock(last.started)} ${
                           last.status === "ok" ? "✓" : last.status === "running" ? "▨" : "✕"
                         }${last.finished ? ` · ${fmtDuration(last.finished - (last.started ?? 0))}` : ""}`
-                      : "从未执行"}
+                      : "never run"}
                   </span>
                   <span>
                     {onceDone
-                      ? "已暂停 · 单次任务执行完毕"
+                      ? "Paused · one-shot task finished"
                       : wfMissing
-                        ? "已暂停 · 配方已删除，请编辑重选"
+                        ? "Paused · recipe deleted, edit to re-pick"
                         : t.enabled && cfg.enabled && t.next_run_at
-                          ? `下次: ${fmtDayPrefix(t.next_run_at)} ${fmtClock(t.next_run_at)}`
-                          : "已暂停"}
+                          ? `Next: ${fmtDayPrefix(t.next_run_at)} ${fmtClock(t.next_run_at)}`
+                          : "Paused"}
                   </span>
-                  {!cfg.enabled && <span className="text-yellow">已暂停（全局关闭）</span>}
+                  {!cfg.enabled && <span className="text-yellow">Paused (globally disabled)</span>}
                 </div>
               </div>
             );
@@ -202,8 +202,8 @@ export function TasksPanel({
       {deleteTarget && (
         <ConfirmModal
           title="Delete scheduled task"
-          message={`确定删除任务「${deleteTarget.name}」？它的历史执行记录与影子会话会保留（账单性质数据不销毁），但任务不再触发。`}
-          confirmLabel="删除"
+          message={`Delete task "${deleteTarget.name}"? Its run history and shadow sessions are kept (ledger data is never destroyed), but the task will no longer fire.`}
+          confirmLabel="Delete"
           onConfirm={() => remove(deleteTarget)}
           onCancel={() => setDeleteTarget(null)}
         />

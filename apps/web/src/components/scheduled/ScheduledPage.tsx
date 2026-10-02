@@ -111,10 +111,10 @@ export function ScheduledPage() {
   const nextIn = nextRun
     ? (() => {
         const s = Math.max(0, Math.round(nextRun.at - Date.now() / 1000));
-        if (s < 60) return `${s}s 后`;
-        if (s < 3600) return `${Math.floor(s / 60)}m 后`;
-        if (s < 86400) return `${Math.floor(s / 3600)}h 后`;
-        return `${Math.floor(s / 86400)}d 后`;
+        if (s < 60) return `in ${s}s`;
+        if (s < 3600) return `in ${Math.floor(s / 60)}m`;
+        if (s < 86400) return `in ${Math.floor(s / 3600)}h`;
+        return `in ${Math.floor(s / 86400)}d`;
       })()
     : null;
 
@@ -149,19 +149,19 @@ export function ScheduledPage() {
           {toggle(
             !!cfg?.enabled,
             () => void putGlobal({ enabled: !cfg?.enabled }),
-            "总开关",
-            cfg?.enabled ? "关闭后所有任务暂停触发" : "开启后任务按计划触发",
+            "Enabled",
+            cfg?.enabled ? "Turn off to pause all tasks" : "Turn on to run tasks on schedule",
           )}
           {toggle(
             !!cfg?.keep_awake,
             () => void putGlobal({ keep_awake: !cfg?.keep_awake }),
-            "保持唤醒",
-            "防止闲置睡眠；屏幕可能变暗，合盖仍会睡眠",
+            "Keep Awake",
+            "Prevents idle system sleep; display may dim, lid close still sleeps",
           )}
           {nextRun && (
-            <span className="text-xs text-faint" title="最近一个启用任务的下次执行">
-              下次: {fmtDayPrefix(nextRun.at)} {fmtClock(nextRun.at)} {nextRun.name}
-              {nextIn ? `（${nextIn}）` : ""}
+            <span className="text-xs text-faint" title="Next run of the nearest enabled task">
+              Next: {fmtDayPrefix(nextRun.at)} {fmtClock(nextRun.at)} {nextRun.name}
+              {nextIn ? ` (${nextIn})` : ""}
             </span>
           )}
           <button
@@ -169,7 +169,7 @@ export function ScheduledPage() {
               void refresh();
               bump();
             }}
-            title="刷新"
+            title="Refresh"
             className="rounded-md p-1.5 text-faint hover:bg-card hover:text-txt"
           >
             <RefreshCw className="h-4 w-4" />
@@ -179,23 +179,23 @@ export function ScheduledPage() {
 
       {/* 保持唤醒能力边界的小字（§3.3 文案诚实） */}
       <div className="mb-3 text-[11px] leading-relaxed text-faint">
-        保持唤醒 = 阻止闲置系统睡眠（屏幕可能变暗/锁定，系统不睡）；不能阻止合盖睡眠、手动睡眠或电池耗尽。
-        {!cfg?.keep_awake && " 睡眠期间到点的任务会记为「错过」，不补跑。"}
+        Keep awake prevents idle system sleep (display may dim/lock, system stays up); it cannot prevent lid-close sleep, manual sleep, or battery drain.
+        {!cfg?.keep_awake && " Tasks due while asleep are recorded as Missed and not re-run."}
       </div>
 
       {/* 联动提示（§3.3，不强制）：有任务且全局开但 keep_awake 关。 */}
       {showKeepAwakeHint && (
         <div className="mb-3 flex items-center gap-2 rounded-lg border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-          <span className="flex-1">建议开启保持唤醒，否则睡眠期间任务会错过</span>
+          <span className="flex-1">Consider enabling Keep Awake, otherwise tasks will be missed while the machine sleeps</span>
           <button
             onClick={() => void putGlobal({ keep_awake: true })}
             className="rounded-md bg-yellow/20 px-2 py-1 text-[11px] font-medium text-yellow hover:bg-yellow/30"
           >
-            开启
+            Enable
           </button>
           <button
             onClick={() => setHintDismissed(true)}
-            aria-label="关闭提示"
+            aria-label="Dismiss hint"
             className="rounded-md p-0.5 text-yellow/70 hover:text-yellow"
           >
             ✕
@@ -208,7 +208,7 @@ export function ScheduledPage() {
           <Loader2 className="h-4 w-4 animate-spin" /> Loading scheduled tasks…
         </div>
       ) : !cfg ? (
-        <div className="py-10 text-sm text-faint">无法连接运行时，请确认 Ginno 正在运行。</div>
+        <div className="py-10 text-sm text-faint">Cannot reach the runtime — make sure Ginno is running.</div>
       ) : (
         <>
           <DayTimeline
@@ -225,8 +225,8 @@ export function ScheduledPage() {
           <div className="mb-3 mt-5 flex items-center gap-1 border-b border-line">
             {(
               [
-                ["tasks", `任务${cfg.tasks.length ? `（${cfg.tasks.length}）` : ""}`],
-                ["runs", "执行记录"],
+                ["tasks", `Tasks${cfg.tasks.length ? ` (${cfg.tasks.length})` : ""}`],
+                ["runs", "Runs"],
               ] as Array<["tasks" | "runs", string]>
             ).map(([k, label]) => (
               <button

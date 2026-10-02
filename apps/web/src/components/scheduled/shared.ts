@@ -4,21 +4,21 @@
 import type { SchedulePlan, ScheduleRun } from "@/lib/types";
 
 const pad = (n: number) => String(n).padStart(2, "0");
-export const WEEKDAY_LABEL = ["日", "一", "二", "三", "四", "五", "六"];
+export const WEEKDAY_LABEL = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** 计划的人类描述（§3.2 任务卡第二段）：每 30 分钟 / 每天 09:30 / 每周五 18:00 / 单次。 */
 export function planDescription(p: SchedulePlan): string {
   switch (p.kind) {
     case "interval":
-      return p.minutes % 60 === 0 ? `每 ${p.minutes / 60} 小时` : `每 ${p.minutes} 分钟`;
+      return p.minutes % 60 === 0 ? `every ${p.minutes / 60}h` : `every ${p.minutes}m`;
     case "daily":
-      return `每天 ${p.at}`;
+      return `daily ${p.at}`;
     case "weekly":
-      return `每周${WEEKDAY_LABEL[((p.weekday % 7) + 7) % 7]} ${p.at}`;
+      return `weekly ${WEEKDAY_LABEL[((p.weekday % 7) + 7) % 7]} ${p.at}`;
     case "once": {
       const d = new Date(p.at);
-      if (isNaN(d.getTime())) return `单次 ${p.at}`;
-      return `单次 ${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      if (isNaN(d.getTime())) return `once ${p.at}`;
+      return `once ${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     }
   }
 }
@@ -37,9 +37,9 @@ export function fmtDayPrefix(sec: number | null | undefined): string {
   const today = new Date();
   const dayStart = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diffDays = Math.round((dayStart(today) - dayStart(d)) / 86400000);
-  if (diffDays === 0) return "今天";
-  if (diffDays === 1) return "昨天";
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 /** 秒 → 「1m12s / 3m42s / 1h06m」；无时长返回 —。 */
@@ -57,11 +57,11 @@ export const RUN_STATUS_META: Record<
   string,
   { label: string; color: string; hollow?: boolean; glyph: string }
 > = {
-  ok: { label: "成功", color: "#14b8a6", glyph: "✓" }, // 青绿
-  running: { label: "进行中", color: "#14b8a6", glyph: "▨" },
-  error: { label: "失败", color: "#ef4444", glyph: "✕" },
-  skipped_overlap: { label: "跳过(重叠)", color: "#71717a", glyph: "◌" },
-  missed: { label: "错过", color: "#71717a", hollow: true, glyph: "◌" },
+  ok: { label: "OK", color: "#14b8a6", glyph: "✓" }, // 青绿
+  running: { label: "Running", color: "#14b8a6", glyph: "▨" },
+  error: { label: "Error", color: "#ef4444", glyph: "✕" },
+  skipped_overlap: { label: "Skipped (overlap)", color: "#71717a", glyph: "◌" },
+  missed: { label: "Missed", color: "#71717a", hollow: true, glyph: "◌" },
 };
 
 export function statusMeta(status: string) {

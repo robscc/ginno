@@ -24,9 +24,9 @@ const PAGE_SIZE = 50;
 const MAX_PAGES = 6;
 
 const RANGE_OPTIONS: Array<[string, string]> = [
-  ["1", "近 1 天"],
-  ["7", "近 7 天"],
-  ["30", "近 30 天"],
+  ["1", "Last 1 day"],
+  ["7", "Last 7 days"],
+  ["30", "Last 30 days"],
 ];
 
 export function RunsPanel({
@@ -114,12 +114,12 @@ export function RunsPanel({
         <button
           onClick={() => setSort((s) => (s === "desc" ? "asc" : "desc"))}
           className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 hover:text-txt"
-          title="切换时间排序"
+          title="Toggle time order"
         >
-          时间 {sort === "desc" ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />}
+          Time {sort === "desc" ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />}
         </button>
         <select className="field w-auto px-2 py-1 text-xs" value={taskId} onChange={(e) => setTaskId(e.target.value)}>
-          <option value="">任务: 全部</option>
+          <option value="">Task: all</option>
           {cfg.tasks.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name}
@@ -131,22 +131,22 @@ export function RunsPanel({
           value={targetType}
           onChange={(e) => setTargetType(e.target.value)}
         >
-          <option value="">目标: 全部</option>
-          <option value="prompt">💬 对话</option>
+          <option value="">Target: all</option>
+          <option value="prompt">💬 Prompt</option>
           <option value="workflow">⚡ Workflow</option>
         </select>
         <select className="field w-auto px-2 py-1 text-xs" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">状态: 全部</option>
-          <option value="ok">成功</option>
-          <option value="error">失败</option>
-          <option value="running">进行中</option>
-          <option value="missed">错过</option>
-          <option value="skipped_overlap">跳过(重叠)</option>
+          <option value="">Status: all</option>
+          <option value="ok">OK</option>
+          <option value="error">Error</option>
+          <option value="running">Running</option>
+          <option value="missed">Missed</option>
+          <option value="skipped_overlap">Skipped (overlap)</option>
         </select>
         {dateFilter ? (
           <span className="flex items-center gap-1.5 rounded-lg border border-violet/50 bg-violet/10 px-2 py-1 text-violet">
             {dateFilter}
-            <button onClick={onClearDateFilter} title="清除日期过滤" className="text-violet/70 hover:text-violet">
+            <button onClick={onClearDateFilter} title="Clear date filter" className="text-violet/70 hover:text-violet">
               ✕
             </button>
           </span>
@@ -159,29 +159,29 @@ export function RunsPanel({
             ))}
           </select>
         )}
-        <span className="ml-auto text-[11px] text-faint">{filtered.length} 条</span>
+        <span className="ml-auto text-[11px] text-faint">{filtered.length} runs</span>
       </div>
 
       {loading ? (
         <div className="flex items-center gap-2 py-10 text-sm text-faint">
-          <Loader2 className="h-4 w-4 animate-spin" /> 正在读取执行记录…
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading runs…
         </div>
       ) : pageRows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-faint">
-          该条件下没有执行记录。
+          No runs match these filters.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-line">
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-line text-[11px] text-faint">
-                <th className="px-3 py-2 font-medium">时间</th>
-                <th className="px-3 py-2 font-medium">任务</th>
-                <th className="px-3 py-2 font-medium">目标</th>
-                <th className="px-3 py-2 font-medium">触发</th>
-                <th className="px-3 py-2 font-medium">状态</th>
-                <th className="px-3 py-2 font-medium">耗时</th>
-                <th className="px-3 py-2 font-medium">摘要</th>
+                <th className="px-3 py-2 font-medium">Time</th>
+                <th className="px-3 py-2 font-medium">Task</th>
+                <th className="px-3 py-2 font-medium">Target</th>
+                <th className="px-3 py-2 font-medium">Trigger</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Duration</th>
+                <th className="px-3 py-2 font-medium">Summary</th>
               </tr>
             </thead>
             <tbody>
@@ -197,7 +197,7 @@ export function RunsPanel({
                     className={`border-b border-line/60 last:border-0 ${
                       clickable ? "cursor-pointer transition-colors hover:bg-card2/60" : ""
                     }`}
-                    title={clickable ? "点击查看执行回放" : r.status === "missed" ? "错过（机器睡眠或应用未运行）" : undefined}
+                    title={clickable ? "Click to view the run" : r.status === "missed" ? "Missed (machine asleep or app not running)" : undefined}
                   >
                     <td className="whitespace-nowrap px-3 py-2 text-muted tabular-nums">
                       {fmtDayPrefix(r.scheduled_at ?? r.started_at)} {fmtClock(r.started_at ?? r.scheduled_at)}
@@ -206,7 +206,7 @@ export function RunsPanel({
                       {r.task_name}
                     </td>
                     <td className="px-3 py-2">{r.target_type === "workflow" ? "⚡" : "💬"}</td>
-                    <td className="px-3 py-2 text-faint">{r.trigger === "manual" ? "手动" : "计划"}</td>
+                    <td className="px-3 py-2 text-faint">{r.trigger === "manual" ? "manual" : "schedule"}</td>
                     <td className="whitespace-nowrap px-3 py-2">
                       <span
                         className="inline-flex items-center gap-1 rounded-full border px-1.5 py-px"
@@ -215,7 +215,7 @@ export function RunsPanel({
                           color: meta.color,
                           ...(meta.hollow ? { borderStyle: "dashed" as const } : {}),
                         }}
-                        title={r.status === "missed" ? "错过（机器睡眠或应用未运行）" : r.error || undefined}
+                        title={r.status === "missed" ? "Missed (machine asleep or app not running)" : r.error || undefined}
                       >
                         {meta.glyph} {meta.label}
                       </span>
@@ -242,7 +242,7 @@ export function RunsPanel({
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             className="rounded-lg border border-line px-2 py-1 disabled:opacity-40"
           >
-            上一页
+            Prev
           </button>
           <span className="text-faint tabular-nums">
             {page + 1} / {pages}
@@ -252,7 +252,7 @@ export function RunsPanel({
             onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
             className="rounded-lg border border-line px-2 py-1 disabled:opacity-40"
           >
-            下一页
+            Next
           </button>
         </div>
       )}

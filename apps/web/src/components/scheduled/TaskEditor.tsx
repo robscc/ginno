@@ -1,7 +1,7 @@
 "use client";
 
 // 任务编辑模态（scheduled-tasks-design.md §3.2）。交互对齐 GoalEditor：
-// 目标类型分段控件 [💬 对话 | ⚡ Workflow] → 对应字段；计划四选一分段控件。
+// 目标类型分段控件 [💬 Prompt | ⚡ Workflow] → 对应字段；计划四选一分段控件。
 // workflow 输入表单直接复用 ContextEditor（按配方 context.schema 渲染、
 // initial 预填），保存值落 target.context_override；必填缺失不可保存。
 // 间隔下限 5 分钟（§10 决议 2，前端侧校验；API 侧再校）。
@@ -95,17 +95,17 @@ export function TaskEditor({
     switch (kind) {
       case "interval": {
         const m = Number(intervalMinutes);
-        if (!Number.isFinite(m) || m < 5) return { error: "间隔下限为 5 分钟" };
+        if (!Number.isFinite(m) || m < 5) return { error: "Minimum interval is 5 minutes" };
         return { kind: "interval", minutes: Math.round(m) };
       }
       case "daily":
-        if (!dailyAt) return { error: "请选择每日执行时间" };
+        if (!dailyAt) return { error: "Pick a daily time" };
         return { kind: "daily", at: dailyAt };
       case "weekly":
-        if (!weeklyAt) return { error: "请选择每周执行时间" };
+        if (!weeklyAt) return { error: "Pick a weekly time" };
         return { kind: "weekly", weekday: weeklyWeekday, at: weeklyAt };
       case "once": {
-        if (!onceAt) return { error: "请选择单次执行时间" };
+        if (!onceAt) return { error: "Pick a date and time" };
         // datetime-local 给 "YYYY-MM-DDTHH:mm"；契约是本地时间 "…THH:mm:ss"。
         return { kind: "once", at: onceAt.length === 16 ? `${onceAt}:00` : onceAt };
       }
@@ -114,10 +114,10 @@ export function TaskEditor({
 
   const save = async () => {
     setError(null);
-    if (!name.trim()) return setError("请填写任务名称");
+    if (!name.trim()) return setError("Task name is required");
     let target: ScheduleTarget;
     if (targetType === "prompt") {
-      if (!prompt.trim()) return setError("请填写提示词");
+      if (!prompt.trim()) return setError("Prompt is required");
       target = {
         type: "prompt",
         prompt: prompt.trim(),
@@ -125,13 +125,13 @@ export function TaskEditor({
         project_slug: projectSlug.trim() || "default",
       };
     } else {
-      if (!workflowId) return setError("请选择 Workflow 配方");
+      if (!workflowId) return setError("Pick a workflow");
       // 必填输入缺失 → 不可保存（§3.2；配方后续被改出必填项时到点由 runtime 记
       // error("missing_input")，这里只拦编辑当下的缺失）。
       for (const k of requiredKeys) {
         const v = contextOverride[k];
         if (v === undefined || v === null || v === "") {
-          return setError(`Workflow 输入「${k}」为必填，请补全后再保存`);
+          return setError(`Workflow input "${k}" is required`);
         }
       }
       target = { type: "workflow", workflow_id: workflowId, context_override: contextOverride };
@@ -148,13 +148,13 @@ export function TaskEditor({
       // 400（间隔<5 / 必填缺失）→ {detail}；ok:false 兜底。
       const msg = (r as { detail?: string; error?: string }).detail ?? (r as { error?: string }).error;
       if ((r as { ok?: boolean }).ok === false || !(r as { id?: string }).id) {
-        setError(msg || "保存失败");
+        setError(msg || "Save failed");
         return;
       }
       onSaved();
       onClose();
     } catch {
-      setError("无法连接运行时");
+      setError("Cannot reach the runtime");
     } finally {
       setBusy(false);
     }
@@ -182,10 +182,10 @@ export function TaskEditor({
 
         {/* 目标类型分段控件（模态第一项，§3.2） */}
         <div className="mt-3">
-          <div className="field-label">目标类型</div>
+          <div className="field-label">Target Type</div>
           <div className="inline-flex rounded-lg border border-line bg-base/40 p-0.5">
             <button className={segBtn(targetType === "prompt")} onClick={() => setTargetType("prompt")}>
-              💬 对话
+              💬 Prompt
             </button>
             <button className={segBtn(targetType === "workflow")} onClick={() => setTargetType("workflow")}>
               ⚡ Workflow
@@ -194,25 +194,25 @@ export function TaskEditor({
         </div>
 
         <div className="mt-3">
-          <div className="field-label">名称</div>
+          <div className="field-label">Name</div>
           <input
             className="field"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="例如：日志巡检"
+            placeholder="e.g. Nightly log review"
           />
         </div>
 
         {targetType === "prompt" ? (
           <>
             <div className="mt-3">
-              <div className="field-label">提示词（每次执行作为一条用户消息发给 Agent）</div>
+              <div className="field-label">Prompt (sent to the agent as a user message on each run)</div>
               <textarea
                 className="field"
                 rows={4}
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="汇总 ~/.ginno/logs/sidecar.log 过去 24h 的 ERROR，给出_top3 修复建议…"
+                placeholder="Summarize ERRORs in ~/.ginno/logs/sidecar.log over the past 24h and suggest top 3 fixes…"
               />
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -227,7 +227,7 @@ export function TaskEditor({
                 </select>
               </div>
               <div>
-                <div className="field-label">项目</div>
+                <div className="field-label">Project</div>
                 <input
                   className="field"
                   value={projectSlug}
@@ -240,7 +240,7 @@ export function TaskEditor({
         ) : (
           <>
             <div className="mt-3">
-              <div className="field-label">Workflow 配方</div>
+              <div className="field-label">Workflow</div>
               <select
                 className="field"
                 value={workflowId}
@@ -249,7 +249,7 @@ export function TaskEditor({
                   setContextOverride({}); // 换配方清掉旧输入，表单按新 initial 预填
                 }}
               >
-                <option value="">选择配方…</option>
+                <option value="">Pick a workflow…</option>
                 {g.workflows.map((w) => (
                   <option key={w.id} value={w.id}>
                     {w.name}
@@ -261,7 +261,7 @@ export function TaskEditor({
                   runtime 记 error("workflow_missing")（§3.2）。 */}
               {initialWfId && !g.workflows.some((w) => w.id === initialWfId) && (
                   <div className="mt-1 text-[11px] text-red">
-                    原配方已删除，可改选其它配方或保留（到点将记为失败）
+                    The original workflow was deleted — pick another, or keep it (runs will fail until then)
                   </div>
                 )}
             </div>
@@ -284,7 +284,7 @@ export function TaskEditor({
                   } as never}
                   onChange={setContextOverride}
                 />
-                <div className="mt-1 text-[10px] text-faint">保存值随任务存储，到点作为本次运行的输入。</div>
+                <div className="mt-1 text-[10px] text-faint">Saved with the task and used as the run input when it fires.</div>
               </div>
             )}
           </>
@@ -292,15 +292,15 @@ export function TaskEditor({
 
         {/* 计划四选一分段控件 */}
         <div className="mt-3">
-          <div className="field-label">计划</div>
+          <div className="field-label">Schedule</div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex flex-wrap rounded-lg border border-line bg-base/40 p-0.5">
               {(
                 [
-                  ["interval", "间隔"],
-                  ["daily", "每日"],
-                  ["weekly", "每周"],
-                  ["once", "单次"],
+                  ["interval", "Interval"],
+                  ["daily", "Daily"],
+                  ["weekly", "Weekly"],
+                  ["once", "Once"],
                 ] as Array<[ScheduleKind, string]>
               ).map(([k, label]) => (
                 <button key={k} className={segBtn(kind === k)} onClick={() => setKind(k)}>
@@ -310,7 +310,7 @@ export function TaskEditor({
             </div>
             {kind === "interval" && (
               <span className="flex items-center gap-1.5 text-xs text-muted">
-                每
+                Every
                 <input
                   type="number"
                   min={intervalUnit === "h" ? 1 : 5}
@@ -334,8 +334,8 @@ export function TaskEditor({
                     );
                   }}
                 >
-                  <option value="m">分钟</option>
-                  <option value="h">小时</option>
+                  <option value="m">min</option>
+                  <option value="h">hour(s)</option>
                 </select>
               </span>
             )}
@@ -349,7 +349,7 @@ export function TaskEditor({
             )}
             {kind === "weekly" && (
               <span className="flex items-center gap-1.5 text-xs text-muted">
-                周
+                On
                 <select
                   className="field w-16 px-1 py-1"
                   value={weeklyWeekday}
@@ -379,7 +379,7 @@ export function TaskEditor({
             )}
           </div>
           {kind === "interval" && (
-            <div className="mt-1 text-[10px] text-faint">间隔下限 5 分钟（防雪崩）。</div>
+            <div className="mt-1 text-[10px] text-faint">Minimum interval is 5 minutes.</div>
           )}
         </div>
 
@@ -390,14 +390,14 @@ export function TaskEditor({
             onClick={onClose}
             className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
           >
-            取消
+            Cancel
           </button>
           <button
             disabled={busy}
             onClick={save}
             className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
           >
-            {busy ? "保存中…" : "保存"}
+            {busy ? "Saving…" : "Save"}
           </button>
         </div>
       </div>

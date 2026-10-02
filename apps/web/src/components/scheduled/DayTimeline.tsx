@@ -114,17 +114,17 @@ export function DayTimeline({
         </div>
         <div className="mt-0.5" style={{ color: meta.color }}>
           {meta.glyph} {meta.label}
-          {r.status === "missed" ? "（机器睡眠或应用未运行）" : ""}
+          {r.status === "missed" ? " (machine asleep or app not running)" : ""}
         </div>
         <div className="mt-0.5">
           {r.status === "missed"
-            ? `计划 ${fmtClock(r.scheduled_at)}`
-            : `开始 ${fmtClock(r.started_at)}${r.finished_at ? ` – 结束 ${fmtClock(r.finished_at)}` : ""}${
-                dur ? `（${dur}）` : ""
+            ? `Due ${fmtClock(r.scheduled_at)}`
+            : `Start ${fmtClock(r.started_at)}${r.finished_at ? ` – End ${fmtClock(r.finished_at)}` : ""}${
+                dur ? ` (${dur})` : ""
               }`}
         </div>
         {r.summary && <div className="mt-1 line-clamp-2 text-txt/80">{r.summary.slice(0, 160)}</div>}
-        {runClickable(r) && <div className="mt-1 text-faint">点击查看回放</div>}
+        {runClickable(r) && <div className="mt-1 text-faint">Click to view the run</div>}
       </div>,
       ev,
     );
@@ -153,10 +153,10 @@ export function DayTimeline({
   return (
     <div className="rounded-xl border border-line bg-card p-3">
       <div className="mb-1 flex items-center gap-2 text-xs">
-        <span className="font-medium text-txt">{isToday ? "今天" : date}</span>
+        <span className="font-medium text-txt">{isToday ? "Today" : date}</span>
         <button
           onClick={() => shiftDate(-1)}
-          title="前一天"
+          title="Previous day"
           className="rounded p-0.5 text-faint hover:bg-card2 hover:text-txt"
         >
           <ChevronLeft className="h-3.5 w-3.5" />
@@ -164,35 +164,35 @@ export function DayTimeline({
         <button
           onClick={() => shiftDate(1)}
           disabled={date >= todayStr}
-          title="后一天"
+          title="Next day"
           className="rounded p-0.5 text-faint hover:bg-card2 hover:text-txt disabled:opacity-30"
         >
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
         {!isToday && (
           <button onClick={() => onDateChange(todayStr)} className="text-[11px] text-violet hover:underline">
-            回到今天
+            Back to today
           </button>
         )}
         {/* 图例（§3.1 头部示意） */}
         <span className="ml-auto flex items-center gap-3 text-[10px] text-faint">
           <span className="flex items-center gap-1">
-            <i className="inline-block h-2 w-3 rounded-[2px]" style={{ background: "#14b8a6" }} /> 成功
+            <i className="inline-block h-2 w-3 rounded-[2px]" style={{ background: "#14b8a6" }} /> OK
           </span>
           <span className="flex items-center gap-1">
-            <i className="inline-block h-2 w-3 rounded-[2px]" style={{ background: "#ef4444" }} /> 失败
+            <i className="inline-block h-2 w-3 rounded-[2px]" style={{ background: "#ef4444" }} /> Error
           </span>
           <span className="flex items-center gap-1">
             <i className="inline-block h-2 w-3 animate-pulse rounded-[2px]" style={{ background: "#14b8a6" }} />{" "}
-            进行中
+            Running
           </span>
           <span className="flex items-center gap-1">
-            <i className="inline-block h-2 w-2 border border-faint" /> 计划
+            <i className="inline-block h-2 w-2 border border-faint" /> Planned
           </span>
         </span>
       </div>
 
-      <svg viewBox={`0 0 ${W} ${height}`} className="w-full" role="img" aria-label="当天执行时间条">
+      <svg viewBox={`0 0 ${W} ${height}`} className="w-full" role="img" aria-label="Daily run timeline">
         {/* 轴线与刻度 */}
         <line x1={PAD_X} y1={height - AXIS_H} x2={W - PAD_X} y2={height - AXIS_H} stroke="var(--line)" strokeWidth={1} />
         {axisTicks.map((h) => {
@@ -296,7 +296,7 @@ export function DayTimeline({
                 show(
                   <div>
                     <div className="font-medium text-txt">{p.task_name}</div>
-                    <div className="mt-0.5">计划 {fmtClock(p.at)}</div>
+                    <div className="mt-0.5">Due {fmtClock(p.at)}</div>
                   </div>,
                   ev,
                 )
@@ -305,7 +305,7 @@ export function DayTimeline({
                 show(
                   <div>
                     <div className="font-medium text-txt">{p.task_name}</div>
-                    <div className="mt-0.5">计划 {fmtClock(p.at)}</div>
+                    <div className="mt-0.5">Due {fmtClock(p.at)}</div>
                   </div>,
                   ev,
                 )
@@ -327,12 +327,12 @@ export function DayTimeline({
       </svg>
 
       {loaded && (tl?.runs?.length ?? 0) === 0 && (tl?.planned?.length ?? 0) === 0 && (
-        <div className="py-2 text-center text-[11px] text-faint">这一天没有执行，也没有排期中的计划点。</div>
+        <div className="py-2 text-center text-[11px] text-faint">No runs and no upcoming scheduled points on this day.</div>
       )}
       {(tl?.runs?.length ?? 0) > 0 && onOpenDayRuns && (
         <div className="mt-1 text-right">
           <button onClick={onOpenDayRuns} className="text-[11px] text-violet hover:underline">
-            查看这天全部记录 →
+            View all runs of this day →
           </button>
         </div>
       )}
