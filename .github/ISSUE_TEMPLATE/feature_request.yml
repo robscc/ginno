@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest an idea or improvement for Ginno
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Focus on the problem, not just the solution.
+      placeholder: "When I ..., I have to ..., which is painful because ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed solution
+      description: What would you like Ginno to do?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false

@@ -1,96 +1,104 @@
+<div align="center">
+
 # Ginno
 
-Personal AI Agent — desktop app inspired by Claude Code, built on LangGraph.
+**A local-first personal AI agent that runs on your own machine.**
+
+*The shape of Claude Code, all-file storage (no DB · no account · no cloud), and a visual Workflow Studio.*
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-black.svg)
+![No cloud](https://img.shields.io/badge/cloud-none-brightgreen.svg)
+
+[English](README.md) · [简体中文](README.zh-CN.md)
+
+![Ginno chat workspace](docs/smoke/ui-workspace.png)
+
+</div>
+
+---
+
+## What it is
+
+Ginno turns the capabilities an AI agent should have into a **complete desktop app**,
+instead of scattering them across a terminal and a dozen browser tabs.
+
+- 🧠 **Multi-agent chat** — switch agents mid-conversation, shared history, per-agent memory
+- 🛠️ **Tools · permissions · skills · MCP · hooks** — Claude Code's shape, all built in
+- 🔀 **Visual Workflow Studio** — a versioned DSL you compile into a LangGraph state graph, with a live run observer
+- 📚 **Local knowledge base** — index your Obsidian vault; answers come back with citations
+- 🎯 **Long-horizon goals + TODO sync** — let the agent keep working toward a standing objective
+- 🌐 **Embedded browser + web search** — retrieval with source attribution, not vibes
+
+> Full feature walkthrough: [`docs/user-guide.md`](docs/user-guide.md).
+
+| Workflow Studio | Local knowledge base |
+|---|---|
+| ![Workflow Studio](docs/smoke/ui-workflow-tab.png) | ![Knowledge base](docs/smoke/kb-overview.png) |
+
+---
+
+## Why "local-first"
+
+One design rule: **your data should not leave your machine.**
+
+| | Ginno |
+|---|---|
+| Database | ❌ none — all state is JSON / JSONL / Markdown under `~/.ginno/` |
+| Account | ❌ none — open it and go |
+| Cloud sync | ❌ none — everything stays local |
+| Portable | ✅ copy the folder to move it; readable, hand-editable, git-able |
+
+You bring your own model key (OpenAI / Anthropic / DeepSeek, or any compatible endpoint).
+**Ginno is just a client — it never takes custody of your key or your data.**
+
+---
+
+## Install
+
+**Option A — download (macOS, Apple Silicon):** grab the latest `.dmg` from
+[Releases](https://github.com/robscc/ginno/releases).
+It is **not code-signed** yet, so on first launch use **right-click → Open** to get past Gatekeeper.
+
+**Option B — build from source:**
+
+```bash
+git clone https://github.com/robscc/ginno
+cd ginno
+
+pnpm install                       # web + desktop shell
+cd packages/runtime && uv sync     # Python runtime
+cd ../..
+
+pnpm dev                           # web + runtime + desktop shell, all at once
+```
+
+Requires: Node ≥ 20 · pnpm ≥ 9 · Python ≥ 3.11 (via `uv`) · Rust (Tauri).
+
+**Package a `.app`:** `make app` → `apps/desktop/target/release/bundle/dmg/Ginno_*.dmg`
+(see [`docs/p3-packaging-notes.md`](docs/p3-packaging-notes.md)).
+
+---
 
 ## Stack
 
-- **Shell**: Tauri (Rust + native webview)
-- **UI**: Next.js (static export) + shadcn/ui
-- **Runtime**: Python + LangGraph + FastAPI (sidecar, bundled via PyInstaller)
-- **Storage**: local files under `~/.ginno/` (no database)
-- **Workspace**: user projects live in `~/workspace/<proj>/`; agent metadata under `~/.ginno/projects/<slug>/`
+| Layer | Choice |
+|---|---|
+| Shell | Tauri 2 (Rust) — process management + webview only |
+| UI | Next.js 14 (static export) + React 18 + Tailwind |
+| Runtime | Python + FastAPI + LangGraph (sidecar, bundled with PyInstaller) |
+| Storage | plain files (no DB); optional LanceDB for semantic-search vectors |
 
-## Repo layout
+> Architecture and subsystem designs: [`docs/architecture.md`](docs/architecture.md).
 
-```
-ginno/
-├── apps/
-│   ├── desktop/        # Tauri shell: spawns Python sidecar, hosts webview
-│   └── web/            # Next.js UI (static export)
-├── packages/
-│   └── runtime/        # Python: FastAPI + LangGraph + Skills/MCP/Hooks/Permissions
-├── docs/               # architecture.md + subsystem design docs
-└── scripts/
-    └── dev.sh          # run all three processes in dev
-```
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  Tauri shell (Rust)  →  WKWebView                        │
-│    / chat · /workflows Studio · /kb · /pin · /settings   │
-│    Studio: left = recipes + runs + decision inbox;       │
-│      centre = design canvas / run observer /             │
-│      supervisor console / versions;                      │
-│      right = node inspector / run context                │
-└───────────────────────────┬──────────────────────────────┘
-                            ▼  http://127.0.0.1:8787 (same-origin)
-┌──────────────────────────────────────────────────────────┐
-│  Python sidecar — FastAPI (:8787)                        │
-│   • serves Next.js static export + REST /api/**          │
-│   • WS /api/ws/sessions/{sid}  session/turn stream       │
-│       → chat workspace run cards (turn stream)           │
-│   • WS /api/ws/runs/{run_id}   run snapshot replay       │
-│       + live push → Studio observer / decision inbox     │
-└───────────────────────────┬──────────────────────────────┘
-                            ▼
-        ~/.ginno/  (all state: plain files, no DB)
-```
-
-Both WebSocket channels are served same-origin by the sidecar: the session
-channel drives the chat workspace, the run channel (snapshot replay + live
-push) drives the Studio's run observer and supervisor decision inbox — it is
-also the only live channel for headless runs. Full details:
-[`docs/architecture.md`](docs/architecture.md).
-
-## ~/.ginno layout
-
-```
-~/.ginno/
-├── settings.json          # hooks / permissions / env / model
-├── config.json            # UI theme, providers
-├── MEMORY.md              # long-term memory index
-├── memory/*.md            # memory entries
-├── projects/<slug>/       # per-project agent metadata
-│   ├── GINNO.md           # project-level rules
-│   ├── sessions/*.json    # file-based checkpointer
-│   ├── plans/  todos/     # task state
-│   └── skills/            # project-scoped skills
-├── skills/<name>/SKILL.md # global skills
-├── mcp/mcp.json           # MCP server registry
-├── hooks/                 # hook scripts
-├── vectorstore/           # LanceDB (Obsidian index)
-├── usage/                 # token-usage logs (requests-YYYY-MM-DD.jsonl)
-└── logs/
-```
-
-## Develop
-
-```bash
-# install deps
-pnpm install
-cd packages/runtime && uv sync && cd ../..
-
-# run all (web + runtime + desktop shell)
-pnpm dev
-
-# or individually
-pnpm dev:web        # Next.js on :3000
-pnpm dev:runtime    # FastAPI on :8787
-pnpm dev:desktop    # Tauri (loads web, spawns sidecar)
-```
+---
 
 ## Status
 
-In active daily use. See `docs/architecture.md` for the current architecture (Studio + workflow engine + sidecar).
+- A **personal project**, used daily (dogfooding) and iterated fast — ~2.5 months, 220+ commits.
+- Early and unpolished; APIs and UI still move.
+- Issues, PRs, and ideas are welcome — in English or Chinese.
+
+## License
+
+[MIT](LICENSE) © 2026 ChuanchuanSong

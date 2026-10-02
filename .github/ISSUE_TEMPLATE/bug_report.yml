@@ -1,0 +1,65 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+        Tip: the first place to look is the runtime log at `~/.ginno/logs/sidecar.log`.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what actually happened?
+      placeholder: "I clicked X and expected Y, but got Z."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See error
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running Ginno?
+      options:
+        - Installed .dmg (Release)
+        - Built from source (`pnpm dev`)
+        - Packaged via `make app`
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "0.1.0"
+    validations:
+      required: false
+
+  - type: input
+    id: macos
+    attributes:
+      label: OS / hardware
+      placeholder: "macOS 15.x, Apple Silicon (M-series)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste from `~/.ginno/logs/sidecar.log` (redact anything sensitive).
+      render: shell
+    validations:
+      required: false

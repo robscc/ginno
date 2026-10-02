@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/robscc/ginno/tree/main/docs
+    about: Architecture, user guide, and subsystem design docs live here.
+  - name: Troubleshooting guide
+    url: https://github.com/robscc/ginno/blob/main/CLAUDE.md
+    about: Known failure modes and where Ginno keeps its logs (~/.ginno/logs/sidecar.log).
