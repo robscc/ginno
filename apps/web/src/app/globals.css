@@ -16,6 +16,13 @@
   --scroll: 44 44 56;
   --code-bg: 14 14 20;
   --inline-code: 233 170 200;
+  /* 定时任务状态语义色(SVG fill/stroke 与内联 style 共用) */
+  --st-ok: #8b5cf6;
+  --st-running: #22d3ee;
+  --st-error: #f43f5e;
+  --st-skipped: #8b8b96;
+  --st-missed: #f59e0b;
+  --st-planned: #38bdf8;
   /* Chart categorical series slots — fixed CVD-validated order, dark steps.
      Assign in order; pie may cycle if the model sends more than 5 slices. */
   --chart-1: #3987e5;
@@ -39,6 +46,13 @@ html.light {
   --scroll: 212 212 220;
   --code-bg: 245 245 249;
   --inline-code: 170 60 105;
+  /* 同一套状态语义色的亮色档(深一档保证白底可读) */
+  --st-ok: #7c3aed;
+  --st-running: #0891b2;
+  --st-error: #e11d48;
+  --st-skipped: #6b7280;
+  --st-missed: #b45309;
+  --st-planned: #0284c7;
   /* Same categorical order, light-surface steps. */
   --chart-1: #2a78d6;
   --chart-2: #eb6834;

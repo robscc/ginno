@@ -81,7 +81,7 @@ export function useTip() {
     <div
       ref={ref}
       role="tooltip"
-      className="pointer-events-none fixed z-50 max-w-[320px] rounded-lg border border-line2 bg-[#101018]/95 px-3 py-2 text-[11.5px] leading-relaxed text-muted shadow-xl"
+      className="pointer-events-none fixed z-50 max-w-[320px] rounded-lg border border-line2 bg-card/95 px-3 py-2 text-[11.5px] leading-relaxed text-txt shadow-xl"
       style={{ display: content ? "block" : "none" }}
     >
       {content}

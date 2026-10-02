@@ -211,7 +211,7 @@ export function RunsPanel({
                       <span
                         className="inline-flex items-center gap-1 rounded-full border px-1.5 py-px"
                         style={{
-                          borderColor: meta.hollow ? undefined : meta.color + "55",
+                          borderColor: meta.hollow ? undefined : meta.color,
                           color: meta.color,
                           ...(meta.hollow ? { borderStyle: "dashed" as const } : {}),
                         }}

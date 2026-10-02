@@ -111,7 +111,7 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
           </span>
           <span
             className="flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px"
-            style={{ borderColor: meta.color + "55", color: meta.color }}
+            style={{ borderColor: meta.color, color: meta.color }}
             title={`Status: ${meta.label}`}
           >
             {run.status === "running" && (

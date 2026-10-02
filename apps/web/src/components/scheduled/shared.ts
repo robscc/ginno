@@ -57,16 +57,16 @@ export const RUN_STATUS_META: Record<
   string,
   { label: string; color: string; hollow?: boolean; glyph: string }
 > = {
-  ok: { label: "OK", color: "#8b5cf6", glyph: "✓" }, // 品牌紫
-  running: { label: "Running", color: "#22d3ee", glyph: "▨" },
-  error: { label: "Error", color: "#f43f5e", glyph: "✕" },
-  skipped_overlap: { label: "Skipped (overlap)", color: "#71717a", glyph: "◌" },
-  missed: { label: "Missed", color: "#f59e0b", hollow: true, glyph: "◌" },
+  ok: { label: "OK", color: "var(--st-ok)", glyph: "✓" }, // 品牌紫(亮色主题自动翻深)
+  running: { label: "Running", color: "var(--st-running)", glyph: "▨" },
+  error: { label: "Error", color: "var(--st-error)", glyph: "✕" },
+  skipped_overlap: { label: "Skipped (overlap)", color: "var(--st-skipped)", glyph: "◌" },
+  missed: { label: "Missed", color: "var(--st-missed)", hollow: true, glyph: "◌" },
 };
 
 export function statusMeta(status: string) {
   return (
-    RUN_STATUS_META[status] ?? { label: status, color: "#71717a", glyph: "·" }
+    RUN_STATUS_META[status] ?? { label: status, color: "var(--st-skipped)", glyph: "·" }
   );
 }
 

@@ -175,7 +175,7 @@ export function TaskEditor({
     >
       <div
         className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border bg-card p-4 shadow-2xl"
-        style={{ borderColor: "var(--line)" }}
+        style={{ borderColor: "rgb(var(--line))" }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="text-sm font-semibold text-txt">{initial ? "Edit Scheduled Task" : "New Scheduled Task"}</div>
