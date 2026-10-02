@@ -859,11 +859,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {/* 定时任务（scheduled-tasks-design §3.1）：Connectors 之下、KB 之上 */}
           <Link href="/scheduled" className={`nav-item ${onScheduled ? "nav-item-active" : ""}`}>
             <AlarmClock className="h-4 w-4 shrink-0" />
-            <span className="truncate">定时任务</span>
+            <span className="truncate">Scheduled Tasks</span>
             {scheduleDot === "error" ? (
               <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-red-500" title="最近执行失败或有错过的计划点" />
             ) : scheduleDot === "off" ? (
-              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-faint" title="定时任务已全局关闭" />
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-faint" title="Scheduled tasks globally disabled" />
             ) : null}
           </Link>
           <Link href="/kb" className={`nav-item ${onKb ? "nav-item-active" : ""}`}>

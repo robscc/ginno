@@ -81,7 +81,7 @@ export function TasksPanel({
 
       {tasks.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-faint">
-          还没有定时任务。
+          还没有 Scheduled Task。
           <br />
           点「新建任务」配置第一个计划——对话或 Workflow 都可以。
         </div>
@@ -201,7 +201,7 @@ export function TasksPanel({
 
       {deleteTarget && (
         <ConfirmModal
-          title="删除定时任务"
+          title="Delete scheduled task"
           message={`确定删除任务「${deleteTarget.name}」？它的历史执行记录与影子会话会保留（账单性质数据不销毁），但任务不再触发。`}
           confirmLabel="删除"
           onConfirm={() => remove(deleteTarget)}

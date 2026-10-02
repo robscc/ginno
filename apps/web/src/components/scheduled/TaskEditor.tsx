@@ -171,14 +171,14 @@ export function TaskEditor({
       onMouseDown={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="定时任务编辑"
+      aria-label="Scheduled task editor"
     >
       <div
         className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border bg-card p-4 shadow-2xl"
         style={{ borderColor: "var(--line)" }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="text-sm font-semibold text-txt">{initial ? "编辑定时任务" : "新建定时任务"}</div>
+        <div className="text-sm font-semibold text-txt">{initial ? "Edit Scheduled Task" : "New Scheduled Task"}</div>
 
         {/* 目标类型分段控件（模态第一项，§3.2） */}
         <div className="mt-3">

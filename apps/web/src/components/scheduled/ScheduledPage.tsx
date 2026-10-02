@@ -144,7 +144,7 @@ export function ScheduledPage() {
     <div className="mx-auto max-w-3xl px-6 py-8">
       <header className="mb-5 flex flex-wrap items-center gap-2">
         <AlarmClock className="h-5 w-5 text-faint" />
-        <h1 className="text-lg font-semibold text-txt">定时任务</h1>
+        <h1 className="text-lg font-semibold text-txt">Scheduled Tasks</h1>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {toggle(
             !!cfg?.enabled,
@@ -205,7 +205,7 @@ export function ScheduledPage() {
 
       {!loaded ? (
         <div className="flex items-center gap-2 py-10 text-sm text-faint">
-          <Loader2 className="h-4 w-4 animate-spin" /> 正在读取定时任务配置…
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading scheduled tasks…
         </div>
       ) : !cfg ? (
         <div className="py-10 text-sm text-faint">无法连接运行时，请确认 Ginno 正在运行。</div>

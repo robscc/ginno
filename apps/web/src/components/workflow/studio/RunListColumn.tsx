@@ -134,8 +134,8 @@ export function RunListColumn({
                 <span className="font-mono text-[10.5px] text-muted">#{r.id.slice(0, 4)}</span>
                 {/* 定时触发的 run（scheduled-tasks-design §3.6/§10 决议 7） */}
                 {r.origin === "schedule" && (
-                  <span className="shrink-0 rounded border border-line2 px-1 text-[9px] leading-4 text-faint" title="由定时任务触发">
-                    ⏰ 定时
+                  <span className="shrink-0 rounded border border-line2 px-1 text-[9px] leading-4 text-faint" title="Triggered by scheduled task">
+                    ⏰ Scheduled
                   </span>
                 )}
                 <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">{relTime(r.started)}</span>
