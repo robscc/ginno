@@ -181,6 +181,8 @@ async def extension_endpoint(ws: WebSocket) -> None:
 
     pinger = asyncio.create_task(_pinger())
     _report_status()
+    # 连接即下发当前 tab 可见范围(SW 重启/重连后不丢配置)
+    asyncio.create_task(_push_tab_scope())
     try:
         while True:
             raw = await ws.receive_text()
@@ -251,3 +253,31 @@ async def extension_endpoint(ws: WebSocket) -> None:
 
 def note_extension_error(detail: str) -> None:
     _report_status(detail, status=STATUS_ERROR)
+
+
+async def push_config(params: dict) -> bool:
+    """Push connector config to the extension (tab 可见范围等,设计 §3).
+
+    Returns False when no extension is connected (it'll get the config
+    on next connect — extension_endpoint pushes it after accept)."""
+    ws = _state.ws
+    if ws is None:
+        return False
+    try:
+        await ws.send_text(json.dumps({"method": "configChanged",
+                                       "params": params}))
+        return True
+    except Exception:  # noqa: BLE001 — 断线瞬间发送失败无妨,重连会补推
+        return False
+
+
+async def _push_tab_scope() -> None:
+    """Send the chrome-extension connector's tab_scope to the live extension."""
+    try:
+        from ..connectors.registry import registry
+
+        scope = (registry().read_config("chrome-extension") or {}).get(
+            "tab_scope", "group")
+        await push_config({"tabScope": scope})
+    except Exception:  # noqa: BLE001 — 配置推送是尽力而为
+        log.exception("tab_scope push failed")

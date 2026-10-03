@@ -35,7 +35,12 @@ const S = {
   groupIdByWindow: new Map(),
   readyTabs: new Set(),             // content-script-present tabs
   pendingStop: null,
+  tabScope: "group",                // tab 可见范围: group(仅 Ginno 组)| all(全部)
 };
+// SW 重启后恢复上次下发的 tab 可见范围(sidecar 连接时也会再推一次)
+chrome.storage.local.get("tabScope").then(({ tabScope }) => {
+  if (tabScope === "all") S.tabScope = "all";
+});
 
 const log = (...a) => console.log("[Ginno Ext]", ...a);
 
@@ -94,6 +99,12 @@ function onFrame(text) {
   let msg;
   try { msg = JSON.parse(text); } catch (e) { return; }
   if (msg.method === "ping") return send({ method: "pong" });
+  if (msg.method === "configChanged") {
+    const scope = (msg.params || {}).tabScope === "all" ? "all" : "group";
+    S.tabScope = scope;
+    chrome.storage.local.set({ tabScope: scope });
+    return;
+  }
   if (msg.method === "stopToolExecution") {
     S.stopRequested = true;
     return;
@@ -542,10 +553,11 @@ async function groupTab(tabId) {
 }
 
 async function ginnoTabs() {
+  const all = await chrome.tabs.query({});
+  if (S.tabScope === "all") return all;  // 连接器配置放开后可见全部 tab
   const groups = await chrome.tabGroups.query({ title: GROUP_TITLE });
   if (!groups.length) return [];
   const ids = new Set(groups.map((g) => g.id));
-  const all = await chrome.tabs.query({});
   return all.filter((t) => ids.has(t.groupId));
 }
 

@@ -73,6 +73,8 @@ class ChromeExtensionConnector(Connector):
             "fallback_profile_mode": "ask",
             "sensitive_domains": [],
             "auto_open_group": True,
+            # tab 可见范围: group=仅 Ginno 组(围栏,默认) / all=全部 tab
+            "tab_scope": "group",
         }
 
     def config_schema(self) -> dict:
@@ -85,6 +87,13 @@ class ChromeExtensionConnector(Connector):
                     "title": "未装扩展时的备用浏览器",
                     "description": ("ask=提示一次后启用 / auto=静默使用 Ginno 自带的"
                                     " Chrome 实例 / off=仅扩展轨"),
+                },
+                "tab_scope": {
+                    "type": "string", "enum": ["group", "all"],
+                    "title": "tab 可见范围",
+                    "description": ("group=仅 Ginno 组内的 tab(围栏,agent 看不到你"
+                                    "个人页面)/ all=浏览器全部 tab(可读可操作,"
+                                    "注意隐私)"),
                 },
                 "sensitive_domains": {
                     "type": "array", "items": {"type": "string"},
@@ -105,6 +114,15 @@ class ChromeExtensionConnector(Connector):
 
     def install_steps(self) -> list[dict]:
         return CHROME_INSTALL_STEPS
+
+    async def apply_config(self, cfg: dict) -> None:
+        """配置变更即时下发扩展(tab_scope 等无需重连)。"""
+        try:
+            from ..browser.relay import push_config
+
+            await push_config({"tabScope": cfg.get("tab_scope", "group")})
+        except Exception:  # noqa: BLE001 — 推送失败无妨,重连时补推
+            pass
 
 
 class BrowserProfileConnector(Connector):
