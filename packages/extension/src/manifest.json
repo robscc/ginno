@@ -1,9 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Ginno Browser Connector",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "description": "让 Ginno 在你自己的 Chrome 里替你干活——登录态共享、动作可见、可随时叫停。",
-  "default_locale": "en",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
   "permissions": [
     "debugger",
     "tabs",
@@ -22,24 +27,45 @@
   },
   "action": {
     "default_title": "Ginno Browser Connector",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content-scripts/accessibility-tree.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content-scripts/accessibility-tree.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content-scripts/page-bridge.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content-scripts/page-bridge.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content-scripts/visual-indicator.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content-scripts/visual-indicator.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }

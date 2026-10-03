@@ -188,22 +188,28 @@ def materialize_extension() -> Path | None:
         if not (src_dir / "manifest.json").exists():
             continue
         try:
-            ns: dict = {}
-            scripts_py = (src_root.parent / "runtime" / "src" /
-                          "ginno_runtime" / "browser" / "scripts.py")
             out.mkdir(parents=True, exist_ok=True)
             (out / "content-scripts").mkdir(exist_ok=True)
             for name in ("background.js", "popup.html", "popup.js", "manifest.json"):
                 if (src_dir / name).exists():
                     shutil.copy2(src_dir / name, out / name)
+            if (src_dir / "icons").is_dir():
+                shutil.copytree(src_dir / "icons", out / "icons",
+                                dirs_exist_ok=True)
             shutil.copy2(src_dir / "content-scripts" / "visual-indicator.js",
                          out / "content-scripts" / "visual-indicator.js")
-            if scripts_py.exists():
-                exec(compile(scripts_py.read_text(), str(scripts_py), "exec"), ns)
+            # content scripts 单一来源(scripts.py):dev/frozen 一律直接 import。
+            # 旧实现按仓库相对路径找 scripts.py,frozen bundle 里该路径不存在,
+            # 两个生成脚本被静默跳过 → Chrome 加载扩展报缺文件(2026-10-02)。
+            try:
+                from . import scripts as _scripts
+
                 (out / "content-scripts" / "accessibility-tree.js").write_text(
-                    ns["ACCESSIBILITY_TREE_JS"])
+                    _scripts.ACCESSIBILITY_TREE_JS)
                 (out / "content-scripts" / "page-bridge.js").write_text(
-                    ns["PAGE_BRIDGE_JS"])
+                    _scripts.PAGE_BRIDGE_JS)
+            except Exception:  # noqa: BLE001 — 生成失败不中断整个物化
+                log.exception("content-script generation failed")
             nh = src_root / "native-host" / "ginno_browser_host.py"
             if not nh.exists():
                 nh = (Path(getattr(sys, "_MEIPASS", "")) / "extension_src_native_host"
