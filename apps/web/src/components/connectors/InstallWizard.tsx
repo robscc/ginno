@@ -101,8 +101,8 @@ export function InstallWizard({
 
         {connected ? (
           <div className="py-6 text-center">
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/40">
-              <Check className="h-6 w-6 text-green-600 dark:text-green-400" />
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green/15">
+              <Check className="h-6 w-6 text-green" />
             </div>
             <div className="text-sm font-medium text-txt">✅ 扩展已连接 Ginno</div>
             <div className="mt-1 text-xs text-faint">
@@ -144,7 +144,7 @@ export function InstallWizard({
                     className="rounded-lg border border-line p-2 text-faint hover:text-txt"
                     title="复制"
                   >
-                    {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copied ? <Check className="h-3.5 w-3.5 text-green" /> : <Copy className="h-3.5 w-3.5" />}
                   </button>
                 </div>
               )}

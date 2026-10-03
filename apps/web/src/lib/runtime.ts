@@ -1661,18 +1661,18 @@ export interface ConnectorsPayload {
 }
 
 export async function listConnectors(): Promise<ConnectorsPayload> {
-  return json<ConnectorsPayload>(`${BASE}/api/connectors`);
+  return json<ConnectorsPayload>(`${BASE}/connectors`);
 }
 
 export async function getConnector(id: string): Promise<ConnectorInfo> {
-  return json<ConnectorInfo>(`${BASE}/api/connectors/${encodeURIComponent(id)}`);
+  return json<ConnectorInfo>(`${BASE}/connectors/${encodeURIComponent(id)}`);
 }
 
 export async function patchConnectorConfig(
   id: string,
   config: Record<string, unknown>,
 ): Promise<{ ok: boolean; config?: Record<string, unknown>; error?: string }> {
-  return json(`${BASE}/api/connectors/${encodeURIComponent(id)}/config`, {
+  return json(`${BASE}/connectors/${encodeURIComponent(id)}/config`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config),
@@ -1684,7 +1684,7 @@ export async function connectorAction(
   action: string,
   extra: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
-  return json(`${BASE}/api/connectors/${encodeURIComponent(id)}/action`, {
+  return json(`${BASE}/connectors/${encodeURIComponent(id)}/action`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...extra }),
@@ -1694,7 +1694,7 @@ export async function connectorAction(
 export async function getHandoffStatus(): Promise<{
   active: { tabId: string }[];
 }> {
-  return json(`${BASE}/api/connectors/browser/handoff`);
+  return json(`${BASE}/connectors/browser/handoff`);
 }
 
 // ---- connectors: event stream (connector-module §5 push half) ----
@@ -1729,7 +1729,7 @@ export function wsConnectorsUrl(): string {
 }
 
 export async function getPushedPage(): Promise<{ page: PushedPage | null }> {
-  return json(`${BASE}/api/connectors/browser/pushed-page`);
+  return json(`${BASE}/connectors/browser/pushed-page`);
 }
 
 // ---- scheduled tasks（docs/scheduled-tasks-design.md §5.1；路由/字段名是契约）----
