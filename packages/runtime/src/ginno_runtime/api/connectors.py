@@ -87,14 +87,14 @@ async def pushed_page() -> dict:
 @router.get("/api/connectors")
 async def list_connectors() -> dict:
     ensure_builtin_connectors()
-    reg = conn_registry.registry()
+    reg = conn_registry()
     return reg.list_payload()
 
 
 @router.get("/api/connectors/{cid}")
 async def connector_detail(cid: str) -> Any:
     ensure_builtin_connectors()
-    reg = conn_registry.registry()
+    reg = conn_registry()
     conn = reg.get(cid)
     if conn is None:
         return JSONResponse({"error": f"unknown connector: {cid}"}, status_code=404)
@@ -108,7 +108,7 @@ async def connector_detail(cid: str) -> Any:
 @router.patch("/api/connectors/{cid}/config")
 async def update_connector_config(cid: str, body: dict) -> Any:
     ensure_builtin_connectors()
-    reg = conn_registry.registry()
+    reg = conn_registry()
     conn = reg.get(cid)
     if conn is None:
         return JSONResponse({"error": f"unknown connector: {cid}"}, status_code=404)
@@ -132,7 +132,7 @@ async def update_connector_config(cid: str, body: dict) -> Any:
 @router.post("/api/connectors/{cid}/action")
 async def connector_action(cid: str, body: dict) -> Any:
     ensure_builtin_connectors()
-    reg = conn_registry.registry()
+    reg = conn_registry()
     action = (body or {}).get("action", "")
     if action == "reveal_folder":
         target = paths.home() / (body.get("folder") or "browser-extension")

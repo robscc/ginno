@@ -214,6 +214,8 @@ class ConnectorRegistry:
             "capabilities": st.capabilities,
             "enabled": self.read_config(cid).get("enabled", True),
             "extra": st.extra,
+            # 列表页据此渲染「安装指引」入口(设计 §2.3);详情接口会再覆盖一次
+            "installSteps": conn.install_steps() if conn else [],
         }
 
     def _notify(self, snapshot: dict) -> None:
