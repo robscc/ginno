@@ -53,22 +53,34 @@ export async function refreshToolLabels(): Promise<void> {
   await loadToolLabels();
 }
 
-/** Synchronous label lookup. Returns the friendly name for a tool. */
-export function toolLabel(name: string): string {
+/**
+ * All candidate labels for a tool. A configured value may carry several
+ * names separated by "|" (e.g. "写文件中|落盘中"); callers that want
+ * variety (tool-call bubbles) pick one at random, others use the first.
+ */
+export function toolLabelOptions(name: string): string[] {
+  let raw: string | undefined;
   // 1. User-configured mapping, or 2. built-in default
-  if (_labels[name]) return _labels[name];
+  if (_labels[name]) raw = _labels[name];
 
   // 3. MCP auto-detection: mcp_{server}_{tool} → "正在调用MCP：{server}"
-  if (name.startsWith("mcp_")) {
+  if (raw === undefined && name.startsWith("mcp_")) {
     const parts = name.split("_");
     // Format: mcp_{server}_{rest...} — server is parts[1]
     if (parts.length >= 3) {
-      return `正在调用MCP：${parts[1]}`;
+      raw = `正在调用MCP：${parts[1]}`;
     }
   }
 
   // 4. Raw name fallback
-  return name;
+  const opts = (raw ?? name).split("|").map((s) => s.trim()).filter(Boolean);
+  return opts.length ? opts : [name];
+}
+
+/** Synchronous label lookup. Deterministic (first candidate) — safe to
+ * call directly in render for stable UI like permission cards. */
+export function toolLabel(name: string): string {
+  return toolLabelOptions(name)[0];
 }
 
 /** Whether the label cache has been loaded at least once. */

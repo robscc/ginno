@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as d3 from "d3";
 import {
@@ -31,7 +31,7 @@ import { isSubagentConfirmed, markSubagentConfirmed } from "@/lib/subagentConfir
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
 import { AskUserCard } from "./AskUserCard";
-import { toolLabel } from "@/lib/toolLabels";
+import { toolLabelOptions } from "@/lib/toolLabels";
 
 export type SourceItem = { kind: "wiki" | "web"; ref: string; note?: string };
 
@@ -1133,7 +1133,13 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
   const [open, setOpen] = useState<boolean | null>(null);
-  const label = toolLabel(name);
+  // A configured label may carry several "|" separated names — pick one at
+  // random per tool call (memoized so it stays stable pending → done and
+  // across re-renders; a fresh call rolls again).
+  const label = useMemo(() => {
+    const opts = toolLabelOptions(name);
+    return opts[Math.floor(Math.random() * opts.length)];
+  }, [name]);
   if (pending && name === "browser_handoff") {
     // 接管卡(browser-companion §7.2 M3):工具在阻塞等待用户,气泡换成
     // 可操作卡片——点「已接管,继续」释放,tool.end 自然接棒。

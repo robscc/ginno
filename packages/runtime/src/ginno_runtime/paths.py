@@ -65,7 +65,8 @@ _DEFAULT_SETTINGS = {
     "hooks": {},
     # Tool display labels: friendly names for tool call bubbles in the UI.
     # Keys are raw tool names (e.g. "write_file"), values are display labels
-    # (e.g. "写文件中"). MCP tools (mcp_{server}_{tool}) are auto-detected and
+    # (e.g. "写文件中"; "|" separates several names, one is picked at random
+    # per call). MCP tools (mcp_{server}_{tool}) are auto-detected and
     # shown as "正在调用MCP：{server}" when no explicit mapping exists.
     "tool_labels": {
         "read_file": "读取文件中",

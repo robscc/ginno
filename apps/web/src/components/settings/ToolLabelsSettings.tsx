@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as api from "@/lib/runtime";
 import { DEFAULT_TOOL_LABELS, refreshToolLabels } from "@/lib/toolLabels";
 
@@ -22,12 +22,20 @@ export function ToolLabelsSettings() {
       .catch(() => setMsg("Failed to load"));
   }, []);
 
+  // IME（拼音等）合成期间每次按键都触发 onChange；若直接落盘会并发保存
+  // 互相覆盖，且可能把拼音中间态写进配置。输入只改本地 state，去抖后落盘。
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveSeq = useRef(0);
+  const composing = useRef(false);
+
   async function save(next: Record<string, string>) {
+    // 串行化：序号过期的旧保存不再刷 UI / 拉取，避免交错覆盖
+    const seq = ++saveSeq.current;
     try {
       const s = await api.getSettings();
       s.tool_labels = next;
       await api.putSettings(s);
-      setLabels(next);
+      if (seq !== saveSeq.current) return;
       await refreshToolLabels();
       setMsg("Saved");
       setTimeout(() => setMsg(""), 2000);
@@ -36,15 +44,31 @@ export function ToolLabelsSettings() {
     }
   }
 
+  function scheduleSave(next: Record<string, string>, immediate = false) {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const flush = () => {
+      saveTimer.current = null;
+      if (composing.current) return; // 拼音选字过程中不落盘
+      save(next);
+    };
+    if (immediate) flush();
+    else saveTimer.current = setTimeout(flush, 600);
+  }
+
+  function blurFlush() {
+    if (saveTimer.current) scheduleSave(labels, true);
+  }
+
   function updateLabel(key: string, value: string) {
     const next = { ...labels, [key]: value };
-    save(next);
+    setLabels(next); // 输入框立即反映，不等网络往返
+    scheduleSave(next);
   }
 
   function removeLabel(key: string) {
     const next = { ...labels };
     delete next[key];
-    save(next);
+    scheduleSave(next, true);
   }
 
   function addLabel() {
@@ -56,7 +80,8 @@ export function ToolLabelsSettings() {
       return;
     }
     const next = { ...labels, [k]: v };
-    save(next);
+    setLabels(next);
+    scheduleSave(next, true);
     setNewKey("");
     setNewVal("");
   }
@@ -69,7 +94,8 @@ export function ToolLabelsSettings() {
       <p className="mt-1 text-xs text-faint">
         Customize the display names of tool-call bubbles. MCP tools (starting with{" "}
         <code className="text-muted">mcp_</code>) default to &ldquo;Calling MCP: &#123;server&#125;&rdquo; when not
-        configured.
+        configured. Separate several names with <code className="text-muted">|</code> (e.g.
+        &ldquo;写文件中|落盘中&rdquo;) — one is picked at random per call.
       </p>
 
       <div className="mt-5 max-w-lg">
@@ -85,6 +111,9 @@ export function ToolLabelsSettings() {
                 className="field flex-1 !py-1 text-xs"
                 value={val}
                 onChange={(e) => updateLabel(key, e.target.value)}
+                onCompositionStart={() => (composing.current = true)}
+                onCompositionEnd={() => (composing.current = false)}
+                onBlur={blurFlush}
               />
               <button
                 onClick={() => removeLabel(key)}
@@ -108,10 +137,16 @@ export function ToolLabelsSettings() {
           <span className="text-faint">→</span>
           <input
             className="field flex-1 !py-1 text-xs"
-            placeholder="Display name"
+            placeholder="Display name (several with |, random)"
             value={newVal}
             onChange={(e) => setNewVal(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addLabel()}
+            // IME guard (same as the composer): Enter commits a CJK
+            // candidate first and must not add mid-composition.
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                addLabel();
+              }
+            }}
           />
           <button
             onClick={addLabel}
