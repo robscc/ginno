@@ -781,6 +781,30 @@ def render_reinjection(ctx: SessionCtx) -> str:
     return f"{REINJECT_MSG_PREFIX}\n（历史刚被压缩，以下是当前世界状态的完整重申）\n{body}"
 
 
+def summary_row_text(content: str) -> str:
+    """Short human-facing line for the E3 summary history row — the full
+    summary is model scaffolding, only a preview belongs in the transcript."""
+    body = ""
+    if content.startswith(SUMMARY_MSG_PREFIX):
+        rest = content[len(SUMMARY_MSG_PREFIX):].lstrip("\n")
+        # Drop the fixed model-facing lead-in, keep the summary itself.
+        marker = "以下是此前对话的摘要（原始消息已被压缩）："
+        body = rest.replace(marker, "", 1).strip()
+    first = body.split("\n", 1)[0].strip()
+    if len(first) > 60:
+        first = first[:60] + "…"
+    row = "🗂 早期对话已压缩为摘要"
+    if first:
+        row += f"：{first}"
+    return row
+
+
+def reinject_row_text(content: str) -> str:
+    """Short human-facing line for the E4 re-injection history row — the
+    re-asserted world state is model scaffolding, not conversation."""
+    return "🌍 当前世界状态已重新注入"
+
+
 # --------------------------------------------------------------------------- #
 # Baseline persistence + per-turn sync (C1/C2)
 # --------------------------------------------------------------------------- #

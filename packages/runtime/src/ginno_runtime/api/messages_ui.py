@@ -23,8 +23,12 @@ from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ..world_state import (
     ALL_CONTEXT_PREFIXES,
     GOAL_CONTEXT_PREFIX,
+    REINJECT_MSG_PREFIX,
+    SUMMARY_MSG_PREFIX,
     TURN_CONTEXT_PREFIX,
     UPDATE_MSG_PREFIX,
+    reinject_row_text,
+    summary_row_text,
 )
 
 # Bullets a world-state update message can start with when it was checkpointed
@@ -574,9 +578,15 @@ def _messages_to_ui(
                 flush_assistant()
                 # Goal steering messages (continuation / objective-updated) fold
                 # into a SHORT centered row — the full prompt is model
-                # scaffolding, not conversation (goal-design.md §4.3.2).
+                # scaffolding, not conversation (goal-design.md §4.3.2). The E3
+                # summary and E4 re-injection follow the same contract: one
+                # short row, never the raw machine prefix + full body.
                 if content_raw.startswith(GOAL_CONTEXT_PREFIX):
                     display = goal_context_row(content_raw)
+                elif content_raw.startswith(SUMMARY_MSG_PREFIX):
+                    display = summary_row_text(content_raw)
+                elif content_raw.startswith(REINJECT_MSG_PREFIX):
+                    display = reinject_row_text(content_raw)
                 else:
                     # The update prefix is a machine marker — never show it.
                     display = content_raw
