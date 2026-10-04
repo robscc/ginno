@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import {
   AlertTriangle,
   Boxes,
@@ -32,37 +33,34 @@ export const ICON: Record<string, typeof FileText> = {
   image: ImageIcon,
 };
 
-export const KIND_LABEL: Record<string, string> = {
-  file: "文件",
-  doc: "文档",
-  link: "链接",
-  workflow: "工作流",
-  image: "图片",
+// kind → 文案 key 的固定映射（值是 right.artifacts 下的 key，翻译在渲染时按
+// locale 取——模块层不能调用 hook）。TodoPanel 等外部引用同一映射。
+export const KIND_LABEL: Record<
+  string,
+  "kind.file" | "kind.doc" | "kind.link" | "kind.workflow" | "kind.image"
+> = {
+  file: "kind.file",
+  doc: "kind.doc",
+  link: "kind.link",
+  workflow: "kind.workflow",
+  image: "kind.image",
 };
 
 // Registry file kinds — the classification that steers prompt tool guidance
 // (analyze_table for spreadsheet/table, parse_document otherwise).
 const FILE_KINDS = ["spreadsheet", "table", "document", "presentation", "pdf", "data", "text", "image"];
-const FILE_KIND_LABEL: Record<string, string> = {
-  spreadsheet: "Excel 表格",
-  table: "CSV 表格",
-  document: "文档",
-  presentation: "演示文稿",
-  pdf: "PDF",
-  data: "结构化数据",
-  text: "纯文本",
-  image: "图片",
-  unknown: "未知",
+// 同上：file_kind → 文案 key 映射。
+const FILE_KIND_LABEL: Record<string, "fileKind.spreadsheet" | "fileKind.table" | "fileKind.document" | "fileKind.presentation" | "fileKind.pdf" | "fileKind.data" | "fileKind.text" | "fileKind.image" | "fileKind.unknown"> = {
+  spreadsheet: "fileKind.spreadsheet",
+  table: "fileKind.table",
+  document: "fileKind.document",
+  presentation: "fileKind.presentation",
+  pdf: "fileKind.pdf",
+  data: "fileKind.data",
+  text: "fileKind.text",
+  image: "fileKind.image",
+  unknown: "fileKind.unknown",
 };
-
-function relTime(ts: number): string {
-  const d = Date.now() / 1000 - ts;
-  if (d < 60) return "刚刚";
-  if (d < 3600) return `${Math.floor(d / 60)} 分钟前`;
-  if (d < 86400) return `${Math.floor(d / 3600)} 小时前`;
-  if (d < 86400 * 30) return `${Math.floor(d / 86400)} 天前`;
-  return new Date(ts * 1000).toLocaleDateString();
-}
 
 function fmtBytes(n?: number): string {
   if (n === undefined || n === null) return "—";
@@ -115,6 +113,9 @@ export function ArtifactMetaCard({
   onClose: () => void;
 }) {
   const g = useGinno();
+  // i18n：t 元数据卡片框架文案（名称/路径/摘要内容是用户数据，不翻译），tc 通用按钮
+  const t = useTranslations("right.artifacts");
+  const tc = useTranslations("right.common");
   const [meta, setMeta] = useState<ArtifactMeta | null>(null);
   const [loadError, setLoadError] = useState("");
   // edit draft + status
@@ -124,14 +125,34 @@ export function ArtifactMetaCard({
   const [savedFlash, setSavedFlash] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // 相对时间文案（common 域，按当前 locale 组装）
+  const rel = (ts: number): string => {
+    const d = Date.now() / 1000 - ts;
+    if (d < 60) return tc("relNow");
+    if (d < 3600) return tc("relMinutes", { n: Math.floor(d / 60) });
+    if (d < 86400) return tc("relHours", { n: Math.floor(d / 3600) });
+    if (d < 86400 * 30) return tc("relDays", { n: Math.floor(d / 86400) });
+    return new Date(ts * 1000).toLocaleDateString();
+  };
+  // kind / file_kind → 当前语言文案（未登记的值原样回显）
+  const kindLabel = (k: string): string => {
+    const key = KIND_LABEL[k];
+    return key ? t(key) : k;
+  };
+  const fileKindLabel = (k: string | undefined): string => {
+    if (!k) return "—";
+    const key = FILE_KIND_LABEL[k];
+    return key ? t(key) : k;
+  };
+
   async function load() {
     setLoadError("");
     try {
       const m = await api.getArtifactMetadata(artifact.id);
-      if (!m.ok) throw new Error(m.error || "加载失败");
+      if (!m.ok) throw new Error(m.error || t("meta.loadFailedShort"));
       setMeta(m);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : "运行时未就绪");
+      setLoadError(e instanceof Error ? e.message : t("meta.runtimeNotReady"));
     }
   }
   useEffect(() => {
@@ -180,7 +201,7 @@ export function ArtifactMetaCard({
     const r = await g.patchArtifact(artifact.id, patch);
     setSaving(false);
     if (!r.ok) {
-      setSaveError(r.error || "保存失败");
+      setSaveError(r.error || t("meta.saveFailed"));
       return;
     }
     setEditing(false);
@@ -215,7 +236,7 @@ export function ArtifactMetaCard({
       className="meta-pop-in fixed z-50 flex flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-2xl"
       style={{ ...posStyle, width: maxW }}
       role="dialog"
-      aria-label={`Artifact 元数据：${artifact.name}`}
+      aria-label={t("meta.cardLabel", { name: artifact.name })}
     >
       {/* header */}
       <div className="flex items-center gap-2 border-b border-line px-3.5 py-2.5">
@@ -225,7 +246,7 @@ export function ArtifactMetaCard({
             value={draft.name}
             onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
             className="min-w-0 flex-1 rounded border border-line2 bg-base/60 px-1.5 py-0.5 text-sm text-txt outline-none focus:border-violet"
-            placeholder="名称（必填）"
+            placeholder={t("meta.namePlaceholder")}
           />
         ) : (
           <span className="min-w-0 flex-1 truncate text-sm font-semibold text-txt">{artifact.name}</span>
@@ -237,14 +258,14 @@ export function ArtifactMetaCard({
               onChange={(e) => setDraft((d) => ({ ...d, kind: e.target.value }))}
               className="bg-transparent text-[10px] outline-none"
             >
-              {Object.entries(KIND_LABEL).map(([k, v]) => (
+              {Object.entries(KIND_LABEL).map(([k, key]) => (
                 <option key={k} value={k} className="bg-panel text-txt">
-                  {v}
+                  {t(key)}
                 </option>
               ))}
             </select>
           ) : (
-            KIND_LABEL[artifact.kind] || artifact.kind
+            kindLabel(artifact.kind)
           )}
         </span>
         {savedFlash && <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
@@ -252,7 +273,7 @@ export function ArtifactMetaCard({
           <button
             onClick={enterEdit}
             disabled={!meta}
-            title="修改元数据"
+            title={t("meta.editTitle")}
             className="shrink-0 rounded-md p-1 text-muted hover:bg-card2 hover:text-txt disabled:opacity-40"
           >
             <Pencil className="h-3.5 w-3.5" />
@@ -260,7 +281,7 @@ export function ArtifactMetaCard({
         )}
         <button
           onClick={onClose}
-          title="关闭"
+          title={tc("close")}
           className="shrink-0 rounded-md p-1 text-muted hover:bg-card2 hover:text-txt"
         >
           <X className="h-3.5 w-3.5" />
@@ -268,7 +289,7 @@ export function ArtifactMetaCard({
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto px-3.5 py-3">
-        {loadError && <div className="text-xs text-red">元数据加载失败：{loadError}</div>}
+        {loadError && <div className="text-xs text-red">{t("meta.loadFailed", { e: loadError })}</div>}
         {!meta && !loadError && (
           <div className="space-y-2 py-1">
             <div className="h-3 w-2/3 animate-pulse rounded bg-card2" />
@@ -283,12 +304,12 @@ export function ArtifactMetaCard({
             {isFile && meta.exists === false && (
               <div className="flex items-center gap-2 rounded-lg border border-yellow/40 bg-yellow/10 px-2.5 py-1.5 text-[11px] text-yellow">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                磁盘上找不到该文件（可能已被移动或删除），预览与注入将不可用。
+                {t("meta.fileMissing")}
               </div>
             )}
 
             <div className="space-y-1.5">
-              <MetaRow label="路径">
+              <MetaRow label={t("meta.path")}>
                 <span className="flex items-center gap-1">
                   <code
                     className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted"
@@ -299,7 +320,7 @@ export function ArtifactMetaCard({
                   {(meta.file?.path || artifact.ref) && (
                     <button
                       onClick={() => void copyPath(meta.file?.path || artifact.ref)}
-                      title="复制路径"
+                      title={t("meta.copyPath")}
                       className="shrink-0 rounded p-0.5 text-faint hover:bg-card2 hover:text-txt"
                     >
                       {copied ? (
@@ -313,13 +334,13 @@ export function ArtifactMetaCard({
               </MetaRow>
               {isFile && meta.file && (
                 <>
-                  <MetaRow label="大小">
+                  <MetaRow label={t("meta.size")}>
                     <span className="text-[11px] text-muted">
                       {fmtBytes(meta.file.size)}
                       {meta.file.mime ? ` · ${meta.file.mime}` : ""}
                     </span>
                   </MetaRow>
-                  <MetaRow label="识别类型">
+                  <MetaRow label={t("meta.detectedType")}>
                     {editing ? (
                       <select
                         value={draft.file_kind}
@@ -328,32 +349,30 @@ export function ArtifactMetaCard({
                       >
                         {FILE_KINDS.map((k) => (
                           <option key={k} value={k} className="bg-panel text-txt">
-                            {FILE_KIND_LABEL[k] || k}
+                            {fileKindLabel(k)}
                           </option>
                         ))}
                       </select>
                     ) : (
-                      <span className="text-[11px] text-muted">
-                        {FILE_KIND_LABEL[meta.file.kind] || meta.file.kind || "—"}
-                      </span>
+                      <span className="text-[11px] text-muted">{fileKindLabel(meta.file.kind)}</span>
                     )}
                   </MetaRow>
                 </>
               )}
-              <MetaRow label="会话">
+              <MetaRow label={t("meta.session")}>
                 <span className="font-mono text-[11px] text-muted">
                   {artifact.session_id ? artifact.session_id.slice(0, 8) : "—"}
                 </span>
               </MetaRow>
-              <MetaRow label="登记于">
-                <span className="text-[11px] text-muted">{relTime(artifact.created)}</span>
+              <MetaRow label={t("meta.added")}>
+                <span className="text-[11px] text-muted">{rel(artifact.created)}</span>
               </MetaRow>
             </div>
 
             {/* schema summary — what actually lands in the model context */}
             <div className="rounded-lg border border-line bg-card/50">
               <div className="flex items-center gap-2 border-b border-line px-2.5 py-1.5">
-                <span className="text-[11px] font-medium text-txt">Schema 摘要</span>
+                <span className="text-[11px] font-medium text-txt">{t("meta.schemaSummary")}</span>
                 {meta.schema ? (
                   <span
                     className={`rounded-full px-1.5 py-px text-[10px] ${
@@ -362,10 +381,12 @@ export function ArtifactMetaCard({
                         : "bg-card2 text-faint"
                     }`}
                   >
-                    {meta.schema_source === "override" ? "已人工修正" : "自动计算"}
+                    {meta.schema_source === "override" ? t("meta.manualOverride") : t("meta.autoComputed")}
                   </span>
                 ) : (
-                  <span className="rounded-full bg-card2 px-1.5 py-px text-[10px] text-faint">无</span>
+                  <span className="rounded-full bg-card2 px-1.5 py-px text-[10px] text-faint">
+                    {t("meta.schemaNone")}
+                  </span>
                 )}
               </div>
               {editing ? (
@@ -373,7 +394,7 @@ export function ArtifactMetaCard({
                   value={draft.schema}
                   onChange={(e) => setDraft((d) => ({ ...d, schema: e.target.value }))}
                   rows={5}
-                  placeholder="留空则恢复自动计算"
+                  placeholder={t("meta.schemaPlaceholder")}
                   className="w-full resize-y bg-transparent px-2.5 py-2 font-mono text-[11px] leading-relaxed text-txt outline-none"
                 />
               ) : (
@@ -383,16 +404,12 @@ export function ArtifactMetaCard({
                       {meta.schema}
                     </pre>
                   ) : (
-                    <span className="text-[11px] text-faint">
-                      （非表格文件，或解析未产出摘要）
-                    </span>
+                    <span className="text-[11px] text-faint">{t("meta.noSchema")}</span>
                   )}
                 </div>
               )}
               <div className="border-t border-line px-2.5 py-1.5 text-[10px] leading-snug text-faint">
-                {editing
-                  ? "保存后，后续会话附加此文件时将注入这份修正版（留空恢复自动计算）。"
-                  : "附加此文件对话时，这段摘要会注入模型上下文——在这里核对并修正它。"}
+                {editing ? t("meta.editHint") : t("meta.viewHint")}
               </div>
             </div>
           </>
@@ -409,16 +426,16 @@ export function ArtifactMetaCard({
               disabled={saving}
               className="rounded-lg border border-line2 px-3 py-1 text-xs text-muted hover:text-txt disabled:opacity-40"
             >
-              取消
+              {tc("cancel")}
             </button>
             <button
               onClick={() => void save()}
               disabled={saving || !dirty}
-              title={!dirty ? "没有改动" : undefined}
+              title={!dirty ? t("meta.noChanges") : undefined}
               className="flex items-center gap-1 rounded-lg bg-violet px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
             >
               {saving && <Loader2 className="h-3 w-3 animate-spin" />}
-              保存
+              {t("meta.save")}
             </button>
           </div>
         </div>
@@ -429,6 +446,9 @@ export function ArtifactMetaCard({
 
 export function ArtifactsPanel() {
   const g = useGinno();
+  // i18n：产物列表框架文案（产物名/路径是用户数据，不翻译）
+  const t = useTranslations("right.artifacts");
+  const tc = useTranslations("right.common");
   const items = g.artifacts;
   const flashing = new Set(g.flashArtifactIds);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -529,7 +549,7 @@ export function ArtifactsPanel() {
     <div className="flex h-full flex-col">
       <div className="flex items-center px-4 pb-2 pt-4">
         <Boxes className="mr-2 h-4 w-4 text-muted" />
-        <span className="text-sm font-semibold text-txt">Artifacts</span>
+        <span className="text-sm font-semibold text-txt">{t("title")}</span>
         <span className="ml-2 rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{items.length}</span>
       </div>
       <div
@@ -540,9 +560,7 @@ export function ArtifactsPanel() {
         }}
       >
         {items.length === 0 && (
-          <div className="px-1 py-6 text-center text-xs text-faint">
-            No artifacts yet. Files / docs / workflows you produce or attach show up here.
-          </div>
+          <div className="px-1 py-6 text-center text-xs text-faint">{t("empty")}</div>
         )}
         {items.map((a) => {
           const Ic = ICON[a.kind] || FileText;
@@ -559,7 +577,7 @@ export function ArtifactsPanel() {
               }}
               onMouseEnter={(e) => scheduleOpen(a, e.currentTarget)}
               onMouseLeave={scheduleClose}
-              title={clickable ? "点击预览 · 悬停查看元数据" : "悬停查看元数据"}
+              title={clickable ? t("clickPreview") : t("hoverMeta")}
               className={`group flex items-center gap-2 rounded-lg px-2 py-2 text-sm transition-colors ${
                 flashing.has(a.id) ? "bg-violet/15 ring-1 ring-violet/40" : "hover:bg-card/50"
               } ${clickable ? "cursor-pointer" : ""}`}
@@ -571,7 +589,7 @@ export function ArtifactsPanel() {
                 {clickable && (
                   <button
                     onClick={(e) => void openExternalArtifact(e, a)}
-                    title="用系统应用打开"
+                    title={t("openExternal")}
                     className={`rounded-md p-1 text-muted hover:bg-card2 hover:text-txt ${
                       busyId === a.id ? "visible" : "invisible group-hover:visible"
                     }`}
@@ -586,7 +604,7 @@ export function ArtifactsPanel() {
                 {clickable && (
                   <button
                     onClick={(e) => void downloadArtifact(e, a)}
-                    title="下载到 Downloads"
+                    title={t("download")}
                     className={`rounded-md p-1 text-muted hover:bg-card2 hover:text-txt ${
                       doneId === a.id
                         ? "visible"
@@ -606,8 +624,8 @@ export function ArtifactsPanel() {
                     setHover(null);
                     setDeleteTarget(a);
                   }}
-                  aria-label={`删除 ${a.name}`}
-                  title="从面板移除（不删除磁盘文件）"
+                  aria-label={t("deleteAria", { name: a.name })}
+                  title={t("removeHint")}
                   className="rounded-md p-1 text-muted hover:bg-card2 hover:text-red invisible group-hover:visible"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -642,9 +660,9 @@ export function ArtifactsPanel() {
 
       {deleteTarget && (
         <ConfirmModal
-          title="移除 Artifact"
-          message={`确定从 Artifacts 面板移除「${deleteTarget.name}」？这只是移除面板中的引用，磁盘上的文件不会被删除，随时可以重新附加。`}
-          confirmLabel="移除"
+          title={t("removeTitle")}
+          message={t("removeMessage", { name: deleteTarget.name })}
+          confirmLabel={t("remove")}
           onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}
         />

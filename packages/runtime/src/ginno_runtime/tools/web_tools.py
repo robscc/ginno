@@ -14,6 +14,7 @@ from langchain_core.tools import tool
 
 from ..knowledge import citations as cit
 from ..knowledge import web_usage
+from ..lang import t
 from ..web.config import load_web_config
 from ..web.engines import EngineError, search as engine_search
 from ..web.fetch import FetchError, fetch_page
@@ -53,8 +54,12 @@ def build_web_tools(session_id: str | None = None) -> list:
             hits = engine_search(query, name, cfg.engine_cfg(name), cfg.timeout_s, n)
         except (EngineError, Exception) as e:  # noqa: BLE001 — builtin contract
             if isinstance(e, EngineError):
-                return f"[error] 网络搜索失败: {e}"
-            return f"[error] 网络搜索失败: {type(e).__name__}: {e}（可稍后重试或换引擎）"
+                return t(f"[error] Web search failed: {e}",
+                         f"[error] 网络搜索失败: {e}")
+            return t(
+                f"[error] Web search failed: {type(e).__name__}: {e} "
+                "(retry later or switch engines)",
+                f"[error] 网络搜索失败: {type(e).__name__}: {e}（可稍后重试或换引擎）")
         # Count EVERY completed search (including zero-hit ones) — the engine
         # cite_rate (hits_cited/searches) is misleading if empty results don't
         # enter the denominator.
@@ -63,8 +68,10 @@ def build_web_tools(session_id: str | None = None) -> list:
         except Exception:
             pass
         if not hits:
-            return f"[search] 引擎 {name} 没有找到与 {query!r} 相关的结果。"
-        lines = [f"[search:{name}] {query!r} — {len(hits)} 条结果：", ""]
+            return t(f"[search] Engine {name} found no results for {query!r}.",
+                     f"[search] 引擎 {name} 没有找到与 {query!r} 相关的结果。")
+        lines = [t(f"[search:{name}] {query!r} — {len(hits)} results:",
+                   f"[search:{name}] {query!r} — {len(hits)} 条结果："), ""]
         for h in hits:
             src = cit.register_source_for(
                 sid,
@@ -82,10 +89,11 @@ def build_web_tools(session_id: str | None = None) -> list:
             snippet = (h.snippet or "").strip().replace("\n", " ")
             if len(snippet) > _SNIPPET_CAP:
                 snippet = snippet[:_SNIPPET_CAP] + "…"
-            lines.append(f"{mark} {h.title or '(无标题)'} — {_host_of(h.url)}")
+            lines.append(
+                f"{mark} {h.title or t('(untitled)', '(无标题)')} — {_host_of(h.url)}")
             lines.append(f"    {h.url}")
             if snippet:
-                lines.append(f"    摘要: {snippet}")
+                lines.append(t(f"    Snippet: {snippet}", f"    摘要: {snippet}"))
             lines.append("")
         return "\n".join(lines)
 
@@ -102,17 +110,24 @@ def build_web_tools(session_id: str | None = None) -> list:
             page = fetch_page(url, timeout_s=cfg.timeout_s)
         except (FetchError, Exception) as e:  # noqa: BLE001 — builtin contract
             if isinstance(e, FetchError):
-                return f"[error] 抓取失败: {e}"
-            return f"[error] 抓取失败: {type(e).__name__}: {e}"
+                return t(f"[error] Fetch failed: {e}", f"[error] 抓取失败: {e}")
+            return t(f"[error] Fetch failed: {type(e).__name__}: {e}",
+                     f"[error] 抓取失败: {type(e).__name__}: {e}")
         src = cit.upgrade_web_source(sid, page["final_url"] or url, title=page["title"])
         mark = f"[{src['id']}]" if src else "[·]"
         try:
             web_usage.record_fetched(page["final_url"] or url)
         except Exception:
             pass
-        truncated = "\n[内容过长已截断]" if page.get("truncated") else ""
-        title = page.get("title") or "(无标题)"
-        return f"{mark} 已读取原文: {title}\nURL: {page['final_url'] or url}\n\n{page['text']}{truncated}"
+        truncated = (
+            t("\n[content truncated: too long]", "\n[内容过长已截断]")
+            if page.get("truncated") else "")
+        title = page.get("title") or t("(untitled)", "(无标题)")
+        return t(
+            f"{mark} Fetched full text: {title}\n"
+            f"URL: {page['final_url'] or url}\n\n{page['text']}{truncated}",
+            f"{mark} 已读取原文: {title}\n"
+            f"URL: {page['final_url'] or url}\n\n{page['text']}{truncated}")
 
     return [web_search, web_fetch]
 

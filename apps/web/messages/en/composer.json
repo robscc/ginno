@@ -1,0 +1,159 @@
+{
+  "composer": {
+    "menu": {
+      "ariaLabel": "Command and mention completions",
+      "hints": "↑↓ navigate · Tab/Enter select · Esc close",
+      "groups": {
+        "commands": "Commands",
+        "skills": "Skills",
+        "artifacts": "Artifacts",
+        "agents": "Agents",
+        "workflows": "Workflows",
+        "memory": "Memory"
+      }
+    },
+    "commands": {
+      "helpDesc": "List available commands and skills",
+      "compactDesc": "Manually compact session context (the LLM summarizes older messages to free tokens)",
+      "subagentDesc": "Spawn subagents: /subagent <goal> spawns 1 directly; /subagent split <task> decomposes via the LLM first, then batch-spawns after card confirmation"
+    },
+    "mentions": {
+      "artifactDesc": "Reference an artifact file as context for this turn",
+      "agentDesc": "Let this agent answer the current turn",
+      "workflowDesc": "Reference a workflow definition for execution/reference",
+      "memoryDesc": "Inject long-term memory MEMORY.md"
+    },
+    "markdown": {
+      "codeLabel": "code",
+      "copy": "Copy",
+      "copied": "Copied ✓",
+      "openLink": "Open {target}"
+    },
+    "askUser": {
+      "chosen": "Chosen: {answer}",
+      "skipped": "Skipped · the agent continues on its own judgment",
+      "defaultHeader": "Your choice is needed",
+      "freeTextPlaceholder": "Other (press Enter to send)",
+      "sendCustom": "Send custom answer",
+      "skip": "Skip · let the agent use its best judgment"
+    },
+    "sheet": {
+      "savedTo": "Saved to {path}",
+      "saveFailed": "Save failed",
+      "downloadStarted": "Download started",
+      "downloadFailed": "Download failed",
+      "previewFailed": "Preview failed",
+      "runtimeUnreachable": "Cannot connect to the runtime",
+      "rowsRange": "rows {from}–{to} / {total}",
+      "emptySheet": "Empty sheet",
+      "loading": "Loading…",
+      "emptyDocument": "_(empty document)_",
+      "downloadOriginal": "Download original file",
+      "exportCsv": "Export current sheet as CSV",
+      "refresh": "Refresh",
+      "close": "Close",
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "summarize": {
+      "modal": {
+        "title": "Summarize into workflow · {name}",
+        "distilledFrom": "Distilled from \"{source}\"",
+        "draftNotSaved": "Draft not saved",
+        "close": "Close",
+        "structurePreview": "Structure preview · {count} nodes",
+        "dryRun": "Dry run",
+        "dryRunning": "Dry running…",
+        "dryRunHint": "Zero-cost dry run of the current draft: nothing is saved, executed, or sent to the LLM — validation/data-flow/compile/reachability checks only",
+        "reSummarize": "Re-summarize",
+        "nodes": "Nodes",
+        "backToCards": "Back to card view",
+        "expandJson": "Expand JSON",
+        "nodeName": "Node name",
+        "nodeGoal": "Node goal",
+        "deleteNode": "Delete node",
+        "noNodes": "No nodes in this draft",
+        "contextVariables": "Context variables",
+        "requiredToOptional": "Required — click to make optional",
+        "optionalToRequired": "Optional — click to make required",
+        "required": "required",
+        "optional": "optional",
+        "noVariables": "No variables detected — runtime inputs are hardcoded in the DSL; you can add them manually",
+        "variableName": "Variable name",
+        "addVariable": "Add variable",
+        "dryRunPassed": "Dry run passed: {count} nodes — validation / data-flow / compile / reachability all pass",
+        "warnings": "{count} warning(s) (non-blocking):",
+        "unreachable": "Unreachable nodes (will never execute): {nodes}",
+        "dryRunFailed": "Dry run failed:",
+        "created": "Workflow \"{name}\" created — view and run it on the Workflows page",
+        "done": "Done",
+        "cancel": "Cancel",
+        "refine": "Refine in a dev session",
+        "refining": "Creating and opening…",
+        "createOnly": "Create only",
+        "creating": "Creating…",
+        "createAndRun": "Create & run",
+        "running": "Running…",
+        "defaultName": "New workflow",
+        "dslMustBeObject": "DSL must be a JSON object",
+        "jsonSyntaxError": "JSON syntax error",
+        "dryRunRequestFailed": "Dry-run request failed"
+      },
+      "flow": {
+        "currentSession": "Current session",
+        "pastSession": "Past session",
+        "previousDraft": "Previous draft",
+        "defaultName": "New workflow",
+        "failed": "Summarize failed: {reason}",
+        "failStage": "Summarize failed: {stage} (case {id}, ~/.ginno/synthesis/{id})",
+        "waitTimeout": "Summarize failed: wait timed out (case {id}, ~/.ginno/synthesis/{id})",
+        "cannotConnect": "Summarize failed: cannot connect to the runtime",
+        "unknown": "unknown",
+        "runtimeUnreachable": "Cannot connect to the runtime",
+        "createFailed": "Failed to create workflow",
+        "triggerRunFailed": "Created, but triggering the run failed: {reason}",
+        "unknownError": "unknown error",
+        "refineSessionTitle": "Refine workflow: {name}"
+      }
+    },
+    "subagentPlan": {
+      "title": "Task split plan · {count} subtasks",
+      "confirmed": "Confirmed",
+      "cancelled": "Cancelled",
+      "task": "Task: {task}",
+      "subtask": "Subtask {index}",
+      "goalPlaceholder": "Subtask goal (self-contained, complete description)",
+      "constraintsPlaceholder": "Constraints (hard boundaries, optional)",
+      "acceptance": "Acceptance: {text}",
+      "reason": "Reason: {text}",
+      "reasonTitle": "Delegation reason: {text}",
+      "confirmedReceipt": "Confirmed · will spawn {count} subagents in sequence (see spawn progress in the cards below)",
+      "cancelledReceipt": "This split plan was cancelled",
+      "emptyGoalHint": "Some subtasks have an empty goal",
+      "confirmHint": "Batch-spawn subagents with the current content",
+      "confirmSpawn": "Confirm & spawn {count}",
+      "cancel": "Cancel",
+      "editableHint": "Goals and constraints are editable"
+    },
+    "badges": {
+      "fileKind": {
+        "spreadsheet": "Spreadsheet",
+        "table": "Table",
+        "document": "Document",
+        "presentation": "Presentation",
+        "pdf": "PDF",
+        "data": "Data",
+        "text": "Text",
+        "image": "Image",
+        "unknown": "Unknown"
+      },
+      "nodeType": {
+        "step": "Step",
+        "branch": "Branch",
+        "loop": "Loop",
+        "human": "Human",
+        "subflow": "Subflow"
+      }
+    }
+  }
+}

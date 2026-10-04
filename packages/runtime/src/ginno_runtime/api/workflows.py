@@ -115,7 +115,7 @@ async def update_workflow_endpoint(wf_id: str, data: dict) -> dict:
 @router.delete("/api/workflows/{wf_id}")
 async def delete_workflow_endpoint(wf_id: str) -> dict:
     if wf_storemod.is_system_def(wf_id):
-        return {"ok": False, "error": "内置 workflow，不可删除"}
+        return {"ok": False, "error": "Built-in workflow; cannot be deleted"}
     ok = wf_store.delete_def(wf_id)
     if ok:
         await _push_global_event("workflows.changed", {})

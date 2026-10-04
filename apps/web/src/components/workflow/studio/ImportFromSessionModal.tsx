@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Bot, Check, FileInput, FlaskConical, Loader2, Wrench, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { relTime } from "@/lib/utils";
 import { useGinno } from "@/lib/store";
@@ -80,6 +81,10 @@ export function ImportFromSessionModal({
 
   const [confirmBusy, setConfirmBusy] = useState<"create" | "merge" | null>(null);
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
+  // wf.import 域文案（异步回调捕获渲染期 t，与既有 useChatT 模式一致）。
+  const t = useTranslations("wf.import");
+  const tCommon = useTranslations("wf.common");
+  const tInspector = useTranslations("wf.inspector");
   // 试运行 of the draft (zero-LLM preflight; receipt copied from SummarizeModal).
   const [dry, setDry] = useState<{ busy: boolean; result: api.DryRunResult | null; err: string | null }>({
     busy: false,
@@ -99,12 +104,12 @@ export function ImportFromSessionModal({
     try {
       const r = await api.getSummarizeTrace(id);
       if (!r.ok || !r.rows.length) {
-        setTraceErr("该会话没有可用的消息记录");
+        setTraceErr(t("traceErrNoHistory"));
       } else {
         setRows(r.rows);
       }
     } catch {
-      setTraceErr("无法读取会话轨迹");
+      setTraceErr(t("traceErrRead"));
     } finally {
       setTraceLoading(false);
     }
@@ -135,10 +140,10 @@ export function ImportFromSessionModal({
         setPendingId(r.synthesis_id);
         setAttemptCount(0);
       } else {
-        setSynthErr(`总结失败：${r.detail ?? r.error ?? "unknown"}`);
+        setSynthErr(t("synthFailed", { detail: r.detail ?? r.error ?? "unknown" }));
       }
     } catch {
-      setSynthErr("总结失败：无法连接运行时");
+      setSynthErr(t("synthFailedConn"));
     }
   };
 
@@ -153,10 +158,10 @@ export function ImportFromSessionModal({
         setDraft(out.dsl as Record<string, unknown>);
         setStep("draft");
       } else {
-        setSynthErr(`总结失败：${out?.fail_stage || "unknown"}（案例 ${id}）`);
+        setSynthErr(t("synthFailedStage", { stage: out?.fail_stage || "unknown", id }));
       }
     } catch {
-      setSynthErr("总结失败：无法连接运行时");
+      setSynthErr(t("synthFailedConn"));
     }
   };
 
@@ -165,9 +170,9 @@ export function ImportFromSessionModal({
     if (!pendingId) return;
     const id = pendingId;
     const started = Date.now();
-    const t = setInterval(() => {
+    const timer = setInterval(() => {
       if (pendingRef.current !== id) {
-        clearInterval(t);
+        clearInterval(timer);
         return;
       }
       api
@@ -180,13 +185,13 @@ export function ImportFromSessionModal({
           /* transient — retry on the next tick */
         });
       if (Date.now() - started > 180_000) {
-        clearInterval(t);
+        clearInterval(timer);
         pendingRef.current = null;
         setPendingId(null);
-        setSynthErr(`总结失败：等待超时（案例 ${id}，~/.ginno/synthesis/${id}）`);
+        setSynthErr(t("synthFailedTimeout", { id }));
       }
     }, 2000);
-    return () => clearInterval(t);
+    return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingId]);
 
@@ -201,7 +206,7 @@ export function ImportFromSessionModal({
       const r = await api.dryRunWorkflow(draft);
       setDry({ busy: false, result: r, err: null });
     } catch {
-      setDry({ busy: false, result: null, err: "试运行请求失败" });
+      setDry({ busy: false, result: null, err: t("dryErr") });
     }
   };
 
@@ -218,15 +223,15 @@ export function ImportFromSessionModal({
         void g.reloadWorkflows();
         onDone(
           mode === "merge"
-            ? `已并入「${wf.name}」→ v${r.workflow.version ?? (wf.version ?? 1) + 1}`
-            : `已创建工作流「${r.workflow.name}」`,
+            ? t("merged", { name: wf.name, version: r.workflow.version ?? (wf.version ?? 1) + 1 })
+            : t("created", { name: r.workflow.name }),
         );
         onClose();
       } else {
-        setConfirmErr("保存失败：请检查草稿后重试");
+        setConfirmErr(t("saveFailed"));
       }
     } catch {
-      setConfirmErr("保存失败：无法连接运行时");
+      setConfirmErr(t("saveFailedConn"));
     } finally {
       setConfirmBusy(null);
     }
@@ -246,11 +251,11 @@ export function ImportFromSessionModal({
         {/* header */}
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <FileInput className="h-4 w-4 text-violet" />
-          <span className="text-sm font-semibold text-txt">从会话导入</span>
+          <span className="text-sm font-semibold text-txt">{t("title")}</span>
           <span className="ml-auto text-xs text-faint">
-            {step === "pick" ? "选择源会话与消息范围" : "确认 DSL 草稿"}
+            {step === "pick" ? t("stepPick") : t("stepDraft")}
           </span>
-          <button onClick={onClose} className="rounded p-1 text-faint hover:bg-card2 hover:text-txt" aria-label="关闭">
+          <button onClick={onClose} className="rounded p-1 text-faint hover:bg-card2 hover:text-txt" aria-label={t("close")}>
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -259,8 +264,8 @@ export function ImportFromSessionModal({
           <div className="flex min-h-0 flex-1">
             {/* session list */}
             <div className="flex w-[240px] shrink-0 flex-col overflow-y-auto border-r border-line p-2">
-              <div className="px-1.5 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-faint">会话</div>
-              {!sessions.length && <div className="p-2 text-xs text-faint">暂无会话</div>}
+              <div className="px-1.5 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-faint">{t("sessions")}</div>
+              {!sessions.length && <div className="p-2 text-xs text-faint">{t("noSessions")}</div>}
               {sessions.map((s) => (
                 <button
                   key={s.id}
@@ -269,7 +274,7 @@ export function ImportFromSessionModal({
                     selId === s.id ? "bg-card2" : "hover:bg-card2/60"
                   }`}
                 >
-                  <span className="w-full truncate text-xs text-txt">{s.title || "未命名会话"}</span>
+                  <span className="w-full truncate text-xs text-txt">{s.title || t("untitledSession")}</span>
                   <span className="flex w-full items-center gap-1.5 text-[10px] text-faint">
                     <Bot className="h-3 w-3" />
                     {s.agent_id || "—"}
@@ -282,10 +287,10 @@ export function ImportFromSessionModal({
             {/* trace preview + range selection */}
             <div className="flex min-w-0 flex-1 flex-col p-3">
               <div className="mb-1.5 flex items-center text-[10px] font-medium uppercase tracking-wide text-faint">
-                轨迹预览
+                {t("tracePreview")}
                 {rows && (
                   <span className="ml-auto normal-case">
-                    {lo !== null ? `已选消息 ${lo}–${hi}` : "点击起点行，再点击终点行以选择范围"}
+                    {lo !== null ? t("selectedRange", { lo, hi: hi ?? 0 }) : t("pickRangeHint")}
                   </span>
                 )}
                 {rows && lo === null && (
@@ -296,14 +301,14 @@ export function ImportFromSessionModal({
                     }}
                     className="ml-2 rounded border border-line px-1.5 py-0.5 text-[10px] normal-case text-muted hover:text-txt"
                   >
-                    全选
+                    {t("selectAll")}
                   </button>
                 )}
               </div>
-              {traceLoading && <div className="flex items-center gap-1.5 p-3 text-xs text-faint"><Loader2 className="h-3.5 w-3.5 animate-spin" /> 读取中…</div>}
+              {traceLoading && <div className="flex items-center gap-1.5 p-3 text-xs text-faint"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {tCommon("loading")}</div>}
               {traceErr && <div className="rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{traceErr}</div>}
               {!traceLoading && !traceErr && !rows && (
-                <div className="flex flex-1 items-center justify-center text-xs text-faint">左侧选择一个会话</div>
+                <div className="flex flex-1 items-center justify-center text-xs text-faint">{t("pickSession")}</div>
               )}
               {rows && (
                 <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-line bg-base">
@@ -330,7 +335,7 @@ export function ImportFromSessionModal({
                         {row.role === "system" && <span className="shrink-0 text-[9px] uppercase text-faint">sys</span>}
                         <span className="min-w-0 flex-1 truncate text-muted">
                           {row.role === "assistant" && row.tools?.length ? `[${row.tools.join(", ")}] ` : ""}
-                          {row.text || "（无文本）"}
+                          {row.text || t("noText")}
                         </span>
                       </button>
                     );
@@ -348,10 +353,10 @@ export function ImportFromSessionModal({
                       void startSynthesis();
                     }}
                     disabled={traceLoading || !rows}
-                    title="按所选范围（不选 = 全部）把这条轨迹总结成流程草稿"
+                    title={t("summarizeTitle")}
                     className="btn-press ml-auto rounded-md bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
                   >
-                    总结所选范围
+                    {t("summarize")}
                   </button>
                 )}
               </div>
@@ -362,13 +367,13 @@ export function ImportFromSessionModal({
             {pendingId ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm text-muted">
                 <Loader2 className="h-5 w-5 animate-spin text-violet" />
-                正在总结{attemptCount > 1 ? `（第 ${attemptCount} 次尝试）` : ""}…
-                <span className="text-[11px] text-faint">通常需要十几秒，最多 3 次自动纠错</span>
+                {attemptCount > 1 ? t("attempt", { count: attemptCount }) : t("summarizing")}
+                <span className="text-[11px] text-faint">{t("summarizingHint")}</span>
               </div>
             ) : (
               <>
                 <div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-faint">
-                  草稿节点 · {nodes.length} 个（只读预览，可在创建后用检查器精修）
+                  {t("draftNodes", { count: nodes.length })}
                 </div>
                 <div className="space-y-2">
                   {nodes.map((n, i) => (
@@ -376,12 +381,12 @@ export function ImportFromSessionModal({
                       <div className="flex items-center gap-2">
                         <span className="rounded bg-card2 px-1.5 py-0.5 font-mono text-[10px] text-faint">{i + 1}</span>
                         <span className="font-medium text-txt">{n.title || n.goal || n.id}</span>
-                        <span className="ml-auto shrink-0 text-[10px] uppercase text-faint">{n.type || "step"}</span>
+                        <span className="ml-auto shrink-0 text-[10px] uppercase text-faint">{n.type || t("nodeStep")}</span>
                       </div>
                       {n.goal && n.title && <div className="mt-1 text-[11px] text-muted">{n.goal}</div>}
                     </div>
                   ))}
-                  {!nodes.length && <div className="py-4 text-center text-xs text-faint">草稿中没有节点</div>}
+                  {!nodes.length && <div className="py-4 text-center text-xs text-faint">{t("noNodes")}</div>}
                 </div>
 
                 {/* 试运行 receipt (mirrors SummarizeModal) */}
@@ -389,32 +394,36 @@ export function ImportFromSessionModal({
                   <button
                     onClick={runDry}
                     disabled={dry.busy || confirmBusy !== null}
-                    title="零成本试跑当前草稿：不保存、不执行、不调 LLM，只做校验/数据流/编译/可达性检查"
+                    title={tInspector("dryRunTitle")}
                     className="btn-press flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-faint hover:bg-card2 hover:text-muted disabled:opacity-50"
                   >
                     {dry.busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
-                    {dry.busy ? "试跑中…" : "试运行"}
+                    {dry.busy ? tInspector("dryRunning") : tInspector("dryRun")}
                   </button>
                   {dry.result &&
                     (dry.result.ok ? (
                       <div className="mt-1.5 space-y-0.5 rounded-md border border-green/30 bg-green/[0.06] px-2 py-1.5 text-xs text-green">
                         <div className="flex items-center gap-1.5">
                           <Check className="h-3.5 w-3.5 shrink-0" />
-                          试运行通过：{dry.result.node_count} 个节点，校验 / 数据流 / 编译 / 可达性全过
+                          {tCommon("dryPassed", { count: dry.result.node_count ?? 0 })}
                         </div>
                         {dry.result.warnings.length > 0 && (
                           <div className="pl-5 text-[11px] text-yellow">
-                            {dry.result.warnings.length} 条警告（不阻断）：
-                            {dry.result.warnings.map((w) => w.message).join("；")}
+                            {tInspector("warningsLine", {
+                              count: dry.result.warnings.length,
+                              list: dry.result.warnings.map((w) => w.message).join("; "),
+                            })}
                           </div>
                         )}
                         {dry.result.unreachable.length > 0 && (
-                          <div className="pl-5 text-[11px] text-yellow">不可达节点：{dry.result.unreachable.join(", ")}</div>
+                          <div className="pl-5 text-[11px] text-yellow">
+                            {tCommon("unreachable", { list: dry.result.unreachable.join(", ") })}
+                          </div>
                         )}
                       </div>
                     ) : (
                       <div className="mt-1.5 max-h-28 space-y-0.5 overflow-y-auto rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
-                        <div>试运行未通过：</div>
+                        <div>{tCommon("dryFailed")}</div>
                         {dry.result.errors.map((e, i) => (
                           <div key={`e${i}`} className="pl-3 text-[11px]">· {e}</div>
                         ))}
@@ -431,14 +440,16 @@ export function ImportFromSessionModal({
                 {/* node-list delta for the merge path (draft vs current recipe) */}
                 {delta && (
                   <div className="mt-3 rounded-md border border-line bg-base px-2 py-1.5 text-[11px] text-muted">
-                    <span className="font-medium text-txt">并入「{wf.name}」时（当前 v{wf.version ?? 1}）：</span>
+                    <span className="font-medium text-txt">
+                      {t("mergedInto", { name: wf.name, version: wf.version ?? 1 })}
+                    </span>
                     {delta.added.length === 0 && delta.removed.length === 0 && delta.changed.length === 0 ? (
-                      <span className="ml-1 text-faint">节点列表与当前版本一致</span>
+                      <span className="ml-1 text-faint">{t("deltaNone")}</span>
                     ) : (
                       <span className="ml-1">
-                        {delta.added.length > 0 && <span className="text-green">新增 {delta.added.join(", ")} </span>}
-                        {delta.removed.length > 0 && <span className="text-red">移除 {delta.removed.join(", ")} </span>}
-                        {delta.changed.length > 0 && <span className="text-yellow">变更 {delta.changed.join(", ")}</span>}
+                        {delta.added.length > 0 && <span className="text-green">{t("deltaAdded", { list: delta.added.join(", ") })}</span>}
+                        {delta.removed.length > 0 && <span className="text-red">{t("deltaRemoved", { list: delta.removed.join(", ") })}</span>}
+                        {delta.changed.length > 0 && <span className="text-yellow">{t("deltaChanged", { list: delta.changed.join(", ") })}</span>}
                       </span>
                     )}
                   </div>
@@ -459,7 +470,7 @@ export function ImportFromSessionModal({
         <div className="flex items-center gap-2 border-t border-line px-4 py-3">
           {step === "pick" ? (
             <button onClick={onClose} className="btn-press rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-card2">
-              取消
+              {t("cancel")}
             </button>
           ) : (
             <>
@@ -474,7 +485,7 @@ export function ImportFromSessionModal({
                 disabled={confirmBusy !== null}
                 className="btn-press rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-card2 disabled:opacity-50"
               >
-                ← 重选范围
+                {t("reselect")}
               </button>
               <div className="ml-auto flex gap-2">
                 <button
@@ -483,16 +494,16 @@ export function ImportFromSessionModal({
                   className="btn-press flex items-center gap-1 rounded-md border border-line px-3 py-1.5 text-xs text-txt hover:bg-card2 disabled:opacity-50"
                 >
                   {confirmBusy === "create" && <Loader2 className="h-3 w-3 animate-spin" />}
-                  创建新配方
+                  {t("createNew")}
                 </button>
                 <button
                   onClick={() => void confirm("merge")}
                   disabled={!!pendingId || confirmBusy !== null}
-                  title={`把草稿作为 v${(wf.version ?? 1) + 1} 应用到「${wf.name}」`}
+                  title={t("mergeTitle", { name: wf.name, version: (wf.version ?? 1) + 1 })}
                   className="btn-press flex items-center gap-1 rounded-md bg-gradient-to-r from-violet to-fuchsia px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
                 >
                   {confirmBusy === "merge" && <Loader2 className="h-3 w-3 animate-spin" />}
-                  并入当前配方 → v{(wf.version ?? 1) + 1}
+                  {t("mergeInto", { version: (wf.version ?? 1) + 1 })}
                 </button>
               </div>
             </>

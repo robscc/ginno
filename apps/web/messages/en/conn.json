@@ -1,0 +1,85 @@
+{
+  "conn": {
+    "title": "Connectors",
+    "refresh": "Refresh",
+    "loading": "Loading connector status…",
+    "empty": "No registered connectors yet.",
+    "status": {
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "not_installed": "Not installed",
+      "installing": "Installing",
+      "error": "Error",
+      "disabled": "Disabled"
+    },
+    "pushedPage": {
+      "from": "Page from browser",
+      "fromWithTitle": "Page from browser: {title}",
+      "send": "Send to Ginno"
+    },
+    "handoff": {
+      "title": "The Agent is waiting for you to take over the browser",
+      "detail": "{count, plural, one {Tab {ids} handed over to you — once login, verification, or payment confirmation is done, click \"Taken over, continue\" to hand control back.} other {Tabs {ids} handed over to you — once login, verification, or payment confirmation is done, click \"Taken over, continue\" to hand control back.}}",
+      "continue": "Taken over, continue"
+    },
+    "actions": {
+      "installGuide": "Install guide",
+      "startInstance": "Start instance",
+      "stopInstance": "Stop instance",
+      "configure": "Configure",
+      "enable": "Enable",
+      "disable": "Disable"
+    },
+    "config": {
+      "empty": "This connector has no configurable options.",
+      "onePerLine": "One per line",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Saved"
+    },
+    "wizard": {
+      "title": "Install the Ginno browser extension",
+      "connectedTitle": "✅ Extension connected to Ginno",
+      "connectedBody": "Browser tools are ready — head to a session and let the agent drive your Chrome.",
+      "getStarted": "Get started",
+      "stepLabel": "Step {n}",
+      "showInFinder": "Show in Finder",
+      "copy": "Copy",
+      "waited": "Waited {s}s…",
+      "troubleshootTitle": "Not connected? Check in order:",
+      "troubleshoot1": "\"Ginno Browser Connector\" appears on the Chrome extensions page and is enabled (if not, go back to step 4 and reload)",
+      "troubleshoot2": "No red \"Errors\" button on the extension card",
+      "troubleshoot3": "The Ginno desktop app is running",
+      "troubleshoot4": "Click the extension icon and confirm the status is \"Connected\"; if not, check the port (default 8787)",
+      "back": "Back",
+      "later": "Later",
+      "next": "Next",
+      "step": {
+        "intro": {
+          "title": "What is this",
+          "body": "Ginno can work for you inside your own Chrome — using your logged-in sessions, clicking and typing like you would. You can always see what it's doing and stop it at any time. It needs a one-time install of a Ginno browser extension (about 1 minute)."
+        },
+        "folder": {
+          "title": "Extension files are ready",
+          "body": "Ginno has placed the extension files in the {path} folder on your computer. Keep this folder open — you'll need it in step 4."
+        },
+        "open_extensions": {
+          "title": "Open the Chrome extensions page",
+          "body": "Type the address below into Chrome's address bar and press Enter (browsers don't allow web pages to open this page directly, so you need to type it yourself):"
+        },
+        "dev_mode": {
+          "title": "Enable Developer mode",
+          "body": "There's a \"Developer mode\" toggle in the top-right corner of the extensions page — turn it on."
+        },
+        "load": {
+          "title": "Load the extension",
+          "body": "Click \"Load unpacked\" in the top-left, then select the browser-extension folder you just opened in the folder picker (note: select the folder itself, don't go inside it), and click \"Select\". Seeing \"Ginno\" appear in the list means success."
+        },
+        "wait": {
+          "title": "Confirm connection",
+          "body": "Waiting for the extension to connect back to Ginno…"
+        }
+      }
+    }
+  }
+}

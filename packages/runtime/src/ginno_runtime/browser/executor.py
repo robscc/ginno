@@ -30,6 +30,7 @@ from typing import Any
 from . import scripts
 from .cdp import CDPConnection, CDPError, TabSession
 from .config import BrowserConfig, load_browser_config, profile_dir
+from ..lang import t
 
 log = logging.getLogger("ginno.browser")
 
@@ -114,10 +115,11 @@ class ProfileBackend:
                 return
             chrome = find_chrome(self.cfg)
             if not chrome:
-                raise CDPError(
+                raise CDPError(t(
+                    "Chrome not found. Install Google Chrome, or set the Chrome "
+                    "executable path in Settings → Connectors → Chrome browser.",
                     "未找到 Chrome。请安装 Google Chrome,或在 设置 → 连接器 → Chrome "
-                    "浏览器里填写 Chrome 可执行文件路径。"
-                )
+                    "浏览器里填写 Chrome 可执行文件路径。"))
             port = _free_port()
             args = [
                 chrome,
@@ -246,9 +248,10 @@ class ProfileBackend:
         await self.ensure_running()
         tab = self.tabs.get(tab_id)
         if tab is None:
-            raise CDPError(
-                f"无效 tabId={tab_id}。先用 browser_tabs_context 获取当前可用标签。"
-            )
+            raise CDPError(t(
+                f"Invalid tabId={tab_id}. Call browser_tabs_context first to "
+                "get the currently available tabs.",
+                f"无效 tabId={tab_id}。先用 browser_tabs_context 获取当前可用标签。"))
         return tab
 
     async def tabs_context(self) -> list[dict]:
@@ -484,7 +487,10 @@ class ProfileBackend:
             except CDPError:
                 continue
         if not data:
-            raise CDPError("截图失败:页面可能处于错误状态,请先 browser_navigate 到有效页面。")
+            raise CDPError(t(
+                "Screenshot failed: the page may be in an error state; "
+                "browser_navigate to a valid page first.",
+                "截图失败:页面可能处于错误状态,请先 browser_navigate 到有效页面。"))
         raw = base64.b64decode(data)
         w, h = _jpeg_size(raw) or (vp["w"], vp["h"])
         self._screenshot_ctx[tab_id] = {
@@ -506,7 +512,10 @@ class ProfileBackend:
             % (mode, depth, max_chars, ref_id or "")
         )
         if not out or "tree" not in out:
-            raise CDPError("页面无障碍树不可用(可能还在加载)。稍等后重试,或先 browser_navigate。")
+            raise CDPError(t(
+                "Page accessibility tree unavailable (it may still be loading). "
+                "Retry shortly, or browser_navigate first.",
+                "页面无障碍树不可用(可能还在加载)。稍等后重试,或先 browser_navigate。"))
         return out
 
     async def find_elements(self, tab_id: int, query: str, max_results: int = 20) -> dict:
@@ -537,7 +546,8 @@ class ProfileBackend:
         )
         out = await tab.eval_js(wrapped)
         if isinstance(out, dict) and out.get("ok") is False:
-            raise CDPError("JavaScript 执行失败: " + str(out.get("error")))
+            raise CDPError(t("JavaScript execution failed: " + str(out.get("error")),
+                             "JavaScript 执行失败: " + str(out.get("error"))))
         return (out or {}).get("value") if isinstance(out, dict) else out
 
     async def scroll_to(self, tab_id: int, ref: str) -> dict:
@@ -591,9 +601,12 @@ class ProfileBackend:
                 raise CDPError(f"Element not found: {ref}. "
                                "Use browser_read_page or browser_find to get a fresh ref.")
             if info.get("tagName") != "INPUT" or info.get("type") != "file":
-                raise CDPError(
+                raise CDPError(t(
+                    f'browser_file_upload ref "{ref}" resolved to '
+                    f'{info.get("tagName")}, which is not a file input. Use '
+                    "browser_read_page to find the ref of input[type=file].",
                     f'browser_file_upload 的 ref "{ref}" 解析为 {info.get("tagName")},'
-                    "不是文件输入框。请用 browser_read_page 找到 input[type=file] 的 ref。")
+                    "不是文件输入框。请用 browser_read_page 找到 input[type=file] 的 ref。"))
         await tab.eval_js(
             "globalThis.__ginnoAT && __ginnoAT.markRef(%r, %r)"
             % (ref, attr))
@@ -604,24 +617,36 @@ class ProfileBackend:
                 "selector": f'input[type="file"][{attr}="1"]',
             })).get("nodeId")
             if not node_id:
-                raise CDPError("未能定位文件输入框的 DOM 节点。")
+                raise CDPError(t("Could not locate the file input's DOM node.",
+                                 "未能定位文件输入框的 DOM 节点。"))
             await tab.cmd("DOM.setFileInputFiles", {"files": paths, "nodeId": node_id})
         finally:
             await tab.eval_js(
                 "globalThis.__ginnoAT && __ginnoAT.clearMark(%r, %r)" % (ref, attr))
         # verify the page actually consumed the files
         await asyncio.sleep(0.3)
+        # The count-mismatch error text is assembled inside the injected JS,
+        # so the localized message pieces are selected here and spliced in.
+        count_err = t(
+            "'Expected '+names.length+' files, the page actually has '"
+            "+files.length+'. Verify the paths exist and are regular files.'",
+            "'期望 '+names.length+"
+            "' 个文件,页面实际 '+files.length+' 个。请确认路径存在且为普通文件。'")
         check = await tab.eval_js(
-            "(function(){var at=globalThis.__ginnoAT;var el=at&&at.resolve(%r);"
-            "if(!el||el.tagName!=='INPUT'||el.type!=='file')return {ok:false,"
-            "error:'input not found'};var names=(%r||[]).map(function(p){return "
-            "String(p).split(/[\\\\/]/).pop()});var files=Array.from(el.files||[]);"
-            "if(files.length!==names.length)return {ok:false,error:'期望 '+names.length+"
-            "' 个文件,页面实际 '+files.length+' 个。请确认路径存在且为普通文件。'};"
-            "return {ok:true,files:files.map(function(f){return {name:f.name,"
-            "size:f.size,type:f.type||''}})}})()" % (ref, paths))
+            (
+                "(function(){var at=globalThis.__ginnoAT;var el=at&&at.resolve(%r);"
+                "if(!el||el.tagName!=='INPUT'||el.type!=='file')return {ok:false,"
+                "error:'input not found'};var names=(%r||[]).map(function(p){return "
+                "String(p).split(/[\\\\/]/).pop()});var files=Array.from(el.files||[]);"
+                "if(files.length!==names.length)return {ok:false,error:"
+                + count_err + "};"
+                "return {ok:true,files:files.map(function(f){return {name:f.name,"
+                "size:f.size,type:f.type||''}})}})()"
+            ) % (ref, paths))
         if not check or not check.get("ok"):
-            raise CDPError((check or {}).get("error", "文件选择校验失败"))
+            raise CDPError((check or {}).get(
+                "error", t("File selection verification failed",
+                           "文件选择校验失败")))
         return {"ok": True, "files": check.get("files", [])}
 
     async def resize_window(self, tab_id: int, width: int, height: int) -> dict:

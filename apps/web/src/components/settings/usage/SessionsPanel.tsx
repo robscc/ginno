@@ -4,6 +4,7 @@
  * 已删除会话的用量仍保留（账单性质，设计 §3.3）。 */
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Search } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { UsageSessionRow } from "@/lib/types";
@@ -18,16 +19,21 @@ function fmtTime(ts: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// label 存 catalog key（settings.usage.sessions.sorts.*），渲染时经 t() 翻译
 const SORTS = [
-  ["total", "Total tokens"],
-  ["input", "Input"],
-  ["output", "Output"],
-  ["hit", "Cache hit rate"],
-  ["calls", "Requests"],
-  ["updated", "Last active"],
+  ["total", "total"],
+  ["input", "input"],
+  ["output", "output"],
+  ["hit", "hit"],
+  ["calls", "calls"],
+  ["updated", "updated"],
 ] as const;
 
+// 表头文案（settings.usage.sessions.th.*）
+const HEADS = ["session", "model", "input", "output", "cacheRead", "hitRate", "requests", "lastActive"] as const;
+
 export function SessionsPanel({ onOpenRequests }: { onOpenRequests: (sessionId: string) => void }) {
+  const t = useTranslations("settings.usage.sessions");
   const [rows, setRows] = useState<UsageSessionRow[]>([]);
   const [sort, setSort] = useState("total");
   const [q, setQ] = useState("");
@@ -60,57 +66,57 @@ export function SessionsPanel({ onOpenRequests }: { onOpenRequests: (sessionId: 
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search sessions / models…"
+            placeholder={t("searchPlaceholder")}
             className="w-48 rounded-lg border border-line bg-card2 py-1.5 pl-8 pr-3 text-xs text-txt outline-none placeholder:text-faint focus:border-line2"
           />
         </div>
         <label className="flex items-center gap-1.5 text-[11.5px] text-faint">
-          Sort
+          {t("sortLabel")}
           <select
             value={sort}
             onChange={(e) => setSort(e.target.value)}
             className="rounded-lg border border-line bg-card2 px-2.5 py-1.5 text-xs text-txt outline-none"
           >
             {SORTS.map(([v, l]) => (
-              <option key={v} value={v}>{l}</option>
+              <option key={v} value={v}>{t(`sorts.${l}`)}</option>
             ))}
           </select>
         </label>
         <div className="flex-1" />
-        <span className="text-[11.5px] text-faint">All sessions within the retention period · usage of deleted sessions is kept · click a row to view requests</span>
+        <span className="text-[11.5px] text-faint">{t("footnote")}</span>
       </div>
 
       <div className="overflow-x-auto">
         <table className="w-full min-w-[820px] border-collapse">
           <thead>
             <tr>
-              {["Session / Agent", "Model", "Input", "Output", "Cache read", "Hit rate", "Requests", "Last active"].map((h, i) => (
+              {HEADS.map((h, i) => (
                 <th
                   key={h}
                   className={`whitespace-nowrap border-b border-line px-3 py-2 text-[11px] font-semibold tracking-wide text-faint ${i >= 2 && i <= 6 ? "text-right" : "text-left"}`}
                 >
-                  {h}
+                  {t(`th.${h}`)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {!loaded && (
-              <tr><td colSpan={8} className="px-3 py-10 text-center text-xs text-faint">Loading…</td></tr>
+              <tr><td colSpan={8} className="px-3 py-10 text-center text-xs text-faint">{t("loading")}</td></tr>
             )}
             {loaded && list.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-10 text-center text-xs text-faint">No session usage records</td></tr>
+              <tr><td colSpan={8} className="px-3 py-10 text-center text-xs text-faint">{t("empty")}</td></tr>
             )}
             {list.map((r) => (
               <tr
                 key={r.session_id || "(bg)"}
                 className="cursor-pointer border-b border-white/5 transition-colors last:border-b-0 hover:bg-white/5"
                 onClick={() => r.session_id && onOpenRequests(r.session_id)}
-                title="View the request log of this session"
+                title={t("rowTitle")}
               >
                 <td className="px-3 py-2 text-[12.5px]">
-                  <span className="text-txt">{r.title || "(background/system)"}</span>
-                  {r.deleted && <span className="ml-1.5 rounded border border-line2 px-1 text-[10px] text-faint">deleted</span>}
+                  <span className="text-txt">{r.title || t("bg")}</span>
+                  {r.deleted && <span className="ml-1.5 rounded border border-line2 px-1 text-[10px] text-faint">{t("deleted")}</span>}
                   {r.agent_id && <div className="text-[11px] text-faint">{r.agent_id}</div>}
                 </td>
                 <td className="px-3 py-2 text-[12.5px] text-muted">{r.model || "—"}</td>

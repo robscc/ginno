@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import type {
   WikiDiscover,
@@ -15,15 +16,6 @@ import { GraphView } from "@/components/kb/GraphView";
 import { PageViewer, type ViewTarget } from "@/components/kb/PageViewer";
 
 type View = "search" | "all" | "discover" | "graph";
-
-function timeAgo(ts?: number): string {
-  if (!ts) return "never";
-  const s = Math.floor(Date.now() / 1000 - ts);
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 function TagPills({ tags }: { tags: string[] }) {
   if (!tags.length) return null;
@@ -61,6 +53,9 @@ function PairRow({ a, b, score, type }: { a: string; b: string; score: number; t
 }
 
 export default function KnowledgeBasePage() {
+  // kb 域 catalog（messages/{en,zh-CN}/kb.json）。翻译函数命名 tKb：本文件多处
+  // `.map((t) => …)` 回调形参会遮蔽 `t`（已知坑），域前缀名彻底避开。
+  const tKb = useTranslations("kb");
   const [stats, setStats] = useState<WikiStats | null>(null);
   const [pages, setPages] = useState<WikiPage[]>([]);
   const [results, setResults] = useState<WikiSearchResult[]>([]);
@@ -83,6 +78,16 @@ export default function KnowledgeBasePage() {
 
   const configured = !!stats?.ok;
 
+  // 相对时间（原模块级 timeAgo 迁入组件：文案走 kb.time catalog）。
+  function timeAgo(ts?: number): string {
+    if (!ts) return tKb("time.never");
+    const s = Math.floor(Date.now() / 1000 - ts);
+    if (s < 60) return tKb("time.seconds", { n: s });
+    if (s < 3600) return tKb("time.minutes", { n: Math.floor(s / 60) });
+    if (s < 86400) return tKb("time.hours", { n: Math.floor(s / 3600) });
+    return tKb("time.days", { n: Math.floor(s / 86400) });
+  }
+
   const loadAll = useCallback(async () => {
     try {
       const [st, pg] = await Promise.all([api.kbWikiStats(), api.kbWikiList()]);
@@ -90,8 +95,9 @@ export default function KnowledgeBasePage() {
       if (pg.ok) setPages(pg.pages);
       setConnError("");
     } catch {
-      setConnError("运行时未连接：请确认 sidecar 已启动（dev: pnpm dev:runtime）。");
+      setConnError(tKb("error.notConnected"));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -118,10 +124,11 @@ export default function KnowledgeBasePage() {
         .kbWikiDiscover()
         .then((d) => {
           if (d.ok) setDiscover(d);
-          else setDiscoverError("加载发现结果失败");
+          else setDiscoverError(tKb("discover.loadFailed"));
         })
-        .catch(() => setDiscoverError("运行时未连接，无法加载发现结果。"));
+        .catch(() => setDiscoverError(tKb("discover.notConnected")));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, configured]);
 
   async function onSearch() {
@@ -137,10 +144,10 @@ export default function KnowledgeBasePage() {
         setSearched(true);
         setView("search");
       } else {
-        setNote(r.error || "检索失败");
+        setNote(r.error || tKb("search.failed"));
       }
     } catch {
-      setNote("检索失败：无法连接运行时");
+      setNote(tKb("search.failedNoRuntime"));
     } finally {
       setBusy(false);
     }
@@ -153,12 +160,12 @@ export default function KnowledgeBasePage() {
       const r = await api.kbWikiReindex();
       if (r.ok) {
         await loadAll();
-        setNote(`索引已重建（${r.indexed} 页）。`);
+        setNote(tKb("reindex.done", { count: r.indexed }));
       } else {
-        setNote("重建索引失败");
+        setNote(tKb("reindex.failed"));
       }
     } catch {
-      setNote("重建索引失败：无法连接运行时");
+      setNote(tKb("reindex.failedNoRuntime"));
     } finally {
       setBusy(false);
     }
@@ -171,14 +178,20 @@ export default function KnowledgeBasePage() {
       const r = await api.kbWikiBuild();
       if (r.ok) {
         setNote(
-          `编译完成：扫描 ${r.scanned ?? 0} 篇，新建 ${(r.created || []).length}，更新 ${(r.updated || []).length}，自动关联 ${(r.new_links || []).length}，用时 ${r.duration_ms ?? 0}ms`,
+          tKb("build.done", {
+            scanned: r.scanned ?? 0,
+            created: (r.created || []).length,
+            updated: (r.updated || []).length,
+            newLinks: (r.new_links || []).length,
+            ms: r.duration_ms ?? 0,
+          }),
         );
         await loadAll();
       } else {
-        setNote(r.error || "编译失败");
+        setNote(r.error || tKb("build.failed"));
       }
     } catch {
-      setNote("编译失败：无法连接运行时");
+      setNote(tKb("build.failedNoRuntime"));
     } finally {
       setBusy(false);
     }
@@ -191,14 +204,14 @@ export default function KnowledgeBasePage() {
       setRelated(r.ok ? r.related : []);
     } catch {
       setRelated([]);
-      setNote("相关查询失败：无法连接运行时");
+      setNote(tKb("discover.relatedFailedNoRuntime"));
     }
   }
 
   async function onDetectImport() {
     setImportProbe("");
     if (!importPath.trim()) {
-      setImportProbe("请填写 vault 路径");
+      setImportProbe(tKb("import.needPath"));
       return;
     }
     try {
@@ -206,18 +219,23 @@ export default function KnowledgeBasePage() {
       setImportProbe(
         r.ok
           ? r.detected?.namespace
-            ? `检测到命名空间「${r.detected.namespace}」：Wiki ${r.wiki_pages} 页 / Raw ${r.raw_pages} 篇${r.has_index ? "（含 INDEX）" : ""}`
-            : `未检测到 */Wiki 目录，将把整个 vault 作为知识库索引（共 ${r.total_md} 篇）`
-          : r.error || "检测失败",
+            ? tKb("import.detected", {
+                ns: r.detected.namespace,
+                wiki: r.wiki_pages ?? 0,
+                raw: r.raw_pages ?? 0,
+                hasIndex: r.has_index ? "yes" : "no",
+              })
+            : tKb("import.noWikiDir", { total: r.total_md ?? 0 })
+          : r.error || tKb("import.detectFailed"),
       );
     } catch {
-      setImportProbe("检测失败：无法连接运行时");
+      setImportProbe(tKb("import.detectFailedNoRuntime"));
     }
   }
 
   async function onImport() {
     if (!importPath.trim()) {
-      setImportProbe("请填写 vault 路径");
+      setImportProbe(tKb("import.needPath"));
       return;
     }
     setImportBusy(true);
@@ -225,7 +243,7 @@ export default function KnowledgeBasePage() {
     try {
       const probe = await api.kbWikiProbe(importPath.trim());
       if (!probe.ok) {
-        setImportProbe(probe.error || "检测失败：路径无效");
+        setImportProbe(probe.error || tKb("import.invalidPath"));
         return;
       }
       const d = probe.detected;
@@ -240,14 +258,14 @@ export default function KnowledgeBasePage() {
         rescan_interval_s: 60,
       });
       if (!saved.ok) {
-        setImportProbe("保存配置失败");
+        setImportProbe(tKb("import.saveFailed"));
         return;
       }
       const ix = await api.kbWikiReindex();
-      setImportProbe(ix.ok ? `已导入并索引 ${ix.indexed} 页` : "已保存配置，但索引失败");
+      setImportProbe(ix.ok ? tKb("import.imported", { count: ix.indexed }) : tKb("import.indexFailed"));
       await loadAll();
     } catch {
-      setImportProbe("导入失败：无法连接运行时");
+      setImportProbe(tKb("import.importFailedNoRuntime"));
     } finally {
       setImportBusy(false);
     }
@@ -262,10 +280,10 @@ export default function KnowledgeBasePage() {
   }
 
   const tabs: { id: View; label: string; icon?: typeof Network }[] = [
-    { id: "search", label: `搜索结果${searched ? ` (${results.length})` : ""}` },
-    { id: "all", label: `全部页面 (${pages.length})` },
-    { id: "discover", label: "发现" },
-    { id: "graph", label: `图谱 (${pages.length})`, icon: Network },
+    { id: "search", label: tKb("tabs.searchResults", { count: results.length }) },
+    { id: "all", label: tKb("tabs.allPages", { count: pages.length }) },
+    { id: "discover", label: tKb("tabs.discover") },
+    { id: "graph", label: tKb("tabs.graph", { count: pages.length }), icon: Network },
   ];
 
   return (
@@ -273,7 +291,7 @@ export default function KnowledgeBasePage() {
       {/* header */}
       <div className="flex items-center gap-2">
         <BookOpen className="h-5 w-5 text-violet" />
-        <h2 className="text-lg font-semibold text-txt">Knowledge Base</h2>
+        <h2 className="text-lg font-semibold text-txt">{tKb("title")}</h2>
         {configured && (
           <div className="ml-auto flex items-center gap-2">
             <button
@@ -282,7 +300,7 @@ export default function KnowledgeBasePage() {
               className="flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               <Hammer className={`h-3.5 w-3.5 ${busy ? "animate-pulse" : ""}`} />
-              Build wiki
+              {tKb("actions.build")}
             </button>
             <button
               onClick={onReindex}
@@ -290,14 +308,12 @@ export default function KnowledgeBasePage() {
               className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-3 py-1.5 text-xs text-muted hover:text-txt disabled:opacity-50"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
-              Rebuild index
+              {tKb("actions.reindex")}
             </button>
           </div>
         )}
       </div>
-      <p className="mt-1 text-sm text-muted">
-        Obsidian 知识库：把 Raw 编译成 Wiki、按相关性检索并在对话中自动注入（LLMWiki）。支持页面预览、wikilink 跳转/创建与图谱。
-      </p>
+      <p className="mt-1 text-sm text-muted">{tKb("subtitle")}</p>
       {note && <div className="mt-2 text-xs text-violet">{note}</div>}
       {connError && (
         <div className="mt-2 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">{connError}</div>
@@ -307,10 +323,12 @@ export default function KnowledgeBasePage() {
       {!configured && (
         <div className="mt-6 max-w-2xl rounded-xl border border-line bg-card p-4">
           <div className="mb-2 flex items-center gap-2 text-sm font-medium text-txt">
-            <BookOpen className="h-4 w-4 text-violet" /> 导入已有的 LLM Wiki 知识库
+            <BookOpen className="h-4 w-4 text-violet" /> {tKb("import.title")}
           </div>
           <p className="mb-3 text-xs text-muted">
-            指向你的 Obsidian vault。若已编译好 Wiki（如 <code className="text-txt">Molly/Wiki</code>），会被直接索引、无需重新编译。
+            {tKb.rich("import.hint", {
+              code: (chunks) => <code className="text-txt">{chunks}</code>,
+            })}
           </p>
           <div className="flex gap-2">
             <input
@@ -324,23 +342,25 @@ export default function KnowledgeBasePage() {
               disabled={importBusy}
               className="flex items-center gap-1.5 rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt disabled:opacity-50"
             >
-              <Search className="h-3.5 w-3.5" /> 检测
+              <Search className="h-3.5 w-3.5" /> {tKb("import.detect")}
             </button>
             <button
               onClick={onImport}
               disabled={importBusy}
               className="flex items-center gap-1.5 rounded-lg bg-violet px-3 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
-              <Hammer className="h-3.5 w-3.5" /> 导入并索引
+              <Hammer className="h-3.5 w-3.5" /> {tKb("import.importAndIndex")}
             </button>
           </div>
           {importProbe && <div className="mt-2 text-xs text-violet">{importProbe}</div>}
           <div className="mt-3 text-xs text-faint">
-            需要细调（top-K / 自动注入 / 目录）？去{" "}
-            <Link href="/settings/knowledge" className="text-violet hover:underline">
-              设置 → 知识库
-            </Link>
-            。
+            {tKb.rich("import.settingsHint", {
+              link: (chunks) => (
+                <Link href="/settings/knowledge" className="text-violet hover:underline">
+                  {chunks}
+                </Link>
+              ),
+            })}
             {stats?.error ? <span className="ml-1">{stats.error}</span> : null}
           </div>
         </div>
@@ -350,10 +370,10 @@ export default function KnowledgeBasePage() {
         <>
           {/* stats bar */}
           <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-faint">
-            <span className="pill border border-line2 text-muted">{stats?.total_pages ?? 0} pages</span>
-            <span className="pill border border-line2 text-muted">{stats?.total_links ?? 0} links</span>
-            <span className="pill border border-line2 text-muted">{stats?.total_tags ?? 0} tags</span>
-            <span className="pill border border-line2 text-muted">indexed {timeAgo(stats?.last_indexed)}</span>
+            <span className="pill border border-line2 text-muted">{tKb("stats.pages", { count: stats?.total_pages ?? 0 })}</span>
+            <span className="pill border border-line2 text-muted">{tKb("stats.links", { count: stats?.total_links ?? 0 })}</span>
+            <span className="pill border border-line2 text-muted">{tKb("stats.tags", { count: stats?.total_tags ?? 0 })}</span>
+            <span className="pill border border-line2 text-muted">{tKb("stats.indexed", { time: timeAgo(stats?.last_indexed) })}</span>
             <span className="pill border border-line2 text-faint">{stats?.vault_path}</span>
           </div>
 
@@ -363,7 +383,7 @@ export default function KnowledgeBasePage() {
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
               <input
                 className="field w-full pl-9"
-                placeholder="搜索知识…（支持中英文）"
+                placeholder={tKb("search.placeholder")}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && onSearch()}
@@ -374,7 +394,7 @@ export default function KnowledgeBasePage() {
               disabled={busy || !query.trim()}
               className="rounded-lg bg-violet px-4 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
             >
-              Search
+              {tKb("search.button")}
             </button>
           </div>
 
@@ -430,7 +450,7 @@ export default function KnowledgeBasePage() {
               {view === "search" &&
                 (searched ? (
                   results.length === 0 ? (
-                    <div className="text-sm text-faint">没有匹配的条目。</div>
+                    <div className="text-sm text-faint">{tKb("search.noResults")}</div>
                   ) : (
                     results.map((r, i) => (
                       <button
@@ -446,21 +466,23 @@ export default function KnowledgeBasePage() {
                         <div className="mt-1.5 flex items-center gap-2">
                           <TagPills tags={r.tags} />
                         </div>
-                        <div className="mt-2 text-xs text-faint">来源: {r.path}</div>
+                        <div className="mt-2 text-xs text-faint">{tKb("search.source", { path: r.path })}</div>
                         {r.matched_terms.length > 0 && (
-                          <div className="mt-1 text-[11px] text-faint">命中: {r.matched_terms.slice(0, 8).join(" · ")}</div>
+                          <div className="mt-1 text-[11px] text-faint">
+                            {tKb("search.matches", { terms: r.matched_terms.slice(0, 8).join(" · ") })}
+                          </div>
                         )}
                         {r.summary && <p className="mt-2 text-sm leading-relaxed text-muted">{r.summary}</p>}
                       </button>
                     ))
                   )
                 ) : (
-                  <div className="text-sm text-faint">输入关键词开始检索。</div>
+                  <div className="text-sm text-faint">{tKb("search.startHint")}</div>
                 ))}
 
               {view === "all" &&
                 (pages.length === 0 ? (
-                  <div className="text-sm text-faint">还没有索引到任何页面（先点 Build wiki 编译 Raw）。</div>
+                  <div className="text-sm text-faint">{tKb("all.empty")}</div>
                 ) : (
                   <>
                     {pages.some((p) => p.type === "memory") && (
@@ -472,7 +494,7 @@ export default function KnowledgeBasePage() {
                             : "border-line2 text-faint hover:text-txt"
                         }`}
                       >
-                        仅记忆来源
+                        {tKb("all.memoryOnly")}
                       </button>
                     )}
                   <div className="overflow-hidden rounded-xl border border-line">
@@ -489,9 +511,9 @@ export default function KnowledgeBasePage() {
                         {p.type === "memory" && (
                           <span
                             className="pill border border-violet/40 bg-violet/10 text-violet"
-                            title="由全局记忆沉淀而来"
+                            title={tKb("all.memoryPillTitle")}
                           >
-                            记忆
+                            {tKb("all.memoryPill")}
                           </span>
                         )}
                         <TagPills tags={p.tags} />
@@ -507,13 +529,16 @@ export default function KnowledgeBasePage() {
                   <>
                     <div className="flex items-center gap-2 text-xs text-faint">
                       <Sparkles className="h-3.5 w-3.5 text-violet" />
-                      {discover.stats?.pages ?? 0} 页 · {discover.stats?.edges ?? 0} 条关联边
+                      {tKb("discover.summary", {
+                        pages: discover.stats?.pages ?? 0,
+                        edges: discover.stats?.edges ?? 0,
+                      })}
                     </div>
-                    <Section title="查看某页的相关">
+                    <Section title={tKb("discover.relatedTitle")}>
                       <div className="flex gap-2">
                         <input
                           className="field flex-1"
-                          placeholder="页面标题，如 权限节点"
+                          placeholder={tKb("discover.relatedPlaceholder")}
                           value={relatedQuery}
                           onChange={(e) => setRelatedQuery(e.target.value)}
                           onKeyDown={(e) => e.key === "Enter" && onRelated()}
@@ -522,12 +547,12 @@ export default function KnowledgeBasePage() {
                           onClick={onRelated}
                           className="rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt"
                         >
-                          相关
+                          {tKb("discover.relatedButton")}
                         </button>
                       </div>
                       {related &&
                         (related.length === 0 ? (
-                          <div className="mt-2 text-xs text-faint">没有相关页（或标题不匹配）。</div>
+                          <div className="mt-2 text-xs text-faint">{tKb("discover.noRelated")}</div>
                         ) : (
                           <div className="mt-2">
                             {related.map((r, i) => (
@@ -536,21 +561,21 @@ export default function KnowledgeBasePage() {
                           </div>
                         ))}
                     </Section>
-                    <Section title={`强关联 (≥80%) · ${discover.strong.length}`}>
+                    <Section title={tKb("discover.strongTitle", { count: discover.strong.length })}>
                       {discover.strong.length === 0 ? (
-                        <div className="text-xs text-faint">无。</div>
+                        <div className="text-xs text-faint">{tKb("discover.none")}</div>
                       ) : (
                         discover.strong.map((p, i) => <PairRow key={i} a={p.a} b={p.b} score={p.score} type={p.type} />)
                       )}
                     </Section>
-                    <Section title={`聚类 · ${discover.clusters.length}`}>
+                    <Section title={tKb("discover.clustersTitle", { count: discover.clusters.length })}>
                       {discover.clusters.length === 0 ? (
-                        <div className="text-xs text-faint">无显著聚类。</div>
+                        <div className="text-xs text-faint">{tKb("discover.noClusters")}</div>
                       ) : (
                         discover.clusters.map((c, i) => (
                           <div key={i} className="py-1">
                             <div className="text-sm text-txt">
-                              {c.label} <span className="text-faint">· 密度 {c.density}</span>
+                              {c.label} <span className="text-faint">{tKb("discover.density", { density: c.density })}</span>
                             </div>
                             <div className="mt-0.5 flex flex-wrap gap-1">
                               {c.members.map((m) => (
@@ -563,16 +588,16 @@ export default function KnowledgeBasePage() {
                         ))
                       )}
                     </Section>
-                    <Section title={`可合并候选 · ${discover.merge_candidates.length}`}>
+                    <Section title={tKb("discover.mergeTitle", { count: discover.merge_candidates.length })}>
                       {discover.merge_candidates.length === 0 ? (
-                        <div className="text-xs text-faint">无。</div>
+                        <div className="text-xs text-faint">{tKb("discover.none")}</div>
                       ) : (
                         discover.merge_candidates.map((p, i) => <PairRow key={i} a={p.a} b={p.b} score={p.score} />)
                       )}
                     </Section>
-                    <Section title={`孤立页（无入链）· ${discover.isolated.length}`}>
+                    <Section title={tKb("discover.orphanTitle", { count: discover.isolated.length })}>
                       {discover.isolated.length === 0 ? (
-                        <div className="text-xs text-faint">无。</div>
+                        <div className="text-xs text-faint">{tKb("discover.none")}</div>
                       ) : (
                         <div className="flex flex-wrap gap-1">
                           {discover.isolated.map((t) => (
@@ -591,7 +616,7 @@ export default function KnowledgeBasePage() {
                 ) : discoverError ? (
                   <div className="text-sm text-red">{discoverError}</div>
                 ) : (
-                  <div className="text-sm text-faint">加载发现结果中…</div>
+                  <div className="text-sm text-faint">{tKb("discover.loading")}</div>
                 ))}
             </div>
 

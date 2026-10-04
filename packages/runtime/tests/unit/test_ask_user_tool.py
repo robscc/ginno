@@ -105,7 +105,7 @@ def test_headless_turn_refuses_without_interrupting(isolated_home, monkeypatch):
         out = _invoke(_tool(), {"question": "q", "options": ["a"]})
     finally:
         at.reset_interactive(tok)
-    assert out.startswith("[error]") and "无人值守" in out
+    assert out.startswith("[error]") and "unattended" in out
     assert called == []
 
 
@@ -122,7 +122,7 @@ def test_budget_caps_asks_per_turn(isolated_home, monkeypatch, tmp_path):
         assert json.loads(_invoke(tool, {"question": "1"}))["ok"] is True
         assert json.loads(_invoke(tool, {"question": "2"}))["ok"] is True
         third = _invoke(tool, {"question": "3"})
-        assert third.startswith("[error]") and "上限 2" in third
+        assert third.startswith("[error]") and "(limit 2)" in third
     finally:
         at.reset_ask_budget(tok)
 

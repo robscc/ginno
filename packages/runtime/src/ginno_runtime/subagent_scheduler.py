@@ -30,6 +30,7 @@ from typing import Any
 
 from . import paths
 from . import server_shared
+from .lang import t
 from .server_shared import (
     _PENDING_KIND,
     _PENDING_RESUME,
@@ -67,6 +68,16 @@ SUBAGENT_MAX_CONCURRENT_LIMIT = 16
 # One-shot wrap-up instruction for a subagent whose turn died on the LangGraph
 # recursion limit (engine.py turn_recursion_limit): salvage a final report from
 # the material it already gathered instead of failing with summary_len=0.
+_RECURSION_WRAP_TEXT_EN = (
+    "[SYSTEM NOTE] Your previous turn was interrupted by the step limit; the "
+    "material you gathered is mostly there. Do not call any more tools now "
+    "(including web_search / web_fetch / file reads). Immediately output the "
+    "final report from the material already collected: conclusions + evidence "
+    "(sources/files, numbered references) + an item-by-item check against the "
+    "acceptance criteria. For parts the material does not cover, state "
+    "honestly that they are \"not covered\" — do not fabricate."
+)
+
 _RECURSION_WRAP_TEXT = (
     "【系统提示】你上一轮因步数上限被中断，材料已经收集得差不多了。"
     "现在不要再调用任何工具（包括 web_search / web_fetch / 文件读取），"
@@ -182,9 +193,12 @@ def format_subagent_result(
     acc = (acceptance or "").strip()
     body = summary
     if acc:
-        body += (
+        body += t(
+            f"\nAcceptance criteria: {acc}"
+            " — when reporting to the user, first go through the criteria one "
+            "by one and give a one-line verdict (met / gap + explanation)",
             f"\n验收标准：{acc}"
-            "——请在向用户汇报时先逐条对照该标准给出一行判定（通过/有缺口+说明）"
+            "——请在向用户汇报时先逐条对照该标准给出一行判定（通过/有缺口+说明）",
         )
     return (
         f'<ginno_subagent_result session="{_xml_attr(child_id)}"'
@@ -202,20 +216,42 @@ def format_subagent_failure(child_id: str, goal: str, error: str) -> str:
     return (
         f'<ginno_subagent_result session="{_xml_attr(child_id)}"'
         f' goal="{_xml_attr(goal)}">\n'
-        "状态：失败（自动重试已耗尽）\n"
-        f"错误：{_xml_text(error)}\n"
-        "本条是失败上报，不包含结果摘要；可用 list_subagents 查看，或重新 spawn。\n"
-        "</ginno_subagent_result>"
+        + t(
+            "Status: failed (auto-retries exhausted)\n",
+            "状态：失败（自动重试已耗尽）\n",
+        )
+        + t(
+            f"Error: {_xml_text(error)}\n",
+            f"错误：{_xml_text(error)}\n",
+        )
+        + t(
+            "This is a failure report and contains no result summary; use "
+            "list_subagents to inspect, or spawn again.\n",
+            "本条是失败上报，不包含结果摘要；可用 list_subagents 查看，或重新 spawn。\n",
+        )
+        + "</ginno_subagent_result>"
     )
 
 
 # Standalone brief (design §5.3) + appendix A.4 (evidence-backed report) +
 # A.6 (operator output discipline) — the child's FIRST user message.
+_REPORT_FORMAT_EN = """Final report format:
+Evidence: first list the evidence supporting your conclusions, numbered — file path:line, command output excerpts, test results. For items without solid evidence, write "no evidence — inference".
+Conclusions: state each point, tagging the evidence number it relies on as [n].
+Acceptance check: go through each acceptance criterion vs what was actually achieved (met / partial / not met + explanation).
+If the goal cannot be completed: state clearly where you are stuck, what you already tried, and what input is still needed."""
+
 _REPORT_FORMAT = """最终报告格式：
 证据：先列出支撑结论的依据，编号排列——文件路径:行号、命令输出摘录、测试结果。没有可靠依据的条目写「无依据，系推断」。
 结论：逐条陈述，句尾以 [n] 标注所依据的证据编号。
 验收对照：逐条列出 acceptance 标准与实际达成情况（达成/部分/未达成 + 说明）。
 若目标无法完成：明确说明卡在哪一步、已尝试什么、还需要什么输入。"""
+
+_OUTPUT_DISCIPLINE_EN = """Output discipline:
+- The workspace and context folders are inherited from the main conversation — use them directly, don't ask again
+- Output must be immediately usable: code lands as-is, conclusions are directly quotable; no "to be filled in" placeholders
+- Missing one key piece of information: finish everything else first, then ask your (at most 2) specific questions at the end — don't stop mid-way to ask
+- Get straight to the point in reports; no "I will…" style openers"""
 
 _OUTPUT_DISCIPLINE = """输出纪律：
 - workspace 与上下文目录已继承自主对话，直接使用，不要重新询问
@@ -241,15 +277,30 @@ def build_subagent_brief(
     # 结构化简报：每段一个标签，前端用 DOMParser 取（不再靠正则切文本），
     # 段名与 spawn_subagent 的参数面对齐（goal/constraints/acceptance + other）。
     other = [
-        "工作目录与上下文目录：继承父 session，直接使用。",
-        f"你是第 {depth + 1} 层 subagent，"
-        f"{'还可以' if can_spawn else '不可以'}再委派子任务。",
+        t(
+            "Working directory and context folders: inherited from the parent session — use them directly.",
+            "工作目录与上下文目录：继承父 session，直接使用。",
+        ),
+        t(
+            f"You are a depth-{depth + 1} subagent; you "
+            f"{'may' if can_spawn else 'may NOT'} delegate further subtasks.",
+            f"你是第 {depth + 1} 层 subagent，"
+            f"{'还可以' if can_spawn else '不可以'}再委派子任务。",
+        ),
     ]
     if fork:
+        # The ASCII "(fork)" token is a CONTRACT: blocks.tsx detects fork
+        # briefs by matching it (or the legacy Chinese phrase for old
+        # checkpoints). Keep it in both language variants.
         other.insert(
             0,
-            "你是从父对话分出的并行分支（fork），上方已继承父对话的完整上下文；"
-            "父对话此后的进展不会自动同步，请独立完成你的目标。",
+            t(
+                "You are a parallel branch (fork) split from the parent conversation; "
+                "the full parent context is inherited above; the parent's later "
+                "progress is not synced automatically — complete your goal independently.",
+                "你是从父对话分出的并行分支（fork），上方已继承父对话的完整上下文；"
+                "父对话此后的进展不会自动同步，请独立完成你的目标。",
+            ),
         )
     lines = [
         "<ginno_subagent_brief>",
@@ -258,10 +309,10 @@ def build_subagent_brief(
         f"<acceptance>{_xml_text((acceptance or '').strip())}</acceptance>",
         f"<other>{_xml_text(chr(10).join(other))}</other>",
         "<report_format>",
-        _xml_text(_REPORT_FORMAT),
+        _xml_text(t(_REPORT_FORMAT_EN, _REPORT_FORMAT)),
         "</report_format>",
         "<output_discipline>",
-        _xml_text(_OUTPUT_DISCIPLINE),
+        _xml_text(t(_OUTPUT_DISCIPLINE_EN, _OUTPUT_DISCIPLINE)),
         "</output_discipline>",
         "</ginno_subagent_brief>",
     ]
@@ -404,12 +455,18 @@ async def create_subagent(
     ``fork=True``; fork does NOT change the depth rules."""
     goal = (goal or "").strip()
     if not goal:
-        return {"ok": False, "error": "goal 不能为空"}
+        return {"ok": False, "error": t("goal must not be empty", "goal 不能为空")}
     from .api.sessions import _ensure_session  # lazy: cycle
 
     parent = _SESSIONS.get(parent_session_id) or _ensure_session(parent_session_id)
     if parent is None:
-        return {"ok": False, "error": f"未知父会话 {parent_session_id}"}
+        return {
+            "ok": False,
+            "error": t(
+                f"unknown parent session {parent_session_id}",
+                f"未知父会话 {parent_session_id}",
+            ),
+        }
     slug = parent["project_slug"]
     found = _find_meta(parent_session_id)
     parent_meta = found[0] if found else {}
@@ -418,9 +475,11 @@ async def create_subagent(
     if depth > SUBAGENT_MAX_DEPTH:
         return {
             "ok": False,
-            "error": (
+            "error": t(
+                f"[error] Maximum nesting depth ({SUBAGENT_MAX_DEPTH + 1} "
+                "layers) reached; no further delegation. Do the work yourself.",
                 f"[error] 已达最大嵌套深度（{SUBAGENT_MAX_DEPTH + 1} 层），"
-                "不能再委派子任务。请自己完成该工作。"
+                "不能再委派子任务。请自己完成该工作。",
             ),
         }
 
@@ -432,12 +491,18 @@ async def create_subagent(
 
         st = get_subagent_type(agent_type)
         if st is None:
-            avail = "、".join(t["name"] for t in describe_types()) or "（注册表为空）"
+            _types = describe_types()
+            avail = t(
+                ", ".join(x["name"] for x in _types) or "(registry is empty)",
+                "、".join(x["name"] for x in _types) or "（注册表为空）",
+            )
             return {
                 "ok": False,
-                "error": (
+                "error": t(
+                    f"[error] Unknown subagent type: {agent_type.strip()}. "
+                    f"Available types: {avail}",
                     f"[error] 未知 subagent 类型：{agent_type.strip()}。"
-                    f"可用类型：{avail}"
+                    f"可用类型：{avail}",
                 ),
             }
     # Fork lineage (P3 contract 2): a fork child cannot fork again. P1/P2
@@ -448,7 +513,11 @@ async def create_subagent(
     if fork and parent_mode == "fork":
         return {
             "ok": False,
-            "error": "[error] fork 子代不能再 fork。请使用标准 spawn（不继承上下文）。",
+            "error": t(
+                "[error] A fork child cannot fork again. Use a standard spawn "
+                "(no inherited context).",
+                "[error] fork 子代不能再 fork。请使用标准 spawn（不继承上下文）。",
+            ),
         }
 
     cap = max_concurrent()
@@ -456,16 +525,22 @@ async def create_subagent(
         running = _running_subagent_metas()
         if len(running) >= cap:
             listing = "\n".join(
-                f"- {m['id']} {((m.get('subagent') or {}).get('goal') or '')[:40]}"
-                f"（{_subagent_status(m)}）"
+                t(
+                    f"- {m['id']} {((m.get('subagent') or {}).get('goal') or '')[:40]}"
+                    f" ({_subagent_status(m)})",
+                    f"- {m['id']} {((m.get('subagent') or {}).get('goal') or '')[:40]}"
+                    f"（{_subagent_status(m)}）",
+                )
                 for m in running[:cap]
             )
             return {
                 "ok": False,
                 "limit": True,
-                "error": (
+                "error": t(
+                    f"[error] Concurrent subagent cap reached ({cap}); do not "
+                    f"retry immediately. Currently running:\n{listing}",
                     f"[error] 并发 subagent 已达上限（{cap}），"
-                    f"勿立即重试。当前在跑清单：\n{listing}"
+                    f"勿立即重试。当前在跑清单：\n{listing}",
                 ),
             }
 
@@ -509,7 +584,13 @@ async def create_subagent(
         )
         resp = await create_session(req)
         if not resp.get("ok"):
-            return {"ok": False, "error": str(resp.get("error") or "子会话创建失败")}
+            return {
+                "ok": False,
+                "error": str(
+                    resp.get("error")
+                    or t("child session creation failed", "子会话创建失败")
+                ),
+            }
         child_id = resp["id"]
 
     # Pre-arm the cooperative stop event BEFORE the turn task exists (the same
@@ -529,7 +610,7 @@ async def create_subagent(
         # the whole spawn.
         try:
             await _seed_fork_history(parent_session_id, child_id, slug, brief)
-            first_text = _FORK_START_TEXT
+            first_text = _fork_start_text()
         except Exception:
             _log.exception(
                 "subagent_fork_seed_failed parent=%s child=%s",
@@ -568,10 +649,14 @@ async def create_subagent(
 
 # The fork child's first turn: the brief already sits at the top of the seeded
 # history, so the turn itself only needs a start instruction.
-_FORK_START_TEXT = (
-    "这是从父对话分出的并行分支（fork），上方已继承父对话的完整上下文"
-    "（含你的 brief）。请直接开始执行目标，完成后按报告格式输出最终报告。"
-)
+def _fork_start_text() -> str:
+    return t(
+        "This is a parallel branch (fork) split from the parent conversation; the complete "
+        "parent context (including your brief) is inherited above. Start working on the "
+        "goal directly, and output the final report in the report format when done.",
+        "这是从父对话分出的并行分支（fork），上方已继承父对话的完整上下文"
+        "（含你的 brief）。请直接开始执行目标，完成后按报告格式输出最终报告。",
+    )
 
 
 def _fork_copy(m):
@@ -762,11 +847,17 @@ async def _maybe_warn_concurrency(owner_session_id: str) -> bool:
     floor = _concurrency_warn_floor(cap)
     if running < floor:
         return False
+    # Ephemeral notice copy → inline bilingual t() (request-scoped locale
+    # when spawned from a turn; settings locale in headless paths).
     return await _warn_once(
         owner_session_id,
         _WARNED_CONCURRENCY,
-        f"提示：当前并发运行中的 subagent 已达 {running} 个"
-        f"（达到上限 {cap} 的 80%）。请留意拆分粒度，勿继续大量并发委派。",
+        t(
+            f"Heads-up: {running} subagents are now running concurrently"
+            f" (80% of the cap of {cap}). Watch the split granularity; avoid mass delegation.",
+            f"提示：当前已有 {running} 个子代理并发运行（达到上限 {cap} 的 80%）。"
+            "请注意拆分粒度，避免大量委派。",
+        ),
     )
 
 
@@ -963,7 +1054,7 @@ async def on_turn_settled(
             spawn_bg(
                 _run_managed_turn(
                     session_id,
-                    _RECURSION_WRAP_TEXT,
+                    t(_RECURSION_WRAP_TEXT_EN, _RECURSION_WRAP_TEXT),
                     {"ginno_system_note": "recursion-wrap"},
                     asyncio.Event(),
                 )
@@ -1153,7 +1244,9 @@ async def _finalize_subagent_locked(
         return
     goal = str(sa.get("goal") or "")
     if status == "failed":
-        text = format_subagent_failure(child_id, goal, error or "未知错误")
+        text = format_subagent_failure(
+            child_id, goal, error or t("unknown error", "未知错误")
+        )
     else:
         text = format_subagent_result(
             child_id, goal, summary, str(sa.get("acceptance") or "")
@@ -1278,7 +1371,11 @@ async def _flush_injections(parent_id: str) -> None:
     texts = [e["text"] for e in entries]
     ids = ",".join(e["child_id"] for e in entries)
     merged = texts[0] if len(texts) == 1 else (
-        f"以下是 {len(texts)} 个子代理的回传（结果与失败报告）：\n\n"
+        t(
+            f"Below are the returns from {len(texts)} subagents "
+            "(results and failure reports):\n\n",
+            f"以下是 {len(texts)} 个子代理的回传（结果与失败报告）：\n\n",
+        )
         + "\n\n".join(texts)
     )
     _log.info(
@@ -1287,12 +1384,15 @@ async def _flush_injections(parent_id: str) -> None:
     )
     _INJECTION_WAKING.add(parent_id)
     try:
-        t = spawn_bg(_wake_parent_turn(parent_id, merged, {"ginno_subagent_result": ids}))
+        # NB: not named ``t`` — that would shadow the lang selector above.
+        _wake_task = spawn_bg(
+            _wake_parent_turn(parent_id, merged, {"ginno_subagent_result": ids})
+        )
 
         def _wake_done(_f: Any, pid: str = parent_id) -> None:
             _INJECTION_WAKING.discard(pid)
 
-        t.add_done_callback(_wake_done)
+        _wake_task.add_done_callback(_wake_done)
     except Exception:
         _INJECTION_WAKING.discard(parent_id)
         raise
@@ -1481,9 +1581,18 @@ async def _reevaluate_waiting_parent(parent_id: str | None) -> None:
         parent_id, stopped, len(descendants),
     )
     wrap_up = (
-        "你的子任务均已被用户停止。请直接收尾：汇报目前已完成的部分与剩余风险。"
+        t(
+            "All of your subtasks have been stopped by the user. Wrap up now: "
+            "report what has been completed so far and the remaining risks.",
+            "你的子任务均已被用户停止。请直接收尾：汇报目前已完成的部分与剩余风险。",
+        )
         if not descendants or stopped == len(descendants)
-        else "你的部分子任务已被用户停止，其余已完成。请直接收尾：整合已完成子任务的结果，并说明被停止的部分。"
+        else t(
+            "Some of your subtasks were stopped by the user and the rest are "
+            "complete. Wrap up now: integrate the completed subtasks' results "
+            "and explain the stopped parts.",
+            "你的部分子任务已被用户停止，其余已完成。请直接收尾：整合已完成子任务的结果，并说明被停止的部分。",
+        )
     )
     # Fold any queued result injections into this wrap-up wake: one turn, one
     # message (the merged-injection queue owns idle wakes for results).
@@ -1536,7 +1645,7 @@ async def _final_report_text(slug: str, session_id: str) -> str:
 async def _maybe_compress_summary(report: str, meta: dict) -> str:
     report = (report or "").strip()
     if not report:
-        return "(subagent 未产生文本输出)"
+        return t("(subagent produced no text output)", "(subagent 未产生文本输出)")
     if len(report) <= SUMMARY_MAX_CHARS:
         return report
     try:
@@ -1550,10 +1659,15 @@ async def _maybe_compress_summary(report: str, meta: dict) -> str:
         resp = await model.ainvoke(
             [
                 SystemMessage(
-                    content=(
+                    content=t(
+                        "Compress the subagent final report below into a "
+                        "summary of at most 500 characters: keep the "
+                        "conclusions, key artifact paths, and acceptance-check "
+                        "results; add nothing beyond the report, and no "
+                        "opening preamble.",
                         "把下面这份 subagent 最终报告压缩为不超过 500 字的摘要："
                         "保留结论、关键产出物路径、验收对照结果；"
-                        "不要添加报告之外的信息，不要写开场白。"
+                        "不要添加报告之外的信息，不要写开场白。",
                     )
                 ),
                 HumanMessage(content=report),
@@ -1569,7 +1683,9 @@ async def _maybe_compress_summary(report: str, meta: dict) -> str:
         _log.info(
             "subagent_summary_compress_skipped session=%s", meta.get("id")
         )
-    return report[:SUMMARY_MAX_CHARS] + "…（原文过长，已截断）"
+    return report[:SUMMARY_MAX_CHARS] + t(
+        "…(report too long, truncated)", "…（原文过长，已截断）"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1578,6 +1694,15 @@ async def _maybe_compress_summary(report: str, meta: dict) -> str:
 
 # A verb phrase, deliberately shorter than the main-conversation subject title.
 SUBAGENT_TITLE_MAX_CHARS = 16
+
+_SUBAGENT_TITLE_SYSTEM_EN = (
+    "You are a session titler for a delegated subagent. Read its goal and the "
+    "excerpt of its final report, then produce ONE very short verb-phrase "
+    "title (at most 16 characters) naming WHAT it set out to do — e.g. "
+    "\"research OAuth library options\", \"write integration test "
+    "skeleton\". Not a sentence, no quotes, no trailing punctuation, no "
+    "preamble. Answer in the goal's language."
+)
 
 _SUBAGENT_TITLE_SYSTEM = (
     "You are a session titler for a delegated subagent. Read its goal and the "
@@ -1618,11 +1743,15 @@ async def _gen_subagent_title(child_id: str, report: str) -> None:
         model = build_model(meta.get("provider"), meta.get("model"))
         resp = await model.ainvoke(
             [
-                SystemMessage(content=_SUBAGENT_TITLE_SYSTEM),
+                SystemMessage(
+                    content=t(_SUBAGENT_TITLE_SYSTEM_EN, _SUBAGENT_TITLE_SYSTEM)
+                ),
                 HumanMessage(
-                    content=(
+                    content=t(
+                        f"Goal: {goal}\nFinal report excerpt: "
+                        f"{(report or '').strip()[:800]}",
                         f"目标：{goal}\n"
-                        f"最终报告节选：{(report or '').strip()[:800]}"
+                        f"最终报告节选：{(report or '').strip()[:800]}",
                     )
                 ),
             ]
@@ -1806,7 +1935,10 @@ async def wait_for_subagents(
     if ids and missing and not chosen:
         # Nothing resolvable: waiting forever would be a deadlock-shaped bug —
         # answer with the error instead.
-        return f"[error] 未找到指定的 subagent：{', '.join(missing)}"
+        return t(
+            f"[error] Subagent(s) not found: {', '.join(missing)}",
+            f"[error] 未找到指定的 subagent：{', '.join(missing)}",
+        )
 
     while True:
         chosen, missing = _snapshot()
@@ -1818,11 +1950,18 @@ async def wait_for_subagents(
             )
         evt = _TURN_STOP.get(parent_session_id)
         if evt is not None and evt.is_set():
-            return "[stopped] 用户停止了当前回合，等待中断。当前子代状态：\n" + json.dumps(
+            return t(
+                "[stopped] The user stopped the current turn; the wait was "
+                "interrupted. Current child statuses:\n",
+                "[stopped] 用户停止了当前回合，等待中断。当前子代状态：\n",
+            ) + json.dumps(
                 {"partial": True, "subagents": _wait_rows(chosen)}, ensure_ascii=False
             )
         if deadline is not None and time.monotonic() >= deadline:
-            return "(partial) 等待超时，子代尚未全部结束：\n" + json.dumps(
+            return t(
+                "(partial) Wait timed out; not all children have finished:\n",
+                "(partial) 等待超时，子代尚未全部结束：\n",
+            ) + json.dumps(
                 {"partial": True, "subagents": _wait_rows(chosen)}, ensure_ascii=False
             )
         await asyncio.sleep(0.2)

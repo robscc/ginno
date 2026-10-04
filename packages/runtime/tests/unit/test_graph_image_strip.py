@@ -50,14 +50,14 @@ def test_keeps_recent_turns_strips_older():
     assert not _has_image(out[0])
     texts = [b["text"] for b in out[0].content if b.get("type") == "text"]
     assert "one" in texts
-    assert any("张历史图片已省略" in t for t in texts)
+    assert any("earlier images omitted" in t for t in texts)
 
 
 def test_image_only_message_leaves_nonempty_placeholder():
     msgs = [_human("", "A"), _human("recent", "B")]
     out = strip_old_images(msgs, keep_turns=1)
     assert out[0].content, "stripped message must not be empty"
-    assert out[0].content == [{"type": "text", "text": "[1 张历史图片已省略]"}]
+    assert out[0].content == [{"type": "text", "text": "[1 earlier images omitted]"}]
 
 
 def test_does_not_mutate_input():
@@ -122,7 +122,7 @@ async def test_graph_trims_context_but_checkpoint_keeps_images(isolated_home):
     blob = json.dumps(model.recorded[-1], ensure_ascii=False, default=str)
     assert "IMGAAA" not in blob, "oldest turn's image must not reach the model"
     assert "IMGBBB" in blob and "IMGCCC" in blob, "recent turns keep their images"
-    assert "张历史图片已省略" in blob
+    assert "earlier images omitted" in blob
 
     # The persisted checkpoint keeps EVERY image — state was never mutated.
     # Load it back through the checkpointer (the same path the UI history uses)

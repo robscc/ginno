@@ -22,6 +22,7 @@ from ... import projects as projects_mod
 from ... import server_shared as shared
 from ... import workflows as wf_store
 from ...graph import build_all_tools, build_graph, build_turn_context
+from ...lang import t
 from ...server_shared import _log, _push_session_event, spawn_bg
 from ...world_state import (
     TURN_CONTEXT_PREFIX,
@@ -35,8 +36,19 @@ from .engine import _stream_graph
 # Default intent for an attachment-only send (no text typed): the picture or
 # document IS the request. Same wording as the turn-start fallback in
 # _run_stream — a mid-turn steer must not behave differently just because it
-# happened while the agent was working.
-_ATTACH_ONLY_TEXT = "请概览我附加的文件：结构、数据质量与关键指标，并给出简短结论。"
+# happened while the agent was working. Bilingual via t() (lang.py): the text
+# is BOTH the user-visible bubble copy and the model's instruction, so it
+# follows the request locale (i18n 分流规则 — prompt/model-context text uses
+# inline t(), never a catalog key).
+_ATTACH_ONLY_TEXT_EN = (
+    "Summarize the files I attached: structure, data quality, and key metrics, "
+    "then give a short conclusion."
+)
+_ATTACH_ONLY_TEXT_ZH = "请概览我附加的文件：结构、数据质量与关键指标，并给出简短结论。"
+
+
+def _attach_only_text() -> str:
+    return t(_ATTACH_ONLY_TEXT_EN, _ATTACH_ONLY_TEXT_ZH)
 
 
 async def _prepare_steer_payload(
@@ -80,7 +92,7 @@ async def _prepare_steer_payload(
     wanted = [f for f in (files or []) if isinstance(f, dict)]
     text = (text or "").strip()
     if not text and (imgs or wanted):
-        text = _ATTACH_ONLY_TEXT
+        text = _attach_only_text()
 
     content_blocks: list[dict] | None = None
     if imgs:
@@ -319,7 +331,7 @@ async def _run_stream(
         # Drop with no text: synthesize a default intent so the turn still runs.
         # Shared with the mid-turn steer path (_prepare_steer_payload) so an
         # attachment-only send reads the same either way.
-        content = _ATTACH_ONLY_TEXT
+        content = _attach_only_text()
 
     session_id = session.get("session_id", "")
     slug = session["project_slug"]

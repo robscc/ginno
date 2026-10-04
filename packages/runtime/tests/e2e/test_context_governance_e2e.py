@@ -9,7 +9,7 @@ import pytest
 from conftest import events_of, script, script_tool_call
 
 from ginno_runtime import paths
-from ginno_runtime.truncation import TRUNCATION_MARKER
+from ginno_runtime.truncation import TRUNCATION_MARKER_EN
 from ginno_runtime.world_state import REINJECT_MSG_PREFIX, SUMMARY_MSG_PREFIX
 
 pytestmark = pytest.mark.e2e
@@ -61,14 +61,23 @@ def test_compaction_fires_and_history_stays_usable(create_session, ws_conv, clie
     entries = _all_history(client, sid)
     texts = json.dumps(entries, ensure_ascii=False)
     # summary + world re-injection are system context rows in the transcript
-    assert SUMMARY_MSG_PREFIX in texts
-    assert REINJECT_MSG_PREFIX in texts
+    assert "Earlier conversation compacted into a summary" in texts
+    assert "Current world state re-injected" in texts
     assert "这是对话摘要" in texts
     # the summarized-away first question is gone; the kept tail remains
     assert "第一个问题" not in texts
     assert "第三个问题" in texts
-    # E4: re-injection still carries the world facts
-    assert "<environment>" in texts
+    # E4: re-injection still carries the world facts — the raw checkpoint keeps
+    # the full body; the history endpoint collapses it to a one-line UI row.
+    from ginno_runtime.checkpointer import FileCheckpointer
+    tup = FileCheckpointer(project_slug="default").get_tuple(
+        {"configurable": {"thread_id": sid}}
+    )
+    raw_texts = json.dumps(
+        (tup.checkpoint["channel_values"]["messages"]), ensure_ascii=False, default=str
+    )
+    assert REINJECT_MSG_PREFIX in raw_texts
+    assert "<environment>" in raw_texts
 
 
 def test_compaction_disabled_does_nothing(create_session, ws_conv, client, isolated_home):
@@ -114,7 +123,7 @@ def test_big_tool_output_truncated_in_history(create_session, ws_conv, client, i
     assert events_of(events, "message.end")
 
     texts = json.dumps(_all_history(client, sid), ensure_ascii=False)
-    assert TRUNCATION_MARKER in texts
+    assert TRUNCATION_MARKER_EN in texts
     assert "HEAD-MARK" in texts  # head kept
     assert "TAIL-MARK" in texts  # tail kept
     assert "x" * 4000 not in texts  # middle dropped
@@ -136,7 +145,7 @@ def test_small_tool_output_untouched(create_session, ws_conv, client, isolated_h
         conv.recv_until("message.end", "error")
     texts = json.dumps(_all_history(client, sid), ensure_ascii=False)
     assert "just a line" in texts
-    assert TRUNCATION_MARKER not in texts
+    assert TRUNCATION_MARKER_EN not in texts
 
 
 # --------------------------------------------------------------------------- #

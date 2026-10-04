@@ -1,13 +1,15 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
+import { useTranslations } from "next-intl";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { ModelConfig, ModelConfigRefs, ModelProtocol } from "@/lib/types";
 import {
   blankConfig,
-  describeRefs,
+  describeRefParts,
   domainRecommendations,
+  formatRefParts,
   mergeModelIds,
   parseModelsText,
   PROTOCOLS,
@@ -39,6 +41,9 @@ export function ModelConfigForm({
   onCancel: () => void;
   onSaved: (cfg: ModelConfig, latencyMs: number) => void;
 }) {
+  const t = useTranslations("settings.model.form");
+  // 引用计数等与 form 平级的 key 走父命名空间（settings.model.ref.*）
+  const tp = useTranslations("settings.model");
   const [draft, setDraft] = useState<ModelConfig>(initial.protocol ? initial : blankConfig());
   const [modelsText, setModelsText] = useState(initial.models?.join("\n") ?? "");
   const [showKey, setShowKey] = useState(false);
@@ -89,10 +94,10 @@ export function ModelConfigForm({
         setPicked(new Set(draft.models));
         setModelSearch("");
       } else {
-        setFetchError(r.error || "Fetch failed: unknown error");
+        setFetchError(r.error || t("fetchUnknownError"));
       }
     } catch {
-      setFetchError("Cannot connect to the runtime");
+      setFetchError(t("connError"));
     } finally {
       setFetching(false);
     }
@@ -125,12 +130,12 @@ export function ModelConfigForm({
   };
 
   const validate = (): string | null => {
-    if (!draft.name.trim()) return "Enter a config name.";
-    if (isCompat && !draft.base_url.trim()) return "An OpenAI Compatible endpoint requires a Base URL.";
-    if (!isCompat && !draft.api_key.trim()) return "This protocol requires an API key (only compatible endpoints may leave it empty).";
-    if (!draft.models.length) return "Add at least one model id.";
+    if (!draft.name.trim()) return t("vName");
+    if (isCompat && !draft.base_url.trim()) return t("vBaseUrl");
+    if (!isCompat && !draft.api_key.trim()) return t("vApiKey");
+    if (!draft.models.length) return t("vModels");
     if (!draft.default_model || !draft.models.includes(draft.default_model))
-      return "The default model must be one of the models in the list.";
+      return t("vDefaultModel");
     return null;
   };
 
@@ -152,10 +157,10 @@ export function ModelConfigForm({
         onSaved(r.config, r.latency_ms);
         return;
       }
-      setError(r.error || "Verification failed: unknown error");
+      setError(r.error || t("verifyUnknownError"));
       setRefs(r.refs);
     } catch {
-      setError("Cannot connect to the runtime");
+      setError(t("connError"));
     } finally {
       setChecking(false);
     }
@@ -164,22 +169,22 @@ export function ModelConfigForm({
   return (
     <div className="rounded-2xl border border-indigo/40 bg-card p-5">
       <div className="mb-4 text-sm font-semibold text-txt">
-        {isNew ? "Add a model config" : `Edit "${initial.name || initial.id}"`}
+        {isNew ? t("addTitle") : t("editTitle", { name: initial.name || initial.id })}
       </div>
 
       <div className="space-y-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Name *">
+          <Field label={t("nameLabel")}>
             <input
               className="field"
-              placeholder="e.g. Relay A / DeepSeek / Local Ollama"
+              placeholder={t("namePlaceholder")}
               value={draft.name}
               onChange={(e) => set("name", e.target.value)}
               autoFocus={isNew}
             />
           </Field>
           <div className="sm:col-span-2">
-            <label className="field-label">Protocol</label>
+            <label className="field-label">{t("protocolLabel")}</label>
             <div className="flex rounded-lg border border-line p-0.5">
               {PROTOCOLS.map((p) => (
                 <button
@@ -194,19 +199,14 @@ export function ModelConfigForm({
                 </button>
               ))}
             </div>
-            {isCompat && (
-              <p className="mt-1 text-[11px] text-faint">
-                OpenAI-compatible endpoints with a custom base_url: DeepSeek, Qwen, Kimi, relay
-                stations, Ollama, etc.
-              </p>
-            )}
+            {isCompat && <p className="mt-1 text-[11px] text-faint">{t("compatHint")}</p>}
           </div>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
-            label={isCompat ? "Base URL * (required)" : "Base URL (optional; defaults to official)"}
-            hint={isResponses ? "Defaults to https://api.openai.com/v1" : isAnthropic ? "Defaults to https://api.anthropic.com" : undefined}
+            label={isCompat ? t("baseUrlLabelRequired") : t("baseUrlLabelOptional")}
+            hint={isResponses ? t("baseUrlHintResponses") : isAnthropic ? t("baseUrlHintAnthropic") : undefined}
           >
             <input
               className="field"
@@ -215,7 +215,7 @@ export function ModelConfigForm({
               onChange={(e) => set("base_url", e.target.value)}
             />
           </Field>
-          <Field label={isCompat ? "API key (optional; leave empty for local endpoints)" : "API Key *"}>
+          <Field label={isCompat ? t("apiKeyLabelOptional") : t("apiKeyLabelRequired")}>
             <div className="relative">
               <input
                 type={showKey ? "text" : "password"}
@@ -227,7 +227,7 @@ export function ModelConfigForm({
               <button
                 type="button"
                 onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? "Hide API key" : "Show API key"}
+                aria-label={showKey ? t("hideKeyAria") : t("showKeyAria")}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-muted"
               >
                 {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -244,12 +244,12 @@ export function ModelConfigForm({
               checked={!!draft.bearer_auth}
               onChange={(e) => set("bearer_auth", e.target.checked)}
             />
-            <span>Bearer auth — third-party Anthropic-compatible gateways use Authorization: Bearer instead of x-api-key</span>
+            <span>{t("bearerAuth")}</span>
           </label>
         )}
 
         {isResponses && (
-          <Field label="Org ID (optional)" hint="Official OpenAI organization id; only applies to the Responses API">
+          <Field label={t("orgIdLabel")} hint={t("orgIdHint")}>
             <input
               className="field"
               placeholder="org-..."
@@ -261,12 +261,12 @@ export function ModelConfigForm({
 
         {isCompat && (
           <div className="space-y-2 rounded-xl border border-line p-3">
-            <div className="text-xs font-medium text-muted">Compatible-endpoint private switches (advanced)</div>
+            <div className="text-xs font-medium text-muted">{t("compatSwitchesTitle")}</div>
             <div className="flex flex-col gap-2">
               {(
                 [
-                  ["enable_search", "Web search — requires endpoint support, e.g. Qwen compatible-mode's enable_search"],
-                  ["enable_thinking", "Thinking mode — hybrid thinking models (e.g. Qwen3) output reasoning before the answer; streaming only"],
+                  ["enable_search", t("enableSearchHint")],
+                  ["enable_thinking", t("enableThinkingHint")],
                 ] as const
               ).map(([flag, text]) => {
                 const rec = recommendations.find((r) => r.flag === flag);
@@ -287,10 +287,10 @@ export function ModelConfigForm({
                       <button
                         type="button"
                         onClick={() => set(flag, true)}
-                        title={`${rec.why} (click to apply)`}
+                        title={t("recommendedTitle", { why: tp(`recommendWhy.${rec.whyKey}`) })}
                         className="pill shrink-0 border border-blue/50 text-blue transition-colors hover:bg-blue/10"
                       >
-                        Recommended
+                        {t("recommended")}
                       </button>
                     )}
                   </div>
@@ -301,7 +301,7 @@ export function ModelConfigForm({
         )}
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Model list *" hint="One model id per line, or comma-separated">
+          <Field label={t("modelsLabel")} hint={t("modelsHint")}>
             <div className="mb-2 flex items-center gap-2">
               <button
                 type="button"
@@ -310,15 +310,15 @@ export function ModelConfigForm({
                 className="pill inline-flex shrink-0 items-center gap-1.5 border border-blue/50 text-blue transition-colors hover:bg-blue/10 disabled:opacity-50"
               >
                 {fetching && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {fetching ? "Fetching…" : "Fetch models from API"}
+                {fetching ? t("fetching") : t("fetchModels")}
               </button>
               {!canFetchModels && (
-                <span className="text-[11px] text-faint">Fill in the Base URL and API key to fetch</span>
+                <span className="text-[11px] text-faint">{t("fetchNeedKeys")}</span>
               )}
             </div>
             {fetchError && (
               <div className="mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-                Fetch failed: {fetchError}
+                {t("fetchFailed", { error: fetchError })}
               </div>
             )}
             {fetched && (
@@ -327,7 +327,7 @@ export function ModelConfigForm({
                 <div className="flex items-center gap-2">
                   <input
                     className="field flex-1"
-                    placeholder="Search model ids…"
+                    placeholder={t("searchModelsPlaceholder")}
                     value={modelSearch}
                     onChange={(e) => setModelSearch(e.target.value)}
                   />
@@ -339,7 +339,7 @@ export function ModelConfigForm({
                     }}
                     className="shrink-0 rounded-lg px-3 py-2 text-xs text-muted transition-colors hover:text-txt"
                   >
-                    Cancel
+                    {t("cancel")}
                   </button>
                 </div>
                 <div className="max-h-56 overflow-y-auto rounded-lg border border-line">
@@ -367,12 +367,12 @@ export function ModelConfigForm({
                     </label>
                   ))}
                   {!filteredFetched.length && (
-                    <div className="px-3 py-3 text-center text-xs text-faint">No matching models</div>
+                    <div className="px-3 py-3 text-center text-xs text-faint">{t("noMatching")}</div>
                   )}
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] text-faint">
-                    {filteredFetched.length} total · {picked.size} selected
+                    {t("fetchedStats", { total: filteredFetched.length, selected: picked.size })}
                   </span>
                   <button
                     type="button"
@@ -380,12 +380,12 @@ export function ModelConfigForm({
                     disabled={!picked.size}
                     className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                   >
-                    Add selected ({picked.size})
+                    {t("addSelected", { count: picked.size })}
                   </button>
                 </div>
               </div>
             )}
-            <div className="mb-1 text-[11px] text-faint">Or add manually (one per line)</div>
+            <div className="mb-1 text-[11px] text-faint">{t("manualHint")}</div>
             <textarea
               className="field font-mono text-xs"
               rows={4}
@@ -395,7 +395,7 @@ export function ModelConfigForm({
             />
           </Field>
           <div className="space-y-3">
-            <Field label="Default model *">
+            <Field label={t("defaultModelLabel")}>
               {draft.models.length > 0 && draft.models.length <= 12 ? (
                 // Short list → a select. The current value is added as an option
                 // when it is not in the list, so a mismatch is visible and
@@ -406,7 +406,7 @@ export function ModelConfigForm({
                   onChange={(e) => set("default_model", e.target.value)}
                 >
                   {!draft.models.includes(draft.default_model) && draft.default_model && (
-                    <option value={draft.default_model}>{draft.default_model} (not in list)</option>
+                    <option value={draft.default_model}>{draft.default_model} {t("notInListSuffix")}</option>
                   )}
                   {draft.models.map((m) => (
                     <option key={m} value={m}>
@@ -429,7 +429,7 @@ export function ModelConfigForm({
                     list="mc-default-model-options"
                     value={draft.default_model}
                     onChange={(e) => set("default_model", e.target.value)}
-                    placeholder="Enter a model id (e.g. glm-5.3-flash)"
+                    placeholder={t("modelIdPlaceholder")}
                   />
                   <datalist id="mc-default-model-options">
                     {draft.models.map((m) => (
@@ -437,15 +437,12 @@ export function ModelConfigForm({
                     ))}
                   </datalist>
                   {draft.models.length === 0 ? (
-                    <p className="mt-1 text-[11px] text-faint">
-                      This provider has no model list yet — enter a model id directly, or add them
-                      line by line in the &quot;Model list&quot; field on the left
-                    </p>
+                    <p className="mt-1 text-[11px] text-faint">{t("noModelListNote")}</p>
                   ) : (
                     !draft.models.includes(draft.default_model) &&
                     draft.default_model && (
                       <p className="mt-1 text-[11px] text-yellow">
-                        {draft.default_model} is not in the model list
+                        {t("notInListModel", { model: draft.default_model })}
                       </p>
                     )
                   )}
@@ -453,7 +450,7 @@ export function ModelConfigForm({
               )}
             </Field>
             <div className="grid grid-cols-3 gap-3">
-              <Field label="Max Tokens">
+              <Field label={t("maxTokens")}>
                 <input
                   type="number"
                   className="field"
@@ -461,7 +458,7 @@ export function ModelConfigForm({
                   onChange={(e) => num("max_tokens", e.target.value)}
                 />
               </Field>
-              <Field label="Temperature">
+              <Field label={t("temperature")}>
                 <input
                   type="number"
                   step="0.1"
@@ -470,7 +467,7 @@ export function ModelConfigForm({
                   onChange={(e) => num("temperature", e.target.value)}
                 />
               </Field>
-              <Field label="Timeout (s)">
+              <Field label={t("timeoutS")}>
                 <input
                   type="number"
                   className="field"
@@ -487,7 +484,15 @@ export function ModelConfigForm({
         // Yellow bar for verify refusal / validation problems (Q8 refs list).
         <div className="mt-4 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
           {error}
-          {describeRefs(refs) && <div className="mt-1">Still referenced by: {describeRefs(refs)} (rebind first, then retry)</div>}
+          {describeRefParts(refs).length > 0 && (
+            <div className="mt-1">
+              {t("stillReferenced", {
+                refs: formatRefParts(describeRefParts(refs), (key, n) =>
+                  tp(`ref.${key}`, { count: n }),
+                ),
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -496,14 +501,14 @@ export function ModelConfigForm({
           onClick={onCancel}
           className="rounded-lg px-3 py-2 text-xs text-muted transition-colors hover:text-txt"
         >
-          Cancel
+          {t("cancel")}
         </button>
         <button
           onClick={() => void submit()}
           disabled={checking}
           className="rounded-lg bg-violet px-4 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {checking ? "Verifying…" : "Verify & Save"}
+          {checking ? t("verifying") : t("verifySave")}
         </button>
       </div>
     </div>

@@ -2,10 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, GripVertical } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno, type RightTab } from "@/lib/store";
 import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
 import { cn } from "@/lib/utils";
 import * as api from "@/lib/runtime";
+import { useLocaleCtx, setLocale } from "@/i18n/provider";
+import type { LanguageSetting } from "@/i18n/config";
 
 export function applyTheme(t: string) {
   if (typeof document === "undefined") return;
@@ -28,6 +31,9 @@ export function applyTheme(t: string) {
  */
 function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
   const g = useGinno();
+  // right 域文案：tab 标签（right.tabs.* 注册表 key 引用）+ 排序列表自身的
+  // 标题/提示/aria（同域追加，Settings 页与右栏 dock 共用一套 tab 名）。
+  const tr = useTranslations("right");
   const [dragId, setDragId] = useState<RightTab | null>(null);
   // Insertion slot 0..N in the *current* order while dragging; null = not dragging.
   const [dropSlot, setDropSlot] = useState<number | null>(null);
@@ -79,7 +85,7 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
   function toggle(id: RightTab) {
     const isHidden = hidden.has(id);
     if (!isHidden && !canHide) {
-      onMsg("At least one tab must stay visible");
+      onMsg(tr("tabs.lastVisible"));
       return;
     }
     g.setRightTabHidden(id, !isHidden);
@@ -148,15 +154,17 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
 
   return (
     <div>
-      <label className="field-label">Right-panel tabs</label>
-      <p className="text-xs text-faint">
-        Drag the handle on the left to reorder; click the eye icon to show / hide. Hidden tabs keep
-        their position and can be shown again anytime.
-      </p>
-      <div role="list" aria-label="Right-panel tab order" className="relative mt-2 flex flex-col gap-1">
+      <label className="field-label">{tr("tabs.settingsTitle")}</label>
+      <p className="text-xs text-faint">{tr("tabs.settingsHint")}</p>
+      <div
+        role="list"
+        aria-label={tr("tabs.settingsListLabel")}
+        className="relative mt-2 flex flex-col gap-1"
+      >
         {order.map((id, i) => {
           const meta = RIGHT_TAB_BY_ID[id];
           const Icon = meta.icon;
+          const label = tr(meta.labelKey);
           const isHidden = hidden.has(id);
           const locked = !isHidden && !canHide;
           return (
@@ -173,9 +181,12 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
                 }}
                 role="listitem"
                 tabIndex={0}
-                aria-label={`${meta.label} tab (${i + 1} / ${order.length}, ${
-                  isHidden ? "hidden" : "visible"
-                })`}
+                aria-label={tr("tabs.rowLabel", {
+                  tab: label,
+                  index: i + 1,
+                  total: order.length,
+                  state: isHidden ? tr("tabs.stateHidden") : tr("tabs.stateVisible"),
+                })}
                 onKeyDown={(e) => onRowKeyDown(e, id, i)}
                 className={cn(
                   "flex items-center gap-2 rounded-lg border bg-base/40 px-2 py-1.5 outline-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-violet/60",
@@ -185,7 +196,7 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
                 <span
                   role="button"
                   tabIndex={-1}
-                  aria-label={`Drag to reorder: ${meta.label}`}
+                  aria-label={tr("tabs.dragHandle", { tab: label })}
                   onPointerDown={(e) => startDrag(e, id)}
                   onPointerMove={moveDrag}
                   onPointerUp={(e) => endDrag(e, false)}
@@ -199,13 +210,15 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
                 </span>
                 <Icon size={14} aria-hidden className={isHidden ? "text-faint" : "text-muted"} />
                 <span className={cn("flex-1 truncate text-sm", isHidden ? "text-faint" : "text-txt")}>
-                  {meta.label}
+                  {label}
                 </span>
                 <button
                   type="button"
                   disabled={locked}
-                  title={locked ? "At least one tab must stay visible" : undefined}
-                  aria-label={isHidden ? `Show ${meta.label} tab` : `Hide ${meta.label} tab`}
+                  title={locked ? tr("tabs.lastVisible") : undefined}
+                  aria-label={
+                    isHidden ? tr("tabs.showTab", { tab: label }) : tr("tabs.hideTab", { tab: label })
+                  }
                   onClick={() => toggle(id)}
                   className={cn(
                     "shrink-0 rounded p-1 transition-colors",
@@ -230,14 +243,14 @@ function RightTabsSection({ onMsg }: { onMsg: (m: string) => void }) {
           type="button"
           onClick={() => {
             g.resetRightTabs();
-            onMsg("Default tab order restored");
+            onMsg(tr("tabs.resetToast"));
           }}
           className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted transition-colors hover:text-txt"
         >
-          Reset to default
+          {tr("tabs.reset")}
         </button>
         <span className="text-xs text-faint">
-          {g.visibleRightTabs.length} / {order.length} tabs visible
+          {tr("tabs.visibleCount", { visible: g.visibleRightTabs.length, total: order.length })}
         </span>
       </div>
     </div>
@@ -252,6 +265,12 @@ export function GeneralSettings() {
   // subagent 并发上限（P3 共享契约 3）：settings 键 subagent.max_concurrent，
   // 默认 5、范围 1-16；runtime 调度器动态读取，保存后即生效。
   const [subMax, setSubMax] = useState("5");
+  // 界面语言：settings.language（auto/en/zh-CN，i18n-design.md §2）。
+  // 值由根部的 I18nProvider 加载/校正，这里只读 context + setLocale 写回。
+  const { languageSetting } = useLocaleCtx();
+  // settings 域 catalog（messages/{en,zh-CN}/settings.json）。注意本组件内
+  // 既有局部变量/形参 `t`（applyTheme/map 回调），翻译函数避开命名用 tSettings。
+  const tSettings = useTranslations("settings");
 
   useEffect(() => {
     let t = "dark";
@@ -281,7 +300,7 @@ export function GeneralSettings() {
   async function setDefault(p: string) {
     await api.putProviders(g.providers, p);
     g.reloadProviders();
-    setMsg("default provider → " + p);
+    setMsg(tSettings("general.providerToast", { name: p }));
   }
   async function toggleBypass(v: boolean) {
     try {
@@ -289,9 +308,19 @@ export function GeneralSettings() {
       s.bypass_permissions = v;
       await api.putSettings(s);
       setBypass(v);
-      setMsg(v ? "Privileged Mode on: all tools run directly without asking" : "Privileged Mode off: ask / block per the permission policy");
+      setMsg(v ? tSettings("general.privilegedOn") : tSettings("general.privilegedOff"));
     } catch {
-      setMsg("Failed to save");
+      setMsg(tSettings("general.saveFailed"));
+    }
+  }
+  // 界面语言：经 i18n setLocale 写 settings.language（get→改→put，同一 API
+  // 通道）+ localStorage 镜像 + context 更新，UI 即时切换、不刷新页面。
+  async function saveLanguage(v: LanguageSetting) {
+    try {
+      await setLocale(v);
+      setMsg(tSettings("language.saved"));
+    } catch {
+      setMsg(tSettings("language.saveFailed"));
     }
   }
   // 保存 subagent 并发上限：走既有 get→改→put 链路（同 toggleBypass），键为
@@ -300,40 +329,37 @@ export function GeneralSettings() {
     const n = Math.round(Number(raw));
     const clamped = Number.isFinite(n) ? Math.min(16, Math.max(1, n)) : 5;
     setSubMax(String(clamped));
-    if (Number.isFinite(n) && n !== clamped) setMsg(`Out of range, clamped to ${clamped} (allowed 1-16)`);
+    if (Number.isFinite(n) && n !== clamped) setMsg(tSettings("general.subClamped", { n: clamped }));
     try {
       const s = (await api.getSettings()) as Record<string, unknown>;
       const sub = (s.subagent as Record<string, unknown> | undefined) ?? {};
       sub.max_concurrent = clamped;
       s.subagent = sub;
       await api.putSettings(s);
-      setMsg(`Subagent concurrency cap saved: ${clamped}`);
+      setMsg(tSettings("general.subSaved", { n: clamped }));
     } catch {
-      setMsg("Failed to save");
+      setMsg(tSettings("general.saveFailed"));
     }
   }
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">General</h2>
+      <h2 className="text-lg font-semibold text-txt">{tSettings("general.title")}</h2>
       <div className="mt-4 max-w-md space-y-4">
         <div>
-          <label className="field-label">Default model provider</label>
+          <label className="field-label">{tSettings("general.providerLabel")}</label>
           <select className="field" value={g.defaultProvider} onChange={(e) => setDefault(e.target.value)}>
             {Object.keys(g.providers).map((p) => (
               <option key={p} value={p} disabled={!g.providers[p].enabled}>
                 {p}
-                {g.providers[p].enabled ? "" : " (disabled)"}
+                {g.providers[p].enabled ? "" : tSettings("general.providerDisabled")}
               </option>
             ))}
           </select>
-          <p className="mt-1 text-xs text-faint">
-            New sessions and agents without their own provider use this provider; bind a different
-            provider to an agent in Settings → Agents to override it.
-          </p>
+          <p className="mt-1 text-xs text-faint">{tSettings("general.providerHelp")}</p>
         </div>
         <div>
-          <label className="field-label">Theme</label>
+          <label className="field-label">{tSettings("general.themeLabel")}</label>
           <div className="flex gap-2">
             {["dark", "light"].map((t) => (
               <button
@@ -350,19 +376,28 @@ export function GeneralSettings() {
           </div>
         </div>
         <div>
-          <label className="flex items-center gap-2 text-sm text-txt">
-            <input type="checkbox" checked={bypass} onChange={(e) => toggleBypass(e.target.checked)} />
-            Privileged Mode (skip all permission confirmations, allow any command)
-          </label>
-          <p className="mt-1 text-xs text-faint">
-            When on, the Agent can call any tool without asking and the permission policy cannot
-            block it (including Bash/Write and other dangerous operations). On by default; when
-            off, asks / blocks per the permission policy. Note: your PreToolUse hooks still run
-            (hooks are custom rules and always apply).
-          </p>
+          <label className="field-label">{tSettings("language.label")}</label>
+          <select
+            className="field"
+            value={languageSetting}
+            onChange={(e) => void saveLanguage(e.target.value as LanguageSetting)}
+            aria-label={tSettings("language.label")}
+          >
+            <option value="auto">{tSettings("language.auto")}</option>
+            <option value="en">{tSettings("language.en")}</option>
+            <option value="zh-CN">{tSettings("language.zh-CN")}</option>
+          </select>
+          <p className="mt-1 text-xs text-faint">{tSettings("language.help")}</p>
         </div>
         <div>
-          <label className="field-label">Subagent concurrency cap</label>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input type="checkbox" checked={bypass} onChange={(e) => toggleBypass(e.target.checked)} />
+            {tSettings("general.privileged")}
+          </label>
+          <p className="mt-1 text-xs text-faint">{tSettings("general.privilegedHelp")}</p>
+        </div>
+        <div>
+          <label className="field-label">{tSettings("general.subLabel")}</label>
           <div className="flex items-center gap-2">
             <input
               type="number"
@@ -378,20 +413,15 @@ export function GeneralSettings() {
                 }
               }}
               className="field w-24"
-              aria-label="Subagent concurrency cap (1-16)"
+              aria-label={tSettings("general.subAria")}
             />
-            <span className="text-xs text-faint">Allowed 1-16, default 5; takes effect right after saving</span>
+            <span className="text-xs text-faint">{tSettings("general.subHint")}</span>
           </div>
-          <p className="mt-1 text-xs text-faint">
-            Hard cap on subagents running concurrently under the same parent session; requests over
-            the cap are rejected with a list of the currently running ones.
-          </p>
+          <p className="mt-1 text-xs text-faint">{tSettings("general.subHelp")}</p>
         </div>
         <div>
-          <label className="field-label">Working directory</label>
-          <div className="field bg-base/40 text-muted">
-            ~/workspace/&lt;project&gt; (agent metadata in ~/.ginno/projects/)
-          </div>
+          <label className="field-label">{tSettings("general.workingDirLabel")}</label>
+          <div className="field bg-base/40 text-muted">{tSettings("general.workingDirValue")}</div>
         </div>
         <RightTabsSection onMsg={setMsg} />
         {msg && <div className="text-xs text-muted">{msg}</div>}

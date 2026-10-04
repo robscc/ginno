@@ -255,7 +255,12 @@ def read_rule_text(dir_path: str) -> tuple[str, str] | None:
     if not text:
         return None
     if len(text) > RULE_FILE_MAX_CHARS:
-        text = text[:RULE_FILE_MAX_CHARS] + "\n…（规则文件过长，已截断）"
+        from .lang import t
+
+        text = text[:RULE_FILE_MAX_CHARS] + t(
+            "\n…(rule file too long, truncated)",
+            "\n…（规则文件过长，已截断）",
+        )
     return cand.name, text
 
 

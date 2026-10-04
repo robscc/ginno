@@ -1,0 +1,159 @@
+{
+  "composer": {
+    "menu": {
+      "ariaLabel": "命令与提及补全",
+      "hints": "↑↓ 选择 · Tab/Enter 确认 · Esc 关闭",
+      "groups": {
+        "commands": "命令",
+        "skills": "技能",
+        "artifacts": "产物",
+        "agents": "代理",
+        "workflows": "工作流",
+        "memory": "记忆"
+      }
+    },
+    "commands": {
+      "helpDesc": "列出可用命令与技能",
+      "compactDesc": "手动压缩会话上下文（由 LLM 摘要较早的消息以释放 token）",
+      "subagentDesc": "派生子代理：/subagent <目标> 直接派生 1 个；/subagent split <任务> 先经 LLM 拆分，确认卡片后批量派生"
+    },
+    "mentions": {
+      "artifactDesc": "引用产物文件作为本轮上下文",
+      "agentDesc": "让该代理回答当前这一轮",
+      "workflowDesc": "引用工作流定义以执行或参考",
+      "memoryDesc": "注入长期记忆 MEMORY.md"
+    },
+    "markdown": {
+      "codeLabel": "code",
+      "copy": "复制",
+      "copied": "已复制 ✓",
+      "openLink": "打开 {target}"
+    },
+    "askUser": {
+      "chosen": "已选择：{answer}",
+      "skipped": "已跳过 · 由代理自行判断继续",
+      "defaultHeader": "需要你做出选择",
+      "freeTextPlaceholder": "其他（回车发送）",
+      "sendCustom": "发送自定义回答",
+      "skip": "跳过 · 让代理自行判断"
+    },
+    "sheet": {
+      "savedTo": "已保存到 {path}",
+      "saveFailed": "保存失败",
+      "downloadStarted": "已开始下载",
+      "downloadFailed": "下载失败",
+      "previewFailed": "预览失败",
+      "runtimeUnreachable": "无法连接 runtime",
+      "rowsRange": "第 {from}–{to} 行 / 共 {total} 行",
+      "emptySheet": "空表格",
+      "loading": "加载中…",
+      "emptyDocument": "_（空文档）_",
+      "downloadOriginal": "下载原文件",
+      "exportCsv": "将当前工作表导出为 CSV",
+      "refresh": "刷新",
+      "close": "关闭",
+      "previous": "上一页",
+      "next": "下一页"
+    },
+    "summarize": {
+      "modal": {
+        "title": "总结成流程 · {name}",
+        "distilledFrom": "提炼自「{source}」",
+        "draftNotSaved": "草稿未保存",
+        "close": "关闭",
+        "structurePreview": "结构预览 · {count} 个节点",
+        "dryRun": "试运行",
+        "dryRunning": "试运行中…",
+        "dryRunHint": "对当前草稿做零成本试运行：不保存、不执行、不请求 LLM——仅做校验/数据流/编译/可达性检查",
+        "reSummarize": "重新总结",
+        "nodes": "节点",
+        "backToCards": "返回卡片视图",
+        "expandJson": "展开 JSON",
+        "nodeName": "节点名称",
+        "nodeGoal": "节点目标",
+        "deleteNode": "删除节点",
+        "noNodes": "此草稿暂无节点",
+        "contextVariables": "上下文变量",
+        "requiredToOptional": "必填——点击改为可选",
+        "optionalToRequired": "可选——点击改为必填",
+        "required": "必填",
+        "optional": "可选",
+        "noVariables": "未检测到变量——运行时输入直接写死在 DSL 里，可手动添加",
+        "variableName": "变量名",
+        "addVariable": "添加变量",
+        "dryRunPassed": "试运行通过：{count} 个节点——校验 / 数据流 / 编译 / 可达性全部通过",
+        "warnings": "{count} 条警告（不阻塞）：",
+        "unreachable": "不可达节点（永远不会执行）：{nodes}",
+        "dryRunFailed": "试运行失败：",
+        "created": "工作流「{name}」已创建——可在「工作流」页查看并运行",
+        "done": "完成",
+        "cancel": "取消",
+        "refine": "进入开发会话精炼",
+        "refining": "创建并打开中…",
+        "createOnly": "仅创建",
+        "creating": "创建中…",
+        "createAndRun": "创建并运行",
+        "running": "运行中…",
+        "defaultName": "新工作流",
+        "dslMustBeObject": "DSL 必须是 JSON 对象",
+        "jsonSyntaxError": "JSON 语法错误",
+        "dryRunRequestFailed": "试运行请求失败"
+      },
+      "flow": {
+        "currentSession": "当前会话",
+        "pastSession": "历史会话",
+        "previousDraft": "上次草稿",
+        "defaultName": "新工作流",
+        "failed": "总结失败：{reason}",
+        "failStage": "总结失败：{stage}（case {id}，~/.ginno/synthesis/{id}）",
+        "waitTimeout": "总结失败：等待超时（case {id}，~/.ginno/synthesis/{id}）",
+        "cannotConnect": "总结失败：无法连接 runtime",
+        "unknown": "未知原因",
+        "runtimeUnreachable": "无法连接 runtime",
+        "createFailed": "创建工作流失败",
+        "triggerRunFailed": "已创建，但触发运行失败：{reason}",
+        "unknownError": "未知错误",
+        "refineSessionTitle": "精炼工作流：{name}"
+      }
+    },
+    "subagentPlan": {
+      "title": "任务拆分方案 · {count} 个子任务",
+      "confirmed": "已确认",
+      "cancelled": "已取消",
+      "task": "任务：{task}",
+      "subtask": "子任务 {index}",
+      "goalPlaceholder": "子任务目标（自包含的完整描述）",
+      "constraintsPlaceholder": "约束（硬性边界，可选）",
+      "acceptance": "验收标准：{text}",
+      "reason": "理由：{text}",
+      "reasonTitle": "委派理由：{text}",
+      "confirmedReceipt": "已确认 · 将依次派生 {count} 个子代理（派生进度见下方卡片）",
+      "cancelledReceipt": "该拆分方案已取消",
+      "emptyGoalHint": "部分子任务目标为空",
+      "confirmHint": "按当前内容批量派生子代理",
+      "confirmSpawn": "确认并发起 {count} 个",
+      "cancel": "取消",
+      "editableHint": "目标与约束可编辑"
+    },
+    "badges": {
+      "fileKind": {
+        "spreadsheet": "电子表格",
+        "table": "数据表",
+        "document": "文档",
+        "presentation": "演示文稿",
+        "pdf": "PDF",
+        "data": "数据",
+        "text": "文本",
+        "image": "图片",
+        "unknown": "未知"
+      },
+      "nodeType": {
+        "step": "步骤",
+        "branch": "分支",
+        "loop": "循环",
+        "human": "人工",
+        "subflow": "子流程"
+      }
+    }
+  }
+}

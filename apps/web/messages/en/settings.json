@@ -1,0 +1,34 @@
+{
+  "settings": {
+    "language": {
+      "label": "Language",
+      "help": "UI language. \"Auto (system)\" follows your OS language; model replies follow this setting as well.",
+      "auto": "Auto (system)",
+      "en": "English",
+      "zh-CN": "简体中文",
+      "saved": "Language saved",
+      "saveFailed": "Failed to save"
+    },
+    "general": {
+      "title": "General",
+      "providerLabel": "Default model provider",
+      "providerDisabled": " (disabled)",
+      "providerHelp": "New sessions and agents without their own provider use this provider; bind a different provider to an agent in Settings → Agents to override it.",
+      "providerToast": "default provider → {name}",
+      "themeLabel": "Theme",
+      "privileged": "Privileged Mode (skip all permission confirmations, allow any command)",
+      "privilegedHelp": "When on, the Agent can call any tool without asking and the permission policy cannot block it (including Bash/Write and other dangerous operations). On by default; when off, asks / blocks per the permission policy. Note: your PreToolUse hooks still run (hooks are custom rules and always apply).",
+      "privilegedOn": "Privileged Mode on: all tools run directly without asking",
+      "privilegedOff": "Privileged Mode off: ask / block per the permission policy",
+      "subLabel": "Subagent concurrency cap",
+      "subAria": "Subagent concurrency cap (1-16)",
+      "subHint": "Allowed 1-16, default 5; takes effect right after saving",
+      "subHelp": "Hard cap on subagents running concurrently under the same parent session; requests over the cap are rejected with a list of the currently running ones.",
+      "subClamped": "Out of range, clamped to {n} (allowed 1-16)",
+      "subSaved": "Subagent concurrency cap saved: {n}",
+      "saveFailed": "Failed to save",
+      "workingDirLabel": "Working directory",
+      "workingDirValue": "~/workspace/<project> (agent metadata in ~/.ginno/projects/)"
+    }
+  }
+}

@@ -33,10 +33,12 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from .lang import t
 from .tokens import estimate_messages_tokens
 from .world_state import (
     SUMMARY_MSG_PREFIX,
     render_reinjection,
+    summary_lead_in,
 )
 
 _SUMMARY_SYSTEM = (
@@ -169,7 +171,12 @@ async def maybe_compact_history(
     summary_resp = await model.ainvoke(
         [
             _summary_system_message(),
-            HumanMessage(content=f"请总结以下对话记录:\n\n{transcript}"),
+            HumanMessage(
+                content=t(
+                    f"Summarize the following conversation:\n\n{transcript}",
+                    f"请总结以下对话记录:\n\n{transcript}",
+                )
+            ),
         ]
     )
     summary = str(getattr(summary_resp, "content", "") or "").strip()
@@ -180,7 +187,7 @@ async def maybe_compact_history(
         RemoveMessage(id=m.id) for m in messages if getattr(m, "id", None)
     ]
     summary_msg = HumanMessage(
-        content=f"{SUMMARY_MSG_PREFIX}\n以下是此前对话的摘要（原始消息已被压缩）：\n\n{summary}",
+        content=f"{SUMMARY_MSG_PREFIX}\n{summary_lead_in()}\n\n{summary}",
         id=f"summary_{uuid.uuid4().hex[:10]}",
     )
     new_messages.append(summary_msg)

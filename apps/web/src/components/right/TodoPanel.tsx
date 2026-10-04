@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import {
   Boxes,
   Check,
@@ -28,14 +29,33 @@ import { ArtifactMetaCard, ICON, KIND_LABEL, type Rect } from "./ArtifactsPanel"
 import type { Artifact, Priority, SessionMeta, Todo, TodoProvider, TodoSyncEntry } from "@/lib/types";
 
 type Filter = "all" | Priority;
-const FILTERS: { id: Filter; label: string; color?: string }[] = [
-  { id: "all", label: "All" },
-  { id: "high", label: "High", color: PRIORITY_HEX.high },
-  { id: "medium", label: "Medium", color: PRIORITY_HEX.medium },
-  { id: "low", label: "Low", color: PRIORITY_HEX.low },
+// 文案按 `filter.<id>` 取（渲染时走 useTranslations），这里只保留 id 与配色。
+const FILTERS: { id: Filter; color?: string }[] = [
+  { id: "all" },
+  { id: "high", color: PRIORITY_HEX.high },
+  { id: "medium", color: PRIORITY_HEX.medium },
+  { id: "low", color: PRIORITY_HEX.low },
 ];
 
 const PRIO_RANK: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
+
+/** 相对时间文案：labels 由调用方按当前 locale 组装（模块层不能调 hook）。 */
+function relTime(
+  ts: number,
+  labels: {
+    now: string;
+    min: (n: number) => string;
+    hour: (n: number) => string;
+    day: (n: number) => string;
+  },
+): string {
+  const d = Date.now() / 1000 - ts;
+  if (d < 60) return labels.now;
+  if (d < 3600) return labels.min(Math.floor(d / 60));
+  if (d < 86400) return labels.hour(Math.floor(d / 3600));
+  if (d < 86400 * 30) return labels.day(Math.floor(d / 86400));
+  return new Date(ts * 1000).toLocaleDateString();
+}
 
 // Curated picker — the common cases. Anything else can be typed in the
 // custom input at the bottom of the popover.
@@ -46,19 +66,10 @@ const EMOJIS = [
   "🤖", "🎬", "🎵", "📷", "✈️", "🏠", "💰", "🧾", "🌱", "🏆",
 ];
 
-function relTime(ts: number): string {
-  const d = Date.now() / 1000 - ts;
-  if (d < 60) return "刚刚";
-  if (d < 3600) return `${Math.floor(d / 60)} 分钟前`;
-  if (d < 86400) return `${Math.floor(d / 3600)} 小时前`;
-  if (d < 86400 * 30) return `${Math.floor(d / 86400)} 天前`;
-  return new Date(ts * 1000).toLocaleDateString();
-}
-
 /** Sessions linked to a todo — explicit list plus the legacy origin link. */
-function linkedSessionIds(t: Todo): string[] {
-  const ids = [...(t.session_ids || [])];
-  const legacy = t.links?.session_id;
+function linkedSessionIds(todo: Todo): string[] {
+  const ids = [...(todo.session_ids || [])];
+  const legacy = todo.links?.session_id;
   if (legacy && !ids.includes(legacy)) ids.push(legacy);
   return ids;
 }
@@ -80,6 +91,8 @@ function EmojiPicker({
   value: string;
   onChange: (v: string) => void;
 }) {
+  // i18n：图标选择器框架文案
+  const t = useTranslations("right.todo");
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState("");
   const ref = useRef<HTMLDivElement | null>(null);
@@ -98,7 +111,7 @@ function EmojiPicker({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title={value ? `图标：${value}（点击更换）` : "选择图标"}
+        title={value ? t("emojiTitle", { v: value }) : t("emojiPick")}
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-line2 bg-base/40 text-sm hover:border-violet"
       >
         {value ? <span className="leading-none">{value}</span> : <SmilePlus className="h-3.5 w-3.5 text-faint" />}
@@ -132,7 +145,7 @@ function EmojiPicker({
                   setOpen(false);
                 }
               }}
-              placeholder="自定义…"
+              placeholder={t("emojiCustom")}
               className="min-w-0 flex-1 rounded border border-line2 bg-base/40 px-1.5 py-0.5 text-xs text-txt outline-none focus:border-violet"
             />
             {value && (
@@ -144,7 +157,7 @@ function EmojiPicker({
                 }}
                 className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:text-txt"
               >
-                无
+                {t("emojiNone")}
               </button>
             )}
           </div>
@@ -158,12 +171,14 @@ function EmojiPicker({
 function TagsInput({
   value,
   onChange,
-  placeholder = "标签（回车添加）",
+  placeholder,
 }: {
   value: string[];
   onChange: (v: string[]) => void;
   placeholder?: string;
 }) {
+  // i18n：标签输入占位文案（标签本身是用户数据，不翻译）
+  const t = useTranslations("right.todo");
   const [draft, setDraft] = useState("");
   const commit = () => {
     const parts = draft
@@ -180,12 +195,12 @@ function TagsInput({
   };
   return (
     <div className="flex min-h-7 flex-1 flex-wrap items-center gap-1 rounded-md border border-line2 bg-base/40 px-1.5 py-1">
-      {value.map((t) => (
-        <span key={t} className="flex items-center gap-0.5 rounded bg-violet/15 px-1.5 py-px text-[10px] text-violet">
-          #{t}
+      {value.map((tag) => (
+        <span key={tag} className="flex items-center gap-0.5 rounded bg-violet/15 px-1.5 py-px text-[10px] text-violet">
+          #{tag}
           <button
             type="button"
-            onClick={() => onChange(value.filter((x) => x !== t))}
+            onClick={() => onChange(value.filter((x) => x !== tag))}
             className="hover:text-txt"
           >
             <X className="h-2.5 w-2.5" />
@@ -204,7 +219,7 @@ function TagsInput({
           }
         }}
         onBlur={commit}
-        placeholder={value.length ? "" : placeholder}
+        placeholder={value.length ? "" : (placeholder ?? t("tagsPlaceholder"))}
         className="min-w-12 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-faint"
       />
     </div>
@@ -232,6 +247,9 @@ function TodoEditor({
   onSubmit: (d: Draft) => void;
   onCancel: () => void;
 }) {
+  // i18n：编辑器框架文案
+  const t = useTranslations("right.todo");
+  const tc = useTranslations("right.common");
   const [d, setD] = useState<Draft>(initial);
   const submit = () => {
     if (!d.title.trim()) return;
@@ -249,7 +267,7 @@ function TodoEditor({
             if (e.key === "Enter") submit();
             if (e.key === "Escape") onCancel();
           }}
-          placeholder="任务标题…"
+          placeholder={t("titlePlaceholder")}
           className="min-w-0 flex-1 rounded-md border border-line2 bg-base/40 px-2 py-1 text-sm text-txt outline-none focus:border-violet"
         />
       </div>
@@ -259,14 +277,14 @@ function TodoEditor({
           onChange={(e) => setD((x) => ({ ...x, priority: e.target.value as Priority }))}
           className="rounded-md border border-line2 bg-base/40 px-1.5 py-1 text-[11px] text-txt outline-none"
         >
-          <option value="high" className="bg-panel">高</option>
-          <option value="medium" className="bg-panel">中</option>
-          <option value="low" className="bg-panel">低</option>
+          <option value="high" className="bg-panel">{t("filter.high")}</option>
+          <option value="medium" className="bg-panel">{t("filter.medium")}</option>
+          <option value="low" className="bg-panel">{t("filter.low")}</option>
         </select>
         <input
           value={d.category}
           onChange={(e) => setD((x) => ({ ...x, category: e.target.value }))}
-          placeholder="分类"
+          placeholder={t("categoryPlaceholder")}
           className="w-20 rounded-md border border-line2 bg-base/40 px-1.5 py-1 text-[11px] text-txt outline-none focus:border-violet"
         />
         <input
@@ -275,7 +293,7 @@ function TodoEditor({
           onKeyDown={(e) => {
             if (e.key === "Enter") submit();
           }}
-          placeholder="截止（如 14:00 / EOD）"
+          placeholder={t("duePlaceholder")}
           className="min-w-0 flex-1 rounded-md border border-line2 bg-base/40 px-1.5 py-1 text-[11px] text-txt outline-none focus:border-violet"
         />
       </div>
@@ -285,7 +303,7 @@ function TodoEditor({
           onClick={onCancel}
           className="rounded-md px-2.5 py-1 text-xs text-muted hover:text-txt"
         >
-          取消
+          {tc("cancel")}
         </button>
         <button
           onClick={submit}
@@ -324,6 +342,21 @@ function TodoDetail({
   onUnlinkSession: (sid: string) => void;
   onUnlinkArtifact: (aid: string) => void;
 }) {
+  // i18n：详情区框架文案（会话标题/产物名是用户数据，不翻译）
+  const t = useTranslations("right.todo");
+  const tc = useTranslations("right.common");
+  const ta = useTranslations("right.artifacts");
+  const rel = (ts: number) =>
+    relTime(ts, {
+      now: tc("relNow"),
+      min: (n) => tc("relMinutes", { n }),
+      hour: (n) => tc("relHours", { n }),
+      day: (n) => tc("relDays", { n }),
+    });
+  const kindLabel = (k: string) => {
+    const key = KIND_LABEL[k];
+    return key ? ta(key) : k;
+  };
   const knownIds = new Set(sessions.map((s) => s.id));
   const linkedSids = linkedSessionIds(todo);
   const resolved = linkedSids
@@ -337,30 +370,30 @@ function TodoDetail({
       {/* sessions */}
       <div>
         <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted">
-          <MessageSquare className="h-3 w-3" /> 相关会话
+          <MessageSquare className="h-3 w-3" /> {t("relatedSessions")}
           <span className="text-faint">({resolved.length + missing.length})</span>
         </div>
         {resolved.length === 0 && missing.length === 0 && (
-          <div className="py-1 text-[11px] leading-relaxed text-faint">
-            暂无关联会话。在任意会话里让 Agent 处理这个 TODO（或用 todo 工具），会话会自动关联到这里。
-          </div>
+          <div className="py-1 text-[11px] leading-relaxed text-faint">{t("noSessions")}</div>
         )}
         {resolved.map((s) => (
           <div
             key={s.id}
             onClick={() => onJumpSession(s)}
-            title="点击跳转到该会话"
+            title={t("jumpSession")}
             className="group flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-card"
           >
             <Icon name={s.icon || "message-square"} className="h-3.5 w-3.5 shrink-0 text-muted" />
-            <span className="min-w-0 flex-1 truncate text-xs text-txt">{s.title || "(未命名会话)"}</span>
-            <span className="shrink-0 text-[10px] text-faint">{relTime(s.updated)}</span>
+            <span className="min-w-0 flex-1 truncate text-xs text-txt">
+              {s.title || t("untitledSession")}
+            </span>
+            <span className="shrink-0 text-[10px] text-faint">{rel(s.updated)}</span>
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onUnlinkSession(s.id);
               }}
-              title="取消关联"
+              title={t("unlink")}
               className="shrink-0 rounded p-0.5 text-faint hover:text-red invisible group-hover:visible"
             >
               <X className="h-3 w-3" />
@@ -370,10 +403,10 @@ function TodoDetail({
         {missing.map((id) => (
           <div key={id} className="flex items-center gap-2 px-1.5 py-1 text-[11px] text-faint">
             <Icon name="message-square" className="h-3.5 w-3.5" />
-            已删除的会话 <span className="font-mono">{id.slice(0, 8)}</span>
+            {t("deletedSession")} <span className="font-mono">{id.slice(0, 8)}</span>
             <button
               onClick={() => onUnlinkSession(id)}
-              title="取消关联"
+              title={t("unlink")}
               className="rounded p-0.5 hover:text-red"
             >
               <X className="h-3 w-3" />
@@ -385,18 +418,16 @@ function TodoDetail({
       {/* artifacts */}
       <div className="border-t border-line pt-2">
         <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted">
-          <Boxes className="h-3 w-3" /> 相关产物
+          <Boxes className="h-3 w-3" /> {t("relatedArtifacts")}
           <span className="text-faint">({artifacts.length})</span>
         </div>
         {loadingArtifacts && (
           <div className="flex items-center gap-1.5 py-1 text-[11px] text-faint">
-            <Loader2 className="h-3 w-3 animate-spin" /> 加载中…
+            <Loader2 className="h-3 w-3 animate-spin" /> {tc("loading")}
           </div>
         )}
         {!loadingArtifacts && artifacts.length === 0 && (
-          <div className="py-1 text-[11px] leading-relaxed text-faint">
-            暂无关联产物。让 Agent 把产出的文件/文档用 todo_link 关联到这个 TODO，或以后支持手动关联。
-          </div>
+          <div className="py-1 text-[11px] leading-relaxed text-faint">{t("noArtifacts")}</div>
         )}
         {artifacts.map((a) => {
           const Ic = ICON[a.kind] || ICON.file;
@@ -406,20 +437,20 @@ function TodoDetail({
               onClick={() => onJumpArtifact(a)}
               onMouseEnter={(e) => onHoverArtifact(a, e.currentTarget)}
               onMouseLeave={onLeaveArtifact}
-              title="点击跳转到产物所在会话 · 悬停查看详情"
+              title={t("jumpArtifact")}
               className="group flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-card"
             >
               <Ic className="h-3.5 w-3.5 shrink-0 text-violet" />
               <span className="min-w-0 flex-1 truncate text-xs text-txt">{a.name}</span>
               <span className="shrink-0 rounded bg-card2 px-1 py-px text-[10px] text-faint">
-                {KIND_LABEL[a.kind] || a.kind}
+                {kindLabel(a.kind)}
               </span>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   onUnlinkArtifact(a.id);
                 }}
-                title="取消关联"
+                title={t("unlink")}
                 className="shrink-0 rounded p-0.5 text-faint hover:text-red invisible group-hover:visible"
               >
                 <X className="h-3 w-3" />
@@ -436,6 +467,9 @@ function TodoDetail({
 export function TodoPanel() {
   const g = useGinno();
   const router = useRouter();
+  // i18n：t 面板框架文案，tc 通用文案（标题/标签/待办条目是用户数据，不翻译）
+  const t = useTranslations("right.todo");
+  const tc = useTranslations("right.common");
   const [filter, setFilter] = useState<Filter>("all");
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [q, setQ] = useState("");
@@ -536,7 +570,7 @@ export function TodoPanel() {
     setMenu(false);
     setSyncBusy(p.id);
     setSyncMsg(null);
-    const before = new Set(g.todos.map((t) => t.id));
+    const before = new Set(g.todos.map((todo) => todo.id));
     const flash = (text: string, ok: boolean) => {
       setSyncMsg({ text, ok });
       window.setTimeout(() => setSyncMsg(null), 8000);
@@ -544,7 +578,7 @@ export function TodoPanel() {
     try {
       const r = await api.pullTodos(p.id);
       if (!r?.ok || !r.run) {
-        flash(`同步失败：${r?.error || "触发失败"}`, false);
+        flash(t("syncFailed", { e: r?.error || t("syncFailedTrigger") }), false);
         return;
       }
       // A todo-sync run is HEADLESS (no present_in session), so it emits no
@@ -564,15 +598,15 @@ export function TodoPanel() {
         if (status === "done" || status === "failed") break;
       }
       const after = await api.listTodos();
-      const added = after.filter((t) => !before.has(t.id)).length;
+      const added = after.filter((todo) => !before.has(todo.id)).length;
       await g.reloadTodos();
       await g.reloadWorkflowRuns();
       refreshSync();
-      if (status === "failed") flash("同步失败（详见 Workflow 面板）", false);
-      else if (added > 0) flash(`同步完成：新增 ${added} 条`, true);
-      else flash("同步完成：平台无新的未完成待办", true);
+      if (status === "failed") flash(t("syncFailedPanel"), false);
+      else if (added > 0) flash(t("syncDone", { n: added }), true);
+      else flash(t("syncNone"), true);
     } catch {
-      flash("同步失败：无法连接运行时", false);
+      flash(t("syncFailedConnect"), false);
     } finally {
       setSyncBusy(null);
     }
@@ -584,23 +618,24 @@ export function TodoPanel() {
 
   const allTags = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const t of g.todos) for (const tag of t.tags || []) counts.set(tag, (counts.get(tag) || 0) + 1);
+    for (const todo of g.todos)
+      for (const tag of todo.tags || []) counts.set(tag, (counts.get(tag) || 0) + 1);
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([tag]) => tag);
   }, [g.todos]);
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return sortTodos(
-      g.todos.filter((t) => {
-        if (filter !== "all" && t.priority !== filter) return false;
-        if (tagFilter && !(t.tags || []).includes(tagFilter)) return false;
-        if (needle && !t.title.toLowerCase().includes(needle)) return false;
+      g.todos.filter((todo) => {
+        if (filter !== "all" && todo.priority !== filter) return false;
+        if (tagFilter && !(todo.tags || []).includes(tagFilter)) return false;
+        if (needle && !todo.title.toLowerCase().includes(needle)) return false;
         return true;
       }),
     );
   }, [g.todos, filter, tagFilter, q]);
 
-  const expanded = expandedId ? g.todos.find((t) => t.id === expandedId) : undefined;
+  const expanded = expandedId ? g.todos.find((todo) => todo.id === expandedId) : undefined;
 
   // ---- actions ----------------------------------------------------------
   function toggleExpand(id: string) {
@@ -621,20 +656,20 @@ export function TodoPanel() {
     router.push("/");
   }
 
-  function unlinkSession(t: Todo, sid: string) {
-    const next = (t.session_ids || []).filter((x) => x !== sid);
+  function unlinkSession(todo: Todo, sid: string) {
+    const next = (todo.session_ids || []).filter((x) => x !== sid);
     const patch: Partial<Todo> = { session_ids: next };
     // also drop the legacy origin link when it points at the same session
-    if (t.links?.session_id === sid) patch.links = { ...t.links, session_id: undefined };
-    void g.patchTodo(t.id, patch);
+    if (todo.links?.session_id === sid) patch.links = { ...todo.links, session_id: undefined };
+    void g.patchTodo(todo.id, patch);
   }
-  function unlinkArtifact(t: Todo, aid: string) {
-    void g.patchTodo(t.id, { artifact_ids: (t.artifact_ids || []).filter((x) => x !== aid) });
+  function unlinkArtifact(todo: Todo, aid: string) {
+    void g.patchTodo(todo.id, { artifact_ids: (todo.artifact_ids || []).filter((x) => x !== aid) });
   }
 
   async function clearCompleted() {
-    const targets = g.todos.filter((t) => t.done);
-    for (const t of targets) await g.removeTodo(t.id);
+    const targets = g.todos.filter((todo) => todo.done);
+    for (const todo of targets) await g.removeTodo(todo.id);
   }
 
   const expandedArtifacts: Artifact[] = expanded
@@ -647,26 +682,24 @@ export function TodoPanel() {
     <div className="flex h-full flex-col">
       <div className="flex items-center px-4 pb-2 pt-4">
         <ListChecks className="mr-2 h-4 w-4 text-muted" />
-        <span className="text-sm font-semibold text-txt">Daily TODO</span>
+        <span className="text-sm font-semibold text-txt">{t("title")}</span>
         <span className="ml-2 rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{total}</span>
         <div className="relative ml-auto">
           <button
             onClick={() => setMenu((m) => !m)}
             disabled={!!syncBusy}
-            title="与外部 TODO 平台同步（settings → todo_providers 配置）"
+            title={t("syncTitle")}
             className="flex items-center gap-1 text-xs text-muted hover:text-txt disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${syncBusy ? "animate-spin" : ""}`} />
-            {syncBusy ? "同步中" : "同步"}
+            {syncBusy ? t("syncing") : t("sync")}
           </button>
           {menu && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setMenu(false)} />
               <div className="absolute right-0 z-50 mt-1 w-48 overflow-hidden rounded-lg border border-line bg-card py-1 text-xs shadow-xl">
                 {providers.length === 0 && (
-                  <div className="px-3 py-1.5 text-faint">
-                    未配置 provider（settings → todo_providers）
-                  </div>
+                  <div className="px-3 py-1.5 text-faint">{t("noProvider")}</div>
                 )}
                 {providers.map((p) => (
                   <button
@@ -674,7 +707,7 @@ export function TodoPanel() {
                     onClick={() => void pull(p)}
                     className="block w-full px-3 py-1.5 text-left text-muted hover:bg-card2 hover:text-txt"
                   >
-                    拉取 {p.label}
+                    {t("pullFrom", { name: p.label })}
                   </button>
                 ))}
               </div>
@@ -688,7 +721,7 @@ export function TodoPanel() {
           }}
           className="ml-2 flex items-center gap-1 text-xs text-muted hover:text-txt"
         >
-          <Plus className="h-3.5 w-3.5" /> New
+          <Plus className="h-3.5 w-3.5" /> {t("new")}
         </button>
       </div>
 
@@ -713,7 +746,7 @@ export function TodoPanel() {
                 border: `1px solid ${sel ? (f.color ? f.color + "55" : "#34343f") : "#262632"}`,
               }}
             >
-              {f.label}
+              {t(`filter.${f.id}`)}
             </button>
           );
         })}
@@ -723,7 +756,7 @@ export function TodoPanel() {
             <button
               key={tag}
               onClick={() => setTagFilter(sel ? null : tag)}
-              title={`按标签筛选：${tag}`}
+              title={t("filterTag", { tag })}
               className={`rounded-md border px-1.5 py-1 text-[10px] transition-colors ${
                 sel
                   ? "border-violet/55 bg-violet/15 text-violet"
@@ -744,7 +777,7 @@ export function TodoPanel() {
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索…"
+              placeholder={t("searchPlaceholder")}
               className="min-w-0 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-faint"
             />
             {q && (
@@ -760,7 +793,7 @@ export function TodoPanel() {
         <div className="px-4 pb-2">
           <TodoEditor
             initial={{ title: "", emoji: "", priority: "medium", category: "", due: "", tags: [] }}
-            submitLabel="添加"
+            submitLabel={t("add")}
             onCancel={() => setAdding(false)}
             onSubmit={(d) => {
               void g.addTodo({
@@ -787,33 +820,31 @@ export function TodoPanel() {
       >
         {visible.length === 0 && (
           <div className="px-2 py-8 text-center text-xs text-faint">
-            {total === 0
-              ? "暂无 TODO。点 + New 添加，或在会话里输入 /todo 让 Agent 管理。"
-              : "没有符合筛选条件的任务。"}
+            {total === 0 ? t("emptyAll") : t("emptyFiltered")}
           </div>
         )}
-        {visible.map((t) => {
-          const cs = categoryStyle(t.category);
-          const isExpanded = expandedId === t.id;
-          const isEditing = editingId === t.id;
-          const nSessions = linkedSessionIds(t).length;
-          const nArtifacts = (t.artifact_ids || []).length;
+        {visible.map((todo) => {
+          const cs = categoryStyle(todo.category);
+          const isExpanded = expandedId === todo.id;
+          const isEditing = editingId === todo.id;
+          const nSessions = linkedSessionIds(todo).length;
+          const nArtifacts = (todo.artifact_ids || []).length;
           if (isEditing) {
             return (
-              <div key={t.id} className="px-1 py-1">
+              <div key={todo.id} className="px-1 py-1">
                 <TodoEditor
                   initial={{
-                    title: t.title,
-                    emoji: t.emoji || "",
-                    priority: t.priority,
-                    category: t.category,
-                    due: t.due,
-                    tags: t.tags || [],
+                    title: todo.title,
+                    emoji: todo.emoji || "",
+                    priority: todo.priority,
+                    category: todo.category,
+                    due: todo.due,
+                    tags: todo.tags || [],
                   }}
-                  submitLabel="保存"
+                  submitLabel={t("save")}
                   onCancel={() => setEditingId(null)}
                   onSubmit={(d) => {
-                    void g.patchTodo(t.id, {
+                    void g.patchTodo(todo.id, {
                       title: d.title,
                       priority: d.priority,
                       category: d.category,
@@ -828,9 +859,9 @@ export function TodoPanel() {
             );
           }
           return (
-            <div key={t.id}>
+            <div key={todo.id}>
               <div
-                onClick={() => toggleExpand(t.id)}
+                onClick={() => toggleExpand(todo.id)}
                 className={`group flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-2.5 hover:bg-card/50 ${
                   isExpanded ? "bg-card/40" : ""
                 }`}
@@ -838,28 +869,28 @@ export function TodoPanel() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    void g.patchTodo(t.id, { done: !t.done });
+                    void g.patchTodo(todo.id, { done: !todo.done });
                   }}
-                  title={t.done ? "标记为未完成" : "标记为完成"}
+                  title={todo.done ? t("markUndone") : t("markDone")}
                   className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors"
                   style={{
-                    borderColor: t.done ? "#8b5cf6" : "#34343f",
-                    background: t.done ? "#8b5cf6" : "transparent",
+                    borderColor: todo.done ? "#8b5cf6" : "#34343f",
+                    background: todo.done ? "#8b5cf6" : "transparent",
                   }}
                 >
-                  {t.done && <Check className="h-3 w-3 text-white" />}
+                  {todo.done && <Check className="h-3 w-3 text-white" />}
                 </button>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
-                    {!t.done && (
+                    {!todo.done && (
                       <span
                         className="h-1.5 w-1.5 shrink-0 rounded-full"
-                        style={{ background: PRIORITY_HEX[t.priority] }}
+                        style={{ background: PRIORITY_HEX[todo.priority] }}
                       />
                     )}
-                    {t.emoji && <span className="shrink-0 text-sm leading-none">{t.emoji}</span>}
-                    <span className={`truncate text-sm ${t.done ? "text-faint line-through" : "text-txt"}`}>
-                      {t.title}
+                    {todo.emoji && <span className="shrink-0 text-sm leading-none">{todo.emoji}</span>}
+                    <span className={`truncate text-sm ${todo.done ? "text-faint line-through" : "text-txt"}`}>
+                      {todo.title}
                     </span>
                     <ChevronDown
                       className={`ml-auto h-3 w-3 shrink-0 text-faint transition-transform ${
@@ -868,22 +899,22 @@ export function TodoPanel() {
                     />
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
-                    {t.category && (
+                    {todo.category && (
                       <span
                         className="rounded px-1.5 py-0.5 text-[10px] font-medium"
                         style={{ color: cs.color, background: cs.bg }}
                       >
-                        {t.category}
+                        {todo.category}
                       </span>
                     )}
-                    {(t.tags || []).map((tag) => (
+                    {(todo.tags || []).map((tag) => (
                       <button
                         key={tag}
                         onClick={(e) => {
                           e.stopPropagation();
                           setTagFilter(tagFilter === tag ? null : tag);
                         }}
-                        title={`筛选标签 #${tag}`}
+                        title={t("filterTag", { tag: `#${tag}` })}
                         className={`rounded px-1.5 py-0.5 text-[10px] ${
                           tagFilter === tag
                             ? "bg-violet/25 text-violet"
@@ -893,22 +924,22 @@ export function TodoPanel() {
                         #{tag}
                       </button>
                     ))}
-                    {t.due && (
+                    {todo.due && (
                       <span className="flex items-center gap-1 text-[11px] text-faint">
                         <Clock className="h-3 w-3" />
-                        {t.due}
+                        {todo.due}
                       </span>
                     )}
-                    {(t.ext || []).map((x, i) => {
+                    {(todo.ext || []).map((x, i) => {
                       const prov = providers.find((p) => p.id === x.provider);
-                      const st = latestSync(t.id, x.provider || "");
+                      const st = latestSync(todo.id, x.provider || "");
                       const label = prov?.label || x.provider || "ext";
                       return (
                         <span
                           key={i}
                           className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
                           style={{ color: "#3b82f6", background: "#3b82f61a" }}
-                          title={`外部待办 ${x.provider}:${x.id ?? ""}`}
+                          title={t("externalTodo", { ref: `${x.provider}:${x.id ?? ""}` })}
                         >
                           {x.url ? (
                             <a
@@ -930,18 +961,18 @@ export function TodoPanel() {
                           ) : (
                             label
                           )}
-                          {st?.status === "running" && <span className="text-faint">同步中</span>}
+                          {st?.status === "running" && <span className="text-faint">{t("syncing")}</span>}
                           {st?.status === "ok" && <span className="text-green">✓</span>}
                           {["failed", "cancelled", "interrupted"].includes(st?.status ?? "") && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                void api.pushTodo(t.id, x.provider || "").then(refreshSync);
+                                void api.pushTodo(todo.id, x.provider || "").then(refreshSync);
                               }}
                               className="text-red hover:underline"
-                              title={`同步失败：${st?.error || "未知错误"}（点击重试）`}
+                              title={t("retryTitle", { e: st?.error || t("unknownError") })}
                             >
-                              重试
+                              {t("retry")}
                             </button>
                           )}
                         </span>
@@ -949,7 +980,7 @@ export function TodoPanel() {
                     })}
                     {nSessions > 0 && (
                       <span
-                        title={`${nSessions} 个相关会话（点击展开）`}
+                        title={t("nSessionsTitle", { n: nSessions })}
                         className="flex items-center gap-0.5 text-[10px] text-faint"
                       >
                         <MessageSquare className="h-3 w-3" /> {nSessions}
@@ -957,7 +988,7 @@ export function TodoPanel() {
                     )}
                     {nArtifacts > 0 && (
                       <span
-                        title={`${nArtifacts} 个相关产物（点击展开）`}
+                        title={t("nArtifactsTitle", { n: nArtifacts })}
                         className="flex items-center gap-0.5 text-[10px] text-faint"
                       >
                         <Boxes className="h-3 w-3" /> {nArtifacts}
@@ -967,11 +998,11 @@ export function TodoPanel() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setEditingId(t.id);
+                          setEditingId(todo.id);
                           setAdding(false);
                           setExpandedId(null);
                         }}
-                        title="编辑"
+                        title={t("edit")}
                         className="rounded p-0.5 text-muted hover:bg-card2 hover:text-txt"
                       >
                         <Pencil className="h-3 w-3" />
@@ -979,9 +1010,9 @@ export function TodoPanel() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setDeleteTarget(t);
+                          setDeleteTarget(todo);
                         }}
-                        title="删除"
+                        title={tc("delete")}
                         className="rounded p-0.5 text-muted hover:bg-card2 hover:text-red"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -1031,15 +1062,15 @@ export function TodoPanel() {
       {/* progress */}
       <div className="border-t border-line px-4 py-3">
         <div className="mb-1.5 flex items-center justify-between text-xs">
-          <span className="text-muted">Today&apos;s progress</span>
+          <span className="text-muted">{t("progress")}</span>
           <span className="flex items-center gap-2 font-medium text-txt">
             {done > 0 && (
               <button
                 onClick={() => void clearCompleted()}
-                title="删除所有已完成条目"
+                title={t("clearTitle")}
                 className="flex items-center gap-0.5 text-[10px] font-normal text-faint hover:text-red"
               >
-                <CornerDownRight className="h-3 w-3" /> 清除已完成 ({done})
+                <CornerDownRight className="h-3 w-3" /> {t("clearDone", { n: done })}
               </button>
             )}
             <span>
@@ -1054,9 +1085,11 @@ export function TodoPanel() {
 
       {deleteTarget && (
         <ConfirmModal
-          title="删除 TODO"
-          message={`确定删除「${deleteTarget.emoji ? deleteTarget.emoji + " " : ""}${deleteTarget.title}」？此操作不可撤销。`}
-          confirmLabel="删除"
+          title={t("deleteTitle")}
+          message={t("deleteMessage", {
+            name: `${deleteTarget.emoji ? deleteTarget.emoji + " " : ""}${deleteTarget.title}`,
+          })}
+          confirmLabel={tc("delete")}
           onConfirm={() => {
             void g.removeTodo(deleteTarget.id);
             setDeleteTarget(null);

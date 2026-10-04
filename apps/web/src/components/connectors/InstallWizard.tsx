@@ -6,6 +6,7 @@
  * connector's install_steps (sidecar defines the copy). */
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import type { InstallStep } from "@/lib/runtime";
 import { Check, Copy, ExternalLink, FolderOpen, Loader2, X } from "lucide-react";
@@ -19,6 +20,10 @@ export function InstallWizard({
   connectorId: string;
   onClose: () => void;
 }) {
+  // conn 域 catalog（messages/{en,zh-CN}/conn.json）。壳文案走 tConn；步骤数据
+  // 走契约（i18n-design.md §3）：runtime 下发 i18n_key + params 时翻译，否则回退原文。
+  const tConn = useTranslations("conn");
+  const tRoot = useTranslations(); // 根级：i18n_key 是含 conn. 前缀的 dot 路径
   const [steps, setSteps] = useState<InstallStep[]>([]);
   const [i, setI] = useState(() => {
     // 重入(设计 §2.3):进度存 localStorage,刷新/重开不从头来;
@@ -58,6 +63,25 @@ export function InstallWizard({
 
   // "waitConnect" step: show elapsed seconds, auto-finish on connect
   const step = steps[i];
+
+  // 步骤文案契约（同 blocks.tsx 的 useEventI18nText 范本）：i18n_key 存在且
+  // catalog 命中时按 <key>.<field> 翻译（附 params），否则回退英文兜底原文。
+  const stepText = (field: "title" | "body", fallback: string): string => {
+    if (!step) return fallback;
+    const key = typeof step.i18n_key === "string" ? step.i18n_key : "";
+    const full = key ? `${key}.${field}` : "";
+    const tr = tRoot as unknown as {
+      (key: string, values?: Record<string, string | number>): string;
+      has(key: string): boolean;
+    };
+    if (!full || !tr.has(full)) return fallback;
+    try {
+      return tr(full, step.params);
+    } catch {
+      return fallback; // params 结构异常等——翻译永不挂掉渲染
+    }
+  };
+
   useEffect(() => {
     if (!step?.waitConnect || connected) return;
     const t = setInterval(() => setWaited((s) => s + 1), 1000);
@@ -80,7 +104,7 @@ export function InstallWizard({
       <div className="w-full max-w-lg rounded-2xl border border-line bg-card p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-semibold text-txt">
-            安装 Ginno 浏览器扩展
+            {tConn("wizard.title")}
           </h2>
           <button onClick={onClose} className="rounded p-1 text-faint hover:text-txt">
             <X className="h-4 w-4" />
@@ -104,25 +128,25 @@ export function InstallWizard({
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-green/15">
               <Check className="h-6 w-6 text-green" />
             </div>
-            <div className="text-sm font-medium text-txt">✅ 扩展已连接 Ginno</div>
+            <div className="text-sm font-medium text-txt">{tConn("wizard.connectedTitle")}</div>
             <div className="mt-1 text-xs text-faint">
-              浏览器工具已就绪——去会话里让 agent 操作你的 Chrome 吧。
+              {tConn("wizard.connectedBody")}
             </div>
             <button
               onClick={onClose}
               className="mt-4 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"
             >
-              开始使用
+              {tConn("wizard.getStarted")}
             </button>
           </div>
         ) : (
           step && (
             <>
               <div className="text-sm font-medium text-txt">
-                第 {i + 1} 步 · {step.title}
+                {tConn("wizard.stepLabel", { n: i + 1 })} · {stepText("title", step.title)}
               </div>
               <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-faint">
-                {step.body}
+                {stepText("body", step.body)}
               </p>
 
               {step.action === "reveal_folder" && (
@@ -130,7 +154,7 @@ export function InstallWizard({
                   onClick={() => api.connectorAction(connectorId, "reveal_folder")}
                   className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
                 >
-                  <FolderOpen className="h-3.5 w-3.5" /> 在 Finder 中显示
+                  <FolderOpen className="h-3.5 w-3.5" /> {tConn("wizard.showInFinder")}
                 </button>
               )}
 
@@ -142,7 +166,7 @@ export function InstallWizard({
                   <button
                     onClick={() => copy(step.copy!)}
                     className="rounded-lg border border-line p-2 text-faint hover:text-txt"
-                    title="复制"
+                    title={tConn("wizard.copy")}
                   >
                     {copied ? <Check className="h-3.5 w-3.5 text-green" /> : <Copy className="h-3.5 w-3.5" />}
                   </button>
@@ -152,19 +176,19 @@ export function InstallWizard({
               {step.waitConnect && (
                 <div className="mt-3 flex items-center gap-2 text-xs text-faint">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  已等待 {waited}s…
+                  {tConn("wizard.waited", { s: waited })}
                 </div>
               )}
 
               {/* 没连上?排查清单(Step 5 末尾,设计 §7.3) */}
               {step.waitConnect && waited > 30 && (
                 <div className="mt-4 rounded-lg border border-yellow/40 bg-yellow/10 p-3 text-xs leading-relaxed text-yellow-900 dark:text-yellow-200">
-                  没连上?按顺序检查:
+                  {tConn("wizard.troubleshootTitle")}
                   <ol className="mt-1 list-decimal space-y-0.5 pl-4">
-                    <li>Chrome 扩展页里出现了「Ginno Browser Connector」且已启用(没出现 → 回到第 4 步重新加载)</li>
-                    <li>扩展卡片上没有红色「错误」按钮</li>
-                    <li>Ginno 桌面应用正在运行</li>
-                    <li>点扩展图标,确认状态为「已连接」;不是则检查端口(默认 8787)</li>
+                    <li>{tConn("wizard.troubleshoot1")}</li>
+                    <li>{tConn("wizard.troubleshoot2")}</li>
+                    <li>{tConn("wizard.troubleshoot3")}</li>
+                    <li>{tConn("wizard.troubleshoot4")}</li>
                   </ol>
                 </div>
               )}
@@ -175,11 +199,11 @@ export function InstallWizard({
                   disabled={i === 0}
                   className="rounded-lg px-3 py-1.5 text-xs text-faint disabled:opacity-40"
                 >
-                  上一步
+                  {tConn("wizard.back")}
                 </button>
                 <div className="flex items-center gap-2">
                   <button onClick={onClose} className="px-3 py-1.5 text-xs text-faint">
-                    以后再说
+                    {tConn("wizard.later")}
                   </button>
                   {!step.waitConnect && (
                     <button
@@ -187,7 +211,7 @@ export function InstallWizard({
                       disabled={isLast}
                       className="rounded-lg bg-violet-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-40"
                     >
-                      下一步
+                      {tConn("wizard.next")}
                     </button>
                   )}
                 </div>

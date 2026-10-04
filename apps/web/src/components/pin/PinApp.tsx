@@ -24,6 +24,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -48,6 +49,8 @@ const SESS_MODE_KEY = "ginno-pin-session-mode";
 
 export function PinApp() {
   const g = useGinno();
+  // 悬浮窗 UI 文案 catalog（i18n Wave2）
+  const t = useTranslations("pin.app");
 
   const [winMode, setWinMode] = useState<WinMode>("mini");
   const [sessMode, setSessMode] = useState<SessMode>(() => {
@@ -185,9 +188,9 @@ export function PinApp() {
       const res = await api.createSession({
         workspace: process.env.NEXT_PUBLIC_WORKSPACE ?? "/tmp/gw",
         type: "quick",
-        title: "速聊",
+        title: t("quickSessionTitle"),
       });
-      if (!res?.id) throw new Error(res?.error || "创建速聊会话失败");
+      if (!res?.id) throw new Error(res?.error || t("createFailed"));
       setQuickId(res.id);
       try {
         localStorage.setItem(QUICK_KEY, res.id);
@@ -202,7 +205,7 @@ export function PinApp() {
       setCreating(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [g.reloadSessions]);
+  }, [g.reloadSessions, t]);
 
   // One-shot quick-session init once the store boots: reuse the persisted
   // id when it still exists, else mint a fresh quick session.
@@ -330,7 +333,7 @@ export function PinApp() {
           onMouseDown={(e) => {
             if (e.button === 0) dragRef.current = { x: e.clientX, y: e.clientY, moved: false };
           }}
-          title="Ginno 速聊 — 点击展开，拖动移动"
+          title={t("pillTooltip")}
           className="flex h-full w-full items-center gap-2 rounded-full border border-line2 bg-panel/90 px-3.5 shadow-lg backdrop-blur-md"
         >
           {/* key={status} re-triggers the one-shot bounce on → permission */}
@@ -346,7 +349,7 @@ export function PinApp() {
             }
           />
           <span className="truncate text-xs font-medium text-muted">
-            {status === "permission" ? "待确认" : status === "busy" ? "运行中" : "Ginno"}
+            {status === "permission" ? t("statusPending") : status === "busy" ? t("statusRunning") : "Ginno"}
           </span>
         </div>
         {/* Stream stays mounted while pill'd — status dot + running turns */}
@@ -371,19 +374,19 @@ export function PinApp() {
         <select
           value={sessMode}
           onChange={(e) => switchSessMode(e.target.value as SessMode)}
-          title="会话模式"
+          title={t("sessionModeTitle")}
           className="min-w-0 max-w-[170px] flex-1 cursor-pointer truncate rounded-md border border-transparent bg-transparent px-1 py-0.5 text-xs font-medium text-muted outline-none transition-colors hover:border-line2 hover:text-txt focus:border-violet/60"
         >
-          <option value="quick">⚡ 速聊（独立会话）</option>
+          <option value="quick">{t("modeQuick")}</option>
           <option value="follow">
-            {followedTitle ? `👁 跟随 · ${followedTitle}` : "👁 跟随主窗口会话"}
+            {followedTitle ? t("modeFollow", { title: followedTitle }) : t("modeFollowNone")}
           </option>
         </select>
         <div className="ml-auto flex shrink-0 items-center">
           <button
             type="button"
             onClick={newQuickSession}
-            title="新建速聊会话"
+            title={t("newQuickTitle")}
             className="rounded-md p-1 text-faint transition-colors hover:bg-card hover:text-txt"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -391,7 +394,7 @@ export function PinApp() {
           <button
             type="button"
             onClick={openMain}
-            title="在主窗口打开（⌘↵）"
+            title={t("openMainTitle")}
             className="rounded-md p-1 text-faint transition-colors hover:bg-card hover:text-txt"
           >
             <ExternalLink className="h-3.5 w-3.5" />
@@ -399,7 +402,7 @@ export function PinApp() {
           <button
             type="button"
             onClick={() => setMode("pill")}
-            title="收为胶囊（Esc）"
+            title={t("collapseTitle")}
             className="rounded-md p-1 text-faint transition-colors hover:bg-card hover:text-txt"
           >
             <ChevronDown className="h-3.5 w-3.5" />
@@ -407,7 +410,7 @@ export function PinApp() {
           <button
             type="button"
             onClick={hide}
-            title="隐藏悬浮窗"
+            title={t("hideTitle")}
             className="rounded-md p-1 text-faint transition-colors hover:bg-card hover:text-red"
           >
             <X className="h-3.5 w-3.5" />
@@ -423,7 +426,7 @@ export function PinApp() {
           {!g.ready ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin text-faint" />
-              <p className="text-xs text-faint">等待 Ginno 启动…</p>
+              <p className="text-xs text-faint">{t("waitingForStart")}</p>
             </>
           ) : sessionError ? (
             <>
@@ -433,27 +436,27 @@ export function PinApp() {
                 onClick={() => void createQuickSession()}
                 className="rounded-lg border border-line2 px-2.5 py-1 text-xs text-muted transition-colors hover:text-txt"
               >
-                重试
+                {t("retry")}
               </button>
             </>
           ) : creating ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin text-faint" />
-              <p className="text-xs text-faint">正在创建速聊会话…</p>
+              <p className="text-xs text-faint">{t("creating")}</p>
             </>
           ) : (
             <>
               <p className="text-xs leading-relaxed text-faint">
-                主窗口暂无活动会话。
+                {t("noActiveSession")}
                 <br />
-                切回「⚡ 速聊」，或先去主窗口打开一个会话。
+                {t("noActiveSessionHint")}
               </p>
               <button
                 type="button"
                 onClick={() => switchSessMode("quick")}
                 className="rounded-lg border border-line2 px-2.5 py-1 text-xs text-muted transition-colors hover:text-txt"
               >
-                切回速聊
+                {t("switchToQuick")}
               </button>
             </>
           )}

@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { WorkflowRun } from "@/lib/types";
-import { STATUS_LABEL } from "@/components/chat/RunBlocks";
+import { relTime } from "@/lib/utils";
+import { useRunStatusLabel } from "@/components/chat/RunBlocks";
 
 function pillClass(status: string): string {
   if (status === "running") return "bg-blue/15 text-blue";
@@ -13,21 +15,12 @@ function pillClass(status: string): string {
   return "bg-card2 text-faint";
 }
 
-function relTime(ts?: number): string {
-  if (!ts) return "";
-  const diff = Math.max(0, Date.now() / 1000 - ts);
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  const d = Math.floor(diff / 86400);
-  return d < 30 ? `${d} 天前` : `${Math.floor(d / 30)} 个月前`;
-}
-
 type Scope = "all" | "active" | "terminal";
-const SCOPES: Array<[Scope, string]> = [
-  ["all", "全部"],
-  ["active", "进行中"],
-  ["terminal", "终态"],
+/** 筛选页签：value 为 wf.runList.* 下的 key（label 随渲染取译）。 */
+const SCOPES: Array<[Scope, "scopeAll" | "scopeActive" | "scopeFinished"]> = [
+  ["all", "scopeAll"],
+  ["active", "scopeActive"],
+  ["terminal", "scopeFinished"],
 ];
 const ACTIVE = new Set(["running", "paused"]);
 const TERMINAL = new Set(["done", "failed", "cancelled", "interrupted"]);
@@ -54,6 +47,10 @@ export function RunListColumn({
   variant?: "rail" | "strip";
 }) {
   const [scope, setScope] = useState<Scope>("all");
+  // wf 域文案 + run 状态 key 渲染（chat.status.*），与侧栏/观察器共用 hook。
+  const t = useTranslations("wf.runList");
+  const tCommon = useTranslations("wf.common");
+  const statusLabel = useRunStatusLabel();
   const visible =
     scope === "all" ? runs : runs.filter((r) => (scope === "active" ? ACTIVE : TERMINAL).has(r.status));
 
@@ -68,13 +65,13 @@ export function RunListColumn({
             <button
               key={r.id}
               onClick={() => onSelectRun(r.id)}
-              title={`${STATUS_LABEL[r.status] || r.status} · ${done}/${r.steps.length} 步 · v${r.dsl_version ?? "?"}`}
+              title={`${statusLabel(r.status)} · ${tCommon("progressSteps", { done, total: r.steps.length })} · v${r.dsl_version ?? "?"}`}
               className={`flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10.5px] transition-colors ${
                 on ? "border-blue bg-card2/70 text-txt" : "border-line2 text-muted hover:bg-card/60"
               }`}
             >
               <span className={`rounded px-1 py-px text-[9px] ${pillClass(r.status)}`}>
-                {STATUS_LABEL[r.status] || r.status}
+                {statusLabel(r.status)}
               </span>
               <span className="font-mono">#{r.id.slice(0, 4)}</span>
               <span className="tabular-nums text-faint">
@@ -92,7 +89,7 @@ export function RunListColumn({
     <div className="flex h-full min-h-0 flex-col rounded-lg border border-line bg-panel">
       <div className="border-b border-line px-2.5 py-2">
         <div className="flex items-center gap-1.5">
-          <span className="text-[11.5px] font-semibold text-txt">本配方的运行</span>
+          <span className="text-[11.5px] font-semibold text-txt">{t("title")}</span>
           {runsLoading ? (
             <Loader2 className="h-3 w-3 animate-spin text-faint" />
           ) : (
@@ -100,7 +97,7 @@ export function RunListColumn({
           )}
         </div>
         <div className="mt-1.5 flex gap-2 text-[10.5px]">
-          {SCOPES.map(([k, label]) => (
+          {SCOPES.map(([k, key]) => (
             <button
               key={k}
               onClick={() => setScope(k)}
@@ -110,7 +107,7 @@ export function RunListColumn({
                   : "px-1 py-px text-faint transition-colors hover:text-muted"
               }
             >
-              {label}
+              {t(key)}
             </button>
           ))}
         </div>
@@ -129,16 +126,18 @@ export function RunListColumn({
             >
               <div className="flex items-center gap-1.5">
                 <span className={`rounded px-1.5 py-px text-[9.5px] ${pillClass(r.status)}`}>
-                  {STATUS_LABEL[r.status] || r.status}
+                  {statusLabel(r.status)}
                 </span>
                 <span className="font-mono text-[10.5px] text-muted">#{r.id.slice(0, 4)}</span>
                 {/* 定时触发的 run（scheduled-tasks-design §3.6/§10 决议 7） */}
                 {r.origin === "schedule" && (
-                  <span className="shrink-0 rounded border border-line2 px-1 text-[9px] leading-4 text-faint" title="Triggered by scheduled task">
-                    ⏰ Scheduled
+                  <span className="shrink-0 rounded border border-line2 px-1 text-[9px] leading-4 text-faint" title={t("scheduledTitle")}>
+                    {t("scheduledBadge")}
                   </span>
                 )}
-                <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">{relTime(r.started)}</span>
+                <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">
+                  {r.started ? relTime(r.started) : ""}
+                </span>
               </div>
               <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-faint">
                 <span className="tabular-nums">
@@ -157,7 +156,7 @@ export function RunListColumn({
         })}
         {!visible.length && (
           <div className="px-2.5 py-3 text-[11px] text-faint">
-            {runs.length ? "该过滤条件下没有运行" : "还没有运行——点上方▶运行发起一次"}
+            {runs.length ? t("noRunsFilter") : t("noRuns")}
           </div>
         )}
       </div>

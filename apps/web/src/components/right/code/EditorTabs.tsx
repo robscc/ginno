@@ -14,6 +14,7 @@
  */
 
 import { AlertTriangle, FileText, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 
 export interface EditorTab {
@@ -50,21 +51,23 @@ function tabLabel(tab: EditorTab): string {
   return parts[parts.length - 1] || tab.path || "/";
 }
 
-/** Tooltip for a tab: the path, plus why it is marked (closing loses edits). */
-function tabTitle(tab: EditorTab): string {
-  const notes: string[] = [];
-  // Conflict first: it outranks dirty when both are set.
-  if (tab.conflict) notes.push("文件在磁盘上已被修改");
-  if (tab.dirty) notes.push(`未保存的修改：${tabLabel(tab)}`);
-  if (notes.length === 0) return tab.path;
-  return `${tab.path}（${notes.join("；")}）`;
-}
-
 export function EditorTabs({ tabs, activeKey, onSelect, onClose, className }: EditorTabsProps) {
+  const t = useTranslations("code.tabs");
+
+  /** Tooltip for a tab: the path, plus why it is marked (closing loses edits). */
+  const tabTip = (tab: EditorTab): string => {
+    const notes: string[] = [];
+    // Conflict first: it outranks dirty when both are set.
+    if (tab.conflict) notes.push(t("conflictTip"));
+    if (tab.dirty) notes.push(t("dirtyTip", { name: tabLabel(tab) }));
+    if (notes.length === 0) return tab.path;
+    return `${tab.path} (${notes.join("; ")})`;
+  };
+
   return (
     <div
       role="tablist"
-      aria-label="已打开的文件"
+      aria-label={t("openFiles")}
       className={cn(
         "flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-line bg-panel",
         className,
@@ -78,7 +81,7 @@ export function EditorTabs({ tabs, activeKey, onSelect, onClose, className }: Ed
             key={key}
             role="tab"
             aria-selected={active}
-            title={tabTitle(tab)}
+            title={tabTip(tab)}
             onClick={() => onSelect(key)}
             onAuxClick={(e) => {
               // Middle-click closes, matching editor/browser tab behaviour.
@@ -98,8 +101,8 @@ export function EditorTabs({ tabs, activeKey, onSelect, onClose, className }: Ed
             {tab.conflict ? (
               <span
                 role="img"
-                title="文件在磁盘上已被修改"
-                aria-label="文件在磁盘上已被修改"
+                title={t("conflictTip")}
+                aria-label={t("conflictTip")}
                 className="flex shrink-0 items-center text-yellow"
               >
                 <AlertTriangle size={12} />
@@ -107,8 +110,8 @@ export function EditorTabs({ tabs, activeKey, onSelect, onClose, className }: Ed
             ) : tab.dirty ? (
               <span
                 role="img"
-                title={`未保存的修改：${tabLabel(tab)}`}
-                aria-label={`未保存的修改：${tabLabel(tab)}`}
+                title={t("dirtyTip", { name: tabLabel(tab) })}
+                aria-label={t("dirtyTip", { name: tabLabel(tab) })}
                 className="flex shrink-0 items-center text-muted"
               >
                 <span className="block h-1.5 w-1.5 rounded-full bg-current" />
@@ -116,8 +119,8 @@ export function EditorTabs({ tabs, activeKey, onSelect, onClose, className }: Ed
             ) : null}
             <button
               type="button"
-              title="关闭"
-              aria-label={`关闭 ${tabLabel(tab)}`}
+              title={t("close")}
+              aria-label={t("closeNamed", { name: tabLabel(tab) })}
               onClick={(e) => {
                 e.stopPropagation();
                 onClose(key);

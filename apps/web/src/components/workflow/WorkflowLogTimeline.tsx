@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { WorkflowRunEvent } from "@/lib/types";
 
 const KIND_STYLE: Record<string, string> = {
@@ -45,19 +46,19 @@ function fmt(ev: WorkflowRunEvent): string {
     return calls.map((c) => c.name || "?").join(", ");
   }
   if (kind === "context_write") {
-    const via = ev.method === "write_json" ? " · WRITE_JSON" : ev.method === "llm" ? " · 抽取" : "";
+    const via = ev.method === "write_json" ? " · WRITE_JSON" : ev.method === "llm" ? " · extract" : "";
     return `keys: ${(ev.keys || []).join(", ")}${via}`;
   }
   if (kind === "branch_decision") return `→ ${String(ev.chosen ?? "")}`;
   if (kind === "error") return String(ev.error || "");
   if (kind === "loop_iter")
-    return ev.parallel ? `并行 ${ev.index ?? "?"}/${ev.of ?? "?"}` : `iter ${ev.index ?? "?"}/${ev.of ?? "?"}`;
+    return ev.parallel ? `parallel ${ev.index ?? "?"}/${ev.of ?? "?"}` : `iter ${ev.index ?? "?"}/${ev.of ?? "?"}`;
   if (kind === "node_retry")
-    return `重试 ${ev.attempt ?? "?"}/${ev.max_attempts ?? "?"}${typeof ev.item === "number" ? `（item ${ev.item}）` : ""} · ${String(ev.error || "").slice(0, 60)}`;
-  if (kind === "loop_item_error") return `item ${ev.index ?? "?"} 失败（${ev.action ?? "?"}）· ${String(ev.error || "").slice(0, 60)}`;
+    return `retry ${ev.attempt ?? "?"}/${ev.max_attempts ?? "?"}${typeof ev.item === "number" ? ` (item ${ev.item})` : ""} · ${String(ev.error || "").slice(0, 60)}`;
+  if (kind === "loop_item_error") return `item ${ev.index ?? "?"} failed (${ev.action ?? "?"}) · ${String(ev.error || "").slice(0, 60)}`;
   if (kind === "warning") return String(ev.message || "");
-  if (kind === "loop_skip") return `空序列跳过（over ${String(ev.over ?? "")}）`;
-  if (kind === "loop_cap") return `达到 max_iters=${ev.max_iters ?? "?"}，剩余 ${ev.remaining ?? "?"}`;
+  if (kind === "loop_skip") return `empty sequence skipped (over ${String(ev.over ?? "")})`;
+  if (kind === "loop_cap") return `max_iters=${ev.max_iters ?? "?"} reached, ${ev.remaining ?? "?"} remaining`;
   if (kind === "supervisor_intervene") {
     const action = String(ev.action ?? "?");
     const n = Array.isArray(ev.errors) ? (ev.errors as unknown[]).length : 0;
@@ -131,6 +132,10 @@ export function WorkflowLogTimeline({
   const [openIdx, setOpenIdx] = useState<number | null>(null);
   const [filter, setFilter] = useState<TimelineFilter>("all");
   const touched = useRef(false);
+  // 日志行本体（fmt/expandBody 的 mono 输出）按设计 §3 视作日志保持英文；
+  // 这里只翻译 UI 骨架：空态、筛选页签、监督者卡片标题。
+  const t = useTranslations("wf.log");
+  const tCommon = useTranslations("wf.common");
 
   useEffect(() => {
     if (touched.current) return;
@@ -142,7 +147,7 @@ export function WorkflowLogTimeline({
   }, [events]);
 
   if (!events.length) {
-    return <div className="py-3 text-center text-xs text-faint">暂无执行日志</div>;
+    return <div className="py-3 text-center text-xs text-faint">{t("empty")}</div>;
   }
 
   // Keep original indices so openIdx stays valid across filters.
@@ -155,11 +160,11 @@ export function WorkflowLogTimeline({
       {filters && (
         <div className="flex gap-3 border-b border-line2 px-2 pt-1.5 text-[10px]">
           {([
-            ["all", "全部"],
-            ["tools", "工具调用"],
-            ["files", "文件访问"],
-            ["context", "上下文写入"],
-          ] as Array<[TimelineFilter, string]>).map(([f, label]) => (
+            ["all", "filterAll"],
+            ["tools", "filterTools"],
+            ["files", "filterFiles"],
+            ["context", "filterContext"],
+          ] as Array<[TimelineFilter, "filterAll" | "filterTools" | "filterFiles" | "filterContext"]>).map(([f, key]) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -167,14 +172,14 @@ export function WorkflowLogTimeline({
                 filter === f ? "border-violet text-violet" : "border-transparent text-faint hover:text-muted"
               }`}
             >
-              {label}
+              {t(key)}
             </button>
           ))}
         </div>
       )}
       <div className="max-h-64 overflow-auto p-2 font-mono text-[11px]">
         {rows.length === 0 && (
-          <div className="py-2 text-center text-[11px] text-faint">该过滤下暂无事件</div>
+          <div className="py-2 text-center text-[11px] text-faint">{t("noEventsForFilter")}</div>
         )}
         {rows.map(({ ev, i }) => {
         const expandable = EXPANDABLE.has(String(ev.kind));
@@ -194,7 +199,7 @@ export function WorkflowLogTimeline({
               >
                 <div className="flex items-center gap-1.5">
                   <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-orange" />
-                  <span className="font-medium text-orange">Supervisor 干预</span>
+                  <span className="font-medium text-orange">{t("supervisorIntervention")}</span>
                   {ev.node_id && <span className="text-faint">[{ev.node_id}]</span>}
                   <span
                     className={`ml-auto rounded px-1.5 py-0.5 font-sans text-[10px] font-medium ${
@@ -207,7 +212,7 @@ export function WorkflowLogTimeline({
                 </div>
                 {errs.length > 0 && (
                   <div className="mt-1 font-sans text-[10px] leading-snug text-faint">
-                    校验错误：{errs.map(String).join("；")}
+                    {tCommon("validationErrors", { list: errs.map(String).join("; ") })}
                   </div>
                 )}
                 {typeof ev.reason === "string" && ev.reason && (
@@ -216,7 +221,7 @@ export function WorkflowLogTimeline({
               </div>
               {open && (
                 <pre className="mb-1 mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-base/60 p-2 font-mono text-[10px] leading-relaxed text-muted">
-                  {expandBody(ev) || "（空）"}
+                  {expandBody(ev) || t("emptyBody")}
                 </pre>
               )}
             </div>
@@ -247,7 +252,7 @@ export function WorkflowLogTimeline({
             </div>
             {open && expandable && (
               <pre className="mb-1 mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-base/60 p-2 font-mono text-[10px] leading-relaxed text-muted">
-                {expandBody(ev) || "（空）"}
+                {expandBody(ev) || t("emptyBody")}
               </pre>
             )}
           </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -18,7 +19,7 @@ import {
 } from "lucide-react";
 import { GoalEditor } from "@/components/shell/GoalChip";
 import { useGinno, LAST_SESSION_KEY } from "@/lib/store";
-import { wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
+import { openSocket, wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
 import { setKeepAwake } from "@/lib/desktop";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
@@ -29,10 +30,10 @@ import { applyTheme } from "@/components/settings/GeneralSettings";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { ChatStream } from "@/components/chat/ChatStream";
-import { SUBAGENT_STATUS_META, SubagentKindBadges } from "@/components/chat/blocks";
+import { SUBAGENT_STATUS_META, SubagentKindBadges, useStatusLabel } from "@/components/chat/blocks";
 import { RunSubSessionView } from "@/components/chat/RunSubSessionView";
 import { ScheduleRunView } from "@/components/chat/ScheduleRunView";
-import { RUN_STATUS_META } from "@/components/chat/RunBlocks";
+import { RUN_STATUS_META, useRunStatusLabel } from "@/components/chat/RunBlocks";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
@@ -40,6 +41,13 @@ import type { SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const g = useGinno();
+  // shell 域文案（侧栏项目列表/导航按钮/窗口控件提示/菜单/空态引导）
+  const t = useTranslations("shell");
+  // 状态枚举的 key 渲染（chat.status.* 命中即译）：侧栏 workflow 运行行与
+  // 子会话行的状态标签不再直读 meta 表的英文 label，经 hook 翻译后拼进
+  // 既有 statusPrefix title 模板（meta 表本身保留英文导出做回退）。
+  const runStatusLabel = useRunStatusLabel();
+  const subStatusLabel = useStatusLabel();
   const pathname = usePathname();
   const router = useRouter();
   // inline session rename (double-click title or pencil icon)
@@ -151,13 +159,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // apply persisted theme as early as the shell mounts
   useEffect(() => {
-    let t = "dark";
+    let theme = "dark";
     try {
-      t = localStorage.getItem("ginno-theme") || "dark";
+      theme = localStorage.getItem("ginno-theme") || "dark";
     } catch {
       /* ignore */
     }
-    applyTheme(t);
+    applyTheme(theme);
   }, []);
 
   // Tauri shell bridges: clicking a native notification fires one of these via
@@ -214,10 +222,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       } catch { /* sidecar 未起时静默 */ }
     };
     tick();
-    const t = setInterval(tick, 10000);
+    const iv = setInterval(tick, 10000);
     return () => {
       alive = false;
-      clearInterval(t);
+      clearInterval(iv);
     };
   }, []);
 
@@ -239,7 +247,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let closed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     try {
-      ws = new WebSocket(wsConnectorsUrl());
+      ws = openSocket(wsConnectorsUrl());
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data) as { type: string; hint?: string };
@@ -277,7 +285,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           setScheduleDot("off");
           return;
         }
-        let bad = (cfg.tasks ?? []).some((t) => t.last_run?.status === "error");
+        let bad = (cfg.tasks ?? []).some((task) => task.last_run?.status === "error");
         if (!bad) {
           const r = await api.listScheduleRuns({ status: "missed", sort: "desc", page: 1 });
           if (!alive) return;
@@ -293,7 +301,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const iv = setInterval(tick, 60000);
     let ws: WebSocket | null = null;
     try {
-      ws = new WebSocket(wsScheduleUrl());
+      ws = openSocket(wsScheduleUrl());
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data) as { type?: string };
@@ -399,17 +407,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
   const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const todayMs = dayStart(new Date());
-  const groupOf = (s: SessionMeta): "今天" | "昨天" | "更早" => {
+  const groupOf = (s: SessionMeta): "Today" | "Yesterday" | "Earlier" => {
     const day = dayStart(new Date((s.updated ?? s.created) * 1000));
-    if (day >= todayMs) return "今天";
-    if (day >= todayMs - 86400000) return "昨天";
-    return "更早";
+    if (day >= todayMs) return "Today";
+    if (day >= todayMs - 86400000) return "Yesterday";
+    return "Earlier";
   };
-  const sessionGroups: Array<["今天" | "昨天" | "更早", SessionMeta[]]> = [
-    ["今天", sortedSessions.filter((s) => groupOf(s) === "今天")],
-    ["昨天", sortedSessions.filter((s) => groupOf(s) === "昨天")],
-    ["更早", sortedSessions.filter((s) => groupOf(s) === "更早")],
+  const sessionGroups: Array<["Today" | "Yesterday" | "Earlier", SessionMeta[]]> = [
+    ["Today", sortedSessions.filter((s) => groupOf(s) === "Today")],
+    ["Yesterday", sortedSessions.filter((s) => groupOf(s) === "Yesterday")],
+    ["Earlier", sortedSessions.filter((s) => groupOf(s) === "Earlier")],
   ];
+  // 天分组标题的本地化展示名（内部 key 保持英文，分组/比较逻辑不受影响）。
+  const groupLabel: Record<"Today" | "Yesterday" | "Earlier", string> = {
+    Today: t("groups.today"),
+    Yesterday: t("groups.yesterday"),
+    Earlier: t("groups.earlier"),
+  };
 
   // workflow 运行行（侧栏运行伪条目）：glyph/标签来自 RUN_STATUS_META，标题
   // 优先 run.name、缺省退回 workflow 定义名；点击进入中央 run 视图（与选中
@@ -437,13 +451,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
         >
           {meta ? (
-            <span className="shrink-0 text-[11px] leading-none" title={`状态：${meta.label}`}>
+            <span
+              className="shrink-0 text-[11px] leading-none"
+              title={t("session.statusPrefix", { status: runStatusLabel(r.status) })}
+            >
               {meta.emoji}
             </span>
           ) : (
             <WorkflowIcon className="h-4 w-4 shrink-0 text-muted" />
           )}
-          <span className="truncate">{r.name || wfName || "Workflow"}</span>
+          <span className="truncate">{r.name || wfName || t("run.fallbackName")}</span>
           <span className="ml-auto shrink-0 text-[10px] text-faint">{relTime(r.started)}</span>
         </button>
         <span className="flex shrink-0 items-center gap-0.5">
@@ -458,8 +475,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     /* 端点不可达——状态以 run.status 事件/轮询为准 */
                   });
               }}
-              aria-label="取消运行"
-              title="取消该运行"
+              aria-label={t("run.cancel")}
+              title={t("run.cancelHint")}
               className="rounded p-1 text-muted opacity-0 transition-opacity hover:bg-card2 hover:text-yellow group-hover:opacity-100"
             >
               <Square className="h-3 w-3" />
@@ -478,8 +495,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     /* ignore — reconcile on next reload */
                   });
               }}
-              aria-label="删除运行记录"
-              title="删除该运行记录"
+              aria-label={t("run.delete")}
+              title={t("run.deleteHint")}
               className="rounded p-1 text-muted opacity-0 transition-opacity hover:bg-card2 hover:text-red group-hover:opacity-100"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -571,7 +588,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   // 子会话行：状态 emoji 取代会话图标（subagent-design.md §6.1）
                   <span
                     className="shrink-0 text-[11px] leading-none"
-                    title={`状态：${subMeta.label}`}
+                    title={t("session.statusPrefix", { status: subStatusLabel(subStatus) })}
                   >
                     {subMeta.glyph}
                   </span>
@@ -582,12 +599,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     style={{ color: hex }}
                   />
                 )}
-                <span className="truncate">{s.title || "Untitled"}</span>
+                <span className="truncate">{s.title || t("session.untitled")}</span>
                 {/* fork / 子代理类型徽标（P3 范围 3）：仅子会话行渲染 */}
                 {isSub && <SubagentKindBadges sub={s.subagent} />}
                 {/* 悬浮速聊窗创建的 quick 会话角标（floating-window-design.md §1.1） */}
                 {s.type === "quick" && (
-                  <span title="速聊会话（来自悬浮窗）" className="shrink-0 text-[10px] text-yellow">
+                  <span title={t("session.quickBadge")} className="shrink-0 text-[10px] text-yellow">
                     ⚡
                   </span>
                 )}
@@ -598,7 +615,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {isSub && subTypeName ? (
                   <span
                     className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet"
-                    title={`子代理类型：${subTypeName}`}
+                    title={t("session.subagentType", { type: subTypeName })}
                   >
                     {subTypeName}
                   </span>
@@ -614,7 +631,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {hasKids && descendantCount(s.id) > childRows.length && (
                   <span
                     className="shrink-0 text-[10px] text-faint"
-                    title={`还有 ${descendantCount(s.id) - childRows.length} 个嵌套子任务`}
+                    title={t("session.moreNested", { count: descendantCount(s.id) - childRows.length })}
                   >
                     +{descendantCount(s.id) - childRows.length}
                   </span>
@@ -627,7 +644,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {hasKids && activeKids > 0 && (
                 <span
                   className="flex shrink-0 items-center gap-1 rounded-full border border-line2 px-1.5 text-[10px] leading-4 text-muted"
-                  title={`${activeKids} 个子任务/运行进行中`}
+                  title={t("session.activeKids", { count: activeKids })}
                 >
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green" />
                   {activeKids}
@@ -641,8 +658,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       // 存的是「新的折叠态」：当前展开 → 收起（true）。
                       g.setTreeCollapsed(s.id, expanded);
                     }}
-                    aria-label={expanded ? "折叠子任务" : "展开子任务"}
-                    title={expanded ? "折叠子任务" : "展开子任务"}
+                    aria-label={expanded ? t("session.collapse") : t("session.expand")}
+                    title={expanded ? t("session.collapse") : t("session.expand")}
                     className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
                   >
                     <ChevronDown
@@ -663,8 +680,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           /* 端点不可达——状态仍以 subagent.status 事件为准 */
                         });
                       }}
-                      aria-label="停止子任务"
-                      title="停止子任务（含其运行中的后代）"
+                      aria-label={t("session.stop")}
+                      title={t("session.stopHint")}
                       className="rounded p-1 text-muted opacity-0 transition-opacity hover:bg-card2 hover:text-yellow group-hover:opacity-100"
                     >
                       <Square className="h-3 w-3" />
@@ -675,8 +692,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         e.stopPropagation();
                         void g.removeSession(s.id);
                       }}
-                      aria-label="清除已结束的子任务"
-                      title="清除（删除该子会话行）"
+                      aria-label={t("session.clearSub")}
+                      title={t("session.clearSubHint")}
                       className="rounded p-1 text-muted opacity-0 transition-opacity hover:bg-card2 hover:text-red group-hover:opacity-100"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -690,8 +707,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         setEditTitle(s.title || "");
                         setEditingId(s.id);
                       }}
-                      aria-label="重命名会话"
-                      title="重命名（也可双击标题）"
+                      aria-label={t("session.rename")}
+                      title={t("session.renameHint")}
                       className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
                     >
                       <Pencil className="h-3.5 w-3.5" />
@@ -701,8 +718,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         e.stopPropagation();
                         setDeleteTarget(s);
                       }}
-                      aria-label="删除会话"
-                      title="删除会话"
+                      aria-label={t("session.delete")}
+                      title={t("session.delete")}
                       className="rounded p-1 text-muted hover:bg-card2 hover:text-red"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -783,14 +800,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex-1 overflow-y-auto px-2.5 pb-2">
           {/* primary actions first (open-experience prototype) */}
           <div className="mb-1 space-y-0.5 border-b border-line pb-2.5">
-            <button onClick={onNewSession} className="nav-item" title="回到着陆首页，会话在首次发送时创建">
+            <button onClick={onNewSession} className="nav-item" title={t("nav.newSessionHint")}>
               <Plus className="h-4 w-4 shrink-0" />
-              <span className="truncate">新建会话</span>
+              <span className="truncate">{t("nav.newSession")}</span>
               <kbd className="ml-auto shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-faint">⌘N</kbd>
             </button>
             <button onClick={() => setSearchOpen(true)} className="nav-item">
               <Search className="h-4 w-4 shrink-0" />
-              <span className="truncate">搜索会话</span>
+              <span className="truncate">{t("nav.searchSessions")}</span>
               <kbd className="ml-auto shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-faint">⌘K</kbd>
             </button>
           </div>
@@ -804,7 +821,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <button
                   key={a.id}
                   onClick={() => setAgentFilter(sel ? null : a.id)}
-                  title={sel ? "取消筛选" : `只看 ${a.name} 的会话`}
+                  title={sel ? t("filter.clear") : t("filter.showOnly", { name: a.name })}
                   className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
                     sel ? "" : "border-line bg-card text-muted hover:border-line2 hover:text-txt"
                   }`}
@@ -821,7 +838,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {sessionGroups.map(([label, rows]) =>
             rows.length ? (
               <div key={label} className="mb-1">
-                <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-faint">{label}</div>
+                <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-faint">{groupLabel[label]}</div>
                 <div className="space-y-0.5">
                   {rows.map((s) => renderSessionRow(s, 0, childrenOf.get(s.id) ?? []))}
                 </div>
@@ -830,24 +847,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
           {g.sessions.length === 0 && (
             <div className="px-2.5 py-2 text-xs leading-relaxed text-faint">
-              还没有会话。
+              {t("empty.noSessions")}
               <br />
-              点「新建会话」或 ⌘N 开始第一个对话。
+              {t("empty.noSessionsHint")}
             </div>
           )}
           {/* C+ 方案③：有会话但当前筛选下为空——独立兜底文案，避免误以为没有会话 */}
           {g.sessions.length > 0 && sortedSessions.length === 0 && (
             <div className="px-2.5 py-2 text-xs leading-relaxed text-faint">
-              该 Agent 下暂无会话。
+              {t("empty.filtered")}
               <br />
-              再点一次高亮的筛选 chip 可取消筛选。
+              {t("empty.filteredHint")}
             </div>
           )}
 
           {g.sessionError && (
             <button
               onClick={() => router.push("/settings/model-api")}
-              title="点击前往 设置 → 模型 API 配置"
+              title={t("session.errorHint")}
               className="mx-1 mb-3 block rounded-md border border-yellow/40 bg-yellow/10 px-2 py-1.5 text-left text-[11px] leading-snug text-yellow hover:bg-yellow/15"
             >
               {g.sessionError}
@@ -859,34 +876,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="border-t border-line px-2.5 py-3">
           <Link href="/connectors" className={`nav-item ${onConnectors ? "nav-item-active" : ""}`}>
             <Cable className="h-4 w-4 shrink-0" />
-            <span className="truncate">Connectors</span>
+            <span className="truncate">{t("nav.connectors")}</span>
             {connectorDot === "error" ? (
-              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-red-500" title="连接器错误" />
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-red-500" title={t("navDots.connectorError")} />
             ) : connectorDot === "warn" ? (
-              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-yellow-500" title="有连接器未连接" />
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-yellow-500" title={t("navDots.connectorWarn")} />
             ) : null}
           </Link>
           {/* 定时任务（scheduled-tasks-design §3.1）：Connectors 之下、KB 之上 */}
           <Link href="/scheduled" className={`nav-item ${onScheduled ? "nav-item-active" : ""}`}>
             <AlarmClock className="h-4 w-4 shrink-0" />
-            <span className="truncate">Scheduled Tasks</span>
+            <span className="truncate">{t("nav.scheduled")}</span>
             {scheduleDot === "error" ? (
-              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-red-500" title="最近执行失败或有错过的计划点" />
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-red-500" title={t("navDots.scheduleError")} />
             ) : scheduleDot === "off" ? (
-              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-faint" title="Scheduled tasks globally disabled" />
+              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-faint" title={t("navDots.scheduleOff")} />
             ) : null}
           </Link>
           <Link href="/kb" className={`nav-item ${onKb ? "nav-item-active" : ""}`}>
             <BookOpen className="h-4 w-4 shrink-0" />
-            <span className="truncate">Knowledge Base</span>
+            <span className="truncate">{t("nav.kb")}</span>
           </Link>
           <Link href="/workflows" className={`nav-item ${onWorkflows ? "nav-item-active" : ""}`}>
             <WorkflowIcon className="h-4 w-4 shrink-0" />
-            <span className="truncate">Workflows</span>
+            <span className="truncate">{t("nav.workflows")}</span>
           </Link>
           <Link href="/settings/model-api" className={`nav-item ${onSettings ? "nav-item-active" : ""}`}>
             <SettingsIcon className="h-4 w-4 shrink-0" />
-            <span className="truncate">Settings</span>
+            <span className="truncate">{t("nav.settings")}</span>
           </Link>
 
           <div className="px-2.5 pt-2 text-[10px] text-faint">© 2025 GinnoWork</div>
@@ -940,7 +957,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* B 轨 fallback「提示一次」toast(connector #6) */}
       {fallbackToast && (
         <div className="fixed bottom-5 right-5 z-50 max-w-xs rounded-xl border border-violet-500/40 bg-violet-500/10 px-4 py-3 text-xs leading-relaxed text-txt shadow-lg">
-          <div className="font-medium">正在使用备用浏览器实例</div>
+          <div className="font-medium">{t("fallbackToast.title")}</div>
           <div className="mt-0.5 text-faint">{fallbackToast}</div>
         </div>
       )}
@@ -948,7 +965,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {goalSessionModal && (
         <GoalEditor
           initial=""
-          title="目标会话 — 设定长程目标"
+          title={t("goalSession.title")}
           onClose={() => setGoalSessionModal(false)}
           onSubmit={onGoalSession}
         />
@@ -967,13 +984,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {deleteTarget && (
         <ConfirmModal
-          title="删除会话"
-          message={`确定删除会话「${deleteTarget.title || "Untitled"}」？其对话历史将被删除且无法恢复；会话产生的文件会保留，可在 设置 → 会话文件 中查看或清理。${
+          title={t("deleteModal.title")}
+          message={`${t("deleteModal.message", {
+            name: deleteTarget.title || t("session.untitled"),
+          })}${
             descendantCount(deleteTarget.id) > 0
-              ? ` 将同时删除它的 ${descendantCount(deleteTarget.id)} 个子 agent 会话（运行中的会先协作式停止）。`
+              ? ` ${t("deleteModal.cascade", { count: descendantCount(deleteTarget.id) })}`
               : ""
           }`}
-          confirmLabel="删除"
+          confirmLabel={t("deleteModal.confirm")}
           onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}
         />

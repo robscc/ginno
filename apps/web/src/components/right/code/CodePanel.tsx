@@ -38,6 +38,7 @@ import {
   RotateCcw,
   Save,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import {
   CodeApiError,
@@ -129,6 +130,7 @@ interface Jump {
 
 export function CodePanel() {
   const g = useGinno();
+  const t = useTranslations("code");
   const sessionId = g.activeSessionId;
   const panelWidth = g.rightPanelWidth;
   const wide = panelWidth >= WIDE_PX;
@@ -266,7 +268,8 @@ export function CodePanel() {
     [activeRoot],
   );
   const activeTab = useMemo(
-    () => tabs.find((t) => codeTabKey(t) === activeKey) ?? null,
+    // 回调参数不用 `t` 命名，避免遮蔽外层 i18n 翻译函数（i18n-design.md §10.4 已知坑）。
+    () => tabs.find((tab) => codeTabKey(tab) === activeKey) ?? null,
     [tabs, activeKey],
   );
   const activeRead = activeKey ? reads[activeKey] : undefined;
@@ -368,7 +371,7 @@ export function CodePanel() {
             !tabMetaRef.current[k]?.dirty,
         );
         if (victim) {
-          setTabs((prev) => prev.filter((t) => codeTabKey(t) !== victim));
+          setTabs((prev) => prev.filter((tab) => codeTabKey(tab) !== victim));
           recencyRef.current = recencyRef.current.filter((k) => k !== victim);
           dropRead(victim);
         }
@@ -377,7 +380,7 @@ export function CodePanel() {
       }
 
       setTabs((prev) =>
-        prev.some((t) => codeTabKey(t) === key) ? prev : [...prev, { rootId, path }],
+        prev.some((tab) => codeTabKey(tab) === key) ? prev : [...prev, { rootId, path }],
       );
       setActiveKey(key);
       jumpNonceRef.current += 1;
@@ -399,12 +402,12 @@ export function CodePanel() {
       // clicks rather than a modal: an OS dialog mid-edit is worse.
       if (tabMetaRef.current[key]?.dirty && pendingClose !== key) {
         setPendingClose(key);
-        setNotice("有未保存的修改：再点一次关闭，或按 ⌘S 保存");
+        setNotice(t("notice.unsavedClose"));
         return;
       }
       setPendingClose(null);
-      const idx = tabs.findIndex((t) => codeTabKey(t) === key);
-      const next = tabs.filter((t) => codeTabKey(t) !== key);
+      const idx = tabs.findIndex((tab) => codeTabKey(tab) === key);
+      const next = tabs.filter((tab) => codeTabKey(tab) !== key);
       setTabs(next);
       if (activeKey === key) {
         const fallback = next[Math.min(idx, next.length - 1)];
@@ -422,7 +425,7 @@ export function CodePanel() {
       delete latestTextRef.current[key];
       setShowDiff(false);
     },
-    [tabs, activeKey, pendingClose, dropRead],
+    [tabs, activeKey, pendingClose, dropRead, t],
   );
 
   const selectTab = useCallback((key: string) => {
@@ -459,7 +462,7 @@ export function CodePanel() {
   /** ⌘S, surfaced by MonacoEditor. */
   const saveTab = useCallback(
     async (key: string, text: string) => {
-      const tab = tabsRef.current.find((t) => codeTabKey(t) === key);
+      const tab = tabsRef.current.find((tab) => codeTabKey(tab) === key);
       const read = readsRef.current[key];
       if (!sessionId || !tab || read?.status !== "ok" || !read.data) return;
       // Same gate the editor used to be read-only: an ro mount, a binary, an
@@ -474,7 +477,7 @@ export function CodePanel() {
           encoding: read.data.encoding,
         });
         acceptSave(key, version);
-        setNotice(`已保存 ${tab.path}`);
+        setNotice(t("notice.saved", { path: tab.path }));
       } catch (err) {
         if (err instanceof CodeConflictError) {
           // Announce, never overwrite (design §6). Fetch the disk copy now so
@@ -491,11 +494,11 @@ export function CodePanel() {
             conflict: { version: err.version, diskText, mine: text },
           }));
         } else {
-          setNotice(err instanceof CodeApiError ? err.message || err.code : "保存失败");
+          setNotice(err instanceof CodeApiError ? err.message || err.code : t("notice.saveFailed"));
         }
       }
     },
-    [sessionId, acceptSave, patchMeta],
+    [sessionId, acceptSave, patchMeta, t],
   );
 
   /**
@@ -507,14 +510,14 @@ export function CodePanel() {
    * stale buffer.
    */
   const reloadTab = useCallback(
-    (key: string, notice = "已重新加载磁盘上的内容") => {
+    (key: string, notice?: string) => {
       dropRead(key);
       patchMeta(key, (m) => ({ ...m, dirty: false, conflict: null, rev: m.rev + 1 }));
       setShowDiff(false);
       setReadNonce((n) => n + 1);
-      setNotice(notice);
+      setNotice(notice ?? t("notice.reloaded"));
     },
-    [dropRead, patchMeta],
+    [dropRead, patchMeta, t],
   );
 
   /**
@@ -525,7 +528,7 @@ export function CodePanel() {
   const openDiff = useCallback(async () => {
     const key = activeKey;
     if (!key) return;
-    const tab = tabsRef.current.find((t) => codeTabKey(t) === key);
+    const tab = tabsRef.current.find((tab) => codeTabKey(tab) === key);
     const meta = tabMetaRef.current[key];
     if (!tab || !meta?.conflict || !sessionId) return;
     if (meta.conflict.diskText == null) {
@@ -535,7 +538,7 @@ export function CodePanel() {
       try {
         diskText = (await readCodeFile(PROJECT_SLUG, sessionId, tab.rootId, tab.path)).text ?? "";
       } catch {
-        setNotice("读不到磁盘上的内容，暂时无法显示差异");
+        setNotice(t("notice.diffUnavailable"));
         return;
       }
       patchMeta(key, (m) =>
@@ -543,7 +546,7 @@ export function CodePanel() {
       );
     }
     setShowDiff(true);
-  }, [activeKey, sessionId, patchMeta]);
+  }, [activeKey, sessionId, patchMeta, t]);
 
   // ---- follow agent changes (S3) --------------------------------------------
   // A pushed `code.changed` for an OPEN file: a CLEAN tab follows the file, a
@@ -559,7 +562,7 @@ export function CodePanel() {
     if (last.nonce === appliedCodeNonceRef.current) return;
     appliedCodeNonceRef.current = last.nonce;
 
-    const hit = tabsRef.current.find((t) => absPathOf(t) === last.path);
+    const hit = tabsRef.current.find((tab) => absPathOf(tab) === last.path);
     if (!hit) return;
     const key = codeTabKey(hit);
 
@@ -575,11 +578,11 @@ export function CodePanel() {
           mine: latestTextRef.current[key] ?? m.conflict?.mine ?? "",
         },
       }));
-      setNotice("agent 修改了这个文件：先看差异，再决定是否覆盖");
+      setNotice(t("notice.agentChangedDirty"));
     } else {
-      reloadTab(key, "agent 刚刚修改了这个文件，已重新加载");
+      reloadTab(key, t("notice.agentChangedReloaded"));
     }
-  }, [g.codeLastChange, sessionId, absPathOf, patchMeta, reloadTab]);
+  }, [g.codeLastChange, sessionId, absPathOf, patchMeta, reloadTab, t]);
 
   /**
    * 「强制覆盖」 — re-send the buffer against the version the 409 reported.
@@ -589,7 +592,7 @@ export function CodePanel() {
    */
   const forceOverwrite = useCallback(
     async (key: string) => {
-      const tab = tabsRef.current.find((t) => codeTabKey(t) === key);
+      const tab = tabsRef.current.find((tab) => codeTabKey(tab) === key);
       const meta = tabMetaRef.current[key];
       const read = readsRef.current[key];
       if (!sessionId || !tab || !meta?.conflict) return;
@@ -604,19 +607,19 @@ export function CodePanel() {
           encoding: read?.data?.encoding,
         });
         acceptSave(key, version);
-        setNotice(`已覆盖保存 ${tab.path}`);
+        setNotice(t("notice.overwrote", { path: tab.path }));
       } catch (err) {
         if (err instanceof CodeConflictError) {
           patchMeta(key, (m) =>
             m.conflict ? { ...m, conflict: { ...m.conflict, version: err.version } } : {},
           );
-          setNotice("文件又被修改了，请重新选择");
+          setNotice(t("notice.conflictAgain"));
         } else {
-          setNotice("覆盖保存失败");
+          setNotice(t("notice.forceSaveFailed"));
         }
       }
     },
-    [sessionId, acceptSave, patchMeta],
+    [sessionId, acceptSave, patchMeta, t],
   );
 
   // Read the active file's contents on demand (cache per tab key).
@@ -635,7 +638,7 @@ export function CodePanel() {
         if (!cancelled) setReads((prev) => ({ ...prev, [key]: { status: "ok", data } }));
       } catch (err) {
         if (!cancelled) {
-          const message = err instanceof CodeApiError ? err.message || err.code : "读取失败";
+          const message = err instanceof CodeApiError ? err.message || err.code : t("notice.readFailed");
           setReads((prev) => ({ ...prev, [key]: { status: "error", error: message } }));
         }
       } finally {
@@ -645,7 +648,7 @@ export function CodePanel() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, activeTab, readNonce]);
+  }, [sessionId, activeTab, readNonce, t]);
 
   // Consume a jump-from-chat request (design §3.4 统一入口). An absolute path
   // means the file is outside every workspace root — surface the §3.2 guidance
@@ -654,13 +657,13 @@ export function CodePanel() {
     const req = codeOpenRequest;
     if (!req) return;
     if (req.path.startsWith("/")) {
-      setNotice("该文件不在当前工作区根内");
+      setNotice(t("notice.outsideRoot"));
     } else {
       setCodeRootId(req.rootId);
       openFile(req.rootId, req.path, req.line ?? null);
     }
     clearCodeOpenRequest();
-  }, [codeOpenRequest, openFile, setCodeRootId, clearCodeOpenRequest]);
+  }, [codeOpenRequest, openFile, setCodeRootId, clearCodeOpenRequest, t]);
 
   // ---- manual controls ------------------------------------------------------
   const toggleTree = useCallback(() => {
@@ -722,47 +725,47 @@ export function CodePanel() {
   /** Create directly under `dir` (`""` = root). `name` is one component. */
   const onTreeCreate = useCallback(
     async (dir: string, name: string, kind: "file" | "dir"): Promise<string | null> => {
-      if (!sessionId || !effectiveRootId) return "没有可用的工作区";
+      if (!sessionId || !effectiveRootId) return t("panel.noWorkspace");
       const path = dir ? `${dir}/${name}` : name;
       try {
         await codeMkdir(PROJECT_SLUG, sessionId, effectiveRootId, path, kind);
         return null;
       } catch (err) {
-        return fsError(err, "创建失败");
+        return fsError(err, t("fs.createFailed"));
       }
     },
-    [sessionId, effectiveRootId],
+    [sessionId, effectiveRootId, t],
   );
 
   /** Rename in place. FileTree hands over a BARE new name; the endpoint wants
    *  the full root-relative `to`, so re-attach the source's parent here. */
   const onTreeRename = useCallback(
     async (path: string, name: string): Promise<string | null> => {
-      if (!sessionId || !effectiveRootId) return "没有可用的工作区";
+      if (!sessionId || !effectiveRootId) return t("panel.noWorkspace");
       const cut = path.lastIndexOf("/");
       const to = cut < 0 ? name : `${path.slice(0, cut)}/${name}`;
       try {
         await codeRename(PROJECT_SLUG, sessionId, effectiveRootId, path, to);
         return null;
       } catch (err) {
-        return fsError(err, "重命名失败");
+        return fsError(err, t("fs.renameFailed"));
       }
     },
-    [sessionId, effectiveRootId],
+    [sessionId, effectiveRootId, t],
   );
 
   /** Drag & drop move. `to` is already the full root-relative destination. */
   const onTreeMove = useCallback(
     async (from: string, to: string): Promise<string | null> => {
-      if (!sessionId || !effectiveRootId) return "没有可用的工作区";
+      if (!sessionId || !effectiveRootId) return t("panel.noWorkspace");
       try {
         await codeMove(PROJECT_SLUG, sessionId, effectiveRootId, from, to);
         return null;
       } catch (err) {
-        return fsError(err, "移动失败");
+        return fsError(err, t("fs.moveFailed"));
       }
     },
-    [sessionId, effectiveRootId],
+    [sessionId, effectiveRootId, t],
   );
 
   /** Delete one entry.
@@ -776,19 +779,19 @@ export function CodePanel() {
    *  OS trash via Tauri; in the browser, the server's `.trash-*` fallback. */
   const onTreeDelete = useCallback(
     async (path: string): Promise<string | null> => {
-      if (!sessionId || !effectiveRootId || !activeRoot) return "没有可用的工作区";
+      if (!sessionId || !effectiveRootId || !activeRoot) return t("panel.noWorkspace");
       let count: number;
       try {
         ({ count } = await codeDelete(PROJECT_SLUG, sessionId, effectiveRootId, path, {
           checkOnly: true,
         }));
       } catch (err) {
-        return fsError(err, "删除失败"); // fence refused — do NOT continue
+        return fsError(err, t("fs.deleteFailed")); // fence refused — do NOT continue
       }
       const abs = absInActiveRoot(path);
       try {
         if (isDesktop()) {
-          if (!abs) return "没有可用的工作区";
+          if (!abs) return t("panel.noWorkspace");
           await invoke("code_trash", { root: activeRoot.path, path: abs });
         } else {
           await codeDelete(PROJECT_SLUG, sessionId, effectiveRootId, path, {
@@ -797,12 +800,12 @@ export function CodePanel() {
           });
         }
       } catch (err) {
-        return fsError(err, "删除失败");
+        return fsError(err, t("fs.deleteFailed"));
       }
       setRefreshNonce((n) => n + 1);
       return null;
     },
-    [sessionId, effectiveRootId, activeRoot, absInActiveRoot],
+    [sessionId, effectiveRootId, activeRoot, absInActiveRoot, t],
   );
 
   const onCopyPath = useCallback(
@@ -810,10 +813,10 @@ export function CodePanel() {
       const text = absolute ? absInActiveRoot(path) ?? path : path;
       void navigator.clipboard
         ?.writeText(text)
-        .then(() => setNotice(`已复制：${text}`))
-        .catch(() => setNotice("复制失败"));
+        .then(() => setNotice(t("notice.copied", { path: text })))
+        .catch(() => setNotice(t("notice.copyFailed")));
     },
-    [absInActiveRoot],
+    [absInActiveRoot, t],
   );
 
   // Reveal / open-external are Tauri-only; invoking them in a plain browser
@@ -825,10 +828,10 @@ export function CodePanel() {
       const abs = absInActiveRoot(path);
       if (!abs) return;
       invoke("code_reveal", { root: activeRoot.path, path: abs }).catch((err) =>
-        setNotice(typeof err === "string" ? err : "无法在文件管理器中显示"),
+        setNotice(typeof err === "string" ? err : t("notice.revealFailed")),
       );
     },
-    [activeRoot, absInActiveRoot],
+    [activeRoot, absInActiveRoot, t],
   );
 
   const onTreeOpenExternal = useCallback(
@@ -837,10 +840,10 @@ export function CodePanel() {
       const abs = absInActiveRoot(path);
       if (!abs) return;
       invoke("code_open_external", { root: activeRoot.path, path: abs }).catch((err) =>
-        setNotice(typeof err === "string" ? err : "无法用默认应用打开"),
+        setNotice(typeof err === "string" ? err : t("notice.openExternalFailed")),
       );
     },
-    [activeRoot, absInActiveRoot],
+    [activeRoot, absInActiveRoot, t],
   );
 
   // ---- search injection (⌘P / ⇧⌘F) ------------------------------------------
@@ -852,7 +855,7 @@ export function CodePanel() {
           scanned: 0,
           truncated: false,
           elapsedMs: 0,
-          error: { code: "unknown-root", message: "没有可用的工作区" },
+          error: { code: "unknown-root", message: t("panel.noWorkspace") },
         };
       }
       // name → literal (the server matches case-insensitively); content → the
@@ -862,16 +865,16 @@ export function CodePanel() {
       const query = mode === "content" ? "(?i)" + escapeRegExp(q) : q;
       return searchCode(PROJECT_SLUG, sessionId, effectiveRootId, query, mode, limit);
     },
-    [sessionId, effectiveRootId],
+    [sessionId, effectiveRootId, t],
   );
 
   // ---- RootBar: register/mount a folder, flip an ro mount to rw -------------
   const onAddFolder = useCallback(
     async (path: string): Promise<string | null> => {
-      if (!sessionId) return "请先选择一个会话";
+      if (!sessionId) return t("panel.noSession");
       try {
         const created = await createFolder({ path, access: "rw", load_rules: true });
-        if (!created.ok || !created.folder) return created.error || "挂载失败";
+        if (!created.ok || !created.folder) return created.error || t("fs.mountFailed");
         const folderId = created.folder.id;
         const meta = g.sessions.find((s) => s.id === sessionId);
         const ids = meta?.context_folders ?? [];
@@ -883,7 +886,7 @@ export function CodePanel() {
           folder_ids: nextIds,
           primary_id: primary,
         });
-        if (!r.ok) return r.error || "挂载失败";
+        if (!r.ok) return r.error || t("fs.mountFailed");
         // Keep the store's session in step so the chip and a later add see it.
         g.applySessionPatch(sessionId, {
           context_folders: nextIds,
@@ -892,22 +895,22 @@ export function CodePanel() {
         setRefreshNonce((n) => n + 1); // the new root must appear
         return null;
       } catch (err) {
-        return fsError(err, "挂载失败");
+        return fsError(err, t("fs.mountFailed"));
       }
     },
-    [sessionId, g.sessions, g.applySessionPatch],
+    [sessionId, g.sessions, g.applySessionPatch, t],
   );
 
   const onMakeRootWritable = useCallback(async (rootId: string): Promise<string | null> => {
     try {
       const r = await updateFolder(rootId, { access: "rw" });
-      if (!r.ok) return r.error || "切换失败";
+      if (!r.ok) return r.error || t("fs.switchFailed");
       setRefreshNonce((n) => n + 1); // re-list roots so the badge flips
       return null;
     } catch (err) {
-      return fsError(err, "切换失败");
+      return fsError(err, t("fs.switchFailed"));
     }
-  }, []);
+  }, [t]);
 
   // ---- keyboard: ⌘P quick-open, ⇧⌘F search, Esc closes the open layer -------
   // (⌘B for the tree is bound separately above — left untouched.)
@@ -1001,14 +1004,14 @@ export function CodePanel() {
       </div>
     </>
   ) : (
-    <div className="px-2 py-2 text-[11px] text-faint">没有可用的工作区</div>
+    <div className="px-2 py-2 text-[11px] text-faint">{t("panel.noWorkspace")}</div>
   );
 
   if (!sessionId) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs text-faint">
         <Info size={20} />
-        <span>请先选择一个会话</span>
+        <span>{t("panel.noSession")}</span>
       </div>
     );
   }
@@ -1018,19 +1021,19 @@ export function CodePanel() {
       {/* Top bar: breadcrumb + tree/layout toggles */}
       <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1">
         {treeVisible ? (
-          <span className="min-w-0 flex-1 truncate text-[11px] text-faint">工作区</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-faint">{t("panel.workspace")}</span>
         ) : (
           <Breadcrumb crumbs={crumbs} onJump={jumpToDir} />
         )}
         {/* While browsing there is nothing to toggle: the tree IS the panel. */}
         {browsing ? null : (
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            <ToolButton title="文件树（⌘B）" active={g.codeTreeOpen} onClick={toggleTree}>
+            <ToolButton title={t("panel.treeToggle")} active={g.codeTreeOpen} onClick={toggleTree}>
               <FolderTree className="h-3.5 w-3.5" />
             </ToolButton>
             {wide && (
               <ToolButton
-                title={effectiveMode === "side" ? "切换为文件优先" : "切换为并排"}
+                title={effectiveMode === "side" ? t("panel.layoutFile") : t("panel.layoutSide")}
                 onClick={toggleMode}
               >
                 <Columns2 className="h-3.5 w-3.5" />
@@ -1067,9 +1070,9 @@ export function CodePanel() {
             that hint plus a collapsed tree IS the whole tab. */}
         <div className={cn("min-h-0 flex-1 flex-col", browsing ? "hidden" : "flex")}>
           <EditorTabs
-            tabs={tabs.map((t) => {
-              const m = tabMeta[codeTabKey(t)];
-              return m ? { ...t, dirty: m.dirty, conflict: !!m.conflict } : t;
+            tabs={tabs.map((tab) => {
+              const m = tabMeta[codeTabKey(tab)];
+              return m ? { ...tab, dirty: m.dirty, conflict: !!m.conflict } : tab;
             })}
             activeKey={activeKey}
             onSelect={selectTab}
@@ -1082,28 +1085,30 @@ export function CodePanel() {
           {activeMeta?.conflict ? (
             <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-base px-3 py-1.5 text-[11px]">
               <AlertTriangle size={13} className="shrink-0 text-yellow" />
-              <span className="text-txt">文件在磁盘上已被修改，保存被拒绝</span>
-              <span className="text-faint">磁盘版本 {activeMeta.conflict.version}</span>
+              <span className="text-txt">{t("conflict.title")}</span>
+              <span className="text-faint">
+                {t("conflict.diskVersion", { version: activeMeta.conflict.version })}
+              </span>
               <div className="ml-auto flex shrink-0 items-center gap-1">
                 <BarButton
                   onClick={() => (showDiff ? setShowDiff(false) : void openDiff())}
                   icon={<Columns2 size={12} />}
                 >
-                  {showDiff ? "隐藏差异" : "看差异"}
+                  {showDiff ? t("conflict.hideDiff") : t("conflict.viewDiff")}
                 </BarButton>
                 <BarButton
                   onClick={() => activeKey && reloadTab(activeKey)}
                   icon={<RotateCcw size={12} />}
-                  title="丢弃你的修改，取磁盘上的内容"
+                  title={t("conflict.reloadTitle")}
                 >
-                  重新加载
+                  {t("conflict.reload")}
                 </BarButton>
                 <BarButton
                   onClick={() => activeKey && void forceOverwrite(activeKey)}
                   icon={<Save size={12} />}
-                  title="用你的内容覆盖磁盘上的版本"
+                  title={t("conflict.forceOverwriteTitle")}
                 >
-                  强制覆盖
+                  {t("conflict.forceOverwrite")}
                 </BarButton>
               </div>
             </div>
@@ -1176,11 +1181,11 @@ export function CodePanel() {
                 />
               )
             ) : activeTab && activeRead?.status === "error" ? (
-              <EmptyHint icon={<AlertTriangle size={18} />} text={activeRead.error ?? "读取失败"} />
+              <EmptyHint icon={<AlertTriangle size={18} />} text={activeRead.error ?? t("notice.readFailed")} />
             ) : activeTab ? (
-              <EmptyHint text="正在读取…" />
+              <EmptyHint text={t("panel.reading")} />
             ) : (
-              <EmptyHint text="从文件树打开一个文件开始阅读" hint="按 ⌘B 展开文件树" />
+              <EmptyHint text={t("panel.emptyTitle")} hint={t("panel.emptyHint")} />
             )}
           </div>
         </div>
@@ -1269,7 +1274,9 @@ function Breadcrumb({
   crumbs: { label: string; path: string }[];
   onJump: (path: string) => void;
 }) {
-  if (!crumbs.length) return <span className="min-w-0 flex-1 truncate text-[11px] text-faint">未打开文件</span>;
+  const t = useTranslations("code.panel");
+  if (!crumbs.length)
+    return <span className="min-w-0 flex-1 truncate text-[11px] text-faint">{t("noFileOpen")}</span>;
   return (
     <div className="flex min-w-0 flex-1 items-center overflow-hidden text-[11px]">
       {crumbs.map((c, i) => (
@@ -1278,7 +1285,7 @@ function Breadcrumb({
           <button
             type="button"
             onClick={() => onJump(c.path)}
-            title={c.path || "根目录"}
+            title={c.path || t("breadcrumbRoot")}
             className={cn(
               "max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-card2 hover:text-txt",
               i === crumbs.length - 1 ? "text-txt" : "text-muted",

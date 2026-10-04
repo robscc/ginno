@@ -1,0 +1,15 @@
+{
+  "stream": {
+    "error_unknown_session": "未知会话：{id}",
+    "error_invalid_json": "无效的 JSON",
+    "error_unknown_type": "未知的消息类型：{type}",
+    "busy_wait": "已有回合正在运行，请等待其完成",
+    "busy_wait_command": "已有回合正在运行；请等它结束后再运行 /{command}",
+    "command_only_after_turn": "/{command} 只能在当前回合结束后运行",
+    "command_failed": "/{command} 失败：{error}",
+    "no_turn_running": "当前没有正在运行的回合，请重新发送",
+    "plan_confirm_failed": "确认拆分方案失败；请重试或重新拆分",
+    "turn_failed": "回合失败：{error}",
+    "auto_retry": "模型连接异常（{error}），{seconds} 秒后自动重试（{attempt}/{max}）…"
+  }
+}

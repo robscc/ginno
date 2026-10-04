@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, Zap } from "lucide-react";
 import { useGinno } from "@/lib/store";
+import { useTranslations } from "next-intl";
 import type { WorkflowDef } from "@/lib/types";
 import { useRunInspector } from "../workflow/studio/useRunInspector";
 import { RunObserver } from "../workflow/studio/RunObserver";
@@ -16,8 +17,19 @@ import { RunMiniDag } from "../workflow/studio/RunMiniDag";
 import { RunRightPane } from "../workflow/studio/RunRightPane";
 import { RUN_STATUS_META, STATUS_COLOR, fmtElapsed } from "./RunBlocks";
 
+/** chat 域翻译 + 动态 key 收敛转型（本文件共用；理由见 blocks.tsx useChatT）。 */
+function useChatT() {
+  const tc = useTranslations("chat");
+  const tr = tc as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  return { tc, tr };
+}
+
 export function RunSubSessionView({ runId }: { runId: string }) {
   const g = useGinno();
+  const { tc, tr } = useChatT();
   const [selRunId, setSelRunId] = useState(runId);
   // AppShell 按 activeRunId 重新挂载本组件，prop 一般不会中途变化；防御性
   // 同步一下（便宜的 useEffect 守卫，未来复用方式变了也不踩坑）。
@@ -39,12 +51,12 @@ export function RunSubSessionView({ runId }: { runId: string }) {
   if (!loading && !run && !g.workflowRuns.some((r) => r.id === selRunId)) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-faint">
-        <span>运行记录已删除</span>
+        <span>{tc("runView.deleted")}</span>
         <button
           onClick={() => g.closeRunView()}
           className="rounded-md border border-line2 px-2 py-1 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
         >
-          返回主对话
+          {tc("subagent.backToMain")}
         </button>
       </div>
     );
@@ -54,11 +66,16 @@ export function RunSubSessionView({ runId }: { runId: string }) {
   // 没有真配方就跳过。
   const wfOrStub: WorkflowDef = wf ?? {
     id: run?.workflow_id ?? "",
-    name: run?.name || "已删除的流程",
+    name: run?.name || tc("runView.deletedWorkflow"),
     description: "",
     steps: [],
   };
 
+  // 状态标签：chat.status.* 命中即译，未识别的状态回退 meta 英文标签 / 原值。
+  const statusKey = `status.${run?.status ?? ""}`;
+  const statusText = tr.has(statusKey)
+    ? tr(statusKey)
+    : RUN_STATUS_META[run?.status ?? ""]?.label ?? run?.status ?? "…";
   const meta =
     RUN_STATUS_META[run?.status ?? ""] ??
     { emoji: "⏳", label: run?.status || "…", color: STATUS_COLOR.pending };
@@ -97,19 +114,19 @@ export function RunSubSessionView({ runId }: { runId: string }) {
             className="min-w-0 max-w-[40%] truncate font-medium text-txt"
             title={run?.name || wfOrStub.name}
           >
-            {run?.name || wfOrStub.name || "Workflow 运行"}
+            {run?.name || wfOrStub.name || tc("runView.fallbackName")}
           </span>
           <span
             className="flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px"
             style={{ borderColor: meta.color + "55", color: meta.color }}
-            title={`状态：${meta.label}`}
+            title={tc("status.tooltip", { status: statusText })}
           >
             <span className="text-[10px]">{meta.emoji}</span>
-            {meta.label}
+            {statusText}
           </span>
           {run && (
             <span className="shrink-0 text-muted">
-              {doneCount}/{run.steps.length} 步
+              {tc("runView.steps", { done: doneCount, total: run.steps.length })}
             </span>
           )}
           {elapsed !== null && (
@@ -118,10 +135,10 @@ export function RunSubSessionView({ runId }: { runId: string }) {
           <button
             onClick={back}
             disabled={!parentExists}
-            title={parentExists ? "回到绑定本 run 的主对话" : "原会话已删除，无法返回"}
+            title={parentExists ? tc("runView.backTitle") : tc("runView.backTitleDeleted")}
             className="ml-auto shrink-0 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet disabled:opacity-40"
           >
-            返回主对话
+            {tc("subagent.backToMain")}
           </button>
         </div>
       </div>

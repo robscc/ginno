@@ -23,6 +23,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { AlertCircle, ArrowUp, Loader2, Paperclip, RotateCcw, Square, X } from "lucide-react";
 import { getSessionHistory, openSessionSocket } from "@/lib/runtime";
 import { loadToolLabels, toolLabel } from "@/lib/toolLabels";
@@ -207,6 +208,8 @@ export function PinStream({
   /** Aggregated activity for the pill's status dot (green/orange/grey). */
   onStatus?: (s: PinStreamStatus) => void;
 }) {
+  // 悬浮窗会话视图的 UI 文案 catalog（i18n Wave2）
+  const t = useTranslations("pin.stream");
   const [messages, setMessages] = useState<PinMsg[]>([]);
   const [liveId, setLiveId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -259,6 +262,7 @@ export function PinStream({
   const lastUserTextRef = useRef<string | null>(null);
 
   // Tool display labels come from settings (module-cached — see toolLabels).
+  // 语言加载由根部 I18nProvider 负责（原 loadPromptLang 已移除）。
   useEffect(() => {
     loadToolLabels();
   }, []);
@@ -322,7 +326,7 @@ export function PinStream({
                   ...m,
                   blocks: m.blocks.map((b) =>
                     b.kind === "tool" && b.pending
-                      ? { ...b, pending: false, content: b.content === "…" ? "(interrupted)" : b.content }
+                      ? { ...b, pending: false, content: b.content === "…" ? t("interrupted") : b.content }
                       : b,
                   ),
                 }
@@ -437,14 +441,10 @@ export function PinStream({
         break;
       }
       case "context.microcompacted":
-        addSystemRow(
-          `已清理 ${Number(ev.cleared_tool_outputs ?? 0)} 条较早的工具输出以节省上下文。`,
-        );
+        addSystemRow(t("clearedToolOutputs", { count: Number(ev.cleared_tool_outputs ?? 0) }));
         break;
       case "context.compacted":
-        addSystemRow(
-          `对话已压缩：${Number(ev.compacted_messages ?? 0)} 条较早的消息被摘要替代。`,
-        );
+        addSystemRow(t("compacted", { count: Number(ev.compacted_messages ?? 0) }));
         break;
       case "turn.state":
         // Answer to the post-reconnect probe: no turn running → whatever we
@@ -479,7 +479,7 @@ export function PinStream({
       case "error": {
         closeLive(true);
         setPermission(null);
-        const text = String(ev.message || "") || "未知错误";
+        const text = String(ev.message || "") || t("unknownError");
         setMessages((prev) => [
           ...prev,
           {
@@ -566,7 +566,7 @@ export function PinStream({
         // Frame-ownership guard (2026-10-01 渲染串线报告), same as ChatStream.
         if (ev.frame_session && sessionId && ev.frame_session !== sessionId) {
           console.warn(
-            `[ginno] 丢弃跨会话帧 event=${ev.event} frame_session=${ev.frame_session} socket_session=${sessionId}`,
+            `[ginno] dropping cross-session frame event=${ev.event} frame_session=${ev.frame_session} socket_session=${sessionId}`,
           );
           return;
         }
@@ -660,13 +660,13 @@ export function PinStream({
   function sendFrame(frame: unknown) {
     const sock = sockRef.current;
     if (!sock || sock.readyState !== WebSocket.OPEN) {
-      setSendError("连接未就绪，正在重连…");
+      setSendError(t("connNotReady"));
       return;
     }
     try {
       sock.send(JSON.stringify(frame));
     } catch {
-      setSendError("发送失败，请重试");
+      setSendError(t("sendFailed"));
     }
   }
 
@@ -699,7 +699,7 @@ export function PinStream({
         const ok = items.filter((x): x is ComposerImage => !!x);
         if (ok.length) setImages((a) => [...a, ...ok]);
       } catch {
-        showHint("图片读取失败，请重试");
+        showHint(t("imageReadFailed"));
       } finally {
         setImagesReading((n) => Math.max(0, n - 1));
       }
@@ -715,7 +715,7 @@ export function PinStream({
         setFiles((a) => a.map((x) => (x.id === tmpId ? { ...entry } : x)));
       } catch {
         setFiles((a) => a.filter((x) => x.id !== tmpId));
-        showHint(`附件上传失败：${f.name}`);
+        showHint(t("uploadFailed", { name: f.name }));
       }
     }
   }
@@ -726,11 +726,11 @@ export function PinStream({
     // ── in-flight gate (brief §4.3). Both halves used to be a silent return in
     // the main window and read as a dead send button; say why instead. ──
     if (imagesReading > 0) {
-      showHint("注意：图片处理中，请稍候再发送");
+      showHint(t("imagesProcessingHint"));
       return;
     }
     if (readyFiles.length !== files.length) {
-      showHint("注意：文件上传中，请稍候再发送");
+      showHint(t("filesUploadingHint"));
       return;
     }
     if (!text && images.length === 0 && readyFiles.length === 0) return;
@@ -783,7 +783,7 @@ export function PinStream({
         if (imgs.length) setImages((a) => [...imgs, ...a]);
         if (readyFiles.length) setFiles((a) => [...readyFiles, ...a]);
       }
-      setSendError("连接未就绪，正在重连…");
+      setSendError(t("connNotReady"));
       return;
     }
     const turnId = newTurnId();
@@ -845,7 +845,7 @@ export function PinStream({
       if (text) setInput((cur) => (cur ? `${text}\n${cur}` : text));
       if (imgs.length) setImages((a) => [...imgs, ...a]);
       if (readyFiles.length) setFiles((a) => [...readyFiles, ...a]);
-      setSendError("发送失败，请重试");
+      setSendError(t("sendFailed"));
     }
   }
 
@@ -928,7 +928,7 @@ export function PinStream({
               <div key={m.id} className="rounded-xl border border-red/40 bg-red/[0.07] px-3 py-2">
                 <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-red">
                   <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                  回复失败
+                  {t("replyFailed")}
                 </div>
                 <div className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">
                   {"text" in (text ?? {}) ? String((text as { text?: string })?.text ?? "") : ""}
@@ -941,7 +941,7 @@ export function PinStream({
                     className="mt-1.5 flex items-center gap-1 rounded-lg border border-line2 px-2 py-1 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-txt disabled:opacity-50"
                   >
                     <RotateCcw className="h-3 w-3" />
-                    重试
+                    {t("retry")}
                   </button>
                 )}
               </div>
@@ -967,7 +967,7 @@ export function PinStream({
         <div className="mx-2.5 mb-2 rounded-xl border border-yellow/40 bg-yellow/10 p-2.5">
           <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-yellow">
             <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-            权限确认 · <code className="font-mono text-txt">{toolLabel(permission.tool)}</code>
+            {t("permissionRequired")} · <code className="font-mono text-txt">{toolLabel(permission.tool)}</code>
           </div>
           <pre className="mb-2 max-h-20 overflow-auto rounded-lg bg-base/60 p-2 font-mono text-[10px] leading-snug text-muted">
             {JSON.stringify(permission.args, null, 2)}
@@ -978,14 +978,14 @@ export function PinStream({
               onClick={() => respond("allow")}
               className="rounded-lg bg-violet px-2.5 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90"
             >
-              允许一次
+              {t("allowOnce")}
             </button>
             <button
               type="button"
               onClick={() => respond("deny")}
               className="rounded-lg border border-line2 px-2.5 py-1 text-xs text-muted transition-colors hover:text-txt"
             >
-              拒绝
+              {t("deny")}
             </button>
           </div>
         </div>
@@ -995,7 +995,7 @@ export function PinStream({
       {(connecting || sendError || hint) && (
         <div className="flex items-center gap-1.5 px-3 pb-1 text-[11px] text-faint">
           {connecting && <Loader2 className="h-3 w-3 animate-spin" />}
-          {sendError ?? hint ?? (wsStatus === "reconnecting" ? "连接断开，重连中…" : "连接中…")}
+          {sendError ?? hint ?? (wsStatus === "reconnecting" ? t("reconnecting") : t("connecting"))}
         </div>
       )}
 
@@ -1008,14 +1008,14 @@ export function PinStream({
               <div key={i} className="group relative">
                 <img
                   src={a.preview}
-                  alt={a.name ?? "图片"}
-                  title={a.name ?? "图片"}
+                  alt={a.name ?? t("imageAlt")}
+                  title={a.name ?? t("imageAlt")}
                   className="h-10 w-10 rounded-lg border border-line object-cover"
                 />
                 <button
                   type="button"
                   onClick={() => setImages((l) => l.filter((_, j) => j !== i))}
-                  aria-label={`移除 ${a.name ?? "图片"}`}
+                  aria-label={t("removeImage", { name: a.name ?? t("imageAlt") })}
                   className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
                 >
                   <X className="h-3 w-3" />
@@ -1035,11 +1035,11 @@ export function PinStream({
                 <span className="max-w-[130px] truncate" title={f.name}>
                   {f.name}
                 </span>
-                {f.uploading && <span className="text-faint">上传中…</span>}
+                {f.uploading && <span className="text-faint">{t("uploading")}</span>}
                 <button
                   type="button"
                   onClick={() => setFiles((l) => l.filter((_, j) => j !== i))}
-                  aria-label={`移除 ${f.name}`}
+                  aria-label={t("removeFile", { name: f.name })}
                   className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
                 >
                   <X className="h-3 w-3" />
@@ -1051,7 +1051,7 @@ export function PinStream({
         {imagesReading > 0 && (
           <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-faint">
             <Loader2 className="h-3 w-3 animate-spin" />
-            图片处理中…
+            {t("processingImages")}
           </div>
         )}
         {steerItems.length > 0 && (
@@ -1060,8 +1060,8 @@ export function PinStream({
           // back.
           <div
             className="mb-1.5 flex items-center gap-1.5 px-0.5 text-[11px] text-muted"
-            title={`待注入 ${steerItems.length} 条 · 停止可取回\n${steerItems
-              .map((it) => it.text || "（仅附件）")
+            title={`${t("pendingTooltip", { count: steerItems.length })}\n${steerItems
+              .map((it) => it.text || t("attachmentsOnly"))
               .join("\n")}`}
           >
             {steerItems.some((it) => it.status === "sending") ? (
@@ -1069,8 +1069,8 @@ export function PinStream({
             ) : (
               <span className="shrink-0">⏳</span>
             )}
-            <span className="truncate">待注入 {steerItems.length}</span>
-            <span className="shrink-0 text-faint">停止可取回</span>
+            <span className="truncate">{t("pendingCount", { count: steerItems.length })}</span>
+            <span className="shrink-0 text-faint">{t("stopToRecall")}</span>
           </div>
         )}
         <div className="flex items-end gap-1.5 rounded-xl border border-line2 bg-card px-2.5 py-1.5 transition-colors focus-within:border-violet/60">
@@ -1081,7 +1081,7 @@ export function PinStream({
             value={input}
             onChange={onInput}
             onKeyDown={onKeyDown}
-            placeholder="问点什么…（Enter 发送，Esc 收起）"
+            placeholder={t("placeholder")}
             className="max-h-28 min-h-[24px] flex-1 resize-none bg-transparent text-[13px] leading-6 text-txt outline-none placeholder:text-faint"
           />
           <input
@@ -1100,8 +1100,8 @@ export function PinStream({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            title="添加附件（图片 / Excel / Word / PPT / PDF）"
-            aria-label="添加附件"
+            title={t("addAttachmentTitle")}
+            aria-label={t("addAttachment")}
             className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-faint transition-colors hover:bg-card2 hover:text-muted"
           >
             <Paperclip className="h-3.5 w-3.5" />
@@ -1112,7 +1112,7 @@ export function PinStream({
             type="button"
             onClick={() => sendText(input)}
             disabled={!canSend}
-            title={busy ? "注入本轮（Enter）" : "发送"}
+            title={busy ? t("injectTitle") : t("sendTitle")}
             className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-30"
           >
             <ArrowUp className="h-3.5 w-3.5" />
@@ -1121,7 +1121,7 @@ export function PinStream({
             <button
               type="button"
               onClick={stopTurn}
-              title="停止本轮"
+              title={t("stopTitle")}
               className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-red/15 text-red transition-colors hover:bg-red/25"
             >
               <Square className="h-3 w-3" />

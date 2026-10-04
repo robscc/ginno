@@ -1,0 +1,42 @@
+{
+  "goal": {
+    "status": {
+      "active": "In progress",
+      "paused": "Paused",
+      "blocked": "Blocked",
+      "usageLimited": "Usage limited",
+      "complete": "Achieved"
+    },
+    "chip": {
+      "set": "Set goal",
+      "setTitle": "Set a long-running goal for this session (the Agent drives multiple turns autonomously)",
+      "goalTitle": "Goal: {objective}"
+    },
+    "editor": {
+      "setTitle": "Set a long-running goal",
+      "editTitle": "Edit goal",
+      "placeholder": "Describe this long-running goal, e.g. research X in depth and produce a sourced report",
+      "hint": "Once set, the Agent automatically keeps running at the end of each turn until the goal is achieved / blocked / you pause it. Control anytime with /goal or this card.",
+      "set": "Set goal",
+      "setting": "Setting…",
+      "cancel": "Cancel"
+    },
+    "panel": {
+      "header": "Goal · {label}",
+      "usage": "{turns} autonomous turns · {elapsed} used"
+    },
+    "actions": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "edit": "Edit",
+      "archive": "Archive as TODO",
+      "archiveTitle": "Archive the achieved goal as a completed TODO",
+      "clear": "Clear"
+    },
+    "confirm": {
+      "title": "Replace goal?",
+      "message": "You have an unfinished goal:\n\"{objective}\"\nReplacing it will clear the old goal's progress.",
+      "confirmLabel": "Replace"
+    }
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "code": {
+    "panel": {
+      "workspace": "Workspace",
+      "treeToggle": "File tree (⌘B)",
+      "layoutSide": "Switch to side-by-side",
+      "layoutFile": "Switch to file-first",
+      "breadcrumbRoot": "Root",
+      "noFileOpen": "No file open",
+      "noSession": "Select a session first",
+      "noWorkspace": "No workspace available",
+      "reading": "Reading…",
+      "emptyTitle": "Open a file from the tree to start reading",
+      "emptyHint": "Press ⌘B to expand the file tree"
+    },
+    "notice": {
+      "unsavedClose": "Unsaved changes: click close again to discard, or press ⌘S to save",
+      "saved": "Saved {path}",
+      "saveFailed": "Failed to save",
+      "reloaded": "Reloaded from disk",
+      "diffUnavailable": "Could not read the disk copy; cannot show the diff right now",
+      "agentChangedDirty": "The agent changed this file: review the diff before deciding to overwrite",
+      "agentChangedReloaded": "The agent just changed this file; reloaded",
+      "overwrote": "Overwrote and saved {path}",
+      "conflictAgain": "The file was modified again; choose again",
+      "forceSaveFailed": "Failed to force-save",
+      "readFailed": "Failed to read",
+      "outsideRoot": "This file is outside the current workspace root",
+      "copied": "Copied: {path}",
+      "copyFailed": "Failed to copy",
+      "revealFailed": "Could not reveal in the file manager",
+      "openExternalFailed": "Could not open with the default app"
+    },
+    "fs": {
+      "createFailed": "Failed to create",
+      "renameFailed": "Failed to rename",
+      "moveFailed": "Failed to move",
+      "deleteFailed": "Failed to delete",
+      "mountFailed": "Failed to mount",
+      "switchFailed": "Failed to switch"
+    },
+    "conflict": {
+      "title": "File was modified on disk; save was rejected",
+      "diskVersion": "Disk version {version}",
+      "viewDiff": "View diff",
+      "hideDiff": "Hide diff",
+      "reload": "Reload",
+      "reloadTitle": "Discard your changes and take the disk copy",
+      "forceOverwrite": "Force overwrite",
+      "forceOverwriteTitle": "Overwrite the disk copy with your content"
+    },
+    "tabs": {
+      "openFiles": "Open files",
+      "conflictTip": "File was modified on disk",
+      "dirtyTip": "Unsaved changes: {name}",
+      "close": "Close",
+      "closeNamed": "Close {name}"
+    },
+    "tree": {
+      "label": "File tree",
+      "root": "Root",
+      "hiddenNone": "hidden",
+      "hiddenCount": "{count, plural, =1 {# item hidden} other {# items hidden}}",
+      "hiddenOverflow": "{count, number}+ items hidden",
+      "newFileName": "New file name",
+      "newFolderName": "New folder name",
+      "newName": "New name",
+      "close": "Close",
+      "retry": "Retry",
+      "empty": "(empty)",
+      "showMore": "Show more ({count, number} more items)"
+    },
+    "menu": {
+      "actionsFor": "Actions for {name}",
+      "actions": "Actions menu",
+      "newFile": "New file",
+      "newFolder": "New folder",
+      "rename": "Rename",
+      "delete": "Delete",
+      "copyRel": "Copy relative path",
+      "copyAbs": "Copy absolute path",
+      "reveal": "Reveal in Finder",
+      "openExternal": "Open with default app",
+      "readOnlyHint": "This folder is mounted read-only"
+    },
+    "delete": {
+      "title": "Delete \"{name}\"?",
+      "counting": "Counting entries…",
+      "dirWithCount": "This folder contains {count} items; they will all be moved to the Trash.",
+      "dirUnknown": "The folder''s contents will be moved to the Trash as well.",
+      "file": "This file will be moved to the Trash.",
+      "recoverable": "Recoverable from the Finder Trash.",
+      "cancel": "Cancel",
+      "confirm": "Move to Trash",
+      "deleting": "Deleting…",
+      "aria": "Confirm delete"
+    },
+    "editor": {
+      "unavailableBinary": "Binary file — cannot be opened as text",
+      "unavailableTooLarge": "File too large{size}, switched to read-only preview",
+      "unavailableDefault": "Cannot be opened as text",
+      "bannerReadOnlyMount": "This folder is mounted read-only",
+      "bannerTooLarge": "File too large{size}, switched to read-only preview",
+      "bannerGitInternal": "This file is inside .git and cannot be edited",
+      "encodingNotice": "Detected {encoding} encoding"
+    },
+    "diff": {
+      "hintSide": "Left: your unsaved changes · Right: current content on disk",
+      "hintInline": "\"−\" marks your unsaved changes, \"+\" marks the current content on disk",
+      "layoutGroup": "Diff layout",
+      "sideBySide": "Side-by-side view",
+      "inline": "Inline view"
+    },
+    "image": {
+      "failed": "Cannot display this image",
+      "failedHint": "The file may be too large (32 MB limit), corrupted, or in a format that cannot be previewed",
+      "readonly": "Read-only preview"
+    },
+    "errors": {
+      "fallback": "Failed to load",
+      "unknown-root": "Unknown workspace root",
+      "root-missing": "Folder not found (moved or deleted)",
+      "outside-root": "This file is outside the current workspace root",
+      "denied-path": "This location is not accessible (protected)",
+      "not-directory": "Not a folder",
+      "binary": "Binary file — cannot be opened as text",
+      "not-text": "Unrecognized text encoding",
+      "too-large": "File too large",
+      "truncated": "Only the first {count} entries are shown",
+      "read-only-mount": "This folder is mounted read-only",
+      "git-internal": "Git internal file, read-only",
+      "search-timeout": "Search timed out; results may be incomplete",
+      "invalid-mode": "Invalid search mode",
+      "invalid-query": "Invalid search query (too short or too long)",
+      "invalid-regex": "Invalid regular expression"
+    },
+    "git": {
+      "modified": "Modified, uncommitted",
+      "added": "Added, uncommitted",
+      "untracked": "Untracked file",
+      "deleted": "Deleted, uncommitted",
+      "renamed": "Renamed, uncommitted",
+      "copied": "Copied, uncommitted",
+      "ignored": "Ignored by .gitignore",
+      "unknown": "Git status: {letter}"
+    },
+    "agent": {
+      "write": "Changed by agent (write)",
+      "edit": "Changed by agent (edit)"
+    },
+    "nameValidation": {
+      "empty": "Name cannot be empty",
+      "slash": "Name cannot contain /",
+      "dot": "Name cannot be . or ..",
+      "control": "Name cannot contain control characters",
+      "tooLong": "Name too long (max 255 bytes)"
+    },
+    "root": {
+      "refresh": "Refresh",
+      "pathRequired": "Enter a folder path",
+      "pathPlaceholder": "Enter a folder path, e.g. ~/workspace/my-repo",
+      "mount": "Mount",
+      "mounting": "Mounting…",
+      "mountHint": "Enter to mount · Esc to cancel",
+      "addFolder": "Add folder…",
+      "addTitle": "Register and mount a local folder",
+      "addUnavailable": "Unavailable",
+      "makeWritable": "Make writable",
+      "makeWritableTitle": "Switch this folder's access to read/write (a directory-library setting)"
+    },
+    "quick": {
+      "aria": "Quick open file",
+      "placeholder": "Search by file name…",
+      "searching": "Searching…",
+      "searchFailed": "Search failed",
+      "noMatches": "No matching files",
+      "emptyHint": "Type a file name to search",
+      "truncatedHint": "Results may be incomplete (search truncated) · ",
+      "keysHint": "↑↓ select · Enter open · Esc close"
+    },
+    "search": {
+      "inputAria": "Search file contents",
+      "placeholderNamed": "Search in \"{name}\"…",
+      "placeholder": "Search file contents…",
+      "searching": "Searching…",
+      "searchFailed": "Search failed",
+      "stopped": "Stopped after scanning {count} files; results may be incomplete",
+      "emptyHint": "Type a keyword to search file contents within the current workspace root",
+      "noMatches": "No matching content",
+      "stat": "{hits} hits · scanned {scanned} files · {ms} ms",
+      "groupHits": "{count} hits",
+      "close": "Close search",
+      "keysHint": "↑↓ select · Enter open and reveal · Esc close"
+    }
+  }
+}

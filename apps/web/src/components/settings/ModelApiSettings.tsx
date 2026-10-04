@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Plus } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ModelConfig, ModelConfigRefs } from "@/lib/types";
 import { ModelConfigCard } from "./ModelConfigCard";
 import { ModelConfigForm } from "./ModelConfigForm";
-import { blankConfig, describeRefs, normalizeConfig } from "./modelConfigShared";
+import { blankConfig, describeRefParts, formatRefParts, normalizeConfig } from "./modelConfigShared";
 
 const COLLAPSE_AT = 6; // Q9: no hard cap; fold beyond six cards
 
@@ -16,6 +17,7 @@ const COLLAPSE_AT = 6; // Q9: no hard cap; fold beyond six cards
 // removed, and verify both probes AND persists (Q4).
 export function ModelApiSettings() {
   const g = useGinno();
+  const t = useTranslations("settings.model");
   const [configs, setConfigs] = useState<ModelConfig[]>([]);
   const [defaultConfig, setDefaultConfig] = useState("");
   const [loading, setLoading] = useState(true);
@@ -50,7 +52,7 @@ export function ModelApiSettings() {
       setDefaultConfig(r.default_config ?? "");
       setLoadError(null);
     } catch {
-      setLoadError("Cannot connect to the runtime; the config list is unavailable");
+      setLoadError(t("connError"));
     } finally {
       setLoading(false);
     }
@@ -59,8 +61,8 @@ export function ModelApiSettings() {
   // Green flashes self-dismiss; errors stay until the next action.
   useEffect(() => {
     if (notice?.kind !== "ok") return;
-    const t = setTimeout(() => setNotice(null), 3000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setNotice(null), 3000);
+    return () => clearTimeout(timer);
   }, [notice]);
 
   // PUT replaces the whole model_configs block, so always send every config.
@@ -78,9 +80,9 @@ export function ModelApiSettings() {
         if (okText) setNotice({ kind: "ok", text: okText });
         return true;
       }
-      setNotice({ kind: "error", text: r.error || "Failed to save", refs: r.refs });
+      setNotice({ kind: "error", text: r.error || t("saveFailed"), refs: r.refs });
     } catch {
-      setNotice({ kind: "error", text: "Failed to save: cannot connect to the runtime" });
+      setNotice({ kind: "error", text: t("saveFailedConn") });
     } finally {
       setBusy(false);
     }
@@ -89,23 +91,23 @@ export function ModelApiSettings() {
 
   const onToggle = (cfg: ModelConfig) => {
     const next = configs.map((c) => (c.id === cfg.id ? { ...c, enabled: !c.enabled } : c));
-    void applyPut(next, defaultConfig, `${cfg.enabled ? "Disabled" : "Enabled"} "${cfg.name || cfg.id}"`);
+    void applyPut(next, defaultConfig, cfg.enabled ? t("toggledOff", { name: cfg.name || cfg.id }) : t("toggledOn", { name: cfg.name || cfg.id }));
   };
 
   const onSetDefault = (id: string) => {
-    void applyPut(configs, id, "Set as default");
+    void applyPut(configs, id, t("setAsDefault"));
   };
 
   const onDelete = (id: string) => {
     const cfg = configs.find((c) => c.id === id);
     let dc = defaultConfig;
-    let okText = `Deleted "${cfg?.name || id}"`;
+    let okText = t("deleted", { name: cfg?.name || id });
     // Removing the default: re-point the default at the first remaining
     // enabled config in the same PUT (mirrors the backend fallback chain);
     // if none remains, clear it and let the backend decide.
     if (cfg && dc === id) {
       dc = nextEnabledAfterRemoval(configs, id);
-      if (dc) okText += `, default switched to "${configs.find((c) => c.id === dc)?.name ?? dc}"`;
+      if (dc) okText += t("defaultSwitched", { name: configs.find((c) => c.id === dc)?.name ?? dc });
     }
     void applyPut(
       configs.filter((c) => c.id !== id),
@@ -126,7 +128,7 @@ export function ModelApiSettings() {
       return next;
     });
     setEditing(null);
-    setNotice({ kind: "ok", text: `"${saved.name || saved.id}" verified and saved · ${latencyMs} ms` });
+    setNotice({ kind: "ok", text: t("verifiedSaved", { name: saved.name || saved.id, ms: latencyMs }) });
     g.reloadProviders();
     g.reloadSessions();
   };
@@ -144,12 +146,8 @@ export function ModelApiSettings() {
     <div className="mx-auto max-w-3xl px-8 py-7">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-txt">Model API</h2>
-          <p className="mt-1 text-sm text-muted">
-            Connect any number of model endpoints: Anthropic protocol, OpenAI-compatible endpoints
-            (DeepSeek / Qwen / Ollama etc.), and the OpenAI Responses API — powering Agent
-            reasoning.
-          </p>
+          <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+          <p className="mt-1 text-sm text-muted">{t("description")}</p>
         </div>
         <button
           onClick={() => setEditing(editing === "new" ? null : "new")}
@@ -157,7 +155,7 @@ export function ModelApiSettings() {
           className="flex shrink-0 items-center gap-1.5 rounded-lg bg-violet px-3 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           <Plus className="h-3.5 w-3.5" />
-          Add config
+          {t("addConfig")}
         </button>
       </div>
 
@@ -170,14 +168,20 @@ export function ModelApiSettings() {
           }`}
         >
           {notice.text}
-          {notice.kind === "error" && describeRefs(notice.refs) && (
-            <div className="mt-1">Still referenced by: {describeRefs(notice.refs)} (rebind the agents / sessions first, then delete)</div>
+          {notice.kind === "error" && describeRefParts(notice.refs).length > 0 && (
+            <div className="mt-1">
+              {t("stillReferenced", {
+                refs: formatRefParts(describeRefParts(notice.refs), (key, n) =>
+                  t(`ref.${key}`, { count: n }),
+                ),
+              })}
+            </div>
           )}
         </div>
       )}
 
       {loading ? (
-        <div className="mt-6 text-sm text-faint">Loading…</div>
+        <div className="mt-6 text-sm text-faint">{t("loading")}</div>
       ) : loadError ? (
         <div className="mt-6 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
           {loadError}
@@ -190,12 +194,8 @@ export function ModelApiSettings() {
 
           {sorted.length === 0 && editing !== "new" && (
             <div className="rounded-2xl border border-dashed border-line2 p-8 text-center">
-              <p className="text-sm text-muted">No model configs yet</p>
-              <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-faint">
-                Click &quot;Add config&quot; in the top right, fill in the Base URL and API key,
-                then verify. Anthropic official, DeepSeek, Qwen, Kimi, local Ollama and other
-                OpenAI-compatible endpoints all work.
-              </p>
+              <p className="text-sm text-muted">{t("emptyTitle")}</p>
+              <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-faint">{t("emptyHint")}</p>
             </div>
           )}
 
@@ -227,7 +227,7 @@ export function ModelApiSettings() {
               onClick={() => setShowAll((v) => !v)}
               className="w-full rounded-xl border border-line py-2 text-xs text-muted transition-colors hover:text-txt"
             >
-              {showAll ? "Collapse" : `Show all ${sorted.length}`}
+              {showAll ? t("collapse") : t("showAll", { count: sorted.length })}
             </button>
           )}
         </div>
@@ -242,18 +242,13 @@ export function ModelApiSettings() {
               disabled={useSysProxy === null}
               onChange={(e) => void onToggleSysProxy(e.target.checked)}
             />
-            Use system proxy
+            {t("sysProxyLabel")}
           </label>
           {proxyMsg && (
             <span className={`text-xs ${proxyMsg.ok ? "text-faint" : "text-red"}`}>{proxyMsg.text}</span>
           )}
         </div>
-        <p className="mt-1 text-xs text-faint">
-          When on, model requests follow the macOS system proxy settings; when off, all model
-          requests connect directly. Local addresses (127.0.0.1 / localhost) always connect
-          directly. If verification or chat returns 502, your proxy software is usually blocking
-          the local port — try turning this off.
-        </p>
+        <p className="mt-1 text-xs text-faint">{t("sysProxyHelp")}</p>
       </div>
     </div>
   );
@@ -271,10 +266,10 @@ export function ModelApiSettings() {
       const s = (await api.getSettings()) as Record<string, unknown>;
       s.use_system_proxy = next;
       await api.putSettings(s);
-      setProxyMsg({ ok: true, text: "Saved" });
+      setProxyMsg({ ok: true, text: t("saved") });
     } catch {
       setUseSysProxy(prev);
-      setProxyMsg({ ok: false, text: "Failed to save: cannot connect to the runtime" });
+      setProxyMsg({ ok: false, text: t("saveFailedConn") });
     }
   }
 }

@@ -1,23 +1,28 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { WorkflowDef } from "@/lib/types";
 import { WorkflowInspector } from "@/components/workflow/WorkflowInspector";
 
-const DSL_TEMPLATE = `{
-  "name": "New Workflow",
+// DSL 骨架模板里的人读字段（name/goal）按 locale 翻译，结构保持不变
+function dslTemplate(newName: string, stepHint: string): string {
+  return `{
+  "name": "${newName}",
   "description": "",
   "entry": "s1",
   "context": { "schema": { "type": "object", "properties": {} }, "initial": {} },
   "nodes": [
-    { "id": "s1", "type": "step", "agent": "dev", "goal": "Describe what this step should do here" }
+    { "id": "s1", "type": "step", "agent": "dev", "goal": "${stepHint}" }
   ],
   "edges": []
 }`;
+}
 
 function DslPreview({ wf }: { wf: WorkflowDef }) {
+  const t = useTranslations("settings.workflows");
   const [open, setOpen] = useState(false);
   if (!wf.dsl) return null;
   return (
@@ -26,7 +31,7 @@ function DslPreview({ wf }: { wf: WorkflowDef }) {
         onClick={() => setOpen((o) => !o)}
         className="text-[11px] text-faint transition-colors hover:text-muted"
       >
-        {open ? "Hide DSL" : "View DSL"}
+        {open ? t("hideDsl") : t("viewDsl")}
       </button>
       {open && (
         <pre className="mt-1 max-h-56 overflow-auto rounded-md border border-line bg-base/50 p-2 font-mono text-[11px] text-muted">
@@ -39,11 +44,12 @@ function DslPreview({ wf }: { wf: WorkflowDef }) {
 
 export function WorkflowsSettings() {
   const g = useGinno();
+  const t = useTranslations("settings.workflows");
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   // P3 #15: DSL v1 JSON editor (replaces the legacy steps-array field) with
   // live parse/structure hints; the server runs the full validate on create.
-  const [dslText, setDslText] = useState(DSL_TEMPLATE);
+  const [dslText, setDslText] = useState(() => dslTemplate(t("newWorkflowName"), t("dslStepHint")));
   const [msg, setMsg] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -52,17 +58,18 @@ export function WorkflowsSettings() {
     try {
       v = JSON.parse(dslText);
     } catch (e) {
-      return { ok: false as const, msg: `JSON syntax error: ${e instanceof Error ? e.message : "cannot parse"}` };
+      return { ok: false as const, msg: t("jsonError", { error: e instanceof Error ? e.message : t("cannotParse") }) };
     }
-    if (typeof v !== "object" || v === null || Array.isArray(v)) return { ok: false as const, msg: "DSL must be a JSON object" };
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return { ok: false as const, msg: t("mustBeObject") };
     const d = v as Record<string, unknown>;
     if (!Array.isArray(d.nodes) || !(d.nodes as unknown[]).length)
-      return { ok: false as const, msg: "Missing nodes array (at least one node)" };
-    if (typeof d.entry !== "string") return { ok: false as const, msg: "Missing entry (entry node id)" };
+      return { ok: false as const, msg: t("missingNodes") };
+    if (typeof d.entry !== "string") return { ok: false as const, msg: t("missingEntry") };
     const ids = new Set((d.nodes as Array<{ id?: string }>).map((n) => n.id));
-    if (!ids.has(d.entry)) return { ok: false as const, msg: `entry "${d.entry}" is not in nodes` };
-    return { ok: true as const, msg: `DSL structure OK · ${(d.nodes as unknown[]).length} nodes` };
-  }, [dslText]);
+    if (!ids.has(d.entry)) return { ok: false as const, msg: t("entryNotInNodes", { entry: String(d.entry) }) };
+    return { ok: true as const, msg: t("dslOk", { count: (d.nodes as unknown[]).length }) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dslText, t]);
 
   async function create() {
     if (!dslHint.ok) {
@@ -72,13 +79,13 @@ export function WorkflowsSettings() {
     const dsl = JSON.parse(dslText) as Record<string, unknown>;
     if (name.trim()) dsl.name = name.trim();
     if (desc.trim()) dsl.description = desc.trim();
-    const r = await api.createWorkflow({ name: (dsl.name as string) || name || "New Workflow", description: desc, dsl: dsl as never });
+    const r = await api.createWorkflow({ name: (dsl.name as string) || name || t("newWorkflowName"), description: desc, dsl: dsl as never });
     const body = r as { ok?: boolean; detail?: string };
-    setMsg(body.ok ? "created" : body.detail || "error");
+    setMsg(body.ok ? t("created") : body.detail || t("error"));
     if (body.ok) {
       setName("");
       setDesc("");
-      setDslText(DSL_TEMPLATE);
+      setDslText(dslTemplate(t("newWorkflowName"), t("dslStepHint")));
       g.reloadWorkflows();
     }
   }
@@ -89,12 +96,11 @@ export function WorkflowsSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Workflows</h2>
+      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
       <p className="mt-1 text-sm text-muted">
-        Multi-step flow recipes (versioned DSL, executed as a LangGraph graph). Click
-        &quot;Details&quot; to view the execution graph / context / logs and trigger runs; for the
-        full two-pane view, see the <span className="text-txt">Workflows</span> page in the left
-        navigation.
+        {t.rich("description", {
+          span: (chunks) => <span className="text-txt">{chunks}</span>,
+        })}
       </p>
       <div className="mt-4 space-y-2">
         {g.workflows.map((w) => (
@@ -112,10 +118,10 @@ export function WorkflowsSettings() {
                   onClick={() => setOpenId((o) => (o === w.id ? null : w.id))}
                   className="text-xs text-faint transition-colors hover:text-txt"
                 >
-                  {openId === w.id ? "Hide" : "Details"}
+                  {openId === w.id ? t("hide") : t("details")}
                 </button>
                 <button onClick={() => del(w.id)} className="text-xs text-faint hover:text-red">
-                  delete
+                  {t("delete")}
                 </button>
               </div>
             </div>
@@ -129,12 +135,12 @@ export function WorkflowsSettings() {
             {openId === w.id && <WorkflowInspector wf={w} runs={g.workflowRuns} />}
           </div>
         ))}
-        {g.workflows.length === 0 && <div className="text-xs text-faint">No workflows.</div>}
+        {g.workflows.length === 0 && <div className="text-xs text-faint">{t("empty")}</div>}
       </div>
       <div className="mt-5 rounded-xl border border-line bg-card p-3">
-        <div className="mb-2 text-sm font-medium text-txt">New workflow</div>
-        <input className="field mb-2" placeholder="name (overrides the name in the DSL)" value={name} onChange={(e) => setName(e.target.value)} />
-        <input className="field mb-2" placeholder="description" value={desc} onChange={(e) => setDesc(e.target.value)} />
+        <div className="mb-2 text-sm font-medium text-txt">{t("newTitle")}</div>
+        <input className="field mb-2" placeholder={t("namePlaceholder")} value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="field mb-2" placeholder={t("descPlaceholder")} value={desc} onChange={(e) => setDesc(e.target.value)} />
         <textarea
           className={`field mb-1 font-mono text-xs ${dslHint.ok ? "" : "border-red/50"}`}
           rows={10}
@@ -149,7 +155,7 @@ export function WorkflowsSettings() {
             disabled={!dslHint.ok}
             className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
           >
-            Create
+            {t("createButton")}
           </button>
           {msg && <span className="text-xs text-muted">{msg}</span>}
         </div>

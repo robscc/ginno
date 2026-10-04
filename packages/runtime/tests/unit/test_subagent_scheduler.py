@@ -193,9 +193,9 @@ async def test_spawn_creates_child_meta_brief_and_event(
     assert "<goal>调研 OAuth 库</goal>" in brief
     assert "<constraints>只读</constraints>" in brief
     assert "<acceptance>给出选型结论</acceptance>" in brief
-    assert "<other>" in brief and "第 1 层 subagent" in brief and "还可以再委派" in brief
-    assert "<report_format>" in brief and "最终报告格式" in brief
-    assert "<output_discipline>" in brief and "输出纪律" in brief
+    assert "<other>" in brief and "depth-1 subagent" in brief and "may delegate" in brief
+    assert "<report_format>" in brief and "Final report format" in brief
+    assert "<output_discipline>" in brief and "Output discipline" in brief
     # contract 2: subagent.spawned broadcast to the parent (and the child)
     spawned = [d for _, e, d in capture["sent"] if e == "subagent.spawned"]
     assert spawned and spawned[0]["session_id"] == child
@@ -205,7 +205,7 @@ async def test_spawn_creates_child_meta_brief_and_event(
 
 async def test_brief_forbids_delegation_at_max_depth(isolated_home):
     brief = sched.build_subagent_brief("g", "", "", sched.SUBAGENT_MAX_DEPTH)
-    assert "不可以再委派" in brief
+    assert "may NOT delegate" in brief
 
 
 async def test_brief_sections_are_xml_escaped(isolated_home):
@@ -229,7 +229,7 @@ async def test_spawn_rejects_depth_overflow(isolated_home, parent_session):
     )
     res = await sched.create_subagent(parent_session, "再拆一层")
     assert not res["ok"]
-    assert "深度" in res["error"]
+    assert "Maximum nesting depth" in res["error"]
     # nothing was created
     assert server_shared.subagent_children(parent_session) == []
 
@@ -239,8 +239,8 @@ async def test_spawn_enforces_concurrency_cap(isolated_home, parent_session):
         _put_meta(_sub_meta(f"run{i}", parent="other", depth=0, status="running"))
     res = await sched.create_subagent(parent_session, "第 6 个")
     assert not res["ok"] and res.get("limit")
-    assert f"已达上限（{sched.SUBAGENT_MAX_CONCURRENT}）" in res["error"]
-    assert "勿立即重试" in res["error"]
+    assert f"Concurrent subagent cap reached ({sched.SUBAGENT_MAX_CONCURRENT})" in res["error"]
+    assert "do not retry immediately" in res["error"]
     # the running list travels with the error (contract 5)
     for i in range(sched.SUBAGENT_MAX_CONCURRENT):
         assert f"run{i}" in res["error"]
@@ -356,7 +356,7 @@ async def test_failed_turn_reports_failure_without_summary(isolated_home, captur
     assert status and status[0]["status"] == "failed" and "Boom" in status[0]["error"]
     # failure notice rides the wake channel (P idle), clearly NOT a summary
     await _ticks()
-    assert capture["wakes"] and "失败" in capture["wakes"][0][1]
+    assert capture["wakes"] and "Status: failed" in capture["wakes"][0][1]
 
 
 async def test_all_descendants_stopped_wakes_waiting_parent(isolated_home, capture):
@@ -367,7 +367,7 @@ async def test_all_descendants_stopped_wakes_waiting_parent(isolated_home, captu
     await _ticks()
     # design §5.6 anti-starvation: the waiting parent gets one wrap-up wake
     assert capture["wakes"] and capture["wakes"][0][0] == "C2"
-    assert "均已被用户停止" in capture["wakes"][0][1]
+    assert "All of your subtasks have been stopped by the user" in capture["wakes"][0][1]
 
 
 # --------------------------------------------------------------------------- #
@@ -487,7 +487,7 @@ def test_result_message_format_contract():
     assert "\n结论：选 A\n" in text
     assert text.endswith("</ginno_subagent_result>")
     fail = sched.format_subagent_failure("kid", "调研", "Boom: 500")
-    assert 'session="kid"' in fail and "Boom: 500" in fail and "失败" in fail
+    assert 'session="kid"' in fail and "Boom: 500" in fail and "Status: failed" in fail
 
 
 def test_subagent_depth_of_meta():
@@ -592,7 +592,7 @@ async def test_mixed_terminal_descendants_wake_waiting_parent(isolated_home, cap
     await sched._reevaluate_waiting_parent("MP")
     await _ticks()
     assert capture["wakes"] and capture["wakes"][0][0] == "MP"
-    assert "已被用户停止" in capture["wakes"][0][1]
+    assert "were stopped by the user" in capture["wakes"][0][1]
 
 
 async def test_all_done_descendants_do_not_double_wake(isolated_home, capture):
@@ -1361,7 +1361,7 @@ async def test_recursion_error_salvages_wrap_turn_then_done(isolated_home, fake_
     assert cr["subagent"].get("recursion_wrapped") is True
     assert _stream_count(fake_stream, "CR") == 1  # exactly the wrap turn
     wrap_text = next(t for s, t in fake_stream["streams"] if s == "CR")
-    assert "步数上限" in wrap_text and "不要再调用任何工具" in wrap_text
+    assert "step limit" in wrap_text and "Do not call any more tools now" in wrap_text
     assert len(_status_events(fake_stream, "ROOT", "CR", "done")) == 1
 
 
@@ -1430,7 +1430,7 @@ async def test_idle_injections_coalesce_into_one_wake(monkeypatch, isolated_home
     assert _stream_count(fake_stream, "ROOT") == 1
     wake_text = next(t for s, t in fake_stream["streams"] if s == "ROOT")
     assert "结论 A" in wake_text and "结论 B" in wake_text
-    assert "2 个子代理的回传" in wake_text
+    assert "returns from 2 subagents" in wake_text
     assert not sched._PENDING_INJECTIONS.get("ROOT")
 
 

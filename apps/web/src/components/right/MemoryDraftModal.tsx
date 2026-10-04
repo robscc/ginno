@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { Loader2, Pencil, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { MemoryDraft } from "@/lib/types";
@@ -19,6 +20,9 @@ export function MemoryDraftModal({
   onResolved: () => void; // apply/discard done — panel reloads badge + content
   onClose: () => void;
 }) {
+  // i18n：审阅弹层框架文案（草稿正文是模型产物/用户数据，不翻译）
+  const t = useTranslations("right.memoryDraft");
+  const tc = useTranslations("right.common");
   const [text, setText] = useState(draft.draft ?? "");
   const [editing, setEditing] = useState(false);
   const [showDiff, setShowDiff] = useState(true);
@@ -38,13 +42,13 @@ export function MemoryDraftModal({
         return;
       }
       if (r.error === "memory_changed") {
-        setMsg("MEMORY.md 在草稿生成后已发生变化。确认无误可强制采纳（将覆盖当前记忆）。");
+        setMsg(t("memoryChanged"));
         setArmForce(true);
       } else {
-        setMsg(r.error || "采纳失败");
+        setMsg(r.error || t("applyFailed"));
       }
     } catch {
-      setMsg("采纳失败：无法连接运行时");
+      setMsg(t("applyFailedConnect"));
     } finally {
       setBusy(false);
     }
@@ -58,7 +62,7 @@ export function MemoryDraftModal({
       onResolved();
       onClose();
     } catch {
-      setMsg("丢弃失败：无法连接运行时");
+      setMsg(t("discardFailedConnect"));
       setBusy(false);
     }
   }
@@ -79,16 +83,16 @@ export function MemoryDraftModal({
       >
         <div className="flex items-center border-b border-line px-4 py-3">
           <span className="rounded-full bg-violet/20 px-2 py-0.5 text-[11px] text-violet">
-            记忆草稿
+            {t("title")}
           </span>
           <span className="ml-2 text-xs text-muted">
-            来自 {draft.pool_entries ?? 0} 条对话
-            {draft.trigger === "auto" ? " · 阈值自动触发" : " · 手动触发"}
+            {t("from", { n: draft.pool_entries ?? 0 })}
+            {draft.trigger === "auto" ? t("triggerAuto") : t("triggerManual")}
             {created ? ` · ${created}` : ""}
           </span>
           <button
             onClick={onClose}
-            aria-label="关闭"
+            aria-label={tc("close")}
             className="ml-auto rounded-lg p-1 text-muted hover:bg-card2 hover:text-txt"
           >
             <X className="h-4 w-4" />
@@ -98,20 +102,21 @@ export function MemoryDraftModal({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <div className="mb-2 flex items-center gap-3 text-[11px] text-muted">
             <span className={over ? "font-medium text-red" : ""}>
-              {chars}/{budget} 字{over ? `（超出预算 ${chars - budget} 字）` : ""}
+              {t("chars", { chars, budget })}
+              {over ? t("overBudget", { n: chars - budget }) : ""}
             </span>
             <button
               onClick={() => setShowDiff((v) => !v)}
               className="text-violet hover:opacity-80"
             >
-              {showDiff ? "收起差异" : "查看差异"}
+              {showDiff ? t("hideDiff") : t("viewDiff")}
             </button>
             <button
               onClick={() => setEditing((v) => !v)}
               className="flex items-center gap-1 text-violet hover:opacity-80"
             >
               <Pencil className="h-3 w-3" />
-              {editing ? "停止编辑" : "编辑草稿"}
+              {editing ? t("stopEditing") : t("editDraft")}
             </button>
           </div>
           {showDiff && !editing && (
@@ -135,14 +140,14 @@ export function MemoryDraftModal({
         </div>
 
         <div className="flex items-center gap-2 border-t border-line px-4 py-3">
-          <span className="text-[11px] text-faint">采纳后写入 MEMORY.md 并清空已蒸馏的对话池</span>
+          <span className="text-[11px] text-faint">{t("applyHint")}</span>
           <div className="ml-auto flex items-center gap-2">
             <button
               onClick={discard}
               disabled={busy}
               className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:bg-card2 hover:text-red disabled:opacity-50"
             >
-              丢弃
+              {t("discard")}
             </button>
             <button
               onClick={apply}
@@ -150,7 +155,7 @@ export function MemoryDraftModal({
               className="flex items-center gap-1 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               {busy && <Loader2 className="h-3 w-3 animate-spin" />}
-              {armForce ? "确认强制采纳？" : "采纳并更新记忆"}
+              {armForce ? t("forceApply") : t("apply")}
             </button>
           </div>
         </div>

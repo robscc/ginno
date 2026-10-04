@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import type { WikiPage } from "@/lib/types";
 
 interface Node { id: string; title: string; x: number; y: number; vx: number; vy: number; deg: number; }
@@ -19,6 +20,9 @@ const COL_EDGE_HI = "#8b5cf6";
  * highlighting and click-to-open.
  */
 export function GraphView({ pages, selected, onSelect }: { pages: WikiPage[]; selected?: string | null; onSelect: (path: string) => void; }) {
+  // kb 域 catalog（messages/{en,zh-CN}/kb.json）。翻译函数命名 tKb：本组件
+  // useMemo 里已有局部变量 `t`（标题解析），避免遮蔽翻译函数（已知坑）。
+  const tKb = useTranslations("kb");
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [size, setSize] = useState({ w: 800, h: 520 });
@@ -175,7 +179,7 @@ export function GraphView({ pages, selected, onSelect }: { pages: WikiPage[]; se
   if (!nodes.length) {
     return (
       <div ref={wrapRef} className="flex h-[520px] items-center justify-center text-sm text-faint">
-        还没有可绘制的页面 / 链接。
+        {tKb("graph.empty")}
       </div>
     );
   }
@@ -190,7 +194,7 @@ export function GraphView({ pages, selected, onSelect }: { pages: WikiPage[]; se
       }}
     >
       <div className="pointer-events-none absolute left-3 top-2 z-10 text-[11px] text-faint">
-        图谱 · {nodes.length} 页 · {edges.length} 链 — 拖拽节点 / 悬停看邻接 / 点击打开
+        {tKb("graph.hint", { pages: nodes.length, links: edges.length })}
       </div>
       <svg
         ref={svgRef}

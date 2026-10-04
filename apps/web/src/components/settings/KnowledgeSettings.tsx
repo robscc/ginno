@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { BookOpen, Search, Download, Save } from "lucide-react";
 
@@ -53,6 +54,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 export function KnowledgeSettings() {
+  const t = useTranslations("settings.knowledge");
   const [form, setForm] = useState<KBForm>(DEFAULTS);
   const [probe, setProbe] = useState<string>("");
   const [msg, setMsg] = useState<string>("");
@@ -74,12 +76,12 @@ export function KnowledgeSettings() {
   async function detect() {
     setProbe("");
     if (!form.vault_path.trim()) {
-      setProbe("Enter a vault path first");
+      setProbe(t("enterPath"));
       return;
     }
     const r = await api.kbWikiProbe(form.vault_path.trim());
     if (!r.ok) {
-      setProbe(r.error || "Detection failed");
+      setProbe(r.error || t("detectFailed"));
       return;
     }
     const d = r.detected;
@@ -87,8 +89,12 @@ export function KnowledgeSettings() {
     if (d?.raw_dir) set("raw_dir", d.raw_dir);
     setProbe(
       d?.namespace
-        ? `Detected namespace "${d.namespace}": Wiki ${r.wiki_pages} pages${r.has_index ? " (with INDEX)" : ""} / Raw ${r.raw_pages} notes`
-        : `No */Wiki directory detected (the whole vault will be indexed as the knowledge base, ${r.total_md} notes in total)`,
+        ? t("detected", {
+            ns: d.namespace,
+            wiki: r.wiki_pages ?? 0,
+            raw: r.raw_pages ?? 0,
+          }) + (r.has_index ? t("withIndex") : "")
+        : t("noWikiDir", { count: r.total_md ?? 0 }),
     );
   }
 
@@ -98,14 +104,14 @@ export function KnowledgeSettings() {
     try {
       const r = await api.kbWikiPutConfig(form);
       if (!r.ok) {
-        setMsg("Failed to save");
+        setMsg(t("saveFailed"));
         return;
       }
       if (andIndex) {
         const ix = await api.kbWikiReindex();
-        setMsg(ix.ok ? `Saved and indexed ${ix.indexed} pages` : "Saved, but indexing failed");
+        setMsg(ix.ok ? t("savedIndexed", { count: ix.indexed }) : t("savedIndexFailed"));
       } else {
-        setMsg("Saved");
+        setMsg(t("saved"));
       }
     } finally {
       setBusy(false);
@@ -115,15 +121,16 @@ export function KnowledgeSettings() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-7">
       <h2 className="flex items-center gap-2 text-lg font-semibold text-txt">
-        <BookOpen className="h-5 w-5 text-violet" /> Knowledge Base
+        <BookOpen className="h-5 w-5 text-violet" /> {t("title")}
       </h2>
       <p className="mt-1 text-sm text-muted">
-        Point to an Obsidian vault. An existing compiled LLM Wiki (e.g.{" "}
-        <code className="text-txt">Molly/Wiki</code>) is indexed directly, no recompilation needed.
+        {t.rich("description", {
+          code: (chunks) => <code className="text-txt">{chunks}</code>,
+        })}
       </p>
 
       <div className="mt-5 space-y-4">
-        <Field label="Vault path (absolute)">
+        <Field label={t("vaultPath")}>
           <div className="flex gap-2">
             <input
               className="field flex-1"
@@ -135,24 +142,24 @@ export function KnowledgeSettings() {
               onClick={detect}
               className="flex items-center gap-1.5 rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt"
             >
-              <Search className="h-3.5 w-3.5" /> Detect
+              <Search className="h-3.5 w-3.5" /> {t("detect")}
             </button>
           </div>
           {probe && <div className="mt-1 text-xs text-violet">{probe}</div>}
         </Field>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Wiki directory (searchable knowledge; relative to vault)">
+          <Field label={t("wikiDir")}>
             <input className="field" value={form.wiki_dir} onChange={(e) => set("wiki_dir", e.target.value)} />
           </Field>
-          <Field label="Raw directory (compilation source; relative to vault)">
+          <Field label={t("rawDir")}>
             <input className="field" value={form.raw_dir} onChange={(e) => set("raw_dir", e.target.value)} />
           </Field>
         </div>
 
         <label className="flex items-center gap-2 text-sm text-txt">
           <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
-          Enable knowledge base
+          {t("enableLabel")}
         </label>
         <label className="flex items-center gap-2 text-sm text-txt">
           <input
@@ -160,11 +167,11 @@ export function KnowledgeSettings() {
             checked={form.auto_inject}
             onChange={(e) => set("auto_inject", e.target.checked)}
           />
-          Auto-inject relevant content into each turn
+          {t("autoInject")}
         </label>
 
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Inject top-K">
+          <Field label={t("injectTopK")}>
             <input
               type="number"
               className="field"
@@ -172,7 +179,7 @@ export function KnowledgeSettings() {
               onChange={(e) => set("inject_top_k", Number(e.target.value) || 0)}
             />
           </Field>
-          <Field label="Minimum relevance score">
+          <Field label={t("minScore")}>
             <input
               type="number"
               step="0.05"
@@ -181,7 +188,7 @@ export function KnowledgeSettings() {
               onChange={(e) => set("inject_min_score", Number(e.target.value) || 0)}
             />
           </Field>
-          <Field label="Index refresh interval (seconds)">
+          <Field label={t("rescanInterval")}>
             <input
               type="number"
               className="field"
@@ -197,12 +204,13 @@ export function KnowledgeSettings() {
             checked={form.use_semantic}
             onChange={(e) => set("use_semantic", e.target.checked)}
           />
-          Semantic retrieval (local embeddings, requires{" "}
-          <code className="font-mono text-xs">uv sync --extra rag</code>)
+          {t.rich("semanticLabel", {
+            code: (chunks) => <code className="font-mono text-xs">{chunks}</code>,
+          })}
         </label>
         {form.use_semantic && (
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-line bg-base/30 p-3">
-            <Field label="Embedding model (sentence-transformers; empty = multilingual default)">
+            <Field label={t("embeddingModel")}>
               <input
                 className="field font-mono text-xs"
                 placeholder="…paraphrase-multilingual-MiniLM-L12-v2"
@@ -210,7 +218,7 @@ export function KnowledgeSettings() {
                 onChange={(e) => set("embedding_model", e.target.value)}
               />
             </Field>
-            <Field label="Semantic weight (added to the lexical score)">
+            <Field label={t("semanticWeight")}>
               <input
                 type="number"
                 step="0.1"
@@ -219,23 +227,19 @@ export function KnowledgeSettings() {
                 onChange={(e) => set("semantic_weight", Number(e.target.value) || 0)}
               />
             </Field>
-            <p className="col-span-2 text-xs text-faint">
-              When enabled, &quot;Save &amp; Index&quot; / Build wiki embeds the Wiki pages (the
-              model is downloaded on first use). If the rag dependencies are missing, or the model
-              download or encoding fails, it silently falls back to pure lexical retrieval.
-            </p>
+            <p className="col-span-2 text-xs text-faint">{t("semanticNote")}</p>
           </div>
         )}
 
         <div className="rounded-lg border border-line bg-base/30 p-3">
-          <div className="mb-2 text-sm text-txt">Memory Refinery</div>
+          <div className="mb-2 text-sm text-txt">{t("refineryTitle")}</div>
           <label className="flex items-center gap-2 text-sm text-txt">
             <input
               type="checkbox"
               checked={form.capture}
               onChange={(e) => set("capture", e.target.checked)}
             />
-            Capture assistant replies into the memory pool after each turn
+            {t("captureLabel")}
           </label>
           <label className="mt-2 flex items-center gap-2 text-sm text-txt">
             <input
@@ -243,11 +247,10 @@ export function KnowledgeSettings() {
               checked={form.auto_summarize}
               onChange={(e) => set("auto_summarize", e.target.checked)}
             />
-            Draft automatically when the threshold is reached (drafts still require manual review;
-            memory is never rewritten silently)
+            {t("autoSummarizeLabel")}
           </label>
           <div className="mt-3 grid grid-cols-2 gap-3">
-            <Field label="Auto-draft threshold (turns in pool)">
+            <Field label={t("flushThreshold")}>
               <input
                 type="number"
                 className="field"
@@ -255,7 +258,7 @@ export function KnowledgeSettings() {
                 onChange={(e) => set("pool_flush_threshold", Number(e.target.value) || 0)}
               />
             </Field>
-            <Field label="Memory budget (chars)">
+            <Field label={t("memoryBudget")}>
               <input
                 type="number"
                 className="field"
@@ -265,19 +268,16 @@ export function KnowledgeSettings() {
             </Field>
           </div>
           <div className="mt-3">
-            <Field label="Distillation model (provider; empty = follow default)">
+            <Field label={t("distillModel")}>
               <input
                 className="field font-mono text-xs"
-                placeholder="Leave empty to use the default provider"
+                placeholder={t("distillPlaceholder")}
                 value={form.summarize_model}
                 onChange={(e) => set("summarize_model", e.target.value)}
               />
             </Field>
           </div>
-          <p className="mt-2 text-xs text-faint">
-            Distillation always produces drafts: review and edit the diff in the right-column Memory
-            panel; only adopted drafts are written to MEMORY.md.
-          </p>
+          <p className="mt-2 text-xs text-faint">{t("distillNote")}</p>
         </div>
 
         <div className="flex items-center gap-2 pt-1">
@@ -286,14 +286,14 @@ export function KnowledgeSettings() {
             disabled={busy}
             className="flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            <Download className="h-3.5 w-3.5" /> Save &amp; Index
+            <Download className="h-3.5 w-3.5" /> {t("saveIndex")}
           </button>
           <button
             onClick={() => save(false)}
             disabled={busy}
             className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-3 py-1.5 text-xs text-muted hover:text-txt disabled:opacity-50"
           >
-            <Save className="h-3.5 w-3.5" /> Save only
+            <Save className="h-3.5 w-3.5" /> {t("saveOnly")}
           </button>
           {msg && <span className="text-xs text-violet">{msg}</span>}
         </div>

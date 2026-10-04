@@ -3,10 +3,11 @@
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, MessagesSquare, Pause, Play, RotateCcw, Square } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type { WorkflowDef, WorkflowRun, WorkflowRunEvent } from "@/lib/types";
-import { STATUS_LABEL } from "@/components/chat/RunBlocks";
+import { useRunStatusLabel } from "@/components/chat/RunBlocks";
 import { RunErrorBox } from "../RunErrorBox";
 import { WorkflowLogTimeline } from "../WorkflowLogTimeline";
 import type { NodeStat } from "./useRunInspector";
@@ -63,6 +64,10 @@ export function RunObserver({
   const [err, setErr] = useState<string | null>(null);
   const g = useGinno();
   const router = useRouter();
+  // wf 域文案 + run/步骤状态 key 渲染（chat.status.*）。
+  const t = useTranslations("wf.observer");
+  const tCommon = useTranslations("wf.common");
+  const statusLabel = useRunStatusLabel();
 
   // 聊天打开本次运行 (阶段5): create a chat session, present the run into it
   // (POST /present re-binds present_in_session_id so run.* events stream into
@@ -72,15 +77,15 @@ export function RunObserver({
     setBusy("present");
     setErr(null);
     try {
-      const s = await g.newSession("dev", { title: `运行观察：${run.name || wf.name}` });
+      const s = await g.newSession("dev", { title: t("sessionTitle", { name: run.name || wf.name }) });
       if (!s?.id) {
-        setErr("新建会话失败：请检查模型提供商设置");
+        setErr(t("sessionCreateFailed"));
         return;
       }
       await api.presentWorkflowRun(run.id, s.id);
       router.push("/");
     } catch {
-      setErr("无法连接运行时");
+      setErr(tCommon("runtimeUnreachable"));
     } finally {
       setBusy(null);
     }
@@ -93,7 +98,7 @@ export function RunObserver({
       await fn();
       onChanged();
     } catch {
-      setErr("操作失败（运行时未响应）");
+      setErr(t("opFailed"));
     } finally {
       setBusy(null);
     }
@@ -110,10 +115,10 @@ export function RunObserver({
         onSelectRun(body.run.id); // follow the fork
         onChanged();
       } else {
-        setErr(body.detail || "无法从该节点重跑");
+        setErr(body.detail || t("rerunFailed"));
       }
     } catch {
-      setErr("无法连接运行时");
+      setErr(tCommon("runtimeUnreachable"));
     } finally {
       setBusy(null);
     }
@@ -122,7 +127,7 @@ export function RunObserver({
   if (!run) {
     return (
       <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-line px-6 text-center text-xs text-faint">
-        {wf ? "从左侧运行列表选择一次运行，或点上方「运行」发起一次。" : "先选一个配方。"}
+        {wf ? t("pickRun") : t("pickWorkflow")}
       </div>
     );
   }
@@ -138,13 +143,13 @@ export function RunObserver({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[12.5px] font-semibold text-txt">运行</span>
+        <span className="text-[12.5px] font-semibold text-txt">{t("run")}</span>
         <span className="font-mono text-[11px] text-muted">#{run.id.slice(0, 8)}</span>
         <span className="rounded border border-line2 px-1 font-mono text-[10px] text-faint">
           v{run.dsl_version ?? "?"}
         </span>
         <span className="font-mono text-[11px] text-faint">
-          {STATUS_LABEL[run.status] || run.status} · {done}/{run.steps.length} 步 ·{" "}
+          {statusLabel(run.status)} · {tCommon("progressSteps", { done, total: run.steps.length })} ·{" "}
           {fmtDuration(duration)}
         </span>
         {(running || paused) && (
@@ -154,10 +159,10 @@ export function RunObserver({
                 ? "border-green/40 text-green"
                 : "border-line2 text-faint"
             }`}
-            title={live ? "run 级 WebSocket 推送" : "REST 轮询兜底（WS 不可用）"}
+            title={live ? t("liveTitle") : t("pollTitle")}
           >
             <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-green" : "bg-faint"}`} />
-            {live ? "推送" : "轮询"}
+            {live ? t("push") : t("poll")}
           </span>
         )}
 
@@ -165,7 +170,7 @@ export function RunObserver({
           <button
             onClick={() => void openInChat()}
             disabled={busy === "present"}
-            title="新建一个聊天会话并绑定本次 run，run 事件会流进该会话"
+            title={t("openInChatTitle")}
             className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt disabled:opacity-50"
           >
             {busy === "present" ? (
@@ -173,7 +178,7 @@ export function RunObserver({
             ) : (
               <MessagesSquare className="h-3 w-3" />
             )}
-            聊天打开本次运行
+            {t("openInChat")}
           </button>
           {running && (
             <button
@@ -182,7 +187,7 @@ export function RunObserver({
               className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt disabled:opacity-50"
             >
               {busy === "pause" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Pause className="h-3 w-3" />}
-              暂停
+              {t("pause")}
             </button>
           )}
           {paused && run.pending_interrupt?.kind === "manual" && (
@@ -192,7 +197,7 @@ export function RunObserver({
               className="btn-press flex items-center gap-1 rounded-md bg-violet px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               {busy === "resume" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-              继续
+              {t("resume")}
             </button>
           )}
           {terminal && (
@@ -204,11 +209,11 @@ export function RunObserver({
                 })
               }
               disabled={!!busy}
-              title="用同一份输入整体重跑一个新 run"
+              title={t("rerunTitle")}
               className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt disabled:opacity-50"
             >
               {busy === "retry" ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-              重跑
+              {t("rerun")}
             </button>
           )}
           {(running || paused) && (
@@ -218,7 +223,7 @@ export function RunObserver({
               className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:border-red/40 hover:text-red disabled:opacity-50"
             >
               {busy === "cancel" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />}
-              中止
+              {t("abort")}
             </button>
           )}
         </div>
@@ -246,13 +251,13 @@ export function RunObserver({
       <div className="flex flex-col gap-3 min-[900px]:flex-row min-[900px]:items-start">
         <div className="w-full shrink-0 min-[900px]:w-64">
           <div className="mb-1 flex items-center gap-1.5">
-            <span className="text-[11.5px] font-semibold text-txt">步骤</span>
+            <span className="text-[11.5px] font-semibold text-txt">{t("steps")}</span>
             {selNode && (
               <button
                 onClick={() => onSelectNode(null)}
                 className="rounded border border-line2 px-1.5 py-px text-[10px] text-faint hover:text-muted"
               >
-                清除过滤 [{selNode}]
+                {t("clearFilter", { node: selNode })}
               </button>
             )}
           </div>
@@ -273,7 +278,7 @@ export function RunObserver({
                   style={{ background: STEP_COLOR[s.status] || "rgb(var(--faint))" }}
                 />
                 <span className="w-[68px] shrink-0" style={{ color: STEP_COLOR[s.status] || "rgb(var(--muted))" }}>
-                  {s.status}
+                  {statusLabel(s.status)}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-txt">{s.title || s.id}</span>
                 {st.latencyMs !== undefined && (
@@ -282,7 +287,7 @@ export function RunObserver({
                   </span>
                 )}
                 {!!st.tokens && (
-                  <span className="shrink-0 tabular-nums text-faint" title="tokens (in+out)">
+                  <span className="shrink-0 tabular-nums text-faint" title={tCommon("tokensTitle")}>
                     {st.tokens >= 1000 ? `${(st.tokens / 1000).toFixed(1)}K` : st.tokens}↑
                   </span>
                 )}
@@ -297,10 +302,10 @@ export function RunObserver({
                       void rerunFrom(s.id);
                     }}
                     aria-disabled={busy !== null}
-                    title="从该节点重跑：fork 一个新 run，只重执行此节点及其后继（用本 run 钉住的版本）"
+                    title={t("rerunStepTitle")}
                     className="btn-press shrink-0 cursor-pointer rounded border border-line2 px-1 py-px text-[9.5px] text-faint hover:border-violet/50 hover:text-violet aria-disabled:opacity-40"
                   >
-                    {busy === `rerun:${s.id}` ? "…" : "重跑"}
+                    {busy === `rerun:${s.id}` ? "…" : t("rerunStep")}
                   </span>
                 )}
               </button>
@@ -311,7 +316,8 @@ export function RunObserver({
 
         <div className="min-w-0 flex-1">
           <div className="mb-1 text-[11.5px] font-semibold text-txt">
-            事件流{selNode ? ` · 节点 ${selNode}` : ""}
+            {t("eventStream")}
+            {selNode ? tCommon("nodeSuffix", { node: selNode }) : ""}
           </div>
           <WorkflowLogTimeline events={filtered} filters />
         </div>

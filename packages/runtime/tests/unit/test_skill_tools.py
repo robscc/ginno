@@ -230,7 +230,7 @@ def test_install_repo_target_needs_an_absolute_dir(src, repo):
             {"path": str(src), "target": "repo", "project_dir": "./relative"}
         )
     )
-    assert out["ok"] is False and "绝对路径" in out["error"]
+    assert out["ok"] is False and "must be an absolute path" in out["error"]
 
 
 def test_install_repo_target_without_project_dir(src, repo):

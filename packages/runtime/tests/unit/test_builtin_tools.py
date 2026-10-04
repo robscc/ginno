@@ -191,7 +191,7 @@ def test_skill_dirs_are_not_home_denied(monkeypatch, tmp_path):
 
     tools = {t.name: t for t in tools_builtin.build_builtin_tools(str(ws))}
     assert tools["read_file"].invoke({"path": str(skill)}) == "print('ok')\n"
-    assert "拒绝访问" in tools["read_file"].invoke({"path": str(fake_home / "settings.json")})
+    assert "denied region" in tools["read_file"].invoke({"path": str(fake_home / "settings.json")})
     bash_out = tools["bash"].invoke({"command": f"python3 {skill}"})
     assert not bash_out.startswith("[error]"), bash_out
     assert "ok" in bash_out
@@ -222,7 +222,7 @@ def test_bash_allows_source_user_rc_but_still_denies_secrets(monkeypatch, tmp_pa
     secret = fake_home / "settings.json"
     secret.write_text("nope", encoding="utf-8")
     denied = tools["bash"].invoke({"command": f"cat {secret}"})
-    assert denied.startswith("[error]") and "拒绝访问" in denied
+    assert denied.startswith("[error]") and "denied region" in denied
 
     denied_ssh = tools["bash"].invoke({"command": f"cat {Path.home() / '.ssh' / 'id_rsa'}"})
     assert denied_ssh.startswith("[error]")

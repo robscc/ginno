@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { WorkflowDef, WorkflowRun } from "@/lib/types";
 
 /** Left rail: the recipe list (full height since 方案B 打磨 moved the runs into
@@ -24,6 +25,7 @@ export function StudioLeftRail({
 }) {
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<"all" | "system" | "user">("all");
+  const t = useTranslations("wf.rail");
 
   const visible = useMemo(
     () =>
@@ -41,9 +43,9 @@ export function StudioLeftRail({
     <div className="flex h-full w-full flex-col border-r border-line bg-panel">
       <div className="space-y-1.5 border-b border-line px-3 py-2.5">
         <div className="flex items-center gap-1.5">
-          <span className="text-[13px] font-semibold text-txt">工作室</span>
+          <span className="text-[13px] font-semibold text-txt">{t("title")}</span>
           <span className="ml-auto font-mono text-[10px] text-faint">
-            {workflows.length} 配方
+            {t("count", { count: workflows.length })}
           </span>
         </div>
         <div className="relative">
@@ -51,18 +53,18 @@ export function StudioLeftRail({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索配方…"
+            placeholder={t("searchPlaceholder")}
             className="w-full rounded border border-line bg-base py-1 pl-7 pr-2 text-xs text-txt placeholder:text-faint focus:border-violet/60 focus:outline-none"
           />
         </div>
         <div className="flex gap-2.5 text-[11px]">
           {(
             [
-              ["all", "全部"],
-              ["system", "系统"],
-              ["user", "用户"],
+              ["all", "scopeAll"],
+              ["system", "scopeSystem"],
+              ["user", "scopeUser"],
             ] as const
-          ).map(([k, label]) => (
+          ).map(([k, key]) => (
             <button
               key={k}
               onClick={() => setScope(k)}
@@ -72,7 +74,7 @@ export function StudioLeftRail({
                   : "text-faint transition-colors hover:text-muted"
               }
             >
-              {label}
+              {t(key)}
             </button>
           ))}
         </div>
@@ -97,9 +99,9 @@ export function StudioLeftRail({
                   <span
                     className="shrink-0 rounded px-1 py-px text-[9.5px]"
                     style={{ color: "#8b5cf6", background: "#8b5cf61a" }}
-                    title="内置配方：随应用提供，不可删除"
+                    title={t("builtinTitle")}
                   >
-                    内置
+                    {t("builtin")}
                   </span>
                 )}
                 <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">v{w.version ?? 1}</span>
@@ -112,7 +114,7 @@ export function StudioLeftRail({
         })}
         {!visible.length && (
           <div className="px-3 py-4 text-[11px] text-faint">
-            {workflows.length ? "没有匹配的配方" : "暂无配方。在聊天页用「总结成流程」创建，或在 设置 → 工作流 里写 DSL。"}
+            {workflows.length ? t("noMatch") : t("empty")}
           </div>
         )}
       </div>
@@ -120,9 +122,9 @@ export function StudioLeftRail({
       {inbox.length > 0 && (
         <div className="border-t border-line py-1.5">
           <div className="flex items-center gap-1.5 px-3 pb-1">
-            <span className="text-[11px] font-semibold text-txt">决策收件箱</span>
+            <span className="text-[11px] font-semibold text-txt">{t("inbox")}</span>
             <span className="rounded-full bg-orange/15 px-1.5 text-[10px] text-orange">
-              {inbox.length} 待裁决
+              {t("pending", { count: inbox.length })}
             </span>
           </div>
           {inbox.map((r) => {

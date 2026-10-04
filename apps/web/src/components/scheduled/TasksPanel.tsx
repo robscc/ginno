@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type { ScheduleConfig, ScheduleTask } from "@/lib/types";
@@ -22,6 +23,7 @@ export function TasksPanel({
   onEdit: (task: ScheduleTask | "new") => void;
 }) {
   const g = useGinno();
+  const tr = useTranslations("sched");
   const [deleteTarget, setDeleteTarget] = useState<ScheduleTask | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -75,15 +77,15 @@ export function TasksPanel({
           onClick={() => onEdit("new")}
           className="flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:bg-violet/90"
         >
-          <Plus className="h-3.5 w-3.5" /> New Task
+          <Plus className="h-3.5 w-3.5" /> {tr("tasks.new")}
         </button>
       </div>
 
       {tasks.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-faint">
-          No scheduled tasks yet.
+          {tr("tasks.emptyLine1")}
           <br />
-          Click &quot;New Task&quot; to set up your first one — a prompt or a workflow.
+          {tr("tasks.emptyLine2")}
         </div>
       ) : (
         <div className={`space-y-2 transition-opacity ${cfg.enabled ? "" : "opacity-50"}`}>
@@ -108,25 +110,27 @@ export function TasksPanel({
                 }`}
               >
                 <div className="flex items-center gap-2.5">
-                  <span className="shrink-0 text-base leading-none" title={isWf ? "Workflow target" : "Prompt target"}>
+                  <span className="shrink-0 text-base leading-none" title={isWf ? tr("tasks.targetWorkflow") : tr("tasks.targetPrompt")}>
                     {isWf ? "⚡" : "💬"}
                   </span>
                   <span className="min-w-0 truncate text-sm font-medium text-txt">{t.name}</span>
                   <span className="shrink-0 text-xs text-muted">{planDescription(t.schedule)}</span>
                   {!isWf && (
                     <span className="hidden shrink-0 text-xs text-faint sm:inline">
-                      {agent ? `agent: ${agent}` : ""}
-                      {promptTarget?.project_slug ? ` · project: ${promptTarget.project_slug}` : ""}
+                      {agent ? tr("tasks.agentSuffix", { name: agent }) : ""}
+                      {promptTarget?.project_slug
+                        ? tr("tasks.projectSuffix", { slug: promptTarget.project_slug })
+                        : ""}
                     </span>
                   )}
                   {wfMissing && (
                     <span className="shrink-0 rounded-full border border-red/40 bg-red/10 px-1.5 text-[10px] leading-4 text-red">
-                      Recipe deleted
+                      {tr("tasks.recipeDeleted")}
                     </span>
                   )}
                   {onceDone && (
                     <span className="shrink-0 rounded-full border border-green/40 bg-green/10 px-1.5 text-[10px] leading-4 text-green">
-                      Done
+                      {tr("tasks.done")}
                     </span>
                   )}
 
@@ -134,7 +138,7 @@ export function TasksPanel({
                     <button
                       onClick={() => toggle(t)}
                       disabled={!cfg.enabled || busyId === t.id}
-                      title={t.enabled ? "Pause this task" : "Enable this task"}
+                      title={t.enabled ? tr("tasks.pauseTitle") : tr("tasks.enableTitle")}
                       className={`text-lg leading-none transition-colors disabled:cursor-not-allowed ${
                         t.enabled ? "text-green" : "text-faint"
                       } ${cfg.enabled ? "hover:opacity-80" : ""}`}
@@ -144,22 +148,22 @@ export function TasksPanel({
                     <button
                       onClick={() => runNow(t)}
                       disabled={busyId === t.id}
-                      title="Run once now (does not advance the schedule)"
+                      title={tr("tasks.runNowTitle")}
                       className="flex items-center rounded-lg border border-line px-2 py-1 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet disabled:opacity-40"
                     >
                       <Play className="h-3 w-3" />
-                      <span className="ml-1 hidden md:inline">Run now</span>
+                      <span className="ml-1 hidden md:inline">{tr("tasks.runNow")}</span>
                     </button>
                     <button
                       onClick={() => onEdit(t)}
-                      title="Edit task"
+                      title={tr("tasks.editTitle")}
                       className="rounded-lg border border-line p-1.5 text-muted transition-colors hover:border-line2 hover:text-txt"
                     >
                       <Pencil className="h-3 w-3" />
                     </button>
                     <button
                       onClick={() => setDeleteTarget(t)}
-                      title="Delete task (runs and sessions are kept)"
+                      title={tr("tasks.deleteTitle")}
                       className="rounded-lg border border-line p-1.5 text-muted transition-colors hover:border-red/50 hover:text-red"
                     >
                       <Trash2 className="h-3 w-3" />
@@ -169,29 +173,35 @@ export function TasksPanel({
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-7 text-[11px] text-faint">
                   {isWf ? (
                     <span>
-                      workflow:{" "}
-                      {g.workflows.find((w) => w.id === wfTarget?.workflow_id)?.name ??
-                        (wfMissing ? "deleted" : wfTarget?.workflow_id)}
+                      {tr("tasks.workflow", {
+                        name:
+                          g.workflows.find((w) => w.id === wfTarget?.workflow_id)?.name ??
+                          (wfMissing ? tr("tasks.workflowDeleted") : wfTarget?.workflow_id ?? ""),
+                      })}
                     </span>
                   ) : null}
                   <span>
-                    Last:{" "}
-                    {last
-                      ? `${fmtDayPrefix(last.started)} ${fmtClock(last.started)} ${
-                          last.status === "ok" ? "✓" : last.status === "running" ? "▨" : "✕"
-                        }${last.finished ? ` · ${fmtDuration(last.finished - (last.started ?? 0))}` : ""}`
-                      : "never run"}
+                    {tr("tasks.last", {
+                      value: last
+                        ? `${fmtDayPrefix(last.started)} ${fmtClock(last.started)} ${
+                            last.status === "ok" ? "✓" : last.status === "running" ? "▨" : "✕"
+                          }${last.finished ? ` · ${fmtDuration(last.finished - (last.started ?? 0))}` : ""}`
+                        : tr("tasks.neverRun"),
+                    })}
                   </span>
                   <span>
                     {onceDone
-                      ? "Paused · one-shot task finished"
+                      ? tr("tasks.stateOnceDone")
                       : wfMissing
-                        ? "Paused · recipe deleted, edit to re-pick"
+                        ? tr("tasks.stateWfMissing")
                         : t.enabled && cfg.enabled && t.next_run_at
-                          ? `Next: ${fmtDayPrefix(t.next_run_at)} ${fmtClock(t.next_run_at)}`
-                          : "Paused"}
+                          ? tr("tasks.stateNext", {
+                              day: fmtDayPrefix(t.next_run_at),
+                              clock: fmtClock(t.next_run_at),
+                            })
+                          : tr("tasks.statePaused")}
                   </span>
-                  {!cfg.enabled && <span className="text-yellow">Paused (globally disabled)</span>}
+                  {!cfg.enabled && <span className="text-yellow">{tr("tasks.pausedGlobal")}</span>}
                 </div>
               </div>
             );
@@ -201,9 +211,9 @@ export function TasksPanel({
 
       {deleteTarget && (
         <ConfirmModal
-          title="Delete scheduled task"
-          message={`Delete task "${deleteTarget.name}"? Its run history and shadow sessions are kept (ledger data is never destroyed), but the task will no longer fire.`}
-          confirmLabel="Delete"
+          title={tr("tasks.deleteModalTitle")}
+          message={tr("tasks.deleteModalMessage", { name: deleteTarget.name })}
+          confirmLabel={tr("tasks.deleteModalConfirm")}
           onConfirm={() => remove(deleteTarget)}
           onCancel={() => setDeleteTarget(null)}
         />

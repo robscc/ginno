@@ -176,12 +176,12 @@ def test_goal_slash_command(ws_conv, create_session, client, monkeypatch):
         conv.invoke("/goal")
         evs = conv.recv_until("message.end")
         notices = events_of(evs, "notice")
-        assert notices and "Goal 用法" in notices[0]["message"]
+        assert notices and "Goal usage" in notices[0]["message"]
 
         # /goal <objective> → sets the goal
         conv.invoke("/goal 调研并写出报告")
         evs = conv.recv_until("message.end")
-        assert "目标已设定" in events_of(evs, "notice")[0]["message"]
+        assert "Goal set" in events_of(evs, "notice")[0]["message"]
         goal = client.get(f"/api/sessions/{sid}/goal").json()["goal"]
         assert goal["objective"] == "调研并写出报告" and goal["status"] == "active"
 
@@ -198,7 +198,7 @@ def test_goal_slash_command(ws_conv, create_session, client, monkeypatch):
         # /goal (bare) now shows the summary
         conv.invoke("/goal")
         evs = conv.recv_until("message.end")
-        assert "当前目标" in events_of(evs, "notice")[0]["message"]
+        assert "Current goal" in events_of(evs, "notice")[0]["message"]
 
         # /goal clear → removed
         conv.invoke("/goal clear")
@@ -224,6 +224,6 @@ def test_goal_context_row_in_history(create_session, client):
         if b.get("kind") == "context"
     ]
     # The continuation message renders as a SHORT context row, not the full prompt
-    rows = [t for t in ctx_texts if "目标推进" in t]
+    rows = [t for t in ctx_texts if "Goal progress" in t]
     assert rows, f"no goal context row in {ctx_texts}"
     assert "<ginno_goal" not in " ".join(rows)  # model scaffolding hidden

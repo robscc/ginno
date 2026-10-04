@@ -1,0 +1,15 @@
+{
+  "stream": {
+    "error_unknown_session": "Unknown session: {id}",
+    "error_invalid_json": "Invalid JSON",
+    "error_unknown_type": "Unknown message type: {type}",
+    "busy_wait": "A turn is already running; please wait for it to finish",
+    "busy_wait_command": "A turn is already running; wait for it to finish before running /{command}",
+    "command_only_after_turn": "/{command} can only run after the current turn finishes",
+    "command_failed": "/{command} failed: {error}",
+    "no_turn_running": "No turn is currently running; please send again",
+    "plan_confirm_failed": "Failed to confirm the split plan; retry or split again",
+    "turn_failed": "Turn failed: {error}",
+    "auto_retry": "Model connection error ({error}); auto-retrying in {seconds}s ({attempt}/{max})…"
+  }
+}

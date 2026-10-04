@@ -24,6 +24,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from ..files import extractors as ex
+from ..lang import t
 
 DOCUMENT_TOOL_NAMES = {"parse_document", "analyze_table"}
 
@@ -52,7 +53,8 @@ def parse_document(path: str, format: str = "text") -> str:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
     except Exception as e:
         return json.dumps(
-            {"ok": False, "error": f"解析失败: {type(e).__name__}: {e}"},
+            {"ok": False, "error": t(f"Parse failed: {type(e).__name__}: {e}",
+                                     f"解析失败: {type(e).__name__}: {e}")},
             ensure_ascii=False,
         )
     fmt = (format or "text").lower()
@@ -153,7 +155,8 @@ def _run_analysis(path: str, code: str, sheet: str, timeout: int) -> dict:
                 timeout=timeout,
             )
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"执行超时（>{timeout}s）"}
+        return {"ok": False, "error": t(f"Execution timed out (>{timeout}s)",
+                                        f"执行超时（>{timeout}s）")}
     out = (proc.stdout or "").strip()
     err = (proc.stderr or "").strip()
     parsed: dict | None = None
@@ -168,7 +171,8 @@ def _run_analysis(path: str, code: str, sheet: str, timeout: int) -> dict:
     if parsed is None:
         return {
             "ok": False,
-            "error": "代码未产出可解析结果",
+            "error": t("The code produced no parseable result",
+                       "代码未产出可解析结果"),
             "stderr": err[-_STDERR_LIMIT:],
         }
     if err:
@@ -213,10 +217,15 @@ def analyze_table(path: str, code: str, sheet: str = "", timeout: int = 30) -> s
     """
     p = Path(path).expanduser()
     if not p.is_file():
-        return json.dumps({"ok": False, "error": f"文件不存在: {path}"}, ensure_ascii=False)
+        return json.dumps(
+            {"ok": False, "error": t(f"File not found: {path}", f"文件不存在: {path}")},
+            ensure_ascii=False,
+        )
     if ex.classify(p) not in ("spreadsheet", "table"):
         return json.dumps(
-            {"ok": False, "error": f"analyze_table 仅支持 csv/xlsx 等表格文件: {p.suffix}"},
+            {"ok": False, "error": t(
+                f"analyze_table supports only table files such as csv/xlsx: {p.suffix}",
+                f"analyze_table 仅支持 csv/xlsx 等表格文件: {p.suffix}")},
             ensure_ascii=False,
         )
     res = _run_analysis(str(p), code, sheet, max(1, min(timeout, 120)))

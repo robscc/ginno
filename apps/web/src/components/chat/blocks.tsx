@@ -32,6 +32,50 @@ import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
 import { AskUserCard } from "./AskUserCard";
 import { toolLabelOptions } from "@/lib/toolLabels";
+import { useTranslations } from "next-intl";
+import { t } from "@/i18n/provider";
+
+/** chat 域翻译 + 动态 key 收敛。next-intl 的 key 类型约束只覆盖字面量；运行态
+ *  key（状态枚举、runtime 事件带來的 dot 路径）经一次安全转型走 string 签名，
+ *  存在性用 has 前置校验，未命中由调用方回退原文。 */
+function useChatT() {
+  const tc = useTranslations("chat");
+  const tr = tc as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  return { tc, tr };
+}
+
+/**
+ * 渲染 runtime 事件文本的契约（i18n-design.md §3 数据契约）：
+ * 事件可带 `i18n_key`（dot 路径，可能落在 chat / errors / 任意 messages 域）
+ * 与 `params`——key 命中即翻译；key 未命中、params 缺失或无 i18n_key 时
+ * 原样回退 fallback（历史会话重放的是成品字符串，不坏）。
+ * 必须在 client 组件内调用（useTranslations 的 SSG 约束）。
+ */
+export function useEventI18nText() {
+  const tRoot = useTranslations(); // 根级：跨域 key
+  const tr = tRoot as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  return (
+    // 索引签名让任意事件帧 / Block 都可直接传入（也规避 weak type 检查）
+    ev: { i18n_key?: unknown; params?: unknown; [k: string]: unknown } | null | undefined,
+    fallback: string,
+  ): string => {
+    if (!ev) return fallback;
+    const key = typeof ev.i18n_key === "string" ? ev.i18n_key : "";
+    if (!key || !tr.has(key)) return fallback;
+    try {
+      const params = (ev.params ?? undefined) as Record<string, string | number> | undefined;
+      return tr(key, params);
+    } catch {
+      return fallback; // params 结构异常等——翻译永不挂掉渲染
+    }
+  };
+}
 
 export type SourceItem = { kind: "wiki" | "web"; ref: string; note?: string };
 
@@ -59,7 +103,10 @@ export type Block =
   | { kind: "workflow"; run: WorkflowRun }
   // WorldState change announcements (docs/design/world-state-plan.md §7):
   // centered system rows in the transcript ("context chips").
-  | { kind: "context"; text: string }
+  // 事件契约（i18n-design.md §3）：runtime 可附 i18n_key（dot 路径）+ params，
+  // 渲染时翻译（ContextBlocks）；历史重放只有成品 text，原样直显。
+  | { kind: "context"; text: string;
+      i18n_key?: string; params?: Record<string, string | number> }
   // Answer provenance (docs/citations-design.md): wiki pages / web sources the
   // model cited. Server emits this on history replay; live text blocks are
   // parsed client-side (the trailing <ginno_citations> block is machine meta).
@@ -103,15 +150,25 @@ export const SUBAGENT_STATUS_META: Record<
   string,
   { glyph: string; label: string; color: string }
 > = {
-  running: { glyph: "🟢", label: "运行中", color: "#22c55e" },
-  waiting: { glyph: "⏳", label: "等待子任务", color: "#eab308" },
-  done: { glyph: "✅", label: "已完成", color: "#22c55e" },
-  failed: { glyph: "⚠️", label: "失败", color: "#ef4444" },
-  stopped: { glyph: "⛔", label: "已停止", color: "#71717a" },
+  running: { glyph: "🟢", label: "Running", color: "#22c55e" },
+  waiting: { glyph: "⏳", label: "Waiting on subtask", color: "#eab308" },
+  done: { glyph: "✅", label: "Completed", color: "#22c55e" },
+  failed: { glyph: "⚠️", label: "Failed", color: "#ef4444" },
+  stopped: { glyph: "⛔", label: "Stopped", color: "#71717a" },
 };
 
 export function subagentStatusMeta(status?: string) {
   return SUBAGENT_STATUS_META[status ?? ""] ?? SUBAGENT_STATUS_META.running;
+}
+
+/** 状态枚举的展示标签：chat.status.* 命中即译；未识别的状态回退 meta 的
+ *  英文标签（SUBAGENT_STATUS_META 的导出形状不变——侧栏等外部使用方仍读它）。 */
+export function useStatusLabel() {
+  const { tr } = useChatT();
+  return (status?: string) => {
+    const key = `status.${status ?? ""}`;
+    return tr.has(key) ? tr(key) : subagentStatusMeta(status).label;
+  };
 }
 
 /** 子代理的 fork / 类型小徽标（P3 范围 3）：meta.subagent.mode === "fork" 时
@@ -121,6 +178,7 @@ export function subagentStatusMeta(status?: string) {
 export function SubagentKindBadges({
   sub,
 }: { sub?: import("@/lib/types").SubagentMeta | null }) {
+  const { tc } = useChatT();
   if (!sub) return null;
   const agentType = (sub as { agent_type?: unknown }).agent_type;
   return (
@@ -128,7 +186,7 @@ export function SubagentKindBadges({
       {sub.mode === "fork" && (
         <span
           className="shrink-0 rounded-md border border-violet/40 bg-violet/10 px-1 py-px text-[10px] leading-4 text-violet"
-          title="fork：从父对话的完整上下文分出的并行分支"
+          title={tc("subagent.forkTitle")}
         >
           fork
         </span>
@@ -136,7 +194,7 @@ export function SubagentKindBadges({
       {typeof agentType === "string" && agentType && (
         <span
           className="shrink-0 rounded-md border border-line2 bg-card2/60 px-1 py-px text-[10px] leading-4 text-muted"
-          title={`子代理类型：${agentType}`}
+          title={tc("subagent.typeTitle", { type: agentType })}
         >
           {agentType}
         </span>
@@ -220,7 +278,9 @@ export function parseSubagentBrief(
     goal,
     constraints: section("constraints") || undefined,
     acceptance: section("acceptance") || undefined,
-    fork: `${extra}\n${before}`.includes("并行分支（fork）"),
+    // "(fork)" is the runtime-side ASCII marker (lang-independent); the
+    // Chinese phrase matches checkpoints persisted before English prompts.
+    fork: /\(fork\)|并行分支（fork）/.test(`${extra}\n${before}`),
     extra: extra || undefined,
     persona: before || undefined,
     notes: notes || undefined,
@@ -386,6 +446,7 @@ export function maskPartialSources(text: string): string {
 
 /** Centered, de-emphasized system row for context chips. */
 export function ContextBlocks({ blocks }: { blocks: Extract<Block, { kind: "context" }>[] }) {
+  const evText = useEventI18nText();
   if (!blocks.length) return null;
   return (
     <div className="flex flex-col items-center gap-1">
@@ -394,7 +455,8 @@ export function ContextBlocks({ blocks }: { blocks: Extract<Block, { kind: "cont
           key={i}
           className="max-w-[85%] whitespace-pre-wrap rounded-lg border border-line/60 bg-card/40 px-3 py-1.5 text-center text-xs leading-relaxed text-muted"
         >
-          {b.text}
+          {/* 事件契约：i18n_key 命中即翻译，否则原样直显 text（历史会话兼容） */}
+          {evText(b, b.text)}
         </div>
       ))}
     </div>
@@ -445,6 +507,7 @@ export function SourcesBlock({ items }: { items: SourceItem[] }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [missed, setMissed] = useState<ReadonlySet<string>>(new Set());
   const router = useRouter();
+  const { tc } = useChatT();
   if (!items.length) return null;
 
   const openWeb = async (url: string) => {
@@ -492,7 +555,7 @@ export function SourcesBlock({ items }: { items: SourceItem[] }) {
         className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-muted hover:text-txt"
       >
         <Link2 className="h-3.5 w-3.5 shrink-0" />
-        <span>来源 · {items.length}</span>
+        <span>{tc("sources.title", { count: items.length })}</span>
         <ChevronDown className={`ml-auto h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
@@ -534,7 +597,7 @@ export function SourcesBlock({ items }: { items: SourceItem[] }) {
                     )}
                     {wikiMissed && (
                       <span className="shrink-0 rounded border border-line px-1 text-[10px] leading-4 text-faint">
-                        未收录
+                        {tc("sources.notIndexed")}
                       </span>
                     )}
                   </div>
@@ -620,6 +683,7 @@ async function openChipInCode(
  *  panel" entry. */
 export function FileChips({ files }: { files: FileBlock[] }) {
   const g = useGinno();
+  const { tc } = useChatT();
   if (!files.length) return null;
   return (
     <div className="mb-1 flex flex-wrap gap-1.5">
@@ -641,7 +705,7 @@ export function FileChips({ files }: { files: FileBlock[] }) {
                 if (chipRoute(f.fileKind) === "code") void openChipInCode(g, f);
                 else g.openPreview({ id: f.fileId!, name: f.name, path: f.path ?? "", kind: f.fileKind });
               }}
-              title={clickable ? "点击预览" : f.path}
+              title={clickable ? tc("fileChips.clickPreview") : f.path}
               className={`flex min-w-0 items-center gap-1.5 ${clickable ? "cursor-pointer" : "cursor-default"}`}
             >
               <span>
@@ -652,8 +716,8 @@ export function FileChips({ files }: { files: FileBlock[] }) {
             {showCodeEntry && (
               <button
                 type="button"
-                title="在代码面板打开"
-                aria-label="在代码面板打开"
+                title={tc("fileChips.openCode")}
+                aria-label={tc("fileChips.openCode")}
                 onClick={() => void openChipInCode(g, f)}
                 className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-faint transition-colors hover:bg-card hover:text-txt"
               >
@@ -672,13 +736,14 @@ type SkillBlock = Extract<Block, { kind: "skill" }>;
 /** Slash-skill invocation chips (user bubble, replayed history). The SKILL.md
     body is model scaffolding; the user sees "/name" + their request only. */
 export function SkillChips({ skills }: { skills: SkillBlock[] }) {
+  const { tc } = useChatT();
   if (!skills.length) return null;
   return (
     <div className="mb-1 flex flex-wrap gap-1.5">
       {skills.map((s, i) => (
         <span
           key={`${s.name}-${i}`}
-          title={`已调用技能 ${s.name}`}
+          title={tc("skillChips.invoked", { name: s.name })}
           className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-2 py-1 text-xs text-violet"
         >
           <Sparkles className="h-3 w-3 shrink-0" />
@@ -807,6 +872,7 @@ function makeFormatters(format?: string) {
 
 function XYChart({ spec }: { spec: ChartSpec }) {
   const [hover, setHover] = useState<number | null>(null);
+  const { tc } = useChatT();
   const rows = spec.data;
   const xs = rows.map((d) => String(d[spec.x]));
   const ys = rows.map((d) => Number(d[spec.y]));
@@ -843,7 +909,7 @@ function XYChart({ spec }: { spec: ChartSpec }) {
         viewBox={`0 0 ${CHART_W} ${CHART_H}`}
         className="h-auto w-full"
         role="img"
-        aria-label={spec.title || "chart"}
+        aria-label={spec.title || tc("widget.chartAria")}
       >
         {ticks.map((t) => (
           <g key={t}>
@@ -931,6 +997,7 @@ function XYChart({ spec }: { spec: ChartSpec }) {
 
 function PieChart({ spec }: { spec: ChartSpec }) {
   const [hover, setHover] = useState<number | null>(null);
+  const { tc } = useChatT();
   // Trust the model's aggregation — do not re-fold into Other (that hid
   // later render_widget calls that only expanded the tail).
   const rows = spec.data;
@@ -951,7 +1018,7 @@ function PieChart({ spec }: { spec: ChartSpec }) {
         viewBox={`0 0 ${CHART_W} ${CHART_H}`}
         className="h-auto w-full"
         role="img"
-        aria-label={spec.title || "chart"}
+        aria-label={spec.title || tc("widget.chartAria")}
       >
         <g transform={`translate(${cx},${cy})`}>
           {arcs.map((a, i) => (
@@ -1028,6 +1095,7 @@ function ChartBlock({ spec }: { spec: ChartSpec }) {
 }
 
 function WidgetBlock({ kind, data }: { kind: string; data: unknown }) {
+  const { tc } = useChatT();
   if (kind === "stat_list" && data && typeof data === "object") {
     return <StatList data={data as Parameters<typeof StatList>[0]["data"]} />;
   }
@@ -1038,7 +1106,7 @@ function WidgetBlock({ kind, data }: { kind: string; data: unknown }) {
   }
   return (
     <div className="my-2 rounded-lg border border-line bg-base/50 p-3">
-      <div className="mb-1 text-xs font-medium text-violet">widget · {kind}</div>
+      <div className="mb-1 text-xs font-medium text-violet">{tc("widget.label", { kind })}</div>
       <pre className="whitespace-pre-wrap text-xs text-muted">{JSON.stringify(data, null, 2)}</pre>
     </div>
   );
@@ -1046,6 +1114,7 @@ function WidgetBlock({ kind, data }: { kind: string; data: unknown }) {
 
 function WorkflowBlock({ run }: { run: WorkflowRun }) {
   const router = useRouter();
+  const { tc } = useChatT();
   const done = run.steps.filter((s) => s.status === "done").length;
   const total = run.steps.length;
   return (
@@ -1063,11 +1132,11 @@ function WorkflowBlock({ run }: { run: WorkflowRun }) {
           }
           router.push(`/workflows${h}`);
         }}
-        title="打开工作流详情"
+        title={tc("workflow.openDetails")}
         className="mb-2 flex cursor-pointer items-center gap-1.5 text-sm font-medium text-txt hover:text-violet"
       >
         <Workflow className="h-3.5 w-3.5 text-violet" />
-        {run.name || "Workflow"}
+        {run.name || tc("workflow.fallbackName")}
         <span className="ml-auto text-xs font-normal text-faint">
           {run.status} · {done}/{total}
         </span>
@@ -1087,11 +1156,12 @@ function WorkflowBlock({ run }: { run: WorkflowRun }) {
 }
 
 function RefChip({ refKind, name }: { refKind: string; name: string }) {
+  const { tc } = useChatT();
   const Ic = refKind === "workflow" ? Workflow : refKind === "link" ? Link2 : FileText;
   return (
     <span className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted">
       <Ic className="h-3.5 w-3.5 text-violet" />
-      {refKind === "workflow" ? "Workflow: " : ""}
+      {refKind === "workflow" ? tc("refChip.workflowPrefix") : ""}
       {name}
     </span>
   );
@@ -1107,11 +1177,12 @@ const LONG_OUTPUT_CHARS = 600;
  * 工具气泡。释放走连接器 action(release-all 语义,无需解析 args)。 */
 function BrowserHandoffCard() {
   const [released, setReleased] = useState(false);
+  const { tc } = useChatT();
   return (
     <div className="my-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2.5 text-xs">
-      <div className="font-medium text-txt">浏览器已交给你接管</div>
+      <div className="font-medium text-txt">{tc("browserHandoff.title")}</div>
       <div className="mt-0.5 text-faint">
-        登录、验证码或付款确认完成后点下方按钮,把控制权交回 Ginno 继续任务。
+        {tc("browserHandoff.body")}
       </div>
       <button
         disabled={released}
@@ -1123,7 +1194,7 @@ function BrowserHandoffCard() {
         }}
         className="mt-2 rounded-lg bg-violet-600 px-3 py-1.5 font-medium text-white hover:bg-violet-500 disabled:opacity-50"
       >
-        {released ? "已交回,等待 Ginno…" : "已接管,继续"}
+        {released ? tc("browserHandoff.handedBack") : tc("browserHandoff.continue")}
       </button>
     </div>
   );
@@ -1133,6 +1204,7 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
   const [open, setOpen] = useState<boolean | null>(null);
+  const { tc } = useChatT();
   // A configured label may carry several "|" separated names — pick one at
   // random per tool call (memoized so it stays stable pending → done and
   // across re-renders; a fresh call rolls again).
@@ -1173,18 +1245,18 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
       <button
         onClick={() => setOpen(!expanded)}
         className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-card2/50"
-        title={`${name} — ${expanded ? "收起" : "展开完整输出"}`}
+        title={`${name} — ${expanded ? tc("tools.collapse") : tc("tools.expand")}`}
       >
         <ChevronRight
           className={`h-3 w-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
         />
         <span className="truncate text-faint" title={argsPreview || undefined}>
-          tool · <span className="text-muted">{label}</span>
+          {tc("tools.prefix")}<span className="text-muted">{label}</span>
           {argsPreview && <span> · {argsPreview}</span>}
         </span>
         <span className="shrink-0 text-green">✓</span>
         <span className="ml-auto shrink-0 text-[10px] text-faint">
-          {lineCount} 行 · {content.length} 字符
+          {tc("tools.stats", { lines: lineCount, chars: content.length })}
         </span>
       </button>
       {expanded && (
@@ -1205,6 +1277,7 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
   const [open, setOpen] = useState(true);
   const wasLive = useRef(live);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const { tc } = useChatT();
   // "Sticky bottom": keep pinned to the newest line while thinking streams in.
   // If the user scrolls up to read earlier reasoning we stop yanking them back
   // down; scrolling to the bottom re-engages the auto-follow.
@@ -1239,14 +1312,14 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
       <button
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
-        title={open ? "收起" : "展开思考过程"}
+        title={open ? tc("thinking.collapse") : tc("thinking.expand")}
       >
         <Sparkles className={`h-3.5 w-3.5 shrink-0 text-violet ${live ? "animate-pulse" : ""}`} />
         <span className="text-xs font-medium text-violet">
-          {live ? "思考中…" : "已深度思考"}
+          {live ? tc("thinking.live") : tc("thinking.done")}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[10px] text-faint">
-          {!live && <span>{text.length} 字</span>}
+          {!live && <span>{tc("thinking.chars", { count: text.length })}</span>}
           <ChevronDown className={`h-3 w-3 transition-transform ${open ? "" : "-rotate-90"}`} />
         </span>
       </button>
@@ -1275,6 +1348,7 @@ export function Lightbox({
   onClose: () => void;
   onNav: (i: number) => void;
 }) {
+  const { tc } = useChatT();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -1290,7 +1364,7 @@ export function Lightbox({
       className="lightbox-in fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6"
       onClick={onClose}
       role="dialog"
-      aria-label="图片预览"
+      aria-label={tc("lightbox.aria")}
     >
       <div className="absolute right-4 top-4 flex items-center gap-3 text-xs text-white/70">
         {urls.length > 1 && (
@@ -1300,7 +1374,7 @@ export function Lightbox({
         )}
         <button
           onClick={onClose}
-          aria-label="关闭"
+          aria-label={tc("lightbox.close")}
           className="rounded-md p-1.5 transition-colors hover:bg-white/10 hover:text-white"
         >
           <X className="h-4 w-4" />
@@ -1313,7 +1387,7 @@ export function Lightbox({
               e.stopPropagation();
               onNav((index - 1 + urls.length) % urls.length);
             }}
-            aria-label="上一张"
+            aria-label={tc("lightbox.prev")}
             className="absolute left-3 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
           >
             <ChevronLeft className="h-5 w-5" />
@@ -1323,7 +1397,7 @@ export function Lightbox({
               e.stopPropagation();
               onNav((index + 1) % urls.length);
             }}
-            aria-label="下一张"
+            aria-label={tc("lightbox.next")}
             className="absolute right-3 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
           >
             <ChevronRight className="h-5 w-5" />
@@ -1343,6 +1417,7 @@ export function Lightbox({
 /** Thumbnail strip for one or more images; click opens the lightbox. */
 export function ImageGallery({ urls }: { urls: string[] }) {
   const [lb, setLb] = useState<number | null>(null);
+  const { tc } = useChatT();
   if (!urls.length) return null;
   const single = urls.length === 1;
   return (
@@ -1353,7 +1428,7 @@ export function ImageGallery({ urls }: { urls: string[] }) {
             key={i}
             onClick={() => setLb(i)}
             className="group relative overflow-hidden rounded-lg border border-line transition-colors hover:border-line2"
-            title="点击预览"
+            title={tc("fileChips.clickPreview")}
           >
             <img
               src={u}
@@ -1487,6 +1562,7 @@ function steerImgUrl(img: SteerBandImage): string {
 
 export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> }) {
   const clock = steerClock(block.injectedAt);
+  const { tc } = useChatT();
   // Deliberately NOT the thinking block's shape or colour: that block is violet
   // with a header ROW of its own (blocks.tsx ThinkingBlock), and an early
   // version of this band copied both — it read as a second thinking panel and
@@ -1509,7 +1585,7 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
     <div className="my-1 flex items-start gap-2 rounded-r-md border-l-2 border-orange/70 bg-orange/[0.07] py-1 pl-2 pr-2">
       <span className="mt-[3px] flex shrink-0 items-center gap-1 rounded bg-orange/15 px-1 py-[1px] text-[10px] font-medium leading-none text-orange">
         <RotateCw className="h-2.5 w-2.5" aria-hidden />
-        运行中注入{clock ? ` · ${clock}` : ""}
+        {tc("steer.injected")}{clock ? ` · ${clock}` : ""}
       </span>
       <div className="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug text-txt">
         {block.text}
@@ -1522,7 +1598,7 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
               <img
                 key={`i${i}`}
                 src={url}
-                alt={img.name ?? "图片"}
+                alt={img.name ?? tc("steer.imageAlt")}
                 title={img.name}
                 className="h-4 w-4 shrink-0 rounded border border-orange/40 object-cover"
               />
@@ -1547,7 +1623,7 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
           ))}
           {overflow > 0 && (
             <span
-              title={`另有 ${overflow} 个附件`}
+              title={tc("steer.moreAttachments", { count: overflow })}
               className="shrink-0 rounded bg-orange/15 px-1 py-px text-[10px] leading-none text-orange"
             >
               +{overflow}
@@ -1579,6 +1655,8 @@ export function SubagentSpawnCard({
 }) {
   const g = useGinno();
   const router = useRouter();
+  const { tc } = useChatT();
+  const statusLabel = useStatusLabel();
   const live = g.sessions.find((s) => s.id === block.sessionId);
   const sub = live?.subagent;
   const status = sub?.status ?? "running";
@@ -1595,39 +1673,39 @@ export function SubagentSpawnCard({
       <div className="flex items-center gap-1.5">
         <span className="shrink-0">🤖</span>
         <span className="min-w-0 flex-1 truncate font-medium text-txt" title={sub?.goal || block.goal}>
-          {block.title || sub?.goal || block.goal || "子任务"}
+          {block.title || sub?.goal || block.goal || tc("subagent.fallbackTitle")}
         </span>
         <SubagentKindBadges sub={sub} />
         {active && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full" style={{ background: meta.color }} />}
-        <span className="shrink-0" title={`状态：${meta.label}`}>
-          {meta.glyph} {meta.label}
+        <span className="shrink-0" title={tc("status.tooltip", { status: statusLabel(status) })}>
+          {meta.glyph} {statusLabel(status)}
         </span>
         <button
           onClick={openChild}
           className="shrink-0 rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
         >
-          查看对话
+          {tc("subagent.viewConversation")}
         </button>
       </div>
       {(sub?.goal || block.goal) && (
         <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
-          目标:{sub?.goal || block.goal}
+          {tc("subagent.goalLabel")}{sub?.goal || block.goal}
         </div>
       )}
       {(sub?.constraints || block.constraints) && (
         <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
-          约束:{sub?.constraints || block.constraints}
+          {tc("subagent.constraintsLabel")}{sub?.constraints || block.constraints}
         </div>
       )}
       {(sub?.acceptance || block.acceptance) && (
         <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
-          验收:{sub?.acceptance || block.acceptance}
+          {tc("subagent.acceptanceLabel")}{sub?.acceptance || block.acceptance}
         </div>
       )}
       <div className="mt-1.5 flex items-center gap-2 text-[10px] text-faint">
-        <span>{block.origin === "user" ? "用户发起" : "主代理发起"}</span>
-        {typeof block.depth === "number" && <span>第 {block.depth + 1} 层</span>}
-        {block.spawnedAt && <span>已运行 {subagentElapsed(block.spawnedAt)}</span>}
+        <span>{block.origin === "user" ? tc("subagent.startedByUser") : tc("subagent.startedByAgent")}</span>
+        {typeof block.depth === "number" && <span>{tc("subagent.depth", { n: block.depth + 1 })}</span>}
+        {block.spawnedAt && <span>{tc("subagent.runningFor", { time: subagentElapsed(block.spawnedAt) })}</span>}
       </div>
     </div>
   );
@@ -1647,11 +1725,13 @@ export function SubagentResultCard({
 }) {
   const g = useGinno();
   const router = useRouter();
+  const { tc } = useChatT();
+  const statusLabel = useStatusLabel();
   const live = g.sessions.find((s) => s.id === block.sessionId);
   const sub = live?.subagent;
   const status = sub?.status ?? "done";
   const meta = subagentStatusMeta(status);
-  const goal = sub?.goal || block.goal || "子任务";
+  const goal = sub?.goal || block.goal || "Subtask";
   const [confirmed, setConfirmed] = useState(() => isSubagentConfirmed(block.sessionId));
   const [problemOpen, setProblemOpen] = useState(false);
   const openChild = () => {
@@ -1671,7 +1751,10 @@ export function SubagentResultCard({
       new CustomEvent("ginno:prefill-input", {
         detail: {
           sessionId: block.sessionId,
-          text: `【纠偏】关于本子任务的目标「${goal}」，结果存在以下问题：`,
+          text: t(
+            `[Course-correct] Regarding this subtask's goal "${goal}", its results have the following problems:`,
+            `【纠偏】关于本子任务的目标「${goal}」，结果存在以下问题：`,
+          ),
         },
       }),
     );
@@ -1695,11 +1778,11 @@ export function SubagentResultCard({
       <div className="flex items-center gap-1.5">
         <span className="shrink-0">🤖</span>
         <span className="min-w-0 flex-1 truncate font-medium text-txt" title={goal}>
-          子代理结果 · {goal}
+          {tc("subagent.resultTitle", { goal })}
         </span>
         <SubagentKindBadges sub={sub} />
-        <span className="shrink-0" title={`状态：${meta.label}`}>
-          {meta.glyph} {meta.label}
+        <span className="shrink-0" title={tc("status.tooltip", { status: statusLabel(status) })}>
+          {meta.glyph} {statusLabel(status)}
         </span>
       </div>
       {(block.summary || sub?.result_summary) && (
@@ -1708,18 +1791,18 @@ export function SubagentResultCard({
         </div>
       )}
       {block.error && (
-        <div className="mt-1.5 whitespace-pre-wrap break-words text-red/90">错误:{block.error}</div>
+        <div className="mt-1.5 whitespace-pre-wrap break-words text-red/90">{tc("subagent.errorPrefix")}{block.error}</div>
       )}
       {/* 验收区（P2 共享契约 5）：acceptance 非空时展示原文；逐条判定由主 agent
           在汇报里给出（runtime 注入消息已引导），卡片不重复解析。 */}
       {sub?.acceptance && (
         <div className="mt-2 rounded-md border border-violet/25 bg-violet/[0.05] px-2 py-1.5">
-          <div className="text-[10px] font-medium text-violet">验收标准</div>
+          <div className="text-[10px] font-medium text-violet">{tc("subagent.acceptanceCriteria")}</div>
           <div className="mt-0.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
             {sub.acceptance}
           </div>
           <div className="mt-1 text-[10px] text-faint">
-            主代理汇报时将逐条对照给出判定（通过 / 有缺口 + 说明）
+            {tc("subagent.acceptanceHint")}
           </div>
         </div>
       )}
@@ -1728,22 +1811,22 @@ export function SubagentResultCard({
           onClick={openChild}
           className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
         >
-          查看完整对话
+          {tc("subagent.viewFullConversation")}
         </button>
         {confirmed ? (
           <span
             className="rounded-md border border-green/40 bg-green/10 px-1.5 py-0.5 text-[10px] text-green"
-            title="已确认该结果，卡片定稿归档"
+            title={tc("subagent.confirmedTitle")}
           >
-            ✅ 已确认
+            ✅ {tc("subagent.confirmed")}
           </span>
         ) : (
           <button
             onClick={confirm}
-            title="确认该结果，卡片定稿归档"
+            title={tc("subagent.confirmTitle")}
             className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-green/50 hover:text-green"
           >
-            ✅ 确认
+            ✅ {tc("subagent.confirm")}
           </button>
         )}
         {!confirmed && (
@@ -1755,29 +1838,29 @@ export function SubagentResultCard({
                 : "border-line2 text-muted hover:border-yellow/50 hover:text-yellow"
             }`}
           >
-            ↩ 有问题
+            {tc("subagent.problem")}
           </button>
         )}
         {problemOpen && !confirmed && (
           <>
             <button
               onClick={goToChild}
-              title="跳转到该子会话，输入框预填纠偏提示（steering / 继续对话）"
+              title={tc("subagent.correctInChildTitle")}
               className="rounded-md border border-yellow/40 bg-yellow/10 px-1.5 py-0.5 text-[10px] text-yellow transition-colors hover:bg-yellow/20"
             >
-              去子会话纠偏
+              {tc("subagent.correctInChild")}
             </button>
             <button
               onClick={escalate}
-              title="在当前会话发一条引用该结果的消息，由主对话决定如何处理"
+              title={tc("subagent.escalateTitle")}
               className="rounded-md border border-yellow/40 bg-yellow/10 px-1.5 py-0.5 text-[10px] text-yellow transition-colors hover:bg-yellow/20"
             >
-              让主对话处理
+              {tc("subagent.escalate")}
             </button>
           </>
         )}
         {sub?.acceptance && (
-          <span className="ml-auto text-[10px] text-faint">验收判定见主代理汇报</span>
+          <span className="ml-auto text-[10px] text-faint">{tc("subagent.verdictsInReport")}</span>
         )}
       </div>
     </div>
@@ -1871,6 +1954,7 @@ export function SubagentBriefCard({
   session?: SessionMeta;
 }) {
   const [notesOpen, setNotesOpen] = useState(false);
+  const { tc } = useChatT();
   const meta = session?.subagent;
   const type = String(
     (meta as { agent_type?: string } | undefined)?.agent_type ?? "",
@@ -1881,20 +1965,20 @@ export function SubagentBriefCard({
   const constraints = meta?.constraints || block.constraints;
   const acceptance = meta?.acceptance || block.acceptance;
   const sections: Array<[string, string | undefined, string]> = [
-    ["目标", goal, "text-txt"],
-    ["约束", constraints, "text-muted"],
-    ["验收标准", acceptance, "text-muted"],
-    ["其他", block.extra, "text-muted"],
+    [tc("subagent.goalSection"), goal, "text-txt"],
+    [tc("subagent.constraintsSection"), constraints, "text-muted"],
+    [tc("subagent.acceptanceSection"), acceptance, "text-muted"],
+    [tc("subagent.otherSection"), block.extra, "text-muted"],
   ];
   return (
     <div className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2.5 text-xs">
       <div className="flex items-center gap-1.5">
         <span className="shrink-0">🧭</span>
-        <span className="shrink-0 font-medium text-violet">任务简报</span>
+        <span className="shrink-0 font-medium text-violet">{tc("subagent.briefTitle")}</span>
         {type && (
           <span
             className="rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet"
-            title={`子代理类型：${type}`}
+            title={tc("subagent.typeTitle", { type })}
           >
             {type}
           </span>
@@ -1902,7 +1986,7 @@ export function SubagentBriefCard({
         {isFork && (
           <span
             className="rounded-md border border-violet/40 bg-violet/10 px-1.5 py-0.5 text-[10px] text-violet"
-            title="从父对话分出的并行分支，已继承父对话完整上下文"
+            title={tc("subagent.forkInheritedTitle")}
           >
             fork
           </span>
@@ -1924,13 +2008,13 @@ export function SubagentBriefCard({
             onClick={() => setNotesOpen((v) => !v)}
             className="text-[10px] text-faint transition-colors hover:text-muted"
           >
-            {notesOpen ? "▾" : "▸"} 类型职责与报告格式
+            {notesOpen ? "▾" : "▸"} {tc("subagent.notesToggle")}
           </button>
           {notesOpen && (
             <div className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-faint">
               {block.persona && (
                 <>
-                  <div className="mb-1 text-[10px] text-violet">类型职责（persona）</div>
+                  <div className="mb-1 text-[10px] text-violet">{tc("subagent.personaLabel")}</div>
                   {block.persona}
                 </>
               )}
@@ -1956,6 +2040,8 @@ export function SubagentGroupCard({
 }) {
   const g = useGinno();
   const router = useRouter();
+  const { tc } = useChatT();
+  const statusLabel = useStatusLabel();
   const [openId, setOpenId] = useState<string | null>(null);
   if (!rows.length) return null;
 
@@ -1979,12 +2065,12 @@ export function SubagentGroupCard({
       <div className="flex items-center gap-1.5">
         <span className="shrink-0">🧭</span>
         <span className="min-w-0 truncate font-medium text-txt">
-          已委派 {rows.length} 个子代理
+          {tc("subagent.delegated", { count: rows.length })}
         </span>
         {uniformType && (
           <span
             className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet"
-            title={`子代理类型：${uniformType}`}
+            title={tc("subagent.typeTitle", { type: uniformType })}
           >
             {uniformType}
           </span>
@@ -1997,7 +2083,7 @@ export function SubagentGroupCard({
           const status = sub?.status ?? "running";
           const meta = subagentStatusMeta(status);
           const active = status === "running" || status === "waiting";
-          const title = r.title || sub?.goal || r.goal || "子任务";
+          const title = r.title || sub?.goal || r.goal || tc("subagent.fallbackTitle");
           const expanded = openId === r.sessionId;
           const type = types[i];
           return (
@@ -2007,7 +2093,7 @@ export function SubagentGroupCard({
                 className="flex w-full items-center gap-2 py-1 text-left transition-colors hover:bg-card2/40"
                 title={sub?.goal || r.goal}
               >
-                <span className="shrink-0" title={`状态：${meta.label}`}>{meta.glyph}</span>
+                <span className="shrink-0" title={tc("status.tooltip", { status: statusLabel(status) })}>{meta.glyph}</span>
                 {mixed && type && (
                   <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet">
                     {type}
@@ -2016,7 +2102,7 @@ export function SubagentGroupCard({
                 <span className="min-w-0 flex-1 truncate text-muted">{title}</span>
                 {r.spawnedAt && active && (
                   <span className="shrink-0 text-[10px] text-faint">
-                    已运行 {subagentElapsed(r.spawnedAt)}
+                    {tc("subagent.runningFor", { time: subagentElapsed(r.spawnedAt) })}
                   </span>
                 )}
                 <ChevronRight
@@ -2027,17 +2113,17 @@ export function SubagentGroupCard({
                 <div className="pb-2 pl-5 pr-1">
                   {(sub?.goal || r.goal) && (
                     <div className="whitespace-pre-wrap break-words leading-relaxed text-muted">
-                      目标：{sub?.goal || r.goal}
+                      {tc("subagent.goalLabel")}{sub?.goal || r.goal}
                     </div>
                   )}
                   {(sub?.constraints || r.constraints) && (
                     <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
-                      约束：{sub?.constraints || r.constraints}
+                      {tc("subagent.constraintsLabel")}{sub?.constraints || r.constraints}
                     </div>
                   )}
                   {(sub?.acceptance || r.acceptance) && (
                     <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
-                      验收：{sub?.acceptance || r.acceptance}
+                      {tc("subagent.acceptanceLabel")}{sub?.acceptance || r.acceptance}
                     </div>
                   )}
                   <div className="mt-1.5 flex items-center gap-2 text-[10px] text-faint">
@@ -2045,10 +2131,10 @@ export function SubagentGroupCard({
                       onClick={() => openChild(r.sessionId)}
                       className="rounded-md border border-line2 px-1.5 py-0.5 text-muted transition-colors hover:border-violet/50 hover:text-violet"
                     >
-                      查看完整对话
+                      {tc("subagent.viewFullConversation")}
                     </button>
-                    <span>{r.origin === "user" ? "用户发起" : "主代理发起"}</span>
-                    {typeof r.depth === "number" && <span>第 {r.depth + 1} 层</span>}
+                    <span>{r.origin === "user" ? tc("subagent.startedByUser") : tc("subagent.startedByAgent")}</span>
+                    {typeof r.depth === "number" && <span>{tc("subagent.depth", { n: r.depth + 1 })}</span>}
                   </div>
                 </div>
               )}

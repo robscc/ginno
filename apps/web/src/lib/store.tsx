@@ -14,6 +14,7 @@ import { ALL_RIGHT_TAB_IDS, canonicalTabOrder, visibleTabOrder } from "./rightTa
 import type { SynthesisCaseSummary } from "./runtime";
 import { notifyNative } from "./desktop";
 import { loadNotifyPrefs, notifyPrefs } from "./notifyPrefs";
+import { uiText } from "../i18n/uiText";
 import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, SubagentSpawnEvent, SubagentStatusEvent, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis" | "code";
@@ -134,14 +135,19 @@ function notifyRunTransitions(
     if (!hidden) continue; // user is looking — the badges already cover it
     let body: string;
     if (r.status === "done") {
-      body = `已完成 · 用时 ${fmtRunElapsed(r)}`;
+      // 通知模板走 ui 域（模块级函数无 hook，uiText 同步读当前 locale）
+      body = uiText("notifyRun.completed", { duration: fmtRunElapsed(r) });
     } else if (r.status === "failed") {
       const failed = (r.steps || []).find((s) => s.status === "failed");
-      body = failed?.title ? `失败于「${failed.title}」` : "执行失败";
+      body = failed?.title
+        ? uiText("notifyRun.failedAt", { step: failed.title })
+        : uiText("notifyRun.failed");
     } else {
       continue;
     }
-    const title = `${r.status === "done" ? "✓" : "✕"} ${r.name || "Workflow"}`;
+    const title = uiText(r.status === "done" ? "notifyRun.titleDone" : "notifyRun.titleFailed", {
+      name: r.name || uiText("notifyRun.defaultName"),
+    });
     // Desktop: the Tauri shell fires a real macOS notification (WKWebView has
     // no window.Notification). Click → window focus + open the Workflow panel.
     void notifyNative({
@@ -1032,7 +1038,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     });
     try {
       const r = await api.updateArtifact(id, patch);
-      if (!r.ok) throw new Error(r.error || "update failed");
+      if (!r.ok) throw new Error(r.error || uiText("net.updateFailed"));
       if (r.artifact) {
         const canonical = r.artifact;
         setArtifacts((prev) => prev.map((a) => (a.id === id ? { ...a, ...canonical } : a)));
@@ -1040,7 +1046,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       return { ok: true };
     } catch (e) {
       if (snapshot) setArtifacts(snapshot);
-      return { ok: false, error: e instanceof Error ? e.message : "更新失败" };
+      return { ok: false, error: e instanceof Error ? e.message : uiText("net.updateFailed") };
     }
   }, []);
 
@@ -1120,9 +1126,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
           return s;
         }
         // server returned ok:false (e.g. no provider enabled / missing key)
-        setSessionError(s?.error || "新建会话失败：请在 设置 → 模型 API 启用一个模型提供商");
+        setSessionError(s?.error || "Failed to create session: enable a model provider in Settings → Model API");
       } catch {
-        setSessionError("新建会话失败：无法连接运行时（sidecar 未启动？）");
+        setSessionError("Failed to create session: cannot reach the runtime (is the sidecar running?)");
       } finally {
         creatingRef.current = false;
       }
@@ -1150,7 +1156,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     });
     try {
       const r = await api.updateTodo(id, patch);
-      if (!r.ok) throw new Error(r.error || "update failed");
+      if (!r.ok) throw new Error(r.error || uiText("net.updateFailed"));
     } catch {
       if (snapshot) setTodos(snapshot);
     }
@@ -1276,7 +1282,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       return [
         {
           id: ev.session_id,
-          title: ev.title || ev.goal || "子任务",
+          title: ev.title || ev.goal || uiText("subtask.fallbackTitle"),
           icon: "boxes",
           agent_id: null,
           provider: "",
@@ -1367,7 +1373,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         if (r?.ok && r.goal) setGoalBySession((prev) => ({ ...prev, [sessionId]: r.goal! }));
         return { ok: !!r?.ok, needs_confirm: !!r?.needs_confirm, error: r?.error };
       } catch {
-        return { ok: false, error: "无法连接运行时" };
+        return { ok: false, error: uiText("net.unreachable") };
       }
     },
     [],
@@ -1379,7 +1385,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
       if (r?.ok && r.goal) setGoalBySession((prev) => ({ ...prev, [sessionId]: r.goal! }));
       return { ok: !!r?.ok, error: r?.error };
     } catch {
-      return { ok: false, error: "无法连接运行时" };
+      return { ok: false, error: uiText("net.unreachable") };
     }
   }, []);
 

@@ -27,8 +27,8 @@ from ..world_state import (
     SUMMARY_MSG_PREFIX,
     TURN_CONTEXT_PREFIX,
     UPDATE_MSG_PREFIX,
-    reinject_row_text,
-    summary_row_text,
+    reinject_row_parts,
+    summary_row_parts,
 )
 
 # Bullets a world-state update message can start with when it was checkpointed
@@ -240,7 +240,7 @@ TOOL_OUTPUT_WS_LIMIT = 4000
 def _truncate_for_ws(text: str) -> str:
     if len(text) <= TOOL_OUTPUT_WS_LIMIT:
         return text
-    return text[:TOOL_OUTPUT_WS_LIMIT] + f"\n…（已截断，完整 {len(text)} 字符）"
+    return text[:TOOL_OUTPUT_WS_LIMIT] + f"\n…(truncated, {len(text)} chars total)"
 
 
 # Keys most likely to carry the "headline" argument of a tool call, in display
@@ -583,20 +583,31 @@ def _messages_to_ui(
                 # short row, never the raw machine prefix + full body.
                 if content_raw.startswith(GOAL_CONTEXT_PREFIX):
                     display = goal_context_row(content_raw)
+                    row_key: str | None = None
+                    row_params: dict = {}
                 elif content_raw.startswith(SUMMARY_MSG_PREFIX):
-                    display = summary_row_text(content_raw)
+                    display, row_key, row_params = summary_row_parts(content_raw)
                 elif content_raw.startswith(REINJECT_MSG_PREFIX):
-                    display = reinject_row_text(content_raw)
+                    display, row_key, row_params = reinject_row_parts(content_raw)
                 else:
                     # The update prefix is a machine marker — never show it.
                     display = content_raw
                     if display.startswith(UPDATE_MSG_PREFIX):
                         display = display[len(UPDATE_MSG_PREFIX):].lstrip("\n")
+                    row_key = None
+                    row_params = {}
+                row_block: dict = {"kind": "context", "text": display}
+                # Event contract (i18n-design.md §3): key + params ride the
+                # block so replay renders localized; text stays the English
+                # fallback so old clients / missing keys degrade gracefully.
+                if row_key:
+                    row_block["i18n_key"] = row_key
+                    row_block["params"] = row_params
                 ui.append(
                     {
                         "id": getattr(m, "id", None),
                         "role": "system",
-                        "blocks": [{"kind": "context", "text": display}],
+                        "blocks": [row_block],
                     }
                 )
                 continue

@@ -13,21 +13,26 @@
 import { Brain, Code2, FileBox, ListTodo, Sparkles, Zap, type LucideIcon } from "lucide-react";
 import type { RightTab } from "./store";
 
+/** 标签 key 的字面量联合（"tabs.<id>"），保住 useTranslations 的 key 类型检查。 */
+export type RightTabLabelKey = `tabs.${RightTab}`;
+
 export interface RightTabMeta {
   id: RightTab;
-  label: string;
+  /** 标签的 i18n key（right 域相对路径，如 "tabs.artifacts" → right.tabs.*）。
+   *  注册表不持成品文案；渲染处用 useTranslations("right") 取 key 翻译。 */
+  labelKey: RightTabLabelKey;
   icon: LucideIcon;
 }
 
 /** Default order. A newly added tab goes at the END so it never displaces the
  *  established ones (the same rule the tab strip has always followed). */
 export const RIGHT_TABS: RightTabMeta[] = [
-  { id: "artifacts", label: "Artifacts", icon: FileBox },
-  { id: "todo", label: "TODO", icon: ListTodo },
-  { id: "workflow", label: "Workflow", icon: Zap },
-  { id: "memory", label: "Memory", icon: Brain },
-  { id: "synthesis", label: "总结", icon: Sparkles },
-  { id: "code", label: "代码", icon: Code2 },
+  { id: "artifacts", labelKey: "tabs.artifacts", icon: FileBox },
+  { id: "todo", labelKey: "tabs.todo", icon: ListTodo },
+  { id: "workflow", labelKey: "tabs.workflow", icon: Zap },
+  { id: "memory", labelKey: "tabs.memory", icon: Brain },
+  { id: "synthesis", labelKey: "tabs.synthesis", icon: Sparkles },
+  { id: "code", labelKey: "tabs.code", icon: Code2 },
 ];
 
 export const RIGHT_TAB_BY_ID = Object.fromEntries(

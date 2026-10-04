@@ -367,14 +367,14 @@ async def code_delete(req: dict) -> dict:
                 "ok": False,
                 "code": "confirm-required",
                 "count": count,
-                "message": f"该目录包含 {count} 项，删除后可在废纸篓中恢复，请确认",
+                "message": f"This folder contains {count} items; they can be restored from Trash after deletion. Are you sure?",
             }
 
     workspace = ctx["workspace"]
     try:
         workspace.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        return _err("denied-path", f"无法准备回收目录：{e}")
+        return _err("denied-path", f"Failed to prepare the trash folder: {e}")
     trash_dir = workspace / f".trash-{time.time_ns()}"
     dest = trash_dir / target.name
     try:
@@ -384,12 +384,12 @@ async def code_delete(req: dict) -> dict:
         # workspace and a mounted root while still never unlinking outright.
         shutil.move(str(target), str(dest))
     except OSError as e:
-        return _err("denied-path", f"无法移入回收目录：{e}")
+        return _err("denied-path", f"Failed to move to the trash folder: {e}")
 
     return {
         "ok": True,
         "trashed": True,
         "count": count,
         "trash_path": str(dest),
-        "message": f"已移入会话回收目录（{dest.name}），并非系统废纸篓，可手动恢复",
+        "message": f"Moved to the session trash folder ({dest.name}), not the system Trash; restore manually if needed",
     }

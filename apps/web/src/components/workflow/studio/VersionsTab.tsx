@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Check, Loader2, RotateCcw } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import type { WorkflowDef } from "@/lib/types";
 import { DiffView } from "../DiffView";
@@ -24,6 +25,8 @@ export function VersionsTab({ wf, onChanged }: { wf: WorkflowDef; onChanged: () 
   const [confirmRoll, setConfirmRoll] = useState(false);
 
   const current = wf.version ?? 1;
+  const t = useTranslations("wf.versions");
+  const tCommon = useTranslations("wf.common");
 
   useEffect(() => {
     let alive = true;
@@ -69,7 +72,7 @@ export function VersionsTab({ wf, onChanged }: { wf: WorkflowDef; onChanged: () 
     if (sel === null || rolling) return;
     setRolling(true);
     try {
-      const r = await api.rollbackWorkflow(wf.id, sel, `studio: 回滚到 v${sel}`);
+      const r = await api.rollbackWorkflow(wf.id, sel, `studio: rolled back to v${sel}`);
       if (r.ok) {
         setSel(null);
         setDiff(null);
@@ -87,12 +90,12 @@ export function VersionsTab({ wf, onChanged }: { wf: WorkflowDef; onChanged: () 
     <div className="grid h-full grid-cols-1 gap-3 overflow-hidden lg:grid-cols-[280px_minmax(0,1fr)]">
       <div className="min-h-0 overflow-y-auto rounded-lg border border-line bg-card">
         <div className="flex items-center gap-1.5 border-b border-line px-2.5 py-2">
-          <span className="text-[11.5px] font-semibold text-txt">版本历史</span>
-          <span className="ml-auto font-mono text-[10px] text-faint">当前 v{current}</span>
+          <span className="text-[11.5px] font-semibold text-txt">{t("title")}</span>
+          <span className="ml-auto font-mono text-[10px] text-faint">{t("currentV", { version: current })}</span>
         </div>
         {loading && (
           <div className="flex items-center justify-center gap-1.5 py-6 text-[11px] text-faint">
-            <Loader2 className="h-3 w-3 animate-spin" /> 加载中…
+            <Loader2 className="h-3 w-3 animate-spin" /> {tCommon("loading")}
           </div>
         )}
         {!loading &&
@@ -108,7 +111,7 @@ export function VersionsTab({ wf, onChanged }: { wf: WorkflowDef; onChanged: () 
                 }`}
               >
                 <span className={isCur ? "font-semibold text-violet" : "text-txt"}>v{v.version}</span>
-                {isCur && <span className="text-[10px] text-faint">当前</span>}
+                {isCur && <span className="text-[10px] text-faint">{t("currentTag")}</span>}
                 <span className="ml-auto font-mono text-[10px] text-faint">
                   {v.ts
                     ? new Date(v.ts * 1000).toLocaleString(undefined, {
@@ -123,27 +126,27 @@ export function VersionsTab({ wf, onChanged }: { wf: WorkflowDef; onChanged: () 
             );
           })}
         {!loading && !versions.length && (
-          <div className="py-6 text-center text-[11px] text-faint">暂无版本记录</div>
+          <div className="py-6 text-center text-[11px] text-faint">{t("empty")}</div>
         )}
       </div>
 
       <div className="min-h-0 overflow-y-auto rounded-lg border border-line bg-card p-3">
         {sel === null ? (
           <div className="flex h-full items-center justify-center text-center text-[11px] text-faint">
-            选一个版本查看它与当前版本的差异，或回滚到它。
+            {t("pick")}
           </div>
         ) : sel === current ? (
           <div className="flex h-full items-center justify-center text-[11px] text-faint">
-            v{current} 就是当前版本。
+            {t("isCurrent", { version: current })}
           </div>
         ) : (
           <div className="space-y-2">
             <div className="text-[11.5px] text-muted">
-              v{sel} → v{current} 的差异
+              {t("diffRange", { from: sel, to: current })}
             </div>
             {diffBusy ? (
               <div className="flex items-center gap-1.5 text-[11px] text-faint">
-                <Loader2 className="h-3 w-3 animate-spin" /> 计算差异…
+                <Loader2 className="h-3 w-3 animate-spin" /> {t("computingDiff")}
               </div>
             ) : (
               <>
@@ -165,10 +168,14 @@ export function VersionsTab({ wf, onChanged }: { wf: WorkflowDef; onChanged: () 
                     ) : (
                       <RotateCcw className="h-3 w-3" />
                     )}
-                    {rolling ? "回滚中…" : confirmRoll ? "确认回滚？" : `回滚到 v${sel}`}
+                    {rolling
+                      ? t("rollingBack")
+                      : confirmRoll
+                        ? t("confirmRollback")
+                        : t("rollbackTo", { version: sel })}
                   </button>
                   <span className="text-[10.5px] text-faint">
-                    回滚不会删除历史：它是把 v{sel} 的内容写成新的 v{current + 1}
+                    {t("rollbackNote", { from: sel, to: current + 1 })}
                   </span>
                 </div>
               </>

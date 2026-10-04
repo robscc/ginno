@@ -12,6 +12,9 @@ persona, model binding, tool allowlist, and (via memory.py) memory scope.
       "provider": "custom",      # provider id from providers.py
       "model": "",               # empty → use provider default
       "tools_allow": ["*"],      # ["*"] = all; else fnmatch patterns over tool names
+      "connectors_deny": [],     # connector ids this agent may NOT use (设计 §8;
+                                 # [] = all enabled connectors; deny-only so
+                                 # future connectors default to allowed)
       "memory_scope": "agent"    # "agent" → ~/.ginno/agents/<id>/memory
     }
 
@@ -43,6 +46,10 @@ class AgentConfig:
     provider_explicit: bool = False
     model: str = ""
     tools_allow: list[str] = field(default_factory=lambda: ["*"])
+    # Per-agent connector denial (connector-module-design.md §8). Denylist on
+    # purpose: per-agent config can only RESTRICT below the global connectors
+    # section, and connectors registered later default to allowed.
+    connectors_deny: list[str] = field(default_factory=list)
     memory_scope: str = "agent"
     status: str = "idle"  # runtime presence; default idle
 
@@ -213,8 +220,8 @@ def validate_model_binding(provider: str | None, model: str | None) -> None:
     models = cfg.get("models") or []
     if models and model not in models:
         raise AgentModelBindingError(
-            f"模型 {model!r} 不属于配置 {cfg.get('name') or provider!r}，"
-            f"可选值: {', '.join(models)}"
+            f"Model {model!r} does not belong to config {cfg.get('name') or provider!r}; "
+            f"available: {', '.join(models)}"
         )
 
 

@@ -232,7 +232,7 @@ async def test_agent_type_unknown_lists_available(isolated_home, parent_session,
     _write_type("researcher")
     res = await sched.create_subagent(parent_session, "调研", agent_type="ghost")
     assert not res["ok"]
-    assert res["error"].startswith("[error] 未知 subagent 类型")
+    assert res["error"].startswith("[error] Unknown subagent type")
     assert "researcher" in res["error"]  # the available list rides along
     assert radio["turns"] == []
     assert server_shared.subagent_children(parent_session) == []
@@ -279,7 +279,7 @@ async def test_spawn_tool_fork_child_refuses_refork(isolated_home, monkeypatch):
     assert out.startswith("[error]") and "fork" in out
     # a standard spawn from the same fork child is untouched
     ok = await tools["spawn_subagent"].ainvoke({"goal": "标准委派"})
-    assert ok.startswith("subagent 已启动")
+    assert ok.startswith("subagent started")
 
 
 # --------------------------------------------------------------------------- #
@@ -315,7 +315,7 @@ async def test_fork_copies_history_with_fresh_ids_and_brief_on_top(
     # brief first, then every copied message
     assert "并行分支" in str(msgs[0].content)
     assert "<ginno_subagent_brief>" in str(msgs[0].content)
-    assert "从父对话分出的并行分支" in str(msgs[0].content)
+    assert "(fork)" in str(msgs[0].content)  # lang-independent fork marker
     assert len(msgs) == len(parent_msgs) + 1
     for src, cp in zip(parent_msgs, msgs[1:]):
         assert cp.content == src.content
@@ -326,7 +326,7 @@ async def test_fork_copies_history_with_fresh_ids_and_brief_on_top(
     assert msgs[2].tool_calls == parent_msgs[1].tool_calls
     assert msgs[3].tool_call_id == "tc1"
     # the first turn is the fork start instruction, NOT a duplicate brief
-    assert radio["turns"][0][1].startswith("这是从父对话分出的并行分支")
+    assert radio["turns"][0][1].startswith("This is a parallel branch (fork)")
     # SystemMessages are never carried over (the model layer adds its own)
     from langchain_core.messages import SystemMessage
 
@@ -339,7 +339,7 @@ async def test_fork_child_cannot_fork(isolated_home, parent_session, radio):
     child = res["session_id"]
     res2 = await sched.create_subagent(child, "第二代 fork", fork=True)
     assert not res2["ok"]
-    assert "fork 子代不能再 fork" in res2["error"]
+    assert "cannot fork again" in res2["error"]
     assert server_shared.subagent_children(child) == []
 
 
@@ -353,7 +353,7 @@ async def test_fork_does_not_change_depth_rules(isolated_home, parent_session, r
     # and the structural depth cap still applies from a depth-2 session
     _put_meta(_sub_meta("D2K", parent="D2", depth=2))
     res3 = await sched.create_subagent("D2K", "越界 fork", fork=True)
-    assert not res3["ok"] and "深度" in res3["error"]
+    assert not res3["ok"] and "Maximum nesting depth" in res3["error"]
 
 
 async def test_fork_seed_failure_degrades_to_standard(
@@ -407,7 +407,7 @@ async def test_spawn_cap_uses_live_setting(isolated_home, parent_session, radio,
     _put_meta(_sub_meta("busy1", parent="other", status="running"))
     res = await sched.create_subagent(parent_session, "第 2 个")
     assert not res["ok"] and res.get("limit")
-    assert "已达上限（1）" in res["error"]
+    assert "Concurrent subagent cap reached (1)" in res["error"]
 
 
 async def test_plan_validation_uses_live_setting(isolated_home, monkeypatch):
@@ -415,7 +415,7 @@ async def test_plan_validation_uses_live_setting(isolated_home, monkeypatch):
     subtasks, err = plan_mod.validate_subtasks(
         [{"goal": f"g{i}", "reason": "r"} for i in range(3)]
     )
-    assert subtasks is None and "上限（2）" in err
+    assert subtasks is None and "cap (2)" in err
     subtasks, err = plan_mod.validate_subtasks(
         [{"goal": f"g{i}", "reason": "r"} for i in range(2)]
     )
@@ -433,7 +433,7 @@ async def test_concurrency_warning_at_80pct_once(isolated_home, parent_session, 
     assert res["ok"]
     notices = _notices(radio)
     assert len(notices) == 1
-    assert "8 个" in notices[0] and "10" in notices[0]
+    assert "8 subagents" in notices[0] and "10" in notices[0]
     # a second spawn past the floor does NOT re-warn (once per session)
     _put_meta(_sub_meta("wr7", parent="other", status="running"))
     res2 = await sched.create_subagent(parent_session, "第 9 个")
@@ -446,7 +446,7 @@ async def test_concurrency_warning_at_80pct_once(isolated_home, parent_session, 
     assert await sched._maybe_warn_concurrency("parent2") is True
     notices = _notices(radio)
     assert len(notices) == 2
-    assert "10 个" in notices[1]
+    assert "10 subagents" in notices[1]
     # ...and only once for that owner as well
     assert await sched._maybe_warn_concurrency("parent2") is False
     assert len(_notices(radio)) == 2
@@ -507,7 +507,7 @@ async def test_background_command_reports_handler_failure(monkeypatch, radio):
     )
     await plan_mod.run_background_command(_main_session("BG2"), "subagent-split", "任务")
     notices = _notices(radio)
-    assert notices and "subagent-split 执行失败" in notices[-1]
+    assert notices and "subagent-split failed" in notices[-1]
     assert "模型网关超时" in notices[-1]
 
 

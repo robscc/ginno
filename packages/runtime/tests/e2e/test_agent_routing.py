@@ -47,7 +47,7 @@ def test_agent_tools_allow_blocks_disallowed_tool(create_session, ws_conv, isola
     # blocked by policy enforcement, not by an interactive permission prompt
     assert "permission.request" not in names
     tool_ends = events_of(events, "tool.end")
-    assert any("不可用" in (e.get("content", "")) for e in tool_ends)
+    assert any("is not available to" in (e.get("content", "")) for e in tool_ends)
     from ginno_runtime import paths
 
     assert not (paths.session_files_dir("default", sid) / "x.txt").exists()

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { BookUp, Brain, Loader2, Sparkles } from "lucide-react";
 import { useGinno } from "@/lib/store";
@@ -36,6 +37,8 @@ function splitSections(content: string): Section[] {
 
 export function MemoryPanel() {
   const g = useGinno();
+  // i18n：记忆面板框架文案（记忆内容本身是用户数据，不翻译）
+  const t = useTranslations("right.memory");
   const [content, setContent] = useState("");
   const [poolCount, setPoolCount] = useState(0);
   const [kbUsable, setKbUsable] = useState(false);
@@ -78,10 +81,10 @@ export function MemoryPanel() {
           setDraftOpen(true); // straight into review
         }
       } else {
-        setMsg(r.error || "起草失败");
+        setMsg(r.error || t("draftFailed"));
       }
     } catch (e) {
-      setMsg(e instanceof Error ? `起草失败：${e.message}` : "起草失败：无法连接运行时");
+      setMsg(e instanceof Error ? t("draftFailedWith", { m: e.message }) : t("draftFailedConnect"));
     } finally {
       setBusy(false);
     }
@@ -93,20 +96,20 @@ export function MemoryPanel() {
     <div className="flex h-full flex-col">
       <div className="flex items-center px-4 pb-2 pt-4">
         <Brain className="mr-2 h-4 w-4 text-muted" />
-        <span className="text-sm font-semibold text-txt">全局记忆</span>
+        <span className="text-sm font-semibold text-txt">{t("title")}</span>
         {poolCount > 0 && (
           <span className="ml-2 rounded-full bg-violet/20 px-2 py-0.5 text-[11px] text-violet">
-            pool: {poolCount}
+            {t("pool", { n: poolCount })}
           </span>
         )}
         <button
           onClick={onDistill}
           disabled={busy || poolCount === 0}
-          title="用 LLM 把对话池提炼成草稿，审核后才写入记忆"
+          title={t("distillTitle")}
           className="ml-auto flex items-center gap-1 text-xs text-muted hover:text-txt disabled:opacity-50"
         >
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-          提炼草稿
+          {t("distill")}
         </button>
       </div>
 
@@ -116,8 +119,8 @@ export function MemoryPanel() {
           className="mx-4 mb-2 flex items-center gap-2 rounded-lg border border-violet/40 bg-violet/10 px-3 py-2 text-left text-xs text-txt hover:bg-violet/20"
         >
           <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-violet" />
-          有 {draft.pool_entries ?? 0} 条对话的蒸馏草稿待审核
-          <span className="ml-auto text-violet">审核</span>
+          {t("draftBanner", { n: draft.pool_entries ?? 0 })}
+          <span className="ml-auto text-violet">{t("review")}</span>
         </button>
       )}
 
@@ -134,7 +137,7 @@ export function MemoryPanel() {
                 {kbUsable && (
                   <button
                     onClick={() => setPromoteSection(s)}
-                    title="沉淀到知识库"
+                    title={t("promoteTitle")}
                     className="float-right ml-2 hidden rounded p-1 text-muted hover:bg-card2 hover:text-violet group-hover:block"
                   >
                     <BookUp className="h-3.5 w-3.5" />
@@ -147,18 +150,12 @@ export function MemoryPanel() {
             ))}
           </div>
         ) : (
-          <div className="py-6 text-center text-xs text-faint">
-            尚无全局记忆。对话会自动累积到 pool，点「提炼草稿」审核后写入。
-          </div>
+          <div className="py-6 text-center text-xs text-faint">{t("empty")}</div>
         )}
         {kbUsable ? (
-          <div className="mt-3 text-[11px] text-faint">
-            悬停段落可「沉淀到知识库」——记忆成为可检索的知识页。
-          </div>
+          <div className="mt-3 text-[11px] text-faint">{t("promoteHint")}</div>
         ) : (
-          <div className="mt-3 text-[11px] text-faint">
-            在设置中配置知识库（vault）后，可把记忆段落沉淀为可检索的知识页。
-          </div>
+          <div className="mt-3 text-[11px] text-faint">{t("kbHint")}</div>
         )}
       </div>
 

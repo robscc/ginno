@@ -1,0 +1,8 @@
+{
+  "errors.session_not_found": "会话 {id} 不存在",
+  "schedule.run_succeeded": "已成功",
+  "schedule.run_failed": "失败：{error}",
+  "schedule.run_interrupted": "运行被中断（应用退出）",
+  "schedule.missed": "已错过（机器睡眠或应用未运行）",
+  "schedule.default_task_title": "定时任务"
+}

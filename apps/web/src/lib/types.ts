@@ -71,6 +71,9 @@ export interface AgentConfig {
   provider: string;
   model: string;
   tools_allow: string[];
+  /** Connector ids this agent may NOT use (connector-module-design §8).
+   *  Denylist: [] = all enabled connectors; per-agent can only restrict. */
+  connectors_deny?: string[];
   memory_scope: string;
   status: string;
 }

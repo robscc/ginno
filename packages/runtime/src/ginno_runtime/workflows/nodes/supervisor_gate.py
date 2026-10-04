@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import time
 
+from ...lang import t
 from .base import BaseNode
 from .registry import register_node
 
@@ -59,14 +60,23 @@ _DECISIONS = ("continue", "skip", "retry", "abort")
 # omits the field (0/false are legitimate values, hence the ``is None`` checks).
 _DEFAULTS = {"retry_limit": 2, "max_interventions": 5, "token_budget": 20000, "confidence_min": 0.7}
 
-# Chinese lead-in for the fallback park question — the question text STARTS
-# with the reason so the human card shows why auto escalated.
+# Lead-in for the fallback park question — the question text STARTS with the
+# reason so the human card shows why auto escalated. Keys are the machine
+# contract (unchanged across variants); values go to the human card and ride
+# recent events into the auto judge's prompt.
 _FALLBACK_LABELS = {
     "judge-error": "auto 裁判不可用",
     "low-confidence": "auto 置信度不足",
     "retry-limit": "auto 重试次数达上限",
     "interventions-exceeded": "auto 干预次数达上限",
     "token-budget": "auto 裁判 token 超预算",
+}
+_FALLBACK_LABELS_EN = {
+    "judge-error": "auto judge unavailable",
+    "low-confidence": "auto confidence too low",
+    "retry-limit": "auto retry limit reached",
+    "interventions-exceeded": "auto intervention limit reached",
+    "token-budget": "auto judge over token budget",
 }
 
 
@@ -89,7 +99,7 @@ class SupervisorGateNode(BaseNode):
         question = (
             sup.get("prompt")
             or node.get("question")
-            or f"「{src}」执行完毕，是否继续？"
+            or t(f'"{src}" finished. Continue?', f"「{src}」执行完毕，是否继续？")
         )
         mode = sup.get("mode") or "human"
 
@@ -200,7 +210,10 @@ class SupervisorGateNode(BaseNode):
         reason: str | None = None
         detail = ""
         if verdict is None:
-            reason, detail = "judge-error", f"裁判模型调用失败：{judge_err[:200]}"
+            reason, detail = "judge-error", t(
+                f"judge model call failed: {judge_err[:200]}",
+                f"裁判模型调用失败：{judge_err[:200]}",
+            )
         else:
             conf = float(verdict["confidence"])
             decision = verdict["decision"]
@@ -214,16 +227,29 @@ class SupervisorGateNode(BaseNode):
                 "verdict": "ok" if conf >= conf_min else "low-confidence",
             })
             if conf < conf_min:
-                reason, detail = "low-confidence", f"置信度 {conf:g} < 阈值 {conf_min:g}（节点「{src}」）"
+                reason, detail = "low-confidence", t(
+                    f'confidence {conf:g} < threshold {conf_min:g} (node "{src}")',
+                    f"置信度 {conf:g} < 阈值 {conf_min:g}（节点「{src}」）",
+                )
             elif decision == "retry" and st["retries"].get(src, 0) >= retry_limit:
                 reason = "retry-limit"
-                detail = f"节点「{src}」已重试 {st['retries'].get(src, 0)} 次，达上限 {retry_limit}"
+                detail = t(
+                    f'node "{src}" already retried {st["retries"].get(src, 0)} time(s), '
+                    f"limit {retry_limit}",
+                    f"节点「{src}」已重试 {st['retries'].get(src, 0)} 次，达上限 {retry_limit}",
+                )
             elif decision != "continue" and st["interventions"] >= max_intv:
                 reason = "interventions-exceeded"
-                detail = f"已干预 {st['interventions']} 次，达上限 {max_intv}"
+                detail = t(
+                    f"{st['interventions']} intervention(s) so far, limit {max_intv}",
+                    f"已干预 {st['interventions']} 次，达上限 {max_intv}",
+                )
             elif st["tokens"] > token_budget:
                 reason = "token-budget"
-                detail = f"裁判累计消耗 {st['tokens']} tokens，超预算 {token_budget:g}"
+                detail = t(
+                    f"judge has spent {st['tokens']} tokens in total, over budget {token_budget:g}",
+                    f"裁判累计消耗 {st['tokens']} tokens，超预算 {token_budget:g}",
+                )
 
         if reason is not None:
             sug = None
@@ -233,9 +259,13 @@ class SupervisorGateNode(BaseNode):
                     "confidence": verdict.get("confidence"),
                     "reason": verdict.get("reason") or "",
                 }
-            q = f"{_FALLBACK_LABELS[reason]}({detail})，转人工"
+            label = t(_FALLBACK_LABELS_EN[reason], _FALLBACK_LABELS[reason])
+            q = f"{label}({detail})" + t(", escalating to human", "，转人工")
             if sug:
-                q += f"；auto 建议：{sug['decision']}（{sug['reason']}）"
+                q += t(
+                    f"; auto suggests: {sug['decision']} ({sug['reason']})",
+                    f"；auto 建议：{sug['decision']}（{sug['reason']}）",
+                )
             emit({"kind": "sup_fallback", "reason": reason, "detail": detail})
             emit({
                 "kind": "interrupt",

@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { DEFAULT_TOOL_LABELS, refreshToolLabels } from "@/lib/toolLabels";
 
 export function ToolLabelsSettings() {
+  // 面板界面文案走 tools.ui 域（工具标签数据本体在 P0 的 tool.labels，勿混用）
+  const t = useTranslations("tools.ui");
   const [labels, setLabels] = useState<Record<string, string>>({});
   const [msg, setMsg] = useState("");
   const [newKey, setNewKey] = useState("");
@@ -19,7 +22,7 @@ export function ToolLabelsSettings() {
         const user = (s.tool_labels as Record<string, string>) || {};
         setLabels({ ...DEFAULT_TOOL_LABELS, ...user });
       })
-      .catch(() => setMsg("Failed to load"));
+      .catch(() => setMsg(t("loadFailed")));
   }, []);
 
   // IME（拼音等）合成期间每次按键都触发 onChange；若直接落盘会并发保存
@@ -37,10 +40,10 @@ export function ToolLabelsSettings() {
       await api.putSettings(s);
       if (seq !== saveSeq.current) return;
       await refreshToolLabels();
-      setMsg("Saved");
+      setMsg(t("saved"));
       setTimeout(() => setMsg(""), 2000);
     } catch {
-      setMsg("Failed to save");
+      setMsg(t("saveFailed"));
     }
   }
 
@@ -76,7 +79,7 @@ export function ToolLabelsSettings() {
     const v = newVal.trim();
     if (!k || !v) return;
     if (labels[k]) {
-      setMsg(`"${k}" already exists`);
+      setMsg(t("alreadyExists", { key: k }));
       return;
     }
     const next = { ...labels, [k]: v };
@@ -90,12 +93,13 @@ export function ToolLabelsSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Tool Labels</h2>
+      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
       <p className="mt-1 text-xs text-faint">
-        Customize the display names of tool-call bubbles. MCP tools (starting with{" "}
-        <code className="text-muted">mcp_</code>) default to &ldquo;Calling MCP: &#123;server&#125;&rdquo; when not
-        configured. Separate several names with <code className="text-muted">|</code> (e.g.
-        &ldquo;写文件中|落盘中&rdquo;) — one is picked at random per call.
+        {t.rich("description", {
+          code: (chunks) => <code className="text-muted">{chunks}</code>,
+          // ICU 模板里不便直写花括号，作为参数注入字面量 "{server}"
+          mcpDefault: "{server}",
+        })}
       </p>
 
       <div className="mt-5 max-w-lg">
@@ -118,7 +122,7 @@ export function ToolLabelsSettings() {
               <button
                 onClick={() => removeLabel(key)}
                 className="shrink-0 rounded px-1.5 py-0.5 text-xs text-faint hover:bg-card2 hover:text-txt"
-                title="Delete"
+                title={t("delete")}
               >
                 ✕
               </button>
@@ -130,14 +134,14 @@ export function ToolLabelsSettings() {
         <div className="mt-4 flex items-center gap-2">
           <input
             className="field w-36 shrink-0 !py-1 text-xs"
-            placeholder="Tool name"
+            placeholder={t("newKeyPlaceholder")}
             value={newKey}
             onChange={(e) => setNewKey(e.target.value)}
           />
           <span className="text-faint">→</span>
           <input
             className="field flex-1 !py-1 text-xs"
-            placeholder="Display name (several with |, random)"
+            placeholder={t("newValPlaceholder")}
             value={newVal}
             onChange={(e) => setNewVal(e.target.value)}
             // IME guard (same as the composer): Enter commits a CJK
@@ -152,7 +156,7 @@ export function ToolLabelsSettings() {
             onClick={addLabel}
             className="shrink-0 rounded-lg border border-violet/40 px-2.5 py-1 text-xs text-violet hover:bg-violet/10"
           >
-            Add
+            {t("add")}
           </button>
         </div>
 

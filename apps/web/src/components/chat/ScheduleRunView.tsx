@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Fragment } from "react";
+import { useTranslations } from "next-intl";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
@@ -27,6 +28,7 @@ type HistoryMessage = {
 
 export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
   const g = useGinno();
+  const tr = useTranslations("sched");
   const [run, setRun] = useState<ScheduleRun>(snapshot);
   const [messages, setMessages] = useState<HistoryMessage[] | null>(null); // null = 加载中
   const [historyError, setHistoryError] = useState(false);
@@ -112,7 +114,7 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
           <span
             className="flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px"
             style={{ borderColor: meta.color, color: meta.color }}
-            title={`Status: ${meta.label}`}
+            title={tr("view.statusTitle", { label: meta.label })}
           >
             {run.status === "running" && (
               <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: meta.color }} />
@@ -120,21 +122,21 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
             {meta.glyph} {meta.label}
           </span>
           <span className="shrink-0 text-faint">
-            Due {fmtDayPrefix(run.scheduled_at)} {fmtClock(run.scheduled_at)}
-            {run.trigger === "manual" && " · manual"}
+            {tr("view.due", { day: fmtDayPrefix(run.scheduled_at), clock: fmtClock(run.scheduled_at) })}
+            {run.trigger === "manual" && tr("view.manualSuffix")}
           </span>
           <span className="shrink-0 text-faint">
-            Start {fmtClock(run.started_at)}
-            {run.finished_at ? ` · End ${fmtClock(run.finished_at)}` : ""}
+            {tr("view.start", { clock: fmtClock(run.started_at) })}
+            {run.finished_at ? tr("view.endSuffix", { clock: fmtClock(run.finished_at) }) : ""}
           </span>
           {dur && <span className="shrink-0 text-faint">⏱ {dur}</span>}
-          {tokens && <span className="shrink-0 text-faint" title="Input / output tokens">⇅ {tokens}</span>}
+          {tokens && <span className="shrink-0 text-faint" title={tr("view.tokensTitle")}>⇅ {tokens}</span>}
           <button
             onClick={() => g.closeScheduleRun()}
-            title="Back to previous view"
+            title={tr("view.backTitle")}
             className="ml-auto flex shrink-0 items-center gap-1 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
           >
-            <ArrowLeft className="h-3 w-3" /> Back
+            <ArrowLeft className="h-3 w-3" /> {tr("view.back")}
           </button>
         </div>
         {run.error && (
@@ -153,11 +155,11 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
             </div>
           ) : historyError ? (
             <div className="py-16 text-center text-sm text-faint">
-              The session was deleted or cannot be read — the run record is kept.
+              {tr("view.historyError")}
             </div>
           ) : messages.length === 0 ? (
             <div className="py-16 text-center text-sm text-faint">
-              {run.status === "running" ? "The shadow session is still running — reopen later…" : "No messages to replay."}
+              {run.status === "running" ? tr("view.runningEmpty") : tr("view.empty")}
             </div>
           ) : (
             messages.map((m) => {

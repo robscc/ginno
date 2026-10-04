@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ScheduleRun, ScheduleTimeline } from "@/lib/types";
@@ -50,6 +51,7 @@ export function DayTimeline({
   onOpenDayRuns?: () => void;
 }) {
   const g = useGinno();
+  const tr = useTranslations("sched");
   // workflow 执行的回放(RunSubSessionView)只在工作区路由——从这里点开推回 "/"。
   const router = useRouter();
   const [tl, setTl] = useState<ScheduleTimeline | null>(null);
@@ -145,17 +147,17 @@ export function DayTimeline({
         </div>
         <div className="mt-0.5" style={{ color: meta.color }}>
           {meta.glyph} {meta.label}
-          {r.status === "missed" ? " (machine asleep or app not running)" : ""}
+          {r.status === "missed" ? tr("day.missedSuffix") : ""}
         </div>
         <div className="mt-0.5">
           {r.status === "missed"
-            ? `Due ${fmtClock(r.scheduled_at)}`
-            : `Start ${fmtClock(r.started_at)}${r.finished_at ? ` – End ${fmtClock(r.finished_at)}` : ""}${
-                dur ? ` (${dur})` : ""
-              }`}
+            ? tr("day.tipDue", { clock: fmtClock(r.scheduled_at) })
+            : `${tr("day.tipStart", { clock: fmtClock(r.started_at) })}${
+                r.finished_at ? tr("day.tipEnd", { clock: fmtClock(r.finished_at) }) : ""
+              }${dur ? ` (${dur})` : ""}`}
         </div>
         {r.summary && <div className="mt-1 line-clamp-2 text-txt/80">{r.summary.slice(0, 160)}</div>}
-        {runClickable(r) && <div className="mt-1 text-faint">Click to view the run</div>}
+        {runClickable(r) && <div className="mt-1 text-faint">{tr("day.tipClick")}</div>}
       </div>,
       ev,
     );
@@ -197,10 +199,10 @@ export function DayTimeline({
   return (
     <div className="rounded-xl border border-line bg-card p-4">
       <div className="mb-2 flex items-center gap-2 text-xs">
-        <span className="font-medium text-txt">{isToday ? "Today" : date}</span>
+        <span className="font-medium text-txt">{isToday ? tr("dayPrefix.today") : date}</span>
         <button
           onClick={() => shiftDate(-1)}
-          title="Previous day"
+          title={tr("day.prevDay")}
           className="rounded p-0.5 text-faint hover:bg-card2 hover:text-txt"
         >
           <ChevronLeft className="h-3.5 w-3.5" />
@@ -208,14 +210,14 @@ export function DayTimeline({
         <button
           onClick={() => shiftDate(1)}
           disabled={date >= todayStr}
-          title="Next day"
+          title={tr("day.nextDay")}
           className="rounded p-0.5 text-faint hover:bg-card2 hover:text-txt disabled:opacity-30"
         >
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
         {!isToday && (
           <button onClick={() => onDateChange(todayStr)} className="text-[11px] text-violet hover:underline">
-            Back to today
+            {tr("day.backToToday")}
           </button>
         )}
       </div>
@@ -233,21 +235,21 @@ export function DayTimeline({
         })}
         <span className="ml-auto flex items-center gap-3">
           <span className="flex items-center gap-1.5">
-            <i className="inline-block h-3 w-3 rounded-[3px] border-[1.6px]" style={{ borderColor: "var(--chart-1)" }} /> OK
+            <i className="inline-block h-3 w-3 rounded-[3px] border-[1.6px]" style={{ borderColor: "var(--chart-1)" }} /> {tr("status.ok")}
           </span>
           <span className="flex items-center gap-1.5">
-            <i className="inline-block h-3 w-3 rounded-[3px] border-[1.8px]" style={{ borderColor: STROKE.err }} /> Error
+            <i className="inline-block h-3 w-3 rounded-[3px] border-[1.8px]" style={{ borderColor: STROKE.err }} /> {tr("status.error")}
           </span>
           <span className="flex items-center gap-1.5">
-            <i className="inline-block h-3 w-3 rounded-[3px] border-[1.4px] border-dashed" style={{ borderColor: STROKE.missed }} /> Missed
+            <i className="inline-block h-3 w-3 rounded-[3px] border-[1.4px] border-dashed" style={{ borderColor: STROKE.missed }} /> {tr("status.missed")}
           </span>
           <span className="flex items-center gap-1.5">
-            <i className="inline-block h-3 w-3 rounded-[3px] border-[1.4px] border-dashed" style={{ borderColor: STROKE.planned }} /> Planned
+            <i className="inline-block h-3 w-3 rounded-[3px] border-[1.4px] border-dashed" style={{ borderColor: STROKE.planned }} /> {tr("day.legendPlanned")}
           </span>
         </span>
       </div>
 
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Daily run heat grid">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={tr("day.heatGridLabel")}>
         {/* 网格底轨 */}
         <rect x={PAD - 4} y={TOP - 4} width={W - PAD * 2 + 8} height={CH + 8} rx={8} fill="rgb(var(--base))" opacity={0.9} />
 
@@ -288,9 +290,9 @@ export function DayTimeline({
                               </div>
                             ))}
                             <div className="mt-0.5" style={{ color: STROKE.planned }}>
-                              ◇ Planned
+                              {tr("day.tipPlanned")}
                             </div>
-                            <div className="mt-0.5">Due {fmtClock(planned?.[0]?.at)}</div>
+                            <div className="mt-0.5">{tr("day.tipDue", { clock: fmtClock(planned?.[0]?.at) })}</div>
                           </div>,
                           ev,
                         )
@@ -365,12 +367,12 @@ export function DayTimeline({
       </svg>
 
       {loaded && (tl?.runs?.length ?? 0) === 0 && (tl?.planned?.length ?? 0) === 0 && (
-        <div className="py-2 text-center text-[11px] text-faint">No runs and no upcoming scheduled points on this day.</div>
+        <div className="py-2 text-center text-[11px] text-faint">{tr("day.emptyDay")}</div>
       )}
       {(tl?.runs?.length ?? 0) > 0 && onOpenDayRuns && (
         <div className="mt-1 text-right">
           <button onClick={onOpenDayRuns} className="text-[11px] text-violet hover:underline">
-            View all runs of this day →
+            {tr("day.viewAllRuns")}
           </button>
         </div>
       )}

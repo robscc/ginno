@@ -226,6 +226,46 @@ fn ginno_home_path<M: tauri::Manager<tauri::Wry>>(app: &M) -> std::path::PathBuf
         .unwrap_or_else(|_| std::path::PathBuf::from(".ginno"))
 }
 
+/// 壳侧孤立用户可见文案（菜单 / 窗口标题 / splash、error 页）的 en/zh 选边。
+/// 读 settings.json 的 `language`（与 load_pin_prefs 同一容错风格）：仅
+/// "zh-CN" → zh；en / "auto" / 缺失 / 非法 → en。设计 §1 规定壳不做 locale
+/// 猜测——"auto" 本应由前端按 navigator.language 解析，壳保守回落 en。
+/// 兼容迁移前的 settings：无 `language` 但 legacy `prompt_language=="zh"`
+/// （runtime 首次加载迁移回写前）也按 zh。
+fn shell_lang<M: tauri::Manager<tauri::Wry>>(app: &M) -> &'static str {
+    let text = std::fs::read_to_string(ginno_home_path(app).join("settings.json")).ok();
+    let v = text
+        .as_deref()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok());
+    let lang = v
+        .as_ref()
+        .and_then(|v| v.get("language"))
+        .and_then(|x| x.as_str());
+    let legacy = v
+        .as_ref()
+        .and_then(|v| v.get("prompt_language"))
+        .and_then(|x| x.as_str());
+    let zh = match lang {
+        Some("zh-CN") => true,
+        Some(_) => false,
+        None => legacy == Some("zh"),
+    };
+    if zh {
+        "zh"
+    } else {
+        "en"
+    }
+}
+
+/// 壳不持 catalog（i18n-design.md §7）：孤立文案用最小 en/zh 字面量二选一。
+fn pick<'a>(lang: &str, en: &'a str, zh: &'a str) -> &'a str {
+    if lang == "zh" {
+        zh
+    } else {
+        en
+    }
+}
+
 /// Open a path in Finder (macOS) / Explorer / xdg-open. Best-effort.
 fn reveal_path(path: &std::path::Path) {
     let _ = std::fs::create_dir_all(path);
@@ -344,7 +384,8 @@ fn restart_sidecar(app: &tauri::AppHandle) {
     // Splash first so the webview is not sitting on a dying origin.
     #[cfg(not(debug_assertions))]
     if let Some(window) = app.get_webview_window("main") {
-        let html = SPLASH_HTML.replace("__PORT__", &SIDECAR_PORT.to_string());
+        let html = localize_shell_html(SPLASH_HTML, shell_lang(app))
+            .replace("__PORT__", &SIDECAR_PORT.to_string());
         let url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
         if let Ok(url) = url.parse() {
             let _ = window.navigate(url);
@@ -382,7 +423,8 @@ fn restart_sidecar(app: &tauri::AppHandle) {
         shell_log(app, "debug: sidecar did not come up within 60s");
         #[cfg(not(debug_assertions))]
         {
-            let html = ERROR_HTML.replace("__PORT__", &SIDECAR_PORT.to_string());
+            let html = localize_shell_html(ERROR_HTML, shell_lang(app))
+                .replace("__PORT__", &SIDECAR_PORT.to_string());
             let err_url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
             let h = app.clone();
             let _ = app.run_on_main_thread(move || {
@@ -427,23 +469,24 @@ fn restart_sidecar(app: &tauri::AppHandle) {
 }
 
 fn install_debug_menu(app: &tauri::App) -> tauri::Result<()> {
+    let lang = shell_lang(app);
     let restart = MenuItem::with_id(
         app,
         "debug-restart-runtime",
-        "重启后端",
+        pick(lang, "Restart Backend", "重启后端"),
         true,
         Some("CmdOrCtrl+Alt+R"),
     )?;
-    let sidecar_log = MenuItem::with_id(app, "debug-open-sidecar-log", "打开 sidecar 日志", true, None::<&str>)?;
-    let shell_log_item = MenuItem::with_id(app, "debug-open-shell-log", "打开 shell 日志", true, None::<&str>)?;
-    let logs_dir = MenuItem::with_id(app, "debug-reveal-logs", "在访达中显示日志目录", true, None::<&str>)?;
-    let home_dir = MenuItem::with_id(app, "debug-reveal-home", "在访达中显示 ~/.ginno", true, None::<&str>)?;
-    let reload = MenuItem::with_id(app, "debug-reload-ui", "重新加载界面", true, Some("CmdOrCtrl+R"))?;
+    let sidecar_log = MenuItem::with_id(app, "debug-open-sidecar-log", pick(lang, "Open Sidecar Log", "打开 Sidecar 日志"), true, None::<&str>)?;
+    let shell_log_item = MenuItem::with_id(app, "debug-open-shell-log", pick(lang, "Open Shell Log", "打开 Shell 日志"), true, None::<&str>)?;
+    let logs_dir = MenuItem::with_id(app, "debug-reveal-logs", pick(lang, "Reveal Logs in Finder", "在 Finder 中打开日志目录"), true, None::<&str>)?;
+    let home_dir = MenuItem::with_id(app, "debug-reveal-home", pick(lang, "Reveal ~/.ginno in Finder", "在 Finder 中打开 ~/.ginno"), true, None::<&str>)?;
+    let reload = MenuItem::with_id(app, "debug-reload-ui", pick(lang, "Reload UI", "重新加载界面"), true, Some("CmdOrCtrl+R"))?;
 
     let debug = Submenu::with_id_and_items(
         app,
         "debug",
-        "Debug",
+        pick(lang, "Debug", "调试"),
         true,
         &[
             &restart,
@@ -524,23 +567,24 @@ const SPLASH_HTML: &str = r#"<!doctype html>
 <div class="box">
   <div class="spin"></div>
   <h1>Ginno</h1>
-  <p id="s">正在启动运行时…</p>
+  <p id="s">__L_STARTING__</p>
 </div>
 <script>
   /* Static splash: no network calls (a data: page fetching loopback would be
      blocked by Private Network Access in some engines). The Tauri shell polls
      the runtime port and navigates this webview to the app once it is up; the
-     script below only animates a status line while we wait. */
+     script below only animates a status line while we wait. __L_*__ tokens
+     are substituted by localize_shell_html (shell_lang picks en/zh). */
   var t0 = Date.now();
   function status(msg) { var el = document.getElementById('s'); if (el) el.textContent = msg; }
   function tick() {
     var s = Math.round((Date.now() - t0) / 1000);
     if (s > 120) {
-      status('启动时间较长（' + s + 's），仍在等待… 如持续失败请重启应用');
+      status('__L_SLOW_A__' + s + '__L_SLOW_B__');
     } else if (s > 8) {
-      status('首次启动需要一点时间，正在加载依赖…（' + s + 's）');
+      status('__L_WARMUP_A__' + s + '__L_WARMUP_B__');
     } else {
-      status('正在启动运行时…（' + s + 's）');
+      status('__L_STARTING_A__' + s + '__L_STARTING_B__');
     }
     setTimeout(tick, 500);
   }
@@ -594,16 +638,40 @@ const ERROR_HTML: &str = r#"<!doctype html>
   <div class="ic">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
   </div>
-  <h1>运行时启动失败</h1>
-  <p>等待 sidecar 就绪超时（60s）。会话数据不受影响。</p>
+  <h1>__L_ERR_TITLE__</h1>
+  <p>__L_ERR_BODY__</p>
   <code>~/.ginno/logs/sidecar.log</code>
   <div class="row">
-    <button onclick="location.href='http://127.0.0.1:__PORT__/'">重试</button>
+    <button onclick="location.href='http://127.0.0.1:__PORT__/'">__L_ERR_RETRY__</button>
   </div>
-  <div class="note">运行时就绪后将自动进入应用</div>
+  <div class="note">__L_ERR_NOTE__</div>
 </div>
 </body>
 </html>"#;
+
+/// SPLASH/ERROR 页是 data: URL 静态页（runtime 未起，前端无法传参），文案由
+/// shell_lang 的二选一结果替换 __L_*__ token（壳不持 catalog，i18n-design.md §7）。
+#[cfg(not(debug_assertions))]
+fn localize_shell_html(html: &str, lang: &str) -> String {
+    let pairs: &[(&str, &str)] = &[
+        ("__L_STARTING__", pick(lang, "Starting the runtime…", "正在启动运行时…")),
+        ("__L_STARTING_A__", pick(lang, "Starting the runtime… (", "正在启动运行时…（")),
+        ("__L_STARTING_B__", pick(lang, "s)", "s）")),
+        ("__L_WARMUP_A__", pick(lang, "First launch takes a moment, loading dependencies… (", "首次启动需要加载依赖，请稍候…（")),
+        ("__L_WARMUP_B__", pick(lang, "s)", "s）")),
+        ("__L_SLOW_A__", pick(lang, "Startup is taking a while (", "启动耗时较久（")),
+        ("__L_SLOW_B__", pick(lang, "s), still waiting… If it keeps failing, restart the app", "s），仍在等待…若持续失败请重启应用")),
+        ("__L_ERR_TITLE__", pick(lang, "Runtime failed to start", "运行时启动失败")),
+        ("__L_ERR_BODY__", pick(lang, "Timed out waiting for the sidecar (60s). Session data is unaffected.", "等待后端启动超时（60s）。会话数据不受影响。")),
+        ("__L_ERR_RETRY__", pick(lang, "Retry", "重试")),
+        ("__L_ERR_NOTE__", pick(lang, "The app will open automatically once the runtime is ready", "运行时就绪后应用会自动打开")),
+    ];
+    let mut out = html.to_string();
+    for (token, text) in pairs {
+        out = out.replace(token, text);
+    }
+    out
+}
 
 /// Fire a native macOS notification and wait for the user's reaction.
 ///
@@ -1015,7 +1083,7 @@ fn ensure_pin_window(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
     };
     let url = tauri::Url::parse(url).map_err(|e| tauri::Error::InvalidUrl(e))?;
     let w = WebviewWindowBuilder::new(app, PIN_LABEL, WebviewUrl::External(url))
-        .title("Ginno 悬浮窗")
+        .title(pick(shell_lang(app), "Ginno Floating Window", "Ginno 悬浮窗"))
         .inner_size(MINI_W, MINI_H)
         .min_inner_size(280.0, 320.0)
         .max_inner_size(480.0, 900.0)
@@ -1173,7 +1241,7 @@ fn register_pin_hotkey(app: &tauri::AppHandle, hotkey: &str) -> bool {
             Err(e) => {
                 shell_log(
                     app,
-                    &format!("pin hotkey register FAILED: {e} (tray menu still works; change it in Settings → 悬浮窗)"),
+                    &format!("pin hotkey register FAILED: {e} (tray menu still works; change it in Settings → Floating Window)"),
                 );
                 false
             }
@@ -1294,11 +1362,11 @@ fn pin_hotkey_status(app: tauri::AppHandle) -> bool {
 /// canonicalized is an error rather than something to guess around.
 fn code_resolve_in_root(root: &str, path: &str) -> Result<(PathBuf, PathBuf), String> {
     let root_real = std::fs::canonicalize(root)
-        .map_err(|e| format!("工作区根无法解析：{root}（{e}）"))?;
+        .map_err(|e| format!("Failed to resolve workspace root: {root} ({e})"))?;
     let path_real = std::fs::canonicalize(path)
-        .map_err(|e| format!("路径无法解析（可能已不存在）：{path}（{e}）"))?;
+        .map_err(|e| format!("Failed to resolve path (it may no longer exist): {path} ({e})"))?;
     if path_real != root_real && !path_real.starts_with(&root_real) {
-        return Err(format!("路径不在工作区根内：{path}"));
+        return Err(format!("Path is outside the workspace root: {path}"));
     }
     Ok((root_real, path_real))
 }
@@ -1308,7 +1376,7 @@ fn code_resolve_in_root(root: &str, path: &str) -> Result<(PathBuf, PathBuf), St
 fn code_reveal(root: String, path: String) -> Result<(), String> {
     let (_root_real, target) = code_resolve_in_root(&root, &path)?;
     tauri_plugin_opener::reveal_item_in_dir(&target)
-        .map_err(|e| format!("无法在文件管理器中显示：{e}"))
+        .map_err(|e| format!("Failed to reveal in Finder: {e}"))
 }
 
 /// Open a workspace file with the OS default application (design §4.4).
@@ -1319,10 +1387,10 @@ fn code_reveal(root: String, path: String) -> Result<(), String> {
 fn code_open_external(root: String, path: String) -> Result<(), String> {
     let (_root_real, target) = code_resolve_in_root(&root, &path)?;
     if !target.is_file() {
-        return Err(format!("只能打开文件，不能打开目录：{path}"));
+        return Err(format!("Only files can be opened, not directories: {path}"));
     }
     tauri_plugin_opener::open_path(&target, None::<&str>)
-        .map_err(|e| format!("无法用默认应用打开：{e}"))
+        .map_err(|e| format!("Failed to open with the default app: {e}"))
 }
 
 /// Delete = move to the OS trash (design D6) — never a permanent unlink.
@@ -1334,9 +1402,9 @@ fn code_trash(root: String, path: String) -> Result<(), String> {
     let (root_real, target) = code_resolve_in_root(&root, &path)?;
     // A root is never deletable (design §4.6), same rule the sidecar enforces.
     if target == root_real {
-        return Err("工作区根自身不可删除".to_string());
+        return Err("The workspace root itself cannot be deleted".to_string());
     }
-    trash::delete(&target).map_err(|e| format!("移入废纸篓失败：{e}"))
+    trash::delete(&target).map_err(|e| format!("Failed to move to Trash: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,12 +1421,12 @@ fn code_trash(root: String, path: String) -> Result<(), String> {
 #[tauri::command]
 fn set_keep_awake(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let Some(state) = app.try_state::<KeepAwake>() else {
-        return Err("keep-awake 状态未初始化".to_string());
+        return Err("keep-awake state not initialized".to_string());
     };
     let mut guard = state
         .0
         .lock()
-        .map_err(|_| "keep-awake 状态锁不可用".to_string())?;
+        .map_err(|_| "keep-awake state lock unavailable".to_string())?;
     let alive = guard
         .as_mut()
         .map(|c| matches!(c.try_wait(), Ok(None)))
@@ -1376,7 +1444,7 @@ fn set_keep_awake(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
             .arg("-i")
             .stdin(Stdio::null())
             .spawn()
-            .map_err(|e| format!("启动 caffeinate 失败：{e}"))?;
+            .map_err(|e| format!("Failed to start caffeinate: {e}"))?;
         *guard = Some(child);
     } else if let Some(mut child) = guard.take() {
         // 只在真的持有过时才 kill；已死/不存在都当成功（幂等关）。
@@ -1408,9 +1476,10 @@ fn get_keep_awake(app: tauri::AppHandle) -> bool {
 /// Menu-bar tray (decision Q4: tray icon + Dock stays). Left click toggles
 /// the pin window; the menu offers explicit entries + quit.
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
-    let toggle = MenuItem::with_id(app, "tray-pin-toggle", "显示/隐藏悬浮窗", true, None::<&str>)?;
-    let open_main = MenuItem::with_id(app, "tray-open-main", "打开主窗口", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "tray-quit", "退出 Ginno", true, None::<&str>)?;
+    let lang = shell_lang(app);
+    let toggle = MenuItem::with_id(app, "tray-pin-toggle", pick(lang, "Show/Hide Floating Window", "显示/隐藏悬浮窗"), true, None::<&str>)?;
+    let open_main = MenuItem::with_id(app, "tray-open-main", pick(lang, "Open Main Window", "打开主窗口"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray-quit", pick(lang, "Quit Ginno", "退出 Ginno"), true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let items: &[&dyn IsMenuItem<tauri::Wry>] = &[&toggle, &open_main, &sep, &quit];
     let menu = Menu::with_items(app, items)?;
@@ -1689,7 +1758,8 @@ pub fn run() {
 
                 if !ready_now {
                     if let Some(window) = app.get_webview_window("main") {
-                        let html = SPLASH_HTML.replace("__PORT__", &SIDECAR_PORT.to_string());
+                        let html = localize_shell_html(SPLASH_HTML, shell_lang(app))
+                            .replace("__PORT__", &SIDECAR_PORT.to_string());
                         let url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
                         if let Ok(url) = url.parse() {
                             let _ = window.navigate(url);
@@ -1721,7 +1791,8 @@ pub fn run() {
                         // page (instead of today's silent dead-port page), then
                         // keep polling slowly — a late cold start or a manually
                         // started runtime recovers without user action.
-                        let html = ERROR_HTML.replace("__PORT__", &SIDECAR_PORT.to_string());
+                        let html = localize_shell_html(ERROR_HTML, shell_lang(&handle))
+                            .replace("__PORT__", &SIDECAR_PORT.to_string());
                         let err_url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
                         let h = handle.clone();
                         let _ = handle.run_on_main_thread(move || {

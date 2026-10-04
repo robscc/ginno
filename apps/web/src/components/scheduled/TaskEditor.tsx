@@ -7,11 +7,12 @@
 // 间隔下限 5 分钟（§10 决议 2，前端侧校验；API 侧再校）。
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { SchedulePlan, ScheduleTask, ScheduleTarget } from "@/lib/types";
 import { ContextEditor } from "@/components/workflow/ContextEditor";
-import { WEEKDAY_LABEL } from "./shared";
+import { WEEKDAY_KEYS } from "./shared";
 
 type ScheduleKind = SchedulePlan["kind"];
 
@@ -34,6 +35,7 @@ export function TaskEditor({
   onSaved: () => void;
 }) {
   const g = useGinno();
+  const tr = useTranslations("sched");
   const [name, setName] = useState(initial?.name ?? "");
   const [targetType, setTargetType] = useState<"prompt" | "workflow">(initial?.target.type ?? "prompt");
   const [prompt, setPrompt] = useState(
@@ -95,17 +97,17 @@ export function TaskEditor({
     switch (kind) {
       case "interval": {
         const m = Number(intervalMinutes);
-        if (!Number.isFinite(m) || m < 5) return { error: "Minimum interval is 5 minutes" };
+        if (!Number.isFinite(m) || m < 5) return { error: tr("editor.errMinInterval") };
         return { kind: "interval", minutes: Math.round(m) };
       }
       case "daily":
-        if (!dailyAt) return { error: "Pick a daily time" };
+        if (!dailyAt) return { error: tr("editor.errPickDaily") };
         return { kind: "daily", at: dailyAt };
       case "weekly":
-        if (!weeklyAt) return { error: "Pick a weekly time" };
+        if (!weeklyAt) return { error: tr("editor.errPickWeekly") };
         return { kind: "weekly", weekday: weeklyWeekday, at: weeklyAt };
       case "once": {
-        if (!onceAt) return { error: "Pick a date and time" };
+        if (!onceAt) return { error: tr("editor.errPickOnce") };
         // datetime-local 给 "YYYY-MM-DDTHH:mm"；契约是本地时间 "…THH:mm:ss"。
         return { kind: "once", at: onceAt.length === 16 ? `${onceAt}:00` : onceAt };
       }
@@ -114,10 +116,10 @@ export function TaskEditor({
 
   const save = async () => {
     setError(null);
-    if (!name.trim()) return setError("Task name is required");
+    if (!name.trim()) return setError(tr("editor.errNameRequired"));
     let target: ScheduleTarget;
     if (targetType === "prompt") {
-      if (!prompt.trim()) return setError("Prompt is required");
+      if (!prompt.trim()) return setError(tr("editor.errPromptRequired"));
       target = {
         type: "prompt",
         prompt: prompt.trim(),
@@ -125,13 +127,13 @@ export function TaskEditor({
         project_slug: projectSlug.trim() || "default",
       };
     } else {
-      if (!workflowId) return setError("Pick a workflow");
+      if (!workflowId) return setError(tr("editor.errPickWorkflow"));
       // 必填输入缺失 → 不可保存（§3.2；配方后续被改出必填项时到点由 runtime 记
       // error("missing_input")，这里只拦编辑当下的缺失）。
       for (const k of requiredKeys) {
         const v = contextOverride[k];
         if (v === undefined || v === null || v === "") {
-          return setError(`Workflow input "${k}" is required`);
+          return setError(tr("editor.errInputRequired", { key: k }));
         }
       }
       target = { type: "workflow", workflow_id: workflowId, context_override: contextOverride };
@@ -148,13 +150,13 @@ export function TaskEditor({
       // 400（间隔<5 / 必填缺失）→ {detail}；ok:false 兜底。
       const msg = (r as { detail?: string; error?: string }).detail ?? (r as { error?: string }).error;
       if ((r as { ok?: boolean }).ok === false || !(r as { id?: string }).id) {
-        setError(msg || "Save failed");
+        setError(msg || tr("editor.errSaveFailed"));
         return;
       }
       onSaved();
       onClose();
     } catch {
-      setError("Cannot reach the runtime");
+      setError(tr("editor.errUnreachable"));
     } finally {
       setBusy(false);
     }
@@ -171,53 +173,53 @@ export function TaskEditor({
       onMouseDown={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Scheduled task editor"
+      aria-label={tr("editor.aria")}
     >
       <div
         className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border bg-card p-4 shadow-2xl"
         style={{ borderColor: "rgb(var(--line))" }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="text-sm font-semibold text-txt">{initial ? "Edit Scheduled Task" : "New Scheduled Task"}</div>
+        <div className="text-sm font-semibold text-txt">{initial ? tr("editor.editTitle") : tr("editor.newTitle")}</div>
 
         {/* 目标类型分段控件（模态第一项，§3.2） */}
         <div className="mt-3">
-          <div className="field-label">Target Type</div>
+          <div className="field-label">{tr("editor.targetType")}</div>
           <div className="inline-flex rounded-lg border border-line bg-base/40 p-0.5">
             <button className={segBtn(targetType === "prompt")} onClick={() => setTargetType("prompt")}>
-              💬 Prompt
+              {tr("editor.targetPrompt")}
             </button>
             <button className={segBtn(targetType === "workflow")} onClick={() => setTargetType("workflow")}>
-              ⚡ Workflow
+              {tr("editor.targetWorkflow")}
             </button>
           </div>
         </div>
 
         <div className="mt-3">
-          <div className="field-label">Name</div>
+          <div className="field-label">{tr("editor.name")}</div>
           <input
             className="field"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Nightly log review"
+            placeholder={tr("editor.namePlaceholder")}
           />
         </div>
 
         {targetType === "prompt" ? (
           <>
             <div className="mt-3">
-              <div className="field-label">Prompt (sent to the agent as a user message on each run)</div>
+              <div className="field-label">{tr("editor.promptLabel")}</div>
               <textarea
                 className="field"
                 rows={4}
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Summarize ERRORs in ~/.ginno/logs/sidecar.log over the past 24h and suggest top 3 fixes…"
+                placeholder={tr("editor.promptPlaceholder")}
               />
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3">
               <div>
-                <div className="field-label">Agent</div>
+                <div className="field-label">{tr("editor.agent")}</div>
                 <select className="field" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
                   {g.agents.map((a) => (
                     <option key={a.id} value={a.id}>
@@ -227,7 +229,7 @@ export function TaskEditor({
                 </select>
               </div>
               <div>
-                <div className="field-label">Project</div>
+                <div className="field-label">{tr("editor.project")}</div>
                 <input
                   className="field"
                   value={projectSlug}
@@ -240,7 +242,7 @@ export function TaskEditor({
         ) : (
           <>
             <div className="mt-3">
-              <div className="field-label">Workflow</div>
+              <div className="field-label">{tr("editor.workflow")}</div>
               <select
                 className="field"
                 value={workflowId}
@@ -249,7 +251,7 @@ export function TaskEditor({
                   setContextOverride({}); // 换配方清掉旧输入，表单按新 initial 预填
                 }}
               >
-                <option value="">Pick a workflow…</option>
+                <option value="">{tr("editor.workflowPlaceholder")}</option>
                 {g.workflows.map((w) => (
                   <option key={w.id} value={w.id}>
                     {w.name}
@@ -261,7 +263,7 @@ export function TaskEditor({
                   runtime 记 error("workflow_missing")（§3.2）。 */}
               {initialWfId && !g.workflows.some((w) => w.id === initialWfId) && (
                   <div className="mt-1 text-[11px] text-red">
-                    The original workflow was deleted — pick another, or keep it (runs will fail until then)
+                    {tr("editor.wfDeletedWarn")}
                   </div>
                 )}
             </div>
@@ -284,7 +286,7 @@ export function TaskEditor({
                   } as never}
                   onChange={setContextOverride}
                 />
-                <div className="mt-1 text-[10px] text-faint">Saved with the task and used as the run input when it fires.</div>
+                <div className="mt-1 text-[10px] text-faint">{tr("editor.inputNote")}</div>
               </div>
             )}
           </>
@@ -292,15 +294,15 @@ export function TaskEditor({
 
         {/* 计划四选一分段控件 */}
         <div className="mt-3">
-          <div className="field-label">Schedule</div>
+          <div className="field-label">{tr("editor.schedule")}</div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex flex-wrap rounded-lg border border-line bg-base/40 p-0.5">
               {(
                 [
-                  ["interval", "Interval"],
-                  ["daily", "Daily"],
-                  ["weekly", "Weekly"],
-                  ["once", "Once"],
+                  ["interval", tr("editor.kindInterval")],
+                  ["daily", tr("editor.kindDaily")],
+                  ["weekly", tr("editor.kindWeekly")],
+                  ["once", tr("editor.kindOnce")],
                 ] as Array<[ScheduleKind, string]>
               ).map(([k, label]) => (
                 <button key={k} className={segBtn(kind === k)} onClick={() => setKind(k)}>
@@ -310,7 +312,7 @@ export function TaskEditor({
             </div>
             {kind === "interval" && (
               <span className="flex items-center gap-1.5 text-xs text-muted">
-                Every
+                {tr("editor.every")}
                 <input
                   type="number"
                   min={intervalUnit === "h" ? 1 : 5}
@@ -334,8 +336,8 @@ export function TaskEditor({
                     );
                   }}
                 >
-                  <option value="m">min</option>
-                  <option value="h">hour(s)</option>
+                  <option value="m">{tr("editor.unitMin")}</option>
+                  <option value="h">{tr("editor.unitHour")}</option>
                 </select>
               </span>
             )}
@@ -349,15 +351,15 @@ export function TaskEditor({
             )}
             {kind === "weekly" && (
               <span className="flex items-center gap-1.5 text-xs text-muted">
-                On
+                {tr("editor.on")}
                 <select
                   className="field w-16 px-1 py-1"
                   value={weeklyWeekday}
                   onChange={(e) => setWeeklyWeekday(Number(e.target.value))}
                 >
-                  {WEEKDAY_LABEL.map((w, i) => (
-                    <option key={i} value={i}>
-                      {w}
+                  {WEEKDAY_KEYS.map((k) => (
+                    <option key={k} value={WEEKDAY_KEYS.indexOf(k)}>
+                      {tr(`weekday.${k}`)}
                     </option>
                   ))}
                 </select>
@@ -379,7 +381,7 @@ export function TaskEditor({
             )}
           </div>
           {kind === "interval" && (
-            <div className="mt-1 text-[10px] text-faint">Minimum interval is 5 minutes.</div>
+            <div className="mt-1 text-[10px] text-faint">{tr("editor.minIntervalHint")}</div>
           )}
         </div>
 
@@ -390,14 +392,14 @@ export function TaskEditor({
             onClick={onClose}
             className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
           >
-            Cancel
+            {tr("editor.cancel")}
           </button>
           <button
             disabled={busy}
             onClick={save}
             className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
           >
-            {busy ? "Saving…" : "Save"}
+            {busy ? tr("editor.saving") : tr("editor.save")}
           </button>
         </div>
       </div>

@@ -18,6 +18,9 @@ import {
 import { useGinno } from "@/lib/store";
 import type { SessionMeta, WorkflowRun } from "@/lib/types";
 import { SUMMARIZE_DRAFT_KEY, readSummarizeDraft } from "./streamCore";
+// 文案走 composer 域 catalog；本文件是 .ts 逻辑模块（文案多在异步回调里成文，
+// 无渲染期响应式需求），按任务约定用非 hook 的 composerT 而非 useTranslations。
+import { composerCatalog, fmt } from "./composerT";
 
 export interface SummarizeFlowDeps {
   g: ReturnType<typeof useGinno>;
@@ -77,10 +80,11 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
     setSumMenuOpen(false);
     const targetId = sessionId || session?.id;
     if (!targetId) return;
+    const flowT = composerCatalog().composer.summarize.flow;
     const label =
       targetId === session?.id
-        ? session?.title || "当前会话"
-        : g.sessions.find((s) => s.id === targetId)?.title || "历史会话";
+        ? session?.title || flowT.currentSession
+        : g.sessions.find((s) => s.id === targetId)?.title || flowT.pastSession;
     setSumLoading(true);
     setSumErr(null);
     setSumCreated(null);
@@ -96,12 +100,12 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
       } else {
         // Synchronous validation failure (400/404/500) — HTTPException bodies
         // carry {detail}; json() doesn't throw on HTTP errors.
-        setSumErr(`总结失败：${r.error ?? r.detail ?? "unknown"}`);
+        setSumErr(fmt(flowT.failed, { reason: r.error ?? r.detail ?? flowT.unknown }));
         setSummarize({}); // keep the modal open so the reason is visible
         setSumLoading(false);
       }
     } catch {
-      setSumErr("总结失败：无法连接运行时");
+      setSumErr(flowT.cannotConnect);
       setSummarize({});
       setSumLoading(false);
     }
@@ -115,19 +119,18 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
     if (sumPendingRef.current !== id) return; // already resolved / abandoned
     sumPendingRef.current = null;
     setSumPendingId(null);
+    const flowT = composerCatalog().composer.summarize.flow;
     try {
       const r = await getSynthesisCase(id);
       const out = r.case?.output;
       if (r.ok && out?.status === "ok" && out.dsl) {
         setSummarize(out.dsl as Record<string, unknown>);
       } else {
-        setSumErr(
-          `总结失败：${out?.fail_stage || "unknown"}（案例 ${id}，~/.ginno/synthesis/${id}）`,
-        );
+        setSumErr(fmt(flowT.failStage, { stage: out?.fail_stage || flowT.unknown, id }));
         setSummarize({});
       }
     } catch {
-      setSumErr("总结失败：无法连接运行时");
+      setSumErr(flowT.cannotConnect);
       setSummarize({});
     } finally {
       setSumLoading(false);
@@ -152,7 +155,9 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
         clearInterval(t);
         sumPendingRef.current = null;
         setSumPendingId(null);
-        setSumErr(`总结失败：等待超时（案例 ${id}，~/.ginno/synthesis/${id}）`);
+        setSumErr(
+          fmt(composerCatalog().composer.summarize.flow.waitTimeout, { id }),
+        );
         setSummarize({});
         setSumLoading(false);
         return;
@@ -182,7 +187,7 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
     setSumMenuOpen(false);
     setSumSource({
       id: draft.sourceSessionId || "",
-      label: draft.sourceLabel || "上次草稿",
+      label: draft.sourceLabel || composerCatalog().composer.summarize.flow.previousDraft,
     });
     setSummarize(draft.dsl);
     setSumErr(null);
@@ -236,9 +241,10 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
     if (!session) return;
     setSumBusy(run ? "run" : "create");
     setSumErr(null);
+    const flowT = composerCatalog().composer.summarize.flow;
     try {
       const cw = await createWorkflow({
-        name: (editedDsl.name as string) || "新流程",
+        name: (editedDsl.name as string) || flowT.defaultName,
         description: (editedDsl.description as string) || "",
         dsl: editedDsl,
         ...(sumSynthesisId ? { synthesis_id: sumSynthesisId } : {}),
@@ -247,7 +253,7 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
       if (!cwBody.workflow) {
         // json() doesn't throw on HTTP errors — surface the reason inline and
         // KEEP the modal open so the draft isn't lost.
-        setSumErr(cwBody.detail || "创建工作流失败");
+        setSumErr(cwBody.detail || flowT.createFailed);
         return;
       }
       await g.reloadWorkflows(); // list reflects the new workflow immediately
@@ -265,7 +271,7 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
           syncDisplay(session.id);
         } else {
           // Created but not started: still a partial success — report inline.
-          setSumErr(`已创建，但运行触发失败：${trBody.detail || "未知错误"}`);
+          setSumErr(fmt(flowT.triggerRunFailed, { reason: trBody.detail || flowT.unknownError }));
           return;
         }
         setSummarize(null); // run card animates in — close the modal
@@ -273,10 +279,10 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
         // Create-only: keep the modal open with an explicit receipt so it is
         // unambiguous that the workflow was added (then 完成 closes it).
         setSumErr(null);
-        setSumCreated(cwBody.workflow.name || "新流程");
+        setSumCreated(cwBody.workflow.name || flowT.defaultName);
       }
     } catch {
-      setSumErr("无法连接运行时");
+      setSumErr(flowT.runtimeUnreachable);
     } finally {
       setSumBusy(null);
     }
@@ -287,16 +293,17 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
   async function openDevFromSummarize(editedDsl: Record<string, unknown>) {
     setSumBusy("dev");
     setSumErr(null);
+    const flowT = composerCatalog().composer.summarize.flow;
     try {
       const cw = await createWorkflow({
-        name: (editedDsl.name as string) || "新流程",
+        name: (editedDsl.name as string) || flowT.defaultName,
         description: (editedDsl.description as string) || "",
         dsl: editedDsl,
         ...(sumSynthesisId ? { synthesis_id: sumSynthesisId } : {}),
       });
       const cwBody = cw as { ok?: boolean; workflow?: import("@/lib/types").WorkflowDef; detail?: string };
       if (!cwBody.workflow) {
-        setSumErr(cwBody.detail || "创建工作流失败");
+        setSumErr(cwBody.detail || flowT.createFailed);
         return;
       }
       await g.reloadWorkflows();
@@ -307,11 +314,11 @@ export function useSummarizeFlow(deps: SummarizeFlowDeps) {
       setSummarize(null);
       setSumCreated(null);
       await g.newSession("workflow-dev", {
-        title: `精炼流程：${cwBody.workflow.name}`,
+        title: fmt(flowT.refineSessionTitle, { name: cwBody.workflow.name }),
         workflow_id: cwBody.workflow.id,
       });
     } catch {
-      setSumErr("无法连接运行时");
+      setSumErr(flowT.runtimeUnreachable);
     } finally {
       setSumBusy(null);
     }

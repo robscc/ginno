@@ -273,7 +273,7 @@ def _list_roots(ctx: dict) -> list[dict]:
     roots.append(
         {
             "id": "session",
-            "name": "会话工作区",
+            "name": "Session workspace",
             "path": str(ws),
             "access": "rw",
             "missing": not ws.is_dir(),
@@ -308,37 +308,37 @@ def resolve_code_target(
     rid = (root_id or "session").strip() or "session"
     root = roots.get(rid)
     if root is None:
-        raise CodeAccessError("unknown-root", f"未知的工作区根：{root_id!r}")
+        raise CodeAccessError("unknown-root", f"Unknown workspace root: {root_id!r}")
     root_path = Path(root["path"]) if root["path"] else None
     if root_path is None or not root_path.is_dir():
-        raise CodeAccessError("root-missing", f"工作区目录不存在：{root.get('name') or rid}")
+        raise CodeAccessError("root-missing", f"Workspace directory does not exist: {root.get('name') or rid}")
 
     rel = _norm_rel(relpath)
     # Gate 2: relative only (an absolute path has no root to belong to).
     if rel.startswith("/") or Path(relpath or "").is_absolute():
-        raise CodeAccessError("outside-root", "只接受相对于根的路径")
+        raise CodeAccessError("outside-root", "Only root-relative paths are accepted")
     # Gate 2+3: containment after resolving the path AND dereferencing
     # symlinks (realpath) — a link pointing outside the root is rejected even
     # though it lexically looked contained.
     root_real = Path(os.path.realpath(root_path))
     real = Path(os.path.realpath(root_path / rel)) if rel else root_real
     if not real.is_relative_to(root_real):
-        raise CodeAccessError("outside-root", f"路径不在当前工作区根内：{relpath!r}")
+        raise CodeAccessError("outside-root", f"Path is outside the current workspace root: {relpath!r}")
 
     # Gate 4: permanent deny regions. Mirror builtin.py EXACTLY — base_dir is
     # the session workspace (a proper subdir of ~/.ginno), NOT primary_path:
     # primary_path lives outside ~/.ginno, so the exemption would never fire
     # and the session-workspace root would come back denied/empty.
     if _path_denied(real, session["workspace"], session["mount_roots"]):
-        raise CodeAccessError("denied-path", f"路径在拒绝访问区域内：{relpath!r}")
+        raise CodeAccessError("denied-path", f"Path is in a denied area: {relpath!r}")
 
     # Gate 5 (writes): an ``ro`` mount is a hard constraint, and nothing under
     # a ``.git`` is ever writable (even with "show all" on).
     if write:
         if root["access"] != "rw" or mount_access(real, session["mounts"]) == "ro":
-            raise CodeAccessError("read-only-mount", "该目录以只读方式挂载")
+            raise CodeAccessError("read-only-mount", "This directory is mounted read-only")
         if ".git" in _rel_parts(real, root_real):
-            raise CodeAccessError("denied-path", ".git 内部路径不可写")
+            raise CodeAccessError("denied-path", ".git internals are not writable")
     return real, root
 
 
@@ -472,7 +472,7 @@ async def code_roots(project_slug: str = "default", session_id: str = "") -> dic
     """Every root the panel can browse: mounts (primary first) + session."""
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"会话不存在或已被删除：{session_id}")
+        return _err("unknown-root", f"Session not found or deleted: {session_id}")
     return {"ok": True, "roots": _list_roots(ctx)}
 
 
@@ -486,17 +486,17 @@ async def code_list(
     """One directory level. Heavy dirs are flagged ``hidden``, not omitted."""
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"会话不存在或已被删除：{session_id}")
+        return _err("unknown-root", f"Session not found or deleted: {session_id}")
     try:
         target, root_info = resolve_code_target(ctx, root, path, write=False)
     except CodeAccessError as e:
         return _err(e.code, e.message)
     if not target.is_dir():
-        return _err("not-directory", f"不是目录：{path!r}")
+        return _err("not-directory", f"Not a directory: {path!r}")
     try:
         entries, truncated = _list_dir(target)
     except OSError as e:
-        return _err("denied-path", f"无法读取目录：{e}")
+        return _err("denied-path", f"Failed to read directory: {e}")
     return {
         "ok": True,
         "root": root_info["id"],
@@ -519,13 +519,13 @@ async def code_read(
     files and returns ``text: null`` for binary ones."""
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"会话不存在或已被删除：{session_id}")
+        return _err("unknown-root", f"Session not found or deleted: {session_id}")
     try:
         target, root_info = resolve_code_target(ctx, root, path, write=False)
     except CodeAccessError as e:
         return _err(e.code, e.message)
     if not target.is_file():
-        return _err("not-text", f"不是文件：{path!r}")
+        return _err("not-text", f"Not a file: {path!r}")
 
     rel = _norm_rel(path)
     language = _language_for(target.name)
@@ -535,7 +535,7 @@ async def code_read(
     try:
         st = target.stat()
     except OSError as e:
-        return _err("not-text", f"无法读取文件：{e}")
+        return _err("not-text", f"Failed to read file: {e}")
     size = st.st_size
     version = f"{size}:{st.st_mtime_ns}"
     editable, reason = _write_state(ctx, target, root_info)
@@ -567,7 +567,7 @@ async def code_read(
         with target.open("rb") as fh:
             head = fh.read(BINARY_SNIFF_BYTES)
     except OSError as e:
-        return _err("not-text", f"无法读取文件：{e}")
+        return _err("not-text", f"Failed to read file: {e}")
     if b"\x00" in head:
         # A non-image binary: no text form exists, so the panel shows the
         # "cannot open as text" notice (plus the external-app escape hatch).
@@ -593,7 +593,7 @@ async def code_read(
             with target.open("rb") as fh:
                 data = fh.read(PREVIEW_MAX_BYTES)
         except OSError as e:
-            return _err("not-text", f"无法读取文件：{e}")
+            return _err("not-text", f"Failed to read file: {e}")
         text = data.decode(enc, errors="replace")
         lines = text.splitlines()
         if len(lines) > PREVIEW_MAX_LINES:
@@ -614,7 +614,7 @@ async def code_read(
     try:
         data = target.read_bytes()
     except OSError as e:
-        return _err("not-text", f"无法读取文件：{e}")
+        return _err("not-text", f"Failed to read file: {e}")
     text, enc = _decode(data)
     return {
         "ok": True,
@@ -784,11 +784,11 @@ def _read_head(root_info: dict, rel: str, language: str) -> dict:
     """
     prefix = _git_prefix(Path(root_info["path"]))
     if prefix is None:
-        return _err("absent", "无法读取 HEAD 版本")
+        return _err("absent", "Failed to read the HEAD version")
     git_path = f"{prefix}/{rel}" if prefix else rel
     r = _git_run(["show", f"HEAD:{git_path}"], root_info["path"])
     if r is None or r.returncode != 0 or not r.stdout:
-        return _err("absent", "HEAD 中不存在该文件")
+        return _err("absent", "File does not exist in HEAD")
     data = r.stdout
     text, enc = _decode(data)
     return {
@@ -839,7 +839,7 @@ async def code_write(req: dict) -> Response:
 
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"会话不存在或已被删除：{session_id}")
+        return _err("unknown-root", f"Session not found or deleted: {session_id}")
     try:
         # The `ro` tier and the `.git` rule live in here — same fence as `read`,
         # deliberately not a second copy of it (design §4.6).
@@ -848,18 +848,18 @@ async def code_write(req: dict) -> Response:
         return _err(e.code, e.message)
 
     if not isinstance(content, str):
-        return _err("not-text", "content 必须是字符串")
+        return _err("not-text", "content must be a string")
 
     # Distinguish "deleted out from under us" (absent — the panel should offer
     # to recreate, not to retry) from "that path is not a file" (not-text).
     if not target.exists():
-        return _err("absent", f"文件已不存在：{path!r}")
+        return _err("absent", f"File no longer exists: {path!r}")
     if not target.is_file():
-        return _err("not-text", f"不是文件：{path!r}")
+        return _err("not-text", f"Not a file: {path!r}")
     try:
         st = target.stat()
     except OSError as e:
-        return _err("not-text", f"无法读取文件状态：{e}")
+        return _err("not-text", f"Failed to stat file: {e}")
 
     # Version format must stay identical to `read`'s, or every save would look
     # like a conflict.
@@ -870,7 +870,7 @@ async def code_write(req: dict) -> Response:
                 "ok": False,
                 "code": "conflict",
                 "version": disk_version,
-                "message": "文件已在磁盘上被修改，未写入",
+                "message": "File was modified on disk; not saved",
             },
             status_code=409,
         )
@@ -881,11 +881,11 @@ async def code_write(req: dict) -> Response:
         # e.g. an emoji into GBK: the content simply has no representation in
         # the file's encoding. Say so instead of mangling it or swapping the
         # encoding behind the user's back.
-        return _err("not-text", f"内容无法以 {encoding} 编码保存（含该编码无法表示的字符）")
+        return _err("not-text", f"Content cannot be saved as {encoding} (contains characters the encoding can't represent)")
     except LookupError:
-        return _err("not-text", f"不支持的编码：{encoding}")
+        return _err("not-text", f"Unsupported encoding: {encoding}")
     if len(data) > EDITABLE_MAX_BYTES:
-        return _err("too-large", f"内容过大（{len(data) / 1048576:.1f} MB），无法保存")
+        return _err("too-large", f"Content too large ({len(data) / 1048576:.1f} MB) to save")
 
     tmp: str | None = None
     try:
@@ -901,7 +901,7 @@ async def code_write(req: dict) -> Response:
         os.replace(tmp, target)
         tmp = None
     except OSError as e:
-        return _err("not-text", f"无法写入文件：{e}")
+        return _err("not-text", f"Failed to write file: {e}")
     finally:
         if tmp is not None:
             try:
@@ -914,7 +914,7 @@ async def code_write(req: dict) -> Response:
     try:
         st_after = target.stat()
     except OSError as e:
-        return _err("not-text", f"写入后无法读取文件状态：{e}")
+        return _err("not-text", f"Failed to stat file after write: {e}")
     return {"ok": True, "version": f"{st_after.st_size}:{st_after.st_mtime_ns}"}
 
 
@@ -960,23 +960,23 @@ async def code_raw(
     """
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _raw_error("unknown-root", f"会话不存在或已被删除：{session_id}")
+        return _raw_error("unknown-root", f"Session not found or deleted: {session_id}")
     try:
         target, _root_info = resolve_code_target(ctx, root, path, write=False)
     except CodeAccessError as e:
         return _raw_error(e.code, e.message)
     if not target.is_file():
-        return _raw_error("not-text", f"不是文件：{path!r}")
+        return _raw_error("not-text", f"Not a file: {path!r}")
     try:
         size = target.stat().st_size
     except OSError as e:
-        return _raw_error("not-text", f"无法读取文件：{e}")
+        return _raw_error("not-text", f"Failed to read file: {e}")
     if size > RAW_MAX_BYTES:
-        return _raw_error("too-large", f"文件过大（{size / 1048576:.1f} MB），无法预览")
+        return _raw_error("too-large", f"File too large ({size / 1048576:.1f} MB) to preview")
     try:
         data = target.read_bytes()
     except OSError as e:
-        return _raw_error("not-text", f"无法读取文件：{e}")
+        return _raw_error("not-text", f"Failed to read file: {e}")
 
     mime = _RAW_MIME.get(target.suffix.lower())
     headers = {
@@ -1050,7 +1050,7 @@ async def code_git(
     """
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"会话不存在或已被删除：{session_id}")
+        return _err("unknown-root", f"Session not found or deleted: {session_id}")
     try:
         # Same fence as every other endpoint: an unreachable root gets the same
         # error here as it would from `list`/`read`.
@@ -1316,7 +1316,7 @@ async def code_search(
     """
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"会话不存在或已被删除：{session_id}")
+        return _err("unknown-root", f"Session not found or deleted: {session_id}")
     try:
         # Same fence as `list`/`read`: an unreachable root gets the same error
         # code here, and the walk stays inside the resolved root.
@@ -1326,12 +1326,12 @@ async def code_search(
 
     m = (mode or "name").strip().lower()
     if m not in ("name", "content"):
-        return _err("invalid-mode", f"未知的搜索模式：{mode!r}")
+        return _err("invalid-mode", f"Unknown search mode: {mode!r}")
     query = q or ""
     if not query.strip():
-        return _err("invalid-query", "搜索内容不能为空")
+        return _err("invalid-query", "Search text must not be empty")
     if len(query.encode("utf-8")) > SEARCH_MAX_QUERY_BYTES:
-        return _err("invalid-query", f"搜索内容过长（上限 {SEARCH_MAX_QUERY_BYTES} 字节）")
+        return _err("invalid-query", f"Search text too long (max {SEARCH_MAX_QUERY_BYTES} bytes)")
 
     # `limit` is a page size, not a budget: clamp rather than reject (an
     # out-of-range limit is a client bug, and 200 is a perfectly good answer).
@@ -1347,7 +1347,7 @@ async def code_search(
         except re.error as e:
             # A bad pattern is the caller's mistake, not a server fault: fail
             # with a code and copy, never a 500 (brief §3.1).
-            return _err("invalid-regex", f"正则表达式无效：{e}")
+            return _err("invalid-regex", f"Invalid regular expression: {e}")
         hits, scanned, truncated = _search_content(target, rx, page, ctx)
     return {
         "ok": True,

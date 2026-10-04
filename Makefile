@@ -38,8 +38,8 @@ RUNTIME_RES := $(ROOT)/apps/desktop/resources/runtime
 
 all: app
 
-## app: full rebuild — web + runtime bundle + Tauri desktop app (+ dmg)
-app: sidecar
+## app: full rebuild — i18n check + web + runtime bundle + Tauri desktop app (+ dmg)
+app: check sidecar
 	@# Unlock the dedicated codesign keychain (locked after sleep/reboot). It
 	@# holds the self-signed "Ginno Local Code Signing" identity that keeps a
 	@# stable designated requirement across rebuilds, so macOS TCC grants
@@ -86,12 +86,19 @@ runtime: web
 	  --add-data "$(WEB_OUT):web_out" \
 	  --add-data "$(ROOT)/packages/extension/src:extension_src" \
 	  --add-data "$(ROOT)/packages/extension/native-host:extension_src_native_host" \
+	  --add-data "$(RUNTIME)/src/ginno_runtime/i18n:ginno_runtime/i18n" \
+	  --add-data "$(ROOT)/apps/web/messages:web_messages" \
 	  bin/ginno-runtime.py
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 
 ## web: build the Next.js static export (bundled into the runtime as web_out/)
 web:
 	cd $(ROOT) && pnpm --filter @ginno/web build
+
+.PHONY: check
+## check: i18n catalog 一致性检查（i18n-design.md §10.2；app 的前置依赖，构建即拦截）
+check:
+	python3 $(ROOT)/scripts/check_i18n.py
 
 ## e2e-ui: packaged-UI Playwright e2e — 真浏览器验证列表/添加session（缺 chromium 自动安装）
 # Sync with --extra docs too: a bare `--group test` sync would UNINSTALL the

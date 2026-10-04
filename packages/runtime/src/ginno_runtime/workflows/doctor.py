@@ -58,7 +58,7 @@ def run_doctor(dsl: dict) -> dict:
         if nt != "extract" and nid.endswith("__extract"):
             errors.append({
                 "rule": "node_id.reserved_suffix", "node_id": nid,
-                "message": f"节点 id '{nid}' 不得以 __extract 结尾（引擎保留后缀）",
+                "message": f"Node id '{nid}' must not end with __extract (reserved engine suffix)",
             })
 
         # Referenced agent must exist. The engine falls back at runtime since
@@ -89,7 +89,7 @@ def run_doctor(dsl: dict) -> dict:
                     if not bw or not isinstance(bw, dict):
                         errors.append({
                             "rule": "loop.parallel.body_writes_not_array", "node_id": nid,
-                            "message": f"parallel loop '{nid}' 的 body 必须声明 writes",
+                            "message": f"parallel loop '{nid}' body must declare writes",
                         })
                     else:
                         for k, v in bw.items():
@@ -105,7 +105,7 @@ def run_doctor(dsl: dict) -> dict:
                     if body.get("type") not in ("step", "agent"):
                         errors.append({
                             "rule": "loop.parallel.body_type", "node_id": nid,
-                            "message": f"parallel loop '{nid}' 的 body 必须是 step/agent 节点",
+                            "message": f"parallel loop '{nid}' body must be a step/agent node",
                         })
             over = n.get("over") or ""
             m = re.match(r"^\s*context\.([a-zA-Z0-9_]+)\s*$", str(over))
@@ -157,7 +157,7 @@ def run_doctor(dsl: dict) -> dict:
         if key not in consumed:
             warnings.append({
                 "rule": "writes.unused", "node_id": src,
-                "message": f"节点 '{src}' 声明写入 '{key}' 但下游未消费",
+                "message": f"Node '{src}' declares write '{key}' but no downstream node consumes it",
             })
 
     # Multi-out-edge graphs: the compiler only ever wired each node's FIRST

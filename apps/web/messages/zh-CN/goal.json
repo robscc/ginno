@@ -1,0 +1,42 @@
+{
+  "goal": {
+    "status": {
+      "active": "推进中",
+      "paused": "已暂停",
+      "blocked": "受阻",
+      "usageLimited": "用量受限",
+      "complete": "已达成"
+    },
+    "chip": {
+      "set": "设定目标",
+      "setTitle": "为本会话设定一个长期目标（Agent 将自主连续推进多个回合）",
+      "goalTitle": "目标：{objective}"
+    },
+    "editor": {
+      "setTitle": "设定长期目标",
+      "editTitle": "编辑目标",
+      "placeholder": "描述这个长期目标，例如：深入调研 X 并产出带来源的报告",
+      "hint": "设定后，Agent 会在每个回合结束时自动继续推进，直到目标达成 / 受阻 / 你手动暂停。随时可通过 /goal 或此卡片控制。",
+      "set": "设定目标",
+      "setting": "设定中…",
+      "cancel": "取消"
+    },
+    "panel": {
+      "header": "目标 · {label}",
+      "usage": "已自主推进 {turns} 个回合 · 已用时 {elapsed}"
+    },
+    "actions": {
+      "pause": "暂停",
+      "resume": "继续",
+      "edit": "编辑",
+      "archive": "存为 TODO",
+      "archiveTitle": "把已达成的目标归档为一条已完成 TODO",
+      "clear": "清除"
+    },
+    "confirm": {
+      "title": "替换当前目标？",
+      "message": "当前目标尚未完成：\n「{objective}」\n替换后将清空原目标的进度。",
+      "confirmLabel": "替换"
+    }
+  }
+}

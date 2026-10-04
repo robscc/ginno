@@ -1,16 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 
 type Perms = { allow: string[]; deny: string[]; ask: string[] };
 const EMPTY: Perms = { allow: [], deny: [], ask: [] };
-
-const HELP: Record<keyof Perms, string> = {
-  allow: "Matching rules are allowed without a prompt. e.g. Read(*), Grep(*)",
-  ask: "Matching rules trigger a confirmation prompt. e.g. Bash(*), Write(*)",
-  deny: "Matching rules are denied (highest priority). e.g. Bash(rm -rf *)",
-};
 
 function RuleList({
   title,
@@ -23,6 +18,8 @@ function RuleList({
   rules: string[];
   onChange: (next: string[]) => void;
 }) {
+  // 分组说明文案按 which 取 settings.permissions.help.*
+  const t = useTranslations("settings.permissions");
   const [draft, setDraft] = useState("");
   const add = () => {
     const v = draft.trim();
@@ -36,7 +33,7 @@ function RuleList({
         <span className="text-sm font-medium text-txt">{title}</span>
         <span className="rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{rules.length}</span>
       </div>
-      <p className="mb-2 text-xs text-faint">{HELP[which]}</p>
+      <p className="mb-2 text-xs text-faint">{t(`help.${which}`)}</p>
       <div className="space-y-1.5">
         {rules.map((r, i) => (
           <div key={i} className="flex gap-2">
@@ -47,7 +44,7 @@ function RuleList({
             />
             <button
               onClick={() => onChange(rules.filter((_, j) => j !== i))}
-              aria-label="Delete rule"
+              aria-label={t("deleteRule")}
               className="rounded-lg border border-line px-2 text-muted hover:text-red"
             >
               ×
@@ -57,7 +54,7 @@ function RuleList({
         <div className="flex gap-2">
           <input
             className="field flex-1 font-mono text-xs"
-            placeholder="New rule, e.g. Bash(git *)"
+            placeholder={t("newRulePlaceholder")}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && add()}
@@ -66,7 +63,7 @@ function RuleList({
             onClick={add}
             className="rounded-lg border border-line2 px-3 text-xs text-muted hover:text-txt"
           >
-            Add
+            {t("add")}
           </button>
         </div>
       </div>
@@ -75,6 +72,7 @@ function RuleList({
 }
 
 export function PermissionsSettings() {
+  const t = useTranslations("settings.permissions");
   const [perms, setPerms] = useState<Perms>(EMPTY);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -91,7 +89,7 @@ export function PermissionsSettings() {
           ask: Array.isArray(p.ask) ? (p.ask as string[]) : [],
         });
       })
-      .catch(() => setMsg("Failed to load: runtime not connected"));
+      .catch(() => setMsg(t("loadFailed")));
   };
   useEffect(load, []);
 
@@ -106,9 +104,9 @@ export function PermissionsSettings() {
       const s = (await api.getSettings()) as Record<string, unknown>;
       s.permissions = { allow: perms.allow, deny: perms.deny, ask: perms.ask };
       const r = await api.putSettings(s);
-      setMsg(r.ok ? "Saved (takes effect on the next tool call, no restart needed)" : "Failed to save");
+      setMsg(r.ok ? t("saved") : t("saveFailed"));
     } catch {
-      setMsg("Failed to save: runtime not connected");
+      setMsg(t("saveFailedConn"));
     } finally {
       setBusy(false);
     }
@@ -116,29 +114,30 @@ export function PermissionsSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Permissions</h2>
+      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
       <p className="mt-1 max-w-2xl text-sm text-muted">
-        Rules look like <code className="font-mono text-txt">Tool(arg-glob)</code>; the first match
-        wins in <b>deny → ask → allow</b> order, defaulting to ask. This policy is skipped while
-        Privileged Mode is on (see General).
+        {t.rich("description", {
+          code: (chunks) => <code className="font-mono text-txt">{chunks}</code>,
+          b: (chunks) => <b>{chunks}</b>,
+        })}
       </p>
       <div className="mt-5 max-w-2xl space-y-6">
-        <RuleList title="Allow" which="allow" rules={perms.allow} onChange={set("allow")} />
-        <RuleList title="Ask" which="ask" rules={perms.ask} onChange={set("ask")} />
-        <RuleList title="Deny" which="deny" rules={perms.deny} onChange={set("deny")} />
+        <RuleList title={t("allow")} which="allow" rules={perms.allow} onChange={set("allow")} />
+        <RuleList title={t("ask")} which="ask" rules={perms.ask} onChange={set("ask")} />
+        <RuleList title={t("deny")} which="deny" rules={perms.deny} onChange={set("deny")} />
         <div className="flex items-center gap-3">
           <button
             onClick={save}
             disabled={busy}
             className="rounded-lg bg-violet px-4 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            Save
+            {t("save")}
           </button>
           <button
             onClick={load}
             className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-txt"
           >
-            Reload
+            {t("reload")}
           </button>
           {msg && <span className="text-xs text-muted">{msg}</span>}
         </div>

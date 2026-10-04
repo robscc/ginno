@@ -6,6 +6,7 @@
  * with 2px gaps + rounded stack tops, recessive grid, hover tooltips. */
 
 import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useTranslations } from "next-intl";
 
 export const SERIES = {
   cache: "#059669", // 缓存读
@@ -118,6 +119,7 @@ const SKU_MAX_MODELS = 6; // beyond this the tail merges into 「其他 N 个模
 /** Every billing SKU (输入非缓存 / 缓存写 / 缓存读 / 输出) per model, in exact
  * digits — mirrors the provider bill line items for reconciliation. */
 export function SkuBreakdown({ models }: { models: SkuRow[] }) {
+  const t = useTranslations("settings.usage.overview");
   const live = (models || []).filter(
     (m) => m.input_tokens + m.output_tokens + (m.cache_creation_tokens || 0) > 0,
   );
@@ -129,7 +131,7 @@ export function SkuBreakdown({ models }: { models: SkuRow[] }) {
     const merged: SkuRow = rest.reduce(
       (a, m) => ({
         provider: "",
-        model: `${rest.length} other models`,
+        model: t("skuOtherModels", { count: rest.length }),
         input_tokens: a.input_tokens + m.input_tokens,
         output_tokens: a.output_tokens + m.output_tokens,
         cache_read_tokens: a.cache_read_tokens + m.cache_read_tokens,
@@ -146,10 +148,10 @@ export function SkuBreakdown({ models }: { models: SkuRow[] }) {
         const cw = m.cache_creation_tokens || 0;
         const net = Math.max(0, m.input_tokens - m.cache_read_tokens - cw);
         const rows: Array<[string, number, string]> = [
-          ["Input (non-cache)", net, SERIES.input],
-          ["Cache write", cw, CACHE_WRITE_COLOR],
-          ["Cache read", m.cache_read_tokens, SERIES.cache],
-          ["Output", m.output_tokens, SERIES.output],
+          [t("labelInputNonCache"), net, SERIES.input],
+          [t("labelCacheWrite"), cw, CACHE_WRITE_COLOR],
+          [t("labelCacheRead"), m.cache_read_tokens, SERIES.cache],
+          [t("labelOutput"), m.output_tokens, SERIES.output],
         ];
         return (
           <div key={`${m.provider}/${m.model}`} className="mt-1.5">
@@ -157,7 +159,7 @@ export function SkuBreakdown({ models }: { models: SkuRow[] }) {
               <span className="truncate font-medium text-txt">{m.model}</span>
               <span className="flex-none text-faint">
                 {m.provider ? `${m.provider} · ` : ""}
-                {m.calls} calls
+                {t("skuCalls", { count: m.calls })}
               </span>
             </div>
             {rows
@@ -318,11 +320,12 @@ export function StackedBars({
 }
 
 export function SeriesLegend() {
+  const t = useTranslations("settings.usage.overview");
   return (
     <div className="ml-auto flex gap-3.5 text-[11.5px] text-muted">
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.cache }} />Cache read</span>
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.input }} />Input (non-cache)</span>
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.output }} />Output</span>
+      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.cache }} />{t("labelCacheRead")}</span>
+      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.input }} />{t("labelInputNonCache")}</span>
+      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.output }} />{t("labelOutput")}</span>
     </div>
   );
 }

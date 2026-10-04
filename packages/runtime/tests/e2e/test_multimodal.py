@@ -69,7 +69,7 @@ def test_tool_end_truncates_long_output_with_marker(create_session, ws_conv):
         events = conv.recv_until("message.end", "error")
     end = events_of(events, "tool.end")[0]
     assert len(end["content"]) < 6000
-    assert "已截断" in end["content"]
+    assert "(truncated, 6000 chars total)" in end["content"]
 
 
 def test_tool_output_does_not_leak_into_text_deltas(create_session, ws_conv):

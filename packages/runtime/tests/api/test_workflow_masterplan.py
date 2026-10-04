@@ -218,10 +218,10 @@ def test_cap_text_keeps_head_and_tail():
     assert _cap_text(short, 100) == short
     long_text = ("H" * 9000) + ("T" * 9000)
     out = _cap_text(long_text, 8000)
-    assert len(out) <= 8000 + len("\n…[中段省略]…\n")
+    assert len(out) <= 8000 + len("\n…[middle section omitted]…\n")
     assert out.startswith("H")
     assert out.rstrip().endswith("T"), "tail must be preserved"
-    assert "中段省略" in out
+    assert "middle section omitted" in out
 
 
 def test_extract_failure_attributes_to_source_step(client, monkeypatch):
@@ -379,7 +379,7 @@ def test_hard_deny_home_protected_but_workspace_exempt(monkeypatch, tmp_path):
     secret = fake_home / "settings.json"
     secret.write_text('{"api_key": "sk"}', encoding="utf-8")
     out = tools["read_file"].invoke({"path": str(secret)})
-    assert out.startswith("[error]") and "拒绝访问" in out
+    assert out.startswith("[error]") and "denied region" in out
 
     # A file inside the session workspace is readable (exemption).
     (ws / "work.txt").write_text("hello", encoding="utf-8")

@@ -1,12 +1,14 @@
 "use client";
 
+import { useTranslations } from "next-intl";
+
 /** In-app confirmation modal. Used instead of window.confirm because the native
  *  dialog is unreliable in the Tauri webview; being React-rendered, this works
  *  identically in Tauri and the browser. */
 export function ConfirmModal({
   title,
   message,
-  confirmLabel = "删除",
+  confirmLabel,
   onConfirm,
   onCancel,
 }: {
@@ -16,6 +18,9 @@ export function ConfirmModal({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const t = useTranslations("ui");
+  // 未显式传入确认键时默认「删除」（危险操作），取消键走 ui 域通用文案
+  const confirmText = confirmLabel ?? t("common.delete");
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
@@ -35,13 +40,13 @@ export function ConfirmModal({
             onClick={onCancel}
             className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
           >
-            取消
+            {t("common.cancel")}
           </button>
           <button
             onClick={onConfirm}
             className="rounded-lg bg-red px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
           >
-            {confirmLabel}
+            {confirmText}
           </button>
         </div>
       </div>

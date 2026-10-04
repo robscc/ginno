@@ -152,7 +152,7 @@ def test_compact_empty_session_reports_nothing(create_session, ws_conv):
         conv.invoke("/compact")
         events = conv.recv_until("message.end", "error")
     assert event_names(events) == ["notice", "message.end"]
-    assert "没有可压缩" in events_of(events, "notice")[0]["message"]
+    assert "no history messages to compact" in events_of(events, "notice")[0]["message"]
     assert not model._captured  # no graph turn, no model call
 
 
@@ -175,7 +175,7 @@ def test_compact_forces_summary_regardless_of_threshold(
         events = conv.recv_until("message.end", "error")
     assert event_names(events) == ["notice", "message.end"]
     notice = events_of(events, "notice")[0]["message"]
-    assert "已压缩" in notice
+    assert "Context compacted" in notice
     assert "tokens" in notice  # before → after estimate reported
     # 2 turn calls + 1 summarizer call (the summary SystemMessage is captured)
     assert len(model._captured) >= 3

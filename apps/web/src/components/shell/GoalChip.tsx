@@ -11,17 +11,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Target } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import type { Goal } from "@/lib/types";
 import { ConfirmModal } from "@/components/ConfirmModal";
-
-const STATUS_LABEL: Record<string, string> = {
-  active: "推进中",
-  paused: "已暂停",
-  blocked: "受阻",
-  usage_limited: "用量受限",
-  complete: "已达成",
-};
 
 const STATUS_COLOR: Record<string, { bg: string; fg: string; dot: string }> = {
   active: { bg: "#f9731622", fg: "#fdba74", dot: "#f97316" },
@@ -52,6 +45,7 @@ export function GoalEditor({
   onSubmit: (objective: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const tr = useTranslations("goal");
   const [text, setText] = useState(initial);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -75,19 +69,19 @@ export function GoalEditor({
           ref={ref}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="描述这个长程目标，例如：深入调研 X 并产出一份带来源的报告"
+          placeholder={tr("editor.placeholder")}
           rows={5}
           className="mt-3 w-full resize-y rounded-lg border border-line2 bg-base/40 p-2.5 text-sm text-txt outline-none focus:border-violet/60"
         />
         <div className="mt-1 text-[11px] text-faint">
-          设定后 Agent 会在每轮结束自动续跑，直到目标达成 / 受阻 / 你暂停。可随时用 /goal 或此卡片控制。
+          {tr("editor.hint")}
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onClose}
             className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
           >
-            取消
+            {tr("editor.cancel")}
           </button>
           <button
             disabled={busy || !text.trim()}
@@ -101,7 +95,7 @@ export function GoalEditor({
             }}
             className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
           >
-            {busy ? "设定中…" : "设定目标"}
+            {busy ? tr("editor.setting") : tr("editor.set")}
           </button>
         </div>
       </div>
@@ -111,6 +105,7 @@ export function GoalEditor({
 
 export function GoalChip({ sessionId }: { sessionId: string | null }) {
   const g = useGinno();
+  const tr = useTranslations("goal");
   const [pop, setPop] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmReplace, setConfirmReplace] = useState<string | null>(null);
@@ -143,15 +138,15 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
       <>
         <button
           onClick={() => setEditing(true)}
-          title="为本会话设定长程目标（Agent 自主多轮推进）"
+          title={tr("chip.setTitle")}
           className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-dashed border-line2 px-2 py-1 text-[11px] text-faint hover:border-violet/50 hover:text-violet"
         >
-          <Target className="h-3 w-3 shrink-0" /> 设定目标
+          <Target className="h-3 w-3 shrink-0" /> {tr("chip.set")}
         </button>
         {editing && (
           <GoalEditor
             initial=""
-            title="设定长程目标"
+            title={tr("editor.setTitle")}
             onClose={() => setEditing(false)}
             onSubmit={async (objective) => {
               const r = await g.setGoalObjective(sessionId, objective);
@@ -164,7 +159,24 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
   }
 
   const sc = STATUS_COLOR[goal.status] ?? STATUS_COLOR.paused;
-  const label = STATUS_LABEL[goal.status] ?? goal.status;
+  // 状态显示名（goal.status.*；未知状态原样显示协议值）——hook 作用域内映射。
+  const statusLabel = (st: string): string => {
+    switch (st) {
+      case "active":
+        return tr("status.active");
+      case "paused":
+        return tr("status.paused");
+      case "blocked":
+        return tr("status.blocked");
+      case "usage_limited":
+        return tr("status.usageLimited");
+      case "complete":
+        return tr("status.complete");
+      default:
+        return st;
+    }
+  };
+  const label = statusLabel(goal.status);
 
   const submitObjective = async (objective: string, confirm: boolean) => {
     const r = await g.setGoalObjective(sessionId, objective, confirm);
@@ -179,7 +191,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
     <div className="relative shrink-0">
       <button
         onClick={() => setPop((p) => !p)}
-        title={`目标：${goal.objective}`}
+        title={tr("chip.goalTitle", { objective: goal.objective })}
         className="flex max-w-[260px] items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px]"
         style={{ background: sc.bg, color: sc.fg }}
       >
@@ -196,13 +208,13 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
           <div className="absolute left-0 z-50 mt-1 w-80 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-line bg-card p-3 text-xs shadow-xl">
             <div className="flex items-center gap-1.5 font-semibold text-txt">
               <span className="h-1.5 w-1.5 rounded-full" style={{ background: sc.dot }} />
-              目标 · {label}
+              {tr("panel.header", { label })}
             </div>
             <div className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-muted">
               {goal.objective}
             </div>
             <div className="mt-2 text-[11px] text-faint">
-              自主推进 {goal.turns_used} 轮 · 已用 {fmtElapsed(elapsed)}
+              {tr("panel.usage", { turns: goal.turns_used, elapsed: fmtElapsed(elapsed) })}
             </div>
             <div className="mt-3 flex flex-wrap gap-1.5">
               {goal.status === "active" && (
@@ -210,7 +222,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
                   onClick={() => g.setGoalStatus(sessionId, "paused")}
                   className="rounded border border-line2 px-2 py-1 text-muted hover:text-txt"
                 >
-                  暂停
+                  {tr("actions.pause")}
                 </button>
               )}
               {(goal.status === "paused" ||
@@ -220,7 +232,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
                   onClick={() => g.setGoalStatus(sessionId, "active")}
                   className="rounded border border-line2 px-2 py-1 text-muted hover:text-txt"
                 >
-                  恢复
+                  {tr("actions.resume")}
                 </button>
               )}
               {goal.status !== "complete" && (
@@ -231,7 +243,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
                   }}
                   className="rounded border border-line2 px-2 py-1 text-muted hover:text-txt"
                 >
-                  编辑
+                  {tr("actions.edit")}
                 </button>
               )}
               {goal.status === "complete" && (
@@ -240,10 +252,10 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
                     setPop(false);
                     void g.addTodo({ title: goal.objective, done: true, tags: ["goal"] });
                   }}
-                  title="把已达成目标归档为一条已完成 TODO"
+                  title={tr("actions.archiveTitle")}
                   className="rounded border border-line2 px-2 py-1 text-muted hover:text-txt"
                 >
-                  归档为 TODO
+                  {tr("actions.archive")}
                 </button>
               )}
               <button
@@ -253,7 +265,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
                 }}
                 className="rounded border border-red/40 px-2 py-1 text-red hover:bg-red/10"
               >
-                清除
+                {tr("actions.clear")}
               </button>
             </div>
           </div>
@@ -263,7 +275,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
       {editing && (
         <GoalEditor
           initial={goal.objective}
-          title="编辑目标"
+          title={tr("editor.editTitle")}
           onClose={() => setEditing(false)}
           onSubmit={(o) => submitObjective(o, false)}
         />
@@ -271,9 +283,9 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
 
       {confirmReplace && (
         <ConfirmModal
-          title="替换目标？"
-          message={`当前有未完成目标：\n「${goal.objective}」\n替换后旧目标的进度将被清除。`}
-          confirmLabel="替换"
+          title={tr("confirm.title")}
+          message={tr("confirm.message", { objective: goal.objective })}
+          confirmLabel={tr("confirm.confirmLabel")}
           onCancel={() => setConfirmReplace(null)}
           onConfirm={async () => {
             const obj = confirmReplace;

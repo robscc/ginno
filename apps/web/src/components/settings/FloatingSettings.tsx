@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { AlertCircle, Keyboard, RotateCcw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { isDesktop } from "@/lib/desktop";
@@ -23,6 +24,7 @@ import {
  * conflicts (⌃⌥Space etc. colliding with macOS input-source switching).
  */
 export function FloatingSettings() {
+  const t = useTranslations("settings.floating");
   const [prefs, setPrefs] = useState<FloatingPrefs | null>(null);
   const [hotkeyActive, setHotkeyActive] = useState(true);
   const [msg, setMsg] = useState("");
@@ -47,51 +49,43 @@ export function FloatingSettings() {
         if ("hotkey" in patch) setHotkeyActive(hotkeyOk);
         setMsg(
           "hotkey" in patch && !hotkeyOk
-            ? "Saved, but the hotkey failed to register — it may already be used by the system or another app. Try a different one."
-            : "Saved",
+            ? t("savedHotkeyConflict")
+            : t("saved"),
         );
       } catch {
         setPrefs(prev);
-        setMsg("Failed to save");
+        setMsg(t("saveFailed"));
       }
     },
-    [prefs],
+    [prefs, t],
   );
 
   function toggleNow() {
     if (!isDesktop()) {
-      setMsg("Only available in the desktop app");
+      setMsg(t("desktopOnly"));
       return;
     }
-    invoke("pin_toggle").catch(() => setMsg("Floating window unavailable (older desktop shell?)"));
+    invoke("pin_toggle").catch(() => setMsg(t("unavailable")));
   }
 
   if (!prefs) {
     return (
       <div className="px-8 py-7">
-        <h2 className="text-lg font-semibold text-txt">Floating Window</h2>
-        <p className="mt-4 text-sm text-faint">Loading…</p>
+        <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+        <p className="mt-4 text-sm text-faint">{t("loading")}</p>
       </div>
     );
   }
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Floating Window</h2>
-      <p className="mt-1 text-sm text-muted">
-        An always-on-top quick chat window: summon it with a global hotkey, with a pill kept on
-        screen and a chat box for quick questions and answers. Full Agent capabilities, with
-        permission confirmations handled inline in the window.
-      </p>
+      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+      <p className="mt-1 text-sm text-muted">{t("description")}</p>
       <div className="mt-4 max-w-md space-y-5">
         {!hotkeyActive && (
           <div className="flex items-start gap-2 rounded-lg border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs leading-relaxed text-yellow">
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>
-              The current hotkey ({formatAccelerator(prefs.hotkey)}) failed to register; it may
-              already be used by the system or another app. The menu bar icon can still open the
-              floating window; we recommend recording a new hotkey.
-            </span>
+            <span>{t("hotkeyWarn", { hotkey: formatAccelerator(prefs.hotkey) })}</span>
           </div>
         )}
         <div>
@@ -99,15 +93,12 @@ export function FloatingSettings() {
             onClick={toggleNow}
             className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:border-violet hover:text-txt"
           >
-            Show / hide floating window
+            {t("toggleButton")}
           </button>
-          <p className="mt-1 text-xs text-faint">
-            Same as the menu bar icon&apos;s &quot;Show floating window&quot;; useful for instantly
-            previewing the settings below.
-          </p>
+          <p className="mt-1 text-xs text-faint">{t("toggleHelp")}</p>
         </div>
         <div>
-          <label className="field-label">Global hotkey</label>
+          <label className="field-label">{t("hotkeyLabel")}</label>
           <div className="flex items-center gap-2">
             <HotkeyRecorder
               value={prefs.hotkey}
@@ -115,22 +106,19 @@ export function FloatingSettings() {
             />
             <button
               onClick={() => void save({ hotkey: DEFAULT_FLOATING.hotkey })}
-              title={`Reset to default (${formatAccelerator(DEFAULT_FLOATING.hotkey)})`}
+              title={t("resetTitle", { hotkey: formatAccelerator(DEFAULT_FLOATING.hotkey) })}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line text-faint transition-colors hover:border-line2 hover:text-txt"
             >
               <RotateCcw className="h-3.5 w-3.5" />
             </button>
           </div>
           <p className="mt-1 text-xs text-faint">
-            Click the input, then press the key combination (it must include ⌘/⌃/⌥ or be a
-            standalone function key); Esc to cancel. Default{" "}
-            {formatAccelerator(DEFAULT_FLOATING.hotkey)} — the legacy ⌃⌥Space conflicts with
-            macOS&apos;s &quot;switch input source&quot; shortcut and has been deprecated.
+            {t("hotkeyHelp", { hotkey: formatAccelerator(DEFAULT_FLOATING.hotkey) })}
           </p>
         </div>
         <div>
           <label className="field-label" htmlFor="pin-default-mode">
-            Default session mode
+            {t("defaultModeLabel")}
           </label>
           <select
             id="pin-default-mode"
@@ -138,17 +126,14 @@ export function FloatingSettings() {
             value={prefs.defaultMode}
             onChange={(e) => void save({ defaultMode: e.target.value as FloatingPrefs["defaultMode"] })}
           >
-            <option value="quick">Quick chat (independent session)</option>
-            <option value="follow">Follow the main window&apos;s current session</option>
+            <option value="quick">{t("modeQuick")}</option>
+            <option value="follow">{t("modeFollow")}</option>
           </select>
-          <p className="mt-1 text-xs text-faint">
-            You can switch anytime from the title bar dropdown; this setting only decides the
-            initial mode when opened.
-          </p>
+          <p className="mt-1 text-xs text-faint">{t("defaultModeHelp")}</p>
         </div>
         <div>
           <label className="field-label" htmlFor="pin-opacity">
-            Inactive opacity: {prefs.inactiveOpacity.toFixed(2)}
+            {t("opacityLabel", { value: prefs.inactiveOpacity.toFixed(2) })}
           </label>
           <input
             id="pin-opacity"
@@ -160,7 +145,7 @@ export function FloatingSettings() {
             onChange={(e) => void save({ inactiveOpacity: Number(e.target.value) })}
             className="w-full accent-violet"
           />
-          <p className="mt-1 text-xs text-faint">Slide to 1.00 to disable dimming on focus loss.</p>
+          <p className="mt-1 text-xs text-faint">{t("opacityHelp")}</p>
         </div>
         <div>
           <label className="flex items-center gap-2 text-sm text-txt">
@@ -169,12 +154,12 @@ export function FloatingSettings() {
               checked={prefs.visibleOnAllSpaces}
               onChange={(e) => void save({ visibleOnAllSpaces: e.target.checked })}
             />
-            Show on all desktop spaces
+            {t("spacesLabel")}
           </label>
         </div>
         <div>
           <label className="field-label" htmlFor="pin-fullscreen">
-            Fullscreen app policy
+            {t("fullscreenLabel")}
           </label>
           <select
             id="pin-fullscreen"
@@ -184,8 +169,8 @@ export function FloatingSettings() {
               void save({ fullscreenPolicy: e.target.value as FloatingPrefs["fullscreenPolicy"] })
             }
           >
-            <option value="avoid">Avoid (default): do not cover fullscreen apps</option>
-            <option value="overlay">Overlay: float above fullscreen apps</option>
+            <option value="avoid">{t("fsAvoid")}</option>
+            <option value="overlay">{t("fsOverlay")}</option>
           </select>
         </div>
         <div>
@@ -195,12 +180,9 @@ export function FloatingSettings() {
               checked={prefs.pillClickThrough}
               onChange={(e) => void save({ pillClickThrough: e.target.checked })}
             />
-            Click-through collapsed pill
+            {t("clickThroughLabel")}
           </label>
-          <p className="mt-1 text-xs text-faint">
-            When enabled, the collapsed pill becomes a pure status light and mouse events pass
-            through to the app below (it cannot be clicked to expand; use the hotkey instead).
-          </p>
+          <p className="mt-1 text-xs text-faint">{t("clickThroughHelp")}</p>
         </div>
         <div>
           <label className="flex items-center gap-2 text-sm text-txt">
@@ -209,7 +191,7 @@ export function FloatingSettings() {
               checked={prefs.showOnLaunch}
               onChange={(e) => void save({ showOnLaunch: e.target.checked })}
             />
-            Show floating window on launch
+            {t("showOnLaunchLabel")}
           </label>
         </div>
         {msg && <div className="text-xs text-muted">{msg}</div>}
@@ -231,6 +213,7 @@ function HotkeyRecorder({
   value: string;
   onCommit: (accel: string) => void;
 }) {
+  const t = useTranslations("settings.floating");
   const [recording, setRecording] = useState(false);
   const btnRef = useRef<HTMLButtonElement | null>(null);
 
@@ -272,7 +255,7 @@ function HotkeyRecorder({
     >
       <Keyboard className="h-3.5 w-3.5 shrink-0 text-faint" />
       {recording ? (
-        <span className="text-xs text-violet">Press the new hotkey… (Esc to cancel)</span>
+        <span className="text-xs text-violet">{t("recording")}</span>
       ) : (
         <span className="font-medium tracking-wide">{formatAccelerator(value)}</span>
       )}

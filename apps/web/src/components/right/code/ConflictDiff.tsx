@@ -17,6 +17,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AlignJustify, Columns2, GitCompare } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import { languageForPath } from "./language";
 import {
@@ -61,18 +62,12 @@ function basename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-/** One line naming both sides; the copy changes with the layout. */
-function sideHint(sideBySide: boolean): string {
-  return sideBySide
-    ? "左边是你的未保存修改，右边是磁盘上的当前内容"
-    : "「−」是你的未保存修改，「＋」是磁盘上的当前内容";
-}
-
 /**
  * Read-only Monaco diff: buffer vs disk. Side-by-side by default, with an
  * inline (unified) toggle for narrow panels.
  */
 export function ConflictDiff({ path, mine, theirs, className }: ConflictDiffProps): JSX.Element {
+  const t = useTranslations("code.diff");
   const hostRef = useRef<HTMLDivElement | null>(null);
   const diffRef = useRef<DiffEditor | null>(null);
   const mineModelRef = useRef<TextModel | null>(null);
@@ -181,7 +176,8 @@ export function ConflictDiff({ path, mine, theirs, className }: ConflictDiffProp
     };
   }, [path, uid]);
 
-  const hint = sideHint(sideBySide);
+  // 同时标出两侧含义的一行说明，随布局（并排/行内）切换措辞。
+  const hint = sideBySide ? t("hintSide") : t("hintInline");
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-[rgb(var(--code-bg))]", className)}>
@@ -193,10 +189,10 @@ export function ConflictDiff({ path, mine, theirs, className }: ConflictDiffProp
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted" title={hint}>
           {hint}
         </span>
-        <div role="group" aria-label="差异布局" className="flex shrink-0 items-center gap-0.5">
+        <div role="group" aria-label={t("layoutGroup")} className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
-            title="并排显示"
+            title={t("sideBySide")}
             aria-pressed={sideBySide}
             onClick={() => setSideBySide(true)}
             className={cn(
@@ -210,7 +206,7 @@ export function ConflictDiff({ path, mine, theirs, className }: ConflictDiffProp
           </button>
           <button
             type="button"
-            title="内联显示"
+            title={t("inline")}
             aria-pressed={!sideBySide}
             onClick={() => setSideBySide(false)}
             className={cn(

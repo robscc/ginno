@@ -4,6 +4,7 @@
  * 只记计数与元数据，不记请求内容（设计 §4.4）。 */
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { UsageRequests } from "@/lib/types";
@@ -21,6 +22,7 @@ const SRC_STYLE: Record<string, { bg: string; fg: string }> = {
 };
 
 function SrcChip({ src }: { src: string }) {
+  // 来源名是协议值（chat/goal/…），保持原样不翻译
   const s = SRC_STYLE[src] || SRC_STYLE.probe;
   return (
     <span className="rounded-md px-1.5 py-0.5 text-[11px]" style={{ background: s.bg, color: s.fg }}>
@@ -36,6 +38,7 @@ function fmtClock(ts: number): string {
 }
 
 export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter?: string; onClearSession?: () => void }) {
+  const t = useTranslations("settings.usage.requests");
   const [date, setDate] = useState(""); // empty = today (server default)
   const [provider, setProvider] = useState("");
   const [source, setSource] = useState("");
@@ -78,22 +81,22 @@ export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter
     <div className="overflow-hidden rounded-xl border border-line bg-card">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-line px-3.5 py-3">
         <label className="flex items-center gap-1.5 text-[11.5px] text-faint">
-          Date
+          {t("dateLabel")}
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={sel} />
         </label>
         <label className="flex items-center gap-1.5 text-[11.5px] text-faint">
-          Provider
+          {t("providerLabel")}
           <select value={provider} onChange={(e) => setProvider(e.target.value)} className={sel}>
-            <option value="">All</option>
+            <option value="">{t("all")}</option>
             <option value="anthropic">anthropic</option>
             <option value="openai">openai</option>
             <option value="custom">custom</option>
           </select>
         </label>
         <label className="flex items-center gap-1.5 text-[11.5px] text-faint">
-          Source
+          {t("sourceLabel")}
           <select value={source} onChange={(e) => setSource(e.target.value)} className={sel}>
-            <option value="">All</option>
+            <option value="">{t("all")}</option>
             {["chat", "goal", "compaction", "workflow", "memory", "kb", "probe"].map((s) => (
               <option key={s} value={s}>{s}</option>
             ))}
@@ -101,42 +104,42 @@ export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter
         </label>
         {sessionFilter && (
           <span className="flex items-center gap-1.5 rounded-lg border border-line2 bg-card2 px-2.5 py-1.5 text-xs text-txt">
-            Session: <code className="text-[11px] text-muted">{sessionFilter.slice(0, 8)}…</code>
-            <button onClick={onClearSession} className="text-faint hover:text-txt" title="Clear session filter">
+            {t("sessionChip")} <code className="text-[11px] text-muted">{sessionFilter.slice(0, 8)}…</code>
+            <button onClick={onClearSession} className="text-faint hover:text-txt" title={t("clearFilter")}>
               <X className="h-3 w-3" />
             </button>
           </span>
         )}
         <div className="flex-1" />
-        <span className="text-[11.5px] text-faint">One model call per row · counts and metadata only, no request content</span>
+        <span className="text-[11.5px] text-faint">{t("footnote")}</span>
       </div>
 
       <div className="overflow-x-auto">
         <table className="w-full min-w-[860px] border-collapse">
           <thead>
             <tr>
-              {["Time", "Session", "Source", "Provider", "Model", "Input", "Output", "Cache read", "Status"].map((h, i) => (
+              {(["time", "session", "source", "provider", "model", "input", "output", "cacheRead", "status"] as const).map((h, i) => (
                 <th
                   key={h}
                   className={`whitespace-nowrap border-b border-line px-3 py-2 text-[11px] font-semibold tracking-wide text-faint ${i >= 5 && i <= 7 ? "text-right" : "text-left"}`}
                 >
-                  {h}
+                  {t(`th.${h}`)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {!loaded && (
-              <tr><td colSpan={9} className="px-3 py-10 text-center text-xs text-faint">Loading…</td></tr>
+              <tr><td colSpan={9} className="px-3 py-10 text-center text-xs text-faint">{t("loading")}</td></tr>
             )}
             {loaded && (!data || data.rows.length === 0) && (
-              <tr><td colSpan={9} className="px-3 py-10 text-center text-xs text-faint">No requests match the filters</td></tr>
+              <tr><td colSpan={9} className="px-3 py-10 text-center text-xs text-faint">{t("empty")}</td></tr>
             )}
             {data?.rows.map((r, i) => (
               <tr key={`${r.ts}-${i}`} className="border-b border-white/5 last:border-b-0 hover:bg-white/5">
                 <td className="px-3 py-2 text-[12.5px] tabular-nums text-faint">{fmtClock(r.ts)}</td>
                 <td className="px-3 py-2 text-[12.5px] text-txt">
-                  {r.session_id ? <code className="text-[11px]" title={r.session_id}>{r.session_id.slice(0, 8)}…</code> : <span className="text-faint">(background)</span>}
+                  {r.session_id ? <code className="text-[11px]" title={r.session_id}>{r.session_id.slice(0, 8)}…</code> : <span className="text-faint">{t("bg")}</span>}
                 </td>
                 <td className="px-3 py-2"><SrcChip src={r.source} /></td>
                 <td className="px-3 py-2 text-[12.5px] text-muted">{r.provider || "—"}</td>
@@ -145,7 +148,7 @@ export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter
                 <td className="px-3 py-2 text-right text-[12.5px] tabular-nums text-muted">{r.output_tokens ? fmt(r.output_tokens) : "—"}</td>
                 <td className="px-3 py-2 text-right text-[12.5px] tabular-nums text-muted">{r.cache_read_tokens ? fmt(r.cache_read_tokens) : "—"}</td>
                 <td className="px-3 py-2 text-[12.5px]">
-                  {r.ok ? <span style={{ color: "#4ade80" }}>✓</span> : <span style={{ color: "#f87171" }}>✗ {r.error || "error"}</span>}
+                  {r.ok ? <span style={{ color: "#4ade80" }}>✓</span> : <span style={{ color: "#f87171" }}>✗ {r.error || t("errorFallback")}</span>}
                 </td>
               </tr>
             ))}
@@ -154,8 +157,8 @@ export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter
       </div>
 
       <div className="flex items-center justify-end gap-2 px-3.5 py-2.5 text-xs text-faint">
-        <span>{data?.total ?? 0} total</span>
-        <span className="ml-2">Page {page}/{pages}</span>
+        <span>{t("total", { total: data?.total ?? 0 })}</span>
+        <span className="ml-2">{t("page", { page, pages })}</span>
         <button
           disabled={page <= 1}
           onClick={() => setPage((p) => Math.max(1, p - 1))}

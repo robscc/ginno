@@ -25,6 +25,7 @@ from ..browser.cdp import CDPError
 from ..browser.config import load_browser_config
 from ..browser.executor import get_profile_backend
 from ..browser.relay import RelayError, invoke_tool, relay_state
+from ..lang import t
 
 BROWSER_TOOL_NAMES = (
     "browser_computer", "browser_read_page", "browser_find",
@@ -52,8 +53,13 @@ _handoff_events: dict[str, asyncio.Event] = {}
 def _fallback_note(cfg) -> str:
     mode = cfg.fallback_profile_mode
     if mode == "off":
-        return ("[error] 浏览器扩展未连接,且备用浏览器实例已关闭(fallback=off)。"
-                "请让用户在 连接器 页面安装扩展或启用备用实例。")
+        return t(
+            "[error] The browser extension is not connected and the fallback "
+            "browser instance is disabled (fallback=off). Ask the user to "
+            "install the extension or enable the fallback instance on the "
+            "Connectors page.",
+            "[error] 浏览器扩展未连接,且备用浏览器实例已关闭(fallback=off)。"
+            "请让用户在 连接器 页面安装扩展或启用备用实例。")
     return ""
 
 
@@ -111,7 +117,10 @@ async def _dispatch(tool_name: str, args: dict, slow: bool = False) -> Any:
         # —— 不阻塞 agent,用户知情后可在连接器页改 off/auto。
         _emit_event("browser_fallback_used", {
             "tool": tool_name,
-            "hint": "未安装扩展,已使用 Ginno 自带浏览器实例(可在 连接器 设置更改)",
+            "hint": t(
+                "Extension not installed; used Ginno's built-in browser "
+                "instance (change this in Connectors settings)",
+                "未安装扩展,已使用 Ginno 自带浏览器实例(可在 连接器 设置更改)"),
         })
     backend = get_profile_backend()
     backend.cfg = cfg
@@ -243,7 +252,9 @@ async def _profile_run(b, name: str, a: dict) -> Any:
         if action == "wait":
             await asyncio.sleep(min(a.get("duration", 1.0), 10.0))
             return f"Waited {a.get('duration', 1.0)}s"
-        raise CDPError(f'未知的 computer action "{action}"。可选:{", ".join(_COMPUTER_ACTIONS)}')
+        raise CDPError(t(
+            f'Unknown computer action "{action}". Valid: {", ".join(_COMPUTER_ACTIONS)}',
+            f'未知的 computer action "{action}"。可选:{", ".join(_COMPUTER_ACTIONS)}'))
     if name == "browser_read_page":
         out = await b.read_page(tid, a.get("filter", "all"),
                                 a.get("depth", 15), a.get("max_chars", 50000),
@@ -255,15 +266,19 @@ async def _profile_run(b, name: str, a: dict) -> Any:
         out = await b.find_elements(tid, a.get("query", ""), a.get("max_results", 20))
         rows = out.get("results", [])
         if not rows:
-            return (f"[find] 没有匹配 {a.get('query')!r} 的元素。注意 find 只做字面"
-                    "匹配——换用页面上实际出现的词,或用 browser_read_page 直接浏览。")
+            return t(
+                f"[find] No elements matching {a.get('query')!r}. Note that find "
+                "matches literally — use words that actually appear on the page, "
+                "or browse directly with browser_read_page.",
+                f"[find] 没有匹配 {a.get('query')!r} 的元素。注意 find 只做字面"
+                "匹配——换用页面上实际出现的词,或用 browser_read_page 直接浏览。")
         return "[find] " + a.get("query", "") + "\n" + "\n".join(
             f'[{r["ref"]}] {r["role"]} "{r["text"]}" (score {r["score"]})'
             for r in rows)
     if name == "browser_form_input":
         out = await b.form_input(tid, a.get("ref", ""), a.get("value"))
         if not out.get("success"):
-            raise CDPError(out.get("error", "form_input 失败"))
+            raise CDPError(out.get("error", t("form_input failed", "form_input 失败")))
         return f'Filled {a.get("ref")} (field: {out.get("fieldName")})'
     if name == "browser_navigate":
         url = (a.get("url") or "").strip()
@@ -275,8 +290,12 @@ async def _profile_run(b, name: str, a: dict) -> Any:
         url = _normalize_url(url)
         r = await b.navigate(tid, url, force=force)
         if r.get("handled") and not r.get("accepted"):
-            return ("[error] 页面的 beforeunload 处理器拦下了导航(有未保存的更改,"
-                    "已按默认策略保留)。确认要丢弃更改请带 force=true 重试。")
+            return t(
+                "[error] The page's beforeunload handler blocked the navigation "
+                "(unsaved changes were kept under the default policy). To "
+                "discard them, retry with force=true.",
+                "[error] 页面的 beforeunload 处理器拦下了导航(有未保存的更改,"
+                "已按默认策略保留)。确认要丢弃更改请带 force=true 重试。")
         redir = "" if r["url"] == url else f" (redirected from {url})"
         return (f"Navigated to: {r['url']}{redir}\nTitle: {r['title']}\n"
                 f"Duration: {r['durationS']}s")
@@ -327,15 +346,20 @@ async def _profile_run(b, name: str, a: dict) -> Any:
         out = await b.file_upload(tid, a.get("ref", ""), paths,
                                   trigger_ref=a.get("triggerRef"))
         files = ", ".join(f"{f['name']} ({f['size']}B)" for f in out.get("files", []))
-        return (f"Files selected at browser level: {files}\n"
-                f"(若页面的上传/附件流程未消费文件,可用 browser_network 查看上传请求确认。)")
+        return t(
+            f"Files selected at browser level: {files}\n"
+            "(If the page's upload/attach flow did not consume the files, use "
+            "browser_network to check the upload requests and confirm.)",
+            f"Files selected at browser level: {files}\n"
+            f"(若页面的上传/附件流程未消费文件,可用 browser_network 查看上传请求确认。)")
     if name == "browser_resize_window":
         await b.resize_window(tid, a.get("width", 1280), a.get("height", 800))
         return f"Resized window to {a.get('width')}x{a.get('height')}"
     if name == "browser_tabs_context":
         rows = await b.tabs_context()
         if not rows:
-            return "当前没有打开的标签页。用 browser_tabs_create 新开一个。"
+            return t("No tabs are open. Create one with browser_tabs_create.",
+                     "当前没有打开的标签页。用 browser_tabs_create 新开一个。")
         return "[tabs]\n" + "\n".join(
             f'- tabId={r["tabId"]}{" (loading)" if r.get("loading") else ""} '
             f'{r.get("title", "")}\n  {r.get("url", "")}' for r in rows)
@@ -345,7 +369,7 @@ async def _profile_run(b, name: str, a: dict) -> Any:
     if name == "browser_tabs_close":
         await b.close_tab(int(a.get("tabId", 0)))
         return f"Closed tab {a.get('tabId')}"
-    raise CDPError(f"未实现的浏览器工具: {name}")
+    raise CDPError(t(f"Unimplemented browser tool: {name}", f"未实现的浏览器工具: {name}"))
 
 
 def _parse_modifiers(spec: str | None) -> int:
@@ -360,7 +384,7 @@ def _parse_modifiers(spec: str | None) -> int:
 
 def _normalize_url(url: str) -> str:
     if not url:
-        raise CDPError("url 不能为空")
+        raise CDPError(t("url must not be empty", "url 不能为空"))
     import re
     if re.match(r"^[a-z][a-z0-9+.-]*:", url, re.I):
         u = url
@@ -389,11 +413,16 @@ def _validate_upload_paths(paths: list[str]) -> None:
     for p in paths:
         rp = Path(p).expanduser()
         if not rp.is_file():
-            raise CDPError(f"路径不存在或不是普通文件: {p}")
+            raise CDPError(t(f"Path does not exist or is not a regular file: {p}",
+                             f"路径不存在或不是普通文件: {p}"))
         if not any(_inside(rp, root) for root in allowed):
-            raise CDPError(
+            raise CDPError(t(
+                f"Path {p} is outside the directories this session may access "
+                "(workspace / mounted dirs / ~/.ginno). Browser upload must not "
+                "bypass file permissions; ask the user to put the file into a "
+                "mounted directory.",
                 f"路径 {p} 不在会话可访问的目录内(工作区/挂载目录/~/.ginno)。"
-                "浏览器上传不能绕过文件权限;请让用户把文件放进挂载目录。")
+                "浏览器上传不能绕过文件权限;请让用户把文件放进挂载目录。"))
 
 
 def _inside(p: Path, root: Path) -> bool:
@@ -417,10 +446,16 @@ def _sensitive_guard(cfg, url: str) -> str | None:
         confirmed = []
     if d in confirmed:
         return None
-    return (f"[error] 该站点({d})在受保护域名列表中(支付/邮箱/云控制台),"
-            "浏览器动作需要用户确认。请用 ask_user 征得用户明确同意;"
-            "用户在 连接器 → Chrome 浏览器扩展 → 配置 → 受保护域名确认 "
-            f"中加入 {d} 后即可重试。")
+    return t(
+        f"[error] This site ({d}) is on the protected-domains list (payments/"
+        "email/cloud consoles); browser actions there require user "
+        "confirmation. Use ask_user to get the user's explicit consent; after "
+        "the user adds the domain under Connectors → Chrome Browser Extension "
+        f"→ Config → Protected-domain confirmation, retry with {d}.",
+        f"[error] 该站点({d})在受保护域名列表中(支付/邮箱/云控制台),"
+        "浏览器动作需要用户确认。请用 ask_user 征得用户明确同意;"
+        "用户在 连接器 → Chrome 浏览器扩展 → 配置 → 受保护域名确认 "
+        f"中加入 {d} 后即可重试。")
 
 
 def build_browser_tools(session_id: str | None = None,
@@ -475,25 +510,36 @@ def build_browser_tools(session_id: str | None = None,
         `modifiers` for click actions: ctrl/shift/alt/cmd combinable with "+".
         Without a valid tabId, call browser_tabs_context first."""
         if action not in _COMPUTER_ACTIONS:
-            return (f'[error] 未知 action "{action}"。可选: ' + ", ".join(_COMPUTER_ACTIONS))
+            return (t(f'[error] Unknown action "{action}". Valid: ',
+                      f'[error] 未知 action "{action}"。可选: ')
+                    + ", ".join(_COMPUTER_ACTIONS))
         # argument validation (教学式错误 — 每条都带下一步, 设计 §5.7)
         if action in ("left_click", "right_click", "double_click", "triple_click",
                       "hover") and not coordinate and not ref:
-            return (f'[error] computer "{action}" 需要 coordinate [x, y],'
-                    "或传 read_page/find 拿到的 ref。")
+            return t(f'[error] computer "{action}" needs coordinate [x, y], '
+                     "or a ref from read_page/find.",
+                     f'[error] computer "{action}" 需要 coordinate [x, y],'
+                     "或传 read_page/find 拿到的 ref。")
         if action == "left_click_drag" and (not start_coordinate or not coordinate):
-            return '[error] left_click_drag 需要 start_coordinate 和 coordinate 两组 [x, y]。'
+            return t('[error] left_click_drag needs both start_coordinate and '
+                     'coordinate as [x, y] pairs.',
+                     '[error] left_click_drag 需要 start_coordinate 和 coordinate 两组 [x, y]。')
         if action == "zoom" and not region:
-            return '[error] zoom 需要 region [x0, y0, x1, y1]。'
+            return t('[error] zoom needs region [x0, y0, x1, y1].',
+                     '[error] zoom 需要 region [x0, y0, x1, y1]。')
         if action == "type" and not text:
-            return '[error] type 需要 text。'
+            return t('[error] type needs text.', '[error] type 需要 text。')
         if action == "key" and not text:
-            return '[error] key 需要 text,如 "Enter" / "cmd+a" / "Backspace Backspace"。'
+            return t('[error] key needs text, e.g. "Enter" / "cmd+a" / '
+                     '"Backspace Backspace".',
+                     '[error] key 需要 text,如 "Enter" / "cmd+a" / "Backspace Backspace"。')
         if action == "scroll_to" and not ref:
-            return "[error] scroll_to 需要 read_page/find 的 ref。"
+            return t("[error] scroll_to needs a ref from read_page/find.",
+                     "[error] scroll_to 需要 read_page/find 的 ref。")
         if action in ("left_click", "right_click", "double_click",
                       "triple_click", "scroll") and coordinate and len(coordinate) < 2:
-            return "[error] coordinate 必须是 [x, y] 两个数。"
+            return t("[error] coordinate must be the two numbers [x, y].",
+                     "[error] coordinate 必须是 [x, y] 两个数。")
         try:
             guard = await _sensitive_action_guard(
                 "browser_computer", {"tabId": tabId, "action": action})
@@ -731,10 +777,17 @@ def build_browser_tools(session_id: str | None = None,
         _emit_event("handoff_changed", {"active": sorted(_handoff_events.keys())})
         try:
             await asyncio.wait_for(ev.wait(), timeout=300)
-            return ("用户已完成操作并交回控制权。用 browser_computer 的 "
-                    "screenshot action 查看当前页面状态后继续。")
+            return t(
+                "The user has finished and handed control back. Take a "
+                "screenshot (browser_computer, action=screenshot) to see the "
+                "current page state, then continue.",
+                "用户已完成操作并交回控制权。用 browser_computer 的 "
+                "screenshot action 查看当前页面状态后继续。")
         except TimeoutError:
-            return "[error] 等待接管超时(5 分钟)。用户可能不在;请询问后再试。"
+            return t(
+                "[error] Timed out waiting for the takeover (5 minutes). The "
+                "user may be away; ask before retrying.",
+                "[error] 等待接管超时(5 分钟)。用户可能不在;请询问后再试。")
         finally:
             _handoff_events.pop(key, None)
 
@@ -750,7 +803,8 @@ def build_browser_tools(session_id: str | None = None,
             request_stop()
         except Exception:  # noqa: BLE001
             pass
-        return "已请求停止当前浏览器动作。"
+        return t("Stop requested for the in-flight browser action.",
+                 "已请求停止当前浏览器动作。")
 
     return [
         browser_computer, browser_read_page, browser_find,

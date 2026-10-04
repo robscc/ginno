@@ -1,0 +1,196 @@
+{
+  "code": {
+    "panel": {
+      "workspace": "工作区",
+      "treeToggle": "文件树（⌘B）",
+      "layoutSide": "切换为左右分栏",
+      "layoutFile": "切换为编辑器优先",
+      "breadcrumbRoot": "根目录",
+      "noFileOpen": "未打开文件",
+      "noSession": "请先选择会话",
+      "noWorkspace": "没有可用的工作区",
+      "reading": "读取中…",
+      "emptyTitle": "从文件树打开一个文件开始查看",
+      "emptyHint": "按 ⌘B 展开文件树"
+    },
+    "notice": {
+      "unsavedClose": "有未保存的更改：再次点击关闭即放弃，或按 ⌘S 保存",
+      "saved": "已保存 {path}",
+      "saveFailed": "保存失败",
+      "reloaded": "已从磁盘重新加载",
+      "diffUnavailable": "无法读取磁盘副本，暂时无法显示差异",
+      "agentChangedDirty": "Agent 已修改此文件：请先查看差异，再决定是否覆盖",
+      "agentChangedReloaded": "Agent 刚修改了此文件，已重新加载",
+      "overwrote": "已覆盖并保存 {path}",
+      "conflictAgain": "文件再次被修改，请重新选择",
+      "forceSaveFailed": "强制保存失败",
+      "readFailed": "读取失败",
+      "outsideRoot": "此文件在当前工作区根目录之外",
+      "copied": "已复制：{path}",
+      "copyFailed": "复制失败",
+      "revealFailed": "无法在文件管理器中显示",
+      "openExternalFailed": "无法用默认应用打开"
+    },
+    "fs": {
+      "createFailed": "创建失败",
+      "renameFailed": "重命名失败",
+      "moveFailed": "移动失败",
+      "deleteFailed": "删除失败",
+      "mountFailed": "挂载失败",
+      "switchFailed": "切换失败"
+    },
+    "conflict": {
+      "title": "文件已在磁盘上被修改，保存被拒绝",
+      "diskVersion": "磁盘版本 {version}",
+      "viewDiff": "查看差异",
+      "hideDiff": "隐藏差异",
+      "reload": "重新加载",
+      "reloadTitle": "放弃你的更改，采用磁盘上的内容",
+      "forceOverwrite": "强制覆盖",
+      "forceOverwriteTitle": "用你的内容覆盖磁盘副本"
+    },
+    "tabs": {
+      "openFiles": "已打开的文件",
+      "conflictTip": "文件已在磁盘上被修改",
+      "dirtyTip": "有未保存的更改：{name}",
+      "close": "关闭",
+      "closeNamed": "关闭 {name}"
+    },
+    "tree": {
+      "label": "文件树",
+      "root": "根目录",
+      "hiddenNone": "已隐藏",
+      "hiddenCount": "{count, plural, other {已隐藏 # 项}}",
+      "hiddenOverflow": "已隐藏 {count, number}+ 项",
+      "newFileName": "新文件名",
+      "newFolderName": "新文件夹名",
+      "newName": "新名称",
+      "close": "关闭",
+      "retry": "重试",
+      "empty": "（空）",
+      "showMore": "显示更多（还有 {count, number} 项）"
+    },
+    "menu": {
+      "actionsFor": "针对 {name} 的操作",
+      "actions": "操作菜单",
+      "newFile": "新建文件",
+      "newFolder": "新建文件夹",
+      "rename": "重命名",
+      "delete": "删除",
+      "copyRel": "复制相对路径",
+      "copyAbs": "复制绝对路径",
+      "reveal": "在 Finder 中显示",
+      "openExternal": "用默认应用打开",
+      "readOnlyHint": "此文件夹以只读方式挂载"
+    },
+    "delete": {
+      "title": "删除「{name}」？",
+      "counting": "正在统计条目…",
+      "dirWithCount": "该文件夹包含 {count} 项，将全部移入废纸篓。",
+      "dirUnknown": "该文件夹的内容也将一并移入废纸篓。",
+      "file": "此文件将被移入废纸篓。",
+      "recoverable": "可从废纸篓恢复。",
+      "cancel": "取消",
+      "confirm": "移入废纸篓",
+      "deleting": "删除中…",
+      "aria": "确认删除"
+    },
+    "editor": {
+      "unavailableBinary": "二进制文件，无法以文本打开",
+      "unavailableTooLarge": "文件过大{size}，已切换为只读预览",
+      "unavailableDefault": "无法以文本打开",
+      "bannerReadOnlyMount": "此文件夹以只读方式挂载",
+      "bannerTooLarge": "文件过大{size}，已切换为只读预览",
+      "bannerGitInternal": "此文件位于 .git 内部，不可编辑",
+      "encodingNotice": "检测到 {encoding} 编码"
+    },
+    "diff": {
+      "hintSide": "左：你的未保存更改 · 右：磁盘当前内容",
+      "hintInline": "「−」为你的未保存更改，「+」为磁盘当前内容",
+      "layoutGroup": "差异视图布局",
+      "sideBySide": "并排视图",
+      "inline": "行内视图"
+    },
+    "image": {
+      "failed": "无法显示此图片",
+      "failedHint": "文件可能过大（上限 32 MB）、已损坏，或为无法预览的格式",
+      "readonly": "只读预览"
+    },
+    "errors": {
+      "fallback": "加载失败",
+      "unknown-root": "未知的工作区根",
+      "root-missing": "文件夹不存在（已移动或删除）",
+      "outside-root": "该文件不在当前工作区根内",
+      "denied-path": "该位置不可访问（已被保护）",
+      "not-directory": "这不是一个文件夹",
+      "binary": "二进制文件，无法以文本打开",
+      "not-text": "无法识别文本编码",
+      "too-large": "文件过大",
+      "truncated": "仅显示前 {count} 项",
+      "read-only-mount": "此文件夹以只读方式挂载",
+      "git-internal": "Git 内部文件，只读",
+      "search-timeout": "搜索超时，结果可能不完整",
+      "invalid-mode": "无效的搜索模式",
+      "invalid-query": "搜索内容无效（过短或过长）",
+      "invalid-regex": "正则表达式无效"
+    },
+    "git": {
+      "modified": "已修改，未提交",
+      "added": "已添加，未提交",
+      "untracked": "未跟踪文件",
+      "deleted": "已删除，未提交",
+      "renamed": "已重命名，未提交",
+      "copied": "已复制，未提交",
+      "ignored": "已被 .gitignore 忽略",
+      "unknown": "Git 状态：{letter}"
+    },
+    "agent": {
+      "write": "由 Agent 修改（写入）",
+      "edit": "由 Agent 修改（编辑）"
+    },
+    "nameValidation": {
+      "empty": "名称不能为空",
+      "slash": "名称不能包含 /",
+      "dot": "名称不能是 . 或 ..",
+      "control": "名称不能包含控制字符",
+      "tooLong": "名称过长（最长 255 字节）"
+    },
+    "root": {
+      "refresh": "刷新",
+      "pathRequired": "请输入文件夹路径",
+      "pathPlaceholder": "输入文件夹路径，例如 ~/workspace/my-repo",
+      "mount": "挂载",
+      "mounting": "挂载中…",
+      "mountHint": "Enter 挂载 · Esc 取消",
+      "addFolder": "添加文件夹…",
+      "addTitle": "注册并挂载本地文件夹",
+      "addUnavailable": "不可用",
+      "makeWritable": "切为读写",
+      "makeWritableTitle": "将此文件夹的访问权限切换为读写（目录库设置）"
+    },
+    "quick": {
+      "aria": "快速打开文件",
+      "placeholder": "按文件名搜索…",
+      "searching": "搜索中…",
+      "searchFailed": "搜索失败",
+      "noMatches": "没有匹配的文件",
+      "emptyHint": "输入文件名以搜索",
+      "truncatedHint": "结果可能不完整（搜索被截断）· ",
+      "keysHint": "↑↓ 选择 · Enter 打开 · Esc 关闭"
+    },
+    "search": {
+      "inputAria": "搜索文件内容",
+      "placeholderNamed": "在「{name}」中搜索…",
+      "placeholder": "搜索文件内容…",
+      "searching": "搜索中…",
+      "searchFailed": "搜索失败",
+      "stopped": "已扫描 {count} 个文件后停止，结果可能不完整",
+      "emptyHint": "输入关键词，在当前工作区内搜索文件内容",
+      "noMatches": "没有匹配的内容",
+      "stat": "{hits} 个结果 · 已扫描 {scanned} 个文件 · {ms} ms",
+      "groupHits": "{count} 个结果",
+      "close": "关闭搜索",
+      "keysHint": "↑↓ 选择 · Enter 打开并定位 · Esc 关闭"
+    }
+  }
+}

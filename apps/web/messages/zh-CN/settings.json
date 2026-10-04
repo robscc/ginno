@@ -1,0 +1,34 @@
+{
+  "settings": {
+    "language": {
+      "label": "语言",
+      "help": "界面显示语言；「自动（跟随系统）」按系统语言选择，模型回复语言也随之切换。",
+      "auto": "自动（跟随系统）",
+      "en": "English",
+      "zh-CN": "简体中文",
+      "saved": "语言已保存",
+      "saveFailed": "保存失败"
+    },
+    "general": {
+      "title": "常规",
+      "providerLabel": "默认模型提供商",
+      "providerDisabled": "（已禁用）",
+      "providerHelp": "新会话与未绑定提供商的 Agent 默认使用该提供商；可在「设置 → Agents」里为单个 Agent 绑定其他提供商覆盖。",
+      "providerToast": "默认提供商 → {name}",
+      "themeLabel": "主题",
+      "privileged": "特权模式（跳过全部权限确认，允许任意命令）",
+      "privilegedHelp": "开启后 Agent 调用任何工具都无需询问，权限策略也无法拦截（包括 Bash/Write 等危险操作）。默认开启；关闭后按权限策略询问/拦截。注意：你的 PreToolUse 钩子仍会执行（钩子是自定义规则，始终生效）。",
+      "privilegedOn": "特权模式已开启：所有工具直接执行、不再询问",
+      "privilegedOff": "特权模式已关闭：按权限策略询问/拦截",
+      "subLabel": "子代理并发上限",
+      "subAria": "子代理并发上限（1-16）",
+      "subHint": "允许 1-16，默认 5；保存后立即生效",
+      "subHelp": "同一父会话下并行运行的子代理数量硬上限；超出上限的请求会被拒绝，并列出当前正在运行的任务。",
+      "subClamped": "超出范围，已收敛到 {n}（允许 1-16）",
+      "subSaved": "子代理并发上限已保存：{n}",
+      "saveFailed": "保存失败",
+      "workingDirLabel": "工作目录",
+      "workingDirValue": "~/workspace/<project>（agent 元数据在 ~/.ginno/projects/）"
+    }
+  }
+}

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FolderOpen, Star, X, Plus, Settings2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type { FolderEntry, SessionMeta } from "@/lib/types";
@@ -12,6 +13,7 @@ import type { FolderEntry, SessionMeta } from "@/lib/types";
  * see right now?" and is the mount/unmount/primary entry point. */
 export function ContextFoldersChip({ session }: { session: SessionMeta | null }) {
   const g = useGinno();
+  const tr = useTranslations("shell");
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [library, setLibrary] = useState<FolderEntry[]>([]);
@@ -43,7 +45,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
         primary_folder: primary_id,
       });
     } else {
-      setErr(r.error || "操作失败");
+      setErr(r.error || tr("folders.errOperation"));
     }
     return r;
   }
@@ -56,7 +58,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
     try {
       const c = await api.createFolder({ path: p, access: "rw", load_rules: true });
       if (!c.ok || !c.folder) {
-        setErr(c.error || "挂载失败");
+        setErr(c.error || tr("folders.errMount"));
         return;
       }
       const newIds = ids.includes(c.folder.id) ? [...ids] : [...ids, c.folder.id];
@@ -84,12 +86,12 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
     <div className="relative shrink-0">
       <button
         onClick={() => setOpen((o) => !o)}
-        title="本会话挂载的上下文目录"
+        title={tr("folders.chipTitle")}
         className="pill border border-line2 bg-card text-muted transition-colors hover:text-txt"
         style={ids.length ? { color: "#34d399" } : undefined}
       >
         <FolderOpen className="h-3 w-3" />
-        {ids.length > 0 ? ids.length : "挂载"}
+        {ids.length > 0 ? ids.length : tr("folders.mount")}
       </button>
 
       {open && (
@@ -97,13 +99,13 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute left-0 z-50 mt-1.5 w-96 max-w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-card shadow-xl">
             <div className="border-b border-line px-3 py-2 text-xs font-medium text-muted">
-              本会话上下文目录
+              {tr("folders.title")}
             </div>
 
             <div className="max-h-64 overflow-y-auto px-2 py-1.5">
               {rows.length === 0 && (
                 <div className="px-2 py-3 text-xs text-faint">
-                  未挂载任何目录。挂载后 Agent 可直接读写其中的文件（代码仓库、笔记等）。
+                  {tr("folders.empty")}
                 </div>
               )}
               {rows.map(({ id, folder }) => (
@@ -112,7 +114,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
                     <>
                       <button
                         onClick={() => applyContext(ids, primary === id ? null : id)}
-                        title={primary === id ? "取消主工作目录" : "设为主工作目录（bash 的 cwd）"}
+                        title={primary === id ? tr("folders.unsetPrimary") : tr("folders.setPrimary")}
                         className="shrink-0"
                         style={{ color: primary === id ? "#fbbf24" : "#52525b" }}
                       >
@@ -126,7 +128,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
                       </div>
                       <button
                         onClick={() => toggleAccess(folder)}
-                        title="切换访问级（库级属性）：rw 可读写 / ro 只读"
+                        title={tr("folders.accessTitle")}
                         className="shrink-0 rounded border border-line2 px-1 py-px font-mono text-[10px]"
                         style={{
                           color: folder.access === "rw" ? "#4ade80" : "#fbbf24",
@@ -136,7 +138,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
                       </button>
                       <button
                         onClick={() => applyContext(ids.filter((x) => x !== id), primary === id ? null : primary)}
-                        title="从本会话卸载"
+                        title={tr("folders.unmount")}
                         className="shrink-0 rounded p-0.5 text-faint hover:text-red-400"
                       >
                         <X className="h-3.5 w-3.5" />
@@ -145,7 +147,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
                   ) : (
                     <>
                       <span className="min-w-0 flex-1 truncate text-xs text-faint">
-                        {id}（目录库中缺失）
+                        {tr("folders.missing", { id })}
                       </span>
                       <button
                         onClick={() => applyContext(ids.filter((x) => x !== id), primary === id ? null : primary)}
@@ -168,16 +170,16 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
                     setErr("");
                   }}
                   onKeyDown={(e) => e.key === "Enter" && attach()}
-                  placeholder="输入目录路径挂载，如 ~/workspace/my-repo"
+                  placeholder={tr("folders.inputPlaceholder")}
                   className="field min-w-0 flex-1 py-1 text-xs"
                 />
                 <button
                   onClick={attach}
                   disabled={busy || !path.trim()}
-                  title="注册进目录库并挂载（默认读写；首个挂载自动成为主工作目录）"
+                  title={tr("folders.mountTitle")}
                   className="flex shrink-0 items-center gap-1 rounded-lg bg-violet px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
                 >
-                  <Plus className="h-3 w-3" /> 挂载
+                  <Plus className="h-3 w-3" /> {tr("folders.mount")}
                 </button>
               </div>
               {err && <div className="mt-1 text-[11px] text-red-400">{err}</div>}
@@ -188,7 +190,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
                 }}
                 className="mt-1.5 flex items-center gap-1 text-[11px] text-faint hover:text-txt"
               >
-                <Settings2 className="h-3 w-3" /> 管理目录库（访问级 / 规则开关）
+                <Settings2 className="h-3 w-3" /> {tr("folders.manage")}
               </button>
             </div>
           </div>

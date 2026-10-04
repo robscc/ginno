@@ -9,6 +9,9 @@
  */
 
 import type { CodeEntry } from "@/lib/codeTypes";
+import { currentLocale } from "@/i18n/provider";
+import codeEn from "../../../../messages/en/code.json";
+import codeZh from "../../../../messages/zh-CN/code.json";
 
 /** One rendered level is capped at 300 rows; "显示更多" reveals another batch
  *  (design §4.1: no virtualization, so bound the DOM instead). */
@@ -56,33 +59,67 @@ export function rowId(path: string): string {
   return `code-row-${encodeURIComponent(path)}`;
 }
 
-/** Error code → Chinese copy (append-only, design §4.3). Used by the tree's
- *  inline failure state and shared with the rest of the panel. */
-const ERROR_TEXT: Record<string, string> = {
-  "unknown-root": "未知的工作区根",
-  "root-missing": "文件夹不存在（已移动或删除）",
-  "outside-root": "该文件不在当前工作区根内",
-  "denied-path": "该位置不可访问（已被保护）",
-  "not-directory": "这不是一个文件夹",
-  binary: "二进制文件，无法以文本打开",
-  "not-text": "无法识别文本编码",
-  "too-large": "文件过大",
-  truncated: `仅显示前 ${DIR_ENTRY_CAP} 项`,
-  "read-only-mount": "此文件夹以只读方式挂载",
-  "git-internal": "Git 内部文件，只读",
+// ---- 文案：非 hook 读取器（i18n-design.md §4.4）-----------------------------
+//
+// 本模块是纯函数库，拿不到 useTranslations（hook 只能在组件渲染期用）。架构同
+// i18n/uiText.ts：静态 import 双语言 catalog + 复用 provider 暴露的模块级
+// locale 镜像 currentLocale()（provider 渲染期同步赋值，locale 切换后下一次
+// 渲染即读到新文案）；SSG 构建期无 provider，默认 en，与预渲染 HTML 一致。
+
+const CODE_CATALOGS: Record<string, Record<string, unknown>> = {
+  en: codeEn.code,
+  "zh-CN": codeZh.code,
+};
+
+/** 按 a.b.c 路径取 code 域叶子字符串，支持 {name} 简单插值；fallback 链与
+ *  next-intl 一致：当前 locale → en → key 原样。 */
+function codeText(key: string, params?: Record<string, string | number>): string {
+  const lookup = (tree: Record<string, unknown>): string | undefined => {
+    let node: unknown = tree;
+    for (const seg of key.split(".")) {
+      if (typeof node !== "object" || node === null) return undefined;
+      node = (node as Record<string, unknown>)[seg];
+    }
+    return typeof node === "string" ? node : undefined;
+  };
+  const raw = lookup(CODE_CATALOGS[currentLocale()]) ?? lookup(CODE_CATALOGS.en) ?? key;
+  if (!params) return raw;
+  return raw.replace(/\{(\w+)\}/g, (m, name: string) =>
+    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : m,
+  );
+}
+
+/** Error code → localized copy（catalog: code.errors.*，append-only，design §4.3）.
+ *  Used by the tree's inline failure state and shared with the rest of the panel. */
+type ErrorKey = keyof typeof codeEn.code.errors;
+
+const ERROR_KEY_OF: Record<string, ErrorKey> = {
+  "unknown-root": "unknown-root",
+  "root-missing": "root-missing",
+  "outside-root": "outside-root",
+  "denied-path": "denied-path",
+  "not-directory": "not-directory",
+  binary: "binary",
+  "not-text": "not-text",
+  "too-large": "too-large",
+  truncated: "truncated",
+  "read-only-mount": "read-only-mount",
+  "git-internal": "git-internal",
   // S4 (brief §3.1 / design §4.3, append-only): the content search gave up on a
   // budget instead of finishing, and the caller-side mistakes the search
   // endpoint reports at HTTP 200 (invalid-mode / invalid-query / invalid-regex
   // are already in `runtime.ts`'s `CodeErrorCode`).
-  "search-timeout": "搜索超时，结果可能不完整",
-  "invalid-mode": "无效的搜索模式",
-  "invalid-query": "搜索内容无效（过短或过长）",
-  "invalid-regex": "正则表达式无效",
+  "search-timeout": "search-timeout",
+  "invalid-mode": "invalid-mode",
+  "invalid-query": "invalid-query",
+  "invalid-regex": "invalid-regex",
 };
 
 export function codeErrorMessage(code: string | null | undefined): string {
-  if (!code) return "加载失败";
-  return ERROR_TEXT[code] ?? "加载失败";
+  const key = code ? ERROR_KEY_OF[code] : undefined;
+  if (!key) return codeText("errors.fallback");
+  if (key === "truncated") return codeText("errors.truncated", { count: DIR_ENTRY_CAP });
+  return codeText(`errors.${key}`);
 }
 
 /** Compact byte size, matching SessionFilesSettings' formatting. */
@@ -110,13 +147,13 @@ export function fmtBytes(n: number | null | undefined): string {
 // the start of the row, an agent change is an accent bar + dot in the gutter.
 // Neither may replace the other; a row can carry both.
 
-/** Row-start git badge: the porcelain letter, a colour, a Chinese tooltip. */
+/** Row-start git badge: the porcelain letter, a colour, a localized tooltip. */
 export interface GitBadge {
   /** The letter as rendered (`M` `A` `U` `D` `R` `C` `!`). */
   letter: string;
   /** Tailwind text-colour class. */
   className: string;
-  /** Chinese tooltip explaining the status. */
+  /** Localized tooltip explaining the status (code.git.*). */
   title: string;
 }
 
@@ -125,15 +162,17 @@ export interface GitBadge {
  *  `cyan` token (`theme.extend.colors` leaves Tailwind's default *palette*
  *  objects, so `text-amber` / `text-cyan` compile to nothing and silently lose
  *  their colour). Those two therefore use literal hex values. */
-const GIT_BADGE: Record<string, Omit<GitBadge, "letter">> = {
-  M: { className: "text-[#f59e0b]", title: "已修改，未提交" },
-  A: { className: "text-green", title: "新增文件，未提交" },
-  U: { className: "text-green", title: "新增文件，未提交" },
-  "?": { className: "text-green", title: "新增文件，未被 Git 跟踪" },
-  D: { className: "text-red", title: "已删除，未提交" },
-  R: { className: "text-blue", title: "已重命名，未提交" },
-  C: { className: "text-[#06b6d4]", title: "已复制，未提交" },
-  "!": { className: "text-faint", title: "已被 .gitignore 忽略" },
+type GitTipKey = keyof typeof codeEn.code.git;
+
+const GIT_BADGE: Record<string, { className: string; tip: GitTipKey }> = {
+  M: { className: "text-[#f59e0b]", tip: "modified" },
+  A: { className: "text-green", tip: "added" },
+  U: { className: "text-green", tip: "added" },
+  "?": { className: "text-green", tip: "untracked" },
+  D: { className: "text-red", tip: "deleted" },
+  R: { className: "text-blue", tip: "renamed" },
+  C: { className: "text-[#06b6d4]", tip: "copied" },
+  "!": { className: "text-faint", tip: "ignored" },
 };
 
 /** git porcelain code → badge, or `null` for "no decoration". Unknown letters
@@ -143,21 +182,21 @@ export function gitBadgeOf(code: string | null | undefined): GitBadge | null {
   if (!letter) return null;
   const known = GIT_BADGE[letter.toUpperCase()];
   return known
-    ? { letter, ...known }
-    : { letter, className: "text-muted", title: `Git 状态：${letter}` };
+    ? { letter, className: known.className, title: codeText(`git.${known.tip}`) }
+    : { letter, className: "text-muted", title: codeText("git.unknown", { letter }) };
 }
 
 /** Left-gutter agent-change marker (bar + dot) — shape kept as an object so the
  *  marker can grow without touching every call site. */
 export interface AgentMarker {
-  /** Chinese tooltip naming the operation. */
+  /** Localized tooltip naming the operation (code.agent.*). */
   title: string;
 }
 
 /** Agent change op → marker, or `null` for "no decoration". */
 export function agentMarkerOf(op: "write" | "edit" | null | undefined): AgentMarker | null {
   if (op !== "write" && op !== "edit") return null;
-  return { title: op === "edit" ? "agent 改过这个文件（编辑）" : "agent 改过这个文件（写入）" };
+  return { title: codeText(op === "edit" ? "agent.edit" : "agent.write") };
 }
 
 // ---- expand / load state machine -------------------------------------------
@@ -343,15 +382,16 @@ export function isSelfOrDescendant(path: string, ancestor: string): boolean {
 
 /** Validate a single path segment for create/rename (brief §1-6 / design §4.2):
  *  non-empty, no `/`, not `.` / `..`, no control characters, ≤255 bytes.
- *  Returns a Chinese message, or `null` when the name is acceptable. */
+ *  Returns a localized message (code.nameValidation.*), or `null` when the
+ *  name is acceptable. */
 export function validateEntryName(name: string): string | null {
   const n = name.trim();
-  if (!n) return "名称不能为空";
-  if (n.includes("/")) return "名称不能包含 /";
-  if (n === "." || n === "..") return "名称不能是 . 或 ..";
+  if (!n) return codeText("nameValidation.empty");
+  if (n.includes("/")) return codeText("nameValidation.slash");
+  if (n === "." || n === "..") return codeText("nameValidation.dot");
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(n)) return "名称不能包含控制字符";
-  if (new TextEncoder().encode(n).length > 255) return "名称过长（最多 255 字节）";
+  if (/[\u0000-\u001f\u007f]/.test(n)) return codeText("nameValidation.control");
+  if (new TextEncoder().encode(n).length > 255) return codeText("nameValidation.tooLong");
   return null;
 }
 

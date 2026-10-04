@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useGinno, type RightTab } from "@/lib/store";
 import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
 
@@ -20,6 +21,10 @@ import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
  */
 export function RightDock() {
   const g = useGinno();
+  // i18n：t 面板/dock 框架文案，tb 角标文案，tn 右栏名与 tab 名
+  const t = useTranslations("right.dock");
+  const tb = useTranslations("right.badges");
+  const tn = useTranslations("right");
   const [hover, setHover] = useState(false);
   const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -55,8 +60,8 @@ export function RightDock() {
       {/* resting hint bar — vertically centered on the edge */}
       <button
         onClick={() => openTab(g.rightTab)}
-        aria-label="展开右侧面板"
-        title="展开面板（⌘\ / Ctrl+\）"
+        aria-label={t("expand")}
+        title={t("expandTitle")}
         className="group absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full p-1"
       >
         <span className="block h-8 w-[3px] rounded-full bg-line2 transition-colors group-hover:bg-violet" />
@@ -68,7 +73,7 @@ export function RightDock() {
       {/* hover dock — slides out over the chat, anchored to the strip */}
       <div
         role="toolbar"
-        aria-label="右栏面板"
+        aria-label={tn("name")}
         aria-hidden={!hover}
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
@@ -77,15 +82,15 @@ export function RightDock() {
         }`}
       >
         {g.visibleRightTabs.map((id) => {
-          const t = RIGHT_TAB_BY_ID[id];
-          const Ic = t.icon;
-          const n = t.id === "artifacts" ? unreadArtifacts : 0;
+          const meta = RIGHT_TAB_BY_ID[id];
+          const Ic = meta.icon;
+          const n = meta.id === "artifacts" ? unreadArtifacts : 0;
           // Mirror the tab-bar workflow badges so the collapsed dock carries
           // the same signal (work item E). The yellow "needs your input" badge
           // is the strongest signal and claims the first slot (P1); each
           // following badge shifts 18px left.
           const wfBadges: Array<{ count: number; cls: string }> = [];
-          if (t.id === "workflow") {
+          if (meta.id === "workflow") {
             if (g.pendingHumanCount > 0)
               wfBadges.push({ count: g.pendingHumanCount, cls: "bg-yellow text-black animate-pulse" });
             if (g.activeRunCount > 0)
@@ -95,25 +100,29 @@ export function RightDock() {
           }
           // 总结 tab: blue pulse dot while a synthesis is in flight (mirrors
           // the tab bar).
-          const synthActive = t.id === "synthesis" && g.synthesisActiveCount > 0;
+          const synthActive = meta.id === "synthesis" && g.synthesisActiveCount > 0;
           // Memory tab: violet pulse dot while a draft awaits review.
-          const memoryDraft = t.id === "memory" && (g.panelBadge.memory ?? 0) > 0;
+          const memoryDraft = meta.id === "memory" && (g.panelBadge.memory ?? 0) > 0;
           const badgeExtra = n
-            ? `，${n} 个新文件`
+            ? `, ${tb("newFiles", { n })}`
             : wfBadges.length
-              ? `，${g.pendingHumanCount} 个等待输入，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
+              ? `, ${tb("workflow", {
+                  human: g.pendingHumanCount,
+                  active: g.activeRunCount,
+                  failed: g.unseenFailedCount,
+                })}`
               : synthActive
-                ? `，${g.synthesisActiveCount} 个总结进行中`
+                ? `, ${tb("synthesis", { n: g.synthesisActiveCount })}`
                 : memoryDraft
-                  ? "，有记忆草稿待审核"
+                  ? `, ${tb("memoryDraft")}`
                   : "";
           return (
             <button
-              key={t.id}
-              onClick={() => openTab(t.id)}
+              key={meta.id}
+              onClick={() => openTab(meta.id)}
               tabIndex={hover ? 0 : -1}
-              aria-label={`${t.label}${badgeExtra}`}
-              title={`${t.label}${badgeExtra}`}
+              aria-label={`${tn(`tabs.${meta.id}`)}${badgeExtra}`}
+              title={`${tn(`tabs.${meta.id}`)}${badgeExtra}`}
               className="relative rounded-lg p-2 text-muted transition-colors hover:bg-card2 hover:text-txt"
             >
               <Ic className="h-[18px] w-[18px]" />

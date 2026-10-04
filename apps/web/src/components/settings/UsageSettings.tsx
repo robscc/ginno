@@ -6,19 +6,23 @@
  * 请求日志各有自己的过滤（评审决议）。 */
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { OverviewPanel } from "./usage/OverviewPanel";
 import { SessionsPanel } from "./usage/SessionsPanel";
 import { RequestsPanel } from "./usage/RequestsPanel";
 
 type Tab = "overview" | "sessions" | "requests";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "sessions", label: "Sessions" },
-  { id: "requests", label: "Request Log" },
+// label 存 catalog key（settings.usage.tabs.*），渲染时经 t() 翻译；
+// label 为字面量联合，保证 next-intl 的 key 类型检查可用
+const TABS: { id: Tab; label: "overview" | "sessions" | "requests" }[] = [
+  { id: "overview", label: "overview" },
+  { id: "sessions", label: "sessions" },
+  { id: "requests", label: "requests" },
 ];
 
 export function UsageSettings() {
+  const t = useTranslations("settings.usage");
   const [tab, setTab] = useState<Tab>("overview");
   // Cross-tab jump: session row → request log filtered by that session.
   const [reqSession, setReqSession] = useState<string | undefined>(undefined);
@@ -30,23 +34,23 @@ export function UsageSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Usage</h2>
-      <p className="mt-1 text-xs text-faint">Global token usage · cache hits · request audit (local records only, retained for 90 days by default)</p>
+      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+      <p className="mt-1 text-xs text-faint">{t("subtitle")}</p>
 
       <div className="mt-4 flex gap-1 border-b border-line" role="tablist">
-        {TABS.map((t) => (
+        {TABS.map((tab2) => (
           <button
-            key={t.id}
+            key={tab2.id}
             role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
+            aria-selected={tab === tab2.id}
+            onClick={() => setTab(tab2.id)}
             className={`-mb-px rounded-t-lg border px-4 py-2 text-[13px] transition-colors ${
-              tab === t.id
+              tab === tab2.id
                 ? "border-line border-b-card bg-card text-txt"
                 : "border-transparent text-muted hover:text-txt"
             }`}
           >
-            {t.label}
+            {t(`tabs.${tab2.label}`)}
           </button>
         ))}
       </div>

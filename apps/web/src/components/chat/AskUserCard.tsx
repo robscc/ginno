@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { Check, CornerDownLeft, HelpCircle, SkipForward } from "lucide-react";
 import { Markdown } from "@/components/chat/Markdown";
 import type { QuestionBlock } from "./blocks";
@@ -51,6 +52,8 @@ export function AskUserCard({
   onAnswer?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
 }) {
   const [freeText, setFreeText] = useState("");
+  // composer 域 catalog（必须在早退 return 之前取 hook，保证 hooks 顺序稳定）
+  const t = useTranslations("composer");
 
   // Answered/skipped collapse to a one-line receipt (same shape as
   // HumanInputCard's done state) — the card must not dominate the transcript
@@ -58,14 +61,14 @@ export function AskUserCard({
   if (block.status === "answered") {
     return (
       <div className="mt-2 flex items-center gap-1.5 rounded-md border border-line bg-card2/40 px-2.5 py-1.5 text-[11px] text-muted">
-        <Check className="h-3 w-3 shrink-0 text-green" /> 已选择：{block.answer}
+        <Check className="h-3 w-3 shrink-0 text-green" /> {t("askUser.chosen", { answer: block.answer ?? "" })}
       </div>
     );
   }
   if (block.status === "skipped") {
     return (
       <div className="mt-2 flex items-center gap-1.5 rounded-md border border-line bg-card2/40 px-2.5 py-1.5 text-[11px] text-muted">
-        <SkipForward className="h-3 w-3 shrink-0" /> 已跳过 · 按 agent 判断继续
+        <SkipForward className="h-3 w-3 shrink-0" /> {t("askUser.skipped")}
       </div>
     );
   }
@@ -75,8 +78,9 @@ export function AskUserCard({
     if (interactive) onAnswer!(block.id ?? "", answer, optionIndex, skip);
   };
   const sendFreeText = () => {
-    const t = freeText.trim();
-    if (t) send(t, null, false);
+    // 局部变量避开 t：翻译函数 t 在本组件作用域（遮蔽 t 是 i18n 已知坑）
+    const text = freeText.trim();
+    if (text) send(text, null, false);
   };
   // Real options win. Only a question that carried NONE gets buttons parsed out
   // of its body — those reply as free text (index null), since the model never
@@ -99,7 +103,7 @@ export function AskUserCard({
         }`}
       >
         <HelpCircle className="h-3.5 w-3.5" />
-        {block.header || "需要你的选择"}
+        {block.header || t("askUser.defaultHeader")}
       </div>
       <div className="mb-2 text-xs leading-relaxed text-txt [&_p]:my-1">
         <Markdown text={block.question} />
@@ -132,14 +136,14 @@ export function AskUserCard({
               }
             }}
             disabled={!interactive}
-            placeholder="其他（输入后回车发送）"
+            placeholder={t("askUser.freeTextPlaceholder")}
             className="w-full rounded border border-line bg-card px-2 py-1.5 text-xs text-txt placeholder:text-faint focus:border-violet/60 focus:outline-none disabled:opacity-50"
           />
           <button
             onClick={sendFreeText}
             disabled={!interactive || !freeText.trim()}
-            title="发送自定义回答"
-            aria-label="发送自定义回答"
+            title={t("askUser.sendCustom")}
+            aria-label={t("askUser.sendCustom")}
             className="btn-press flex h-[30px] w-8 shrink-0 items-center justify-center rounded-md border border-line bg-card text-muted hover:border-violet/60 hover:text-txt disabled:opacity-40"
           >
             <CornerDownLeft className="h-3.5 w-3.5" />
@@ -151,7 +155,7 @@ export function AskUserCard({
         disabled={!interactive}
         className="btn-press text-[11px] text-faint underline-offset-2 hover:text-muted hover:underline disabled:opacity-50 disabled:hover:no-underline"
       >
-        跳过 · 按你的判断继续
+        {t("askUser.skip")}
       </button>
     </div>
   );

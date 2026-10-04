@@ -53,6 +53,14 @@ def as_fake_model(model_or_scripts: Any) -> ScriptedChatModel:
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point $GINNO_HOME at a fresh temp dir and reset server globals per test."""
     monkeypatch.setenv("GINNO_HOME", str(tmp_path))
+    # Pin the "auto" locale resolution away from the dev machine (a zh-region
+    # macOS flips the product default to zh-CN while the suite asserts the en
+    # variants). Tests that exercise auto→zh or a settings/env language patch
+    # these explicitly — settings- and env-based resolution still wins over
+    # this, so priority semantics stay testable.
+    from ginno_runtime import lang
+
+    monkeypatch.setattr(lang._locale_mod, "getdefaultlocale", lambda: (None, None))
     # Process-wide state that the lifespan does NOT reset between tests.
     server._SESSIONS.clear()
     server._USAGE_BY_SESSION.clear()

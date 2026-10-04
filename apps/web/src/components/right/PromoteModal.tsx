@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Loader2, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { PromotePreview } from "@/lib/types";
@@ -22,6 +23,9 @@ export function PromoteModal({
   onDone: (note: string) => void;
   onClose: () => void;
 }) {
+  // i18n：晋升确认弹层框架文案（页面正文/路径是用户数据，不翻译）
+  const t = useTranslations("right.promote");
+  const tc = useTranslations("right.common");
   const [preview, setPreview] = useState<PromotePreview | null>(null);
   const [raw, setRaw] = useState("");
   const [path, setPath] = useState("");
@@ -35,15 +39,16 @@ export function PromoteModal({
       .kbPromotePreview(text)
       .then((r) => {
         if (!r.ok) {
-          setMsg(r.error || "预览失败");
+          setMsg(r.error || t("previewFailed"));
           return;
         }
         setPreview(r);
         setRaw(r.draft?.raw ?? "");
         setPath(r.draft?.path ?? "");
       })
-      .catch(() => setMsg("预览失败：无法连接运行时"))
+      .catch(() => setMsg(t("previewFailedConnect")))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text]);
 
   async function apply() {
@@ -52,13 +57,13 @@ export function PromoteModal({
     try {
       const r = await api.kbPromoteApply(path, raw, remove && sectionLines ? sectionLines : undefined);
       if (r.ok) {
-        onDone(`已沉淀到知识库：${r.path}`);
+        onDone(t("done", { path: r.path ?? "" }));
         onClose();
       } else {
-        setMsg(r.error || "沉淀失败");
+        setMsg(r.error || t("applyFailed"));
       }
     } catch {
-      setMsg("沉淀失败：无法连接运行时");
+      setMsg(t("applyFailedConnect"));
     } finally {
       setBusy(false);
     }
@@ -78,12 +83,12 @@ export function PromoteModal({
       >
         <div className="flex items-center border-b border-line px-4 py-3">
           <span className="rounded-full bg-violet/20 px-2 py-0.5 text-[11px] text-violet">
-            沉淀到知识库
+            {t("title")}
           </span>
           <span className="ml-2 truncate text-xs text-muted">{path || "…"}</span>
           <button
             onClick={onClose}
-            aria-label="关闭"
+            aria-label={tc("close")}
             className="ml-auto rounded-lg p-1 text-muted hover:bg-card2 hover:text-txt"
           >
             <X className="h-4 w-4" />
@@ -94,21 +99,20 @@ export function PromoteModal({
           {loading ? (
             <div className="flex items-center gap-2 py-8 text-xs text-muted">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              正在检索知识库做去重检查…
+              {t("searching")}
             </div>
           ) : (
             <>
               {suggestion === "merge" && mergeTarget && (
                 <div className="mb-3 rounded-lg border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-txt">
-                  发现高度相似的知识页「{mergeTarget.title}」（相关度{" "}
-                  {Math.round(mergeTarget.score * 100)}%）——建议把内容合并进该页，而不是新建。
-                  你仍可以坚持新建。
+                  {t("mergeSuggestion", {
+                    title: mergeTarget.title,
+                    pct: Math.round(mergeTarget.score * 100),
+                  })}
                 </div>
               )}
               {suggestion === "create" && (
-                <div className="mb-3 text-[11px] text-faint">
-                  知识库中未发现高度相似的页面，将创建新页（frontmatter 标记 type: memory）。
-                </div>
+                <div className="mb-3 text-[11px] text-faint">{t("createSuggestion")}</div>
               )}
               {(preview?.similar?.length ?? 0) > 0 && (
                 <div className="mb-3 flex flex-wrap gap-1.5">
@@ -137,7 +141,7 @@ export function PromoteModal({
                     onChange={(e) => setRemove(e.target.checked)}
                     className="accent-violet"
                   />
-                  同时从全局记忆中移除该段（沉淀后不再重复注入）
+                  {t("removeSection")}
                 </label>
               )}
             </>
@@ -151,7 +155,7 @@ export function PromoteModal({
             disabled={busy}
             className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:bg-card2 disabled:opacity-50"
           >
-            取消
+            {tc("cancel")}
           </button>
           <button
             onClick={apply}
@@ -159,7 +163,7 @@ export function PromoteModal({
             className="flex items-center gap-1 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {busy && <Loader2 className="h-3 w-3 animate-spin" />}
-            确认沉淀
+            {t("confirm")}
           </button>
         </div>
       </div>

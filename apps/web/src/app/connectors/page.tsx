@@ -5,6 +5,8 @@
  * Reachable from the sidebar entry ABOVE Knowledge Base. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
+import { t as llmT } from "@/i18n/provider";
 import * as api from "@/lib/runtime";
 import type { ConnectorInfo } from "@/lib/runtime";
 import { InstallWizard } from "@/components/connectors/InstallWizard";
@@ -28,16 +30,27 @@ import type { ConnectorEvent, PushedPage } from "@/lib/runtime";
 
 const POLL_MS = 5000; // M1 polling fallback (设计 §5);事件通道接好后可替换
 
+// 状态徽标：文案迁 conn 域 catalog（status.<statusKey>），这里只留样式/图标；
+// statusKey 收成字面量联合，模板串 `status.${statusKey}` 才能通过 next-intl 的
+// key 类型检查。未知状态回退到 not_installed 的展示。
+type ConnStatusKey =
+  | "connected"
+  | "disconnected"
+  | "not_installed"
+  | "installing"
+  | "error"
+  | "disabled";
+
 const STATUS_META: Record<
   string,
-  { label: string; cls: string; Icon: typeof CheckCircle2 }
+  { statusKey: ConnStatusKey; cls: string; Icon: typeof CheckCircle2 }
 > = {
-  connected: { label: "已连接", cls: "text-green-600 dark:text-green-400", Icon: CheckCircle2 },
-  disconnected: { label: "已断开", cls: "text-yellow-600 dark:text-yellow-400", Icon: TriangleAlert },
-  not_installed: { label: "未安装", cls: "text-faint", Icon: CircleDashed },
-  installing: { label: "安装中", cls: "text-blue-600 dark:text-blue-400", Icon: Loader2 },
-  error: { label: "错误", cls: "text-red-600 dark:text-red-400", Icon: XCircle },
-  disabled: { label: "已禁用", cls: "text-faint", Icon: CircleOff },
+  connected: { statusKey: "connected", cls: "text-green-600 dark:text-green-400", Icon: CheckCircle2 },
+  disconnected: { statusKey: "disconnected", cls: "text-yellow-600 dark:text-yellow-400", Icon: TriangleAlert },
+  not_installed: { statusKey: "not_installed", cls: "text-faint", Icon: CircleDashed },
+  installing: { statusKey: "installing", cls: "text-blue-600 dark:text-blue-400", Icon: Loader2 },
+  error: { statusKey: "error", cls: "text-red-600 dark:text-red-400", Icon: XCircle },
+  disabled: { statusKey: "disabled", cls: "text-faint", Icon: CircleOff },
 };
 
 function iconFor(c: ConnectorInfo) {
@@ -56,6 +69,8 @@ function metaLine(c: ConnectorInfo): string {
 }
 
 export default function ConnectorsPage() {
+  // conn 域 catalog（messages/{en,zh-CN}/conn.json）。
+  const tConn = useTranslations("conn");
   const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
   const [wizardFor, setWizardFor] = useState<string | null>(null);
   const [configFor, setConfigFor] = useState<string | null>(null);
@@ -98,7 +113,7 @@ export default function ConnectorsPage() {
   useEffect(() => {
     let ws: WebSocket | null = null;
     try {
-      ws = new WebSocket(api.wsConnectorsUrl());
+      ws = api.openSocket(api.wsConnectorsUrl());
     } catch {
       return; // 预渲染环境
     }
@@ -151,10 +166,10 @@ export default function ConnectorsPage() {
     <div className="mx-auto max-w-3xl px-6 py-8">
       <header className="mb-6 flex items-center gap-2">
         <Cable className="h-5 w-5 text-faint" />
-        <h1 className="text-lg font-semibold text-txt">连接器</h1>
+        <h1 className="text-lg font-semibold text-txt">{tConn("title")}</h1>
         <button
           onClick={refresh}
-          title="刷新"
+          title={tConn("refresh")}
           className="ml-auto rounded-md p-1.5 text-faint hover:bg-card hover:text-txt"
         >
           <RefreshCw className="h-4 w-4" />
@@ -179,7 +194,9 @@ export default function ConnectorsPage() {
           <ExternalLink className="h-4 w-4 shrink-0 text-faint" />
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium text-txt">
-              来自浏览器的页面{pushedPage.title ? `:${pushedPage.title}` : ""}
+              {pushedPage.title
+                ? tConn("pushedPage.fromWithTitle", { title: pushedPage.title })
+                : tConn("pushedPage.from")}
             </div>
             <div className="mt-0.5 truncate text-xs text-faint">{pushedPage.url}</div>
           </div>
@@ -189,7 +206,12 @@ export default function ConnectorsPage() {
               window.dispatchEvent(
                 new CustomEvent("ginno:prefill-input", {
                   detail: {
-                    text: `请帮我处理这个浏览器页面:${pushedPage.title || pushedPage.url}\n${pushedPage.url}`,
+                    // 预填文案是发给模型的组合模板（会进对话），按 i18n 设计走
+                    // provider 的 t(en, zh) 选边，而非纯 UI 的 useTranslations。
+                    text: llmT(
+                      `Please help me work with this browser page: ${pushedPage.title || pushedPage.url}\n${pushedPage.url}`,
+                      `请帮我处理这个浏览器页面：${pushedPage.title || pushedPage.url}\n${pushedPage.url}`,
+                    ),
                   },
                 }),
               );
@@ -198,7 +220,7 @@ export default function ConnectorsPage() {
             className="shrink-0 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
           >
             <Send className="mr-1 inline h-3 w-3" />
-            发给 Ginno
+            {tConn("pushedPage.send")}
           </button>
         </div>
       )}
@@ -207,10 +229,12 @@ export default function ConnectorsPage() {
       {handoff.length > 0 && (
         <div className="mb-4 flex items-center gap-3 rounded-xl border border-violet-500/40 bg-violet-500/10 p-4">
           <div className="min-w-0 flex-1 text-sm text-txt">
-            <div className="font-medium">Agent 正在等待你接管浏览器</div>
+            <div className="font-medium">{tConn("handoff.title")}</div>
             <div className="mt-0.5 text-xs text-faint">
-              标签 {handoff.map((h) => `#${h.tabId}`).join(", ")} 交给你了——登录、
-              验证码或付款确认完成后,点「已接管,继续」交回控制权。
+              {tConn("handoff.detail", {
+                count: handoff.length,
+                ids: handoff.map((h) => `#${h.tabId}`).join(", "),
+              })}
             </div>
           </div>
           <button
@@ -226,17 +250,17 @@ export default function ConnectorsPage() {
             }}
             className="shrink-0 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
           >
-            已接管,继续
+            {tConn("handoff.continue")}
           </button>
         </div>
       )}
 
       {!loaded ? (
         <div className="flex items-center gap-2 py-10 text-sm text-faint">
-          <Loader2 className="h-4 w-4 animate-spin" /> 正在读取连接器状态…
+          <Loader2 className="h-4 w-4 animate-spin" /> {tConn("loading")}
         </div>
       ) : connectors.length === 0 ? (
-        <div className="py-10 text-sm text-faint">还没有已注册的连接器。</div>
+        <div className="py-10 text-sm text-faint">{tConn("empty")}</div>
       ) : (
         <div className="space-y-3">
           {connectors.map((c) => {
@@ -257,7 +281,7 @@ export default function ConnectorsPage() {
                         <meta.Icon
                           className={`h-3.5 w-3.5 ${c.status === "installing" ? "animate-spin" : ""}`}
                         />
-                        {meta.label}
+                        {tConn(`status.${meta.statusKey}`)}
                       </span>
                     </div>
                     {metaLine(c) && (
@@ -276,7 +300,7 @@ export default function ConnectorsPage() {
                             onClick={() => setWizardFor(c.id)}
                             className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
                           >
-                            安装指引
+                            {tConn("actions.installGuide")}
                           </button>
                         ) : null)}
                       {c.id === "browser-profile" && (
@@ -287,14 +311,16 @@ export default function ConnectorsPage() {
                           }}
                           className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
                         >
-                          {c.status === "connected" ? "停止实例" : "启动实例"}
+                          {c.status === "connected"
+                            ? tConn("actions.stopInstance")
+                            : tConn("actions.startInstance")}
                         </button>
                       )}
                       <button
                         onClick={() => setConfigFor(configFor === c.id ? null : c.id)}
                         className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
                       >
-                        配置
+                        {tConn("actions.configure")}
                       </button>
                       <button
                         onClick={async () => {
@@ -303,7 +329,7 @@ export default function ConnectorsPage() {
                         }}
                         className="rounded-lg border border-line px-3 py-1.5 text-xs text-faint hover:bg-hover"
                       >
-                        {isActive ? "禁用" : "启用"}
+                        {isActive ? tConn("actions.disable") : tConn("actions.enable")}
                       </button>
                     </>
                   )}

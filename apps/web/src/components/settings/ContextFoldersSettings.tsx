@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import type { FolderEntry, FolderProbe } from "@/lib/types";
 import { FolderInput, Search, Plus, Trash2 } from "lucide-react";
@@ -12,10 +13,11 @@ function AccessToggle({
   access: "ro" | "rw";
   onChange: (a: "ro" | "rw") => void;
 }) {
+  const t = useTranslations("settings.folders");
   return (
     <button
       onClick={() => onChange(access === "rw" ? "ro" : "rw")}
-      title="Click to toggle access level: rw read-write / ro read-only (hard constraint at the tool layer)"
+      title={t("accessToggleTitle")}
       className="rounded border border-line2 px-1.5 py-0.5 font-mono text-[11px] transition-colors"
       style={{
         color: access === "rw" ? "#4ade80" : "#fbbf24",
@@ -28,6 +30,7 @@ function AccessToggle({
 }
 
 export function ContextFoldersSettings() {
+  const t = useTranslations("settings.folders");
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [path, setPath] = useState("");
   const [access, setAccess] = useState<"ro" | "rw">("rw");
@@ -48,7 +51,7 @@ export function ContextFoldersSettings() {
     setProbe(null);
     setMsg("");
     if (!path.trim()) {
-      setMsg("Enter a folder path first");
+      setMsg(t("enterPath"));
       return;
     }
     setProbe(await api.probeFolder(path.trim()));
@@ -60,10 +63,10 @@ export function ContextFoldersSettings() {
     try {
       const r = await api.createFolder({ path: path.trim(), access, load_rules: loadRules });
       if (!r.ok) {
-        setMsg(r.error || "Failed to add");
+        setMsg(r.error || t("addFailed"));
         return;
       }
-      setMsg(`Added to the folder library: ${r.folder?.name}`);
+      setMsg(t("added", { name: r.folder?.name ?? "" }));
       setPath("");
       setProbe(null);
       reload();
@@ -78,7 +81,7 @@ export function ContextFoldersSettings() {
   }
 
   async function remove(f: FolderEntry) {
-    if (!window.confirm(`Remove "${f.name}" from the folder library? Sessions that mounted it will show it as missing.`)) return;
+    if (!window.confirm(t("confirmRemove", { name: f.name }))) return;
     await api.deleteFolder(f.id);
     reload();
   }
@@ -86,19 +89,17 @@ export function ContextFoldersSettings() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-7">
       <h2 className="flex items-center gap-2 text-lg font-semibold text-txt">
-        <FolderInput className="h-5 w-5 text-violet" /> Context Folders
+        <FolderInput className="h-5 w-5 text-violet" /> {t("title")}
       </h2>
       <p className="mt-1 text-sm text-muted">
-        Register local folders (repos, notes, docs) into the folder library, then mount them in a
-        session (the TopBar 📁 menu or the <code className="text-txt">/mount</code> command). Once
-        mounted, the Agent can read and write the files directly;{" "}
-        <code className="text-txt">AGENTS.md</code> / <code className="text-txt">GINNO.md</code>{" "}
-        inside the folder are injected as that folder&apos;s rules.
+        {t.rich("description", {
+          code: (chunks) => <code className="text-txt">{chunks}</code>,
+        })}
       </p>
 
       {/* ---- add form ---- */}
       <div className="mt-6 rounded-xl border border-line bg-card p-4">
-        <div className="text-sm font-medium text-txt">Add a folder</div>
+        <div className="text-sm font-medium text-txt">{t("addTitle")}</div>
         <div className="mt-3 flex gap-2">
           <input
             value={path}
@@ -107,14 +108,14 @@ export function ContextFoldersSettings() {
               setProbe(null);
             }}
             onKeyDown={(e) => e.key === "Enter" && doProbe()}
-            placeholder="Absolute path, e.g. ~/workspace/my-repo"
+            placeholder={t("pathPlaceholder")}
             className="field flex-1"
           />
           <button
             onClick={doProbe}
             className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-3 py-1.5 text-xs text-muted hover:text-txt"
           >
-            <Search className="h-3.5 w-3.5" /> Probe
+            <Search className="h-3.5 w-3.5" /> {t("probeButton")}
           </button>
         </div>
 
@@ -123,17 +124,17 @@ export function ContextFoldersSettings() {
             {probe.ok ? (
               <div className="space-y-1 text-muted">
                 <div>
-                  <span className="text-txt">{probe.path}</span> · {probe.file_count}
-                  {probe.file_count_truncated ? "+" : ""} files
-                  {probe.has_git ? " · git repository" : ""}
+                  <span className="text-txt">{probe.path}</span> ·{" "}
+                  {t("filesCount", { count: `${probe.file_count}${probe.file_count_truncated ? "+" : ""}` })}
+                  {probe.has_git ? ` ${t("gitRepo")}` : ""}
                 </div>
                 <div>
                   {probe.rule_file ? (
-                    <span style={{ color: "#4ade80" }}>Found {probe.rule_file} (will be injected as rules)</span>
+                    <span style={{ color: "#4ade80" }}>{t("ruleFound", { file: probe.rule_file })}</span>
                   ) : (
-                    <span className="text-faint">No AGENTS.md / CLAUDE.md / GINNO.md found</span>
+                    <span className="text-faint">{t("ruleNotFound")}</span>
                   )}
-                  {probe.already_registered && <span style={{ color: "#fbbf24" }}> · already in the library (will be updated)</span>}
+                  {probe.already_registered && <span style={{ color: "#fbbf24" }}>{t("alreadyRegistered")}</span>}
                 </div>
               </div>
             ) : (
@@ -144,14 +145,14 @@ export function ContextFoldersSettings() {
 
         <div className="mt-3 flex items-center gap-4 text-sm text-muted">
           <label className="flex items-center gap-2">
-            Access level
+            {t("accessLabel")}
             <select
               value={access}
               onChange={(e) => setAccess(e.target.value as "ro" | "rw")}
               className="field w-auto py-1"
             >
-              <option value="rw">Read-write (rw)</option>
-              <option value="ro">Read-only (ro)</option>
+              <option value="rw">{t("accessRw")}</option>
+              <option value="ro">{t("accessRo")}</option>
             </select>
           </label>
           <label className="flex items-center gap-1.5">
@@ -160,14 +161,14 @@ export function ContextFoldersSettings() {
               checked={loadRules}
               onChange={(e) => setLoadRules(e.target.checked)}
             />
-            Load its rule files (AGENTS.md / CLAUDE.md / GINNO.md)
+            {t("loadRulesLabel")}
           </label>
           <button
             onClick={add}
             disabled={busy || !path.trim()}
             className="ml-auto flex items-center gap-1.5 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            <Plus className="h-3.5 w-3.5" /> Add to library
+            <Plus className="h-3.5 w-3.5" /> {t("addButton")}
           </button>
         </div>
         {msg && <div className="mt-2 text-xs text-muted">{msg}</div>}
@@ -175,10 +176,10 @@ export function ContextFoldersSettings() {
 
       {/* ---- library list ---- */}
       <div className="mt-6">
-        <div className="mb-2 text-sm font-medium text-txt">Folder library ({folders.length})</div>
+        <div className="mb-2 text-sm font-medium text-txt">{t("libraryTitle", { count: folders.length })}</div>
         {folders.length === 0 ? (
           <div className="rounded-xl border border-dashed border-line2 px-4 py-8 text-center text-sm text-faint">
-            No folders registered yet. Add one to mount it in sessions.
+            {t("empty")}
           </div>
         ) : (
           <div className="space-y-2">
@@ -198,19 +199,19 @@ export function ContextFoldersSettings() {
                 </div>
                 <label
                   className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
-                  title="Whether to inject this folder's AGENTS.md / CLAUDE.md / GINNO.md into sessions that mount it"
+                  title={t("rulesTooltip")}
                 >
                   <input
                     type="checkbox"
                     checked={f.load_rules}
                     onChange={(e) => patch(f.id, { load_rules: e.target.checked })}
                   />
-                  Rules
+                  {t("rulesLabel")}
                 </label>
                 <button
                   onClick={() => remove(f)}
                   className="shrink-0 rounded-lg p-1.5 text-faint hover:bg-card2 hover:text-red-400"
-                  title="Remove from library"
+                  title={t("removeTitle")}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -218,11 +219,7 @@ export function ContextFoldersSettings() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-xs text-faint">
-          Security boundary: mounting only grants file access — a folder&apos;s settings / hooks /
-          skills are never loaded (access ≠ config); the read-only level is a hard constraint at the
-          tool layer, independent of Privileged Mode.
-        </p>
+        <p className="mt-3 text-xs text-faint">{t("securityNote")}</p>
       </div>
     </div>
   );

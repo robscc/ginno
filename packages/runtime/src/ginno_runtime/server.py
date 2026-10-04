@@ -15,12 +15,13 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import agents as agents_reg
-from . import paths, usage_store
+from . import lang, paths, usage_store
 from . import server_shared as shared
 from . import workflows as wf_store
 from .hooks.dispatcher import HookDispatcher
@@ -34,6 +35,18 @@ async def lifespan(app: FastAPI):
     # _shutdown_run_tasks resolve at call time from the module-level (facade)
     # imports below — the app cannot start before this module fully imports.
     paths.ensure_layout()
+    # i18n bundle check (i18n-design.md §10.5): both catalogs loadable + key/
+    # placeholder parity. A frozen-app packaging gap (the JSONs missing from
+    # the bundle) must surface HERE, not on first use — same lesson as the
+    # zlib TOC incident. Log-only: degraded copy beats a startup crash.
+    try:
+        from .i18n import i18n_health_check
+
+        _i18n_problems = i18n_health_check()
+        if _i18n_problems:
+            _log.error("i18n_bundle invalid: %s", "; ".join(_i18n_problems))
+    except Exception:
+        _log.exception("i18n health check failed (continuing)")
     # Record the main loop so sync (threadpool) REST handlers can schedule WS
     # broadcasts via run_coroutine_threadsafe (spawn_bg) instead of failing with
     # "no running event loop".
@@ -205,6 +218,55 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class RequestLocaleMiddleware:
+    """Bind the request locale from ``X-Ginno-Language`` (i18n-design.md §5).
+
+    Pure-ASGI (deliberately not BaseHTTPMiddleware) so the contextvar is set
+    in the SAME task that runs the endpoint: for websocket scopes the binding
+    wraps the whole connection, and every task the session endpoint spawns
+    mid-connection (turn jobs via ``asyncio.create_task``, ``spawn_bg``)
+    inherits it through context copy — the locale stays effective for entire
+    turns, including work scheduled later in the connection. Valid values are
+    ``en`` / ``zh-CN``; anything else (or nothing sent) binds nothing and
+    :func:`lang.current_locale` falls back to settings resolution. Since the
+    browser WebSocket API cannot send custom headers, a websocket/http scope
+    WITHOUT the header falls back to the ``lang`` query parameter (same
+    validation).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        token = None
+        for name, value in scope.get("headers") or []:
+            if name == b"x-ginno-language":
+                token = lang.bind_request_locale(value.decode("latin-1").strip())
+                break
+        if token is None:
+            # Browser WebSocket API cannot send custom headers — the web side
+            # falls back to a ``?lang=`` query parameter (same normalization/
+            # validation: only en / zh-CN bind, anything else is ignored and
+            # :func:`lang.current_locale` resolves from settings).
+            params = parse_qs((scope.get("query_string") or b"").decode("latin-1"))
+            values = params.get("lang")
+            if values:
+                token = lang.bind_request_locale(values[0])
+        if token is None:
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            lang.reset_request_locale(token)
+
+
+app.add_middleware(RequestLocaleMiddleware)
 
 
 # ---- serve the web UI from the sidecar (same origin as the API) ----

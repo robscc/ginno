@@ -166,6 +166,38 @@ class Connector(Protocol):
 3. 侧栏入口命名:`Connectors` vs `连接器` vs `集成`(现产品侧栏是英文,倾向
    Connectors)。
 
+## 8. Per-agent 连接器开关(2026-10-04)
+
+**需求**:Agents 设置里按 agent 收紧连接器(如 research agent 不该碰浏览器)。
+此前只有两层:全局 `enabled`(连接器页)与 per-agent `tools_allow` glob
+(`browser_*` 按工具名过滤)——前者太粗,后者是工具名视角、不承载「连接器」
+的产品概念。
+
+**语义裁定**(与用户对齐):
+- **能力级**:浏览器双轨(扩展 + profile)服务同一组 `browser_*` 工具,
+  在 agent 卡片上呈现为**一个「浏览器」toggle**;能力关闭 = 该 agent 的
+  浏览器工具全部不可用。
+- **denylist**:落 `~/.ginno/agents/<id>.json` 新字段 `connectors_deny:
+  []`(connector id 列表)。选拒绝名单而非 allowlist:per-agent 只能**收紧**
+  不能放大,且未来注册的连接器默认对该 agent 允许(旧配置不会误伤新连接器)。
+- **AND 全局**:`enabled=false`(连接器页)对所有人生效,per-agent 只能在
+  此之上进一步收紧;两个页面的职责边界维持 §0 原划分(连接器页管「连没连、
+  怎么装、怎么配」,Agents 页管「这个 agent 能不能用」)。
+- **硬约束**:拒绝优先于 `tools_allow` 的 `*` 与 skills 的 `extra_allow`
+  (技能不得绕过用户为该 agent 关掉的连接器)。仅 render/workflow/artifact/
+  use_skill/ask_user 这些全量常驻工具不受影响。
+
+**判定机制**:连接器声明 `tool_prefix`(两个浏览器连接器均为 `"browser_"`);
+一个工具被拒 = **所有**提供它的连接器都在该 agent 的 deny 名单里(双轨任一
+存活即能力可用),见 `ConnectorRegistry.tool_denied`。执行点在
+`graph.py:tool_allowed`(工具绑定与调用时双保险),下一 turn 生效——与
+tools_allow 同语义。
+
+**UI**:AgentsSettings 每张卡片 tools_allow 下方加 `connectors` 小节:
+toggle + 聚合状态点(绿=有轨已连接/蓝=安装中/红=错误/黄=非 idle 断开/灰=未
+连接,B 轨 idle 不亮黄,与侧栏聚合点哲学一致);未分组的未来连接器各自一行。
+改 draft 随 Save 提交,不即时落盘。
+
 
 ---
 
@@ -180,6 +212,7 @@ class Connector(Protocol):
 | 侧栏入口(KB 上方 + 聚合状态点) | `apps/web/src/components/shell/AppShell.tsx`(footer nav 首项,10s 轮询) |
 | `/connectors` 页(卡片/配置折叠/向导弹层/排查) | `apps/web/src/app/connectors/page.tsx` + `components/connectors/{InstallWizard,ConfigFold}.tsx` |
 | 接管横幅(「已接管,继续」) | Connectors 页顶部,poll `GET /api/connectors/browser/handoff` |
+| per-agent 开关(§8) | `Connector.tool_prefix` + `ConnectorRegistry.tool_denied`(connectors/registry.py);执行点 `graph.py:tool_allowed`;字段 `AgentConfig.connectors_deny`;UI 在 AgentsSettings(浏览器聚合 toggle + 状态点);单测 tests/unit/test_connectors_deny.py |
 
 说明:M1 的状态推送用了轮询兜底(页面 5s/侧栏 10s/向导等待 1s),事件通道
 (`connector_status_changed`)的 WS 推送留作后续优化——设计 §5 的形状已定。

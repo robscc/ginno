@@ -4,6 +4,7 @@
  * 页签内的「统计窗口」只影响本页（评审决议：时间控制不跨页签）。 */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { RefreshCw } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { UsageHourly, UsageOverview } from "@/lib/types";
@@ -43,6 +44,7 @@ function Kpi({ label, value, sub }: { label: string; value: React.ReactNode; sub
 }
 
 export function OverviewPanel() {
+  const t = useTranslations("settings.usage.overview");
   const [range, setRange] = useState(30);
   const [ov, setOv] = useState<UsageOverview | null>(null);
   const [hourly, setHourly] = useState<UsageHourly | null>(null);
@@ -61,9 +63,9 @@ export function OverviewPanel() {
         api.getUsageHourly(o.window.to).then((h) => alive.current && setHourly(h)).catch(() => {});
       }
     } catch {
-      if (alive.current) setErr("Failed to load usage data (runtime not connected?)");
+      if (alive.current) setErr(t("loadFailed"));
     }
-  }, [hourDate]);
+  }, [hourDate, t]);
 
   const loadHour = useCallback(async (date: string) => {
     try {
@@ -77,10 +79,10 @@ export function OverviewPanel() {
   useEffect(() => {
     alive.current = true;
     load(range);
-    const t = setInterval(() => load(range), 60_000); // 页面可见时的轻轮询
+    const timer = setInterval(() => load(range), 60_000); // 页面可见时的轻轮询
     return () => {
       alive.current = false;
-      clearInterval(t);
+      clearInterval(timer);
     };
   }, [range, load]);
 
@@ -90,24 +92,24 @@ export function OverviewPanel() {
   }
 
   if (err) return <div className="py-10 text-center text-sm text-faint">{err}</div>;
-  if (!ov) return <div className="py-10 text-center text-sm text-faint">Loading…</div>;
+  if (!ov) return <div className="py-10 text-center text-sm text-faint">{t("loading")}</div>;
 
-  const t = ov.today;
+  const today = ov.today;
   const daily = ov.daily;
   const y = daily.length > 1 ? daily[daily.length - 2] : null;
   const dTokens = y && y.input_tokens + y.output_tokens > 0
-    ? ((t.input_tokens + t.output_tokens) - (y.input_tokens + y.output_tokens)) / (y.input_tokens + y.output_tokens) * 100
+    ? ((today.input_tokens + today.output_tokens) - (y.input_tokens + y.output_tokens)) / (y.input_tokens + y.output_tokens) * 100
     : 0;
-  const dCalls = y ? t.calls - y.calls : 0;
-  const dHit = y && y.input_tokens > 0 && t.input_tokens > 0
-    ? (t.cache_hit_ratio - y.cache_hit_ratio) * 100
+  const dCalls = y ? today.calls - y.calls : 0;
+  const dHit = y && y.input_tokens > 0 && today.input_tokens > 0
+    ? (today.cache_hit_ratio - y.cache_hit_ratio) * 100
     : 0;
-  const empty = ov.totals.calls === 0 && t.calls === 0;
+  const empty = ov.totals.calls === 0 && today.calls === 0;
 
   return (
     <div>
       <div className="mb-3 flex items-center gap-2.5">
-        <span className="text-[11.5px] text-faint">The stats window only affects this page&apos;s trends and distributions; sessions / request log have their own time filters</span>
+        <span className="text-[11.5px] text-faint">{t("windowNote")}</span>
         <div className="flex-1" />
         <div className="flex rounded-lg border border-line bg-card p-0.5">
           {[7, 30, 90].map((d) => (
@@ -116,13 +118,13 @@ export function OverviewPanel() {
               onClick={() => setRange(d)}
               className={`rounded-md px-3 py-1 text-xs transition-colors ${range === d ? "bg-card2 text-txt" : "text-muted hover:text-txt"}`}
             >
-              Last {d}d
+              {t("lastN", { days: d })}
             </button>
           ))}
         </div>
         <button
           className="flex h-7 w-7 items-center justify-center rounded-lg border border-line text-muted hover:bg-card"
-          title="Refresh"
+          title={t("refresh")}
           onClick={() => { load(range); if (hourDate) loadHour(hourDate); }}
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -131,39 +133,39 @@ export function OverviewPanel() {
 
       {empty ? (
         <div className="rounded-xl border border-line bg-card px-6 py-14 text-center text-sm text-faint">
-          Token usage data will appear here once you start chatting.
+          {t("empty")}
         </div>
       ) : (
         <>
           {/* KPI */}
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             <Kpi
-              label="Tokens today"
-              value={fmt(t.input_tokens + t.output_tokens)}
-              sub={<>↑ {fmt(t.input_tokens)} · ↓ {fmt(t.output_tokens)} · <Delta v={dTokens} suffix="%" /></>}
+              label={t("kpiTokensToday")}
+              value={fmt(today.input_tokens + today.output_tokens)}
+              sub={<>↑ {fmt(today.input_tokens)} · ↓ {fmt(today.output_tokens)} · <Delta v={dTokens} suffix="%" /></>}
             />
-            <Kpi label="Requests today" value={`${t.calls}`} sub={<>vs yesterday <Delta v={dCalls} /></>} />
+            <Kpi label={t("kpiRequestsToday")} value={`${today.calls}`} sub={<>{t("vsYesterday")} <Delta v={dCalls} /></>} />
             <Kpi
-              label="Cache hit rate today"
-              value={<><span style={{ color: "#4ade80" }}>⚡</span> {pct(t.cache_hit_ratio)}</>}
-              sub={<>vs yesterday {dHit >= 0 ? "+" : ""}{dHit.toFixed(1)} pt (cache reads are billed at a discount)</>}
+              label={t("kpiHitToday")}
+              value={<><span style={{ color: "#4ade80" }}>⚡</span> {pct(today.cache_hit_ratio)}</>}
+              sub={<>{t("vsYesterday")} {dHit >= 0 ? "+" : ""}{dHit.toFixed(1)} {t("hitPtNote")}</>}
             />
             <Kpi
-              label={`Tokens, last ${range}d`}
+              label={t("kpiTokensRange", { days: range })}
               value={fmt(ov.totals.input_tokens + ov.totals.output_tokens)}
-              sub={<>{ov.sessions_active} sessions · {ov.providers.length} providers</>}
+              sub={t("sessionsProviders", { sessions: ov.sessions_active, providers: ov.providers.length })}
             />
           </div>
 
           {/* 每日趋势 */}
           <div className="mt-3 rounded-xl border border-line bg-card px-4 pb-2 pt-3.5">
             <div className="mb-2 flex flex-wrap items-baseline gap-3">
-              <h3 className="text-[13px] font-semibold">Daily trend</h3>
-              <span className="text-[11px] text-faint">Click a day to switch the hourly distribution below; hover for details</span>
+              <h3 className="text-[13px] font-semibold">{t("dailyTrend")}</h3>
+              <span className="text-[11px] text-faint">{t("dailyTrendHint")}</span>
               <SeriesLegend />
             </div>
             <StackedBars
-              ariaLabel="Daily token trend stacked bar chart"
+              ariaLabel={t("ariaDaily")}
               data={daily.map((d) => ({
                 key: d.date,
                 label: d.date.slice(5),
@@ -178,22 +180,22 @@ export function OverviewPanel() {
                 if (!p) return null;
                 return (
                   <>
-                    <b className="text-txt">{p.date}</b> · {p.calls} requests · hit {pct(p.cache_hit_ratio)}
+                    <b className="text-txt">{p.date}</b> · {t("tipRequests", { count: p.calls })} · {t("tipHit", { value: pct(p.cache_hit_ratio) })}
                     {p.models?.length ? (
                       <SkuBreakdown models={p.models} />
                     ) : (
                       /* 旧 runtime 无 per-model 明细 — 退回按天聚合（精确数字） */
                       <>
-                        <TipRow label="Input (non-cache)" value={exact(Math.max(0, p.input_tokens - p.cache_read_tokens - p.cache_creation_tokens))} swatch={SERIES.input} />
-                        <TipRow label="Cache write" value={exact(p.cache_creation_tokens)} swatch={CACHE_WRITE_COLOR} />
-                        <TipRow label="Cache read" value={exact(p.cache_read_tokens)} swatch={SERIES.cache} />
-                        <TipRow label="Output" value={exact(p.output_tokens)} swatch={SERIES.output} />
+                        <TipRow label={t("labelInputNonCache")} value={exact(Math.max(0, p.input_tokens - p.cache_read_tokens - p.cache_creation_tokens))} swatch={SERIES.input} />
+                        <TipRow label={t("labelCacheWrite")} value={exact(p.cache_creation_tokens)} swatch={CACHE_WRITE_COLOR} />
+                        <TipRow label={t("labelCacheRead")} value={exact(p.cache_read_tokens)} swatch={SERIES.cache} />
+                        <TipRow label={t("labelOutput")} value={exact(p.output_tokens)} swatch={SERIES.output} />
                       </>
                     )}
                     <div className="mt-1.5 border-t border-white/10 pt-1">
-                      <TipRow label="Total tokens" value={exact(p.input_tokens + p.output_tokens)} />
+                      <TipRow label={t("labelTotal")} value={exact(p.input_tokens + p.output_tokens)} />
                     </div>
-                    <div className="mt-0.5 text-faint">Click to view the hourly distribution for that day</div>
+                    <div className="mt-0.5 text-faint">{t("tipClickDay")}</div>
                   </>
                 );
               }}
@@ -203,7 +205,7 @@ export function OverviewPanel() {
           {/* 小时分布 */}
           <div className="mt-3 rounded-xl border border-line bg-card px-4 pb-2 pt-3.5">
             <div className="mb-2 flex flex-wrap items-baseline gap-3">
-              <h3 className="text-[13px] font-semibold">Hourly distribution</h3>
+              <h3 className="text-[13px] font-semibold">{t("hourlyDist")}</h3>
               <div className="flex items-center gap-1.5">
                 {daily.slice(-5).map((d) => (
                   <button
@@ -215,12 +217,12 @@ export function OverviewPanel() {
                   </button>
                 ))}
               </div>
-              <span className="text-[11px] text-faint">Hover for per-model SKU details of that hour (exact numbers)</span>
+              <span className="text-[11px] text-faint">{t("hourlyHint")}</span>
               <SeriesLegend />
             </div>
             {hourly && hourly.date === hourDate ? (
               <StackedBars
-                ariaLabel={`Hourly distribution, ${hourDate}`}
+                ariaLabel={t("ariaHourly", { date: hourDate })}
                 height={210}
                 xEvery={3}
                 data={hourly.hours.map((h) => ({
@@ -235,27 +237,27 @@ export function OverviewPanel() {
                   const cw = h.cache_creation_tokens ?? 0;
                   return (
                     <>
-                      <b className="text-txt">{hourDate} {String(h.hour).padStart(2, "0")}:00–{String(h.hour).padStart(2, "0")}:59</b> · {h.calls} requests
+                      <b className="text-txt">{hourDate} {String(h.hour).padStart(2, "0")}:00–{String(h.hour).padStart(2, "0")}:59</b> · {t("tipRequests", { count: h.calls })}
                       {h.models?.length ? (
                         <SkuBreakdown models={h.models} />
                       ) : (
                         /* 旧 runtime 无 per-model 明细 — 退回按小时聚合（精确数字） */
                         <>
-                          <TipRow label="Input (non-cache)" value={exact(Math.max(0, h.input_tokens - h.cache_read_tokens - cw))} swatch={SERIES.input} />
-                          <TipRow label="Cache write" value={exact(cw)} swatch={CACHE_WRITE_COLOR} />
-                          <TipRow label="Cache read" value={exact(h.cache_read_tokens)} swatch={SERIES.cache} />
-                          <TipRow label="Output" value={exact(h.output_tokens)} swatch={SERIES.output} />
+                          <TipRow label={t("labelInputNonCache")} value={exact(Math.max(0, h.input_tokens - h.cache_read_tokens - cw))} swatch={SERIES.input} />
+                          <TipRow label={t("labelCacheWrite")} value={exact(cw)} swatch={CACHE_WRITE_COLOR} />
+                          <TipRow label={t("labelCacheRead")} value={exact(h.cache_read_tokens)} swatch={SERIES.cache} />
+                          <TipRow label={t("labelOutput")} value={exact(h.output_tokens)} swatch={SERIES.output} />
                         </>
                       )}
                       <div className="mt-1.5 border-t border-white/10 pt-1">
-                        <TipRow label="Total tokens" value={exact(h.input_tokens + h.output_tokens)} />
+                        <TipRow label={t("labelTotal")} value={exact(h.input_tokens + h.output_tokens)} />
                       </div>
                     </>
                   );
                 }}
               />
             ) : (
-              <div className="py-12 text-center text-xs text-faint">Loading…</div>
+              <div className="py-12 text-center text-xs text-faint">{t("loading")}</div>
             )}
           </div>
 
@@ -272,20 +274,24 @@ export function OverviewPanel() {
 }
 
 /** 来源（usage-stats-design §3.6）：对话 vs 工作流 vs 后台任务。
- * 颜色与请求日志的 SrcChip 保持一致（RequestsPanel.SRC_STYLE 的 fg 列）。 */
-const SOURCE_META: Record<string, { label: string; color: string }> = {
-  chat: { label: "Chat", color: "#8d90f8" },
-  goal: { label: "Goal follow-up", color: "#b39df9" },
-  compaction: { label: "Compaction", color: "#d9a93e" },
-  workflow: { label: "Workflow", color: "#4ade80" },
-  memory: { label: "Memory", color: "#38bdf8" },
-  kb: { label: "Knowledge Base", color: "#60a5fa" },
-  probe: { label: "Probe", color: "#9a9aa6" },
-  external: { label: "External agents", color: "#f472b6" },
-  other: { label: "Other", color: "#9a9aa6" },
+ * 颜色与请求日志的 SrcChip 保持一致（RequestsPanel.SRC_STYLE 的 fg 列）。
+ * labelKey 存 catalog key（settings.usage.overview.source.*，字面量联合）。 */
+type SourceKey =
+  | "chat" | "goal" | "compaction" | "workflow" | "memory" | "kb" | "probe" | "external" | "other";
+const SOURCE_META: Record<string, { labelKey: SourceKey; color: string }> = {
+  chat: { labelKey: "chat", color: "#8d90f8" },
+  goal: { labelKey: "goal", color: "#b39df9" },
+  compaction: { labelKey: "compaction", color: "#d9a93e" },
+  workflow: { labelKey: "workflow", color: "#4ade80" },
+  memory: { labelKey: "memory", color: "#38bdf8" },
+  kb: { labelKey: "kb", color: "#60a5fa" },
+  probe: { labelKey: "probe", color: "#9a9aa6" },
+  external: { labelKey: "external", color: "#f472b6" },
+  other: { labelKey: "other", color: "#9a9aa6" },
 };
 
 function SourceDist({ ov }: { ov: UsageOverview }) {
+  const t = useTranslations("settings.usage.overview");
   const { show, hide, move, tipEl } = useTip();
   const sources = ov.sources || [];
   const total = sources.reduce((a, s) => a + s.input_tokens + s.output_tokens, 0) || 1;
@@ -293,12 +299,13 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
   return (
     <div className="min-w-0 overflow-hidden rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
-        <h3 className="text-[13px] font-semibold">Source distribution</h3>
-        <span className="text-[11px] text-faint">Chat · workflows · background</span>
+        <h3 className="text-[13px] font-semibold">{t("sourceDist")}</h3>
+        <span className="text-[11px] text-faint">{t("sourceDistHint")}</span>
       </div>
-      {sources.length === 0 && <div className="py-6 text-center text-xs text-faint">No data</div>}
+      {sources.length === 0 && <div className="py-6 text-center text-xs text-faint">{t("noData")}</div>}
       {sources.map((s) => {
-        const meta = SOURCE_META[s.source] || { label: s.source, color: "#9a9aa6" };
+        const meta = SOURCE_META[s.source] || { labelKey: null as SourceKey | null, color: "#9a9aa6" };
+        const label = meta.labelKey ? t(`source.${meta.labelKey}`) : s.source;
         const v = s.input_tokens + s.output_tokens;
         return (
           <div
@@ -307,12 +314,12 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
             onMouseEnter={(e) =>
               show(
                 <>
-                  <b className="text-txt">{meta.label}</b> ({s.source}) · in window
-                  <TipRow label="Tokens" value={fmt(v)} />
-                  <TipRow label="Input" value={fmt(s.input_tokens)} />
-                  <TipRow label="Output" value={fmt(s.output_tokens)} />
-                  <TipRow label="Cache read" value={fmt(s.cache_read_tokens)} swatch={SERIES.cache} />
-                  <TipRow label="Requests" value={String(s.calls)} />
+                  <b className="text-txt">{label}</b> ({s.source}) · {t("tipInWindow")}
+                  <TipRow label={t("labelTokens")} value={fmt(v)} />
+                  <TipRow label={t("labelInput")} value={fmt(s.input_tokens)} />
+                  <TipRow label={t("labelOutput")} value={fmt(s.output_tokens)} />
+                  <TipRow label={t("labelCacheRead")} value={fmt(s.cache_read_tokens)} swatch={SERIES.cache} />
+                  <TipRow label={t("labelRequests")} value={String(s.calls)} />
                 </>,
                 e,
               )
@@ -321,9 +328,9 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
             onMouseLeave={hide}
           >
             <div className="flex items-center gap-2">
-              <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted" title={meta.label}>
+              <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted" title={label}>
                 <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: meta.color }} />
-                <span className="truncate">{meta.label}</span>
+                <span className="truncate">{label}</span>
               </span>
               <span className="ml-auto flex-none whitespace-nowrap text-xs tabular-nums text-muted">
                 <b className="text-txt">{pct(v / total)}</b> · {fmt(v)}
@@ -341,16 +348,17 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
 }
 
 function ProviderDist({ ov }: { ov: UsageOverview }) {
+  const t = useTranslations("settings.usage.overview");
   const { show, hide, move, tipEl } = useTip();
   const total = ov.providers.reduce((a, p) => a + p.input_tokens + p.output_tokens, 0) || 1;
   const vmax = Math.max(...ov.providers.map((p) => p.input_tokens + p.output_tokens), 1);
   return (
     <div className="min-w-0 overflow-hidden rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
-        <h3 className="text-[13px] font-semibold">Provider distribution</h3>
-        <span className="text-[11px] text-faint">Share within window</span>
+        <h3 className="text-[13px] font-semibold">{t("providerDist")}</h3>
+        <span className="text-[11px] text-faint">{t("providerDistHint")}</span>
       </div>
-      {ov.providers.length === 0 && <div className="py-6 text-center text-xs text-faint">No data</div>}
+      {ov.providers.length === 0 && <div className="py-6 text-center text-xs text-faint">{t("noData")}</div>}
       {ov.providers.map((p) => {
         const v = p.input_tokens + p.output_tokens;
         return (
@@ -360,13 +368,13 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
             onMouseEnter={(e) =>
               show(
                 <>
-                  <b className="text-txt">{p.provider}</b> · in window
-                  <TipRow label="Tokens" value={fmt(v)} />
-                  <TipRow label="Input" value={fmt(p.input_tokens)} />
-                  <TipRow label="Output" value={fmt(p.output_tokens)} />
-                  <TipRow label="Cache read" value={fmt(p.cache_read_tokens)} swatch={SERIES.cache} />
-                  <TipRow label="Hit rate" value={p.input_tokens > 0 ? pct(p.cache_hit_ratio) : "—"} />
-                  <TipRow label="Requests" value={String(p.calls)} />
+                  <b className="text-txt">{p.provider}</b> · {t("tipInWindow")}
+                  <TipRow label={t("labelTokens")} value={fmt(v)} />
+                  <TipRow label={t("labelInput")} value={fmt(p.input_tokens)} />
+                  <TipRow label={t("labelOutput")} value={fmt(p.output_tokens)} />
+                  <TipRow label={t("labelCacheRead")} value={fmt(p.cache_read_tokens)} swatch={SERIES.cache} />
+                  <TipRow label={t("labelHitRate")} value={p.input_tokens > 0 ? pct(p.cache_hit_ratio) : "—"} />
+                  <TipRow label={t("labelRequests")} value={String(p.calls)} />
                 </>,
                 e,
               )
@@ -395,18 +403,19 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
 }
 
 function ModelRank({ ov }: { ov: UsageOverview }) {
+  const t = useTranslations("settings.usage.overview");
   const total = ov.models.reduce((a, m) => a + m.input_tokens + m.output_tokens, 0) || 1;
   return (
     <div className="min-w-0 overflow-hidden rounded-xl border border-line bg-card px-4 pb-3 pt-3.5">
       <div className="mb-1.5 flex items-baseline gap-3">
-        <h3 className="text-[13px] font-semibold">Model ranking</h3>
-        <span className="text-[11px] text-faint">By total tokens</span>
+        <h3 className="text-[13px] font-semibold">{t("modelRank")}</h3>
+        <span className="text-[11px] text-faint">{t("modelRankHint")}</span>
       </div>
       <div className="flex items-baseline gap-2 pb-1.5 text-[11px] text-faint">
-        <span>Model</span>
-        <span className="ml-auto whitespace-nowrap">Tokens · Share · Hit</span>
+        <span>{t("labelModel")}</span>
+        <span className="ml-auto whitespace-nowrap">{t("tokensShareHit")}</span>
       </div>
-      {ov.models.length === 0 && <div className="py-6 text-center text-xs text-faint">No data</div>}
+      {ov.models.length === 0 && <div className="py-6 text-center text-xs text-faint">{t("noData")}</div>}
       {ov.models.map((m) => {
         const v = m.input_tokens + m.output_tokens;
         const hit = m.cache_read_tokens > 0 || m.cache_hit_ratio > 0 ? pct(m.cache_hit_ratio) : "—";

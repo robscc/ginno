@@ -121,20 +121,20 @@ def test_analyze_timeout(tmp_path):
             {"path": str(f), "code": "import time\ntime.sleep(9)\nresult = 1", "timeout": 2}
         )
     )
-    assert d["ok"] is False and "超时" in d["error"]
+    assert d["ok"] is False and "timed out" in d["error"]
 
 
 def test_analyze_rejects_non_table(tmp_path):
     f = make_docx(tmp_path / "c.docx")
     d = json.loads(analyze_table.invoke({"path": str(f), "code": "result = 1"}))
-    assert d["ok"] is False and "仅支持" in d["error"]
+    assert d["ok"] is False and "supports only" in d["error"]
 
 
 def test_analyze_missing_file(tmp_path):
     d = json.loads(
         analyze_table.invoke({"path": str(tmp_path / "gone.csv"), "code": "result = 1"})
     )
-    assert d["ok"] is False and "不存在" in d["error"]
+    assert d["ok"] is False and "not found" in d["error"]
 
 
 def test_analyze_load_error_inside_sandbox(tmp_path):

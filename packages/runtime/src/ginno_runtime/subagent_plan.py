@@ -25,6 +25,7 @@ import json
 import time
 import uuid
 
+from .lang import t
 from .server_shared import _log, _push_session_event
 from .subagent_scheduler import max_concurrent
 
@@ -44,6 +45,21 @@ _PENDING_PLANS: dict[str, dict] = {}
 # Decompose prompt — appendix A.2 (implementation template) as the skeleton,
 # with A.7's per-subtask 委派理由 (``reason``) added and A.8's output control
 # as the closing line. The assistant prefill "[" lives in ``decompose_task``.
+_DECOMPOSE_SYSTEM_EN = """You are a task decomposer. Given an engineering task, output a plan of parallel subtasks.
+
+Process:
+1. Key analysis (do it exactly once): break the task's key aspects and risks down with a multi-level list
+2. Subtask division: every subtask must be —
+   - independently completable and individually acceptable (clear completion criteria)
+   - conflict-free with the others on files/resources (safe to run concurrently); conflicting ones must be chained into a dependency note instead
+   - right-sized: expect 5-30 minutes of work per subtask; merge smaller ones, split bigger ones
+3. For each subtask write: goal (a self-contained full description — the subagent cannot see this conversation, the goal must be executable on its own),
+   constraints (boundaries it must not touch), acceptance (acceptance criteria), reason (delegation rationale:
+   why it suits independent delegation, e.g. "pure read-only research, completable in an independent context";
+   if the rationale is "it needs details from this conversation", the task should not be delegated — leave it out)
+
+Output a JSON array with no preamble or explanation."""
+
 _DECOMPOSE_SYSTEM = """你是任务拆解器。输入一个工程任务，输出并行子任务方案。
 
 流程：
@@ -85,27 +101,37 @@ def validate_subtasks(raw) -> tuple[list[dict] | None, str]:
     needs a non-empty string ``goal`` AND a non-empty string ``reason``
     (appendix A.7 — the 委派理由 is the main thing the user reviews on the
     confirmation card). ``constraints``/``acceptance`` are optional strings.
-    Any failure rejects the WHOLE plan."""
+    Any failure rejects the WHOLE plan.
+
+    The error string is USER-FACING (it surfaces verbatim in the split-failed
+    notice), so it goes through t() — request-scoped locale (i18n 分流规则)."""
     if not isinstance(raw, list):
-        return None, "模型输出不是 JSON 数组"
+        return None, t(
+            "Model output is not a JSON array", "模型输出不是 JSON 数组"
+        )
     if not raw:
-        return None, "模型没有拆出任何子任务"
+        return None, t("The model produced no subtasks", "模型没有产出任何子任务")
     cap = max_concurrent()
     if len(raw) > cap:
-        return None, (
-            f"拆出了 {len(raw)} 个子任务，超过并发上限（{cap}）；"
-            "请把任务描述得更聚焦后重试"
+        return None, t(
+            f"Got {len(raw)} subtasks, exceeding the concurrency cap ({cap}); "
+            "make the task more focused and retry",
+            f"得到 {len(raw)} 个子任务，超过并发上限（{cap}）；"
+            "请让任务更聚焦后重试",
         )
     out: list[dict] = []
     for i, item in enumerate(raw):
         if not isinstance(item, dict):
-            return None, f"第 {i + 1} 个子任务不是对象"
+            return None, t(f"Subtask {i + 1} is not an object", f"子任务 {i + 1} 不是对象")
         goal = item.get("goal")
         reason = item.get("reason")
         if not isinstance(goal, str) or not goal.strip():
-            return None, f"第 {i + 1} 个子任务缺少 goal"
+            return None, t(f"Subtask {i + 1} is missing goal", f"子任务 {i + 1} 缺少 goal")
         if not isinstance(reason, str) or not reason.strip():
-            return None, f"第 {i + 1} 个子任务缺少 reason（委派理由）"
+            return None, t(
+                f"Subtask {i + 1} is missing reason (delegation rationale)",
+                f"子任务 {i + 1} 缺少 reason（委派理由）",
+            )
         out.append(
             {
                 "goal": goal.strip(),
@@ -125,7 +151,12 @@ async def decompose_task(session: dict, task: str) -> list[dict]:
     if os.environ.get("GINNO_FAKE_LLM"):
         # The scripted demo model cannot produce a real plan; fail loudly
         # instead of showing a fake one.
-        raise ValueError("GINNO_FAKE_LLM 演示模式下不可用，请配置真实模型后重试")
+        raise ValueError(
+            t(
+                "Unavailable in GINNO_FAKE_LLM demo mode; configure a real model and retry",
+                "GINNO_FAKE_LLM 演示模式下不可用；请配置真实模型后重试",
+            )
+        )
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
     from .models import build_model
@@ -134,7 +165,7 @@ async def decompose_task(session: dict, task: str) -> list[dict]:
     model = build_model(session.get("model_provider"), session.get("model_name"))
     resp = await model.ainvoke(
         [
-            SystemMessage(content=_DECOMPOSE_SYSTEM),
+            SystemMessage(content=t(_DECOMPOSE_SYSTEM_EN, _DECOMPOSE_SYSTEM)),
             HumanMessage(content=(task or "").strip()),
             AIMessage(content="["),  # A.8: prefill the opening bracket
         ]
@@ -143,7 +174,12 @@ async def decompose_task(session: dict, task: str) -> list[dict]:
     data = _extract_json_array(raw)
     if data is None:
         _log.info("subagent_decompose_invalid session=%s raw=%r", session.get("session_id"), raw[:200])
-        raise ValueError("模型输出无法解析为子任务 JSON 数组，请重试")
+        raise ValueError(
+            t(
+                "Model output could not be parsed as a subtask JSON array; please retry",
+                "模型输出无法解析为子任务 JSON 数组；请重试",
+            )
+        )
     subtasks, err = validate_subtasks(data)
     if subtasks is None:
         raise ValueError(err)
@@ -176,12 +212,27 @@ async def issue_plan(session: dict, task: str, subtasks: list[dict]) -> str:
         "subagent_plan_issued session=%s plan=%s subtasks=%d",
         session_id, plan["plan_id"], len(subtasks),
     )
-    lines = [f"已生成拆分方案（{len(subtasks)} 个子任务），请在确认卡片中查看："]
+    # Ephemeral notice copy → inline bilingual t() at source (request-scoped
+    # locale; notices are never replayed from history, i18n 分流规则).
+    lines = [
+        t(
+            f"Split plan generated ({len(subtasks)} subtasks) — see the confirmation card:",
+            f"已生成拆分方案（{len(subtasks)} 个子任务）——见确认卡片：",
+        )
+    ]
     lines += [
-        f"{i}. {st['goal']} —— 委派理由：{st['reason']}"
+        t(
+            f"{i}. {st['goal']} — rationale: {st['reason']}",
+            f"{i}. {st['goal']} —— 委代理由：{st['reason']}",
+        )
         for i, st in enumerate(subtasks, 1)
     ]
-    lines.append("确认后逐个启动；未确认前再次 /subagent 拆分 会覆盖本方案。")
+    lines.append(
+        t(
+            "They start one by one after confirmation; running /subagent split again before confirming overwrites this plan.",
+            "确认后将逐个启动；确认前再次运行 /subagent 拆分 会覆盖本方案。",
+        )
+    )
     return "\n".join(lines)
 
 
@@ -253,7 +304,10 @@ async def run_background_command(
             "subagent_async_job_failed name=%s session=%s",
             name, session.get("session_id"),
         )
-        reply = f"/{name} 执行失败：{type(e).__name__}: {e}"
+        reply = t(
+            f"/{name} failed: {type(e).__name__}: {e}",
+            f"/{name} 失败：{type(e).__name__}: {e}",
+        )
     try:
         await _push_session_event(
             session.get("session_id") or "", "notice", {"message": reply}, turn_id
@@ -275,14 +329,17 @@ async def confirm_plan(
         # to 「已确认」 optimistically — without the notice, a confirm that
         # raced a cancel/overwrite (second tab, re-split) loses the whole batch
         # silently.
-        text = "确认未生效：未找到待确认的拆分方案（可能已在其他窗口确认/取消，或被新方案覆盖）"
+        text = t(
+            "Confirm did not take effect: no pending plan found (it may have been confirmed/cancelled in another window, or overwritten by a new plan)",
+            "确认未生效：没有待确认的方案（可能已在其他窗口确认/取消，或被新方案覆盖）",
+        )
         await _push_session_event(session_id, "notice", {"message": text})
         return text
     subtasks = plan["subtasks"]
     if subtasks_override:
         subtasks, err = validate_subtasks(subtasks_override)
         if subtasks is None:
-            text = f"编辑后的子任务无效：{err}"
+            text = t(f"Edited subtasks are invalid: {err}", f"编辑后的子任务无效：{err}")
             await _push_session_event(session_id, "notice", {"message": text})
             return text
     del _PENDING_PLANS[session_id]
@@ -302,11 +359,18 @@ async def confirm_plan(
         if res.get("ok"):
             spawned.append(f"{res['session_id']} {st['goal'][:40]}")
         else:
-            failed.append(f"{st['goal'][:40]}：{res.get('error') or '未知错误'}")
-    lines = [f"拆分方案已确认：成功启动 {len(spawned)} 个 subagent。"]
+            failed.append(f"{st['goal'][:40]}: {res.get('error') or 'unknown error'}")
+    lines = [
+        t(
+            f"Plan confirmed: {len(spawned)} subagent(s) started.",
+            f"方案已确认：已启动 {len(spawned)} 个子代理。",
+        )
+    ]
     lines += [f"- ✅ {s}" for s in spawned]
     if failed:
-        lines.append(f"{len(failed)} 个启动失败：")
+        lines.append(
+            t(f"{len(failed)} failed to start:", f"{len(failed)} 个启动失败：")
+        )
         lines += [f"- ❌ {f}" for f in failed]
     text = "\n".join(lines)
     await _push_session_event(session_id, "notice", {"message": text})

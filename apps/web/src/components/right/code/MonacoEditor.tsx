@@ -24,6 +24,7 @@
 
 import { useEffect, useRef } from "react";
 import { AlertTriangle, Info, Lock } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import type { CodeRead } from "@/lib/codeTypes";
 import { languageForPath } from "./language";
@@ -233,36 +234,13 @@ function sizeSuffix(sizeBytes: number | null | undefined): string {
   if (sizeBytes == null || !Number.isFinite(sizeBytes) || sizeBytes <= 0) return "";
   const mb = sizeBytes / (1024 * 1024);
   const text = mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
-  return `（${text}）`;
+  return `(${text})`;
 }
 
-/** Non-null when the file cannot be rendered as text at all. */
-function textUnavailableMessage(
-  reason: CodeRead["readonly_reason"],
-  sizeBytes: number | null | undefined,
-): string {
-  if (reason === "binary") return "二进制文件，无法以文本打开";
-  if (reason === "too-large") return `文件过大${sizeSuffix(sizeBytes)}，已切换为只读预览`;
-  return "无法以文本打开";
-}
-
-/** Non-null when the file is renderable but read-only. */
-function readonlyBanner(
-  reason: CodeRead["readonly_reason"],
-  sizeBytes: number | null | undefined,
-): string | null {
-  if (reason === "read-only-mount") return "此文件夹以只读方式挂载";
-  if (reason === "too-large") return `文件过大${sizeSuffix(sizeBytes)}，已切换为只读预览`;
-  if (reason === "git-internal") return "该文件位于 .git 内部，不可编辑";
-  return null;
-}
-
-/** "检测到 GBK 编码" when the file is not plain UTF-8/ASCII. */
-function encodingNotice(encoding: string | null | undefined): string | null {
-  if (!encoding) return null;
+/** 非 UTF-8/ASCII 编码才提示（文案走 i18n catalog，见组件内的 encNotice）。 */
+function needsEncodingNotice(encoding: string): boolean {
   const e = encoding.toLowerCase().replace("_", "-");
-  if (e === "utf-8" || e === "utf8" || e === "ascii" || e === "us-ascii") return null;
-  return `检测到 ${encoding.toUpperCase()} 编码`;
+  return e !== "utf-8" && e !== "utf8" && e !== "ascii" && e !== "us-ascii";
 }
 
 /**
@@ -287,6 +265,7 @@ export function MonacoEditor({
   onChangeText,
   className,
 }: MonacoEditorProps) {
+  const t = useTranslations("code.editor");
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<Editor | null>(null);
   const modelRef = useRef<Model | null>(null);
@@ -511,9 +490,29 @@ export function MonacoEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealLine, revealNonce, rootId, path]);
 
+  // 降级文案（brief §4）：原先的 reason → 文案映射改为就地用 t() 构建，
+  // 映射逻辑保持不变；{size} 为空串时得到与旧版一致的省略形式。
   const unavailable = text === null;
-  const banner = editable ? null : readonlyBanner(readonlyReason, sizeBytes);
-  const encNotice = encodingNotice(encoding);
+  const unavailableMsg = text === null
+    ? readonlyReason === "binary"
+      ? t("unavailableBinary")
+      : readonlyReason === "too-large"
+        ? t("unavailableTooLarge", { size: sizeSuffix(sizeBytes) })
+        : t("unavailableDefault")
+    : null;
+  const banner = editable
+    ? null
+    : readonlyReason === "read-only-mount"
+      ? t("bannerReadOnlyMount")
+      : readonlyReason === "too-large"
+        ? t("bannerTooLarge", { size: sizeSuffix(sizeBytes) })
+        : readonlyReason === "git-internal"
+          ? t("bannerGitInternal")
+          : null;
+  const encNotice =
+    encoding && needsEncodingNotice(encoding)
+      ? t("encodingNotice", { encoding: encoding.toUpperCase() })
+      : null;
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-[rgb(var(--code-bg))]", className)}>
@@ -532,7 +531,7 @@ export function MonacoEditor({
       {unavailable ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-xs text-faint">
           <AlertTriangle size={20} />
-          <span>{textUnavailableMessage(readonlyReason, sizeBytes)}</span>
+          <span>{unavailableMsg}</span>
         </div>
       ) : (
         <div ref={hostRef} className="min-h-0 flex-1" />

@@ -405,7 +405,7 @@ def test_two_steers_do_not_strip_the_turns_own_image(isolated_home):
     ``strip_old_images`` counts HumanMessages as turn boundaries. Two steered
     messages inside turn 3 used to fill the last-two window on their own, so the
     turn's OWN user message fell out of it and its picture was silently replaced
-    by "[N 张历史图片已省略]" — for the model only, but that is the whole point
+    by "[N earlier images omitted]" — for the model only, but that is the whole point
     of the image.
     """
     steered = _steer_msg("s1", "先跑测试")
@@ -428,7 +428,7 @@ def test_two_steers_do_not_strip_the_turns_own_image(isolated_home):
     assert _has_image(out[5]) and "IMGD" in blob
     # ...while the window still does its job on genuinely old turns
     assert not _has_image(out[0]) and "IMGA" not in blob
-    assert "张历史图片已省略" in blob
+    assert "earlier images omitted" in blob
 
 
 def test_strip_window_is_unchanged_without_steers(isolated_home):
@@ -651,7 +651,10 @@ def test_ws_steer_with_image_and_no_text_is_accepted_and_absorbed(
         for m in call
     ), model.seen
     # ...and the default intent stands in for the words the user never typed
-    assert _saw_in_one_call(model, "请概览我附加的文件"), "attachment-only steer lost its intent"
+    # (locale-aware via t() — the suite pins en, see conftest isolated_home)
+    from ginno_runtime.api.stream.turn import _attach_only_text
+
+    assert _saw_in_one_call(model, _attach_only_text()), "attachment-only steer lost its intent"
 
     msgs = client.get(f"/api/sessions/{sid}/history").json()["messages"]
     bands = [b for m in msgs for b in m.get("blocks", []) if b.get("kind") == "steer"]

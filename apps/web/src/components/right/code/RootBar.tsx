@@ -19,6 +19,7 @@
  */
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { GitBranch, Loader2, Plus, RefreshCw } from "lucide-react";
 import type { CodeRoot } from "@/lib/codeTypes";
 import { cn } from "@/lib/utils";
@@ -49,6 +50,8 @@ export function RootBar({
   onMakeRootWritable,
   className,
 }: RootBarProps) {
+  // code 域 catalog：本组件文案收在 code.root（个别复用既有 key：panel/fs/delete/errors）
+  const t = useTranslations("code");
   const [adding, setAdding] = useState(false);
   const [path, setPath] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -66,7 +69,7 @@ export function RootBar({
     if (!onAddFolder || busy) return;
     const p = path.trim();
     if (!p) {
-      setErr("请输入文件夹路径");
+      setErr(t("root.pathRequired"));
       return;
     }
     setBusy(true);
@@ -76,7 +79,7 @@ export function RootBar({
       if (message) setErr(message);
       else closeAdd();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "挂载失败");
+      setErr(e instanceof Error ? e.message : t("fs.mountFailed"));
     } finally {
       setBusy(false);
     }
@@ -89,7 +92,7 @@ export function RootBar({
       const message = await onMakeRootWritable(id);
       if (message) setErr(message);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "切换失败");
+      setErr(e instanceof Error ? e.message : t("fs.switchFailed"));
     } finally {
       setRwBusy((prev) => ({ ...prev, [id]: false }));
     }
@@ -98,12 +101,12 @@ export function RootBar({
   return (
     <div className={cn("flex flex-col", className)}>
       <div className="flex items-center justify-between px-2 py-1">
-        <span className="text-[11px] font-medium tracking-wide text-faint">工作区</span>
+        <span className="text-[11px] font-medium tracking-wide text-faint">{t("panel.workspace")}</span>
         <button
           type="button"
           onClick={onRefresh}
-          title="刷新"
-          aria-label="刷新"
+          title={t("root.refresh")}
+          aria-label={t("root.refresh")}
           className="rounded p-0.5 text-faint transition-colors hover:text-txt"
         >
           <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
@@ -111,7 +114,7 @@ export function RootBar({
       </div>
 
       {!roots.length ? (
-        <div className="px-2 py-1 text-[11px] text-faint">没有可用的工作区</div>
+        <div className="px-2 py-1 text-[11px] text-faint">{t("panel.noWorkspace")}</div>
       ) : (
         <ul role="list" className="flex flex-col">
           {roots.map((r) => {
@@ -162,7 +165,7 @@ export function RootBar({
                       type="button"
                       onClick={() => void makeWritable(r.id)}
                       disabled={!!rwBusy[r.id]}
-                      title="把该文件夹的访问级改为读写（目录库级设置）"
+                      title={t("root.makeWritableTitle")}
                       className="flex items-center gap-1 text-[10px] text-indigo transition-colors hover:text-indigo2 disabled:opacity-50"
                     >
                       {rwBusy[r.id] ? (
@@ -170,13 +173,13 @@ export function RootBar({
                       ) : (
                         <RefreshCw className="h-3 w-3" />
                       )}
-                      切为读写
+                      {t("root.makeWritable")}
                     </button>
                   </div>
                 ) : null}
                 {r.missing && (
                   <div className="pb-1 pl-5 pr-2 text-[10px] text-faint">
-                    文件夹不存在（已移动或删除）
+                    {t("errors.root-missing")}
                   </div>
                 )}
               </li>
@@ -205,7 +208,7 @@ export function RootBar({
                   closeAdd();
                 }
               }}
-              placeholder="输入文件夹路径，如 ~/workspace/my-repo"
+              placeholder={t("root.pathPlaceholder")}
               className="min-w-0 flex-1 rounded-md border border-line2 bg-card px-2 py-1 text-[11px] text-txt outline-none placeholder:text-faint focus:border-indigo/60"
             />
             <button
@@ -214,18 +217,18 @@ export function RootBar({
               disabled={busy || !path.trim()}
               className="shrink-0 rounded-md bg-indigo px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
             >
-              {busy ? "挂载中…" : "挂载"}
+              {busy ? t("root.mounting") : t("root.mount")}
             </button>
             <button
               type="button"
               onClick={closeAdd}
               className="shrink-0 rounded p-0.5 text-faint hover:text-txt"
-              title="取消"
+              title={t("delete.cancel")}
             >
               ✕
             </button>
           </div>
-          <div className="mt-0.5 text-[10px] text-faint">Enter 挂载 · Esc 取消</div>
+          <div className="mt-0.5 text-[10px] text-faint">{t("root.mountHint")}</div>
         </div>
       ) : (
         <button
@@ -235,10 +238,10 @@ export function RootBar({
             setErr(null);
           }}
           disabled={!onAddFolder}
-          title={onAddFolder ? "注册并挂载一个本地文件夹" : "不可用"}
+          title={onAddFolder ? t("root.addTitle") : t("root.addUnavailable")}
           className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-[11px] text-faint transition-colors hover:bg-line2/40 hover:text-txt disabled:opacity-50"
         >
-          <Plus className="h-3 w-3" /> 添加文件夹…
+          <Plus className="h-3 w-3" /> {t("root.addFolder")}
         </button>
       )}
 

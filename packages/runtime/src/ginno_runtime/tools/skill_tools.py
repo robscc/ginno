@@ -28,6 +28,7 @@ from langchain_core.tools import tool
 
 from .. import paths
 from .. import projects as projects_mod
+from ..lang import t
 from ..skills.installer import import_skills_from_dir
 from ..skills.installer import uninstall_skill as _uninstall
 from ..skills.loader import SkillLoader, _parse_skill_file, wrap_skill_body
@@ -68,21 +69,32 @@ def build_skill_tools(
         """
         val = (raw or "").strip()
         if not val:
-            return None, "target=repo 需要 project_dir（仓库根目录的绝对路径）"
+            return None, t(
+                "target=repo requires project_dir (absolute path of the repo root)",
+                "target=repo 需要 project_dir（仓库根目录的绝对路径）")
         p = Path(val).expanduser()
         if not p.is_absolute():
-            return None, f"project_dir 必须是绝对路径：{val}"
+            return None, t(f"project_dir must be an absolute path: {val}",
+                           f"project_dir 必须是绝对路径：{val}")
         try:
             p = p.resolve()
         except OSError:
-            return None, f"project_dir 无法解析：{val}"
+            return None, t(f"project_dir could not be resolved: {val}",
+                           f"project_dir 无法解析：{val}")
         allowed = _known_repo_roots()
         if str(p) not in allowed:
-            cand = "；可选：" + "，".join(allowed) if allowed else "（本会话尚未识别出项目目录）"
-            return None, (
+            if allowed:
+                cand = t("; candidates: " + ", ".join(allowed),
+                         "；可选：" + "，".join(allowed))
+            else:
+                cand = t(" (no project directories recognized in this session yet)",
+                         "（本会话尚未识别出项目目录）")
+            return None, t(
+                f"{p} is not among the project directories known to this "
+                f"session{cand}. Do not invent paths — if the user wants it "
+                "installed elsewhere, confirm with them via ask_user first.",
                 f"{p} 不在本会话已知的项目目录内{cand}。"
-                "不要臆造路径 —— 若用户想装到别处，先用 ask_user 与他确认。"
-            )
+                "不要臆造路径 —— 若用户想装到别处，先用 ask_user 与他确认。")
         return projects_mod.claude_skills_dir(p), ""
 
     @tool
@@ -176,7 +188,9 @@ def build_skill_tools(
         if target == "project":
             if not slug:
                 return json.dumps(
-                    {"ok": False, "error": "target=project 需要会话的 project_slug"},
+                    {"ok": False, "error": t(
+                        "target=project requires the session's project_slug",
+                        "target=project 需要会话的 project_slug")},
                     ensure_ascii=False,
                 )
             dest = paths.project_skills_dir(slug)

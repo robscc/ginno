@@ -10,6 +10,7 @@ import pytest
 from ginno_runtime import paths
 from ginno_runtime.world_state import (
     UPDATE_MSG_PREFIX,
+    WEEKDAYS_EN,
     EnvironmentSection,
     McpSection,
     MemorySection,
@@ -39,7 +40,7 @@ def ctx(**kw) -> SessionCtx:
 def test_environment_snapshot_fields():
     snap = EnvironmentSection().snapshot(ctx())
     assert snap["date"] == datetime.now().astimezone().strftime("%Y-%m-%d")
-    assert snap["weekday"].startswith("星期")
+    assert snap["weekday"] in WEEKDAYS_EN  # default prompt language is English
     assert "UTC" in snap["tz"]
     assert snap["os"]
     assert snap["ginno_home"] == str(paths.home())
@@ -91,9 +92,9 @@ def test_permissions_reflects_bypass(isolated_home):
     sp.write_text(json.dumps(s))
     snap2 = sec.snapshot(ctx())
     assert snap2["bypass"] is False
-    assert "审批模式" in sec.render(snap2)
+    assert "Approval mode" in sec.render(snap2)
     text = sec.update_text(snap, snap2)
-    assert text is not None and "审批模式" in text
+    assert text is not None and "approval mode" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -120,7 +121,7 @@ def test_agent_section_prompt_edit_detected(isolated_home):
     after = sec.snapshot(c)
     assert after["prompt_hash"] != before["prompt_hash"]
     text = sec.update_text(before, after)
-    assert text is not None and "角色设定" in text
+    assert text is not None and "persona prompt" in text
 
 
 def test_agent_section_switch_detected(isolated_home):
@@ -135,7 +136,7 @@ def test_agent_section_switch_detected(isolated_home):
     before = sec.snapshot(ctx(agent_id=a.id))
     after = sec.snapshot(ctx(agent_id=b.id))
     text = sec.update_text(before, after)
-    assert text is not None and b.name in text and "切换" in text
+    assert text is not None and b.name in text and "Switched to" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -161,8 +162,8 @@ def test_skills_budget_truncates(isolated_home):
     # 30 user skills + the always-present builtin "todo" skill.
     assert snap is not None and len(snap["names"]) == 31
     assert "todo" in snap["names"]
-    assert len(snap["index"]) <= 300 + 100  # budget + tail note slack
-    assert "未列出" in snap["index"]  # tail note about dropped skills
+    assert len(snap["index"]) <= 300 + 150  # budget + tail note slack (en note ~110 chars)
+    assert "not listed" in snap["index"]  # tail note about dropped skills
 
 
 def test_skills_change_detection(isolated_home):
@@ -353,7 +354,7 @@ def test_sync_world_state_baseline_flow(isolated_home):
     data["snapshot"]["environment"]["date"] = "1999-12-31"
     p.write_text(json.dumps(data))
     text, chip = sync_world_state(c)
-    assert text is not None and "日期已更新" in text
+    assert text is not None and "Date updated" in text
     assert chip and chip[0]["section"] == "environment"
 
 
@@ -373,11 +374,11 @@ def test_goal_section_renders_and_announces(isolated_home):
     assert "complete" in rendered  # guidance mentions completion discipline
 
     # creation + status transitions announce via update_text
-    assert sec.update_text(None, snap) == "长程目标已设定：Write the report"
+    assert sec.update_text(None, snap) == "Long-running goal set: Write the report"
     paused = dict(snap, status="paused")
-    assert "已暂停" in sec.update_text(snap, paused)
+    assert "Goal paused." in sec.update_text(snap, paused)
     done = dict(snap, status="complete")
-    assert "已达成" in sec.update_text(snap, done)
+    assert "Goal achieved." in sec.update_text(snap, done)
     # accounting churn (turns_used) must NOT announce
     churn = dict(snap, turns_used=5)
     assert sec.update_text(snap, churn) is None
@@ -437,7 +438,7 @@ def test_memory_render_budget_truncates(isolated_home):
             "global": "记" * 20000, "agent": ""}
     out = sec.render(snap)
     assert len(out) < 9000  # budget + truncation note
-    assert "截断" in out
+    assert "truncated" in out
     # snapshot keeps the FULL text (change detection unaffected)
     assert len(snap["global"]) == 20000
 
@@ -447,7 +448,7 @@ def test_memory_render_under_budget_untouched(isolated_home):
     snap = {"global_hash": "h", "agent_hash": "h",
             "global": "small memory", "agent": ""}
     out = sec.render(snap)
-    assert "small memory" in out and "截断" not in out
+    assert "small memory" in out and "truncated" not in out
 
 
 def test_memory_budget_override(isolated_home):
@@ -458,4 +459,4 @@ def test_memory_budget_override(isolated_home):
     snap = {"global_hash": "h", "agent_hash": "h",
             "global": "x" * 500, "agent": ""}
     out = sec.render(snap)
-    assert len(out) < 200 and "截断" in out
+    assert len(out) < 300 and "truncated" in out  # budget + fixed en note (~162 chars)

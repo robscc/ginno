@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { SettingsNav } from "./SettingsNav";
 import { ModelApiSettings } from "./ModelApiSettings";
 import { SkillsSettings } from "./SkillsSettings";
@@ -20,6 +21,7 @@ import { ToolLabelsSettings } from "./ToolLabelsSettings";
 import { SynthesisQualitySettings } from "./SynthesisQualitySettings";
 
 export function SettingsView({ tab }: { tab: string }) {
+  const t = useTranslations("settings.view");
   return (
     <div className="flex min-w-0 flex-1">
       <SettingsNav active={tab} />
@@ -42,7 +44,7 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "floating" && <FloatingSettings />}
         {tab === "tool-labels" && <ToolLabelsSettings />}
         {!["model-api", "skills", "mcp", "agents", "workflows", "synthesis-quality", "knowledge", "folders", "web", "permissions", "hooks", "session-files", "usage", "general", "notifications", "floating", "tool-labels"].includes(tab) && (
-          <div className="px-8 py-10 text-sm text-faint">Unknown tab: {tab}</div>
+          <div className="px-8 py-10 text-sm text-faint">{t("unknownTab", { tab })}</div>
         )}
       </div>
     </div>

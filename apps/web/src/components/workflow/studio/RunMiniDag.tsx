@@ -2,7 +2,9 @@
 
 import { useMemo } from "react";
 import { Hexagon } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { WorkflowRun, WorkflowRunEvent } from "@/lib/types";
+import { useRunStatusLabel } from "@/components/chat/RunBlocks";
 import { StudioCanvas } from "./StudioCanvas";
 import { STUDIO_BOX, branchTargets, layerOrder, type DagDsl, type NodeBox } from "./canvasLayout";
 
@@ -49,6 +51,8 @@ export function RunMiniDag({
   /** Panel height; >120px switches the strip to a wrapping multi-row flow. */
   height?: number;
 }) {
+  const t = useTranslations("wf.miniDag");
+  const statusLabel = useRunStatusLabel();
   const stepStatus = useMemo(() => {
     const m = new Map<string, string>();
     for (const s of run?.steps || []) m.set(s.id, s.status);
@@ -151,7 +155,7 @@ export function RunMiniDag({
               {n.synthetic === "extract" ? (
                 <button
                   onClick={() => onSelectNode(sel ? null : n.id)}
-                  title={`抽取 · ${n.id}`}
+                  title={t("extractTitle", { id: n.id })}
                   className={`mt-0.5 flex shrink-0 items-center rounded border px-1 py-0.5 transition-colors ${
                     sel ? "border-violet bg-violet/10" : "border-line2 bg-card hover:bg-card2/60"
                   }`}
@@ -167,7 +171,7 @@ export function RunMiniDag({
                 <div className="flex shrink-0 flex-col items-start gap-0.5">
                   <button
                     onClick={() => onSelectNode(sel ? null : n.id)}
-                    title={`${n.id} · ${st}${n.type !== "step" && n.type !== "agent" && n.type !== "llm" ? ` · ${n.type}` : ""}`}
+                    title={`${n.id} · ${statusLabel(st)}${n.type !== "step" && n.type !== "agent" && n.type !== "llm" ? ` · ${n.type}` : ""}`}
                     className={`relative flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] transition-colors ${
                       sel ? "border-violet bg-violet/10 text-txt" : "border-line2 bg-card text-txt hover:bg-card2/60"
                     } ${active ? `ring-1 shadow-sm ${st === "running" ? "ring-blue/60" : "ring-orange/60"}` : ""}`}
@@ -185,7 +189,7 @@ export function RunMiniDag({
                     {iters > 0 && (
                       <span
                         className="rounded bg-orange/15 px-0.5 font-mono text-[9px] leading-[14px] text-orange"
-                        title={`${iters} 次迭代`}
+                        title={t("iterations", { count: iters })}
                       >
                         ↻{iters}
                       </span>
@@ -195,7 +199,7 @@ export function RunMiniDag({
                     {isPausedHere && (
                       <span
                         className="absolute -right-1.5 -top-1.5 rounded-full bg-orange px-0.5 text-[8px] leading-[12px] text-white"
-                        title="运行暂停在此节点"
+                        title={t("pausedHere")}
                       >
                         ⏸
                       </span>
@@ -205,20 +209,23 @@ export function RunMiniDag({
                       the target's own status, misses grey + dashed */}
                   {targets.length > 0 && (
                     <div className="ml-1.5 flex flex-col gap-px">
-                      {targets.map((t) => {
-                        const tst = stepStatus.get(t);
+                      {targets.map((tg) => {
+                        const tst = stepStatus.get(tg);
                         const hit = !!tst && tst !== "pending";
-                        const tTitle = dsl?.nodes?.find((x) => x.id === t)?.title || t;
+                        const tTitle = dsl?.nodes?.find((x) => x.id === tg)?.title || tg;
                         return (
                           <button
-                            key={t}
-                            onClick={() => onSelectNode(selNode === t ? null : t)}
-                            title={`路由 → ${tTitle}（${tst || "未命中"}）`}
+                            key={tg}
+                            onClick={() => onSelectNode(selNode === tg ? null : tg)}
+                            title={t("routeTitle", {
+                              target: tTitle,
+                              status: tst ? statusLabel(tst) : t("noMatch"),
+                            })}
                             className={`flex items-center gap-0.5 rounded border px-1 py-px text-[9px] leading-[14px] ${
                               hit
                                 ? "border-solid bg-card text-txt"
                                 : "border-dashed border-line2 text-faint"
-                            } ${selNode === t ? "border-violet" : ""}`}
+                            } ${selNode === tg ? "border-violet" : ""}`}
                           >
                             <span className="text-faint">⊃</span>
                             {hit && (

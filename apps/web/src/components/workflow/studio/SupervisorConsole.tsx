@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import type { WorkflowDef, WorkflowRunEvent } from "@/lib/types";
 
 function fmtTs(ts?: number): string {
@@ -16,14 +17,48 @@ const DECISION_COLOR: Record<string, string> = {
   abort: "text-red",
 };
 
-/** fallback_reason → 中文（auto 转人工，design B P2.5）。Decision card banner 也复用。 */
+/** fallback_reason → 展示文案的 meta 表（auto 转人工，design B P2.5）。
+ *  消费方现走 wf.sup.fallback* 的 key 渲染（SupervisorConsole /
+ *  SupervisorDecisionCard）；本表保留英文导出做未识别 reason 的回退。 */
 export const FALLBACK_REASON_ZH: Record<string, string> = {
-  "low-confidence": "置信度不足",
-  "interventions-exceeded": "干预次数超限",
-  "token-budget": "token 预算超限",
-  "retry-limit": "重试次数超限",
-  "judge-error": "裁决器异常",
+  "low-confidence": "Low confidence",
+  "interventions-exceeded": "Intervention limit exceeded",
+  "token-budget": "Token budget exceeded",
+  "retry-limit": "Retry limit exceeded",
+  "judge-error": "Adjudicator error",
 };
+
+/** fallback_reason 的 i18n key 映射（wf.sup.*）；未知 reason 回落 meta 表。 */
+function fallbackReasonKey(reason: string): string | null {
+  switch (reason) {
+    case "low-confidence":
+      return "fallbackLowConfidence";
+    case "interventions-exceeded":
+      return "fallbackInterventionsExceeded";
+    case "token-budget":
+      return "fallbackTokenBudget";
+    case "retry-limit":
+      return "fallbackRetryLimit";
+    case "judge-error":
+      return "fallbackJudgeError";
+    default:
+      return null;
+  }
+}
+
+/** fallback_reason 的本地化展示（hook 组件内使用）。 */
+export function useFallbackReasonLabel() {
+  const t = useTranslations("wf.sup");
+  const tr = t as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  return (reason: string): string => {
+    const key = fallbackReasonKey(reason);
+    if (key && tr.has(key)) return tr(key);
+    return FALLBACK_REASON_ZH[reason] || reason;
+  };
+}
 
 // 运行时缺省（DSL 未写 supervisor.confidence_min 等 5 项时的生效值）。
 const CONF_MIN_DEFAULT = 0.7;
@@ -100,6 +135,8 @@ export function SupervisorConsole({
   const cfg = ((wf.dsl as { supervisor?: SupervisorCfg } | undefined)?.supervisor ||
     {}) as SupervisorCfg;
   const ck = cfg.checkpoints || {};
+  const t = useTranslations("wf.sup");
+  const fallbackLabel = useFallbackReasonLabel();
   const after = Array.isArray(ck.after_nodes) && ck.after_nodes.length > 0;
   const rows = events.filter(
     (e) =>
@@ -123,51 +160,51 @@ export function SupervisorConsole({
       <div className="space-y-3">
         <div className="rounded-lg border border-line bg-card p-3">
           <div className="mb-2 flex items-center gap-1.5">
-            <span className="text-[12.5px] font-semibold text-txt">配置</span>
+            <span className="text-[12.5px] font-semibold text-txt">{t("config")}</span>
             {cfg.enabled ? (
               <span className="rounded bg-violet/15 px-1.5 py-px text-[10px] text-violet">
                 {cfg.mode === "auto" ? "auto" : "human"}
               </span>
             ) : (
-              <span className="rounded bg-card2 px-1.5 py-px text-[10px] text-faint">未启用</span>
+              <span className="rounded bg-card2 px-1.5 py-px text-[10px] text-faint">{t("notEnabled")}</span>
             )}
           </div>
           <div className="space-y-1 text-[11.5px]">
             <div className="flex justify-between gap-3">
-              <span className="text-muted">检查点</span>
+              <span className="text-muted">{t("checkpoints")}</span>
               <span className="text-right text-txt">
                 {after
-                  ? `指定节点后：${ck.after_nodes!.join("、")}`
-                  : "每个 step 之后（every_step）"}
+                  ? t("afterNodes", { list: ck.after_nodes!.join(", ") })
+                  : t("everyStep")}
               </span>
             </div>
             {cfg.retry_limit != null && (
               <div className="flex justify-between">
-                <span className="text-muted">每步重试上限</span>
+                <span className="text-muted">{t("retryLimit")}</span>
                 <span className="tabular-nums text-txt">{cfg.retry_limit}</span>
               </div>
             )}
             {cfg.max_interventions != null && (
               <div className="flex justify-between">
-                <span className="text-muted">单 run 干预上限</span>
+                <span className="text-muted">{t("interventionLimit")}</span>
                 <span className="tabular-nums text-txt">{cfg.max_interventions}</span>
               </div>
             )}
             {cfg.token_budget != null && (
               <div className="flex justify-between">
-                <span className="text-muted">token 预算</span>
+                <span className="text-muted">{t("tokenBudget")}</span>
                 <span className="tabular-nums text-txt">{cfg.token_budget}</span>
               </div>
             )}
             {cfg.confidence_min != null && (
               <div className="flex justify-between">
-                <span className="text-muted">auto 回退阈值</span>
+                <span className="text-muted">{t("confidenceMin")}</span>
                 <span className="tabular-nums text-txt">{cfg.confidence_min}</span>
               </div>
             )}
             {cfg.model && (
               <div className="flex justify-between gap-3">
-                <span className="text-muted">裁决模型</span>
+                <span className="text-muted">{t("judgeModel")}</span>
                 <span className="truncate text-txt">{cfg.model}</span>
               </div>
             )}
@@ -176,17 +213,16 @@ export function SupervisorConsole({
             )}
           </div>
           <div className="mt-2 border-t border-line pt-1.5 text-[10.5px] text-faint">
-            配置三层：配方 DSL 默认 → 运行前 override（P2.5）→ 运行中即时切换（P2.5）。
-            每个检查点的评估与裁决落 sup_eval / sup_decision 事件，可审计、可回放。
+            {t("layersNote")}
           </div>
         </div>
       </div>
 
       <div className="rounded-lg border border-line bg-card p-3">
         <div className="mb-2 flex items-center gap-1.5">
-          <span className="text-[12.5px] font-semibold text-txt">裁决时间线</span>
+          <span className="text-[12.5px] font-semibold text-txt">{t("timeline")}</span>
           <span className="ml-auto font-mono text-[10px] text-faint">
-            {rows.length} 条 · 本次运行
+            {t("entries", { count: rows.length })}
           </span>
         </div>
         {hasAuto && (
@@ -194,28 +230,28 @@ export function SupervisorConsole({
             {budget ? (
               <>
                 <BudgetBar
-                  label="干预"
+                  label={t("budgetInterv")}
                   value={budget.interventions ?? 0}
                   max={budget.max_interventions ?? 0}
                   fmt={(n) => String(n)}
                 />
                 <BudgetBar
-                  label="tokens"
+                  label={t("budgetTokens")}
                   value={budget.tokens ?? 0}
                   max={budget.token_budget ?? 0}
                   fmt={fmtK}
                 />
               </>
             ) : (
-              <div className="text-[10px] text-faint">auto 已启用 — 预算随首条 auto 裁决出现</div>
+              <div className="text-[10px] text-faint">{t("noBudget")}</div>
             )}
           </div>
         )}
         {!rows.length ? (
           <div className="py-6 text-center text-[11px] text-faint">
             {cfg.enabled
-              ? "本次运行还没有触发任何检查点裁决"
-              : "该配方未启用 supervisor——启用后每个检查点的裁决都会记在这里"}
+              ? t("noDecisions")
+              : t("disabled")}
           </div>
         ) : (
           <div className="space-y-1">
@@ -245,7 +281,7 @@ export function SupervisorConsole({
                     <>
                       <span className={`w-[96px] shrink-0 ${DECISION_COLOR[dec] || "text-muted"}`}>
                         {e.mode === "auto-pending"
-                          ? "auto·直通"
+                          ? "auto·pass"
                           : String(e.mode || "")}
                       </span>
                       <span className={DECISION_COLOR[dec] || "text-muted"}>{dec}</span>
@@ -261,14 +297,16 @@ export function SupervisorConsole({
                       <span className={lowConf ? "text-yellow" : "text-muted"}>
                         conf {fmtConf(e.confidence)} / ≥{" "}
                         {fmtConf(e.confidence_min ?? CONF_MIN_DEFAULT)}
-                        {lowConf ? " · 置信度不足" : ""}
+                        {lowConf ? " · low confidence" : ""}
                       </span>
                     </>
                   ) : isFallback ? (
                     <>
                       <span className="w-[96px] shrink-0 text-yellow">sup_fallback</span>
                       <span className="text-yellow">
-                        转人工 · {FALLBACK_REASON_ZH[String(e.reason)] || String(e.reason || "?")}
+                        {t("escalated", {
+                          reason: fallbackLabel(String(e.reason || "?")),
+                        })}
                       </span>
                       {typeof e.detail === "string" && e.detail && (
                         <span className="truncate text-muted">{e.detail}</span>
@@ -276,7 +314,7 @@ export function SupervisorConsole({
                     </>
                   ) : (
                     <>
-                      <span className="w-[96px] shrink-0 text-yellow">human·等待</span>
+                      <span className="w-[96px] shrink-0 text-yellow">human·waiting</span>
                       <span className="truncate text-muted">@{e.node_id || "?"}</span>
                     </>
                   )}
@@ -292,7 +330,7 @@ export function SupervisorConsole({
           </div>
         )}
         <div className="mt-2 border-t border-line pt-1.5 text-[10.5px] text-faint">
-          跨运行的待裁决项在左栏「决策收件箱」聚合。
+          {t("inboxNote")}
         </div>
       </div>
     </div>

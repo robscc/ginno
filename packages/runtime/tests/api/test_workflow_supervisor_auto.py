@@ -230,7 +230,7 @@ def test_low_confidence_falls_back_then_human_decides(client, monkeypatch):
     assert pi["fallback_reason"] == "low-confidence"
     assert pi["auto_suggestion"]["decision"] == "continue"
     assert pi["auto_suggestion"]["confidence"] == 0.41
-    assert pi["question"].startswith("auto 置信度不足")
+    assert pi["question"].startswith("auto confidence too low")
     fb = _evs(client, rid, "sup_fallback")
     assert len(fb) == 1 and fb[0]["reason"] == "low-confidence"
     ev = _evs(client, rid, "sup_eval")[0]
@@ -257,7 +257,7 @@ def test_judge_error_falls_back(client, monkeypatch):
     pi = aw["run"]["pending_interrupt"]
     assert pi["fallback_reason"] == "judge-error"
     assert pi["auto_suggestion"] is None  # nothing to suggest
-    assert pi["question"].startswith("auto 裁判不可用")
+    assert pi["question"].startswith("auto judge unavailable")
     assert _evs(client, rid, "sup_fallback")[0]["reason"] == "judge-error"
     assert _evs(client, rid, "sup_eval") == []  # nothing was judged
     assert _decide(client, rid, "continue").status_code == 200
@@ -303,7 +303,7 @@ def test_token_budget_fallback(client, monkeypatch):
     assert aw["run"]["status"] == "paused"
     pi = aw["run"]["pending_interrupt"]
     assert pi["fallback_reason"] == "token-budget"
-    assert pi["question"].startswith("auto 裁判 token 超预算")
+    assert pi["question"].startswith("auto judge over token budget")
 
 
 # --------------------------------------------------------------------------- #

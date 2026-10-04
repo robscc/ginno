@@ -51,7 +51,7 @@ from .engine import (  # noqa: F401  (re-export of the historical namespace)
     TurnStopped,
 )
 from .turn import (  # noqa: F401  (re-export of the historical namespace)
-    _ATTACH_ONLY_TEXT,
+    _attach_only_text,
     _bound_workflow_view,
     _maybe_refresh_session_graph,
     _prepare_steer_payload,

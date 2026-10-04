@@ -1,0 +1,105 @@
+{
+  "shell": {
+    "nav": {
+      "newSession": "新建会话",
+      "newSessionHint": "返回首页；会话在首次发送时才真正创建",
+      "searchSessions": "搜索会话",
+      "connectors": "连接器",
+      "scheduled": "定时任务",
+      "kb": "知识库",
+      "workflows": "工作流",
+      "settings": "设置"
+    },
+    "navDots": {
+      "connectorError": "连接器出错",
+      "connectorWarn": "部分连接器未连接",
+      "scheduleError": "最近一次执行失败，或近期有错过的定时点",
+      "scheduleOff": "定时任务已全局停用"
+    },
+    "groups": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "earlier": "更早"
+    },
+    "filter": {
+      "clear": "清除筛选",
+      "showOnly": "只看 {name} 的会话"
+    },
+    "empty": {
+      "noSessions": "还没有会话。",
+      "noSessionsHint": "点击「新建会话」或按 ⌘N，开始第一段对话。",
+      "filtered": "该 Agent 下暂无会话。",
+      "filteredHint": "再次点击高亮的筛选标签即可取消筛选。"
+    },
+    "session": {
+      "untitled": "未命名会话",
+      "quickBadge": "速聊会话（来自悬浮速聊窗）",
+      "statusPrefix": "状态：{status}",
+      "subagentType": "子代理类型：{type}",
+      "moreNested": "还有 {count} 个更深层子任务",
+      "activeKids": "{count} 个子任务/运行进行中",
+      "collapse": "收起子任务",
+      "expand": "展开子任务",
+      "stop": "停止子任务",
+      "stopHint": "停止子任务（连同其运行中的后代一起停止）",
+      "clearSub": "清除已结束的子任务",
+      "clearSubHint": "清除（删除该子会话行）",
+      "rename": "重命名会话",
+      "renameHint": "重命名（或双击标题）",
+      "delete": "删除会话",
+      "errorHint": "前往 设置 → 模型 API 配置"
+    },
+    "run": {
+      "fallbackName": "工作流",
+      "cancel": "取消运行",
+      "cancelHint": "取消此次运行",
+      "delete": "删除运行记录",
+      "deleteHint": "删除该运行记录"
+    },
+    "fallbackToast": {
+      "title": "正在使用备用浏览器实例"
+    },
+    "goalSession": {
+      "title": "目标会话 — 设定一个长期运行的目标"
+    },
+    "deleteModal": {
+      "title": "删除会话",
+      "confirm": "删除",
+      "message": "删除会话「{name}」？其对话历史将被删除且无法恢复。会话产出的文件会保留，可在 设置 → 会话文件 中查看或清理。",
+      "cascade": "将同时删除其 {count} 个子代理会话（运行中的会先协作式停止）。"
+    },
+    "folders": {
+      "chipTitle": "本会话挂载的上下文文件夹",
+      "mount": "挂载",
+      "title": "本会话的上下文文件夹",
+      "empty": "尚未挂载文件夹。挂载后 Agent 可直接读写其中的文件（代码仓库、笔记等）。",
+      "unsetPrimary": "取消主工作文件夹",
+      "setPrimary": "设为主工作文件夹（bash cwd）",
+      "accessTitle": "切换访问级别（库级设置）：rw = 读写 / ro = 只读",
+      "unmount": "从本会话卸载",
+      "missing": "{id}（文件夹库中已不存在）",
+      "inputPlaceholder": "输入要挂载的文件夹路径，如 ~/workspace/my-repo",
+      "mountTitle": "注册进文件夹库并挂载（默认读写；首个挂载成为主工作文件夹）",
+      "manage": "管理文件夹库（访问级别 / 规则开关）",
+      "errOperation": "操作失败",
+      "errMount": "挂载失败"
+    },
+    "search": {
+      "dialogLabel": "搜索会话",
+      "placeholder": "搜索会话标题，或输入 Agent 名称…",
+      "empty": "没有匹配的会话",
+      "footer": "↑↓ 选择 · Enter 打开 · Esc 关闭"
+    },
+    "topbar": {
+      "newSession": "新会话",
+      "running": "运行中",
+      "idle": "空闲",
+      "usageTitle": "本轮：输入 {input} tokens（{cache} 来自缓存），输出 {output} tokens，{calls} 次模型调用",
+      "actions": "会话操作",
+      "renamePrompt": "会话标题",
+      "copyId": "复制会话 ID",
+      "copied": "已复制",
+      "idChipTitle": "会话 {id}（点击复制，用于查日志）"
+    }
+  }
+}

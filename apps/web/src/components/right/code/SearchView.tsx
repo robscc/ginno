@@ -12,6 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslations } from "next-intl";
 import { ChevronDown, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { codeErrorMessage } from "./treeUtils";
@@ -103,6 +104,9 @@ export function SearchView({
   initialQuery = "",
   className,
 }: SearchViewProps) {
+  // code 域 catalog（本组件文案收在 code.search；错误码经 treeUtils 的
+  // codeErrorMessage 走 code.errors）
+  const t = useTranslations("code");
   const [q, setQ] = useState(initialQuery);
   const [result, setResult] = useState<CodeSearchResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -135,12 +139,12 @@ export function SearchView({
         scanned: 0,
         truncated: false,
         elapsedMs: 0,
-        error: { code: "unknown", message: err instanceof Error ? err.message : "搜索失败" },
+        error: { code: "unknown", message: err instanceof Error ? err.message : t("search.searchFailed") },
       });
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -154,9 +158,10 @@ export function SearchView({
       setLoading(false);
       return;
     }
-    const t = window.setTimeout(() => void run(q), DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
-  }, [q, run]);
+    // 局部变量不可命名 t——会遮蔽 useTranslations 的 t（已知坑）
+    const timer = window.setTimeout(() => void run(q), DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [q, run, t]);
 
   const groups = useMemo(() => {
     const out: { path: string; rows: { hit: CodeSearchHit; index: number }[] }[] = [];
@@ -210,7 +215,7 @@ export function SearchView({
       return (
         <div className="shrink-0 border-b border-line bg-card px-3 py-1 text-[11px] text-red">
           {codeErrorMessage(result.error.code)}
-          {result.error.message ? `：${result.error.message}` : ""}
+          {result.error.message ? `: ${result.error.message}` : ""}
         </div>
       );
     }
@@ -218,12 +223,12 @@ export function SearchView({
       // Explicit by design: never let a budget cut masquerade as "no more hits".
       return (
         <div className="shrink-0 border-b border-line bg-card px-3 py-1 text-[11px] text-yellow">
-          已扫描 {result.scanned.toLocaleString()} 个文件后停止，结果可能不完整
+          {t("search.stopped", { count: result.scanned.toLocaleString() })}
         </div>
       );
     }
     return null;
-  }, [result]);
+  }, [result, t]);
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", className)}>
@@ -237,22 +242,22 @@ export function SearchView({
             setActive(0);
           }}
           onKeyDown={onKeyDown}
-          placeholder={rootName ? `在「${rootName}」中搜索内容…` : "搜索文件内容…"}
-          aria-label="搜索文件内容"
+          placeholder={rootName ? t("search.placeholderNamed", { name: rootName }) : t("search.placeholder")}
+          aria-label={t("search.inputAria")}
           className="min-w-0 flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-faint"
         />
         <span className="shrink-0 text-[10px] text-faint">
           {loading
-            ? "搜索中…"
+            ? t("search.searching")
             : result && !result.error
-              ? `${total} 处结果 · 扫描 ${result.scanned.toLocaleString()} 个文件 · ${result.elapsedMs} ms`
+              ? t("search.stat", { hits: total, scanned: result.scanned.toLocaleString(), ms: result.elapsedMs })
               : ""}
         </span>
         <button
           type="button"
           onClick={onClose}
-          title="关闭搜索"
-          aria-label="关闭搜索"
+          title={t("search.close")}
+          aria-label={t("search.close")}
           className="shrink-0 rounded p-0.5 text-faint transition-colors hover:text-txt"
         >
           <X className="h-3.5 w-3.5" />
@@ -264,12 +269,12 @@ export function SearchView({
       <div className="min-h-0 flex-1 overflow-auto py-1">
         {!q.trim() ? (
           <div className="px-3 py-6 text-center text-[11px] text-faint">
-            输入关键字搜索当前工作区根内的文件内容
+            {t("search.emptyHint")}
           </div>
         ) : loading && !result ? (
-          <div className="px-3 py-6 text-center text-[11px] text-faint">搜索中…</div>
+          <div className="px-3 py-6 text-center text-[11px] text-faint">{t("search.searching")}</div>
         ) : result && !result.error && !total ? (
-          <div className="px-3 py-6 text-center text-[11px] text-faint">没有匹配的内容</div>
+          <div className="px-3 py-6 text-center text-[11px] text-faint">{t("search.noMatches")}</div>
         ) : (
           groups.map((g) => (
             <div key={g.path} className="mb-1">
@@ -278,7 +283,7 @@ export function SearchView({
                 <span className="min-w-0 flex-1 truncate" title={g.path}>
                   {g.path}
                 </span>
-                <span className="shrink-0 text-[10px] text-faint">{g.rows.length} 处</span>
+                <span className="shrink-0 text-[10px] text-faint">{t("search.groupHits", { count: g.rows.length })}</span>
               </div>
               {g.rows.map(({ hit, index }) => (
                 <button
@@ -306,7 +311,7 @@ export function SearchView({
       </div>
 
       <div className="shrink-0 border-t border-line px-3 py-1 text-[10px] text-faint">
-        ↑↓ 选择 · Enter 打开并定位 · Esc 关闭
+        {t("search.keysHint")}
       </div>
     </div>
   );

@@ -16,6 +16,7 @@
 
 import { useEffect, useState } from "react";
 import { ImageOff } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 
 export function ImagePreview({
@@ -27,6 +28,7 @@ export function ImagePreview({
   url: string;
   className?: string;
 }) {
+  const t = useTranslations("code.image");
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -48,10 +50,8 @@ export function ImagePreview({
         )}
       >
         <ImageOff size={18} />
-        <span>无法显示这张图片</span>
-        <span className="text-[11px] text-faint/80">
-          文件可能过大（上限 32 MB）、已损坏，或不在可预览的格式内
-        </span>
+        <span>{t("failed")}</span>
+        <span className="text-[11px] text-faint/80">{t("failedHint")}</span>
       </div>
     );
   }
@@ -78,7 +78,7 @@ export function ImagePreview({
             {dims.w} × {dims.h}
           </span>
         ) : null}
-        <span className="ml-auto shrink-0">只读预览</span>
+        <span className="ml-auto shrink-0">{t("readonly")}</span>
       </div>
     </div>
   );

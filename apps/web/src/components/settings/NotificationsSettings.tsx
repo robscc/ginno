@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { notifyNative } from "@/lib/desktop";
 import {
   loadNotifyPrefs,
@@ -16,6 +17,7 @@ import {
  * on purpose: it exists to verify permissions/sound while the switch is off.
  */
 export function NotificationsSettings() {
+  const t = useTranslations("settings.notifications");
   const [prefs, setPrefs] = useState<NotifyPrefs | null>(null);
   const [msg, setMsg] = useState("");
 
@@ -32,10 +34,10 @@ export function NotificationsSettings() {
     try {
       const p = await saveNotifyPrefs(patch);
       setPrefs(p);
-      setMsg("Saved");
+      setMsg(t("saved"));
     } catch {
       setPrefs(prefs);
-      setMsg("Failed to save");
+      setMsg(t("saveFailed"));
     }
   }
 
@@ -44,21 +46,21 @@ export function NotificationsSettings() {
     void notifyNative({
       kind: "test",
       id: "test",
-      title: "Ginno Test Notification",
-      body: prefs.sound ? `Sound: ${prefs.soundName}` : "This is a test notification (silent)",
+      title: t("testTitle"),
+      body: prefs.sound ? t("testBodySound", { sound: prefs.soundName }) : t("testBodySilent"),
       sound: prefs.sound ? prefs.soundName : undefined,
     }).then((sent) => {
       // Plain-browser dev fallback (WKWebView has no Notification API, so in
       // the packaged app notifyNative is the only path anyway).
       if (sent) return;
       if (typeof Notification === "undefined") {
-        setMsg("Cannot send a test notification in this environment");
+        setMsg(t("testUnavailable"));
         return;
       }
       try {
-        new Notification("Ginno Test Notification", { body: "Browser notification (dev environment)" });
+        new Notification(t("testTitle"), { body: t("testBodyBrowser") });
       } catch {
-        setMsg("Cannot send a test notification in this environment");
+        setMsg(t("testUnavailable"));
       }
     });
   }
@@ -66,20 +68,16 @@ export function NotificationsSettings() {
   if (!prefs) {
     return (
       <div className="px-8 py-7">
-        <h2 className="text-lg font-semibold text-txt">Notifications</h2>
-        <p className="mt-4 text-sm text-faint">Loading…</p>
+        <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+        <p className="mt-4 text-sm text-faint">{t("loading")}</p>
       </div>
     );
   }
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Notifications</h2>
-      <p className="mt-1 text-sm text-muted">
-        Send system notifications when a session reply or a Workflow run completes; clicking a
-        notification jumps to the corresponding content. You are only notified when you have not
-        viewed it yet.
-      </p>
+      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+      <p className="mt-1 text-sm text-muted">{t("description")}</p>
       <div className="mt-4 max-w-md space-y-4">
         <div>
           <label className="flex items-center gap-2 text-sm text-txt">
@@ -88,12 +86,9 @@ export function NotificationsSettings() {
               checked={prefs.enabled}
               onChange={(e) => void save({ enabled: e.target.checked })}
             />
-            Enable desktop notifications
+            {t("enableLabel")}
           </label>
-          <p className="mt-1 text-xs text-faint">
-            The system asks for notification permission on the first desktop notification (if
-            denied, enable it manually in System Settings → Notifications → Ginno).
-          </p>
+          <p className="mt-1 text-xs text-faint">{t("enableHelp")}</p>
         </div>
         <div>
           <label className="flex items-center gap-2 text-sm text-txt">
@@ -102,11 +97,11 @@ export function NotificationsSettings() {
               checked={prefs.sound}
               onChange={(e) => void save({ sound: e.target.checked })}
             />
-            Sound
+            {t("soundLabel")}
           </label>
         </div>
         <div>
-          <label className="field-label">Sound name</label>
+          <label className="field-label">{t("soundNameLabel")}</label>
           <select
             className="field"
             value={prefs.soundName}
@@ -125,12 +120,9 @@ export function NotificationsSettings() {
             onClick={testNotify}
             className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:border-violet hover:text-txt"
           >
-            Send test notification
+            {t("testButton")}
           </button>
-          <p className="mt-1 text-xs text-faint">
-            Not affected by the desktop notification toggle; used to verify notification permission
-            and the sound effect.
-          </p>
+          <p className="mt-1 text-xs text-faint">{t("testHelp")}</p>
         </div>
         {msg && <div className="text-xs text-muted">{msg}</div>}
       </div>

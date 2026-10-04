@@ -498,7 +498,7 @@ def test_delete_moves_the_file_to_the_trash_and_it_is_still_recoverable(env):
     assert trashed[0].read_text(encoding="utf-8") == "import thing\n"
     # The response points at the copy, so the UI can tell the user where it went.
     assert r["trash_path"] == str(trashed[0])
-    assert "废纸篓" in r["message"] or "回收" in r["message"]
+    assert "session trash" in r["message"] or "Trash" in r["message"]
 
 
 def test_delete_never_leaves_the_entry_in_place(env):

@@ -10,6 +10,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import { useTranslations } from "next-intl";
 import { openLinkExternal } from "@/lib/runtime";
 
 // Obsidian-style [[target]] / [[target|alias]] / [[target#heading]]. Turned into
@@ -28,6 +29,8 @@ function nodeText(n: ReactNode): string {
 
 function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {
   const [copied, setCopied] = useState(false);
+  // composer 域 catalog（本组件也被其他域文件复用，文案统一收在 composer.markdown）
+  const t = useTranslations("composer");
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(nodeText(children).replace(/\n$/, ""));
@@ -41,13 +44,13 @@ function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {
     <div className="my-3 overflow-hidden rounded-lg border border-line">
       <div className="flex items-center justify-between border-b border-line bg-card2/60 px-3 py-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">
-          {lang || "code"}
+          {lang || t("markdown.codeLabel")}
         </span>
         <button
           onClick={copy}
           className="text-[11px] text-faint transition-colors hover:text-txt"
         >
-          {copied ? "已复制 ✓" : "复制"}
+          {copied ? t("markdown.copied") : t("markdown.copy")}
         </button>
       </div>
       <pre className="overflow-x-auto bg-[rgb(var(--code-bg))] p-3 text-xs leading-relaxed">
@@ -72,6 +75,7 @@ export function Markdown({
   text: string;
   onWikilink?: (target: string) => void;
 }) {
+  const t = useTranslations("composer");
   const src = onWikilink
     ? text.replace(WIKILINK_RE, (_, target: string, alias?: string) => {
         const label = (alias || target).trim();
@@ -110,7 +114,7 @@ export function Markdown({
               <button
                 type="button"
                 onClick={() => onWikilink(target)}
-                title={`打开 ${target}`}
+                title={t("markdown.openLink", { target })}
                 className="rounded bg-violet/15 px-1 py-0.5 text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:bg-violet/25 hover:decoration-violet"
               >
                 {children}

@@ -10,6 +10,7 @@
  */
 
 import type { AgentConfig, Artifact, SkillSummary, WorkflowDef } from "@/lib/types";
+import { composerCatalog } from "./composerT";
 
 export type MentionKind = "artifact" | "agent" | "workflow" | "memory";
 
@@ -42,23 +43,25 @@ export interface MenuItem {
 }
 
 /** Client mirror of the server's builtin registry (discoverability subset).
- *  The server registry stays authoritative for parsing. */
-export const BUILTIN_COMMANDS: Array<{ name: string; description: string }> = [
-  { name: "help", description: "列出可用命令与技能" },
-  { name: "compact", description: "手动压缩会话上下文（LLM 摘要旧消息，释放 tokens）" },
-  {
-    name: "subagent",
-    description:
-      "发起子代理：/subagent <目标> 直接发起 1 个；/subagent 拆分 <任务> 先 LLM 拆分，卡片确认后批量发起",
-  },
-];
+ *  The server registry stays authoritative for parsing.
+ *  命令名/触发词本身不翻译（i18n 硬性约束）；描述文案在 buildMenuItems 时
+ *  走 composer 域 catalog 按当前 locale 取词。 */
+const BUILTIN_COMMAND_NAMES = ["help", "compact", "subagent"] as const;
 
-const MENTION_KIND_META: Record<MentionKind, { group: string; description: string }> = {
-  artifact: { group: "产物 Artifacts", description: "引用一个产物文件作为本轮上下文" },
-  agent: { group: "智能体 Agents", description: "本轮改由该智能体应答" },
-  workflow: { group: "工作流 Workflows", description: "引用工作流定义供执行/参考" },
-  memory: { group: "记忆 Memory", description: "注入长期记忆 MEMORY.md" },
-};
+/** 内置命令的描述 + mention 类型的分组名/说明，均按当前 locale 从 catalog 取。 */
+function mentionKindMeta(kind: MentionKind): { group: string; description: string } {
+  const cat = composerCatalog().composer;
+  switch (kind) {
+    case "artifact":
+      return { group: cat.menu.groups.artifacts, description: cat.mentions.artifactDesc };
+    case "agent":
+      return { group: cat.menu.groups.agents, description: cat.mentions.agentDesc };
+    case "workflow":
+      return { group: cat.menu.groups.workflows, description: cat.mentions.workflowDesc };
+    case "memory":
+      return { group: cat.menu.groups.memory, description: cat.mentions.memoryDesc };
+  }
+}
 
 export const MENTION_KINDS: MentionKind[] = ["artifact", "agent", "workflow", "memory"];
 
@@ -117,17 +120,24 @@ export interface MenuSources {
 
 /** Build the flat, group-ordered item list for the active trigger. */
 export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
+  // 分组名/说明文案按当前 locale 取词（每次构建菜单时取，切语言后即时生效）
+  const cat = composerCatalog().composer;
   if (trigger.kind === "command") {
     const items: MenuItem[] = [];
-    for (const c of BUILTIN_COMMANDS) {
-      if (matches(c.name, trigger.query) || matches(c.description, trigger.query)) {
+    const desc: Record<(typeof BUILTIN_COMMAND_NAMES)[number], string> = {
+      help: cat.commands.helpDesc,
+      compact: cat.commands.compactDesc,
+      subagent: cat.commands.subagentDesc,
+    };
+    for (const name of BUILTIN_COMMAND_NAMES) {
+      if (matches(name, trigger.query) || matches(desc[name], trigger.query)) {
         items.push({
           kind: "command",
-          id: c.name,
-          label: `/${c.name}`,
-          detail: c.description,
-          group: "命令 Commands",
-          insert: `/${c.name} `,
+          id: name,
+          label: `/${name}`,
+          detail: desc[name],
+          group: cat.menu.groups.commands,
+          insert: `/${name} `,
         });
       }
     }
@@ -140,7 +150,7 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
           id: s.name,
           label: `/${s.name}`,
           detail: s.description,
-          group: "技能 Skills",
+          group: cat.menu.groups.skills,
           insert: `/${s.name} `,
         });
       }
@@ -158,12 +168,13 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
     const searchIn = kindFilter ? label : `${kind}:${label} ${detail ?? ""}`;
     const needle = kindFilter ? labelQ : q;
     if (!matches(searchIn, needle)) return;
+    const meta = mentionKindMeta(kind);
     items.push({
       kind,
       id,
       label,
-      detail: detail || MENTION_KIND_META[kind].description,
-      group: MENTION_KIND_META[kind].group,
+      detail: detail || meta.description,
+      group: meta.group,
       insert: `@${kind}:${label} `,
     });
   };
@@ -171,7 +182,7 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
   for (const a of src.artifacts) push("artifact", a.id, a.name, a.kind);
   for (const a of src.agents) push("agent", a.id, a.name);
   for (const w of src.workflows) push("workflow", w.id, w.name, w.description);
-  push("memory", "global", "MEMORY.md", MENTION_KIND_META.memory.description);
+  push("memory", "global", "MEMORY.md", mentionKindMeta("memory").description);
   return items;
 }
 

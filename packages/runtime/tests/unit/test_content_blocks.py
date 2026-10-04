@@ -173,7 +173,7 @@ def test_truncate_for_ws_long_appends_marker():
     text = "x" * (TOOL_OUTPUT_WS_LIMIT + 2000)
     out = _truncate_for_ws(text)
     assert out.startswith("x" * TOOL_OUTPUT_WS_LIMIT)
-    assert "已截断" in out
+    assert "truncated" in out
     assert str(len(text)) in out
     assert len(out) < len(text)
 

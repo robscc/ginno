@@ -208,7 +208,7 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
     if proto == "anthropic":
         key = cfg.get("api_key")
         if not key:
-            raise ValueError("Anthropic API Key 为空 — 在 设置 → 模型 API 填写")
+            raise ValueError("Anthropic API key is empty — fill it in Settings → Model API")
         from langchain_anthropic import ChatAnthropic
 
         chat_kwargs: dict[str, Any] = dict(

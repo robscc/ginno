@@ -29,6 +29,7 @@ from ... import usage_store
 from ... import workflows as wf_store
 from ...checkpointer import ABANDONED_TURNS
 from ...graph import BLOCK_PREFIX
+from ...lang import t
 from ...server_shared import (
     _PENDING_KIND,
     _PENDING_RESUME,
@@ -981,11 +982,19 @@ async def _stream_graph(
                                 session_id,
                                 {
                                     "steer_id": f"recursion-warn-{turn_id}",
-                                    "text": (
+                                    # Model-facing steering (i18n 分流规则):
+                                    # inline bilingual t(), never a catalog key.
+                                    "text": t(
+                                        "[System reminder] This turn is about to "
+                                        f"hit the step limit (~{2 * _agent_steps}/"
+                                        f"{_r_limit} steps used). Stop issuing new "
+                                        "tool calls and immediately write your "
+                                        "final report from the material gathered "
+                                        "so far.",
                                         "【系统提醒】本回合即将达到步数上限"
                                         f"（已用约 {2 * _agent_steps}/{_r_limit} 步）。"
                                         "请停止发起新的工具调用，基于已有材料"
-                                        "立即输出最终报告。"
+                                        "立即输出最终报告。",
                                     ),
                                 },
                             )
@@ -1189,8 +1198,8 @@ async def _stream_graph(
                                             "present_in_session_id": session_id,
                                         })
                                     )
-                                    t = _WF_RUN_TASKS.get(run["id"])
-                                    if (t is None or t.done()) and run.get("status") == "running":
+                                    _wf_task = _WF_RUN_TASKS.get(run["id"])
+                                    if (_wf_task is None or _wf_task.done()) and run.get("status") == "running":
                                         _spawn_run_task(
                                             run["id"],
                                             _run_workflow_bg(
@@ -1339,11 +1348,20 @@ async def _stream_graph(
                     emit(
                         "notice",
                         {
+                            # Event contract (i18n-design.md §3): English
+                            # fallback text + i18n_key + params for the UI.
                             "message": (
-                                f"模型连接异常（{type(e).__name__}），"
-                                f"{_backoff:.0f} 秒后自动重试"
-                                f"（{_attempt + 1}/{AUTO_RETRY_MAX}）…"
-                            )
+                                f"Model connection error ({type(e).__name__}); "
+                                f"auto-retrying in {_backoff:.0f}s "
+                                f"({_attempt + 1}/{AUTO_RETRY_MAX})…"
+                            ),
+                            "i18n_key": "stream.auto_retry",
+                            "params": {
+                                "error": type(e).__name__,
+                                "seconds": f"{_backoff:.0f}",
+                                "attempt": _attempt + 1,
+                                "max": AUTO_RETRY_MAX,
+                            },
                         },
                     )
                 )
@@ -1392,7 +1410,18 @@ async def _stream_graph(
             session_id,
             {"last_error": {"turn_id": ui_turn_id, "message": err_msg, "at": time.time()}},
         )
-        await safe_send(emit("error", {"message": err_msg}))
+        # Event contract (i18n-design.md §3): the raw exception dump stays the
+        # English fallback; the key lets the UI render a localized headline.
+        await safe_send(
+            emit(
+                "error",
+                {
+                    "message": err_msg,
+                    "i18n_key": "stream.turn_failed",
+                    "params": {"error": err_msg},
+                },
+            )
+        )
     finally:
         try:
             _ka.cancel()

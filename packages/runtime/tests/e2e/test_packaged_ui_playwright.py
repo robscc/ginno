@@ -75,6 +75,11 @@ def _settings() -> dict:
     return {
         "default_provider": "custom",
         "bypass_permissions": True,
+        # Pin the UI/runtime language: otherwise `language` defaults to "auto"
+        # and the assertion texts below depend on the HOST OS locale (web
+        # resolves auto via navigator.language, the runtime via
+        # getdefaultlocale) — nondeterministic across machines/CI.
+        "language": "en",
         "providers": {
             "anthropic": {"enabled": False, "protocol": "anthropic", "api_key": "", "default_model": "x", "base_url": "", "max_tokens": 1, "temperature": 0.7, "timeout_s": 5},
             "openai": {"enabled": False, "protocol": "openai", "api_key": "", "default_model": "x", "base_url": "", "org_id": "", "max_tokens": 1},
@@ -112,7 +117,7 @@ def test_packaged_ui_shows_lists_and_adds_session(tmp_path):
 
             # open-experience redesign: the landing page is a centred home state
             # (no session yet); assert it actually rendered.
-            assert page.locator("text=交给 Agent").count() >= 1, "landing home should render"
+            assert page.locator("text=Hand it to your Agent").count() >= 1, "landing home should render"
 
             def session_count() -> int:
                 return page.evaluate(
@@ -146,8 +151,12 @@ def test_packaged_ui_context_chip_and_usage(tmp_path):
 
     * after a turn the TopBar shows the cumulative usage pill (↑/↓ + cache %);
     * editing the active agent's prompt mid-session makes the NEXT turn
-      announce a context chip ("角色设定…已更新"), and the chip survives a
-      page reload (history replay renders system context rows).
+      announce a context chip ("The persona prompt of … was updated"), and the
+      chip survives a page reload (history replay renders system context rows).
+
+    The chip text is the runtime's t() render under the pinned `language: en`
+    (see _settings) — before the i18n switch it was hardcoded Chinese
+    ("角色设定…已更新"), which only matched when the host OS locale was zh.
     """
     if not RUNTIME_BIN.exists():
         pytest.skip("packaged sidecar not built (run `make runtime`)")
@@ -222,14 +231,16 @@ def test_packaged_ui_context_chip_and_usage(tmp_path):
             page.wait_for_timeout(300)
 
             # ---- turn 2 → context chip announces the change ----
+            # (runtime t() render under the pinned en locale; the row carries
+            # no i18n_key — plain finished text from the checkpoint replay)
             send_msg("再来一句")
-            chip = page.get_by_text("角色设定", exact=False)
+            chip = page.get_by_text("persona prompt", exact=False)
             chip.first.wait_for(timeout=15000)
 
             # ---- reload → chip persists via history replay ----
             page.reload(wait_until="load")
             page.wait_for_timeout(2500)
-            assert page.get_by_text("角色设定", exact=False).count() >= 1, (
+            assert page.get_by_text("persona prompt", exact=False).count() >= 1, (
                 "context chip should survive reload (history endpoint maps "
                 "world-state messages to system context blocks)"
             )

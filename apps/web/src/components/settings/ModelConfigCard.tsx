@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { Pencil, Trash2, Star } from "lucide-react";
 import type { ModelConfig } from "@/lib/types";
-import { hostOf, PROTOCOL_LABEL, protocolBadge, relTime } from "./modelConfigShared";
+import { hostOf, PROTOCOL_LABEL, protocolBadge, relTimeParts } from "./modelConfigShared";
 
 // One saved model config in the list (multi-provider-model-config.md §2.1).
 // Presentational + local delete-confirm state; all writes go through the
@@ -31,30 +32,33 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
 // Persisted verify state: green with a relative time, yellow past 7 days,
 // red when the last verify failed, gray when never verified.
 function VerifyDot({ cfg }: { cfg: ModelConfig }) {
+  const t = useTranslations("settings.model");
   if (cfg.last_error) {
     return (
       <span className="flex items-center gap-1.5 text-faint" title={cfg.last_error}>
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red" />
-        Last verification failed
+        {t("verifyFailed")}
       </span>
     );
   }
   if (cfg.verified_at) {
     const stale = Date.now() / 1000 - cfg.verified_at > 7 * 86400;
+    const p = relTimeParts(cfg.verified_at);
+    const when = p.key === "justNow" ? t("justNow") : t(p.key, { count: p.count });
     return (
       <span
         className={`flex items-center gap-1.5 ${stale ? "text-yellow" : "text-faint"}`}
-        title={stale ? `Last verified ${relTime(cfg.verified_at)}` : undefined}
+        title={stale ? t("lastVerified", { time: when }) : undefined}
       >
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${stale ? "bg-yellow" : "bg-green"}`} />
-        {stale ? "Re-verification recommended" : `Verified ${relTime(cfg.verified_at)}`}
+        {stale ? t("reverify") : t("verified", { time: when })}
       </span>
     );
   }
   return (
     <span className="flex items-center gap-1.5 text-faint">
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#71717a" }} />
-      Not verified
+      {t("notVerified")}
     </span>
   );
 }
@@ -76,9 +80,10 @@ export function ModelConfigCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const t = useTranslations("settings.model");
   const [confirming, setConfirming] = useState(false);
   const badge = protocolBadge(cfg);
-  const host = hostOf(cfg.base_url) || "official endpoint";
+  const host = hostOf(cfg.base_url) || t("officialEndpoint");
   const models = cfg.models ?? [];
   const chips = models.slice(0, 6);
 
@@ -88,7 +93,7 @@ export function ModelConfigCard({
         <span
           className="pill"
           style={{ background: `${badge.color}1f`, color: badge.color }}
-          title={`Protocol: ${PROTOCOL_LABEL[cfg.protocol]}`}
+          title={t("protocolTooltip", { protocol: PROTOCOL_LABEL[cfg.protocol] })}
         >
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: badge.color }} />
           {badge.label}
@@ -97,8 +102,8 @@ export function ModelConfigCard({
           {cfg.name || cfg.id}
         </span>
         {isDefault && (
-          <span className="pill border border-violet/50 text-violet" title="New sessions use this config by default">
-            Default
+          <span className="pill border border-violet/50 text-violet" title={t("defaultTooltip")}>
+            {t("defaultLabel")}
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -108,34 +113,35 @@ export function ModelConfigCard({
                 onClick={onSetDefault}
                 disabled={busy}
                 className="pill border border-line2 text-faint transition-colors hover:text-muted disabled:opacity-50"
-                title="Set as the default config"
+                title={t("setDefaultTooltip")}
               >
-                Set default
+                {t("setDefault")}
               </button>
             )}
           <button
             onClick={onEdit}
-            aria-label={`Edit ${cfg.name}`}
+            aria-label={t("editAria", { name: cfg.name })}
             className="rounded-md p-1.5 text-faint transition-colors hover:bg-card2 hover:text-muted"
           >
             <Pencil className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={() => setConfirming(true)}
-            aria-label={`Delete ${cfg.name}`}
+            aria-label={t("deleteAria", { name: cfg.name })}
             className="rounded-md p-1.5 text-faint transition-colors hover:bg-card2 hover:text-red"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
-          <Toggle on={cfg.enabled} onClick={onToggle} label={`Enable ${cfg.name}`} />
+          <Toggle on={cfg.enabled} onClick={onToggle} label={t("enableAria", { name: cfg.name })} />
         </div>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-faint">
-        <span>{badge.label === "OpenAI" ? "official API" : host}</span>
+        <span>{badge.label === "OpenAI" ? t("officialApi") : host}</span>
         <span>·</span>
         <span>
-          {models.length} models{cfg.default_model ? ` · default ${cfg.default_model}` : ""}
+          {t("modelsCount", { count: models.length })}
+          {cfg.default_model ? t("defaultModelSuffix", { model: cfg.default_model }) : ""}
         </span>
         <span>·</span>
         <VerifyDot cfg={cfg} />
@@ -149,7 +155,7 @@ export function ModelConfigCard({
               className={`pill border font-mono ${
                 m === cfg.default_model ? "border-violet/50 text-violet" : "border-line2 text-muted"
               }`}
-              title={m === cfg.default_model ? "Default model of this config" : undefined}
+              title={m === cfg.default_model ? t("defaultModelTooltip") : undefined}
             >
               {m === cfg.default_model && <Star className="h-2.5 w-2.5 fill-violet" />}
               {m}
@@ -165,9 +171,8 @@ export function ModelConfigCard({
         // Q8: single yellow bar inline, no second dialog. If the backend still
         // refuses (default / referenced), the parent shows the refs list.
         <div className="mt-3 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-          {isDefault ? "This config is the global default; after deletion the default switches to the first enabled config. " : ""}
-          Delete &quot;{cfg.name || cfg.id}&quot;? Agents referencing it will show as deleted, and
-          historical sessions fall back to the default config.
+          {isDefault ? `${t("confirmDefaultPrefix")} ` : ""}
+          {t("confirmDelete", { name: cfg.name || cfg.id })}
           <div className="mt-2 flex gap-2">
             <button
               onClick={() => {
@@ -176,13 +181,13 @@ export function ModelConfigCard({
               }}
               className="rounded-md border border-yellow/50 px-2.5 py-1 font-medium transition-colors hover:bg-yellow/20"
             >
-              Delete
+              {t("delete")}
             </button>
             <button
               onClick={() => setConfirming(false)}
               className="rounded-md px-2.5 py-1 text-muted transition-colors hover:text-txt"
             >
-              Cancel
+              {t("cancel")}
             </button>
           </div>
         </div>

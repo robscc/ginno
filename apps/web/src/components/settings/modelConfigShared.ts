@@ -11,6 +11,7 @@ export const PROTOCOL_LABEL: Record<ModelProtocol, string> = {
 
 // Migrated `openai` slots show as plain "OpenAI" when pointed at the official
 // host (design §3.2) — same wire protocol, friendlier badge.
+// 协议徽标均为品牌/协议名，不入 catalog。
 export function protocolBadge(cfg: { protocol: ModelProtocol; base_url?: string }): {
   label: string;
   color: string;
@@ -32,13 +33,14 @@ export function hostOf(base_url?: string): string {
 
 // Q5: suggest compatible-endpoint private switches by base_url domain.
 // Recommend-only — never auto-checked; the UI offers a one-click apply.
+// why 文案在 catalog settings.model.recommendWhy.<whyKey>（模块级无法用 hook）。
 export const DOMAIN_RECOMMEND: Array<{
   host: string;
   flag: "enable_search" | "enable_thinking";
-  why: string;
+  whyKey: "qwenSearch" | "deepseekThinking";
 }> = [
-  { host: "dashscope.aliyuncs.com", flag: "enable_search", why: "Qwen compatible-mode supports server-side web search" },
-  { host: "deepseek.com", flag: "enable_thinking", why: "DeepSeek supports thinking mode with reasoning output" },
+  { host: "dashscope.aliyuncs.com", flag: "enable_search", whyKey: "qwenSearch" },
+  { host: "deepseek.com", flag: "enable_thinking", whyKey: "deepseekThinking" },
 ];
 
 export function domainRecommendations(base_url: string) {
@@ -47,19 +49,43 @@ export function domainRecommendations(base_url: string) {
   return DOMAIN_RECOMMEND.filter((r) => host === r.host || host.endsWith(`.${r.host}`) || host.endsWith(r.host));
 }
 
+export type RefPart = { key: string; n: number };
+
 // Defensive ref-summary for the Q8 yellow bar. The backend may send counts or
-// id lists; unknown keys pass through as-is.
-export function describeRefs(refs?: ModelConfigRefs): string {
-  if (!refs) return "";
-  const LABEL: Record<string, string> = { agents: "agents", sessions: "sessions", workflows: "workflows" };
-  const parts: string[] = [];
+// id lists; unknown keys pass through as-is. 返回结构化片段，由组件用
+// settings.model.ref.* 翻译（本模块非组件，拿不到 useTranslations）。
+export function describeRefParts(refs?: ModelConfigRefs): RefPart[] {
+  if (!refs) return [];
+  const KEY: Record<string, string> = { agents: "agents", sessions: "sessions", workflows: "workflows" };
+  const parts: RefPart[] = [];
   for (const [key, value] of Object.entries(refs)) {
     const n = Array.isArray(value) ? value.length : typeof value === "number" ? value : 0;
     if (!n) continue;
-    const label = LABEL[key] ?? key;
-    parts.push(`${n} ${label}`);
+    parts.push({ key: KEY[key] ?? key, n });
   }
-  return parts.join(", ");
+  return parts;
+}
+
+/** 渲染引用片段：已知 key 走 resolve（翻译 settings.model.ref.*），未知 key
+ * 原样回显。resolve 用 switch 收窄字面量，绕开 next-intl 的 key 类型检查。 */
+export function formatRefParts(
+  parts: RefPart[],
+  resolve: (key: "agents" | "sessions" | "workflows", n: number) => string,
+): string {
+  return parts
+    .map((p) => {
+      switch (p.key) {
+        case "agents":
+          return resolve("agents", p.n);
+        case "sessions":
+          return resolve("sessions", p.n);
+        case "workflows":
+          return resolve("workflows", p.n);
+        default:
+          return `${p.n} ${p.key}`;
+      }
+    })
+    .join(", ");
 }
 
 export function blankConfig(): ModelConfig {
@@ -83,12 +109,17 @@ export function normalizeConfig(raw: ModelConfig): ModelConfig {
   return { ...raw, models: Array.isArray(raw.models) ? raw.models : [] };
 }
 
-export function relTime(ts: number): string {
+export type RelTimePart =
+  | { key: "justNow"; count?: undefined }
+  | { key: "minAgo" | "hoursAgo" | "daysAgo"; count: number };
+
+// 相对时间返回结构化片段，由组件经 settings.model.<key> 翻译（同 describeRefParts）。
+export function relTimeParts(ts: number): RelTimePart {
   const d = Math.max(0, Date.now() / 1000 - ts);
-  if (d < 90) return "just now";
-  if (d < 3600) return `${Math.round(d / 60)} min ago`;
-  if (d < 86400) return `${Math.round(d / 3600)} h ago`;
-  return `${Math.round(d / 86400)} d ago`;
+  if (d < 90) return { key: "justNow" };
+  if (d < 3600) return { key: "minAgo", count: Math.round(d / 60) };
+  if (d < 86400) return { key: "hoursAgo", count: Math.round(d / 3600) };
+  return { key: "daysAgo", count: Math.round(d / 86400) };
 }
 
 // Parse the free-form models textarea: newline- or comma-separated ids,

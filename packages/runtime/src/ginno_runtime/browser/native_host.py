@@ -141,6 +141,20 @@ def _source_candidates() -> list[Path]:
     ]
 
 
+def _ext_messages_candidates() -> list[Path]:
+    """Roots holding {en,zh-CN}/ext.json for _locales generation (§8).
+
+    dev: repo checkout (…/ginno/apps/web/messages，ginno_runtime/browser 的
+    parents[5] = 仓库根)。frozen: Makefile --add-data 把 apps/web/messages
+    整树放进 bundle 的 web_messages/（目录结构与 dev 完全一致，共用
+    ext_locales.load_catalogs）。"""
+    meipass = getattr(sys, "_MEIPASS", "")
+    return [
+        Path(__file__).resolve().parents[5] / "apps" / "web" / "messages",
+        *([Path(meipass) / "web_messages"] if meipass else []),
+    ]
+
+
 def _bundled_version() -> str | None:
     """Version of the extension bundled with THIS build (None = unknown)."""
     candidates = _source_candidates()
@@ -210,6 +224,25 @@ def materialize_extension() -> Path | None:
                     _scripts.PAGE_BRIDGE_JS)
             except Exception:  # noqa: BLE001 — 生成失败不中断整个物化
                 log.exception("content-script generation failed")
+            # i18n(§8):_locales 从 web ext.json 生成 + manifest 改写 __MSG_*，
+            # 与 packages/extension/build.py 同一单一来源（browser/ext_locales）。
+            # 生成失败不中断物化：manifest 保持英文明文，扩展侧内嵌 en 兜底
+            # （与 content-script 生成失败同策略）；generate_and_localize 内部
+            # 保证 manifest 只在 default locale messages 落盘后才改写。
+            try:
+                from . import ext_locales as _ext_locales
+
+                catalogs = None
+                for root in _ext_messages_candidates():
+                    catalogs = _ext_locales.load_catalogs(root)
+                    if catalogs is not None:
+                        break
+                if catalogs is not None:
+                    _ext_locales.generate_and_localize(out, catalogs)
+                else:
+                    log.warning("ext catalogs not found; _locales skipped")
+            except Exception:  # noqa: BLE001 — 生成失败不中断整个物化
+                log.exception("extension _locales generation failed")
             nh = src_root / "native-host" / "ginno_browser_host.py"
             if not nh.exists():
                 nh = (Path(getattr(sys, "_MEIPASS", "")) / "extension_src_native_host"

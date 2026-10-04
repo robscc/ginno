@@ -110,8 +110,8 @@ async def test_create_draft_marks_cited_excerpts(isolated_home, monkeypatch):
 
     await create_draft()
     human = [m for m in rec.calls[0] if m.type == "human"][0]
-    assert "[有引用验证] 带引用的结论" in human.content
-    assert "[有引用验证] 普通结论" not in human.content
+    assert "[citation-verified] 带引用的结论" in human.content
+    assert "[citation-verified] 普通结论" not in human.content
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,7 @@ async def test_create_draft_kb_digest_when_usable(isolated_home, kb_vault, monke
 
     await create_draft()
     human = [m for m in rec.calls[0] if m.type == "human"][0]
-    assert "近期知识库使用台账" in human.content
+    assert "Recent knowledge-base usage ledger" in human.content
     assert "Ginno/Wiki/concepts/permission.md" in human.content
 
 
@@ -137,4 +137,4 @@ async def test_create_draft_no_digest_when_kb_disabled(isolated_home, monkeypatc
     rec = _patch_model(monkeypatch, "## A\n- x")
     await create_draft()
     human = [m for m in rec.calls[0] if m.type == "human"][0]
-    assert "近期知识库使用台账" not in human.content
+    assert "knowledge-base usage ledger" not in human.content

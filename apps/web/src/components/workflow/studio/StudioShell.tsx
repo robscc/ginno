@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { FileInput, Loader2, MessagesSquare, Play } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { WorkflowRun } from "@/lib/types";
@@ -28,11 +29,12 @@ const RAIL = { def: 236, min: 180, max: 380 };
 const ASIDE = { def: 326, min: 280, max: 520 };
 const RUNLIST = { def: 224, min: 176, max: 400 };
 
-const TABS: Array<[StudioTab, string]> = [
-  ["design", "设计"],
-  ["run", "运行"],
-  ["sup", "Supervisor"],
-  ["versions", "版本"],
+/** 顶部页签：value 为 wf.studio.* 下的 key（label 随渲染取译）。 */
+const TABS: Array<[StudioTab, "tabDesign" | "tabRun" | "tabSup" | "tabVersions"]> = [
+  ["design", "tabDesign"],
+  ["run", "tabRun"],
+  ["sup", "tabSup"],
+  ["versions", "tabVersions"],
 ];
 
 type DagNode = Record<string, unknown> & { id: string; type: string };
@@ -52,6 +54,9 @@ export function StudioShell() {
   const g = useGinno();
   const studio = useStudioState();
   const { state } = studio;
+  const t = useTranslations("wf.studio");
+  const tCommon = useTranslations("wf.common");
+  const tInspector = useTranslations("wf.inspector");
 
   const workflows = g.workflows;
   const wf = workflows.find((w) => w.id === state.wfId) || workflows[0] || null;
@@ -179,12 +184,12 @@ export function StudioShell() {
         studio.setTab("run");
         reloadRuns();
       } else {
-        const msg = body.detail || "触发失败";
+        const msg = body.detail || tCommon("triggerFailed");
         setTriggerErr(msg);
         fb.fail(msg);
       }
     } catch {
-      const msg = "无法连接运行时";
+      const msg = tCommon("runtimeUnreachable");
       setTriggerErr(msg);
       fb.fail(msg);
     }
@@ -211,7 +216,7 @@ export function StudioShell() {
   if (!wf) {
     return (
       <div className="flex h-full items-center justify-center px-8 text-center text-sm text-faint">
-        还没有配方。在聊天页用「总结成流程」从会话生成，或在 设置 → 工作流 里写一份 DSL。
+        {t("empty")}
       </div>
     );
   }
@@ -250,14 +255,13 @@ export function StudioShell() {
       )}
       {state.tab === "versions" && (
         <div className="space-y-2 text-[11px] text-muted">
-          <div className="text-[12.5px] font-semibold text-txt">关于版本</div>
+          <div className="text-[12.5px] font-semibold text-txt">{t("aboutVersions")}</div>
           <p>
-            每次改动（检查器编辑、开发会话 apply、回滚）都会追加一个<b>不可变</b>版本。
-            run 永远钉住它启动时的 dsl_version，所以旧运行始终可复现。
+            {t("versionsP1a")}
+            <b>immutable</b>
+            {t("versionsP1b")}
           </p>
-          <p className="text-faint">
-            当前 v{wf.version ?? 1}。回滚不会删历史——它把旧内容写成新的下一版。
-          </p>
+          <p className="text-faint">{t("versionsP2", { version: wf.version ?? 1 })}</p>
         </div>
       )}
     </>
@@ -283,7 +287,7 @@ export function StudioShell() {
         />
       </div>
       <PanelResizer
-        ariaLabel="调整左侧导航宽度"
+        ariaLabel={t("resizeRail")}
         onDrag={(dx) => setRailW((w) => w + dx)}
         onReset={() => setRailW(RAIL.def)}
       />
@@ -295,7 +299,7 @@ export function StudioShell() {
             v{wf.version ?? 1}
           </span>
           <div className="ml-1 flex gap-0.5">
-            {TABS.map(([k, label]) => (
+            {TABS.map(([k, key]) => (
               <button
                 key={k}
                 onClick={() => studio.setTab(k)}
@@ -303,7 +307,7 @@ export function StudioShell() {
                   state.tab === k ? "bg-card2 font-medium text-txt" : "text-muted hover:text-txt"
                 }`}
               >
-                {label}
+                {t(key)}
               </button>
             ))}
           </div>
@@ -313,28 +317,32 @@ export function StudioShell() {
               onClick={() => setAsideOpen((o) => !o)}
               className="btn-press rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt xl:hidden"
             >
-              检查器
+              {t("inspector")}
             </button>
             <button
               onClick={() => setDevDrawerOpen(true)}
-              title="在 Studio 内打开绑定该配方的 workflow-dev 会话，用对话改 DSL（带 diff 确认）"
+              title={t("devSessionTitle")}
               className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt"
             >
               <MessagesSquare className="h-3 w-3" />
-              开发会话
+              {tInspector("devSession")}
             </button>
             <button
               onClick={() => setImportOpen(true)}
-              title="把某个会话（或其中一段消息范围）总结成流程：创建新配方，或并入当前配方作为新版本"
+              title={t("importSessionTitle")}
               className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted hover:text-txt"
             >
               <FileInput className="h-3 w-3" />
-              从会话导入
+              {t("importSession")}
             </button>
             <button
               onClick={() => void trigger()}
               disabled={busy}
-              title={unfilled.length ? `${unfilled.length} 个模板变量未填：${unfilled.join(", ")}` : "运行这份配方"}
+              title={
+                unfilled.length
+                  ? tInspector("unfilledTitle", { count: unfilled.length, list: unfilled.join(", ") })
+                  : tInspector("runTitle")
+              }
               className={`btn-press flex items-center gap-1.5 rounded-md px-3 py-1 text-[11.5px] font-medium disabled:opacity-50 ${
                 unfilled.length
                   ? "border border-yellow/60 bg-yellow/10 text-yellow hover:bg-yellow/20"
@@ -342,7 +350,7 @@ export function StudioShell() {
               } ${fb.animClass}`}
             >
               {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-              {busy ? "运行中…" : "运行"}
+              {busy ? tInspector("running") : tInspector("run")}
             </button>
           </div>
         </div>
@@ -388,7 +396,7 @@ export function StudioShell() {
                   />
                 </div>
                 <PanelResizer
-                  ariaLabel="调整运行列表宽度"
+                  ariaLabel={t("resizeRunList")}
                   onDrag={(dx) => setRunListW((w) => w + dx)}
                   onReset={() => setRunListW(RUNLIST.def)}
                   className="hidden lg:block"
@@ -428,7 +436,7 @@ export function StudioShell() {
                         />
                         <PanelResizer
                           orientation="horizontal"
-                          ariaLabel="调整 DAG 面板高度"
+                          ariaLabel={t("resizeDagH")}
                           onDrag={(d) => setDagH((prev) => prev + d)}
                           onReset={() => setDagH(DEFAULT_DAG_H)}
                         />
@@ -447,7 +455,7 @@ export function StudioShell() {
           {/* Docked inspector (≥1280px) is resizable; the <1280px overlay
               drawer below keeps its fixed width and gets no handle. */}
           <PanelResizer
-            ariaLabel="调整检查器宽度"
+            ariaLabel={t("resizeInspector")}
             onDrag={(dx) => setInspW((w) => w - dx)}
             onReset={() => setInspW(ASIDE.def)}
             className="hidden xl:block"
@@ -469,7 +477,7 @@ export function StudioShell() {
                   onClick={() => setAsideOpen(false)}
                   className="mb-2 ml-auto block rounded border border-line2 px-2 py-0.5 text-[11px] text-muted hover:text-txt"
                 >
-                  关闭
+                  {t("close")}
                 </button>
                 {asideContent}
               </div>

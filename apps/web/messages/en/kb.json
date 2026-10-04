@@ -1,0 +1,116 @@
+{
+  "kb": {
+    "title": "Knowledge Base",
+    "subtitle": "Obsidian Knowledge Base: compiles Raw into Wiki, searches by relevance, and auto-injects into conversations (LLMWiki). Supports page preview, wikilink navigation/creation, and a graph view.",
+    "actions": {
+      "build": "Build wiki",
+      "reindex": "Rebuild index"
+    },
+    "stats": {
+      "pages": "{count, plural, one {# page} other {# pages}}",
+      "links": "{count, plural, one {# link} other {# links}}",
+      "tags": "{count, plural, one {# tag} other {# tags}}",
+      "indexed": "indexed {time}"
+    },
+    "time": {
+      "never": "never",
+      "seconds": "{n}s ago",
+      "minutes": "{n}m ago",
+      "hours": "{n}h ago",
+      "days": "{n}d ago"
+    },
+    "error": {
+      "notConnected": "Runtime not connected: make sure the sidecar is running (dev: pnpm dev:runtime)."
+    },
+    "tabs": {
+      "searchResults": "{count, plural, =0 {Search results} other {Search results ({count})}}",
+      "allPages": "All pages ({count})",
+      "discover": "Discover",
+      "graph": "Graph ({count})"
+    },
+    "search": {
+      "placeholder": "Search knowledge… (Chinese and English supported)",
+      "button": "Search",
+      "noResults": "No matching entries.",
+      "startHint": "Type a keyword to start searching.",
+      "failed": "Search failed",
+      "failedNoRuntime": "Search failed: cannot reach the runtime",
+      "source": "Source: {path}",
+      "matches": "Matches: {terms}"
+    },
+    "all": {
+      "empty": "No pages indexed yet (click Build wiki first to compile Raw).",
+      "memoryOnly": "Memory sources only",
+      "memoryPill": "Memory",
+      "memoryPillTitle": "Distilled from global Memory"
+    },
+    "discover": {
+      "loading": "Loading discover results…",
+      "loadFailed": "Failed to load discover results",
+      "notConnected": "Runtime not connected — cannot load discover results.",
+      "summary": "{pages} pages · {edges} relation edges",
+      "relatedTitle": "Related pages for a note",
+      "relatedPlaceholder": "Page title, e.g. Permissions",
+      "relatedButton": "Related",
+      "relatedFailedNoRuntime": "Related query failed: cannot reach the runtime",
+      "noRelated": "No related pages (or title doesn''t match).",
+      "strongTitle": "Strong links (≥80%) · {count}",
+      "clustersTitle": "Clusters · {count}",
+      "noClusters": "No significant clusters.",
+      "density": "· density {density}",
+      "mergeTitle": "Merge candidates · {count}",
+      "orphanTitle": "Orphan pages (no inbound links) · {count}",
+      "none": "None."
+    },
+    "reindex": {
+      "done": "Index rebuilt ({count} pages).",
+      "failed": "Reindex failed",
+      "failedNoRuntime": "Reindex failed: cannot reach the runtime"
+    },
+    "build": {
+      "done": "Build complete: scanned {scanned} pages, created {created}, updated {updated}, auto-linked {newLinks}, took {ms}ms",
+      "failed": "Build failed",
+      "failedNoRuntime": "Build failed: cannot reach the runtime"
+    },
+    "import": {
+      "title": "Import an existing LLM Wiki knowledge base",
+      "hint": "Point to your Obsidian vault. If a Wiki is already built (e.g. <code>Molly/Wiki</code>), it will be indexed directly without rebuilding.",
+      "detect": "Detect",
+      "importAndIndex": "Import & index",
+      "settingsHint": "Need fine-tuning (top-K / auto-inject / folders)? Go to <link>Settings → Knowledge Base</link>.",
+      "needPath": "Please enter a vault path",
+      "detected": "Detected namespace \"{ns}\": {wiki} Wiki pages / {raw} Raw notes{hasIndex, select, yes { (INDEX included)} other {}}",
+      "noWikiDir": "No */Wiki directory detected — the whole vault will be indexed as the Knowledge Base ({total} notes total)",
+      "detectFailed": "Detection failed",
+      "detectFailedNoRuntime": "Detection failed: cannot reach the runtime",
+      "invalidPath": "Detection failed: invalid path",
+      "saveFailed": "Failed to save config",
+      "imported": "Imported and indexed {count} pages",
+      "indexFailed": "Config saved, but indexing failed",
+      "importFailedNoRuntime": "Import failed: cannot reach the runtime"
+    },
+    "graph": {
+      "empty": "No pages / links to draw yet.",
+      "hint": "Graph · {pages} pages · {links} links — drag nodes / hover for neighbors / click to open"
+    },
+    "viewer": {
+      "loadFailed": "Load failed: runtime not connected",
+      "loading": "Loading…",
+      "cannotLoad": "Cannot load",
+      "emptyHint": "Pick a page on the left, or click a <wikilink>[[wikilink]]</wikilink> in the text to preview / navigate.",
+      "newBadge": "New",
+      "close": "Close",
+      "edit": "Edit",
+      "preview": "Preview",
+      "savePath": "Save path",
+      "insertLink": "Insert [[link]]",
+      "insertLinkHint": "Select text then click to generate [[selection]]",
+      "create": "Create",
+      "save": "Save",
+      "created": "Created",
+      "saved": "Saved",
+      "saveFailed": "Save failed",
+      "saveFailedNoRuntime": "Save failed: runtime not connected"
+    }
+  }
+}

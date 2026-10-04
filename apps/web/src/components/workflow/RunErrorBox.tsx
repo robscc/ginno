@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy, Loader2, RotateCcw } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { WorkflowRun, WorkflowRunEvent } from "@/lib/types";
 import { getWorkflowRunEvents } from "@/lib/runtime";
 import { buildRunErrorReport, copyText, failedStep } from "@/lib/errorReport";
@@ -9,12 +10,6 @@ import { WorkflowLogTimeline } from "./WorkflowLogTimeline";
 
 const FAILURE = new Set(["failed", "interrupted", "cancelled"]);
 const TAIL_N = 15;
-
-function fallbackError(run: WorkflowRun): string {
-  if (run.status === "interrupted") return "进程重启导致中断，可重试";
-  if (run.status === "cancelled") return "已取消";
-  return "执行失败";
-}
 
 /**
  * Shared failure panel for a workflow run (work item C). Replaces the old
@@ -43,6 +38,16 @@ export function RunErrorBox({
   const [resumeBusy, setResumeBusy] = useState(false);
   const [resumeErr, setResumeErr] = useState<string | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // wf.error 域文案；fallbackError 原为模块级函数（直写英文），现随组件取
+  // 译文案。resumeErr 默认值也走同域 key（异步回调里捕获渲染期 t，与既有
+  // useChatT 模式一致）。
+  const t = useTranslations("wf.error");
+  const tCommon = useTranslations("wf.common");
+  const fallbackError = (r: WorkflowRun): string => {
+    if (r.status === "interrupted") return t("interruptedRestart");
+    if (r.status === "cancelled") return t("cancelled");
+    return t("failed");
+  };
 
   const color = run.status === "interrupted" ? "#f97316" : "#ef4444";
   const step = failedStep(run);
@@ -60,12 +65,12 @@ export function RunErrorBox({
     try {
       const r = await onRetryFromCheckpoint();
       if (r && r.ok === false) {
-        setResumeErr(r.detail || "无法从断点重试");
+        setResumeErr(r.detail || t("resumeFailed"));
         setResumeBusy(false);
       }
       // ok: stay busy — the refresh swaps this panel for the new run card.
     } catch {
-      setResumeErr("无法连接运行时");
+      setResumeErr(tCommon("runtimeUnreachable"));
       setResumeBusy(false);
     }
   };
@@ -132,9 +137,9 @@ export function RunErrorBox({
             <span
               className="ml-2 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-sans"
               style={{ background: "rgba(239,68,68,.12)", color }}
-              title="失败步骤（按 error_detail.node_id 归因）"
+              title={t("failedStepTitle")}
             >
-              失败步骤：{step.title}
+              {t("failedStep", { title: step.title })}
             </span>
           )}
         </div>
@@ -146,37 +151,37 @@ export function RunErrorBox({
               className={`flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:bg-card2 hover:text-txt disabled:opacity-50 ${
                 resumeErr ? "anim-shake" : ""
               }`}
-              title={`从「${step?.title || run.error_detail?.node_id}」节点恢复，跳过已完成的步骤`}
+              title={t("resumeTitle", { node: step?.title || run.error_detail?.node_id || "?" })}
             >
               {resumeBusy ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
                 <RotateCcw className="h-3 w-3" />
               )}
-              {resumeBusy ? "恢复中…" : "从失败步骤重试"}
+              {resumeBusy ? t("resuming") : t("retryFromStep")}
             </button>
           )}
           <button
             onClick={() => setOpen((o) => !o)}
             className="rounded border border-line px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:bg-card2 hover:text-txt"
-            title="展开/收起 traceback 与最近事件"
+            title={t("detailsTitle")}
           >
-            {open ? "收起 ▾" : "详情 ▸"}
+            {open ? t("collapse") : t("details")}
           </button>
           <button
             onClick={doCopy}
             className="flex items-center gap-1 rounded border border-line px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:bg-card2 hover:text-txt"
-            title="复制完整错误报告（Markdown），可直接粘贴给 Claude Code 定位"
+            title={t("copyTitle")}
           >
             {copied === "copied" ? (
               <>
-                <Check className="h-3 w-3 text-green" /> 已复制
+                <Check className="h-3 w-3 text-green" /> {t("copied")}
               </>
             ) : copied === "failed" ? (
-              "复制失败"
+              t("copyFailed")
             ) : (
               <>
-                <Copy className="h-3 w-3" /> 复制错误报告
+                <Copy className="h-3 w-3" /> {t("copyReport")}
               </>
             )}
           </button>
@@ -187,17 +192,19 @@ export function RunErrorBox({
       {open && (
         <div className="space-y-2 border-t border-red/20 px-2 py-2">
           <div>
-            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">Traceback</div>
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">{t("traceback")}</div>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-base/60 p-2 font-mono text-[10px] leading-relaxed text-muted">
-              {traceback || (loading ? "加载中…" : "（无 traceback——该失败未捕获堆栈，如进程重启/旧版本记录）")}
+              {traceback || (loading ? tCommon("loading") : t("noTraceback"))}
             </pre>
           </div>
           <div>
             <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">
-              最近事件{events ? `（最后 ${Math.min(TAIL_N, events.length)} 条）` : ""}
+              {events
+                ? t("recentEventsCount", { count: Math.min(TAIL_N, events.length) })
+                : t("recentEvents")}
             </div>
             {loading ? (
-              <div className="py-2 text-center text-[11px] text-faint">加载中…</div>
+              <div className="py-2 text-center text-[11px] text-faint">{tCommon("loading")}</div>
             ) : (
               <WorkflowLogTimeline events={(events || []).slice(-TAIL_N)} />
             )}

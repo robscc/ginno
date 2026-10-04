@@ -70,7 +70,7 @@ def _validate_inputs_check(data: dict) -> None:
     )
     if missing:
         raise HTTPException(
-            status_code=400, detail=f"workflow 必填输入缺失：{', '.join(missing)}"
+            status_code=400, detail=f"Missing required workflow inputs: {', '.join(missing)}"
         )
 
 

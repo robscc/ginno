@@ -1,0 +1,85 @@
+{
+  "conn": {
+    "title": "连接器",
+    "refresh": "刷新",
+    "loading": "正在加载连接器状态…",
+    "empty": "还没有已注册的连接器。",
+    "status": {
+      "connected": "已连接",
+      "disconnected": "连接断开",
+      "not_installed": "未安装",
+      "installing": "安装中",
+      "error": "错误",
+      "disabled": "已停用"
+    },
+    "pushedPage": {
+      "from": "来自浏览器的页面",
+      "fromWithTitle": "来自浏览器的页面：{title}",
+      "send": "发送到 Ginno"
+    },
+    "handoff": {
+      "title": "Agent 正在等待你接管浏览器",
+      "detail": "{count, plural, other {标签页 {ids} 已移交给你——完成登录、验证或支付确认后，点击「已接管，继续」把控制权交回。}}",
+      "continue": "已接管，继续"
+    },
+    "actions": {
+      "installGuide": "安装向导",
+      "startInstance": "启动实例",
+      "stopInstance": "停止实例",
+      "configure": "配置",
+      "enable": "启用",
+      "disable": "停用"
+    },
+    "config": {
+      "empty": "此连接器没有可配置项。",
+      "onePerLine": "每行一个",
+      "save": "保存",
+      "saving": "保存中…",
+      "saved": "已保存"
+    },
+    "wizard": {
+      "title": "安装 Ginno 浏览器扩展",
+      "connectedTitle": "✅ 扩展已连接到 Ginno",
+      "connectedBody": "浏览器工具已就绪——回到会话即可让 Agent 操控你的 Chrome。",
+      "getStarted": "开始使用",
+      "stepLabel": "第 {n} 步",
+      "showInFinder": "在访达中显示",
+      "copy": "复制",
+      "waited": "已等待 {s} 秒…",
+      "troubleshootTitle": "仍未连接？请按顺序检查：",
+      "troubleshoot1": "Chrome 扩展页里出现「Ginno Browser Connector」且已启用（若无，回到第 4 步重新加载）",
+      "troubleshoot2": "扩展卡片上没有红色「Errors」按钮",
+      "troubleshoot3": "Ginno 桌面应用正在运行",
+      "troubleshoot4": "点开扩展图标，确认状态为「已连接」；若不是，检查端口（默认 8787）",
+      "back": "上一步",
+      "later": "稍后",
+      "next": "下一步",
+      "step": {
+        "intro": {
+          "title": "这是什么",
+          "body": "Ginno 可以在你自己的 Chrome 里为你干活——使用你已登录的会话，像你本人一样点击和输入。它做了什么你随时可见，随时可叫停。这需要一次性安装 Ginno 浏览器扩展（约 1 分钟）。"
+        },
+        "folder": {
+          "title": "扩展文件已就绪",
+          "body": "Ginno 已把扩展文件放到你电脑上的 {path} 文件夹。请保持这个文件夹处于打开状态——第 4 步会用到它。"
+        },
+        "open_extensions": {
+          "title": "打开 Chrome 扩展页",
+          "body": "把下面的地址输入 Chrome 地址栏并回车（浏览器不允许网页直接打开该页面，所以需要你手动输入）："
+        },
+        "dev_mode": {
+          "title": "开启开发者模式",
+          "body": "扩展页右上角有一个「开发者模式」（Developer mode）开关——请把它打开。"
+        },
+        "load": {
+          "title": "加载扩展",
+          "body": "点击左上角的「加载已解压的扩展程序」（Load unpacked），在文件夹选择器里选中刚打开的那个浏览器扩展文件夹（注意：选中文件夹本身，不要进入文件夹内部），再点「选择」。列表里出现「Ginno」就说明成功了。"
+        },
+        "wait": {
+          "title": "确认连接",
+          "body": "正在等待扩展连接回 Ginno…"
+        }
+      }
+    }
+  }
+}

@@ -33,6 +33,7 @@ from typing import Protocol
 from langchain_core.tools import tool
 
 from .. import usage_store
+from ..lang import t
 from ..usage import add_usage, empty_usage
 from ..world_state import external_agents_enabled
 
@@ -508,7 +509,7 @@ def build_external_agent_tools(
             )
             return f"[error] {name} is not installed ({hint})"
         if not (prompt or "").strip():
-            return "[error] prompt 不能为空"
+            return t("[error] prompt must not be empty", "[error] prompt 不能为空")
         m = (mode or "").strip().lower()
         if m not in ("read-only", "edit"):
             return (
@@ -516,11 +517,11 @@ def build_external_agent_tools(
             )
         cwd = base_dir if base_dir and os.path.isdir(base_dir) else os.getcwd()
         try:
-            t = max(_TIMEOUT_MIN_S, min(_TIMEOUT_MAX_S, int(timeout or 0)))
+            timeout_s = max(_TIMEOUT_MIN_S, min(_TIMEOUT_MAX_S, int(timeout or 0)))
         except (TypeError, ValueError):
-            t = _TIMEOUT_DEFAULT_S
+            timeout_s = _TIMEOUT_DEFAULT_S
 
-        result = run_delegation(be, prompt, m, cwd, t)
+        result = run_delegation(be, prompt, m, cwd, timeout_s)
 
         # Usage attribution (chat path only — workflow runs have no session).
         if session_id and result.usage:
@@ -540,7 +541,7 @@ def build_external_agent_tools(
             f"[delegate backend={name} mode={m} stop={result.stop_reason}"
         )
         if result.stop_reason == "timeout":
-            header += f" after {t}s"
+            header += f" after {timeout_s}s"
         if turns is not None:
             header += f" turns={turns}"
         if duration is not None:

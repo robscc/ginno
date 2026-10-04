@@ -239,7 +239,7 @@ def _guard_config_removal(stored_ids: set[str], new_ids: set[str], new_default: 
             status_code=400,
             content={
                 "ok": False,
-                "error": "以下配置仍被引用，无法删除: "
+                "error": "The following configs are still referenced and cannot be deleted: "
                 + ", ".join(blocked.keys()),
                 "references": blocked,
             },
@@ -258,7 +258,7 @@ async def put_model_configs(req: PutModelConfigsRequest):
     if default is not None and default not in new_ids:
         return JSONResponse(
             status_code=400,
-            content={"ok": False, "error": f"default_config {default!r} 不在 configs 内"},
+            content={"ok": False, "error": f"default_config {default!r} is not in configs"},
         )
     blocked = _guard_config_removal(
         {c["id"] for c in prov_mod.load_configs()}, new_ids, default
@@ -327,7 +327,7 @@ async def delete_model_config(config_id: str):
             status_code=400,
             content={
                 "ok": False,
-                "error": f"配置 {config_id} 仍被引用，无法删除",
+                "error": f"Config {config_id} is still referenced and cannot be deleted",
                 # same shape as the PUT removal guard: keyed by config id
                 "references": {config_id: refs},
             },

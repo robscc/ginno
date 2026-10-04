@@ -147,7 +147,10 @@ def test_truncate_short_unchanged():
     assert truncate_middle("abc", 100) == "abc"
 
 
-def test_truncate_middle_keeps_head_tail_and_marks():
+def test_truncate_middle_keeps_head_tail_and_marks(monkeypatch):
+    # This test pins the zh marker variant explicitly (it imports the zh
+    # TRUNCATION_MARKER constant); the en default is the actual product default.
+    monkeypatch.setenv("GINNO_LANGUAGE", "zh-CN")
     text = "H" * 1000 + "M" * 5000 + "T" * 1000
     out = truncate_middle(text, max_chars=1000)
     assert TRUNCATION_MARKER in out
@@ -249,7 +252,7 @@ def test_turn_context_carries_discovered_projects(isolated_home):
     )
     assert "<projects>" in out
     assert "/Users/me/work/claude-agent-team" in out
-    assert "14 个 skill" in out
+    assert "already has 14 skill(s)" in out
     assert "/Users/me/work/claude-agent-team/.claude/skills" in out
     assert "ask_user" in out  # the ask-first rule
 

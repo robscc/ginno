@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ChevronDown, FlaskConical, Loader2, Play, Shield, ShieldAlert, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { WorkflowDef, WorkflowRun, WorkflowRunEvent } from "@/lib/types";
-import { STATUS_LABEL } from "@/components/chat/RunBlocks";
+import { useRunStatusLabel } from "@/components/chat/RunBlocks";
 import { useTriggerFeedback } from "@/lib/useTriggerFeedback";
 import { WorkflowDag } from "./WorkflowDag";
 import { WorkflowLogTimeline } from "./WorkflowLogTimeline";
@@ -23,14 +24,6 @@ const STEP_COLOR: Record<string, string> = {
   interrupted: "#f97316",
   skipped: "#a1a1aa",
 };
-
-function fmtRunOption(r: WorkflowRun): string {
-  const d = new Date(r.started * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${STATUS_LABEL[r.status] || r.status} · ${r.id.slice(0, 8)} · ${p(d.getMonth() + 1)}-${p(
-    d.getDate(),
-  )} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
 
 /** Full workflow inspector: editable context, run trigger, live DAG (click a node
  *  to filter the log), step list, and event timeline. Shared by the /workflows
@@ -50,6 +43,20 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
   const [selRunId, setSelRunId] = useState<string | null>(null);
   const fb = useTriggerFeedback();
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  // wf 域文案；run 状态经 chat.status.* 的 key 渲染（原 fmtRunOption 为模块级
+  // 函数直读英文 STATUS_LABEL，现移入组件随 hook 取译）。
+  const t = useTranslations("wf.inspector");
+  const tCommon = useTranslations("wf.common");
+  const tDev = useTranslations("wf.dev");
+  const tError = useTranslations("wf.error");
+  const statusLabel = useRunStatusLabel();
+  const fmtRunOption = (r: WorkflowRun): string => {
+    const d = new Date(r.started * 1000);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${statusLabel(r.status)} · ${r.id.slice(0, 8)} · ${p(d.getMonth() + 1)}-${p(
+      d.getDate(),
+    )} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
   // P2: version history drawer (diff + rollback) opened from the v-badge.
   const [versionDrawer, setVersionDrawer] = useState(false);
   // §4.2 doctor: static dataflow lint results + expandable panel.
@@ -89,7 +96,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
       setDryRun({ busy: false, result: r });
     } catch {
       setDryRun({ busy: false, result: null });
-      setErrMsg("试运行请求失败（sidecar 未响应）");
+      setErrMsg(t("dryRunRequestFailed"));
     }
   };
 
@@ -168,13 +175,13 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         fb.succeed();
       } else {
         setBusy(false); // no run to poll → unlock the button now
-        const msg = body.detail || "触发失败";
+        const msg = body.detail || tCommon("triggerFailed");
         setErrMsg(msg);
         fb.fail(msg);
       }
     } catch {
       setBusy(false); // sidecar down → don't leave the button dead
-      const msg = "无法连接运行时";
+      const msg = tCommon("runtimeUnreachable");
       setErrMsg(msg);
       fb.fail(msg);
     }
@@ -185,7 +192,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
     // (docs/workflow-dsl-design.md §8.3). The agent proposes via
     // workflow_propose_edit → diff card.
     const s = await g.newSession("workflow-dev", {
-      title: `精炼流程：${wf.name}`,
+      title: tDev("sessionTitle", { name: wf.name }),
       workflow_id: wf.id,
     });
     router.push("/");
@@ -239,11 +246,11 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
       <ContextEditor dsl={wf.dsl as never} onChange={setCtxOverride} />
 
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium text-txt">执行图</span>
+        <span className="text-sm font-medium text-txt">{t("executionGraph")}</span>
         {/* P2: current DSL version — click to open history (diff + rollback) */}
         <button
           onClick={() => setVersionDrawer(true)}
-          title="查看版本历史与差异"
+          title={t("versionHistoryTitle")}
           className="btn-press flex items-center gap-1 rounded border border-line2 px-1.5 py-0.5 text-[10px] text-faint hover:text-muted"
         >
           v{wf.version ?? 1} <ChevronDown className="h-3 w-3" />
@@ -252,7 +259,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         {doctor && (doctor.errors.length > 0 || doctor.warnings.length > 0) && (
           <button
             onClick={() => setDoctorOpen((o) => !o)}
-            title="查看 DSL 数据流检查结果"
+            title={t("doctorTitle")}
             className={`btn-press flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
               doctor.errors.length > 0
                 ? "border-red/40 text-red hover:bg-red/10"
@@ -268,26 +275,26 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
             onClick={() => setSelNode(null)}
             className="btn-press rounded border border-line2 px-1.5 py-0.5 text-[10px] text-faint hover:text-muted"
           >
-            清除节点过滤 [{selNode}]
+            {t("clearNodeFilter", { node: selNode })}
           </button>
         )}
         <button
           onClick={openDevSession}
-          title="打开 Workflow 开发会话，用对话修改 DSL（带 diff 确认）"
+          title={t("devSessionTitleAttr")}
           className="btn-press rounded-md border border-line2 px-2.5 py-1 text-xs text-muted hover:text-txt"
         >
-          开发会话
+          {t("devSession")}
         </button>
         {/* P1d: zero-LLM preflight of the stored DSL (never saves/executes). */}
         {wf.dsl && (
           <button
             onClick={runDry}
             disabled={dryRun.busy}
-            title="零成本试跑当前版本：不保存、不执行、不调 LLM，只做校验/数据流/编译/可达性检查"
+            title={t("dryRunTitle")}
             className="btn-press flex items-center gap-1 rounded-md border border-line2 px-2.5 py-1 text-xs text-muted hover:text-txt disabled:opacity-50"
           >
             {dryRun.busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
-            {dryRun.busy ? "试跑中…" : "试运行"}
+            {dryRun.busy ? t("dryRunning") : t("dryRun")}
           </button>
         )}
         {/* Historical-run selector: the latest run is the default; any older
@@ -296,10 +303,10 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
           <select
             value={selRunId ?? ""}
             onChange={(e) => setSelRunId(e.target.value || null)}
-            title="选择要查看的运行记录"
+            title={t("selectRunTitle")}
             className="rounded-md border border-line2 bg-card px-1.5 py-1 text-[11px] text-muted outline-none hover:text-txt"
           >
-            <option value="">最新运行（共 {wfRuns.length} 次）</option>
+            <option value="">{t("latestRun", { count: wfRuns.length })}</option>
             {wfRuns.map((r) => (
               <option key={r.id} value={r.id}>
                 {fmtRunOption(r)}
@@ -310,7 +317,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         <button
           onClick={trigger}
           disabled={busy || fb.phase === "busy"}
-          title={unfilledVars.length ? `有 ${unfilledVars.length} 个模板变量未填：${unfilledVars.join(", ")}` : undefined}
+          title={unfilledVars.length ? t("unfilledTitle", { count: unfilledVars.length, list: unfilledVars.join(", ") }) : t("runTitle")}
           className={`btn-press ml-auto flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium disabled:opacity-50 ${
             unfilledVars.length
               ? "border border-yellow/60 bg-yellow/10 text-yellow hover:bg-yellow/20"
@@ -319,11 +326,11 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         >
           {busy || fb.phase === "busy" ? (
             <>
-              <Loader2 className="h-3 w-3 animate-spin" /> 运行中…
+              <Loader2 className="h-3 w-3 animate-spin" /> {t("running")}
             </>
           ) : (
             <>
-              <Play className="h-3 w-3" /> 运行
+              <Play className="h-3 w-3" /> {t("run")}
             </>
           )}
         </button>
@@ -335,9 +342,9 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
         <div className="space-y-1.5 rounded-lg border border-line bg-base/30 p-2.5">
           <div className="flex items-center gap-1.5">
             <ShieldAlert className="h-3.5 w-3.5 text-muted" />
-            <span className="text-xs font-medium text-txt">DSL 数据流检查</span>
+            <span className="text-xs font-medium text-txt">{t("doctorPanel")}</span>
             <button onClick={() => setDoctorOpen(false)} className="ml-auto text-[10px] text-faint hover:text-muted">
-              收起 ▴
+              {tCommon("collapseUp")}
             </button>
           </div>
           {doctor.errors.map((e, i) => (
@@ -357,7 +364,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
               onClick={openDevSession}
               className="btn-press mt-1 flex items-center gap-1 rounded-md border border-violet/40 px-2 py-1 text-[11px] text-violet hover:bg-violet/[0.06]"
             >
-              一键升级（开发会话补 writes 声明）
+              {t("oneClickUpgrade")}
             </button>
           )}
         </div>
@@ -370,25 +377,26 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
             <div className="flex items-center gap-1.5">
               <Check className="h-3.5 w-3.5 shrink-0" />
               <span>
-                试运行通过（v{wf.version ?? 1}）：{dryRun.result.node_count} 个节点，
-                校验 / 数据流 / 编译 / 可达性全过
+                {t("dryRunPassed", { version: wf.version ?? 1, count: dryRun.result.node_count ?? 0 })}
               </span>
               <button
                 onClick={() => setDryRun({ busy: false, result: null })}
                 className="ml-auto text-[10px] text-green/70 hover:text-green"
               >
-                收起 ▴
+                {tCommon("collapseUp")}
               </button>
             </div>
             {dryRun.result.warnings.length > 0 && (
               <div className="pl-5 text-yellow">
-                {dryRun.result.warnings.length} 条警告（不阻断）：
-                {dryRun.result.warnings.map((w) => w.message).join("；")}
+                {t("warningsLine", {
+                  count: dryRun.result.warnings.length,
+                  list: dryRun.result.warnings.map((w) => w.message).join("; "),
+                })}
               </div>
             )}
             {dryRun.result.unreachable.length > 0 && (
               <div className="pl-5 text-yellow">
-                不可达节点（永远不会执行）：{dryRun.result.unreachable.join(", ")}
+                {tCommon("unreachable", { list: dryRun.result.unreachable.join(", ") })}
               </div>
             )}
           </div>
@@ -396,12 +404,12 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
           <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg border border-red/30 bg-red/[0.06] px-2.5 py-2 text-[11px] text-red">
             <div className="flex items-center gap-1.5">
               <X className="h-3.5 w-3.5 shrink-0" />
-              <span>试运行未通过（v{wf.version ?? 1}）：</span>
+              <span>{t("dryRunFailed", { version: wf.version ?? 1 })}</span>
               <button
                 onClick={() => setDryRun({ busy: false, result: null })}
                 className="ml-auto text-[10px] text-red/70 hover:text-red"
               >
-                收起 ▴
+                {tCommon("collapseUp")}
               </button>
             </div>
             {dryRun.result.errors.map((e, i) => (
@@ -423,9 +431,11 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
 
       {run && (
         <div className="text-[11px] text-faint">
-          run <span className="font-mono text-muted">{run.id.slice(0, 8)}</span> · v
+          {t("runPrefix")} <span className="font-mono text-muted">{run.id.slice(0, 8)}</span> · v
           {run.dsl_version ?? "?"} ·{" "}
-          <span style={{ color: STEP_COLOR[run.status] || "rgb(var(--muted))" }}>{run.status}</span>
+          <span style={{ color: STEP_COLOR[run.status] || "rgb(var(--muted))" }}>
+            {statusLabel(run.status)}
+          </span>
         </div>
       )}
 
@@ -443,9 +453,9 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
                 setEvents([]);
                 return undefined;
               }
-              return { ok: false, detail: body.detail || "无法从断点重试" };
+              return { ok: false, detail: body.detail || tError("resumeFailed") };
             } catch {
-              return { ok: false, detail: "无法连接运行时" };
+              return { ok: false, detail: tCommon("runtimeUnreachable") };
             }
           }}
         />
@@ -453,7 +463,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
 
       {run && (
         <div className="space-y-1">
-          <div className="text-xs font-medium text-txt">步骤清单</div>
+          <div className="text-xs font-medium text-txt">{t("steps")}</div>
           <div className="space-y-0.5">
             {run.steps.map((s) => {
               const st = nodeStats[s.id] || {};
@@ -469,7 +479,9 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
                     className="h-1.5 w-1.5 shrink-0 rounded-full"
                     style={{ background: STEP_COLOR[s.status] || "rgb(var(--faint))" }}
                   />
-                  <span style={{ color: STEP_COLOR[s.status] || "rgb(var(--muted))" }}>{s.status}</span>
+                  <span style={{ color: STEP_COLOR[s.status] || "rgb(var(--muted))" }}>
+                    {statusLabel(s.status)}
+                  </span>
                   <span className="min-w-0 flex-1 truncate text-txt">{s.title || s.id}</span>
                   {st.latencyMs !== undefined && (
                     <span className="shrink-0 tabular-nums text-faint">
@@ -477,7 +489,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
                     </span>
                   )}
                   {st.tokens !== undefined && st.tokens > 0 && (
-                    <span className="shrink-0 tabular-nums text-faint" title="tokens (in+out)">
+                    <span className="shrink-0 tabular-nums text-faint" title={tCommon("tokensTitle")}>
                       {st.tokens >= 1000 ? `${(st.tokens / 1000).toFixed(1)}K` : st.tokens}↑
                     </span>
                   )}
@@ -490,7 +502,8 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
 
       <div className="space-y-1">
         <div className="text-xs font-medium text-txt">
-          执行日志{selNode ? ` · 节点 ${selNode}` : ""}
+          {t("executionLog")}
+          {selNode ? tCommon("nodeSuffix", { node: selNode }) : ""}
         </div>
         <WorkflowLogTimeline events={filteredEvents} filters />
       </div>
@@ -501,17 +514,17 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
       <div className="space-y-1.5 rounded-lg border border-line bg-base/30 p-2.5">
         <div className="flex items-center gap-1.5">
           <Shield className="h-3.5 w-3.5 text-muted" />
-          <span className="text-xs font-medium text-txt">Supervisor</span>
-          <span className="ml-auto text-[10px] text-faint">自动模式</span>
+          <span className="text-xs font-medium text-txt">{t("supervisor")}</span>
+          <span className="ml-auto text-[10px] text-faint">{t("autoMode")}</span>
         </div>
         {(() => {
           const supEvents = events.filter((e) => e.kind === "supervisor_intervene");
           if (!supEvents.length) {
-            return <div className="text-[11px] text-faint">本次运行未触发 Supervisor 干预</div>;
+            return <div className="text-[11px] text-faint">{t("noInterventions")}</div>;
           }
           return (
             <div className="space-y-1.5">
-              <div className="text-[10px] text-faint">本次运行 {supEvents.length} 次干预</div>
+              <div className="text-[10px] text-faint">{t("interventionsCount", { count: supEvents.length })}</div>
               {supEvents.map((e, i) => {
                 const action = String(e.action ?? "?");
                 const ok = action === "coerce" || action === "patch_dsl";
@@ -532,7 +545,9 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
                       {e.node_id && <span className="font-mono text-faint">· {e.node_id}</span>}
                     </div>
                     {errs.length > 0 && (
-                      <div className="mt-0.5 text-faint">校验错误：{errs.map(String).join("；")}</div>
+                      <div className="mt-0.5 text-faint">
+                        {tCommon("validationErrors", { list: errs.map(String).join("; ") })}
+                      </div>
                     )}
                     {typeof e.reason === "string" && e.reason && (
                       <div className="mt-0.5 text-muted">{e.reason}</div>

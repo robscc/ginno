@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize2, Minus, Plus } from "lucide-react";
+import { useTranslations } from "next-intl";
 import {
   allEdges,
   computeLayout,
@@ -62,6 +63,7 @@ export function StudioCanvas({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState>(null);
   const [view, setView] = useState({ x: 24, y: 24, z: 1 });
+  const t = useTranslations("wf.canvas");
 
   const layout = useMemo(() => computeLayout(dsl || {}, box), [dsl, box]);
   const edges = useMemo(() => allEdges(dsl || {}), [dsl]);
@@ -154,7 +156,7 @@ export function StudioCanvas({
   if (!nodes.length) {
     return (
       <div className={`flex items-center justify-center rounded-lg border border-dashed border-line text-xs text-faint ${className}`}>
-        该配方还没有节点
+        {t("empty")}
       </div>
     );
   }
@@ -274,24 +276,24 @@ export function StudioCanvas({
         <button
           onClick={() => setView((v) => ({ ...v, z: Math.min(MAX_ZOOM, v.z * 1.2) }))}
           className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
-          title="放大"
-          aria-label="放大"
+          title={t("zoomIn")}
+          aria-label={t("zoomIn")}
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={() => setView((v) => ({ ...v, z: Math.max(MIN_ZOOM, v.z / 1.2) }))}
           className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
-          title="缩小"
-          aria-label="缩小"
+          title={t("zoomOut")}
+          aria-label={t("zoomOut")}
         >
           <Minus className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={fit}
           className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
-          title="适配视图"
-          aria-label="适配视图"
+          title={t("fitView")}
+          aria-label={t("fitView")}
         >
           <Maximize2 className="h-3.5 w-3.5" />
         </button>

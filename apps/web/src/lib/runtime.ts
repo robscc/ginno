@@ -4,6 +4,10 @@
  */
 
 import type { CodeEntry, CodeGitStatus, CodeListing, CodeRead, CodeRoot } from "./codeTypes";
+import { uiText } from "../i18n/uiText";
+// 非 hook 层取已解析 locale（模块级镜像，provider 渲染期同步赋值）：随每个
+// API 请求/WS 连接下发给 runtime（i18n-design.md §1/§5）。
+import { currentLocale } from "../i18n/provider";
 // Type-only import: the search contract lives next to its views (SearchView),
 // which is where both QuickOpen and SearchView read it from. Erased at compile,
 // so this pulls no component code into the lib.
@@ -65,12 +69,14 @@ function wsBase(): string {
   return `ws://127.0.0.1:${OVERRIDE_PORT ?? 8787}/api/ws/sessions`;
 }
 
+// 每个请求下发已解析 locale（X-Ginno-Language）：runtime 的
+// RequestLocaleMiddleware 读头绑定 contextvar，非法/缺失回落 settings 解析。
+const H = { "Content-Type": "application/json" };
+
 async function json<T>(input: string | URL | Request, init?: RequestInit): Promise<T> {
-  const r = await fetch(input, init);
+  const r = await fetch(input, { ...init, headers: { "X-Ginno-Language": currentLocale(), ...(init?.headers ?? {}) } });
   return (await r.json()) as T;
 }
-
-const H = { "Content-Type": "application/json" };
 
 export async function health() {
   return json<{ ok: boolean; version: string }>(`${BASE}/health`);
@@ -388,8 +394,16 @@ export async function listSkills(project_slug?: string) {
   return json<import("./types").SkillSummary[]>(url);
 }
 
+// 浏览器 WebSocket API 不能发自定义头——WS 侧经 ?lang=<resolved> 下发 locale，
+// runtime 中间件在无 X-Ginno-Language 头时回退读 query_string。所有 new
+// WebSocket 构造统一走此 helper，别在调用点裸建（会漏 lang）。
+export function openSocket(url: string): WebSocket {
+  const sep = url.includes("?") ? "&" : "?";
+  return new WebSocket(`${url}${sep}lang=${encodeURIComponent(currentLocale())}`);
+}
+
 export function openSessionSocket(session_id: string): WebSocket {
-  return new WebSocket(`${wsBase()}/${session_id}`);
+  return openSocket(`${wsBase()}/${session_id}`);
 }
 
 // ---- subagent 拆分方案（P2 共享契约 2）：WS 上行帧的发送辅助 --------------
@@ -424,9 +438,9 @@ export function openRunSocket(run_id: string): WebSocket {
     const host = OVERRIDE_PORT
       ? `${window.location.hostname}:${OVERRIDE_PORT}`
       : window.location.host;
-    return new WebSocket(`${proto}//${host}${path}`);
+    return openSocket(`${proto}//${host}${path}`);
   }
-  return new WebSocket(`ws://127.0.0.1:${OVERRIDE_PORT ?? 8787}${path}`);
+  return openSocket(`ws://127.0.0.1:${OVERRIDE_PORT ?? 8787}${path}`);
 }
 
 // ---- workflows ----
@@ -862,9 +876,12 @@ export async function downloadFile(
   opts: { fmt?: "raw" | "csv"; sheet?: string } = {},
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(fileDownloadUrl(fileId, opts));
+    const res = await fetch(fileDownloadUrl(fileId, opts), {
+      headers: { "X-Ginno-Language": currentLocale() },
+    });
     if (!res.ok) {
-      let msg = `下载失败（HTTP ${res.status}）`;
+      // 通用网络层错误文案走 ui 域（非 hook 场景，uiText 同步读当前 locale）
+      let msg = uiText("net.downloadFailed", { status: res.status });
       try {
         const j = (await res.json()) as { detail?: string };
         if (j.detail) msg = j.detail;
@@ -888,7 +905,7 @@ export async function downloadFile(
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
     return { ok: true };
   } catch {
-    return { ok: false, error: "无法连接运行时" };
+    return { ok: false, error: uiText("net.unreachable") };
   }
 }
 
@@ -1438,9 +1455,9 @@ export async function writeCodeFile(
   if (r.ok && r.version) return r.version;
   if (r.code === "conflict") {
     // 409 carries the on-disk version (see the brief §3.1).
-    throw new CodeConflictError(r.version ?? "", r.message ?? "文件已在磁盘上被修改");
+    throw new CodeConflictError(r.version ?? "", r.message ?? "File has been modified on disk");
   }
-  throw new CodeApiError(r.code ?? "not-text", r.message ?? "保存失败");
+  throw new CodeApiError(r.code ?? "not-text", r.message ?? "Save failed");
 }
 
 /** Git status for one root.
@@ -1653,6 +1670,10 @@ export interface InstallStep {
   action?: string;   // "reveal_folder"
   copy?: string;     // value to copy to clipboard
   waitConnect?: boolean;
+  // i18n 契约（i18n-design.md §3）：runtime 附带的 catalog 键（base，渲染时拼
+  // .title/.body）与 ICU 占位参数；title/body 始终是英文兜底原文。
+  i18n_key?: string;
+  params?: Record<string, string | number>;
 }
 
 export interface ConnectorsPayload {

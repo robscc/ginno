@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Eye, Pencil, Save, X, Link2, FilePlus } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { WikiPageDoc } from "@/lib/types";
@@ -41,6 +42,11 @@ export function PageViewer({
   const [path, setPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  // kb 域 catalog（messages/{en,zh-CN}/kb.json）。
+  const tKb = useTranslations("kb");
+  // 提示着色标志：原实现靠比对英文文案字符串（msg === "Created"/"Saved"），
+  // 迁 catalog 后文案随语言变化，改用显式 ok 标志（true→绿色，false/未设→红色）。
+  const [msgOk, setMsgOk] = useState(false);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -51,6 +57,7 @@ export function PageViewer({
     let alive = true;
     setLoading(true);
     setMsg("");
+    setMsgOk(false);
     api
       .kbWikiPage(target.path || "", target.title || "")
       .then((d) => {
@@ -67,7 +74,7 @@ export function PageViewer({
           setMode("create");
         }
       })
-      .catch(() => alive && setMsg("加载失败：运行时未连接"))
+      .catch(() => alive && setMsg(tKb("viewer.loadFailed")))
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
@@ -101,15 +108,18 @@ export function PageViewer({
           ? await api.kbWikiCreatePage(path.trim(), raw)
           : await api.kbWikiPutPage(doc?.path || path.trim(), raw);
       if (r.ok) {
-        setMsg(mode === "create" ? "已创建" : "已保存");
+        setMsg(mode === "create" ? tKb("viewer.created") : tKb("viewer.saved"));
+        setMsgOk(true);
         onSaved();
         if (mode === "create") onNavigate(path.trim()); // reopen as existing
         else setMode("read");
       } else {
-        setMsg(r.error || "保存失败");
+        setMsg(r.error || tKb("viewer.saveFailed"));
+        setMsgOk(false);
       }
     } catch {
-      setMsg("保存失败：运行时未连接");
+      setMsg(tKb("viewer.saveFailedNoRuntime"));
+      setMsgOk(false);
     } finally {
       setBusy(false);
     }
@@ -119,12 +129,14 @@ export function PageViewer({
     return (
       <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-xl border border-dashed border-line p-6 text-center text-sm text-faint">
         <FilePlus className="mb-2 h-5 w-5 text-faint" />
-        从左侧选一篇，或点正文里的 <span className="text-violet">[[wikilink]]</span> 预览 / 跳转。
+        {tKb.rich("viewer.emptyHint", {
+          wikilink: (chunks) => <span className="text-violet">{chunks}</span>,
+        })}
       </div>
     );
   }
-  if (loading) return <div className="p-6 text-sm text-faint">加载中…</div>;
-  if (!doc) return <div className="p-6 text-sm text-red">{msg || "无法加载"}</div>;
+  if (loading) return <div className="p-6 text-sm text-faint">{tKb("viewer.loading")}</div>;
+  if (!doc) return <div className="p-6 text-sm text-red">{msg || tKb("viewer.cannotLoad")}</div>;
 
   const title = doc.title || target.title || path;
 
@@ -146,7 +158,7 @@ export function PageViewer({
           {title}
         </span>
         {mode === "create" && (
-          <span className="rounded-full bg-violet/20 px-2 py-0.5 text-[10px] text-violet">新建</span>
+          <span className="rounded-full bg-violet/20 px-2 py-0.5 text-[10px] text-violet">{tKb("viewer.newBadge")}</span>
         )}
         <div className="ml-auto flex items-center gap-1">
           {mode === "read" ? (
@@ -154,7 +166,7 @@ export function PageViewer({
               onClick={() => setMode("edit")}
               className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-xs text-muted hover:text-txt"
             >
-              <Pencil className="h-3.5 w-3.5" /> 编辑
+              <Pencil className="h-3.5 w-3.5" /> {tKb("viewer.edit")}
             </button>
           ) : (
             <button
@@ -164,10 +176,10 @@ export function PageViewer({
               }}
               className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-xs text-muted hover:text-txt"
             >
-              <Eye className="h-3.5 w-3.5" /> 预览
+              <Eye className="h-3.5 w-3.5" /> {tKb("viewer.preview")}
             </button>
           )}
-          <button onClick={onClose} aria-label="关闭" className="rounded-lg p-1 text-faint hover:text-txt">
+          <button onClick={onClose} aria-label={tKb("viewer.close")} className="rounded-lg p-1 text-faint hover:text-txt">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -192,12 +204,12 @@ export function PageViewer({
         <div className="flex flex-1 flex-col overflow-hidden">
           {mode === "create" && (
             <div className="flex items-center gap-2 px-4 pt-3">
-              <label className="text-[11px] text-faint">保存路径</label>
+              <label className="text-[11px] text-faint">{tKb("viewer.savePath")}</label>
               <input
                 className="field flex-1 font-mono text-xs"
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
-                placeholder="文件夹/笔记名.md"
+                placeholder="folder/note-name.md"
               />
             </div>
           )}
@@ -206,9 +218,9 @@ export function PageViewer({
               onClick={insertLink}
               className="flex items-center gap-1 rounded-lg border border-line2 px-2 py-1 text-xs text-muted hover:text-txt"
             >
-              <Link2 className="h-3.5 w-3.5" /> 插入 [[链接]]
+              <Link2 className="h-3.5 w-3.5" /> {tKb("viewer.insertLink")}
             </button>
-            <span className="text-[11px] text-faint">选中文字再点，可生成 [[选中]] </span>
+            <span className="text-[11px] text-faint">{tKb("viewer.insertLinkHint")}</span>
           </div>
           <textarea
             ref={taRef}
@@ -223,9 +235,9 @@ export function PageViewer({
               disabled={busy || !path.trim()}
               className="flex items-center gap-1 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
-              <Save className="h-3.5 w-3.5" /> {mode === "create" ? "创建" : "保存"}
+              <Save className="h-3.5 w-3.5" /> {mode === "create" ? tKb("viewer.create") : tKb("viewer.save")}
             </button>
-            {msg && <span className={`text-xs ${msg.startsWith("已") ? "text-green" : "text-red"}`}>{msg}</span>}
+            {msg && <span className={`text-xs ${msgOk ? "text-green" : "text-red"}`}>{msg}</span>}
           </div>
         </div>
       )}

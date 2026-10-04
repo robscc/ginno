@@ -12,6 +12,7 @@
 // 不会来第二次，store 里的状态就是唯一事实。
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { ListChecks, Loader2 } from "lucide-react";
 import type { SubagentPlanSubtask } from "@/lib/types";
 import type { Block } from "@/components/chat/blocks";
@@ -35,6 +36,8 @@ export function SubagentPlanCard({
     block.subtasks.map((s) => ({ ...s })),
   );
   const [busy, setBusy] = useState<null | "confirm" | "cancel">(null);
+  // composer 域 catalog（subagentPlan 子树）
+  const t = useTranslations("composer");
   const done = block.status !== "pending";
   const update = (i: number, patch: Partial<SubagentPlanSubtask>) =>
     setDraft((d) => d.map((s, j) => (j === i ? { ...s, ...patch } : s)));
@@ -49,7 +52,7 @@ export function SubagentPlanCard({
       <div className="flex items-center gap-1.5">
         <ListChecks className="h-3.5 w-3.5 shrink-0 text-violet" />
         <span className="min-w-0 flex-1 font-medium text-txt">
-          任务拆分方案 · {block.subtasks.length} 个子任务
+          {t("subagentPlan.title", { count: block.subtasks.length })}
         </span>
         {done && (
           <span
@@ -59,7 +62,7 @@ export function SubagentPlanCard({
                 : "border-line2 bg-card2/60 text-faint"
             }`}
           >
-            {block.status === "confirmed" ? "已确认" : "已取消"}
+            {block.status === "confirmed" ? t("subagentPlan.confirmed") : t("subagentPlan.cancelled")}
           </span>
         )}
       </div>
@@ -68,7 +71,7 @@ export function SubagentPlanCard({
           className="mt-1.5 line-clamp-2 whitespace-pre-wrap break-words leading-relaxed text-muted"
           title={block.task}
         >
-          任务:{block.task}
+          {t("subagentPlan.task", { task: block.task })}
         </div>
       )}
       <div className="mt-2 flex flex-col gap-2">
@@ -78,14 +81,14 @@ export function SubagentPlanCard({
               <span className="rounded bg-violet/15 px-1 py-px font-medium text-violet">
                 #{i + 1}
               </span>
-              子任务 {i + 1}
+              {t("subagentPlan.subtask", { index: i + 1 })}
             </div>
             <textarea
               value={s.goal}
               disabled={done}
               onChange={(e) => update(i, { goal: e.target.value })}
               rows={2}
-              placeholder="子任务目标（自足的完整描述）"
+              placeholder={t("subagentPlan.goalPlaceholder")}
               className="mt-1 w-full resize-y rounded border border-line bg-base/40 px-1.5 py-1 text-xs leading-relaxed text-txt outline-none focus:border-violet disabled:opacity-70"
             />
             <textarea
@@ -93,14 +96,18 @@ export function SubagentPlanCard({
               disabled={done}
               onChange={(e) => update(i, { constraints: e.target.value })}
               rows={1}
-              placeholder="约束（不可碰的边界，可留空）"
+              placeholder={t("subagentPlan.constraintsPlaceholder")}
               className="mt-1 w-full resize-y rounded border border-line bg-base/40 px-1.5 py-1 text-[11px] leading-relaxed text-muted outline-none focus:border-violet disabled:opacity-70"
             />
             {(s.acceptance || s.reason) && (
               <div className="mt-1 space-y-0.5 text-[11px] leading-relaxed text-faint">
-                {s.acceptance && <div>验收:{s.acceptance}</div>}
+                {s.acceptance && <div>{t("subagentPlan.acceptance", { text: s.acceptance })}</div>}
                 {/* 委派理由（附录 A.7）：确认环节的主要审阅物。 */}
-                {s.reason && <div title={`委派理由:${s.reason}`}>理由:{s.reason}</div>}
+                {s.reason && (
+                  <div title={t("subagentPlan.reasonTitle", { text: s.reason })}>
+                    {t("subagentPlan.reason", { text: s.reason })}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -109,28 +116,32 @@ export function SubagentPlanCard({
       {done ? (
         <div className="mt-2 border-t border-line/60 pt-1.5 text-[10px] text-faint">
           {block.status === "confirmed"
-            ? `已确认 · 将依次发起 ${block.subtasks.length} 个子代理（spawn 进度见下方卡片）`
-            : "已取消该拆分方案"}
+            ? t("subagentPlan.confirmedReceipt", { count: block.subtasks.length })
+            : t("subagentPlan.cancelledReceipt")}
         </div>
       ) : (
         <div className="mt-2 flex items-center gap-2 border-t border-line/60 pt-1.5">
           <button
             onClick={() => decide("confirm")}
             disabled={!!busy || draft.some((s) => !s.goal.trim())}
-            title={draft.some((s) => !s.goal.trim()) ? "存在目标为空的子任务" : "按当前内容批量发起子代理"}
+            title={
+              draft.some((s) => !s.goal.trim())
+                ? t("subagentPlan.emptyGoalHint")
+                : t("subagentPlan.confirmHint")
+            }
             className="btn-press flex items-center gap-1 rounded-md bg-violet px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
           >
             {busy === "confirm" && <Loader2 className="h-3 w-3 animate-spin" />}
-            确认发起 {draft.length} 个
+            {t("subagentPlan.confirmSpawn", { count: draft.length })}
           </button>
           <button
             onClick={() => decide("cancel")}
             disabled={!!busy}
             className="rounded-md border border-line2 px-2 py-1 text-[11px] text-muted transition-colors hover:border-red/40 hover:text-red disabled:opacity-50"
           >
-            取消
+            {t("subagentPlan.cancel")}
           </button>
-          <span className="ml-auto text-[10px] text-faint">目标与约束可编辑</span>
+          <span className="ml-auto text-[10px] text-faint">{t("subagentPlan.editableHint")}</span>
         </div>
       )}
     </div>

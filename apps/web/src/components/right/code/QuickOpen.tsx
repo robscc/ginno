@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { FileText, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { codeErrorMessage } from "./treeUtils";
@@ -36,6 +37,9 @@ export interface QuickOpenProps {
 }
 
 export function QuickOpen({ search, onOpen, onClose, className }: QuickOpenProps) {
+  // code 域 catalog（本组件文案收在 code.quick；错误码经 treeUtils 的
+  // codeErrorMessage 走 code.errors）
+  const t = useTranslations("code");
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<string[]>([]);
   const [truncated, setTruncated] = useState(false);
@@ -64,7 +68,8 @@ export function QuickOpen({ search, onOpen, onClose, className }: QuickOpenProps
       return;
     }
     setLoading(true);
-    const t = window.setTimeout(() => {
+    // 局部变量不可命名 t——会遮蔽 useTranslations 的 t（已知坑）
+    const timer = window.setTimeout(() => {
       void (async () => {
         try {
           const r = await searchRef.current("name", query);
@@ -75,14 +80,14 @@ export function QuickOpen({ search, onOpen, onClose, className }: QuickOpenProps
         } catch (err) {
           if (seq !== seqRef.current) return;
           setHits([]);
-          setError({ code: "unknown", message: err instanceof Error ? err.message : "搜索失败" });
+          setError({ code: "unknown", message: err instanceof Error ? err.message : t("quick.searchFailed") });
         } finally {
           if (seq === seqRef.current) setLoading(false);
         }
       })();
     }, DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
-  }, [q]);
+    return () => window.clearTimeout(timer);
+  }, [q, t]);
 
   useEffect(() => {
     setActive(0);
@@ -119,7 +124,7 @@ export function QuickOpen({ search, onOpen, onClose, className }: QuickOpenProps
     >
       <div
         role="dialog"
-        aria-label="快速打开文件"
+        aria-label={t("quick.aria")}
         className="w-[560px] max-w-[90vw] overflow-hidden rounded-xl border border-line bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -130,22 +135,22 @@ export function QuickOpen({ search, onOpen, onClose, className }: QuickOpenProps
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="按文件名搜索…"
+            placeholder={t("quick.placeholder")}
             className="w-full bg-transparent py-3 text-sm text-txt outline-none placeholder:text-faint"
           />
-          {loading ? <span className="shrink-0 text-[10px] text-faint">搜索中…</span> : null}
+          {loading ? <span className="shrink-0 text-[10px] text-faint">{t("quick.searching")}</span> : null}
         </div>
 
         <div className="max-h-[46vh] overflow-y-auto py-1">
           {error ? (
             <div className="px-3 py-6 text-center text-xs text-red">
               {codeErrorMessage(error.code)}
-              {error.message ? `：${error.message}` : ""}
+              {error.message ? `: ${error.message}` : ""}
             </div>
           ) : q.trim() && !hits.length && !loading ? (
-            <div className="px-3 py-6 text-center text-xs text-faint">没有匹配的文件</div>
+            <div className="px-3 py-6 text-center text-xs text-faint">{t("quick.noMatches")}</div>
           ) : !q.trim() ? (
-            <div className="px-3 py-6 text-center text-xs text-faint">输入文件名开始搜索</div>
+            <div className="px-3 py-6 text-center text-xs text-faint">{t("quick.emptyHint")}</div>
           ) : (
             hits.map((path, i) => {
               const { dir, name } = splitPath(path);
@@ -176,8 +181,8 @@ export function QuickOpen({ search, onOpen, onClose, className }: QuickOpenProps
         </div>
 
         <div className="border-t border-line px-3 py-1.5 text-[10px] text-faint">
-          {truncated ? "结果可能不完整（搜索已截断） · " : ""}
-          ↑↓ 选择 · Enter 打开 · Esc 关闭
+          {truncated ? t("quick.truncatedHint") : ""}
+          {t("quick.keysHint")}
         </div>
       </div>
     </div>

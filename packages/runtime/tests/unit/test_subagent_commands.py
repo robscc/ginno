@@ -166,7 +166,7 @@ async def test_direct_form_spawns_one_subagent_as_user(
     reply = await _subagent_async_handler(SLUG, server_shared._SESSIONS["M1"], "调研 OAuth 库")
     await asyncio.sleep(0)  # let the spawn_bg brief-turn task run
 
-    assert "✅ subagent 已启动" in reply
+    assert "✅ subagent started" in reply
     children = server_shared.subagent_children("M1")
     assert len(children) == 1
     meta, _ = _find_meta(children[0])
@@ -177,7 +177,7 @@ async def test_direct_form_spawns_one_subagent_as_user(
 
 
 async def test_subagent_without_args_returns_usage(isolated_home):
-    assert "用法" in await _subagent_async_handler(SLUG, _main_session("M2"), "")
+    assert "usage" in await _subagent_async_handler(SLUG, _main_session("M2"), "")
 
 
 # --------------------------------------------------------------------------- #
@@ -197,7 +197,7 @@ async def test_split_form_issues_plan_and_broadcasts(isolated_home, monkeypatch,
 
     reply = await _subagent_async_handler(SLUG, session, "拆分 完成认证模块重构")
 
-    assert "拆分方案" in reply and "委派理由" in reply
+    assert "Split plan" in reply and "rationale" in reply
     pending = plan_mod.get_pending_plan("S1")
     assert pending is not None
     assert pending["task"] == "完成认证模块重构"
@@ -221,12 +221,12 @@ async def test_decompose_tolerates_prefill_echo_and_fences(isolated_home, monkey
 @pytest.mark.parametrize(
     "raw,frag",
     [
-        ('{"goal": "不是数组"}', "JSON 数组"),
-        ("前言解释了一大堆，没有 JSON", "JSON 数组"),
+        ('{"goal": "不是数组"}', "JSON array"),
+        ("前言解释了一大堆，没有 JSON", "JSON array"),
         (json.dumps([{"goal": "缺理由"}], ensure_ascii=False), "reason"),
         (json.dumps([{"reason": "缺 goal"}], ensure_ascii=False), "goal"),
         (json.dumps([{"goal": " ", "reason": "空 goal"}], ensure_ascii=False), "goal"),
-        ("[]", "没有拆出任何子任务"),
+        ("[]", "produced no subtasks"),
     ],
 )
 async def test_decompose_invalid_output_never_issues_plan(
@@ -236,7 +236,7 @@ async def test_decompose_invalid_output_never_issues_plan(
         "ginno_runtime.models.build_model", lambda *a, **k: _text_model(raw)
     )
     reply = await _subagent_async_handler(SLUG, _main_session("S3"), "拆分 任务")
-    assert reply.startswith("拆分失败：") and frag in reply
+    assert reply.startswith("Split failed: ") and frag in reply
     assert plan_mod.get_pending_plan("S3") is None
     assert _plan_event(radio) is None  # no half-built plan is ever broadcast
 
@@ -247,14 +247,14 @@ async def test_decompose_rejects_more_than_concurrency_cap(isolated_home, monkey
         "ginno_runtime.models.build_model", lambda *a, **k: _text_model(json.dumps(many, ensure_ascii=False))
     )
     reply = await _subagent_async_handler(SLUG, _main_session("S4"), "拆分 大任务")
-    assert "上限" in reply
+    assert "cap" in reply
     assert plan_mod.get_pending_plan("S4") is None
 
 
 async def test_decompose_unavailable_under_fake_llm(isolated_home, monkeypatch, radio):
     monkeypatch.setenv("GINNO_FAKE_LLM", "1")
     reply = await _subagent_async_handler(SLUG, _main_session("S5"), "拆分 任务")
-    assert reply.startswith("拆分失败：")
+    assert reply.startswith("Split failed: ")
     assert plan_mod.get_pending_plan("S5") is None
 
 
@@ -266,7 +266,7 @@ async def test_split_alias_handler(isolated_home, monkeypatch, radio):
         lambda *a, **k: _text_model(json.dumps(_VALID, ensure_ascii=False)),
     )
     reply = await _subagent_split_async_handler(SLUG, _main_session("S6"), "评审任务描述")
-    assert "拆分方案" in reply
+    assert "Split plan" in reply
     assert plan_mod.get_pending_plan("S6")["task"] == "评审任务描述"
 
 
@@ -292,7 +292,7 @@ async def test_confirm_spawns_each_subtask_as_user(
     reply = await plan_mod.confirm_plan("C1", plan["plan_id"])
     await asyncio.sleep(0)  # let the spawn_bg brief-turn tasks run
 
-    assert "成功启动 2 个 subagent" in reply
+    assert "2 subagent(s) started" in reply
     children = server_shared.subagent_children("C1")
     assert len(children) == 2
     for cid in children:
@@ -301,7 +301,7 @@ async def test_confirm_spawns_each_subtask_as_user(
         assert meta["subagent"]["status"] == "running"
     assert len(fake_turn["turns"]) == 2  # each child got its brief turn
     notices = [d for _s, e, d in radio["sent"] if e == "notice"]
-    assert notices and "成功启动 2 个" in notices[-1]["message"]
+    assert notices and "2 subagent(s) started" in notices[-1]["message"]
     assert plan_mod.get_pending_plan("C1") is None  # consumed
 
 
@@ -313,7 +313,7 @@ async def test_confirm_with_edited_subtasks_overrides(isolated_home, offline_spa
     edited = [{"goal": "编辑后的子任务", "constraints": "只读", "acceptance": "有结论", "reason": "用户改过"}]
     reply = await plan_mod.confirm_plan("C2", plan["plan_id"], edited)
 
-    assert "成功启动 1 个" in reply
+    assert "1 subagent(s) started" in reply
     meta, _ = _find_meta(server_shared.subagent_children("C2")[0])
     assert meta["subagent"]["goal"] == "编辑后的子任务"
 
@@ -321,14 +321,14 @@ async def test_confirm_with_edited_subtasks_overrides(isolated_home, offline_spa
 async def test_confirm_rejects_invalid_edit(isolated_home, monkeypatch, radio):
     plan = await _issue(monkeypatch, "C3")
     reply = await plan_mod.confirm_plan("C3", plan["plan_id"], [{"goal": "缺理由"}])
-    assert "无效" in reply
+    assert "invalid" in reply
     # the plan survives a rejected edit — the user can fix the card and retry
     assert plan_mod.get_pending_plan("C3") is not None
 
 
 async def test_confirm_unknown_plan_id_errors(isolated_home, radio):
     reply = await plan_mod.confirm_plan("C4", "nope")
-    assert "未找到" in reply
+    assert "no pending plan" in reply
 
 
 async def test_cancel_discards_plan(isolated_home, monkeypatch, radio):
@@ -336,7 +336,7 @@ async def test_cancel_discards_plan(isolated_home, monkeypatch, radio):
     assert plan_mod.cancel_plan("C5", plan["plan_id"]) is True
     assert plan_mod.cancel_plan("C5", plan["plan_id"]) is False  # idempotent
     reply = await plan_mod.confirm_plan("C5", plan["plan_id"])
-    assert "未找到" in reply
+    assert "no pending plan" in reply
 
 
 async def test_confirm_refusal_pushes_notice(isolated_home, monkeypatch, radio):
@@ -347,15 +347,15 @@ async def test_confirm_refusal_pushes_notice(isolated_home, monkeypatch, radio):
     plan = await _issue(monkeypatch, "C9")
     plan_mod.cancel_plan("C9", plan["plan_id"])
     reply = await plan_mod.confirm_plan("C9", plan["plan_id"])
-    assert "未找到" in reply
+    assert "no pending plan" in reply
     notices = [d for _s, e, d in radio["sent"] if e == "notice"]
-    assert notices and "确认未生效" in notices[-1]["message"]
+    assert notices and "did not take effect" in notices[-1]["message"]
     # same for a rejected edit: plan survives, refusal is broadcast
     plan_b = await _issue(monkeypatch, "C9", "任务B")
     reply2 = await plan_mod.confirm_plan("C9", plan_b["plan_id"], [{"goal": "缺理由"}])
-    assert "无效" in reply2
+    assert "invalid" in reply2
     notices2 = [d for _s, e, d in radio["sent"] if e == "notice"]
-    assert "编辑后的子任务无效" in notices2[-1]["message"]
+    assert "Edited subtasks are invalid" in notices2[-1]["message"]
     assert plan_mod.get_pending_plan("C9") is not None  # still fixable
 
 
@@ -366,7 +366,7 @@ async def test_resplit_overwrites_pending_plan(isolated_home, offline_spawn, fak
     assert plan_mod.get_pending_plan("C6")["plan_id"] == plan_b["plan_id"]
     # the stale card's confirm is refused
     reply = await plan_mod.confirm_plan("C6", plan_a["plan_id"])
-    assert "未找到" in reply
+    assert "no pending plan" in reply
     assert plan_mod.get_pending_plan("C6") is not None  # B still pending
 
 
@@ -494,15 +494,15 @@ async def test_stop_parked_subagent_cascades_descendants(isolated_home, radio, m
 # --------------------------------------------------------------------------- #
 def test_result_injection_carries_acceptance_line():
     text = sched.format_subagent_result("kid", "调研", "结论：选 A", "给出选型结论")
-    assert "验收标准：给出选型结论" in text
-    assert "逐条对照该标准给出一行判定（通过/有缺口+说明）" in text
-    assert text.index("结论：选 A") < text.index("验收标准：")  # appended AFTER the summary
+    assert "Acceptance criteria: 给出选型结论" in text
+    assert "one-line verdict (met / gap + explanation)" in text
+    assert text.index("结论：选 A") < text.index("Acceptance criteria:")  # appended AFTER the summary
     assert text.endswith("</ginno_subagent_result>")
 
 
 def test_result_injection_without_acceptance_is_unchanged():
     text = sched.format_subagent_result("kid", "调研", "结论：选 A", "")
-    assert "验收标准" not in text
+    assert "Acceptance criteria" not in text
     plain = sched.format_subagent_result("kid", "调研", "结论：选 A")
     assert plain == text
 

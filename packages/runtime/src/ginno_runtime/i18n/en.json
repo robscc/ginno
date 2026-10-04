@@ -1,0 +1,8 @@
+{
+  "errors.session_not_found": "Session {id} not found",
+  "schedule.run_succeeded": "Succeeded",
+  "schedule.run_failed": "Failed: {error}",
+  "schedule.run_interrupted": "Run interrupted (app quit)",
+  "schedule.missed": "Missed (machine asleep or app not running)",
+  "schedule.default_task_title": "Scheduled task"
+}

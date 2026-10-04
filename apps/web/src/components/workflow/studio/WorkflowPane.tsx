@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AlertTriangle, Check, FlaskConical, Loader2, ShieldAlert, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import type { WorkflowDef } from "@/lib/types";
 import { ContextEditor } from "../ContextEditor";
@@ -28,6 +29,10 @@ export function WorkflowPane({
     busy: false,
     result: null,
   });
+  const t = useTranslations("wf.pane");
+  const tCommon = useTranslations("wf.common");
+  const tRail = useTranslations("wf.rail");
+  const tInspector = useTranslations("wf.inspector");
 
   useEffect(() => {
     let alive = true;
@@ -74,7 +79,7 @@ export function WorkflowPane({
               className="rounded px-1 py-px text-[9.5px]"
               style={{ color: "#8b5cf6", background: "#8b5cf61a" }}
             >
-              内置
+              {tRail("builtin")}
             </span>
           )}
         </div>
@@ -93,23 +98,23 @@ export function WorkflowPane({
             }`}
           >
             <ShieldAlert className="h-3 w-3" />
-            数据流检查 {doctor.errors.length || doctor.warnings.length}
+            {t("dataflowCheck", { count: doctor.errors.length || doctor.warnings.length })}
           </button>
         )}
         {doctor && issues === 0 && (
           <span className="flex items-center gap-1 rounded border border-green/30 px-1.5 py-0.5 text-[10px] text-green">
-            <Check className="h-3 w-3" /> 数据流检查通过
+            <Check className="h-3 w-3" /> {t("dataflowPassed")}
           </span>
         )}
         {wf.dsl && (
           <button
             onClick={() => void runDry()}
             disabled={dry.busy}
-            title="零成本试跑：不保存、不执行、不调 LLM"
+            title={t("dryRunTitle")}
             className="btn-press flex items-center gap-1 rounded border border-line2 px-1.5 py-0.5 text-[10px] text-muted hover:text-txt disabled:opacity-50"
           >
             {dry.busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
-            试运行
+            {tInspector("dryRun")}
           </button>
         )}
       </div>
@@ -144,18 +149,18 @@ export function WorkflowPane({
               <div className="flex items-center gap-1.5">
                 <Check className="h-3.5 w-3.5" />
                 <span>
-                  试运行通过：{dry.result.node_count} 个节点，校验 / 数据流 / 编译 / 可达性全过
+                  {tCommon("dryPassed", { count: dry.result.node_count ?? 0 })}
                 </span>
                 <button
                   onClick={() => setDry({ busy: false, result: null })}
                   className="ml-auto text-[10px] opacity-70 hover:opacity-100"
                 >
-                  收起 ▴
+                  {tCommon("collapseUp")}
                 </button>
               </div>
               {dry.result.unreachable.length > 0 && (
                 <div className="pl-5 text-yellow">
-                  不可达节点：{dry.result.unreachable.join(", ")}
+                  {tCommon("unreachable", { list: dry.result.unreachable.join(", ") })}
                 </div>
               )}
             </>
@@ -163,12 +168,12 @@ export function WorkflowPane({
             <>
               <div className="flex items-center gap-1.5">
                 <X className="h-3.5 w-3.5" />
-                <span>试运行未通过：</span>
+                <span>{tCommon("dryFailed")}</span>
                 <button
                   onClick={() => setDry({ busy: false, result: null })}
                   className="ml-auto text-[10px] opacity-70 hover:opacity-100"
                 >
-                  收起 ▴
+                  {tCommon("collapseUp")}
                 </button>
               </div>
               {[...dry.result.errors, ...dry.result.doctor_errors.map((d) => d.message)]
@@ -187,18 +192,18 @@ export function WorkflowPane({
         <div className="flex items-start gap-1.5 rounded-md border border-yellow/40 bg-yellow/[0.06] px-2 py-1.5 text-[11px] text-yellow">
           <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
           <span>
-            运行前需要填：{unfilled.join(", ")}（仍可直接运行，空值也是合法输入）
+            {t("fillFirst", { list: unfilled.join(", ") })}
           </span>
         </div>
       )}
 
       <div>
-        <div className="mb-1.5 text-[11.5px] font-semibold text-txt">运行参数</div>
+        <div className="mb-1.5 text-[11.5px] font-semibold text-txt">{t("runParams")}</div>
         <ContextEditor dsl={wf.dsl as never} onChange={onCtxChange} />
       </div>
 
       <div className="rounded-lg border border-dashed border-line2 px-2.5 py-2 text-[10.5px] text-faint">
-        点画布上的节点可编辑它的参数（改一次 = 一个新版本）。结构改动走「开发会话」或「从会话导入」。
+        {t("canvasNote")}
       </div>
     </div>
   );

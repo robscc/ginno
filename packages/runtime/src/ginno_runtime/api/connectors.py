@@ -170,7 +170,7 @@ async def connector_action(cid: str, body: dict) -> Any:
         b = get_profile_backend()
         try:
             await b.ensure_running()
-            reg.report("browser-profile", "connected", "运行中")
+            reg.report("browser-profile", "connected", "Running")
             return {"ok": True, "tabs": await b.tabs_context()}
         except Exception as e:  # noqa: BLE001
             reg.report("browser-profile", "error", str(e))
@@ -180,7 +180,7 @@ async def connector_action(cid: str, body: dict) -> Any:
 
         b = get_profile_backend()
         await b.shutdown()
-        reg.report("browser-profile", "disconnected", "已停止")
+        reg.report("browser-profile", "disconnected", "Stopped")
         return {"ok": True}
     if action == "extension_status_refresh":
         from ..browser.relay import relay_state

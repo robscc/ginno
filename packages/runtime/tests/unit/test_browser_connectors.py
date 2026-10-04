@@ -327,3 +327,55 @@ def test_materialize_version_compare(ginno_home, monkeypatch, tmp_path):
     _t.sleep(0.02)
     nh.materialize_extension()
     assert bg.stat().st_mtime_ns == mtime
+
+
+@pytest.mark.unit
+def test_materialize_generates_locales(ginno_home, monkeypatch, tmp_path):
+    """物化冒烟(i18n-design.md §8):materialize_extension 之后
+    _locales/{en,zh_CN}/messages.json 存在、en/zh key 集合一致、manifest 已
+    改写 __MSG_* + default_locale——打包安装的扩展才有中文名/中文文案。
+
+    扩展源用最小 fixture(同 test_materialize_version_compare);ext catalog
+    走真实仓库的 apps/web/messages(物化在 dev checkout 下的真实数据源),
+    找不到时跳过(非仓库布局的安装环境)。"""
+
+    from ginno_runtime.browser import native_host as nh
+    from ginno_runtime.browser.config import extension_dir
+
+    mip = tmp_path / "mip"
+    src = mip / "extension_src"
+    (src / "content-scripts").mkdir(parents=True)
+    (src / "manifest.json").write_text(
+        json.dumps({"version": "9.9.9",
+                    "action": {"default_title": "Ginno"}}))
+    (src / "background.js").write_text("// bg")
+    (src / "content-scripts" / "visual-indicator.js").write_text("// vi")
+    monkeypatch.setattr(nh, "_materialize_candidates", lambda: [src])
+
+    from ginno_runtime.browser import ext_locales as extl
+
+    catalogs = None
+    for root in nh._ext_messages_candidates():
+        catalogs = extl.load_catalogs(root)
+        if catalogs is not None:
+            break
+    if catalogs is None:
+        pytest.skip("web ext.json catalogs not found (non-repo layout)")
+
+    out = nh.materialize_extension()
+    assert out == extension_dir()
+
+    en_path = out / "_locales" / "en" / "messages.json"
+    zh_path = out / "_locales" / "zh_CN" / "messages.json"
+    assert en_path.is_file(), "materialized extension missing en _locales"
+    assert zh_path.is_file(), "materialized extension missing zh_CN _locales"
+    en_msgs = json.loads(en_path.read_text())
+    zh_msgs = json.loads(zh_path.read_text())
+    assert set(en_msgs) == set(zh_msgs), "en/zh_CN _locales key sets diverge"
+    # manifest __MSG_* 引用的 message 必须真实存在,否则 Chrome 拒载
+    for ref in ("ext_manifest_name", "ext_manifest_description",
+                "ext_manifest_defaultTitle"):
+        assert ref in en_msgs and ref in zh_msgs
+    mf = json.loads((out / "manifest.json").read_text())
+    assert mf["default_locale"] == "en"
+    assert mf["name"] == "__MSG_ext_manifest_name__"

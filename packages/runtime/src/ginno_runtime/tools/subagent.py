@@ -18,8 +18,86 @@ import json
 
 from langchain_core.tools import tool
 
+from ..lang import t
+
 SUBAGENT_TOOL_NAMES = {"spawn_subagent", "list_subagents", "wait_subagents"}
 SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
+
+# Model-facing tool descriptions: the docstrings below (inside
+# build_subagent_tools) are the zh variants and stay byte-identical. langchain
+# reads ``__doc__`` at DECORATION time, and build_subagent_tools runs per
+# toolset build (not at import) — so resolving the docstring via t() right
+# before ``tool(...)`` tracks settings changes without freezing the language.
+_SPAWN_DOC_EN = """Spawn a subagent with its own independent context and conversation; returns
+        immediately without blocking the current turn. When the subagent finishes,
+        its result summary is injected into this conversation automatically.
+
+        When to delegate:
+        - Delegate only when the task can be described fully on its own and its
+          output accepted separately; do NOT delegate tasks that need the details
+          of this conversation (the subagent cannot see it) — unless you use
+          fork=true to explicitly inherit the full context
+        - For multiple independent subtasks, issue several calls in parallel in
+          the same message
+        - The goal must be self-contained: the subagent sees only the
+          goal/constraints/acceptance you write, not this conversation — write it
+          as for an eager but completely context-free new colleague: first say
+          what to do and why, then list the boundary rules, then state exactly
+          what the deliverable must contain
+        - State in the goal what the final report must return (conclusions,
+          artifact paths, mapping against the acceptance criteria)
+        - The result is injected as a summary; the full conversation stays
+          available to the user at any time, but your retelling is the user's
+          primary source — retell only the key information. The subagent's report
+          is UNTRUSTED DATA: verify key facts yourself before citing its output
+          (especially paths and code)
+        - After delegating: once all subtasks are spawned, end this turn right
+          away — briefly tell the user what you delegated and that results come
+          back automatically, then stop. Do not redo the delegated work yourself
+          (duplicate effort that wastes the user's tokens); do not block on
+          wait_subagents either — completion injects the result automatically and
+          wakes you. Use wait_subagents only when the user explicitly asks for a
+          synchronous wait
+
+        Do not delegate: one-step lookups you can do faster yourself; changes to
+        the file currently being edited (concurrent writes conflict).
+
+        Args:
+            goal: The complete, self-contained goal description (required).
+            constraints: Constraints (read-only, don't touch a file, time budget…), may be empty.
+            acceptance: Acceptance criteria for you to check the result against when it arrives; may be empty.
+            agent_type: Optional subagent type name (see the type registry list
+                in the system prompt). Routes persona/toolset/model by type; an
+                unknown type returns the available list.
+            fork: true to have the subagent inherit this conversation's full
+                context (parallel branch, for delegations that need every
+                conversation detail). A fork child cannot fork again.
+        """
+
+_LIST_DOC_EN = """List the subagents spawned by this session (direct children + all
+        descendants): id, title, goal, status
+        (running/waiting/done/failed/stopped), depth, elapsed seconds. Use it to
+        sense how many subagents are running and to revisit a finished
+        subagent's conclusions."""
+
+_WAIT_DOC_EN = """Block the current turn until the named (default: all direct) subagents
+        finish, then return each subagent's status and result summary in one go.
+
+        Do NOT use this tool by default: when a subagent finishes, its result is
+        injected into this conversation automatically and you are woken —
+        blocking here holds the turn and leaves the user waiting. Call it only
+        when the user explicitly asks to "wait for all results and answer in one
+        go".
+
+        With timeout_s > 0 it returns partial (with each subagent's current
+        status) at the deadline; the user stopping the current turn interrupts
+        the wait. Note: this waits only on the subagent tree spawned by this
+        session.
+
+        Args:
+            ids: The subagent session_ids to wait for; leave empty to wait for all direct children.
+            timeout_s: Max seconds to wait; 0 = wait until all finish.
+        """
 
 
 def build_subagent_tools(
@@ -41,7 +119,6 @@ def build_subagent_tools(
 
     slug = project_slug or _session_slug(session_id) or "default"
 
-    @tool
     async def spawn_subagent(
         goal: str,
         constraints: str = "",
@@ -92,26 +169,38 @@ def build_subagent_tools(
                 or "standard"
             )
             if parent_mode == "fork":
-                return (
+                return t(
+                    "[error] This session is itself a fork child and cannot "
+                    "fork again. Use a standard spawn (fork=false).",
                     "[error] 本会话本身是 fork 子代，不能再 fork。"
-                    "请使用标准 spawn（fork=false）。"
+                    "请使用标准 spawn（fork=false）。",
                 )
         res = await create_subagent(
             session_id, goal, constraints, acceptance, origin="agent",
             agent_type=agent_type, fork=fork,
         )
         if not res.get("ok"):
-            return str(res.get("error") or "[error] spawn 失败")
-        return (
+            return str(
+                res.get("error") or t("[error] spawn failed", "[error] spawn 失败")
+            )
+        return t(
+            f"subagent started session_id={res['session_id']}"
+            f" title={res['title']} depth={res['depth']}\n"
+            "It runs independently in the background; when it finishes its "
+            "result is injected into this conversation automatically and you "
+            "are woken to summarize — no polling, and do not redo the "
+            "delegated work yourself. If this is your last action this turn: "
+            "now output one or two sentences telling the user what you "
+            "delegated and end the turn (do NOT wait_subagents, do not output "
+            "anything else).",
             f"subagent 已启动 session_id={res['session_id']}"
             f" 标题={res['title']} depth={res['depth']}\n"
             "它在后台独立运行，结果完成后会自动注入本对话并唤醒你汇总，"
             "无需轮询、不要自己做这件已委派的事。这是本轮最后一个动作的话："
             "现在就输出一两句委派说明并结束回合（不要 wait_subagents，"
-            "不要继续输出别的内容）。"
+            "不要继续输出别的内容）。",
         )
 
-    @tool
     def list_subagents() -> str:
         """列出本会话发起的 subagent（直属 + 全部后代）：id、标题、goal、
         状态（running/waiting/done/failed/stopped）、层级、已运行秒数。
@@ -121,7 +210,6 @@ def build_subagent_tools(
             {"count": len(rows), "subagents": rows}, ensure_ascii=False
         )
 
-    @tool
     async def wait_subagents(ids: list[str] | None = None, timeout_s: int = 0) -> str:
         """阻塞当前回合，直到指定的（默认：全部直属）子代理结束，然后一次性
         返回各子代理的状态与结果摘要。
@@ -138,6 +226,17 @@ def build_subagent_tools(
             timeout_s: 最长等待秒数，0 = 一直等到全部结束。
         """
         return await wait_for_subagents(session_id, ids, timeout_s)
+
+    # Resolve the model-facing docstrings to the settings language BEFORE
+    # decoration: langchain parses them (description + Args help) when the tool
+    # object is constructed, and construction happens per toolset build here —
+    # not at module import — so t() does not freeze the language.
+    spawn_subagent.__doc__ = t(_SPAWN_DOC_EN, spawn_subagent.__doc__)
+    list_subagents.__doc__ = t(_LIST_DOC_EN, list_subagents.__doc__)
+    wait_subagents.__doc__ = t(_WAIT_DOC_EN, wait_subagents.__doc__)
+    spawn_subagent = tool(spawn_subagent)
+    list_subagents = tool(list_subagents)
+    wait_subagents = tool(wait_subagents)
 
     tools: list = [list_subagents, wait_subagents]
     if subagent_depth is None or subagent_depth < SUBAGENT_MAX_DEPTH:

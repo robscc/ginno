@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import {
   computeLayout,
   NW,
@@ -33,6 +34,7 @@ export function WorkflowDag({
   interactive?: boolean;
 }) {
   const [sel, setSel] = useState<string | null>(null);
+  const t = useTranslations("wf.dag");
   const selId = selected !== undefined ? selected : sel;
   const setSelId = (v: string | null) => {
     if (onSelect) onSelect(v);
@@ -41,7 +43,7 @@ export function WorkflowDag({
   const layout = useMemo(() => computeLayout(dsl || {}, PREVIEW_BOX), [dsl]);
 
   if (!dsl?.nodes?.length) {
-    return <div className="py-4 text-center text-xs text-faint">无 DSL 节点</div>;
+    return <div className="py-4 text-center text-xs text-faint">{t("noNodes")}</div>;
   }
   const byId = new Map((dsl.nodes || []).map((n) => [n.id, n]));
   const edges = dsl.edges || [];

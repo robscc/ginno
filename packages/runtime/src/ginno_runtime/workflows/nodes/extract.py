@@ -21,6 +21,7 @@ import time
 from langchain_core.messages import HumanMessage
 
 from ...graph import text_of_content
+from ...lang import t
 from . import agent_helpers as ah
 from .base import BaseNode, llm_invoke_with_timeout, validate_against
 from .registry import register_node
@@ -58,7 +59,7 @@ def _cap_text(text: str, cap: int) -> str:
         return text
     tail = cap // 3
     head = cap - tail
-    return text[:head] + "\n…[中段省略]…\n" + text[-tail:]
+    return text[:head] + t("\n…[middle section omitted]…\n", "\n…[中段省略]…\n") + text[-tail:]
 
 
 def _extract_json_from_text(text: str) -> dict:
@@ -120,12 +121,12 @@ async def extract_from_text(
     # the model can't rename/omit them — the #1 cause of "key missing" failures.
     key_lines = []
     for k, sch in writes_schema.items():
-        t = sch.get("type", "any") if isinstance(sch, dict) else "any"
-        key_lines.append(f'  - "{k}"（类型 {t}）')
+        typ = sch.get("type", "any") if isinstance(sch, dict) else "any"
+        key_lines.append(t(f'  - "{k}" (type {typ})', f'  - "{k}"（类型 {typ}）'))
     keys_block = "\n".join(key_lines)
     skeleton = "{\n" + ",\n".join(f'  "{k}": ...' for k in writes_schema) + "\n}"
     capped_source = _cap_text(source_text or "", _SOURCE_CHAR_CAP)
-    base_prompt = (
+    prompt_zh = (
         "你是结构化数据抽取器。下面的「步骤输出」是某个工作流步骤执行后的结果文本。\n"
         "请从中抽取信息并构造一个 JSON 对象，严格遵守：\n"
         "1. 输出对象的顶层必须恰好包含以下字段，键名完全一致，不得改名、不得增删：\n"
@@ -137,14 +138,36 @@ async def extract_from_text(
         f"输出结构示例：\n{skeleton}\n\n"
         f"步骤输出：\n{capped_source}"
     )
+    prompt_en = (
+        "You are a structured-data extractor. The step output below is the result "
+        "text produced by one workflow step.\n"
+        "Extract information from it and build one JSON object, strictly following:\n"
+        "1. The top level of the output object must contain EXACTLY the following "
+        "fields, key names identical — do not rename, add, or remove any:\n"
+        f"{keys_block}\n"
+        "2. Each field's value must match its declared type; find the corresponding "
+        "content in the step output and fill it in verbatim or lightly normalized.\n"
+        "3. Output only this one JSON object — no explanations, comments, or code "
+        "fences.\n"
+        "4. Output null for a field only when the step output truly contains nothing "
+        "for it.\n\n"
+        f"Full schema: {schema_str}\n\n"
+        f"Output skeleton:\n{skeleton}\n\n"
+        f"Step output:\n{capped_source}"
+    )
+    base_prompt = t(prompt_en, prompt_zh)
     prompt = base_prompt
     last_err = ""
     for attempt in range(2):
         if attempt > 0:
-            prompt = base_prompt + (
+            prompt = base_prompt + t(
+                "\n\n[Previous output was invalid: " + last_err
+                + ". Re-extract from the step output; the top level must contain "
+                "exactly all of the fields above with non-null values (unless truly "
+                "absent), and output only the corrected JSON object.]",
                 "\n\n[上一次输出有误：" + last_err + "。请重新从步骤输出中抽取，"
                 "确保顶层恰好包含上述全部字段且值非 null（除非确无内容），"
-                "只输出修正后的 JSON 对象。]"
+                "只输出修正后的 JSON 对象。]",
             )
         resp = await llm_invoke_with_timeout(m.ainvoke([HumanMessage(content=prompt)]))
         # Per-call usage telemetry (source=workflow). The extraction model may
@@ -157,7 +180,7 @@ async def extract_from_text(
         try:
             parsed = _extract_json_from_text(raw)
         except Exception as e:
-            last_err = f"JSON 解析失败：{e}"
+            last_err = t(f"JSON parse failed: {e}", f"JSON 解析失败：{e}")
             continue
         validated, errs = _validate_writes(parsed, writes_schema)
         if not errs:
@@ -237,7 +260,7 @@ class ExtractNode(BaseNode):
         if validated is None:
             emit({"run_id": run_ctx["run_id"], "node_id": node_id,
                   "kind": "error",
-                  "error": f"抽取失败（来源步骤 {source_id}）：{last_err}",
+                  "error": f"Extraction failed (source step {source_id}): {last_err}",
                   "traceback": None})
             raise RuntimeError(f"ExtractNode '{node_id}' failed: {last_err}")
 

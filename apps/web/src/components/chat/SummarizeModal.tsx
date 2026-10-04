@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Bot, Check, FlaskConical, Loader2, Plus, RotateCcw, Trash2, Workflow, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import { WorkflowDag } from "@/components/workflow/WorkflowDag";
@@ -38,6 +39,16 @@ export function SummarizeModal({
 }) {
   const [local, setLocal] = useState<Record<string, unknown>>(dsl);
   const [showJson, setShowJson] = useState(false);
+  // composer 域 catalog（summarize.modal 子树）
+  const t = useTranslations("composer");
+  // 服务端数据徽标兜底词：n.type 分类法值 → 本地化徽标（composer.badges.nodeType）；
+  // 未知值仍回退英文原值（DSL 新增节点类型无需前端同步）。known 取值 =
+  // runtime workflows/dsl.py 的 NODE_TYPES_ALL。
+  const NODE_TYPES = ["step", "branch", "loop", "human", "subflow"] as const;
+  const nodeTypeBadge = (type: string): string =>
+    (NODE_TYPES as readonly string[]).includes(type)
+      ? t(`badges.nodeType.${type as (typeof NODE_TYPES)[number]}`)
+      : type;
   // Stability plan P1d: zero-LLM 试运行 of the CURRENT edited draft (the
   // endpoint never saves or executes anything). The receipt clears as soon as
   // the draft changes again so it never vouches for stale content.
@@ -60,10 +71,10 @@ export function SummarizeModal({
         setLocal(v as Record<string, unknown>);
         setJsonErr(null);
       } else {
-        setJsonErr("DSL 必须是 JSON 对象");
+        setJsonErr(t("summarize.modal.dslMustBeObject"));
       }
     } catch (e) {
-      setJsonErr(e instanceof Error ? e.message : "JSON 语法错误");
+      setJsonErr(e instanceof Error ? e.message : t("summarize.modal.jsonSyntaxError"));
     }
   };
 
@@ -87,11 +98,11 @@ export function SummarizeModal({
       const r = await api.dryRunWorkflow(local);
       setDry({ busy: false, result: r, err: null });
     } catch (e) {
-      setDry({ busy: false, result: null, err: e instanceof Error ? e.message : "试运行请求失败" });
+      setDry({ busy: false, result: null, err: e instanceof Error ? e.message : t("summarize.modal.dryRunRequestFailed") });
     }
   };
 
-  const name = (local.name as string) || "新流程";
+  const name = (local.name as string) || t("summarize.modal.defaultName");
   const nodes = (local.nodes as DslNode[]) || [];
 
   // {{variable}} placeholders used anywhere in the DSL (S3 guidance row).
@@ -169,11 +180,14 @@ export function SummarizeModal({
         {/* header */}
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
           <Workflow className="h-4 w-4 text-violet" />
-          <span className="text-sm font-semibold text-txt">总结成流程 · {name}</span>
-          <span className="ml-auto text-xs text-faint">
-            {sourceLabel ? `从「${sourceLabel}」提炼 · ` : ""}草稿未保存
+          <span className="text-sm font-semibold text-txt">
+            {t("summarize.modal.title", { name })}
           </span>
-          <button onClick={onClose} className="rounded p-1 text-faint hover:bg-card2 hover:text-txt" aria-label="关闭">
+          <span className="ml-auto text-xs text-faint">
+            {sourceLabel ? `${t("summarize.modal.distilledFrom", { source: sourceLabel })} · ` : ""}
+            {t("summarize.modal.draftNotSaved")}
+          </span>
+          <button onClick={onClose} className="rounded p-1 text-faint hover:bg-card2 hover:text-txt" aria-label={t("summarize.modal.close")}>
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -182,7 +196,7 @@ export function SummarizeModal({
         <div className="flex min-h-0 flex-1">
           <div className="flex w-[300px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-line p-4">
             <div className="text-[10px] font-medium uppercase tracking-wide text-faint">
-              结构预览 · {nodes.length} 个节点
+              {t("summarize.modal.structurePreview", { count: nodes.length })}
             </div>
             <WorkflowDag
               interactive={false}
@@ -196,11 +210,11 @@ export function SummarizeModal({
               <button
                 onClick={runDry}
                 disabled={!!busy || dry.busy}
-                title="零成本试跑当前草稿：不保存、不执行、不调 LLM，只做校验/数据流/编译/可达性检查"
+                title={t("summarize.modal.dryRunHint")}
                 className="btn-press flex items-center gap-1 self-start rounded-md border border-line px-2 py-1 text-[11px] text-faint hover:bg-card2 hover:text-muted disabled:opacity-50"
               >
                 {dry.busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
-                {dry.busy ? "试跑中…" : "试运行"}
+                {dry.busy ? t("summarize.modal.dryRunning") : t("summarize.modal.dryRun")}
               </button>
               {onRetry && (
                 <button
@@ -208,7 +222,7 @@ export function SummarizeModal({
                   disabled={!!busy}
                   className="btn-press flex items-center gap-1 self-start rounded-md border border-line px-2 py-1 text-[11px] text-faint hover:bg-card2 hover:text-muted disabled:opacity-50"
                 >
-                  <RotateCcw className="h-3 w-3" /> 重新总结
+                  <RotateCcw className="h-3 w-3" /> {t("summarize.modal.reSummarize")}
                 </button>
               )}
             </div>
@@ -216,7 +230,7 @@ export function SummarizeModal({
 
           <div className="flex-1 space-y-3 overflow-y-auto p-4">
             <div className="flex items-center">
-              <span className="text-[10px] font-medium uppercase tracking-wide text-faint">节点</span>
+              <span className="text-[10px] font-medium uppercase tracking-wide text-faint">{t("summarize.modal.nodes")}</span>
               <button
                 onClick={() => {
                   if (!showJson) {
@@ -228,7 +242,7 @@ export function SummarizeModal({
                 }}
                 className="ml-auto text-[11px] text-faint hover:text-muted"
               >
-                {showJson ? "返回卡片视图" : "展开 JSON"}
+                {showJson ? t("summarize.modal.backToCards") : t("summarize.modal.expandJson")}
               </button>
             </div>
 
@@ -252,14 +266,16 @@ export function SummarizeModal({
                       <span className="rounded bg-card2 px-1.5 py-0.5 font-mono text-[10px] text-faint">{i + 1}</span>
                       <input
                         value={n.title || n.goal || ""}
-                        placeholder="节点名称"
+                        placeholder={t("summarize.modal.nodeName")}
                         onChange={(e) => patchNode(n.id, n.title !== undefined || !n.goal ? { title: e.target.value } : { goal: e.target.value })}
                         className="min-w-0 flex-1 border-b border-transparent bg-transparent font-medium text-txt outline-none placeholder:text-faint focus:border-violet"
                       />
-                      <span className="shrink-0 text-[10px] uppercase text-faint">{n.type || "step"}</span>
+                      <span className="shrink-0 text-[10px] uppercase text-faint">
+                        {n.type ? nodeTypeBadge(n.type) : t("badges.nodeType.step")}
+                      </span>
                       <button
                         onClick={() => deleteNode(n.id)}
-                        title="删除节点"
+                        title={t("summarize.modal.deleteNode")}
                         className="shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:bg-red/10 hover:text-red group-hover:opacity-100"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -269,7 +285,7 @@ export function SummarizeModal({
                       <textarea
                         value={n.goal}
                         rows={2}
-                        placeholder="节点目标"
+                        placeholder={t("summarize.modal.nodeGoal")}
                         onChange={(e) => patchNode(n.id, { goal: e.target.value })}
                         onInput={(e) => {
                           // S3: auto-grow with content instead of an inner scrollbar
@@ -281,13 +297,17 @@ export function SummarizeModal({
                     )}
                   </div>
                 ))}
-                {!nodes.length && <div className="py-4 text-center text-xs text-faint">草稿中没有节点</div>}
+                {!nodes.length && (
+                  <div className="py-4 text-center text-xs text-faint">{t("summarize.modal.noNodes")}</div>
+                )}
               </div>
             )}
 
             {/* context variables (S3): what changes per-run */}
             <div className="pt-1">
-              <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-faint">上下文变量</div>
+              <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-faint">
+                {t("summarize.modal.contextVariables")}
+              </div>
               {vars.length ? (
                 <div className="flex flex-wrap items-center gap-1.5">
                   {vars.map((v) => {
@@ -296,33 +316,33 @@ export function SummarizeModal({
                       <button
                         key={v}
                         onClick={() => toggleRequired(v)}
-                        title={req ? "必填 — 点击改为可选" : "可选 — 点击改为必填"}
+                        title={req ? t("summarize.modal.requiredToOptional") : t("summarize.modal.optionalToRequired")}
                         className={`flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] ${
                           req ? "border-yellow/50 bg-yellow/10 text-yellow" : "border-line text-muted hover:text-txt"
                         }`}
                       >
                         {`{{${v}}}`}
-                        <span className="text-[9px]">{req ? "必填" : "可选"}</span>
+                        <span className="text-[9px]">{req ? t("summarize.modal.required") : t("summarize.modal.optional")}</span>
                       </button>
                     );
                   })}
                 </div>
               ) : (
-                <div className="text-[11px] italic text-faint">未识别到变量 — 运行时输入写死在 DSL 里，可手动添加</div>
+                <div className="text-[11px] italic text-faint">{t("summarize.modal.noVariables")}</div>
               )}
               <div className="mt-1.5 flex items-center gap-1.5">
                 <input
                   value={newVar}
                   onChange={(e) => setNewVar(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addVariable()}
-                  placeholder="变量名"
+                  placeholder={t("summarize.modal.variableName")}
                   className="w-32 rounded border border-line bg-base px-2 py-1 font-mono text-[11px] text-txt placeholder:text-faint focus:border-violet/60 focus:outline-none"
                 />
                 <button
                   onClick={addVariable}
                   className="btn-press flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-muted hover:bg-card2 hover:text-txt"
                 >
-                  <Plus className="h-3 w-3" /> 添加变量
+                  <Plus className="h-3 w-3" /> {t("summarize.modal.addVariable")}
                 </button>
               </div>
             </div>
@@ -335,23 +355,23 @@ export function SummarizeModal({
             <div className="mx-4 mb-2 space-y-0.5 rounded-md border border-green/30 bg-green/[0.06] px-2 py-1.5 text-xs text-green">
               <div className="flex items-center gap-1.5">
                 <Check className="h-3.5 w-3.5 shrink-0" />
-                试运行通过：{dry.result.node_count} 个节点，校验 / 数据流 / 编译 / 可达性全过
+                {t("summarize.modal.dryRunPassed", { count: dry.result.node_count ?? 0 })}
               </div>
               {dry.result.warnings.length > 0 && (
                 <div className="pl-5 text-[11px] text-yellow">
-                  {dry.result.warnings.length} 条警告（不阻断）：
-                  {dry.result.warnings.map((w) => w.message).join("；")}
+                  {t("summarize.modal.warnings", { count: dry.result.warnings.length })}
+                  {dry.result.warnings.map((w) => w.message).join("; ")}
                 </div>
               )}
               {dry.result.unreachable.length > 0 && (
                 <div className="pl-5 text-[11px] text-yellow">
-                  不可达节点（永远不会执行）：{dry.result.unreachable.join(", ")}
+                  {t("summarize.modal.unreachable", { nodes: dry.result.unreachable.join(", ") })}
                 </div>
               )}
             </div>
           ) : (
             <div className="mx-4 mb-2 max-h-28 space-y-0.5 overflow-y-auto rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
-              <div>试运行未通过：</div>
+              <div>{t("summarize.modal.dryRunFailed")}</div>
               {dry.result.errors.map((e, i) => (
                 <div key={`e${i}`} className="pl-3 text-[11px]">· {e}</div>
               ))}
@@ -369,7 +389,7 @@ export function SummarizeModal({
 
         {createdName ? (
           <div className="mx-4 mb-2 flex items-center gap-1.5 rounded-md border border-green/30 bg-green/[0.06] px-2 py-1.5 text-xs text-green">
-            <Check className="h-3.5 w-3.5" /> 已创建工作流「{createdName}」，可在 Workflows 页查看与运行
+            <Check className="h-3.5 w-3.5" /> {t("summarize.modal.created", { name: createdName })}
           </div>
         ) : (
           error && (
@@ -386,12 +406,12 @@ export function SummarizeModal({
               onClick={onClose}
               className="btn-press ml-auto rounded-md bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
             >
-              完成
+              {t("summarize.modal.done")}
             </button>
           ) : (
             <>
               <button onClick={onClose} className="btn-press rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-card2">
-                取消
+                {t("summarize.modal.cancel")}
               </button>
               {onOpenDevSession && (
                 <button
@@ -400,7 +420,7 @@ export function SummarizeModal({
                   className="btn-press flex items-center gap-1 rounded-md border border-violet/40 px-3 py-1.5 text-xs text-violet hover:bg-violet/[0.06] disabled:opacity-50"
                 >
                   {busy === "dev" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
-                  {busy === "dev" ? "创建并打开…" : "进入开发会话精炼"}
+                  {busy === "dev" ? t("summarize.modal.refining") : t("summarize.modal.refine")}
                 </button>
               )}
               <div className="ml-auto flex gap-2">
@@ -410,7 +430,7 @@ export function SummarizeModal({
                   className="btn-press flex items-center gap-1 rounded-md border border-line px-3 py-1.5 text-xs text-txt hover:bg-card2 disabled:opacity-50"
                 >
                   {busy === "create" && <Loader2 className="h-3 w-3 animate-spin" />}
-                  {busy === "create" ? "创建中…" : "仅创建"}
+                  {busy === "create" ? t("summarize.modal.creating") : t("summarize.modal.createOnly")}
                 </button>
                 <button
                   disabled={!!busy}
@@ -418,7 +438,7 @@ export function SummarizeModal({
                   className="btn-press flex items-center gap-1 rounded-md bg-gradient-to-r from-violet to-fuchsia px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
                 >
                   {busy === "run" && <Loader2 className="h-3 w-3 animate-spin" />}
-                  {busy === "run" ? "运行中…" : "创建并运行"}
+                  {busy === "run" ? t("summarize.modal.running") : t("summarize.modal.createAndRun")}
                 </button>
               </div>
             </>

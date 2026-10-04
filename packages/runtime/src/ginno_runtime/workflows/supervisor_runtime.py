@@ -18,12 +18,42 @@ from __future__ import annotations
 
 import json
 
+from ..lang import t
+
 _DECISIONS = ("continue", "skip", "retry", "abort")
 
 _DEFAULT_POLICY = (
     "你是工作流监督者：审查刚执行完的节点输出，判断运行是否可信地继续。"
     "输出正确/可接受 → continue；输出缺失或失败且重跑可能改善 → retry；"
     "该步骤不必要或其结果应被忽略 → skip；运行应立即终止 → abort。拿不准时选 continue 并给出较低 confidence。"
+)
+_DEFAULT_POLICY_EN = (
+    "You are the workflow supervisor: review the output of the node that just ran "
+    "and judge whether the run can credibly continue.\n"
+    "Output correct/acceptable → continue; output missing or failed and a rerun "
+    "might improve it → retry; the step is unnecessary or its result should be "
+    "ignored → skip; the run must stop immediately → abort. When unsure, choose "
+    "continue with a low confidence."
+)
+
+# Appended to whichever policy variant is selected — machine skeleton (decision
+# vocabulary, JSON shape and key names) is identical in both variants.
+_CONTRACT_ZH = (
+    "\n\n## 决策词汇表\n"
+    "continue | skip | retry | abort（只能取其中一个值）\n\n"
+    "## 输出契约\n"
+    "只输出一个 JSON 对象，不要输出任何其他文字、不要代码围栏：\n"
+    '{"decision": "continue|skip|retry|abort", "confidence": <0到1的小数>, '
+    '"reason": "<不超过200字的理由>", "context_patch": <要合并进运行上下文的对象或null>}'
+)
+_CONTRACT_EN = (
+    "\n\n## Decision vocabulary\n"
+    "continue | skip | retry | abort (exactly one of these values)\n\n"
+    "## Output contract\n"
+    "Output a single JSON object — no other text, no code fences:\n"
+    '{"decision": "continue|skip|retry|abort", "confidence": <float in 0..1>, '
+    '"reason": "<reason, no more than 200 chars>", '
+    '"context_patch": <object to merge into the run context, or null>}'
 )
 
 # Rendered context values / event summaries are compacted to keep the judge
@@ -97,17 +127,22 @@ def _render_events(recent_events: list) -> str:
             f"- {ev.get('kind')} node={ev.get('node_id')}"
             + (f" | {_truncate(str(gist), _EVENT_LINE_MAX)}" if gist else "")
         )
-    return "\n".join(lines) if lines else "（无）"
+    return "\n".join(lines) if lines else t("(none)", "（无）")
 
 
 def _render_context(context: dict) -> str:
     lines = []
     for i, (k, v) in enumerate(dict(context or {}).items()):
         if i >= _CTX_KEY_MAX:
-            lines.append(f"- …（其余 {len(context) - _CTX_KEY_MAX} 个键省略）")
+            lines.append(
+                t(
+                    f"- …({len(context) - _CTX_KEY_MAX} more keys omitted)",
+                    f"- …（其余 {len(context) - _CTX_KEY_MAX} 个键省略）",
+                )
+            )
             break
         lines.append(f"- {k}: {_truncate(str(v), _CTX_VALUE_MAX)}")
-    return "\n".join(lines) if lines else "（空）"
+    return "\n".join(lines) if lines else t("(empty)", "（空）")
 
 
 async def adjudicate(
@@ -137,24 +172,27 @@ async def adjudicate(
     from .nodes import agent_helpers as ah
     from .nodes.base import llm_invoke_with_timeout
 
-    system = (
-        (policy or "").strip()
-        or _DEFAULT_POLICY
-    ) + (
-
-        "\n\n## 决策词汇表\n"
-        "continue | skip | retry | abort（只能取其中一个值）\n\n"
-        "## 输出契约\n"
-        "只输出一个 JSON 对象，不要输出任何其他文字、不要代码围栏：\n"
-        '{"decision": "continue|skip|retry|abort", "confidence": <0到1的小数>, '
-        '"reason": "<不超过200字的理由>", "context_patch": <要合并进运行上下文的对象或null>}'
-    )
+    policy_text = (policy or "").strip() or t(_DEFAULT_POLICY_EN, _DEFAULT_POLICY)
+    system = policy_text + t(_CONTRACT_EN, _CONTRACT_ZH)
+    output_text = _truncate(
+        str(node_output) if node_output is not None else "", 2000
+    ) or t("(empty)", "（空）")
     user = (
-        f"## 被监督节点\nid: {node_id}" + (f"  type: {node_type}" if node_type else "") + "\n\n"
-        f"## 该节点的输出（过长已截断）\n{_truncate(str(node_output) if node_output is not None else '', 2000) or '（空）'}\n\n"
-        f"## 当前运行上下文\n{_render_context(context)}\n\n"
-        f"## 最近事件\n{_render_events(recent_events)}\n\n"
-        "请给出裁决 JSON。"
+        t(f"## Supervised node\nid: {node_id}", f"## 被监督节点\nid: {node_id}")
+        + (f"  type: {node_type}" if node_type else "")
+        + "\n\n"
+        + t(
+            f"## Gated node output (truncated when long)\n{output_text}",
+            f"## 该节点的输出（过长已截断）\n{output_text}",
+        )
+        + "\n\n"
+        + t("## Current run context\n", "## 当前运行上下文\n")
+        + _render_context(context)
+        + "\n\n"
+        + t("## Recent events\n", "## 最近事件\n")
+        + _render_events(recent_events)
+        + "\n\n"
+        + t("Respond with the adjudication JSON.", "请给出裁决 JSON。")
     )
     msgs = [SystemMessage(content=system), HumanMessage(content=user)]
     resp = await llm_invoke_with_timeout(model.ainvoke(msgs))

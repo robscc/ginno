@@ -22,6 +22,10 @@ def home() -> Path:
 
 _DEFAULT_SETTINGS = {
     "default_provider": "custom",
+    # UI + model reply language (lang.py, i18n-design.md §2):
+    # "auto" (resolve from the OS locale) | "en" | "zh-CN".
+    # The legacy "prompt_language" key is merged into this one at load.
+    "language": "auto",
     # Privileged mode ON by default: allow every tool call without permission
     # prompts (toggle off in Settings → 通用 to re-enable per-tool checks).
     "bypass_permissions": True,
@@ -65,18 +69,18 @@ _DEFAULT_SETTINGS = {
     "hooks": {},
     # Tool display labels: friendly names for tool call bubbles in the UI.
     # Keys are raw tool names (e.g. "write_file"), values are display labels
-    # (e.g. "写文件中"; "|" separates several names, one is picked at random
+    # (e.g. "Writing file"; "|" separates several names, one is picked at random
     # per call). MCP tools (mcp_{server}_{tool}) are auto-detected and
-    # shown as "正在调用MCP：{server}" when no explicit mapping exists.
+    # shown as "Calling MCP: {server}" when no explicit mapping exists.
     "tool_labels": {
-        "read_file": "读取文件中",
-        "write_file": "写文件中",
-        "edit_file": "编辑文件中",
-        "glob_files": "搜索文件中",
-        "grep_files": "搜索内容中",
-        "bash": "执行命令中",
-        "parse_document": "解析文档中",
-        "analyze_table": "分析表格中",
+        "read_file": "Reading file",
+        "write_file": "Writing file",
+        "edit_file": "Editing file",
+        "glob_files": "Searching files",
+        "grep_files": "Searching content",
+        "bash": "Running command",
+        "parse_document": "Parsing document",
+        "analyze_table": "Analyzing table",
     },
     # Context engineering (docs/design/world-state-plan.md). All keys have
     # safe defaults in world_state.context_settings(); values here override.
@@ -218,6 +222,29 @@ def _migrate_settings(settings: dict) -> dict:
     return settings
 
 
+def _migrate_language(settings: dict) -> bool:
+    """Merge the legacy ``prompt_language`` into ``language`` in place
+    (i18n-design.md §2, one-shot at settings load + write back).
+
+    旧 ``prompt_language=zh`` → ``zh-CN`` / ``=en`` → ``en``（行为不变）；
+    两个键都没有 → ``auto``；已存在 ``language`` 时以它为准。``prompt_language``
+    键移除。Returns True when the dict changed (caller writes back).
+    """
+    changed = False
+    legacy = settings.pop("prompt_language", None)
+    if legacy is not None:
+        changed = True
+    if not settings.get("language"):
+        if legacy == "zh":
+            settings["language"] = "zh-CN"
+        elif legacy == "en":
+            settings["language"] = "en"
+        else:
+            settings["language"] = "auto"
+        changed = True
+    return changed
+
+
 def ensure_layout() -> None:
     """Create the standard ~/.ginno directory tree with seed defaults."""
     import json
@@ -249,7 +276,10 @@ def ensure_layout() -> None:
             data = json.loads(settings.read_text() or "{}")
             had_providers = "providers" in data
             _migrate_settings(data)
-            if not had_providers:
+            # prompt_language → language (i18n-design.md §2); runs regardless
+            # of the providers migration's early-return shape.
+            lang_migrated = _migrate_language(data)
+            if not had_providers or lang_migrated:
                 settings.write_text(json.dumps(data, indent=2, ensure_ascii=False))
         except json.JSONDecodeError:
             pass

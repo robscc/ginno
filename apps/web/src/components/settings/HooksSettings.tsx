@@ -1,19 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 
 const EVENTS = ["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SessionStart"] as const;
 type Ev = (typeof EVENTS)[number];
 type Hook = { matcher: string; command: string };
 
-const HELP: Record<Ev, string> = {
-  PreToolUse: "Before a tool call; matcher = tool name (e.g. Bash).",
-  PostToolUse: "After a tool call; matcher = tool name.",
-  UserPromptSubmit: "When the user submits a message.",
-  Stop: "At the end of each turn.",
-  SessionStart: "When a session starts.",
-};
+// 事件说明文案在 catalog settings.hooks.help.<事件名>（原模块级 HELP 移入）
 
 const norm = (h: unknown): Hook => {
   const o = (h || {}) as Record<string, unknown>;
@@ -21,6 +16,7 @@ const norm = (h: unknown): Hook => {
 };
 
 export function HooksSettings() {
+  const t = useTranslations("settings.hooks");
   const [hooks, setHooks] = useState<Record<string, Hook[]>>({});
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,7 +31,7 @@ export function HooksSettings() {
         for (const e of EVENTS) out[e] = Array.isArray(raw[e]) ? raw[e].map(norm) : [];
         setHooks(out);
       })
-      .catch(() => setMsg("Failed to load: runtime not connected"));
+      .catch(() => setMsg(t("loadFailed")));
   };
   useEffect(load, []);
 
@@ -58,9 +54,9 @@ export function HooksSettings() {
       }
       s.hooks = cleaned;
       const r = await api.putSettings(s);
-      setMsg(r.ok ? "Saved (takes effect on the next matching event; hooks are unaffected by Privileged Mode)" : "Failed to save");
+      setMsg(r.ok ? t("saved") : t("saveFailed"));
     } catch {
-      setMsg("Failed to save: runtime not connected");
+      setMsg(t("saveFailedConn"));
     } finally {
       setBusy(false);
     }
@@ -68,11 +64,8 @@ export function HooksSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Hooks</h2>
-      <p className="mt-1 max-w-2xl text-sm text-muted">
-        Run custom commands on lifecycle events; commands receive a JSON payload on stdin (including
-        event / tool_name, etc.). Hooks always run and are unaffected by Privileged Mode.
-      </p>
+      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+      <p className="mt-1 max-w-2xl text-sm text-muted">{t("description")}</p>
       <div className="mt-5 max-w-2xl space-y-6">
         {EVENTS.map((e) => (
           <div key={e}>
@@ -82,13 +75,13 @@ export function HooksSettings() {
                 {(hooks[e] || []).length}
               </span>
             </div>
-            <p className="mb-2 text-xs text-faint">{HELP[e]}</p>
+            <p className="mb-2 text-xs text-faint">{t(`help.${e}`)}</p>
             <div className="space-y-1.5">
               {(hooks[e] || []).map((h, i) => (
                 <div key={i} className="flex gap-2">
                   <input
                     className="field w-40 font-mono text-xs"
-                    placeholder="matcher (optional)"
+                    placeholder={t("matcherPlaceholder")}
                     value={h.matcher}
                     onChange={(ev) =>
                       update(
@@ -99,7 +92,7 @@ export function HooksSettings() {
                   />
                   <input
                     className="field flex-1 font-mono text-xs"
-                    placeholder="command, e.g. python ~/.ginno/hooks/x.py"
+                    placeholder={t("commandPlaceholder")}
                     value={h.command}
                     onChange={(ev) =>
                       update(
@@ -110,7 +103,7 @@ export function HooksSettings() {
                   />
                   <button
                     onClick={() => update(e, (hooks[e] || []).filter((_, j) => j !== i))}
-                    aria-label="Delete hook"
+                    aria-label={t("deleteHook")}
                     className="rounded-lg border border-line px-2 text-muted hover:text-red"
                   >
                     ×
@@ -121,7 +114,7 @@ export function HooksSettings() {
                 onClick={() => update(e, [...(hooks[e] || []), { matcher: "", command: "" }])}
                 className="rounded-lg border border-line2 px-3 py-1 text-xs text-muted hover:text-txt"
               >
-                + Add hook
+                {t("addHook")}
               </button>
             </div>
           </div>
@@ -132,13 +125,13 @@ export function HooksSettings() {
             disabled={busy}
             className="rounded-lg bg-violet px-4 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            Save
+            {t("save")}
           </button>
           <button
             onClick={load}
             className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-txt"
           >
-            Reload
+            {t("reload")}
           </button>
           {msg && <span className="text-xs text-muted">{msg}</span>}
         </div>

@@ -14,7 +14,10 @@ send-only optimization).
 
 from __future__ import annotations
 
+from .lang import t
+
 TRUNCATION_MARKER = "[输出过长已截断"
+TRUNCATION_MARKER_EN = "[output truncated: "
 
 
 def truncate_middle(
@@ -38,9 +41,12 @@ def truncate_middle(
     head = text[:head_budget]
     tail = text[n - tail_budget:] if tail_budget > 0 else ""
     dropped = n - head_budget - tail_budget
-    marker = (
+    marker = t(
+        f"\n{TRUNCATION_MARKER_EN}original {n} chars; kept head {head_budget} + tail "
+        f"{tail_budget}; omitted {dropped} chars in the middle. If you need the omitted "
+        f"content, re-read with a more precise query or range.]\n",
         f"\n{TRUNCATION_MARKER}：原文 {n} 字符，保留头部 {head_budget} + 尾部 {tail_budget}，"
-        f"省略中间 {dropped} 字符。如需被省略的内容，请用更精确的查询/范围重新读取。]\n"
+        f"省略中间 {dropped} 字符。如需被省略的内容，请用更精确的查询/范围重新读取。]\n",
     )
     return head + marker + tail
 

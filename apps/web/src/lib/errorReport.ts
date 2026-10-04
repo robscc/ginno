@@ -70,34 +70,34 @@ export function buildRunErrorReport(run: WorkflowRun, events?: WorkflowRunEvent[
     .pop();
 
   const lines: string[] = [];
-  lines.push("# Ginno Workflow 错误报告");
+  lines.push("# Ginno Workflow Error Report");
   lines.push("");
-  lines.push("> 请帮我定位这个 workflow 运行失败的原因。以下是完整诊断信息。");
+  lines.push("> Please help me find the cause of this workflow run failure. Full diagnostics below.");
   lines.push("");
-  lines.push("## 基本信息");
-  lines.push(`- 工作流: ${run.name || "?"} (\`${run.workflow_id}\`)`);
+  lines.push("## Overview");
+  lines.push(`- Workflow: ${run.name || "?"} (\`${run.workflow_id}\`)`);
   lines.push(`- Run ID: \`${run.id}\``);
-  lines.push(`- DSL 版本: v${run.dsl_version ?? "?"}`);
-  lines.push(`- 状态: ${run.status}`);
-  lines.push(`- 开始: ${fmtISO(run.started)}`);
-  lines.push(`- 结束: ${fmtISO(run.finished)}`);
-  if (step) lines.push(`- 失败步骤: ${step.title} (\`${step.id}\`)`);
+  lines.push(`- DSL version: v${run.dsl_version ?? "?"}`);
+  lines.push(`- Status: ${run.status}`);
+  lines.push(`- Started: ${fmtISO(run.started)}`);
+  lines.push(`- Finished: ${fmtISO(run.finished)}`);
+  if (step) lines.push(`- Failed step: ${step.title} (\`${step.id}\`)`);
   lines.push("");
-  lines.push("## 错误");
+  lines.push("## Error");
   lines.push("```");
-  lines.push(run.error || "（无错误信息）");
+  lines.push(run.error || "(no error message)");
   lines.push("```");
   lines.push("");
   lines.push("## Traceback");
   lines.push("```");
   lines.push(
-    tb || "（不可用——该失败未捕获堆栈，如进程重启/旧版本记录。可查 sidecar 日志）",
+    tb || "(unavailable — no traceback was captured for this failure, e.g. a process restart or an older-version record. Check the sidecar logs)",
   );
   lines.push("```");
   if (events && events.length) {
     const tail = events.slice(-15);
     lines.push("");
-    lines.push(`## 最近事件（最后 ${tail.length} 条）`);
+    lines.push(`## Recent events (last ${tail.length})`);
     lines.push("```");
     for (const ev of tail) {
       const node = ev.node_id ? ` [${ev.node_id}]` : "";
@@ -106,11 +106,11 @@ export function buildRunErrorReport(run: WorkflowRun, events?: WorkflowRunEvent[
     lines.push("```");
   }
   lines.push("");
-  lines.push("## 诊断提示");
+  lines.push("## Diagnostic pointers");
   lines.push(
-    `- Sidecar 日志: \`~/.ginno/logs/sidecar.log\`（grep \`workflow_run_failed run=${run.id.slice(0, 8)}\`）`,
+    `- Sidecar log: \`~/.ginno/logs/sidecar.log\` (grep \`workflow_run_failed run=${run.id.slice(0, 8)}\`)`,
   );
-  lines.push(`- 事件文件: \`~/.ginno/workflow_runs/${run.id}.events.jsonl\``);
+  lines.push(`- Events file: \`~/.ginno/workflow_runs/${run.id}.events.jsonl\``);
   return lines.join("\n");
 }
 

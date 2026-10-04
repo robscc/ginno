@@ -39,7 +39,7 @@ from ...subagent_plan import BACKGROUND_ASYNC_COMMANDS as _BACKGROUND_ASYNC_COMM
 from ..messages_ui import skill_display_text
 from ..sessions import _emit_goal_event, _ensure_session, _first_agent_id, _start_goal_driver
 from .engine import _stop_parked_turn, _stream_graph
-from .turn import _ATTACH_ONLY_TEXT, _prepare_steer_payload, _run_resume, _run_stream
+from .turn import _attach_only_text, _prepare_steer_payload, _run_resume, _run_stream
 
 router = APIRouter()
 
@@ -87,7 +87,18 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     session = _ensure_session(session_id)
     if not session:
         await ws.accept()
-        await ws.send_text(_ev("error", {"message": f"unknown session: {session_id}"}))
+        # Event contract (i18n-design.md §3): English fallback text + i18n_key
+        # + params — the frontend renders t(i18n_key, params) when present.
+        await ws.send_text(
+            _ev(
+                "error",
+                {
+                    "message": f"unknown session: {session_id}",
+                    "i18n_key": "stream.error_unknown_session",
+                    "params": {"id": session_id},
+                },
+            )
+        )
         await ws.close()
         return
 
@@ -237,7 +248,13 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             except Exception as e:
                 _log.exception("resume_error session=%s", session_id)
                 await _push_session_event(
-                    session_id, "error", {"message": f"{type(e).__name__}: {e}"}
+                    session_id,
+                    "error",
+                    {
+                        "message": f"{type(e).__name__}: {e}",
+                        "i18n_key": "stream.turn_failed",
+                        "params": {"error": f"{type(e).__name__}: {e}"},
+                    },
                 )
             finally:
                 if _TURN_TASKS.get(session_id) is asyncio.current_task():
@@ -275,7 +292,12 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                await ws.send_text(_ev("error", {"message": "invalid JSON"}))
+                await ws.send_text(
+                    _ev(
+                        "error",
+                        {"message": "invalid JSON", "i18n_key": "stream.error_invalid_json"},
+                    )
+                )
                 continue
 
             kind = msg.get("type")
@@ -314,7 +336,11 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             await ws.send_text(
                                 _ev(
                                     "notice",
-                                    {"message": f"当前有回合正在进行，请等待其结束再执行 /{plan.builtin_async}"},
+                                    {
+                                        "message": f"A turn is already running; wait for it to finish before running /{plan.builtin_async}",
+                                        "i18n_key": "stream.busy_wait_command",
+                                        "params": {"command": plan.builtin_async},
+                                    },
                                     turn_id,
                                 )
                             )
@@ -341,6 +367,8 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             )
                             await ws.send_text(_ev("message.end", {}, turn_id))
                             continue
+                        _reply_key: str | None = None
+                        _reply_params: dict | None = None
                         try:
                             _reply = await _commands.BUILTINS[
                                 plan.builtin_async
@@ -355,10 +383,19 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                                 plan.builtin_async, session_id,
                             )
                             _reply = (
-                                f"/{plan.builtin_async} 执行失败："
+                                f"/{plan.builtin_async} failed: "
                                 f"{type(_ce).__name__}: {_ce}"
                             )
-                        await ws.send_text(_ev("notice", {"message": _reply}, turn_id))
+                            _reply_key = "stream.command_failed"
+                            _reply_params = {
+                                "command": plan.builtin_async,
+                                "error": f"{type(_ce).__name__}: {_ce}",
+                            }
+                        _notice_payload: dict = {"message": _reply}
+                        if _reply_key:
+                            _notice_payload["i18n_key"] = _reply_key
+                            _notice_payload["params"] = _reply_params
+                        await ws.send_text(_ev("notice", _notice_payload, turn_id))
                         await ws.send_text(_ev("message.end", {}, turn_id))
                         continue
                     if plan.builtin_reply is not None:
@@ -377,7 +414,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     _busy = _TURN_TASKS.get(session_id)
                     if _busy is not None and not _busy.done():
                         await ws.send_text(
-                            _ev("notice", {"message": "当前有回合正在进行，请等待其结束"}, turn_id)
+                            _ev(
+                                "notice",
+                                {
+                                    "message": "A turn is already running; please wait for it to finish",
+                                    "i18n_key": "stream.busy_wait",
+                                },
+                                turn_id,
+                            )
                         )
                         continue
                     # Pre-arm the cooperative stop signal BEFORE spawning the
@@ -450,7 +494,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             # error card instead of a silently dropped turn.
                             _log.exception("invoke_error session=%s", session_id)
                             await _push_session_event(
-                                session_id, "error", {"message": f"{type(e).__name__}: {e}"}, _tid
+                                session_id,
+                                "error",
+                                {
+                                    "message": f"{type(e).__name__}: {e}",
+                                    "i18n_key": "stream.turn_failed",
+                                    "params": {"error": f"{type(e).__name__}: {e}"},
+                                },
+                                _tid,
                             )
                         finally:
                             # Drop the busy markers BEFORE post-turn housekeeping:
@@ -516,7 +567,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     _log.exception("invoke_error session=%s", session_id)
                     try:
                         await ws.send_text(
-                            _ev("error", {"message": f"{type(e).__name__}: {e}"})
+                            _ev(
+                                "error",
+                                {
+                                    "message": f"{type(e).__name__}: {e}",
+                                    "i18n_key": "stream.turn_failed",
+                                    "params": {"error": f"{type(e).__name__}: {e}"},
+                                },
+                            )
                         )
                     except Exception:
                         return  # socket died while reporting; nothing to do
@@ -538,7 +596,11 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     await ws.send_text(
                         _ev(
                             "notice",
-                            {"message": f"/{plan.builtin_async} 需要在回合结束后执行"},
+                            {
+                                "message": f"/{plan.builtin_async} can only run after the current turn finishes",
+                                "i18n_key": "stream.command_only_after_turn",
+                                "params": {"command": plan.builtin_async},
+                            },
                             _steer_turn,
                         )
                     )
@@ -586,7 +648,10 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     await ws.send_text(
                         _ev(
                             "error",
-                            {"message": "当前没有正在进行的回合，请重新发送"},
+                            {
+                                "message": "No turn is currently running; please send again",
+                                "i18n_key": "stream.no_turn_running",
+                            },
                             _steer_turn,
                         )
                     )
@@ -607,7 +672,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         "steer_attach_failed session=%s steer=%s", session_id, steer_id
                     )
                     _payload = {
-                        "text": steer_text or _ATTACH_ONLY_TEXT,
+                        "text": steer_text or _attach_only_text(),
                         "content_blocks": None,
                         "context_text": None,
                         "files": [],
@@ -714,7 +779,10 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             await _push_session_event(
                                 _sid,
                                 "notice",
-                                {"message": "拆分方案确认失败，请重试或重新拆分"},
+                                {
+                                    "message": "Failed to confirm the split plan; retry or split again",
+                                    "i18n_key": "stream.plan_confirm_failed",
+                                },
                             )
                         except Exception:
                             pass
@@ -855,7 +923,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 _busy = _TURN_TASKS.get(session_id)
                 if _busy is not None and not _busy.done():
                     await ws.send_text(
-                        _ev("notice", {"message": "当前有回合正在进行，请等待其结束"}, turn_id)
+                        _ev(
+                            "notice",
+                            {
+                                "message": "A turn is already running; please wait for it to finish",
+                                "i18n_key": "stream.busy_wait",
+                            },
+                            turn_id,
+                        )
                     )
                     continue
                 slug = session.get("project_slug")
@@ -911,7 +986,13 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     except Exception as e:
                         _log.exception("checkpoint_retry_error session=%s turn=%s", session_id, _tid)
                         await _push_session_event(
-                            session_id, "error", {"message": f"{type(e).__name__}: {e}"}
+                            session_id,
+                            "error",
+                            {
+                                "message": f"{type(e).__name__}: {e}",
+                                "i18n_key": "stream.turn_failed",
+                                "params": {"error": f"{type(e).__name__}: {e}"},
+                            },
                         )
                     finally:
                         if _TURN_TASKS.get(session_id) is asyncio.current_task():
@@ -951,7 +1032,16 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 )
             else:
                 try:
-                    await ws.send_text(_ev("error", {"message": f"unknown type: {kind}"}))
+                    await ws.send_text(
+                        _ev(
+                            "error",
+                            {
+                                "message": f"unknown type: {kind}",
+                                "i18n_key": "stream.error_unknown_type",
+                                "params": {"type": str(kind)},
+                            },
+                        )
+                    )
                 except Exception:
                     return
     except WebSocketDisconnect:

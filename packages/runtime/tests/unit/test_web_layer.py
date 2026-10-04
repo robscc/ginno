@@ -177,7 +177,7 @@ def test_web_fetch_upgrades_source(isolated_home, monkeypatch):
                                        "origin": "search", "depth": "snippet", "engine": "duckduckgo"})
     wf = next(t for t in tools if t.name == "web_fetch")
     out = wf.invoke({"url": "https://e.com/p"})
-    assert "已读取原文" in out and "[s1]" in out
+    assert "Fetched full text" in out and "[s1]" in out
     src = cit.peek_turn_sources("sess-f")[0]
     assert src["depth"] == "fetched" and src["title"] == "全文"
     data = json.loads(web_usage.web_usage_path().read_text())
@@ -225,7 +225,7 @@ def test_search_records_zero_hit_searches(isolated_home, monkeypatch):
     tools = web_tools.build_web_tools("s-zero")
     ws = next(t for t in tools if t.name == "web_search")
     out = ws.invoke({"query": "nothing"})
-    assert "没有找到" in out
+    assert "found no results" in out
     data = json.loads(web_usage.web_usage_path().read_text())
     assert data["engines"]["duckduckgo"]["searches"] == 1
     assert data["engines"]["duckduckgo"]["results"] == 0

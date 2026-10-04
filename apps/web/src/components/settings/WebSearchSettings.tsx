@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { Globe, Save, FlaskConical } from "lucide-react";
 
@@ -25,11 +26,13 @@ const DEFAULTS: WebForm = {
   tavily_api_key: "",
 };
 
+// label 存 catalog key（settings.web.engines.*），渲染时经 t() 翻译；
+// as const 保证 label 为字面量联合（next-intl key 类型检查要求）
 const ENGINES = [
-  { id: "duckduckgo", label: "DuckDuckGo (no key required)" },
-  { id: "searxng", label: "SearXNG (self-hosted)" },
-  { id: "tavily", label: "Tavily (API key)" },
-];
+  { id: "duckduckgo", label: "ddg" },
+  { id: "searxng", label: "searxng" },
+  { id: "tavily", label: "tavily" },
+] as const;
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
@@ -42,6 +45,7 @@ function Field({ label, children, hint }: { label: string; children: React.React
 }
 
 export function WebSearchSettings() {
+  const t = useTranslations("settings.web");
   const [form, setForm] = useState<WebForm>(DEFAULTS);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -84,7 +88,7 @@ export function WebSearchSettings() {
       // ensure_layout always seeds a non-empty settings.json, so an empty read
       // means a failed/corrupt GET — refusing is safer than wiping config.
       if (!cur || typeof cur !== "object" || Object.keys(cur).length === 0) {
-        setMsg("Failed to read existing settings; save aborted (to avoid overwriting other config). Please retry.");
+        setMsg(t("readAborted"));
         return;
       }
       const engines: Record<string, Record<string, string>> = {};
@@ -100,9 +104,9 @@ export function WebSearchSettings() {
           engines,
         },
       });
-      setMsg("Saved. Takes effect for new sessions (open sessions keep the tool set they were created with).");
+      setMsg(t("saved"));
     } catch (e) {
-      setMsg(`Failed to save: ${String(e)}`);
+      setMsg(t("saveFailed", { error: String(e) }));
     } finally {
       setBusy(false);
     }
@@ -113,10 +117,10 @@ export function WebSearchSettings() {
     setMsg("");
     try {
       const r = await api.testWebSearch(form.default_engine);
-      setMsg(r.ok ? `✅ Engine ${form.default_engine} works, returned ${r.results} results` : `❌ ${r.error || "Search failed"}`);
+      setMsg(r.ok ? t("testOk", { engine: form.default_engine, count: r.results ?? 0 }) : t("testFail", { error: r.error || t("searchFailed") }));
       reloadUsage();
     } catch (e) {
-      setMsg(`Test failed: ${String(e)}`);
+      setMsg(t("testFailed", { error: String(e) }));
     } finally {
       setTesting(false);
     }
@@ -126,7 +130,7 @@ export function WebSearchSettings() {
     <div className="mx-auto max-w-2xl px-8 py-8">
       <div className="mb-6 flex items-center gap-2">
         <Globe className="h-5 w-5 text-blue" />
-        <h2 className="text-[1rem] font-semibold">Web Search</h2>
+        <h2 className="text-[1rem] font-semibold">{t("title")}</h2>
       </div>
 
       <div className="flex flex-col gap-5">
@@ -136,10 +140,10 @@ export function WebSearchSettings() {
             checked={form.enabled}
             onChange={(e) => set("enabled", e.target.checked)}
           />
-          Enable built-in web search (web_search / web_fetch tools)
+          {t("enableLabel")}
         </label>
 
-        <Field label="Default engine">
+        <Field label={t("defaultEngine")}>
           <select
             className="field"
             value={form.default_engine}
@@ -147,14 +151,14 @@ export function WebSearchSettings() {
           >
             {ENGINES.map((e) => (
               <option key={e.id} value={e.id}>
-                {e.label}
+                {t(`engines.${e.label}`)}
               </option>
             ))}
           </select>
         </Field>
 
         {form.default_engine === "searxng" && (
-          <Field label="SearXNG instance URL" hint="Base URL of your self-hosted instance, e.g. http://127.0.0.1:8888">
+          <Field label={t("searxngUrl")} hint={t("searxngHint")}>
             <input
               className="field"
               value={form.searxng_base_url}
@@ -164,7 +168,7 @@ export function WebSearchSettings() {
           </Field>
         )}
         {form.default_engine === "tavily" && (
-          <Field label="Tavily API Key">
+          <Field label={t("tavilyKey")}>
             <input
               className="field"
               type="password"
@@ -176,7 +180,7 @@ export function WebSearchSettings() {
         )}
 
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Results per search">
+          <Field label={t("maxResults")}>
             <input
               className="field"
               type="number"
@@ -186,7 +190,7 @@ export function WebSearchSettings() {
               onChange={(e) => set("max_results", Math.max(1, Math.min(10, Number(e.target.value) || 5)))}
             />
           </Field>
-          <Field label="Timeout (seconds)">
+          <Field label={t("timeout")}>
             <input
               className="field"
               type="number"
@@ -204,14 +208,14 @@ export function WebSearchSettings() {
             onClick={save}
             disabled={busy}
           >
-            <Save className="h-4 w-4" /> Save
+            <Save className="h-4 w-4" /> {t("save")}
           </button>
           <button
             className="flex items-center gap-1.5 rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt disabled:opacity-50"
             onClick={testSearch}
             disabled={testing || !form.enabled}
           >
-            <FlaskConical className="h-4 w-4" /> {testing ? "Testing…" : "Test search"}
+            <FlaskConical className="h-4 w-4" /> {testing ? t("testing") : t("testSearch")}
           </button>
         </div>
         {msg && <p className="text-xs text-muted">{msg}</p>}
@@ -219,16 +223,16 @@ export function WebSearchSettings() {
         {usage && (usage.total_searches > 0 || usage.total_cited > 0) && (
           <div className="mt-4 rounded-lg border border-line/60 p-4 text-xs">
             <div className="mb-2 font-medium text-muted">
-              Search telemetry · {usage.total_searches} searches, {usage.total_cited} cited
+              {t("telemetry", { searches: usage.total_searches, cited: usage.total_cited })}
             </div>
             {usage.engines.length > 0 && (
               <table className="w-full text-left">
                 <thead>
                   <tr className="text-faint">
-                    <th className="py-1 font-normal">Engine</th>
-                    <th className="py-1 font-normal">Searches</th>
-                    <th className="py-1 font-normal">Hits cited</th>
-                    <th className="py-1 font-normal">Cite rate</th>
+                    <th className="py-1 font-normal">{t("thEngine")}</th>
+                    <th className="py-1 font-normal">{t("thSearches")}</th>
+                    <th className="py-1 font-normal">{t("thHits")}</th>
+                    <th className="py-1 font-normal">{t("thRate")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -245,7 +249,7 @@ export function WebSearchSettings() {
             )}
             {usage.top_domains.length > 0 && (
               <div className="mt-3 text-faint">
-                Top cited domains:
+                {t("topDomains")}
                 {usage.top_domains.slice(0, 8).map((d) => (
                   <span key={d.domain} className="ml-1.5 rounded bg-panel px-1.5 py-0.5 text-muted">
                     {d.domain} ×{d.cited}
@@ -256,12 +260,7 @@ export function WebSearchSettings() {
           </div>
         )}
 
-        <p className="text-xs leading-relaxed text-faint">
-          Search results are registered as sources for the turn, and answers cite them as [sN]
-          per the citation convention; cited sources appear in the &quot;Sources&quot; card under
-          the bubble (🌐 web pages are clickable, 📓 are knowledge-base pages). web_fetch only
-          allows public http/https addresses.
-        </p>
+        <p className="text-xs leading-relaxed text-faint">{t("citationsNote")}</p>
       </div>
     </div>
   );

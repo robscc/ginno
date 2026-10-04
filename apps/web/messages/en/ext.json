@@ -1,0 +1,38 @@
+{
+  "ext": {
+    "manifest": {
+      "name": "Ginno Browser Connector",
+      "description": "Let Ginno work for you in your own Chrome — shared logins, visible actions, stoppable at any time.",
+      "defaultTitle": "Ginno Browser Connector"
+    },
+    "action": {
+      "titleConnected": "Ginno Browser Connector · Connected"
+    },
+    "popup": {
+      "title": "Ginno Browser Connector",
+      "checking": "Checking connection…",
+      "connected": "✅ Connected",
+      "connectedPort": "✅ Connected (port {port})",
+      "notConnected": "❌ Not connected to Ginno — make sure Ginno is running",
+      "portLabel": "Ginno port (usually no need to change; leave empty for auto-discovery)",
+      "save": "Save and reconnect",
+      "invalidPort": "Invalid port (1024-65535)",
+      "saved": "Saved, reconnecting…",
+      "sendPage": "Send this page to Ginno",
+      "sending": "Sending…",
+      "sendOk": "✅ Sent — see the Connectors page in Ginno",
+      "sendFailed": "Send failed",
+      "sendFailedReason": "Send failed: {reason}",
+      "sendErr": "❌ {reason}",
+      "metaVersion": "Extension v{version}",
+      "metaConnectedAt": "Connected at {time}",
+      "helpA": "Not connected? Make sure the Ginno desktop app is running, and see the install guide on Ginno's ",
+      "connectors": "Connectors",
+      "helpB": " page."
+    },
+    "indicator": {
+      "stop": "■ Stop Ginno",
+      "stopping": "Stopping…"
+    }
+  }
+}

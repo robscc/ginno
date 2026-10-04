@@ -12,6 +12,7 @@
 // 由组件持有，这里只负责写入。
 
 import { useEffect, useRef } from "react";
+import { useTranslations } from "next-intl";
 import {
   openSessionSocket,
   getSessionHistory,
@@ -33,6 +34,7 @@ import {
   foldSubagentResultBlocks,
   hasPendingTool,
   parseSubagentResult,
+  useEventI18nText,
   type Block,
 } from "@/components/chat/blocks";
 import type {
@@ -122,6 +124,19 @@ export function useChatStreamEngine(deps: EngineDeps) {
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
   } = deps;
 
+  // ---- i18n（chat 域 + 事件契约）----
+  // 本 hook 处理 runtime 事件文本的落地：error / notice 等事件可带 i18n_key+params
+  // （i18n-design.md §3 契约），落地时翻译，未命中回退原文。socket 回调闭包的
+  // 生命周期长于单次 render，翻译句柄经 ref 镜像保持最新。
+  const tc = useTranslations("chat");
+  const tr = tc as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  const evText = useEventI18nText();
+  const i18nRef = useRef({ tr, evText });
+  i18nRef.current = { tr, evText };
+
   // liveIdRef mirrors liveId state for use inside callbacks without closure staleness
   const liveIdRef = useRef<string | null>(null);
   // Socket callbacks outlive session switches (per-session sockets stay open),
@@ -168,7 +183,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
     serverRunningRef.current[sid] = false;
     storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
       m.role === "user" && m.status === "sending"
-        ? { ...m, status: "failed" as const, failReason: "连接中断，未送达" }
+        ? // failReason 存稳定 key（渲染时经 chat.sendFailed.* 翻译），避免把
+          // 成品文案烤进状态——语言切换后历史气泡仍能跟上。
+          { ...m, status: "failed" as const, failReason: "connLost" }
         : m,
     );
     syncDisplay(sid);
@@ -266,7 +283,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
           (m) => m.role === "user" && textOf(m) === textOf(p),
         );
         if (!delivered) {
-          mapped.push({ ...p, status: "failed" as const, failReason: "连接中断，未送达" });
+          mapped.push({ ...p, status: "failed" as const, failReason: "connLost" });
         }
       }
       storeRef.current[sid] = mapped;
@@ -452,7 +469,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         // 子会话，不能混用）；不属于本会话的帧一律丢弃并告警。
         if (ev.frame_session && sid && ev.frame_session !== sid) {
           console.warn(
-            `[ginno] 丢弃跨会话帧 event=${ev.event} frame_session=${ev.frame_session} socket_session=${sid}`,
+            `[ginno] dropped cross-session frame event=${ev.event} frame_session=${ev.frame_session} socket_session=${sid}`,
           );
           try {
             sock.send(JSON.stringify({
@@ -715,7 +732,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         session: sid,
         head: String((ev.content as string) ?? "").slice(0, 40),
       };
-      console.warn("[ginno] 流事件落入他轮气泡", detail);
+      console.warn("[ginno] stream event landed in another turn's bubble", detail);
       try {
         socketsRef.current[sid]?.send(
           JSON.stringify({ type: "client_diag", diag_kind: "bubble_turn_mismatch", detail }),
@@ -1057,8 +1074,12 @@ export function useChatStreamEngine(deps: EngineDeps) {
       case "notice":
         // Built-in command reply (e.g. /help): no graph turn ran, so the server
         // pushes the rendered text directly into the live bubble as one delta.
+        // 事件契约：带 i18n_key 时落地即翻译，否则原样直显 message。
         markDelivered(sid);
-        mutateLive(sid, { event: "token.delta", content: (ev.message as string) || "" });
+        mutateLive(sid, {
+          event: "token.delta",
+          content: i18nRef.current.evText(ev, (ev.message as string) || ""),
+        });
         break;
       case "goal.updated":
         // Live goal snapshot (created/status/accounting) → TopBar chip.
@@ -1200,7 +1221,21 @@ export function useChatStreamEngine(deps: EngineDeps) {
         const changes = ((ev.changes as ContextChange[]) || []).filter(Boolean);
         const visible = changes.filter((c) => c.section !== "environment");
         if (!visible.length) break; // environment-only (date rollover) = silent
-        const rows = visible.map((c): Block => ({ kind: "context", text: c.summary }));
+        // 事件契约（i18n-design.md §3）：单条 change 可带 i18n_key+params，
+        // 透传给 ContextBlocks 渲染时翻译；旧 runtime 只有成品 summary，直显。
+        const rows = visible.map((c): Block => {
+          const extra = c as { i18n_key?: unknown; params?: unknown };
+          return {
+            kind: "context",
+            text: c.summary,
+            ...(typeof extra.i18n_key === "string"
+              ? {
+                  i18n_key: extra.i18n_key,
+                  ...(extra.params != null ? { params: extra.params as Record<string, string | number> } : {}),
+                }
+              : {}),
+          };
+        });
         storeRef.current[sid] = [
           ...(storeRef.current[sid] ?? []),
           { id: mid(), role: "system" as const, blocks: rows },
@@ -1219,7 +1254,11 @@ export function useChatStreamEngine(deps: EngineDeps) {
             blocks: [
               {
                 kind: "context",
-                text: `已清理 ${n} 条较早的工具输出以节省上下文，需要时可重新调用工具获取。`,
+                // 契约：key 命中渲染时翻译（chat.context.microcompacted）；
+                // text 是旧 runtime / key 未命中时的英文兜底（与历史版本一致）。
+                text: `Cleared ${n} older tool outputs to save context; call the tools again to re-fetch when needed.`,
+                i18n_key: "chat.context.microcompacted",
+                params: { n },
               },
             ],
           },
@@ -1238,7 +1277,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
             blocks: [
               {
                 kind: "context",
-                text: `对话已压缩：${n} 条较早的消息被摘要替代，最近的对话原样保留。`,
+                text: `Conversation compacted: ${n} older messages were replaced with a summary; recent messages are kept verbatim.`,
+                i18n_key: "chat.context.compacted",
+                params: { n },
               },
             ],
           },
@@ -1319,7 +1360,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
           if (np.enabled && !watching) {
             const title = g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
             const raw = typeof ev.text === "string" ? ev.text.trim() : "";
-            const body = raw || "回复已完成";
+            const body = raw || i18nRef.current.tr("notify.replyCompleted");
             void notifyNative({
               kind: "session",
               id: sid,
@@ -1449,7 +1490,16 @@ export function useChatStreamEngine(deps: EngineDeps) {
           {
             id: mid(),
             role: "assistant" as const,
-            blocks: [{ kind: "text", text: String(ev.message || "") || "未知错误" }],
+            // 事件契约（i18n-design.md §3）：error 事件可带 i18n_key+params，
+            // 落地即翻译；未命中/缺失回退服务端成品 message，再退「未知错误」。
+            blocks: [
+              {
+                kind: "text",
+                text:
+                  i18nRef.current.evText(ev, String(ev.message || "")) ||
+                  i18nRef.current.tr("error.unknown"),
+              },
+            ],
             turnId: liveBubble?.turnId,
             error: true,
             sendPayload: lastUser?.sendPayload,

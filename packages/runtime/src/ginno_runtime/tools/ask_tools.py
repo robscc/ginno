@@ -24,6 +24,8 @@ from typing import Annotated
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import interrupt
 
+from ..lang import t
+
 ASK_TOOL_NAMES = {"ask_user"}
 
 # Autonomous turns (the goal continuation driver) have nobody to answer. A
@@ -154,10 +156,13 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
         opts = normalize_options(options)
 
         if not _INTERACTIVE.get():
-            return (
+            return t(
+                "[error] This is an autonomous continuation (unattended) turn — "
+                "nobody can answer. Pick the most reasonable default and "
+                "continue, and state clearly in your reply which assumption you "
+                "made so the user can correct it.",
                 "[error] 当前是自主续跑（无人值守）回合，没有人能回答。"
-                "请选择最合理的默认继续，并在回复中明确写出你选了什么，以便用户纠正。"
-            )
+                "请选择最合理的默认继续，并在回复中明确写出你选了什么，以便用户纠正。")
 
         from ..world_state import (  # local: avoid import cycle at module load
             DEFAULT_ASK_MAX_PER_TURN,
@@ -174,10 +179,12 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
         budget = _BUDGET.get()
         if budget is not None:
             if budget["n"] >= max_asks:
-                return (
+                return t(
+                    f"[error] Already asked the user {budget['n']} times this "
+                    f"turn (limit {max_asks}). Decide yourself, and state your "
+                    "assumption in your reply.",
                     f"[error] 本轮已询问用户 {budget['n']} 次（上限 {max_asks}）。"
-                    "请自行决定，并把你的假定写进回复。"
-                )
+                    "请自行决定，并把你的假定写进回复。")
             budget["n"] += 1
 
         answer = interrupt(

@@ -1,3 +1,24 @@
 {
-  "extends": "next/core-web-vitals"
+  "extends": "next/core-web-vitals",
+  "rules": {
+    "no-restricted-syntax": [
+      "warn",
+      {
+        "selector": "JSXText[value=/[\\u3000-\\u303f\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uff01-\\uff5e]/]",
+        "message": "裸中文 JSX 文本 — 用户可见文案迁入 messages/{en,zh-CN}/ 对应域并改用 useTranslations（i18n-design.md §4/§10）。"
+      },
+      {
+        "selector": "JSXAttribute[name.name=/^(placeholder|title|aria-label|alt|label)$/i] > Literal[value=/[\\u3400-\\u4dbf\\u4e00-\\u9fff]/]",
+        "message": "裸中文 UI 属性字符串（placeholder/title/aria-label/alt/label）— 迁入 messages catalog。"
+      },
+      {
+        "selector": "JSXText[value=/[A-Za-z]{2,} +[A-Za-z]{2,}/]:not(JSXText[value=/^\\s*[\\/~.]/]):not(JSXText[value=/\\:\\/\\//])",
+        "message": "裸英文 JSX 文本（空格分隔的多词文案）— 迁入 messages catalog 并改用 useTranslations；P1 迁移 backlog 信号，warn 不阻塞。"
+      },
+      {
+        "selector": "JSXAttribute[name.name=/^(placeholder|title|aria-label|alt|label)$/i] > Literal[value=/[A-Za-z]{2,} +[A-Za-z]{2,}/]:not(Literal[value=/^[\\/~.]/]):not(Literal[value=/\\:\\/\\//])",
+        "message": "裸英文 UI 属性字符串 — 迁入 messages catalog。"
+      }
+    ]
+  }
 }

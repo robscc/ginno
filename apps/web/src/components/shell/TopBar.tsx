@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { MoreVertical } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type { AgentConfig, SessionMeta, SessionUsage } from "@/lib/types";
@@ -20,6 +21,7 @@ function fmtTokens(n: number): string {
  * chat bubbles. The full id is what you grep the sidecar logs for
  * (`session=...`); we show a short prefix to keep the bar tidy. */
 function SessionIdChip({ sessionId }: { sessionId?: string }) {
+  const tr = useTranslations("shell");
   const [copied, setCopied] = useState(false);
   if (!sessionId) return null;
   const short = sessionId.slice(0, 8);
@@ -34,10 +36,10 @@ function SessionIdChip({ sessionId }: { sessionId?: string }) {
           /* clipboard unavailable */
         }
       }}
-      title={`session ${sessionId}（点击复制，用于日志定位）`}
+      title={tr("topbar.idChipTitle", { id: sessionId })}
       className="shrink-0 whitespace-nowrap rounded border border-line2 px-1 py-px font-mono text-[9px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
     >
-      {copied ? "copied" : `#${short}`}
+      {copied ? tr("topbar.copied") : `#${short}`}
     </button>
   );
 }
@@ -54,14 +56,15 @@ export function TopBar({
   usage?: SessionUsage | null;
 }) {
   const g = useGinno();
+  const tr = useTranslations("shell");
   const [menu, setMenu] = useState(false);
   const hex = agentHex(agent?.color);
 
   return (
     <header className="flex min-h-14 min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-5 py-1.5">
       <div className="flex min-w-[min(100%,12rem)] flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
-        <h1 className="min-w-[5rem] max-w-full truncate text-[15px] font-semibold tracking-tight text-txt" title={session?.title || "New Session"}>
-          {session?.title || "New Session"}
+        <h1 className="min-w-[5rem] max-w-full truncate text-[15px] font-semibold tracking-tight text-txt" title={session?.title || tr("topbar.newSession")}>
+          {session?.title || tr("topbar.newSession")}
         </h1>
         <SessionIdChip sessionId={session?.id} />
 
@@ -85,7 +88,7 @@ export function TopBar({
             className="h-1.5 w-1.5 shrink-0 rounded-full"
             style={{ background: running ? "#22c55e" : "#71717a" }}
           />
-          {running ? "Running" : "Idle"}
+          {running ? tr("topbar.running") : tr("topbar.idle")}
         </span>
 
         <GoalChip sessionId={session?.id ?? null} />
@@ -98,7 +101,12 @@ export function TopBar({
           <span
             className="pill font-mono text-[11px]"
             style={{ background: "#3b82f61a", color: "#93c5fd" }}
-            title={`本次运行累计：输入 ${usage.input_tokens} tokens（其中缓存命中 ${usage.cache_read_tokens}），输出 ${usage.output_tokens} tokens，模型调用 ${usage.calls} 次`}
+            title={tr("topbar.usageTitle", {
+              input: usage.input_tokens,
+              cache: usage.cache_read_tokens,
+              output: usage.output_tokens,
+              calls: usage.calls,
+            })}
           >
             ↑{fmtTokens(usage.input_tokens)} ↓{fmtTokens(usage.output_tokens)}
             {usage.cache_read_tokens > 0 && (
@@ -109,7 +117,7 @@ export function TopBar({
         <div className="relative">
           <button
             onClick={() => setMenu((m) => !m)}
-            aria-label="会话操作"
+            aria-label={tr("topbar.actions")}
             aria-haspopup="menu"
             aria-expanded={menu}
             className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt"
@@ -128,7 +136,7 @@ export function TopBar({
                   onClick={async () => {
                     setMenu(false);
                     if (!session) return;
-                    const name = window.prompt("会话标题", session.title || "");
+                    const name = window.prompt(tr("topbar.renamePrompt"), session.title || "");
                     if (name != null && name.trim()) {
                       await api.patchSession(session.id, { title: name.trim() });
                       await g.reloadSessions();
@@ -136,7 +144,7 @@ export function TopBar({
                   }}
                   className="block w-full px-3 py-1.5 text-left text-muted hover:bg-card2 hover:text-txt"
                 >
-                  重命名会话
+                  {tr("session.rename")}
                 </button>
                 <button
                   role="menuitem"
@@ -146,7 +154,7 @@ export function TopBar({
                   }}
                   className="block w-full px-3 py-1.5 text-left text-muted hover:bg-card2 hover:text-txt"
                 >
-                  复制会话 ID
+                  {tr("topbar.copyId")}
                 </button>
               </div>
             </>

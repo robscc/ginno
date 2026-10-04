@@ -33,6 +33,7 @@ from typing import Any
 
 from . import paths
 from .agents.memory import read_agent_memory
+from .lang import current_locale, t
 from .permission.policy import PermissionPolicy, is_bypass_permissions
 from .skills.loader import SkillLoader
 
@@ -42,6 +43,19 @@ UPDATE_MSG_PREFIX = "[world state update]"
 REINJECT_MSG_PREFIX = "[world state re-injection]"
 TURN_CONTEXT_PREFIX = "[turn context]"
 SUMMARY_MSG_PREFIX = "[conversation summary]"
+
+# Fixed lead-in between the machine prefix and the summary body (compaction
+# writes it; summary_row_text strips it for the UI row). Language-dependent
+# (lang.py) — the strip must try BOTH variants because old checkpoints carry
+# the Chinese one regardless of the current setting.
+SUMMARY_LEAD_IN_EN = "The following is a summary of the earlier conversation (the original messages were compacted):"
+SUMMARY_LEAD_IN_ZH = "以下是此前对话的摘要（原始消息已被压缩）："
+
+
+def summary_lead_in() -> str:
+    from .lang import t
+
+    return t(SUMMARY_LEAD_IN_EN, SUMMARY_LEAD_IN_ZH)
 from .goals.templates import GOAL_CONTEXT_PREFIX  # noqa: E402
 
 ALL_CONTEXT_PREFIXES = (
@@ -53,6 +67,12 @@ ALL_CONTEXT_PREFIXES = (
 )
 
 WEEKDAYS_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+WEEKDAYS_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _weekdays() -> list[str]:
+    """Weekday names in the active locale (model-facing date line)."""
+    return WEEKDAYS_CN if current_locale() == "zh-CN" else WEEKDAYS_EN
 
 # A6: skills index budget (chars) unless overridden in settings.context.
 DEFAULT_SKILLS_INDEX_MAX_CHARS = 1500
@@ -215,7 +235,7 @@ class EnvironmentSection:
             folders.append(entry)
         return {
             "date": now.strftime("%Y-%m-%d"),
-            "weekday": WEEKDAYS_CN[now.weekday()],
+            "weekday": _weekdays()[now.weekday()],
             "tz": f"{now.tzname()} (UTC{now.strftime('%z')})",
             "os": _platform_desc(),
             "ginno_home": str(paths.home()),
@@ -231,36 +251,72 @@ class EnvironmentSection:
             f"<date>{snap['date']} ({snap['weekday']})</date>",
             f"<timezone>{snap['tz']}</timezone>",
             f"<os>{snap['os']}</os>",
-            f"<ginno_home>{snap['ginno_home']} — 记忆、skills、settings 所在目录</ginno_home>",
+            t(
+                f"<ginno_home>{snap['ginno_home']} — directory holding memory, skills, and settings</ginno_home>",
+                f"<ginno_home>{snap['ginno_home']} — 记忆、skills、settings 所在目录</ginno_home>",
+            ),
         ]
         if snap.get("workspace"):
             if folders:
                 lines.append(
-                    f"<workspace>{snap['workspace']} — 会话文件目录：上传文件与产物写在这里"
-                    "（除非设有 ★primary 挂载目录，它才是 cwd）</workspace>"
+                    t(
+                        f"<workspace>{snap['workspace']} — session files directory: uploaded "
+                        "files and produced artifacts are written here (unless a ★primary "
+                        "mount directory is set — that one is the cwd)</workspace>",
+                        f"<workspace>{snap['workspace']} — 会话文件目录：上传文件与产物写在这里"
+                        "（除非设有 ★primary 挂载目录，它才是 cwd）</workspace>",
+                    )
                 )
             else:
                 lines.append(
-                    f"<workspace>{snap['workspace']} — 本会话工作目录：bash 的 cwd、"
-                    "文件工具相对路径的默认位置；产物文件也写在这里</workspace>"
+                    t(
+                        f"<workspace>{snap['workspace']} — working directory of this "
+                        "session: the cwd of bash and the default base for file-tool "
+                        "relative paths; artifact files are written here too</workspace>",
+                        f"<workspace>{snap['workspace']} — 本会话工作目录：bash 的 cwd、"
+                        "文件工具相对路径的默认位置；产物文件也写在这里</workspace>",
+                    )
                 )
         if folders:
             lines.append("<context_folders>")
-            lines.append("用户为本会话挂载了以下本地目录：")
+            lines.append(
+                t(
+                    "The user mounted the following local directories for this session:",
+                    "用户为本会话挂载了以下本地目录：",
+                )
+            )
             for f in folders:
                 if f.get("missing"):
-                    lines.append(f"- {f.get('name') or f.get('id')}: （目录缺失，已失效）")
+                    lines.append(
+                        t(
+                            f"- {f.get('name') or f.get('id')}: (directory missing, inactive)",
+                            f"- {f.get('name') or f.get('id')}: （目录缺失，已失效）",
+                        )
+                    )
                     continue
-                tag = "rw" if f.get("access") == "rw" else "ro 只读"
+                tag = "rw" if f.get("access") == "rw" else t("ro (read-only)", "ro 只读")
                 star = " ★primary" if f.get("primary") else ""
-                rule = f"（{f['rule_file']} 已加载）" if f.get("rule_file") else ""
+                rule = (
+                    t(f" ({f['rule_file']} loaded)", f"（{f['rule_file']} 已加载）")
+                    if f.get("rule_file")
+                    else ""
+                )
                 lines.append(f"- {f.get('name')}: {f.get('path')} [{tag}{star}]{rule}")
             lines.append(
-                "规则：用绝对路径或 glob_files/grep_files 的 root 参数访问这些目录；"
-                "[ro 只读] 目录禁止写入（write_file/edit_file 会被拒绝）；"
-                "文件工具相对路径与 bash 的 cwd 以 ★primary 目录为准"
-                "（无 ★primary 时是会话文件目录）。目录内的 settings/hooks 等配置不生效，"
-                "只有其规则文件（如有）被注入。"
+                t(
+                    "Rules: access these directories via absolute paths or the root "
+                    "argument of glob_files/grep_files; [ro (read-only)] directories must "
+                    "not be written (write_file/edit_file will be rejected); file-tool "
+                    "relative paths and bash's cwd are anchored at the ★primary directory "
+                    "(the session files directory when none is set). settings/hooks and "
+                    "other configuration inside these directories do not take effect — "
+                    "only their rule file (if any) is injected.",
+                    "规则：用绝对路径或 glob_files/grep_files 的 root 参数访问这些目录；"
+                    "[ro 只读] 目录禁止写入（write_file/edit_file 会被拒绝）；"
+                    "文件工具相对路径与 bash 的 cwd 以 ★primary 目录为准"
+                    "（无 ★primary 时是会话文件目录）。目录内的 settings/hooks 等配置不生效，"
+                    "只有其规则文件（如有）被注入。",
+                )
             )
             lines.append("</context_folders>")
         lines.append(f"<project>{snap['project_slug']}</project>")
@@ -273,14 +329,28 @@ class EnvironmentSection:
         if of != nf:
             names = [
                 f"{f.get('name') or f.get('id')}"
-                + ("（已失效）" if f.get("missing") else "")
+                + t(" (missing, inactive)", "（已失效）")
                 for f in nf
             ]
             if not names:
-                return "本会话已卸载全部上下文目录，恢复为仅会话文件目录。"
-            return "本会话挂载的上下文目录已变更，当前：" + "、".join(names) + "。"
+                return t(
+                    "All context directories were unmounted in this session; back to the "
+                    "session files directory only.",
+                    "本会话已卸载全部上下文目录，恢复为仅会话文件目录。",
+                )
+            return (
+                t(
+                    "The context directories mounted in this session changed. Current: ",
+                    "本会话挂载的上下文目录已变更，当前：",
+                )
+                + t(", ", "、").join(names)
+                + t(".", "。")
+            )
         if old.get("date") != new.get("date"):
-            return f"日期已更新为 {new['date']}（{new['weekday']}）。"
+            return t(
+                f"Date updated to {new['date']} ({new['weekday']}).",
+                f"日期已更新为 {new['date']}（{new['weekday']}）。",
+            )
         return None  # remaining fields are static within a session
 
 
@@ -327,7 +397,10 @@ class FolderRulesSection:
             if remaining <= 0:
                 break
             if len(text) > remaining:
-                text = text[:remaining] + "\n…（规则注入总预算用尽，已截断）"
+                text = text[:remaining] + t(
+                    "\n…(total rule-injection budget exhausted; truncated)",
+                    "\n…（规则注入总预算用尽，已截断）",
+                )
             parts.append(
                 f'<folder_rules path="{path}" file="{r.get("file")}">\n{text}\n</folder_rules>'
             )
@@ -336,8 +409,16 @@ class FolderRulesSection:
 
     def update_text(self, old: dict, new: dict) -> str | None:
         if set(old or {}) != set(new or {}):
-            return "挂载目录的规则文件（AGENTS.md/CLAUDE.md/GINNO.md）注入集合已变化。"
-        return "挂载目录的规则文件（AGENTS.md/CLAUDE.md/GINNO.md）内容已更新。"
+            return t(
+                "The set of rule files (AGENTS.md/CLAUDE.md/GINNO.md) injected from "
+                "mounted directories changed.",
+                "挂载目录的规则文件（AGENTS.md/CLAUDE.md/GINNO.md）注入集合已变化。",
+            )
+        return t(
+            "The content of the rule files (AGENTS.md/CLAUDE.md/GINNO.md) injected from "
+            "mounted directories was updated.",
+            "挂载目录的规则文件（AGENTS.md/CLAUDE.md/GINNO.md）内容已更新。",
+        )
 
 
 class PermissionsSection:
@@ -356,22 +437,37 @@ class PermissionsSection:
 
     def render(self, snap: dict) -> str:
         if snap["bypass"]:
-            body = "特权模式：所有工具调用直接执行，无需用户确认。"
+            body = t(
+                "Privileged mode: every tool call runs immediately, without user confirmation.",
+                "特权模式：所有工具调用直接执行，无需用户确认。",
+            )
         else:
-            body = (
+            body = t(
+                "Approval mode: tool calls match deny→ask→allow rules (currently "
+                f"{snap['deny']} deny, {snap['ask']} ask, {snap['allow']} allow). On denial "
+                "you receive a [blocked:...] message — switch to another approach or tell "
+                "the user directly.",
                 "审批模式：工具调用按 deny→ask→allow 规则匹配"
                 f"（当前 deny {snap['deny']} 条、ask {snap['ask']} 条、allow {snap['allow']} 条），"
-                "被拒时你会收到 [blocked:...] 消息，请改用其他方式或直接向用户说明。"
+                "被拒时你会收到 [blocked:...] 消息，请改用其他方式或直接向用户说明。",
             )
         return f"<permissions>\n{body}\n</permissions>"
 
     def update_text(self, old: dict, new: dict) -> str | None:
         if old.get("bypass") != new.get("bypass"):
             if new["bypass"]:
-                return "已切换为特权模式：工具调用不再需要用户确认。"
-            return "已切换为审批模式：部分工具调用需要用户确认，被拒时你会收到 [blocked:...] 消息。"
+                return t(
+                    "Switched to privileged mode: tool calls no longer require user "
+                    "confirmation.",
+                    "已切换为特权模式：工具调用不再需要用户确认。",
+                )
+            return t(
+                "Switched to approval mode: some tool calls require user confirmation; on "
+                "denial you receive a [blocked:...] message.",
+                "已切换为审批模式：部分工具调用需要用户确认，被拒时你会收到 [blocked:...] 消息。",
+            )
         if old != new:
-            return "权限策略规则已更新。"
+            return t("The permission policy rules were updated.", "权限策略规则已更新。")
         return None
 
 
@@ -438,17 +534,71 @@ class AgentSection:
     def update_text(self, old: dict, new: dict) -> str | None:
         lines: list[str] = []
         if old.get("agent_id") != new.get("agent_id"):
-            line = f"已切换为 **{new['name']}**（{new['tool_count']} 个可用工具）"
+            line = t(
+                f"Switched to **{new['name']}** ({new['tool_count']} tools available)",
+                f"已切换为 **{new['name']}**（{new['tool_count']} 个可用工具）",
+            )
             if old.get("name"):
-                line += f"，此前是 {old['name']}"
-            lines.append(line + "。")
+                line += t(f", previously {old['name']}", f"，此前是 {old['name']}")
+            lines.append(line + t(".", "。"))
         elif old.get("prompt_hash") != new.get("prompt_hash"):
-            lines.append(f"**{new['name']}** 的角色设定（prompt）已更新，从本轮起生效。")
+            lines.append(
+                t(
+                    f"The persona prompt of **{new['name']}** was updated; effective from "
+                    "this turn.",
+                    f"**{new['name']}** 的角色设定（prompt）已更新，从本轮起生效。",
+                )
+            )
         elif old.get("tool_count") != new.get("tool_count"):
             lines.append(
-                f"你在当前角色下的可用工具数量变化：{old.get('tool_count')} → {new['tool_count']}。"
+                t(
+                    f"Available tool count in your current role changed: "
+                    f"{old.get('tool_count')} → {new['tool_count']}.",
+                    f"你在当前角色下的可用工具数量变化：{old.get('tool_count')} → {new['tool_count']}。",
+                )
             )
         return " ".join(lines) if lines else None
+
+
+# install_skills management guidance (skills_management section body)
+_SKILLS_INSTALL_EN = (
+    "Installing a skill: first get the source onto the local machine (e.g. bash git "
+    "clone), then call install_skills. path is a directory containing one or more "
+    "<skill>/SKILL.md subdirectories, or a single skill directory. There are three "
+    "targets, default global:\n"
+    "- install_skills(path) / install_skills(path, target=\"global\")"
+    " → ~/.ginno/skills/<name>/SKILL.md, visible to all sessions;\n"
+    "- install_skills(path, target=\"project\")"
+    " → ~/.ginno/projects/<this project>/skills/<name>/SKILL.md, this project only, "
+    "same name overrides global;\n"
+    "- install_skills(path, target=\"repo\", project_dir=\"<absolute path to the repo "
+    "root>\") → <repo>/.claude/skills/<name>/SKILL.md, for external agents such as "
+    "Claude Code; Ginno itself does not load skills from there (use_skill cannot "
+    "reach them), but they can be listed."
+    " project_dir must be a repo root this session has recognized or has mounted — "
+    "see the <projects> section of each turn's [turn context].\n"
+    "When the user only says \"import/install a skill\" without saying where, ask "
+    "first with ask_user; do not default to Ginno's own directory."
+    " list_skills() shows what is installed (annotated by scope); uninstall_skill(name) "
+    "uninstalls."
+)
+_SKILLS_INSTALL_ZH = (
+    "安装 skill：先把源码取到本地（如用 bash git clone），再调用 install_skills。"
+    "path 是含一个或多个 <skill>/SKILL.md 子目录的目录，或单个 skill 目录。"
+    "目标有三个，默认 global：\n"
+    "- install_skills(path) / install_skills(path, target=\"global\")"
+    " → ~/.ginno/skills/<name>/SKILL.md，所有会话可见；\n"
+    "- install_skills(path, target=\"project\")"
+    " → ~/.ginno/projects/<本项目>/skills/<name>/SKILL.md，仅本项目，同名覆盖全局；\n"
+    "- install_skills(path, target=\"repo\", project_dir=\"<仓库根目录绝对路径>\")"
+    " → <仓库>/.claude/skills/<name>/SKILL.md，供 Claude Code 等外部 agent 使用；"
+    "Ginno 自己不加载那里的 skill（use_skill 够不到），但可以列出来。"
+    "project_dir 必须是本会话已识别或已挂载的仓库根目录——见每轮 [turn context] "
+    "的 <projects> 段。\n"
+    "当用户只说「导入/安装 skill」而没说装哪时，先 ask_user 让用户选，"
+    "不要默认装进 Ginno 自己的目录。"
+    "list_skills() 查看已安装（按 scope 标注），uninstall_skill(name) 卸载。"
+)
 
 
 class SkillsSection:
@@ -477,7 +627,7 @@ class SkillsSection:
 
     def _budget_index(self, skills) -> str:
         if not skills:
-            return "(尚未安装任何 skill。)"
+            return t("(No skills installed yet.)", "(尚未安装任何 skill。)")
         budget = int(
             context_settings().get("skills_index_max_chars", DEFAULT_SKILLS_INDEX_MAX_CHARS)
         )
@@ -498,35 +648,33 @@ class SkillsSection:
             used += len(line) + 1
         out = "\n".join([header] + kept)
         if dropped:
-            out += f"\n(另有 {dropped} 个 skill 因预算未列出，可用 use_skill 或 / 前缀调用。)"
+            out += t(
+                f"\n({dropped} more skills are not listed due to the char budget; invoke "
+                "them via use_skill or the / prefix.)",
+                f"\n(另有 {dropped} 个 skill 因预算未列出，可用 use_skill 或 / 前缀调用。)",
+            )
         return out
 
     def render(self, snap: dict) -> str:
         lines = [
             snap.get("index", ""),
             "<skills_management>",
-            f"全局 skills 目录: {snap['global_dir']}/<name>/SKILL.md",
-            f"项目 skills 目录: {snap['project_dir']}/<name>/SKILL.md（同名时覆盖全局）",
-            "SKILL.md 需包含 YAML frontmatter（至少 name、description）。",
+            t(
+                f"Global skills dir: {snap['global_dir']}/<name>/SKILL.md",
+                f"全局 skills 目录: {snap['global_dir']}/<name>/SKILL.md",
+            ),
+            t(
+                f"Project skills dir: {snap['project_dir']}/<name>/SKILL.md "
+                "(same name overrides the global one)",
+                f"项目 skills 目录: {snap['project_dir']}/<name>/SKILL.md（同名时覆盖全局）",
+            ),
+            t(
+                "SKILL.md must contain YAML frontmatter (at least name and description).",
+                "SKILL.md 需包含 YAML frontmatter（至少 name、description）。",
+            ),
         ]
         if snap.get("can_manage"):
-            lines.append(
-                "安装 skill：先把源码取到本地（如用 bash git clone），再调用 install_skills。"
-                "path 是含一个或多个 <skill>/SKILL.md 子目录的目录，或单个 skill 目录。"
-                "目标有三个，默认 global：\n"
-                "- install_skills(path) / install_skills(path, target=\"global\")"
-                " → ~/.ginno/skills/<name>/SKILL.md，所有会话可见；\n"
-                "- install_skills(path, target=\"project\")"
-                " → ~/.ginno/projects/<本项目>/skills/<name>/SKILL.md，仅本项目，同名覆盖全局；\n"
-                "- install_skills(path, target=\"repo\", project_dir=\"<仓库根目录绝对路径>\")"
-                " → <仓库>/.claude/skills/<name>/SKILL.md，供 Claude Code 等外部 agent 使用；"
-                "Ginno 自己不加载那里的 skill（use_skill 够不到），但可以列出来。"
-                "project_dir 必须是本会话已识别或已挂载的仓库根目录——见每轮 [turn context] "
-                "的 <projects> 段。\n"
-                "当用户只说「导入/安装 skill」而没说装哪时，先 ask_user 让用户选，"
-                "不要默认装进 Ginno 自己的目录。"
-                "list_skills() 查看已安装（按 scope 标注），uninstall_skill(name) 卸载。"
-            )
+            lines.append(t(_SKILLS_INSTALL_EN, _SKILLS_INSTALL_ZH))
         lines.append("</skills_management>")
         return "\n".join(p for p in lines if p)
 
@@ -537,12 +685,21 @@ class SkillsSection:
             return None
         added = sorted(new_names - old_names)
         removed = sorted(old_names - new_names)
-        parts = [f"数量 {len(old_names)} → {len(new_names)}"]
+        parts = [
+            t(
+                f"count {len(old_names)} → {len(new_names)}",
+                f"数量 {len(old_names)} → {len(new_names)}",
+            )
+        ]
         if added:
-            parts.append("新增 " + ", ".join(added))
+            parts.append(t("added " + ", ".join(added), "新增 " + ", ".join(added)))
         if removed:
-            parts.append("移除 " + ", ".join(removed))
-        return "Skills 已更新：" + "；".join(parts) + "。"
+            parts.append(t("removed " + ", ".join(removed), "移除 " + ", ".join(removed)))
+        return (
+            t("Skills updated: ", "Skills 已更新：")
+            + t("; ", "；").join(parts)
+            + t(".", "。")
+        )
 
 
 class MemorySection:
@@ -582,18 +739,31 @@ class MemorySection:
         out = "\n".join(p for p in parts if p)
         budget = int(context_settings().get("memory_max_chars", DEFAULT_MEMORY_MAX_CHARS))
         if budget > 0 and len(out) > budget:
-            out = out[:budget] + (
+            out = out[:budget] + t(
+                "\n…(memory content exceeded the injection budget and was truncated; "
+                "for the full text read MEMORY.md and the persona memory files under "
+                "ginno_home with file tools)",
                 "\n…（记忆内容超出注入预算已截断，如需完整内容请用文件工具读取 "
-                "ginno_home 下的 MEMORY.md 与角色记忆文件）"
+                "ginno_home 下的 MEMORY.md 与角色记忆文件）",
             )
         return out
 
     def update_text(self, old: dict, new: dict) -> str | None:
         lines = []
         if old.get("global_hash") != new.get("global_hash"):
-            lines.append("全局长期记忆（MEMORY.md）已更新。")
+            lines.append(
+                t(
+                    "Global long-term memory (MEMORY.md) was updated.",
+                    "全局长期记忆（MEMORY.md）已更新。",
+                )
+            )
         if old.get("agent_hash") != new.get("agent_hash"):
-            lines.append("你所扮演角色的私有记忆已更新。")
+            lines.append(
+                t(
+                    "The private memory of the persona you are playing was updated.",
+                    "你所扮演角色的私有记忆已更新。",
+                )
+            )
         return " ".join(lines) if lines else None
 
 
@@ -623,7 +793,48 @@ class McpSection:
         if old == new:
             return None
         old_count = (old or {}).get("count", 0)
-        return f"MCP 工具已更新：{old_count} → {new.get('count', 0)} 个。"
+        return t(
+            f"MCP tools updated: {old_count} → {new.get('count', 0)}.",
+            f"MCP 工具已更新：{old_count} → {new.get('count', 0)} 个。",
+        )
+
+
+# <goal> guidance bodies (stable system layer; tool names/status keys are a
+# machine contract and stay identical in both variants)
+_GOAL_GUIDANCE_ACTIVE_EN = (
+    "<guidance>This session has a long-running goal in autonomous progress. Ordinary "
+    "user messages are transient input in the course of that goal: understand and "
+    "handle them in the context of the goal first. When the goal is genuinely achieved "
+    "with no remaining work, call goal_update(status=\"complete\"); when the same "
+    "blocker prevents progress for 3 consecutive goal turns, call "
+    "goal_update(status=\"blocked\"). Pause/resume/clear is user-controlled — never "
+    "pause it on your own.</guidance>"
+)
+_GOAL_GUIDANCE_ACTIVE_ZH = (
+    "<guidance>本会话有一个自主推进中的长程目标。普通用户消息是该目标"
+    "过程中的临时输入：优先结合目标来理解和处理；目标真正达成且无遗留"
+    "工作时调用 goal_update(status=\"complete\")，同一阻塞连续 3 个 goal "
+    "轮无法推进时调用 goal_update(status=\"blocked\")。暂停/恢复/清除由"
+    "用户控制，你不要自行暂停。</guidance>"
+)
+_GOAL_GUIDANCE_PAUSED_EN = (
+    "<guidance>The goal is currently paused by the user and will not auto-continue; "
+    "handle user messages like an ordinary session. Unless the user resumes the goal, "
+    "do not advance it on your own or call goal_update.</guidance>"
+)
+_GOAL_GUIDANCE_PAUSED_ZH = (
+    "<guidance>目标当前被用户暂停，不会自主续跑；像普通会话一样处理用户"
+    "消息，除非用户恢复目标，不要主动推进目标或调用 goal_update。</guidance>"
+)
+_GOAL_GUIDANCE_TERMINATED_EN = (
+    "<guidance>The goal is in a terminal state (blocked/usage_limited/complete), "
+    "waiting for the user to act; do not advance it on your own unless the user "
+    "resumes it or sets a new goal.</guidance>"
+)
+_GOAL_GUIDANCE_TERMINATED_ZH = (
+    "<guidance>目标处于终止态（blocked/usage_limited/complete），等待用户"
+    "处置；不要主动推进，除非用户恢复或设定新目标。</guidance>"
+)
 
 
 class GoalSection:
@@ -656,41 +867,40 @@ class GoalSection:
             f"<objective>{snap.get('objective')}</objective>",
         ]
         if status == "active":
-            lines.append(
-                "<guidance>本会话有一个自主推进中的长程目标。普通用户消息是该目标"
-                "过程中的临时输入：优先结合目标来理解和处理；目标真正达成且无遗留"
-                "工作时调用 goal_update(status=\"complete\")，同一阻塞连续 3 个 goal "
-                "轮无法推进时调用 goal_update(status=\"blocked\")。暂停/恢复/清除由"
-                "用户控制，你不要自行暂停。</guidance>"
-            )
+            lines.append(t(_GOAL_GUIDANCE_ACTIVE_EN, _GOAL_GUIDANCE_ACTIVE_ZH))
         elif status == "paused":
-            lines.append(
-                "<guidance>目标当前被用户暂停，不会自主续跑；像普通会话一样处理用户"
-                "消息，除非用户恢复目标，不要主动推进目标或调用 goal_update。</guidance>"
-            )
+            lines.append(t(_GOAL_GUIDANCE_PAUSED_EN, _GOAL_GUIDANCE_PAUSED_ZH))
         else:
-            lines.append(
-                "<guidance>目标处于终止态（blocked/usage_limited/complete），等待用户"
-                "处置；不要主动推进，除非用户恢复或设定新目标。</guidance>"
-            )
+            lines.append(t(_GOAL_GUIDANCE_TERMINATED_EN, _GOAL_GUIDANCE_TERMINATED_ZH))
         lines.append("</goal>")
         return "\n".join(lines)
 
     def update_text(self, old: dict, new: dict) -> str | None:
         if not old and new:
-            return f"长程目标已设定：{new.get('objective')}"
+            return t(
+                f"Long-running goal set: {new.get('objective')}",
+                f"长程目标已设定：{new.get('objective')}",
+            )
         if old and not new:
-            return "长程目标已清除。"
+            return t("Long-running goal cleared.", "长程目标已清除。")
         lines = []
         if old.get("objective") != new.get("objective"):
-            lines.append(f"长程目标已更新为：{new.get('objective')}")
+            lines.append(
+                t(
+                    f"Long-running goal updated to: {new.get('objective')}",
+                    f"长程目标已更新为：{new.get('objective')}",
+                )
+            )
         if old.get("status") != new.get("status"):
             label = {
-                "active": "目标已恢复自主推进。",
-                "paused": "目标已暂停。",
-                "blocked": "目标标记为受阻，等待你的指示。",
-                "usage_limited": "目标因用量受限停止。",
-                "complete": "目标已达成。",
+                "active": t("Goal resumed autonomous progress.", "目标已恢复自主推进。"),
+                "paused": t("Goal paused.", "目标已暂停。"),
+                "blocked": t(
+                    "Goal marked blocked; awaiting your instruction.",
+                    "目标标记为受阻，等待你的指示。",
+                ),
+                "usage_limited": t("Goal stopped due to usage limits.", "目标因用量受限停止。"),
+                "complete": t("Goal achieved.", "目标已达成。"),
             }.get(new.get("status"), "")
             lines.append(label)
         return " ".join(l for l in lines if l) or None
@@ -778,31 +988,60 @@ def render_reinjection(ctx: SessionCtx) -> str:
     """E4 — full world facts re-asserted after history compaction."""
     ws = WorldState(ctx)
     body = ws.render_system()
-    return f"{REINJECT_MSG_PREFIX}\n（历史刚被压缩，以下是当前世界状态的完整重申）\n{body}"
+    return (
+        f"{REINJECT_MSG_PREFIX}\n"
+        + t(
+            "(The history was just compacted; below is a full re-assertion of the "
+            "current world state)",
+            "（历史刚被压缩，以下是当前世界状态的完整重申）",
+        )
+        + f"\n{body}"
+    )
 
 
-def summary_row_text(content: str) -> str:
-    """Short human-facing line for the E3 summary history row — the full
-    summary is model scaffolding, only a preview belongs in the transcript."""
+def summary_row_parts(content: str) -> tuple[str, str, dict]:
+    """(text, i18n_key, params) for the E3 summary history row — the full
+    summary is model scaffolding, only a preview belongs in the transcript.
+
+    Event contract (i18n-design.md §3): the persisted checkpoint carries ONE
+    finished English string, so ``text`` stays the English fallback and the
+    key/params let the UI render a localized line on replay."""
     body = ""
     if content.startswith(SUMMARY_MSG_PREFIX):
         rest = content[len(SUMMARY_MSG_PREFIX):].lstrip("\n")
         # Drop the fixed model-facing lead-in, keep the summary itself.
-        marker = "以下是此前对话的摘要（原始消息已被压缩）："
-        body = rest.replace(marker, "", 1).strip()
+        # Both language variants are stripped (the persisted message may
+        # predate the current language setting).
+        for marker in (SUMMARY_LEAD_IN_ZH, SUMMARY_LEAD_IN_EN):
+            if rest.startswith(marker):
+                rest = rest[len(marker):]
+                break
+        body = rest.strip()
     first = body.split("\n", 1)[0].strip()
     if len(first) > 60:
         first = first[:60] + "…"
-    row = "🗂 早期对话已压缩为摘要"
+    row = "🗂 Earlier conversation compacted into a summary"
+    params: dict = {"preview": ""}
     if first:
-        row += f"：{first}"
-    return row
+        params["preview"] = f": {first}"
+        row += f": {first}"
+    return row, "summary.compacted_row", params
+
+
+def summary_row_text(content: str) -> str:
+    """Text-only view of :func:`summary_row_parts` (back-compat callers)."""
+    return summary_row_parts(content)[0]
+
+
+def reinject_row_parts(content: str) -> tuple[str, str, dict]:
+    """(text, i18n_key, params) for the E4 re-injection history row — the
+    re-asserted world state is model scaffolding, not conversation."""
+    return "🌍 Current world state re-injected", "summary.reinjected_row", {}
 
 
 def reinject_row_text(content: str) -> str:
-    """Short human-facing line for the E4 re-injection history row — the
-    re-asserted world state is model scaffolding, not conversation."""
-    return "🌍 当前世界状态已重新注入"
+    """Text-only view of :func:`reinject_row_parts` (back-compat callers)."""
+    return reinject_row_parts(content)[0]
 
 
 # --------------------------------------------------------------------------- #

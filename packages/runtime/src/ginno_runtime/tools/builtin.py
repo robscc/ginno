@@ -35,6 +35,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from .. import paths
+from ..lang import t
 from ..files.code_changes import encode_code_marker
 from ..files.images import diff_images, encode_images_marker, snapshot_images
 
@@ -174,7 +175,10 @@ def _path_denied(p: Path, base_dir: Path | None, extra_roots: list[Path] | None 
 
 
 def _deny_msg(p: str) -> str:
-    return f"[error] 路径 {p!r} 在拒绝访问区域内（运行时数据/凭据目录受保护）"
+    return t(
+        f"[error] path {p!r} is in a denied region (runtime data/credential "
+        "directories are protected)",
+        f"[error] 路径 {p!r} 在拒绝访问区域内（运行时数据/凭据目录受保护）")
 
 
 def _base(workspace: str | None) -> Path:
@@ -302,11 +306,14 @@ def build_builtin_tools(
     search_roots: list[Path] = [ws_root] + mount_roots
 
     def _ro_write_msg(p: str) -> str:
-        return (
+        return t(
+            f"[error] path {p!r} is inside a read-only mounted directory and "
+            "cannot be written. Read-only dirs are for read_file / grep_files / "
+            "glob_files reference only; to modify files there, ask the user to "
+            "remount it as read-write.",
             f"[error] 路径 {p!r} 位于只读挂载目录内，不可写入。"
             "只读目录仅供 read_file / grep_files / glob_files 参考；"
-            "如需修改请让用户将其改为读写挂载。"
-        )
+            "如需修改请让用户将其改为读写挂载。")
 
     @tool
     def read_file(path: str) -> str:
@@ -351,7 +358,8 @@ def build_builtin_tools(
         workspace or a mounted dir. Returns the resolved Path or an error."""
         rp = _ws(base_dir, (root or "").strip())
         if not rp.is_dir():
-            return f"[error] root 不是目录: {root}"
+            return t(f"[error] root is not a directory: {root}",
+                     f"[error] root 不是目录: {root}")
         try:
             real = os.path.realpath(rp)
         except OSError:
@@ -364,7 +372,10 @@ def build_builtin_tools(
             if _inside(real, rr_real):
                 return rp
         avail = ", ".join(str(rr) for rr in search_roots)
-        return f"[error] root {root!r} 不在本会话的可达目录内（工作目录/挂载目录：{avail}）"
+        return t(
+            f"[error] root {root!r} is outside this session's reachable "
+            f"directories (working dir/mounted dirs: {avail})",
+            f"[error] root {root!r} 不在本会话的可达目录内（工作目录/挂载目录：{avail}）")
 
     @tool
     def glob_files(pattern: str, root: str = "") -> str:

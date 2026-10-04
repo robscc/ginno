@@ -128,7 +128,7 @@ def _report_status(detail: str = "", status: str | None = None) -> None:
     reg.report(
         "chrome-extension",
         st,
-        detail or ("已连接" if _state.connected else "扩展未连接(未安装或已禁用)"),
+        detail or ("Connected" if _state.connected else "Extension not connected (not installed or disabled)"),
         version=_state.version,
         capabilities=_state.capabilities,
         extra={
@@ -198,8 +198,8 @@ async def extension_endpoint(ws: WebSocket) -> None:
                 _state.browser_client_id = p.get("browserClientId")
                 if isinstance(p.get("capabilities"), list):
                     _state.capabilities = p["capabilities"]
-                _report_status("已连接 · Chrome"
-                               if _state.connected else "扩展未连接")
+                _report_status("Connected · Chrome"
+                               if _state.connected else "Extension not connected")
             elif method == "pong":
                 continue
             elif method == "stopToolExecution":

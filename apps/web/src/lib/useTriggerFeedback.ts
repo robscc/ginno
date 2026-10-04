@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 
 /**
  * Shared reaction state machine for workflow trigger buttons (work item D).
@@ -32,6 +33,7 @@ export function useTriggerFeedback(opts?: {
 }): TriggerFeedback {
   const successHold = opts?.successHoldMs ?? 900;
   const errorHold = opts?.errorHoldMs ?? 2500;
+  const t = useTranslations("ui");
   const [phase, setPhase] = useState<TriggerPhase>("idle");
   const [message, setMessage] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -61,12 +63,13 @@ export function useTriggerFeedback(opts?: {
     (msg?: string) => {
       clearTimer();
       setPhase("error");
-      setMessage(msg || "触发失败");
+      // 调用方未给出具体错误时回落 ui 域通用文案
+      setMessage(msg || t("trigger.failed"));
       // Hold the error long enough to read, then let the button re-arm. The
       // message stays visible until the next attempt clears it via start().
       timer.current = setTimeout(() => setPhase("idle"), errorHold);
     },
-    [errorHold],
+    [errorHold, t],
   );
 
   const animClass =

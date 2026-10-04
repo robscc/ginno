@@ -35,6 +35,7 @@ from . import server_shared as shared
 from . import usage as usage_mod
 from . import usage_store
 from . import workflows as wf_store
+from .i18n import _
 from .schedule_store import MIN_INTERVAL_MIN
 
 _log = logging.getLogger("ginno.schedule")
@@ -331,7 +332,9 @@ async def _execute_run(task: dict, row: dict) -> None:
             now = time.time()
             row2 = {
                 **row, "status": "error", "error": "interrupted", "finished_at": now,
-                "summary": "执行被中断（应用退出）",
+                # User-facing row copy rendered server-side (no request context
+                # here — `_()` resolves the settings locale, i18n-design.md §5).
+                "summary": _("schedule.run_interrupted"),
             }
             store.record_run(row2)
             schedule_events().emit("run_finished", {"run": row2})
@@ -343,11 +346,15 @@ async def _execute_run(task: dict, row: dict) -> None:
         now = time.time()
         ok = bool(final.get("ok"))
         text = str(final.get("text") or "")
-        status_text = "执行成功" if ok else f"执行失败：{final.get('error') or '未知错误'}"
+        status_text = (
+            _("schedule.run_succeeded")
+            if ok
+            else _("schedule.run_failed", error=final.get("error") or "unknown error")
+        )
         row2 = {
             **row,
             "status": "ok" if ok else "error",
-            "error": None if ok else (final.get("error") or "执行失败"),
+            "error": None if ok else (final.get("error") or "failed"),
             "finished_at": now,
             # 摘要永远不缺席：先落纯截断兜底，LLM 摘要成功后以同 run_id 末行替位（§10 决议 6）
             "summary": (text[:SUMMARY_MAX_CHARS] if text else status_text)[:SUMMARY_MAX_CHARS],
@@ -385,7 +392,7 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
         project_slug=slug,
         workspace="",  # create_session 以每会话目录为准（忽略该字段）
         agent_id=target.get("agent_id"),
-        title=f"⏰ {task.get('name') or '定时任务'}",
+        title=f"⏰ {task.get('name') or _('schedule.default_task_title')}",
         type="scheduled",
     )
     meta = await _sessions_api.create_session(req)
@@ -625,7 +632,7 @@ def _record_missed(task: dict, point: float) -> None:
     row = _run_row(task, store.new_run_id(), "schedule", point, point)
     row["status"] = "missed"
     row["finished_at"] = point
-    row["summary"] = "错过（机器睡眠或应用未运行）"
+    row["summary"] = _("schedule.missed")
     store.record_run(row)
     schedule_events().emit("missed", {"run": row, "task_id": task.get("id")})
 

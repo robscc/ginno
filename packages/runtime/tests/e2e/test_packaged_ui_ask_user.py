@@ -227,13 +227,13 @@ def test_card_renders_answer_folds_and_survives_reload(app):
     _card(page).wait_for(timeout=20_000)
     assert page.locator(f"text={OPTION_A}").count() >= 1
     assert page.locator(f"text={OPTION_B}").count() >= 1
-    # the 跳过 escape hatch is always offered alongside the options
-    assert page.locator("text=跳过").count() >= 1
+    # the Skip escape hatch is always offered alongside the options
+    assert page.locator("text=Skip · use your best judgment").count() >= 1
 
     page.locator(f"text={OPTION_B}").first.click()
 
     # the receipt folds into the transcript once the turn resumes
-    page.locator(f"text=已选择：{OPTION_B}").first.wait_for(timeout=20_000)
+    page.locator(f"text=Chosen: {OPTION_B}").first.wait_for(timeout=20_000)
     page.locator("text=好，按你选的位置装好了。").first.wait_for(timeout=20_000)
 
     # THE property the permission prompt does not have: a reload rebuilds the
@@ -241,7 +241,7 @@ def test_card_renders_answer_folds_and_survives_reload(app):
     # tool result) instead of losing it.
     page.reload(wait_until="load")
     page.wait_for_timeout(2000)
-    assert page.locator(f"text=已选择：{OPTION_B}").count() >= 1, (
+    assert page.locator(f"text=Chosen: {OPTION_B}").count() >= 1, (
         "the answered card must come back from history after a reload"
     )
     # …and it is a receipt, not a live question again
@@ -275,12 +275,12 @@ def test_pending_card_survives_reload_and_is_still_answerable(app):
 
     # still pending (blank receipt), options present
     _card(page).wait_for(timeout=20_000)
-    assert page.locator("text=已选择").count() == 0, "the question is unanswered"
+    assert page.locator("text=Chosen").count() == 0, "the question is unanswered"
     assert page.locator(f"text={OPTION_A}").count() >= 1
 
     # …and ANSWERABLE: clicking resumes the parked turn.
     page.locator(f"text={OPTION_A}").first.click()
-    page.locator(f"text=已选择：{OPTION_A}").first.wait_for(timeout=20_000)
+    page.locator(f"text=Chosen: {OPTION_A}").first.wait_for(timeout=20_000)
     page.locator("text=好，按你选的位置装好了。").first.wait_for(timeout=20_000)
 
 # --------------------------------------------------------------------------- #
@@ -375,7 +375,7 @@ def test_inline_numbered_choices_become_buttons(app_inline):
 
     # One click replies for the user — no typing.
     b2.click()
-    page.locator("text=已选择：").first.wait_for(timeout=20_000)
+    page.locator("text=Chosen:").first.wait_for(timeout=20_000)
     page.locator("text=好，装到全局了。").first.wait_for(timeout=20_000)
 
     # …and the reply is the line text, so the model gets the full choice.
@@ -393,4 +393,4 @@ def test_inline_choices_survive_reload(app_inline):
     b = page.get_by_role("button", name="两个都装")
     b.wait_for(timeout=20_000)
     b.click()
-    page.locator("text=已选择：").first.wait_for(timeout=20_000)
+    page.locator("text=Chosen:").first.wait_for(timeout=20_000)

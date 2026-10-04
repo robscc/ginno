@@ -5,6 +5,7 @@
  * connectors get their settings UI for free. */
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import type { ConnectorInfo } from "@/lib/runtime";
 
@@ -15,6 +16,9 @@ export function ConfigFold({
   connector: ConnectorInfo;
   onSaved: () => void;
 }) {
+  // conn 域 catalog（messages/{en,zh-CN}/conn.json）；schema 里的 title/description
+  // 是 runtime 下发的数据文案，不在前端翻译范围。
+  const tConn = useTranslations("conn");
   const [cfg, setCfg] = useState<Record<string, unknown>>(connector.config || {});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -46,7 +50,7 @@ export function ConfigFold({
   return (
     <div className="mt-3 space-y-3 rounded-lg border border-line bg-hover/40 p-3">
       {props.length === 0 && (
-        <div className="text-xs text-faint">此连接器没有可配置项。</div>
+        <div className="text-xs text-faint">{tConn("config.empty")}</div>
       )}
       {props.map(([key, spec]) => {
         const title = String(spec.title || key);
@@ -103,7 +107,7 @@ export function ConfigFold({
                     [key]: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean),
                   })
                 }
-                placeholder="每行一个"
+                placeholder={tConn("config.onePerLine")}
                 className="w-full rounded-lg border border-line bg-card px-2 py-1.5 font-mono text-xs text-txt"
               />
             </div>
@@ -126,9 +130,9 @@ export function ConfigFold({
           disabled={saving}
           className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-50"
         >
-          {saving ? "保存中…" : "保存"}
+          {saving ? tConn("config.saving") : tConn("config.save")}
         </button>
-        {saved && <span className="text-xs text-green-600">已保存</span>}
+        {saved && <span className="text-xs text-green-600">{tConn("config.saved")}</span>}
         {error && <span className="text-xs text-red-600">{error}</span>}
       </div>
     </div>

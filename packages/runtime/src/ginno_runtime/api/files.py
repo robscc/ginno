@@ -235,7 +235,7 @@ async def update_artifact_endpoint(
     patch = {k: data[k] for k in ("name", "kind", "ref", "schema") if data.get(k) is not None}
     updated = art_store.update_artifact(project_slug, artifact_id, patch)
     if updated is None:
-        return {"ok": False, "error": "名称不能为空"}
+        return {"ok": False, "error": "Name must not be empty"}
     file_kind = (data.get("file_kind") or "").strip()
     if file_kind and updated.get("kind") == "file" and updated.get("ref"):
         files_mod.get_registry(project_slug).set_kind(updated["ref"], file_kind)
@@ -269,7 +269,7 @@ async def upload_file_endpoint(
     if len(data) > UPLOAD_MAX_BYTES:
         return {
             "ok": False,
-            "error": f"文件过大（上限 {UPLOAD_MAX_BYTES // 1024 // 1024}MB）",
+            "error": f"File too large (max {UPLOAD_MAX_BYTES // 1024 // 1024}MB)",
         }
     dest_dir = paths.session_uploads_dir(slug, session_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -317,7 +317,7 @@ async def attach_file_by_path_endpoint(req: dict) -> dict:
     slug = meta.get("project_slug") or "default"
     p = Path(src).expanduser()
     if not p.is_file():
-        return {"ok": False, "error": f"文件不存在: {src}"}
+        return {"ok": False, "error": f"File not found: {src}"}
     name = p.name
     dest_dir = paths.session_uploads_dir(slug, session_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -325,7 +325,7 @@ async def attach_file_by_path_endpoint(req: dict) -> dict:
     try:
         shutil.copyfile(p, dest)
     except OSError as e:
-        return {"ok": False, "error": f"无法读取文件: {e}"}
+        return {"ok": False, "error": f"Failed to read file: {e}"}
     kind = files_ex.classify(dest)
     art = art_store.add_artifact(slug, "file", name, files_mod.norm_path(dest), session_id)
     entry = files_mod.get_registry(slug).register(
@@ -376,9 +376,9 @@ async def file_preview_endpoint(
     except (files_ex.UnsupportedFormat, files_ex.ExtractorUnavailable) as e:
         return {"ok": False, "error": str(e)}
     except FileNotFoundError:
-        return {"ok": False, "error": "文件已被移动或删除"}
+        return {"ok": False, "error": "File has been moved or deleted"}
     except Exception as e:  # parse failure → actionable error, not 500
-        return {"ok": False, "error": f"预览失败: {type(e).__name__}: {e}"}
+        return {"ok": False, "error": f"Preview failed: {type(e).__name__}: {e}"}
     # a fresh preview counts as "seen": clear the stale badge + sync mtime
     try:
         entry["mtime"] = Path(entry["path"]).stat().st_mtime
@@ -428,7 +428,7 @@ async def file_download_endpoint(
         raise HTTPException(status_code=404, detail=f"file not found: {file_id}")
     p = Path(entry["path"])
     if not p.is_file():
-        raise HTTPException(status_code=404, detail="文件已被移动或删除")
+        raise HTTPException(status_code=404, detail="File has been moved or deleted")
     if fmt == "raw":
         from starlette.responses import FileResponse
 
@@ -448,7 +448,7 @@ async def file_download_endpoint(
             raise HTTPException(status_code=501, detail=str(e)) from e
         except Exception as e:  # parse failure → actionable error, not bare 500
             raise HTTPException(
-                status_code=500, detail=f"导出失败: {type(e).__name__}: {e}"
+                status_code=500, detail=f"Export failed: {type(e).__name__}: {e}"
             ) from e
         return Response(
             content=data,
@@ -487,7 +487,7 @@ async def save_file_to_downloads_endpoint(
         return {"ok": False, "error": f"file not found: {file_id}"}
     p = Path(entry["path"])
     if not p.is_file():
-        return {"ok": False, "error": "文件已被移动或删除"}
+        return {"ok": False, "error": "File has been moved or deleted"}
     downloads = Path(os.environ.get("GINNO_DOWNLOADS") or (Path.home() / "Downloads"))
     try:
         downloads.mkdir(parents=True, exist_ok=True)
@@ -508,7 +508,7 @@ async def save_file_to_downloads_endpoint(
     except files_ex.ExtractorUnavailable as e:
         return {"ok": False, "error": str(e)}
     except OSError as e:
-        return {"ok": False, "error": f"写入 Downloads 失败: {e}"}
+        return {"ok": False, "error": f"Failed to write to Downloads: {e}"}
     return {"ok": True, "path": str(dest), "name": dest.name}
 
 
@@ -525,7 +525,7 @@ async def open_file_external_endpoint(file_id: str) -> dict:
         return {"ok": False, "error": f"file not found: {file_id}"}
     p = Path(entry["path"])
     if not p.is_file():
-        return {"ok": False, "error": "文件已被移动或删除"}
+        return {"ok": False, "error": "File has been moved or deleted"}
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["open", str(p)])
@@ -534,7 +534,7 @@ async def open_file_external_endpoint(file_id: str) -> dict:
         else:
             subprocess.Popen(["xdg-open", str(p)])
     except OSError as e:
-        return {"ok": False, "error": f"无法启动外部应用: {e}"}
+        return {"ok": False, "error": f"Failed to launch external app: {e}"}
     return {"ok": True}
 
 
@@ -669,7 +669,7 @@ async def reveal_session_file_endpoint(req: dict) -> dict:
     sub = (req or {}).get("path") or ""
     target = _session_file_guard(slug, sid, sub)
     if target is None or not target.exists():
-        return {"ok": False, "error": "文件不存在"}
+        return {"ok": False, "error": "File not found"}
     try:
         if sys.platform == "darwin":
             if target.is_dir():
@@ -681,7 +681,7 @@ async def reveal_session_file_endpoint(req: dict) -> dict:
         else:
             subprocess.Popen(["xdg-open", str(target.parent)])
     except OSError as e:
-        return {"ok": False, "error": f"无法打开文件管理器: {e}"}
+        return {"ok": False, "error": f"Failed to open file manager: {e}"}
     return {"ok": True}
 
 
@@ -697,12 +697,12 @@ async def delete_session_file_endpoint(req: dict) -> dict:
     sid = (req or {}).get("session_id") or ""
     sub = (req or {}).get("path") or ""
     if not _is_orphaned_session(slug, sid):
-        return {"ok": False, "error": "仅支持删除已删除会话的文件；请先删除该会话"}
+        return {"ok": False, "error": "Only files of deleted sessions can be removed here; delete the session first"}
     target = _session_file_guard(slug, sid, sub)
     if target is None:
         return {"ok": False, "error": "invalid session or path"}
     if not target.is_file():
-        return {"ok": False, "error": "文件不存在"}
+        return {"ok": False, "error": "File not found"}
     reg = files_mod.get_registry(slug)
     entry = reg.find_by_path(target)
     unregistered = False
@@ -715,7 +715,7 @@ async def delete_session_file_endpoint(req: dict) -> dict:
     try:
         target.unlink()
     except OSError as e:
-        return {"ok": False, "error": f"删除失败: {e}"}
+        return {"ok": False, "error": f"Failed to delete: {e}"}
     return {"ok": True, "unregistered": unregistered}
 
 
@@ -733,12 +733,12 @@ async def delete_session_dir_endpoint(req: dict) -> dict:
     sid = (req or {}).get("session_id") or ""
     sub = (req or {}).get("path") or ""
     if not _is_orphaned_session(slug, sid):
-        return {"ok": False, "error": "仅支持删除已删除会话的文件；请先删除该会话"}
+        return {"ok": False, "error": "Only files of deleted sessions can be removed here; delete the session first"}
     target = _session_file_guard(slug, sid, sub)
     if target is None:
         return {"ok": False, "error": "invalid session or path"}
     if not target.is_dir():
-        return {"ok": False, "error": "目录不存在"}
+        return {"ok": False, "error": "Directory not found"}
     reg = files_mod.get_registry(slug)
     removed = 0
     prefix = str(target.resolve())
@@ -753,5 +753,5 @@ async def delete_session_dir_endpoint(req: dict) -> dict:
     try:
         shutil.rmtree(target)
     except OSError as e:
-        return {"ok": False, "error": f"删除失败: {e}"}
+        return {"ok": False, "error": f"Failed to delete: {e}"}
     return {"ok": True, "files_removed": removed}

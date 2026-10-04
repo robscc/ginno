@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useTranslations } from "next-intl";
 import { PanelRightClose } from "lucide-react";
 import { PANEL_WIDTH_DEFAULT, useGinno } from "@/lib/store";
 import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
@@ -19,6 +20,10 @@ import { SynthesisPanel } from "./SynthesisPanel";
 
 export function RightPanel() {
   const g = useGinno();
+  // i18n：t 角标 title 等面板框架文案，tb 角标文案，tn 右栏名与 tab 名
+  const t = useTranslations("right.panel");
+  const tb = useTranslations("right.badges");
+  const tn = useTranslations("right");
   const tab = g.rightTab;
   const width = g.rightPanelWidth;
   // Below the default width the labels don't fit beside the icons — drop to
@@ -39,7 +44,7 @@ export function RightPanel() {
       {/* Left-edge resize handle (pointer capture, keyboard ±16px, double-click
           reset). Dragging left widens the panel, hence the negated delta. */}
       <PanelResizer
-        ariaLabel="拖拽调整面板宽度（双击重置）"
+        ariaLabel={t("resize")}
         onDrag={(d) => {
           liveWidthRef.current -= d;
           setRightPanelWidth(liveWidthRef.current);
@@ -48,47 +53,52 @@ export function RightPanel() {
       />
       <aside className="relative flex shrink-0 flex-col border-l border-line bg-panel" style={{ width }}>
         <div className="flex items-center gap-0.5 border-b border-line px-2 py-2.5">
-          <div role="tablist" aria-label="右栏面板" className="flex min-w-0 flex-1 items-center gap-0.5">
+          <div role="tablist" aria-label={tn("name")} className="flex min-w-0 flex-1 items-center gap-0.5">
             {g.visibleRightTabs.map((id) => {
-              const t = RIGHT_TAB_BY_ID[id];
-              const Ic = t.icon;
+              const meta = RIGHT_TAB_BY_ID[id];
+              const Ic = meta.icon;
               // Workflow tab badge (work item E): yellow = waiting for a human
               // answer (strongest signal, P1), blue = active runs (pulsing),
               // red = failures the user hasn't looked at yet.
-              const showHuman = t.id === "workflow" && g.pendingHumanCount > 0;
-              const showActive = t.id === "workflow" && g.activeRunCount > 0;
-              const showFailed = t.id === "workflow" && g.unseenFailedCount > 0;
+              const showHuman = meta.id === "workflow" && g.pendingHumanCount > 0;
+              const showActive = meta.id === "workflow" && g.activeRunCount > 0;
+              const showFailed = meta.id === "workflow" && g.unseenFailedCount > 0;
               // 总结 tab: blue pulse dot while a synthesis case is in flight.
-              const showSynthActive = t.id === "synthesis" && g.synthesisActiveCount > 0;
+              const showSynthActive = meta.id === "synthesis" && g.synthesisActiveCount > 0;
               // Memory tab: violet pulse dot while a distillation draft awaits
               // review (memory.changed WS event drives the badge).
-              const showMemoryDraft = t.id === "memory" && (g.panelBadge.memory ?? 0) > 0;
+              const showMemoryDraft = meta.id === "memory" && (g.panelBadge.memory ?? 0) > 0;
               const ariaExtra =
-                t.id === "workflow" && (showHuman || showActive || showFailed)
-                  ? `，${g.pendingHumanCount} 个等待输入，${g.activeRunCount} 个运行中，${g.unseenFailedCount} 个新失败`
+                meta.id === "workflow" && (showHuman || showActive || showFailed)
+                  ? `, ${tb("workflow", {
+                      human: g.pendingHumanCount,
+                      active: g.activeRunCount,
+                      failed: g.unseenFailedCount,
+                    })}`
                   : showSynthActive
-                    ? `，${g.synthesisActiveCount} 个总结进行中`
+                    ? `, ${tb("synthesis", { n: g.synthesisActiveCount })}`
                     : showMemoryDraft
-                      ? "，有记忆草稿待审核"
+                      ? `, ${tb("memoryDraft")}`
                       : "";
+              const label = tn(`tabs.${meta.id}`);
               return (
                 <button
-                  key={t.id}
+                  key={meta.id}
                   role="tab"
-                  aria-selected={tab === t.id}
-                  aria-label={`${t.label}${ariaExtra}`}
-                  title={t.label}
-                  onClick={() => g.setRightTab(t.id, { manual: true })}
+                  aria-selected={tab === meta.id}
+                  aria-label={`${label}${ariaExtra}`}
+                  title={label}
+                  onClick={() => g.setRightTab(meta.id, { manual: true })}
                   className={`flex items-center rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors ${
-                    tab === t.id ? "bg-card2 text-txt" : "text-muted hover:text-txt"
+                    tab === meta.id ? "bg-card2 text-txt" : "text-muted hover:text-txt"
                   }`}
                 >
                   <Ic className="h-3.5 w-3.5 shrink-0" />
-                  {!compact && <span className="ml-1 truncate">{t.label}</span>}
+                  {!compact && <span className="ml-1 truncate">{label}</span>}
                   {showHuman && (
                     <span
                       className="ml-1 inline-flex h-4 min-w-[16px] animate-pulse items-center justify-center rounded-full bg-yellow px-1 text-[10px] font-semibold leading-none text-black"
-                      title={`${g.pendingHumanCount} 个运行等待你的输入`}
+                      title={t("waitingTitle", { n: g.pendingHumanCount })}
                     >
                       {g.pendingHumanCount}
                     </span>
@@ -96,7 +106,7 @@ export function RightPanel() {
                   {showActive && (
                     <span
                       className="ml-1 inline-flex h-4 min-w-[16px] animate-pulse items-center justify-center rounded-full bg-blue px-1 text-[10px] font-semibold leading-none text-white"
-                      title={`${g.activeRunCount} 个运行正在运行/暂停`}
+                      title={t("runningTitle", { n: g.activeRunCount })}
                     >
                       {g.activeRunCount}
                     </span>
@@ -104,7 +114,7 @@ export function RightPanel() {
                   {showFailed && (
                     <span
                       className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red px-1 text-[10px] font-semibold leading-none text-white"
-                      title={`${g.unseenFailedCount} 个运行失败，点击查看`}
+                      title={t("failedTitle", { n: g.unseenFailedCount })}
                     >
                       {g.unseenFailedCount}
                     </span>
@@ -112,13 +122,13 @@ export function RightPanel() {
                   {showSynthActive && (
                     <span
                       className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-blue"
-                      title={`${g.synthesisActiveCount} 个总结进行中`}
+                      title={tb("synthesis", { n: g.synthesisActiveCount })}
                     />
                   )}
                   {showMemoryDraft && (
                     <span
                       className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-violet"
-                      title="有记忆草稿待审核"
+                      title={tb("memoryDraft")}
                     />
                   )}
                 </button>
@@ -127,8 +137,8 @@ export function RightPanel() {
           </div>
           <button
             onClick={() => g.setRightPanelOpen(false)}
-            aria-label="收起面板"
-            title="收起面板（⌘\ / Ctrl+\）"
+            aria-label={t("collapse")}
+            title={t("collapseTitle")}
             className="shrink-0 rounded-lg p-1.5 text-muted transition-colors hover:bg-card hover:text-txt"
           >
             <PanelRightClose className="h-4 w-4" />

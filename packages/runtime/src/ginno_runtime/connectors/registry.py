@@ -56,13 +56,17 @@ class Connector:
     description: str = ""
     icon: str = "plug"           # frontend lucide icon name
     order: int = 100
+    # Tools whose names start with this prefix are provided by this connector
+    # (设计 §8 per-agent 开关的判定依据)。双轨连接器声明同一前缀:浏览器能力
+    # 只有在所有提供方都被该 agent 拒绝时才算关掉。None = 不提供工具。
+    tool_prefix: str | None = None
 
     def default_config(self) -> dict:
         return {"enabled": True}
 
     def config_schema(self) -> dict:
         return {"type": "object", "properties": {
-            "enabled": {"type": "boolean", "title": "启用"}},
+            "enabled": {"type": "boolean", "title": "Enabled"}},
         }
 
     def install_steps(self) -> list[dict]:
@@ -167,6 +171,22 @@ class ConnectorRegistry:
         if STATUS_DISCONNECTED in active or STATUS_INSTALLING in active:
             return "warn"
         return ""
+
+    def tool_denied(self, tool_name: str, denied_ids) -> bool:
+        """Per-agent connector denial (设计 §8): True = 该 agent 不可用此工具。
+
+        A tool is provided by every connector whose ``tool_prefix`` matches;
+        it is denied only when ALL providers are in ``denied_ids`` — the
+        dual-track browser (extension + profile) stays usable while either
+        track is allowed. Tools no connector declares are never denied here.
+        """
+        with self._lock:
+            providers = [c.id for c in self._connectors.values()
+                         if c.tool_prefix and tool_name.startswith(c.tool_prefix)]
+        if not providers:
+            return False
+        denied = set(denied_ids or [])
+        return all(pid in denied for pid in providers)
 
     # ---- config (settings.json → connectors.<id>) ------------------------------
 

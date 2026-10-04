@@ -1,0 +1,105 @@
+{
+  "shell": {
+    "nav": {
+      "newSession": "New session",
+      "newSessionHint": "Back to the landing home; the session is created on first send",
+      "searchSessions": "Search sessions",
+      "connectors": "Connectors",
+      "scheduled": "Scheduled Tasks",
+      "kb": "Knowledge Base",
+      "workflows": "Workflows",
+      "settings": "Settings"
+    },
+    "navDots": {
+      "connectorError": "Connector error",
+      "connectorWarn": "Some connectors are not connected",
+      "scheduleError": "Last run failed or there are missed scheduled points",
+      "scheduleOff": "Scheduled tasks globally disabled"
+    },
+    "groups": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "earlier": "Earlier"
+    },
+    "filter": {
+      "clear": "Clear filter",
+      "showOnly": "Show only {name}'s sessions"
+    },
+    "empty": {
+      "noSessions": "No sessions yet.",
+      "noSessionsHint": "Click \"New session\" or press ⌘N to start your first conversation.",
+      "filtered": "No sessions for this Agent.",
+      "filteredHint": "Click the highlighted filter chip again to clear the filter."
+    },
+    "session": {
+      "untitled": "Untitled",
+      "quickBadge": "Quick Chat session (from the Floating Window)",
+      "statusPrefix": "Status: {status}",
+      "subagentType": "Subagent type: {type}",
+      "moreNested": "{count} more nested subtasks",
+      "activeKids": "{count} subtasks/runs in progress",
+      "collapse": "Collapse subtasks",
+      "expand": "Expand subtasks",
+      "stop": "Stop subtask",
+      "stopHint": "Stop subtask (including its running descendants)",
+      "clearSub": "Clear finished subtask",
+      "clearSubHint": "Clear (deletes this sub-session row)",
+      "rename": "Rename session",
+      "renameHint": "Rename (or double-click the title)",
+      "delete": "Delete session",
+      "errorHint": "Go to Settings → Model API config"
+    },
+    "run": {
+      "fallbackName": "Workflow",
+      "cancel": "Cancel run",
+      "cancelHint": "Cancel this run",
+      "delete": "Delete run record",
+      "deleteHint": "Delete this run record"
+    },
+    "fallbackToast": {
+      "title": "Using a fallback browser instance"
+    },
+    "goalSession": {
+      "title": "Goal session — set a long-running goal"
+    },
+    "deleteModal": {
+      "title": "Delete session",
+      "confirm": "Delete",
+      "message": "Delete session \"{name}\"? Its conversation history will be deleted and cannot be recovered. Files produced by the session are kept and can be reviewed or cleaned up in Settings → Session Files.",
+      "cascade": "This will also delete its {count} sub-agent sessions (running ones are stopped cooperatively first)."
+    },
+    "folders": {
+      "chipTitle": "Context folders mounted for this session",
+      "mount": "Mount",
+      "title": "This session's context folders",
+      "empty": "No folders mounted. Once mounted, the Agent can directly read and write files inside (code repos, notes, etc.).",
+      "unsetPrimary": "Unset primary working folder",
+      "setPrimary": "Set as primary working folder (bash cwd)",
+      "accessTitle": "Toggle access level (library-level setting): rw = read-write / ro = read-only",
+      "unmount": "Unmount from this session",
+      "missing": "{id} (missing from the folder library)",
+      "inputPlaceholder": "Enter a folder path to mount, e.g. ~/workspace/my-repo",
+      "mountTitle": "Register in the folder library and mount (read-write by default; the first mount becomes the primary working folder)",
+      "manage": "Manage folder library (access levels / rule toggles)",
+      "errOperation": "Operation failed",
+      "errMount": "Failed to mount"
+    },
+    "search": {
+      "dialogLabel": "Search sessions",
+      "placeholder": "Search session titles, or type an Agent name…",
+      "empty": "No matching sessions",
+      "footer": "↑↓ select · Enter open · Esc close"
+    },
+    "topbar": {
+      "newSession": "New Session",
+      "running": "Running",
+      "idle": "Idle",
+      "usageTitle": "This run: input {input} tokens ({cache} from cache), output {output} tokens, {calls} model calls",
+      "actions": "Session actions",
+      "renamePrompt": "Session title",
+      "copyId": "Copy session ID",
+      "copied": "copied",
+      "idChipTitle": "session {id} (click to copy, for log lookup)"
+    }
+  }
+}

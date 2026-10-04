@@ -23,6 +23,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 
 export interface ContextMenuItem {
@@ -54,6 +55,7 @@ export interface ContextMenuProps {
 /** Generic menu: a fixed, viewport-clamped popup with a full-screen backdrop
  *  that closes on any outside click. */
 export function ContextMenu({ x, y, items, onSelect, onClose, title }: ContextMenuProps) {
+  const t = useTranslations("code.menu");
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
   const enabledIdx = useMemo(
@@ -99,7 +101,7 @@ export function ContextMenu({ x, y, items, onSelect, onClose, title }: ContextMe
         ref={ref}
         role="menu"
         tabIndex={-1}
-        aria-label={title ? `${title} 的操作菜单` : "操作菜单"}
+        aria-label={title ? t("actionsFor", { name: title }) : t("actions")}
         style={{ left: pos.x, top: pos.y }}
         className="fixed z-50 min-w-[176px] overflow-hidden rounded-lg border border-line bg-card py-1 text-xs shadow-2xl outline-none"
         onKeyDown={(e) => {
@@ -193,28 +195,45 @@ export interface CodeMenuFlags {
   canOpenExternal: boolean;
 }
 
-const WRITE_HINT = "当前文件夹以只读方式挂载";
+/** 菜单项文案集合：`buildFileMenuItems` 是纯函数（非 hook），拿不到
+ *  useTranslations，由调用方（FileTree）用 t() 构建好传入。 */
+export interface CodeMenuLabels {
+  newFile: string;
+  newFolder: string;
+  rename: string;
+  delete: string;
+  copyRel: string;
+  copyAbs: string;
+  reveal: string;
+  openExternal: string;
+  /** 只读挂载时禁用写操作的原因提示。 */
+  readOnlyHint: string;
+}
 
 /** Build the menu for one tree row (or the root area). */
-export function buildFileMenuItems(f: CodeMenuFlags): ContextMenuItem[] {
+export function buildFileMenuItems(
+  f: CodeMenuFlags,
+  labels: CodeMenuLabels,
+): ContextMenuItem[] {
   const groups: ContextMenuItem[][] = [];
   const isDirLike = f.target !== "file";
+  const writeHint = labels.readOnlyHint;
 
   if (isDirLike && f.canCreate) {
     groups.push([
       {
         id: "new-file",
-        label: "新建文件",
+        label: labels.newFile,
         icon: <FilePlus2 className="h-3.5 w-3.5" />,
         disabled: !f.writable,
-        disabledHint: WRITE_HINT,
+        disabledHint: writeHint,
       },
       {
         id: "new-folder",
-        label: "新建文件夹",
+        label: labels.newFolder,
         icon: <FolderPlus className="h-3.5 w-3.5" />,
         disabled: !f.writable,
-        disabledHint: WRITE_HINT,
+        disabledHint: writeHint,
       },
     ]);
   }
@@ -224,22 +243,22 @@ export function buildFileMenuItems(f: CodeMenuFlags): ContextMenuItem[] {
     if (f.canRename) {
       editGroup.push({
         id: "rename",
-        label: "重命名",
+        label: labels.rename,
         icon: <Pencil className="h-3.5 w-3.5" />,
         shortcut: "F2",
         disabled: !f.writable,
-        disabledHint: WRITE_HINT,
+        disabledHint: writeHint,
       });
     }
     if (f.canDelete) {
       editGroup.push({
         id: "delete",
-        label: "删除",
+        label: labels.delete,
         icon: <Trash2 className="h-3.5 w-3.5" />,
         shortcut: "Delete",
         danger: true,
         disabled: !f.writable,
-        disabledHint: WRITE_HINT,
+        disabledHint: writeHint,
       });
     }
     if (editGroup.length) groups.push(editGroup);
@@ -249,8 +268,8 @@ export function buildFileMenuItems(f: CodeMenuFlags): ContextMenuItem[] {
   // (`path` would be ""), so the root menu is only ever "create here".
   if (f.target !== "root" && f.canCopyPath) {
     groups.push([
-      { id: "copy-rel", label: "复制相对路径", icon: <Copy className="h-3.5 w-3.5" /> },
-      { id: "copy-abs", label: "复制绝对路径", icon: <Copy className="h-3.5 w-3.5" /> },
+      { id: "copy-rel", label: labels.copyRel, icon: <Copy className="h-3.5 w-3.5" /> },
+      { id: "copy-abs", label: labels.copyAbs, icon: <Copy className="h-3.5 w-3.5" /> },
     ]);
   }
 
@@ -258,14 +277,14 @@ export function buildFileMenuItems(f: CodeMenuFlags): ContextMenuItem[] {
   if (f.target !== "root" && f.canReveal) {
     osGroup.push({
       id: "reveal",
-      label: "在 Finder 中显示",
+      label: labels.reveal,
       icon: <FolderOpen className="h-3.5 w-3.5" />,
     });
   }
   if (f.target === "file" && f.canOpenExternal) {
     osGroup.push({
       id: "open-external",
-      label: "在默认应用打开",
+      label: labels.openExternal,
       icon: <ExternalLink className="h-3.5 w-3.5" />,
     });
   }

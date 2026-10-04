@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ChevronRight, History, Loader2, RotateCcw, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { DiffView } from "./DiffView";
 
@@ -28,6 +29,8 @@ export function VersionHistoryDrawer({
   const [diffBusy, setDiffBusy] = useState(false);
   const [rolling, setRolling] = useState(false);
   const [confirmRoll, setConfirmRoll] = useState(false);
+  const t = useTranslations("wf.versions");
+  const tCommon = useTranslations("wf.common");
 
   useEffect(() => {
     let alive = true;
@@ -90,9 +93,9 @@ export function VersionHistoryDrawer({
       >
         <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
           <History className="h-3.5 w-3.5 text-muted" />
-          <span className="text-xs font-semibold text-txt">版本历史</span>
-          <span className="ml-auto text-[10px] text-faint">v{currentVersion} 当前</span>
-          <button onClick={onClose} className="rounded p-0.5 text-faint hover:bg-card2 hover:text-txt" aria-label="关闭">
+          <span className="text-xs font-semibold text-txt">{t("title")}</span>
+          <span className="ml-auto text-[10px] text-faint">{t("currentV", { version: currentVersion })}</span>
+          <button onClick={onClose} className="rounded p-0.5 text-faint hover:bg-card2 hover:text-txt" aria-label={t("close")}>
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -100,7 +103,7 @@ export function VersionHistoryDrawer({
         <div className="min-h-0 flex-1 overflow-y-auto">
           {loading && (
             <div className="flex items-center justify-center gap-1.5 py-6 text-xs text-faint">
-              <Loader2 className="h-3 w-3 animate-spin" /> 加载中…
+              <Loader2 className="h-3 w-3 animate-spin" /> {tCommon("loading")}
             </div>
           )}
           {!loading &&
@@ -117,7 +120,7 @@ export function VersionHistoryDrawer({
                   >
                     <ChevronRight className={`h-3 w-3 text-faint transition-transform ${open ? "rotate-90" : ""}`} />
                     <span className={isCur ? "font-medium text-violet" : "text-txt"}>v{v.version}</span>
-                    {isCur && <span className="text-[10px] text-faint">(当前)</span>}
+                    {isCur && <span className="text-[10px] text-faint">({t("currentTag")})</span>}
                     {v.ts && (
                       <span className="text-[10px] text-faint">
                         {new Date(v.ts * 1000).toLocaleString(undefined, {
@@ -128,17 +131,19 @@ export function VersionHistoryDrawer({
                         })}
                       </span>
                     )}
-                    {!isCur && <span className="ml-auto text-[10px] text-faint">查看差异</span>}
+                    {!isCur && <span className="ml-auto text-[10px] text-faint">{t("viewDiff")}</span>}
                   </button>
                   {open && !isCur && (
                     <div className="space-y-2 px-3 pb-2">
                       {diffBusy ? (
                         <div className="flex items-center gap-1.5 text-[11px] text-faint">
-                          <Loader2 className="h-3 w-3 animate-spin" /> 计算差异…
+                          <Loader2 className="h-3 w-3 animate-spin" /> {t("computingDiff")}
                         </div>
                       ) : (
                         <>
-                          <div className="text-[10px] text-faint">v{v.version} → v{currentVersion} 的差异</div>
+                          <div className="text-[10px] text-faint">
+                            {t("diffRange", { from: v.version, to: currentVersion })}
+                          </div>
                           <DiffView diff={diff ?? ""} />
                           <button
                             onClick={() => (confirmRoll ? void rollback() : setConfirmRoll(true))}
@@ -150,7 +155,11 @@ export function VersionHistoryDrawer({
                             } disabled:opacity-50`}
                           >
                             {rolling ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                            {rolling ? "回滚中…" : confirmRoll ? "确认回滚？（创建新版本）" : `回滚到 v${v.version}`}
+                            {rolling
+                              ? t("rollingBack")
+                              : confirmRoll
+                                ? t("confirmRollbackNew")
+                                : t("rollbackTo", { version: v.version })}
                           </button>
                         </>
                       )}
@@ -160,7 +169,7 @@ export function VersionHistoryDrawer({
               );
             })}
           {!loading && !versions.length && (
-            <div className="py-6 text-center text-xs text-faint">暂无版本记录</div>
+            <div className="py-6 text-center text-xs text-faint">{t("empty")}</div>
           )}
         </div>
       </div>

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, Check } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 type Schema = { type?: string; properties?: Record<string, { type?: string }> };
 
@@ -121,19 +122,20 @@ export function ContextEditor({
     return found;
   }, [dsl]);
   const hintKeys = [...templateKeys].filter((k) => keys.includes(k));
+  const t = useTranslations("wf.context");
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-1.5">
-        <span className="text-[11px] font-medium text-txt">上下文（运行前可编辑）</span>
+        <span className="text-[11px] font-medium text-txt">{t("title")}</span>
         <span
           className="group relative flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-line2 text-[9px] text-faint"
-          aria-label="上下文说明"
+          aria-label={t("aboutAria")}
         >
           i
           <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-1 w-56 -translate-x-1/2 rounded-md border border-line2 bg-card p-2 text-[10px] font-normal leading-snug text-muted opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100">
-            工作流的「运行变量」：每次执行可改的输入（如仓库名、阈值、目标列表），会以{" "}
-            <span className="font-mono text-txt">{"{{context.字段}}"}</span>{" "}
-            注入各步骤的 goal。改这里只影响本次运行，不改 DSL 本身。
+            {t("aboutBefore")}
+            <span className="font-mono text-txt">{"{{context.field}}"}</span>
+            {t("aboutAfter")}
           </span>
         </span>
         <button
@@ -144,12 +146,12 @@ export function ContextEditor({
           }}
           className="ml-auto text-[10px] text-faint hover:text-muted"
         >
-          重置
+          {t("reset")}
         </button>
       </div>
       {hintKeys.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-faint">模板变量</span>
+          <span className="text-[10px] text-faint">{t("templateVars")}</span>
           {hintKeys.map((k) => {
             const filled = !isEmpty(form[k]);
             return (
@@ -161,16 +163,14 @@ export function ContextEditor({
               >
                 {filled ? <Check className="h-2.5 w-2.5" /> : <AlertCircle className="h-2.5 w-2.5" />}
                 {k}
-                {!filled && <span className="font-sans">(未填)</span>}
+                {!filled && <span className="font-sans">{t("notSet")}</span>}
               </span>
             );
           })}
         </div>
       )}
       <p className="text-[10px] leading-snug text-faint">
-        {keys.length === 0
-          ? "该 DSL 未声明 context.schema，下方用 JSON 自由填写本次运行的初始上下文（可为空 {}）。"
-          : "按 schema 生成的表单；这些值会在运行开始时作为 context 初始值传入。"}
+        {keys.length === 0 ? t("noSchemaHint") : t("schemaHint")}
       </p>
       {keys.length === 0 ? (
         <textarea

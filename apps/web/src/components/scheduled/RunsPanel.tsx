@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ScheduleConfig, ScheduleRun } from "@/lib/types";
@@ -23,12 +24,6 @@ const PAGE_SIZE = 50;
 // 范围过滤在客户端做（API 的 date 是单日），最多向后取 6 页兜底。
 const MAX_PAGES = 6;
 
-const RANGE_OPTIONS: Array<[string, string]> = [
-  ["1", "Last 1 day"],
-  ["7", "Last 7 days"],
-  ["30", "Last 30 days"],
-];
-
 export function RunsPanel({
   cfg,
   refreshKey,
@@ -42,6 +37,13 @@ export function RunsPanel({
   onClearDateFilter: () => void;
 }) {
   const g = useGinno();
+  const tr = useTranslations("sched");
+  // 范围选项（catalog 驱动；原模块级英文常量迁入 sched.runs.range*）。
+  const rangeOptions: Array<[string, string]> = [
+    ["1", tr("runs.range1d")],
+    ["7", tr("runs.range7d")],
+    ["30", tr("runs.range30d")],
+  ];
   // workflow 目标的回放是工作区路由里的 RunSubSessionView——从本页点开要推回 "/"。
   const router = useRouter();
   const [rows, setRows] = useState<ScheduleRun[]>([]);
@@ -114,12 +116,12 @@ export function RunsPanel({
         <button
           onClick={() => setSort((s) => (s === "desc" ? "asc" : "desc"))}
           className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 hover:text-txt"
-          title="Toggle time order"
+          title={tr("runs.sortTitle")}
         >
-          Time {sort === "desc" ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />}
+          {tr("runs.time")} {sort === "desc" ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />}
         </button>
         <select className="field w-auto px-2 py-1 text-xs" value={taskId} onChange={(e) => setTaskId(e.target.value)}>
-          <option value="">Task: all</option>
+          <option value="">{tr("runs.taskAll")}</option>
           {cfg.tasks.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name}
@@ -131,57 +133,57 @@ export function RunsPanel({
           value={targetType}
           onChange={(e) => setTargetType(e.target.value)}
         >
-          <option value="">Target: all</option>
-          <option value="prompt">💬 Prompt</option>
-          <option value="workflow">⚡ Workflow</option>
+          <option value="">{tr("runs.targetAll")}</option>
+          <option value="prompt">{tr("runs.targetPrompt")}</option>
+          <option value="workflow">{tr("runs.targetWorkflow")}</option>
         </select>
         <select className="field w-auto px-2 py-1 text-xs" value={status} onChange={(e) => setStatus(e.target.value)}>
-          <option value="">Status: all</option>
-          <option value="ok">OK</option>
-          <option value="error">Error</option>
-          <option value="running">Running</option>
-          <option value="missed">Missed</option>
-          <option value="skipped_overlap">Skipped (overlap)</option>
+          <option value="">{tr("runs.statusAll")}</option>
+          <option value="ok">{tr("status.ok")}</option>
+          <option value="error">{tr("status.error")}</option>
+          <option value="running">{tr("status.running")}</option>
+          <option value="missed">{tr("status.missed")}</option>
+          <option value="skipped_overlap">{tr("status.skipped")}</option>
         </select>
         {dateFilter ? (
           <span className="flex items-center gap-1.5 rounded-lg border border-violet/50 bg-violet/10 px-2 py-1 text-violet">
             {dateFilter}
-            <button onClick={onClearDateFilter} title="Clear date filter" className="text-violet/70 hover:text-violet">
+            <button onClick={onClearDateFilter} title={tr("runs.clearDate")} className="text-violet/70 hover:text-violet">
               ✕
             </button>
           </span>
         ) : (
           <select className="field w-auto px-2 py-1 text-xs" value={range} onChange={(e) => setRange(e.target.value)}>
-            {RANGE_OPTIONS.map(([v, label]) => (
+            {rangeOptions.map(([v, label]) => (
               <option key={v} value={v}>
                 {label}
               </option>
             ))}
           </select>
         )}
-        <span className="ml-auto text-[11px] text-faint">{filtered.length} runs</span>
+        <span className="ml-auto text-[11px] text-faint">{tr("runs.count", { n: filtered.length })}</span>
       </div>
 
       {loading ? (
         <div className="flex items-center gap-2 py-10 text-sm text-faint">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading runs…
+          <Loader2 className="h-4 w-4 animate-spin" /> {tr("runs.loading")}
         </div>
       ) : pageRows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-line py-10 text-center text-sm text-faint">
-          No runs match these filters.
+          {tr("runs.empty")}
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-line">
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-line text-[11px] text-faint">
-                <th className="px-3 py-2 font-medium">Time</th>
-                <th className="px-3 py-2 font-medium">Task</th>
-                <th className="px-3 py-2 font-medium">Target</th>
-                <th className="px-3 py-2 font-medium">Trigger</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Duration</th>
-                <th className="px-3 py-2 font-medium">Summary</th>
+                <th className="px-3 py-2 font-medium">{tr("runs.colTime")}</th>
+                <th className="px-3 py-2 font-medium">{tr("runs.colTask")}</th>
+                <th className="px-3 py-2 font-medium">{tr("runs.colTarget")}</th>
+                <th className="px-3 py-2 font-medium">{tr("runs.colTrigger")}</th>
+                <th className="px-3 py-2 font-medium">{tr("runs.colStatus")}</th>
+                <th className="px-3 py-2 font-medium">{tr("runs.colDuration")}</th>
+                <th className="px-3 py-2 font-medium">{tr("runs.colSummary")}</th>
               </tr>
             </thead>
             <tbody>
@@ -197,7 +199,7 @@ export function RunsPanel({
                     className={`group border-b border-line/60 last:border-0 ${
                       clickable ? "cursor-pointer transition-colors hover:bg-card2/60" : ""
                     }`}
-                    title={clickable ? "Click to view the run" : r.status === "missed" ? "Missed (machine asleep or app not running)" : undefined}
+                    title={clickable ? tr("runs.rowClick") : r.status === "missed" ? tr("runs.rowMissed") : undefined}
                   >
                     <td className="whitespace-nowrap px-3 py-2 text-muted tabular-nums">
                       {fmtDayPrefix(r.scheduled_at ?? r.started_at)} {fmtClock(r.started_at ?? r.scheduled_at)}
@@ -206,7 +208,7 @@ export function RunsPanel({
                       {r.task_name}
                     </td>
                     <td className="px-3 py-2">{r.target_type === "workflow" ? "⚡" : "💬"}</td>
-                    <td className="px-3 py-2 text-faint">{r.trigger === "manual" ? "manual" : "schedule"}</td>
+                    <td className="px-3 py-2 text-faint">{r.trigger === "manual" ? tr("trigger.manual") : tr("trigger.scheduled")}</td>
                     <td className="whitespace-nowrap px-3 py-2">
                       <span
                         className="inline-flex items-center gap-1 rounded-full border px-1.5 py-px"
@@ -215,7 +217,7 @@ export function RunsPanel({
                           color: meta.color,
                           ...(meta.hollow ? { borderStyle: "dashed" as const } : {}),
                         }}
-                        title={r.status === "missed" ? "Missed (machine asleep or app not running)" : r.error || undefined}
+                        title={r.status === "missed" ? tr("runs.rowMissed") : r.error || undefined}
                       >
                         {meta.glyph} {meta.label}
                       </span>
@@ -229,7 +231,7 @@ export function RunsPanel({
                         {/* 显式回放入口：hover 才出现，让「整行可点」可被发现 */}
                         {clickable && (
                           <span className="shrink-0 rounded-md border border-violet/40 px-1.5 py-px text-[10px] text-violet opacity-0 transition-opacity group-hover:opacity-100">
-                            Open ↗
+                            {tr("runs.open")}
                           </span>
                         )}
                       </div>
@@ -250,7 +252,7 @@ export function RunsPanel({
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             className="rounded-lg border border-line px-2 py-1 disabled:opacity-40"
           >
-            Prev
+            {tr("runs.prev")}
           </button>
           <span className="text-faint tabular-nums">
             {page + 1} / {pages}
@@ -260,7 +262,7 @@ export function RunsPanel({
             onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
             className="rounded-lg border border-line px-2 py-1 disabled:opacity-40"
           >
-            Next
+            {tr("runs.next")}
           </button>
         </div>
       )}

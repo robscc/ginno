@@ -1008,7 +1008,7 @@ def apply_session_context(
     folder_ids = [fid for fid in (folder_ids or []) if isinstance(fid, str) and fid]
     unknown = [fid for fid in folder_ids if cf.get_folder(fid) is None]
     if unknown:
-        return {"ok": False, "error": f"未知的目录 id：{unknown}"}
+        return {"ok": False, "error": f"Unknown folder id: {unknown}"}
     if primary_id and primary_id not in folder_ids:
         primary_id = None  # primary must be one of the mounts
 

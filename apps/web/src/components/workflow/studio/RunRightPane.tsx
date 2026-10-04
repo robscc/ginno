@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Check, Loader2, MessageSquare, Shield, ShieldAlert, X } from "lucide-react";
+import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import type { WorkflowRun, WorkflowRunEvent } from "@/lib/types";
 import { HumanInputCard } from "../HumanInputCard";
@@ -21,9 +22,11 @@ export function RunRightPane({
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const t = useTranslations("wf.right");
+  const tObserver = useTranslations("wf.observer");
 
   if (!run) {
-    return <div className="text-[11px] text-faint">选一次运行查看上下文与干预记录。</div>;
+    return <div className="text-[11px] text-faint">{t("pickRun")}</div>;
   }
 
   const ctx = Object.entries(run.context_override || {});
@@ -48,9 +51,9 @@ export function RunRightPane({
   return (
     <div className="space-y-3">
       <div>
-        <div className="text-[12.5px] font-semibold text-txt">运行上下文</div>
+        <div className="text-[12.5px] font-semibold text-txt">{t("runContext")}</div>
         <div className="mt-1.5 space-y-0.5">
-          {ctx.length === 0 && <div className="text-[11px] text-faint">本次运行未覆盖任何 context 字段</div>}
+          {ctx.length === 0 && <div className="text-[11px] text-faint">{t("noOverrides")}</div>}
           {ctx.map(([k, v]) => (
             <div key={k} className="flex items-baseline justify-between gap-2 border-b border-line py-1">
               <span className="text-[11px] text-muted">{k}</span>
@@ -62,7 +65,7 @@ export function RunRightPane({
 
       {writes.length > 0 && (
         <div>
-          <div className="text-[11.5px] font-semibold text-txt">context 写入（{writes.length}）</div>
+          <div className="text-[11.5px] font-semibold text-txt">{t("contextWrites", { count: writes.length })}</div>
           <div className="mt-1 space-y-0.5">
             {writes.slice(-8).map((w, i) => (
               <div key={i} className="flex items-baseline gap-2 font-mono text-[10.5px]">
@@ -82,7 +85,7 @@ export function RunRightPane({
         <div>
           <div className="mb-1 flex items-center gap-1.5 text-[11.5px] font-semibold text-txt">
             <MessageSquare className="h-3.5 w-3.5 text-yellow" />
-            等待裁决
+            {t("awaitingDecision")}
             {interrupt.node_id && <span className="font-mono text-[10px] text-faint">@{interrupt.node_id}</span>}
           </div>
           {interrupt.kind === "human" ? (
@@ -103,7 +106,8 @@ export function RunRightPane({
           ) : (
             <div className="rounded-md border border-yellow/40 bg-yellow/[0.05] p-2.5">
               <div className="text-[11px] text-yellow">
-                手动暂停{interrupt.node_id ? ` @${interrupt.node_id}` : ""}
+                {t("manuallyPaused")}
+                {interrupt.node_id ? ` @${interrupt.node_id}` : ""}
               </div>
               <button
                 onClick={() => void resumeManual()}
@@ -111,7 +115,7 @@ export function RunRightPane({
                 className="btn-press mt-2 flex items-center gap-1.5 rounded-md bg-violet px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
               >
                 {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                继续
+                {tObserver("resume")}
               </button>
             </div>
           )}
@@ -121,11 +125,11 @@ export function RunRightPane({
       <div className="rounded-lg border border-line bg-base/30 p-2.5">
         <div className="flex items-center gap-1.5">
           <Shield className="h-3.5 w-3.5 text-muted" />
-          <span className="text-[11.5px] font-semibold text-txt">校验恢复干预</span>
-          <span className="ml-auto text-[10px] text-faint">{supEvents.length} 次</span>
+          <span className="text-[11.5px] font-semibold text-txt">{t("interventions")}</span>
+          <span className="ml-auto text-[10px] text-faint">{t("total", { count: supEvents.length })}</span>
         </div>
         {!supEvents.length ? (
-          <div className="mt-1 text-[11px] text-faint">本次运行没有触发参数校验恢复</div>
+          <div className="mt-1 text-[11px] text-faint">{t("noInterventions")}</div>
         ) : (
           <div className="mt-1.5 space-y-1">
             {supEvents.map((e, i) => {
@@ -155,28 +159,28 @@ export function RunRightPane({
           </div>
         )}
         <div className="mt-2 border-t border-line pt-1.5 text-[10px] text-faint">
-          这是「参数校验失败时的自动恢复」。按检查点裁决的 Supervisor 门见阶段 2/3。
+          {t("recoveryNote")}
         </div>
       </div>
 
       <div className="space-y-0.5 text-[10.5px] text-faint">
         <div className="flex justify-between">
-          <span>run id</span>
+          <span>{t("runId")}</span>
           <span className="font-mono text-muted">{run.id.slice(0, 8)}</span>
         </div>
         <div className="flex justify-between">
-          <span>DSL 版本</span>
+          <span>{t("dslVersion")}</span>
           <span className="font-mono text-muted">v{run.dsl_version ?? "?"}</span>
         </div>
         {run.retried_from && (
           <div className="flex justify-between">
-            <span>重跑自</span>
+            <span>{t("rerunFrom")}</span>
             <span className="font-mono text-muted">{run.retried_from.slice(0, 8)}</span>
           </div>
         )}
         {run.session_id && (
           <div className="flex justify-between">
-            <span>绑定会话</span>
+            <span>{t("boundSession")}</span>
             <span className="font-mono text-muted">{run.session_id.slice(0, 8)}</span>
           </div>
         )}

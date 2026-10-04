@@ -24,6 +24,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .. import paths
 from ..graph import text_of_content
+from ..lang import t
 from ..models import build_model
 from .pool import clear_pool, read_pool, sanitize_for_memory
 
@@ -61,6 +62,51 @@ SUMMARIZE_PROMPT = """\
 - 如果新知识与现有记忆冲突，以新知识为准，更新旧条目
 - 保持精炼，总量控制在 {budget} 字以内
 - 使用与源内容相同的语言
+"""
+
+SUMMARIZE_PROMPT_EN = """\
+You are a knowledge distiller. Your task is to extract knowledge that is reusable \
+long-term from conversation excerpts and merge it into the existing global memory.
+
+## Extraction criteria
+Extract knowledge of the following kinds:
+1. **Technical decisions** — architecture choices, API conventions, configuration \
+changes, stack selections
+2. **Problem diagnoses** — bugs investigated, root causes, solutions (keep only \
+generalizable conclusions; do not keep the debugging trail)
+3. **User preferences** — work habits, communication style, tool preferences, naming \
+conventions
+4. **Project context** — work in progress, milestones, dependencies, blockers
+5. **Reusable patterns** — recurring code patterns, workflows, best practices
+
+## Filter criteria (do not extract)
+- One-off operational details (execution narration such as "I fixed this file for you")
+- Temporary debugging steps and error stack traces
+- Small talk, greetings, transitional exchanges
+- Conclusions later overturned by the conversation
+- Information too specific to be reusable across sessions
+
+## Evidence weight
+- Excerpt content carrying the [citation-verified] marker was verified against \
+knowledge-base/web citations; the evidence is stronger — keep it with priority
+- Conclusions without citation support are kept only when they recur or express user \
+preferences
+
+## Relationship to the knowledge base
+- If the input carries a "Recent knowledge-base usage ledger", the KB pages in it were \
+recently retrieved or cited
+- If a fact is already covered by a KB page in that ledger, do not duplicate it into \
+memory; you may append "(already in KB: <page name>)" after the entry — the user \
+decides whether to delete it or promote it into a knowledge page
+
+## Output requirements
+- Output the merged full memory directly; do not narrate your analysis
+- Group by topic with Markdown headings (## Topic)
+- One bullet point per knowledge item
+- When new knowledge conflicts with existing memory, the new knowledge wins; update \
+the old entry
+- Stay terse; keep the total within {budget} characters
+- Use the same language as the source content
 """
 
 
@@ -175,15 +221,25 @@ def _kb_digest() -> str:
 
         rows = kb_usage.top(sort="cited", limit=10)
         lines = [
-            f"- {r['path']}（注入×{r.get('injected', 0)}，引用×{r.get('cited', 0)}）"
+            t(
+                f"- {r['path']} (injected x{r.get('injected', 0)}, cited x{r.get('cited', 0)})",
+                f"- {r['path']}（注入×{r.get('injected', 0)}，引用×{r.get('cited', 0)}）",
+            )
             for r in rows
         ]
         if not lines:
             return ""
         return (
-            "## 近期知识库使用台账（注入/引用次数）\n"
+            t(
+                "## Recent knowledge-base usage ledger (injected/cited counts)\n",
+                "## 近期知识库使用台账（注入/引用次数）\n",
+            )
             + "\n".join(lines)
-            + "\n（与上述页面重复的事实不必再写入记忆）\n"
+            + t(
+                "\n(Facts already covered by the pages above do not need to be written "
+                "into memory again.)\n",
+                "\n（与上述页面重复的事实不必再写入记忆）\n",
+            )
         )
     except Exception:
         return ""
@@ -232,7 +288,7 @@ async def create_draft(trigger: str = "manual", provider: str | None = None) -> 
             if not content:
                 continue
             if e.get("cited"):
-                content = "[有引用验证] " + content
+                content = t("[citation-verified] ", "[有引用验证] ") + content
             excerpt_lines.append(content)
         excerpts = "\n\n---\n\n".join(excerpt_lines)
 
@@ -241,7 +297,9 @@ async def create_draft(trigger: str = "manual", provider: str | None = None) -> 
 
         try:
             response = await model.ainvoke([
-                SystemMessage(content=SUMMARIZE_PROMPT.format(budget=budget)),
+                SystemMessage(
+                    content=t(SUMMARIZE_PROMPT_EN, SUMMARIZE_PROMPT).format(budget=budget)
+                ),
                 HumanMessage(content=(
                     f"## Existing Memory\n{existing or '(empty)'}\n\n"
                     f"## New Conversation Excerpts\n{excerpts}"

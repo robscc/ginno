@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..lang import t
+
 NODE_TYPES_V1 = {"step", "branch", "loop", "human"}
 NODE_TYPES_ALL = NODE_TYPES_V1 | {"subflow"}
 
@@ -384,7 +386,14 @@ def steps_from_dsl(dsl: dict, include_extracts: bool = False) -> list[dict]:
             out.append(
                 {
                     "id": f"{n.get('id')}__extract",
-                    "title": "提取结构化输出" + (f"（{'、'.join(keys)}）" if keys else ""),
+                    "title": (
+                        t("Extract structured output", "提取结构化输出")
+                        + (
+                            t(f" ({', '.join(keys)})", f"（{'、'.join(keys)}）")
+                            if keys
+                            else ""
+                        )
+                    ),
                     "agent_id": None,
                 }
             )

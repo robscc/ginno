@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import { relTime } from "@/lib/utils";
 import { agentHex } from "@/lib/theme";
@@ -19,6 +20,7 @@ export function SessionSearchModal({
   onOpen: (sessionId: string) => void;
 }) {
   const g = useGinno();
+  const tr = useTranslations("shell");
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -58,7 +60,7 @@ export function SessionSearchModal({
     >
       <div
         role="dialog"
-        aria-label="搜索会话"
+        aria-label={tr("search.dialogLabel")}
         className="w-[560px] max-w-[90vw] overflow-hidden rounded-xl border border-line bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -83,13 +85,13 @@ export function SessionSearchModal({
                 onClose();
               }
             }}
-            placeholder="搜索会话标题，或直接输 Agent 名…"
+            placeholder={tr("search.placeholder")}
             className="w-full bg-transparent py-3 text-sm text-txt outline-none placeholder:text-faint"
           />
         </div>
         <div className="max-h-[46vh] overflow-y-auto py-1">
           {results.length === 0 && (
-            <div className="px-3 py-6 text-center text-xs text-faint">没有匹配的会话</div>
+            <div className="px-3 py-6 text-center text-xs text-faint">{tr("search.empty")}</div>
           )}
           {results.map((s, i) => {
             const rowAgent = g.agents.find((a) => a.id === s.agent_id) ?? null;
@@ -108,7 +110,7 @@ export function SessionSearchModal({
                 className="h-4 w-4 shrink-0"
                 style={{ color: hex }}
               />
-              <span className="min-w-0 flex-1 truncate">{s.title || "Untitled"}</span>
+              <span className="min-w-0 flex-1 truncate">{s.title || tr("session.untitled")}</span>
               {/* C+ 方案⑤：agent dot + name 小标签（agent 已删除时不渲染） */}
               {rowAgent && (
                 <span
@@ -125,7 +127,7 @@ export function SessionSearchModal({
           })}
         </div>
         <div className="border-t border-line px-3 py-1.5 text-[10px] text-faint">
-          ↑↓ 选择 · Enter 打开 · Esc 关闭
+          {tr("search.footer")}
         </div>
       </div>
     </div>

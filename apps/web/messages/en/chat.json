@@ -1,0 +1,294 @@
+{
+  "chat": {
+    "status": {
+      "running": "Running",
+      "waiting": "Waiting on subtask",
+      "done": "Completed",
+      "ok": "Completed",
+      "failed": "Failed",
+      "stopped": "Stopped",
+      "paused": "Paused",
+      "pending": "Pending",
+      "cancelled": "Cancelled",
+      "interrupted": "Interrupted",
+      "skipped": "Skipped",
+      "tooltip": "Status: {status}"
+    },
+    "conn": {
+      "connected": "Connected",
+      "reconnecting": "Reconnecting",
+      "offline": "Offline",
+      "connecting": "Connecting",
+      "tipLive": "Realtime connection is healthy",
+      "tipReconnecting": "Connection interrupted, auto-reconnecting… (click to retry now)",
+      "tipOffline": "Not connected to the runtime (click to retry)",
+      "tipConnecting": "Connecting…",
+      "ariaStatus": "Connection status: {status}",
+      "ariaStatusClickable": "Connection status: {status}, click to reconnect"
+    },
+    "composer": {
+      "hintImagesProcessing": "Note: images still processing — please wait before sending",
+      "hintFileUploading": "Note: file upload in progress — please wait before sending",
+      "resizeTitle": "Drag to resize the input box (double-click to restore auto height)",
+      "resizeAria": "Resize input box",
+      "processingImages": "Processing images…",
+      "removeNamed": "Remove {name}",
+      "uploading": "Uploading…",
+      "uploadsOnSend": "Uploads on send",
+      "subtaskSteerHint": "Subtask running · sends are injected at the next tool boundary (steering)",
+      "placeholder": "Ask something…  / commands · @ mention artifacts/agents/workflows/memory · drop or paste images / Excel / Word / PPT / PDF",
+      "addAttachmentsTitle": "Add attachments (image / Excel / Word / PPT / PDF; paste or drag-and-drop also works)",
+      "slashTitle": "Slash commands / @ mentions (type / or @ to trigger completion)",
+      "slashAria": "Insert slash command",
+      "stopTitle": "Stop the current turn (keeps what has been generated)",
+      "stopAria": "Stop",
+      "sendingAria": "Sending",
+      "newSession": "+ New Session"
+    },
+    "queue": {
+      "pending": "Pending ({count})",
+      "recallHint": "↑ recall to edit",
+      "attachmentsOnly": "(attachments only)",
+      "attachTooltip": "{images} image(s) · {files} file(s)",
+      "submitting": "Submitting",
+      "removeTitle": "Remove this pending message",
+      "removeAria": "Remove pending message"
+    },
+    "model": {
+      "switchTitle": "Switch this session's model",
+      "pickTitle": "Choose the model for the new session",
+      "noProviders": "No enabled providers — go to Settings → Model API to enable one",
+      "noModels": "No models configured for this provider — go to Settings → Model API to add one",
+      "footnote": "Takes effect next turn · changes in Settings override session-level selection"
+    },
+    "agentChips": {
+      "ask": "Ask {name}",
+      "recommended": "Recommended",
+      "switchPrefix": "From the next message,",
+      "switchSuffix": "answers · session history is kept",
+      "undo": "Undo"
+    },
+    "home": {
+      "tagline": "Hand it to your Agent: code, documents, data, workflows.",
+      "defaultAgentHint": "⏎ send directly = default {name}",
+      "chipExcelLabel": "Analyze a dropped Excel / CSV",
+      "chipExcelFill": "Analyze this July usage report and find abnormal growth",
+      "chipWorkflowLabel": "Run the morning-report workflow",
+      "chipWorkflowFill": "/workflow run the morning report",
+      "chipMemoryLabel": "Recall last week's decisions with @memory",
+      "chipMemoryFill": "@memory What did we decide last week?",
+      "setGoal": "Set a long-running goal",
+      "hintLine": "Drop in Excel / Word / PPT / PDF · / commands · @ mention Artifacts / Agents / Workflows / Memory"
+    },
+    "goal": {
+      "stalledLabel": "Goal is {status, select, paused {paused} blocked {blocked} other {out of usage}}",
+      "resume": "Resume",
+      "dismissAria": "Dismiss notice",
+      "pauseTitle": "Pause the goal (stops autonomous continuation after the current turn finishes)",
+      "pauseAria": "Pause goal"
+    },
+    "empty": {
+      "start": "Start the conversation — the Agent will use tools to complete the task and may ask you about permissions."
+    },
+    "sendFailed": {
+      "connNotReady": "Connection not ready",
+      "connLost": "Connection lost — not delivered",
+      "label": "Send failed",
+      "retryHint": " · click the red exclamation mark to retry",
+      "unknownReason": "unknown reason",
+      "titleRetry": "Send failed: {reason} (click to retry)",
+      "title": "Send failed: {reason}",
+      "ariaRetry": "Send failed, click to retry",
+      "editResend": "Edit & resend",
+      "delete": "Delete"
+    },
+    "permission": {
+      "title": "Permission required",
+      "toolLabel": "tool:",
+      "allow": "Allow",
+      "deny": "Deny"
+    },
+    "propose": {
+      "title": "DSL change proposal",
+      "versionBadge": "{id} · v{version} → new version",
+      "rationale": "Rationale: {rationale}",
+      "collapseDiff": "Collapse diff",
+      "viewDiff": "View full diff ({count} changes)",
+      "applying": "Applying…",
+      "apply": "Apply changes (create new version)",
+      "reject": "Reject",
+      "appliedReceipt": "Changes applied · {id} v{version} → new version",
+      "rejectedReceipt": "DSL change rejected · {id}"
+    },
+    "summarize": {
+      "buttonTitle": "Summarize the session into a workflow",
+      "button": "Summarize into workflow",
+      "busy": "Summarizing…",
+      "restoreDraftTitle": "Restore this unsaved draft",
+      "restoreDraft": "Restore draft · {time}",
+      "deleteDraftTitle": "Delete draft",
+      "pickSession": "Pick the session to summarize",
+      "untitled": "Untitled session",
+      "recommended": "(recommended)",
+      "range": "Range",
+      "all": "All",
+      "lastN": "Last {n} messages"
+    },
+    "confirmDeleteRun": {
+      "title": "Delete run record",
+      "message": "Delete this run record? Its event log and checkpoints will be removed too. This cannot be undone.",
+      "confirm": "Delete"
+    },
+    "stream": {
+      "connecting": "Connecting to model…",
+      "thinking": "Model is thinking…",
+      "stillThinking": "Still thinking — this may take a moment… ({seconds}s)",
+      "justNow": "just now",
+      "interrupted": "Reply interrupted — this reply is incomplete. Click \"Retry from scratch\" on the error card below to start over",
+      "emptyReply": "(empty reply)",
+      "fallbackAgent": "Agent"
+    },
+    "turnId": {
+      "title": "turn {id} (click to copy, for locating logs)",
+      "copied": "copied"
+    },
+    "handoff": {
+      "takesOver": "{name} takes over"
+    },
+    "errorCard": {
+      "title": "Request failed",
+      "retry": "Retry from scratch",
+      "retryTitle": "Start the turn over from scratch with the original input",
+      "resume": "Resume from checkpoint",
+      "resumeTitle": "Continue from the latest checkpoint, keeping completed tool calls and intermediate results"
+    },
+    "error": {
+      "unknown": "Unknown error"
+    },
+    "context": {
+      "microcompacted": "Cleared {n} older tool outputs to save context; call the tools again to re-fetch when needed.",
+      "compacted": "Conversation compacted: {n} older messages were replaced with a summary; recent messages are kept verbatim."
+    },
+    "notify": {
+      "replyCompleted": "Reply completed"
+    },
+    "tools": {
+      "prefix": "tool · ",
+      "stats": "{lines} lines · {chars} chars",
+      "collapse": "Collapse",
+      "expand": "Expand full output"
+    },
+    "thinking": {
+      "live": "Thinking…",
+      "done": "Deeply thought",
+      "collapse": "Collapse",
+      "expand": "Expand reasoning",
+      "chars": "{count} chars"
+    },
+    "sources": {
+      "title": "Sources · {count}",
+      "notIndexed": "Not indexed"
+    },
+    "fileChips": {
+      "clickPreview": "Click to preview",
+      "openCode": "Open in code panel"
+    },
+    "skillChips": {
+      "invoked": "Skill invoked: {name}"
+    },
+    "widget": {
+      "label": "widget · {kind}",
+      "chartAria": "chart"
+    },
+    "workflow": {
+      "openDetails": "Open workflow details",
+      "fallbackName": "Workflow"
+    },
+    "refChip": {
+      "workflowPrefix": "Workflow: "
+    },
+    "browserHandoff": {
+      "title": "The browser is now in your hands",
+      "body": "After finishing login, CAPTCHA, or payment confirmation, click the button below to hand control back to Ginno to continue the task.",
+      "continue": "Taken over, continue",
+      "handedBack": "Handed back — waiting for Ginno…"
+    },
+    "steer": {
+      "injected": "Injected mid-run",
+      "moreAttachments": "{count} more attachment(s)",
+      "imageAlt": "image"
+    },
+    "subagent": {
+      "fallbackTitle": "Subtask",
+      "forkTitle": "fork: a parallel branch split from the parent session's full context",
+      "forkInheritedTitle": "A parallel branch split from the parent session; has inherited the parent's full context",
+      "typeTitle": "Subagent type: {type}",
+      "viewConversation": "View conversation",
+      "viewFullConversation": "View full conversation",
+      "goalLabel": "Goal: ",
+      "constraintsLabel": "Constraints: ",
+      "acceptanceLabel": "Acceptance: ",
+      "startedByUser": "Started by user",
+      "startedByAgent": "Started by main agent",
+      "depth": "Depth {n}",
+      "runningFor": "Running for {time}",
+      "resultTitle": "Subagent result · {goal}",
+      "errorPrefix": "Error: ",
+      "acceptanceCriteria": "Acceptance criteria",
+      "acceptanceHint": "The main agent will go through these one by one in its report (pass / gap + explanation)",
+      "confirmed": "Confirmed",
+      "confirm": "Confirm",
+      "confirmedTitle": "Result confirmed; card is finalized and archived",
+      "confirmTitle": "Confirm this result; card is finalized and archived",
+      "problem": "↩ Problem",
+      "correctInChild": "Correct in subagent session",
+      "correctInChildTitle": "Jump to the subagent session and prefill a correction prompt in the input (steering / continue the conversation)",
+      "escalate": "Let main conversation handle it",
+      "escalateTitle": "Send a message referencing this result in the current session; the main conversation decides how to handle it",
+      "verdictsInReport": "See the main agent's report for acceptance verdicts",
+      "briefTitle": "Task brief",
+      "goalSection": "Goal",
+      "constraintsSection": "Constraints",
+      "acceptanceSection": "Acceptance criteria",
+      "otherSection": "Other",
+      "notesToggle": "Type role & report format",
+      "personaLabel": "Type role (persona)",
+      "delegated": "Delegated {count} subagents",
+      "backToMain": "Back to main session"
+    },
+    "run": {
+      "viewRun": "View run",
+      "openViewTitle": "Open run view (step telemetry / event stream / intervention panel)",
+      "possiblyStuck": "Possibly stuck",
+      "stuckTitleAvg": "This workflow usually finishes in {avg}; no progress for {elapsed} — consider cancelling and retrying",
+      "stuckTitle": "No progress for over 2 minutes — consider cancelling and retrying",
+      "warningsTitle": "Some steps failed but the run continued (on_error=continue)",
+      "pause": "Pause",
+      "pauseTitle": "Pause after the current step/tool call finishes; can resume from the pause point",
+      "cancel": "Cancel",
+      "resume": "Resume",
+      "continue": "Continue (human/supervisor)",
+      "retried": "Retried",
+      "retrying": "Retrying…",
+      "retry": "Retry",
+      "retryFailed": "Retry failed",
+      "retryFailedNoConn": "Retry failed: cannot connect to the runtime",
+      "retryNoConnection": "Cannot connect to the runtime",
+      "delete": "Delete"
+    },
+    "runView": {
+      "deleted": "This run record has been deleted",
+      "deletedWorkflow": "Deleted workflow",
+      "fallbackName": "Workflow run",
+      "steps": "{done}/{total} steps",
+      "backTitle": "Back to the main session bound to this run",
+      "backTitleDeleted": "The original session has been deleted; cannot go back"
+    },
+    "lightbox": {
+      "aria": "Image preview",
+      "close": "Close",
+      "prev": "Previous image",
+      "next": "Next image"
+    }
+  }
+}

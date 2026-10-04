@@ -1,0 +1,294 @@
+{
+  "chat": {
+    "status": {
+      "running": "运行中",
+      "waiting": "等待子任务",
+      "done": "已完成",
+      "ok": "已完成",
+      "failed": "失败",
+      "stopped": "已停止",
+      "paused": "已暂停",
+      "pending": "等待中",
+      "cancelled": "已取消",
+      "interrupted": "已中断",
+      "skipped": "已跳过",
+      "tooltip": "状态：{status}"
+    },
+    "conn": {
+      "connected": "已连接",
+      "reconnecting": "重连中",
+      "offline": "离线",
+      "connecting": "连接中",
+      "tipLive": "实时连接正常",
+      "tipReconnecting": "连接中断，正在自动重连……（点击立即重试）",
+      "tipOffline": "未连接到 runtime（点击重试）",
+      "tipConnecting": "连接中……",
+      "ariaStatus": "连接状态：{status}",
+      "ariaStatusClickable": "连接状态：{status}，点击重连"
+    },
+    "composer": {
+      "hintImagesProcessing": "注意：图片仍在处理中，请稍候再发送",
+      "hintFileUploading": "注意：文件上传进行中，请稍候再发送",
+      "resizeTitle": "拖拽调整输入框高度（双击恢复自动高度）",
+      "resizeAria": "调整输入框大小",
+      "processingImages": "正在处理图片……",
+      "removeNamed": "移除 {name}",
+      "uploading": "上传中……",
+      "uploadsOnSend": "发送时上传",
+      "subtaskSteerHint": "子任务运行中 · 发送内容将在下一个工具边界注入（steering）",
+      "placeholder": "说点什么…… / 命令 · @ 提及工件/代理/工作流/记忆 · 拖入或粘贴图片 / Excel / Word / PPT / PDF",
+      "addAttachmentsTitle": "添加附件（图片 / Excel / Word / PPT / PDF，也可粘贴或拖拽）",
+      "slashTitle": "斜杠命令 / @ 提及（输入 / 或 @ 触发补全）",
+      "slashAria": "插入斜杠命令",
+      "stopTitle": "停止当前回合（保留已生成内容）",
+      "stopAria": "停止",
+      "sendingAria": "发送中",
+      "newSession": "+ 新会话"
+    },
+    "queue": {
+      "pending": "待注入（{count}）",
+      "recallHint": "↑ 取回编辑",
+      "attachmentsOnly": "（仅附件）",
+      "attachTooltip": "{images} 张图片 · {files} 个文件",
+      "submitting": "提交中",
+      "removeTitle": "移除这条待注入消息",
+      "removeAria": "移除待注入消息"
+    },
+    "model": {
+      "switchTitle": "切换本会话的模型",
+      "pickTitle": "为新会话选择模型",
+      "noProviders": "尚无启用的服务商——请到 设置 → 模型 API 启用一个",
+      "noModels": "该服务商未配置模型——请到 设置 → 模型 API 添加",
+      "footnote": "下一回合生效 · 设置中的更改会覆盖会话级选择"
+    },
+    "agentChips": {
+      "ask": "问 {name}",
+      "recommended": "推荐",
+      "switchPrefix": "从下一条消息起，改由",
+      "switchSuffix": "回答 · 会话历史保留",
+      "undo": "撤销"
+    },
+    "home": {
+      "tagline": "把任务交给你的 Agent：代码、文档、数据、工作流。",
+      "defaultAgentHint": "⏎ 直接发送 = 默认 {name}",
+      "chipExcelLabel": "分析拖入的 Excel / CSV",
+      "chipExcelFill": "分析这份 7 月用量报表，找出异常增长",
+      "chipWorkflowLabel": "运行晨报工作流",
+      "chipWorkflowFill": "/workflow 运行晨报",
+      "chipMemoryLabel": "用 @memory 回忆上周的决策",
+      "chipMemoryFill": "@memory 上周我们定了哪些事？",
+      "setGoal": "设定一个长期目标",
+      "hintLine": "拖入 Excel / Word / PPT / PDF · / 命令 · @ 提及 工件 / 代理 / 工作流 / 记忆"
+    },
+    "goal": {
+      "stalledLabel": "目标{status, select, paused {已暂停} blocked {被阻塞} other {额度用尽}}",
+      "resume": "继续",
+      "dismissAria": "关闭提示",
+      "pauseTitle": "暂停目标（当前回合结束后不再自动继续）",
+      "pauseAria": "暂停目标"
+    },
+    "empty": {
+      "start": "开始对话——Agent 会调用工具完成任务，并可能在权限上询问你。"
+    },
+    "sendFailed": {
+      "connNotReady": "连接未就绪",
+      "connLost": "连接断开——未送达",
+      "label": "发送失败",
+      "retryHint": " · 点击红色感叹号可重试",
+      "unknownReason": "原因未知",
+      "titleRetry": "发送失败：{reason}（点击重试）",
+      "title": "发送失败：{reason}",
+      "ariaRetry": "发送失败，点击重试",
+      "editResend": "编辑重发",
+      "delete": "删除"
+    },
+    "permission": {
+      "title": "需要权限",
+      "toolLabel": "工具：",
+      "allow": "允许",
+      "deny": "拒绝"
+    },
+    "propose": {
+      "title": "DSL 变更提案",
+      "versionBadge": "{id} · v{version} → 新版本",
+      "rationale": "理由：{rationale}",
+      "collapseDiff": "收起 diff",
+      "viewDiff": "查看完整 diff（{count} 处变更）",
+      "applying": "应用中……",
+      "apply": "应用变更（创建新版本）",
+      "reject": "拒绝",
+      "appliedReceipt": "已应用 · {id} v{version} → 新版本",
+      "rejectedReceipt": "DSL 变更已拒绝 · {id}"
+    },
+    "summarize": {
+      "buttonTitle": "把会话总结成工作流",
+      "button": "总结为工作流",
+      "busy": "总结中……",
+      "restoreDraftTitle": "恢复这份未保存的草稿",
+      "restoreDraft": "恢复草稿 · {time}",
+      "deleteDraftTitle": "删除草稿",
+      "pickSession": "选择要总结的会话",
+      "untitled": "未命名会话",
+      "recommended": "（推荐）",
+      "range": "范围",
+      "all": "全部",
+      "lastN": "最近 {n} 条"
+    },
+    "confirmDeleteRun": {
+      "title": "删除运行记录",
+      "message": "删除这条运行记录？其事件日志与 checkpoint 将一并删除，且不可恢复。",
+      "confirm": "删除"
+    },
+    "stream": {
+      "connecting": "正在连接模型……",
+      "thinking": "模型思考中……",
+      "stillThinking": "还在思考——可能需要一点时间……（{seconds}s）",
+      "justNow": "刚刚",
+      "interrupted": "回复已中断——本条回复不完整。点击下方错误卡片的「从头重试」可重新开始",
+      "emptyReply": "（空回复）",
+      "fallbackAgent": "Agent"
+    },
+    "turnId": {
+      "title": "turn {id}（点击复制，用于定位日志）",
+      "copied": "已复制"
+    },
+    "handoff": {
+      "takesOver": "{name} 接手"
+    },
+    "errorCard": {
+      "title": "请求失败",
+      "retry": "从头重试",
+      "retryTitle": "以原始输入重新开始整个回合",
+      "resume": "从 checkpoint 续跑",
+      "resumeTitle": "从最近的 checkpoint 继续，保留已完成的工具调用与中间结果"
+    },
+    "error": {
+      "unknown": "未知错误"
+    },
+    "context": {
+      "microcompacted": "已清理 {n} 条较早的工具输出以节省上下文；需要时重新调用工具即可再取。",
+      "compacted": "对话已压缩：较早的 {n} 条消息已被摘要替换，近期消息原样保留。"
+    },
+    "notify": {
+      "replyCompleted": "回复完成"
+    },
+    "tools": {
+      "prefix": "工具 · ",
+      "stats": "{lines} 行 · {chars} 字符",
+      "collapse": "收起",
+      "expand": "展开全部输出"
+    },
+    "thinking": {
+      "live": "思考中……",
+      "done": "已深入思考",
+      "collapse": "收起",
+      "expand": "展开思考过程",
+      "chars": "{count} 字符"
+    },
+    "sources": {
+      "title": "来源 · {count}",
+      "notIndexed": "未收录"
+    },
+    "fileChips": {
+      "clickPreview": "点击预览",
+      "openCode": "在代码面板打开"
+    },
+    "skillChips": {
+      "invoked": "已调用技能：{name}"
+    },
+    "widget": {
+      "label": "widget · {kind}",
+      "chartAria": "图表"
+    },
+    "workflow": {
+      "openDetails": "查看工作流详情",
+      "fallbackName": "工作流"
+    },
+    "refChip": {
+      "workflowPrefix": "工作流："
+    },
+    "browserHandoff": {
+      "title": "浏览器现在交到你手上",
+      "body": "完成登录、验证码或支付确认后，点击下方按钮把控制权交还给 Ginno 继续任务。",
+      "continue": "已接管，继续",
+      "handedBack": "已交还——等待 Ginno……"
+    },
+    "steer": {
+      "injected": "运行中注入",
+      "moreAttachments": "还有 {count} 个附件",
+      "imageAlt": "图片"
+    },
+    "subagent": {
+      "fallbackTitle": "子任务",
+      "forkTitle": "fork：从父会话完整上下文分出的并行分支",
+      "forkInheritedTitle": "从父会话分出的并行分支；已继承父会话的完整上下文",
+      "typeTitle": "子代理类型：{type}",
+      "viewConversation": "查看对话",
+      "viewFullConversation": "查看完整对话",
+      "goalLabel": "目标：",
+      "constraintsLabel": "约束：",
+      "acceptanceLabel": "验收：",
+      "startedByUser": "由用户发起",
+      "startedByAgent": "由主代理发起",
+      "depth": "第 {n} 层",
+      "runningFor": "已运行 {time}",
+      "resultTitle": "子代理结果 · {goal}",
+      "errorPrefix": "错误：",
+      "acceptanceCriteria": "验收标准",
+      "acceptanceHint": "主代理会在汇报中逐条对照给出判定（通过 / 差距 + 说明）",
+      "confirmed": "已确认",
+      "confirm": "确认",
+      "confirmedTitle": "结果已确认；卡片定稿归档",
+      "confirmTitle": "确认此结果；卡片将定稿归档",
+      "problem": "↩ 有问题",
+      "correctInChild": "去子会话纠偏",
+      "correctInChildTitle": "跳转到子代理会话并在输入框预填纠偏提示（steering / 继续对话）",
+      "escalate": "让主对话处理",
+      "escalateTitle": "在当前会话发送一条引用此结果的消息，由主对话决定如何处理",
+      "verdictsInReport": "验收判定以主代理的汇报为准",
+      "briefTitle": "任务简报",
+      "goalSection": "目标",
+      "constraintsSection": "约束",
+      "acceptanceSection": "验收标准",
+      "otherSection": "其他",
+      "notesToggle": "类型角色与报告格式",
+      "personaLabel": "类型角色（persona）",
+      "delegated": "已委派 {count} 个子代理",
+      "backToMain": "返回主对话"
+    },
+    "run": {
+      "viewRun": "查看运行",
+      "openViewTitle": "打开运行视图（步骤遥测 / 事件流 / 干预面板）",
+      "possiblyStuck": "疑似卡住",
+      "stuckTitleAvg": "该工作流通常 {avg} 完成；已 {elapsed} 无进展——可考虑取消后重试",
+      "stuckTitle": "已超过 2 分钟无进展——可考虑取消后重试",
+      "warningsTitle": "部分步骤失败但运行继续（on_error=continue）",
+      "pause": "暂停",
+      "pauseTitle": "在当前步骤/工具调用结束后暂停；可从暂停点恢复",
+      "cancel": "取消",
+      "resume": "恢复",
+      "continue": "继续（人工/监督者）",
+      "retried": "已重试",
+      "retrying": "重试中……",
+      "retry": "重试",
+      "retryFailed": "重试失败",
+      "retryFailedNoConn": "重试失败：无法连接 runtime",
+      "retryNoConnection": "无法连接 runtime",
+      "delete": "删除"
+    },
+    "runView": {
+      "deleted": "该运行记录已被删除",
+      "deletedWorkflow": "已删除的工作流",
+      "fallbackName": "工作流运行",
+      "steps": "{done}/{total} 步",
+      "backTitle": "返回绑定本运行的主会话",
+      "backTitleDeleted": "原会话已被删除，无法返回"
+    },
+    "lightbox": {
+      "aria": "图片预览",
+      "close": "关闭",
+      "prev": "上一张",
+      "next": "下一张"
+    }
+  }
+}

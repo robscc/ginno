@@ -20,6 +20,8 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
+from ..lang import t
+
 log = logging.getLogger("ginno.browser.cdp")
 
 _id_iter = itertools.count(1)
@@ -69,7 +71,8 @@ class CDPConnection:
             except Exception as e:  # noqa: BLE001 — probe loop
                 last_err = e
             await asyncio.sleep(0.25)
-        raise CDPError(f"无法连接 Chrome 调试端口 {port}: {last_err}")
+        raise CDPError(t(f"Cannot connect to the Chrome debug port {port}: {last_err}",
+                         f"无法连接 Chrome 调试端口 {port}: {last_err}"))
 
     async def _open(self, timeout_s: float) -> None:
         import websockets  # uvicorn[standard] dependency, already bundled
@@ -153,7 +156,9 @@ class CDPConnection:
     async def send(self, method: str, params: dict | None = None,
                    session_id: str | None = None, timeout_s: float = 30.0) -> Any:
         if self._closed or self._ws is None:
-            raise CDPError("浏览器连接已断开,请重试或检查 Chrome 是否在运行")
+            raise CDPError(t(
+                "Browser connection lost; retry, or check that Chrome is running",
+                "浏览器连接已断开,请重试或检查 Chrome 是否在运行"))
         mid = next(_id_iter)
         msg: dict[str, Any] = {"id": mid, "method": method, "params": params or {}}
         if session_id:
@@ -165,7 +170,8 @@ class CDPConnection:
             return await asyncio.wait_for(fut, timeout_s)
         except TimeoutError:
             self._pending.pop(mid, None)
-            raise CDPError(f"CDP 命令超时: {method}") from None
+            raise CDPError(t(f"CDP command timed out: {method}",
+                             f"CDP 命令超时: {method}")) from None
 
     # ---- targets / sessions ----------------------------------------------
 
@@ -231,7 +237,8 @@ class TabSession:
         exc = out.get("exceptionDetails")
         if exc:
             desc = (exc.get("exception") or {}).get("description") or exc.get("text")
-            raise CDPError(f"页面执行失败: {desc}")
+            raise CDPError(t(f"Page evaluation failed: {desc}",
+                             f"页面执行失败: {desc}"))
         res = out.get("result") or {}
         if res.get("type") in ("object",) and res.get("subtype") == "null":
             return None

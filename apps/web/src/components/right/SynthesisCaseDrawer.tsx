@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Loader2, RotateCcw, X } from "lucide-react";
 import * as api from "@/lib/runtime";
 
@@ -19,6 +20,9 @@ export function SynthesisCaseDrawer({
   onClose: () => void;
   onReplayed: () => void;
 }) {
+  // i18n：用例抽屉框架文案（trace/parse/错误详情是数据，不翻译）
+  const t = useTranslations("right.case");
+  const tc = useTranslations("right.common");
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [replaying, setReplaying] = useState(false);
   const [replayMsg, setReplayMsg] = useState<string | null>(null);
@@ -56,13 +60,13 @@ export function SynthesisCaseDrawer({
     try {
       const r = await api.replaySynthesis(synthesisId);
       if (r.ok) {
-        setReplayMsg(`重放成功（${r.attempts_used} 次尝试，${r.prompt_version}）`);
+        setReplayMsg(t("replayOk", { n: r.attempts_used ?? 0, v: r.prompt_version ?? "" }));
         onReplayed();
       } else {
-        setReplayMsg(`重放失败：${r.fail_stage || (r.errors || []).join("; ") || "未知"}`);
+        setReplayMsg(t("replayFail", { r: r.fail_stage || (r.errors || []).join("; ") || "unknown" }));
       }
     } catch {
-      setReplayMsg("重放失败：无法连接运行时");
+      setReplayMsg(t("replayFailConnect"));
     } finally {
       setReplaying(false);
     }
@@ -77,7 +81,7 @@ export function SynthesisCaseDrawer({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-          <span className="text-sm font-semibold text-txt">案例详情</span>
+          <span className="text-sm font-semibold text-txt">{t("title")}</span>
           <span
             className="truncate font-mono text-[10px] text-faint"
             title={`~/.ginno/synthesis/${synthesisId}`}
@@ -87,47 +91,54 @@ export function SynthesisCaseDrawer({
           {inFlight && (
             <span className="flex shrink-0 items-center gap-1 text-[11px] text-blue">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue" />
-              总结中…
+              {t("synthesizing")}
             </span>
           )}
-          <button onClick={onClose} className="ml-auto rounded p-1 text-faint hover:bg-card2 hover:text-txt" aria-label="关闭">
+          <button onClick={onClose} className="ml-auto rounded p-1 text-faint hover:bg-card2 hover:text-txt" aria-label={tc("close")}>
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-          {!detail && <div className="py-6 text-center text-xs text-faint">加载中…</div>}
+          {!detail && <div className="py-6 text-center text-xs text-faint">{tc("loading")}</div>}
           {detail && (
             <>
               <div className="rounded-lg border border-line bg-base/30 p-2.5 text-[11px]">
                 <div className="text-faint">
-                  状态：
+                  {t("status")}{" "}
                   {detail.output ? (
                     <span className={detail.output.status === "ok" ? "text-green" : "text-red"}>
                       {detail.output.status}
                     </span>
                   ) : (
-                    <span className="text-blue">进行中</span>
+                    <span className="text-blue">{t("inProgress")}</span>
                   )}
                   {detail.output?.fail_stage && <> · {detail.output.fail_stage}</>}
                 </div>
                 <div className="mt-0.5 text-faint">
-                  提示词版本：{detail.input?.prompt_version}
-                  {detail.output?.attempts_used != null && <> · 尝试 {detail.output.attempts_used} 次</>}
+                  {t("promptVersion", { v: detail.input?.prompt_version ?? "" })}
+                  {detail.output?.attempts_used != null && (
+                    <>
+                      {" · "}
+                      {t("attempts", { n: detail.output.attempts_used })}
+                    </>
+                  )}
                 </div>
               </div>
 
               {(detail.attempts || []).length > 0 && (
                 <div>
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">各轮尝试</div>
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
+                    {t("attemptsHeader")}
+                  </div>
                   <div className="space-y-1">
                     {(detail.attempts || []).map((a, i) => (
                       <div key={i} className="rounded-md border border-line bg-card px-2 py-1.5 text-[11px]">
                         <span className={a.validate_errors.length ? "text-red" : "text-green"}>
-                          第 {a.attempt} 轮 · {a.parse}
+                          {t("attemptN", { n: a.attempt, parse: a.parse })}
                         </span>
                         <span className="ml-2 text-faint">{a.latency_ms}ms</span>
                         {a.validate_errors.length > 0 && (
-                          <div className="mt-0.5 text-[10px] text-red">{a.validate_errors.join("；")}</div>
+                          <div className="mt-0.5 text-[10px] text-red">{a.validate_errors.join("; ")}</div>
                         )}
                       </div>
                     ))}
@@ -137,7 +148,9 @@ export function SynthesisCaseDrawer({
 
               {detail.input?.trace && (
                 <div>
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">Trace（会话摘要）</div>
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">
+                    {t("trace")}
+                  </div>
                   <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-base/50 p-2 font-mono text-[10px] leading-relaxed text-muted">
                     {detail.input.trace}
                   </pre>
@@ -154,7 +167,7 @@ export function SynthesisCaseDrawer({
             className="btn-press flex w-full items-center justify-center gap-1.5 rounded-md bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {replaying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-            {replaying ? "重放中…" : "用当前提示词重新总结（离线重放）"}
+            {replaying ? t("replaying") : t("replay")}
           </button>
         </div>
       </div>

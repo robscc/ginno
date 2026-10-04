@@ -16,6 +16,7 @@ from langgraph.prebuilt import ToolNode
 
 from ... import agents as agents_reg
 from ...graph import text_of_content, tool_allowed
+from ...lang import t
 from .. import expr as wf_expr
 from . import agent_helpers as ah
 from .base import BaseNode, llm_invoke_with_timeout, tools_invoke_with_timeout
@@ -432,10 +433,14 @@ class BrowserNode(AgentNode):
         # shared _run_agent_turn renders goal from it unchanged otherwise.
         patched = dict(node)
         goal = patched.get("goal") or patched.get("title") or ""
-        patched["goal"] = (
+        patched["goal"] = t(
+            "Complete the following task using the browser (browser_* tools; get "
+            "the tabId with browser_tabs_context first, confirm the page state "
+            "with a screenshot before acting, and hand sensitive operations to "
+            f"the user with browser_handoff):\n{goal}",
             "用浏览器完成以下任务(browser_* 工具;先用 browser_tabs_context "
             "拿 tabId,截图确认页面状态后再操作,敏感操作用 browser_handoff "
-            f"交给用户):\n{goal}"
+            f"交给用户):\n{goal}",
         )
         return await AgentNode.execute(patched, cctx, state, config, eff)
 
@@ -627,8 +632,8 @@ class LoopNode(BaseNode):
         par, _mc = wf_dsl.loop_parallel_spec(node)
         if par and not ws_mod.workflow_parallel_enabled():
             emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "warning",
-                  "message": f"loop '{node_id}' 声明了 parallel，但 settings "
-                  "workflow_parallel_loops 未开启，降级为顺序执行"})
+                  "message": f"loop '{node_id}' declares parallel, but settings "
+                  "workflow_parallel_loops is off; falling back to sequential execution"})
             par = False
         if st.get("parallel"):
             st["done"] = True

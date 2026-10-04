@@ -180,11 +180,11 @@ async def test_parallel_pipeline_full_chain(isolated_home, monkeypatch):
     assert len(model._calls) == 6  # prep, i0, i1, extract(i1), i2, use
     extract_msgs = model._calls[3]
     extract_human = str(extract_msgs[-1].content)
-    assert "结构化数据抽取器" in extract_human
+    assert "structured-data extractor" in extract_human
     assert "缓存机制" in extract_human  # item 1's prose reached the extractor
     # No extraction prompt anywhere else (items 0/2 took the fast path).
     assert all(
-        "结构化数据抽取器" not in str(c[-1].content)
+        "structured-data extractor" not in str(c[-1].content)
         for c in model._calls[:3] + model._calls[4:]
     )
 

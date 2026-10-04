@@ -6,6 +6,7 @@ import json
 import re
 
 from ...graph import build_agent_system_prompt
+from ...lang import t
 
 # Marker the step system prompt asks the model to use for context write-back.
 WRITE_OPEN = "WRITE_JSON"
@@ -34,18 +35,33 @@ def resolve_agent(agent_id: str | None):
         fb = agents_reg.get_agent(cand)
         if fb:
             if agent_id:
-                return fb, f"agent '{agent_id}' 不存在，已回退到 '{cand}'"
-            return fb, f"未指定 agent，使用默认 '{cand}'"
+                return fb, t(
+                    f"agent '{agent_id}' not found, fell back to '{cand}'",
+                    f"agent '{agent_id}' 不存在，已回退到 '{cand}'",
+                )
+            return fb, t(
+                f"no agent specified, using default '{cand}'",
+                f"未指定 agent，使用默认 '{cand}'",
+            )
     lst = agents_reg.list_agents()
     if lst:
         fb = lst[0]
         if agent_id:
-            return fb, f"agent '{agent_id}' 不存在，已回退到 '{fb.id}'"
-        return fb, f"未指定 agent，使用默认 '{fb.id}'"
+            return fb, t(
+                f"agent '{agent_id}' not found, fell back to '{fb.id}'",
+                f"agent '{agent_id}' 不存在，已回退到 '{fb.id}'",
+            )
+        return fb, t(
+            f"no agent specified, using default '{fb.id}'",
+            f"未指定 agent，使用默认 '{fb.id}'",
+        )
     return None, (
-        f"agent '{agent_id}' 不存在且系统中没有任何 agent"
+        t(
+            f"agent '{agent_id}' not found and the system has no agents at all",
+            f"agent '{agent_id}' 不存在且系统中没有任何 agent",
+        )
         if agent_id
-        else "系统中没有任何 agent"
+        else t("the system has no agents at all", "系统中没有任何 agent")
     )
 
 

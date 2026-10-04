@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <style>
@@ -28,24 +28,21 @@
 </style>
 </head>
 <body>
-  <h1><span id="dot" class="dot"></span> Ginno 浏览器连接器</h1>
+  <h1><span id="dot" class="dot"></span> <span data-i18n="ext_popup_title">Ginno Browser Connector</span></h1>
   <div class="row">
-    <div id="status">检查连接状态…</div>
+    <div id="status" data-i18n="ext_popup_checking">Checking connection…</div>
   </div>
   <div class="row">
-    <label for="port">Ginno 端口(通常无需修改;留空使用自动发现)</label>
+    <label for="port" data-i18n="ext_popup_portLabel">Ginno port (usually no need to change; leave empty for auto-discovery)</label>
     <input id="port" type="number" min="1024" max="65535" placeholder="8787" />
-    <button id="save">保存并重连</button>
+    <button id="save" data-i18n="ext_popup_save">Save and reconnect</button>
   </div>
   <div class="meta" id="meta"></div>
   <div class="row">
-    <button id="send" style="background:#111827">发送此页面到 Ginno</button>
+    <button id="send" style="background:#111827" data-i18n="ext_popup_sendPage">Send this page to Ginno</button>
     <div id="sendMsg" class="help" style="margin-top:4px;display:none"></div>
   </div>
-  <div class="help">
-    没连上?确认 Ginno 桌面应用正在运行,并在 Ginno 的
-    <b>连接器</b> 页面查看安装指引。
-  </div>
+  <div class="help"><span data-i18n="ext_popup_helpA">Not connected? Make sure the Ginno desktop app is running, and see the install guide on Ginno's </span><b data-i18n="ext_popup_connectors">Connectors</b><span data-i18n="ext_popup_helpB"> page.</span></div>
 <script src="popup.js"></script>
 </body>
 </html>

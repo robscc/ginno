@@ -195,7 +195,7 @@ def test_steer_without_a_running_turn_is_refused(create_session, ws_conv):
     with ws_conv(sid) as conv:
         _steer(conv, "在吗", "s-idle")
         evs = conv.recv_until("error")
-    assert "正在进行的回合" in events_of(evs, "error")[0]["message"]
+    assert "No turn is currently running" in events_of(evs, "error")[0]["message"]
     assert server_shared.steer_drain(sid) == []  # nothing was stashed
 
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { ChevronLeft, ChevronRight, Download, FileDown, Loader2, RefreshCw, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
@@ -18,6 +19,8 @@ const PAGE = 100;
  */
 export function SheetViewer() {
   const g = useGinno();
+  // composer 域 catalog（本组件挂 AppShell 下，文案统一收在 composer.sheet）
+  const t = useTranslations("composer");
   const file = g.previewFile;
   const [pv, setPv] = useState<FilePreview | null>(null);
   const [sheet, setSheet] = useState<string | undefined>(undefined);
@@ -44,10 +47,15 @@ export function SheetViewer() {
     try {
       if (isDesktop()) {
         const r = await api.saveFileToDownloads(file.id, opts);
-        flashNote(r.ok ? `已保存到 ${r.path}` : (r.error ?? "保存失败"));
+        // path 理论上必有（ok 时），缺 path 也按失败提示而非渲染 "undefined"
+        flashNote(
+          r.ok && r.path
+            ? t("sheet.savedTo", { path: r.path })
+            : (r.error ?? t("sheet.saveFailed")),
+        );
       } else {
         const r = await api.downloadFile(file.id, file.name, opts);
-        flashNote(r.ok ? "已开始下载" : (r.error ?? "下载失败"));
+        flashNote(r.ok ? t("sheet.downloadStarted") : (r.error ?? t("sheet.downloadFailed")));
       }
     } finally {
       setBusy(null);
@@ -67,10 +75,10 @@ export function SheetViewer() {
     setErr(null);
     try {
       const r = await api.getFilePreview(file.id, { sheet, offset, limit: PAGE });
-      if (!r.ok) setErr(r.error || "预览失败");
+      if (!r.ok) setErr(r.error || t("sheet.previewFailed"));
       else setPv(r);
     } catch {
-      setErr("无法连接运行时");
+      setErr(t("sheet.runtimeUnreachable"));
     } finally {
       setLoading(false);
     }
@@ -93,6 +101,23 @@ export function SheetViewer() {
 
   const isTable = pv?.kind === "spreadsheet" || pv?.kind === "table";
   const isImage = file?.kind === "image";
+  // 服务端数据徽标兜底词：pv.kind 分类法值 → 本地化徽标（composer.badges.fileKind）；
+  // 未知值仍回退英文原值（服务端新增 kind 无需前端同步）。
+  const FILE_KINDS = [
+    "spreadsheet",
+    "table",
+    "document",
+    "presentation",
+    "pdf",
+    "data",
+    "text",
+    "image",
+    "unknown",
+  ] as const;
+  const fileKindBadge = (kind: string): string =>
+    (FILE_KINDS as readonly string[]).includes(kind)
+      ? t(`badges.fileKind.${kind as (typeof FILE_KINDS)[number]}`)
+      : kind;
   const total = pv?.total_rows ?? 0;
   const shown = pv?.rows?.length ?? 0;
 
@@ -110,12 +135,14 @@ export function SheetViewer() {
           <span className="truncate text-sm font-semibold text-txt">{file.name}</span>
           {(pv?.kind || (isImage ? "image" : "")) && (
             <span className="rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">
-              {pv?.kind || "image"}
+              {fileKindBadge(pv?.kind || "image")}
             </span>
           )}
           {isTable && (
             <span className="text-xs text-faint">
-              {total > 0 ? `${offset + 1}–${offset + shown} / ${total} 行` : "空表"}
+              {total > 0
+                ? t("sheet.rowsRange", { from: offset + 1, to: offset + shown, total })
+                : t("sheet.emptySheet")}
             </span>
           )}
           <div className="ml-auto flex items-center gap-1">
@@ -127,7 +154,7 @@ export function SheetViewer() {
             <button
               onClick={() => void save("raw")}
               disabled={busy !== null}
-              title="下载原文件"
+              title={t("sheet.downloadOriginal")}
               className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt disabled:opacity-40"
             >
               {busy === "raw" ? (
@@ -140,7 +167,7 @@ export function SheetViewer() {
               <button
                 onClick={() => void save("csv")}
                 disabled={busy !== null}
-                title="将当前 sheet 导出为 CSV"
+                title={t("sheet.exportCsv")}
                 className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt disabled:opacity-40"
               >
                 {busy === "csv" ? (
@@ -152,14 +179,14 @@ export function SheetViewer() {
             )}
             <button
               onClick={() => void load()}
-              title="刷新"
+              title={t("sheet.refresh")}
               className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
             <button
               onClick={() => g.closePreview()}
-              title="关闭"
+              title={t("sheet.close")}
               className="rounded-lg p-1.5 text-muted hover:bg-card hover:text-txt"
             >
               <X className="h-4 w-4" />
@@ -190,7 +217,7 @@ export function SheetViewer() {
         <div className="min-h-0 flex-1 overflow-auto">
           {err && <div className="px-4 py-6 text-center text-sm text-red-400">{err}</div>}
           {!err && !pv && !isImage && (
-            <div className="px-4 py-6 text-center text-sm text-faint">加载中…</div>
+            <div className="px-4 py-6 text-center text-sm text-faint">{t("sheet.loading")}</div>
           )}
           {isImage && (
             <div className="flex min-h-full items-center justify-center px-5 py-4">
@@ -231,7 +258,7 @@ export function SheetViewer() {
           )}
           {pv && !isTable && pv.markdown !== undefined && (
             <div className="px-5 py-4">
-              <Markdown text={pv.markdown || "_(空文档)_"} />
+              <Markdown text={pv.markdown || t("sheet.emptyDocument")} />
             </div>
           )}
         </div>
@@ -244,7 +271,7 @@ export function SheetViewer() {
               onClick={() => setOffset((o) => Math.max(0, o - PAGE))}
               className="flex items-center gap-1 rounded-lg px-2 py-1 hover:bg-card disabled:opacity-40"
             >
-              <ChevronLeft className="h-3.5 w-3.5" /> 上一页
+              <ChevronLeft className="h-3.5 w-3.5" /> {t("sheet.previous")}
             </button>
             <span>
               {Math.floor(offset / PAGE) + 1} / {Math.ceil(total / PAGE)}
@@ -254,7 +281,7 @@ export function SheetViewer() {
               onClick={() => setOffset((o) => o + PAGE)}
               className="flex items-center gap-1 rounded-lg px-2 py-1 hover:bg-card disabled:opacity-40"
             >
-              下一页 <ChevronRight className="h-3.5 w-3.5" />
+              {t("sheet.next")} <ChevronRight className="h-3.5 w-3.5" />
             </button>
           </div>
         )}

@@ -8,6 +8,17 @@
   if (globalThis.__ginnoIndicator) return;
   var border = null, badge = null, stopWrap = null, active = false;
 
+  // i18n: chrome.i18n.getMessage 为主(_locales 由 build.py 生成,按浏览器语言
+  // 选边);内嵌 en 兜底(runtime native_host.py 固定清单物化不带 _locales,
+  // 见 i18n-design.md §8)。
+  function i18nMsg(key, fallback) {
+    try {
+      var m = chrome.i18n.getMessage(key);
+      if (m) return m;
+    } catch (e) { /* 走兜底 */ }
+    return fallback;
+  }
+
   function root() {
     var host = document.getElementById("ginno-shadow-container");
     if (host && host.shadowRoot) return host.shadowRoot;
@@ -49,7 +60,7 @@
         "pointer-events:none;z-index:2147483647;";
       var btn = document.createElement("button");
       btn.id = "ginno-stop-btn";
-      btn.textContent = "■ 停止 Ginno 操作";
+      btn.textContent = i18nMsg("ext_indicator_stop", "■ Stop Ginno");
       btn.style.cssText =
         "pointer-events:auto;cursor:pointer;padding:10px 16px;border-radius:12px;" +
         "border:0.5px solid rgba(31,30,29,.4);background:#FAF9F5;color:#141413;" +
@@ -59,7 +70,7 @@
       btn.onmouseleave = function () { btn.style.background = "#FAF9F5"; };
       btn.onclick = function () {
         btn.disabled = true;
-        btn.textContent = "正在停止…";
+        btn.textContent = i18nMsg("ext_indicator_stopping", "Stopping…");
         try { chrome.runtime.sendMessage({ type: "GINNO_STOP_TOOL" }); } catch (e) {}
         setTimeout(function () { hideBorder(); }, 600);
       };

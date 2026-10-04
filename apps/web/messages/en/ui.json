@@ -1,0 +1,41 @@
+{
+  "ui": {
+    "common": {
+      "confirm": "Confirm",
+      "cancel": "Cancel",
+      "delete": "Delete"
+    },
+    "net": {
+      "unreachable": "Cannot reach the runtime",
+      "downloadFailed": "Download failed (HTTP {status})",
+      "updateFailed": "Update failed"
+    },
+    "trigger": {
+      "failed": "Trigger failed"
+    },
+    "relTime": {
+      "justNow": "Just now",
+      "minAgo": "{n} min ago",
+      "hrAgo": "{n} hr ago",
+      "dAgo": "{n} d ago"
+    },
+    "greeting": {
+      "lateNight": "Up late",
+      "morning": "Good morning",
+      "afternoon": "Good afternoon",
+      "evening": "Good evening",
+      "prompt": "{part}, what would you like to do today?"
+    },
+    "notifyRun": {
+      "completed": "Completed · took {duration}",
+      "failedAt": "Failed at \"{step}\"",
+      "failed": "Run failed",
+      "titleDone": "✓ {name}",
+      "titleFailed": "✕ {name}",
+      "defaultName": "Workflow"
+    },
+    "subtask": {
+      "fallbackTitle": "Subtask"
+    }
+  }
+}

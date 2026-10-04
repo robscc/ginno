@@ -1,0 +1,16 @@
+{
+  "tool": {
+    "labels": {
+      "read_file": "Reading file",
+      "write_file": "Writing file",
+      "edit_file": "Editing file",
+      "glob_files": "Searching files",
+      "grep_files": "Searching content",
+      "bash": "Running command",
+      "delegate_agent": "Delegating to external agent",
+      "parse_document": "Parsing document",
+      "analyze_table": "Analyzing table"
+    },
+    "mcp_call": "Calling MCP: {server}"
+  }
+}

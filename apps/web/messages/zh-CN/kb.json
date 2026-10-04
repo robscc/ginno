@@ -1,0 +1,116 @@
+{
+  "kb": {
+    "title": "知识库",
+    "subtitle": "Obsidian 知识库：把 Raw 笔记编译为 Wiki，按相关度检索并自动注入对话（LLMWiki）。支持页面预览、wikilink 跳转/创建与图谱视图。",
+    "actions": {
+      "build": "构建 Wiki",
+      "reindex": "重建索引"
+    },
+    "stats": {
+      "pages": "{count} 页",
+      "links": "{count} 个链接",
+      "tags": "{count} 个标签",
+      "indexed": "上次索引：{time}"
+    },
+    "time": {
+      "never": "从未",
+      "seconds": "{n} 秒前",
+      "minutes": "{n} 分钟前",
+      "hours": "{n} 小时前",
+      "days": "{n} 天前"
+    },
+    "error": {
+      "notConnected": "Runtime 未连接：请确认 sidecar 正在运行（开发模式：pnpm dev:runtime）。"
+    },
+    "tabs": {
+      "searchResults": "{count, plural, =0 {搜索结果} other {搜索结果 ({count})}}",
+      "allPages": "全部页面 ({count})",
+      "discover": "发现",
+      "graph": "图谱 ({count})"
+    },
+    "search": {
+      "placeholder": "搜索知识库…（支持中英文）",
+      "button": "搜索",
+      "noResults": "没有匹配的条目。",
+      "startHint": "输入关键词开始搜索。",
+      "failed": "搜索失败",
+      "failedNoRuntime": "搜索失败：无法连接 Runtime",
+      "source": "来源：{path}",
+      "matches": "命中：{terms}"
+    },
+    "all": {
+      "empty": "还没有已索引的页面（先点击「构建 Wiki」把 Raw 编译成 Wiki）。",
+      "memoryOnly": "仅记忆来源",
+      "memoryPill": "记忆",
+      "memoryPillTitle": "从全局记忆沉淀而来"
+    },
+    "discover": {
+      "loading": "正在加载发现结果…",
+      "loadFailed": "发现结果加载失败",
+      "notConnected": "Runtime 未连接——无法加载发现结果。",
+      "summary": "{pages} 页 · {edges} 条关联边",
+      "relatedTitle": "查找笔记的相关页面",
+      "relatedPlaceholder": "页面标题，如 Permissions",
+      "relatedButton": "关联查询",
+      "relatedFailedNoRuntime": "关联查询失败：无法连接 Runtime",
+      "noRelated": "没有相关页面（或标题不匹配）。",
+      "strongTitle": "强关联（≥80%）· {count}",
+      "clustersTitle": "聚类 · {count}",
+      "noClusters": "没有明显的聚类。",
+      "density": "· 密度 {density}",
+      "mergeTitle": "可合并候选 · {count}",
+      "orphanTitle": "孤立页面（无入链）· {count}",
+      "none": "无。"
+    },
+    "reindex": {
+      "done": "索引已重建（{count} 页）。",
+      "failed": "重建索引失败",
+      "failedNoRuntime": "重建索引失败：无法连接 Runtime"
+    },
+    "build": {
+      "done": "构建完成：扫描 {scanned} 页，新建 {created}，更新 {updated}，自动链接 {newLinks}，耗时 {ms} ms",
+      "failed": "构建失败",
+      "failedNoRuntime": "构建失败：无法连接 Runtime"
+    },
+    "import": {
+      "title": "导入已有的 LLM Wiki 知识库",
+      "hint": "指向你的 Obsidian vault。如果 Wiki 已经构建过（如 <code>Molly/Wiki</code>），会直接索引、无需重建。",
+      "detect": "检测",
+      "importAndIndex": "导入并索引",
+      "settingsHint": "需要精调（top-K / 自动注入 / 目录）？前往<link>设置 → 知识库</link>。",
+      "needPath": "请填写 vault 路径",
+      "detected": "检测到命名空间「{ns}」：{wiki} 个 Wiki 页面 / {raw} 条原始笔记{hasIndex, select, yes {（含 INDEX）} other {}}",
+      "noWikiDir": "未检测到 */Wiki 目录——整个 vault 将作为知识库索引（共 {total} 条笔记）",
+      "detectFailed": "检测失败",
+      "detectFailedNoRuntime": "检测失败：无法连接 Runtime",
+      "invalidPath": "检测失败：路径无效",
+      "saveFailed": "保存配置失败",
+      "imported": "已导入并索引 {count} 个页面",
+      "indexFailed": "配置已保存，但索引失败",
+      "importFailedNoRuntime": "导入失败：无法连接 Runtime"
+    },
+    "graph": {
+      "empty": "还没有可绘制的页面 / 链接。",
+      "hint": "图谱 · {pages} 页 · {links} 条链接——拖拽节点 / 悬停看邻居 / 点击打开"
+    },
+    "viewer": {
+      "loadFailed": "加载失败：Runtime 未连接",
+      "loading": "加载中…",
+      "cannotLoad": "无法加载",
+      "emptyHint": "在左侧选择一个页面，或点击文中的<wikilink>[[wikilink]]</wikilink>进行预览 / 跳转。",
+      "newBadge": "新建",
+      "close": "关闭",
+      "edit": "编辑",
+      "preview": "预览",
+      "savePath": "保存路径",
+      "insertLink": "插入 [[链接]]",
+      "insertLinkHint": "选中文字后点击，生成 [[所选内容]]",
+      "create": "创建",
+      "save": "保存",
+      "created": "已创建",
+      "saved": "已保存",
+      "saveFailed": "保存失败",
+      "saveFailedNoRuntime": "保存失败：Runtime 未连接"
+    }
+  }
+}

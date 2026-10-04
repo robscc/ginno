@@ -1,11 +1,14 @@
 "use client";
 
+import { useTranslations } from "next-intl";
+
 /** Minimal unified-diff viewer: colorizes lines by their leading marker.
  *  Pure presentational — the server produces the diff text (difflib unified). */
 export function DiffView({ diff }: { diff: string }) {
+  const t = useTranslations("wf.diff");
   const lines = (diff || "").split("\n");
   if (!diff || !diff.trim()) {
-    return <div className="py-2 text-center text-[11px] text-faint">无差异</div>;
+    return <div className="py-2 text-center text-[11px] text-faint">{t("noChanges")}</div>;
   }
   return (
     <pre className="max-h-72 overflow-auto rounded-lg border border-line bg-base/60 p-2 font-mono text-[11px] leading-relaxed">

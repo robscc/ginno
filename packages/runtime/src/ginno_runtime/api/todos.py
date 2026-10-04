@@ -104,8 +104,8 @@ def _provider_ready(prov: dict) -> tuple[bool, str]:
     if srv:
         if shared._mcp and shared._mcp.server_tools(srv):
             return True, ""
-        return False, f"MCP 服务未连接或无工具: {srv}"
-    return False, f"provider {prov['id']} 既无 skill 也无可用 MCP（settings → todo_providers）"
+        return False, f"MCP server not connected or has no tools: {srv}"
+    return False, f"provider {prov['id']} has neither a skill nor a usable MCP (settings → todo_providers)"
 
 
 @router.get("/api/todo-providers")

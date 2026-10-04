@@ -7,6 +7,7 @@
  * browse, reveal, and delete files / whole directories. */
 
 import { useCallback, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Trash2 } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { SessionDirEntry, SessionDirSummary } from "@/lib/types";
@@ -36,6 +37,7 @@ type ConfirmTarget =
   | { kind: "dir"; slug: string; sid: string; path: string; label: string };
 
 export function SessionFilesSettings() {
+  const t = useTranslations("settings.sessionFiles");
   const [dirs, setDirs] = useState<SessionDirSummary[]>([]);
   const [listings, setListings] = useState<Record<string, SessionDirEntry[]>>({});
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -91,19 +93,20 @@ export function SessionFilesSettings() {
     setOpen((p) => ({ ...p, [k]: true }));
   }
 
-  async function doDelete(t: ConfirmTarget) {
+  // 参数改名 target：避免遮蔽外层的 t（useTranslations）
+  async function doDelete(target: ConfirmTarget) {
     setConfirm(null);
     try {
-      if (t.kind === "file") {
-        const r = await api.deleteSessionFile(t.slug, t.sid, t.path);
-        setMsg(r.ok ? `Deleted ${t.label}` : r.error || "Failed to delete");
+      if (target.kind === "file") {
+        const r = await api.deleteSessionFile(target.slug, target.sid, target.path);
+        setMsg(r.ok ? t("deleted", { name: target.label }) : r.error || t("deleteFailed"));
       } else {
-        const r = await api.deleteSessionDir(t.slug, t.sid, t.path || undefined);
-        setMsg(r.ok ? `Deleted ${t.label}` : r.error || "Failed to delete");
+        const r = await api.deleteSessionDir(target.slug, target.sid, target.path || undefined);
+        setMsg(r.ok ? t("deleted", { name: target.label }) : r.error || t("deleteFailed"));
       }
       await reloadOpen();
     } catch {
-      setMsg("Failed to delete");
+      setMsg(t("deleteFailed"));
     }
   }
 
@@ -120,7 +123,7 @@ export function SessionFilesSettings() {
     if (!entries.length)
       return (
         <div className="py-1 text-xs text-faint" style={{ paddingLeft: depth * 18 + 26 }}>
-          (empty)
+          {t("emptyDir")}
         </div>
       );
     return (
@@ -158,15 +161,15 @@ export function SessionFilesSettings() {
               <span className="min-w-0 flex-1 truncate">{e.name}</span>
               <span className="shrink-0 text-[10px] text-faint">{fmtBytes(e.size)}</span>
               <button
-                title="Reveal in Finder"
+                title={t("revealTitle")}
                 onClick={() => reveal(slug, sid, subPath)}
                 className="shrink-0 rounded px-1 text-[10px] text-faint opacity-0 transition-opacity hover:text-txt group-hover:opacity-100"
               >
-                Reveal
+                {t("reveal")}
               </button>
               {orphaned && (
                 <button
-                  title="Delete file"
+                  title={t("deleteFileTitle")}
                   onClick={() =>
                     setConfirm({ kind: "file", slug, sid, path: subPath, label: e.name, parentKey: k })
                   }
@@ -184,16 +187,12 @@ export function SessionFilesSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">Session Files</h2>
-      <p className="mt-1 text-sm text-muted">
-        Each session owns a dedicated files directory, created automatically with the session;
-        deleting a session only clears the conversation history — the files are kept here for
-        browsing or manual cleanup.
-      </p>
+      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+      <p className="mt-1 text-sm text-muted">{t("description")}</p>
 
       {dirs.length === 0 ? (
         <div className="mt-6 rounded-xl border border-line bg-card p-6 text-center text-sm text-faint">
-          No session file directories
+          {t("empty")}
         </div>
       ) : (
         <div className="mt-4 space-y-2">
@@ -214,28 +213,28 @@ export function SessionFilesSettings() {
                     )}
                     <FolderOpen className="h-4 w-4 shrink-0" style={{ color: "#38bdf8" }} />
                     <span className="truncate text-sm text-txt">
-                      {d.title || "(untitled session)"}
+                      {d.title || t("untitled")}
                     </span>
                     <span className="truncate font-mono text-[10px] text-faint">{d.session_id}</span>
                     {d.orphaned && (
                       <span className="shrink-0 rounded-full bg-amber/15 px-2 py-0.5 text-[10px] font-medium text-amber">
-                        deleted session
+                        {t("deletedSession")}
                       </span>
                     )}
                   </button>
                   <span className="shrink-0 text-[11px] text-faint">
-                    {d.file_count} files · {fmtBytes(d.total_bytes)} · {fmtTime(d.mtime)}
+                    {t("filesCount", { count: d.file_count, size: fmtBytes(d.total_bytes), time: fmtTime(d.mtime) })}
                   </span>
                   <button
-                    title="Reveal in Finder"
+                    title={t("revealTitle")}
                     onClick={() => reveal(d.project_slug, d.session_id, "")}
                     className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-muted hover:text-txt"
                   >
-                    Open
+                    {t("openButton")}
                   </button>
                   {d.orphaned ? (
                     <button
-                      title="Delete the whole session directory"
+                      title={t("deleteDirTitle")}
                       onClick={() =>
                         setConfirm({
                           kind: "dir",
@@ -251,10 +250,10 @@ export function SessionFilesSettings() {
                     </button>
                   ) : (
                     <span
-                      title="Files of an active session are protected and cannot be deleted here; they become cleanable after the session is deleted"
+                      title={t("inUseTitle")}
                       className="shrink-0 rounded-full bg-line2/60 px-2 py-0.5 text-[10px] text-faint"
                     >
-                      In use
+                      {t("inUse")}
                     </span>
                   )}
                 </div>
@@ -269,13 +268,13 @@ export function SessionFilesSettings() {
 
       {confirm && (
         <ConfirmModal
-          title={confirm.kind === "file" ? "Delete file" : "Delete session directory"}
+          title={confirm.kind === "file" ? t("confirmTitleFile") : t("confirmTitleDir")}
           message={
             confirm.kind === "file"
-              ? `Delete the file "${confirm.label}"? It will be removed from disk and cannot be recovered.`
-              : `Delete the whole file directory of "${confirm.label}"? All files inside will be removed and cannot be recovered. Conversation history is unaffected.`
+              ? t("confirmFile", { name: confirm.label })
+              : t("confirmDir", { name: confirm.label })
           }
-          confirmLabel="Delete"
+          confirmLabel={t("deleteLabel")}
           onConfirm={() => doDelete(confirm)}
           onCancel={() => setConfirm(null)}
         />

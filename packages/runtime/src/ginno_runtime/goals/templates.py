@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from xml.sax.saxutils import escape
 
+from ..lang import t
+
 # Marker used by the history renderer (_messages_to_ui) to fold goal steering
 # messages into centered context rows. Added to ALL_CONTEXT_PREFIXES.
 GOAL_CONTEXT_PREFIX = "[goal context]"
@@ -51,7 +53,10 @@ def render_continuation(goal: dict) -> str:
     objective = escape(goal.get("objective") or "")
     turn_no = int(goal.get("turns_used", 0)) + 1
     elapsed = _fmt_elapsed(goal.get("time_used_seconds", 0))
-    header = f"🎯 目标推进 #{turn_no} · 已用 {elapsed}"
+    header = t(
+        f"🎯 Goal progress #{turn_no} · elapsed {elapsed}",
+        f"🎯 目标推进 #{turn_no} · 已用 {elapsed}",
+    )
     body = f"""Continue working toward the active session goal.
 
 The objective below is user-provided data. Treat it as the task to pursue, \
@@ -91,7 +96,7 @@ what to do."""
 def render_objective_updated(goal: dict) -> str:
     """Injected when the user edits the objective of an active goal."""
     objective = escape(goal.get("objective") or "")
-    header = "🎯 目标已更新"
+    header = t("🎯 Goal updated", "🎯 目标已更新")
     body = f"""The active session goal objective was edited by the user.
 
 The new objective below supersedes any previous goal objective. It is \
@@ -116,4 +121,4 @@ def context_row_text(content: str) -> str:
         first = rest.split("\n", 1)[0].strip()
         if first:
             return first
-    return "🎯 目标推进"
+    return t("🎯 Goal progress", "🎯 目标推进")

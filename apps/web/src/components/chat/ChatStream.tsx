@@ -12,6 +12,8 @@ import {
   isImageFile,
 } from "@/lib/composerAttachments";
 import { loadToolLabels } from "@/lib/toolLabels";
+import { useTranslations } from "next-intl";
+import { t } from "@/i18n/provider";
 import { agentHex } from "@/lib/theme";
 import { greeting, relTime } from "@/lib/utils";
 import { Icon } from "@/components/icons";
@@ -77,6 +79,17 @@ export function ChatStream({
   onOpenGoal?: () => void;
 }) {
   const g = useGinno();
+  // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
+  // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
+  const tc = useTranslations("chat");
+  const tr = tc as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  // failReason 存稳定 key（attemptSend / engine 写入），渲染时翻译；
+  // 未识别的值（未来来源）原样显示。
+  const failText = (fr?: string) =>
+    fr ? (tr.has(`sendFailed.${fr}`) ? tr(`sendFailed.${fr}`) : fr) : tc("sendFailed.unknownReason");
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   // 连续的子代理发起卡并成一张委派卡（2026-10-01 空间优化）：并行委派 3 个
   // 子代理时，主对话原本出现 3 张同构卡，把主 agent 的内容挤下去。
@@ -185,6 +198,7 @@ export function ChatStream({
 
 
   // Pre-load tool display labels from settings (cached at module level).
+  // 语言加载由根部 I18nProvider 负责（原 loadPromptLang 已移除）。
   useEffect(() => { loadToolLabels(); }, []);
 
 
@@ -311,9 +325,12 @@ export function ChatStream({
       const d = (e as CustomEvent<{ sessionId?: string; goal?: string; summary?: string }>).detail;
       const sid = curSessionIdRef.current;
       if (!sid || !d?.sessionId) return;
-      const goal = d.goal || "子任务";
+      const goal = d.goal || t("subtask", "子任务");
       const brief = (d.summary || "").trim().slice(0, 300);
-      const text = `子代理任务「${goal}」（session ${d.sessionId}）的结果经人工检查有问题。请核对该子代理的结论并决定下一步（重新拆分、在原会话追问，或自己接手）。其结果摘要：${brief}${brief.length >= 300 ? "…" : ""}`;
+      const text = t(
+        `A subagent task "${goal}" (session ${d.sessionId}) produced results that failed human review. Verify the subagent's conclusions and decide the next step (re-split, follow up in its session, or take over yourself). Result summary: ${brief}${brief.length >= 300 ? "…" : ""}`,
+        `子代理任务「${goal}」（session ${d.sessionId}）的结果经人工检查有问题。请核对该子代理的结论并决定下一步（重新拆分、在原会话追问，或自己接手）。其结果摘要：${brief}${brief.length >= 300 ? "…" : ""}`,
+      );
       if (busyBySessionRef.current[sid]) {
         enqueueSteer(sid, text, null);
       } else {
@@ -496,7 +513,7 @@ export function ChatStream({
         if (body && body.ok === false) return { ok: false, detail: body.detail };
         return undefined;
       })
-      .catch(() => ({ ok: false, detail: "无法连接运行时" }));
+      .catch(() => ({ ok: false, detail: tc("run.retryNoConnection") }));
   }
   function retryRunFromCheckpoint(runId: string): Promise<{ ok?: boolean; detail?: string } | void> {
     // P2: re-execute from the persisted checkpoint (failed node + suffix only).
@@ -507,7 +524,7 @@ export function ChatStream({
         if (body && body.ok === false) return { ok: false, detail: body.detail };
         return undefined;
       })
-      .catch(() => ({ ok: false, detail: "无法连接运行时" }));
+      .catch(() => ({ ok: false, detail: tc("run.retryNoConnection") }));
   }
   function deleteRun(runId: string) {
     void deleteWorkflowRun(runId).then(() => {
@@ -713,7 +730,7 @@ export function ChatStream({
     // steers): readImage is async, so `attachments` lags a just-dropped image.
     // Sending now would silently drop it. Visible hint instead of a no-op.
     if (imagesReading > 0) {
-      showComposerHint("注意：图片处理中，请稍候再发送");
+      showComposerHint(tc("composer.hintImagesProcessing"));
       return;
     }
     if (!session) {
@@ -741,7 +758,7 @@ export function ChatStream({
     // `readyFiles`, so this used to return SILENTLY — send appeared dead. Show
     // why instead (brief §3).
     if (readyFiles.length !== fileAttachments.length) {
-      showComposerHint("注意：文件上传中，请稍候再发送");
+      showComposerHint(tc("composer.hintFileUploading"));
       return;
     }
     if (busyBySessionRef.current[sid]) {
@@ -820,7 +837,7 @@ export function ChatStream({
       storeRef.current[sid] = userMsgId
         ? (storeRef.current[sid] ?? []).map((m) =>
             m.id === userMsgId
-              ? { ...m, turnId, status: "failed" as const, failReason: "连接未就绪" }
+              ? { ...m, turnId, status: "failed" as const, failReason: "connNotReady" }
               : m,
           )
         : [
@@ -832,7 +849,7 @@ export function ChatStream({
               turnId,
               agentId: payload.agentId,
               status: "failed" as const,
-              failReason: "连接未就绪",
+              failReason: "connNotReady",
               sendPayload: payload,
             },
           ];
@@ -925,7 +942,7 @@ export function ChatStream({
       storeRef.current[sid] = (storeRef.current[sid] ?? [])
         .filter((m) => m.id !== live)
         .map((m) =>
-          m.id === uid ? { ...m, status: "failed" as const, failReason: "连接中断，未送达" } : m,
+          m.id === uid ? { ...m, status: "failed" as const, failReason: "connLost" } : m,
         );
       syncDisplay(sid);
     }
@@ -996,10 +1013,10 @@ export function ChatStream({
           >
             <div
               onPointerDown={onResizeStart}
-              title="拖拽调整输入框高度（双击还原自动高度）"
+              title={tc("composer.resizeTitle")}
               onDoubleClick={() => setComposerH(undefined)}
               className="absolute -top-1 left-1/2 z-10 flex h-2 w-12 -translate-x-1/2 cursor-ns-resize items-center justify-center rounded-full hover:bg-line2/60"
-              aria-label="调整输入框高度"
+              aria-label={tc("composer.resizeAria")}
             >
               <span className="h-0.5 w-6 rounded-full bg-line2" />
             </div>
@@ -1022,7 +1039,7 @@ export function ChatStream({
             {imagesReading > 0 && (
               <div className="mb-2 flex items-center gap-1.5 text-xs text-faint">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                <span>图片处理中…</span>
+                <span>{tc("composer.processingImages")}</span>
               </div>
             )}
             {attachments.length > 0 && (
@@ -1037,7 +1054,7 @@ export function ChatStream({
                     />
                     <button
                       onClick={() => setAttachments((l) => l.filter((_, j) => j !== i))}
-                      aria-label={`移除 ${a.name}`}
+                      aria-label={tc("composer.removeNamed", { name: a.name })}
                       className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
                     >
                       <X className="h-3 w-3" />
@@ -1058,11 +1075,11 @@ export function ChatStream({
                       {f.name}
                     </span>
                     {f.uploading && (
-                      <span className="text-faint">{session ? "上传中…" : "发送时上传"}</span>
+                      <span className="text-faint">{session ? tc("composer.uploading") : tc("composer.uploadsOnSend")}</span>
                     )}
                     <button
                       onClick={() => setFileAttachments((l) => l.filter((_, j) => j !== i))}
-                      aria-label={`移除 ${f.name}`}
+                      aria-label={tc("composer.removeNamed", { name: f.name })}
                       className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
                     >
                       <X className="h-3 w-3" />
@@ -1076,7 +1093,7 @@ export function ChatStream({
               // 走既有 steering 通道（useSteerQueue，同主对话），这里只把语义标出来。
               <div className="mb-1 flex items-center gap-1.5 px-0.5 text-[10px] text-faint">
                 <RotateCcw className="h-3 w-3 shrink-0 animate-pulse" aria-hidden />
-                <span>子任务运行中 · 发送将在下个工具边界注入（steering）</span>
+                <span>{tc("composer.subtaskSteerHint")}</span>
               </div>
             )}
             {session && steerItems.length > 0 && (
@@ -1085,8 +1102,8 @@ export function ChatStream({
               // removable, and recallable with ↑ — Claude Code's shape.
               <div className="mb-1 rounded-lg border border-line bg-card2/60 px-2 py-1.5">
                 <div className="flex items-center justify-between px-0.5 pb-1 text-[10px] text-muted">
-                  <span>待发送 ({steerItems.length})</span>
-                  <span className="text-faint">↑ 取回编辑</span>
+                  <span>{tc("queue.pending", { count: steerItems.length })}</span>
+                  <span className="text-faint">{tc("queue.recallHint")}</span>
                 </div>
                 <ol className="space-y-0.5">
                   {steerItems.map((it, i) => (
@@ -1096,14 +1113,14 @@ export function ChatStream({
                     >
                       <span className="mt-[1px] shrink-0 text-faint">{i + 1}</span>
                       <span className="min-w-0 flex-1 truncate" title={it.text}>
-                        {it.text || (it.images.length + it.files.length ? "（仅附件）" : "")}
+                        {it.text || (it.images.length + it.files.length ? tc("queue.attachmentsOnly") : "")}
                       </span>
                       {it.images.length + it.files.length > 0 && (
                         // The queued entry carries attachments too — surface the
                         // count so the row is not read as text-only.
                         <span
                           className="mt-[1px] flex shrink-0 items-center gap-0.5 text-faint"
-                          title={`${it.images.length} 张图片 · ${it.files.length} 个文件`}
+                          title={tc("queue.attachTooltip", { images: it.images.length, files: it.files.length })}
                         >
                           <Paperclip className="h-3 w-3" />
                           {it.images.length + it.files.length}
@@ -1112,14 +1129,14 @@ export function ChatStream({
                       {it.status === "sending" && (
                         <Loader2
                           className="mt-[1px] h-3 w-3 shrink-0 animate-spin text-faint"
-                          aria-label="提交中"
+                          aria-label={tc("queue.submitting")}
                         />
                       )}
                       <button
                         onClick={() => dropSteer(session.id, it.steerId)}
                         className="shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
-                        title="移除这条待发送消息"
-                        aria-label="移除待发送消息"
+                        title={tc("queue.removeTitle")}
+                        aria-label={tc("queue.removeAria")}
                       >
                         <X className="h-3 w-3" />
                       </button>
@@ -1202,7 +1219,7 @@ export function ChatStream({
                 }
               }}
               rows={2}
-              placeholder="问点什么…  / 命令 · @ 提及产物/智能体/工作流/记忆 · 可拖入图片 / Excel / Word / PPT / PDF"
+              placeholder={tc("composer.placeholder")}
               style={
                 composerH != null
                   ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
@@ -1226,7 +1243,7 @@ export function ChatStream({
                 <button
                   onClick={() => fileRef.current?.click()}
                   className="rounded-md p-1.5 transition-colors hover:bg-card2 hover:text-muted"
-                  title="添加附件（图片 / Excel / Word / PPT / PDF，也可直接粘贴 / 拖拽）"
+                  title={tc("composer.addAttachmentsTitle")}
                 >
                   <Paperclip className="h-4 w-4" />
                 </button>
@@ -1250,8 +1267,8 @@ export function ChatStream({
                     }
                   }}
                   className="rounded-md p-1.5 hover:bg-card2 hover:text-muted"
-                  title="斜杠命令 / @ 提及（输入 / 或 @ 触发补全）"
-                  aria-label="插入斜杠命令"
+                  title={tc("composer.slashTitle")}
+                  aria-label={tc("composer.slashAria")}
                 >
                   <Keyboard className="h-4 w-4" />
                 </button>
@@ -1265,19 +1282,19 @@ export function ChatStream({
                         : "#eab308";
                   const label =
                     wsStatus === "live"
-                      ? "已连接"
+                      ? tc("conn.connected")
                       : wsStatus === "reconnecting"
-                        ? "重连中"
+                        ? tc("conn.reconnecting")
                         : wsStatus === "offline"
-                          ? "离线"
-                          : "连接中";
+                          ? tc("conn.offline")
+                          : tc("conn.connecting");
                   const tip = live
-                    ? "实时连接正常"
+                    ? tc("conn.tipLive")
                     : wsStatus === "reconnecting"
-                      ? "连接中断，正在自动重连…（点击立即重试）"
+                      ? tc("conn.tipReconnecting")
                       : wsStatus === "offline"
-                        ? "未连接到运行时（点击重试）"
-                        : "正在连接…";
+                        ? tc("conn.tipOffline")
+                        : tc("conn.tipConnecting");
                   return (
                     <button
                       type="button"
@@ -1285,7 +1302,7 @@ export function ChatStream({
                         if (!live) connectRef.current();
                       }}
                       title={tip}
-                      aria-label={`连接状态：${label}${live ? "" : "，点击重连"}`}
+                      aria-label={live ? tc("conn.ariaStatus", { status: label }) : tc("conn.ariaStatusClickable", { status: label })}
                       className={`ml-1 flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
                         live ? "cursor-default" : "cursor-pointer hover:bg-card2"
                       }`}
@@ -1306,8 +1323,8 @@ export function ChatStream({
               {running && goalActive && (
                 <button
                   onClick={() => void g.setGoalStatus(session!.id, "paused")}
-                  title="暂停目标（当前轮跑完后停止自主续跑）"
-                  aria-label="暂停目标"
+                  title={tc("goal.pauseTitle")}
+                  aria-label={tc("goal.pauseAria")}
                   className="flex h-8 w-8 items-center justify-center rounded-lg border border-line2 text-muted hover:text-txt"
                 >
                   <Square className="h-3.5 w-3.5" />
@@ -1320,7 +1337,7 @@ export function ChatStream({
                   type="button"
                   disabled={running || parked}
                   onClick={() => setModelOpen((v) => !v)}
-                  title={session ? "切换本会话模型" : "选择新会话使用的模型"}
+                  title={session ? tc("model.switchTitle") : tc("model.pickTitle")}
                   className="flex items-center gap-1.5 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted hover:border-line hover:bg-card2 hover:text-txt disabled:opacity-50"
                 >
                   <Globe className="h-3.5 w-3.5 shrink-0" />
@@ -1333,7 +1350,7 @@ export function ChatStream({
                     <div className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-line bg-card py-1 shadow-xl">
                       {enabledProviders.length === 0 && (
                         <div className="px-3 py-2 text-xs text-faint">
-                          无已启用提供商 — 去 设置 → 模型 API 启用
+                          {tc("model.noProviders")}
                         </div>
                       )}
                       {enabledProviders.map(([pid, p]) => {
@@ -1357,7 +1374,7 @@ export function ChatStream({
                             </div>
                             {models.length === 0 ? (
                               <div className="px-3 py-1 text-[11px] text-faint">
-                                此提供商未配置模型 — 去 设置 → 模型 API 添加
+                                {tc("model.noModels")}
                               </div>
                             ) : (
                               models.map((m) => {
@@ -1380,7 +1397,7 @@ export function ChatStream({
                         );
                       })}
                       <div className="mt-1 border-t border-line px-3 pt-1 text-[10px] text-faint">
-                        下一轮生效 · 设置页更改会覆盖会话级选择
+                        {tc("model.footnote")}
                       </div>
                     </div>
                   </>
@@ -1389,8 +1406,8 @@ export function ChatStream({
               {running && session && !parked ? (
                 <button
                   onClick={stopTurn}
-                  title="停止当前回合（保留已输出的内容）"
-                  aria-label="停止"
+                  title={tc("composer.stopTitle")}
+                  aria-label={tc("composer.stopAria")}
                   className="flex h-8 w-8 items-center justify-center rounded-lg bg-red text-white transition-opacity hover:opacity-90"
                 >
                   <Square className="h-3.5 w-3.5" fill="currentColor" />
@@ -1443,10 +1460,10 @@ export function ChatStream({
             style={sel ? { borderColor: hex, background: hex + "1a", color: hex } : undefined}
           >
             <Icon name={a.icon} className="h-3.5 w-3.5" />
-            Ask {a.name}
+            {tc("agentChips.ask", { name: a.name })}
             {rec && (
               <span className="rounded-full border border-yellow/40 bg-yellow/10 px-1.5 text-[10px] leading-4 text-yellow">
-                推荐
+                {tc("agentChips.recommended")}
               </span>
             )}
           </button>
@@ -1476,14 +1493,14 @@ export function ChatStream({
             {greeting()}
           </div>
           <div className="mt-2 text-center text-[13px] text-faint">
-            交给 Agent：代码、文档、数据、工作流。
+            {tc("home.tagline")}
           </div>
           <div key="composer-home" className="mt-8 w-full max-w-[760px]">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               {agentChipsEl}
               {!target && (
                 <span className="ml-auto self-center text-[11px] text-faint">
-                  ⏎ 直接发送 = 默认 {g.agents[0]?.name ?? "Agent"}
+                  {tc("home.defaultAgentHint", { name: g.agents[0]?.name ?? tc("stream.fallbackAgent") })}
                 </span>
               )}
             </div>
@@ -1491,9 +1508,9 @@ export function ChatStream({
           </div>
           <div className="mt-6 flex max-w-[820px] flex-wrap justify-center gap-2.5">
             {[
-              { icon: "📊", label: "分析拖入的 Excel / CSV", fill: "分析这份 7 月用量报表，找出异常增长" },
-              { icon: "🔁", label: "跑一次晨报 workflow", fill: "/workflow 跑一次晨报" },
-              { icon: "🧠", label: "@记忆 回顾上周决定", fill: "@记忆 上周我们定了什么方案？" },
+              { icon: "📊", label: tc("home.chipExcelLabel"), fill: tc("home.chipExcelFill") },
+              { icon: "🔁", label: tc("home.chipWorkflowLabel"), fill: tc("home.chipWorkflowFill") },
+              { icon: "🧠", label: tc("home.chipMemoryLabel"), fill: tc("home.chipMemoryFill") },
             ].map((c) => (
               <button
                 key={c.label}
@@ -1512,11 +1529,11 @@ export function ChatStream({
               className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
             >
               <span>🎯</span>
-              设定一个长程目标
+              {tc("home.setGoal")}
             </button>
           </div>
           <div className="mt-6 text-[11px] text-faint">
-            支持拖入 Excel / Word / PPT / PDF · / 命令 · @ 提及产物 / 智能体 / 工作流 / 记忆
+            {tc("home.hintLine")}
           </div>
         </div>
       ) : (
@@ -1526,18 +1543,18 @@ export function ChatStream({
         <div className="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />
           <span className="flex-1 text-muted">
-            目标已{goal.status === "paused" ? "暂停" : goal.status === "blocked" ? "受阻" : "用量受限"}：
+            {tc("goal.stalledLabel", { status: goal.status })}:
             <span className="text-txt">{goal.objective}</span>
           </span>
           <button
             onClick={() => void g.setGoalStatus(session!.id, "active")}
             className="rounded-md bg-violet px-2 py-1 text-[11px] font-medium text-white hover:opacity-90"
           >
-            恢复
+            {tc("goal.resume")}
           </button>
           <button
             onClick={() => setResumeDismissed(true)}
-            aria-label="关闭提示"
+            aria-label={tc("goal.dismissAria")}
             className="rounded-md p-1 text-faint hover:text-txt"
           >
             <X className="h-3.5 w-3.5" />
@@ -1555,7 +1572,7 @@ export function ChatStream({
         <div className="mx-auto flex max-w-3xl flex-col gap-5">
           {messages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
-              开始对话吧，Agent 会使用工具完成任务，并可能就权限询问你。
+              {tc("empty.start")}
             </div>
           )}
 
@@ -1646,34 +1663,34 @@ export function ChatStream({
                             onClick={() => editResend(m.id)}
                             className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-txt group-hover:opacity-100"
                           >
-                            编辑重发
+                            {tc("sendFailed.editResend")}
                           </button>
                           <button
                             onClick={() => dismissFailed(m.id)}
                             className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
                           >
-                            删除
+                            {tc("sendFailed.delete")}
                           </button>
                         </>
                       )}
                       {m.id === lastRetryableId ? (
                         <button
                           onClick={() => retryFailed(m.id)}
-                          title={`发送失败：${m.failReason ?? "未知原因"}（点击重试）`}
-                          aria-label="发送失败，点击重试"
+                          title={tc("sendFailed.titleRetry", { reason: failText(m.failReason) })}
+                          aria-label={tc("sendFailed.ariaRetry")}
                           className="shrink-0 transition-transform hover:scale-110"
                         >
                           <AlertCircle className="h-[18px] w-[18px] text-red" />
                         </button>
                       ) : (
-                        <span title={`发送失败：${m.failReason ?? "未知原因"}`}>
+                        <span title={tc("sendFailed.title", { reason: failText(m.failReason) })}>
                           <AlertCircle className="h-[18px] w-[18px] shrink-0 text-red/50" />
                         </span>
                       )}
                     </div>
                   )}
                   {m.status === "sending" && (
-                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-faint" aria-label="发送中" />
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-faint" aria-label={tc("composer.sendingAria")} />
                   )}
                   <div
                     className={`max-w-[78%] rounded-2xl rounded-tr-md border px-4 py-2.5 text-sm leading-relaxed ${
@@ -1687,8 +1704,8 @@ export function ChatStream({
                 </div>
                 {m.status === "failed" && (
                   <div className="text-[10px] text-red/80">
-                    发送失败{m.failReason ? `：${m.failReason}` : ""}
-                    {m.id === lastRetryableId && " · 点击红色感叹号重试"}
+                    {tc("sendFailed.label")}{m.failReason ? `: ${failText(m.failReason)}` : ""}
+                    {m.id === lastRetryableId && tc("sendFailed.retryHint")}
                   </div>
                 )}
               </div>
@@ -1756,9 +1773,9 @@ export function ChatStream({
 
       {confirmDelRun && (
         <ConfirmModal
-          title="删除运行记录"
-          message="删除该运行记录？事件日志与检查点将一并删除，此操作不可撤销。"
-          confirmLabel="删除"
+          title={tc("confirmDeleteRun.title")}
+          message={tc("confirmDeleteRun.message")}
+          confirmLabel={tc("confirmDeleteRun.confirm")}
           onConfirm={() => {
             const id = confirmDelRun;
             setConfirmDelRun(null);
@@ -1771,9 +1788,9 @@ export function ChatStream({
       {permission && (
         <div className="mx-auto w-full max-w-3xl px-6">
           <div className="mb-2 rounded-xl border border-yellow/40 bg-yellow/10 p-3">
-            <div className="mb-1 text-sm font-medium text-yellow">Permission required</div>
+            <div className="mb-1 text-sm font-medium text-yellow">{tc("permission.title")}</div>
             <div className="mb-2 text-xs text-muted">
-              tool: <code className="font-mono text-txt">{permission.tool}</code>
+              {tc("permission.toolLabel")} <code className="font-mono text-txt">{permission.tool}</code>
             </div>
             <pre className="mb-3 max-h-28 overflow-auto rounded-lg bg-base/60 p-2 text-[11px] text-muted">
               {JSON.stringify(permission.args, null, 2)}
@@ -1783,13 +1800,13 @@ export function ChatStream({
                 onClick={() => respond("allow")}
                 className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
               >
-                Allow
+                {tc("permission.allow")}
               </button>
               <button
                 onClick={() => respond("deny")}
                 className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
               >
-                Deny
+                {tc("permission.deny")}
               </button>
             </div>
           </div>
@@ -1813,8 +1830,8 @@ export function ChatStream({
               <X className="h-3 w-3" />
             )}
             {proposeResult.decision === "allow"
-              ? `已应用变更 · ${proposeResult.workflowId} v${proposeResult.fromVersion} → 新版本`
-              : `已拒绝该 DSL 变更 · ${proposeResult.workflowId}`}
+              ? tc("propose.appliedReceipt", { id: proposeResult.workflowId, version: proposeResult.fromVersion })
+              : tc("propose.rejectedReceipt", { id: proposeResult.workflowId })}
           </div>
         </div>
       )}
@@ -1843,17 +1860,17 @@ export function ChatStream({
                 style={{ background: agentHex(switchTarget.color) }}
               />
               <span className="flex-1 text-muted">
-                下一条起由{" "}
+                {tc("agentChips.switchPrefix")}{" "}
                 <span className="font-medium" style={{ color: agentHex(switchTarget.color) }}>
                   {switchTarget.name}
                 </span>{" "}
-                应答 · 会话记录保留
+                {tc("agentChips.switchSuffix")}
               </span>
               <button
                 onClick={() => setTarget(null)}
                 className="shrink-0 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:text-txt"
               >
-                撤销
+                {tc("agentChips.undo")}
               </button>
             </div>
           )}
@@ -1863,7 +1880,7 @@ export function ChatStream({
               onClick={() => g.setActiveSession(null)}
               className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted hover:text-txt"
             >
-              + New Session
+              {tc("composer.newSession")}
             </button>
             {/* S1/S5: summarize entry — session picker + trace range (last N
                 messages) live in one dropdown. */}
@@ -1871,11 +1888,11 @@ export function ChatStream({
               <button
                 onClick={() => setSumMenuOpen((v) => !v)}
                 disabled={sumLoading || g.sessions.length === 0}
-                title="把会话总结成 workflow"
+                title={tc("summarize.buttonTitle")}
                 className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-2.5 py-1 text-xs text-violet hover:bg-violet/20 disabled:opacity-60"
               >
                 {sumLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
-                {sumLoading ? "正在总结…" : "总结成流程"}
+                {sumLoading ? tc("summarize.busy") : tc("summarize.button")}
                 <ChevronDown className="h-3 w-3 opacity-70" />
               </button>
               {sumMenuOpen && (
@@ -1885,15 +1902,15 @@ export function ChatStream({
                     <div className="mb-1 flex items-center gap-1 rounded-md border border-violet/30 bg-violet/[0.06] px-2 py-1.5">
                       <button
                         onClick={openDraftModal}
-                        title="恢复这份未保存的草稿"
+                        title={tc("summarize.restoreDraftTitle")}
                         className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[11px] text-violet hover:opacity-80"
                       >
                         <RotateCcw className="h-3 w-3 shrink-0" />
-                        <span className="truncate">恢复草稿 · {relTime(savedDraft.savedAt / 1000)}</span>
+                        <span className="truncate">{tc("summarize.restoreDraft", { time: relTime(savedDraft.savedAt / 1000) })}</span>
                       </button>
                       <button
                         onClick={deleteDraft}
-                        title="删除草稿"
+                        title={tc("summarize.deleteDraftTitle")}
                         className="shrink-0 rounded p-0.5 text-faint hover:bg-red/10 hover:text-red"
                       >
                         <X className="h-3 w-3" />
@@ -1901,7 +1918,7 @@ export function ChatStream({
                     </div>
                   )}
                   <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-faint">
-                    选择要总结的会话
+                    {tc("summarize.pickSession")}
                   </div>
                   {g.sessions.slice(0, 10).map((s) => (
                     <button
@@ -1910,13 +1927,13 @@ export function ChatStream({
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-card2 hover:text-txt"
                     >
                       {s.id === session?.id && <span className="text-violet">●</span>}
-                      <span className="max-w-[150px] truncate">{s.title || "未命名会话"}</span>
-                      {s.id === session?.id && <span className="text-[10px] text-faint">（推荐）</span>}
+                      <span className="max-w-[150px] truncate">{s.title || tc("summarize.untitled")}</span>
+                      {s.id === session?.id && <span className="text-[10px] text-faint">{tc("summarize.recommended")}</span>}
                       <span className="ml-auto shrink-0 text-[10px] text-faint">{relTime(s.updated)}</span>
                     </button>
                   ))}
                   <div className="mt-1 border-t border-line2 px-2 pb-1 pt-1.5">
-                    <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">范围</div>
+                    <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">{tc("summarize.range")}</div>
                     <div className="flex gap-1">
                       {([null, 5, 10, 20] as const).map((n) => (
                         <button
@@ -1928,7 +1945,7 @@ export function ChatStream({
                               : "text-faint hover:bg-card2 hover:text-muted"
                           }`}
                         >
-                          {n === null ? "全部" : `最近 ${n} 条`}
+                          {n === null ? tc("summarize.all") : tc("summarize.lastN", { n })}
                         </button>
                       ))}
                     </div>

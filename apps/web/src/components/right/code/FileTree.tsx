@@ -43,6 +43,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { ChevronDown, ChevronRight, FileText, Folder, FolderLock } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import { CodeApiError, listCodeDir } from "@/lib/runtime";
 import { cn } from "@/lib/utils";
@@ -81,13 +82,6 @@ const DRAG_THRESHOLD = 5;
 /** Callbacks return an error message (`null` = success): the tree shows the
  *  server's own wording inline, which is more useful than a generic failure. */
 type OpResult = Promise<string | null> | string | null;
-
-/** The heavy-dir placeholder's right-hand label. */
-function hiddenLabel(count: number | null): string {
-  if (count == null) return "已隐藏";
-  if (count >= HIDDEN_COUNT_CAP) return `已隐藏 ${HIDDEN_COUNT_CAP.toLocaleString()}+ 项`;
-  return `已隐藏 ${count.toLocaleString()} 项`;
-}
 
 /** What a rename / create action is currently editing. */
 type Editing =
@@ -179,6 +173,7 @@ export function FileTree({
   className,
 }: FileTreeProps) {
   const { openInCode } = useGinno();
+  const t = useTranslations("code");
   const [state, dispatch] = useReducer(treeReducer, undefined, initialTreeState);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
 
@@ -346,10 +341,10 @@ export function FileTree({
         setEditError(null);
         void refreshDir(e.dir);
       } catch (err) {
-        setEditError(err instanceof Error ? err.message : "创建失败");
+        setEditError(err instanceof Error ? err.message : t("fs.createFailed"));
       }
     },
-    [editing, onCreate, refreshDir],
+    [editing, onCreate, refreshDir, t],
   );
 
   const commitRename = useCallback(
@@ -377,10 +372,10 @@ export function FileTree({
         setEditError(null);
         void refreshDir(parentPath(path));
       } catch (err) {
-        setEditError(err instanceof Error ? err.message : "重命名失败");
+        setEditError(err instanceof Error ? err.message : t("fs.renameFailed"));
       }
     },
-    [onRename, refreshDir],
+    [onRename, refreshDir, t],
   );
 
   const openDelete = useCallback(
@@ -423,24 +418,25 @@ export function FileTree({
   );
 
   const confirmDelete = useCallback(async () => {
-    const t = pendingDelete;
-    if (!t || !onDelete || deleteBusy) return;
+    // 不能命名为 `t`：会遮蔽外层的 i18n 翻译函数（i18n-design.md §10.4 已知坑）。
+    const target = pendingDelete;
+    if (!target || !onDelete || deleteBusy) return;
     setDeleteBusy(true);
     try {
-      const message = await onDelete(t.path);
+      const message = await onDelete(target.path);
       setPendingDelete(null);
       if (message) {
         setOpError(message);
         return;
       }
-      void refreshDir(parentPath(t.path));
+      void refreshDir(parentPath(target.path));
     } catch (err) {
       setPendingDelete(null);
-      setOpError(err instanceof Error ? err.message : "删除失败");
+      setOpError(err instanceof Error ? err.message : t("fs.deleteFailed"));
     } finally {
       setDeleteBusy(false);
     }
-  }, [pendingDelete, onDelete, deleteBusy, refreshDir]);
+  }, [pendingDelete, onDelete, deleteBusy, refreshDir, t]);
 
   const runAction = useCallback(
     (id: string) => {
@@ -479,19 +475,45 @@ export function FileTree({
     [menu, startNew, startRename, openDelete, onCopyPath, onReveal, onOpenExternal],
   );
 
+  // 右键菜单文案：buildFileMenuItems 是纯函数，文案在这里用 t() 构建后传入。
+  const menuLabels = useMemo(
+    () => ({
+      newFile: t("menu.newFile"),
+      newFolder: t("menu.newFolder"),
+      rename: t("menu.rename"),
+      delete: t("menu.delete"),
+      copyRel: t("menu.copyRel"),
+      copyAbs: t("menu.copyAbs"),
+      reveal: t("menu.reveal"),
+      openExternal: t("menu.openExternal"),
+      readOnlyHint: t("menu.readOnlyHint"),
+    }),
+    [t],
+  );
+
   const menuItems = useMemo(() => {
     if (!menu) return [];
-    return buildFileMenuItems({
-      target: menu.target.kind,
-      writable,
-      canCreate: !!onCreate,
-      canRename: !!onRename,
-      canDelete: !!onDelete,
-      canCopyPath: !!onCopyPath,
-      canReveal: !!onReveal,
-      canOpenExternal: !!onOpenExternal,
-    });
-  }, [menu, writable, onCreate, onRename, onDelete, onCopyPath, onReveal, onOpenExternal]);
+    return buildFileMenuItems(
+      {
+        target: menu.target.kind,
+        writable,
+        canCreate: !!onCreate,
+        canRename: !!onRename,
+        canDelete: !!onDelete,
+        canCopyPath: !!onCopyPath,
+        canReveal: !!onReveal,
+        canOpenExternal: !!onOpenExternal,
+      },
+      menuLabels,
+    );
+  }, [menu, writable, onCreate, onRename, onDelete, onCopyPath, onReveal, onOpenExternal, menuLabels]);
+
+  /** 重型目录占位行的右侧标签（数量未知 → "已隐藏"；超上限 → "9,999+" 形式）。 */
+  const hiddenLabel = (count: number | null): string => {
+    if (count == null) return t("tree.hiddenNone");
+    if (count >= HIDDEN_COUNT_CAP) return t("tree.hiddenOverflow", { count: HIDDEN_COUNT_CAP });
+    return t("tree.hiddenCount", { count });
+  };
 
   const openRowMenu = useCallback((row: TreeRow, x: number, y: number) => {
     setEditing(null);
@@ -532,10 +554,10 @@ export function FileTree({
         void refreshDir(parentPath(from));
         void refreshDir(toDir);
       } catch (err) {
-        setOpError(err instanceof Error ? err.message : "移动失败");
+        setOpError(err instanceof Error ? err.message : t("fs.moveFailed"));
       }
     },
-    [refreshDir],
+    [refreshDir, t],
   );
   // The drag listeners must survive re-renders (and never be torn down while a
   // drag is live), so they read `doMove` through a ref and register once.
@@ -703,7 +725,7 @@ export function FileTree({
       <div
         ref={treeRef}
         role="tree"
-        aria-label="文件树"
+        aria-label={t("tree.label")}
         tabIndex={0}
         aria-activedescendant={focusedKey ? rowId(focusedKey) : undefined}
         onKeyDown={onKeyDown}
@@ -713,7 +735,7 @@ export function FileTree({
           setMenu({
             x: e.clientX,
             y: e.clientY,
-            target: { path: "", name: "根目录", kind: "root" },
+            target: { path: "", name: t("tree.root"), kind: "root" },
           });
         }}
         /* Belt and braces against the native drag layer (a text selection drag
@@ -733,7 +755,7 @@ export function FileTree({
               onClick={() => setOpError(null)}
               className="shrink-0 text-faint hover:text-txt"
             >
-              关闭
+              {t("tree.close")}
             </button>
           </div>
         ) : null}
@@ -742,7 +764,7 @@ export function FileTree({
           <InlineNameInput
             depth={0}
             initial=""
-            placeholder={newAtRoot.type === "file" ? "新文件名" : "新文件夹名"}
+            placeholder={newAtRoot.type === "file" ? t("tree.newFileName") : t("tree.newFolderName")}
             error={editError}
             onCommit={(v) => void commitNew(v)}
             onCancel={() => {
@@ -853,7 +875,7 @@ export function FileTree({
                     <InlineNameInput
                       bare
                       initial={row.name}
-                      placeholder="新名称"
+                      placeholder={t("tree.newName")}
                       error={editError}
                       onCommit={(v) => void commitRename(row.path, v)}
                       onCancel={() => {
@@ -883,7 +905,7 @@ export function FileTree({
                   <InlineNameInput
                     depth={row.depth + 1}
                     initial=""
-                    placeholder={newHere.type === "file" ? "新文件名" : "新文件夹名"}
+                    placeholder={newHere.type === "file" ? t("tree.newFileName") : t("tree.newFolderName")}
                     error={editError}
                     onCommit={(v) => void commitNew(v)}
                     onCancel={() => {
@@ -918,7 +940,7 @@ export function FileTree({
                   onClick={() => retry(item.path)}
                   className="shrink-0 text-faint underline hover:text-txt"
                 >
-                  重试
+                  {t("tree.retry")}
                 </button>
               </div>
             );
@@ -931,7 +953,7 @@ export function FileTree({
                 style={{ paddingLeft: (item.depth + 1) * 14 + 6 }}
                 className="py-1 pr-2 text-[11px] text-faint"
               >
-                （空）
+                {t("tree.empty")}
               </div>
             );
           }
@@ -944,7 +966,7 @@ export function FileTree({
                   onClick={() => dispatch({ type: "more", path: item.path })}
                   className="text-[11px] text-faint underline hover:text-txt"
                 >
-                  显示更多（还有 {Math.min(item.remaining, ROW_LIMIT)} 项）
+                  {t("tree.showMore", { count: Math.min(item.remaining, ROW_LIMIT) })}
                 </button>
               </div>
             );
@@ -1089,19 +1111,24 @@ function DeleteConfirm({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const t = useTranslations("code.delete");
+
   // Focus the dialog once so a keyboard user can answer it (Enter/Esc).
   const boxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     boxRef.current?.focus();
   }, []);
 
+  // 条目数在调用点格式化成字符串（含 "+" 后缀），文案侧保持模板简单。
   const detail = target.isDir
     ? target.loading
-      ? "正在统计条目数…"
+      ? t("counting")
       : target.count != null
-        ? `该文件夹下有 ${target.count.toLocaleString()}${target.countCapped ? "+" : ""} 项，将一并移入废纸篓。`
-        : "该文件夹的内容将一并移入废纸篓。"
-    : "此文件将移入废纸篓。";
+        ? t("dirWithCount", {
+            count: `${target.count.toLocaleString()}${target.countCapped ? "+" : ""}`,
+          })
+        : t("dirUnknown")
+    : t("file");
 
   return (
     <div
@@ -1119,22 +1146,22 @@ function DeleteConfirm({
     >
       <div
         role="alertdialog"
-        aria-label="确认删除"
+        aria-label={t("aria")}
         tabIndex={-1}
         ref={boxRef}
         className="w-[380px] max-w-[90vw] rounded-xl border border-line bg-card p-3 text-xs shadow-2xl outline-none"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-1 font-medium text-txt">删除「{target.name}」？</div>
+        <div className="mb-1 font-medium text-txt">{t("title", { name: target.name })}</div>
         <div className="mb-1 text-muted">{detail}</div>
-        <div className="mb-3 text-[11px] text-faint">可从访达的废纸篓恢复。</div>
+        <div className="mb-3 text-[11px] text-faint">{t("recoverable")}</div>
         <div className="flex justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
             className="rounded-md px-2.5 py-1 text-[11px] text-muted transition-colors hover:bg-card2 hover:text-txt"
           >
-            取消
+            {t("cancel")}
           </button>
           <button
             type="button"
@@ -1142,7 +1169,7 @@ function DeleteConfirm({
             disabled={busy}
             className="rounded-md bg-red px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? "删除中…" : "移到废纸篓"}
+            {busy ? t("deleting") : t("confirm")}
           </button>
         </div>
       </div>

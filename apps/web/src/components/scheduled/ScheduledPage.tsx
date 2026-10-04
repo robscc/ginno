@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlarmClock, Loader2, RefreshCw } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ScheduleConfig, ScheduleTask } from "@/lib/types";
@@ -19,6 +20,7 @@ import { dateStr, fmtClock, fmtDayPrefix } from "./shared";
 
 export function ScheduledPage() {
   const g = useGinno();
+  const tr = useTranslations("sched");
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -52,7 +54,7 @@ export function ScheduledPage() {
   useEffect(() => {
     let ws: WebSocket | null = null;
     try {
-      ws = new WebSocket(api.wsScheduleUrl());
+      ws = api.openSocket(api.wsScheduleUrl());
     } catch {
       return; // 预渲染环境
     }
@@ -110,11 +112,11 @@ export function ScheduledPage() {
   })();
   const nextIn = nextRun
     ? (() => {
-        const s = Math.max(0, Math.round(nextRun.at - Date.now() / 1000));
-        if (s < 60) return `in ${s}s`;
-        if (s < 3600) return `in ${Math.floor(s / 60)}m`;
-        if (s < 86400) return `in ${Math.floor(s / 3600)}h`;
-        return `in ${Math.floor(s / 86400)}d`;
+        const sec = Math.max(0, Math.round(nextRun.at - Date.now() / 1000));
+        if (sec < 60) return tr("page.inSec", { n: sec });
+        if (sec < 3600) return tr("page.inMin", { n: Math.floor(sec / 60) });
+        if (sec < 86400) return tr("page.inHour", { n: Math.floor(sec / 3600) });
+        return tr("page.inDay", { n: Math.floor(sec / 86400) });
       })()
     : null;
 
@@ -144,23 +146,27 @@ export function ScheduledPage() {
     <div className="mx-auto max-w-3xl px-6 py-8">
       <header className="mb-5 flex flex-wrap items-center gap-2">
         <AlarmClock className="h-5 w-5 text-faint" />
-        <h1 className="text-lg font-semibold text-txt">Scheduled Tasks</h1>
+        <h1 className="text-lg font-semibold text-txt">{tr("page.title")}</h1>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {toggle(
             !!cfg?.enabled,
             () => void putGlobal({ enabled: !cfg?.enabled }),
-            "Enabled",
-            cfg?.enabled ? "Turn off to pause all tasks" : "Turn on to run tasks on schedule",
+            tr("page.enabled"),
+            cfg?.enabled ? tr("page.enabledOnTitle") : tr("page.enabledOffTitle"),
           )}
           {toggle(
             !!cfg?.keep_awake,
             () => void putGlobal({ keep_awake: !cfg?.keep_awake }),
-            "Keep Awake",
-            "Prevents idle system sleep; display may dim, lid close still sleeps",
+            tr("page.keepAwake"),
+            tr("page.keepAwakeTitle"),
           )}
           {nextRun && (
-            <span className="text-xs text-faint" title="Next run of the nearest enabled task">
-              Next: {fmtDayPrefix(nextRun.at)} {fmtClock(nextRun.at)} {nextRun.name}
+            <span className="text-xs text-faint" title={tr("page.nextTitle")}>
+              {tr("page.next", {
+                day: fmtDayPrefix(nextRun.at),
+                clock: fmtClock(nextRun.at),
+                name: nextRun.name,
+              })}
               {nextIn ? ` (${nextIn})` : ""}
             </span>
           )}
@@ -169,7 +175,7 @@ export function ScheduledPage() {
               void refresh();
               bump();
             }}
-            title="Refresh"
+            title={tr("page.refresh")}
             className="rounded-md p-1.5 text-faint hover:bg-card hover:text-txt"
           >
             <RefreshCw className="h-4 w-4" />
@@ -179,23 +185,23 @@ export function ScheduledPage() {
 
       {/* 保持唤醒能力边界的小字（§3.3 文案诚实） */}
       <div className="mb-3 text-[11px] leading-relaxed text-faint">
-        Keep awake prevents idle system sleep (display may dim/lock, system stays up); it cannot prevent lid-close sleep, manual sleep, or battery drain.
-        {!cfg?.keep_awake && " Tasks due while asleep are recorded as Missed and not re-run."}
+        {tr("page.keepAwakeHint")}
+        {!cfg?.keep_awake && tr("page.keepAwakeHintOff")}
       </div>
 
       {/* 联动提示（§3.3，不强制）：有任务且全局开但 keep_awake 关。 */}
       {showKeepAwakeHint && (
         <div className="mb-3 flex items-center gap-2 rounded-lg border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
-          <span className="flex-1">Consider enabling Keep Awake, otherwise tasks will be missed while the machine sleeps</span>
+          <span className="flex-1">{tr("page.keepAwakeNudge")}</span>
           <button
             onClick={() => void putGlobal({ keep_awake: true })}
             className="rounded-md bg-yellow/20 px-2 py-1 text-[11px] font-medium text-yellow hover:bg-yellow/30"
           >
-            Enable
+            {tr("page.enable")}
           </button>
           <button
             onClick={() => setHintDismissed(true)}
-            aria-label="Dismiss hint"
+            aria-label={tr("page.dismiss")}
             className="rounded-md p-0.5 text-yellow/70 hover:text-yellow"
           >
             ✕
@@ -205,10 +211,10 @@ export function ScheduledPage() {
 
       {!loaded ? (
         <div className="flex items-center gap-2 py-10 text-sm text-faint">
-          <Loader2 className="h-4 w-4 animate-spin" /> Loading scheduled tasks…
+          <Loader2 className="h-4 w-4 animate-spin" /> {tr("page.loading")}
         </div>
       ) : !cfg ? (
-        <div className="py-10 text-sm text-faint">Cannot reach the runtime — make sure Ginno is running.</div>
+        <div className="py-10 text-sm text-faint">{tr("page.unreachable")}</div>
       ) : (
         <>
           <DayTimeline
@@ -225,8 +231,11 @@ export function ScheduledPage() {
           <div className="mb-3 mt-5 flex items-center gap-1 border-b border-line">
             {(
               [
-                ["tasks", `Tasks${cfg.tasks.length ? ` (${cfg.tasks.length})` : ""}`],
-                ["runs", "Runs"],
+                [
+                  "tasks",
+                  cfg.tasks.length ? tr("page.tabTasksCount", { count: cfg.tasks.length }) : tr("page.tabTasks"),
+                ],
+                ["runs", tr("page.tabRuns")],
               ] as Array<["tasks" | "runs", string]>
             ).map(([k, label]) => (
               <button

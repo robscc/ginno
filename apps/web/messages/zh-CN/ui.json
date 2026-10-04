@@ -1,0 +1,41 @@
+{
+  "ui": {
+    "common": {
+      "confirm": "确认",
+      "cancel": "取消",
+      "delete": "删除"
+    },
+    "net": {
+      "unreachable": "无法连接运行时服务",
+      "downloadFailed": "下载失败（HTTP {status}）",
+      "updateFailed": "更新失败"
+    },
+    "trigger": {
+      "failed": "触发失败"
+    },
+    "relTime": {
+      "justNow": "刚刚",
+      "minAgo": "{n} 分钟前",
+      "hrAgo": "{n} 小时前",
+      "dAgo": "{n} 天前"
+    },
+    "greeting": {
+      "lateNight": "夜深了",
+      "morning": "早上好",
+      "afternoon": "下午好",
+      "evening": "晚上好",
+      "prompt": "{part}，今天想做点什么？"
+    },
+    "notifyRun": {
+      "completed": "已完成 · 用时 {duration}",
+      "failedAt": "在「{step}」失败",
+      "failed": "运行失败",
+      "titleDone": "✓ {name}",
+      "titleFailed": "✕ {name}",
+      "defaultName": "工作流"
+    },
+    "subtask": {
+      "fallbackTitle": "子任务"
+    }
+  }
+}

@@ -5,8 +5,31 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, Check, Circle, Loader2, MessageSquare, Pause, RotateCcw, SkipForward, Square, Trash2, Workflow, Wrench } from "lucide-react";
 import type { WorkflowRun } from "@/lib/types";
 import { useGinno } from "@/lib/store";
+import { useTranslations } from "next-intl";
 import { RunErrorBox } from "@/components/workflow/RunErrorBox";
 import { HumanInputCard } from "@/components/workflow/HumanInputCard";
+
+/** chat 域翻译 + 动态 key 收敛转型（本文件共用；理由见 blocks.tsx useChatT）。 */
+function useChatT() {
+  const tc = useTranslations("chat");
+  const tr = tc as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  return { tc, tr };
+}
+
+/** run 状态枚举的展示标签：chat.status.* 命中即译，未识别的状态回退原值
+ *  （STATUS_LABEL 导出形状不变——workflow 页面等外部使用方仍读它）。
+ *  侧栏运行行 / workflow / studio 的状态标签统一走本 hook 做 key 渲染。 */
+export function useRunStatusLabel() {
+  const { tr } = useChatT();
+  return (status?: string) => {
+    const key = `status.${status ?? ""}`;
+    if (tr.has(key)) return tr(key);
+    return (status && STATUS_LABEL[status]) || status || "";
+  };
+}
 
 export const STATUS_COLOR: Record<string, string> = {
   done: "#22c55e",
@@ -21,15 +44,15 @@ export const STATUS_COLOR: Record<string, string> = {
 };
 
 export const STATUS_LABEL: Record<string, string> = {
-  done: "已完成",
-  ok: "已完成",
-  running: "运行中",
-  paused: "已暂停",
-  pending: "待执行",
-  failed: "失败",
-  cancelled: "已取消",
-  interrupted: "已中断",
-  skipped: "已跳过",
+  done: "Completed",
+  ok: "Completed",
+  running: "Running",
+  paused: "Paused",
+  pending: "Pending",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  interrupted: "Interrupted",
+  skipped: "Skipped",
 };
 
 /** Run 级状态 meta（运行子会话视图顶栏用；色值与上方 STATUS_COLOR 同源）。
@@ -38,12 +61,12 @@ export const RUN_STATUS_META: Record<
   string,
   { emoji: string; label: string; color: string }
 > = {
-  running: { emoji: "🟢", label: "运行中", color: STATUS_COLOR.running },
-  paused: { emoji: "⏳", label: "已暂停", color: STATUS_COLOR.paused },
-  done: { emoji: "✅", label: "已完成", color: STATUS_COLOR.done },
-  failed: { emoji: "⚠️", label: "失败", color: STATUS_COLOR.failed },
-  cancelled: { emoji: "⛔", label: "已取消", color: STATUS_COLOR.cancelled },
-  interrupted: { emoji: "⚠️", label: "已中断", color: STATUS_COLOR.interrupted },
+  running: { emoji: "🟢", label: "Running", color: STATUS_COLOR.running },
+  paused: { emoji: "⏳", label: "Paused", color: STATUS_COLOR.paused },
+  done: { emoji: "✅", label: "Completed", color: STATUS_COLOR.done },
+  failed: { emoji: "⚠️", label: "Failed", color: STATUS_COLOR.failed },
+  cancelled: { emoji: "⛔", label: "Cancelled", color: STATUS_COLOR.cancelled },
+  interrupted: { emoji: "⚠️", label: "Interrupted", color: STATUS_COLOR.interrupted },
 };
 
 function Glyph({ status }: { status?: string }) {
@@ -98,10 +121,12 @@ export function LiveRunBlock({
 }) {
   const router = useRouter();
   const g = useGinno();
+  const { tc } = useChatT();
+  const statusLabel = useRunStatusLabel();
   const done = run.steps.filter((s) => s.status === "done").length;
   const total = run.steps.length;
   const c = STATUS_COLOR[run.status] || STATUS_COLOR.pending;
-  const label = STATUS_LABEL[run.status] || run.status;
+  const label = statusLabel(run.status);
   const isTerminal = TERMINAL.has(run.status);
   const showFailure = run.status === "failed" || run.status === "interrupted" || run.status === "cancelled";
   // Paused because a human node asked a question → answer card (P1). Other
@@ -133,13 +158,13 @@ export function LiveRunBlock({
     try {
       const r = await onRetry(run.id);
       if (r && r.ok === false) {
-        setRetryErr(r.detail || "重试失败");
+        setRetryErr(r.detail || tc("run.retryFailed"));
         setRetryBusy(false);
       }
       // ok (or void): stay busy — the refresh replaces this button with 已重试
       // and the new run card animates in below/above.
     } catch {
-      setRetryErr("重试失败：无法连接运行时");
+      setRetryErr(tc("run.retryFailedNoConn"));
       setRetryBusy(false);
     }
   };
@@ -184,11 +209,11 @@ export function LiveRunBlock({
           }
           router.push(`/workflows${h}`);
         }}
-        title="打开工作流详情"
+        title={tc("workflow.openDetails")}
         className="mb-2 flex cursor-pointer items-center gap-1.5 text-sm font-medium text-txt hover:text-violet"
       >
         {humanInterrupt ? <MessageSquare className="h-3.5 w-3.5 text-yellow" /> : <Workflow className="h-3.5 w-3.5 text-violet" />}
-        {run.name || "Workflow"}
+        {run.name || tc("workflow.fallbackName")}
         {/* 运行子会话视图入口（run view 方案）：卡片本体仍是 Studio deep-link
             （行为不变），这个独立小按钮原地打开全屏运行视图——已在 "/" 时
             （聊天页/右侧 Workflow 面板）不换路由，其它页面先切回去。 */}
@@ -198,10 +223,10 @@ export function LiveRunBlock({
             g.openRunView(run.id);
             if (window.location.pathname !== "/") router.push("/");
           }}
-          title="打开运行视图（步骤遥测 / 事件流 / 干预面板）"
+          title={tc("run.openViewTitle")}
           className="ml-1 shrink-0 rounded border border-line2 px-1 py-px text-[10px] font-normal text-faint transition-colors hover:border-violet/50 hover:text-violet"
         >
-          查看运行
+          {tc("run.viewRun")}
         </button>
         <span className="ml-auto flex items-center gap-1.5 text-xs font-normal" style={{ color: c }}>
           {elapsed !== null && <span className="text-faint">⏱ {fmtElapsed(elapsed)}</span>}
@@ -210,11 +235,11 @@ export function LiveRunBlock({
               className="flex items-center gap-0.5 rounded-full bg-yellow/15 px-1.5 py-0.5 text-[10px] text-yellow"
               title={
                 avgDone
-                  ? `该流程平均 ${fmtElapsed(avgDone)} 完成，当前已 ${fmtElapsed(now - run.started)} 无进展，可取消后重试`
-                  : "超过 2 分钟无进展，可取消后重试"
+                  ? tc("run.stuckTitleAvg", { avg: fmtElapsed(avgDone), elapsed: fmtElapsed(now - run.started) })
+                  : tc("run.stuckTitle")
               }
             >
-              <AlertTriangle className="h-3 w-3" /> 疑似卡住
+              <AlertTriangle className="h-3 w-3" /> {tc("run.possiblyStuck")}
             </span>
           )}
           <span className="inline-block h-2 w-2 rounded-full" style={{ background: c }} />
@@ -224,7 +249,7 @@ export function LiveRunBlock({
           {isTerminal && (run.warnings ?? 0) > 0 && (
             <span
               className="ml-1 text-yellow"
-              title="部分步骤失败但运行继续（on_error=continue）"
+              title={tc("run.warningsTitle")}
             >
               ⚠ {run.warnings}
             </span>
@@ -278,10 +303,10 @@ export function LiveRunBlock({
           {run.status === "running" && onPause && (
             <button
               onClick={() => onPause(run.id)}
-              title="在当前步骤/工具调用完成后暂停，可从暂停点继续"
+              title={tc("run.pauseTitle")}
               className="btn-press flex items-center gap-1 rounded-md border border-yellow/40 px-2 py-1 text-xs text-yellow hover:bg-yellow/10"
             >
-              <Pause className="h-3 w-3" /> 暂停
+              <Pause className="h-3 w-3" /> {tc("run.pause")}
             </button>
           )}
           {run.status === "running" && onCancel && (
@@ -289,7 +314,7 @@ export function LiveRunBlock({
               onClick={() => onCancel(run.id)}
               className="btn-press flex items-center gap-1 rounded-md border border-red/40 px-2 py-1 text-xs text-red hover:bg-red/10"
             >
-              <Square className="h-3 w-3" /> 取消
+              <Square className="h-3 w-3" /> {tc("run.cancel")}
             </button>
           )}
           {run.status === "paused" && onContinue && (
@@ -297,7 +322,7 @@ export function LiveRunBlock({
               onClick={() => onContinue(run.id)}
               className="btn-press flex items-center gap-1 rounded-md border border-yellow/40 px-2 py-1 text-xs text-yellow hover:bg-yellow/10"
             >
-              <Check className="h-3 w-3" /> {manualPaused ? "继续执行" : "继续（human/supervisor）"}
+              <Check className="h-3 w-3" /> {manualPaused ? tc("run.resume") : tc("run.continue")}
             </button>
           )}
           {run.status === "paused" && onCancel && (
@@ -305,7 +330,7 @@ export function LiveRunBlock({
               onClick={() => onCancel(run.id)}
               className="btn-press flex items-center gap-1 rounded-md border border-red/40 px-2 py-1 text-xs text-red hover:bg-red/10"
             >
-              <Square className="h-3 w-3" /> 取消
+              <Square className="h-3 w-3" /> {tc("run.cancel")}
             </button>
           )}
         </div>
@@ -315,7 +340,7 @@ export function LiveRunBlock({
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {onRetry &&
             (run.retry_run_id ? (
-              <span className="flex items-center gap-1 text-[11px] text-faint">已重试</span>
+              <span className="flex items-center gap-1 text-[11px] text-faint">{tc("run.retried")}</span>
             ) : (
               <button
                 onClick={handleRetry}
@@ -329,7 +354,7 @@ export function LiveRunBlock({
                 ) : (
                   <RotateCcw className="h-3 w-3" />
                 )}
-                {retryBusy ? "重试中…" : "重试"}
+                {retryBusy ? tc("run.retrying") : tc("run.retry")}
               </button>
             ))}
           {onDelete && (
@@ -337,7 +362,7 @@ export function LiveRunBlock({
               onClick={() => onDelete(run.id)}
               className="btn-press flex items-center gap-1 rounded-md border border-line px-2 py-1 text-xs text-muted hover:bg-red/10 hover:text-red"
             >
-              <Trash2 className="h-3 w-3" /> 删除
+              <Trash2 className="h-3 w-3" /> {tc("run.delete")}
             </button>
           )}
           {retryErr && <span className="text-[11px] text-red">{retryErr}</span>}

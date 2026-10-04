@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useTranslations } from "next-intl";
 import { Bot, Brain, FileText, Sparkles, Terminal, Workflow } from "lucide-react";
 import type { MenuItem } from "./commandMenu";
 
@@ -38,6 +39,8 @@ export function ComposerMenu({
   onHover: (index: number) => void;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
+  // composer 域 catalog（分组名 item.group 由 commandMenu 构建时已按 locale 取词）
+  const t = useTranslations("composer");
 
   // Keep the active row in view while arrow-keying.
   useEffect(() => {
@@ -50,7 +53,7 @@ export function ComposerMenu({
     <div
       className="absolute bottom-full left-0 right-0 z-20 mb-2 max-h-72 overflow-y-auto rounded-xl border border-line bg-card shadow-xl"
       role="listbox"
-      aria-label="命令与提及补全"
+      aria-label={t("menu.ariaLabel")}
     >
       <div ref={listRef}>
         {items.map((item, i) => {
@@ -91,7 +94,7 @@ export function ComposerMenu({
         })}
       </div>
       <div className="border-t border-line px-3 py-1 text-[10px] text-faint">
-        ↑↓ 选择 · Tab/Enter 确认 · Esc 关闭
+        {t("menu.hints")}
       </div>
     </div>
   );
