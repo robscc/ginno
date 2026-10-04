@@ -21,6 +21,8 @@ import pytest
 
 from ginno_runtime import server_shared, usage_store
 from ginno_runtime.tools import external_agent
+from ginno_runtime.tools.external_agents import base as _xa_base  # adapter 拆分后 _resolve_cli 的真实宿主
+from ginno_runtime.tools.external_agent import run_delegation
 from ginno_runtime.tools.external_agent import (
     ClaudeCodeBackend,
     CodexBackend,
@@ -60,6 +62,15 @@ def _cli_cache_clean():
     clear_cli_cache()
 
 
+def _stub_cli(monkeypatch, path):
+    """CLI 桩：直接写 base._CLI_CACHE。adapter 拆分后各 backend 在导入期
+    绑定了 _resolve_cli 引用，patch 模块属性够不到它们；cache 是共享
+    dict（运行期读），一处注入对全部 adapter 生效。autouse 的
+    _cli_cache_clean 负责清理。"""
+    for _name in ("claude", "codex", "pi"):
+        _xa_base._CLI_CACHE[_name] = path
+
+
 @pytest.fixture
 def ws(tmp_path):
     # A real subdir (mirrors session workspaces; keeps parity with the
@@ -76,7 +87,9 @@ def enabled(monkeypatch):
 
 @pytest.fixture
 def delegate(ws, enabled):
-    tools = build_external_agent_tools(ws, session_id="sess-1", project_slug="proj-x")
+    # 异步化后（2026-10-04）：unit 层只测无会话的同步路径；带会话的异步
+    # 注入/记账由 tests/api/test_delegate_wiring.py 覆盖。
+    tools = build_external_agent_tools(ws)
     assert len(tools) == 1 and tools[0].name == "delegate_agent"
     return tools[0]
 
@@ -116,26 +129,28 @@ def fake_popen(monkeypatch, *, stdout="", stderr="", rc=0, timeout_once=False):
 # argv construction (2 backends × 2 modes)
 # --------------------------------------------------------------------------- #
 def test_claude_argv_read_only(monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     argv = ClaudeCodeBackend().build_argv("do it", "read-only", "/ws", None)
     assert argv[0] == "/opt/claude"
     assert argv[1] == "-p"
-    assert argv[argv.index("--output-format") + 1] == "json"
-    assert "--restricted" in argv  # BOTH modes — strips Bash entirely
-    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
+    ro_settings = next(a for a in argv if a.startswith("--settings="))
+    assert '"Bash"' in ro_settings and '"Edit"' in ro_settings  # BOTH modes — no shell（--restricted 已被 claude 2.x 移除）
+    assert not any(a.startswith("--permission-mode") for a in argv)
     assert argv[-1] == "do it"
 
 
 def test_claude_argv_edit(monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     argv = ClaudeCodeBackend().build_argv("do it", "edit", "/ws", None)
-    assert "--restricted" in argv
-    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert '"Bash"' in next(a for a in argv if a.startswith("--settings="))
+    assert "--permission-mode=acceptEdits" in argv
     assert "plan" not in argv
 
 
 def test_codex_argv_read_only(monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/codex")
+    _stub_cli(monkeypatch, "/opt/codex")
     argv = CodexBackend().build_argv("do it", "read-only", "/ws", "/tmp/out.txt")
     assert argv[0] == "/opt/codex"
     assert argv[1] == "exec"
@@ -148,7 +163,7 @@ def test_codex_argv_read_only(monkeypatch):
 
 
 def test_codex_argv_edit(monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/codex")
+    _stub_cli(monkeypatch, "/opt/codex")
     argv = CodexBackend().build_argv("do it", "edit", "/ws", None)
     assert "--full-auto" in argv
     assert "-s" not in argv
@@ -157,7 +172,7 @@ def test_codex_argv_edit(monkeypatch):
 def test_prompt_stays_a_single_argv_element(monkeypatch):
     """Prompt injection into argv: shell metacharacters must remain one
     element (we never go through a shell)."""
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     evil = "a b; rm -rf / $(reboot) `x`"
     argv = ClaudeCodeBackend().build_argv(evil, "read-only", "/ws", None)
     assert argv[-1] == evil
@@ -242,13 +257,13 @@ def test_empty_prompt(delegate):
 
 
 def test_unknown_mode(delegate, monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     out = delegate.invoke({"backend": "claude-code", "prompt": "x", "mode": "yolo"})
     assert "[error] unknown mode" in out
 
 
 def test_backend_not_installed_lists_available(delegate, monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: None)
+    _stub_cli(monkeypatch, None)
     out = delegate.invoke({"backend": "codex", "prompt": "x"})
     assert "[error] codex is not installed" in out
 
@@ -265,7 +280,7 @@ def test_description_lists_availability(delegate):
 # End-to-end tool runs (fake subprocess)
 # --------------------------------------------------------------------------- #
 def test_delegate_success_header_and_cwd(delegate, ws, monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     created = fake_popen(monkeypatch, stdout=CLAUDE_OK)
     out = delegate.invoke({"backend": "claude-code", "prompt": "do x"})
     assert out.startswith("[delegate backend=claude-code mode=read-only stop=success")
@@ -279,15 +294,15 @@ def test_delegate_success_header_and_cwd(delegate, ws, monkeypatch):
 
 
 def test_default_mode_is_read_only(delegate, monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     created = fake_popen(monkeypatch, stdout=CLAUDE_OK)
     delegate.invoke({"backend": "claude-code", "prompt": "x"})
     argv = created[0].argv
-    assert argv[argv.index("--permission-mode") + 1] == "plan"
+    assert not any(a.startswith("--permission-mode") for a in argv)
 
 
 def test_error_rc_flattens_to_diagnostic(delegate, monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     fake_popen(monkeypatch, stdout="not json", stderr="auth failed", rc=1)
     out = delegate.invoke({"backend": "claude-code", "prompt": "x"})
     assert "stop=error" in out
@@ -296,7 +311,7 @@ def test_error_rc_flattens_to_diagnostic(delegate, monkeypatch):
 
 
 def test_timeout_kills_process_group_and_reports(delegate, monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     created = fake_popen(monkeypatch, timeout_once=True)
     signals = []
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: signals.append((pgid, sig)))
@@ -308,16 +323,16 @@ def test_timeout_kills_process_group_and_reports(delegate, monkeypatch):
 
 
 def test_timeout_clamps_up_to_minimum(delegate, monkeypatch):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     created = fake_popen(monkeypatch, stdout=CLAUDE_OK)
     delegate.invoke({"backend": "claude-code", "prompt": "x", "timeout": 1})
     assert created[0].timeouts[0] == 10  # clamped to the min
 
 
 def test_workspace_none_falls_back_to_process_cwd(monkeypatch, enabled):
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     created = fake_popen(monkeypatch, stdout=CLAUDE_OK)
-    tools = build_external_agent_tools(None, session_id="s")
+    tools = build_external_agent_tools(None)
     tools[0].invoke({"backend": "claude-code", "prompt": "x"})
     assert created[0].kw["cwd"] == os.getcwd()
 
@@ -325,13 +340,21 @@ def test_workspace_none_falls_back_to_process_cwd(monkeypatch, enabled):
 # --------------------------------------------------------------------------- #
 # Usage booking (ledger + live accumulator)
 # --------------------------------------------------------------------------- #
-def test_usage_recorded_and_accumulator_synced(delegate, monkeypatch):
+def test_usage_recorded_and_accumulator_synced(monkeypatch):
+    """账本 + 实时累加器双写（seam 不变量）；带会话的端到端记账在
+    tests/api/test_delegate_wiring.py 的异步注入路径覆盖。"""
     recorded = []
     monkeypatch.setattr(usage_store, "record", lambda **kw: recorded.append(kw))
     server_shared._USAGE_BY_SESSION.pop("sess-1", None)
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
-    fake_popen(monkeypatch, stdout=CLAUDE_OK)
-    delegate.invoke({"backend": "claude-code", "prompt": "x"})
+    from ginno_runtime.tools.external_agent import _record_external_usage
+
+    _record_external_usage(
+        {"input_tokens": 12495, "output_tokens": 678},
+        "claude-code",
+        {"model": "claude-sonnet-5"},
+        "sess-1",
+        "proj-x",
+    )
 
     assert recorded
     r = recorded[0]
@@ -351,7 +374,7 @@ def test_no_usage_booking_without_session(ws, enabled, monkeypatch):
     """Workflow/headless path: no session attribution → no ledger writes."""
     recorded = []
     monkeypatch.setattr(usage_store, "record", lambda **kw: recorded.append(kw))
-    monkeypatch.setattr(external_agent, "_resolve_cli", lambda n: "/opt/claude")
+    _stub_cli(monkeypatch, "/opt/claude")
     fake_popen(monkeypatch, stdout=CLAUDE_OK)
     tools = build_external_agent_tools(ws)
     out = tools[0].invoke({"backend": "claude-code", "prompt": "x"})
@@ -419,3 +442,33 @@ def test_resolve_cli_nowhere(monkeypatch):
         subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="")
     )
     assert external_agent._resolve_cli("codex") is None
+
+
+def test_run_delegation_streaming_on_line(monkeypatch):
+    """流式路径：真实子进程逐行回调 on_line（fake 无 stdout 时自动落回
+    communicate——本测试用 /bin/sh printf 模拟 JSONL 逐行输出）。"""
+    import io as _io
+    import threading as _th
+
+    class _StreamP:
+        def __init__(self, argv, **kw):
+            self.argv = list(argv)
+            self.pid = 4242
+            self.returncode = 0
+            self.stdout = _io.StringIO('{"type":"result","subtype":"success","result":"ok","is_error":false}\n')
+            self.stderr = _io.StringIO("")
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            pass
+
+    seen = []
+    monkeypatch.setattr(subprocess, "Popen", _StreamP)
+    _stub_cli(monkeypatch, "/opt/claude")
+    res = run_delegation(
+        ClaudeCodeBackend(), "p", "read-only", "/ws", 30, on_line=seen.append
+    )
+    assert res.stop_reason == "success" and res.output == "ok"
+    assert seen and seen[0].startswith("{")  # 逐行收到

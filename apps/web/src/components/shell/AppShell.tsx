@@ -363,7 +363,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 父 id → 直属子会话（按创建时间正序）。
   const childrenOf = new Map<string, SessionMeta[]>();
   for (const s of visibleSessions) {
-    if (s.type !== "subagent" || !s.parent_session_id) continue;
+    if ((s.type !== "subagent" && s.type !== "delegation") || !s.parent_session_id) continue;
     const list = childrenOf.get(s.parent_session_id) ?? [];
     list.push(s);
     childrenOf.set(s.parent_session_id, list);
@@ -400,7 +400,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 父在本列表可见（未被筛选掉/未删除）的子会话才嵌套；孤儿子会话退回
   // 天分组顶层渲染，避免凭空消失。
   const hasVisibleParent = (s: SessionMeta) =>
-    s.type === "subagent" && !!s.parent_session_id &&
+    (s.type === "subagent" || s.type === "delegation") &&
+    !!s.parent_session_id &&
     visibleSessions.some((p) => p.id === s.parent_session_id);
   const sortedSessions = [...visibleSessions]
     .filter((s) => !hasVisibleParent(s))

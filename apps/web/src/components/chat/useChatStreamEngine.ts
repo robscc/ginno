@@ -123,6 +123,31 @@ export function useChatStreamEngine(deps: EngineDeps) {
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
   } = deps;
+  // 运行中的委托回放页（P1 实时流前端侧）：后端 bg 每 3s 节流回填部分转录，
+  // 这里同步轮询 history 替换消息——回放内容随委托进度"长"出来，终态即停。
+  const delegationReplayLive =
+    session?.type === "delegation" && session?.stop_reason === "running";
+  useEffect(() => {
+    if (!delegationReplayLive || !session?.id) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const res = await getSessionHistory(session.id);
+        if (!alive) return;
+        setMessages(mapHistory(res ?? {}));
+        pinToBottom();
+      } catch {
+        /* 轮询失败静默——下一轮再试 */
+      }
+    };
+    void tick();
+    const iv = setInterval(tick, 3000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delegationReplayLive, session?.id]);
 
   // ---- i18n（chat 域 + 事件契约）----
   // 本 hook 处理 runtime 事件文本的落地：error / notice 等事件可带 i18n_key+params
@@ -1071,14 +1096,50 @@ export function useChatStreamEngine(deps: EngineDeps) {
         syncDisplay(sid);
         break;
       }
+      case "delegate_update": {
+        // P1 委托实时进度：运行中的系统行同 id 刷新；running=false 撤行
+        //（结果卡由 subagent.status 通道补位，已有 dedup 与跳转）。
+        const did = ev.delegation_id as string;
+        if (!did) break;
+        const liveId = `delegate-live-${did}`;
+        const store0 = storeRef.current[sid] ?? [];
+        const without = store0.filter((m) => m.id !== liveId);
+        if (ev.running === false) {
+          storeRef.current[sid] = without;
+          setMessages(without);
+        } else {
+          const nxt = [
+            ...without,
+            {
+              id: liveId,
+              role: "system" as const,
+              blocks: [
+                {
+                  kind: "text",
+                  text: `🤖 ${ev.backend ?? "delegation"} · ${ev.text ?? "working…"}`,
+                } as Block,
+              ],
+            },
+          ];
+          storeRef.current[sid] = nxt;
+          setMessages(nxt);
+        }
+        break;
+      }
       case "notice":
         // Built-in command reply (e.g. /help): no graph turn ran, so the server
         // pushes the rendered text directly into the live bubble as one delta.
         // 事件契约：带 i18n_key 时落地即翻译，否则原样直显 message。
         markDelivered(sid);
+        let _txt = i18nRef.current.evText(ev, (ev.message as string) || "");
+        // auto-retry 是瞬态系统提示——包成 code span + ⚠️，气泡里呈现为
+        // 琥珀色等宽小条而不是混入正文的普通文本（用户反馈样式不显眼）。
+        if ((ev.i18n_key as string) === "stream.auto_retry") {
+          _txt = "`⚠️ " + _txt + "`";
+        }
         mutateLive(sid, {
           event: "token.delta",
-          content: i18nRef.current.evText(ev, (ev.message as string) || ""),
+          content: _txt,
         });
         break;
       case "goal.updated":

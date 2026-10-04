@@ -171,7 +171,11 @@ export interface SessionMeta {
   // linkage lives in parent_session_id/depth/subagent below.
   // "scheduled" = 定时任务影子会话（scheduled-tasks-design.md §4.3）；列表与
   // 搜索均整类隐藏（§10 决议 5），只能从 /scheduled 的执行记录/时间条进入回放。
-  type?: "quick" | "subagent" | "scheduled";
+  type?: "quick" | "subagent" | "scheduled" | "delegation";
+  /** delegation 专用：running | success | error | timeout（bg 终态/启动对账写入） */
+  stop_reason?: string;
+  backend?: string;
+  mode?: string;
   // 影子会话所属的执行记录 run_id（§4.3）；普通会话缺省。
   schedule_run_id?: string;
   // ---- subagent (subagent-design.md §4.1；与共享契约 1 同形) ----

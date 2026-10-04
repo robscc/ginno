@@ -206,6 +206,12 @@ def test_timeline_runs_and_planned(client):
     today = time.strftime("%Y-%m-%d", time.localtime())
     r = client.get("/api/schedule/timeline", params={"date": today}).json()
     assert r["date"] == today and r["runs"] == []
+    # 时间炸弹修复（2026-10-04）：23:30 后当天 30 分钟网格的剩余点可能为 0
+    # （下一点落到明天）——当天为空时改查明天，验证语义不变：网格步进+全在未来。
+    if not r["planned"]:
+        tomorrow = time.strftime("%Y-%m-%d", time.localtime(time.time() + 86400))
+        r = client.get("/api/schedule/timeline", params={"date": tomorrow}).json()
+        assert r["date"] == tomorrow and r["runs"] == []
     # interval 任务：剩余计划点按网格步进，至少 1 个且都在未来
     assert len(r["planned"]) >= 1
     assert all(p["task_id"] == t["id"] and p["at"] > time.time() for p in r["planned"])

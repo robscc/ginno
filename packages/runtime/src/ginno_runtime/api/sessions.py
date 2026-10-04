@@ -766,6 +766,38 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     }
 
 
+@router.get("/api/external-agents")
+async def list_external_agents() -> list[dict]:
+    """Backend detection for Settings → External Agents（安装状态 + 路径）。"""
+    from ..tools.external_agent import _BACKENDS
+
+    out: list[dict] = []
+    for _name, _be in _BACKENDS.items():
+        try:
+            _path = _be.available()
+        except Exception:  # noqa: BLE001 — 检测绝不 500
+            _path = None
+        out.append({"name": _name, "installed": bool(_path), "path": _path or ""})
+    return out
+
+
+@router.post("/api/delegations/{delegation_id}/stop")
+async def stop_delegation(delegation_id: str) -> dict:
+    """取消运行中的外部委托：直杀子进程，bg 随后自行回填 error 终态并注入。"""
+    from ..tools.external_agent import (
+        _ACTIVE_DELEGATIONS,
+        _ACTIVE_LOCK,
+        _kill_tree,
+    )
+
+    with _ACTIVE_LOCK:
+        entry = _ACTIVE_DELEGATIONS.get(delegation_id)
+    if not entry:
+        return {"ok": True, "killed": False, "reason": "not running"}
+    _kill_tree(entry["proc"])
+    return {"ok": True, "killed": True}
+
+
 @router.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str, cascade: bool = False) -> dict:
     """Delete a session: its index entry, on-disk checkpoint history, and any

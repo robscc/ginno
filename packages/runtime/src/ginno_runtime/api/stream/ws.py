@@ -84,6 +84,25 @@ async def _touch_session_title(
 
 @router.websocket("/api/ws/sessions/{session_id}")
 async def session_ws(ws: WebSocket, session_id: str) -> None:
+    # Delegation 子会话是静态回放档案（external-agents-design.md §9）——
+    # 无 graph、无 model，不接受 turn；否则 _ensure_session 会在深处的
+    # model 解析上炸出一个莫名其妙的错。明确拒绝 + 提示回放只读。
+    from ...session_meta import _find_meta
+
+    _del_meta, _ = _find_meta(session_id) or ({}, None)
+    if isinstance(_del_meta, dict) and _del_meta.get("type") == "delegation":
+        # 回放会话：接受连接但保持打开——发错误后立刻 close 会触发前端
+        # WS 自动重连风暴（每次重连又收到错误，2026-10-04 真机事故）。
+        # 静默挂着；仅当客户端真的发来 invoke 时回一条错误，仍不关闭。
+        await ws.accept()
+        # 静默吞掉一切消息：回放会话 composer 已隐藏，真实调用不存在；而对
+        # invoke 回 error 事件会让前端"关连接→重连→自动发消息→又收错误"
+        # 循环刷屏（2026-10-05 真机，修复版仍在风暴）。连接保持打开即可。
+        while True:
+            msg = await ws.receive()
+            if msg.get("type") == "websocket.disconnect":
+                return
+
     session = _ensure_session(session_id)
     if not session:
         await ws.accept()

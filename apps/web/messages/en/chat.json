@@ -43,7 +43,9 @@
       "stopTitle": "Stop the current turn (keeps what has been generated)",
       "stopAria": "Stop",
       "sendingAria": "Sending",
-      "newSession": "+ New Session"
+      "newSession": "+ New Session",
+      "delegationReadonly": "Delegation replay · read-only",
+      "delegationRunning": "running"
     },
     "queue": {
       "pending": "Pending ({count})",
@@ -176,7 +178,8 @@
       "prefix": "tool · ",
       "stats": "{lines} lines · {chars} chars",
       "collapse": "Collapse",
-      "expand": "Expand full output"
+      "expand": "Expand full output",
+      "openDelegation": "Open delegation replay"
     },
     "thinking": {
       "live": "Thinking…",
@@ -233,6 +236,7 @@
       "depth": "Depth {n}",
       "runningFor": "Running for {time}",
       "resultTitle": "Subagent result · {goal}",
+      "delegationResultTitle": "Delegation result · {backend}",
       "errorPrefix": "Error: ",
       "acceptanceCriteria": "Acceptance criteria",
       "acceptanceHint": "The main agent will go through these one by one in its report (pass / gap + explanation)",

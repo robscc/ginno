@@ -35,7 +35,8 @@
         "general": "通用",
         "notifications": "通知",
         "floating": "悬浮窗",
-        "toolLabels": "工具标签"
+        "toolLabels": "工具标签",
+        "externalAgents": "外部代理"
       }
     },
     "view": {
@@ -618,6 +619,20 @@
           "other": "其他"
         }
       }
+    },
+    "externalAgents": {
+      "title": "外部代理",
+      "intro": "把自包含的编码任务委托给本机外部编码代理 CLI（claude-code / codex / pi），一次性子进程运行。",
+      "enable": "启用 delegate_agent 工具",
+      "enableHint": "默认关闭：委托消耗外部厂商额度且可能改文件。权限姿态按调用固定（默认只读，edit 才放开写，永不给 shell）。",
+      "backends": "检测到的后端",
+      "noBackends": "检测中……或 runtime 不可达",
+      "notInstalled": "未安装",
+      "ownAccount": "各后端用自己的 CLI 配置与模型账号——Ginno 不转发任何 provider 凭证。",
+      "save": "保存",
+      "saved": "已保存",
+      "saveFailed": "保存失败",
+      "readAborted": "读取当前设置失败，已中止保存。"
     }
   }
 }

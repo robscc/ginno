@@ -35,6 +35,14 @@ async def lifespan(app: FastAPI):
     # _shutdown_run_tasks resolve at call time from the module-level (facade)
     # imports below — the app cannot start before this module fully imports.
     paths.ensure_layout()
+    # 委托子会话启动对账：上个进程的后台委托随重启消亡，running 态存量
+    # 一律改判 error，避免侧栏出现永远转圈的委托行（2026-10-05）。
+    try:
+        from .delegation_sessions import reconcile_running_delegations
+
+        reconcile_running_delegations()
+    except Exception:  # noqa: BLE001 — 启动绝不因对账失败而中断
+        pass
     # i18n bundle check (i18n-design.md §10.5): both catalogs loadable + key/
     # placeholder parity. A frozen-app packaging gap (the JSONs missing from
     # the bundle) must surface HERE, not on first use — same lesson as the

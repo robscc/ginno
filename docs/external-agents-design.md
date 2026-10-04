@@ -166,3 +166,93 @@ claude JSON 的 `usage.input_tokens` 是 Anthropic 口径（不含缓存段）�
 | `apps/web/src/lib/toolLabels.ts` | 气泡标签「委托外部代理中」 |
 | `apps/web/src/components/settings/usage/{OverviewPanel,RequestsPanel}.tsx` | 来源分布/请求日志 `external` 展示 |
 | `packages/runtime/tests/unit/test_external_agent_tools.py` | 单测（31 例） |
+
+---
+
+## 9. pi backend + 全量对话流 + delegation 子会话（2026-10-04 增补）
+
+### 9.1 adapter 化：一个 CLI 一个文件（connector-module 同款模式）
+
+* `tools/external_agents/base.py` — `ExternalBackend` 接口（Protocol）+
+  `DelegationResult`（新增 `transcript` IR 字段）+ IR 助手 / usage 映射 / CLI 解析
+* `tools/external_agents/claude_code.py` / `pi.py` / `codex.py` — 各 CLI 的
+  argv 矩阵与事件流解析（adapter）
+* `tools/external_agent.py` — 装配层：`_BACKENDS` 注册表、`run_delegation`
+  进程监督、`_record_external_usage`、`delegate_agent` 工具构造（导入面不变）
+
+### 9.2 三后端统一升级为全量对话流
+
+| backend | 输出通道 | 权限映射 | 回放保真 |
+|---|---|---|---|
+| claude-code | `-p --output-format stream-json --verbose`（JSONL；老 CLI 自动退回单 JSON） | `--disallowedTools Bash` + `--permission-mode plan\|acceptEdits`（⚠️ `--restricted` 已被 claude CLI 2.x 移除，2026-10-04 真机发现） | 全量 |
+| pi | `--mode json`（JSONL v3：session/message_end/message_update/tool_execution_*/agent_end） | `--tools read,grep,find,ls` / `read,edit,write,grep,find,ls`——pi 无权限系统，工具表即边界；两模式均无 bash | 全量 |
+| codex | `exec --json`（实验，宽松解析）+ `--output-last-message` 双通道 | `-s read-only` / `--full-auto` | 全量；事件解析不出自动降级为单条 |
+
+pi 额外卫生标志：`--no-session`（ephemeral）+ `--no-extensions`（子进程确定性，
+用户级坏扩展不得影响委托）；provider/model 尊重 pi 自己的配置（外部代理自带账号）。
+usage 映射：pi `input+cacheRead` / claude `input_tokens+cache_*` 归一化为 ginno
+的 input_tokens（含缓存的全量口径）。
+
+### 9.3 delegation 子会话（可回放）
+
+`delegation_sessions.record_delegation()`：每次 `delegate_agent` 调用落一个真会话——
+
+* meta：`type="delegation"` + `parent_session_id` + backend/mode/stop_reason；
+  级联删除自动跟随（`_session_meta_descendants` 只认 parent 链不看类型）；
+  标题 `"<backend> · <prompt 前 40 字>"`
+* 转录：adapter 产出的 IR（assistant / tool_result 条目）→ LangChain 消息写入
+  FileCheckpointer（孤儿 tool_result 补空 AIMessage 钉 tool_call_id 保持成对）；
+  `GET /sessions/{id}/history` 与聊天 UI 原样渲染——**没有专门的回放器**，
+  pi 的工具循环在 Ginno 气泡里就是原生 tool 卡片
+* 原始事件流归档 `sessions/<id>/delegation-events.jsonl`（512KB 截断，排障用）
+* 工具结果字符串首行后跟 `delegation=<id>` 溯源行；前端 ToolBlock 解析出
+  backend/mode/stop 徽标 + 「打开委托回放」跳转（`ginno:focus-latest`，🧭 同款）
+* **结果注入走 `<ginno_subagent_result>` 信封**（2026-10-05 展示修复）：后台
+  完成回流的文本包信封后经 subagent 注入通道进父会话——前端折成 🧭 结果卡，
+  不再把裸机器头当 steering 文本原样渲染。信封正文 = 完整回执（机器头是 §7
+  溯源头，模型侧语义不变）；`subagent.status` 的 result_summary 也以机器头
+  开头（与注入通道竞速时，先渲染的卡也能识别 delegation 并折徽标行）。
+  前端委托卡：标题「委托结果 · backend」+ backend/mode/stop/turns/duration/
+  tokens 徽标行 + 剥头正文；确认/纠偏/升级按钮不渲染（外部 CLI 跑完即终态、
+  回放只读，评审流程无意义）。重放时旧版裸注入文本按 `delegation=` 溯源行
+  兜底折卡。
+* 契约不变：结果字符串仍是唯一回流通道；子会话簿记失败绝不影响工具结果
+  （never-raise，缺字段的 result 鸭子类型静默降级为空转录）
+
+### 9.4 配套 API / UI
+
+* `GET /api/external-agents` — 后端安装检测（`_resolve_cli` 有缓存）
+* Settings → External Agents：`context.external_agents_enabled` 开关 + 检测列表
+  + 「外部代理用自己的账号」说明（i18n en/zh）
+* 用量：`source="external"`（既有）；TopBar 实时累加器照旧双写
+
+### 9.5 测试与真机验证
+
+* `tests/unit/test_external_agents_adapters.py`：argv 矩阵 + 三家事件流
+  fixture + legacy/降级路径（schema 漂移在此显式失败）
+* `tests/unit/test_delegation_sessions.py`：IR 配对/孤儿补钉、端到端落盘、
+  错误注记、never-raise 契约
+* 真机：claude stream-json 已实测通过（2026-10-04，v2.1.229）；pi 解析器
+  fixture 通过、live 运行待用户完成 provider 登录（`pi /login`）；codex 本机
+  未装，--json 仅 fixture 验证，装后可用 `e2e_delegate_check.py` 实测
+
+### 9.6 claude CLI 2.1.x 权限标志排雷（2026-10-04 真机矩阵 V1-V10）
+
+`--restricted` 被 claude CLI 2.x 移除后，替代方案经过 10 组真机实验筛选：
+
+| 方案 | 结果 |
+|---|---|
+| 无任何标志 | ✓ 工具齐全（基线） |
+| `--permission-mode plan` | ✗ 延迟工具系统只留 ToolSearch，核心工具全无 |
+| `--allowedTools`（任何形式） | ✗ 同上 |
+| `--strict-mcp-config` | ✗ 同上 |
+| `--disallowedTools=Bash` | ✗ deny "Bash" 这一个名字就会炸掉延迟工具系统 |
+| `--disallowedTools=Edit` / `Edit,Write` | ✓ 工具保留（deny 非 Bash 名字安全） |
+| `--permission-mode=acceptEdits` | ✓ |
+| **`--settings={"permissions":{"deny":[...]}}`** | **✓ 工具保留 + Bash/Edit/Write 全禁（最终方案）** |
+
+另两个坑：variadic 形式的 `--disallowedTools X prompt` 会**把 prompt 吞成工具名**（commander
+可变参数吃掉后续所有参数 → "Input must be provided" 错误）；用户级 MCP（Playwright/钉钉）
+会泄入委托会话（`--strict-mcp-config` 能挡但代价是工具全灭，故接受泄漏）。最终 read-only =
+deny `Bash,Edit,Write,NotebookEdit`；edit = deny `Bash` + `--permission-mode=acceptEdits`；
+全部走 `--settings=` 等号紧凑 JSON 单值。

@@ -43,7 +43,9 @@
       "stopTitle": "停止当前回合（保留已生成内容）",
       "stopAria": "停止",
       "sendingAria": "发送中",
-      "newSession": "+ 新会话"
+      "newSession": "+ 新会话",
+      "delegationReadonly": "委托回放 · 只读",
+      "delegationRunning": "运行中"
     },
     "queue": {
       "pending": "待注入（{count}）",
@@ -176,7 +178,8 @@
       "prefix": "工具 · ",
       "stats": "{lines} 行 · {chars} 字符",
       "collapse": "收起",
-      "expand": "展开全部输出"
+      "expand": "展开全部输出",
+      "openDelegation": "打开委托回放"
     },
     "thinking": {
       "live": "思考中……",
@@ -233,6 +236,7 @@
       "depth": "第 {n} 层",
       "runningFor": "已运行 {time}",
       "resultTitle": "子代理结果 · {goal}",
+      "delegationResultTitle": "委托结果 · {backend}",
       "errorPrefix": "错误：",
       "acceptanceCriteria": "验收标准",
       "acceptanceHint": "主代理会在汇报中逐条对照给出判定（通过 / 差距 + 说明）",

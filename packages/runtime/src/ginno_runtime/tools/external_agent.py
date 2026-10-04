@@ -1,34 +1,38 @@
 """Delegate self-contained coding tasks to external coding agents.
 
 Ginno calls OUT (active delegation only — Ginno is never the callee here):
-the ``delegate_agent`` tool runs Claude Code or Codex CLI as a one-shot
-subprocess and returns the agent's answer as the tool result.
+the ``delegate_agent`` tool runs an external coding-agent CLI (claude-code /
+codex / pi) as a one-shot subprocess and returns the agent's answer as the
+tool result.
+
+装配层（adapter 模式，connector-module 同款）：本文件只保留注册表
+（_BACKENDS）、进程监督（run_delegation/_kill_tree）、用量记账与
+delegate_agent 工具构造；每个 CLI 的 argv/事件流解析在 external_agents/
+包里一个文件一个 adapter，全部实现 base.ExternalBackend 接口。
 
 Design (docs/external-agents-design.md) borrows the seam principles from
 DeepSeek Harness's subagent packages (2026-08-30 comparison study):
-
 * one ``ExternalBackend`` abstraction collects every out-of-process agent;
-  availability is checked fail-loud (never accept-then-ignore);
+availability is checked fail-loud (never accept-then-ignore);
 * a run never raises — failures flatten into ``stop_reason`` plus a bounded,
-  sanitized diagnostic (the result string is the ONLY channel back into the
-  parent conversation, so child events stay isolated by construction);
+sanitized diagnostic (the result string is the ONLY channel back into the
+parent conversation, so child events stay isolated by construction);
 * out-of-process permissions are a FIXED mode mapping, never the parent's
-  dynamic policy (``read-only`` default; ``edit`` escalates explicitly);
+dynamic policy (``read-only`` default; ``edit`` escalates explicitly);
 * token usage is not part of the contract — backends parse it best-effort.
 
 Builtin contract: never raise — failures degrade to ``[error] …`` results.
 """
-
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import shutil
 import signal
+import threading
+import time
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
-from typing import Protocol
 
 from langchain_core.tools import tool
 
@@ -36,278 +40,26 @@ from .. import usage_store
 from ..lang import t
 from ..usage import add_usage, empty_usage
 from ..world_state import external_agents_enabled
-
-DELEGATE_TOOL_NAME = "delegate_agent"
-
-# Delegation runs an entire agent loop — give it real headroom, but never
-# let a stalled child sit for half an hour.
-_TIMEOUT_MIN_S = 10
-_TIMEOUT_MAX_S = 1800
-_TIMEOUT_DEFAULT_S = 600
-
-_DIAGNOSTIC_CAP = 2000
-
-
-def _tail(text: str, cap: int = _DIAGNOSTIC_CAP) -> str:
-    text = text or ""
-    return text if len(text) <= cap else "…" + text[-cap:]
-
-
-@dataclass
-class DelegationResult:
-    """One finished delegation run. Never carries an exception."""
-
-    output: str = ""
-    stop_reason: str = "success"  # success | error | timeout
-    diagnostic: str = ""
-    # Normalized token shape (usage.py USAGE_FIELDS) — empty when the
-    # backend reports nothing.
-    usage: dict = field(default_factory=dict)
-    meta: dict = field(default_factory=dict)
-
-
-class ExternalBackend(Protocol):
-    """A provider of external coding agents (one per CLI)."""
-
-    name: str
-
-    def available(self) -> str | None:
-        """Absolute path of the CLI, or None when not installed."""
-        ...
-
-    def build_argv(
-        self, prompt: str, mode: str, cwd: str, out_file: str | None
-    ) -> list[str]:
-        ...
-
-    def parse_result(
-        self, stdout: str, stderr: str, rc: int, out_file: str | None
-    ) -> DelegationResult:
-        ...
-
-
-# --------------------------------------------------------------------------- #
-# CLI resolution
-# --------------------------------------------------------------------------- #
-
-_CLI_CACHE: dict[str, str | None] = {}
-
-
-def _resolve_cli(name: str) -> str | None:
-    """Locate a CLI on PATH, falling back to the user's login shell.
-
-    Ginno launched from Finder inherits a bare GUI environment (the bash
-    tool uses ``$SHELL -lc`` for the same reason — see builtin.py), so a
-    plain ``shutil.which`` misses homebrew/~/.local/bin entries exported in
-    zshrc. Resolved paths are cached per process.
-    """
-    if name in _CLI_CACHE:
-        return _CLI_CACHE[name]
-    found = shutil.which(name)
-    if not found:
-        shell = os.environ.get("SHELL") or "/bin/sh"
-        try:
-            r = subprocess.run(
-                [shell, "-lc", f"command -v {name}"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if r.returncode == 0:
-                lines = [ln for ln in (r.stdout or "").strip().splitlines() if ln]
-                found = lines[0] if lines else None
-        except Exception:  # noqa: BLE001 — resolution must never raise
-            found = None
-    found = found or None
-    _CLI_CACHE[name] = found
-    return found
-
-
-def clear_cli_cache() -> None:
-    """Drop the resolution cache (tests switch PATH between cases)."""
-    _CLI_CACHE.clear()
-
-
-# --------------------------------------------------------------------------- #
-# Backends
-# --------------------------------------------------------------------------- #
-
-
-def _parse_json_lenient(text: str) -> dict | None:
-    try:
-        data = json.loads(text)
-        return data if isinstance(data, dict) else None
-    except Exception:  # noqa: BLE001
-        start, end = text.find("{"), text.rfind("}")
-        if start != -1 and end > start:
-            try:
-                data = json.loads(text[start : end + 1])
-                return data if isinstance(data, dict) else None
-            except Exception:  # noqa: BLE001
-                return None
-        return None
-
-
-class ClaudeCodeBackend:
-    """Claude Code in headless print mode (``claude -p --output-format json``).
-
-    Mode mapping (see design doc — ``--restricted`` alone is NOT read-only,
-    it only removes Bash/PowerShell/REPL/WebFetch while Edit/Write remain):
-
-    * read-only → ``--restricted --permission-mode plan`` (plans, never edits)
-    * edit      → ``--restricted --permission-mode acceptEdits`` (file edits
-      auto-approved inside the workspace; Bash is gone from the tool table
-      entirely, settings/git writes still need approval)
-    """
-
-    name = "claude-code"
-
-    def available(self) -> str | None:
-        return _resolve_cli("claude")
-
-    def build_argv(
-        self, prompt: str, mode: str, cwd: str, out_file: str | None
-    ) -> list[str]:
-        perm = "plan" if mode == "read-only" else "acceptEdits"
-        return [
-            self.available() or "claude",
-            "-p",
-            "--output-format",
-            "json",
-            "--restricted",
-            "--permission-mode",
-            perm,
-            prompt,
-        ]
-
-    def parse_result(
-        self, stdout: str, stderr: str, rc: int, out_file: str | None
-    ) -> DelegationResult:
-        data = _parse_json_lenient(stdout or "")
-        if data is None:
-            return DelegationResult(
-                stop_reason="error",
-                diagnostic=_tail(
-                    f"rc={rc}; stderr: {stderr}\nstdout tail: {stdout}"
-                ),
-            )
-        output = str(data.get("result") or "")
-        is_error = bool(data.get("is_error")) or rc != 0
-        raw_usage = data.get("usage") or {}
-
-        def _num(v) -> int:
-            try:
-                return int(v or 0)
-            except (TypeError, ValueError):
-                return 0
-
-        cache_read = _num(raw_usage.get("cache_read_input_tokens"))
-        cache_creation = _num(raw_usage.get("cache_creation_input_tokens"))
-        usage = {}
-        if raw_usage:
-            # Ginno normalization (usage.py): input_tokens is the WHOLE
-            # prompt, cache portions included.
-            usage = {
-                "input_tokens": _num(raw_usage.get("input_tokens"))
-                + cache_read
-                + cache_creation,
-                "output_tokens": _num(raw_usage.get("output_tokens")),
-                "cache_read_tokens": cache_read,
-                "cache_creation_tokens": cache_creation,
-            }
-        meta = {
-            "session_id": data.get("session_id"),
-            "num_turns": data.get("num_turns"),
-            "duration_ms": data.get("duration_ms"),
-            "cost_usd": data.get("cost_usd") or data.get("total_cost_usd"),
-            "model": data.get("model") or "claude-code",
-        }
-        if is_error:
-            return DelegationResult(
-                output=output,
-                stop_reason="error",
-                diagnostic=_tail(f"rc={rc}; stderr: {stderr}") or "is_error",
-                usage=usage,
-                meta=meta,
-            )
-        return DelegationResult(
-            output=output, stop_reason="success", usage=usage, meta=meta
-        )
-
-
-class CodexBackend:
-    """Codex CLI non-interactive mode (``codex exec``).
-
-    The final agent message is captured via ``--output-last-message`` (a temp
-    file) because stdout is human-oriented progress text.
-
-    * read-only → ``-s read-only`` (blocks shell AND apply_patch)
-    * edit      → ``--full-auto`` (workspace-write sandbox + auto-approval)
-    """
-
-    name = "codex"
-
-    def available(self) -> str | None:
-        return _resolve_cli("codex")
-
-    def build_argv(
-        self, prompt: str, mode: str, cwd: str, out_file: str | None
-    ) -> list[str]:
-        argv = [
-            self.available() or "codex",
-            "exec",
-            "-C",
-            cwd,
-            "--skip-git-repo-check",
-        ]
-        if out_file:
-            argv += ["--output-last-message", out_file]
-        if mode == "read-only":
-            argv += ["-s", "read-only"]
-        else:
-            argv += ["--full-auto"]
-        argv.append(prompt)
-        return argv
-
-    def parse_result(
-        self, stdout: str, stderr: str, rc: int, out_file: str | None
-    ) -> DelegationResult:
-        output = ""
-        if out_file:
-            try:
-                with open(out_file, encoding="utf-8", errors="replace") as f:
-                    output = f.read().strip()
-            except OSError:
-                output = ""
-        if rc != 0:
-            return DelegationResult(
-                output=output,
-                stop_reason="error",
-                diagnostic=_tail(f"rc={rc}; stderr: {stderr}\nstdout: {stdout}"),
-            )
-        if not output:
-            # Degraded: no last-message file — fall back to the stdout tail.
-            # The [note] travels in the OUTPUT (not just the diagnostic):
-            # diagnostics are only surfaced on failure, but the model must
-            # know this text is a progress-stream tail, not a final answer.
-            output = (
-                "[note] no last-message file captured; showing stdout tail:\n"
-                + _tail(stdout or "", 4000)
-            )
-            return DelegationResult(
-                output=output,
-                stop_reason="success",
-                diagnostic="no last-message file; showing stdout tail",
-            )
-        # Token usage: codex exec prints no structured usage (seam principle
-        # 5 — usage is not in the contract). Extension point if a future
-        # version emits it.
-        return DelegationResult(output=output, stop_reason="success", usage={})
+from .external_agents import (  # noqa: F401 — 兼容既有导入面（含旧测试）
+    ClaudeCodeBackend,
+    CodexBackend,
+    DelegationResult,
+    ExternalBackend,
+    PiBackend,
+    _TIMEOUT_DEFAULT_S,
+    _TIMEOUT_MAX_S,
+    _TIMEOUT_MIN_S,
+    _parse_json_lenient,
+    _resolve_cli,
+    _tail,
+    clear_cli_cache,
+)
 
 
 _BACKENDS: dict[str, ExternalBackend] = {
     ClaudeCodeBackend.name: ClaudeCodeBackend(),
     CodexBackend.name: CodexBackend(),
+    PiBackend.name: PiBackend(),
 }
 
 
@@ -325,7 +77,8 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     """Terminate the child's whole process group (delegation-specific risk:
     ``subprocess.run``'s timeout only kills the direct child — an orphaned
     claude would keep editing files and burning tokens). Children that call
-    setsid/setpgid themselves escape; claude/codex don't detach (documented).
+    setsid/setpgid themselves escape — claude 2.x DID in practice
+    (2026-10-05), hence the direct proc.kill() fallback below.
     """
     try:
         if os.name == "posix":
@@ -342,6 +95,12 @@ def _kill_tree(proc: subprocess.Popen) -> None:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
+            # 直接补一刀：子进程若自建进程组，killpg 会 ESRCH 逃逸
+            # （2026-10-05 真机：claude 孤儿存活 80 分钟）——按 pid 直杀兜底。
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
         else:
             proc.kill()
     except Exception:  # noqa: BLE001 — teardown must never raise
@@ -349,9 +108,21 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def run_delegation(
-    backend: ExternalBackend, prompt: str, mode: str, cwd: str, timeout: int
+    backend: ExternalBackend,
+    prompt: str,
+    mode: str,
+    cwd: str,
+    timeout: int,
+    on_line=None,
+    proc_cb=None,
 ) -> DelegationResult:
-    """Run one delegation. NEVER raises — every failure becomes a result."""
+    """Run one delegation. NEVER raises — every failure becomes a result.
+
+    ``on_line``（bg 实时回填用）：给出回调则走流式路径——stdout 逐行读取并
+    回调（节流由调用方负责），stderr 并发排空防 64KB 管道阻塞，超时由看门狗
+    计时。无回调/子进程无真实 stdout（测试 fakes）时保持原 communicate 路径。
+    """
+    import threading
     out_file: str | None = None
     if isinstance(backend, CodexBackend):
         fd, out_file = tempfile.mkstemp(prefix="ginno-codex-", suffix=".txt")
@@ -362,6 +133,9 @@ def run_delegation(
             proc = subprocess.Popen(
                 argv,
                 cwd=cwd,
+                # pi --mode json 会先读 stdin 等 EOF：不断开就会挂到超时
+                #（2026-10-04 真机发现；claude/codex headless 不读，DEVNULL 无害）。
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -373,16 +147,63 @@ def run_delegation(
                 diagnostic=f"cannot launch {backend.name}: "
                 f"{type(e).__name__}: {e}",
             )
-        timed_out = False
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _kill_tree(proc)
+        if proc_cb is not None:
             try:
-                stdout, stderr = proc.communicate(timeout=5)
+                proc_cb(proc)
             except Exception:  # noqa: BLE001
-                stdout, stderr = "", ""
+                pass
+        timed_out = False
+        if on_line is not None and getattr(proc, "stdout", None) is not None:
+            # 流式路径：真实管道逐行回调；fakes（无 stdout 属性）落回 communicate。
+            out_lines: list[str] = []
+            err_lines: list[str] = []
+
+            def _read_out() -> None:
+                try:
+                    for line in proc.stdout:
+                        out_lines.append(line)
+                        try:
+                            on_line(line)
+                        except Exception:  # noqa: BLE001 — 回调绝不拖垮读取
+                            pass
+                except Exception:  # noqa: BLE001
+                    pass
+
+            def _read_err() -> None:
+                try:
+                    for line in proc.stderr:
+                        err_lines.append(line)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            t_out = threading.Thread(target=_read_out, daemon=True)
+            t_err = threading.Thread(target=_read_err, daemon=True)
+            t_out.start()
+            t_err.start()
+            t_out.join(timeout or None)
+            if t_out.is_alive():
+                timed_out = True
+                _kill_tree(proc)
+                t_out.join(5)
+            else:
+                try:
+                    proc.wait(timeout=30)
+                except Exception:  # noqa: BLE001
+                    timed_out = True
+                    _kill_tree(proc)
+            t_err.join(5)
+            stdout = "".join(out_lines)
+            stderr = "".join(err_lines)
+        else:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout or None)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _kill_tree(proc)
+                try:
+                    stdout, stderr = proc.communicate(timeout=5)
+                except Exception:  # noqa: BLE001
+                    stdout, stderr = "", ""
         stdout = stdout or ""
         stderr = stderr or ""
         if timed_out:
@@ -393,7 +214,14 @@ def run_delegation(
                     f"stderr: {stderr}"
                 ),
             )
-        return backend.parse_result(stdout, stderr, proc.returncode, out_file)
+        result = backend.parse_result(stdout, stderr, proc.returncode, out_file)
+        # 原始事件流归档（截断 512KB）——delegation 子会话的
+        # delegation-events.jsonl 备档；失败不影响结果。
+        try:
+            result.meta["_stdout_tail"] = (stdout or "")[-512_000:]
+        except Exception:  # noqa: BLE001
+            pass
+        return result
     except Exception as e:  # noqa: BLE001 — seam principle: never raise
         return DelegationResult(
             stop_reason="error",
@@ -410,6 +238,273 @@ def run_delegation(
 # --------------------------------------------------------------------------- #
 # Tool construction
 # --------------------------------------------------------------------------- #
+
+
+def _activity_from_line(line: str) -> str:
+    """一行 JSONL → 人类可读的最新动作（协议无关的最小启发式）。"""
+    try:
+        ev = json.loads(line)
+    except Exception:  # noqa: BLE001
+        return ""
+    t = ev.get("type")
+    if t == "tool_execution_start":
+        return f"⚙ {ev.get('toolName') or ev.get('tool_name') or 'tool'}"
+    if t == "item.completed":
+        item = ev.get("item") or {}
+        if item.get("type") == "agent_message":
+            return str(item.get("text") or "")[:80]
+        return f"⚙ {item.get('type', '')}"
+    if t == "assistant":
+        msg = ev.get("message") or {}
+        for blk in msg.get("content") or []:
+            if isinstance(blk, dict):
+                if blk.get("type") == "tool_use":
+                    return f"⚙ {blk.get('name')}"
+                if blk.get("type") == "text" and blk.get("text"):
+                    return str(blk["text"])[:80]
+    if t == "message_end":
+        msg = ev.get("message") or {}
+        for blk in msg.get("content") or []:
+            if isinstance(blk, dict) and blk.get("type") == "toolCall":
+                return f"⚙ {blk.get('name')}"
+    return ""
+
+
+# 运行中委托的进程注册表：取消端点按 delegation_id 直杀（P1 第三件套）。
+_ACTIVE_DELEGATIONS: dict[str, dict] = {}
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _register_delegation_proc(did: str, session_id: str, proc) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE_DELEGATIONS[did] = {"session_id": session_id, "proc": proc}
+
+
+def _unregister_delegation_proc(did: str) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE_DELEGATIONS.pop(did, None)
+
+
+def _delegation_header(name: str, m: str, timeout_s: int, result) -> str:
+    """机器头一行（§7 溯源头）：工具回执、注入正文、subagent.status 的
+    result_summary 三处共用——前端 parseDelegation 以它折徽标行。"""
+    tokens = ""
+    if result.usage:
+        tokens = (
+            f" tokens={result.usage.get('input_tokens', 0)}/"
+            f"{result.usage.get('output_tokens', 0)}"
+        )
+    turns = result.meta.get("num_turns")
+    duration = result.meta.get("duration_ms")
+    header = f"[delegate backend={name} mode={m} stop={result.stop_reason}"
+    if result.stop_reason == "timeout":
+        header += f" after {timeout_s}s"
+    if turns is not None:
+        header += f" turns={turns}"
+    if duration is not None:
+        try:
+            header += f" duration={int(duration) // 1000}s"
+        except (TypeError, ValueError):
+            pass
+    return f"{header}{tokens}]"
+
+
+def _delegation_result_text(
+    name: str, m: str, timeout_s: int, result, delegation_id: str
+) -> str:
+    """委托结果串（后台完成注入用；与旧同步版格式一致，前端
+    parseDelegation 正则继续适用）。"""
+    header = _delegation_header(name, m, timeout_s, result)
+    body = result.output or ""
+    if delegation_id:
+        body = (
+            f"delegation={delegation_id}\n{body}" if body
+            else f"delegation={delegation_id}"
+        )
+    if result.stop_reason != "success":
+        diag = result.diagnostic or "unknown failure"
+        return f"{header}\n[diagnostic] {diag}" + (
+            f"\n--- output ---\n{body}" if body else ""
+        )
+    note = f"\n[note] {result.diagnostic}" if result.diagnostic else ""
+    return f"{header}\n{body}{note}"
+
+
+async def _delegation_bg(
+    delegation_id: str,
+    session_id: str,
+    project_slug,
+    be,
+    backend_name: str,
+    prompt: str,
+    m: str,
+    cwd: str,
+    timeout_s: int,
+) -> None:
+    """后台跑委托（spawn_bg 调度）：阻塞子进程放线程池；完成后回填子会话、
+    记用量、并把结果经 subagent 注入通道回流父会话（前端 🧭 卡同款）。
+    绝不抛异常。"""
+    from ..server_shared import _log
+
+    _log.info(
+        "delegation_bg_start id=%s backend=%s parent=%s",
+        delegation_id, backend_name, session_id,
+    )
+    # 实时回填（P1，"jsonl watch"）：逐行累计 + 3s 节流地把部分转录写进
+    # 子会话 checkpoint（terminal=False 保持 running 态），回放页轮询即见增长。
+    _st = {"last": 0.0, "lines": []}
+
+    def _on_line(line: str) -> None:
+        _st["lines"].append(line)
+        now = time.monotonic()
+        if delegation_id and now - _st["last"] >= 3.0:
+            _st["last"] = now
+            try:
+                from ..server_shared import _push_session_event, spawn_bg
+
+                spawn_bg(
+                    _push_session_event(
+                        session_id,
+                        "delegate_update",
+                        {
+                            "delegation_id": delegation_id,
+                            "backend": backend_name,
+                            "text": _activity_from_line(line),
+                            "running": True,
+                        },
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                partial = be.parse_result("".join(_st["lines"]), "", 0, None)
+                finalize_delegation(
+                    delegation_id,
+                    project_slug=project_slug,
+                    result=partial,
+                    prompt=prompt,
+                    timeout_s=timeout_s,
+                    terminal=False,
+                )
+            except Exception:  # noqa: BLE001 — 节流回填失败不影响主流程
+                pass
+
+    try:
+        result = await asyncio.to_thread(
+            run_delegation, be, prompt, m, cwd, timeout_s,
+            on_line=_on_line,
+            proc_cb=lambda p: _register_delegation_proc(delegation_id, session_id, p),
+        )
+        _log.info(
+            "delegation_bg_done id=%s stop=%s", delegation_id, result.stop_reason
+        )
+        if delegation_id:
+            try:
+                from ..delegation_sessions import finalize_delegation
+
+                finalize_delegation(
+                    delegation_id,
+                    project_slug=project_slug,
+                    result=result,
+                    prompt=prompt,
+                    timeout_s=timeout_s,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        if session_id and result.usage:
+            try:
+                _record_external_usage(
+                    result.usage, backend_name, result.meta, session_id, project_slug
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        if session_id:
+            raw = _delegation_result_text(
+                backend_name, m, timeout_s, result, delegation_id
+            )
+            try:
+                from ..subagent_scheduler import (
+                    _inject_result,
+                    format_subagent_result,
+                )
+
+                # 注入必须走 <ginno_subagent_result> 信封（契约 3）：前端把回传
+                # 折成结果卡片；裸机器头会被当成 steering 文本原样渲染
+                # （2026-10-05 展示修复）。正文不动——机器头是 §7 的溯源头，
+                # 模型侧语义不变。goal 取 prompt 前 120 字（与子会话标题同源）。
+                goal = " ".join((prompt or "").split())[:120] or (
+                    f"{backend_name} delegation"
+                )
+                await _inject_result(
+                    session_id,
+                    format_subagent_result(delegation_id, goal, raw),
+                    delegation_id,
+                )
+            except Exception:  # noqa: BLE001
+                try:
+                    from ..server_shared import _log
+
+                    _log.exception("delegation_inject_failed parent=%s", session_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            # 撤实时行 + 结果卡（复用 subagent.status 通道：前端已有
+            # dedup/跳转逻辑，delegation 卡零新增渲染代码）。
+            try:
+                from ..server_shared import _push_session_event, spawn_bg
+
+                spawn_bg(
+                    _push_session_event(
+                        session_id,
+                        "delegate_update",
+                        {"delegation_id": delegation_id, "backend": backend_name,
+                         "text": "", "running": False},
+                    )
+                )
+                spawn_bg(
+                    _push_session_event(
+                        session_id,
+                        "subagent.status",
+                        {
+                            "session_id": delegation_id,
+                            "parent_session_id": session_id,
+                            "status": "done" if result.stop_reason == "success" else "failed",
+                            # 机器头随行：status 通道先渲染结果卡时（与注入通道
+                            # 竞速，dedup 只留先到者），前端靠它识别 delegation
+                            # 并折徽标行——否则 sessions 列表未刷新时误判成
+                            # 子代理卡（2026-10-05 展示修复）。
+                            "result_summary": (
+                                _delegation_header(backend_name, m, timeout_s, result)
+                                + "\n"
+                                + (result.output or result.diagnostic or "")
+                            )[:200],
+                            "error": None if result.stop_reason == "success"
+                            else (result.diagnostic or result.stop_reason)[:200],
+                        },
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                pass
+    except BaseException as e:  # noqa: BLE001 — 含 CancelledError（BaseException，
+        # 2026-10-05 真机事故：except Exception 漏掉它 → 协程静默死、meta 永卡 running）
+        _log.exception("delegation_bg_failed id=%s err=%r", delegation_id, e)
+        if delegation_id:
+            try:
+                from ..delegation_sessions import finalize_delegation
+
+                finalize_delegation(
+                    delegation_id,
+                    project_slug=project_slug,
+                    result=DelegationResult(
+                        stop_reason="error",
+                        diagnostic=f"background task failed: {type(e).__name__}: {e}",
+                    ),
+                    prompt=prompt,
+                    timeout_s=timeout_s,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        _unregister_delegation_proc(delegation_id)
 
 
 def _record_external_usage(
@@ -476,7 +571,13 @@ def build_external_agent_tools(
         timeout: int = _TIMEOUT_DEFAULT_S,
     ) -> str:
         """Delegate a self-contained coding task to an external coding agent
-        (Claude Code or Codex) that runs in the workspace directory. The
+        (Claude Code, Codex, or pi) that runs in the workspace directory.
+        ASYNC (chat sessions): returns immediately with a receipt; the run
+        executes in the background and its result is injected into this
+        conversation automatically (same channel as spawn_subagent) —
+        finish the turn right after delegating. Sessionless callers
+        (workflows) get the synchronous one-shot result instead.
+        The
         external agent gets NO conversation context — the prompt must be a
         complete, standalone brief. Use for heavyweight coding work: bug
         fixes, implementing features, refactors, deep codebase analysis.
@@ -486,12 +587,12 @@ def build_external_agent_tools(
         verify, summarize, or act on with your own judgment.
 
         Args:
-            backend: "claude-code" or "codex".
+            backend: "claude-code", "codex", or "pi".
             prompt: Complete task brief (context, goal, constraints, how to
                 report back). Written for an agent that sees nothing else.
             mode: "read-only" (default — analysis only, no file changes) or
                 "edit" (may modify files in the workspace; no shell access).
-            timeout: Seconds to wait, 10-1800 (default 600).
+            timeout: Seconds to wait, 10-1800; 0 = never time out (default 1800).
         """
         name = (backend or "").strip().lower()
         if name not in _BACKENDS:
@@ -517,49 +618,80 @@ def build_external_agent_tools(
             )
         cwd = base_dir if base_dir and os.path.isdir(base_dir) else os.getcwd()
         try:
-            timeout_s = max(_TIMEOUT_MIN_S, min(_TIMEOUT_MAX_S, int(timeout or 0)))
+            _t_req = int(timeout)
         except (TypeError, ValueError):
-            timeout_s = _TIMEOUT_DEFAULT_S
+            _t_req = _TIMEOUT_DEFAULT_S
+        if _t_req == 0:
+            timeout_s = 0  # 显式 0 = 永不超时（挂死风险自担，文档已注明）
+        else:
+            timeout_s = max(_TIMEOUT_MIN_S, min(_TIMEOUT_MAX_S, _t_req))
 
-        result = run_delegation(be, prompt, m, cwd, timeout_s)
-
-        # Usage attribution (chat path only — workflow runs have no session).
-        if session_id and result.usage:
-            _record_external_usage(
-                result.usage, name, result.meta, session_id, project_slug
-            )
-
-        tokens = ""
-        if result.usage:
-            tokens = (
-                f" tokens={result.usage.get('input_tokens', 0)}/"
-                f"{result.usage.get('output_tokens', 0)}"
-            )
-        turns = result.meta.get("num_turns")
-        duration = result.meta.get("duration_ms")
-        header = (
-            f"[delegate backend={name} mode={m} stop={result.stop_reason}"
-        )
-        if result.stop_reason == "timeout":
-            header += f" after {timeout_s}s"
-        if turns is not None:
-            header += f" turns={turns}"
-        if duration is not None:
+        # 委托开始即建骨架子会话（running 态）——侧栏立刻可见，完成后再
+        # 回填转录；簿记绝不变成工具错误。
+        delegation_id = ""
+        if session_id:
             try:
-                header += f" duration={int(duration) // 1000}s"
-            except (TypeError, ValueError):
-                pass
-        header += f"{tokens}]"
-        body = result.output or ""
-        if result.stop_reason != "success":
-            diag = result.diagnostic or "unknown failure"
-            return f"{header}\n[diagnostic] {diag}" + (
-                f"\n--- output ---\n{body}" if body else ""
-            )
-        # A success can still carry a degradation note (e.g. codex with no
-        # last-message file) — surface it without alarming.
-        note = f"\n[note] {result.diagnostic}" if result.diagnostic else ""
-        return f"{header}\n{body}{note}"
+                from ..delegation_sessions import create_delegation
+
+                delegation_id = create_delegation(
+                    parent_session_id=session_id,
+                    project_slug=project_slug,
+                    backend=name,
+                    mode=m,
+                    prompt=prompt,
+                    workspace=cwd,
+                ) or ""
+            except Exception:  # noqa: BLE001 — archive must never break the run
+                delegation_id = ""
+
+        if not session_id:
+            # 无会话上下文（workflow/脚本）：保持同步一次性语义。
+            result = run_delegation(be, prompt, m, cwd, timeout_s)
+            return _delegation_result_text(name, m, timeout_s, result, delegation_id)
+        # 异步化（spawn_subagent 同款待遇）：立即回执，后台执行——同步阻塞
+        # 会撞流停滞看门狗（"model/stream stall: no chunk for 180s" →
+        # turn_auto_retry 重试并重复 spawn，2026-10-04 真机事故）。
+        if delegation_id:
+            try:
+                from ..server_shared import spawn_bg
+
+                spawn_bg(
+                    _delegation_bg(
+                        delegation_id, session_id, project_slug, be, name,
+                        prompt, m, cwd, timeout_s,
+                    )
+                )
+            except Exception:  # noqa: BLE001 — spawn 失败也给出可用回执
+                from ..server_shared import _log
+
+                _log.exception("delegation_spawn_failed id=%s", delegation_id)
+                try:
+                    from ..delegation_sessions import finalize_delegation
+
+                    finalize_delegation(
+                        delegation_id,
+                        project_slug=project_slug,
+                        result=DelegationResult(
+                            stop_reason="error",
+                            diagnostic="background spawn failed (see sidecar log)",
+                        ),
+                        prompt=prompt,
+                        timeout_s=timeout_s,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+        return t(
+            f"[delegate backend={name} mode={m} started timeout={'no-timeout' if timeout_s == 0 else f'{timeout_s}s'}]\n"
+            f"delegation={delegation_id}\n"
+            "Running in the background — the result is injected into this "
+            "conversation automatically when it finishes. Do NOT redo the "
+            "delegated work and do not wait; finish your turn now and retell "
+            "the [delegate …] result to the user when it arrives.",
+            f"[delegate backend={name} mode={m} started timeout={'no-timeout' if timeout_s == 0 else f'{timeout_s}s'}]\n"
+            f"delegation={delegation_id}\n"
+            "已在后台运行，完成后结果自动注入本会话。不要重做被委托的工作、"
+            "也不要等待；现在就结束回合，等 [delegate …] 结果到达后向用户转述。",
+        )
 
     # Availability is per machine — surface it in the tool schema so the
     # model picks an installed backend (detected once at build time).

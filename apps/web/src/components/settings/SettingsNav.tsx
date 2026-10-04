@@ -2,13 +2,13 @@
 
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, Globe, ShieldCheck, Webhook, FolderOpen, FolderInput, BarChart3, Tags, TrendingUp, Pin } from "lucide-react";
+import { Cpu, Sparkles, Plug, Users, Workflow, SlidersHorizontal, Bell, BookOpen, Globe, ShieldCheck, Webhook, Bot, FolderOpen, FolderInput, BarChart3, Tags, TrendingUp, Pin } from "lucide-react";
 
 // label 为 settings.nav.items.* 的 catalog key（字面量联合，供 next-intl 类型检查）
 type NavKey =
   | "modelApi" | "skills" | "mcp" | "agents" | "workflows" | "synthesis" | "knowledge"
   | "folders" | "webSearch" | "sessionFiles" | "usage" | "permissions" | "hooks"
-  | "general" | "notifications" | "floating" | "toolLabels";
+  | "general" | "notifications" | "floating" | "toolLabels" | "externalAgents";
 type Item = { id: string; label: NavKey; icon: typeof Cpu; color: string };
 
 // label 存 catalog key（settings.nav.items.*），渲染时经 t() 翻译
@@ -22,6 +22,7 @@ const MAIN: Item[] = [
   { id: "knowledge", label: "knowledge", icon: BookOpen, color: "#60a5fa" },
   { id: "folders", label: "folders", icon: FolderInput, color: "#34d399" },
   { id: "web", label: "webSearch", icon: Globe, color: "#3b82f6" },
+  { id: "external-agents", label: "externalAgents", icon: Bot, color: "#f472b6" },
   { id: "session-files", label: "sessionFiles", icon: FolderOpen, color: "#38bdf8" },
   { id: "usage", label: "usage", icon: BarChart3, color: "#2dd4bf" },
 ];

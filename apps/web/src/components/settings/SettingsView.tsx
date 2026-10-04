@@ -13,6 +13,7 @@ import { FloatingSettings } from "./FloatingSettings";
 import { KnowledgeSettings } from "./KnowledgeSettings";
 import { ContextFoldersSettings } from "./ContextFoldersSettings";
 import { WebSearchSettings } from "./WebSearchSettings";
+import { ExternalAgentsSettings } from "./ExternalAgentsSettings";
 import { PermissionsSettings } from "./PermissionsSettings";
 import { HooksSettings } from "./HooksSettings";
 import { SessionFilesSettings } from "./SessionFilesSettings";
@@ -35,6 +36,7 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "knowledge" && <KnowledgeSettings />}
         {tab === "folders" && <ContextFoldersSettings />}
         {tab === "web" && <WebSearchSettings />}
+        {tab === "external-agents" && <ExternalAgentsSettings />}
         {tab === "permissions" && <PermissionsSettings />}
         {tab === "hooks" && <HooksSettings />}
         {tab === "session-files" && <SessionFilesSettings />}
@@ -43,7 +45,7 @@ export function SettingsView({ tab }: { tab: string }) {
         {tab === "notifications" && <NotificationsSettings />}
         {tab === "floating" && <FloatingSettings />}
         {tab === "tool-labels" && <ToolLabelsSettings />}
-        {!["model-api", "skills", "mcp", "agents", "workflows", "synthesis-quality", "knowledge", "folders", "web", "permissions", "hooks", "session-files", "usage", "general", "notifications", "floating", "tool-labels"].includes(tab) && (
+        {!["model-api", "skills", "mcp", "agents", "workflows", "synthesis-quality", "knowledge", "folders", "web", "permissions", "hooks", "session-files", "usage", "general", "notifications", "floating", "tool-labels", "external-agents"].includes(tab) && (
           <div className="px-8 py-10 text-sm text-faint">{t("unknownTab", { tab })}</div>
         )}
       </div>

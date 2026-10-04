@@ -994,7 +994,8 @@ export function ChatStream({
   // instance; the two keyed slots force a clean remount on home↔session
   // transitions (all composer state lives on ChatStream — only DOM focus is
   // lost, and home autofocuses above).
-  const composerBoxEl = (
+  const hideDel = session?.type === "delegation"; // 回放会话隐藏 goal 条等会话级控件
+        const composerBoxEl = (
           <div
             ref={composerBoxRef}
             onDragOver={(e) => {
@@ -1320,7 +1321,7 @@ export function ChatStream({
                 })()}
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              {running && goalActive && (
+              {running && goalActive && session?.type !== "delegation" && (
                 <button
                   onClick={() => void g.setGoalStatus(session!.id, "paused")}
                   title={tc("goal.pauseTitle")}
@@ -1539,7 +1540,7 @@ export function ChatStream({
       ) : (
         <>
       {session.type === "subagent" && <SubagentTopBar session={session} />}
-      {goal && goalStalled && !resumeDismissed && (
+      {!hideDel && goal && goalStalled && !resumeDismissed && (
         <div className="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />
           <span className="flex-1 text-muted">
@@ -1875,7 +1876,8 @@ export function ChatStream({
             </div>
           )}
           <div className="mb-2 flex flex-wrap gap-2">
-            {agentChipsEl}
+            {/* 回放会话（delegation）不显示 agent 切换 chips——静态档案无谓的噪音 */}
+            {session?.type !== "delegation" && agentChipsEl}
             <button
               onClick={() => g.setActiveSession(null)}
               className="flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted hover:text-txt"
@@ -1955,7 +1957,44 @@ export function ChatStream({
             </div>
           </div>
 
-          <div key="composer-session">{composerBoxEl}</div>
+          <div key="composer-session">
+              {session?.type === "delegation" ? (
+                (() => {
+                  // 回放状态栏：正确反馈 backend 运行态（用户需求 2026-10-05）
+                  const st = session.stop_reason ?? "running";
+                  const elapsed = Math.max(0, Math.round(Date.now() / 1000 - (session.created ?? Date.now() / 1000)));
+                  const mm = `${Math.floor(elapsed / 60)}m${String(elapsed % 60).padStart(2, "0")}s`;
+                  const color = st === "running" ? "#a78bfa" : st === "success" ? "#4ade80" : "#fb7185";
+                  return (
+                    <div className="flex items-center justify-center gap-2 rounded-2xl border border-line bg-card px-3 py-3 text-xs">
+                      {st === "running" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color }} />
+                      ) : (
+                        <span style={{ color }}>●</span>
+                      )}
+                      <span className="font-mono text-txt">{session.backend ?? "delegation"}</span>
+                      <span className="text-faint">· {session.mode ?? ""}</span>
+                      <span style={{ color }}>
+                        {st === "running" ? `${tc("composer.delegationRunning")} · ${mm}` : st}
+                      </span>
+                      <span className="text-faint">· read-only</span>
+                      {st === "running" && (
+                        <button
+                          onClick={() =>
+                            import("@/lib/runtime").then((m) => m.stopDelegation(session.id))
+                          }
+                          className="ml-1 rounded-md border border-red/40 px-1.5 py-0.5 text-[10px] text-red hover:bg-red/10"
+                        >
+                          ✕ stop
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()
+              ) : (
+                composerBoxEl
+              )}
+            </div>
         </div>
       </div>
         </>

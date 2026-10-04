@@ -303,6 +303,14 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
       out.push({ kind: "subagent_brief", ...brief });
       continue;
     }
+    // 旧版委托注入（2026-10-05 信封化之前落库的）：裸机器头 + delegation=
+    // 溯源行的 HumanMessage——同样折成结果卡（sessionId 取溯源行），重载后
+    // 不再以原始文本气泡出现。goal 无从恢复，卡片标题退回 backend。
+    const rawDel = parseDelegation(b.text);
+    if (rawDel?.sid) {
+      out.push({ kind: "subagent_result", sessionId: rawDel.sid, summary: b.text });
+      continue;
+    }
     const results = parseSubagentResults(b.text);
     if (!results.length) {
       out.push(b);
@@ -1200,6 +1208,38 @@ function BrowserHandoffCard() {
   );
 }
 
+/** delegate_agent 回执解析：首行机器头 [delegate backend=… mode=… stop=…] +
+ *  delegation=<id> 溯源行（external-agents-design.md §9）。turns/duration/tokens
+ *  仅终态回执携带；started 回执没有 stop 键——显示 started 而不是 ?。 */
+function parseDelegation(content: string): {
+  backend: string;
+  mode: string;
+  stop: string;
+  sid?: string;
+  turns?: string;
+  duration?: string;
+  tokens?: string;
+} | null {
+  const first = content.split("\n", 1)[0] || "";
+  const m = first.match(/^\[delegate\s+(.*)\]$/);
+  if (!m) return null;
+  const kv: Record<string, string> = {};
+  for (const part of m[1].split(/\s+/)) {
+    const eq = part.indexOf("=");
+    if (eq > 0) kv[part.slice(0, eq)] = part.slice(eq + 1);
+  }
+  const sid = (content.match(/^delegation=([0-9a-f]+)$/m) || [])[1];
+  return {
+    backend: kv.backend || "?",
+    mode: kv.mode || "?",
+    stop: kv.stop || (kv.started !== undefined ? "started" : "?"),
+    sid,
+    turns: kv.turns,
+    duration: kv.duration,
+    tokens: kv.tokens,
+  };
+}
+
 function ToolBlock({ name, content, pending, argsPreview }: { name: string; content: string; pending: boolean; argsPreview?: string }) {
   // null = user hasn't toggled yet → default depends on output length
   // (re-evaluated once content arrives, so pending→done stays correct).
@@ -1232,11 +1272,21 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
     );
   }
   const lineCount = content.split("\n").length;
+  const del = name === "delegate_agent" ? parseDelegation(content) : null;
+  // 机器头与溯源行是给模型/回放跳转看的，展示层剥掉。
+  const shown = del
+    ? content
+        .split("\n")
+        .filter((l, idx) => idx > 0 && !/^delegation=/.test(l))
+        .join("\n")
+        .trim()
+    : content;
   // spawn_subagent 的回执是固定模板（"已启动 session_id=… / 它在后台独立运行…"），
   // 每次委派都全展开会把主 agent 的内容挤下去——默认只留标题行，点开看全文
   // （2026-10-01 空间优化）。模型侧拿到的仍是全文，这里只影响显示。
   const isLong =
     name === "spawn_subagent" ||
+    name === "delegate_agent" ||
     lineCount > LONG_OUTPUT_LINES ||
     content.length > LONG_OUTPUT_CHARS;
   const expanded = open ?? !isLong;
@@ -1255,13 +1305,28 @@ function ToolBlock({ name, content, pending, argsPreview }: { name: string; cont
           {argsPreview && <span> · {argsPreview}</span>}
         </span>
         <span className="shrink-0 text-green">✓</span>
+        {del && (
+          <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet">
+            {del.backend} · {del.mode} · {del.stop}
+          </span>
+        )}
         <span className="ml-auto shrink-0 text-[10px] text-faint">
           {tc("tools.stats", { lines: lineCount, chars: content.length })}
         </span>
       </button>
+      {del?.sid && (
+        <button
+          onClick={() =>
+            window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: del.sid }))
+          }
+          className="block w-full border-t border-line/60 px-2.5 py-1 text-left text-[11px] text-violet transition-colors hover:bg-card2/50"
+        >
+          {tc("tools.openDelegation")} ↗
+        </button>
+      )}
       {expanded && (
         <div className={`border-t border-line/60 ${isLong ? "max-h-80 overflow-y-auto" : ""}`}>
-          <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 py-1.5 text-faint">{content}</pre>
+          <pre className="overflow-x-auto whitespace-pre-wrap px-2.5 py-1.5 text-faint">{shown}</pre>
         </div>
       )}
     </div>
@@ -1729,7 +1794,19 @@ export function SubagentResultCard({
   const statusLabel = useStatusLabel();
   const live = g.sessions.find((s) => s.id === block.sessionId);
   const sub = live?.subagent;
-  const status = sub?.status ?? "done";
+  // delegation 回执（external_agent 注入）复用本卡。判定双保险：summary 带
+  // [delegate …] 机器头（注入/status 两通道的 summary 都以它开头），或子会话
+  // meta type=delegation（老数据/极端时序兜底）。
+  const summaryText = block.summary || sub?.result_summary || "";
+  const del = parseDelegation(summaryText);
+  const isDelegation = live?.type === "delegation" || !!del;
+  // 终态优先级：机器头（本次运行真实 verdict）> meta.stop_reason。
+  const stop = del?.stop ?? live?.stop_reason ?? "";
+  const status = isDelegation
+    ? stop === "error" || stop === "timeout"
+      ? "failed"
+      : "done"
+    : sub?.status ?? "done";
   const meta = subagentStatusMeta(status);
   const goal = sub?.goal || block.goal || "Subtask";
   const [confirmed, setConfirmed] = useState(() => isSubagentConfirmed(block.sessionId));
@@ -1776,18 +1853,64 @@ export function SubagentResultCard({
   return (
     <div className="rounded-lg border border-line bg-card/60 px-3 py-2.5 text-xs">
       <div className="flex items-center gap-1.5">
-        <span className="shrink-0">🤖</span>
-        <span className="min-w-0 flex-1 truncate font-medium text-txt" title={goal}>
-          {tc("subagent.resultTitle", { goal })}
+        <span className="shrink-0">{isDelegation ? "🧭" : "🤖"}</span>
+        <span
+          className="min-w-0 flex-1 truncate font-medium text-txt"
+          title={isDelegation ? block.goal || live?.backend || "" : goal}
+        >
+          {isDelegation
+            ? tc("subagent.delegationResultTitle", {
+                backend: live?.backend ?? del?.backend ?? "?",
+              })
+            : tc("subagent.resultTitle", { goal })}
         </span>
         <SubagentKindBadges sub={sub} />
         <span className="shrink-0" title={tc("status.tooltip", { status: statusLabel(status) })}>
           {meta.glyph} {statusLabel(status)}
         </span>
       </div>
-      {(block.summary || sub?.result_summary) && (
+      {isDelegation && block.goal && (
+        <div className="mt-0.5 truncate text-faint" title={block.goal}>
+          {block.goal}
+        </div>
+      )}
+      {/* delegation 徽标行：机器头的 kv 折成等宽小胶囊（与 ToolBlock 委托徽标
+          同款配色）；turns/duration/tokens 只有终态回执携带。 */}
+      {isDelegation && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1 font-mono text-[10px] text-faint">
+          <span className="rounded-full border border-violet/40 bg-violet/10 px-1.5 leading-4 text-violet">
+            {live?.backend ?? del?.backend ?? "?"}
+          </span>
+          <span className="rounded-full border border-line px-1.5 leading-4 text-muted">
+            {live?.mode ?? del?.mode ?? "?"}
+          </span>
+          <span
+            className={`rounded-full border px-1.5 leading-4 ${
+              stop === "success"
+                ? "border-green/40 bg-green/10 text-green"
+                : stop === "error" || stop === "timeout"
+                  ? "border-red/40 bg-red/10 text-red"
+                  : "border-line text-faint"
+            }`}
+          >
+            {stop || "?"}
+          </span>
+          {del?.turns && <span>turns={del.turns}</span>}
+          {del?.duration && <span>duration={del.duration}</span>}
+          {del?.tokens && <span>tokens={del.tokens}</span>}
+        </div>
+      )}
+      {/* delegation 正文：机器头与 delegation= 溯源行剥掉（信息已进徽标行与
+          卡片跳转，ToolBlock 同款过滤）。 */}
+      {summaryText && (
         <div className="mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-muted">
-          {block.summary || sub?.result_summary}
+          {isDelegation && del
+            ? summaryText
+                .split("\n")
+                .filter((l, idx) => idx > 0 && !/^delegation=/.test(l))
+                .join("\n")
+                .trim()
+            : summaryText}
         </div>
       )}
       {block.error && (
@@ -1813,35 +1936,39 @@ export function SubagentResultCard({
         >
           {tc("subagent.viewFullConversation")}
         </button>
-        {confirmed ? (
+        {/* delegation：外部 CLI 跑完即终态，回放会话只读——确认/纠偏/升级
+            这套子代理结果评审流程对它没有意义，整个不渲染（2026-10-05
+            用户反馈），只留「查看完整对话」。 */}
+        {!isDelegation && confirmed && (
           <span
             className="rounded-md border border-green/40 bg-green/10 px-1.5 py-0.5 text-[10px] text-green"
             title={tc("subagent.confirmedTitle")}
           >
             ✅ {tc("subagent.confirmed")}
           </span>
-        ) : (
-          <button
-            onClick={confirm}
-            title={tc("subagent.confirmTitle")}
-            className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-green/50 hover:text-green"
-          >
-            ✅ {tc("subagent.confirm")}
-          </button>
         )}
-        {!confirmed && (
-          <button
-            onClick={() => setProblemOpen((v) => !v)}
-            className={`rounded-md border px-1.5 py-0.5 text-[10px] transition-colors ${
-              problemOpen
-                ? "border-yellow/50 bg-yellow/10 text-yellow"
-                : "border-line2 text-muted hover:border-yellow/50 hover:text-yellow"
-            }`}
-          >
-            {tc("subagent.problem")}
-          </button>
+        {!isDelegation && !confirmed && (
+          <>
+            <button
+              onClick={confirm}
+              title={tc("subagent.confirmTitle")}
+              className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-green/50 hover:text-green"
+            >
+              ✅ {tc("subagent.confirm")}
+            </button>
+            <button
+              onClick={() => setProblemOpen((v) => !v)}
+              className={`rounded-md border px-1.5 py-0.5 text-[10px] transition-colors ${
+                problemOpen
+                  ? "border-yellow/50 bg-yellow/10 text-yellow"
+                  : "border-line2 text-muted hover:border-yellow/50 hover:text-yellow"
+              }`}
+            >
+              {tc("subagent.problem")}
+            </button>
+          </>
         )}
-        {problemOpen && !confirmed && (
+        {!isDelegation && problemOpen && !confirmed && (
           <>
             <button
               onClick={goToChild}

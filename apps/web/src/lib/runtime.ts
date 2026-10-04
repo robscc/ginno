@@ -991,6 +991,15 @@ export async function revealSessionFile(project_slug: string, session_id: string
 }
 
 // ---- settings / mcp / skills / kb ----
+export async function stopDelegation(id: string) {
+  return json(`${BASE}/delegations/${id}/stop`, { method: "POST" });
+}
+
+export async function getExternalAgents(): Promise<
+  { name: string; installed: boolean; path: string }[]
+> {
+  return json(`${BASE}/external-agents`);
+}
 export async function getSettings() {
   return json<Record<string, unknown>>(`${BASE}/settings`);
 }

@@ -35,7 +35,8 @@
         "general": "General",
         "notifications": "Notifications",
         "floating": "Floating Window",
-        "toolLabels": "Tool Labels"
+        "toolLabels": "Tool Labels",
+        "externalAgents": "External Agents"
       }
     },
     "view": {
@@ -618,6 +619,20 @@
           "other": "Other"
         }
       }
+    },
+    "externalAgents": {
+      "title": "External Agents",
+      "intro": "Delegate self-contained coding tasks to external coding agent CLIs (claude-code / codex / pi) running one-shot in the workspace.",
+      "enable": "Enable delegate_agent tool",
+      "enableHint": "Off by default: delegation spends external vendors' credits and can edit files. Permission posture is fixed per call (read-only default, edit escalates, never a shell).",
+      "backends": "Detected backends",
+      "noBackends": "Detecting… or runtime unreachable",
+      "notInstalled": "not installed",
+      "ownAccount": "Each backend runs with its own CLI config and model account — Ginno never forwards provider credentials.",
+      "save": "Save",
+      "saved": "Saved",
+      "saveFailed": "Save failed",
+      "readAborted": "Could not read current settings; save aborted."
     }
   }
 }
