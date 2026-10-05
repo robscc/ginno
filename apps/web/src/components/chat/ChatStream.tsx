@@ -623,12 +623,46 @@ export function ChatStream({
 // reads as a model name and looks unchangeable (the "default is customer"
 // report), and the id is the one thing the user cannot act on.
   const defaultProviderCfg = g.providers[g.defaultProvider];
+  // 生效模型解析——镜像服务端 _resolve_provider_model / provider_is_deliberate
+  // 的优先级:显式选择 > 目标 agent 的 deliberate 绑定 > 全局默认。chip 显示
+  // 什么,首个会话就用什么;此前 label 只认全局默认、懒创建又只在主动点选时
+  // 才下发,agent 绑定在服务端悄悄接管——「选了 glm 进去变 qwen」的根因。
+  const targetAgent =
+    g.agents.find((a) => a.id === (target ?? g.agents[0]?.id)) ?? null;
+  const agentBindingPid =
+    targetAgent?.provider &&
+    (targetAgent.provider !== "custom" || targetAgent.provider_explicit) &&
+    g.providers[targetAgent.provider]?.enabled
+      ? targetAgent.provider
+      : null;
+  const homeEffective = homeModel
+    ? { ...homeModel }
+    : agentBindingPid
+      ? {
+          provider: agentBindingPid,
+          model:
+            targetAgent?.model ||
+            g.providers[agentBindingPid]?.default_model ||
+            g.providers[agentBindingPid]?.model ||
+            "",
+        }
+      : {
+          provider: g.defaultProvider,
+          model:
+            defaultProviderCfg?.default_model ||
+            defaultProviderCfg?.model ||
+            "",
+        };
+  // 首页态的模型来源:picked=用户点选 / agent=agent 绑定 / default=应用默认
+  const homeModelSource: "picked" | "agent" | "default" = homeModel
+    ? "picked"
+    : agentBindingPid
+      ? "agent"
+      : "default";
   const modelChipLabel = session
     ? session.model || session.provider
-    : homeModel?.model ||
-      homeModel?.provider ||
-      defaultProviderCfg?.default_model ||
-      defaultProviderCfg?.model ||
+    : homeEffective.model ||
+      homeEffective.provider ||
       defaultProviderCfg?.name ||
       g.defaultProvider;
 
@@ -1338,7 +1372,18 @@ export function ChatStream({
                   type="button"
                   disabled={running || parked}
                   onClick={() => setModelOpen((v) => !v)}
-                  title={session ? tc("model.switchTitle") : tc("model.pickTitle")}
+                  title={
+                    session
+                      ? tc("model.switchTitle")
+                      : homeModelSource === "agent"
+                        ? tc("model.fromAgentTitle", {
+                            agent: targetAgent?.name ?? "",
+                            model: modelChipLabel,
+                          })
+                        : homeModelSource === "default"
+                          ? tc("model.fromDefaultTitle", { model: modelChipLabel })
+                          : tc("model.pickTitle")
+                  }
                   className="flex items-center gap-1.5 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted hover:border-line hover:bg-card2 hover:text-txt disabled:opacity-50"
                 >
                   <Globe className="h-3.5 w-3.5 shrink-0" />
@@ -1366,8 +1411,9 @@ export function ChatStream({
                             ? p.models
                             : [p.default_model || p.model || ""]
                         ).filter((m): m is string => !!m);
-                        const curProvider = session ? session.provider : homeModel?.provider;
-                        const curModel = session ? session.model : homeModel?.model;
+                        // 菜单 ✓ 跟随「将要生效」的模型(含 agent 绑定/默认),与 chip 一致
+                        const curProvider = session ? session.provider : homeEffective?.provider;
+                        const curModel = session ? session.model : homeEffective?.model;
                         return (
                           <div key={pid}>
                             <div className="px-3 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wider text-faint">
@@ -1398,7 +1444,7 @@ export function ChatStream({
                         );
                       })}
                       <div className="mt-1 border-t border-line px-3 pt-1 text-[10px] text-faint">
-                        {tc("model.footnote")}
+                        {tc(session ? "model.footnote" : "model.footnoteHome")}
                       </div>
                     </div>
                   </>

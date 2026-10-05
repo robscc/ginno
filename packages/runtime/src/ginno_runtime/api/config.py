@@ -380,9 +380,11 @@ def _refresh_session_metas() -> None:
     Session metas persist provider/model from creation time; the topbar label
     and rebuilt graphs (``_ensure_session``) read them, so after a provider
     config change — or on startup, to heal metas frozen by older builds — they
-    must be re-resolved. Precedence mirrors ``_resolve_provider_model`` minus
-    explicit request overrides: an enabled agent provider, else the enabled
-    global default.
+    must be re-resolved. A session's own still-resolvable binding — the model
+    picked at creation or switched via the chat model chip — is PRESERVED;
+    only bindings that no longer resolve (provider disabled/deleted, model
+    dropped from its list) fall back to the enabled agent provider, else the
+    enabled global default.
     """
     providers = prov_mod.load_providers()
 
@@ -402,6 +404,17 @@ def _refresh_session_metas() -> None:
         changed = False
         for m in metas:
             ag = _agent_lookup(m.get("agent_id"))
+            # 会话自身的绑定优先保留:新建会话时的选择、模型 chip 的切换都是
+            # 用户显式动作,meta 里的 provider/model 即意图,不能被重算打回
+            # (否则「选好的模型重启后悄悄变回 agent 绑定」)。仅当绑定已不可
+            # 解析(provider 被禁/删,或 model 不在其 models 列表;列表为空
+            # 视为不限,兼容手填 model 的用法)才继续走 agent/默认重算。
+            cur_pid = m.get("provider")
+            cur_model = m.get("model")
+            if _enabled(cur_pid):
+                allowed = (providers.get(cur_pid) or {}).get("models") or []
+                if cur_model and (not allowed or cur_model in allowed):
+                    continue
             # Same precedence as _resolve_provider_model (2026-10-02 fix):
             # the agent's provider counts only as a DELIBERATE choice — one
             # differing from the global default. The seed placeholder
@@ -428,9 +441,11 @@ def _refresh_session_metas() -> None:
                 m["model"] = model
                 changed = True
         if changed:
-            paths.session_index_path(slug).write_text(
-                json.dumps(metas, indent=2, ensure_ascii=False)
-            )
+            # 整表替换必须走 session_meta 的锁+原子写(直接 write_text 会绕开
+            # 2026-10-05 事故后加上的串行约束)。
+            from .session_meta import _session_meta_rewrite_all
+
+            _session_meta_rewrite_all(slug, metas)
 
 
 @router.put("/api/providers")

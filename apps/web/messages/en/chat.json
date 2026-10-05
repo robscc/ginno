@@ -57,11 +57,14 @@
       "removeAria": "Remove pending message"
     },
     "model": {
-      "switchTitle": "Switch this session's model",
+      "switchTitle": "Switch this session's model · takes effect next turn and persists",
       "pickTitle": "Choose the model for the new session",
+      "fromAgentTitle": "Next session starts on the model bound to {agent} ({model}) — change it in Settings → Agents, or pick below to override for that session",
+      "fromDefaultTitle": "Next session starts on the app default model ({model}) — change it in Settings → Model API, or pick below",
       "noProviders": "No enabled providers — go to Settings → Model API to enable one",
       "noModels": "No models configured for this provider — go to Settings → Model API to add one",
-      "footnote": "Takes effect next turn · changes in Settings override session-level selection"
+      "footnoteHome": "The checked model is what the next session will use · a pick here overrides the agent binding for that session",
+      "footnote": "Takes effect next turn · your pick stays with this session unless its provider or model is removed"
     },
     "agentChips": {
       "ask": "Ask {name}",

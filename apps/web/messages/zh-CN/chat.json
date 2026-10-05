@@ -57,11 +57,14 @@
       "removeAria": "移除待注入消息"
     },
     "model": {
-      "switchTitle": "切换本会话的模型",
+      "switchTitle": "切换本会话的模型 · 下一回合生效并一直保留",
       "pickTitle": "为新会话选择模型",
+      "fromAgentTitle": "下一个会话将使用 {agent} 绑定的模型（{model}）——可在 设置 → Agents 修改，或在下方选择以覆盖该会话",
+      "fromDefaultTitle": "下一个会话将使用应用默认模型（{model}）——可在 设置 → 模型 API 修改，或在下方选择",
       "noProviders": "尚无启用的服务商——请到 设置 → 模型 API 启用一个",
       "noModels": "该服务商未配置模型——请到 设置 → 模型 API 添加",
-      "footnote": "下一回合生效 · 设置中的更改会覆盖会话级选择"
+      "footnoteHome": "勾选的模型即下一个会话将使用的模型 · 在此选择可覆盖该会话的 Agent 绑定",
+      "footnote": "下一回合生效 · 你的选择随会话保留，除非其服务商或模型被移除"
     },
     "agentChips": {
       "ask": "问 {name}",
