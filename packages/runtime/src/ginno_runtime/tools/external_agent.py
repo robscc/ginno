@@ -280,6 +280,11 @@ def _register_delegation_proc(did: str, session_id: str, proc) -> None:
         _ACTIVE_DELEGATIONS[did] = {"session_id": session_id, "proc": proc}
 
 
+# 并发上限(2026-10-05 事故:一次拉起 20 个并发委托——索引竞态+资源失控):
+# 委托是重操作(外部 CLI 进程 + API 配额),超限直接回拒让模型排队/串行。
+_MAX_ACTIVE_DELEGATIONS = 8
+
+
 def _unregister_delegation_proc(did: str) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_DELEGATIONS.pop(did, None)
@@ -345,6 +350,11 @@ async def _delegation_bg(
     记用量、并把结果经 subagent 注入通道回流父会话（前端 🧭 卡同款）。
     绝不抛异常。"""
     from ..server_shared import _log
+    # _on_line 的节流回填引用 finalize_delegation——必须在 _on_line 定义【前】
+    # 绑定:若只靠完成点的 from-import(下方 403/492 处),闭包 cell 在整个
+    # 运行期都是空的,回填每次 NameError(free variable 无值)再被静默吞掉
+    # ——2026-10-05 真机排查实锤,回放页因此从不增长。
+    from ..delegation_sessions import finalize_delegation
 
     _log.info(
         "delegation_bg_start id=%s backend=%s parent=%s",
@@ -375,7 +385,13 @@ async def _delegation_bg(
                     )
                 )
             except Exception:  # noqa: BLE001
-                pass
+                # 静默吞异常曾让实时进度整场失效而无人知晓——必须留痕。
+                try:
+                    _log.warning(
+                        "delegation_update_push_failed id=%s", delegation_id, exc_info=True
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 partial = be.parse_result("".join(_st["lines"]), "", 0, None)
                 finalize_delegation(
@@ -386,8 +402,16 @@ async def _delegation_bg(
                     timeout_s=timeout_s,
                     terminal=False,
                 )
-            except Exception:  # noqa: BLE001 — 节流回填失败不影响主流程
-                pass
+            except Exception:  # noqa: BLE001 — 节流回填失败不影响主流程,但必须留痕
+                try:
+                    _log.warning(
+                        "delegation_throttle_failed id=%s lines=%d",
+                        delegation_id,
+                        len(_st["lines"]),
+                        exc_info=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
     try:
         result = await asyncio.to_thread(
@@ -626,6 +650,16 @@ def build_external_agent_tools(
         else:
             timeout_s = max(_TIMEOUT_MIN_S, min(_TIMEOUT_MAX_S, _t_req))
 
+        # 并发闸门:达到上限直接回拒(回执而非异常——模型可排队/串行重试),
+        # 防再次出现一次拉起 20 个进程的事故。
+        with _ACTIVE_LOCK:
+            _active = len(_ACTIVE_DELEGATIONS)
+        if _active >= _MAX_ACTIVE_DELEGATIONS:
+            return (
+                f"[delegate] rejected: {_active} delegations already running "
+                f"(cap {_MAX_ACTIVE_DELEGATIONS}). Wait for some to finish "
+                "or work sequentially instead of spawning more."
+            )
         # 委托开始即建骨架子会话（running 态）——侧栏立刻可见，完成后再
         # 回填转录；簿记绝不变成工具错误。
         delegation_id = ""
