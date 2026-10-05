@@ -443,7 +443,7 @@ def _refresh_session_metas() -> None:
         if changed:
             # 整表替换必须走 session_meta 的锁+原子写(直接 write_text 会绕开
             # 2026-10-05 事故后加上的串行约束)。
-            from .session_meta import _session_meta_rewrite_all
+            from ..session_meta import _session_meta_rewrite_all
 
             _session_meta_rewrite_all(slug, metas)
 
