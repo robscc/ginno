@@ -5,8 +5,6 @@ stream-json 事件流（system/assistant/user/result）→ IR；解析不出事�
 """
 from __future__ import annotations
 
-import json
-
 from .base import (
     DelegationResult,
     _claude_usage,
@@ -22,15 +20,13 @@ class ClaudeCodeBackend:
     """Claude Code headless with a full event stream
     (``claude -p --output-format stream-json --verbose``).
 
-    Mode mapping (both modes deny Bash via ``--settings`` permissions.deny —
-    read-only additionally denies Edit/Write/NotebookEdit; edit adds
-    ``--permission-mode=acceptEdits``):
-    it only removes Bash/PowerShell/REPL/WebFetch while Edit/Write remain):
+    Mode mapping (2026-10-05 用户决策：真实委托需要完整工具表，不禁任何
+    工具；两种模式都跑 ``--dangerously-skip-permissions``，如需只读语义
+    只能靠 prompt 层约束):
 
-    * read-only → ``--disallowedTools Bash --permission-mode plan`` (plans, never edits)
-    * edit      → ``--disallowedTools Bash --permission-mode acceptEdits`` (file edits
-      auto-approved inside the workspace; Bash is gone from the tool table
-      entirely, settings/git writes still need approval)
+    * read-only → 与 edit 同一张完整工具表（名义保留，供调用方语义区分）
+    * edit      → 追加 ``--permission-mode=acceptEdits``（skip-permissions
+      之下主要是显式声明编辑意图）
     """
 
     name = "claude-code"
@@ -42,28 +38,19 @@ class ClaudeCodeBackend:
         self, prompt: str, mode: str, cwd: str, out_file: str | None
     ) -> list[str]:
         # 2026-10-04 真机矩阵（V1-V10）：--allowedTools / --strict-mcp-config /
-        # --disallowedTools=Bash 都会炸掉 claude CLI 2.1.x headless 的延迟
-        # 工具系统（会话里只剩 ToolSearch）；settings 形式的 permissions.deny
-        # 是唯一既保留核心工具又能禁 Bash/编辑的路。--settings 用等号紧凑
-        # JSON 单值形式（variadic 的 --disallowedTools 会把 prompt 吞掉）。
-        deny = (
-            ["Bash", "Edit", "Write", "NotebookEdit"]
-            if mode == "read-only"
-            else ["Bash"]
-        )
-        perm_settings = json.dumps(
-            {"permissions": {"deny": deny}}, separators=(",", ":")
-        )
+        # --disallowedTools 都会炸掉 claude CLI 2.1.x headless 的延迟工具系统
+        # （会话里只剩 ToolSearch）——CLI 层禁工具的路全堵死了。
+        # 2026-10-05 用户决策：委托面向真实工作环境，Bash/Edit 等被禁工具
+        # 都是要用的——彻底移除 permissions.deny / --settings，保留完整
+        # 工具表，配合 --dangerously-skip-permissions 直跑。
         argv = [
             self.available() or "claude",
             "-p",
             "--output-format",
             "stream-json",
             "--verbose",
-            # headless 无人应答权限提示——默认跳过（用户决策 2026-10-05；
-            # settings 里的 deny 清单保留作为兜底防线）。
+            # headless 无人应答权限提示——默认跳过（用户决策 2026-10-05）。
             "--dangerously-skip-permissions",
-            f"--settings={perm_settings}",
         ]
         if mode == "edit":
             argv.append("--permission-mode=acceptEdits")
