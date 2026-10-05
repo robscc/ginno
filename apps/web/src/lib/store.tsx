@@ -1257,7 +1257,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     setSessions((prev) => {
       const idx = prev.findIndex((s) => s.id === ev.session_id);
       const patch: Partial<SessionMeta> = {
-        type: "subagent",
+        type: (ev.type as SessionMeta["type"]) || "subagent",
         parent_session_id: ev.parent_session_id,
         depth: typeof ev.depth === "number" ? ev.depth : 0,
         subagent: {
@@ -1283,7 +1283,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         {
           id: ev.session_id,
           title: ev.title || ev.goal || uiText("subtask.fallbackTitle"),
-          icon: "boxes",
+          icon: ev.icon ?? "boxes",
           agent_id: null,
           provider: "",
           model: "",
@@ -1304,6 +1304,16 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
           ? {
               ...s,
               updated: Date.now() / 1000,
+              // delegation 行的终态打在顶层 stop_reason 上(meta 无 subagent 对象);
+              // 不回填则回放页的 3s 轮询永不停、侧栏状态点一直转 running
+              stop_reason:
+                s.type === "delegation"
+                  ? ev.status === "done"
+                    ? "success"
+                    : ev.status === "failed"
+                      ? "error"
+                      : s.stop_reason
+                  : s.stop_reason,
               subagent: s.subagent
                 ? {
                     ...s.subagent,

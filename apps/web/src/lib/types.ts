@@ -70,6 +70,9 @@ export interface AgentConfig {
   system_prompt: string;
   provider: string;
   model: string;
+  /** Mirrors runtime provider_is_deliberate: the provider was deliberately
+   * chosen for this agent (saved via Agents settings), not the seed value. */
+  provider_explicit?: boolean;
   tools_allow: string[];
   /** Connector ids this agent may NOT use (connector-module-design §8).
    *  Denylist: [] = all enabled connectors; per-agent can only restrict. */
@@ -215,6 +218,12 @@ export interface SubagentSpawnEvent {
   title?: string;
   /** 命中的子代理类型名（~/.ginno/agents/subagents/*.md），空 = 默认 persona */
   agent_type?: string;
+  /** 会话类型透传:"delegation" = 委托子会话(store 按 delegation 行渲染,不加发起卡) */
+  type?: string;
+  /** delegation 专用:外部后端名(claude/pi/codex) */
+  backend?: string;
+  /** 占位行图标(delegation 传 terminal;缺省 boxes) */
+  icon?: string;
 }
 
 // WS 帧 subagent.status（契约 2）。

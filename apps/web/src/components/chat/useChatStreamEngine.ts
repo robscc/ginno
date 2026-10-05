@@ -134,7 +134,14 @@ export function useChatStreamEngine(deps: EngineDeps) {
       try {
         const res = await getSessionHistory(session.id);
         if (!alive) return;
-        setMessages(mapHistory(res ?? {}));
+        const mapped = mapHistory(res ?? {});
+        // 必须同步写 per-session store:只写显示层的话,任何 syncDisplay
+        // (WS 状态变化/权限事件等)都会把视图弹回进入会话时的旧 store 快照
+        // ——运行中表现为"时不时闪白";结束后轮询停止,重进会话又被
+        // `if (!storeRef[sid])` 非空守卫挡住不再拉 history,视图冻结在旧
+        // 内容上,只有重启(清空 store)才恢复。
+        storeRef.current[session.id] = mapped;
+        setMessages(mapped);
         pinToBottom();
       } catch {
         /* 轮询失败静默——下一轮再试 */
@@ -148,6 +155,31 @@ export function useChatStreamEngine(deps: EngineDeps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [delegationReplayLive, session?.id]);
+  // 终态补一拍:轮询随 stop_reason 翻转立即停止,而终态 finalize(完整转录+
+  // 结果注记)恰在最后一次轮询之后落盘——不补拉,回放会冻结在倒数第二个
+  // 快照上;同时覆盖"结束后切走再切回"的入口(store 非空不再走初始加载,
+  // 由这里刷新到最终内容)。
+  useEffect(() => {
+    if (delegationReplayLive || session?.type !== "delegation" || !session?.id)
+      return;
+    const sid = session.id;
+    let alive = true;
+    getSessionHistory(sid)
+      .then((res) => {
+        if (!alive) return;
+        const mapped = mapHistory(res ?? {});
+        storeRef.current[sid] = mapped;
+        setMessages(mapped);
+        pinToBottom();
+      })
+      .catch(() => {
+        /* 补拍失败静默——终态内容不随轮询自愈,这里也别打扰 */
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delegationReplayLive, session?.id, session?.type, session?.stop_reason]);
 
   // ---- i18n（chat 域 + 事件契约）----
   // 本 hook 处理 runtime 事件文本的落地：error / notice 等事件可带 i18n_key+params
@@ -1106,7 +1138,12 @@ export function useChatStreamEngine(deps: EngineDeps) {
         const without = store0.filter((m) => m.id !== liveId);
         if (ev.running === false) {
           storeRef.current[sid] = without;
-          setMessages(without);
+          // 显示同步必须走 syncDisplay(带当前会话守卫):委托运行期间本事件
+          // 持续打在父会话 socket 上,若用户正在看别的会话(典型:运行中的
+          // 子会话回放页),裸 setMessages 会把父会话消息刷进当前视图——
+          // "subsession 自动刷新主 session 内容"即此。store 照常落,切回
+          // 父会话时由 syncDisplay 统一呈现。
+          syncDisplay(sid);
         } else {
           const nxt = [
             ...without,
@@ -1122,7 +1159,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
             },
           ];
           storeRef.current[sid] = nxt;
-          setMessages(nxt);
+          syncDisplay(sid);
         }
         break;
       }
@@ -1168,7 +1205,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
         // socket）。Store 侧 upsert 会话列表的子会话行；只有当本会话就是
         // 发起父时，transcript 里追加一张发起卡片（子 socket 收到同帧但不渲染）。
         g.notifySubagentSpawned(ev as unknown as SubagentSpawnEvent);
-        if (ev.parent_session_id === sid) {
+        // delegation 的 spawned 只为侧栏建行服务:transcript 不加发起卡——
+        // 委托的实时进度/结果卡由 delegate_update + subagent.status 通道负责,
+        // 叠加发起卡会双渲染。
+        if (ev.parent_session_id === sid && ev.type !== "delegation") {
           storeRef.current[sid] = [
             ...(storeRef.current[sid] ?? []),
             {
