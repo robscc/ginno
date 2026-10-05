@@ -90,6 +90,11 @@ DEFAULT_ASK_MAX_PER_TURN = 3
 DEFAULT_MEMORY_MAX_CHARS = 8000
 
 _CONTEXT_DEFAULTS = {
+    # External Agents 设置页(2026-10-05):委托并发上限 + 权限模式钉死。
+    # context_settings() 只透传本表内的键——不登记则 runtime 永远读不到
+    # 用户设置,一直走默认值(cap=8 事故即此)。
+    "max_active_delegations": 8,
+    "delegation_mode": "",
     "world_state": True,
     "cache_control": True,
     "tool_output_max_chars": 20000,

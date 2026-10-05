@@ -632,7 +632,14 @@
       "save": "Save",
       "saved": "Saved",
       "saveFailed": "Save failed",
-      "readAborted": "Could not read current settings; save aborted."
+      "readAborted": "Could not read current settings; save aborted.",
+      "maxActive": "Max concurrent delegations",
+      "maxActiveHint": "New delegate calls are rejected while this many are running · saved value takes effect immediately",
+      "delegationMode": "Delegation permission mode",
+      "delegationModeHint": "Pin edit / read-only instead of letting the model pick per call · saved value takes effect immediately",
+      "modeAuto": "Model decides (default read-only)",
+      "modeEdit": "Always edit",
+      "modeReadOnly": "Always read-only"
     }
   }
 }

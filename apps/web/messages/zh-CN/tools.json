@@ -632,7 +632,14 @@
       "save": "保存",
       "saved": "已保存",
       "saveFailed": "保存失败",
-      "readAborted": "读取当前设置失败，已中止保存。"
+      "readAborted": "读取当前设置失败，已中止保存。",
+      "maxActive": "并发委托上限",
+      "maxActiveHint": "运行中的委托达到该数量时，新的 delegate 调用将被拒绝 · 保存后即时生效",
+      "delegationMode": "委托权限模式",
+      "delegationModeHint": "钉死 edit / read-only，不再每次由模型选择 · 保存后即时生效",
+      "modeAuto": "模型自选（默认 read-only）",
+      "modeEdit": "始终 edit",
+      "modeReadOnly": "始终 read-only"
     }
   }
 }

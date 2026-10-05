@@ -9,6 +9,8 @@ import { Bot, Save } from "lucide-react";
 // accounts — Ginno never forwards provider credentials to them.
 interface ExtForm {
   enabled: boolean;
+  maxActive: number;
+  mode: string;
 }
 
 interface BackendRow {
@@ -19,7 +21,11 @@ interface BackendRow {
 
 export function ExternalAgentsSettings() {
   const t = useTranslations("settings.externalAgents");
-  const [form, setForm] = useState<ExtForm>({ enabled: false });
+  const [form, setForm] = useState<ExtForm>({
+    enabled: false,
+    maxActive: 8,
+    mode: "",
+  });
   const [backends, setBackends] = useState<BackendRow[]>([]);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -29,7 +35,14 @@ export function ExternalAgentsSettings() {
       .getSettings()
       .then((s) => {
         const c = ((s as Record<string, any>).context || {}) as Record<string, any>;
-        setForm({ enabled: !!c.external_agents_enabled });
+        setForm({
+          enabled: !!c.external_agents_enabled,
+          maxActive:
+            typeof c.max_active_delegations === "number"
+              ? c.max_active_delegations
+              : 8,
+          mode: typeof c.delegation_mode === "string" ? c.delegation_mode : "",
+        });
       })
       .catch(() => {});
     api.getExternalAgents().then(setBackends).catch(() => {});
@@ -50,6 +63,14 @@ export function ExternalAgentsSettings() {
       cur.context = {
         ...(cur.context || {}),
         external_agents_enabled: form.enabled,
+        // 并发上限夹在 1..32,非法输入回落 8——runtime 侧还有同样兜底
+        max_active_delegations: Math.max(
+          1,
+          Math.min(32, Math.round(Number(form.maxActive)) || 8)
+        ),
+        delegation_mode: ["edit", "read-only"].includes(form.mode)
+          ? form.mode
+          : "",
       };
       await api.putSettings(cur);
       setMsg(t("saved"));
@@ -73,12 +94,45 @@ export function ExternalAgentsSettings() {
           <input
             type="checkbox"
             checked={form.enabled}
-            onChange={(e) => setForm({ enabled: e.target.checked })}
+            onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
             className="h-4 w-4 accent-[#a78bfa]"
           />
           <span className="text-sm text-txt">{t("enable")}</span>
         </label>
         <p className="mt-2 text-xs text-faint">{t("enableHint")}</p>
+        <div className="mt-3 flex items-center gap-3 border-t border-line pt-3">
+          <label htmlFor="ext-max-active" className="text-sm text-txt">
+            {t("maxActive")}
+          </label>
+          <input
+            id="ext-max-active"
+            type="number"
+            min={1}
+            max={32}
+            value={form.maxActive}
+            onChange={(e) =>
+              setForm({ ...form, maxActive: Number(e.target.value) })
+            }
+            className="w-20 rounded-md border border-line2 bg-card px-2 py-1 text-sm text-txt"
+          />
+          <span className="text-xs text-faint">{t("maxActiveHint")}</span>
+        </div>
+        <div className="mt-3 flex items-center gap-3 border-t border-line pt-3">
+          <label htmlFor="ext-delegation-mode" className="text-sm text-txt">
+            {t("delegationMode")}
+          </label>
+          <select
+            id="ext-delegation-mode"
+            value={form.mode}
+            onChange={(e) => setForm({ ...form, mode: e.target.value })}
+            className="rounded-md border border-line2 bg-card px-2 py-1 text-sm text-txt"
+          >
+            <option value="">{t("modeAuto")}</option>
+            <option value="edit">{t("modeEdit")}</option>
+            <option value="read-only">{t("modeReadOnly")}</option>
+          </select>
+          <span className="text-xs text-faint">{t("delegationModeHint")}</span>
+        </div>
       </div>
 
       <div className="rounded-lg border border-line bg-card/40 p-4">
