@@ -8,10 +8,32 @@ module (which would create an import cycle).
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 
 from . import paths
 from .server_shared import _SESSIONS
+
+# 2026-10-05 事故:20 路并发委托各自「读-改-写」同一 _index.json,最后写的
+# 抱着过期快照把其余条目全部踩掉(索引只剩 1 条、侧栏清空)。索引所有写
+# 路径必须串行(进程内 threading 锁足够——调用方横跨事件循环与委托 bg
+# 线程)+ 原子落盘(tmp+rename),读端永远只见完整文件。
+_IDX_LOCK = threading.RLock()
+
+
+def _write_index(slug: str, items: list[dict]) -> None:
+    paths.project_sessions_dir(slug).mkdir(parents=True, exist_ok=True)
+    p = paths.session_index_path(slug)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(items, indent=2, ensure_ascii=False))
+    os.replace(tmp, p)
+
+
+def _session_meta_rewrite_all(slug: str, metas: list[dict]) -> None:
+    """整表替换(heal/迁移路径专用)——同样走锁,免得绕开串行约束。"""
+    with _IDX_LOCK:
+        _write_index(slug, metas)
 
 
 def _session_meta_list(slug: str) -> list[dict]:
@@ -25,39 +47,35 @@ def _session_meta_list(slug: str) -> list[dict]:
 
 
 def _session_meta_upsert(slug: str, entry: dict) -> None:
-    items = [m for m in _session_meta_list(slug) if m.get("id") != entry["id"]]
-    items.insert(0, entry)
-    paths.project_sessions_dir(slug).mkdir(parents=True, exist_ok=True)
-    paths.session_index_path(slug).write_text(
-        json.dumps(items, indent=2, ensure_ascii=False)
-    )
+    with _IDX_LOCK:
+        items = [m for m in _session_meta_list(slug) if m.get("id") != entry["id"]]
+        items.insert(0, entry)
+        _write_index(slug, items)
 
 
 def _session_meta_patch(slug: str, session_id: str, patch: dict) -> dict | None:
-    items = _session_meta_list(slug)
-    target = None
-    for m in items:
-        if m.get("id") == session_id:
-            m.update({k: v for k, v in patch.items() if v is not None})
-            m["updated"] = time.time()
-            target = m
-    if target is None:
-        return None
-    paths.session_index_path(slug).write_text(
-        json.dumps(items, indent=2, ensure_ascii=False)
-    )
-    return target
+    with _IDX_LOCK:
+        items = _session_meta_list(slug)
+        target = None
+        for m in items:
+            if m.get("id") == session_id:
+                m.update({k: v for k, v in patch.items() if v is not None})
+                m["updated"] = time.time()
+                target = m
+        if target is None:
+            return None
+        _write_index(slug, items)
+        return target
 
 
 def _session_meta_remove(slug: str, session_id: str) -> bool:
-    items = _session_meta_list(slug)
-    kept = [m for m in items if m.get("id") != session_id]
-    if len(kept) == len(items):
-        return False
-    paths.session_index_path(slug).write_text(
-        json.dumps(kept, indent=2, ensure_ascii=False)
-    )
-    return True
+    with _IDX_LOCK:
+        items = _session_meta_list(slug)
+        kept = [m for m in items if m.get("id") != session_id]
+        if len(kept) == len(items):
+            return False
+        _write_index(slug, kept)
+        return True
 
 
 def _session_meta_children(slug: str, session_id: str) -> list[dict]:

@@ -17,6 +17,8 @@ try/except 双保险）。
 """
 from __future__ import annotations
 
+import os
+import shutil
 import time
 import uuid
 
@@ -27,6 +29,9 @@ from .checkpointer import FileCheckpointer
 from .session_meta import _find_meta, _session_meta_upsert, subagent_depth_of
 
 _RAW_CAP = 512_000
+# 存量上限:每 slug 只保留最近 N 条委托归档(2026-10-05 单日即产生 44 条,
+# 不封顶会无限累积;running 态的永不清理)。
+_MAX_DELEGATION_SESSIONS = 60
 
 
 def _ir_to_messages(ir: list, prompt: str) -> list:
@@ -182,6 +187,7 @@ def create_delegation(
             "updated": now,
         }
         _session_meta_upsert(slug, entry)
+        _prune_delegation_sessions(slug)
         # 初始转录只有 prompt——运行中打开回放不是空屏。
         _write_checkpoint(slug, sid, [HumanMessage(content=prompt or "")])
         if parent_session_id:
@@ -189,11 +195,68 @@ def create_delegation(
                 from . import server_shared as shared
 
                 shared.subagent_link_child(parent_session_id, sid)
+                # 骨架行同步广播 subagent.spawned——侧栏立刻建行(docstring 承诺
+                # 的"立刻可见"此前缺的就是这一步):前端 notifySubagentSpawned 凭
+                # 事件合成占位行,否则要等下一次 reloadSessions(窗口聚焦等偶发
+                # 时机)才浮出来。只发父会话 socket;引擎对 type=delegation 的
+                # spawned 不加发起卡(实时进度已有 delegate_update 卡)。
+                shared.spawn_bg(
+                    shared._push_session_event(
+                        parent_session_id,
+                        "subagent.spawned",
+                        {
+                            "session_id": sid,
+                            "parent_session_id": parent_session_id,
+                            "goal": (prompt or "")[:120],
+                            "constraints": "",
+                            "acceptance": "",
+                            "depth": entry["depth"],
+                            "origin": "agent",
+                            "title": entry["title"],
+                            "mode": mode,
+                            "agent_type": "",
+                            "type": "delegation",
+                            "backend": backend,
+                            "icon": "terminal",
+                        },
+                    )
+                )
             except Exception:  # noqa: BLE001
                 pass
         return sid
     except Exception:
         return ""
+
+
+def _prune_delegation_sessions(slug: str) -> None:
+    """委托归档超过 _MAX_DELEGATION_SESSIONS 时,把最旧的连 meta 带文件清掉
+    (running 态的永不清理)。失败静默——修剪绝不影响委托主流程。"""
+    try:
+        from .session_meta import _session_meta_list, _session_meta_remove
+
+        dels = [
+            m
+            for m in _session_meta_list(slug)
+            if m.get("type") == "delegation" and m.get("stop_reason") != "running"
+        ]
+        dels.sort(
+            key=lambda m: m.get("updated") or m.get("created") or 0, reverse=True
+        )
+        for m in dels[_MAX_DELEGATION_SESSIONS:]:
+            sid = m.get("id") or ""
+            if not sid:
+                continue
+            _session_meta_remove(slug, sid)
+            try:
+                os.unlink(paths.project_sessions_dir(slug) / f"{sid}.json")
+            except OSError:
+                pass
+            try:
+                shutil.rmtree(paths.session_files_dir(slug, sid), ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def finalize_delegation(
