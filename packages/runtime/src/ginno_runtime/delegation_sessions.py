@@ -32,6 +32,9 @@ _RAW_CAP = 512_000
 # 存量上限:每 slug 只保留最近 N 条委托归档(2026-10-05 单日即产生 44 条,
 # 不封顶会无限累积;running 态的永不清理)。
 _MAX_DELEGATION_SESSIONS = 60
+# 委托子会话图标按后端取:claude-code 用专属星芒标(前端 icons.tsx 同名
+# 组件),其余后端沿用通用 terminal。
+_DELEGATION_ICONS = {"claude-code": "claude-code", "codex": "codex", "pi": "pi"}
 
 
 def _ir_to_messages(ir: list, prompt: str) -> list:
@@ -156,6 +159,7 @@ def create_delegation(
     mode: str,
     prompt: str,
     workspace: str,
+    sid: str | None = None,
 ) -> str:
     """委托开始即建骨架（stop_reason="running" + 仅 prompt 的转录）。
 
@@ -164,7 +168,7 @@ def create_delegation(
     """
     try:
         slug = project_slug or "default"
-        sid = uuid.uuid4().hex
+        sid = sid or uuid.uuid4().hex
         now = time.time()
         found = _find_meta(parent_session_id or "") if parent_session_id else None
         parent_meta = found[0] if found else {}
@@ -172,7 +176,7 @@ def create_delegation(
             "id": sid,
             "title": f"{backend} · {(prompt or '').strip()[:40]}",
             "title_auto": False,
-            "icon": "terminal",
+            "icon": _DELEGATION_ICONS.get(backend, "terminal"),
             "agent_id": parent_meta.get("agent_id"),
             "provider": backend,
             "model": backend,
@@ -217,7 +221,7 @@ def create_delegation(
                             "agent_type": "",
                             "type": "delegation",
                             "backend": backend,
-                            "icon": "terminal",
+                            "icon": entry["icon"],
                         },
                     )
                 )

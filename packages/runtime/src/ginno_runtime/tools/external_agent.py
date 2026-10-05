@@ -33,6 +33,7 @@ import threading
 import time
 import subprocess
 import tempfile
+import uuid
 
 from langchain_core.tools import tool
 
@@ -283,6 +284,35 @@ def _register_delegation_proc(did: str, session_id: str, proc) -> None:
 # 并发上限(2026-10-05 事故:一次拉起 20 个并发委托——索引竞态+资源失控):
 # 委托是重操作(外部 CLI 进程 + API 配额),超限直接回拒让模型排队/串行。
 _MAX_ACTIVE_DELEGATIONS = 8
+
+
+def _active_delegations_cap() -> int:
+    """并发上限读 settings.context.max_active_delegations(External Agents
+    设置页可调,保存即生效,无需重启);缺省/非法回落 _MAX_ACTIVE_DELEGATIONS。"""
+    try:
+        from ..world_state import context_settings
+
+        v = context_settings().get("max_active_delegations")
+        return (
+            max(1, min(64, int(v)))
+            if isinstance(v, (int, float))
+            else _MAX_ACTIVE_DELEGATIONS
+        )
+    except Exception:  # noqa: BLE001
+        return _MAX_ACTIVE_DELEGATIONS
+
+
+def _forced_delegation_mode() -> str:
+    """settings.context.delegation_mode: ""/"auto"=模型按调用自选(默认
+    read-only),"edit"/"read-only"=用户在 External Agents 页钉死。活读即效——
+    用户明确要求权限模式是产品选项,不再靠 prompt 劝模型。"""
+    try:
+        from ..world_state import context_settings
+
+        v = (context_settings().get("delegation_mode") or "").strip()
+        return v if v in ("edit", "read-only") else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _unregister_delegation_proc(did: str) -> None:
@@ -635,7 +665,7 @@ def build_external_agent_tools(
             return f"[error] {name} is not installed ({hint})"
         if not (prompt or "").strip():
             return t("[error] prompt must not be empty", "[error] prompt 不能为空")
-        m = (mode or "").strip().lower()
+        m = _forced_delegation_mode() or (mode or "").strip().lower()
         if m not in ("read-only", "edit"):
             return (
                 f"[error] unknown mode {mode!r}; valid: read-only, edit"
@@ -650,16 +680,22 @@ def build_external_agent_tools(
         else:
             timeout_s = max(_TIMEOUT_MIN_S, min(_TIMEOUT_MAX_S, _t_req))
 
-        # 并发闸门:达到上限直接回拒(回执而非异常——模型可排队/串行重试),
-        # 防再次出现一次拉起 20 个进程的事故。
+        # 并发闸门 + 原子预占:检查与进程登记(proc_cb 在 Popen 时才执行)
+        # 之间有异步空窗——同一轮的并行工具调用会在任何进程登记前全部
+        # 通过检查再各自拉起进程(2026-10-05 实测 cap=2 仍一次起 5 个、
+        # 回拒零触发)。检查与预占必须在同一把锁内完成;槽位由 bg 的
+        # finally 或下方各失败路径释放。
         with _ACTIVE_LOCK:
             _active = len(_ACTIVE_DELEGATIONS)
-        if _active >= _MAX_ACTIVE_DELEGATIONS:
-            return (
-                f"[delegate] rejected: {_active} delegations already running "
-                f"(cap {_MAX_ACTIVE_DELEGATIONS}). Wait for some to finish "
-                "or work sequentially instead of spawning more."
-            )
+            _cap = _active_delegations_cap()
+            if _active >= _cap:
+                return (
+                    f"[delegate] rejected: {_active} delegations already running "
+                    f"(cap {_cap}). Wait for some to finish "
+                    "or work sequentially instead of spawning more."
+                )
+            _slot = uuid.uuid4().hex
+            _ACTIVE_DELEGATIONS[_slot] = {"session_id": session_id, "proc": None}
         # 委托开始即建骨架子会话（running 态）——侧栏立刻可见，完成后再
         # 回填转录；簿记绝不变成工具错误。
         delegation_id = ""
@@ -674,14 +710,24 @@ def build_external_agent_tools(
                     mode=m,
                     prompt=prompt,
                     workspace=cwd,
+                    sid=_slot,
                 ) or ""
             except Exception:  # noqa: BLE001 — archive must never break the run
                 delegation_id = ""
 
+            if not delegation_id:
+                # 骨架落库失败:不跑委托(与旧行为一致),释放预占槽
+                _unregister_delegation_proc(_slot)
+
         if not session_id:
             # 无会话上下文（workflow/脚本）：保持同步一次性语义。
-            result = run_delegation(be, prompt, m, cwd, timeout_s)
-            return _delegation_result_text(name, m, timeout_s, result, delegation_id)
+            try:
+                result = run_delegation(be, prompt, m, cwd, timeout_s)
+                return _delegation_result_text(
+                    name, m, timeout_s, result, delegation_id
+                )
+            finally:
+                _unregister_delegation_proc(_slot)
         # 异步化（spawn_subagent 同款待遇）：立即回执，后台执行——同步阻塞
         # 会撞流停滞看门狗（"model/stream stall: no chunk for 180s" →
         # turn_auto_retry 重试并重复 spawn，2026-10-04 真机事故）。
@@ -699,6 +745,8 @@ def build_external_agent_tools(
                 from ..server_shared import _log
 
                 _log.exception("delegation_spawn_failed id=%s", delegation_id)
+                # bg 没能起跑,其 finally 不会执行——在此释放预占槽
+                _unregister_delegation_proc(_slot)
                 try:
                     from ..delegation_sessions import finalize_delegation
 
