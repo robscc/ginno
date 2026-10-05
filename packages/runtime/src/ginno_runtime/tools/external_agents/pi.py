@@ -1,7 +1,8 @@
 """pi adapter — ``pi --mode json``（JSONL v3 事件流）。
 
-pi 无内置权限系统，工具表是唯一静态边界：mode → ``--tools`` 裁剪，
-两种模式都无 bash（no-shell 原则）。provider/model 尊重 pi 自己的配置。
+pi 无内置权限系统，工具表是唯一静态边界：read-only 走 ``--tools`` 只读
+白名单；edit 不传 ``--tools``，用 pi 默认全部内置工具(含 bash，2026-10-05
+用户决策：真实委托需要 shell)。provider/model 尊重 pi 自己的配置。
 """
 from __future__ import annotations
 
@@ -15,13 +16,45 @@ from .base import (
 )
 
 
+def _pi_tool_result(res) -> str:
+    """pi 的 tool_execution_end.result 是 LLM content-block 形状:
+    {'content': [{'type':'text','text':...}], 'structuredContent':
+    {'output':..., 'exit_code':..., 'wall_time_seconds':...}}。通用
+    _tool_result_text 不认这个形状会整只 repr 出来(2026-10-05 用户反馈:
+    回放里 toolcall 显示原始 dict)。优先 structuredContent.output 并附
+    exit_code/耗时摘要行;退化 content[].text;再退化通用提取。"""
+    if isinstance(res, dict):
+        sc = res.get("structuredContent")
+        if isinstance(sc, dict):
+            out = sc.get("output")
+            if isinstance(out, str) and out.strip():
+                extras = []
+                if sc.get("exit_code") is not None:
+                    extras.append(f"exit_code={sc.get('exit_code')}")
+                wt = sc.get("wall_time_seconds")
+                if isinstance(wt, (int, float)):
+                    extras.append(f"{wt:.1f}s")
+                head = f"[{' '.join(extras)}]" if extras else ""
+                return f"{head}\n{out}".strip() if head else out
+        content = res.get("content")
+        if isinstance(content, list):
+            parts = [
+                b.get("text")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+            ]
+            if parts:
+                return "\n".join(parts)
+    return _tool_result_text(res)
+
+
 class PiBackend:
     """pi coding agent in JSON mode (``pi --mode json``).
 
     pi 没有内置权限系统——工具表是唯一静态边界，mode 映射到 ``--tools``：
     * read-only → ``--tools read,grep,find,ls``（无 bash/edit/write）
-    * edit      → ``--tools read,edit,write,grep,find,ls``——依旧无 bash，
-      与另外两个后端的 no-shell 原则一致。
+    * edit      → 不传 ``--tools``，pi 默认全部内置工具(含 bash)——与
+      claude-code 移除 deny 同批的 2026-10-05 用户决策：真实委托需要 shell。
 
     ``--mode json``：stdout 输出 JSONL 协议事件（v3 schema：session 头 /
     message_update / message_end / tool_execution_* / agent_end）；
@@ -39,21 +72,20 @@ class PiBackend:
         self, prompt: str, mode: str, cwd: str, out_file: str | None
     ) -> list[str]:
         # cwd 由 run_delegation 的 Popen(cwd=...) 绑定（pi 无 -C 标志）。
-        tools = (
-            "read,grep,find,ls"
-            if mode == "read-only"
-            else "read,edit,write,grep,find,ls"
-        )
-        return [
+        argv = [
             self.available() or "pi",
             "--mode",
             "json",
             "--no-session",
             "--no-extensions",
-            "--tools",
-            tools,
-            prompt,
         ]
+        # 工具表:read-only 维持只读白名单(无 bash/edit/write);edit 不传
+        # --tools,走 pi 默认全部内置工具(read/bash/edit/write/...)。pi 无
+        # 权限系统,工具表是唯一静态边界(2026-10-05 用户决策,同批移除了
+        # claude-code 的 permissions.deny)。
+        if mode == "read-only":
+            argv += ["--tools", "read,grep,find,ls"]
+        return argv + [prompt]
 
     def parse_result(
         self, stdout: str, stderr: str, rc: int, out_file: str | None
@@ -106,7 +138,7 @@ class PiBackend:
                         "role": "tool_result",
                         "id": ev.get("toolCallId") or ev.get("tool_call_id"),
                         "name": ev.get("toolName") or ev.get("tool_name") or "",
-                        "content": _tool_result_text(ev.get("result")),
+                        "content": _pi_tool_result(ev.get("result")),
                         "is_error": bool(
                             ev.get("isError") or ev.get("is_error")
                         ),
