@@ -308,7 +308,22 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
     // 不再以原始文本气泡出现。goal 无从恢复，卡片标题退回 backend。
     const rawDel = parseDelegation(b.text);
     if (rawDel?.sid) {
-      out.push({ kind: "subagent_result", sessionId: rawDel.sid, summary: b.text });
+      // 展示层去掉机器头/delegation= 行/--- output --- 分隔线;错误态把
+      // [diagnostic] 提为首行警示(原始 b.text 保留给解析,不进卡片)。
+      let summary = b.text
+        .replace(/^\[delegate[^\]]*\]\n?/, "")
+        .replace(/^delegation=[0-9a-f]+\n?/m, "")
+        .replace(/^--- output ---\n?/m, "")
+        .replace(/^\[diagnostic\] (.+)$/m, "⚠️ $1")
+        .trim();
+      if (rawDel.stop === "error" && !summary.startsWith("⚠️")) {
+        summary = "⚠️ " + (summary || "delegation failed");
+      }
+      out.push({
+        kind: "subagent_result",
+        sessionId: rawDel.sid,
+        summary: summary || b.text,
+      });
       continue;
     }
     const results = parseSubagentResults(b.text);

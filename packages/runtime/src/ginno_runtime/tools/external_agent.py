@@ -358,9 +358,9 @@ def _delegation_result_text(
         )
     if result.stop_reason != "success":
         diag = result.diagnostic or "unknown failure"
-        return f"{header}\n[diagnostic] {diag}" + (
-            f"\n--- output ---\n{body}" if body else ""
-        )
+        # 失败态不再加 --- output --- 分隔行:body 此时往往只有
+        # delegation=<id>(前端靠它折卡),裸分隔线只是渲染噪音。
+        return f"{header}\n[diagnostic] {diag}" + (f"\n{body}" if body else "")
     note = f"\n[note] {result.diagnostic}" if result.diagnostic else ""
     return f"{header}\n{body}{note}"
 
