@@ -87,6 +87,19 @@ def _resolve_cli(name: str) -> str | None:
         return _CLI_CACHE[name]
     found = shutil.which(name)
     if not found:
+        # 登录 shell 兜底有盲区:zsh -lc 只加载 .zprofile,不读 .zshrc,
+        # 而很多用户(如本机)只在 .zshrc 里 export homebrew PATH。这里把
+        # 常见安装目录显式补进 PATH 再 which 一次(2026-10-06:GUI 重启后
+        # 三后端全部误报 not installed 即此盲区)。
+        home = os.path.expanduser("~")
+        extra = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/homebrew/sbin"]
+        for sub in (".local/bin", "bin"):
+            p = os.path.join(home, sub)
+            if os.path.isdir(p):
+                extra.append(p)
+        found = shutil.which(
+            name, path=os.pathsep.join([os.environ.get("PATH", ""), *extra]))
+    if not found:
         shell = os.environ.get("SHELL") or "/bin/sh"
         try:
             r = subprocess.run(
