@@ -1000,6 +1000,58 @@ export async function getExternalAgents(): Promise<
 > {
   return json(`${BASE}/external-agents`);
 }
+
+// ---- mods(Claude Code Mods 兼容层,claude-code-mods-design.md §7.5)----
+// 后端由 runtime 侧并行实现;前端类型取宽容形状(字段缺失时设置页优雅降级)。
+export interface ModInfo {
+  name: string;
+  version?: string;
+  /** loaded | error | disabled | restarting */
+  status?: string;
+  /** global | project */
+  source?: string;
+  dir?: string;
+  error?: string;
+  enabled?: boolean;
+  config?: Record<string, unknown>;
+}
+
+export interface ModsStatus {
+  mods?: ModInfo[];
+  broker?: {
+    available?: boolean;
+    version?: string;
+    node_path?: string;
+    nodePath?: string;
+    error?: string;
+  } | null;
+}
+
+export async function listMods() {
+  return json<ModsStatus>(`${BASE}/mods`);
+}
+
+export async function updateMod(
+  name: string,
+  patch: { enabled?: boolean; config?: Record<string, unknown> },
+) {
+  return json<ModInfo & { ok?: boolean; error?: string }>(
+    `${BASE}/mods/${encodeURIComponent(name)}`,
+    {
+      method: "PUT",
+      headers: H,
+      body: JSON.stringify(patch),
+    },
+  );
+}
+
+export async function validateMod(name: string) {
+  return json<Record<string, unknown>>(`${BASE}/mods/validate`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ name }),
+  });
+}
 export async function getSettings() {
   return json<Record<string, unknown>>(`${BASE}/settings`);
 }

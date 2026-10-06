@@ -66,6 +66,8 @@ import {
 import { useChatStreamEngine, HOME_SLOT } from "./useChatStreamEngine";
 import { useSummarizeFlow } from "./useSummarizeFlow";
 import { SubagentPlanCard } from "./subagentPlanCard";
+import { ModBand } from "./mod/ModBand";
+import type { ModBandSnapshot } from "./mod/modElements";
 
 export function ChatStream({
   session,
@@ -145,6 +147,9 @@ export function ChatStream({
   const [proposeResult, setProposeResult] = useState<
     { decision: "allow" | "deny"; workflowId: string; fromVersion: number } | null
   >(null);
+  // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):按 sid 存的
+  // band 快照,composer 上方渲染。会话内瞬态,本地 state 即可,不进全局 store。
+  const [modBands, setModBands] = useState<Record<string, ModBandSnapshot>>({});
 
   const {
     activeSidRef, curSessionIdRef, storeRef, liveBySessionRef,
@@ -155,12 +160,13 @@ export function ChatStream({
     dropSteer, showComposerHint, enqueueSteer, recallSteers,
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
+    sendModUiPress,
   } = useChatStreamEngine({
     g, steerQ, session, onUsageChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
-    setFileAttachments, setComposerHint, setProposeResult,
+    setFileAttachments, setComposerHint, setProposeResult, setModBands,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
     finishSynthesisWait,
@@ -1062,6 +1068,18 @@ export function ChatStream({
                 onPick={pickItem}
                 onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
               />
+            )}
+            {session && (modBands[session.id]?.tree.length ?? 0) > 0 && (
+              // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):
+              // composerHint 之上、与 hint/steer 条同级。空树零渲染。
+              <div className="mb-2">
+                <ModBand
+                  snapshot={modBands[session.id]!}
+                  onPress={(actionId) =>
+                    sendModUiPress(session.id, modBands[session.id]!.generation, actionId)
+                  }
+                />
+              </div>
             )}
             {composerHint && (
               // Blocked send, made visible. A silent return here read as a

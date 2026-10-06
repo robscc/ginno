@@ -37,6 +37,8 @@ import {
   useEventI18nText,
   type Block,
 } from "@/components/chat/blocks";
+import type { ModBandSnapshot } from "@/components/chat/mod/modElements";
+import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToastHost";
 import type {
   ContextChange,
   Goal,
@@ -89,6 +91,13 @@ export interface EngineDeps {
   setProposeResult: (
     v: ProposeResult | null | ((p: ProposeResult | null) => ProposeResult | null),
   ) => void;
+  // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):按 sid 存
+  // 的 band 快照,渲染归 ChatStream(composer 内),store 不参与。
+  setModBands: (
+    v:
+      | Record<string, ModBandSnapshot>
+      | ((p: Record<string, ModBandSnapshot>) => Record<string, ModBandSnapshot>),
+  ) => void;
   // Refs owned by the component (shared with composer / scroll code there).
   stickRef: { current: boolean };
   connectRef: { current: () => void };
@@ -119,7 +128,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
-    setFileAttachments, setComposerHint, setProposeResult,
+    setFileAttachments, setComposerHint, setProposeResult, setModBands,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
   } = deps;
@@ -1612,8 +1621,46 @@ export function useChatStreamEngine(deps: EngineDeps) {
         flushSteerQueue(sid);
         break;
       }
+      // ─── Claude Code Mods(claude-code-mods-design.md §7)──────────────────────
+      // 归属守卫:frame_session 检查已在 socket onmessage 里统一做过,这里的
+      // sid 即归属会话,无需再防串线。
+      case "mod.bands": {
+        // 整树替换(generation 由 broker 递增,过期 press 由 broker 侧忽略)。
+        const tree = Array.isArray(ev.tree) ? (ev.tree as ModBandSnapshot["tree"]) : [];
+        setModBands((prev) => ({
+          ...prev,
+          [sid]: { generation: Number(ev.generation) || 0, tree, mod: typeof ev.mod === "string" ? ev.mod : undefined },
+        }));
+        break;
+      }
+      case "mod.toast": {
+        const level: ModToastLevel = ev.level === "warn" || ev.level === "error" ? ev.level : "info";
+        pushModToast(level, String(ev.text ?? ""));
+        break;
+      }
+      case "mod.state.changed": {
+        // mod 装载/启停/配置变化:设置页若开着就重拉;没有对应的 store 动作,
+        // 页面不在时该事件自然无处消费,静默。
+        try {
+          window.dispatchEvent(new CustomEvent("ginno:mods-state-changed"));
+        } catch {
+          /* 非浏览器环境(SSG) */
+        }
+        break;
+      }
     }
     syncDisplay(sid);
+  }
+  // Band 按钮 press 回发(§7.1):后端/broker 未就绪时静默——按钮是「禁用
+  // 样式但可点」,发送失败不该打扰用户;过期代际由 broker 侧忽略。
+  function sendModUiPress(sid: string, generation: number, actionId: string) {
+    const sock = socketsRef.current[sid];
+    if (!sock || sock.readyState !== WebSocket.OPEN) return;
+    try {
+      sock.send(JSON.stringify({ type: "mod.ui.press", generation, actionId }));
+    } catch {
+      /* socket closing */
+    }
   }
   // Docs/native paths dropped while on the landing home (no session yet):
   // buffered with optimistic chips, uploaded right after lazy creation.
@@ -1996,5 +2043,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     recallSteers, flushSteerQueue, dropAbsorbedSteers,
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
+    sendModUiPress,
   };
 }

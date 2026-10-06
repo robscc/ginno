@@ -149,6 +149,16 @@ _DEFAULT_SETTINGS = {
         "summarize_model": "",
         "memory_budget_chars": 3000,
     },
+    # Claude Code Mods 兼容层 (claude-code-mods-design.md §9)。结构完整定义
+    # 在 mods/bridge_utils.DEFAULT_MODS_SETTINGS;这里放同形默认值,迁移时
+    # 只在缺键时补齐,用户键一律保留。
+    "mods": {
+        "enabled": True,
+        "allowOverrideDenyRules": False,
+        "nodePath": "",
+        "brokerPath": "",
+        "items": {},
+    },
 }
 
 # Default MCP servers shipped with Ginno. Playwright gives every agent the ability
@@ -245,6 +255,20 @@ def _migrate_language(settings: dict) -> bool:
     return changed
 
 
+def _migrate_mods(settings: dict) -> bool:
+    """Fill in the ``mods`` block when absent (claude-code-mods-design.md §9).
+
+    Only adds the key — never rewrites an existing block, so a user's
+    grants/config survive every upgrade. Returns True when changed.
+    """
+    if "mods" in settings:
+        return False
+    from copy import deepcopy
+
+    settings["mods"] = deepcopy(_DEFAULT_SETTINGS["mods"])
+    return True
+
+
 def ensure_layout() -> None:
     """Create the standard ~/.ginno directory tree with seed defaults."""
     import json
@@ -264,6 +288,7 @@ def ensure_layout() -> None:
         "knowledge",
         "usage",
         "schedule-runs",
+        "mods",
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
@@ -279,7 +304,8 @@ def ensure_layout() -> None:
             # prompt_language → language (i18n-design.md §2); runs regardless
             # of the providers migration's early-return shape.
             lang_migrated = _migrate_language(data)
-            if not had_providers or lang_migrated:
+            mods_migrated = _migrate_mods(data)
+            if not had_providers or lang_migrated or mods_migrated:
                 settings.write_text(json.dumps(data, indent=2, ensure_ascii=False))
         except json.JSONDecodeError:
             pass

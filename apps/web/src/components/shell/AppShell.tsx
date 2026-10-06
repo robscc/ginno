@@ -35,6 +35,7 @@ import { RunSubSessionView } from "@/components/chat/RunSubSessionView";
 import { ScheduleRunView } from "@/components/chat/ScheduleRunView";
 import { RUN_STATUS_META, useRunStatusLabel } from "@/components/chat/RunBlocks";
 import { SheetViewer } from "@/components/chat/SheetViewer";
+import { ModToastHost } from "@/components/chat/mod/ModToastHost";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
 import type { SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
@@ -962,6 +963,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="mt-0.5 text-faint">{fallbackToast}</div>
         </div>
       )}
+
+      {/* Claude Code Mods toast 宿主(claude-code-mods-design.md §7.2):消费
+          engine 转发的 mod.toast 帧,右下角堆叠、8s 自动消失。 */}
+      <ModToastHost />
 
       {goalSessionModal && (
         <GoalEditor

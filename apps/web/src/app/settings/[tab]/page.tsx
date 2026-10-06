@@ -5,6 +5,7 @@ export function generateStaticParams() {
     { tab: "model-api" },
     { tab: "skills" },
     { tab: "mcp" },
+    { tab: "mods" },
     { tab: "agents" },
     { tab: "workflows" },
     { tab: "synthesis-quality" },
