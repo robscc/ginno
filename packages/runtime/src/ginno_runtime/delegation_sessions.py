@@ -234,7 +234,10 @@ def create_delegation(
 
 def _prune_delegation_sessions(slug: str) -> None:
     """委托归档超过 _MAX_DELEGATION_SESSIONS 时,把最旧的连 meta 带文件清掉
-    (running 态的永不清理)。失败静默——修剪绝不影响委托主流程。"""
+    (running 态的永不清理)。失败静默——修剪绝不影响委托主流程。
+
+    用户置顶（sidebar pin）的会话永不被自动清理；被豁免的置顶行也不占用
+    上限——「保留前 N 条」的语义只作用在未置顶的归档上。"""
     try:
         from .session_meta import _session_meta_list, _session_meta_remove
 
@@ -246,7 +249,8 @@ def _prune_delegation_sessions(slug: str) -> None:
         dels.sort(
             key=lambda m: m.get("updated") or m.get("created") or 0, reverse=True
         )
-        for m in dels[_MAX_DELEGATION_SESSIONS:]:
+        unpinned = [m for m in dels if not m.get("pinned")]
+        for m in unpinned[_MAX_DELEGATION_SESSIONS:]:
             sid = m.get("id") or ""
             if not sid:
                 continue

@@ -19,7 +19,8 @@
     "groups": {
       "today": "今天",
       "yesterday": "昨天",
-      "earlier": "更早"
+      "earlier": "更早",
+      "pinned": "置顶"
     },
     "filter": {
       "clear": "清除筛选",
@@ -47,7 +48,11 @@
       "rename": "重命名会话",
       "renameHint": "重命名（或双击标题）",
       "delete": "删除会话",
-      "errorHint": "前往 设置 → 模型 API 配置"
+      "errorHint": "前往 设置 → 模型 API 配置",
+      "pin": "置顶会话",
+      "unpin": "取消置顶",
+      "pinHint": "置顶到侧栏顶部",
+      "unpinHint": "取消置顶"
     },
     "run": {
       "fallbackName": "工作流",

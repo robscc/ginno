@@ -19,7 +19,8 @@
     "groups": {
       "today": "Today",
       "yesterday": "Yesterday",
-      "earlier": "Earlier"
+      "earlier": "Earlier",
+      "pinned": "Pinned"
     },
     "filter": {
       "clear": "Clear filter",
@@ -47,7 +48,11 @@
       "rename": "Rename session",
       "renameHint": "Rename (or double-click the title)",
       "delete": "Delete session",
-      "errorHint": "Go to Settings → Model API config"
+      "errorHint": "Go to Settings → Model API config",
+      "pin": "Pin session",
+      "unpin": "Unpin session",
+      "pinHint": "Pin to the top of the sidebar",
+      "unpinHint": "Remove from the top of the sidebar"
     },
     "run": {
       "fallbackName": "Workflow",

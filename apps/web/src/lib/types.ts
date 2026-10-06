@@ -168,6 +168,8 @@ export interface SessionMeta {
   primary_folder?: string | null;
   // Bound workflow for workflow-dev refine sessions (injected every turn).
   workflow_id?: string | null;
+  // 侧栏置顶（sidebar pin）：显式置顶的会话排在天分组之上。
+  pinned?: boolean;
   // "quick" = created by the floating quick-chat window
   // (docs/floating-window-design.md §1.1); regular sessions omit the field.
   // "subagent" = a spawned child session (subagent-design.md §4.1); the parent

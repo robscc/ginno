@@ -14,6 +14,8 @@ import {
   Search,
   Workflow as WorkflowIcon,
   Pencil,
+  Pin,
+  PinOff,
   Square,
   Trash2,
 } from "lucide-react";
@@ -405,7 +407,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     visibleSessions.some((p) => p.id === s.parent_session_id);
   const sortedSessions = [...visibleSessions]
     .filter((s) => !hasVisibleParent(s))
-    .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
+    .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (b.updated ?? 0) - (a.updated ?? 0));
+  // 显式置顶的会话独立成组，排在天分组之上，不受活动日分组影响。
+  const pinnedSessions = sortedSessions.filter((s) => s.pinned);
+  const unpinnedSessions = sortedSessions.filter((s) => !s.pinned);
   const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const todayMs = dayStart(new Date());
   const groupOf = (s: SessionMeta): "Today" | "Yesterday" | "Earlier" => {
@@ -415,9 +420,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return "Earlier";
   };
   const sessionGroups: Array<["Today" | "Yesterday" | "Earlier", SessionMeta[]]> = [
-    ["Today", sortedSessions.filter((s) => groupOf(s) === "Today")],
-    ["Yesterday", sortedSessions.filter((s) => groupOf(s) === "Yesterday")],
-    ["Earlier", sortedSessions.filter((s) => groupOf(s) === "Earlier")],
+    ["Today", unpinnedSessions.filter((s) => groupOf(s) === "Today")],
+    ["Yesterday", unpinnedSessions.filter((s) => groupOf(s) === "Yesterday")],
+    ["Earlier", unpinnedSessions.filter((s) => groupOf(s) === "Earlier")],
   ];
   // 天分组标题的本地化展示名（内部 key 保持英文，分组/比较逻辑不受影响）。
   const groupLabel: Record<"Today" | "Yesterday" | "Earlier", string> = {
@@ -705,6 +710,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
+                        void g.pinSession(s.id, !s.pinned);
+                      }}
+                      aria-label={s.pinned ? t("session.unpin") : t("session.pin")}
+                      title={s.pinned ? t("session.unpinHint") : t("session.pinHint")}
+                      className={`rounded p-1 hover:bg-card2 ${
+                        s.pinned ? "text-violet" : "text-muted hover:text-txt"
+                      }`}
+                    >
+                      {s.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
                         setEditTitle(s.title || "");
                         setEditingId(s.id);
                       }}
@@ -835,7 +853,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             })}
           </div>
 
-          {/* sessions grouped by activity day */}
+          {/* sessions grouped by activity day（置顶组在最上） */}
+          {pinnedSessions.length > 0 && (
+            <div className="mb-1">
+              <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-faint">
+                {t("groups.pinned")}
+              </div>
+              <div className="space-y-0.5">
+                {pinnedSessions.map((s) => renderSessionRow(s, 0, childrenOf.get(s.id) ?? []))}
+              </div>
+            </div>
+          )}
           {sessionGroups.map(([label, rows]) =>
             rows.length ? (
               <div key={label} className="mb-1">

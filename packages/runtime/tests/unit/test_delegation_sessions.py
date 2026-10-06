@@ -124,3 +124,31 @@ def test_reconcile_running_delegations():
     assert entry2["stop_reason"] == "error"
     # 幂等：第二次跑不再计数
     assert reconcile_running_delegations() == 0
+
+
+def test_prune_skips_pinned_delegation_sessions(monkeypatch):
+    """置顶的委托归档永不被自动清理，且不占用数量上限。"""
+    import ginno_runtime.delegation_sessions as ds
+    from ginno_runtime.session_meta import _session_meta_patch, _session_meta_upsert
+
+    monkeypatch.setattr(ds, "_MAX_DELEGATION_SESSIONS", 3)
+    for i in range(5):  # d0 最旧 → d4 最新
+        _session_meta_upsert(
+            "default",
+            {
+                "id": f"d{i}",
+                "type": "delegation",
+                "stop_reason": "success",
+                "title": f"d{i}",
+                "created": i,
+                "updated": i,
+            },
+        )
+    _session_meta_patch("default", "d0", {"pinned": True})  # 置顶最旧的一条
+
+    ds._prune_delegation_sessions("default")
+
+    kept = {m["id"] for m in _session_meta_list("default")}
+    assert "d0" in kept  # 置顶豁免：不被清掉
+    # 未置顶的按上限只留最近 3 条（d4/d3/d2），置顶行不占额度
+    assert kept == {"d0", "d4", "d3", "d2"}

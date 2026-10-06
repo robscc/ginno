@@ -708,6 +708,9 @@ class PatchSessionRequest(BaseModel):
     provider: str | None = None
     model: str | None = None
     workflow_id: str | None = None
+    # 侧栏置顶（sidebar pin）。False 是合法值——_session_meta_patch 只过滤
+    # None，所以取消置顶也能落盘。
+    pinned: bool | None = None
 
 
 @router.patch("/api/sessions/{session_id}")

@@ -287,6 +287,8 @@ interface GinnoState {
   setSessionAgent: (id: string, agentId: string) => void;
   removeSession: (id: string, opts?: { cascade?: boolean }) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
+  // 侧栏置顶（sidebar pin）：乐观写 pinned，随后提交到后端。
+  pinSession: (id: string, pinned: boolean) => Promise<void>;
   // Merge a server-pushed or optimistic partial into one session's meta
   // (session_title WS events, model-switch reconcile).
   applySessionPatch: (id: string, patch: Partial<SessionMeta>) => void;
@@ -1246,6 +1248,18 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const pinSession = useCallback(async (id: string, pinned: boolean) => {
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, pinned } : s)));
+    try {
+      const r = await api.patchSession(id, { pinned });
+      if (r?.session) {
+        setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...r.session } : s)));
+      }
+    } catch {
+      /* ignore — reconcile on next reload */
+    }
+  }, []);
+
   const applySessionPatch = useCallback((id: string, patch: Partial<SessionMeta>) => {
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
@@ -1525,6 +1539,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     treeCollapsed,
     setTreeCollapsed,
     renameSession,
+    pinSession,
     applySessionPatch,
     notifySubagentSpawned,
     notifySubagentStatus,

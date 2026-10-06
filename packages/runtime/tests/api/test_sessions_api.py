@@ -266,3 +266,22 @@ def test_create_session_regular_has_no_type(client, patch_build_model):
     index = json.loads(paths.session_index_path("default").read_text())
     hit = next(m for m in index if m["id"] == data["id"])
     assert "type" not in hit
+
+
+def test_pin_session_persists_and_unpins(client, patch_build_model):
+    """侧栏置顶：pinned 落盘到索引，False 也能存（_session_meta_patch 只过滤 None）。"""
+    patch_build_model(script(text="ok"))
+    sid = _post_session(client).json()["id"]
+
+    def disk():
+        return {m["id"]: m for m in json.loads(paths.session_index_path("default").read_text())}
+
+    r = client.patch(f"/api/sessions/{sid}", json={"pinned": True}).json()
+    assert r["ok"] is True and r["session"]["pinned"] is True
+    assert disk()[sid]["pinned"] is True
+    assert next(s for s in client.get("/api/sessions").json() if s["id"] == sid)["pinned"] is True
+
+    # 取消置顶必须落盘（不能和 None 一样被吃掉）
+    r = client.patch(f"/api/sessions/{sid}", json={"pinned": False}).json()
+    assert r["session"]["pinned"] is False
+    assert disk()[sid]["pinned"] is False
