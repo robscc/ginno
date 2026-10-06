@@ -17,6 +17,7 @@ interface BackendRow {
   name: string;
   installed: boolean;
   path: string;
+  setupHint?: string;
 }
 
 export function ExternalAgentsSettings() {
@@ -150,6 +151,11 @@ export function ExternalAgentsSettings() {
               <span className="truncate text-xs text-faint" title={b.path}>
                 {b.installed ? b.path : t("notInstalled")}
               </span>
+              {b.installed && b.setupHint === "needsInit" && (
+                <span className="ml-auto shrink-0 text-xs text-yellow">
+                  {t("needsInit", { name: b.name })}
+                </span>
+              )}
             </div>
           ))}
         </div>

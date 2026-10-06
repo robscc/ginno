@@ -628,6 +628,7 @@
       "backends": "检测到的后端",
       "noBackends": "检测中……或 runtime 不可达",
       "notInstalled": "未安装",
+      "needsInit": "已安装,但尚未初始化——先在终端运行一次 `{name}` 完成模型配置",
       "ownAccount": "各后端用自己的 CLI 配置与模型账号——Ginno 不转发任何 provider 凭证。",
       "save": "保存",
       "saved": "已保存",

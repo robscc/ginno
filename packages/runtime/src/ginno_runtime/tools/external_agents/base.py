@@ -56,6 +56,11 @@ class ExternalBackend(Protocol):
         """Absolute path of the CLI, or None when not installed."""
         ...
 
+    def configured(self) -> bool:
+        """安装之外是否还需首次初始化(claude/codex 登录即配好;
+        pi 需要终端跑一次生成 ~/.pi)。False 时设置页给引导提示。"""
+        return True
+
     def build_argv(
         self, prompt: str, mode: str, cwd: str, out_file: str | None
     ) -> list[str]:

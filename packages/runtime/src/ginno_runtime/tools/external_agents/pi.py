@@ -68,6 +68,13 @@ class PiBackend:
     def available(self) -> str | None:
         return _resolve_cli("pi")
 
+    def configured(self) -> bool:
+        """pi 装好后还需首次运行完成 provider/model 配置(~/.pi 生成);
+        未初始化时设置页给「先在终端跑一次 pi」的提示。"""
+        from pathlib import Path
+
+        return Path.home().joinpath(".pi").exists()
+
     def build_argv(
         self, prompt: str, mode: str, cwd: str, out_file: str | None
     ) -> list[str]:

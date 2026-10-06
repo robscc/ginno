@@ -628,6 +628,7 @@
       "backends": "Detected backends",
       "noBackends": "Detecting… or runtime unreachable",
       "notInstalled": "not installed",
+      "needsInit": "installed but not initialized — run `{name}` once in a terminal to configure a model",
       "ownAccount": "Each backend runs with its own CLI config and model account — Ginno never forwards provider credentials.",
       "save": "Save",
       "saved": "Saved",
