@@ -1,7 +1,7 @@
 /**
  * Small value helpers shared by the runner: reading a mod's untyped call
  * input, wording a thrown value, and JSON encoding as typed by what it does.
- * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek.
+ * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek. @license MIT
  * @module
  */
 

@@ -185,6 +185,26 @@ def resolve_broker() -> str | None:
     return None
 
 
+def resolve_runner() -> str | None:
+    """The mod-runner.mjs single-file bundle the broker spawns per mod.
+    Same discovery ladder as the broker binary: env override → repo dist →
+    ~/.ginno/bin (where a packaged install materializes it)."""
+    candidates: list[Path] = []
+    env = os.environ.get("GINNO_MOD_RUNNER_PATH", "").strip()
+    if env:
+        candidates.append(Path(env))
+    repo_root = Path(__file__).resolve().parents[5]  # …/ginno
+    candidates.append(repo_root / "packages" / "mod-runner" / "dist" / "mod-runner.mjs")
+    candidates.append(Path.home() / ".ginno" / "bin" / "mod-runner.mjs")
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return str(cand)
+        except OSError:
+            continue
+    return None
+
+
 # ---- dev-mode broker spawn + supervision -----------------------------------------
 
 
@@ -307,3 +327,42 @@ def scan_installed_mods() -> list[dict]:
             version = str(manifest.get("version") or "")
         out.append({"name": name, "version": version, "path": str(d), "hasManifest": manifest is not None})
     return out
+
+
+# ---- classic hooks bridging (claude-code-mods-design.md §10) ---------------------
+
+
+def read_classic_hooks_doc(mod_dir: Path) -> dict | None:
+    """A mod's hooks.json when it is the CLASSIC shape (``{"hooks": {...}}``);
+    None for the JS "modules" shape (those hooks ride the broker/runner)."""
+    doc = None
+    for rel in ("hooks/hooks.json", "hooks.json"):
+        try:
+            doc = json.loads((mod_dir / rel).read_text() or "{}")
+            break
+        except (OSError, json.JSONDecodeError):
+            continue
+    if isinstance(doc, dict) and isinstance(doc.get("hooks"), dict):
+        return doc
+    return None
+
+
+def register_classic_plugin_hooks(dispatcher: Any) -> int:
+    """Scan ~/.ginno/mods/ and register every classic-shape hooks.json into
+    the HookDispatcher (settings hooks stay first; env CLAUDE_PLUGIN_ROOT is
+    injected at spawn). Runs at startup and after each install; never raises.
+    Returns the number of hook commands registered."""
+    if dispatcher is None:
+        return 0
+    count = 0
+    for scanned in scan_installed_mods():
+        doc = read_classic_hooks_doc(Path(scanned["path"]))
+        if doc is None:
+            continue
+        try:
+            count += dispatcher.register_plugin(scanned["name"], doc, scanned["path"])
+        except Exception:  # noqa: BLE001 — one bad mod must not block the rest
+            log.exception("classic hooks registration failed for %s", scanned["name"])
+    if count:
+        log.info("mods classic hooks registered (%d commands)", count)
+    return count

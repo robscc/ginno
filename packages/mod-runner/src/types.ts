@@ -4,7 +4,7 @@
  * API subset it serves. Field names follow Claude Code's declarations so an
  * unmodified mod type-checks against the same names; only the members this
  * bridge implements are declared.
- * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek.
+ * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek. @license MIT
  * @module
  */
 

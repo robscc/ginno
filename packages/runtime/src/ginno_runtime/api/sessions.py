@@ -676,6 +676,14 @@ async def create_session(req: CreateSessionRequest) -> dict:
         # reverse index for the scheduler's tree walks (server_shared)
         shared.subagent_link_child(req.parent_session_id or "", session_id)
     _SESSIONS[session_id] = s_entry
+    # Mods/classic SessionStart (claude-code-mods-design.md §5.3): classic
+    # hooks first, the mods broker after; both observe-only, never fatal.
+    try:
+        from ..mods.events import dispatch_session_start
+
+        await dispatch_session_start(session_id, meta)
+    except Exception:
+        _log.exception("mods_session_start_failed session=%s", session_id)
     # return the meta shape (with `id`) so the frontend SessionMeta matches
     return {**meta, "ok": True}
 
@@ -875,6 +883,14 @@ async def delete_session(session_id: str, cascade: bool = False) -> dict:
         except Exception:
             _log.exception("goal_cascade_delete_failed session=%s", session_id)
         _stop_goal_driver(session_id)
+    # Mods/classic SessionEnd (claude-code-mods-design.md §5.3): observe-only;
+    # the mods dispatch carries the 1.5s session.end budget internally.
+    try:
+        from ..mods.events import dispatch_session_end
+
+        await dispatch_session_end(session_id)
+    except Exception:
+        _log.exception("mods_session_end_failed session=%s", session_id)
     return {"ok": True, "removed": removed, "files_dir": files_dir}
 
 

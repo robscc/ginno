@@ -338,6 +338,29 @@ async def _run_stream(
     turn_id = ((config or {}).get("configurable") or {}).get("turn_id")
     effective_agent = agent_id or session.get("agent_id") or ""
 
+    # Mods/classic prompt.submit tap (claude-code-mods-design.md §5.3): the
+    # classic UserPromptSubmit hooks run first (rewrite applies, block drops),
+    # the mods broker after (observe-only in P0) — both BEFORE user_text lands.
+    _prompt_blocked = False
+    try:
+        from ...mods.events import dispatch_prompt_submit
+
+        user_text, _prompt_blocked = await dispatch_prompt_submit(session_id, user_text)
+    except Exception:
+        _log.exception("mods_prompt_submit_failed session=%s", session_id)
+    if _prompt_blocked:
+        await _push_session_event(
+            session_id,
+            "notice",
+            {
+                "message": "Prompt blocked by a hook.",
+                "i18n_key": "stream.prompt_blocked",
+                "params": {},
+            },
+            turn_id,
+        )
+        return
+
     # Lazy MCP healing + graph refresh: a server that connects AFTER session
     # creation (late startup connect, recovered DNS, mid-session reload) must
     # still reach THIS turn's tool bindings. Retry is fire-and-forget with a

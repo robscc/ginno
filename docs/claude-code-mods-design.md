@@ -255,37 +255,39 @@ bridge_utils.py# node/broker 二进制发现(_resolve_cli 移植复用)、dev �
 
 ## 6. 通信协议(三段同构,换行 JSON 帧)
 
-### 6.1 帧类型
+### 6.1 帧类型(实现定案,与 crates/mod-broker/src/protocol.rs 对账)
 
 ```jsonc
 // 请求-响应($ op;Python↔broker 与 broker↔runner 同构,方向可反转)
 {"v":1,"id":42,"kind":"call","ns":"fs","method":"read","args":{"path":"./x.py"},"session":"s1","mod":"token-weather"}
 {"v":1,"id":42,"kind":"result","ok":true,"value":"<content>"}
-{"v":1,"id":42,"kind":"result","ok":false,"code":"denied|no-implementation|not-found","message":"..."}
+{"v":1,"id":42,"kind":"result","ok":false,"code":"denied|no-implementation|hook-throw|no-result|no-hook|runner-dead","message":"..."}
 
-// 引擎事件(Python→broker)与 hook 派发(broker→runner)
-{"v":1,"kind":"event","event":"tool.call","session":"s1","invocation":"i-17","payload":{...},"deadlineMs":10000}
+// 引擎事件(Python→broker)与 hook 派发(broker→runner);event 帧带 id,
+// hook 的最终答案 = 该 id 的 result 帧(ok:true+value / ok:false+code)
+{"v":1,"id":43,"kind":"event","event":"tool.call","session":"s1","invocation":"i-17","payload":{...},"deadlineMs":10000}
 
-// next()/catch(runner→broker;invocation 关联)
-{"v":1,"kind":"next","invocation":"i-17","e":{...改写后的事件输入或原样}}
-{"v":1,"kind":"catch-call","invocation":"i-17"}   // broker 失败信息随 event 帧重入 runner
+// next()/catch(runner→broker;invocation 关联;catch-call 携带 failure,应答回 catch-call 自己的 id)
+{"v":1,"id":44,"kind":"next","invocation":"i-17","e":{...改写后的事件输入或原样}}
+{"v":1,"id":45,"kind":"catch-call","invocation":"i-17","failure":{"kind":"timeout","message":"..."}}
 
-// 通知(bands/toast/status,单向)
+// 通知(bands/toast/status/report,单向)
 {"v":1,"kind":"notify","method":"bands.update","session":"s1","args":{"generation":3,"tree":[...]}}
 ```
 
 - `v` 协议版本(P0=1);语义按 Claude Code 2.1.289 固化,升级是显式决策。
 - **invocation id** 贯穿一次 hook 派发:next 单次性、budget 记账、catch 关联都挂它。
 - 并发:请求按 `id` 关联(两侧各持 pending map);同一 session 的事件串行(await 完成才继续),跨 session 并行;runner 对同一 invocation 的 hook 串行。
-- 事件超时:Python 计算 `deadlineMs` 传入,broker 强制;超时按事件默认策略继续(`tool.call` 超时 = 放行)。
+- 事件超时:Python 计算 `deadlineMs` 传入,broker 强制,超时后向 runner 发 `hook-timeout` notify(放弃该 invocation,迟到的 next 拿 undefined);`tool.call` 超时 = 放行。
+- **对设计稿的务实偏离(实现中定案)**:①hook 答案复用 result 帧(词汇表封闭,不设独立 event-result kind);②**actionId 由 runner 铸造**(`<mod>:a<N>`,绘制内位置编号)——换来「树未变字节一致」的 generation 保持判定;③press/timer 走 call 帧(`ui.press{actionId,generation}`、`clock.fire`/`clock.cancel{timer}`),到点 `clock.fire` 的 result 等 runner 回调完成才回(支撑 TimerSet close 语义);④matcher 序列化 RegExp → `{"regexp":source,"flags":flags}`,由 broker(Rust regex)评估,JS↔Rust 方言差异列入已知限制;⑤runner 在 register 前先发 `runner.loaded` call 上报 userConfig 默认值,broker 回 `{config}`(settings 推送与默认值合并的通道)。
 - WebSocket 侧(前端↔Python)新增:`mod.bands` / `mod.toast` / `mod.ask{askId,text,options}` / `mod.answer{askId,answer}` / `mod.ui.press{generation,actionId}` / `mod.state.changed`;`ask` 独立于 LangGraph interrupt(mod 的提问多在 turn 之外),session 切走即取消。
 
 ### 6.2 三段差异
 
 | 链路 | 传输 | 握手 |
 |---|---|---|
-| Python ↔ broker | Unix socket + token | `hello{role:'runtime',config:{...}}` → `ready{mods:[...]}` |
-| broker ↔ runner | 子进程 stdio | spawn 参数 `--mod <dir>`;runner 上报 `hooks-registered{hooks:[{event,matcher}]}` → broker 回 `start` |
+| Python ↔ broker | Unix socket + token(0600 文件) | `call broker.hello{role:'runtime',token,config}` → result `ready{mods:[...]}`;config = `build_config()` 的 broker schema(nodePath/runnerPath 为**已解析**路径,mods.items.\<name\> 带 dir/grants/enabled/config,budgets 用 broker 键名) |
+| broker ↔ runner | 子进程 stdio,spawn 参数 `--mod <dir>` | runner 先发 `call runner.loaded{name,version,userConfig}` → broker 回 `{config}`(2s 超时兜底用默认)→ register 跑完 → `call runner.hooks-registered{hooks:[{event,matcher}]}` → broker 回 `"start"`;心跳 5s ping / 15s 判死 |
 
 ---
 

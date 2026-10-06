@@ -39,10 +39,15 @@ export class FrameConnection {
   /** Called once when stdin ends; the runner's orderly exit hangs from it. */
   closeHandler: (() => void) | undefined
 
-  constructor(
-    private readonly input: NodeJS.ReadableStream = process.stdin,
-    private readonly output: NodeJS.WritableStream = process.stdout,
-  ) {}
+  // No parameter properties: the dev mode runs this source under Node's type
+  // stripping, which refuses them (design §11).
+  private readonly input: NodeJS.ReadableStream
+  private readonly output: NodeJS.WritableStream
+
+  constructor(input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WritableStream = process.stdout) {
+    this.input = input
+    this.output = output
+  }
 
   /** Start reading stdin; frames flow to {@link frameHandler} from now on. */
   start(): void {

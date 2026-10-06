@@ -6,7 +6,7 @@
  * result the call rejects with. The hook's running-time clock pauses while a
  * call is awaited, except for `$.clock.sleep`, which the host counts as the
  * hook's own time.
- * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek — the
+ * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek. @license MIT — the
  * in-process `invoke` became a broker round-trip, and `clock.after`/`every`
  * became broker-owned timers the runner hears back about as frames.
  * @module
@@ -18,7 +18,7 @@ import { messageOf } from './values.ts'
 import type {
   AskOptions, CommandInfo, CommandRunResult, CommandSpec, FsEntry, FsStat, HttpInit, HttpResponse, ModsApi, PaneOpenArgs,
   PaneOpenResult, ProcessRunInit, ProcessRunResult, PromptSubmitArgs, SessionMessage, SessionUsage, SessionVersion,
-  StateRef, ModTimer, ToastOptions, ToolCallResult, ToolInfo, UiLogOptions,
+  StateRef, ModTimer, ToastOptions, ToolCallResult, ToolInfo, ToolSpec, UiLogOptions,
 } from './types.ts'
 
 /**

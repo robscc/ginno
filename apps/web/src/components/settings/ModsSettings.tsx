@@ -23,7 +23,7 @@ export function ModsSettings() {
     (key: string, values?: Record<string, string | number>): string;
   };
   const [mods, setMods] = useState<api.ModInfo[]>([]);
-  const [broker, setBroker] = useState<api.ModsStatus["broker"]>(null);
+  const [broker, setBroker] = useState<api.ModsStatus["runtime"]>(null);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<string | null>(null); // 正在操作的 mod 名 / "validate"
   const [msg, setMsg] = useState("");
@@ -36,7 +36,7 @@ export function ModsSettings() {
     try {
       const data = await api.listMods();
       setMods(Array.isArray(data?.mods) ? data.mods : []);
-      setBroker(data?.broker ?? null);
+      setBroker(data?.runtime ?? null);
     } catch {
       // sidecar 未起:保留上次状态,运行时区显示未连接
       setBroker(null);
@@ -101,8 +101,10 @@ export function ModsSettings() {
     }
   };
 
-  const brokerUp = !!broker?.available;
-  const nodePath = broker?.node_path ?? broker?.nodePath;
+  // 引导看二进制可解析性(brokerPath/nodePath),不看 status —— 零 mod 时
+  // channel 是 disabled 但环境其实是好的(runtime-dev2 的对齐注意点)。
+  const brokerUp = !!broker?.brokerPath;
+  const nodePath = broker?.nodePath ?? undefined;
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-6">
@@ -128,8 +130,8 @@ export function ModsSettings() {
           <div className="flex items-center gap-2">
             <span className={brokerUp ? "text-green" : "text-faint"}>{brokerUp ? "✓" : "✗"}</span>
             <span className="text-txt">{t("broker")}</span>
-            {brokerUp && broker?.version && (
-              <span className="text-xs text-faint">{t("brokerVersion", { version: broker.version })}</span>
+            {brokerUp && broker?.status && (
+              <span className="text-xs text-faint">{broker.status}</span>
             )}
             {!brokerUp && loaded && <span className="text-xs text-faint">{t("brokerUnavailable")}</span>}
           </div>
@@ -137,7 +139,7 @@ export function ModsSettings() {
             <span>{t("nodePath")}</span>
             <span className="font-mono">{nodePath || t("notDiscovered")}</span>
           </div>
-          {broker?.error && <div className="text-xs text-red">{broker.error}</div>}
+          {broker?.detail && <div className="text-xs text-faint">{broker.detail}</div>}
           <p className="text-xs text-faint">{t("dirHint")}</p>
         </div>
       </div>

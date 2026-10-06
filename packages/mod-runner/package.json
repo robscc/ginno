@@ -9,7 +9,7 @@
   },
   "main": "dist/mod-runner.mjs",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --legal-comment=inline --outfile=dist/mod-runner.mjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --legal-comments=inline --outfile=dist/mod-runner.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

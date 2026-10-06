@@ -3,7 +3,7 @@
  * `Box`, `Text`, and `Button` constructors — and what the host does with a
  * tree: validate it, serialize it with callbacks replaced by action ids, and
  * search it the way a mod's test does.
- * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek.
+ * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek. @license MIT
  * @module
  */
 

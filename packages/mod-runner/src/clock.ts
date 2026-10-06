@@ -5,7 +5,7 @@
  * round-trips; the *deadline* is enforced by the broker (one budget
  * implementation, no drift). Only the wall-clock backstop in the hook
  * runtime bounds a hook that never answers.
- * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek — the
+ * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek. @license MIT — the
  * deadline arming (`expired`) is carried over unchanged but nothing in the
  * runner awaits it.
  * @module
@@ -20,18 +20,23 @@ export class HookTimeoutError extends Error {
 }
 
 export class BudgetClock {
+  readonly ms: number
   private spent = 0
   private busySince: number | undefined
   private pauses = 0
   private stopped = false
   private timer: ReturnType<typeof setTimeout> | undefined
   private readonly deadline = Promise.withResolvers<never>()
+  // No parameter properties: the dev mode runs this source under Node's type stripping.
+  private readonly now: () => number
 
   /**
    * @param ms - the running-time limit in milliseconds.
    * @param now - monotonic clock in milliseconds.
    */
-  constructor(readonly ms: number, private readonly now: () => number = () => performance.now()) {
+  constructor(ms: number, now: () => number = () => performance.now()) {
+    this.ms = ms
+    this.now = now
     // The deadline only matters while a race awaits it; an unobserved
     // rejection after the hook settled must not surface.
     this.deadline.promise.catch(() => {})

@@ -89,6 +89,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("session-files migration failed (continuing)")
     shared._hooks = HookDispatcher.from_settings()
+    # Mods classic hooks bridging (claude-code-mods-design.md §10): register
+    # every installed mod's classic-shape hooks.json into the dispatcher (the
+    # JS "modules" shape rides the broker instead). Best-effort.
+    try:
+        from .mods.bridge_utils import register_classic_plugin_hooks
+
+        register_classic_plugin_hooks(shared._hooks)
+    except Exception:
+        _log.exception("mods classic hooks registration failed (continuing)")
     todo_store.ensure_seeded()
     # Connector registry (connector-module-design.md): seed the built-in
     # connectors so /api/connectors answers from the very first request.
@@ -209,6 +218,14 @@ async def lifespan(app: FastAPI):
             _log.exception("synthesis_shutdown_failed")
         if shared._mcp:
             await shared._mcp.close_all()
+        # Mods bus teardown (§5.2): stop the channel and any dev-spawned
+        # broker child. Best-effort; never masks the shutdowns above.
+        try:
+            from .mods.channel import shutdown_channel
+
+            await shutdown_channel()
+        except Exception:
+            _log.exception("mods channel shutdown failed")
 
 
 async def _connect_mcp_background() -> None:
@@ -319,6 +336,7 @@ from .api import stream as _stream_api  # noqa: E402
 from .api import todos as _todos_api  # noqa: E402
 from .api import usage as _usage_api  # noqa: E402
 from .api import workflows as _workflows_api  # noqa: E402
+from .mods import api as _mods_api  # noqa: E402
 
 app.include_router(_code_api.router)
 app.include_router(_connectors_api.router)
@@ -328,6 +346,7 @@ app.include_router(_files_api.router)
 app.include_router(_folders_api.router)
 app.include_router(_knowledge_api.router)
 app.include_router(_memory_api.router)
+app.include_router(_mods_api.router)
 app.include_router(_schedule_api.router)
 app.include_router(_sessions_api.router)
 app.include_router(_stream_api.router)

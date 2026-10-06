@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import uuid
@@ -150,6 +151,14 @@ async def install_mod(req: ModInstallRequest) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     item = bridge_utils.update_mod_item(name, {"enabled": True, "source": "global"})
     get_channel().ensure_started()  # a first install is the trigger to connect
+    # Classic-shape hooks.json (§10 bridging): register into the dispatcher
+    # immediately — a settings-hook mod works before the broker is even up.
+    try:
+        from ..server_shared import _hooks
+
+        bridge_utils.register_classic_plugin_hooks(_hooks)
+    except Exception:  # noqa: BLE001 — install already succeeded
+        log.exception("classic hooks re-registration failed after install")
     return {"ok": True, "mod": {"name": name, "version": version, **item}}
 
 

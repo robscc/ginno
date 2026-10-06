@@ -640,6 +640,9 @@ async def _stream_graph(
     # commit): what a user stop must persist as a partial AIMessage.
     seg_text: list[str] = []
     stop_waiter: Any = None
+    # mods turn.complete durationMs (claude-code-mods-design.md §15.7); reset
+    # at the turn.start tap below (resumes keep the segment-entry stamp).
+    _mods_t0 = time.monotonic()
     session_id = (config.get("configurable") or {}).get("thread_id", "")
     # Pre-init so the except/finally blocks below can never NameError-mask the
     # original failure when the error lands before the try-body assigns them.
@@ -821,6 +824,15 @@ async def _stream_graph(
             await safe_send(
                 emit("turn.start", {"turn_id": ui_turn_id, "agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
             )
+            # Mods turn.start tap (claude-code-mods-design.md §5.3, same
+            # position as the WS event): observe-only, zero-cost with no mod.
+            _mods_t0 = time.monotonic()
+            try:
+                from ...mods.events import dispatch_turn_start
+
+                await dispatch_turn_start(session_id, ui_turn_id)
+            except Exception:
+                _log.exception("mods_turn_start_failed session=%s", session_id)
         else:
             _log.info("turn_resume session=%s turn=%s agent=%s", session_id, turn_id, agent_id)
 
@@ -1307,6 +1319,21 @@ async def _stream_graph(
                 session_id, turn_id, len("".join(turn_text)),
             )
             # Empty text (tool-only turn) → the UI falls back to a generic body.
+            # Mods turn.complete (claude-code-mods-design.md §5.3/§15.7):
+            # detached dispatch BEFORE message.end; observe-only in P0.
+            try:
+                from ...mods.events import spawn_turn_complete
+
+                spawn_turn_complete(
+                    session_id,
+                    ui_turn_id,
+                    answer=_clean_text,
+                    duration_ms=int((time.monotonic() - _mods_t0) * 1000),
+                    is_aborted=False,
+                    reason="answer",
+                )
+            except Exception:
+                _log.exception("mods_turn_complete_failed session=%s", session_id)
             await safe_send(emit("message.end", {"text": _clean_text.strip()[:200]}))
         else:
             _log.info(
@@ -1324,6 +1351,21 @@ async def _stream_graph(
             session_id, turn_id, len("".join(seg_text)),
         )
         await safe_send(emit("turn.stopped", {}))
+        # Mods turn.complete for the aborted close-out (§5.3: all three
+        # engine close-outs dispatch; detached, observe-only in P0).
+        try:
+            from ...mods.events import spawn_turn_complete
+
+            spawn_turn_complete(
+                session_id,
+                ui_turn_id,
+                answer="".join(seg_text),
+                duration_ms=int((time.monotonic() - _mods_t0) * 1000),
+                is_aborted=True,
+                reason="aborted",
+            )
+        except Exception:
+            _log.exception("mods_turn_complete_failed session=%s", session_id)
     except Exception as e:
         # Transient provider/network failure (SSL drop, connection error,
         # 429/5xx, stall watchdog): auto-retry from the latest checkpoint with
@@ -1422,6 +1464,22 @@ async def _stream_graph(
                 },
             )
         )
+        # Mods turn.complete for the error close-out (§5.3). The auto-retry
+        # branch above `return`s before this point, so a retried turn only
+        # dispatches once its final segment settles.
+        try:
+            from ...mods.events import spawn_turn_complete
+
+            spawn_turn_complete(
+                session_id,
+                ui_turn_id,
+                answer="".join(seg_text),
+                duration_ms=int((time.monotonic() - _mods_t0) * 1000),
+                is_aborted=stop_evt.is_set(),
+                reason="error",
+            )
+        except Exception:
+            _log.exception("mods_turn_complete_failed session=%s", session_id)
     finally:
         try:
             _ka.cancel()

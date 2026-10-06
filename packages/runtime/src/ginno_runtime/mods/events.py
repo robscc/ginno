@@ -21,6 +21,23 @@ DEFAULT_DEADLINE_MS = 10_000
 SESSION_END_DEADLINE_MS = 1_500
 
 
+async def _classic_dispatch(event_name: str, context: dict, matcher: str | None = None) -> list:
+    """Run the classic hooks (hooks/dispatcher.py: settings.json hooks plus
+    plugin ``hooks.json`` entries) — ALWAYS before the mods broker (design
+    §10 ordering: settings hooks first, mods after). No hooks configured →
+    an empty list and no subprocess; never raises."""
+    try:
+        from ..hooks.dispatcher import HookEvent
+        from ..server_shared import _hooks
+
+        if _hooks is None:
+            return []
+        return await _hooks.dispatch(HookEvent(name=event_name, context=context), matcher=matcher)
+    except Exception:  # noqa: BLE001 — classic hooks must never break the engine
+        log.exception("classic hook dispatch failed event=%s", event_name)
+        return []
+
+
 async def maybe_dispatch(session_id: str, event: str, payload: dict, deadline_ms: int = DEFAULT_DEADLINE_MS) -> dict:
     """The one funnel every mount site calls. Returns the (possibly rewritten,
     P1) event input; observe-only in P0. Never raises."""
@@ -41,6 +58,10 @@ async def maybe_dispatch(session_id: str, event: str, payload: dict, deadline_ms
 
 
 async def dispatch_session_start(session_id: str, meta: dict) -> None:
+    # Classic SessionStart hooks first (observe), then the mods bus.
+    await _classic_dispatch(
+        "SessionStart", {"session_id": session_id, "cwd": meta.get("workspace") or ""}
+    )
     payload = {
         "sessionId": session_id,
         "cwd": meta.get("workspace") or "",
@@ -51,6 +72,8 @@ async def dispatch_session_start(session_id: str, meta: dict) -> None:
 
 
 async def dispatch_session_end(session_id: str) -> None:
+    # Classic SessionEnd hooks first (observe), then the mods bus.
+    await _classic_dispatch("SessionEnd", {"session_id": session_id})
     payload = {"sessionId": session_id, "reason": "other"}
     await maybe_dispatch(session_id, "session.end", payload, deadline_ms=SESSION_END_DEADLINE_MS)
 
@@ -95,12 +118,36 @@ def spawn_turn_complete(
     spawn_bg(maybe_dispatch(session_id, "turn.complete", payload))
 
 
-async def dispatch_prompt_submit(session_id: str, text: str) -> str:
-    """Returns the (P0 unchanged) prompt text. P1 adds drop/rewrite + the
-    context algorithm (§15.6) on this same seam."""
-    payload = {"sessionId": session_id, "text": text or "", "origin": {"kind": "composer"}}
+async def dispatch_prompt_submit(session_id: str, text: str) -> tuple[str, bool]:
+    """Returns ``(text, blocked)``. Classic UserPromptSubmit hooks run first:
+    their ``rewrite`` replaces the prompt text (existing dispatcher semantics)
+    and ``block`` drops the prompt entirely. The mods bus then gets its
+    prompt.submit (observe-only in P0; drop/rewrite + the context algorithm
+    land in P1 on this same seam, §15.6)."""
+    text = text or ""
+    for r in await _classic_dispatch("UserPromptSubmit", {"prompt": text}):
+        if r.block:
+            return text, True
+        if r.rewrite:
+            text = r.rewrite
+    payload = {"sessionId": session_id, "text": text, "origin": {"kind": "composer"}}
     result = await maybe_dispatch(session_id, "prompt.submit", payload)
-    return result.get("text") if isinstance(result.get("text"), str) else (text or "")
+    if isinstance(result.get("text"), str):
+        text = result["text"]
+    return text, False
+
+
+def _deny_reason(value: Any) -> str | None:
+    """Normalize the DSH deny shapes (§15.5) into a reason string:
+    ``true`` / ``"reason"`` / ``{"reason": ..}`` / ``{"deny": ..}``."""
+    if value is True:
+        return "denied by mod"
+    if isinstance(value, str) and value.strip():
+        return value
+    if isinstance(value, dict):
+        inner = value.get("reason") or value.get("deny") or value.get("denied")
+        return _deny_reason(inner) if inner is not None else None
+    return None
 
 
 async def dispatch_tool_call(session_id: str, tool: str, args: dict) -> str | None:
@@ -113,13 +160,10 @@ async def dispatch_tool_call(session_id: str, tool: str, args: dict) -> str | No
     if not isinstance(result, dict):
         return None
     # Settle-value convention (§6.1): the broker replies with the final event
-    # input plus, when a hook denied, a top-level ``deny`` (also accepted
-    # nested under ``answer`` — both spellings appear in the wild).
-    deny = result.get("deny")
-    if not isinstance(deny, dict):
-        answer = result.get("answer")
-        deny = answer if isinstance(answer, dict) else {}
-    if "deny" in deny or deny.get("denied"):
-        reason = deny.get("reason") or deny.get("deny")
-        return str(reason) if reason and reason is not True else "denied by mod"
-    return None
+    # input plus, when a hook denied, a top-level ``deny`` carrying the DSH
+    # deny shape (true | "reason" | {reason}); a nested ``answer.deny`` is
+    # accepted too — both spellings appear in the wild.
+    reason = _deny_reason(result.get("deny"))
+    if reason is None and isinstance(result.get("answer"), dict):
+        reason = _deny_reason(result["answer"].get("deny"))
+    return reason

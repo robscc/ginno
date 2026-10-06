@@ -17,6 +17,27 @@
 //! `call{ns:"broker",method:"hello"}`) and the broker answers with the
 //! `ready{mods:[...]}` payload; a runner reports
 //! `call{ns:"runner",method:"hooks-registered"}` and gets `start` back.
+//!
+//! Runner-side conventions the broker relies on (runner-dev, keep in sync):
+//! - A hook's answer to its `event` frame: `result{ok:true,value}` with an
+//!   object or `null` (null is a legal answer); `ok:false,code:"no-result"`
+//!   when the hook returned undefined/non-object; `ok:false,code:"hook-throw"`
+//!   with the error message otherwise. When `next()` rejected with a protocol
+//!   error and the hook rethrows it, the runner repeats that error's code and
+//!   message verbatim — the broker matches beneath failures by it.
+//! - A `next` frame is answered by the broker with the beneath result
+//!   (`ok:true,value`; an abandoned hook gets `ok:true` with no value, i.e.
+//!   undefined; a rewrite refusal is `code:"rewrite-refused"`; a beneath
+//!   failure is `ok:false` with the failure's code/message).
+//! - Every `$` call carries `invocation` (and `session`/`mod`) so the broker
+//!   can pause that hook's budget while it works — except `clock.sleep`,
+//!   which counts as the hook's own time. Denials come back as
+//!   `code:"denied"`, unimplemented ops as `code:"no-implementation"`.
+//! - Serialized band trees carry Button ids as `<mod>:a<N>` (runner-minted,
+//!   deterministic per drawing, so an unchanged tree keeps its generation).
+//! - The runner sends a `ping` notify at least every 5 s; 15 s of silence
+//!   marks it dead. A `hook-timeout` notify tells it to stop waiting on an
+//!   abandoned hook (late `next` answers undefined).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,10 +55,17 @@ pub const CODE_HOOK_FAILED: &str = "hook-failed";
 pub const CODE_RUNNER_DEAD: &str = "runner-dead";
 pub const CODE_ERROR: &str = "error";
 
+/// Largest file `$.fs` reads or writes, Claude Code's own limit.
+pub const FS_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Largest response body `$.http.fetch` returns.
+pub const HTTP_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Largest stdout or stderr `$.process.run` keeps.
+pub const PROCESS_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
+
 /// One wire frame. Field names match the design verbatim (`mod` is a raw
 /// identifier in Rust, hence `mod_name` with a serde rename).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Frame {
     /// A call awaiting one `result` frame with the same `id`.
     Call {
@@ -81,7 +109,7 @@ pub enum Frame {
         invocation: String,
         #[serde(default)]
         payload: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "deadlineMs", default, skip_serializing_if = "Option::is_none")]
         deadline_ms: Option<u64>,
         /// Registry entry the dispatch belongs to, so a runner with several
         /// hooks on one event can tell them apart. Runners may ignore it.
@@ -108,7 +136,7 @@ pub enum Frame {
         #[serde(default)]
         payload: Value,
         failure: HookFailure,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "deadlineMs", default, skip_serializing_if = "Option::is_none")]
         deadline_ms: Option<u64>,
     },
     /// One-way notification: `bands.update`, `ui.toast`, `mod.status`,
@@ -161,6 +189,11 @@ pub struct RpcError {
 }
 
 impl RpcError {
+    /// Wrap a plain error string as `code:"error"`.
+    pub fn new_error(message: impl Into<String>) -> Self {
+        Self::new(CODE_ERROR, message)
+    }
+
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self { code: code.into(), message: message.into() }
     }

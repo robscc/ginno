@@ -1,36 +1,44 @@
 /**
  * The hook runtime: one invocation at a time, the runner deep-freezes the
  * event payload, builds the invocation-bound `$` and `next`, runs the hook,
- * and reports the answer to the broker. The broker owns the chain (ordering,
- * matchers, budgets, the single-call semantics of `next`); the runner keeps
- * only what has to live next to the mod's closures: the press-callback and
- * timer-callback tables, and a local cache so a second `next()` reuses the
- * first round-trip instead of sending another frame.
+ * and reports the answer to the broker as the `result` frame of the event
+ * frame's id. The broker owns the chain (ordering, matchers, budgets, the
+ * single-call semantics of `next`); the runner keeps only what has to live
+ * next to the mod's closures: the press-callback and timer-callback tables,
+ * and a local cache so a second `next()` reuses the first round-trip instead
+ * of sending another frame.
  * @module
  */
 
 import { createModsApi } from './api.ts'
 import type { TimerHost } from './api.ts'
 import { BudgetClock } from './clock.ts'
-import { serializeTree, treeProblem } from './elements.ts'
+import { isUiElement, serializeTree, treeProblem } from './elements.ts'
 import type { UiNode } from './elements.ts'
 import type { FrameConnection, Frame } from './frames.ts'
 import { messageOf, deepFreeze } from './values.ts'
 import type { LoadedMod, RegisteredHook } from './module.ts'
 import type { AnyHook, HookFailure, HookNext, HookOrigin, ModTimer } from './types.ts'
 
-/** The events whose answer is a drawable tree and gets serialized with press markers. */
+/** The events whose answer is a drawable tree and gets serialized with action ids. */
 const TREE_EVENTS: ReadonlySet<string> = new Set(['ui.render'])
 
-/** How a hook's answer failed, as the `event-result` frame words it. */
+/** How long a failed hook's context stays around for the broker's catch-call. */
+const CATCH_GRACE_MS = 30_000
+
+/** How a hook's answer failed, as the event's `result` frame words it. */
 interface HookAnswer {
-  code: 'hook-failed' | 'no-result' | 'tree-problem' | 'timeout' | 'beneath-failed' | 'catch-failed' | 'catch-timeout'
+  code: 'no-result' | 'no-hook' | 'hook-throw' | 'no-catch' | 'catch-throw' | 'catch-timeout'
   message: string
 }
 
 interface InvocationContext {
+  /** The id of the `event` frame; the answer `result` frame echoes it. */
+  readonly frameId: number
   readonly invocation: string
   readonly event: string
+  /** The session the event belongs to, echoed on the invocation's `$` calls. */
+  readonly session: string | undefined
   readonly hook: RegisteredHook
   /** The frozen payload copy the hook (and its `.catch`) receives as `e`. */
   readonly frozen: unknown
@@ -47,6 +55,7 @@ interface InvocationContext {
   failed: boolean
   settled: boolean
   deadlineTimer: NodeJS.Timeout | undefined
+  catchGraceTimer: NodeJS.Timeout | undefined
 }
 
 export interface HookRuntimeOptions {
@@ -59,18 +68,23 @@ export interface HookRuntimeOptions {
 
 /**
  * Broker-owned timers: `after`/`every` frame a `clock.*` op whose result
- * names the timer; the broker hands each firing back as a `timer-callback`
- * frame. Cancellation frames a `clock.cancel` op fire-and-forget.
+ * names the timer (`{timer}`, or `{timer:""}` for a dead handle once the
+ * set closed); the broker hands each firing back as a `clock.fire` call and
+ * reads its result as the callback's completion. Cancellation frames a
+ * `clock.cancel` op fire-and-forget.
  */
 class BrokerTimers implements TimerHost {
   private readonly callbacks = new Map<string, () => unknown>()
+  // No parameter properties: the dev mode runs this source under Node's type stripping.
+  private readonly modName: string
+  private readonly invoke: (op: string, input: unknown) => Promise<unknown>
+  private readonly report: (line: string) => void
 
-  constructor(
-    private readonly modName: string,
-    private readonly invoke: (op: string, input: unknown) => Promise<unknown>,
-    private readonly report: (line: string) => void,
-    private readonly onCallbackFailed: (timerId: string, message: string) => void,
-  ) {}
+  constructor(modName: string, invoke: (op: string, input: unknown) => Promise<unknown>, report: (line: string) => void) {
+    this.modName = modName
+    this.invoke = invoke
+    this.report = report
+  }
 
   after(ms: number, fn: () => unknown): ModTimer {
     return this.register('after', ms, fn)
@@ -86,21 +100,21 @@ class BrokerTimers implements TimerHost {
     const cancelNow = (): void => {
       if (timerId === undefined) return
       this.callbacks.delete(timerId)
-      this.invoke('clock.cancel', { timerId }).catch(() => {})
+      this.invoke('clock.cancel', { timer: timerId }).catch(() => {})
     }
     this.invoke(`clock.${method}`, { ms }).then(result => {
-      const id = record_get(result, 'timerId')
-      if (typeof id !== 'string' && typeof id !== 'number') {
-        this.report(`${this.modName}: $.clock.${method} failed: the broker named no timer id`)
+      const id = record_get(result, 'timer')
+      if (typeof id !== 'string') {
+        this.report(`${this.modName}: $.clock.${method} failed: the broker named no timer`)
         return
       }
-      const key = String(id)
+      if (id === '') return // A dead handle: the timer set closed; cancel is a no-op, as DSH's is.
       if (cancelled) {
-        this.invoke('clock.cancel', { timerId: key }).catch(() => {})
+        this.invoke('clock.cancel', { timer: id }).catch(() => {})
         return
       }
-      timerId = key
-      this.callbacks.set(key, fn)
+      timerId = id
+      this.callbacks.set(id, fn)
     }).catch((error: unknown) => {
       this.report(`${this.modName}: $.clock.${method} failed: ${messageOf(error)}`)
     })
@@ -112,15 +126,20 @@ class BrokerTimers implements TimerHost {
     }
   }
 
-  /** Run the callback a `timer-callback` frame names; one-shot timers drop it. */
-  fire(timerId: string): void {
+  /**
+   * Run the callback a `clock.fire` call names, resolving when it settles —
+   * the broker reads this result as the callback's completion (its close
+   * semantics await the callbacks already running).
+   */
+  async fire(timerId: string): Promise<void> {
     const callback = this.callbacks.get(timerId)
     if (callback === undefined) return
-    Promise.resolve().then(callback).catch((error: unknown) => {
-      const message = messageOf(error)
-      this.report(`${this.modName}: timer callback failed: ${message}`)
-      this.onCallbackFailed(timerId, message)
-    })
+    try {
+      await callback()
+    } catch (error: unknown) {
+      this.report(`${this.modName}: timer callback failed: ${messageOf(error)}`)
+      throw error
+    }
   }
 }
 
@@ -133,17 +152,18 @@ function record_get(value: unknown, field: string): unknown {
  */
 export class HookRuntime {
   private readonly invocations = new Map<string, InvocationContext>()
-  private readonly pressCallbacks = new Map<number, () => unknown>()
-  private nextPressIndex = 0
+  /** The latest ui.render's press callbacks, keyed `session\0actionId`. */
+  private readonly pressCallbacks = new Map<string, () => unknown>()
   private readonly timers: BrokerTimers
   private readonly defaultDeadlineMs: number
+  // No parameter properties: the dev mode runs this source under Node's type stripping.
+  private readonly options: HookRuntimeOptions
 
-  constructor(private readonly options: HookRuntimeOptions) {
+  constructor(options: HookRuntimeOptions) {
+    this.options = options
     this.defaultDeadlineMs = options.defaultDeadlineMs ?? 10_000
     // Timers live outside any invocation: a `clock.after` a hook scheduled fires after the hook settled.
-    this.timers = new BrokerTimers(options.loaded.name, this.invokeUnbound.bind(this), this.report.bind(this), (timerId, message) => {
-      options.connection.notify('timer-callback-failed', { timerId, message })
-    })
+    this.timers = new BrokerTimers(options.loaded.name, this.invokeUnbound.bind(this), this.report.bind(this))
   }
 
   /** A `$` with no invocation bound: what press and timer callbacks capture. */
@@ -155,11 +175,14 @@ export class HookRuntime {
     const dot = op.indexOf('.')
     const ns = dot === -1 ? op : op.slice(0, dot)
     const method = dot === -1 ? '' : op.slice(dot + 1)
+    const session = invocation === undefined ? undefined : this.invocations.get(invocation)?.session
     return this.options.connection.request({
       kind: 'call',
       ns,
       method,
       args: input,
+      mod: this.options.loaded.name,
+      ...(session === undefined ? {} : { session }),
       ...(invocation === undefined ? {} : { invocation }),
     }).then(result => {
       if (result.ok) return result.value
@@ -176,27 +199,41 @@ export class HookRuntime {
 
   // ---- Events ----
 
-  /** Run the hook an `event` frame selects. */
+  /** Run the hook an `event` frame selects, and answer its `result` frame. */
   handleEvent(frame: Frame): void {
     const invocation = typeof frame.invocation === 'string' ? frame.invocation : undefined
     const event = typeof frame.event === 'string' ? frame.event : undefined
+    const frameId = typeof frame.id === 'number' ? frame.id : -1
     if (invocation === undefined || event === undefined) {
       console.error('mod-runner: an event frame without invocation/event arrived; dropped')
+      this.options.connection.respond(frameId, false, { code: 'hook-throw', message: 'an event frame without invocation/event arrived' })
       return
     }
     if (this.invocations.has(invocation)) {
       console.error(`mod-runner: invocation ${invocation} is already running; dropped the duplicate frame`)
       return
     }
+    const session = typeof frame.session === 'string' ? frame.session : undefined
     // The payload arrived over JSON, so it is already a fresh copy; freezing it keeps the mods API's promise.
     const frozen = deepFreeze(frame.payload)
     const deadlineMs = typeof frame.deadlineMs === 'number' && frame.deadlineMs > 0 ? frame.deadlineMs : this.defaultDeadlineMs
-    const hook = this.hookFor(event)
+    let hook: RegisteredHook
+    try {
+      hook = this.hookFor(event, frame.hook)
+    } catch (error: unknown) {
+      // The broker dispatches from its own registry, so this is a protocol slip, not a hook failure; answer and move on.
+      const message = messageOf(error)
+      console.error(`mod-runner: ${message}`)
+      this.options.connection.respond(frameId, false, { code: 'no-hook', message })
+      return
+    }
     const clock = new BudgetClock(deadlineMs)
     const controller = new AbortController()
     const context: InvocationContext = {
+      frameId,
       invocation,
       event,
+      session,
       hook,
       frozen,
       clock,
@@ -206,11 +243,12 @@ export class HookRuntime {
       failed: false,
       settled: false,
       deadlineTimer: undefined,
+      catchGraceTimer: undefined,
     }
     this.invocations.set(invocation, context)
     context.deadlineTimer = setTimeout(() => {
       // The broker enforces the budget; this wall-clock backstop only covers a hook that never answers.
-      this.settleFailure(context, { code: 'timeout', message: `${event} hook ran past its ${deadlineMs} ms limit` })
+      this.settleFailure(context, { code: 'hook-throw', message: `ran past its ${deadlineMs} ms limit` })
     }, deadlineMs).unref()
 
     const next = this.makeNext(context, {})
@@ -224,30 +262,58 @@ export class HookRuntime {
     clock.start()
     Promise.resolve().then(() => hook.hook(api, frozen, next as HookNext<unknown, unknown>)).then(
       result => this.settleSuccess(context, result),
-      error => this.settleFailure(context, { code: 'hook-failed', message: failureLine(error) }),
+      error => this.settleThrown(context, error),
     )
   }
 
-  /** Run the failed hook's `.catch` handler on a `catch-call` frame from the broker. */
+  /** The broker gave up on this hook (`hook-timeout`): stop waiting; a late `next` answers undefined. */
+  abandonHook(invocation: unknown): void {
+    const context = typeof invocation === 'string' ? this.invocations.get(invocation) : undefined
+    if (context === undefined || context.settled) return
+    this.clearDeadline(context)
+    context.state.abandoned = true
+    context.settled = true
+    this.options.connection.respond(context.frameId, false, {
+      code: 'hook-throw',
+      message: `ran past its ${context.deadlineMs} ms limit`,
+    })
+    this.invocations.delete(context.invocation)
+  }
+
+  /** Run the failed hook's `.catch` handler on the broker's `catch-call` frame. */
   handleCatchCall(frame: Frame): void {
+    const id = typeof frame.id === 'number' ? frame.id : -1
     const invocation = typeof frame.invocation === 'string' ? frame.invocation : undefined
     const context = invocation === undefined ? undefined : this.invocations.get(invocation)
     if (context === undefined || !context.failed) {
-      console.error(`mod-runner: a catch-call for unknown or unsettled invocation ${String(invocation)} arrived; dropped`)
+      // The broker skips silently on `no-catch` (its wording for a handler that is not there).
+      this.options.connection.respond(id, false, { code: 'no-catch', message: `no failed hook is waiting under ${String(invocation)}` })
       return
+    }
+    // The catch's answer rides on the catch-call frame's id, not the event's.
+    const finish = (answer: { ok: boolean; value?: unknown; code?: string; message?: string }): void => {
+      this.clearDeadline(context)
+      context.settled = true
+      this.clearCatchGrace(context)
+      this.invocations.delete(context.invocation)
+      this.options.connection.respond(id, answer.ok, {
+        ...(answer.ok ? { value: answer.value } : { code: answer.code, message: answer.message }),
+      })
     }
     const handler = context.hook.catchHandler
     if (handler === undefined) {
-      this.finish(context, { ok: false, code: 'catch-failed', message: 'no catch handler is attached to this hook' })
+      // `no-catch` is the broker's silent skip: it does not know which hooks attached a handler.
+      finish({ ok: false, code: 'no-catch', message: 'no catch handler is attached to this hook' })
       return
     }
     if (context.state.beneathFailed) {
       // The failure is the event's own (the chain beneath threw), not the hook's: a catch does not answer it.
-      this.finish(context, { ok: false, code: 'beneath-failed', message: 'the chain beneath failed; the catch handler does not run' })
+      finish({ ok: false, code: 'no-catch', message: 'the chain beneath failed; the catch handler does not run' })
       return
     }
     const failure = recordFailure(frame.failure)
-    const clock = new BudgetClock(1000) // The catch budget the broker enforces; this backs it up.
+    const catchDeadlineMs = typeof frame.deadlineMs === 'number' && frame.deadlineMs > 0 ? frame.deadlineMs : 1000
+    const clock = new BudgetClock(catchDeadlineMs)
     const next = this.makeNext(context, { isCatch: true, failure })
     const api = createModsApi({
       mod: { name: this.options.loaded.name, root: this.options.loaded.root },
@@ -259,65 +325,79 @@ export class HookRuntime {
     let abandoned = false
     const timer = setTimeout(() => {
       abandoned = true
-      this.finish(context, { ok: false, code: 'catch-timeout', message: 'the .catch handler ran past its 1000 ms limit' })
-    }, 1000).unref()
+      finish({ ok: false, code: 'catch-timeout', message: `the .catch handler ran past its ${catchDeadlineMs} ms limit` })
+    }, catchDeadlineMs).unref()
     clock.start()
     Promise.resolve().then(() => handler(api, context.frozen, next as HookNext<unknown, unknown>)).then(
       result => {
         if (abandoned) return
         clearTimeout(timer)
         clock.stop()
-        if (typeof result === 'object') this.finish(context, { ok: true, value: this.finalValue(context.event, result) })
-        else this.finish(context, { ok: false, code: 'catch-failed', message: 'the .catch handler returned no result' })
+        if (typeof result === 'object') finish({ ok: true, value: this.finalValue(context, result) })
+        else finish({ ok: false, code: 'catch-throw', message: 'the .catch handler returned no result' })
       },
       error => {
         if (abandoned) return
         clearTimeout(timer)
         clock.stop()
-        this.finish(context, { ok: false, code: 'catch-failed', message: failureLine(error) })
+        finish({ ok: false, code: 'catch-throw', message: failureLine(error) })
       },
     )
   }
 
-  /** Run a `press` frame's button callback from the latest ui.render registrations. */
-  handlePress(frame: Frame): void {
+  /** Answer the broker's `ui.press` call by running the named button callback. */
+  handlePressCall(frame: Frame): void {
     const id = typeof frame.id === 'number' ? frame.id : -1
-    // The marker the runner serializes into the tree comes back either as `callbackIndex` or, in broker
-    // dialects that only know one field, as the numeric `actionId`.
-    const raw = frame.callbackIndex ?? frame.actionId
-    const index = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : Number.NaN
-    const callback = Number.isInteger(index) ? this.pressCallbacks.get(index) : undefined
+    const args = record_get(frame, 'args')
+    const actionId = record_get(args, 'actionId')
+    const session = typeof frame.session === 'string' ? frame.session : ''
+    const callback = typeof actionId === 'string' ? this.pressCallbacks.get(`${session}\u0000${actionId}`) : undefined
     if (callback === undefined) {
-      this.options.connection.respond(id, false, { code: 'not-found', message: `no press callback is registered for ${String(raw)}` })
+      this.options.connection.respond(id, false, { code: 'not-found', message: `no press callback is registered for ${String(actionId)}` })
       return
     }
     Promise.resolve().then(callback).then(
       value => this.options.connection.respond(id, true, { value: value === undefined ? null : value }),
-      error => this.options.connection.respond(id, false, { code: 'press-failed', message: failureLine(error) }),
+      error => this.options.connection.respond(id, false, { code: 'error', message: failureLine(error) }),
     )
   }
 
-  /** Run the timer callback a `timer-callback` frame names. */
-  handleTimerCallback(frame: Frame): void {
+  /** Answer the broker's `clock.fire` call by running the timer callback to completion. */
+  handleFireCall(frame: Frame): void {
     const id = typeof frame.id === 'number' ? frame.id : -1
-    const timerId = typeof frame.timerId === 'string' ? frame.timerId : undefined
-    if (timerId === undefined) {
-      this.options.connection.respond(id, false, { code: 'not-found', message: 'a timer-callback frame without timerId arrived' })
+    const timer = record_get(record_get(frame, 'args'), 'timer')
+    if (typeof timer !== 'string') {
+      this.options.connection.respond(id, false, { code: 'not-found', message: 'a clock.fire call without a timer name arrived' })
       return
     }
-    this.timers.fire(timerId)
-    this.options.connection.respond(id, true, { value: null })
+    this.timers.fire(timer).then(
+      () => this.options.connection.respond(id, true, { value: null }),
+      error => this.options.connection.respond(id, false, { code: 'error', message: failureLine(error) }),
+    )
+  }
+
+  /** A call this runner does not serve; the broker words the gap by the code. */
+  respondUnknownCall(frame: Frame): void {
+    const id = typeof frame.id === 'number' ? frame.id : -1
+    this.options.connection.respond(id, false, {
+      code: 'no-implementation',
+      message: `no implementation for ${String(frame['ns'])}.${String(frame['method'])}`,
+    })
   }
 
   // ---- Internals ----
 
-  private hookFor(event: string): RegisteredHook {
-    // The broker dispatches by its own registry; one runner hosts one mod, and an event
-    // only arrives when a hook of this mod selects it.
-    const hook = this.options.hooks.find(candidate => candidate.event === event || (candidate.event.endsWith('.*') && event.startsWith(candidate.event.slice(0, -1))) || candidate.event === '*')
-    if (hook === undefined) {
-      throw new Error(`no hook of this mod selects ${event}`)
+  /**
+   * The hook an event dispatches: the frame's `hook` field names the
+   * registration (its position in this mod's `hooks-registered` list); the
+   * event pattern is the fallback for brokers that omit it.
+   */
+  private hookFor(event: string, index: unknown): RegisteredHook {
+    if (typeof index === 'number' && Number.isInteger(index) && index >= 0 && index < this.options.hooks.length) {
+      return this.options.hooks[index] as RegisteredHook
     }
+    const hook = this.options.hooks.find(candidate => candidate.event === event || (candidate.event.endsWith('.*') && event.startsWith(candidate.event.slice(0, -1))) || candidate.event === '*')
+    if (hook === undefined) throw new Error(`no hook of this mod selects ${event}`)
     return hook
   }
 
@@ -338,6 +418,7 @@ export class HookRuntime {
         kind: 'next',
         invocation: context.invocation,
         e: e === undefined ? null : e,
+        ...(opts.isCatch === true ? { phase: 'catch' } : {}),
       }).then(result => {
         if (result.ok) return result.value
         context.state.beneathFailed = true
@@ -366,13 +447,23 @@ export class HookRuntime {
 
   private settleSuccess(context: InvocationContext, result: unknown): void {
     this.clearDeadline(context)
+    // A hook that answers after the deadline backstop fired (or after it failed) has no audience left.
+    if (context.failed || context.settled) return
     // `null` is an answer (a surface drawn empty); only a hook that settles with no object at all is skipped.
     if (typeof result !== 'object') {
       this.settleFailure(context, { code: 'no-result', message: `${context.event} hook returned no result` })
       return
     }
+    let value: unknown
+    try {
+      value = this.finalValue(context, result)
+    } catch (error: unknown) {
+      // An invalid tree is the hook's failure; word it as one.
+      this.settleFailure(context, { code: 'hook-throw', message: messageOf(error) })
+      return
+    }
     // The hook answered; whatever it started beneath still runs to its end before the event settles.
-    const finish = (): void => this.finish(context, { ok: true, value: this.finalValue(context.event, result) })
+    const finish = (): void => this.respondValue(context, value)
     if (context.state.beneath !== undefined) {
       context.state.beneath.catch((error: unknown) => {
         this.report(`${this.options.loaded.name}: ${context.event}: the chain beneath failed after the hook answered: ${messageOf(error)}`)
@@ -382,37 +473,48 @@ export class HookRuntime {
     finish()
   }
 
-  private settleFailure(context: InvocationContext, answer: HookAnswer): void {
+  /**
+   * A hook that threw. A protocol error from `next()` that the hook let
+   * through (or rethrew) rides verbatim — the broker matches beneath failures
+   * by code+message, the distributed stand-in for DSH's error identity check.
+   */
+  private settleThrown(context: InvocationContext, error: unknown): void {
+    const code = record_get(error, 'code')
+    if (context.state.beneathFailed && typeof code === 'string') {
+      this.settleFailure(context, { code: 'hook-throw', message: messageOf(error), wireCode: code })
+      return
+    }
+    this.settleFailure(context, { code: 'hook-throw', message: failureLine(error) })
+  }
+
+  private settleFailure(context: InvocationContext, answer: HookAnswer & { wireCode?: string }): void {
     this.clearDeadline(context)
     context.state.abandoned = true
-    if (context.settled) return
+    // One answer per invocation: a late throw after the deadline backstop fired changes nothing.
+    if (context.failed || context.settled) return
     const line = `${this.options.loaded.name}: ${context.event} hook skipped: ${answer.message}`
     if (!context.hook.reported.has(answer.code)) {
       context.hook.reported.add(answer.code)
       this.report(line)
     }
     context.failed = true
-    this.options.connection.notify('event-result', {
-      invocation: context.invocation,
-      ok: false,
-      code: answer.code,
+    this.options.connection.respond(context.frameId, false, {
+      code: answer.wireCode ?? answer.code,
       message: answer.message,
-      hasCatch: context.hook.catchHandler !== undefined,
     })
-    // No `.catch` to wait for: the invocation is over on this side.
-    if (context.hook.catchHandler === undefined) this.invocations.delete(context.invocation)
+    // The broker may still want the `.catch` to answer; hold the context for it, then sweep.
+    context.catchGraceTimer = setTimeout(() => {
+      this.invocations.delete(context.invocation)
+    }, CATCH_GRACE_MS).unref()
   }
 
-  /** Send the invocation's final answer and drop its state. */
-  private finish(context: InvocationContext, answer: { ok: boolean; value?: unknown; code?: string; message?: string }): void {
+  /** Send the invocation's successful answer and drop its state. */
+  private respondValue(context: InvocationContext, value: unknown): void {
     this.clearDeadline(context)
     context.settled = true
+    this.clearCatchGrace(context)
     this.invocations.delete(context.invocation)
-    this.options.connection.notify('event-result', {
-      invocation: context.invocation,
-      ok: answer.ok,
-      ...(answer.ok ? { value: answer.value } : { code: answer.code, message: answer.message }),
-    })
+    this.options.connection.respond(context.frameId, true, { value })
   }
 
   private clearDeadline(context: InvocationContext): void {
@@ -420,52 +522,46 @@ export class HookRuntime {
     context.deadlineTimer = undefined
   }
 
+  private clearCatchGrace(context: InvocationContext): void {
+    if (context.catchGraceTimer !== undefined) clearTimeout(context.catchGraceTimer)
+    context.catchGraceTimer = undefined
+  }
+
   /**
    * The value an answer frame carries: for a tree event, the hook's elements
-   * serialized with each `onPress` replaced by a numeric marker the broker
-   * turns into its own action id; anything else passes as JSON as-is.
+   * serialized with each `onPress` replaced by a runner-minted action id
+   * (`<mod>:a<N>`, positional within the drawing, so an unchanged tree stays
+   * JSON-equal across redraws and keeps its generation); anything else passes
+   * as JSON as-is.
    */
-  private finalValue(event: string, result: unknown): unknown {
+  private finalValue(context: InvocationContext, result: unknown): unknown {
+    const event = context.event
     if (!TREE_EVENTS.has(event)) return result === undefined ? null : result
     if (result === null || result === undefined) return null
     if (looksSerialized(result)) return result // A tree `next` handed up from a later mod: already serialized.
     const problem = treeProblem(result as UiNode)
-    if (problem !== undefined) {
-      // An invalid tree is the hook's failure; the caller words it as an answer frame failure.
-      throw new Error(problem)
+    if (problem !== undefined) throw new Error(problem)
+    // The drawing replaces the session's previous callbacks; ids restart at a0 so the
+    // same tree serializes byte-identically every time.
+    const prefix = `${context.session ?? ''}\u0000`
+    for (const key of [...this.pressCallbacks.keys()]) {
+      if (key.startsWith(prefix)) this.pressCallbacks.delete(key)
     }
-    const serialized = serializeTree(result as UiNode, callback => {
-      const index = this.nextPressIndex
-      this.nextPressIndex += 1
-      this.pressCallbacks.set(index, callback)
-      return index
+    let index = 0
+    return serializeTree(result as UiNode, callback => {
+      const actionId = `${this.options.loaded.name}:a${index}`
+      index += 1
+      this.pressCallbacks.set(`${prefix}${actionId}`, callback)
+      return actionId
     })
-    // serializeTree names the held callback `actionId` (the host assigns it); this broker learns the
-    // callback from the numeric `onPress` marker instead.
-    return markPressCallbacks(serialized)
   }
-}
-
-/** `serializeTree` output with each held `actionId` renamed to a numeric `onPress` marker. */
-function markPressCallbacks(nodes: unknown): unknown {
-  if (Array.isArray(nodes)) return nodes.map(markPressCallbacks)
-  if (typeof nodes === 'object' && nodes !== null) {
-    const record = nodes as Record<string, unknown>
-    const rest: Record<string, unknown> = {}
-    for (const [field, value] of Object.entries(record)) {
-      if (field === 'actionId') continue
-      rest[field] = field === 'children' ? markPressCallbacks(value) : value
-    }
-    if ('actionId' in record) rest['onPress'] = typeof record['actionId'] === 'number' ? record['actionId'] : Number(record['actionId'])
-    return rest
-  }
-  return nodes
 }
 
 /** Whether a value already reads as a serialized tree (what `next` hands up from a later mod). */
 function looksSerialized(value: unknown): boolean {
   const nodes = Array.isArray(value) ? value : [value]
   return nodes.every(node => typeof node === 'string' || (typeof node === 'object' && node !== null
+    && !isUiElement(node) // a branded element is a live tree, however much it resembles the JSON
     && typeof (node as Record<string, unknown>)['type'] === 'string'
     && typeof (node as Record<string, unknown>)['props'] === 'object'))
 }

@@ -4,7 +4,7 @@
  * runs. Matcher *evaluation* lives in the broker (the runner holds no policy,
  * and one matcher implementation avoids drift); only the name table and the
  * validate-style rendering are kept here.
- * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek.
+ * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek. @license MIT
  * @module
  */
 

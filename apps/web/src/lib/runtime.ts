@@ -1017,13 +1017,18 @@ export interface ModInfo {
 }
 
 export interface ModsStatus {
+  ok?: boolean;
   mods?: ModInfo[];
-  broker?: {
-    available?: boolean;
-    version?: string;
-    node_path?: string;
-    nodePath?: string;
-    error?: string;
+  /** GET /api/mods 的 runtime 字段 = ModChannel.availability()。引导判断看
+   *  brokerPath/nodePath 是否解析得到,而不是 status(零 mod 时 status 是
+   *  disabled 但二进制都正常,见 mods/channel.py availability)。 */
+  runtime?: {
+    status?: string;
+    detail?: string;
+    connected?: boolean;
+    envSocket?: boolean;
+    brokerPath?: string | null;
+    nodePath?: string | null;
   } | null;
 }
 

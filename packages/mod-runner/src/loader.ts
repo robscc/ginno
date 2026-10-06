@@ -78,10 +78,13 @@ export function readManifest(dir: string): LoadedManifest {
  */
 export async function importHooksModule(manifest: LoadedManifest): Promise<ImportedHooksModule> {
   const imported: Record<string, unknown> = await import(pathToFileURL(manifest.modulePath).href)
-  if (typeof imported['register'] !== 'function') {
+  // A plain module exports `register`; a `defineMod` module default-exports the spec that holds it.
+  const spec = record(imported['default'])
+  const register = imported['register'] ?? spec['register']
+  if (typeof register !== 'function') {
     throw new Error(`mod not loaded: the hooks module exports no register(on, options) function`)
   }
-  return { register: imported['register'], userConfig: extractUserConfig(imported) }
+  return { register, userConfig: extractUserConfig(imported) }
 }
 
 /**

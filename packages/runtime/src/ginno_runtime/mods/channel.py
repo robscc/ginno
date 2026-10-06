@@ -159,10 +159,18 @@ class ModChannel:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return  # no loop (shutdown edge / sync import): stay lazy
-        from .bridge_utils import load_mods_settings
+        from .bridge_utils import load_mods_settings, scan_installed_mods
 
-        if not load_mods_settings().get("enabled", True):
+        cfg = load_mods_settings()
+        if not cfg.get("enabled", True):
             self._status = "disabled"
+            return
+        # Zero-mod zero-cost rule (§5.3): nothing installed and no settings
+        # item → never spawn/connect the broker. The next install (API or a
+        # manual drop-in + first event) re-enters here.
+        if not (cfg.get("items") or scan_installed_mods()):
+            self._status = "disabled"
+            self._status_detail = "no mods installed"
             return
         self._status = self._status if self._status != "disabled" else "connecting"
         self._task = loop.create_task(self._connect_loop())
@@ -522,21 +530,42 @@ class ModChannel:
     # ---- config (settings.json is ours; broker gets a push, design §9) ---------
 
     def build_config(self) -> dict:
-        """The config payload the hello handshake (and every re-push) carries."""
-        from .bridge_utils import load_mods_settings
+        """The config payload the hello handshake (and every re-push) carries.
+        Schema = the broker's ``parse_config`` (crates/mod-broker/src/lib.rs):
+        nodePath/runnerPath are required and must be *resolved* paths, and
+        mods live under ``mods.items.<name>`` with a ``dir`` each."""
+        from .bridge_utils import load_mods_settings, mods_dir, resolve_node, resolve_runner, scan_installed_mods
 
         cfg = load_mods_settings()
+        # Base items from the installed directories (drop-in convention), so a
+        # mod the user cloned without touching settings still gets a dir.
+        items: dict[str, dict] = {}
+        for m in scan_installed_mods():
+            items[m["name"]] = {"enabled": True, "dir": m["path"], "grants": {}, "config": {}}
+        for name, item in (cfg.get("items") or {}).items():
+            if not isinstance(item, dict):
+                continue
+            base = items.get(name, {"dir": str(mods_dir() / name)})
+            if item.get("dir"):
+                base["dir"] = str(item["dir"])
+            for key in ("enabled", "grants", "config"):
+                if key in item:
+                    base[key] = item[key]
+            items[name] = base
         return {
             "enabled": bool(cfg.get("enabled", True)),
             "allowOverrideDenyRules": bool(cfg.get("allowOverrideDenyRules", False)),
-            "nodePath": cfg.get("nodePath") or "",
-            "items": cfg.get("items") or {},
-            # Budget values the broker's BudgetClock enforces (§3.2).
-            "budget": {
-                "hookTimeoutMs": 10_000,
-                "promptEditBudgetMs": 50,
-                "catchBudgetMs": 1000,
-                "sessionEndBudgetMs": 1500,
+            # Resolved binaries (settings nodePath already rode resolve_node).
+            "nodePath": resolve_node() or cfg.get("nodePath") or "",
+            "runnerPath": resolve_runner() or "",
+            "mods": {"items": items},
+            # Budget values the broker's BudgetClock enforces (§3.2); the
+            # broker's key names, defaulting to the spec numbers.
+            "budgets": {
+                "hookMs": 10_000,
+                "promptEditMs": 50,
+                "catchMs": 1000,
+                "sessionEndMs": 1500,
             },
         }
 

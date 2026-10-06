@@ -3,7 +3,7 @@
  * `on(...)` registration in one ordered list the runner reports to the
  * broker. Selection and ordering across mods live in the broker; the runner
  * holds the validations Claude Code does at register time.
- * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek.
+ * Adapted from deepseek-harness (MIT), Copyright (c) 2026 DeepSeek. @license MIT
  * @module
  */
 
