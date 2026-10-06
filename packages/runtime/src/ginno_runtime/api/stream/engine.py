@@ -391,6 +391,32 @@ def turn_recursion_limit() -> int:
         _log.info("recursion_limit_settings_unreadable", exc_info=True)
     return TURN_RECURSION_LIMIT_DEFAULT
 
+
+def format_turn_error(e: BaseException) -> str:
+    """User-facing text for the error card (the ``{error}`` param of
+    ``stream.turn_failed``).
+
+    The raw exception dump stays the English fallback (i18n-design.md §3), but
+    known failures get a Ginno-specific remedy appended — the framework's own
+    advice is not actionable inside Ginno (LangGraph's GraphRecursionError
+    points at a langchain docs page instead of this app's settings file).
+    Substring gates elsewhere (e.g. subagent_scheduler's recursion wrap) keep
+    matching because ``GraphRecursionError`` stays in the first line.
+    """
+    text = f"{type(e).__name__}: {e}"
+    from langgraph.errors import GraphRecursionError  # lazy: import cost
+
+    if isinstance(e, GraphRecursionError):
+        text += (
+            f"\nThis turn hit Ginno's step budget (recursion_limit="
+            f"{turn_recursion_limit()})."
+            "\nTo raise it, edit ~/.ginno/settings.json:"
+            '\n{ "runtime": { "recursion_limit": 256 } }'
+            "\nThe new value applies from the next turn — no restart needed."
+        )
+    return text
+
+
 # --- Turn-level auto retry for TRANSIENT provider/network failures ----------
 # 2026-09-29 incident (turn f50a6304): a 100k-token-context turn died twice in
 # a row — first ssl SSLV3_ALERT_BAD_RECORD_MAC mid-stream, then the manual
@@ -1399,7 +1425,7 @@ async def _stream_graph(
                         )
                         return
         _log.exception("turn_error session=%s turn=%s", session_id, turn_id)
-        err_msg = f"{type(e).__name__}: {e}"
+        err_msg = format_turn_error(e)
         # Persist the failure on the session meta so the error card (with its
         # retry action) survives webview reloads and route/session switches —
         # the history endpoint re-surfaces it as the last message. The retry
