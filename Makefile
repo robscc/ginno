@@ -92,8 +92,10 @@ runtime: web
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 
 ## web: build the Next.js static export (bundled into the runtime as web_out/)
+# pnpm install first: a fresh pull may add deps (lockfile-synced, ~1s no-op
+# when up to date) — without it `next build` fails on missing modules.
 web:
-	cd $(ROOT) && pnpm --filter @ginno/web build
+	cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/web build
 
 .PHONY: check
 ## check: i18n catalog 一致性检查（i18n-design.md §10.2；app 的前置依赖，构建即拦截）
