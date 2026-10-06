@@ -1223,6 +1223,11 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
         dsl = _apply_supervisor_override(run0, dsl)
+        # Replayable transcript session (transcript.py): every run gets one so
+        # its agent steps read like scheduled agent tasks in the sessions list.
+        from ..workflows import transcript as wf_transcript
+
+        transcript_sid = await wf_transcript.begin_run_session(wf, {"id": run_id})
         if present_in:
             await _push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
         else:
@@ -1235,6 +1240,7 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
             dsl, run_id=run_id, model=model, tools=tools,
             context_override=context_override,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
+            transcript_session=transcript_sid,
         )
         await _drive_run_events(run_id, present_in, wf, agen)
         sync_ledger.set_status(run_id, "ok")

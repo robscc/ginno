@@ -135,6 +135,16 @@ async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dic
                 "name": getattr(tm, "name", ""), "content": c[:2000],
             })
         msgs.extend(tmsgs)
+    # Transcript mirror (transcript.py): the turn's full dialogue lands in the
+    # run's replayable session — workflow agent steps become as readable as
+    # scheduled agent tasks. Best-effort; never blocks the node.
+    tr_sid = run_ctx.get("transcript_session")
+    if tr_sid:
+        from .. import transcript as wf_transcript
+
+        await wf_transcript.mirror_turn(
+            tr_sid, run_ctx.get("project_slug") or "default", goal, msgs, node_id
+        )
     return result_text, usage, agent_warning
 
 

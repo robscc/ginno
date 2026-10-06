@@ -84,3 +84,30 @@ def _as_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [v.strip() for v in value.split(",") if v.strip()]
     return [str(value)]
+
+
+def dump_frontmatter(meta: dict) -> str:
+    """Serialize a metadata dict back to a ``---`` block + trailing blank line.
+
+    keys keep insertion order; ``sources`` renders as a list, ``tags`` as an
+    inline array, strings JSON-quoted (CJK-safe), everything else via json.
+    (Ex WikiCompiler._dump_frontmatter — kept for the memory-promote drafts.)"""
+    import json
+
+    def _q(s: str) -> str:
+        return json.dumps(s, ensure_ascii=False)
+
+    lines = ["---"]
+    for k, v in meta.items():
+        if k == "sources":
+            lines.append("sources:")
+            for s in v:
+                lines.append(f"  - {_q(s)}")
+        elif k == "tags":
+            lines.append(f"tags: [{', '.join(_q(t) for t in (v or []))}]")
+        elif isinstance(v, str):
+            lines.append(f"{k}: {_q(v)}")
+        else:
+            lines.append(f"{k}: {json.dumps(v, ensure_ascii=False, default=str)}")
+    lines.append("---\n\n")
+    return "\n".join(lines)

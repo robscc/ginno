@@ -117,14 +117,15 @@ def get_wiki_guidelines(cfg: KnowledgeConfig) -> str:
     wiki = vault / cfg.wiki_dir
     return (
         "## Obsidian Wiki 使用规范\n\n"
-        "向 Obsidian vault 写入新文档时，请遵循以下目录结构（**绝对路径**）：\n\n"
+        "向 Obsidian vault 写入文档时，遵循以下目录约定（**绝对路径**）：\n\n"
         "| 目录 | 用途 | 是否可写 |\n"
         "|------|------|----------|\n"
-        f"| `{raw}/` | 原始文档、笔记、报告 | ✅ 新文档写这里 |\n"
+        f"| `{raw}/` | 原始文档、笔记、报告（不可变源：写入后不改写） | ✅ 新文档写这里 |\n"
         f"| `{research}/` | 深度研究报告 | ✅ 研究报告写这里 |\n"
-        f"| `{wiki}/` | 自动编译的 wiki 页（KB 页 “Build wiki” / POST /kb/wiki/build 产物） | ❌ 勿直接写入 |\n\n"
-        f"规则：新文档/报告/总结一律存到 `{raw}/`；"
-        f"`{wiki}/` 由 KB 页 “Build wiki”（POST /kb/wiki/build）从 Raw/ 自动生成，不要手写（没有 /kb build 命令）。"
+        f"| `{wiki}/` | 综合提炼的知识页（frontmatter 含 title/date/tags/confidence/sources，正文用 [[双链]]） | ✅ 可编辑 |\n\n"
+        f"规则：新文档/报告一律先存 `{raw}/`；`{wiki}/` 的页面由「📚 Wiki 编译」工作流"
+        "（Workflows 页可手动运行，也可挂定时任务）从 Raw/ 综合生成——页面内容是提炼不是摘抄，"
+        "不要直接把整篇原文复制进去。Wiki 页会被每轮对话按相关性检索注入并要求引用。"
     )
 
 

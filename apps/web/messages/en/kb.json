@@ -68,9 +68,10 @@
       "failedNoRuntime": "Reindex failed: cannot reach the runtime"
     },
     "build": {
-      "done": "Build complete: scanned {scanned} pages, created {created}, updated {updated}, auto-linked {newLinks}, took {ms}ms",
-      "failed": "Build failed",
-      "failedNoRuntime": "Build failed: cannot reach the runtime"
+      "sessionTitle": "📚 Wiki Compile",
+      "started": "Opened the「📚 Wiki Compile」session — agents are fanning out; see that session for details.",
+      "failed": "Failed to start Wiki Compile",
+      "failedNoRuntime": "Failed to start Wiki Compile: cannot reach the runtime"
     },
     "import": {
       "title": "Import an existing LLM Wiki knowledge base",

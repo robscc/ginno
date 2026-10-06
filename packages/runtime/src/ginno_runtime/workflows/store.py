@@ -601,6 +601,91 @@ _SEED = [
             "edges": [],
         },
     },
+    # ---- Wiki 编译（agent-wiki-workflow-design.md）：agent 即编译器 ---- #
+    # 旧的确定性编译器已删除;wiki 页由本 workflow 的 agent 步进综合撰写。
+    # 用户以后在 Workflows UI 里以维护 DSL 的方式维护编译管线;夜间维护 =
+    # 定时任务 target=workflow 指向本 workflow(scheduler 现成支持)。
+    {
+        "id": "wiki-compile",
+        "name": "📚 Wiki 编译",
+        "description": "扫描 Raw/ 新增/变更文档,agent 并行综合撰写 Wiki 页,重建 INDEX 并修断链。",
+        "system": True,
+        "dsl": {
+            "entry": "inv",
+            "nodes": [
+                {
+                    "id": "inv",
+                    "type": "python",
+                    "entry": "kb_wiki_inventory",
+                    "writes": {"plan": {"type": "object"}},
+                },
+                {
+                    "id": "compile",
+                    "type": "loop",
+                    "over": "{{plan.files}}",
+                    "as": "doc",
+                    "max_iters": 50,
+                    "parallel": True,
+                    "on_empty": "skip",
+                    "body": "compile_one",
+                },
+                {
+                    # 「Wiki 编译」loop 的 fan-out body(compile 节点以 id 引用):
+                    # 每个文档一个并发 agent turn,goal 内联编译规范。
+                    "id": "compile_one",
+                    "type": "agent",
+                    "agent": "dev",
+                    "title": "编译 {{doc.title}}（{{doc.reason}}）",
+                    "goal": (
+                        "把一篇知识库原始文档编译为 wiki 页（本轮只处理这一篇）。\n"
+                        "源文档：`{{doc.path}}`（{{doc.reason}}）。\n"
+                        "编译规范：\n"
+                        "1. 原文不可变：禁止修改 Raw/ 下任何文件；\n"
+                        "2. 在 vault 的 `{{plan.vault}}/{{plan.wiki_dir}}/` 下写或更新一页，"
+                        "文件名为标题的 slug（小写、空格转 -、去非法字符、≤80 字符）；页已存在则并入更新；\n"
+                        "3. 页面是综合不是摘抄：结论先行，提炼核心观点、关键数据与结论，可用小节组织；\n"
+                        "4. frontmatter 必含 title、date（YYYY-MM-DD）、tags（0-6 个）、"
+                        "confidence（high|medium|low，按来源质量与交叉印证定）、"
+                        "sources（必须含 `{{doc.rel}}`）；\n"
+                        "5. 关键概念用 [[双链]] 关联：先列出 Wiki 目录确认现有页面，"
+                        "只链真实存在或本轮确定会创建的页，禁止捏造链接目标；\n"
+                        "6. 完成后输出 WRITE_JSON {\"compiled\": [{\"doc\": \"{{doc.rel}}\", "
+                        "\"page\": \"<页面标题>\", \"action\": \"created\" 或 \"updated\"}]}。"
+                    ),
+                    "writes": {
+                        "compiled": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        }
+                    },
+                },
+                {
+                    "id": "fin",
+                    "type": "python",
+                    "entry": "kb_wiki_finalize",
+                    "args": {"compiled": "{{compiled}}"},
+                    "writes": {"report": {"type": "object"}},
+                },
+                {
+                    "id": "fix",
+                    "type": "agent",
+                    "agent": "dev",
+                    "title": "断链巡检",
+                    "goal": (
+                        "Wiki 断链巡检。查看工作流上下文里的 report.broken（[{page, link}]）。\n"
+                        "若为空：直接回复「无断链」，不要做任何其他事。\n"
+                        "否则逐条处理：若目标页应存在（Raw/ 里有对应来源文档），按编译规范补写该页；"
+                        "否则把断链改成指向真实存在的页面，或移除该链接。全部处理完后逐条复核一遍。"
+                    ),
+                },
+            ],
+            "edges": [
+                {"from": "inv", "to": "compile"},
+                {"from": "compile", "to": "fin"},
+                {"from": "fin", "to": "fix"},
+            ],
+        },
+    },
 ]
 
 

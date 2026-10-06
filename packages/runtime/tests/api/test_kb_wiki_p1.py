@@ -1,4 +1,11 @@
-"""API integration tests for the P1 wiki endpoints (build/ingest/related/discover/...)."""
+"""API integration tests for the wiki endpoints (search/related/discover/...).
+
+Wiki pages are now written by the「Wiki 编译」workflow's agent steps
+(agent-wiki-workflow-design.md) — the deterministic build/ingest endpoints are
+gone. These tests write pages directly into the vault and exercise the read
+path (index → search → related/discover/orphans/backlinks) plus the
+maintenance helpers behind the workflow's python entries.
+"""
 
 from __future__ import annotations
 
@@ -12,25 +19,58 @@ from ginno_runtime.knowledge.indexer import reset_indexers
 pytestmark = pytest.mark.api
 
 
+def _wiki_page(title, tags, sources, links):
+    tags_s = ", ".join(tags)
+    srcs = "\n".join(f'  - "{s}"' for s in sources)
+    link_lines = "\n".join(f"- [[{t}]]" for t in links)
+    return (
+        "---\n"
+        f'title: "{title}"\n'
+        'date: "2026-10-07"\n'
+        f"tags: [{tags_s}]\n"
+        "type: summary\n"
+        "confidence: medium\n"
+        "sources:\n"
+        f"{srcs}\n"
+        "---\n\n"
+        f"# {title}\n\n"
+        "a sufficiently detailed distilled summary of the source document.\n\n"
+        "## Key Concepts\n\n"
+        f"{link_lines}\n"
+    )
+
+
 @pytest.fixture
 def kb_setup(client, isolated_home):
     reset_indexers()
     reset_engines()
     vault = isolated_home / "vault"
-
-    def w(rel, title, tags, *concepts):
-        p = vault / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        body = "this is a sufficiently long summary paragraph for the document.\n\n" + "\n\n".join(
-            f"we rely on **{c}** to do the work here." for c in concepts
-        )
+    wiki = vault / "Ginno" / "Wiki"
+    wiki.mkdir(parents=True, exist_ok=True)
+    (vault / "Ginno" / "Raw").mkdir(parents=True, exist_ok=True)
+    # Two compiled pages (as the workflow agent would write them) + their raw
+    # sources. DocA/DocB don't link each other directly — they co-occur via the
+    # shared 权限节点 page, which is what the association engine scores.
+    (wiki / "doc-a.md").write_text(
+        _wiki_page("DocA", ["arch", "perm"], ["Ginno/Raw/a.md"], ["权限节点"]),
+        encoding="utf-8",
+    )
+    (wiki / "doc-b.md").write_text(
+        _wiki_page("DocB", ["arch", "perm"], ["Ginno/Raw/b.md"], ["权限节点"]),
+        encoding="utf-8",
+    )
+    (wiki / "concepts").mkdir()
+    (wiki / "concepts" / "权限节点.md").write_text(
+        _wiki_page("权限节点", ["arch"], ["Ginno/Raw/a.md", "Ginno/Raw/b.md"], ["DocA", "DocB"]),
+        encoding="utf-8",
+    )
+    for rel, title in (("a.md", "DocA"), ("b.md", "DocB")):
+        p = vault / "Ginno" / "Raw" / rel
         p.write_text(
-            f"---\ntitle: {title}\ntags: [{', '.join(tags)}]\n---\n\n# {title}\n\n{body}\n",
+            f"---\ntitle: {title}\ntags: [arch]\n---\n\n# {title}\n\n"
+            "raw source body long enough to matter for the indexer.\n",
             encoding="utf-8",
         )
-
-    w("Ginno/Raw/a.md", "DocA", ["arch", "perm"], "权限节点", "AlphaX")
-    w("Ginno/Raw/b.md", "DocB", ["arch", "perm"], "权限节点", "BetaY")
 
     sp = isolated_home / "settings.json"
     s = json.loads(sp.read_text())
@@ -47,41 +87,35 @@ def kb_setup(client, isolated_home):
     return vault
 
 
-def test_build_guard_when_disabled(client):
-    assert client.post("/api/kb/wiki/build").json()["ok"] is False
+def _reindex(client) -> None:
+    r = client.post("/api/kb/wiki/index").json()
+    assert r["ok"] is True
+
+
+def test_guard_when_disabled(client):
     assert client.get("/api/kb/wiki/discover").json()["ok"] is False
     assert client.get("/api/kb/wiki/orphans").json()["ok"] is False
 
 
-def test_build_creates_pages_and_refreshes_search(client, kb_setup):
-    vault = kb_setup
-    r = client.post("/api/kb/wiki/build").json()
-    assert r["ok"] is True
-    assert r["scanned"] == 2
-    assert r["created"]
-    assert (vault / "Ginno" / "Wiki" / "concepts" / "权限节点.md").exists()
-    assert (vault / "Ginno" / "Wiki" / "INDEX.md").exists()
-    # the shared indexer was rescanned → search now sees the compiled concept
+def test_index_refreshes_search(client, kb_setup):
+    _reindex(client)
     sr = client.get("/api/kb/wiki/search?q=权限").json()
     assert any("权限节点" in x["title"] for x in sr["results"])
 
 
 def test_related_and_backlinks(client, kb_setup):
-    client.post("/api/kb/wiki/build")
-    # 权限节点 occurs in both raw docs, so every concept/summary neighbour shares a
-    # source with it and is (correctly) skipped; AlphaX has genuine neighbours.
-    rel = client.get("/api/kb/wiki/related?title=AlphaX").json()
+    _reindex(client)
+    rel = client.get("/api/kb/wiki/related?title=DocA").json()
     assert rel["ok"] is True
-    assert "BetaY" in {x["title"] for x in rel["related"]}
-    # backlinks come from the per-doc summary pages that wikilink the concepts
+    assert "DocB" in {x["title"] for x in rel["related"]}
     bl = client.get("/api/kb/wiki/backlinks?title=权限节点").json()
     assert {"DocA", "DocB"} <= set(bl["backlinks"])
-    bla = client.get("/api/kb/wiki/backlinks?title=AlphaX").json()
-    assert set(bla["backlinks"]) == {"DocA"}
+    bla = client.get("/api/kb/wiki/backlinks?title=DocA").json()
+    assert "权限节点" in set(bla["backlinks"])
 
 
 def test_discover_shape(client, kb_setup):
-    client.post("/api/kb/wiki/build")
+    _reindex(client)
     d = client.get("/api/kb/wiki/discover").json()
     assert d["ok"] is True
     for key in ("strong", "clusters", "isolated", "orphan_bridges", "merge_candidates", "stats"):
@@ -91,28 +125,7 @@ def test_discover_shape(client, kb_setup):
 
 
 def test_orphans_list(client, kb_setup):
-    client.post("/api/kb/wiki/build")
+    _reindex(client)
     o = client.get("/api/kb/wiki/orphans").json()
     assert o["ok"] is True
     assert isinstance(o["pages"], list)
-
-
-def test_ingest_single_new_file(client, kb_setup):
-    vault = kb_setup
-    client.post("/api/kb/wiki/build")
-    new = vault / "Ginno" / "Raw" / "c.md"
-    new.write_text(
-        "---\ntitle: DocC\ntags: [arch, perm]\n---\n# DocC\n\n"
-        "another sufficiently long summary paragraph here.\n\nwe use **GammaZ** now.\n",
-        encoding="utf-8",
-    )
-    r = client.post("/api/kb/wiki/ingest", json={"path": "Ginno/Raw/c.md"}).json()
-    assert r["ok"] is True and r["created"]
-    assert (vault / "Ginno" / "Wiki" / "concepts" / "gammaz.md").exists()
-    lst = client.get("/api/kb/wiki/list").json()
-    assert any(p["title"] == "GammaZ" for p in lst["pages"])
-
-
-def test_ingest_rejects_path_outside_vault(client, kb_setup):
-    r = client.post("/api/kb/wiki/ingest", json={"path": "/etc/passwd"}).json()
-    assert r["ok"] is False

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
+import { useGinno } from "@/lib/store";
 import type {
   WikiDiscover,
   WikiPage,
@@ -175,21 +176,23 @@ export default function KnowledgeBasePage() {
     setBusy(true);
     setNote("");
     try {
-      const r = await api.kbWikiBuild();
-      if (r.ok) {
-        setNote(
-          tKb("build.done", {
-            scanned: r.scanned ?? 0,
-            created: (r.created || []).length,
-            updated: (r.updated || []).length,
-            newLinks: (r.new_links || []).length,
-            ms: r.duration_ms ?? 0,
-          }),
-        );
-        await loadAll();
-      } else {
-        setNote(r.error || tKb("build.failed"));
+      // agent-wiki-workflow-design.md:Build = 打开可见会话运行「📚 Wiki 编译」
+      // workflow(agent 扇出综合写页);run 绑定到该会话,run.* 事件在聊天里可见。
+      const g = useGinno();
+      const s = await g.newSession(undefined, {
+        title: tKb("build.sessionTitle"),
+        workflow_id: "wiki-compile",
+      });
+      if (!s?.id) {
+        setNote(tKb("build.failed"));
+        return;
       }
+      const r = await api.triggerWorkflowRun("wiki-compile", undefined, s.id);
+      if (!r.ok) {
+        setNote(tKb("build.failed"));
+        return;
+      }
+      setNote(tKb("build.started"));
     } catch {
       setNote(tKb("build.failedNoRuntime"));
     } finally {

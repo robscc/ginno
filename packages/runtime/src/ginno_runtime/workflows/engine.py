@@ -182,6 +182,7 @@ async def run_workflow(
     context_override: dict | None = None,
     project_slug: str = "default",
     usage_attr: dict | None = None,
+    transcript_session: str | None = None,
 ) -> AsyncIterator[dict]:
     d = wf_dsl.normalize_dsl(dsl)
     initial = dict((d.get("context") or {}).get("initial") or {})
@@ -190,7 +191,15 @@ async def run_workflow(
     # usage_attr (provider/model/session/run attribution) is read by the LLM
     # nodes when they record per-call usage into the global usage log
     # (source=workflow, usage-stats-design §3.6).
-    run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
+    run_ctx: dict[str, Any] = {
+        "run_id": run_id,
+        "events": [],
+        "usage_attr": dict(usage_attr or {}),
+        # Replayable-transcript session (transcript.py): agent steps mirror
+        # their full dialogue here so workflow runs read like scheduled tasks.
+        "transcript_session": transcript_session,
+        "project_slug": project_slug,
+    }
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(

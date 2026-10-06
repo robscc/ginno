@@ -13,7 +13,6 @@ from fastapi import APIRouter
 
 from .. import paths
 from .. import server_shared as shared
-from ..knowledge import compiler as _kb_compiler
 from ..knowledge.association import get_engine as _get_kb_engine
 from ..knowledge.association import reset_engines as _reset_kb_engines
 from ..knowledge.config import load_knowledge_config as _load_kb_cfg
@@ -457,8 +456,13 @@ def kb_wiki_promote_preview(data: dict) -> dict:
     against the vault, then draft the page (frontmatter + landing path) for
     user confirmation. ``suggestion`` is ``merge`` when a near-duplicate page
     exists (≥0.75, the discover merge-candidate precedent)."""
-    from ..knowledge.compiler import WikiCompiler, _iso_now
+    from ..knowledge.frontmatter import dump_frontmatter as _dump_fm
     from ..memory import sanitize_for_memory
+
+    def _iso_now() -> str:
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     cfg = _load_kb_cfg()
     if not cfg.usable:
@@ -513,7 +517,7 @@ def kb_wiki_promote_preview(data: dict) -> dict:
         "tags": ["memory"],
         "sources": ["ginno://memory"],
     }
-    raw = WikiCompiler._dump_frontmatter(meta) + f"# {title}\n\n{body}\n"
+    raw = _dump_fm(meta) + f"# {title}\n\n{body}\n"
 
     landing = _memory_landing_dir(cfg)
     slug = _promote_slug(title)
@@ -594,7 +598,7 @@ def _kb_refresh(cfg) -> None:
 
 
 def _maybe_build_semantic(cfg) -> None:
-    """Encode wiki pages into the semantic index after a build/reindex (no-op
+    """Encode wiki pages into the semantic index after a reindex (no-op
     unless ``use_semantic`` is on). Failures are swallowed → lexical fallback."""
     if not getattr(cfg, "use_semantic", False):
         return
@@ -604,50 +608,9 @@ def _maybe_build_semantic(cfg) -> None:
         pass
 
 
-def _compile_to_dict(res) -> dict:
-    return {
-        "created": res.created,
-        "updated": res.updated,
-        "new_links": res.new_links,
-        "discovered": res.discovered,
-    }
-
-
-@router.post("/api/kb/wiki/ingest")
-def kb_wiki_ingest(data: dict) -> dict:
-    """Compile a single raw file (path absolute or relative to the vault)."""
-    cfg = _load_kb_cfg()
-    if not cfg.usable:
-        return _kb_not_configured()
-    vault = Path(cfg.vault_path).resolve()
-    raw = (data or {}).get("path", "")
-    p = Path(raw) if Path(raw).is_absolute() else (vault / raw).resolve()
-    try:
-        p.relative_to(vault)
-    except ValueError:
-        return {"ok": False, "error": "path outside vault"}
-    if not p.is_file():
-        # compile() silently no-ops on a missing path and returned ok:True with
-        # empty created/updated — callers couldn't tell failure from empty.
-        return {"ok": False, "error": "file not found"}
-    comp = _kb_compiler.WikiCompiler(vault, cfg.wiki_dir, cfg.raw_dir)
-    res = comp.compile(p)
-    comp.update_index()
-    _kb_refresh(cfg)
-    return {"ok": True, **_compile_to_dict(res)}
-
-
-@router.post("/api/kb/wiki/build")
-def kb_wiki_build() -> dict:
-    """Compile every raw file in the vault (raw→wiki) and rebuild the index."""
-    cfg = _load_kb_cfg()
-    if not cfg.usable:
-        return _kb_not_configured()
-    comp = _kb_compiler.WikiCompiler(Path(cfg.vault_path), cfg.wiki_dir, cfg.raw_dir)
-    result = comp.build_all()
-    _kb_refresh(cfg)
-    _maybe_build_semantic(cfg)
-    return {"ok": True, **result}
+# Wiki 页面由「Wiki 编译」workflow 撰写(agent-wiki-workflow-design.md):
+# 编译入口是 workflow run(POST /api/workflow_runs, workflow_id="wiki-compile"),
+# 不再有确定性 build/ingest 端点。KB 页的「Build wiki」按钮负责拉起该 run。
 
 
 @router.get("/api/kb/wiki/related")

@@ -1078,18 +1078,6 @@ export async function kbWikiReindex() {
     method: "POST",
   });
 }
-export async function kbWikiBuild() {
-  return json<{
-    ok: boolean;
-    error?: string;
-    scanned?: number;
-    created?: string[];
-    updated?: string[];
-    new_links?: unknown[];
-    discovered?: unknown[];
-    duration_ms?: number;
-  }>(`${BASE}/kb/wiki/build`, { method: "POST" });
-}
 export async function kbWikiDiscover() {
   return json<import("./types").WikiDiscover>(`${BASE}/kb/wiki/discover`);
 }

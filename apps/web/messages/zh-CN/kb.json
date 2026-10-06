@@ -68,9 +68,10 @@
       "failedNoRuntime": "重建索引失败：无法连接 Runtime"
     },
     "build": {
-      "done": "构建完成：扫描 {scanned} 页，新建 {created}，更新 {updated}，自动链接 {newLinks}，耗时 {ms} ms",
-      "failed": "构建失败",
-      "failedNoRuntime": "构建失败：无法连接 Runtime"
+      "sessionTitle": "📚 Wiki 编译",
+      "started": "已打开「📚 Wiki 编译」会话,agent 正在扇出编译——详情见该会话对话。",
+      "failed": "Wiki 编译启动失败",
+      "failedNoRuntime": "Wiki 编译启动失败:无法连接 Runtime"
     },
     "import": {
       "title": "导入已有的 LLM Wiki 知识库",

@@ -15,11 +15,23 @@ from __future__ import annotations
 
 from .billing import fetch_aliyun_bills, fetch_volc_bills
 from .compare import normalize_and_compare
+from .kb_wiki import kb_wiki_finalize, kb_wiki_inventory, kb_wiki_lint
 
 ENTRY_REGISTRY: dict = {
     "fetch_aliyun_bills": fetch_aliyun_bills,
     "fetch_volc_bills": fetch_volc_bills,
     "normalize_and_compare": normalize_and_compare,
+    "kb_wiki_inventory": kb_wiki_inventory,
+    "kb_wiki_finalize": kb_wiki_finalize,
+    "kb_wiki_lint": kb_wiki_lint,
 }
 
-__all__ = ["ENTRY_REGISTRY", "fetch_aliyun_bills", "fetch_volc_bills", "normalize_and_compare"]
+__all__ = [
+    "ENTRY_REGISTRY",
+    "fetch_aliyun_bills",
+    "fetch_volc_bills",
+    "normalize_and_compare",
+    "kb_wiki_inventory",
+    "kb_wiki_finalize",
+    "kb_wiki_lint",
+]
