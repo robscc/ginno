@@ -217,7 +217,9 @@ async def ensure_broker() -> tuple[str | None, str | None]:
 
     if _broker_proc is not None and _broker_proc.returncode is None and _broker_sock:
         token = _read_token(_broker_sock)
-        return _broker_sock, token
+        if token:
+            return _broker_sock, token
+        # Token unreadable (broker mid-cleanup?): fall through and respawn.
     # A previous child died: reap it before respawning.
     if _broker_proc is not None and _broker_proc.returncode is not None:
         log.info("mods broker exited (rc=%s); respawning", _broker_proc.returncode)
@@ -249,11 +251,13 @@ async def ensure_broker() -> tuple[str | None, str | None]:
         _broker_proc = None
         return None, None
     _broker_sock = sock_path
-    # Wait for the socket + token file the broker creates on listen.
+    # Wait for the socket AND its token file: the broker creates the socket
+    # first and the token a moment after — returning on the socket alone races
+    # the token read and the hello then goes out with token=null.
     deadline = asyncio.get_running_loop().time() + _SPAWN_WAIT_S
     while asyncio.get_running_loop().time() < deadline:
-        if os.path.exists(sock_path):
-            token = _read_token(sock_path)
+        token = _read_token(sock_path)
+        if token and os.path.exists(sock_path):
             if _broker_proc.returncode is not None:
                 log.warning("mods broker died during startup (rc=%s)", _broker_proc.returncode)
                 _broker_proc = None
@@ -325,7 +329,24 @@ def scan_installed_mods() -> list[dict]:
         if isinstance(manifest, dict):
             name = str(manifest.get("name") or name)
             version = str(manifest.get("version") or "")
-        out.append({"name": name, "version": version, "path": str(d), "hasManifest": manifest is not None})
+        # Shape: the JS "modules" hooks.json rides the broker/runner; the
+        # classic {"hooks": {...}} shape goes to the HookDispatcher instead
+        # (§10) and must never be spawned as a runner (it has no module to
+        # import — the runner would exit and crash-loop).
+        shape = "none"
+        for rel in ("hooks/hooks.json", "hooks.json"):
+            try:
+                doc = json.loads((d / rel).read_text() or "{}")
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(doc, dict):
+                if isinstance(doc.get("modules"), list) and doc["modules"]:
+                    shape = "js"
+                elif isinstance(doc.get("hooks"), dict):
+                    shape = "classic"
+            break
+        out.append({"name": name, "version": version, "path": str(d),
+                    "hasManifest": manifest is not None, "shape": shape})
     return out
 
 

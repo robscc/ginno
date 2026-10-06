@@ -1,0 +1,5 @@
+{
+  "name": "ginno-tamagotchi",
+  "version": "0.1.0",
+  "description": "A band pet that grows on context usage; feed it with a press. Ginno e2e sample (conceived after keras9496/claude-tamagotchi, an Electron app rather than a mod)."
+}

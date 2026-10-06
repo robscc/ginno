@@ -140,7 +140,16 @@ export function createModsApi(binding: ApiBinding): ModsApi {
     }),
     state: Object.freeze({
       get(ref: StateRef): Promise<{ value: unknown }> {
-        return call('state.get', { plugin: ref.plugin, key: ref.key })
+        return call('state.get', { plugin: ref.plugin, key: ref.key }).then(stored => {
+          // The broker answers DSH's opCore shape `{value: stored}`; over JSON a
+          // missing (or null-stored) slot arrives as `{value: null}`, while DSH's
+          // in-process shape is `{value: undefined}` — which is what a mod's
+          // `const { value = fallback } = await $.state.get(ref)` destructuring needs.
+          const inner = (stored as { value?: unknown } | null)?.value
+          return inner === undefined || inner === null
+            ? { value: undefined }
+            : stored as { value: unknown }
+        })
       },
       set(ref: StateRef, value: unknown): Promise<void> {
         return call('state.set', { plugin: ref.plugin, key: ref.key, value })

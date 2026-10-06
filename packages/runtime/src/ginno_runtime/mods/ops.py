@@ -131,8 +131,11 @@ async def _op_version(args: dict, session_id: str) -> str:
     return _runtime_version()
 
 
-async def _op_usage(args: dict, session_id: str) -> dict | None:
-    """Per-session cumulative usage (usage-stats-design.md §5 source order)."""
+async def _op_usage(args: dict, session_id: str) -> dict:
+    """Per-session cumulative usage (usage-stats-design.md §5 source order).
+    Always an object — the mods spec has $.session.usage() resolve to the
+    canonical shape; an unknown session (just-ended, or a mod asking before
+    the first turn) gets the zero window, never null (mods deref .context)."""
     from .. import usage_store
     from ..server_shared import _USAGE_BY_SESSION
 
@@ -140,7 +143,9 @@ async def _op_usage(args: dict, session_id: str) -> dict | None:
     if logged:
         return logged
     acc = _USAGE_BY_SESSION.get(session_id)
-    return dict(acc) if acc else None
+    if acc:
+        return dict(acc)
+    return {"context": {"tokens": 0, "window": 0}, "rateLimits": []}
 
 
 async def _op_messages(args: dict, session_id: str) -> list[dict]:

@@ -61,6 +61,26 @@ describe('served methods', () => {
     const $ = createModsApi(binding)
     await expect($.fs.write('./x', 'y')).rejects.toMatchObject({ code: 'denied' })
   })
+
+  test('state.get reads a missing slot as {value: undefined}, keeping DSH default destructuring', async () => {
+    // The broker answers DSH's opCore shape `{value: stored|null}`; over JSON a missing slot's
+    // inner is null (JSON has no undefined), and the shim hands back `{value: undefined}` so
+    // `const { value = [] } = await $.state.get(ref)` works.
+    const stored: Record<string, unknown> = { readings: [1, 2] }
+    const { binding } = makeBinding({
+      invoke: (op, input) => {
+        if (op !== 'state.get') return Promise.resolve({})
+        const key = (input as { key: string }).key
+        return Promise.resolve({ value: stored[key] ?? null })
+      },
+    })
+    const $ = createModsApi(binding)
+    const { value = [] } = await $.state.get({ plugin: 'sample', key: 'absent' })
+    expect(value).toEqual([])
+    await expect($.state.get({ plugin: 'sample', key: 'absent' })).resolves.toEqual({ value: undefined })
+    // A stored array passes through with its inner shape intact.
+    await expect($.state.get({ plugin: 'sample', key: 'readings' })).resolves.toEqual({ value: [1, 2] })
+  })
 })
 
 describe('unserved members', () => {

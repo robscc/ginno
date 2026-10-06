@@ -584,7 +584,9 @@ async fn op_calls_run_through_earlier_mods() {
 
     let settled = env.runtime.raise("turn.complete", Some("s1"), json!({ "turnId": 1 })).await;
     assert_eq!(settled["ok"], true, "the call succeeded: {settled}");
-    assert_eq!(settled["value"], json!(null), "the state slot is empty");
+    // DSH opCore shape: `{ value: null }` for a missing slot (the runner's
+    // shim turns the inner null into undefined for the mod).
+    assert_eq!(settled["value"], json!({ "value": null }), "the state slot is empty");
     env.wait_trace("early", "early:state.get:begin").await;
 
     // `tool.call` as an op never re-enters the chain (§15.2).

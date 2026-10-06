@@ -131,7 +131,11 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
             let slot = state_slot(&input)?;
             let key = ctx.session.clone().unwrap_or_default();
             broker.surfaces_state_read(&key, &slot);
-            Ok(broker.state_get(&key, &slot))
+            // DSH's opCore shape: the mod destructures `{ value }` from the
+            // answer. Cross-process, a missing (or null-stored) slot arrives
+            // as `{value: null}` — the runner's `$` shim turns that into
+            // `{value: undefined}`, restoring DSH's destructuring defaults.
+            Ok(json!({ "value": broker.state_get(&key, &slot) }))
         }
         "state.set" => {
             let slot = state_slot(&input)?;

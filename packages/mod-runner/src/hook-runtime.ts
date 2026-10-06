@@ -171,11 +171,21 @@ export class HookRuntime {
     return this.invokeOp(op, input, undefined)
   }
 
+  /**
+   * The session a press or timer callback runs for. Its `$` calls carry no
+   * invocation (the hook that captured the `$` has settled), so the press /
+   * clock.fire frame's session rides here instead — without it the broker's
+   * runtime-backed ops refuse the call ("session context missing").
+   */
+  private ambientSession: string | undefined
+
   private invokeOp(op: string, input: unknown, invocation: string | undefined): Promise<unknown> {
     const dot = op.indexOf('.')
     const ns = dot === -1 ? op : op.slice(0, dot)
     const method = dot === -1 ? '' : op.slice(dot + 1)
-    const session = invocation === undefined ? undefined : this.invocations.get(invocation)?.session
+    const session =
+      (invocation !== undefined ? this.invocations.get(invocation)?.session : undefined) ??
+      this.ambientSession
     return this.options.connection.request({
       kind: 'call',
       ns,
@@ -356,9 +366,17 @@ export class HookRuntime {
       this.options.connection.respond(id, false, { code: 'not-found', message: `no press callback is registered for ${String(actionId)}` })
       return
     }
+    // The callback's `$` calls ride this session (see ambientSession).
+    this.ambientSession = session || undefined
     Promise.resolve().then(callback).then(
-      value => this.options.connection.respond(id, true, { value: value === undefined ? null : value }),
-      error => this.options.connection.respond(id, false, { code: 'error', message: failureLine(error) }),
+      value => {
+        this.ambientSession = undefined
+        this.options.connection.respond(id, true, { value: value === undefined ? null : value })
+      },
+      error => {
+        this.ambientSession = undefined
+        this.options.connection.respond(id, false, { code: 'error', message: failureLine(error) })
+      },
     )
   }
 
@@ -370,9 +388,19 @@ export class HookRuntime {
       this.options.connection.respond(id, false, { code: 'not-found', message: 'a clock.fire call without a timer name arrived' })
       return
     }
+    // Same ambient-session rule as a press: the timer's callback `$` calls
+    // carry the frame's session when one rode along.
+    const fireSession = typeof frame.session === 'string' ? frame.session : ''
+    this.ambientSession = fireSession || undefined
     this.timers.fire(timer).then(
-      () => this.options.connection.respond(id, true, { value: null }),
-      error => this.options.connection.respond(id, false, { code: 'error', message: failureLine(error) }),
+      () => {
+        this.ambientSession = undefined
+        this.options.connection.respond(id, true, { value: null })
+      },
+      error => {
+        this.ambientSession = undefined
+        this.options.connection.respond(id, false, { code: 'error', message: failureLine(error) })
+      },
     )
   }
 

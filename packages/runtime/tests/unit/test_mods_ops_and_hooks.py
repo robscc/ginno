@@ -40,7 +40,11 @@ async def test_session_read_family(isolated_home):
     assert await mods_ops.handle("session", "cwd", {}, "abc") == ""  # no meta → empty
     assert await mods_ops.handle("session", "root", {}, "abc") == ""
     assert await mods_ops.handle("session", "turns", {}, "abc") == 0  # no checkpoint
-    assert await mods_ops.handle("session", "usage", {}, "abc") is None
+    # 未知会话返回零窗口而不是 None:mods 规范里 usage 永远是对象(mod 会解构 .context)
+    assert await mods_ops.handle("session", "usage", {}, "abc") == {
+        "context": {"tokens": 0, "window": 0},
+        "rateLimits": [],
+    }
     assert await mods_ops.handle("session", "messages", {}, "abc") == []
 
 

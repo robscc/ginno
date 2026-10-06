@@ -152,7 +152,7 @@ async function runBehavior(hook, frame, kind) {
       // Read a state slot through `$`, then answer a band tree naming it.
       const ref = hook.stateRef ?? { plugin: modName, key: 'v' }
       const result = await call('state', 'get', { plugin: ref.plugin, key: ref.key }, frame.invocation, frame.session)
-      const value = result.value ?? null
+      const value = result.value?.value ?? null
       const tree = [{ type: 'Text', props: {}, children: [`count ${value}`] }]
       return { value: tree }
     }

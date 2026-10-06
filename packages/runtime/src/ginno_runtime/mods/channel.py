@@ -39,7 +39,10 @@ PROTOCOL_VERSION = 1
 _DEADLINE_GRACE_S = 2.0
 
 # hello handshake must not hang the first event longer than this.
-_HELLO_TIMEOUT_S = 5.0
+# First hello spawns every configured runner in parallel; the broker caps
+# each at HANDSHAKE_TIMEOUT (20 s), so this must exceed it or a slow-loading
+# mod flaps the channel (runner tests: cold node + TS stripping can take s).
+_HELLO_TIMEOUT_S = 30.0
 
 _BACKOFF_START_S = 1.0
 _BACKOFF_MAX_S = 30.0
@@ -207,6 +210,11 @@ class ModChannel:
         backoff = self._backoff_start
         while not self._closing:
             sock_path, token = await self._resolve_endpoint()
+            # The hello below reads self._token: carry what the endpoint
+            # resolved (dev-spawn reads the token file; env/ctor paths set
+            # it here already) — without this the default path sends null.
+            if token:
+                self._token = token
             if self._closing:
                 return
             if sock_path is None:
@@ -324,9 +332,19 @@ class ModChannel:
                             "status": m.get("status") or "loaded",
                             **{k: v for k, v in m.items() if k not in ("name", "status", "hooks")},
                         }
-                    for h in m.get("hooks") or []:
-                        if isinstance(h, dict) and h.get("event"):
-                            events.add(str(h["event"]))
+                    raw_hooks = m.get("hooks")
+                    if isinstance(raw_hooks, str):
+                        # The broker's ready carries the validate-style describe
+                        # string ("turn.start, tool.call{tool=/^Write/}") — split
+                        # on commas and drop the matcher braces.
+                        for part in raw_hooks.split(","):
+                            name = part.split("{", 1)[0].strip()
+                            if name:
+                                events.add(name)
+                    else:
+                        for h in raw_hooks or []:
+                            if isinstance(h, dict) and h.get("event"):
+                                events.add(str(h["event"]))
         # No mods list at all → unknown registry (always forward); an explicit
         # (possibly empty) list → exact short-circuit set.
         self._registered = events if known else None
@@ -539,8 +557,12 @@ class ModChannel:
         cfg = load_mods_settings()
         # Base items from the installed directories (drop-in convention), so a
         # mod the user cloned without touching settings still gets a dir.
+        # JS-shaped only: classic {"hooks":{...}} plugins ride the
+        # HookDispatcher (§10) — spawning a runner for them crash-loops.
         items: dict[str, dict] = {}
         for m in scan_installed_mods():
+            if m.get("shape") not in (None, "js"):
+                continue
             items[m["name"]] = {"enabled": True, "dir": m["path"], "grants": {}, "config": {}}
         for name, item in (cfg.get("items") or {}).items():
             if not isinstance(item, dict):
