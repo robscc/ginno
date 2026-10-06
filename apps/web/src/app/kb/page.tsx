@@ -57,6 +57,7 @@ export default function KnowledgeBasePage() {
   // kb 域 catalog（messages/{en,zh-CN}/kb.json）。翻译函数命名 tKb：本文件多处
   // `.map((t) => …)` 回调形参会遮蔽 `t`（已知坑），域前缀名彻底避开。
   const tKb = useTranslations("kb");
+  const g = useGinno(); // Build wiki：新建并切换到「📚 Wiki 编译」会话
   const [stats, setStats] = useState<WikiStats | null>(null);
   const [pages, setPages] = useState<WikiPage[]>([]);
   const [results, setResults] = useState<WikiSearchResult[]>([]);
@@ -178,7 +179,6 @@ export default function KnowledgeBasePage() {
     try {
       // agent-wiki-workflow-design.md:Build = 打开可见会话运行「📚 Wiki 编译」
       // workflow(agent 扇出综合写页);run 绑定到该会话,run.* 事件在聊天里可见。
-      const g = useGinno();
       const s = await g.newSession(undefined, {
         title: tKb("build.sessionTitle"),
         workflow_id: "wiki-compile",
