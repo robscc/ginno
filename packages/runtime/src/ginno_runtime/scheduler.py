@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 import uuid
@@ -53,6 +54,37 @@ _RUN_TASKS: dict[str, asyncio.Task] = {}
 
 # 单例循环任务（lifespan 注册/停机）。
 _LOOP_TASK: asyncio.Task | None = None
+
+# 跨进程调度租约（flock）。多个 sidecar 可能同时活着(dev uvicorn、打包应用、
+# 游离进程),它们共享 ~/.ginno 存储;若各自 tick,同一计划点会各记一笔
+# missed/skipped_overlap(2026-10-06:单任务一天出 3 条 run 记录)。只有
+# 持有租约的实例 tick/对账;holder 退出锁由 OS 自动释放,其余实例在
+# 下一个 tick 尝试接管。
+_LEASE_FD: int | None = None
+
+
+def _try_acquire_lease() -> bool:
+    """尝试独占调度租约;已持有或获取成功返回 True。"""
+    global _LEASE_FD
+    if _LEASE_FD is not None:
+        return True
+    import fcntl
+
+    from . import paths
+
+    fd = None
+    try:
+        lock_path = paths.home() / "scheduler.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        return False
+    _LEASE_FD = fd
+    _log.info("scheduler_lease_acquired")
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -672,10 +704,15 @@ async def _tick() -> None:
 async def scheduler_loop() -> None:
     """单例调度循环。随 lifespan cancel；CancelledError = 正常停机。"""
     _log.info("scheduler_loop_started tick=%ss grace=%ss", TICK_S, GRACE_S)
+    have_lease = _try_acquire_lease()
+    if not have_lease:
+        _log.info("scheduler_lease_held_elsewhere; standby(持有者退出后接管)")
     try:
         while True:
             try:
-                await _tick()
+                if have_lease or _try_acquire_lease():
+                    have_lease = True
+                    await _tick()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 — 单 tick 崩溃不终止循环
@@ -695,10 +732,11 @@ def start() -> asyncio.Task:
     global _LOOP_TASK
     if _LOOP_TASK is not None and not _LOOP_TASK.done():
         return _LOOP_TASK
-    try:
-        reconcile_interrupted()
-    except Exception:  # noqa: BLE001
-        _log.exception("schedule_reconciliation_failed")
+    if _try_acquire_lease():
+        try:
+            reconcile_interrupted()
+        except Exception:  # noqa: BLE001
+            _log.exception("schedule_reconciliation_failed")
     _LOOP_TASK = asyncio.get_running_loop().create_task(scheduler_loop())
     return _LOOP_TASK
 
