@@ -393,28 +393,100 @@ def turn_recursion_limit() -> int:
 
 
 def format_turn_error(e: BaseException) -> str:
-    """User-facing text for the error card (the ``{error}`` param of
-    ``stream.turn_failed``).
+    """User-facing text for the error card (the fallback ``message`` field).
 
     The raw exception dump stays the English fallback (i18n-design.md §3), but
     known failures get a Ginno-specific remedy appended — the framework's own
     advice is not actionable inside Ginno (LangGraph's GraphRecursionError
     points at a langchain docs page instead of this app's settings file).
     Substring gates elsewhere (e.g. subagent_scheduler's recursion wrap) keep
-    matching because ``GraphRecursionError`` stays in the first line.
+    matching because the class name stays in the first line.
+    """
+    return turn_error_fields(e)["message"]
+
+
+def turn_error_fields(e: BaseException) -> dict:
+    """Full error-event payload fields (i18n-design.md §3): ``message``
+    (English fallback text) + ``i18n_key`` + ``params`` so the web UI renders
+    a localized version; a stale bundle missing the key falls back to
+    ``message``. Control-flow signals (GraphBubbleUp family,
+    NodeCancelledError) keep the generic key with no hint — they are not
+    failures, and a "what to do next" tip would mislead.
     """
     text = f"{type(e).__name__}: {e}"
-    from langgraph.errors import GraphRecursionError  # lazy: import cost
+    hit = _langgraph_error_hint(e)
+    if hit is None:
+        return {
+            "message": text,
+            "i18n_key": "stream.turn_failed",
+            "params": {"error": text},
+        }
+    suffix, params, hint = hit
+    return {
+        "message": f"{text}\n{hint}",
+        "i18n_key": f"stream.turn_failed.{suffix}",
+        "params": {"error": text, **params},
+    }
 
+
+def _langgraph_error_hint(e: BaseException) -> tuple[str, dict, str] | None:
+    """Classify a langgraph turn failure for the error card.
+
+    Returns ``(i18n key suffix under stream.turn_failed, params, English
+    hint)`` or ``None`` for unknown / control-flow exceptions.
+    """
+    from langgraph.errors import (  # lazy: import cost
+        EmptyChannelError,
+        EmptyInputError,
+        GraphBubbleUp,
+        GraphRecursionError,
+        InvalidUpdateError,
+        NodeCancelledError,
+        NodeTimeoutError,
+    )
+
+    # GraphRecursionError subclasses GraphBubbleUp — test before the family.
     if isinstance(e, GraphRecursionError):
-        text += (
-            f"\nThis turn hit Ginno's step budget (recursion_limit="
-            f"{turn_recursion_limit()})."
+        limit = turn_recursion_limit()
+        return (
+            "recursion_limit",
+            {"limit": limit},
+            f"This turn hit Ginno's step budget (recursion_limit={limit})."
             "\nTo raise it, edit ~/.ginno/settings.json:"
             '\n{ "runtime": { "recursion_limit": 256 } }'
-            "\nThe new value applies from the next turn — no restart needed."
+            "\nThe new value applies from the next turn — no restart needed.",
         )
-    return text
+    # Control flow, not failure: interrupts / commands / drains / user stop.
+    if isinstance(e, (GraphBubbleUp, NodeCancelledError)):
+        return None
+    if isinstance(e, EmptyInputError):
+        return (
+            "empty_input",
+            {},
+            "This turn had no state to resume — the first model call never"
+            " completed (common after an app restart or a failed first call)."
+            "\nUse retry on the error card; it re-runs the original input.",
+        )
+    if isinstance(e, (InvalidUpdateError, EmptyChannelError)):
+        return (
+            "state",
+            {},
+            "A step hit inconsistent turn state — usually a checkpoint written"
+            " by an older version or left mid-write by a crash."
+            "\nRetry once; if it repeats, restart the app, then start a new"
+            " session if it still repeats"
+            " (traceback: ~/.ginno/logs/sidecar.log).",
+        )
+    if isinstance(e, NodeTimeoutError):
+        return (
+            "node_timeout",
+            {},
+            "A step exceeded its time budget — usually a slow provider or tool"
+            " call, not a Ginno fault."
+            "\nRetry; if it repeats, check the provider's status"
+            " (traceback: ~/.ginno/logs/sidecar.log).",
+        )
+    return None
 
 
 # --- Turn-level auto retry for TRANSIENT provider/network failures ----------
@@ -1425,7 +1497,10 @@ async def _stream_graph(
                         )
                         return
         _log.exception("turn_error session=%s turn=%s", session_id, turn_id)
-        err_msg = format_turn_error(e)
+        # Event contract (i18n-design.md §3): the raw exception dump (+ remedy
+        # hint for known failures) stays the English fallback; the key lets the
+        # UI render a localized version.
+        _err_fields = turn_error_fields(e)
         # Persist the failure on the session meta so the error card (with its
         # retry action) survives webview reloads and route/session switches —
         # the history endpoint re-surfaces it as the last message. The retry
@@ -1434,17 +1509,19 @@ async def _stream_graph(
         _session_meta_patch(
             slug,
             session_id,
-            {"last_error": {"turn_id": ui_turn_id, "message": err_msg, "at": time.time()}},
+            {
+                "last_error": {
+                    "turn_id": ui_turn_id,
+                    "message": _err_fields["message"],
+                    "at": time.time(),
+                }
+            },
         )
-        # Event contract (i18n-design.md §3): the raw exception dump stays the
-        # English fallback; the key lets the UI render a localized headline.
         await safe_send(
             emit(
                 "error",
                 {
-                    "message": err_msg,
-                    "i18n_key": "stream.turn_failed",
-                    "params": {"error": err_msg},
+                    **_err_fields,
                 },
             )
         )

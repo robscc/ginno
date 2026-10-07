@@ -10,6 +10,12 @@
     "no_turn_running": "No turn is currently running; please send again",
     "plan_confirm_failed": "Failed to confirm the split plan; retry or split again",
     "turn_failed": "Turn failed: {error}",
-    "auto_retry": "Model connection error ({error}); auto-retrying in {seconds}s ({attempt}/{max})…"
+    "auto_retry": "Model connection error ({error}); auto-retrying in {seconds}s ({attempt}/{max})…",
+    "turn_failed_note": {
+      "recursion_limit": "Turn failed: {error}\nThis turn hit Ginno's step budget (recursion_limit={limit}).\nTo raise it, set runtime.recursion_limit under \"runtime\" in ~/.ginno/settings.json to 256.\nThe new value applies from the next turn — no restart needed.",
+      "empty_input": "Turn failed: {error}\nThis turn had no state to resume — the first model call never completed (common after an app restart or a failed first call).\nUse retry on the error card; it re-runs the original input.",
+      "state": "Turn failed: {error}\nA step hit inconsistent turn state — usually a checkpoint written by an older version or left mid-write by a crash.\nRetry once; if it repeats, restart the app, then start a new session if it still repeats (traceback: ~/.ginno/logs/sidecar.log).",
+      "node_timeout": "Turn failed: {error}\nA step exceeded its time budget — usually a slow provider or tool call, not a Ginno fault.\nRetry; if it repeats, check the provider's status (traceback: ~/.ginno/logs/sidecar.log)."
+    }
   }
 }

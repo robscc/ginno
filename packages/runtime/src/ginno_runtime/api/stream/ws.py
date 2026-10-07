@@ -38,7 +38,7 @@ from ...session_meta import _find_meta, _session_meta_patch
 from ...subagent_plan import BACKGROUND_ASYNC_COMMANDS as _BACKGROUND_ASYNC_COMMANDS
 from ..messages_ui import skill_display_text
 from ..sessions import _emit_goal_event, _ensure_session, _first_agent_id, _start_goal_driver
-from .engine import _stop_parked_turn, _stream_graph, format_turn_error
+from .engine import _stop_parked_turn, _stream_graph, turn_error_fields
 from .turn import _attach_only_text, _prepare_steer_payload, _run_resume, _run_stream
 
 router = APIRouter()
@@ -269,11 +269,9 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 await _push_session_event(
                     session_id,
                     "error",
-                    {
-                        "message": format_turn_error(e),
-                        "i18n_key": "stream.turn_failed",
-                        "params": {"error": format_turn_error(e)},
-                    },
+                    # i18n-design.md §3: fields carry key+params for known
+                    # failures; a stale bundle falls back to message.
+                    turn_error_fields(e),
                 )
             finally:
                 if _TURN_TASKS.get(session_id) is asyncio.current_task():
@@ -516,9 +514,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                                 session_id,
                                 "error",
                                 {
-                                    "message": format_turn_error(e),
-                                    "i18n_key": "stream.turn_failed",
-                                    "params": {"error": format_turn_error(e)},
+                                    **turn_error_fields(e),
                                 },
                                 _tid,
                             )
@@ -589,9 +585,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             _ev(
                                 "error",
                                 {
-                                    "message": format_turn_error(e),
-                                    "i18n_key": "stream.turn_failed",
-                                    "params": {"error": format_turn_error(e)},
+                                    **turn_error_fields(e),
                                 },
                             )
                         )
@@ -1008,9 +1002,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             session_id,
                             "error",
                             {
-                                "message": format_turn_error(e),
-                                "i18n_key": "stream.turn_failed",
-                                "params": {"error": format_turn_error(e)},
+                                **turn_error_fields(e),
                             },
                         )
                     finally:

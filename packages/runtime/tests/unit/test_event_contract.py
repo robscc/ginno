@@ -65,13 +65,33 @@ def test_stream_i18n_keys_exist_in_web_catalogs():
 
 @pytest.mark.skipif(not _MESSAGES_DIR.exists(), reason="web checkout not present")
 def test_web_stream_catalog_key_parity_en_zh():
-    en = _load_catalog("en", "stream")["stream"]
-    zh = _load_catalog("zh-CN", "stream")["stream"]
+    def _flatten(cat: dict, prefix: str = "") -> dict[str, str]:
+        flat: dict[str, str] = {}
+        for k, v in cat.items():
+            key = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                flat.update(_flatten(v, key))
+            else:
+                flat[key] = v
+        return flat
+
+    en = _flatten(_load_catalog("en", "stream")["stream"])
+    zh = _flatten(_load_catalog("zh-CN", "stream")["stream"])
     assert set(en) == set(zh)
     # ICU placeholder parity ({name} same names both sides)
     ph = re.compile(r"\{([a-z_]+)\}")
     for key, entext in en.items():
         assert sorted(ph.findall(entext)) == sorted(ph.findall(zh[key])), key
+
+
+@pytest.mark.skipif(not _MESSAGES_DIR.exists(), reason="web checkout not present")
+def test_turn_failed_note_keys_exist_in_web_catalogs():
+    """turn_error_fields builds its key dynamically (suffix per failure
+    class), so the literal scan in test_stream_i18n_keys_exist_in_web_catalogs
+    can't see it — pin the suffix set against the catalogs explicitly."""
+    for locale_dir in ("en", "zh-CN"):
+        cat = _load_catalog(locale_dir, "stream")["stream"]["turn_failed_note"]
+        assert set(cat) == {"recursion_limit", "empty_input", "state", "node_timeout"}
 
 
 @pytest.mark.skipif(not _MESSAGES_DIR.exists(), reason="web checkout not present")

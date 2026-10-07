@@ -10,6 +10,12 @@
     "no_turn_running": "当前没有正在运行的回合，请重新发送",
     "plan_confirm_failed": "确认拆分方案失败；请重试或重新拆分",
     "turn_failed": "回合失败：{error}",
-    "auto_retry": "模型连接异常（{error}），{seconds} 秒后自动重试（{attempt}/{max}）…"
+    "auto_retry": "模型连接异常（{error}），{seconds} 秒后自动重试（{attempt}/{max}）…",
+    "turn_failed_note": {
+      "recursion_limit": "回合失败：{error}\n本回合到达了 Ginno 的步数上限（recursion_limit={limit}）。\n调高方法：编辑 ~/.ginno/settings.json，把 \"runtime\" 下的 runtime.recursion_limit 改为 256。\n下一回合即生效，无需重启。",
+      "empty_input": "回合失败：{error}\n本回合没有可恢复的状态——首次模型调用未完成（常见于应用重启后或首次调用失败）。\n点错误卡上的重试即可，它会重新执行原始输入。",
+      "state": "回合失败：{error}\n某一步撞上了不一致的回合状态——通常是旧版本写入的 checkpoint，或崩溃时写了一半的残留。\n先重试一次；若复现，重启应用；仍复现则新建会话（堆栈见 ~/.ginno/logs/sidecar.log）。",
+      "node_timeout": "回合失败：{error}\n某一步超出了时间预算——通常是 provider 或工具调用慢，不是 Ginno 的问题。\n直接重试；若复现，检查 provider 状态（堆栈见 ~/.ginno/logs/sidecar.log）。"
+    }
   }
 }
