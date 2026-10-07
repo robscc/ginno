@@ -186,7 +186,7 @@ export function ContextFoldersChip({ session }: { session: SessionMeta | null })
               <button
                 onClick={() => {
                   setOpen(false);
-                  router.push("/settings/folders");
+                  router.push("/settings/knowledge/folders");
                 }}
                 className="mt-1.5 flex items-center gap-1 text-[11px] text-faint hover:text-txt"
               >

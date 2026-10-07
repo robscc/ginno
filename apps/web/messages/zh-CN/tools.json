@@ -16,6 +16,14 @@
   "settings": {
     "nav": {
       "title": "设置",
+      "groups": {
+        "connections": "模型与连接",
+        "agents": "智能体",
+        "knowledge": "知识与上下文",
+        "security": "权限与钩子",
+        "data": "用量与数据",
+        "general": "通用"
+      },
       "groupSecurity": "安全",
       "groupSystem": "系统",
       "items": {

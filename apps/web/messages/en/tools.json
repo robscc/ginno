@@ -16,6 +16,14 @@
   "settings": {
     "nav": {
       "title": "Settings",
+      "groups": {
+        "connections": "Models & Connections",
+        "agents": "Agents",
+        "knowledge": "Knowledge & Context",
+        "security": "Permissions & Hooks",
+        "data": "Usage & Data",
+        "general": "General"
+      },
       "groupSecurity": "Security",
       "groupSystem": "System",
       "items": {

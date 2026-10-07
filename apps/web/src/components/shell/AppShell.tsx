@@ -874,7 +874,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           {g.sessionError && (
             <button
-              onClick={() => router.push("/settings/model-api")}
+              onClick={() => router.push("/settings/connections/model-api")}
               title={t("session.errorHint")}
               className="mx-1 mb-3 block rounded-md border border-yellow/40 bg-yellow/10 px-2 py-1.5 text-left text-[11px] leading-snug text-yellow hover:bg-yellow/15"
             >
@@ -912,7 +912,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <WorkflowIcon className="h-4 w-4 shrink-0" />
             <span className="truncate">{t("nav.workflows")}</span>
           </Link>
-          <Link href="/settings/model-api" className={`nav-item ${onSettings ? "nav-item-active" : ""}`}>
+          <Link href="/settings/connections/model-api" className={`nav-item ${onSettings ? "nav-item-active" : ""}`}>
             <SettingsIcon className="h-4 w-4 shrink-0" />
             <span className="truncate">{t("nav.settings")}</span>
           </Link>
