@@ -7,6 +7,7 @@ import { defaultTab, getGroup, isValidSub } from "./settingsGroups";
 import { ModelApiSettings } from "./ModelApiSettings";
 import { SkillsSettings } from "./SkillsSettings";
 import { McpSettings } from "./McpSettings";
+import { ModsSettings } from "./ModsSettings";
 import { AgentsSettings } from "./AgentsSettings";
 import { WorkflowsSettings } from "./WorkflowsSettings";
 import { GeneralSettings } from "./GeneralSettings";
@@ -30,6 +31,8 @@ function TabPanel({ tab }: { tab: string }) {
       return <ModelApiSettings />;
     case "mcp":
       return <McpSettings />;
+    case "mods":
+      return <ModsSettings />;
     case "web":
       return <WebSearchSettings />;
     case "external-agents":

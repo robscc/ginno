@@ -22,6 +22,7 @@ export type SettingsGroupId =
 export type SettingsTabKey =
   | "modelApi"
   | "mcp"
+  | "mods"
   | "webSearch"
   | "externalAgents"
   | "agents"
@@ -53,6 +54,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     tabs: [
       { id: "model-api", label: "modelApi" },
       { id: "mcp", label: "mcp" },
+      { id: "mods", label: "mods" },
       { id: "web", label: "webSearch" },
       { id: "external-agents", label: "externalAgents" },
     ],
@@ -128,6 +130,7 @@ export const LEGACY_REDIRECT: Record<string, string> = {
   mcp: "/settings/connections/mcp",
   web: "/settings/connections/web",
   "external-agents": "/settings/connections/external-agents",
+  mods: "/settings/connections/mods",
   skills: "/settings/agents/skills",
   workflows: "/settings/agents/workflows",
   folders: "/settings/knowledge/folders",

@@ -1,0 +1,29 @@
+[package]
+name = "ginno-mod-broker"
+version = "0.1.0"
+edition = "2021"
+description = "Ginno Claude Code Mods compatibility bus: chain orchestration, op table, surfaces, runner supervision"
+license = "MIT"
+
+# Standalone crate: deliberately NOT a member of any workspace. It is built by
+# `make mod-broker`, linked into the Tauri app as a path dependency, and run
+# standalone as the `ginno-mod-broker` CLI in dev/web mode.
+
+[lib]
+name = "ginno_mod_broker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ginno-mod-broker"
+path = "src/bin/ginno-mod-broker.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: mod load order follows the order of the config's `mods` map.
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+libc = "0.2"
+
+[dev-dependencies]

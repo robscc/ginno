@@ -44,7 +44,8 @@
         "notifications": "Notifications",
         "floating": "Floating Window",
         "toolLabels": "Tool Labels",
-        "externalAgents": "External Agents"
+        "externalAgents": "External Agents",
+        "mods": "Mods"
       }
     },
     "view": {
@@ -651,6 +652,39 @@
       "modeAuto": "Model decides (default read-only)",
       "modeEdit": "Always edit",
       "modeReadOnly": "Always read-only"
+    },
+    "mods": {
+      "title": "Mods",
+      "intro": "Claude Code-compatible mod extensions: each mod runs in its own sandboxed Node process, capabilities gated by grants.",
+      "refresh": "Refresh",
+      "runtime": "Runtime",
+      "broker": "Mod broker",
+      "brokerVersion": "v{version}",
+      "brokerUnavailable": "Not connected — broker binary missing or not started",
+      "nodePath": "Node:",
+      "notDiscovered": "not discovered",
+      "dirHint": "Mods are loaded from ~/.ginno/mods/ (drop a mod repo there to install).",
+      "list": "Installed mods",
+      "loading": "Loading…",
+      "noMods": "No mods installed. Clone a mod repository into ~/.ginno/mods/ to load it.",
+      "enable": "Enable",
+      "status.loaded": "Loaded",
+      "status.error": "Error",
+      "status.disabled": "Disabled",
+      "status.restarting": "Restarting",
+      "status.unknown": "Unknown",
+      "source.global": "Global",
+      "source.project": "Project",
+      "dirLabel": "Directory",
+      "editConfig": "Edit config",
+      "configHint": "JSON · saved to mods.<name>.config, merged over the mod's defaults",
+      "saveConfig": "Save config",
+      "configSaved": "Config saved",
+      "configInvalid": "Invalid JSON: {msg}",
+      "validate": "Validate",
+      "validateReport": "Validation report — {name}",
+      "validateFailed": "Validation failed (runtime unreachable?)",
+      "actionFailed": "Operation failed"
     }
   }
 }

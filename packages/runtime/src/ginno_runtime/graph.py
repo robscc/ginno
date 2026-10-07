@@ -1103,6 +1103,34 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                             },
                         )
 
+            # 1.5) Mods tool.call (claude-code-mods-design.md §5.3): same
+            # position as the classic PreToolUse hooks — still BEFORE the
+            # permission policy. Observe + {deny} in P0; the deny renders with
+            # the same bubble shape as the hooks block. Async, but zero-cost
+            # (short-circuit inside) when no mod is connected.
+            try:
+                from .mods.events import dispatch_tool_call
+
+                _mod_deny = await dispatch_tool_call(
+                    str(((config or {}).get("configurable") or {}).get("thread_id") or ""),
+                    name,
+                    args,
+                )
+            except Exception:
+                _mod_deny = None
+            if _mod_deny:
+                return Command(
+                    goto="agent",
+                    update={
+                        "messages": [
+                            AIMessage(
+                                content=f"{BLOCK_PREFIX}{name}] mod denied: {_mod_deny}",
+                                additional_kwargs={"agent_id": aid} if aid else {},
+                            )
+                        ]
+                    },
+                )
+
             # 2) permission policy (skipped under bypass)
             if not bypass:
                 decision = policy.decide(name, repr(args))
