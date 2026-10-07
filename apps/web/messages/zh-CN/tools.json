@@ -668,11 +668,6 @@
       "loading": "加载中……",
       "noMods": "暂未安装 mod。把 mod 仓库 clone 到 ~/.ginno/mods/ 即可加载。",
       "enable": "启用",
-      "status.loaded": "已加载",
-      "status.error": "错误",
-      "status.disabled": "已停用",
-      "status.restarting": "重启中",
-      "status.unknown": "未知",
       "source.global": "全局",
       "source.project": "项目",
       "dirLabel": "目录",
@@ -684,7 +679,14 @@
       "validate": "验证",
       "validateReport": "验证报告——{name}",
       "validateFailed": "验证失败（runtime 不可达？）",
-      "actionFailed": "操作失败"
+      "actionFailed": "操作失败",
+      "status": {
+        "loaded": "已加载",
+        "error": "错误",
+        "disabled": "已停用",
+        "restarting": "重启中",
+        "unknown": "未知"
+      }
     }
   }
 }

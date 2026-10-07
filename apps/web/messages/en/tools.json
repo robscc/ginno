@@ -668,11 +668,6 @@
       "loading": "Loading…",
       "noMods": "No mods installed. Clone a mod repository into ~/.ginno/mods/ to load it.",
       "enable": "Enable",
-      "status.loaded": "Loaded",
-      "status.error": "Error",
-      "status.disabled": "Disabled",
-      "status.restarting": "Restarting",
-      "status.unknown": "Unknown",
       "source.global": "Global",
       "source.project": "Project",
       "dirLabel": "Directory",
@@ -684,7 +679,14 @@
       "validate": "Validate",
       "validateReport": "Validation report — {name}",
       "validateFailed": "Validation failed (runtime unreachable?)",
-      "actionFailed": "Operation failed"
+      "actionFailed": "Operation failed",
+      "status": {
+        "loaded": "Loaded",
+        "error": "Error",
+        "disabled": "Disabled",
+        "restarting": "Restarting",
+        "unknown": "Unknown"
+      }
     }
   }
 }

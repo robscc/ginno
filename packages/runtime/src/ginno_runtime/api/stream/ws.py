@@ -901,6 +901,26 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                 except Exception:
                     return  # socket died between recv and send
+            elif kind == "mod.ui.press":
+                # Mod band button (design §7.2): forward to the mods channel;
+                # the broker validates the generation against its current
+                # drawing and routes to the owning mod's runner. Disconnected
+                # → silent no-op (a press on a dead band is not an error).
+                _action_id = msg.get("actionId")
+                if isinstance(_action_id, str) and _action_id:
+                    from ...mods.channel import get_channel
+
+                    try:
+                        await get_channel().notify(
+                            "ui.press",
+                            {
+                                "generation": int(msg.get("generation") or 0),
+                                "actionId": _action_id,
+                            },
+                            session=session_id,
+                        )
+                    except Exception as e:  # noqa: BLE001 — mods are additive
+                        _log.debug("mod.ui.press dropped session=%s: %s", session_id, e)
             elif kind == "ping":
                 try:
                     await ws.send_text(_ev("pong", {}))

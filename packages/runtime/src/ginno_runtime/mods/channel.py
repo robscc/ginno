@@ -478,6 +478,21 @@ class ModChannel:
             raise OpError(str(reply.get("code") or "error"), str(reply.get("message") or ""))
         return reply.get("value")
 
+    async def notify(self, method: str, args: dict, *, session: str | None = None) -> None:
+        """Fire-and-forget notify to the broker (``ui.press`` — the broker
+        validates the generation and routes to the owning mod's runner). No-op
+        when disconnected: a press on a dead band must never surface as a turn
+        error."""
+        if not self.is_connected:
+            return
+        await self._send({
+            "v": PROTOCOL_VERSION,
+            "kind": "notify",
+            "method": method,
+            **({"session": session} if session else {}),
+            "args": args,
+        })
+
     # ---- event dispatch (design §5.3) -----------------------------------------
 
     async def dispatch_event(self, session_id: str, event: str, payload: dict, deadline_ms: int = 10_000) -> dict:
