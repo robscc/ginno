@@ -23,7 +23,7 @@ import {
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { PRIORITY_HEX, categoryStyle } from "@/lib/theme";
-import { Icon } from "@/components/icons";
+import { AgentIcon, Icon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { ArtifactMetaCard, ICON, KIND_LABEL, type Rect } from "./ArtifactsPanel";
 import type { Artifact, Priority, SessionMeta, Todo, TodoProvider, TodoSyncEntry } from "@/lib/types";
@@ -383,7 +383,7 @@ function TodoDetail({
             title={t("jumpSession")}
             className="group flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 hover:bg-card"
           >
-            <Icon name={s.icon || "message-square"} className="h-3.5 w-3.5 shrink-0 text-muted" />
+            <AgentIcon name={s.icon} className="h-3.5 w-3.5 shrink-0 text-muted" />
             <span className="min-w-0 flex-1 truncate text-xs text-txt">
               {s.title || t("untitledSession")}
             </span>

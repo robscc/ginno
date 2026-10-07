@@ -164,8 +164,10 @@ def _default_title(agent_id: str | None) -> str:
 
 
 def _agent_icon(agent_id: str | None) -> str:
+    """新会话的图标 = agent 的图标；agent 未配置 icon（空串）时留空，由前端
+    渲染为品牌鸭兜底（icons.tsx AgentIcon）。agent 不存在同样留空。"""
     a = _agent_lookup(agent_id)
-    return a.icon if a else "message-square"
+    return a.icon if a else ""
 
 
 # ---- Goal continuation driver (goal-design.md §4.3.3) ---------------------

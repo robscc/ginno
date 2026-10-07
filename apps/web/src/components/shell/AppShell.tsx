@@ -26,7 +26,7 @@ import { setKeepAwake } from "@/lib/desktop";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { relTime } from "@/lib/utils";
-import { Icon } from "@/components/icons";
+import { AgentIcon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { applyTheme } from "@/components/settings/GeneralSettings";
 import { TopBar } from "@/components/shell/TopBar";
@@ -519,9 +519,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const hex = agentHex(rowAgent?.color);
     const editing = editingId === s.id;
     const isSub = s.type === "subagent";
-    const subTypeName = isSub
-      ? String((s.subagent as { agent_type?: unknown } | undefined)?.agent_type ?? "").trim()
-      : "";
     const subStatus = s.subagent?.status;
     const subMeta = subStatus ? SUBAGENT_STATUS_META[subStatus] : null;
     const subActive = subStatus === "running" || subStatus === "waiting";
@@ -590,6 +587,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 }}
                 className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
               >
+                {/* 会话行归属：行首图标即 agent 图标（按 agent 色着色），取代原先的
+                    agent 名文字标签 —— 归属一眼可见、不占标题宽度。子会话行例外：
+                    persona 是继承父会话的（永远是 Dev Agent），标它没有信息量——
+                    子会话行仍用状态 emoji + SubagentKindBadges 表达身份。 */}
                 {isSub && subMeta ? (
                   // 子会话行：状态 emoji 取代会话图标（subagent-design.md §6.1）
                   <span
@@ -599,11 +600,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     {subMeta.glyph}
                   </span>
                 ) : (
-                  <Icon
-                    name={s.icon || "message-square"}
-                    className="h-4 w-4 shrink-0"
-                    style={{ color: hex }}
-                  />
+                  // 归属由行首图标表达：agent 配置了 icon 就显示它（按 agent 色
+                  // 着色），未配置（或 agent 已删除）统一回退到品牌鸭。
+                  <span className="shrink-0" style={{ color: hex }} title={rowAgent?.name}>
+                    <AgentIcon name={rowAgent?.icon} className="h-4 w-4" />
+                  </span>
                 )}
                 <span className="truncate">{s.title || t("session.untitled")}</span>
                 {/* fork / 子代理类型徽标（P3 范围 3）：仅子会话行渲染 */}
@@ -614,25 +615,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     ⚡
                   </span>
                 )}
-                {/* C+ 方案③：会话行 agent 名小标签（agent 已删除时不渲染）。
-                    子会话例外：persona 是继承父会话的（永远是 Dev Agent），用它
-                    标注没有信息量——改显示子代理类型（与主对话卡片、子会话顶栏
-                    一致）；没有类型才退回 persona 名。 */}
-                {isSub && subTypeName ? (
-                  <span
-                    className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet"
-                    title={t("session.subagentType", { type: subTypeName })}
-                  >
-                    {subTypeName}
-                  </span>
-                ) : rowAgent ? (
-                  <span
-                    className="shrink-0 rounded-full border px-1.5 text-[10px] leading-4"
-                    style={{ borderColor: hex + "44", background: hex + "14", color: hex }}
-                  >
-                    {rowAgent.name}
-                  </span>
-                ) : null}
                 {/* 子树还有更深的后代：行尾 +N 尾标（设计 §6.1） */}
                 {hasKids && descendantCount(s.id) > childRows.length && (
                   <span

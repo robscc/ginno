@@ -65,6 +65,21 @@ function PiMark(props: LucideProps) {
   );
 }
 
+// Ginno 品牌鸭的 16px 单色字形（Material Design Icons 的 duck，单路径填充，
+// fill=currentColor → 可用 style.color 染色）。用作未配置 icon 的 agent 的兜底
+// 图标，和 apps/web/public/icon.png 的卡通鸭同一形象语言。
+function Duck(props: LucideProps) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" {...props}>
+      <title>Ginno</title>
+      <path
+        fill="currentColor"
+        d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"
+      />
+    </svg>
+  );
+}
+
 const MAP: Record<string, React.ComponentType<LucideProps>> = {
   terminal: Terminal,
   search: Search,
@@ -93,7 +108,14 @@ const MAP: Record<string, React.ComponentType<LucideProps>> = {
   "claude-code": ClaudeCodeMark,
   codex: CodexMark,
   pi: PiMark,
+  duck: Duck,
 };
+
+/** Agent 图标：未配置（空串 / 未知名）时回退到品牌鸭 Duck。 */
+export function AgentIcon({ name, ...rest }: { name?: string | null } & LucideProps) {
+  const Cmp = MAP[name ?? ""] ?? Duck;
+  return <Cmp {...rest} />;
+}
 
 export function Icon({
   name,

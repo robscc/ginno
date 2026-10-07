@@ -151,6 +151,8 @@
       "providerLabel": "提供商",
       "modelLabel": "模型",
       "iconLabel": "图标",
+      "iconDefault": "默认（Ginno 鸭）",
+      "iconNote": "留空即用 Ginno 鸭，并按本 Agent 的颜色着色。",
       "colorLabel": "颜色",
       "takeEffectNote": "名称 / 系统提示词 / 工具白名单 / 连接器保存后立即对所有会话的下一轮生效。",
       "removeTitle": "移除",

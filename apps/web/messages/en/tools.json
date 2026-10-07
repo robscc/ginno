@@ -151,6 +151,8 @@
       "providerLabel": "provider",
       "modelLabel": "model",
       "iconLabel": "icon",
+      "iconDefault": "default (Ginno duck)",
+      "iconNote": "Leave empty to use the Ginno duck, tinted with this agent's colour.",
       "colorLabel": "color",
       "takeEffectNote": "Name / System prompt / tool allowlist / connectors take effect for the next turn of all sessions right after saving.",
       "removeTitle": "Remove",

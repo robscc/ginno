@@ -6,7 +6,7 @@ import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ConnectorInfo } from "@/lib/runtime";
 import { AGENT_HEX, agentHex } from "@/lib/theme";
-import { Icon } from "@/components/icons";
+import { AgentIcon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import type { AgentConfig } from "@/lib/types";
 
@@ -29,6 +29,7 @@ const AGENT_ICONS = [
   "list",
   "clock",
   "eye",
+  "duck",
 ];
 
 // Real tool names / prefixes from the runtime (tools/*.py), for suggestions.
@@ -265,9 +266,9 @@ export function AgentsSettings() {
             cur.provider && !enabledProviders.has(cur.provider)
               ? t("providerWarn", { provider: cur.provider, default: g.defaultProvider || "custom" })
               : "";
-          const iconOptions = AGENT_ICONS.includes(cur.icon)
-            ? AGENT_ICONS
-            : [cur.icon, ...AGENT_ICONS];
+          const iconOptions = cur.icon && !AGENT_ICONS.includes(cur.icon)
+            ? [cur.icon, ...AGENT_ICONS]
+            : AGENT_ICONS;
           return (
             <div key={a.id} className="rounded-xl border border-line bg-card p-3">
               <div className="flex items-center gap-2">
@@ -275,7 +276,7 @@ export function AgentsSettings() {
                   className="flex h-6 w-6 items-center justify-center rounded-md"
                   style={{ background: hex + "22", color: hex }}
                 >
-                  <Icon name={cur.icon} className="h-3.5 w-3.5" />
+                  <AgentIcon name={cur.icon} className="h-3.5 w-3.5" />
                 </span>
                 <span className="font-medium text-txt">{cur.name}</span>
                 <span className="text-xs text-faint">@{a.id}</span>
@@ -402,12 +403,14 @@ export function AgentsSettings() {
                     value={cur.icon}
                     onChange={(e) => set(a.id, "icon", e.target.value)}
                   >
+                    <option value="">{t("iconDefault")}</option>
                     {iconOptions.map((i) => (
                       <option key={i} value={i}>
                         {i}
                       </option>
                     ))}
                   </select>
+                  <div className="mt-0.5 text-[11px] text-faint">{t("iconNote")}</div>
                 </div>
               </div>
               {providerWarn && (

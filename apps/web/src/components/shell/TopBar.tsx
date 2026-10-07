@@ -7,7 +7,7 @@ import * as api from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import type { AgentConfig, SessionMeta, SessionUsage } from "@/lib/types";
 import { agentHex } from "@/lib/theme";
-import { Icon } from "@/components/icons";
+import { AgentIcon } from "@/components/icons";
 import { GoalChip } from "./GoalChip";
 import { ContextFoldersChip } from "./ContextFoldersChip";
 
@@ -71,7 +71,7 @@ export function TopBar({
         {agent && (
           <span className="pill border border-line2 bg-card text-txt">
             <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" style={{ color: hex }}>
-              <Icon name={agent.icon} className="h-3.5 w-3.5" />
+              <AgentIcon name={agent.icon} className="h-3.5 w-3.5" />
             </span>
             {agent.name}
           </span>

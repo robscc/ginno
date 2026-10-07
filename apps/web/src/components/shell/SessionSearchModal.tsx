@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import { relTime } from "@/lib/utils";
 import { agentHex } from "@/lib/theme";
-import { Icon } from "@/components/icons";
+import { AgentIcon } from "@/components/icons";
 import type { SessionMeta } from "@/lib/types";
 
 /** ⌘K session search: title ∪ agent-name substring filter over sessions
@@ -105,22 +105,12 @@ export function SessionSearchModal({
                 i === active ? "bg-card2 text-txt" : "text-muted"
               }`}
             >
-              <Icon
-                name={s.icon || "message-square"}
+              <AgentIcon
+                name={rowAgent?.icon}
                 className="h-4 w-4 shrink-0"
                 style={{ color: hex }}
               />
               <span className="min-w-0 flex-1 truncate">{s.title || tr("session.untitled")}</span>
-              {/* C+ 方案⑤：agent dot + name 小标签（agent 已删除时不渲染） */}
-              {rowAgent && (
-                <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 text-[10px] leading-4"
-                  style={{ borderColor: hex + "44", background: hex + "14", color: hex }}
-                >
-                  <span className="h-1 w-1 rounded-full" style={{ background: hex }} />
-                  {rowAgent.name}
-                </span>
-              )}
               <span className="shrink-0 text-[11px] text-faint">{relTime(s.updated ?? s.created)}</span>
             </button>
             );

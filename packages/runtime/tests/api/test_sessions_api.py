@@ -285,3 +285,21 @@ def test_pin_session_persists_and_unpins(client, patch_build_model):
     r = client.patch(f"/api/sessions/{sid}", json={"pinned": False}).json()
     assert r["session"]["pinned"] is False
     assert disk()[sid]["pinned"] is False
+
+
+def test_session_icon_follows_agent_icon_empty_falls_back(client, patch_build_model):
+    """会话行图标 = agent.icon；agent 未配置 icon（空串）时留空，
+    由前端渲染品牌鸭兜底（icons.tsx AgentIcon）。"""
+    patch_build_model(script(text="ok"))
+
+    # 已配置 icon 的 agent：会话继承该图标
+    data = _post_session(client, agent_id="dev").json()
+    assert data["icon"] == "terminal"
+    assert data["agent_id"] == "dev"
+
+    # 该 agent 未配置 icon：不再落 "message-square" 占位，而是空串
+    from ginno_runtime.agents import registry
+
+    registry.update_agent("dev", {"icon": ""})
+    blank = _post_session(client, agent_id="dev", title="blank").json()
+    assert blank["icon"] == ""

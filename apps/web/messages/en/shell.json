@@ -36,7 +36,6 @@
       "untitled": "Untitled",
       "quickBadge": "Quick Chat session (from the Floating Window)",
       "statusPrefix": "Status: {status}",
-      "subagentType": "Subagent type: {type}",
       "moreNested": "{count} more nested subtasks",
       "activeKids": "{count} subtasks/runs in progress",
       "collapse": "Collapse subtasks",
