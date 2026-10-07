@@ -574,12 +574,24 @@ class ModChannel:
                 if key in item:
                     base[key] = item[key]
             items[name] = base
+        node_path = resolve_node() or cfg.get("nodePath") or ""
+        runner_path = resolve_runner() or ""
+        # JS mods need both binaries; push an empty path and every runner
+        # spawn fails for the whole broker session (broker now fails fast,
+        # but the root cause should be visible here at hello time).
+        if not node_path:
+            log.warning("mods config: node not resolved — runner mods unavailable (need Node ≥22.18; set mods.nodePath)")
+        if not runner_path:
+            log.warning(
+                "mods config: runner bundle not resolved — runner mods unavailable "
+                "(build packages/mod-runner: pnpm build; or install dist/mod-runner.mjs to ~/.ginno/bin)"
+            )
         return {
             "enabled": bool(cfg.get("enabled", True)),
             "allowOverrideDenyRules": bool(cfg.get("allowOverrideDenyRules", False)),
             # Resolved binaries (settings nodePath already rode resolve_node).
-            "nodePath": resolve_node() or cfg.get("nodePath") or "",
-            "runnerPath": resolve_runner() or "",
+            "nodePath": node_path,
+            "runnerPath": runner_path,
             "mods": {"items": items},
             # Budget values the broker's BudgetClock enforces (§3.2); the
             # broker's key names, defaulting to the spec numbers.

@@ -147,6 +147,20 @@ impl RunnerConn {
 /// and wait for the handshake. Returns the connection on success.
 pub async fn spawn(broker: &Arc<Broker>, name: &str, dir: &str, gen: u64) -> Result<Arc<RunnerConn>, String> {
     let config = broker.config.read().unwrap().clone();
+    // An empty binary path spawns `node ""`, which idles silently and burns
+    // the whole handshake timeout with zero output (seen live: the runtime
+    // connected before its runner bundle was built and pushed runnerPath="").
+    // Fail fast with the actionable message instead.
+    if config.node_path.trim().is_empty() {
+        return Err(format!(
+            "runner {name}: node path is not configured (runtime pushed an empty nodePath; resolve Node ≥22.18 and restart the runtime)"
+        ));
+    }
+    if config.runner_path.trim().is_empty() {
+        return Err(format!(
+            "runner {name}: runner bundle path is not configured (runtime pushed an empty runnerPath; build packages/mod-runner (pnpm build) or install dist/mod-runner.mjs to ~/.ginno/bin)"
+        ));
+    }
     let log_path = config.logs_dir.join(format!("mod-{name}.log"));
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
