@@ -820,6 +820,17 @@ async fn grants_deny_unauthorized_calls() {
     assert_eq!(results[1]["code"], "denied", "env.get outside the grant");
     assert_eq!(results[2]["code"], "denied", "http.fetch without a grant");
     assert_eq!(results[3]["ok"], true, "PATH is in the env grant: {}", results[3]);
+    // Every denial points at the fix: grants on the Mods settings page (§8).
+    assert!(
+        results[0]["message"].as_str().unwrap().contains("Mods settings page"),
+        "{}",
+        results[0]["message"]
+    );
+    assert!(
+        results[2]["message"].as_str().unwrap().contains("Mods settings page"),
+        "{}",
+        results[2]["message"]
+    );
 }
 
 // Design §3.4: renders subscribe to the state slots they read; a write
@@ -878,17 +889,132 @@ async fn press_routes_to_the_runner_and_stale_generations_are_ignored() {
     env.runtime.notify("ui.press", json!({ "generation": 1, "actionId": "a:a0" }), Some("s1"));
     env.wait_trace("a", "a:press:a:a0").await;
 
+    // A pane Input/Select submission rides the press frame as `value`; the
+    // runner call carries it through (observable in the mock's trace).
+    env.runtime
+        .notify("ui.press", json!({ "generation": 1, "actionId": "a:a0", "value": "cm" }), Some("s1"));
+    env.wait_trace("a", r#"a:press:a:a0:"cm""#).await;
+
     // A stale-generation press is ignored with a report.
     env.runtime.notify("ui.press", json!({ "generation": 0, "actionId": "a:a0" }), Some("s1"));
     let line = env.runtime.wait_report_containing("band press ignored", Duration::from_secs(10)).await;
     assert!(line.contains("generation 0"), "unexpected report: {line}");
 }
 
+// Design §7.1 per-mod bands: each mod with a `ui.render` hook draws its own
+// segment — one mod's tree never blanks another's, presses validate against
+// the owning mod's generation, and the payload keeps the first non-empty
+// tree as the legacy `tree` field.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_mod_draws_its_own_band_segment() {
+    needs_node!();
+    let env = Env::new("per-mod").await;
+    env.scenario("a", json!({ "hooks": [{ "event": "ui.render", "behavior": "render_button" }] }));
+    env.scenario("b", json!({ "hooks": [{ "event": "ui.render", "behavior": "render_button" }] }));
+    let items = json!({ "a": env.spec("a", json!({})), "b": env.spec("b", json!({})) });
+    let _ready = env.hello_with(items, default_budgets()).await;
+
+    let _ = env.runtime.raise("session.start", Some("s1"), json!({})).await;
+    let drawn = env.runtime.wait_notify("bands.update", Duration::from_secs(30)).await;
+    let mods = drawn["args"]["mods"].as_array().expect("a per-mod mods array");
+    assert_eq!(mods.len(), 2, "both mods draw: {drawn}");
+    assert_eq!(mods[0]["mod"], "a");
+    assert_eq!(mods[1]["mod"], "b");
+    assert_eq!(mods[0]["generation"], 1);
+    assert_eq!(mods[1]["generation"], 1);
+    assert!(mods[0]["tree"].to_string().contains("a:a0"), "got {drawn}");
+    assert!(mods[1]["tree"].to_string().contains("b:a0"), "got {drawn}");
+    // Legacy fields mirror the first non-empty mod (a, in load order).
+    assert_eq!(drawn["args"]["generation"], 1);
+    assert!(drawn["args"]["tree"].to_string().contains("a:a0"), "got {drawn}");
+
+    // A press names its mod by the action id prefix; b's own generation 1 is
+    // valid even though a's tree came first.
+    env.runtime.notify("ui.press", json!({ "generation": 1, "actionId": "b:a0" }), Some("s1"));
+    env.wait_trace("b", "b:press:b:a0").await;
+
+    // A generation from the other mod's drawing does not validate for a.
+    env.runtime.notify("ui.press", json!({ "generation": 99, "actionId": "a:a0" }), Some("s1"));
+    let line = env.runtime.wait_report_containing("band press ignored", Duration::from_secs(10)).await;
+    assert!(line.contains("a:a0"), "unexpected report: {line}");
+}
+
+// Design §7.4 panes, Rust side: `$.ui.open` records the pane and reports
+// `isPlaced`, the next render pass draws it through the owner's chain and
+// pushes `mod.pane.update`, `$.ui.close`/`session.end` push `mod.pane.close`
+// and clear it, and the 4-panes-per-session cap holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn panes_open_render_close_and_clear_on_session_end() {
+    needs_node!();
+    let env = Env::new("panes").await;
+    env.scenario(
+        "p",
+        json!({ "hooks": [
+            { "event": "ui.render", "behavior": "render_button" },
+            { "event": "turn.complete", "behavior": "calls_collect", "calls": [
+                ["ui", "open", { "id": "w1", "title": "Weather" }],
+                ["ui", "open", { "id": "w2", "title": "Two" }],
+                ["ui", "open", { "id": "w3", "title": "Three" }],
+                ["ui", "open", { "id": "w4", "title": "Four" }],
+                ["ui", "open", { "id": "w5", "title": "Five" }],
+            ] },
+            { "event": "session.end", "behavior": "calls_collect", "calls": [
+                ["ui", "close", { "id": "w1" }],
+            ] },
+        ] }),
+    );
+    let items = json!({ "p": env.spec("p", json!({})) });
+    let _ready = env.hello_with(items, default_budgets()).await;
+
+    // Four panes open; the fifth is refused by the cap. Each open reports
+    // isPlaced and reaches Python as `mod.pane.open`.
+    let settled = env.runtime.raise("turn.complete", Some("s1"), json!({ "turnId": 1 })).await;
+    let results = settled.as_array().expect("collect results");
+    assert_eq!(results[0]["value"]["isPlaced"], true, "{settled}");
+    assert_eq!(results[0]["value"]["id"], "w1");
+    assert_eq!(results[4]["ok"], false, "the fifth pane is over the cap: {settled}");
+    assert!(results[4]["message"].as_str().unwrap().contains("at most 4 panes"));
+    for id in ["w1", "w2", "w3", "w4"] {
+        let opened = env.runtime.wait_notify("mod.pane.open", Duration::from_secs(30)).await;
+        assert_eq!(opened["args"]["id"], id, "got {opened}");
+        assert_eq!(opened["mod_name"], "p");
+    }
+
+    // The render pass draws each pane through the owner's ui.render chain.
+    for id in ["w1", "w2", "w3", "w4"] {
+        let updated = env.runtime.wait_notify("mod.pane.update", Duration::from_secs(30)).await;
+        assert_eq!(updated["args"]["id"], id, "got {updated}");
+        assert_eq!(updated["args"]["generation"], 1);
+        assert!(updated["args"]["tree"].to_string().contains("p:a0"), "got {updated}");
+        assert_eq!(updated["mod_name"], "p");
+    }
+
+    // ui.panes lists them, oldest first.
+    // (Checked from the broker side below via session.end's close order.)
+    let _ = env
+        .runtime
+        .raise("session.end", Some("s1"), json!({}))
+        .await;
+    // session.end first runs the mod's own close of w1, then clears the rest.
+    // The session.end chain settles, then forget_session closes every pane.
+    let mut closed = Vec::new();
+    for _ in 0..4 {
+        let frame = env.runtime.wait_notify("mod.pane.close", Duration::from_secs(30)).await;
+        closed.push(frame["args"]["id"].as_str().unwrap().to_string());
+    }
+    closed.sort();
+    assert_eq!(closed, vec!["w1", "w2", "w3", "w4"], "every open pane closes");
+
+    // The band table is gone too: a further draw would re-open, so a fresh
+    // session's pane cap starts clean.
+    let panes = env.broker.surfaces_panes("s1");
+    assert!(panes.is_empty(), "session.end cleared the pane table");
+}
+
 // Design §15.2 v2 addition: a runner crash fails its own hook; the chain
 // continues.
 #[tokio::test(flavor = "multi_thread")]
-async fn runner_crash_fails_its_hook_and_the_chain_continues() {
-    needs_node!();
+async fn runner_crash_fails_its_hook_and_the_chain_continues() {    needs_node!();
     let env = Env::new("crash").await;
     env.scenario("doomed", json!({ "hooks": [{ "event": "tool.call", "behavior": "crash" }] }));
     env.scenario("b", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "ran": "b" } }] }));

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
-import { Puzzle, RefreshCw, Save, ShieldCheck } from "lucide-react";
+import { Activity, Puzzle, RefreshCw, Save, ShieldCheck } from "lucide-react";
 
 // Claude Code Mods 设置页(claude-code-mods-design.md §7.5):mod 列表
 // (名称/版本/状态/来源)、启停、配置 JSON 编辑、验证报告、运行时状态。
@@ -14,6 +14,78 @@ const STATUS_CLASSES: Record<string, string> = {
   disabled: "text-faint",
   restarting: "text-yellow",
 };
+
+// ---- 兼容度(design §7.5 持续项)------------------------------------------------
+// 数字 + 简单条形:绿 = 成功份额,红 = 失败份额。事件区是「注册 × 实际触发 ×
+// 执行失败」;$ 区只统计经 Python 后端的 op(Rust 直服务的调用不过 channel),
+// 未实现 $ 调用单独一行警告。
+
+function CompatBar({ ok, bad }: { ok: number; bad: number }) {
+  const total = ok + bad;
+  if (total === 0) return <span className="h-1.5 w-16 rounded-full bg-line/60" />;
+  return (
+    <span className="inline-flex h-1.5 w-16 overflow-hidden rounded-full bg-line/60">
+      <span className="bg-green" style={{ width: `${(ok / total) * 100}%` }} />
+      {bad > 0 && <span className="bg-red" style={{ width: `${(bad / total) * 100}%` }} />}
+    </span>
+  );
+}
+
+function ModCompatView({ compat, tr }: { compat: api.ModCompat; tr: (key: string, values?: Record<string, string | number>) => string }) {
+  const events = Object.entries(compat.events ?? {});
+  const ops = Object.entries(compat.ops ?? {});
+  const unimplemented = Object.entries(compat.unimplemented ?? {});
+  if (events.length === 0 && ops.length === 0 && unimplemented.length === 0) {
+    return <div className="text-xs text-faint">{tr("compatEmpty")}</div>;
+  }
+  return (
+    <div className="space-y-2.5 text-xs">
+      {events.length > 0 && (
+        <div>
+          <div className="mb-1 font-medium text-muted">{tr("compat.events")}</div>
+          <div className="space-y-1">
+            {events.map(([event, s]) => (
+              <div key={event} className="flex items-center gap-2">
+                <span className="w-40 truncate font-mono text-txt" title={event}>{event}</span>
+                <CompatBar ok={Math.max(0, (s.fired ?? 0) - (s.failed ?? 0))} bad={s.failed ?? 0} />
+                <span className="text-faint">
+                  {tr("compat.fired", { n: s.fired ?? 0 })}
+                  {(s.failed ?? 0) > 0 && <span className="text-red"> · {tr("compat.failed", { n: s.failed ?? 0 })}</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {ops.length > 0 && (
+        <div>
+          <div className="mb-1 font-medium text-muted">{tr("compat.ops")}</div>
+          <div className="space-y-1">
+            {ops.map(([op, s]) => (
+              <div key={op} className="flex items-center gap-2">
+                <span className="w-40 truncate font-mono text-txt" title={op}>{op}</span>
+                <CompatBar ok={s.ok ?? 0} bad={Math.max(0, (s.called ?? 0) - (s.ok ?? 0))} />
+                <span className="text-faint">{tr("compat.called", { n: s.called ?? 0, ok: s.ok ?? 0 })}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {unimplemented.length > 0 && (
+        <div>
+          <div className="mb-1 font-medium text-yellow">{tr("compat.unimplemented")}</div>
+          <div className="flex flex-wrap gap-1">
+            {unimplemented.map(([op, n]) => (
+              <span key={op} className="rounded bg-yellow/10 px-1.5 py-px font-mono text-[10px] text-yellow">
+                {op}{n > 1 ? ` ×${n}` : ""}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function ModsSettings() {
   const t = useTranslations("settings.mods");
@@ -31,6 +103,8 @@ export function ModsSettings() {
   const [editName, setEditName] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [report, setReport] = useState<{ name: string; text: string } | null>(null);
+  // 兼容度展开的 mod 名(一次一个)
+  const [compatOpen, setCompatOpen] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -243,7 +317,19 @@ export function ModsSettings() {
                       <ShieldCheck className="h-3 w-3" />
                       {t("validate")}
                     </button>
+                    <button
+                      onClick={() => setCompatOpen(compatOpen === m.name ? null : m.name)}
+                      className="flex items-center gap-1 text-xs text-muted hover:text-txt"
+                    >
+                      <Activity className="h-3 w-3" />
+                      {tr("compat")}
+                    </button>
                   </div>
+                  {compatOpen === m.name && m.compat && (
+                    <div className="mt-2 rounded-md border border-line2 bg-base/40 p-2.5">
+                      <ModCompatView compat={m.compat} tr={tr} />
+                    </div>
+                  )}
                   {editName === m.name && (
                     <div className="mt-2">
                       <textarea

@@ -63,11 +63,33 @@ broker (Rust) ──stdio 换行 JSON──> runner --mod <dir>
 - **兼容注意**:源码无 TS 参数属性(`constructor(private …)`),dev 模式可直接
   `node src/index.ts --mod <dir>`(type stripping 不支持参数属性)。
 
+## `--test`:最小测试套件
+
+```bash
+node dist/mod-runner.mjs --test <modDir>    # 或 dev 模式:node src/index.ts --test <modDir>
+```
+
+对单个 mod 跑一遍兼容度冒烟:走**与生产完全相同的装载路径**(`runRunner`,mock broker
+为进程内两条 PassThrough 流),然后给每个注册 hook 派发一条合成事件(payload 形状 =
+`mods/events.py` 的 §5.3/§15.7 形状),`$` 调用一律回良性值(`{}`;`clock.after/every`
+回 `{timer}`,`state.get` 回 `{value:null}`),`ui.render` 画出的树里每个 Button 都会
+被真实 press 一次。stdout 输出人类可读报告:
+
+- hooks:每条注册 hook 的执行结果(`✓` 跑通 / `✗` 抛错,含 code+message;press 失败
+  以 `ui.press{<actionId>}` 行紧跟其 `ui.render` 之后);
+- `$ ops exercised`:mod 实际调用过的 op 与次数;
+- warning:`$` 调用中本 host 未实现的成员(`no implementation for ns.member`),以及
+  注册了但本 host 从不 raise 的事件(这些 hook 永不执行)。
+
+**退出码**:`0` = 全部 hook 跑通;`1` = 装载/注册失败,或任一 hook(或 press 回调)
+抛错/超时未答;`2` = 用法错误(缺 `<modDir>`)。未实现 `$` 调用与未 raise 事件是
+**警告,不影响退出码**——mod 可以故意在特性开关后面调用 `$.model.complete`。
+
 ## 构建 / 测试
 
 ```bash
 pnpm --filter @ginno/mod-runner build      # esbuild → dist/mod-runner.mjs(单文件零依赖,署名头经 @license 保留)
-pnpm --filter @ginno/mod-runner test       # vitest:58 用例(协议级 chain / matcher / elements / module / api / loader / clock)
+pnpm --filter @ginno/mod-runner test       # vitest:70 用例(协议级 chain / matcher / elements / module / api / loader / clock / --test 套件)
 pnpm --filter @ginno/mod-runner typecheck  # tsc --noEmit
 ```
 

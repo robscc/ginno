@@ -42,7 +42,9 @@
       "collapseTitle": "Collapse panel (⌘\\ / Ctrl+\\)",
       "waitingTitle": "{n} runs waiting for your input",
       "runningTitle": "{n} runs running/paused",
-      "failedTitle": "{n} failed runs, click to view"
+      "failedTitle": "{n} failed runs, click to view",
+      "modPaneTitle": "Mods panes",
+      "modPaneClose": "Close pane"
     },
     "badges": {
       "newFiles": "{n} new files",

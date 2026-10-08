@@ -1,9 +1,12 @@
 """Python-backed ``$`` ops for the mods bus (claude-code-mods-design.md §5.4).
 
-The broker forwards ``$.session.*`` calls here as ``call`` frames; P0 ships
-the read family only (id/cwd/root/model/version/turns/usage/messages) —
-anything else answers ``no-implementation`` so a mod sees an explicit named
-failure instead of silence (规范 §"未实现成员是命名 reject").
+The broker forwards ``$.session.*`` calls here as ``call`` frames; the served
+families are the session read family (id/cwd/root/model/version/turns/usage/
+messages), the command registry (P1), and the P2 model ops (model.complete /
+model.classify, usage-accounted under source="mods") plus the agent registry
+(agent.register/list). Anything else answers ``no-implementation`` so a mod
+sees an explicit named failure instead of silence (规范 §"未实现成员是命名
+reject").
 
 Facts come from the live session registry (server_shared._SESSIONS), the
 on-disk session meta, the usage ledger, and a checkpointer history rebuild.
@@ -19,6 +22,11 @@ log = logging.getLogger("ginno.mods")
 # session.messages cap (design §5.4): the last 4096 entries suffice for any
 # mod view; full history stays available through the transcript UI.
 _MESSAGES_LIMIT = 4096
+
+# model.* op cap (design §5.4 P2): a mod may never request more than 64k
+# output tokens per call, whatever its args say.
+_MODEL_MAX_TOKENS_CAP = 64_000
+_MODEL_MAX_TOKENS_DEFAULT = 4_096
 
 
 class OpError(Exception):
@@ -243,14 +251,218 @@ _COMMAND_OPS = {
 }
 
 
+# ---- the op table (ns="model", design §5.4 P2) ----------------------------------
+
+
+def _build_model(args: dict) -> tuple[Any, str, str]:
+    """Resolve the model a model.* op runs on (the existing providers build
+    path). ``args.model`` (a bare model name) rides build_model_by_name's
+    ladder; otherwise the default provider's configured model. Returns
+    (chat model, provider id, resolved model name) — the latter two only
+    feed the usage ledger's attribution columns."""
+    from .. import models as models_mod
+    from .. import providers as prov_mod
+
+    name = str(args.get("model") or "").strip()
+    if name:
+        model = models_mod.build_model_by_name(name)
+        # Attribution best-effort: find the config that build_model_by_name
+        # would have picked (same ladder, cheap re-scan over an in-memory dict).
+        pid = ""
+        all_prov = prov_mod.load_providers()
+        for pid_c, cfg_c in all_prov.items():
+            if not cfg_c.get("enabled"):
+                continue
+            known = set(cfg_c.get("models") or [])
+            for key in ("default_model", "model"):
+                if cfg_c.get(key):
+                    known.add(cfg_c[key])
+            if name in known or pid_c == name:
+                pid = pid_c
+                break
+        return model, pid or str(prov_mod.get_default_provider() or ""), name
+    pid = str(prov_mod.get_default_provider() or "")
+    all_prov = prov_mod.load_providers()
+    cfg = all_prov.get(pid) or {}
+    resolved = (
+        prov_mod.model_for_provider(all_prov, pid)
+        or prov_mod.model_for_config(cfg)
+        or ""
+    )
+    return models_mod.build_model(pid), pid, str(resolved)
+
+
+def _clamp_max_tokens(args: dict) -> int | None:
+    """``args.maxTokens`` clamped into [1, 64000]; None when unset/garbage."""
+    raw = args.get("maxTokens")
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return min(n, _MODEL_MAX_TOKENS_CAP)
+
+
+async def _invoke_model(messages: list, args: dict, session_id: str, op: str) -> Any:
+    """Build + run one model call with usage accounting (source="mods").
+    Raises OpError on any provider failure — the channel turns that into the
+    op error frame (§6.1), never a crash."""
+    try:
+        model, pid, model_name = _build_model(args)
+    except Exception as e:  # noqa: BLE001 — unknown/disabled provider, missing key
+        raise OpError("provider-unavailable", f"{type(e).__name__}: {e}") from None
+    max_tokens = _clamp_max_tokens(args)
+    # bind() keeps the per-call cap out of the provider-config defaults; a
+    # provider that rejects the bound kwarg must not kill the op.
+    if max_tokens is not None:
+        try:
+            model = model.bind(max_tokens=max_tokens)
+        except Exception:  # noqa: BLE001 — fall back to the configured default
+            pass
+    from .. import usage as usage_mod
+    from .. import usage_store
+
+    try:
+        resp = await model.ainvoke(messages)
+    except Exception as e:  # noqa: BLE001 — record the failure, then surface it
+        usage_store.record(
+            input_tokens=0, output_tokens=0,
+            provider=pid, model=model_name, source="mods",
+            session_id=session_id or None, ok=False,
+            error=f"{type(e).__name__}: {e}"[:300],
+        )
+        raise OpError("provider-error", f"{type(e).__name__}: {e}") from None
+    u = usage_mod.extract_usage(resp) or {}
+    usage_store.record(
+        input_tokens=u.get("input_tokens") or 0,
+        output_tokens=u.get("output_tokens") or 0,
+        cache_read_tokens=u.get("cache_read_tokens") or 0,
+        cache_creation_tokens=u.get("cache_creation_tokens") or 0,
+        provider=pid, model=model_name, source="mods",
+        session_id=session_id or None,
+    )
+    return resp
+
+
+async def _op_model_complete(args: dict, session_id: str) -> dict:
+    """``$.model.complete {prompt, system?, maxTokens?, model?}`` → ``{text}``."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    prompt = str(args.get("prompt") or "")
+    if not prompt.strip():
+        raise OpError("invalid-argument", "model.complete requires a non-empty prompt")
+    messages: list = []
+    system = str(args.get("system") or "").strip()
+    if system:
+        messages.append(SystemMessage(content=system))
+    messages.append(HumanMessage(content=prompt))
+    resp = await _invoke_model(messages, args, session_id, "complete")
+    return {"text": _text_of(resp)}
+
+
+async def _op_model_classify(args: dict, session_id: str) -> dict:
+    """``$.model.classify {input, labels, model?}`` → ``{label}``.
+
+    complete + a constrained-output parse: the model is told to answer with
+    exactly one label; the reply is matched case-insensitively (whole reply,
+    then first line, then containment). No match → a named OpError, never a
+    silently wrong label."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    text = str(args.get("input") or "")
+    labels = [str(x).strip() for x in (args.get("labels") or []) if str(x).strip()]
+    if not text.strip():
+        raise OpError("invalid-argument", "model.classify requires a non-empty input")
+    if not labels:
+        raise OpError("invalid-argument", "model.classify requires at least one label")
+    system = (
+        "You are a strict classifier. Answer with EXACTLY one of the allowed "
+        "labels and nothing else — no quotes, no punctuation, no explanation."
+    )
+    prompt = (
+        f"Allowed labels: {', '.join(labels)}\n"
+        f"Input:\n{text}\n\n"
+        "Answer with exactly one allowed label."
+    )
+    resp = await _invoke_model(
+        [SystemMessage(content=system), HumanMessage(content=prompt)], args, session_id, "classify"
+    )
+    reply = _text_of(resp).strip()
+    first_line = reply.splitlines()[0].strip().strip("\"'.,;:!?") if reply else ""
+    lowered = reply.lower()
+    for cand in (reply, first_line):
+        for label in labels:
+            if cand.lower() == label.lower():
+                return {"label": label}
+    for label in labels:  # containment fallback: chatty reply naming a label
+        if label.lower() in lowered:
+            return {"label": label}
+    raise OpError(
+        "no-label",
+        f"model reply did not contain any allowed label ({', '.join(labels)}): {reply[:120]!r}",
+    )
+
+
+_MODEL_OPS = {
+    "complete": _op_model_complete,
+    "classify": _op_model_classify,
+}
+
+
+# ---- the op table (ns="agent", design §5.4 P2) ----------------------------------
+
+
+async def _op_agent_register(args: dict, session_id: str, mod: str) -> list[dict]:
+    """``$.agent.register {name, description}`` → the (updated) registry.
+    Declarative metadata only; spawning is gated by the agent.spawn EVENT,
+    not by these entries (agents/mod_registry.py)."""
+    from ..agents import mod_registry
+
+    try:
+        entry = mod_registry.register(
+            name=str(args.get("name") or ""),
+            mod=mod,
+            description=str(args.get("description") or ""),
+        )
+    except ValueError as e:
+        raise OpError("invalid-argument", str(e)) from None
+    log.info("mods agent.register name=%s mod=%s", entry["name"], entry["mod"])
+    return mod_registry.list_agents()
+
+
+async def _op_agent_list(args: dict, session_id: str, mod: str) -> list[dict]:
+    from ..agents import mod_registry
+
+    return mod_registry.list_agents()
+
+
+_AGENT_OPS = {
+    "register": _op_agent_register,
+    "list": _op_agent_list,
+}
+
+
 async def handle(ns: str, method: str, args: dict, session_id: str, mod: str = "") -> Any:
     """Entry the ModChannel's call server routes to. Scope: the session read
-    family plus the command registry (P1, design §5.4) — everything else
-    answers no-implementation."""
+    family, the command registry (P1), the model ops and the agent registry
+    (P2, design §5.4) — everything else answers no-implementation."""
     if ns == "command":
         op = _COMMAND_OPS.get(method)
         if op is None:
             raise OpError("no-implementation", f"no implementation for command.{method}")
+        return await op(args if isinstance(args, dict) else {}, session_id, mod)
+    if ns == "model":
+        op = _MODEL_OPS.get(method)
+        if op is None:
+            raise OpError("no-implementation", f"no implementation for model.{method}")
+        return await op(args if isinstance(args, dict) else {}, session_id)
+    if ns == "agent":
+        op = _AGENT_OPS.get(method)
+        if op is None:
+            raise OpError("no-implementation", f"no implementation for agent.{method}")
         return await op(args if isinstance(args, dict) else {}, session_id, mod)
     if ns != "session":
         raise OpError("no-implementation", f"no implementation for {ns}.{method}")

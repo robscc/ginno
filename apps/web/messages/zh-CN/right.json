@@ -42,7 +42,9 @@
       "collapseTitle": "收起面板（⌘\\ / Ctrl+\\）",
       "waitingTitle": "{n} 个运行等待你的输入",
       "runningTitle": "{n} 个运行正在执行或已暂停",
-      "failedTitle": "{n} 个运行失败，点击查看"
+      "failedTitle": "{n} 个运行失败，点击查看",
+      "modPaneTitle": "Mods panes",
+      "modPaneClose": "关闭 pane"
     },
     "badges": {
       "newFiles": "{n} 个新文件",

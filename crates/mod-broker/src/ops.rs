@@ -56,7 +56,11 @@ pub async fn invoke_op(
     depth: usize,
 ) -> Result<Value, RpcError> {
     if let Some(reason) = broker.grants_for(caller).check(op, &args) {
-        return Err(RpcError::new(CODE_DENIED, reason));
+        // Point at the fix: grants live in settings, on the Mods page (§8).
+        return Err(RpcError::new(
+            CODE_DENIED,
+            format!("{reason} (grants for a mod are configured on the Mods settings page)"),
+        ));
     }
     if depth > MAX_OP_DEPTH {
         return Err(RpcError::new(CODE_ERROR, format!("{op}: mods call depth exceeded")));
@@ -133,7 +137,7 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         "state.get" => {
             let slot = state_slot(&input)?;
             let key = ctx.session.clone().unwrap_or_default();
-            broker.surfaces_state_read(&key, &slot);
+            broker.surfaces_state_read(&key, &slot, caller);
             // DSH's opCore shape: the mod destructures `{ value }` from the
             // answer. Cross-process, a missing (or null-stored) slot arrives
             // as `{value: null}` — the runner's `$` shim turns that into
@@ -277,7 +281,7 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
             Ok(std::env::var(name).map(Value::String).unwrap_or(Value::Null))
         }
 
-        // ---- ui: toasts and friends go to Python; panes are never placed ----
+        // ---- ui: toasts and friends go to Python ----
         "ui.log" | "ui.toast" | "ui.status" | "ui.notice" | "ui.copy" => {
             let method = if op == "ui.toast" { "mod.toast" } else { "mod.ui" };
             let mut args = input.clone();
@@ -287,18 +291,45 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
             broker.runtime_notify(method, ctx.session.clone(), Some(caller.to_string()), args);
             Ok(Value::Null)
         }
-        "ui.invalidate" | "ui.close" | "ui.open" => {
+
+        // ---- panes (design §7.4): the SurfaceTable records the open pane,
+        // the runtime relays `mod.pane.open`, and the next render pass draws
+        // it through the owning mod's `ui.render` chain ----
+        "ui.open" => {
+            let id = need_string(&input, "id", "$.ui.open id")?.to_string();
+            let title = input.get("title").and_then(Value::as_str).unwrap_or_default().to_string();
+            let session = ctx.session.clone().unwrap_or_default();
+            broker.surfaces_pane_open(&session, caller, &id, &title).map_err(|e| RpcError::new(CODE_ERROR, e))?;
+            broker.runtime_notify(
+                "mod.pane.open",
+                ctx.session.clone(),
+                Some(caller.to_string()),
+                json!({ "id": id, "title": title }),
+            );
+            let broker2 = broker.clone();
+            tokio::spawn(async move { broker2.surfaces_refresh(&session).await });
+            Ok(json!({ "id": id, "isPlaced": true }))
+        }
+        "ui.close" => {
+            let id = need_string(&input, "id", "$.ui.close id")?;
+            let session = ctx.session.clone().unwrap_or_default();
+            if let Some(owner) = broker.surfaces_pane_close(&session, id) {
+                broker.runtime_notify("mod.pane.close", ctx.session.clone(), Some(owner), json!({ "id": id }));
+            }
+            let broker2 = broker.clone();
+            tokio::spawn(async move { broker2.surfaces_refresh(&session).await });
+            Ok(Value::Null)
+        }
+        "ui.invalidate" => {
             let session = ctx.session.clone().unwrap_or_default();
             let broker2 = broker.clone();
             tokio::spawn(async move { broker2.surfaces_refresh(&session).await });
-            if op == "ui.open" {
-                let id = need_string(&input, "id", "$.ui.open id")?;
-                Ok(json!({ "id": id, "isPlaced": false, "reason": "this host places no panes; draw in AbovePrompt" }))
-            } else {
-                Ok(Value::Null)
-            }
+            Ok(Value::Null)
         }
-        "ui.panes" => Ok(json!([])),
+        "ui.panes" => {
+            let session = ctx.session.clone().unwrap_or_default();
+            Ok(json!(broker.surfaces_panes(&session)))
+        }
 
         // ---- ui.ask: a question parked here until Python answers it (§7.3) ----
         "ui.ask" => op_ui_ask(ctx, caller, input).await,

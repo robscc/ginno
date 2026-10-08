@@ -360,6 +360,12 @@ export class HookRuntime {
     const id = typeof frame.id === 'number' ? frame.id : -1
     const args = record_get(frame, 'args')
     const actionId = record_get(args, 'actionId')
+    // Pane elements (Input/Select) submit the user's value through the press
+    // frame: `value` present → onPress(value); a plain Button's frame has no
+    // value and its callback keeps its zero-arg shape.
+    const argsRecord = args !== null && typeof args === 'object' ? (args as Record<string, unknown>) : {}
+    const hasValue = 'value' in argsRecord
+    const value = argsRecord['value']
     const session = typeof frame.session === 'string' ? frame.session : ''
     const callback = typeof actionId === 'string' ? this.pressCallbacks.get(`${session}\u0000${actionId}`) : undefined
     if (callback === undefined) {
@@ -368,7 +374,8 @@ export class HookRuntime {
     }
     // The callback's `$` calls ride this session (see ambientSession).
     this.ambientSession = session || undefined
-    Promise.resolve().then(callback).then(
+    const run = hasValue ? () => (callback as (v: unknown) => unknown)(value) : callback
+    Promise.resolve().then(run).then(
       value => {
         this.ambientSession = undefined
         this.options.connection.respond(id, true, { value: value === undefined ? null : value })

@@ -1,21 +1,26 @@
 "use client";
 
 /**
- * Claude Code Mods band 树渲染器(claude-code-mods-design.md §7.1)。
+ * Claude Code Mods band/pane 树渲染器(claude-code-mods-design.md §7.1/§7.4)。
  *
  * broker 的 SurfaceTable 把 mod 的 ui.render 结果序列化成 JSON 树
- * (SerializedNode),经 Python WS 以 `mod.bands {generation, tree}` 帧推到前端。
- * 这里递归把它落成 DOM:Box→div、Text→span、Button→禁用样式的按钮(press 回发)。
+ * (SerializedNode),经 Python WS 以 `mod.bands {generation, tree}` /
+ * `mod.pane.update {id, generation, tree}` 帧推到前端。这里递归把它落成 DOM:
+ * Box→div、Text→span、Button/Input/Select→可交互元素(press 回发)、
+ * Markdown/Code→只读文本。
  *
  * 序列化树是不可信数据(mod 产出):渲染全程白名单取 props,未知类型只画占位
  * `∅`,字符串子节点超长截断——绝不让 mod 的 props 直接决定任意样式。
  */
 
+import { useState } from "react";
+import { Markdown } from "@/components/chat/Markdown";
+
 export interface SerializedNode {
   type: string;
   props?: Record<string, unknown>;
   children?: (SerializedNode | string)[];
-  /** Button 专有:broker 分配的动作 id,press 帧回传。 */
+  /** Button/Input/Select 专有:broker 分配的动作 id,press 帧回传。 */
   actionId?: string;
 }
 
@@ -101,7 +106,8 @@ function ModNodeView({
   onPress,
 }: {
   node: SerializedNode | string;
-  onPress: (actionId: string) => void;
+  /** value 仅 Input 提交 / Select 选中时携带(broker 侧转交 runner 的回调)。 */
+  onPress: (actionId: string, value?: string) => void;
 }) {
   if (typeof node === "string") return <span className="whitespace-pre-wrap">{truncate(node)}</span>;
   const props = (node.props ?? {}) as Record<string, unknown>;
@@ -157,10 +163,126 @@ function ModNodeView({
         </button>
       );
     }
+    case "Input":
+      return <ModInputNode node={node} props={props} onPress={onPress} />;
+    case "Select":
+      return <ModSelectNode node={node} props={props} onPress={onPress} />;
+    case "Markdown": {
+      // 子节点就是 markdown 源文本;复用 chat 的渲染器(白名单主题样式)。
+      const src = children.filter((c) => typeof c === "string").join("");
+      return (
+        <div className="min-w-0 text-sm text-txt">
+          <Markdown text={truncate(src)} />
+        </div>
+      );
+    }
+    case "Code": {
+      // 轻量呈现:不做语法高亮(Monaco 实例对一个 pane 片段太重),等宽
+      // pre + 横向滚动即可;超长截断同 Text。
+      const src = children.filter((c) => typeof c === "string").join("");
+      const lang = typeof props.language === "string" ? props.language : "";
+      return (
+        <pre className="max-h-64 overflow-auto rounded-md border border-line bg-base p-2 font-mono text-xs leading-relaxed text-txt">
+          {lang && <div className="mb-1 text-[10px] uppercase tracking-wide text-faint">{lang}</div>}
+          <code className="whitespace-pre">{truncate(src)}</code>
+        </pre>
+      );
+    }
     default:
       // 未知元素类型:占位,不猜测渲染。
       return <span className="font-mono text-faint" title={node.type}>∅</span>;
   }
+}
+
+/** Input(pane 专有,§7.4):文本框,提交(Enter / 按钮)即 press,输入值随帧回发。 */
+function ModInputNode({
+  node,
+  props,
+  onPress,
+}: {
+  node: SerializedNode;
+  props: Record<string, unknown>;
+  onPress: (actionId: string, value?: string) => void;
+}) {
+  const [text, setText] = useState(typeof props.value === "string" ? props.value : "");
+  const placeholder = typeof props.placeholder === "string" ? props.placeholder : "";
+  const submitLabel = typeof props.submitLabel === "string" ? props.submitLabel : "↵";
+  const multiline = bool(props.multiline);
+  const disabled = !node.actionId;
+  const submit = () => {
+    if (node.actionId) onPress(node.actionId, text);
+  };
+  return (
+    <div className="flex min-w-0 items-start gap-1.5">
+      {multiline ? (
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={placeholder}
+          rows={3}
+          className="min-w-0 flex-1 rounded-md border border-line bg-card px-2 py-1 text-xs text-txt placeholder:text-faint"
+        />
+      ) : (
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
+          }}
+          placeholder={placeholder}
+          className="min-w-0 flex-1 rounded-md border border-line bg-card px-2 py-1 text-xs text-txt placeholder:text-faint"
+        />
+      )}
+      <button
+        onClick={submit}
+        disabled={disabled}
+        className="shrink-0 rounded-md border border-line bg-card2/60 px-2 py-1 text-xs text-muted transition-colors hover:text-txt disabled:opacity-40"
+      >
+        {truncate(submitLabel)}
+      </button>
+    </div>
+  );
+}
+
+/** Select(pane 专有):下拉,选中即 press,选项值随帧回发。 */
+function ModSelectNode({
+  node,
+  props,
+  onPress,
+}: {
+  node: SerializedNode;
+  props: Record<string, unknown>;
+  onPress: (actionId: string, value?: string) => void;
+}) {
+  // options 白名单:string 或 {label, value};其余丢弃。
+  const options = (Array.isArray(props.options) ? props.options : [])
+    .map((o: unknown) =>
+      typeof o === "string"
+        ? { label: o, value: o }
+        : o && typeof o === "object"
+          ? {
+              label: String((o as { label?: unknown }).label ?? (o as { value?: unknown }).value ?? ""),
+              value: String((o as { value?: unknown }).value ?? ""),
+            }
+          : null,
+    )
+    .filter((o): o is { label: string; value: string } => o !== null && o.label !== "");
+  const disabled = !node.actionId || options.length === 0;
+  return (
+    <select
+      value={typeof props.value === "string" ? props.value : ""}
+      disabled={disabled}
+      onChange={(e) => node.actionId && onPress(node.actionId, e.target.value)}
+      className="min-w-0 rounded-md border border-line bg-card px-1.5 py-1 text-xs text-txt"
+    >
+      {(props.value === undefined || props.value === "") && <option value="">…</option>}
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {truncate(o.label)}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 export { ModNodeView };

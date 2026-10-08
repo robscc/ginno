@@ -223,11 +223,14 @@ async fn handle_runtime_frame(broker: &Arc<Broker>, conn: &Arc<RuntimeConn>, fra
             "ui.press" => {
                 let generation = args.get("generation").and_then(Value::as_u64).unwrap_or(0);
                 let action_id = args.get("actionId").and_then(Value::as_str).unwrap_or_default().to_string();
+                // Pane Input/Select submissions ride an optional `value`; a
+                // plain Button press (or an explicit null) omits it.
+                let value = args.get("value").cloned().filter(|v| !v.is_null());
                 let session = session.or_else(|| args.get("session").and_then(Value::as_str).map(str::to_string));
                 let Some(session) = session else { return };
                 let broker = broker.clone();
                 tokio::spawn(async move {
-                    broker.surfaces_press(&session, generation, &action_id).await;
+                    broker.surfaces_press(&session, generation, &action_id, value).await;
                 });
             }
             "mod.answer" => {

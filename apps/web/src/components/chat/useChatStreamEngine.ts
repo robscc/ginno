@@ -37,9 +37,10 @@ import {
   useEventI18nText,
   type Block,
 } from "@/components/chat/blocks";
-import type { ModBandSnapshot } from "@/components/chat/mod/modElements";
+import type { ModBandGroup } from "@/components/chat/mod/ModBand";
 import type { ModAskState } from "@/components/chat/mod/ModAskCard";
 import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToastHost";
+import { pushModPane, registerModPanePressSender, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type {
   ContextChange,
   Goal,
@@ -93,11 +94,12 @@ export interface EngineDeps {
     v: ProposeResult | null | ((p: ProposeResult | null) => ProposeResult | null),
   ) => void;
   // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):按 sid 存
-  // 的 band 快照,渲染归 ChatStream(composer 内),store 不参与。
+  // 的 band 分段数组(每 mod 一段,各有 generation),渲染归 ChatStream
+  // (composer 内),store 不参与。
   setModBands: (
     v:
-      | Record<string, ModBandSnapshot>
-      | ((p: Record<string, ModBandSnapshot>) => Record<string, ModBandSnapshot>),
+      | Record<string, ModBandGroup[]>
+      | ((p: Record<string, ModBandGroup[]>) => Record<string, ModBandGroup[]>),
   ) => void;
   // $.ui.ask(claude-code-mods-design.md §7.3):按 sid 存的待答问题(同一会话
   // 同时最多展示最新一条),渲染归 ChatStream 浮层 ModAskCard。
@@ -1633,12 +1635,32 @@ export function useChatStreamEngine(deps: EngineDeps) {
       // 归属守卫:frame_session 检查已在 socket onmessage 里统一做过,这里的
       // sid 即归属会话,无需再防串线。
       case "mod.bands": {
-        // 整树替换(generation 由 broker 递增,过期 press 由 broker 侧忽略)。
-        const tree = Array.isArray(ev.tree) ? (ev.tree as ModBandSnapshot["tree"]) : [];
-        setModBands((prev) => ({
-          ...prev,
-          [sid]: { generation: Number(ev.generation) || 0, tree, mod: typeof ev.mod === "string" ? ev.mod : undefined },
-        }));
+        // 整树替换(§7.1 per-mod:每 mod 一段,generation 按 mod 递增,过期
+        // press 由 broker 侧按 mod 校验忽略)。旧帧形状(单树 {generation,
+        // tree, mod})兜底成一段,树空则清空。
+        const groups: ModBandGroup[] = [];
+        if (Array.isArray(ev.mods)) {
+          for (const entry of ev.mods) {
+            if (!entry || typeof entry !== "object") continue;
+            const tree = Array.isArray(entry.tree) ? (entry.tree as ModBandGroup["tree"]) : [];
+            if (tree.length === 0) continue; // 空树 mod 不占位
+            groups.push({
+              mod: typeof entry.mod === "string" ? entry.mod : undefined,
+              generation: Number(entry.generation) || 0,
+              tree,
+            });
+          }
+        } else if (Array.isArray(ev.tree)) {
+          const tree = ev.tree as ModBandGroup["tree"];
+          if (tree.length > 0) {
+            groups.push({
+              mod: typeof ev.mod === "string" ? ev.mod : undefined,
+              generation: Number(ev.generation) || 0,
+              tree,
+            });
+          }
+        }
+        setModBands((prev) => ({ ...prev, [sid]: groups }));
         break;
       }
       case "mod.toast": {
@@ -1679,16 +1701,32 @@ export function useChatStreamEngine(deps: EngineDeps) {
         setModAsks((prev) => ({ ...prev, [sid]: ask }));
         break;
       }
+      // mod.pane.*(§7.4,P2):右栏 pane 区,经 paneBus 交给 ModPaneHost;
+      // 本分支只做转发,归属(会话切换移除)由宿主按 sid 自行守卫。
+      case "mod.pane.open":
+      case "mod.pane.update":
+      case "mod.pane.close": {
+        const kind = ev.event === "mod.pane.open" ? "open" : ev.event === "mod.pane.update" ? "update" : "close";
+        pushModPane(sid, kind, {
+          id: String(ev.id ?? ""),
+          title: typeof ev.title === "string" ? ev.title : String(ev.id ?? ""),
+          mod: typeof ev.mod === "string" ? ev.mod : undefined,
+          generation: Number(ev.generation) || 0,
+          tree: Array.isArray(ev.tree) ? (ev.tree as ModPaneSnapshot["tree"]) : [],
+        });
+        break;
+      }
     }
     syncDisplay(sid);
   }
   // Band 按钮 press 回发(§7.1):后端/broker 未就绪时静默——按钮是「禁用
   // 样式但可点」,发送失败不该打扰用户;过期代际由 broker 侧忽略。
-  function sendModUiPress(sid: string, generation: number, actionId: string) {
+  // value 仅 pane 的 Input/Select 提交携带(随帧多余字段,broker 按需取用)。
+  function sendModUiPress(sid: string, generation: number, actionId: string, value?: string) {
     const sock = socketsRef.current[sid];
     if (!sock || sock.readyState !== WebSocket.OPEN) return;
     try {
-      sock.send(JSON.stringify({ type: "mod.ui.press", generation, actionId }));
+      sock.send(JSON.stringify(value === undefined ? { type: "mod.ui.press", generation, actionId } : { type: "mod.ui.press", generation, actionId, value }));
     } catch {
       /* socket closing */
     }
@@ -2068,6 +2106,13 @@ export function useChatStreamEngine(deps: EngineDeps) {
     );
     syncDisplay(sid);
   }
+
+  // Pane 的 press 回发沿本 hook 的 session socket(§7.4):注册进 paneBus,
+  // 右栏 ModPaneHost 不需要自己的连接。挂载一次即可——sender 是稳定闭包,
+  // 经 socketsRef 间接取当前 socket。
+  useEffect(() => {
+    registerModPanePressSender((sid, generation, actionId, value) => sendModUiPress(sid, generation, actionId, value));
+  }, []);
 
   return {
     // refs

@@ -20,6 +20,12 @@ log = logging.getLogger("ginno.mods")
 DEFAULT_DEADLINE_MS = 10_000
 # session.end carries a 1.5s total budget (design §3.2 / §15.4).
 SESSION_END_DEADLINE_MS = 1_500
+# session.compact sits on the TURN path (checked before each turn's messages
+# land) — a 2s cap keeps a hung mod from delaying the turn it precedes.
+COMPACT_DEADLINE_MS = 2_000
+# agent.spawn is a one-off user/model action, not a per-turn tap; 5s leaves a
+# deliberating mod room without making a denied spawn feel hung.
+AGENT_SPAWN_DEADLINE_MS = 5_000
 
 
 async def _classic_dispatch(event_name: str, context: dict, matcher: str | None = None) -> list:
@@ -271,3 +277,53 @@ async def dispatch_command_run(session_id: str, command: str, args: str) -> str 
     result = await maybe_dispatch(session_id, "command.run", payload)
     reply = _settle(result, "reply")
     return reply if isinstance(reply, str) and reply.strip() else None
+
+
+async def dispatch_session_compact(
+    session_id: str, *, tokens: int, threshold: int, force: bool, messages: int
+) -> bool:
+    """session.compact (§5.3, P2): raised once compaction has actually been
+    decided (threshold/manual passed, split found) — not on every turn check.
+    A chain that answers ``{skip}`` (truthy, §6.1 settle convention) aborts
+    THIS compaction only; the next turn re-checks the threshold. Returns True
+    when skipped. Never raises (maybe_dispatch funnels the failure modes)."""
+    payload = {
+        "sessionId": session_id,
+        "estimatedTokens": max(0, int(tokens)),
+        "threshold": max(0, int(threshold)),
+        "reason": "manual" if force else "threshold",
+        "messages": max(0, int(messages)),
+    }
+    result = await maybe_dispatch(
+        session_id, "session.compact", payload, deadline_ms=COMPACT_DEADLINE_MS
+    )
+    skipped = bool(_settle(result, "skip"))
+    if skipped:
+        log.info("mods session.compact skip session=%s reason=%s", session_id, payload["reason"])
+    return skipped
+
+
+async def dispatch_agent_spawn(
+    session_id: str, agent: str, task: str, *, origin: str = "", depth: int = 0
+) -> dict | None:
+    """agent.spawn (§5.3): a subagent spawn is about to start. Returns
+    ``{"deny": reason, "mod": name}`` when the chain answered ``{deny}``
+    (DSH shapes normalize via :func:`_deny_reason`), else None (observe /
+    no mod / timeout → the spawn proceeds). P2 does NOT model-rewrite the
+    spawn — the answer's ``model`` key is ignored here by design."""
+    payload = {
+        "sessionId": session_id,
+        "agent": agent or "general",
+        "task": task or "",
+        "origin": origin or "",
+        "depth": max(0, int(depth)),
+    }
+    result = await maybe_dispatch(
+        session_id, "agent.spawn", payload, deadline_ms=AGENT_SPAWN_DEADLINE_MS
+    )
+    if not isinstance(result, dict):
+        return None
+    reason = _deny_reason(_settle(result, "deny"))
+    if not reason:
+        return None
+    return {"deny": reason, "mod": _mod_name(result)}

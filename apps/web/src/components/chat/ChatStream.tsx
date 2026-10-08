@@ -68,7 +68,7 @@ import { useSummarizeFlow } from "./useSummarizeFlow";
 import { SubagentPlanCard } from "./subagentPlanCard";
 import { ModBand } from "./mod/ModBand";
 import { ModAskCard, type ModAskState } from "./mod/ModAskCard";
-import type { ModBandSnapshot } from "./mod/modElements";
+import type { ModBandGroup } from "./mod/ModBand";
 
 export function ChatStream({
   session,
@@ -149,8 +149,9 @@ export function ChatStream({
     { decision: "allow" | "deny"; workflowId: string; fromVersion: number } | null
   >(null);
   // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):按 sid 存的
-  // band 快照,composer 上方渲染。会话内瞬态,本地 state 即可,不进全局 store。
-  const [modBands, setModBands] = useState<Record<string, ModBandSnapshot>>({});
+  // band 分段数组(每 mod 一段),composer 上方渲染。会话内瞬态,本地 state
+  // 即可,不进全局 store。
+  const [modBands, setModBands] = useState<Record<string, ModBandGroup[]>>({});
   // $.ui.ask(§7.3):按 sid 存的待答问题,浮层渲染(见文件尾部 ModAskCard)。
   const [modAsks, setModAsks] = useState<Record<string, ModAskState | null>>({});
 
@@ -1072,15 +1073,13 @@ export function ChatStream({
                 onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
               />
             )}
-            {session && (modBands[session.id]?.tree.length ?? 0) > 0 && (
+            {session && (modBands[session.id]?.some((g) => g.tree.length > 0) ?? false) && (
               // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):
-              // composerHint 之上、与 hint/steer 条同级。空树零渲染。
+              // composerHint 之上、与 hint/steer 条同级;每 mod 一段。空树零渲染。
               <div className="mb-2">
                 <ModBand
-                  snapshot={modBands[session.id]!}
-                  onPress={(actionId) =>
-                    sendModUiPress(session.id, modBands[session.id]!.generation, actionId)
-                  }
+                  groups={modBands[session.id]!}
+                  onPress={(actionId, generation) => sendModUiPress(session.id, generation, actionId)}
                 />
               </div>
             )}

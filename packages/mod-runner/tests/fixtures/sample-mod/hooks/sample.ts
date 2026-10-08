@@ -18,7 +18,7 @@ export function register(on, options) {
       flexDirection: 'column',
       children: [
         ui.Text({ color: 'cyan', children: `units=${String(options.units)}` }),
-        ui.Button({ label: 'Refresh', onPress: () => `pressed:${String(options.units)}` }),
+        ui.Button({ label: 'Refresh', onPress: value => `pressed:${String(options.units)}${value === undefined ? '' : `:${String(value)}`}` }),
       ],
     })
   })

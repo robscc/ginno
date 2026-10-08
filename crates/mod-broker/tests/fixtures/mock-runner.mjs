@@ -329,7 +329,9 @@ function handleCall(frame) {
     return
   }
   if (ns === 'ui' && method === 'press') {
-    trace(`${modName}:press:${args.actionId}`)
+    // A pane Input/Select press carries the user's value; keep it observable.
+    const value = 'value' in args ? `:${JSON.stringify(args.value)}` : ''
+    trace(`${modName}:press:${args.actionId}${value}`)
     replyResult(id, null)
     return
   }

@@ -1003,6 +1003,15 @@ export async function getExternalAgents(): Promise<
 
 // ---- mods(Claude Code Mods 兼容层,claude-code-mods-design.md §7.5)----
 // 后端由 runtime 侧并行实现;前端类型取宽容形状(字段缺失时设置页优雅降级)。
+/** Per-mod compatibility counters (channel.compat_summary, design §7.5
+ *  持续项): events × fired, the Python-backed op slice × ok, and the
+ *  unimplemented `$` mentions the runner reported. Empty until first hello. */
+export interface ModCompat {
+  events?: Record<string, { registered?: boolean; fired?: number; failed?: number }>;
+  ops?: Record<string, { called?: number; ok?: number }>;
+  unimplemented?: Record<string, number>;
+}
+
 export interface ModInfo {
   name: string;
   version?: string;
@@ -1016,6 +1025,8 @@ export interface ModInfo {
   config?: Record<string, unknown>;
   /** grants 白名单(JS mods: fs.read/http/process…;classic hooks: classic 三态) */
   grants?: Record<string, unknown>;
+  /** 兼容度计数(见 ModCompat);断连清零,新会话从空开始。 */
+  compat?: ModCompat;
 }
 
 export interface ModsStatus {

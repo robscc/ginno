@@ -59,9 +59,18 @@ def _merged_mod_list() -> list[dict]:
             "version": scanned["version"],
             "installed": True,
             "hasManifest": scanned["hasManifest"],
+            # "global" | "project" — which dir took effect for this name
+            # (project overrides global on a name clash, design §9/§11).
+            "scope": scanned.get("scope") or "global",
         }
     for name, item in items.items():
-        rows.setdefault(name, {"name": name, "version": "", "installed": False, "hasManifest": False})
+        rows.setdefault(name, {
+            "name": name,
+            "version": "",
+            "installed": False,
+            "hasManifest": False,
+            "scope": "global",
+        })
         rows[name].update({k: v for k, v in item.items() if k != "name"})
     for name, state in channel.mods_state.items():
         rows.setdefault(name, {"name": name, "version": "", "installed": False, "hasManifest": False})
@@ -73,6 +82,13 @@ def _merged_mod_list() -> list[dict]:
     for row in rows.values():
         row.setdefault("enabled", True)
         row.setdefault("status", None)
+    # Compatibility counters (design §7.5 持续项): events × fired, the
+    # Python-backed op slice × ok, and unimplemented `$` mentions the runner
+    # reported. Empty until the channel's first hello — the settings page
+    # re-fetches on mod.state.changed.
+    compat = channel.compat_summary()
+    for row in rows.values():
+        row["compat"] = compat.get(str(row["name"]), {})
     return sorted(rows.values(), key=lambda r: r["name"])
 
 

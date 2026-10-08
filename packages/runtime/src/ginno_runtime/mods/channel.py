@@ -26,6 +26,7 @@ import itertools
 import json
 import logging
 import os
+import re
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -56,11 +57,16 @@ _NOTIFY_TO_WS = {
     "status": "mod.ui.status",         # global ($ ui.status line; avoids the
     #                                      lifecycle ``mod.status`` collision)
     "mod.ask": "mod.ask",              # session-scoped ($.ui.ask, design §7.3)
+    # Panes (§7.4, P2): the broker raises one notify per surface change; the
+    # names already carry the mod.pane.* prefix, so they map 1:1 to WS.
+    "mod.pane.open": "mod.pane.open",      # session-scoped ($.ui.open)
+    "mod.pane.update": "mod.pane.update",  # session-scoped (redraw pass)
+    "mod.pane.close": "mod.pane.close",    # session-scoped ($.ui.close)
 }
 
 # Notify events that belong to ONE session (routed to that session's sockets
 # only); everything else in _NOTIFY_TO_WS fans out globally.
-_SESSION_SCOPED_WS = {"mod.bands", "mod.ask"}
+_SESSION_SCOPED_WS = {"mod.bands", "mod.ask", "mod.pane.open", "mod.pane.update", "mod.pane.close"}
 
 
 class ChannelNotConnected(RuntimeError):
@@ -69,6 +75,40 @@ class ChannelNotConnected(RuntimeError):
 
 class FrameError(ValueError):
     """A frame arrived malformed (bad JSON / not an object)."""
+
+
+def _hook_event_names(raw_hooks: Any) -> list[str]:
+    """Event names one mod registered, from the hello ready's ``hooks`` field —
+    the broker sends either the validate-style describe string
+    (``turn.start, tool.call{tool=/^Write/}``) or a list of ``{event, matcher}``."""
+    names: list[str] = []
+    if isinstance(raw_hooks, str):
+        for part in raw_hooks.split(","):
+            name = part.split("{", 1)[0].strip()
+            if name:
+                names.append(name)
+    elif isinstance(raw_hooks, list):
+        for h in raw_hooks:
+            if isinstance(h, dict) and h.get("event"):
+                names.append(str(h["event"]))
+    return names
+
+
+def _covers_event(hooks: list[str], event: str) -> bool:
+    """Whether one mod's registration list selects ``event`` (exact name, or a
+    ``*`` / ``<ns>.*`` glob, per createOn semantics)."""
+    if event in hooks or "*" in hooks:
+        return True
+    ns = event.split(".", 1)[0]
+    return f"{ns}.*" in hooks
+
+
+# mod.report lines the broker relays from a runner: a failed hook
+# ("mod: event hook skipped: ...") and fire-and-forget `$` failures, whose
+# messages carry the unimplemented-op mentions ("no implementation for ns.member").
+_REPORT_HOOK_FAIL_RE = re.compile(r"^(?P<mod>[A-Za-z0-9_-]{1,64}): (?P<event>[A-Za-z0-9_.:*]+) hook skipped: ")
+_REPORT_NOIMPL_RE = re.compile(r"no implementation for ([A-Za-z0-9_.]+)")
+_REPORT_MOD_RE = re.compile(r"^([A-Za-z0-9_-]{1,64}): ")
 
 
 # ---- frame codec (newline JSON, design §6.1) --------------------------------
@@ -125,6 +165,15 @@ class ModChannel:
         self._registered: set[str] | None = None
         # Broker-reported mod lifecycle states (name → {status, detail, ...}).
         self.mods_state: dict[str, dict] = {}
+
+        # Per-mod compatibility counters (design §7.5 持续项): events × fired,
+        # ops × ok (the Python-backed slice only — Rust-served ops never pass
+        # through here), and the runner's own failure reports. In-memory by
+        # design; a disconnect clears everything (the next hello rebuilds it).
+        # Shape: {mod: {"events": {event: {"registered", "fired", "failed"}},
+        #               "ops": {op: {"called", "ok"}},
+        #               "unimplemented": {op: count}}}
+        self.compat: dict[str, dict] = {}
 
         # Per-session serial dispatch (design §6.1): one queue + one drain
         # task per session; sessions run in parallel.
@@ -313,6 +362,9 @@ class ModChannel:
         self._writer = None
         self._registered = None
         self.mods_state.clear()
+        # Compat counters describe the live connection's behavior; a stale
+        # mod's numbers must not survive into the next session (断连清零).
+        self.compat = {}
         # Mod-registered slash commands live only as long as the connection:
         # a reloaded runner re-registers; a dead one must not leave ghosts
         # (commands/mod_commands.py — in-memory by design).
@@ -327,6 +379,7 @@ class ModChannel:
     def _absorb_ready(self, ready: Any) -> None:
         """Parse the hello result: mod lifecycle cache + registered events."""
         self.mods_state = {}
+        self.compat = {}
         events: set[str] = set()
         known = False
         if isinstance(ready, dict):
@@ -337,25 +390,22 @@ class ModChannel:
                     if not isinstance(m, dict):
                         continue
                     name = str(m.get("name") or "")
+                    raw_hooks = m.get("hooks")
+                    mod_events = _hook_event_names(raw_hooks)
                     if name:
                         self.mods_state[name] = {
                             "name": name,
                             "status": m.get("status") or "loaded",
+                            "hooks": mod_events,
                             **{k: v for k, v in m.items() if k not in ("name", "status", "hooks")},
                         }
-                    raw_hooks = m.get("hooks")
-                    if isinstance(raw_hooks, str):
-                        # The broker's ready carries the validate-style describe
-                        # string ("turn.start, tool.call{tool=/^Write/}") — split
-                        # on commas and drop the matcher braces.
-                        for part in raw_hooks.split(","):
-                            name = part.split("{", 1)[0].strip()
-                            if name:
-                                events.add(name)
-                    else:
-                        for h in raw_hooks or []:
-                            if isinstance(h, dict) and h.get("event"):
-                                events.add(str(h["event"]))
+                        self.compat[name] = {
+                            "events": {e: {"registered": True, "fired": 0, "failed": 0} for e in mod_events},
+                            "ops": {},
+                            "unimplemented": {},
+                        }
+                    for event in mod_events:
+                        events.add(event)
         # No mods list at all → unknown registry (always forward); an explicit
         # (possibly empty) list → exact short-circuit set.
         self._registered = events if known else None
@@ -363,6 +413,56 @@ class ModChannel:
     def _set_status(self, status: str, detail: str = "") -> None:
         self._status = status
         self._status_detail = detail
+
+    # ---- compatibility counters (design §7.5 持续项) ---------------------------
+
+    def _compat_slot(self, mod: str) -> dict:
+        return self.compat.setdefault(mod, {"events": {}, "ops": {}, "unimplemented": {}})
+
+    def _count_event_fired(self, event: str) -> None:
+        """One dispatch of ``event`` actually reached the broker: bump every mod
+        whose registration covers it."""
+        for name, entry in self.mods_state.items():
+            if _covers_event(entry.get("hooks") or [], event):
+                stats = self._compat_slot(name)["events"].setdefault(
+                    event, {"registered": False, "fired": 0, "failed": 0}
+                )
+                stats["fired"] += 1
+
+    def _count_op(self, mod: str, op: str, ok: bool) -> None:
+        """One Python-backed op call served for ``mod`` (the Rust-served slice
+        of `$` never passes through here — the report says so per op)."""
+        stats = self._compat_slot(mod)["ops"].setdefault(op, {"called": 0, "ok": 0})
+        stats["called"] += 1
+        if ok:
+            stats["ok"] += 1
+
+    def _count_report(self, line: str) -> None:
+        """A runner failure line relayed via ``mod.report``: hook failures land
+        on the event's counter; ``no implementation for ns.member`` mentions go
+        to the per-mod unimplemented map (settings-page warnings)."""
+        fail = _REPORT_HOOK_FAIL_RE.match(line)
+        if fail:
+            mod, event = fail.group("mod"), fail.group("event")
+            if mod in self.mods_state or mod in self.compat:
+                stats = self._compat_slot(mod)["events"].setdefault(
+                    event, {"registered": True, "fired": 0, "failed": 0}
+                )
+                stats["failed"] += 1
+        noimpl = _REPORT_NOIMPL_RE.search(line)
+        if noimpl:
+            mod_match = _REPORT_MOD_RE.match(line)
+            mod = mod_match.group(1) if mod_match else ""
+            if mod and (mod in self.mods_state or mod in self.compat):
+                ops_map = self._compat_slot(mod)["unimplemented"]
+                op = noimpl.group(1)
+                ops_map[op] = ops_map.get(op, 0) + 1
+
+    def compat_summary(self) -> dict[str, dict]:
+        """A JSON-safe deep copy of the counters for GET /api/mods rows."""
+        import copy
+
+        return copy.deepcopy(self.compat)
 
     # ---- reader loop ----------------------------------------------------------
 
@@ -399,6 +499,7 @@ class ModChannel:
         frame_id = frame.get("id")
         ns = str(frame.get("ns") or "")
         method = str(frame.get("method") or "")
+        mod = str(frame.get("mod") or "")
         try:
             value = await ops.handle(
                 ns, method, frame.get("args") or {}, str(frame.get("session") or ""),
@@ -417,6 +518,8 @@ class ModChannel:
                 "code": "internal",
                 "message": f"{type(e).__name__}: {e}",
             }
+        if mod:
+            self._count_op(mod, f"{ns}.{method}", reply["ok"] is True)
         try:
             await self._send(reply)
         except Exception:  # noqa: BLE001 — socket died mid-reply; reconnect handles it
@@ -427,6 +530,11 @@ class ModChannel:
         method = str(frame.get("method") or "")
         args = frame.get("args") or {}
         session = frame.get("session") or None
+        if method == "mod.report":
+            # Runner diagnostics relayed by the broker; feed the compat
+            # counters, never the WS layer.
+            self._count_report(str((args or {}).get("line") or ""))
+            return
         if method == "mod.status":
             # Lifecycle (loaded/error/disabled/restarting): refresh the cache
             # the API reads, then broadcast to every open settings page.
@@ -527,6 +635,7 @@ class ModChannel:
         """
         if not self.active_for(event):
             return payload
+        self._count_event_fired(event)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         queue = self._queues.get(session_id)
         if queue is None:
@@ -597,6 +706,10 @@ class ModChannel:
         # mod the user cloned without touching settings still gets a dir.
         # JS-shaped only: classic {"hooks":{...}} plugins ride the
         # HookDispatcher (§10) — spawning a runner for them crash-loops.
+        # Dir priority (design §9/§11): scan_installed_mods already resolves
+        # project-over-global per name (the row's path IS the winner's); an
+        # explicit settings item dir — a deliberate user pointing — outranks
+        # both below.
         items: dict[str, dict] = {}
         for m in scan_installed_mods():
             if m.get("shape") not in (None, "js"):

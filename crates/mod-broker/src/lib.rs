@@ -527,13 +527,28 @@ impl Broker {
         payload: Value,
         deadline_ms: Option<u64>,
     ) -> Result<Value, RpcError> {
+        self.raise_event_limited(event, session, invocation, payload, deadline_ms, None).await
+    }
+
+    /// [`Self::raise_event`] restricted to one mod's hooks: the SurfaceTable
+    /// renders each mod (and each pane) through its own chain, so one mod's
+    /// answer can never blank another's (design §7.1 band slots).
+    pub async fn raise_event_limited(
+        self: &Arc<Self>,
+        event: &str,
+        session: Option<String>,
+        invocation: Option<String>,
+        payload: Value,
+        deadline_ms: Option<u64>,
+        limit_mod: Option<String>,
+    ) -> Result<Value, RpcError> {
         let (tx, rx) = oneshot::channel();
         let lane = self.lane_for(session.as_deref().unwrap_or(""));
         let this = Arc::clone(self);
         let event = event.to_string();
         lane.send(Job {
             task: Box::pin(async move {
-                let result = this.do_raise(&event, session, invocation, payload, deadline_ms).await;
+                let result = this.do_raise(&event, session, invocation, payload, deadline_ms, limit_mod).await;
                 let _ = tx.send(result);
             }),
         })
@@ -564,6 +579,7 @@ impl Broker {
         invocation: Option<String>,
         mut payload: Value,
         deadline_ms: Option<u64>,
+        limit_mod: Option<String>,
     ) -> Result<Value, RpcError> {
         // Mods see Claude Code tool names (design §15.8).
         if event == "tool.call" {
@@ -580,7 +596,10 @@ impl Broker {
             budget.start();
             budget
         });
-        let hooks = self.registry.read().unwrap().select(event, None);
+        let mut hooks = self.registry.read().unwrap().select(event, None);
+        if let Some(limit) = &limit_mod {
+            hooks.retain(|hook| &hook.mod_name == limit);
+        }
         let ctx = Arc::new(ChainCtx {
             broker: Arc::clone(self),
             event: event.to_string(),

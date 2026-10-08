@@ -3,19 +3,31 @@
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { ModNodeView, type ModBandSnapshot } from "./modElements";
+import { ModNodeView, type SerializedNode } from "./modElements";
 
 /**
- * 单条 mod band 容器(claude-code-mods-design.md §7.1):composer 上方的 mod
- * 渲染区。mod 标签可选(快照带 mod 名才显示),主体递归渲染序列化树;
- * Button 的 press 经 onPress 回 ChatStream → engine 回发 `mod.ui.press` 帧。
+ * 一个 mod 的 band 分段(claude-code-mods-design.md §7.1):broker 的
+ * SurfaceTable 对每个注册了 ui.render hook 的 mod 各走一条链,各得一棵树、
+ * 各有各的 generation(press 校验也按 mod 走——actionId 自带 `<mod>:` 前缀)。
+ */
+export interface ModBandGroup {
+  /** 来源 mod 名(broker 的 mods 数组必带;旧单树帧可选)。 */
+  mod?: string;
+  generation: number;
+  tree: (SerializedNode | string)[];
+}
+
+/**
+ * mod band 容器(§7.1):composer 上方的 mod 渲染区。多 mod 各占一段,间距
+ * 分隔、mod 名做小标签;空树段不渲染。主体递归渲染序列化树;Button 的
+ * press 带着所属段的 generation 回 ChatStream → engine 回发 `mod.ui.press`。
  */
 export function ModBand({
-  snapshot,
+  groups,
   onPress,
 }: {
-  snapshot: ModBandSnapshot;
-  onPress: (actionId: string) => void;
+  groups: ModBandGroup[];
+  onPress: (actionId: string, generation: number) => void;
 }) {
   const t = useTranslations("chat.composer");
   const [collapsed, setCollapsed] = useState(false);
@@ -30,22 +42,33 @@ export function ModBand({
         >
           {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
         </button>
-        {snapshot.mod && (
-          <span className="rounded bg-line/60 px-1.5 py-px font-mono text-[10px] text-muted">
-            {snapshot.mod}
-          </span>
-        )}
-        <span className="text-[10px] text-faint">#{snapshot.generation}</span>
       </div>
       {!collapsed && (
         <div className="mt-1 text-xs text-txt">
-          {snapshot.tree.length === 0 ? (
-            <span className="text-faint">∅</span>
-          ) : (
-            snapshot.tree.map((node, i) => (
-              <ModNodeView key={i} node={node} onPress={onPress} />
-            ))
-          )}
+          {groups.map((group, gi) => (
+            <div
+              key={group.mod ?? gi}
+              className={gi > 0 ? "mt-2 border-t border-line/60 pt-2" : undefined}
+            >
+              {(group.mod || gi > 0) && (
+                <div className="mb-1 flex items-center gap-1.5">
+                  {group.mod && (
+                    <span className="rounded bg-line/60 px-1.5 py-px font-mono text-[10px] text-muted">
+                      {group.mod}
+                    </span>
+                  )}
+                  <span className="text-[10px] text-faint">#{group.generation}</span>
+                </div>
+              )}
+              {group.tree.length === 0 ? (
+                <span className="text-faint">∅</span>
+              ) : (
+                group.tree.map((node, i) => (
+                  <ModNodeView key={i} node={node} onPress={(actionId) => onPress(actionId, group.generation)} />
+                ))
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>

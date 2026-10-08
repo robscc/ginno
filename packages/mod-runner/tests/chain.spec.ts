@@ -211,6 +211,12 @@ describe('surfaces and presses', () => {
     const pressed = asResult(await broker.take(frame => frame.kind === 'result' && frame['id'] === 41))
     expect(pressed.ok).toBe(true)
     expect(pressed.value).toBe('pressed:metric')
+    // A pane Input/Select submission rides the press frame as `value`; the
+    // callback receives it as its first argument.
+    broker.send({ kind: 'call', id: 43, ns: 'ui', method: 'press', args: { actionId: 'sample-mod:a0', generation: 1, value: 'cm' }, session: 's-1', mod: 'sample-mod' })
+    const withValue = asResult(await broker.take(frame => frame.kind === 'result' && frame['id'] === 43))
+    expect(withValue.ok).toBe(true)
+    expect(withValue.value).toBe('pressed:metric:cm')
     broker.send({ kind: 'call', id: 42, ns: 'ui', method: 'press', args: { actionId: 'sample-mod:a5', generation: 1 }, session: 's-1', mod: 'sample-mod' })
     const missed = asResult(await broker.take(frame => frame.kind === 'result' && frame['id'] === 42))
     expect(missed.ok).toBe(false)

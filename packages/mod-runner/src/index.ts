@@ -11,6 +11,7 @@ import { FrameConnection } from './frames.ts'
 import type { Frame } from './frames.ts'
 import { importHooksModule, readManifest } from './loader.ts'
 import { describeRegistrations, registerMod } from './module.ts'
+import type { LoadedMod } from './module.ts'
 import { ENGINE_EVENTS, serializeMatcher } from './matcher.ts'
 import { HookRuntime } from './hook-runtime.ts'
 import { messageOf } from './values.ts'
@@ -22,7 +23,7 @@ const PING_INTERVAL_MS = 5_000
 const LOADED_TIMEOUT_MS = 2_000
 
 /** The engine events this host raises (design §5.3, P0/P1 rows); anything else registers but never runs. */
-const SERVED_EVENTS: ReadonlySet<string> = new Set([
+export const SERVED_EVENTS: ReadonlySet<string> = new Set([
   'session.start', 'session.end', 'turn.start', 'turn.complete', 'prompt.submit',
   'tool.call', 'tool.check', 'command.run', 'agent.spawn', 'session.compact',
   'ui.render', 'ui.press', 'ui.input',
@@ -32,6 +33,10 @@ const SERVED_EVENTS: ReadonlySet<string> = new Set([
 export interface RunnerHandle {
   readonly connection: FrameConnection
   readonly runtime: HookRuntime
+  /** The loaded mod's identity, as the manifests named it (`--test` reports it). */
+  readonly mod: LoadedMod
+  /** The engine events this host actually raises; registrations outside it never run. */
+  readonly servedEvents: ReadonlySet<string>
   /** Stops the ping interval; the frames already written stay in flight. */
   stop(): void
 }
@@ -118,6 +123,8 @@ export async function runRunner(
   return {
     connection,
     runtime,
+    mod,
+    servedEvents: SERVED_EVENTS,
     stop(): void {
       clearInterval(pinger)
     },
@@ -169,7 +176,27 @@ function unservedEvents(events: readonly string[]): string[] {
   return names
 }
 
-function main(): void {
+async function main(): Promise<void> {
+  const testIndex = process.argv.indexOf('--test')
+  if (testIndex !== -1) {
+    const dir = process.argv[testIndex + 1]
+    if (dir === undefined) {
+      console.error('usage: mod-runner --test <dir>')
+      process.exitCode = 2
+      return
+    }
+    // Lazy: the broker-served path never pays for the test suite's module.
+    const { exitCodeOf, renderReport, testMod } = await import('./test-mode.ts')
+    try {
+      const report = await testMod(dir)
+      console.log(renderReport(report))
+      process.exit(exitCodeOf(report))
+    } catch (error) {
+      console.error(`mod-runner --test failed: ${messageOf(error)}`)
+      process.exit(1)
+    }
+    return
+  }
   const modIndex = process.argv.indexOf('--mod')
   const modDir = modIndex !== -1 ? process.argv[modIndex + 1] : undefined
   if (modDir === undefined) {

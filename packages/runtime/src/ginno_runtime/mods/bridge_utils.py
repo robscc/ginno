@@ -74,6 +74,46 @@ def mods_dir() -> Path:
     return paths.home() / "mods"
 
 
+def project_mods_dir() -> Path | None:
+    """``<workspace>/.ginno/mods`` — the project-level mods dir (design §9/§11).
+
+    The workspace is the CURRENT project root, resolved the way
+    ops._session_facts resolves it: the live session registry first (last
+    entry wins — dict insertion order is creation order), falling back to the
+    newest session's meta on disk for a cold runtime. None when no session
+    exists at all (global-only install; nothing project-scoped to scan)."""
+    from ..server_shared import _SESSIONS
+
+    for entry in reversed(_SESSIONS):
+        ws = str((_SESSIONS[entry] or {}).get("workspace") or "").strip()
+        if ws:
+            return Path(ws) / ".ginno" / "mods"
+    # Cold start: pick the newest project's index and derive the session
+    # files dir the way create_session does (paths.session_files_dir).
+    from .. import paths
+
+    best: tuple[float, Path] | None = None
+    try:
+        for idx in (paths.home() / "projects").glob("*/sessions/_index.json"):
+            try:
+                doc = json.loads(idx.read_text() or "[]")
+            except (OSError, json.JSONDecodeError):
+                continue
+            try:
+                mt = idx.stat().st_mtime
+            except OSError:
+                continue
+            slug = idx.parent.parent.name
+            for item in doc if isinstance(doc, list) else []:
+                if not isinstance(item, dict) or not str(item.get("id") or ""):
+                    continue
+                if best is None or mt > best[0]:
+                    best = (mt, paths.session_files_dir(slug, str(item["id"])))
+    except OSError:
+        return None
+    return (best[1] / ".ginno" / "mods") if best else None
+
+
 def load_mods_settings() -> dict:
     """The mods block with defaults merged in (user keys never clobbered)."""
     from .. import paths
@@ -318,11 +358,10 @@ async def stop_broker() -> None:
         log.exception("mods broker stop failed")
 
 
-def scan_installed_mods() -> list[dict]:
-    """Mod directories under ~/.ginno/mods with their manifest facts
-    (``.claude-plugin/plugin.json``, the drop-in convention)."""
+def _scan_mod_dir(root: Path) -> list[dict]:
+    """One dir's mod entries with their manifest facts (``.claude-plugin/
+    plugin.json``, the drop-in convention)."""
     out: list[dict] = []
-    root = mods_dir()
     try:
         entries = sorted(root.iterdir())
     except OSError:
@@ -350,7 +389,9 @@ def scan_installed_mods() -> list[dict]:
         for rel in ("hooks/hooks.json", "hooks.json"):
             try:
                 doc = json.loads((d / rel).read_text() or "{}")
-            except (OSError, json.JSONDecodeError):
+            except OSError:
+                continue
+            except json.JSONDecodeError:
                 continue
             if isinstance(doc, dict):
                 if isinstance(doc.get("modules"), list) and doc["modules"]:
@@ -361,6 +402,23 @@ def scan_installed_mods() -> list[dict]:
         out.append({"name": name, "version": version, "path": str(d),
                     "hasManifest": manifest is not None, "shape": shape})
     return out
+
+
+def scan_installed_mods() -> list[dict]:
+    """Installed mods: the global dir (~/.ginno/mods) plus the project-level
+    dir (<workspace>/.ginno/mods, design §9/§11). One row per NAME — on the
+    same name the PROJECT copy wins (「项目级覆盖全局」) and the row carries
+    ``scope: "global"|"project"`` telling which one took effect."""
+    by_name: dict[str, dict] = {}
+    for scope, root in (("global", mods_dir()), ("project", project_mods_dir())):
+        if root is None:
+            continue
+        for row in _scan_mod_dir(root):
+            row["scope"] = scope
+            # The project pass runs last, so a same-name project entry simply
+            # overwrites the global one — that IS the override.
+            by_name[row["name"]] = row
+    return sorted(by_name.values(), key=lambda m: m["name"])
 
 
 # ---- classic hooks bridging (claude-code-mods-design.md §10) ---------------------
