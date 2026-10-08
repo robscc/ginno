@@ -89,7 +89,9 @@ interface SessionMeta {
 新增工具 `spawn_subagent(goal, constraints?, acceptance?)`（`tools/builtin.py` 注册，随 `build_all_tools` 拼装）：
 
 - 工具描述里写清使用判据（何时该拆、何时不该），模仿 Claude Code 的 description 驱动路由；
-- 单 turn 内多次调用 = 并行多个 subagent（同一消息多个 tool_use 的既有并发语义）；
+- 单 turn 内多次调用 = 并行多个 subagent（同一消息多个 tool_use 的既有并发语义——langgraph
+  并发派发，见 architecture §17.15；注意并行 subagent 若与父 agent 改**同一文件**，进程级写锁只保证
+  不互相踩踏，不保证语义上的合并，需在 brief 里靠"分文件"约束规避）；
 - **不进 permission 豁免集**（同 delegate_agent 的先例）：默认 `ask`，用户看到 goal/约束后批准——这是防泛滥的第一道闸。用户批准时可勾选「本会话不再询问」；
 - 返回值是即时回执（subagent_session_id + 标题），**不阻塞主对话**——后台语义，结果靠完成通知（§5.5）。
 

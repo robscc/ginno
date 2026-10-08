@@ -189,6 +189,9 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
   （2026-08 缓存诊断）；尾部断点让每次请求读取直至上一请求尾部的整段前缀。
 - **`permission` 节点**：判定顺序见 §6.9。
 - **`tools` 节点**：`ToolNode(all_tools, handle_tool_errors=True)` + 工具输出中段截断（§6.5 E2）。
+  **同一 AIMessage 里的多个 tool call 是并发执行的**（langgraph 内部 `asyncio.gather`，同步工具进线程池），
+  这一点对任何"读-改-写"型工具都是硬约束——2026-10-08 四联编辑事故即由此而来（§17.15）。
+  内置文件工具已用进程级写锁自行兜底；**新增有副作用的工具必须自己处理**。
 
 ### 6.2 图状态字段（`state.py`）
 
@@ -208,6 +211,12 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
 
 聊天主图与 Workflow 引擎共享同一 union 工具集。内置工具**永不抛异常**（返回 `[error] …` 字符串），
 并按 session workspace 绑定（模型看不到 workspace 参数）。
+
+**文件类工具的并发契约**（`tools/builtin.py`）：`write_file` / `edit_file` 持**进程级 `_FILE_WRITE_LOCK`**，
+锁覆盖 `edit_file` 的 read → match → replace → write **全程**（分两段拿锁仍会 lost update：B 在 A 的 read 与
+write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（同目录临时文件 → `os.replace`）。
+于是"模型在一条消息里对同一文件发多个 edit"是安全的——它们被串行化为逐个完整应用，且每个都返回 `ok`。
+`bash` **不持锁**：命令任意且可能长跑，持锁会串行死所有会话；跨进程并发也不在此契约的守备范围。
 
 | 组 | 工具名 |
 |---|---|
@@ -683,6 +692,11 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
     memory pool 捕获也整块剥离——它不进记忆、不当正文显示。
 14. server.py 只是 **app 壳**（347 行）：端点在 `api/` 各 router，进程级状态在 `server_shared.py`，
     底部大量 re-export 是历史兼容 facade，别在 server.py 里找业务逻辑。
+15. **同一 AIMessage 里的多个 tool call 并发执行**（langgraph `asyncio.gather`，同步工具进线程池）。
+    2026-10-08 事故：模型一条消息里对 `compaction.py` 发 4 个 `edit_file`，四线程无锁 read-modify-write
+    互相踩踏——整段替换丢失 + 错位插入成"缝合怪"（`import` 直接语法炸），而**每个调用都返回 `ok`**，
+    工具层零冲突信号，模型只能事后靠 `py_compile` 发现。内置文件工具现已用进程级锁 + 原子写兜底（§6.3）；
+    新增有副作用的工具必须自己处理并发。
 
 ---
 
