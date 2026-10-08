@@ -917,7 +917,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="truncate">{t("nav.settings")}</span>
           </Link>
 
-          <div className="px-2.5 pt-2 text-[10px] text-faint">© 2025 GinnoWork</div>
+          <div className="px-2.5 pt-2 text-[10px] text-faint">© 2026 GinnoWork</div>
         </div>
       </aside>
 

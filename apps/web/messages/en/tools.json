@@ -95,7 +95,11 @@
       "description": "Connected to {servers} server(s) and {tools} tool(s). Edit mcp.json, then save and reload.",
       "saveReload": "Save & Reload",
       "saved": "saved · servers: {servers}",
-      "invalidJson": "invalid JSON: {error}"
+      "invalidJson": "invalid JSON: {error}",
+      "toolsCount": "{count, plural, =1 {1 tool} other {# tools}}",
+      "notConnected": "Not connected",
+      "reconnect": "Reconnect",
+      "reconnecting": "Reconnecting…"
     },
     "skills": {
       "title": "Skills",

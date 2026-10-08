@@ -95,7 +95,11 @@
       "description": "已连接 {servers} 个服务器、{tools} 个工具。编辑 mcp.json 后保存并重载。",
       "saveReload": "保存并重载",
       "saved": "已保存 · 服务器：{servers}",
-      "invalidJson": "JSON 无效：{error}"
+      "invalidJson": "JSON 无效：{error}",
+      "toolsCount": "{count} 个工具",
+      "notConnected": "未连接",
+      "reconnect": "重连",
+      "reconnecting": "重连中…"
     },
     "skills": {
       "title": "技能",

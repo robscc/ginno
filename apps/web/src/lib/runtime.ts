@@ -1010,8 +1010,14 @@ export async function putSettings(data: Record<string, unknown>) {
     body: JSON.stringify(data),
   });
 }
+export type McpServerStatus = {
+  name: string;
+  connected: boolean;
+  tools: number;
+  error?: string | null;
+};
 export async function getMcp() {
-  return json<{ servers: string[]; tools: string[] }>(`${BASE}/mcp`);
+  return json<{ servers: string[]; tools: string[]; status?: McpServerStatus[] }>(`${BASE}/mcp`);
 }
 export async function getMcpConfig() {
   return json<{ mcpServers: Record<string, unknown> }>(`${BASE}/mcp/config`);
@@ -1021,6 +1027,9 @@ export async function putMcp(data: unknown) {
 }
 export async function reloadMcp() {
   return json<{ ok: boolean; servers: string[] }>(`${BASE}/mcp/reload`, { method: "POST" });
+}
+export async function reconnectMcp() {
+  return json<{ ok: boolean; status?: McpServerStatus[] }>(`${BASE}/mcp/reconnect`, { method: "POST" });
 }
 export async function createSkill(data: { name: string; body: string }) {
   return json<{ ok: boolean; error?: string }>(`${BASE}/skills`, {
