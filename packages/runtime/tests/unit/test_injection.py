@@ -135,3 +135,27 @@ def test_build_wiki_context_enabled(kb_vault):
     assert "LangGraph 权限节点" in ctx
     # the unrelated cooking page is not surfaced
     assert "红烧肉" not in ctx
+
+
+# --------------------- meaningless-injection gates --------------------- #
+def test_no_hits_injects_nothing(kb_vault):
+    # The hit gate: gibberish retrieves nothing → not even the guidelines.
+    # Before the gate a "ihihihi" turn still paid ~500 tokens of 使用规范.
+    assert build_wiki_context("ihihihi") == ""
+    assert build_wiki_context("dddd") == ""
+
+
+def test_intent_gate_skips_nonverbal_queries(kb_vault):
+    # Punctuation/emoji/1-char queries cannot match any indexed token —
+    # skip retrieval entirely.
+    assert build_wiki_context("？？？") == ""
+    assert build_wiki_context("😂😂") == ""
+    assert build_wiki_context(" ") == ""
+    assert build_wiki_context("!") == ""
+
+
+def test_short_but_meaningful_query_still_retrieves(kb_vault):
+    # The intent gate must not eat meaningful short CJK queries.
+    ctx = build_wiki_context("权限节点")
+    assert "## 相关知识" in ctx
+    assert "LangGraph 权限节点" in ctx

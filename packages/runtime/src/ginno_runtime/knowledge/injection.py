@@ -146,17 +146,42 @@ def format_wiki_context(results: list[RetrievalResult]) -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def _has_retrieval_intent(query: str) -> bool:
+    """Cheap gate: does the query plausibly carry something to retrieve?
+
+    Pure punctuation / emoji / whitespace cannot match any indexed token, so
+    running the indexer for one is pure waste. Anything with at least one
+    alphanumeric or CJK character passes — meaningful-but-short queries
+    ("权限") are still retrieved; the score gate below decides whether the
+    hits justify injecting.
+    """
+    q = query.strip()
+    if len(q) < 2:
+        return False
+    return any(ch.isalnum() for ch in q)
+
+
 def build_wiki_context(query: str, cfg: KnowledgeConfig | None = None) -> str:
     """Return the injectable wiki context for a query, or '' when disabled.
+
+    Two gates against meaningless injection (a gibberish query used to inject
+    the full 使用规范 every turn — measured ~500 tokens of dead weight per
+    turn):
+
+    1. intent gate — queries with nothing retrievable (punctuation, emoji,
+       single chars) skip the retrieval pass entirely;
+    2. hit gate — when retrieval returns nothing above ``inject_min_score``,
+       NOTHING is injected, guidelines included. Guidelines-only injection
+       teaches write conventions the model cannot act on this turn and had no
+       retrieval to anchor; whenever any page hits, the guidelines ride along.
 
     Side effects when ``cfg.citations`` is on (design §3): each injected page
     is registered in the turn's source registry (citations validate against
     it at turn end) and counted in the usage ledger (``injected``).
     """
     cfg = cfg or load_knowledge_config()
-    if not cfg.usable or not query.strip():
+    if not cfg.usable or not query.strip() or not _has_retrieval_intent(query):
         return ""
-    parts = [get_wiki_guidelines(cfg)]
     try:
         # Index the whole vault minus the raw sources dir, so finished notes
         # anywhere (e.g. 股市/) are injectable, not just compiled wiki pages.
@@ -178,21 +203,25 @@ def build_wiki_context(query: str, cfg: KnowledgeConfig | None = None) -> str:
         )
     except Exception:
         results = []
-    if results:
-        parts.append(format_wiki_context(results))
-        if getattr(cfg, "citations", True):
-            # Full wording once the built-in web tools exist; wiki-only before.
-            parts.append(CITATIONS_CONTRACT if _web_search_enabled() else CITATIONS_CONTRACT_WIKI_ONLY)
-            try:
-                from . import citations as _cit, usage as _usage
+    if not results:
+        # Hit gate: zero retrieval hits → nothing to read and nothing to cite;
+        # injecting the static guidelines alone was pure per-turn token waste.
+        return ""
+    parts = [get_wiki_guidelines(cfg)]
+    parts.append(format_wiki_context(results))
+    if getattr(cfg, "citations", True):
+        # Full wording once the built-in web tools exist; wiki-only before.
+        parts.append(CITATIONS_CONTRACT if _web_search_enabled() else CITATIONS_CONTRACT_WIKI_ONLY)
+        try:
+            from . import citations as _cit, usage as _usage
 
-                _cit.register_wiki_sources(results)
-                _usage.record_injected(
-                    [r.entry.relative_path for r in results],
-                    {r.entry.relative_path: r.entry.checksum for r in results},
-                )
-            except Exception:
-                pass  # telemetry must never break injection
+            _cit.register_wiki_sources(results)
+            _usage.record_injected(
+                [r.entry.relative_path for r in results],
+                {r.entry.relative_path: r.entry.checksum for r in results},
+            )
+        except Exception:
+            pass  # telemetry must never break injection
     return "\n\n".join(parts)
 
 
