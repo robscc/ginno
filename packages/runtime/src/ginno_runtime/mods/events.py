@@ -12,6 +12,7 @@ mods are strictly additive, a misbehaving bus can never stall a turn.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger("ginno.mods")
@@ -118,23 +119,77 @@ def spawn_turn_complete(
     spawn_bg(maybe_dispatch(session_id, "turn.complete", payload))
 
 
-async def dispatch_prompt_submit(session_id: str, text: str) -> tuple[str, bool]:
-    """Returns ``(text, blocked)``. Classic UserPromptSubmit hooks run first:
-    their ``rewrite`` replaces the prompt text (existing dispatcher semantics)
-    and ``block`` drops the prompt entirely. The mods bus then gets its
-    prompt.submit (observe-only in P0; drop/rewrite + the context algorithm
-    land in P1 on this same seam, §15.6)."""
+@dataclass
+class PromptSubmitResult:
+    """The prompt.submit consumption contract (P1, design §15.6): ``text`` is
+    the (possibly rewritten) prompt body, ``blocked`` ends the turn outright
+    (the frontend gets a notice), ``context`` rides the steer channel as a
+    companion HumanMessage, ``mod`` is the answering mod's name when the
+    broker reported one (it labels the injected context's origin). ``source``
+    says who blocked: the classic hooks ("classic") or the mods bus ("mod")."""
+
+    text: str
+    blocked: bool = False
+    context: str | None = None
+    mod: str | None = None
+    source: str = "mod"
+
+
+def _settle(result: Any, key: str) -> Any:
+    """Read one answer key off a chain-settle value (§6.1 convention): the
+    broker merges the final hook answer into the event input at top level;
+    an ``answer`` object next to it is accepted too — both spellings appear
+    in the wild."""
+    if not isinstance(result, dict):
+        return None
+    top = result.get(key)
+    if top is not None:
+        return top
+    answer = result.get("answer")
+    if isinstance(answer, dict):
+        return answer.get(key)
+    return None
+
+
+def _mod_name(result: Any) -> str | None:
+    mod = _settle(result, "mod")
+    return mod if isinstance(mod, str) and mod else None
+
+
+async def dispatch_prompt_submit(session_id: str, text: str) -> PromptSubmitResult:
+    """Full P1 semantics (§15.6): classic UserPromptSubmit hooks run first
+    (their ``rewrite`` replaces the prompt text, ``block`` drops it), then the
+    mods bus answers ``{drop}`` (turn ends with a notice), ``{text}`` (body
+    rewrite) and/or ``{context}`` (extra context, injected on the steer
+    channel by the caller with a ``Message from the "<mod>" mod:`` origin).
+    Results are liberal per §15.6: a non-string ``text`` keeps the original,
+    ``context`` keeps only its string lines."""
     text = text or ""
     for r in await _classic_dispatch("UserPromptSubmit", {"prompt": text}):
         if r.block:
-            return text, True
+            return PromptSubmitResult(text=text, blocked=True, source="classic")
         if r.rewrite:
             text = r.rewrite
     payload = {"sessionId": session_id, "text": text, "origin": {"kind": "composer"}}
     result = await maybe_dispatch(session_id, "prompt.submit", payload)
-    if isinstance(result.get("text"), str):
-        text = result["text"]
-    return text, False
+    if not isinstance(result, dict):
+        return PromptSubmitResult(text=text)
+    mod = _mod_name(result)
+    drop = _settle(result, "drop")
+    if drop:  # §15.6: drop must be a string — a reason here, but stay liberal
+        log.info("mods prompt.submit drop session=%s reason=%r", session_id, drop)
+        return PromptSubmitResult(text=text, blocked=True, mod=mod)
+    if isinstance(_settle(result, "text"), str):
+        text = _settle(result, "text")
+    raw_ctx = _settle(result, "context")
+    if isinstance(raw_ctx, str):
+        lines = [raw_ctx]
+    elif isinstance(raw_ctx, list):
+        lines = [x for x in raw_ctx if isinstance(x, str)]
+    else:
+        lines = []
+    context = "\n".join(x for x in (ln.strip() for ln in lines) if x) or None
+    return PromptSubmitResult(text=text, context=context, mod=mod)
 
 
 def _deny_reason(value: Any) -> str | None:
@@ -150,20 +205,69 @@ def _deny_reason(value: Any) -> str | None:
     return None
 
 
-async def dispatch_tool_call(session_id: str, tool: str, args: dict) -> str | None:
-    """Returns a deny reason string when a mod answered ``{deny}``, else None
-    (allowed / no mod / timeout — the broker timeout policy is 放行, §6.1).
-    The deny string is rendered with the same bubble shape as the hooks
-    rejection in graph.permission_node."""
+async def dispatch_tool_call(session_id: str, tool: str, args: dict) -> dict | None:
+    """The P1 tool.call consumption contract. Returns a normalized action dict
+    (or None = allowed / no mod / timeout — the broker timeout policy is 放行,
+    §6.1); graph.permission_node consumes it:
+
+    - ``{"deny": "<reason>"}`` — the tool never runs, blocked bubble (existing
+      P0 shape; ``true`` / ``{"reason": ..}`` normalize via :func:`_deny_reason`);
+    - ``{"args": {...}}`` — the engine substitutes the rewritten args and
+      re-runs the permission policy on them;
+    - ``{"result": {"value": ..., "isError"?: bool}}`` — takeover: the tool
+      does not execute, ``value`` becomes the tool result (error-shaped when
+      ``isError``);
+    - ``{"inject": "<text>"}`` — extra context, appended to this turn's
+      message stream on the steer channel.
+
+    Priority deny > result > args; ``inject`` may coexist with any of them.
+    The optional ``mod`` key (answering mod's name) rides along when the
+    broker reported it."""
     payload = {"sessionId": session_id, "tool": tool, "args": args if isinstance(args, dict) else {}}
     result = await maybe_dispatch(session_id, "tool.call", payload)
     if not isinstance(result, dict):
         return None
-    # Settle-value convention (§6.1): the broker replies with the final event
-    # input plus, when a hook denied, a top-level ``deny`` carrying the DSH
-    # deny shape (true | "reason" | {reason}); a nested ``answer.deny`` is
-    # accepted too — both spellings appear in the wild.
-    reason = _deny_reason(result.get("deny"))
-    if reason is None and isinstance(result.get("answer"), dict):
-        reason = _deny_reason(result["answer"].get("deny"))
-    return reason
+    action: dict[str, Any] = {}
+    reason = _deny_reason(_settle(result, "deny"))
+    if reason:
+        action["deny"] = reason
+    took = _settle(result, "result")
+    if isinstance(took, dict) and "value" in took:
+        action["result"] = took
+    rewritten = _settle(result, "args")
+    if isinstance(rewritten, dict) and rewritten:
+        action["args"] = rewritten
+    inject = _settle(result, "inject")
+    if isinstance(inject, str) and inject.strip():
+        action["inject"] = inject
+    mod = _mod_name(result)
+    if mod:
+        action["mod"] = mod
+    return action or None
+
+
+async def dispatch_tool_check(session_id: str, tool: str, args: dict) -> dict | None:
+    """tool.check (§5.3, P1): raised after the tool.call chain, before
+    policy.decide. Returns ``{"decision": "allow"|"deny"|"ask", "reason"?: str}``
+    or None (no answer / no mod → the policy decides as usual)."""
+    payload = {"sessionId": session_id, "tool": tool, "args": args if isinstance(args, dict) else {}}
+    result = await maybe_dispatch(session_id, "tool.check", payload)
+    decision = _settle(result, "decision")
+    if not isinstance(decision, str) or decision.lower() not in ("allow", "deny", "ask"):
+        return None
+    out: dict[str, Any] = {"decision": decision.lower()}
+    reason = _settle(result, "reason")
+    if isinstance(reason, str) and reason:
+        out["reason"] = reason
+    return out
+
+
+async def dispatch_command_run(session_id: str, command: str, args: str) -> str | None:
+    """command.run (§5.3): the user ran ``/name``, no builtin/skill matched and
+    a mod registered the name — the broker routes the event to the owning
+    mod's runner. Returns the mod's ``reply`` string (top level or nested
+    ``answer.reply``) or None; the caller delivers it as a notice."""
+    payload = {"sessionId": session_id, "command": command, "args": args or ""}
+    result = await maybe_dispatch(session_id, "command.run", payload)
+    reply = _settle(result, "reply")
+    return reply if isinstance(reply, str) and reply.strip() else None

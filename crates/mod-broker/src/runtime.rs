@@ -10,14 +10,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixListener;
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
 
 use crate::protocol::{
-    decode_line, result_ok, Frame, FrameWriter, RpcError, CODE_ERROR, CODE_NO_IMPLEMENTATION, PROTOCOL_VERSION,
+    decode_line, result_ok, Frame, FrameWriter, RpcError, CODE_ERROR, CODE_NO_IMPLEMENTATION, CODE_NOT_FOUND,
+    PROTOCOL_VERSION,
 };
 use crate::Broker;
 
@@ -184,9 +185,11 @@ async fn handle_connection(broker: Arc<Broker>, stream: UnixStream, token: &str)
         };
         handle_runtime_frame(&broker, &conn, frame).await;
     }
-    // The runtime went away: fail its pending op forwards. Runners keep
-    // running and wait for the reconnect (design §5.2).
+    // The runtime went away: fail its pending op forwards and every `$.ui.ask`
+    // waiting on it (§7.3). Runners keep running and wait for the reconnect
+    // (design §5.2).
     conn.fail_pending(RpcError::new(CODE_ERROR, "runtime disconnected"));
+    crate::ops::fail_all_asks("runtime disconnected");
     if broker.runtime.read().unwrap().as_ref().is_some_and(|current| Arc::ptr_eq(current, &conn)) {
         // Only clear if no newer connection already replaced us.
         *broker.runtime.write().unwrap() = None;
@@ -228,8 +231,8 @@ async fn handle_runtime_frame(broker: &Arc<Broker>, conn: &Arc<RuntimeConn>, fra
                 });
             }
             "mod.answer" => {
-                // P1 (§7.3): ask/answer is not served yet; rejected at the op layer.
-                broker.report("mod.answer ignored: ui.ask is not implemented in P0");
+                // Asks resolve through the `broker.answer` call, not a notify.
+                broker.report("mod.answer ignored: resolve $.ui.ask via call broker.answer");
             }
             "ping" => {}
             other => {
@@ -240,6 +243,17 @@ async fn handle_runtime_frame(broker: &Arc<Broker>, conn: &Arc<RuntimeConn>, fra
             let result = match (ns.as_str(), method.as_str()) {
                 ("broker", "status") => Ok(broker.status_payload().await),
                 ("broker", "apply-config") => Ok(broker.apply_config(&args).await),
+                // `$.ui.ask`'s answer (§7.3): { id, value } resolves the ask
+                // the mod's op parked with the broker.
+                ("broker", "answer") => {
+                    let ask_id = args.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                    let value = args.get("value").cloned().unwrap_or(Value::Null);
+                    if crate::ops::resolve_ask(&ask_id, value) {
+                        Ok(json!({ "resolved": true }))
+                    } else {
+                        Err(RpcError::new(CODE_NOT_FOUND, format!("no pending ask named {ask_id}")))
+                    }
+                }
                 _ => Err(RpcError::new(CODE_NO_IMPLEMENTATION, format!("no implementation for {ns}.{method}"))),
             };
             conn.tx.send_result(id, &result);

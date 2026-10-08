@@ -210,9 +210,48 @@ _SESSION_OPS = {
 }
 
 
-async def handle(ns: str, method: str, args: dict, session_id: str) -> Any:
-    """Entry the ModChannel's call server routes to. P0 scope: session read
-    family only — everything else answers no-implementation (design §5.4)."""
+# ---- the op table (ns="command", design §5.4 P1) -------------------------------
+
+
+async def _op_command_register(args: dict, session_id: str, mod: str) -> dict:
+    """``$.command.register {name, description?}`` → the slash-command registry
+    (commands/mod_commands.py). The calling mod rides the call frame; without
+    it the command could not be routed back on ``/name``."""
+    from ..commands import mod_commands
+
+    try:
+        entry = mod_commands.register(
+            name=str(args.get("name") or ""),
+            mod=mod,
+            description=str(args.get("description") or ""),
+        )
+    except ValueError as e:
+        raise OpError("invalid-argument", str(e)) from None
+    log.info("mods command.register name=%s mod=%s", entry["name"], entry["mod"])
+    return {"ok": True, **entry}
+
+
+async def _op_command_list(args: dict, session_id: str, mod: str) -> dict:
+    from ..commands import mod_commands
+
+    return {"commands": mod_commands.list_commands()}
+
+
+_COMMAND_OPS = {
+    "register": _op_command_register,
+    "list": _op_command_list,
+}
+
+
+async def handle(ns: str, method: str, args: dict, session_id: str, mod: str = "") -> Any:
+    """Entry the ModChannel's call server routes to. Scope: the session read
+    family plus the command registry (P1, design §5.4) — everything else
+    answers no-implementation."""
+    if ns == "command":
+        op = _COMMAND_OPS.get(method)
+        if op is None:
+            raise OpError("no-implementation", f"no implementation for command.{method}")
+        return await op(args if isinstance(args, dict) else {}, session_id, mod)
     if ns != "session":
         raise OpError("no-implementation", f"no implementation for {ns}.{method}")
     op = _SESSION_OPS.get(method)

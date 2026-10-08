@@ -49,6 +49,12 @@
       "delegationReadonly": "Delegation replay · read-only",
       "delegationRunning": "running"
     },
+    "mods": {
+      "promptBlocked": "This prompt was blocked by a mod.",
+      "promptBlockedHook": "Prompt blocked by a hook.",
+      "askPlaceholder": "Or type your answer…",
+      "askSend": "Send"
+    },
     "queue": {
       "pending": "Pending ({count})",
       "recallHint": "↑ recall to edit",

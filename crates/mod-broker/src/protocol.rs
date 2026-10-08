@@ -27,12 +27,17 @@
 //!   message verbatim — the broker matches beneath failures by it.
 //! - A `next` frame is answered by the broker with the beneath result
 //!   (`ok:true,value`; an abandoned hook gets `ok:true` with no value, i.e.
-//!   undefined; a rewrite refusal is `code:"rewrite-refused"`; a beneath
-//!   failure is `ok:false` with the failure's code/message).
+//!   undefined; swapping the tool on `tool.call` is refused with
+//!   `code:"rewrite-refused"`; a beneath failure is `ok:false` with the
+//!   failure's code/message). Arg rewrites pass through — the engine
+//!   re-walks the permission policy (design §15.5 P1).
 //! - Every `$` call carries `invocation` (and `session`/`mod`) so the broker
 //!   can pause that hook's budget while it works — except `clock.sleep`,
 //!   which counts as the hook's own time. Denials come back as
 //!   `code:"denied"`, unimplemented ops as `code:"no-implementation"`.
+//!   `$.ui.ask` parks with the broker until the runtime answers via
+//!   `call{ns:"broker", method:"answer", args:{id, value}}`; a runtime
+//!   disconnect or the 60 s cap settles it with `code:"error"`.
 //! - Serialized band trees carry Button ids as `<mod>:a<N>` (runner-minted,
 //!   deterministic per drawing, so an unchanged tree keeps its generation).
 //! - The runner sends a `ping` notify at least every 5 s; 15 s of silence

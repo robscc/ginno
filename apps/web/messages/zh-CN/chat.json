@@ -49,6 +49,12 @@
       "delegationReadonly": "委托回放 · 只读",
       "delegationRunning": "运行中"
     },
+    "mods": {
+      "promptBlocked": "本轮输入已被 mod 拦截。",
+      "promptBlockedHook": "输入被 hook 拦截。",
+      "askPlaceholder": "或者输入你的回答……",
+      "askSend": "发送"
+    },
     "queue": {
       "pending": "待注入（{count}）",
       "recallHint": "↑ 取回编辑",

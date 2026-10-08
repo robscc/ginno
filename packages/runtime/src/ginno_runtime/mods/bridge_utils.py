@@ -44,6 +44,18 @@ DEFAULT_MODS_SETTINGS: dict = {
 MOD_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _SOCK_NAME = "ginno-mod-broker.sock"
+
+
+def _dev_sock_name() -> str:
+    """Per-checkout socket name: two dev runtimes (worktree + main) share
+    $TMPDIR, and a fixed name made them fight over ONE broker whose config
+    belonged to the other checkout (seen live 2026-10-08). Desktop injects
+    GINNO_MOD_BROKER_SOCK and never lands here."""
+    import hashlib
+
+    repo_root = Path(__file__).resolve().parents[5]
+    tag = hashlib.sha1(str(repo_root).encode()).hexdigest()[:8]
+    return f"ginno-mod-broker-{tag}.sock"
 _TOKEN_SUFFIX = ".token"
 _SPAWN_WAIT_S = 10.0
 
@@ -236,7 +248,7 @@ async def ensure_broker() -> tuple[str | None, str | None]:
         log.info("node not found — mods runtime unavailable (runner needs Node ≥22.18)")
         return None, None
 
-    sock_path = os.path.join(tempfile.gettempdir(), _SOCK_NAME)
+    sock_path = os.path.join(tempfile.gettempdir(), _dev_sock_name())
     _cleanup_stale_socket(sock_path)
     try:
         _broker_proc = await asyncio.create_subprocess_exec(

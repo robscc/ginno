@@ -39,7 +39,15 @@ TOC 偏移量读到新归档的垃圾数据 → zlib 解压失败。**只有重�
 
 - 改完代码后跑 `make app`（见全局 memory）。
 - `make app` = web + PyInstaller sidecar bundle + Tauri 桌面应用（含签名校验，
-  仅 linker-signed 会导致 webview 白屏）。
+  仅 linker-signed 会导致 webview 白屏）；构建前有防呆：检测到 Ginno 在运行或
+  8787 被 Ginno sidecar 占用即报错退出（对应上面 zlib 已知故障），`FORCE=1` 跳过。
+- `make mod-broker` / `make mod-runner`：mods 兼容层两个组件——broker CLI
+  （→ `<repo>/target/release/ginno-mod-broker`，即 Python 的发现梯子；桌面版不
+  用它，broker 以 path dependency 编译进 Tauri 进程内）与 mod-runner.mjs
+  （esbuild 单文件，`make sidecar` 会一并拷进 Tauri resources）。桌面启动时
+  shell 进程内起 broker 监听 app 数据目录的 Unix socket，并向 sidecar 注入
+  env `GINNO_MOD_BROKER_SOCK` / `GINNO_MOD_BROKER_TOKEN` / `GINNO_MOD_RUNNER_PATH`；
+  broker 没起来时不注入 env，Python 走 dev-spawn / `~/.ginno/bin` 发现梯子。
 - 开发调试可用 `pnpm dev`（web:3000 + runtime:8787 + Tauri），dev 模式下 runtime
   直接跑源码（无 PyInstaller），不存在上述 bundle 问题。
 - 生产 bundle 位于 `apps/desktop/target/release/bundle/macos/Ginno.app`，

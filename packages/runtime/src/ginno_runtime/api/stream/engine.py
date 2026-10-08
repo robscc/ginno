@@ -1354,6 +1354,21 @@ async def _stream_graph(
                                         "content": reason.strip() or c,
                                     })
                                 )
+                            elif isinstance(m, ToolMessage):
+                                # Mods {result} takeover (design §15.5): the
+                                # tool never executed — the mod's value rides a
+                                # synthetic ToolMessage. Close the bubble that
+                                # tool.start opened with it (special tools keep
+                                # their no-bubble contract).
+                                tc_id = getattr(m, "tool_call_id", None)
+                                nm = special_ids.get(tc_id)
+                                if tc_id and nm not in WORKFLOW_TOOL_NAMES | RENDER_TOOL_NAMES | ARTIFACT_TOOL_NAMES:
+                                    await safe_send(
+                                        emit("tool.end", {
+                                            "id": tc_id,
+                                            "content": _truncate_for_ws(_tool_content_str(getattr(m, "content", ""))),
+                                        })
+                                    )
         # Auto-associate this session with every TODO the turn created or
         # touched — the TODO panel surfaces these sessions as jump targets.
         # Gated on an actual todo_* tool call so unrelated edits don't count.

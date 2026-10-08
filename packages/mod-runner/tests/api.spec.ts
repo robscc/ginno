@@ -62,6 +62,33 @@ describe('served methods', () => {
     await expect($.fs.write('./x', 'y')).rejects.toMatchObject({ code: 'denied' })
   })
 
+  test('ui.ask frames {message, choices} and unwraps the {value} answer', async () => {
+    const calls: { op: string; input: unknown }[] = []
+    const { binding } = makeBinding({
+      invoke: (op, input) => {
+        calls.push({ op, input })
+        return op === 'ui.ask' ? Promise.resolve({ value: 'yes' }) : Promise.resolve({})
+      },
+    })
+    const $ = createModsApi(binding)
+    // A choices array and the AskOptions form frame identically.
+    await expect($.ui.ask('Proceed?', ['yes', 'no'])).resolves.toBe('yes')
+    expect(calls.at(-1)).toEqual({ op: 'ui.ask', input: { message: 'Proceed?', choices: ['yes', 'no'] } })
+    await expect($.ui.ask('Opts?', { options: ['a', 'b'], header: 'Header' })).resolves.toBe('yes')
+    expect(calls.at(-1)).toEqual({ op: 'ui.ask', input: { message: 'Opts?', choices: ['a', 'b'] } })
+    // No options: no choices field, per the broker contract.
+    await expect($.ui.ask('Plain?')).resolves.toBe('yes')
+    expect(calls.at(-1)).toEqual({ op: 'ui.ask', input: { message: 'Plain?' } })
+  })
+
+  test('a failed ui.ask (timeout, disconnect, denial) rejects', async () => {
+    const { binding } = makeBinding({
+      invoke: (op) => (op === 'ui.ask' ? Promise.reject(Object.assign(new Error('$.ui.ask ran past its 60000 ms limit'), { code: 'error' })) : Promise.resolve({})),
+    })
+    const $ = createModsApi(binding)
+    await expect($.ui.ask('Hello?')).rejects.toThrow('ran past its 60000 ms limit')
+  })
+
   test('state.get reads a missing slot as {value: undefined}, keeping DSH default destructuring', async () => {
     // The broker answers DSH's opCore shape `{value: stored|null}`; over JSON a missing slot's
     // inner is null (JSON has no undefined), and the shim hands back `{value: undefined}` so

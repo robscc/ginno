@@ -168,6 +168,10 @@ async function runBehavior(hook, frame, kind) {
     case 'single_call': {
       const [ns, method, args] = hook.call
       const result = await call(ns, method, args, frame.invocation, frame.session)
+      // The traced result keeps the call observable even when the runtime
+      // that raised the event disconnected before the result frame could go
+      // back (the ui.ask abort test reads it).
+      trace(`${modName}:call:${ns}.${method}:${JSON.stringify(result)}`)
       return result.ok
         ? { value: { ok: true, value: result.value ?? null } }
         : { value: { ok: false, code: result.code, message: result.message } }

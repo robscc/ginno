@@ -6,11 +6,14 @@
 //! are checked before the chain runs, so a denied capability never reaches
 //! any mod, let alone the implementation.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
+use tokio::sync::oneshot;
 
 use crate::chain::{run_from, ChainCore, ChainCtx};
 use crate::protocol::{
@@ -35,7 +38,7 @@ const UNSERVED_OPS: &[&str] = &[
     "settings.read",
     "env.set",
     "fs.ancestors",
-    "ui.ask", "ui.blit", "ui.focus", "ui.scroll", "ui.message",
+    "ui.blit", "ui.focus", "ui.scroll", "ui.message",
     "config.list", "config.set",
     "model.fork", // P2
 ];
@@ -297,6 +300,9 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         }
         "ui.panes" => Ok(json!([])),
 
+        // ---- ui.ask: a question parked here until Python answers it (§7.3) ----
+        "ui.ask" => op_ui_ask(ctx, caller, input).await,
+
         other if UNSERVED_OPS.contains(&other) => Err(no_implementation(other)),
         other if FORWARD_NAMESPACES.contains(&ns_of(other)) => {
             forward_to_runtime(ctx, caller, other, input).await
@@ -307,6 +313,93 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
 
 fn ns_of(op: &str) -> &str {
     op.split('.').next().unwrap_or(op)
+}
+
+// ---- $.ui.ask (design §7.3): pending asks live here, between the op that
+// raised them and the runtime's `broker.answer` call that resolves them. The
+// table is module-global because it is written from two dispatch paths
+// (`op_core` and the runtime channel) while `Broker`'s fields are lib-owned.
+
+/// How long a `$.ui.ask` waits for the runtime's answer before failing.
+pub const ASK_TIMEOUT_MS: u64 = 60_000;
+
+struct PendingAsk {
+    tx: oneshot::Sender<Result<Value, RpcError>>,
+}
+
+fn pending_asks() -> &'static Mutex<HashMap<String, PendingAsk>> {
+    static ASKS: OnceLock<Mutex<HashMap<String, PendingAsk>>> = OnceLock::new();
+    ASKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn next_ask_id() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    format!("ask-{}", SEQ.fetch_add(1, Ordering::SeqCst))
+}
+
+/// Park a pending ask and return the channel its answer arrives on.
+fn register_ask(id: &str) -> oneshot::Receiver<Result<Value, RpcError>> {
+    let (tx, rx) = oneshot::channel();
+    pending_asks().lock().unwrap().insert(id.to_string(), PendingAsk { tx });
+    rx
+}
+
+/// Resolve a pending ask with the runtime's answer; `false` when no ask by
+/// that id is waiting (already answered, timed out, or never existed).
+pub fn resolve_ask(id: &str, value: Value) -> bool {
+    match pending_asks().lock().unwrap().remove(id) {
+        Some(pending) => {
+            let _ = pending.tx.send(Ok(value));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Fail every pending ask — the runtime went away mid-question (§7.3).
+pub fn fail_all_asks(reason: &str) {
+    let pending: Vec<PendingAsk> =
+        { std::mem::take(&mut *pending_asks().lock().unwrap()) }.into_values().collect();
+    for ask in pending {
+        let _ = ask.tx.send(Err(RpcError::new(CODE_ERROR, format!("$.ui.ask aborted: {reason}"))));
+    }
+}
+
+/// Wait for a pending ask's answer, bounded by its timeout. On a timeout the
+/// caller (which knows the id) sweeps the entry so a late `broker.answer`
+/// names no ask.
+async fn wait_ask_answer(rx: oneshot::Receiver<Result<Value, RpcError>>, timeout_ms: u64) -> Result<Value, RpcError> {
+    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(RpcError::new(CODE_ERROR, "$.ui.ask was dropped".to_string())),
+        Err(_) => Err(RpcError::new(CODE_ERROR, format!("$.ui.ask ran past its {timeout_ms} ms limit"))),
+    }
+}
+
+/// `$.ui.ask`: validate `{ message, choices? }`, park a pending ask, notify
+/// the runtime as `mod.ask`, and settle `{ value }` when Python calls
+/// `broker.answer` — or an error on the 60 s cap or a runtime disconnect.
+async fn op_ui_ask(ctx: &Arc<ChainCtx>, caller: &str, input: Value) -> Result<Value, RpcError> {
+    let message = need_string(&input, "message", "$.ui.ask message")?.to_string();
+    let choices = match input.get("choices") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) if items.iter().all(Value::is_string) => Some(items.clone()),
+        Some(_) => {
+            return Err(RpcError::new(CODE_ERROR, "$.ui.ask choices must be an array of strings".to_string()))
+        }
+    };
+    let id = next_ask_id();
+    let rx = register_ask(&id);
+    let mut payload = json!({ "id": id, "message": message });
+    if let Some(choices) = &choices {
+        payload["choices"] = json!(choices);
+    }
+    ctx.broker.runtime_notify("mod.ask", ctx.session.clone(), Some(caller.to_string()), payload);
+    let answer = wait_ask_answer(rx, ASK_TIMEOUT_MS).await;
+    if answer.is_err() {
+        pending_asks().lock().unwrap().remove(&id);
+    }
+    Ok(json!({ "value": answer? }))
 }
 
 fn state_slot(input: &Value) -> Result<String, RpcError> {
@@ -554,5 +647,48 @@ mod tests {
         let error = no_implementation("audio.play");
         assert_eq!(error.code, "no-implementation");
         assert_eq!(error.message, "no implementation for audio.play");
+    }
+
+    // ---- $.ui.ask pending table ----
+    // One sequential test: the pending table is process-global, so parallel
+    // tests could sweep each other's asks with `fail_all_asks`.
+
+    #[test]
+    fn the_ask_table_resolves_times_out_and_fails() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // A resolve answers the waiting ask exactly once; unknown ids are false.
+        let rx = register_ask("ask-rt");
+        assert!(resolve_ask("ask-rt", json!("yes")));
+        assert_eq!(rx.blocking_recv().unwrap().unwrap(), json!("yes"));
+        assert!(!resolve_ask("ask-rt", json!("again")));
+        assert!(!resolve_ask("ask-nope", Value::Null));
+
+        // A timeout names the limit, and the caller's sweep makes a late
+        // answer name no ask.
+        rt.block_on(async {
+            let rx = register_ask("ask-timeout");
+            let error = wait_ask_answer(rx, 20).await.unwrap_err();
+            assert!(error.message.contains("ran past its 20 ms limit"), "{}", error.message);
+        });
+        pending_asks().lock().unwrap().remove("ask-timeout");
+        assert!(!resolve_ask("ask-timeout", json!("late")));
+
+        // A dropped answer (the entry swept elsewhere) is an error, not a hang.
+        rt.block_on(async {
+            let rx = register_ask("ask-dropped");
+            pending_asks().lock().unwrap().remove("ask-dropped");
+            let error = wait_ask_answer(rx, 1_000).await.unwrap_err();
+            assert_eq!(error.message, "$.ui.ask was dropped");
+        });
+
+        // The runtime leaving fails every waiting ask with the reason.
+        let first = register_ask("ask-fail-1");
+        let second = register_ask("ask-fail-2");
+        fail_all_asks("runtime disconnected");
+        for rx in [first, second] {
+            let error = rx.blocking_recv().unwrap().unwrap_err();
+            assert_eq!(error.message, "$.ui.ask aborted: runtime disconnected");
+        }
     }
 }

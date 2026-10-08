@@ -1014,6 +1014,8 @@ export interface ModInfo {
   error?: string;
   enabled?: boolean;
   config?: Record<string, unknown>;
+  /** grants 白名单(JS mods: fs.read/http/process…;classic hooks: classic 三态) */
+  grants?: Record<string, unknown>;
 }
 
 export interface ModsStatus {
@@ -1038,7 +1040,7 @@ export async function listMods() {
 
 export async function updateMod(
   name: string,
-  patch: { enabled?: boolean; config?: Record<string, unknown> },
+  patch: { enabled?: boolean; config?: Record<string, unknown>; grants?: Record<string, unknown> },
 ) {
   return json<ModInfo & { ok?: boolean; error?: string }>(
     `${BASE}/mods/${encodeURIComponent(name)}`,

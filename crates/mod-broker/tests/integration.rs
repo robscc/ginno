@@ -62,6 +62,9 @@ struct ClientInner {
     /// Ops the fake runtime serves (`session.usage` and friends); everything
     /// else is refused like an unimplemented Python backend.
     responder: std::sync::Mutex<Option<Box<dyn Fn(&str, &str) -> Option<Value> + Send>>>,
+    /// Set to make both pump tasks drop the socket: the broker then sees the
+    /// runtime disconnect (the `$.ui.ask` abort test).
+    shutdown: Notify,
 }
 
 /// The test's stand-in for Python's ModChannel: a framed socket client.
@@ -74,33 +77,43 @@ struct RuntimeClient {
 impl RuntimeClient {
     async fn connect(socket: &Path) -> RuntimeClient {
         let stream = UnixStream::connect(socket).await.expect("connect to broker socket");
-        let (reader, writer) = stream.into_split();
+        let (reader, mut socket_writer) = stream.into_split();
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        let mut writer = writer;
+        let inner = Arc::new(ClientInner {
+            writer: Arc::new(tx),
+            inbox: std::sync::Mutex::new(Vec::new()),
+            wake: Notify::new(),
+            responder: std::sync::Mutex::new(None),
+            shutdown: Notify::new(),
+        });
+        // Outbound frames: from `send`/`call_broker` into the socket.
+        let writer_pump = Arc::clone(&inner);
         tokio::spawn(async move {
-            while let Some(line) = rx.recv().await {
-                if writer.write_all(line.as_bytes()).await.is_err() {
+            loop {
+                let line = tokio::select! {
+                    _ = writer_pump.shutdown.notified() => break,
+                    line = rx.recv() => line,
+                };
+                let Some(line) = line else { break };
+                if socket_writer.write_all(line.as_bytes()).await.is_err() {
                     break;
                 }
             }
         });
-        let tx = Arc::new(tx);
-        let tx_for_pump = Arc::clone(&tx);
-        let inner = Arc::new(ClientInner {
-            writer: tx,
-            inbox: std::sync::Mutex::new(Vec::new()),
-            wake: Notify::new(),
-            responder: std::sync::Mutex::new(None),
-        });
+        // Inbound frames; forwarded ops are answered like the Python runtime
+        // would (the registered responder serves what it knows).
         let pump = Arc::clone(&inner);
         let inner2 = Arc::clone(&inner);
-        let writer = tx_for_pump;
+        let replies = Arc::clone(&inner.writer);
         tokio::spawn(async move {
             let mut lines = tokio::io::BufReader::new(reader).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            loop {
+                let line = tokio::select! {
+                    _ = pump.shutdown.notified() => break,
+                    line = lines.next_line() => line,
+                };
+                let Ok(Some(line)) = line else { break };
                 if let Ok(frame) = serde_json::from_str::<Value>(&line) {
-                    // Play Python's role for forwarded ops: the registered
-                    // responder serves what it knows, the rest is refused.
                     if frame["kind"] == "call" {
                         let ns = frame["ns"].as_str().unwrap_or_default().to_string();
                         let method = frame["method"].as_str().unwrap_or_default().to_string();
@@ -117,7 +130,7 @@ impl RuntimeClient {
                         };
                         let mut line = reply.to_string();
                         line.push('\n');
-                        let _ = writer.send(line);
+                        let _ = replies.send(line);
                     }
                     pump.inbox.lock().unwrap().push(frame);
                     pump.wake.notify_waiters();
@@ -187,6 +200,36 @@ impl RuntimeClient {
         let ready = self.wait_result(1, "hello/ready", Duration::from_secs(120)).await.expect("ready");
         eprintln!("ready payload: {ready}");
         ready
+    }
+
+    /// Raise an engine event without waiting for its result; returns the
+    /// frame id for [`Self::wait_result`] (for events that only settle once
+    /// the test has answered something in between, like `$.ui.ask`).
+    fn send_event(&self, event: &str, session: Option<&str>, payload: Value) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let mut frame = json!({
+            "v": 1, "kind": "event", "id": id, "event": event,
+            "invocation": format!("it-{id}"), "payload": payload,
+        });
+        if let Some(session) = session {
+            frame["session"] = json!(session);
+        }
+        self.send(&frame);
+        id
+    }
+
+    /// Call a broker-side method (`broker.answer`); returns the frame id.
+    fn call_broker(&self, method: &str, args: Value) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.send(&json!({"v": 1, "kind": "call", "id": id, "ns": "broker", "method": method, "args": args}));
+        id
+    }
+
+    /// Close the socket: the broker sees the runtime disconnect.
+    async fn disconnect(&self) {
+        self.inner.shutdown.notify_waiters();
+        // Give both pump tasks a beat to drop the stream halves.
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
 
     /// Push a new config on the live connection (`broker.apply-config`).
@@ -388,7 +431,7 @@ async fn chain_order_and_matchers_reevaluate_per_hook() {
     let env = Env::new("chain-order").await;
     // DSH's "rewrites" spec case lives on prompt.submit: matchers re-evaluate
     // against the input each hook receives. (On tool.call this rewrite would
-    // be refused — see tool_call_rewrites_are_refused.)
+    // be refused — see tool_call_reroutes_are_refused.)
     env.scenario("a", json!({ "hooks": [{ "event": "prompt.submit", "behavior": "next", "ePatch": { "text": "trimmed" } }] }));
     env.scenario("b", json!({ "hooks": [{ "event": "prompt.submit", "matcher": { "text": "  raw  " }, "behavior": "answer", "answer": { "seen": "b" } }] }));
     env.scenario("c", json!({ "hooks": [{ "event": "prompt.submit", "matcher": { "text": ["trimmed", "x"] }, "behavior": "answer", "answer": { "seen": "c" } }] }));
@@ -535,13 +578,13 @@ async fn catch_handler_shares_the_beneath_run() {
     assert_eq!(env.trace_count("b", "b:tool.call:begin"), 1, "beneath must run exactly once");
 }
 
-// Design §15.5 (P0): a tool.call rewrite is refused; the chain continues with
-// the original input.
+// Design §15.5 (P0 rule, still true in P1): a tool.call reroute — swapping
+// the tool itself — is refused; the chain continues with the original input.
 #[tokio::test(flavor = "multi_thread")]
-async fn tool_call_rewrites_are_refused() {
+async fn tool_call_reroutes_are_refused() {
     needs_node!();
-    let env = Env::new("rewrite").await;
-    env.scenario("a", json!({ "hooks": [{ "event": "tool.call", "behavior": "next", "ePatch": { "args": { "command": "evil" } } }] }));
+    let env = Env::new("reroute").await;
+    env.scenario("a", json!({ "hooks": [{ "event": "tool.call", "behavior": "next", "ePatch": { "tool": "Edit" } }] }));
     let items = json!({ "a": env.spec("a", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
@@ -551,8 +594,101 @@ async fn tool_call_rewrites_are_refused() {
         json!({ "tool": "bash", "args": { "command": "ls" } }),
         "the logged call runs as logged (host spelling)"
     );
-    let line = env.runtime.wait_report_containing("rewrote the arguments of Bash", Duration::from_secs(10)).await;
+    let line = env.runtime.wait_report_containing("rerouted the call from Bash to Edit", Duration::from_secs(10)).await;
     assert!(line.contains("a: tool.call hook skipped"), "unexpected report: {line}");
+}
+
+// Design §15.5 (P1): an args rewrite now passes through — the rewritten args
+// run beneath unchanged, and the event settles with them so the engine
+// re-walks the permission policy.
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_call_args_rewrites_pass_through() {
+    needs_node!();
+    let env = Env::new("args-rewrite").await;
+    env.scenario("a", json!({ "hooks": [{ "event": "tool.call", "behavior": "next", "ePatch": { "args": { "command": "ls -la" } } }] }));
+    let items = json!({ "a": env.spec("a", json!({})) });
+    let _ready = env.hello_with(items, default_budgets()).await;
+
+    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "bash", "args": { "command": "ls" } })).await;
+    assert_eq!(settled, json!({ "tool": "bash", "args": { "command": "ls -la" } }));
+    assert!(env.trace("a").contains("a:tool.call:begin"));
+    // No refusal report: the rewrite is served, not skipped.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(500) {
+        assert!(
+            env.runtime.take(|frame| frame.get("method").and_then(Value::as_str) == Some("mod.report")).is_none(),
+            "an args rewrite must not report a skip"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+// Design §15.5 (P1): a `{result}` answer takes the tool.call event over — the
+// tool does not execute and the object rides back to the runtime as-is.
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_call_result_takeover_reaches_the_runtime() {
+    needs_node!();
+    let env = Env::new("takeover").await;
+    env.scenario(
+        "a",
+        json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "result": { "value": "blocked by policy", "isError": true } } }] }),
+    );
+    let items = json!({ "a": env.spec("a", json!({})) });
+    let _ready = env.hello_with(items, default_budgets()).await;
+
+    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "bash", "args": {} })).await;
+    assert_eq!(settled, json!({ "result": { "value": "blocked by policy", "isError": true } }));
+}
+
+// Design §15.5 (P1): an invalid `{result}` shape is a chain error — the hook
+// skips with a report and the chain continues from its input; a non-object
+// `{args}` rewrite fails the same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_call_invalid_answer_shapes_skip_the_hook() {
+    needs_node!();
+    let env = Env::new("bad-shapes").await;
+    env.scenario("badresult", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "result": "text, not an object" } }] }));
+    env.scenario("nullvalue", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "result": { "value": null } } }] }));
+    env.scenario("badiserror", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "result": { "value": "x", "isError": "yes" } } }] }));
+    env.scenario("badargs", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "args": "not an object" } }] }));
+    let items = json!({
+        "badresult": env.spec("badresult", json!({})),
+        "nullvalue": env.spec("nullvalue", json!({})),
+        "badiserror": env.spec("badiserror", json!({})),
+        "badargs": env.spec("badargs", json!({})),
+    });
+    let _ready = env.hello_with(items, default_budgets()).await;
+
+    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "bash", "args": { "command": "ls" } })).await;
+    // Every hook skipped: the event settles with the original input.
+    assert_eq!(settled, json!({ "tool": "bash", "args": { "command": "ls" } }));
+    env.runtime.wait_report_containing("badresult: tool.call hook skipped: answered with an invalid result takeover", Duration::from_secs(10)).await;
+    env.runtime.wait_report_containing("nullvalue: tool.call hook skipped: answered with an invalid result takeover", Duration::from_secs(10)).await;
+    env.runtime.wait_report_containing("badiserror: tool.call hook skipped: answered with an invalid result takeover", Duration::from_secs(10)).await;
+    env.runtime.wait_report_containing("badargs: tool.call hook skipped: answered with an invalid args rewrite", Duration::from_secs(10)).await;
+}
+
+// Design §5.3: tool.check passes its `{decision}` three-value answers through
+// to the runtime; a decision outside the three values is a chain error.
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_check_decisions_pass_through() {
+    needs_node!();
+    let env = Env::new("tool-check").await;
+    env.scenario("gate", json!({ "hooks": [{ "event": "tool.check", "behavior": "answer", "answer": { "decision": "ask", "reason": "confirm?" } }] }));
+    let items = json!({ "gate": env.spec("gate", json!({})) });
+    let _ready = env.hello_with(items, default_budgets()).await;
+
+    let settled = env.runtime.raise("tool.check", Some("s1"), json!({ "tool": "bash" })).await;
+    assert_eq!(settled, json!({ "decision": "ask", "reason": "confirm?" }));
+
+    let env2 = Env::new("tool-check-bad").await;
+    env2.scenario("gate", json!({ "hooks": [{ "event": "tool.check", "behavior": "answer", "answer": { "decision": "maybe" } }] }));
+    let items = json!({ "gate": env2.spec("gate", json!({})) });
+    let _ready = env2.hello_with(items, default_budgets()).await;
+    let settled = env2.runtime.raise("tool.check", Some("s1"), json!({ "tool": "bash" })).await;
+    assert_eq!(settled, json!({ "tool": "bash" }), "an invalid decision skips the hook");
+    let line = env2.runtime.wait_report_containing("answered with an invalid decision", Duration::from_secs(10)).await;
+    assert!(line.contains("gate: tool.check hook skipped"), "unexpected report: {line}");
 }
 
 // Design §15.8: the broker maps Claude Code tool names both ways.
@@ -789,6 +925,70 @@ async fn config_reload_unloads_disabled_mods() {
     let mods = status["mods"].as_array().unwrap();
     assert_eq!(mods.len(), 1, "b should be gone: {status}");
     assert_eq!(mods[0]["name"], "a");
+}
+
+// ---------------------------------------------------------------------------
+// $.ui.ask (design §7.3): mod → broker pending → runtime mod.ask → broker.answer
+// ---------------------------------------------------------------------------
+
+// The pending-ask table is process-global and the disconnect test's
+// `fail_all_asks` sweeps every ask in it, so the two tests serialize.
+static ASK_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ui_ask_round_trips_through_the_runtime() {
+    needs_node!();
+    let _guard = ASK_TESTS.lock().await;
+    let env = Env::new("ui-ask").await;
+    env.scenario("asking", json!({ "hooks": [{ "event": "turn.complete", "behavior": "single_call", "call": ["ui", "ask", { "message": "Proceed?", "choices": ["yes", "no"] }] }] }));
+    let items = json!({ "asking": env.spec("asking", json!({})) });
+    let _ready = env.hello_with(items, default_budgets()).await;
+
+    // The event only settles once the test (as the runtime) answers.
+    let event_id = env.runtime.send_event("turn.complete", Some("s1"), json!({ "turnId": 1 }));
+    let ask = env.runtime.wait_notify("mod.ask", Duration::from_secs(30)).await;
+    assert_eq!(ask["args"]["message"], "Proceed?");
+    assert_eq!(ask["args"]["choices"], json!(["yes", "no"]));
+    assert_eq!(ask["mod_name"], "asking");
+    assert_eq!(ask["session"], "s1");
+    let ask_id = ask["args"]["id"].as_str().expect("an ask id").to_string();
+
+    // The runtime's answer resolves the pending ask; the runner's `$` call
+    // settles with the op's `{value}` shape.
+    let answer_id = env.runtime.call_broker("answer", json!({ "id": ask_id, "value": "yes" }));
+    let ack = env.runtime.wait_result(answer_id, "broker.answer", Duration::from_secs(10)).await.expect("answer ack");
+    assert_eq!(ack, json!({ "resolved": true }));
+
+    let settled = env.runtime.wait_result(event_id, "turn.complete", Duration::from_secs(30)).await.expect("event settles");
+    assert_eq!(settled, json!({ "ok": true, "value": { "value": "yes" } }));
+    env.wait_trace("asking", r#"asking:call:ui.ask:{"ok":true,"value":{"value":"yes"}}"#).await;
+
+    // Answering an id that names no ask is a not-found, not a silent ok.
+    let bogus = env.runtime.call_broker("answer", json!({ "id": "ask-gone", "value": "x" }));
+    let err = env.runtime.wait_result(bogus, "bogus answer", Duration::from_secs(10)).await.unwrap_err();
+    assert!(err.contains("no pending ask"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ui_ask_fails_when_the_runtime_disconnects() {
+    needs_node!();
+    let _guard = ASK_TESTS.lock().await;
+    let env = Env::new("ui-ask-disconnect").await;
+    env.scenario("asking", json!({ "hooks": [{ "event": "turn.complete", "behavior": "single_call", "call": ["ui", "ask", { "message": "Still there?" }] }] }));
+    let items = json!({ "asking": env.spec("asking", json!({})) });
+    let _ready = env.hello_with(items, default_budgets()).await;
+
+    let _event_id = env.runtime.send_event("turn.complete", Some("s1"), json!({}));
+    let ask = env.runtime.wait_notify("mod.ask", Duration::from_secs(30)).await;
+    assert_eq!(ask["args"]["choices"], Value::Null, "no choices field when the mod sent none");
+
+    // The runtime goes away mid-question: the ask aborts, the runner's call
+    // errors, and its trace keeps the proof (the event result itself has no
+    // runtime left to reach).
+    env.runtime.disconnect().await;
+    env.wait_trace("asking", r#"asking:call:ui.ask:{"ok":false"#).await;
+    let trace = env.trace("asking");
+    assert!(trace.contains("runtime disconnected"), "{trace}");
 }
 
 // ---------------------------------------------------------------------------

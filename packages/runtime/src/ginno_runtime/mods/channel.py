@@ -47,15 +47,20 @@ _HELLO_TIMEOUT_S = 30.0
 _BACKOFF_START_S = 1.0
 _BACKOFF_MAX_S = 30.0
 
-# P0 WS events (design §6.1): the notify methods the broker sends us and the
-# WS event each maps to. ``mod.status`` (lifecycle) is special-cased below —
-# it updates the local cache and rides ``mod.state.changed``.
+# P0/P1 WS events (design §6.1): the notify methods the broker sends us and
+# the WS event each maps to. ``mod.status`` (lifecycle) is special-cased
+# below — it updates the local cache and rides ``mod.state.changed``.
 _NOTIFY_TO_WS = {
     "bands.update": "mod.bands",       # session-scoped
     "toast": "mod.toast",              # global
     "status": "mod.ui.status",         # global ($ ui.status line; avoids the
     #                                      lifecycle ``mod.status`` collision)
+    "mod.ask": "mod.ask",              # session-scoped ($.ui.ask, design §7.3)
 }
+
+# Notify events that belong to ONE session (routed to that session's sockets
+# only); everything else in _NOTIFY_TO_WS fans out globally.
+_SESSION_SCOPED_WS = {"mod.bands", "mod.ask"}
 
 
 class ChannelNotConnected(RuntimeError):
@@ -308,6 +313,12 @@ class ModChannel:
         self._writer = None
         self._registered = None
         self.mods_state.clear()
+        # Mod-registered slash commands live only as long as the connection:
+        # a reloaded runner re-registers; a dead one must not leave ghosts
+        # (commands/mod_commands.py — in-memory by design).
+        from ..commands import mod_commands
+
+        mod_commands.clear()
         for fut in list(self._pending.values()):
             if not fut.done():
                 fut.set_exception(ChannelNotConnected("connection lost"))
@@ -389,7 +400,10 @@ class ModChannel:
         ns = str(frame.get("ns") or "")
         method = str(frame.get("method") or "")
         try:
-            value = await ops.handle(ns, method, frame.get("args") or {}, str(frame.get("session") or ""))
+            value = await ops.handle(
+                ns, method, frame.get("args") or {}, str(frame.get("session") or ""),
+                mod=str(frame.get("mod") or ""),
+            )
             reply = {"v": PROTOCOL_VERSION, "id": frame_id, "kind": "result", "ok": True, "value": value}
         except ops.OpError as e:
             reply = {"v": PROTOCOL_VERSION, "id": frame_id, "kind": "result", "ok": False, "code": e.code, "message": str(e)}
@@ -422,12 +436,21 @@ class ModChannel:
                 entry.update({k: v for k, v in args.items() if k != "name"})
             await self._broadcast(None, "mod.state.changed", args)
             return
+        # The Notify frame spells the owning mod "mod_name" (Call frames use
+        # "mod" — broker seam, 2026-10-08); the frontend events expect "mod",
+        # so fold it in unless args already carry it.
+        mod_name = frame.get("mod_name")
+        if mod_name and isinstance(args, dict) and "mod" not in args:
+            args = {**args, "mod": mod_name}
         ws_event = _NOTIFY_TO_WS.get(method)
         if ws_event is None:
             log.debug("mods notify with unknown method=%s dropped", method)
             return
-        if ws_event == "mod.bands":
-            await self._broadcast(session, ws_event, args)
+        if ws_event in _SESSION_SCOPED_WS:
+            # The broker may carry the session at the frame level (§6.1 notify
+            # shape) or inside args ($.ui.ask spells it there) — accept both.
+            sid = session or (args.get("session") if isinstance(args, dict) else None)
+            await self._broadcast(sid or None, ws_event, args)
         else:
             await self._broadcast(None, ws_event, args)
 

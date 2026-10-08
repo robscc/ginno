@@ -36,11 +36,11 @@
 
 **claude-music 的 SessionStart hook 会自动 `brew install mpv`**(缺 mpv 时),并改写 `~/.claude/settings.json` 注入 statusLine。classic hooks = 任意 shell,当前无任何 grants 管控——这与 JS mods 的 IPC 边界管控形成反差。
 
-**Follow-up(P1)**:
+## Follow-up(P1)：
 - classic hooks 纳入 grants(命令白名单/首次运行确认),至少对"包管理器调用"和"settings 写入"设默认拒。
 - `HookResult.inject`(additionalContext)接进 state(runtime 侧已记 P1)。
-- Makefile 加 `mod-broker`/`mod-runner` target;Tauri 嵌入 broker(桌面形态)。
-- 前端 `mod.ui.press` WS 帧 → channel 的转发接线(引擎分支已留)。
+- ✅ Makefile 加 `mod-broker`/`mod-runner` target;Tauri 嵌入 broker(桌面形态)——2026-10-08 落地:`make mod-broker` 产 CLI 到 `<repo>/target/release/`(Python 发现梯子位),`make mod-broker`/`make mod-runner` 挂进 `make app` 依赖链并前置运行中防呆(FORCE=1 跳过);desktop 以 path dependency 编译 broker crate 进程内,启动时监听 app 数据目录 socket,spawn sidecar 前注入 `GINNO_MOD_BROKER_SOCK`/`GINNO_MOD_BROKER_TOKEN`/`GINNO_MOD_RUNNER_PATH`(资源目录的 mod-runner.mjs);失败不注入,Python 走原发现梯子。
+- ✅ 前端 `mod.ui.press` WS 帧 → channel 的转发接线(引擎分支已留)——commit 2e1f832。
 
 ## 已知限制
 

@@ -96,8 +96,13 @@ export function createModsApi(binding: ApiBinding): ModsApi {
         return call('ui.panes', {})
       },
       ask(question: string, options?: readonly string[] | AskOptions): Promise<string> {
+        // The wire contract is `{ message, choices? }`; the op answers
+        // `{ value }` (or the call rejects on the 60 s cap / a disconnect).
         const normalized: AskOptions = Array.isArray(options) ? { options } : options as AskOptions | undefined ?? {}
-        return call('ui.ask', { question, ...normalized })
+        return call<{ value?: unknown }>('ui.ask', {
+          message: question,
+          ...(normalized.options === undefined ? {} : { choices: normalized.options }),
+        }).then(answer => answer?.value as string)
       },
       resolve: () => uiElements(),
     }),

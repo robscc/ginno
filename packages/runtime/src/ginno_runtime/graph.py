@@ -1018,8 +1018,23 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
         agent = _resolve_agent(_turn_agent_id(state, config))
         # Attribution tag for deny/blocked bubbles below (see agent_node).
         aid = _turn_agent_id(state, config)
-        pending = state.get("pending_tool_calls") or []
-        for tc in pending:
+        pending = list(state.get("pending_tool_calls") or [])
+        # The AIMessage that issued these calls (the latest one carrying
+        # tool_calls): mods {args} rewrites and {result} takeovers must amend
+        # IT — the tools node executes the latest AIMessage's tool_calls, not
+        # the pending list. model_copy keeps the message id, so add_messages
+        # replaces it in place instead of duplicating it.
+        ai_msg = next(
+            (
+                m
+                for m in reversed(state.get("messages") or [])
+                if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
+            ),
+            None,
+        )
+        _ai_changed = False
+        _extra_msgs: list = []  # takeover ToolMessages + mod-injected context
+        for tc in list(pending):
             name = tc.get("name", "")
             args = tc.get("args", {})
 
@@ -1103,33 +1118,140 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                             },
                         )
 
-            # 1.5) Mods tool.call (claude-code-mods-design.md §5.3): same
-            # position as the classic PreToolUse hooks — still BEFORE the
-            # permission policy. Observe + {deny} in P0; the deny renders with
-            # the same bubble shape as the hooks block. Async, but zero-cost
+            # 1.5) Mods tool.call (claude-code-mods-design.md §5.3/§15.5):
+            # same position as the classic PreToolUse hooks — still BEFORE the
+            # permission policy. Consumption contract (P1):
+            #   {"deny": reason} → blocked bubble, same shape as the hooks block;
+            #   {"args": {...}}  → substitute the rewritten args AND re-run the
+            #                      policy on them; the tools node must execute
+            #                      the rewritten call too, so the issuing
+            #                      AIMessage gets a same-id replacement;
+            #   {"result": {"value", "isError"?}} → takeover: the tool never
+            #                      runs, value becomes its ToolMessage (error
+            #                      status when isError);
+            #   {"inject": text} → extra context, appended to this turn's
+            #                      message stream on the steer channel.
+            # Priority deny > result > args; inject may coexist. Zero-cost
             # (short-circuit inside) when no mod is connected.
+            _thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "")
+            _mod_action: dict | None = None
             try:
                 from .mods.events import dispatch_tool_call
 
-                _mod_deny = await dispatch_tool_call(
-                    str(((config or {}).get("configurable") or {}).get("thread_id") or ""),
-                    name,
-                    args,
-                )
+                _mod_action = await dispatch_tool_call(_thread_id, name, args)
             except Exception:
-                _mod_deny = None
-            if _mod_deny:
-                return Command(
-                    goto="agent",
-                    update={
-                        "messages": [
-                            AIMessage(
-                                content=f"{BLOCK_PREFIX}{name}] mod denied: {_mod_deny}",
-                                additional_kwargs={"agent_id": aid} if aid else {},
+                _mod_action = None
+            if isinstance(_mod_action, dict):
+                if _mod_action.get("deny"):
+                    return Command(
+                        goto="agent",
+                        update={
+                            "messages": [
+                                AIMessage(
+                                    content=f"{BLOCK_PREFIX}{name}] mod denied: {_mod_action['deny']}",
+                                    additional_kwargs={"agent_id": aid} if aid else {},
+                                )
+                            ]
+                        },
+                    )
+                _took = _mod_action.get("result")
+                if isinstance(_took, dict) and "value" in _took:
+                    _tc_id = tc.get("id")
+                    if ai_msg is not None and _tc_id:
+                        import json as _json
+
+                        _val = _took.get("value")
+                        _content = (
+                            _val
+                            if isinstance(_val, str)
+                            else _json.dumps(_val, ensure_ascii=False, default=str)
+                        )
+                        _extra_msgs.append(
+                            ToolMessage(
+                                content=_content,
+                                tool_call_id=_tc_id,
+                                name=name,
+                                status="error" if _took.get("isError") else "success",
                             )
-                        ]
-                    },
-                )
+                        )
+                        ai_msg = ai_msg.model_copy(
+                            update={"tool_calls": [c for c in ai_msg.tool_calls if c.get("id") != _tc_id]}
+                        )
+                        pending = [p for p in pending if p.get("id") != _tc_id]
+                        _ai_changed = True
+                        # Taken over: no policy, no execution for this call.
+                        continue
+                    # No id / no AIMessage to amend: a takeover we cannot
+                    # represent must not silently swallow the call — run it.
+                _rewritten = _mod_action.get("args")
+                if isinstance(_rewritten, dict) and _rewritten and _rewritten != args:
+                    _tc_id = tc.get("id")
+                    if ai_msg is not None and _tc_id:
+                        tc = {**tc, "args": _rewritten}
+                        pending = [p if p.get("id") != _tc_id else tc for p in pending]
+                        ai_msg = ai_msg.model_copy(
+                            update={
+                                "tool_calls": [
+                                    {**c, "args": _rewritten} if c.get("id") == _tc_id else c
+                                    for c in ai_msg.tool_calls
+                                ]
+                            }
+                        )
+                        args = _rewritten  # the policy below re-decides on these
+                        _ai_changed = True
+                _inject = _mod_action.get("inject")
+                if isinstance(_inject, str) and _inject.strip():
+                    _extra_msgs.append(
+                        HumanMessage(
+                            content=(
+                                f'Message from the "{_mod_action["mod"]}" mod:\n{_inject}'
+                                if _mod_action.get("mod")
+                                else _inject
+                            ),
+                            additional_kwargs={
+                                STEER_CONTEXT_KEY: {
+                                    "origin": "mod",
+                                    "mod": _mod_action.get("mod") or "",
+                                }
+                            },
+                        )
+                    )
+
+            # 1.6) Mods tool.check (§5.3, P1): dispatched after the tool.call
+            # chain, BEFORE policy.decide. allow → fall through to the policy;
+            # deny → blocked bubble; ask → deny for now with the reason logged
+            # (its confirmation UI lands later on the $.ui.ask base).
+            _mod_check: dict | None = None
+            try:
+                from .mods.events import dispatch_tool_check
+
+                _mod_check = await dispatch_tool_check(_thread_id, name, args)
+            except Exception:
+                _mod_check = None
+            if isinstance(_mod_check, dict):
+                _decision = str(_mod_check.get("decision") or "")
+                _reason = str(_mod_check.get("reason") or "denied by mod (tool.check)")
+                if _decision in ("deny", "ask"):
+                    if _decision == "ask":
+                        import logging as _logging
+
+                        _logging.getLogger("ginno.mods").warning(
+                            "mods tool.check ask treated as deny session=%s tool=%s reason=%s",
+                            _thread_id,
+                            name,
+                            _reason,
+                        )
+                    return Command(
+                        goto="agent",
+                        update={
+                            "messages": [
+                                AIMessage(
+                                    content=f"{BLOCK_PREFIX}{name}] mod denied: {_reason}",
+                                    additional_kwargs={"agent_id": aid} if aid else {},
+                                )
+                            ]
+                        },
+                    )
 
             # 2) permission policy (skipped under bypass)
             if not bypass:
@@ -1160,6 +1282,16 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
                             ]
                         },
                     )
+        # Mods rewrote something (args / takeover / inject): flush the amended
+        # AIMessage (same id → replaced in place), the takeover ToolMessages
+        # and the injected context alongside the reduced pending list. All
+        # calls taken over → back to the agent directly (nothing to execute).
+        if _ai_changed or _extra_msgs:
+            msgs = ([ai_msg] if _ai_changed and ai_msg is not None else []) + _extra_msgs
+            return Command(
+                goto="tools" if pending else "agent",
+                update={"messages": msgs, "pending_tool_calls": pending},
+            )
         return Command(goto="tools")
 
     return permission_node

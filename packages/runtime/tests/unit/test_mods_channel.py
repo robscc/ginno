@@ -329,12 +329,16 @@ def stub_channel(monkeypatch):
 
 async def test_tool_call_deny_shape(stub_channel):
     stub_channel.replies["tool.call"] = {"tool": "bash", "deny": {"reason": "blast radius"}}
-    assert await mods_events.dispatch_tool_call("s1", "bash", {"cmd": "rm"}) == "blast radius"
+    assert await mods_events.dispatch_tool_call("s1", "bash", {"cmd": "rm"}) == {
+        "deny": "blast radius"
+    }
 
 
 async def test_tool_call_deny_nested_answer(stub_channel):
     stub_channel.replies["tool.call"] = {"answer": {"deny": True}}
-    assert await mods_events.dispatch_tool_call("s1", "bash", {}) == "denied by mod"
+    assert await mods_events.dispatch_tool_call("s1", "bash", {}) == {
+        "deny": "denied by mod"
+    }
 
 
 async def test_tool_call_no_deny_passes(stub_channel):
@@ -424,9 +428,9 @@ async def test_classic_prompt_rewrite_and_block(stub_channel, monkeypatch):
     monkeypatch.setattr(
         server_shared, "_hooks", StubHooks([HookResult(rewrite="rewritten")])
     )
-    text, blocked = await mods_events.dispatch_prompt_submit("s1", "original")
-    assert (text, blocked) == ("rewritten", False)
+    r = await mods_events.dispatch_prompt_submit("s1", "original")
+    assert (r.text, r.blocked) == ("rewritten", False)
 
     monkeypatch.setattr(server_shared, "_hooks", StubHooks([HookResult(block=True, reason="no")]))
-    text, blocked = await mods_events.dispatch_prompt_submit("s1", "original")
-    assert blocked is True
+    r = await mods_events.dispatch_prompt_submit("s1", "original")
+    assert r.blocked is True and r.source == "classic"

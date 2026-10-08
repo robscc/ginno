@@ -24,12 +24,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from .. import paths
+from .grants import SETTINGS_HOOK_MOD
+from .grants import classic_grant_for, classify_hook_command
+
+log = logging.getLogger("ginno.hooks")
 
 HookEventName = Literal[
     "SessionStart",
@@ -134,12 +139,65 @@ class HookDispatcher:
     def plugin_hook_count(self) -> int:
         return sum(len(v) for v in self._plugin_hooks.values())
 
+    def _notify_grant_blocked(self, mod: str, cmd: str, danger: list[str]) -> None:
+        """Toast the user that a dangerous hook command was refused by the
+        default ``ask`` grant (fire-and-forget; never raises). The frontend
+        consumes the same ``mod.toast`` WS event broker toasts ride."""
+        try:
+            from ..server_shared import spawn_bg
+
+            spawn_bg(self._push_grant_blocked_toast(mod, cmd, danger))
+        except Exception:  # noqa: BLE001 — notification is best-effort
+            log.exception("grants blocked-hook toast failed")
+
+    @staticmethod
+    async def _push_grant_blocked_toast(mod: str, cmd: str, danger: list[str]) -> None:
+        try:
+            from ..server_shared import _push_global_event
+
+            await _push_global_event(
+                "mod.toast",
+                {
+                    "level": "warn",
+                    "text": (
+                        f'Mods grants blocked a "{mod}" hook command '
+                        f"({', '.join(danger)}) — denied by the default ask grant. "
+                        "Allow it in the Mods settings page if you trust this mod."
+                    ),
+                },
+            )
+        except Exception:  # noqa: BLE001 — notification is best-effort
+            pass
+
     async def dispatch(self, event: HookEvent, matcher: str | None = None) -> list[HookResult]:
         results: list[HookResult] = []
         for h in self._hooks_for(event.name, matcher):
             cmd = h.get("command")
             if not cmd:
                 continue
+            # Grants gate (§8 安全模型): classic hooks are arbitrary shell with
+            # no broker IPC boundary in front of them, so dangerous commands
+            # (package-manager installs / host settings writes — see
+            # hooks/grants.py) are refused unless the mod's grant says allow.
+            # Non-dangerous commands always run.
+            mod = h.get("plugin") or SETTINGS_HOOK_MOD
+            danger = sorted(classify_hook_command(cmd))
+            if danger:
+                grant = classic_grant_for(self.settings, mod)
+                if grant != "allow":
+                    log.warning(
+                        "classic hook blocked by grants (mod=%s grant=%s danger=%s event=%s cmd=%.160r)",
+                        mod,
+                        grant,
+                        ",".join(danger),
+                        event.name,
+                        cmd,
+                    )
+                    if grant == "ask":
+                        # Denied by default: tell the user via the mods toast
+                        # channel so they can flip the grant in Mods settings.
+                        self._notify_grant_blocked(mod, cmd, danger)
+                    continue
             # Plugin hooks run with CLAUDE_PLUGIN_ROOT=<mod dir> (§10 bridging).
             env: dict[str, str] | None = None
             root = h.get("plugin_root")

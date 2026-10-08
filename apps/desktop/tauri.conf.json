@@ -30,7 +30,7 @@
     "active": true,
     "targets": ["app", "dmg"],
     "icon": ["icons/icon.icns", "icons/icon.png"],
-    "resources": ["resources/runtime"],
+    "resources": ["resources/runtime", "resources/mod-runner.mjs"],
     "macOS": {
       "signingIdentity": "Ginno Local Code Signing"
     }

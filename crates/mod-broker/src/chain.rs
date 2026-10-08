@@ -23,7 +23,8 @@ use crate::protocol::{
 };
 use crate::registry::HookDesc;
 
-/// A refused `tool.call` rewrite (`next` with a changed tool/args, P0).
+/// A refused `tool.call` reroute (`next` that swaps the tool; since P1 an
+/// args rewrite passes through and the engine re-walks the permission policy).
 pub const CODE_REWRITE_REFUSED: &str = "rewrite-refused";
 /// A runner without a `.catch` handler answers a catch-call with this code.
 pub const CODE_NO_CATCH: &str = "no-catch";
@@ -198,6 +199,12 @@ impl Failure {
         }
     }
 
+    /// The hook answered in a shape this event never accepts (§15.5): skipped
+    /// like a throw, but the report names the answer, not a throw.
+    fn bad_answer(line: String) -> Failure {
+        Failure { kind: "throw".to_string(), message: line.clone(), line }
+    }
+
     fn timeout(limit_ms: u64) -> Failure {
         Failure {
             kind: "timeout".to_string(),
@@ -236,8 +243,10 @@ fn result_undefined(frame_id: u64) -> Frame {
     }
 }
 
-/// P0 `tool.call` rewrite check (design §15.5): the logged call runs as
-/// logged. Rewrites are P1; for now they are refused with DSH's wording.
+/// `tool.call` `next` check (design §15.5): the tool itself cannot be swapped
+/// ("rerouted the call from X to Y"); an args rewrite is P1 and runs beneath
+/// unchanged — the engine re-checks the rewritten args against the permission
+/// policy before the tool executes, so invocation semantics are untouched.
 fn validate_tool_call(next_e: &Value, original: &Value) -> Option<String> {
     let name_of = |value: Option<&Value>| match value {
         Some(Value::String(text)) => text.clone(),
@@ -249,8 +258,60 @@ fn validate_tool_call(next_e: &Value, original: &Value) -> Option<String> {
     if original_tool != next_tool {
         return Some(format!("rerouted the call from {} to {}", name_of(original_tool), name_of(next_tool)));
     }
-    if original.get("args") != next_e.get("args") {
-        return Some(format!("rewrote the arguments of {}", name_of(original_tool)));
+    None
+}
+
+/// Shape checks the broker enforces on tool-pipeline answers (design §15.5
+/// P1): a `{result}` takeover must carry a stringifiable `value` and, when
+/// present, a boolean `isError`; an `{args}` rewrite must be an object; a
+/// `tool.check` decision must be one of the three values. A bad shape is a
+/// chain error — the hook skips with a report and the chain continues from
+/// its input, so a malformed takeover never reaches the runtime as one.
+fn validate_event_answer(ctx: &ChainCtx, answer: &Value) -> Option<Failure> {
+    let fields = answer.as_object()?;
+    match ctx.event.as_str() {
+        "tool.call" => {
+            if let Some(result) = fields.get("result") {
+                return validate_takeover_result(result);
+            }
+            if let Some(args) = fields.get("args") {
+                if !args.is_object() {
+                    return Some(Failure::bad_answer(
+                        "answered with an invalid args rewrite: args must be an object".to_string(),
+                    ));
+                }
+            }
+            None
+        }
+        "tool.check" => match fields.get("decision") {
+            Some(decision) if matches!(decision.as_str(), Some("allow" | "deny" | "ask")) => None,
+            Some(other) => Some(Failure::bad_answer(format!(
+                "answered with an invalid decision {other}: must be \"allow\", \"deny\", or \"ask\""
+            ))),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
+/// The `{result}` takeover shape: `{ value: string | object, isError?: bool }`.
+fn validate_takeover_result(result: &Value) -> Option<Failure> {
+    let bad = |detail: String| {
+        Some(Failure::bad_answer(format!(
+            "answered with an invalid result takeover: {detail} (needs {{ value, isError? }})"
+        )))
+    };
+    let Some(fields) = result.as_object() else {
+        return bad("the result must be an object".to_string());
+    };
+    match fields.get("value") {
+        Some(Value::String(_)) | Some(Value::Number(_)) | Some(Value::Bool(_)) | Some(Value::Object(_)) => {}
+        _ => return bad("value is required and must be a string or an object".to_string()),
+    }
+    if let Some(is_error) = fields.get("isError") {
+        if !is_error.is_boolean() {
+            return bad("isError must be a boolean".to_string());
+        }
     }
     None
 }
@@ -546,7 +607,16 @@ async fn answer_loop(
                         cell.notify_settled();
                     });
                 }
-                Some(HookMsg::Reply { res }) => break classify_reply(res, phase),
+                Some(HookMsg::Reply { res }) => {
+                    let verdict = classify_reply(res, phase);
+                    break match verdict {
+                        Verdict::Answered(value) => match validate_event_answer(ctx, &value) {
+                            Some(failure) => Verdict::Failed(failure),
+                            None => Verdict::Answered(value),
+                        },
+                        other => other,
+                    };
+                }
                 Some(HookMsg::RunnerDead) => break Verdict::Failed(Failure::throw("runner dead".to_string())),
                 None => break Verdict::Failed(Failure::throw("hook channel closed".to_string())),
             },

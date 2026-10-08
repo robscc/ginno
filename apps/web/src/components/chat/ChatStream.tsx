@@ -67,6 +67,7 @@ import { useChatStreamEngine, HOME_SLOT } from "./useChatStreamEngine";
 import { useSummarizeFlow } from "./useSummarizeFlow";
 import { SubagentPlanCard } from "./subagentPlanCard";
 import { ModBand } from "./mod/ModBand";
+import { ModAskCard, type ModAskState } from "./mod/ModAskCard";
 import type { ModBandSnapshot } from "./mod/modElements";
 
 export function ChatStream({
@@ -150,6 +151,8 @@ export function ChatStream({
   // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):按 sid 存的
   // band 快照,composer 上方渲染。会话内瞬态,本地 state 即可,不进全局 store。
   const [modBands, setModBands] = useState<Record<string, ModBandSnapshot>>({});
+  // $.ui.ask(§7.3):按 sid 存的待答问题,浮层渲染(见文件尾部 ModAskCard)。
+  const [modAsks, setModAsks] = useState<Record<string, ModAskState | null>>({});
 
   const {
     activeSidRef, curSessionIdRef, storeRef, liveBySessionRef,
@@ -160,13 +163,13 @@ export function ChatStream({
     dropSteer, showComposerHint, enqueueSteer, recallSteers,
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
-    sendModUiPress,
+    sendModUiPress, sendModUiAnswer,
   } = useChatStreamEngine({
     g, steerQ, session, onUsageChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
-    setFileAttachments, setComposerHint, setProposeResult, setModBands,
+    setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
     finishSynthesisWait,
@@ -2062,6 +2065,14 @@ export function ChatStream({
         </div>
       </div>
         </>
+      )}
+      {session && modAsks[session.id] && (
+        // $.ui.ask 浮层(claude-code-mods-design.md §7.3):mod 的提问独立于
+        // turn(interrupt),session 切走即不可见;回答经 engine 回发后乐观清卡。
+        <ModAskCard
+          ask={modAsks[session.id]!}
+          onAnswer={(value) => sendModUiAnswer(session.id, modAsks[session.id]!.id, value)}
+        />
       )}
     </div>
   );

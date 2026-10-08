@@ -38,6 +38,7 @@ import {
   type Block,
 } from "@/components/chat/blocks";
 import type { ModBandSnapshot } from "@/components/chat/mod/modElements";
+import type { ModAskState } from "@/components/chat/mod/ModAskCard";
 import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToastHost";
 import type {
   ContextChange,
@@ -98,6 +99,13 @@ export interface EngineDeps {
       | Record<string, ModBandSnapshot>
       | ((p: Record<string, ModBandSnapshot>) => Record<string, ModBandSnapshot>),
   ) => void;
+  // $.ui.ask(claude-code-mods-design.md §7.3):按 sid 存的待答问题(同一会话
+  // 同时最多展示最新一条),渲染归 ChatStream 浮层 ModAskCard。
+  setModAsks: (
+    v:
+      | Record<string, ModAskState | null>
+      | ((p: Record<string, ModAskState | null>) => Record<string, ModAskState | null>),
+  ) => void;
   // Refs owned by the component (shared with composer / scroll code there).
   stickRef: { current: boolean };
   connectRef: { current: () => void };
@@ -128,7 +136,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
-    setFileAttachments, setComposerHint, setProposeResult, setModBands,
+    setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
   } = deps;
@@ -1648,6 +1656,29 @@ export function useChatStreamEngine(deps: EngineDeps) {
         }
         break;
       }
+      case "mod.ask": {
+        // $.ui.ask(§7.3):问题浮层,按 sid 存最新一条。choices 可为字符串,
+        // 也兼容 {label}/{value} 对象形状;自由输入恒可用。
+        const rawChoices = Array.isArray(ev.choices) ? ev.choices : [];
+        const ask: ModAskState = {
+          id: String(ev.id ?? ""),
+          mod: typeof ev.mod === "string" ? ev.mod : undefined,
+          message: String(ev.message ?? ""),
+          choices: rawChoices
+            .map((c) =>
+              typeof c === "string"
+                ? c
+                : c && typeof c === "object"
+                  ? String((c as { label?: unknown; value?: unknown }).label ??
+                    (c as { value?: unknown }).value ?? "")
+                  : "",
+            )
+            .filter((c) => c !== ""),
+        };
+        if (!ask.id) break; // 无法回发的问题直接丢弃
+        setModAsks((prev) => ({ ...prev, [sid]: ask }));
+        break;
+      }
     }
     syncDisplay(sid);
   }
@@ -1658,6 +1689,18 @@ export function useChatStreamEngine(deps: EngineDeps) {
     if (!sock || sock.readyState !== WebSocket.OPEN) return;
     try {
       sock.send(JSON.stringify({ type: "mod.ui.press", generation, actionId }));
+    } catch {
+      /* socket closing */
+    }
+  }
+  // $.ui.ask 回答回发(§7.3):乐观清卡——即使 broker 侧已超时/孤儿,回答
+  // 被丢弃也比让用户对着一张死卡片重试好;卡没了问题自然消失。
+  function sendModUiAnswer(sid: string, id: string, value: string) {
+    setModAsks((prev) => (prev[sid] ? { ...prev, [sid]: null } : prev));
+    const sock = socketsRef.current[sid];
+    if (!sock || sock.readyState !== WebSocket.OPEN) return;
+    try {
+      sock.send(JSON.stringify({ type: "mod.ui.answer", id, value }));
     } catch {
       /* socket closing */
     }
@@ -2043,6 +2086,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     recallSteers, flushSteerQueue, dropAbsorbedSteers,
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
-    sendModUiPress,
+    sendModUiPress, sendModUiAnswer,
   };
 }

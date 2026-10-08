@@ -17,6 +17,8 @@
 #     make app        # full rebuild → apps/desktop/target/release/bundle/...
 #     make runtime    # just the PyInstaller bundle (dist/ginno-runtime/)
 #     make web        # just the web static export
+#     make mod-broker # ginno-mod-broker CLI → target/release/ (Python 发现梯子)
+#     make mod-runner # mod-runner.mjs bundle (packages/mod-runner/dist/)
 #     make clean      # remove build artifacts
 #
 # NOTE: `make app` overwrites apps/desktop/target/release/bundle/macos/Ginno.app
@@ -33,13 +35,19 @@ RUNTIME := $(ROOT)/packages/runtime
 # Where the onedir bundle is staged; tauri.conf.json bundles it into
 # Contents/Resources/resources/runtime/ and lib.rs launches the executable.
 RUNTIME_RES := $(ROOT)/apps/desktop/resources/runtime
+# mod-runner.mjs staged beside it; tauri.conf.json bundles both under
+# Contents/Resources/resources/ and lib.rs points GINNO_MOD_RUNNER_PATH at it.
+RUNNER_RES := $(ROOT)/apps/desktop/resources/mod-runner.mjs
 
-.PHONY: all app sidecar runtime web clean help e2e-ui
+.PHONY: all app sidecar runtime web mod-broker mod-runner clean help e2e-ui
 
 all: app
 
 ## app: full rebuild — i18n check + web + runtime bundle + Tauri desktop app (+ dmg)
-app: check sidecar
+# The running-app guard first: rebuilding the runtime bundle in place while a
+# live Ginno still maps it is the known zlib-extract corruption (CLAUDE.md
+# 已知故障 #1). FORCE=1 skips the guard.
+app: check guard-app-not-running mod-broker mod-runner sidecar
 	@# Unlock the dedicated codesign keychain (locked after sleep/reboot). It
 	@# holds the self-signed "Ginno Local Code Signing" identity that keeps a
 	@# stable designated requirement across rebuilds, so macOS TCC grants
@@ -71,7 +79,59 @@ sidecar: runtime
 	mkdir -p $(RUNTIME_RES)
 	rsync -a --delete $(RUNTIME)/dist/ginno-runtime/ $(RUNTIME_RES)/
 	@find $(RUNTIME_RES) -name .DS_Store -delete
+	@# mod-runner rides along as its own bundled resource (plain text, no
+	@# signing concerns — design §11); mod-runner ran before us via app's
+	@# prerequisite order, so the dist file exists.
+	cp $(ROOT)/packages/mod-runner/dist/mod-runner.mjs $(RUNNER_RES)
 	@echo "✅ Runtime bundle → $(RUNTIME_RES)"
+
+## guard-app-not-running: refuse to build while a live Ginno maps the bundle
+# Rebuilding the PyInstaller bundle in place under a running Ginno is the
+# known zlib-extract failure (CLAUDE.md 已知故障 #1: PyInstaller re-opens the
+# archive by path on every lazy extract; swapped bytes → garbage reads → only
+# a restart recovers). Same for the broker/tauri app itself (file locks).
+# FORCE=1 skips the guard for scripted rebuilds that already quit the app.
+guard-app-not-running:
+	@if [ "$(FORCE)" = "1" ]; then \
+	  echo "⚠️  FORCE=1 — running-app guard skipped"; exit 0; \
+	fi; \
+	if pgrep -f "Ginno\.app/Contents/MacOS/Ginno" >/dev/null 2>&1; then \
+	  echo "❌ Ginno.app is running. Replacing its bundle under a live process"; \
+	  echo "   corrupts lazy PyInstaller extracts (zlib errors until restart)."; \
+	  echo "   先完全退出 Ginno 再构建 (⌘Q, not just closing the window)."; \
+	  echo "   (FORCE=1 to override)"; exit 1; \
+	fi; \
+	pids=$$(lsof -t -iTCP:8787 -sTCP:LISTEN 2>/dev/null); \
+	if [ -n "$$pids" ]; then \
+	  busy=""; \
+	  for pid in $$pids; do \
+	    if ps -p $$pid -o args= | grep -qE "ginno-runtime|ginno_runtime\.server|Ginno\.app"; then \
+	      busy="$$busy $$pid"; \
+	    fi; \
+	  done; \
+	  if [ -n "$$busy" ]; then \
+	    echo "❌ Port 8787 is held by a Ginno sidecar ($$busy)."; \
+	    echo "   退出 Ginno（或停掉 pnpm dev:runtime）再构建。(FORCE=1 to override)"; \
+	    exit 1; \
+	  fi; \
+	fi; \
+	echo "✅ No live Ginno / sidecar — safe to rebuild"
+
+## mod-broker: the ginno-mod-broker CLI (dev/web mode — Python spawns it)
+# --target-dir $(ROOT)/target puts the binary exactly on the runtime's
+# discovery ladder (bridge_utils.py: <repo>/target/{debug,release}/). The
+# desktop app does NOT use this binary — it links the crate in-process via a
+# path dependency (design §2: one crate, two hosts).
+mod-broker:
+	cargo build --release --manifest-path $(ROOT)/crates/mod-broker/Cargo.toml --target-dir $(ROOT)/target
+	@echo "✅ Broker CLI → $(ROOT)/target/release/ginno-mod-broker"
+
+## mod-runner: the mod-runner.mjs single-file bundle (esbuild)
+# Packaged form: sidecar stages it as a Tauri resource; dev/web form: the
+# runtime's resolve_runner() finds it at packages/mod-runner/dist/.
+mod-runner:
+	cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/mod-runner build
+	@echo "✅ Runner bundle → $(ROOT)/packages/mod-runner/dist/mod-runner.mjs"
 
 ## runtime: PyInstaller onedir bundle with web_out + all deps (incl. docs extra)
 # `--extra docs` installs the file-parsing deps. files/extractors.py imports
@@ -113,7 +173,8 @@ e2e-ui:
 clean:
 	rm -rf $(WEB_OUT)
 	rm -rf $(RUNTIME)/dist $(RUNTIME)/build $(RUNTIME)/ginno-runtime.spec
-	rm -rf $(RUNTIME_RES) $(ROOT)/apps/desktop/binaries
+	rm -rf $(RUNTIME_RES) $(RUNNER_RES) $(ROOT)/apps/desktop/binaries
+	rm -rf $(ROOT)/target $(ROOT)/crates/mod-broker/target
 
 ## help: list targets
 help:

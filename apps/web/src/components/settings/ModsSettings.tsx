@@ -87,6 +87,23 @@ export function ModsSettings() {
     }
   };
 
+  // classic hooks grants 三态(allow | deny | ask,默认 ask):选完即存。
+  // 整个 grants 对象原样回传(PUT 全量替换),只改 classic 键。
+  const setClassicGrant = async (m: api.ModInfo, value: string) => {
+    setBusy(m.name);
+    setMsg("");
+    try {
+      await api.updateMod(m.name, {
+        grants: { ...(m.grants ?? {}), classic: value },
+      });
+      await refresh();
+    } catch {
+      setMsg(t("actionFailed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const validate = async (name: string) => {
     setBusy(`validate:${name}`);
     setMsg("");
@@ -186,6 +203,26 @@ export function ModsSettings() {
                       {t("dirLabel")}: <span className="font-mono">{m.dir}</span>
                     </div>
                   )}
+                  {/* classic hooks grants(settings.json hooks + 插件 hooks.json shell 命令):
+                      危险命令(装包 / 改写宿主 settings)在 ask/deny 下默认拒 */}
+                  <div className="mt-2 flex items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-xs text-muted">
+                      {t("grantsClassic")}
+                      <select
+                        value={
+                          typeof m.grants?.classic === "string" ? m.grants.classic : "ask"
+                        }
+                        disabled={busy === m.name}
+                        onChange={(e) => void setClassicGrant(m, e.target.value)}
+                        className="rounded-md border border-line2 bg-card px-1.5 py-0.5 text-xs text-txt"
+                      >
+                        <option value="ask">{t("grant.ask")}</option>
+                        <option value="deny">{t("grant.deny")}</option>
+                        <option value="allow">{t("grant.allow")}</option>
+                      </select>
+                    </label>
+                    <span className="text-[10px] text-faint">{t("grantsHint")}</span>
+                  </div>
                   <div className="mt-2 flex items-center gap-2">
                     <button
                       onClick={() => {
