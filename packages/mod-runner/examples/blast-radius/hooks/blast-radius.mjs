@@ -74,7 +74,7 @@ export function register(on) {
 
   // Band: mode + counters + the strict toggle.
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e);
+    if (e.props?.hasSurvey) return next(e);
     const core = await loadCore($);
     const { Box, Text, Button } = $.ui.resolve(e);
     const mode = core.strict ? "STRICT" : "normal";

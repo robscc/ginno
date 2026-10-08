@@ -69,7 +69,10 @@ const SYNTHETIC_PAYLOADS: Record<string, Record<string, unknown>> = {
   'command.run': { command: 'test', args: '' },
   'agent.spawn': { agent: 'test' },
   'session.compact': {},
-  'ui.render': { reason: 'redraw' },
+  // mirrors the broker's render input (surfaces.rs): AbovePrompt always
+  // carries props — mods read e.props.hasSurvey / $.ui.resolve(e) on it.
+  'ui.render': { reason: 'redraw', component: 'AbovePrompt', surface: 'AbovePrompt',
+    props: { bodyColumns: 100, hasSurvey: false, isWorking: false, maxRows: 5 } },
   'ui.press': { actionId: 'test:a0' },
   'ui.input': { actionId: 'test:a0', value: '' },
 }
