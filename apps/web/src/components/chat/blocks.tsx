@@ -801,7 +801,10 @@ function StatusGlyph({ status }: { status?: string }) {
 }
 
 function StatList({ data }: { data: { title?: string; items?: Array<{ label: string; value?: string; status?: string }> } }) {
-  const items = data?.items || [];
+  // Array guard, not `|| []`: a truthy non-array (the model once sent
+  // {"items": {"item": [...]}}) sails through `||` and crashes .map —
+  // on the live event and again on every history replay.
+  const items = Array.isArray(data?.items) ? data.items : [];
   return (
     <div className="my-2 rounded-lg border border-line bg-base/50 p-3">
       {data?.title && (

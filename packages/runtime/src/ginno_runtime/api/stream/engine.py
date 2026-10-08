@@ -29,6 +29,7 @@ from ... import usage_store
 from ... import workflows as wf_store
 from ...checkpointer import ABANDONED_TURNS
 from ...graph import BLOCK_PREFIX
+from ...knowledge import citations as cit
 from ...lang import t
 from ...server_shared import (
     _PENDING_KIND,
@@ -403,6 +404,53 @@ def format_turn_error(e: BaseException) -> str:
     matching because the class name stays in the first line.
     """
     return turn_error_fields(e)["message"]
+
+
+# Content-block types carrying provider-side web-search results. The Anthropic
+# protocol returns them as `web_search_tool_result`; the `server_tool_use` /
+# `tool_use` pair above it is the request echo, not a result.
+_SERVER_SEARCH_BLOCK_TYPES = frozenset(
+    {"web_search_tool_result", "web_fetch_tool_result"}
+)
+
+
+def _server_search_hits(block: dict, block_types: frozenset[str]) -> list[dict]:
+    """Extract ``{url, title, content, page_age}`` from a server-search block.
+
+    Tolerant by necessity: an Anthropic-compatible gateway that relays these
+    blocks without the official envelope makes the SDK parse the items as
+    ``WebSearchToolResultError`` — still carrying url/title/content, so the
+    fields are read from either a dict or a pydantic model. Items whose
+    ``type`` marks them as a search *failure* are dropped; so are the
+    non-list payloads a gateway may substitute.
+    """
+    btype = block.get("type") if isinstance(block, dict) else None
+    if btype not in block_types:
+        return []
+    payload = block.get("content")
+    if isinstance(payload, dict):
+        payload = payload.get("content")
+    if not isinstance(payload, list):
+        return []
+    out: list[dict] = []
+    for it in payload:
+        d = it if isinstance(it, dict) else getattr(it, "model_dump", lambda: {})()
+        if not isinstance(d, dict):
+            continue
+        # `error_code` set, or a type that isn't a result, means the search
+        # itself failed — nothing citable in it.
+        if d.get("error_code") or (d.get("type") and d.get("type") != "web_search_result"):
+            continue
+        if d.get("url"):
+            out.append(
+                {
+                    "url": d.get("url"),
+                    "title": d.get("title") or "",
+                    "content": d.get("content") or "",
+                    "page_age": d.get("page_age") or "",
+                }
+            )
+    return out
 
 
 def turn_error_fields(e: BaseException) -> dict:
@@ -894,6 +942,10 @@ async def _stream_graph(
         # batch gets its bubble (the old ``not index`` check only surfaced the
         # first, silently dropping the rest from the live view).
         started_tool_ids: set[str] = set()
+        # Hits from the Anthropic server-side web_search tool, drained once the
+        # final (non-streamed) assistant message arrives — see
+        # _server_search_hits for why the streamed chunks aren't authoritative.
+        _SERVER_SEARCH_BUFFER: list[list[dict]] = []
         # Track tool names by id so we can emit ``tool.args`` from the chunks
         # stream (the first chunk carries the name, subsequent ones don't).
         _tool_name_by_id: dict[str, str] = {}
@@ -1017,6 +1069,18 @@ async def _stream_graph(
                                 turn_text.append(txt)
                                 seg_text.append(txt)
                                 await safe_send(emit("token.delta", {"content": txt}))
+                        elif btype in _SERVER_SEARCH_BLOCK_TYPES:
+                            # Anthropic-protocol server-side web_search: the
+                            # gateway ran the search, so the hits ride back
+                            # inside the assistant message. Register them as
+                            # turn sources or every [sN] the model cites
+                            # resolves as unverified. Accumulated then drained
+                            # on the non-streaming final message, which
+                            # carries the complete block (streamed chunks
+                            # repeat partial result payloads).
+                            _SERVER_SEARCH_BUFFER.append(
+                                _server_search_hits(b, _SERVER_SEARCH_BLOCK_TYPES)
+                            )
                 elif isinstance(content, str) and content:
                     turn_text.append(content)
                     seg_text.append(content)
@@ -1113,6 +1177,31 @@ async def _stream_graph(
                         # (a user stop only persists what's still uncommitted).
                         seg_text.clear()
                         for m in (delta or {}).get("messages", []):
+                            # Server-side web_search (Anthropic protocol): the
+                            # hits were buffered off the stream and belong to
+                            # the assistant message committing here. Register
+                            # them as turn sources so the [sN] ids the model
+                            # cites from its answer resolve. Best-effort — the
+                            # registry is a no-op outside a live turn.
+                            if getattr(m, "type", None) in ("ai", "AIMessage") and _SERVER_SEARCH_BUFFER:
+                                registered = [
+                                    s
+                                    for hits in _SERVER_SEARCH_BUFFER
+                                    for s in cit.register_server_search_hits(session_id, hits)
+                                ]
+                                if registered:
+                                    # The one visible trace of a gateway-side
+                                    # search: no local tool runs, so without
+                                    # this line there is nothing in the log to
+                                    # tell server search from parametric recall.
+                                    _log.info(
+                                        "server_search session=%s turn=%s hits=%d urls=%s",
+                                        session_id,
+                                        turn_id,
+                                        len(registered),
+                                        ",".join(s["identity"] for s in registered)[:400],
+                                    )
+                                _SERVER_SEARCH_BUFFER.clear()
                             # A steered message COMMITTED with this superstep
                             # (docs/steering-design.md §3.2): its ack was already
                             # sent at drain time (see _steer_absorbed), so all
