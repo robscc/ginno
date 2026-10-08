@@ -90,9 +90,9 @@ def test_overview_window_clamps_to_data(isolated_home):
     assert ov30["totals"]["calls"] == 1         # inside the 30-day window
 
 
-def test_daily_and_hourly_model_sku_breakdown(isolated_home):
-    """Bar-hover breakdown: per-day / per-hour model×SKU rows with exact
-    counters (incl. cache_creation, which the old hourly aggregate dropped)."""
+def test_daily_models_and_grid_cells(isolated_home):
+    """Bar-hover breakdown: per-day model×SKU rows with exact counters
+    (incl. cache_creation, which the old hourly aggregate dropped)."""
     _record(input_tokens=1000, output_tokens=100, cache_read_tokens=600,
             cache_creation_tokens=50, provider="anthropic", model="claude-x")
     _record(input_tokens=500, output_tokens=50, cache_read_tokens=0,
@@ -112,27 +112,59 @@ def test_daily_and_hourly_model_sku_breakdown(isolated_home):
     # a day without records still carries an empty breakdown (stable shape)
     assert ov["daily"][0]["models"] == []
 
-    h = usage_store.aggregate_hourly()
-    now_hour = time.localtime().tm_hour
-    b = h["hours"][now_hour]
-    assert b["cache_creation_tokens"] == 50
-    assert b["calls"] == 2
-    assert [m["model"] for m in b["models"]] == ["claude-x", "glm-flash"]
-    assert b["models"][1]["cache_creation_tokens"] == 0
-    # empty hours keep the stable shape
-    empty = h["hours"][(now_hour + 12) % 24]
-    assert empty["calls"] == 0 and empty["models"] == []
+    # 点格图：今天的 2h 桶汇总了两条记录，cell = [gross, net, out, cache, calls]
+    # （两条记录几乎同时写入，落在同一个桶；跨桶边界时按整行求和验证）
+    g = usage_store.aggregate_grid()
+    slot = time.localtime().tm_hour // 2
+    row = g["grid"][-1]
+    summed = [sum(row[i][k] for i in range(12)) for k in range(5)]
+    assert summed == [1650, 1000, 150, 650, 2]
+    assert row[slot][4] in (1, 2)
+    # 空桶保持稳定形状（全 0）
+    assert row[(slot + 6) % 12] == [0, 0, 0, 0, 0]
 
 
-def test_hourly_buckets_by_local_hour(isolated_home):
+def test_grid_buckets_by_local_two_hour_slot(isolated_home):
     _record()
     _record()
-    h = usage_store.aggregate_hourly()
-    assert h["date"] == _today()
-    assert len(h["hours"]) == 24
-    now_hour = time.localtime().tm_hour
-    assert h["hours"][now_hour]["calls"] == 2
-    assert sum(b["calls"] for b in h["hours"]) == 2
+    g = usage_store.aggregate_grid()
+    # 默认窗口 = 今天往回 30 天（含），每天一行 12 个桶
+    assert len(g["days"]) == len(g["grid"]) == 30
+    assert g["days"][-1] == _today()
+    assert all(len(row) == 12 for row in g["grid"])
+    slot = time.localtime().tm_hour // 2
+    assert g["grid"][-1][slot][4] == 2
+    assert sum(cell[4] for row in g["grid"] for cell in row) == 2
+
+
+def test_grid_missing_days_are_all_zero(isolated_home):
+    """无 jsonl 文件的日子照样出现在 days 里，整行全 0，且不带任何
+    have/have_file 标记——前端两者渲染相同。"""
+    _record(ts_offset_days=0)
+    today = datetime.now().strftime("%Y-%m-%d")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    g = usage_store.aggregate_grid(yesterday, today)
+    assert g["days"] == [yesterday, today]
+    assert g["grid"][0] == [[0, 0, 0, 0, 0]] * 12
+    assert "have" not in repr(g)
+
+
+def test_grid_window_clamps_to_retention(isolated_home):
+    long_ago = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+    g = usage_store.aggregate_grid(long_ago, _today())
+    # 超长窗口从 from 侧砍掉，to 不动
+    assert len(g["days"]) == usage_store.RETENTION_DAYS
+    assert g["days"][-1] == _today()
+    # from > to 会被对调（不报错，窗口为 1 天）
+    g2 = usage_store.aggregate_grid(_today(), long_ago)
+    assert len(g2["days"]) == usage_store.RETENTION_DAYS
+
+
+def test_grid_rejects_bad_dates(isolated_home):
+    _record()
+    g = usage_store.aggregate_grid("not-a-date", _today())
+    # 非法 from 退回默认 30 天窗口
+    assert len(g["days"]) == 30 and g["days"][-1] == _today()
 
 
 def test_sessions_aggregate_and_sort(isolated_home):

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from datetime import datetime, timedelta
+
 import pytest
 
 from ginno_runtime import usage_store
@@ -67,11 +70,49 @@ def test_overview_sources_breakdown(client):
     assert data["totals"]["input_tokens"] == 1500  # whole-account unchanged
 
 
-def test_hourly_endpoint(client):
+def test_grid_endpoint(client):
+    """点格图：连续日历 × 12 个 2h 桶，cell = [gross, net, out, cache, calls]"""
+    _seed(input_tokens=1000, output_tokens=100, cache_read_tokens=600)
+    data = client.get("/api/usage/grid").json()
+    assert data["ok"]
+    assert len(data["days"]) == len(data["grid"]) == 30
+    assert data["days"][-1] == time.strftime("%Y-%m-%d", time.localtime())
+    row = data["grid"][-1]
+    assert len(row) == 12
+    slot = time.localtime().tm_hour // 2
+    cell = row[slot]
+    assert cell[4] == 1                       # requests
+    assert cell[0] == 1100                    # gross = in + out
+    assert cell[1] == 1000 + 100 - 600        # net = (in - cache) + out
+    assert cell[2] == 100 and cell[3] == 600  # out / cache
+    assert row[(slot + 6) % 12] == [0, 0, 0, 0, 0]
+
+
+def test_grid_endpoint_from_to_and_missing_days(client):
+    today = datetime.now()
+    day0 = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    day1 = today.strftime("%Y-%m-%d")
     _seed()
-    data = client.get("/api/usage/hourly").json()
-    assert data["ok"] and len(data["hours"]) == 24
-    assert sum(b["calls"] for b in data["hours"]) == 1
+    data = client.get(f"/api/usage/grid?from={day0}&to={day1}").json()
+    assert data["days"] == [day0, day1]
+    # 没有 jsonl 文件的昨天照样占一列，整列全 0，且无 have/have_file 标记
+    assert data["grid"][0] == [[0, 0, 0, 0, 0]] * 12
+    assert "have" not in repr(data)
+
+
+def test_grid_endpoint_clamps_to_retention(client):
+    old = (datetime.now() - timedelta(days=200)).strftime("%Y-%m-%d")
+    data = client.get(f"/api/usage/grid?from={old}").json()
+    assert len(data["days"]) == usage_store.RETENTION_DAYS
+    assert len(data["grid"]) == usage_store.RETENTION_DAYS
+
+
+def test_hourly_endpoint_removed(client):
+    """/api/usage/hourly 没有调用方后被删除（design §7）。注意不能断言 404：
+    server 末尾的 SPA catch-all 会把任何未知路径回成 index.html。"""
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/api/usage/grid" in paths
+    assert "/api/usage/hourly" not in paths
 
 
 def test_sessions_endpoint_joins_meta_and_placeholder(client):

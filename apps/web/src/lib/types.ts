@@ -639,15 +639,15 @@ export interface UsageOverview {
   models: UsageModelAgg[];
   sources?: UsageSourceAgg[];
 }
-export interface UsageHourPoint extends UsageCounters {
-  hour: number;
-  /** Per-model SKU rows for the hour (bar-hover breakdown), tokens desc. */
-  models?: UsageModelAgg[];
-}
-export interface UsageHourly {
+/** 一个 2 小时桶的用量：[gross, net, out, cache, requests] */
+export type UsageGridCell = [gross: number, net: number, out: number, cache: number, requests: number];
+
+/** 连续日历的 2 小时点格矩阵。grid[i] 对应 days[i]，每天固定 12 个桶（本地时间 00:00–24:00）。
+ *  没有 jsonl 文件的日子也占一列，整行全 0 —— 前端不区分「无文件」与「零请求」。 */
+export interface UsageGrid {
   ok: boolean;
-  date: string;
-  hours: UsageHourPoint[];
+  days: string[];
+  grid: UsageGridCell[][];
 }
 export interface UsageSessionRow extends UsageCounters {
   session_id: string;

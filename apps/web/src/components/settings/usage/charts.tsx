@@ -1,11 +1,11 @@
 "use client";
 
 /** Shared chart primitives for Settings → 用量统计 (usage-stats-design.md §6).
- * Hand-rolled SVG on the app's dark tokens — same visual contract as the
- * prototype (docs/design/prototypes/usage-stats-prototype.html): stacked bars
- * with 2px gaps + rounded stack tops, recessive grid, hover tooltips. */
+ * Hand-rolled SVG + hand-rolled HTML on the app's tokens — same visual contract
+ * as the prototype (docs/design/prototypes/usage-stats-prototype.html): stacked
+ * bars with 2px gaps + rounded stack tops, recessive grid, hover tooltips. */
 
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
 
 export const SERIES = {
@@ -34,21 +34,8 @@ export function exact(n: number | undefined | null): string {
   return Math.round(n || 0).toLocaleString("en-US");
 }
 
-/** 缓存写 (cache creation) — a billing SKU of its own; not drawn in the
- * stacked bars (input net excludes it) but always listed in tooltips. */
-export const CACHE_WRITE_COLOR = "#d9a93e";
-
 export function pct(x: number): string {
   return `${Math.round(x * 100)}%`;
-}
-
-export function niceMax(v: number): number {
-  if (v <= 0) return 1;
-  const p = Math.pow(10, Math.floor(Math.log10(v)));
-  for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
-    if (m * p >= v) return m * p;
-  }
-  return 10 * p;
 }
 
 /* ---- tooltip ---- */
@@ -103,229 +90,103 @@ export function TipRow({ label, value, swatch }: { label: string; value: string;
   );
 }
 
-/* ---- per-model SKU breakdown (bar tooltips) ---- */
-export interface SkuRow {
-  provider: string;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_creation_tokens?: number;
-  calls: number;
+/* ---- 2h cadence grid: sequential heat ramp + cell geometry ----
+ *  Unlike the older SVG charts above (which hardcode dark hex), the cadence
+ *  grid themes through CSS custom properties so it holds up in both themes.
+ *  Pattern copied from globals.css: dark values on :root, light overrides on
+ *  html.light.
+ *  色阶不另起炉灶：空格子直接用 --card2，L1–L5 是 --card2 → --chart-1
+ *  的 20/40/60/80/100% 混合（L5 恰为 --chart-1 本尊），跟全局 CVD 校验的
+ *  图表色板同源。选中/hover 的强调色是 data 分组的主题青绿，与蓝阶
+ *  色相分离，描边不会被当成最深档。 */
+export const USAGE_GRID_CSS = `
+:root {
+  --ug-heat-0: rgb(var(--card2));
+  --ug-heat-0-ring: rgb(var(--line));
+  --ug-heat-1: #21314b;
+  --ug-heat-2: #274672;
+  --ug-heat-3: #2d5c98;
+  --ug-heat-4: #3371bf;
+  --ug-heat-5: #3987e5;
+  --ug-accent: #2dd4bf;
+}
+html.light {
+  --ug-heat-0: rgb(var(--card2));
+  --ug-heat-0-ring: rgb(var(--line));
+  --ug-heat-1: #cbdaf0;
+  --ug-heat-2: #a3c2ea;
+  --ug-heat-3: #7aa9e3;
+  --ug-heat-4: #5291dd;
+  --ug-heat-5: #2a78d6;
+  --ug-accent: #0891b2;
+}
+.ug-scroll {
+  padding: 34px 18px 14px; overflow-x: auto; max-height: 420px;
+}
+.ug-inner { display: flex; gap: 8px; min-width: min-content; }
+.ug-gutter { display: grid; grid-template-rows: repeat(12, var(--ug-cell)); gap: var(--ug-gap); flex: none; }
+.ug-gutter > span {
+  font-size: 9.5px; color: rgb(var(--faint)); line-height: var(--ug-cell); height: var(--ug-cell);
+  display: flex; align-items: center; font-variant-numeric: tabular-nums;
+}
+.ug-cols { display: flex; gap: var(--ug-gap); position: relative; min-width: min-content; }
+.ug-day { position: relative; display: grid; grid-template-rows: repeat(12, var(--ug-cell)); gap: var(--ug-gap); flex: none; }
+.ug-date {
+  position: absolute; top: -19px; left: 1px; font-size: 9.5px; color: rgb(var(--faint));
+  white-space: nowrap; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.ug-monthsep { position: absolute; top: -19px; bottom: -4px; width: 1px; background: rgb(var(--line2)); }
+.ug-cell {
+  width: var(--ug-cell); height: var(--ug-cell); border-radius: 2.5px; border: 0; padding: 0;
+  background: var(--ug-heat-0); box-shadow: inset 0 0 0 1px var(--ug-heat-0-ring);
+  cursor: pointer; transition: outline-color 0.09s ease;
+}
+.ug-cell.ug-l1 { background: var(--ug-heat-1); box-shadow: none; }
+.ug-cell.ug-l2 { background: var(--ug-heat-2); box-shadow: none; }
+.ug-cell.ug-l3 { background: var(--ug-heat-3); box-shadow: none; }
+.ug-cell.ug-l4 { background: var(--ug-heat-4); box-shadow: none; }
+.ug-cell.ug-l5 { background: var(--ug-heat-5); box-shadow: none; }
+.ug-cell:hover { outline: 1.5px solid var(--ug-accent); outline-offset: 1px; }
+.ug-cell:focus-visible { outline: 2px solid var(--ug-accent); outline-offset: 1px; }
+.ug-cell[data-sel="1"] { outline: 2px solid var(--ug-accent); outline-offset: 1px; }
+.ug-cell.ug-future {
+  background: transparent; box-shadow: inset 0 0 0 1px rgb(var(--line));
+  opacity: 0.5; cursor: default;
+}
+.ug-cell.ug-future:hover { outline: none; }
+.ug-cell.ug-now { outline: 1.5px solid var(--ug-accent); outline-offset: 1px; }
+.ug-swatch {
+  display: inline-block; width: 11px; height: 11px; border-radius: 2.5px;
+  box-shadow: inset 0 0 0 1px var(--ug-heat-0-ring);
+}
+.ug-swatch.ug-l1 { background: var(--ug-heat-1); box-shadow: none; }
+.ug-swatch.ug-l2 { background: var(--ug-heat-2); box-shadow: none; }
+.ug-swatch.ug-l3 { background: var(--ug-heat-3); box-shadow: none; }
+.ug-swatch.ug-l4 { background: var(--ug-heat-4); box-shadow: none; }
+.ug-swatch.ug-l5 { background: var(--ug-heat-5); box-shadow: none; }
+@media (prefers-reduced-motion: reduce) {
+  .ug-cell { transition: none; }
+}
+`;
+
+/** Injects USAGE_GRID_CSS once per page; the grid reads every colour through
+ * the custom properties above, so no component ever hardcodes a hex. */
+export function UsageGridTokens() {
+  return <style dangerouslySetInnerHTML={{ __html: USAGE_GRID_CSS }} />;
 }
 
-const SKU_MAX_MODELS = 6; // beyond this the tail merges into 「其他 N 个模型」
+/** Level → class name (index 0 = empty/idle bin, which also covers days with
+ * no telemetry file — there is no such distinction in the data contract). */
+export const HEAT_CLASSES = ["", "ug-l1", "ug-l2", "ug-l3", "ug-l4", "ug-l5"] as const;
 
-/** Every billing SKU (输入非缓存 / 缓存写 / 缓存读 / 输出) per model, in exact
- * digits — mirrors the provider bill line items for reconciliation. */
-export function SkuBreakdown({ models }: { models: SkuRow[] }) {
-  const t = useTranslations("settings.usage.overview");
-  const live = (models || []).filter(
-    (m) => m.input_tokens + m.output_tokens + (m.cache_creation_tokens || 0) > 0,
-  );
-  if (!live.length) return null;
-  let shown = live;
-  if (live.length > SKU_MAX_MODELS) {
-    const head = live.slice(0, SKU_MAX_MODELS - 1);
-    const rest = live.slice(SKU_MAX_MODELS - 1);
-    const merged: SkuRow = rest.reduce(
-      (a, m) => ({
-        provider: "",
-        model: t("skuOtherModels", { count: rest.length }),
-        input_tokens: a.input_tokens + m.input_tokens,
-        output_tokens: a.output_tokens + m.output_tokens,
-        cache_read_tokens: a.cache_read_tokens + m.cache_read_tokens,
-        cache_creation_tokens: (a.cache_creation_tokens || 0) + (m.cache_creation_tokens || 0),
-        calls: a.calls + m.calls,
-      }),
-      { provider: "", model: "", input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, calls: 0 },
-    );
-    shown = [...head, merged];
-  }
-  return (
-    <>
-      {shown.map((m) => {
-        const cw = m.cache_creation_tokens || 0;
-        const net = Math.max(0, m.input_tokens - m.cache_read_tokens - cw);
-        const rows: Array<[string, number, string]> = [
-          [t("labelInputNonCache"), net, SERIES.input],
-          [t("labelCacheWrite"), cw, CACHE_WRITE_COLOR],
-          [t("labelCacheRead"), m.cache_read_tokens, SERIES.cache],
-          [t("labelOutput"), m.output_tokens, SERIES.output],
-        ];
-        return (
-          <div key={`${m.provider}/${m.model}`} className="mt-1.5">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="truncate font-medium text-txt">{m.model}</span>
-              <span className="flex-none text-faint">
-                {m.provider ? `${m.provider} · ` : ""}
-                {t("skuCalls", { count: m.calls })}
-              </span>
-            </div>
-            {rows
-              .filter(([, v]) => v > 0)
-              .map(([label, v, sw]) => (
-                <TipRow key={label} label={label} value={exact(v)} swatch={sw} />
-              ))}
-          </div>
-        );
-      })}
-    </>
-  );
+/** Raw CSS var reference for a ramp level (0 = empty/idle bin). Keeps the hex
+ * inside this file — panels never spell a colour literal. */
+export function heatVar(level: number): string {
+  return level <= 0 ? "var(--ug-heat-0)" : `var(--ug-heat-${level})`;
 }
 
-/* ---- stacked-bar geometry ---- */
-interface Part {
-  v: number;
-  color: string;
-}
-
-function roundTopRect(x: number, y: number, w: number, h: number, r: number): string {
-  if (h <= 0) return "";
-  r = Math.min(r, w / 2, h);
-  return `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z`;
-}
-
-const GAP = 2;
-const RAD = 4;
-
-/** One stacked column (parts bottom→top), 2px gaps, rounded stack top. */
-function stackColumn(x: number, yBase: number, w: number, parts: Part[], scale: number): ReactNode[] {
-  const visible = parts.filter((p) => p.v > 0);
-  if (!visible.length) return [];
-  const out: ReactNode[] = [];
-  let y = yBase;
-  visible.forEach((p, idx) => {
-    const ph = Math.max(1.2, p.v * scale);
-    const isTop = idx === visible.length - 1;
-    const h = isTop ? ph : Math.max(0.8, ph - GAP);
-    y -= ph;
-    out.push(
-      isTop ? (
-        <path key={idx} d={roundTopRect(x, y, w, h, RAD)} fill={p.color} />
-      ) : (
-        <rect key={idx} x={x} y={y} width={w} height={h} fill={p.color} />
-      ),
-    );
-  });
-  return out;
-}
-
-export interface StackDatum {
-  key: string;
-  label: string; // x-axis label
-  cache: number;
-  inputNet: number;
-  output: number;
-}
-
-/** Generic stacked bar chart. Hover any bar for the tooltip from `tipFor`;
- * click fires `onPick(key)`. `selected` gets a teal marker + full opacity. */
-export function StackedBars({
-  data,
-  height = 250,
-  selected,
-  onPick,
-  tipFor,
-  xEvery,
-  ariaLabel,
-}: {
-  data: StackDatum[];
-  height?: number;
-  selected?: string;
-  onPick?: (key: string) => void;
-  tipFor: (d: StackDatum, i: number) => ReactNode;
-  xEvery?: number;
-  ariaLabel: string;
-}) {
-  const { show, hide, move, tipEl } = useTip();
-  const W = 960;
-  const L = 48;
-  const R = 10;
-  const T = 12;
-  const B = 26;
-  const iw = W - L - R;
-  const ih = height - T - B;
-  const n = data.length;
-  const max = niceMax(Math.max(...data.map((d) => d.cache + d.inputNet + d.output), 1));
-  const slot = iw / n;
-  const bw = Math.max(3, Math.min(slot - 3, 26));
-  const step = xEvery ?? (n > 40 ? Math.ceil(n / 8) : n > 12 ? 5 : 2);
-
-  const grid: ReactNode[] = [];
-  const ticks = 4;
-  for (let g = 0; g <= ticks; g++) {
-    const gv = (max * g) / ticks;
-    const y = T + ih - (ih * g) / ticks;
-    grid.push(<line key={`l${g}`} x1={L} x2={W - R} y1={y} y2={y} stroke="#262632" strokeWidth={1} />);
-    grid.push(
-      <text key={`t${g}`} x={L - 8} y={y + 3.5} textAnchor="end" fontSize={10} fill="#62626e" className="tabular-nums">
-        {fmt(gv)}
-      </text>,
-    );
-  }
-
-  return (
-    <>
-      <svg viewBox={`0 0 ${W} ${height}`} role="img" aria-label={ariaLabel} style={{ maxWidth: "100%" }}>
-        {grid}
-        {data.map((d, i) => {
-          const x = L + i * slot + (slot - bw) / 2;
-          const dim = selected !== undefined && d.key !== selected;
-          return (
-            <g key={d.key} opacity={dim ? 0.72 : 1}>
-              {stackColumn(x, T + ih, bw, [
-                { v: d.cache, color: SERIES.cache },
-                { v: d.inputNet, color: SERIES.input },
-                { v: d.output, color: SERIES.output },
-              ], ih / max)}
-            </g>
-          );
-        })}
-        {data.map((d, i) => (
-          <rect
-            key={`h${d.key}`}
-            x={L + i * slot}
-            y={T}
-            width={slot}
-            height={ih}
-            fill="transparent"
-            style={{ cursor: onPick ? "pointer" : "default" }}
-            onMouseEnter={(e) => show(tipFor(d, i), e)}
-            onMouseMove={(e) => move(e)}
-            onMouseLeave={hide}
-            onClick={() => onPick?.(d.key)}
-          />
-        ))}
-        {data.map((d, i) => {
-          if (i % step !== 0 && i !== n - 1) return null;
-          const x = L + i * slot + slot / 2;
-          const sel = d.key === selected;
-          return (
-            <text key={`x${d.key}`} x={x} y={height - 8} textAnchor="middle" fontSize={10} fill={sel ? "#2dd4bf" : "#62626e"} className="tabular-nums">
-              {d.label}
-            </text>
-          );
-        })}
-        {selected &&
-          data.map((d, i) =>
-            d.key === selected ? (
-              <circle key="sel" cx={L + i * slot + slot / 2} cy={height - 1.5} r={2} fill="#2dd4bf" />
-            ) : null,
-          )}
-      </svg>
-      {tipEl}
-    </>
-  );
-}
-
-export function SeriesLegend() {
-  const t = useTranslations("settings.usage.overview");
-  return (
-    <div className="ml-auto flex gap-3.5 text-[11.5px] text-muted">
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.cache }} />{t("labelCacheRead")}</span>
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.input }} />{t("labelInputNonCache")}</span>
-      <span><i className="mr-1.5 inline-block h-2 w-2 rounded-[2.5px]" style={{ background: SERIES.output }} />{t("labelOutput")}</span>
-    </div>
-  );
+/** Inline style for a legend swatch / accent-driven bit that needs the ramp
+ * colour without a class. */
+export function heatStyle(level: number): CSSProperties {
+  return { background: heatVar(level) };
 }

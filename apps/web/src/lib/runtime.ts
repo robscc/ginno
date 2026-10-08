@@ -26,7 +26,7 @@ import type {
   SessionMeta,
   SessionUsage,
   Todo,
-  UsageHourly,
+  UsageGrid,
   UsageOverview,
   UsageRequests,
   UsageSessions,
@@ -170,8 +170,12 @@ export async function getUsageOverview(days = 30) {
   return json<UsageOverview>(`${BASE}/usage/overview?days=${days}`);
 }
 
-export async function getUsageHourly(date?: string) {
-  return json<UsageHourly>(`${BASE}/usage/hourly${date ? `?date=${date}` : ""}`);
+export async function getUsageGrid(opts?: { from?: string; to?: string }) {
+  const q = new URLSearchParams();
+  if (opts?.from) q.set("from", opts.from);
+  if (opts?.to) q.set("to", opts.to);
+  const s = q.toString();
+  return json<UsageGrid>(`${BASE}/usage/grid${s ? `?${s}` : ""}`);
 }
 
 export async function getUsageSessions(opts?: { from?: string; to?: string; sort?: string; limit?: number }) {
