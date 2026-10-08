@@ -101,6 +101,8 @@ export function blankConfig(): ModelConfig {
     temperature: 0.7,
     timeout_s: 60,
     enabled: true,
+    server_web_search: false,
+    server_web_search_max_uses: 5,
   };
 }
 

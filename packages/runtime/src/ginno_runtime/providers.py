@@ -119,6 +119,12 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "timeout_s": 300,
     "enable_search": False,
     "enable_thinking": False,
+    # Anthropic protocol only: bind the provider-side `web_search` server tool
+    # (web_search_20250305) so the model searches on the gateway instead of
+    # through Gin's own DDG/Tavily web_search tool. See models.py
+    # `server_web_search_on` and citations.nregister_server_search_hits.
+    "server_web_search": False,
+    "server_web_search_max_uses": 5,
     "enabled": False,
     "verified_at": None,
     "last_error": None,

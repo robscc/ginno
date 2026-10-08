@@ -356,6 +356,41 @@ def test_widget_event_ignores_model_data_id():
     assert ev3["kind"] == "stat_list"
 
 
+def test_widget_event_normalizes_wrapped_stat_list_items():
+    """The model wraps ``items`` in an XML-style envelope (observed live,
+    2026-10-08: ``{"items": {"item": [...]}}``) — a truthy non-array that
+    crashed the frontend's items.map on the live event AND on every history
+    replay, making the client unlaunchable."""
+    from ginno_runtime.tools.render_tools import widget_event
+
+    ev = widget_event(
+        {
+            "kind": "stat_list",
+            "data": {"items": {"item": [{"label": "a"}, {"label": "b"}]}, "title": "t"},
+        },
+        "tc-1",
+    )
+    assert ev["data"]["items"] == [{"label": "a"}, {"label": "b"}]
+    assert ev["data"]["title"] == "t"  # siblings untouched
+
+
+def test_widget_event_degrades_bad_stat_list_items():
+    from ginno_runtime.tools.render_tools import widget_event
+
+    # two competing lists / scalar / lone object — nothing sensible to show
+    for bad in ({"a": [1], "b": [2]}, "oops", 42, {"label": "x"}):
+        ev = widget_event({"kind": "stat_list", "data": {"items": bad}}, "tc")
+        assert ev["data"]["items"] == []
+    # non-dict items inside a list are dropped, dicts kept
+    ev = widget_event({"kind": "stat_list", "data": {"items": [{"label": "ok"}, "junk", 3]}}, "tc")
+    assert ev["data"]["items"] == [{"label": "ok"}]
+    # already-correct payloads and other kinds pass through untouched
+    ev = widget_event({"kind": "stat_list", "data": {"items": [{"label": "a"}]}}, "tc")
+    assert ev["data"]["items"] == [{"label": "a"}]
+    ev = widget_event({"kind": "chart", "data": {"items": {"weird": True}}}, "tc")
+    assert ev["data"]["items"] == {"weird": True}
+
+
 # --------------------------------------------------------------------------- #
 # _tool_args_preview — "see WHAT a tool is doing" command preview
 # --------------------------------------------------------------------------- #

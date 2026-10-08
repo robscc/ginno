@@ -16,6 +16,31 @@ from langchain_core.tools import tool
 RENDER_TOOL_NAMES = {"render_widget", "attach_ref"}
 
 
+def _normalize_stat_list(data) -> None:
+    """Coerce a malformed ``stat_list`` payload in place so the UI can render it.
+
+    Models wrap ``items`` in an extra envelope — observed live (2026-10-08,
+    MiniMax via the model hub): ``data = {"items": {"item": [...]}, ...}``
+    (an XML-style habit). The frontend's StatList does ``items.map`` on
+    whatever arrives, so a truthy non-array crashes the whole React app —
+    on the live event AND again on every history replay of the checkpoint,
+    making the client unlaunchable. Unwrap a single list-valued dict, keep
+    a stray list of items under another key, wrap a lone object, else drop.
+    """
+    if not isinstance(data, dict):
+        return
+    items = data.get("items")
+    if isinstance(items, list):
+        data["items"] = [it for it in items if isinstance(it, dict)]
+        return
+    if isinstance(items, dict):
+        lists = [v for v in items.values() if isinstance(v, list)]
+        if len(lists) == 1:
+            data["items"] = [it for it in lists[0] if isinstance(it, dict)]
+            return
+    data["items"] = []
+
+
 def widget_event(args: dict, tc_id: str | None = None) -> dict:
     """Build the `widget.emit` / history-replay payload.
 
@@ -24,9 +49,12 @@ def widget_event(args: dict, tc_id: str | None = None) -> dict:
     we ignore that and never let two calls share a render_id.
     """
     rid = (tc_id or "").strip() or str(uuid.uuid4())
+    data = args.get("data")
+    if args.get("kind") == "stat_list":
+        _normalize_stat_list(data)
     return {
         "kind": args.get("kind", "widget"),
-        "data": args.get("data"),
+        "data": data,
         "render_id": rid,
     }
 
