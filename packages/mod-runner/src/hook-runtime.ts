@@ -256,6 +256,24 @@ export class HookRuntime {
       catchGraceTimer: undefined,
     }
     this.invocations.set(invocation, context)
+    const armBackstop = () => {
+      // The broker enforces the budget; this wall-clock backstop only covers a
+      // hook that never answers. Suspended while the clock is paused (a
+      // pending `$.ui.ask` included) — user think time is not hook time.
+      if (context.settled) return
+      if (context.deadlineTimer) clearTimeout(context.deadlineTimer)
+      context.deadlineTimer = setTimeout(() => {
+        this.settleFailure(context, { code: 'hook-throw', message: `ran past its ${deadlineMs} ms limit` })
+      }, deadlineMs).unref()
+    }
+    const suspendBackstop = () => {
+      if (context.deadlineTimer) {
+        clearTimeout(context.deadlineTimer)
+        context.deadlineTimer = undefined
+      }
+    }
+    clock.onPause = suspendBackstop
+    clock.onResume = armBackstop
     context.deadlineTimer = setTimeout(() => {
       // The broker enforces the budget; this wall-clock backstop only covers a hook that never answers.
       this.settleFailure(context, { code: 'hook-throw', message: `ran past its ${deadlineMs} ms limit` })

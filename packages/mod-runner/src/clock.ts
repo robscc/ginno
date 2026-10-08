@@ -31,6 +31,15 @@ export class BudgetClock {
   private readonly now: () => number
 
   /**
+   * Hooked by the hook runtime to suspend/resume its wall-clock backstop in
+   * step with the budget: while a `next`/mods-API call (a pending `$.ui.ask`
+   * included) has the clock paused, the backstop must not fire — user think
+   * time is not the mod's running time (design §3.2).
+   */
+  onPause: (() => void) | undefined
+  onResume: (() => void) | undefined
+
+  /**
    * @param ms - the running-time limit in milliseconds.
    * @param now - monotonic clock in milliseconds.
    */
@@ -69,6 +78,7 @@ export class BudgetClock {
       this.busySince = undefined
     }
     this.disarm()
+    this.onPause?.()
   }
 
   /** Resume counting after the awaited call settled. */
@@ -79,6 +89,7 @@ export class BudgetClock {
       this.busySince = this.now()
       this.arm()
     }
+    this.onResume?.()
   }
 
   /** The hook settled: no deadline can fire from now on. */
