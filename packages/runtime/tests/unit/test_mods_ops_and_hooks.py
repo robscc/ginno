@@ -40,9 +40,10 @@ async def test_session_read_family(isolated_home):
     assert await mods_ops.handle("session", "cwd", {}, "abc") == ""  # no meta → empty
     assert await mods_ops.handle("session", "root", {}, "abc") == ""
     assert await mods_ops.handle("session", "turns", {}, "abc") == 0  # no checkpoint
-    # 未知会话返回零窗口而不是 None:mods 规范里 usage 永远是对象(mod 会解构 .context)
+    # 未知会话返回零 tokens 而不是 None:mods 规范里 usage 恒为对象(mod 会解构
+    # .context);window 取 mods.contextWindow 默认(runtime 不跟踪模型窗口)
     assert await mods_ops.handle("session", "usage", {}, "abc") == {
-        "context": {"tokens": 0, "window": 0},
+        "context": {"tokens": 0, "window": 200_000, "percent": 0.0},
         "rateLimits": [],
     }
     assert await mods_ops.handle("session", "messages", {}, "abc") == []

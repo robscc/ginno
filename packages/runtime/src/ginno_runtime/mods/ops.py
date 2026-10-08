@@ -132,20 +132,47 @@ async def _op_version(args: dict, session_id: str) -> str:
 
 
 async def _op_usage(args: dict, session_id: str) -> dict:
-    """Per-session cumulative usage (usage-stats-design.md §5 source order).
-    Always an object — the mods spec has $.session.usage() resolve to the
-    canonical shape; an unknown session (just-ended, or a mod asking before
-    the first turn) gets the zero window, never null (mods deref .context)."""
+    """Canonical mods shape (design §15.7): ``{context: {tokens, window,
+    percent}, rateLimits: []}`` — mods deref ``.context`` (token-weather was
+    built on it), so returning the flat usage-store totals here silently broke
+    every reading mod. Context size proxies the LAST LLM call's whole-prompt
+    input (cumulative totals span calls and are not the window occupancy).
+    The runtime does not track a model context window; ``mods.contextWindow``
+    (default 200k) stands in. Unknown session → zero tokens, never null."""
     from .. import usage_store
     from ..server_shared import _USAGE_BY_SESSION
+    from .bridge_utils import load_mods_settings
 
-    logged = usage_store.session_totals(session_id)
-    if logged:
-        return logged
-    acc = _USAGE_BY_SESSION.get(session_id)
-    if acc:
-        return dict(acc)
-    return {"context": {"tokens": 0, "window": 0}, "rateLimits": []}
+    window = int(load_mods_settings().get("contextWindow") or 200_000)
+    tokens = 0
+    try:
+        rows = usage_store.query_requests(session_id=session_id, page=1, page_size=1).get("rows") or []
+        if rows:
+            last = rows[0]
+            tokens = (
+                (last.get("input_tokens") or 0)
+                + (last.get("cache_read_tokens") or 0)
+                + (last.get("cache_creation_tokens") or 0)
+            )
+    except Exception:  # noqa: BLE001 — usage log miss falls through to totals
+        pass
+    if not tokens:
+        acc = usage_store.session_totals(session_id) or _USAGE_BY_SESSION.get(session_id)
+        if acc:
+            tokens = (
+                (acc.get("input_tokens") or 0)
+                + (acc.get("output_tokens") or 0)
+                + (acc.get("cache_read_tokens") or 0)
+                + (acc.get("cache_creation_tokens") or 0)
+            )
+    return {
+        "context": {
+            "tokens": tokens,
+            "window": window,
+            "percent": round(tokens * 100 / window, 1) if window > 0 else 0,
+        },
+        "rateLimits": [],
+    }
 
 
 async def _op_messages(args: dict, session_id: str) -> list[dict]:

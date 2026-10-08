@@ -30,6 +30,7 @@
 6. **scan 区分 shape**:classic 形态(`{"hooks":{...}}`)误入 broker 会 crash-loop(没有 JS 模块可加载);现在 classic 只进 dispatcher,js("modules")才进 broker。hello 超时 5s→30s(首次握手要并行拉 runner,broker 侧 HANDSHAKE_TIMEOUT 20s)。
 7. **press/timer 回调的 session 上下文**:hook 已 settle,回调期间的 `$` 调用没带 session → Python 后端 op 拒绝;runner 增加 ambientSession(press/clock.fire 帧的 session 在回调期间生效)。
 8. **`session.usage` 零形状兜底**:未知会话返回 `{context:{tokens:0,window:0}}` 而非 None(mods 规范 usage 恒为对象,mod 会解构 `.context`)。
+9. **`session.usage` 主路径形状违规(2026-10-08)**:有用量时返回扁平 totals(无 `context` 键),reading 类 mod(token-weather)解构 `.context` 落空 → 永不渲染。已改为规范形状:`tokens` 取最近一次调用的 whole-prompt input(cache 计入),`window` 取新设置 `mods.contextWindow`(默认 200k,runtime 不跟踪模型窗口)。
 
 ## e2e 发现的安全问题(重要)
 
