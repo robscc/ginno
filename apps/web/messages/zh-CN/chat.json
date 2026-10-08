@@ -27,6 +27,8 @@
       "ariaStatusClickable": "连接状态：{status}，点击重连"
     },
     "composer": {
+      "modBandCollapse": "收起 mod band",
+      "modBandExpand": "展开 mod band",
       "hintImagesProcessing": "注意：图片仍在处理中，请稍候再发送",
       "hintFileUploading": "注意：文件上传进行中，请稍候再发送",
       "resizeTitle": "拖拽调整输入框高度（双击恢复自动高度）",
@@ -46,6 +48,12 @@
       "newSession": "+ 新会话",
       "delegationReadonly": "委托回放 · 只读",
       "delegationRunning": "运行中"
+    },
+    "mods": {
+      "promptBlocked": "本轮输入已被 mod 拦截。",
+      "promptBlockedHook": "输入被 hook 拦截。",
+      "askPlaceholder": "或者输入你的回答……",
+      "askSend": "发送"
     },
     "queue": {
       "pending": "待注入（{count}）",

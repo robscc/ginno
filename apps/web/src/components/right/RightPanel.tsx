@@ -7,6 +7,7 @@ import { PANEL_WIDTH_DEFAULT, useGinno } from "@/lib/store";
 import { RIGHT_TAB_BY_ID } from "@/lib/rightTabs";
 import { PanelResizer } from "@/components/workflow/studio/PanelResizer";
 import { CodePanel } from "./code/CodePanel";
+import { ModPaneHost } from "./ModPaneHost";
 import { TodoPanel } from "./TodoPanel";
 import { WorkflowPanel } from "./WorkflowPanel";
 import { ArtifactsPanel } from "./ArtifactsPanel";
@@ -144,6 +145,9 @@ export function RightPanel() {
             <PanelRightClose className="h-4 w-4" />
           </button>
         </div>
+        {/* Mods pane 区(§7.4):有 mod 打开 pane 时出现在 tab 内容之上,
+            无 pane 时不占任何空间。 */}
+        <ModPaneHost />
         {/* The code panel owns its own internal scrolling and fills the height;
             the other panels are plain vertical scrollers. */}
         <div className={tab === "code" ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-y-auto"}>

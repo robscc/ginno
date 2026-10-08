@@ -350,6 +350,51 @@ async def _run_stream(
     turn_id = ((config or {}).get("configurable") or {}).get("turn_id")
     effective_agent = agent_id or session.get("agent_id") or ""
 
+    # Mods/classic prompt.submit tap (claude-code-mods-design.md §5.3/§15.6):
+    # the classic UserPromptSubmit hooks run first (rewrite applies, block
+    # drops), the mods broker after — {drop} ends the turn with a notice,
+    # {text} rewrites the body, {context} is injected below as a steer-channel
+    # companion message. All BEFORE user_text lands.
+    _ps = None
+    _prompt_ctx: str | None = None
+    _prompt_mod: str | None = None
+    _prompt_blocked = False
+    try:
+        from ...mods.events import dispatch_prompt_submit
+
+        _ps = await dispatch_prompt_submit(session_id, user_text)
+        user_text = _ps.text
+        _prompt_ctx = _ps.context
+        _prompt_mod = _ps.mod
+        _prompt_blocked = _ps.blocked
+    except Exception:
+        _log.exception("mods_prompt_submit_failed session=%s", session_id)
+    if _prompt_blocked:
+        _blocked_by_hook = bool(_ps and _ps.source == "classic")
+        await _push_session_event(
+            session_id,
+            "notice",
+            {
+                "message": (
+                    "Prompt blocked by a hook."
+                    if _blocked_by_hook
+                    else "This prompt was blocked by a mod."
+                ),
+                "i18n_key": (
+                    "chat.mods.promptBlockedHook"
+                    if _blocked_by_hook
+                    else "chat.mods.promptBlocked"
+                ),
+                "params": {},
+            },
+            turn_id,
+        )
+        # Terminate the turn frame: nothing downstream will emit message.end
+        # (the graph never started), and a socket left busy on a dropped
+        # prompt reads as a hung turn on every client.
+        await _push_session_event(session_id, "message.end", {}, turn_id)
+        return
+
     # Lazy MCP healing + graph refresh: a server that connects AFTER session
     # creation (late startup connect, recovered DNS, mid-session reload) must
     # still reach THIS turn's tool bindings. Retry is fire-and-forget with a
@@ -497,6 +542,24 @@ async def _run_stream(
     messages.append(
         HumanMessage(content=content, **({"id": turn_id} if turn_id else {}), **user_kwargs)
     )
+    if _prompt_ctx:
+        # §15.6: mod-supplied context attaches AFTER the user's message, on
+        # the steer channel — the STEER_CONTEXT_KEY marker makes it a
+        # mid-turn injected message (graph.is_midturn_injected): it never
+        # counts as a turn (ops._op_turns filters it) and never starts one.
+        # Deterministic id: a same-turn retry replaces it instead of stacking.
+        _ctx_kwargs: dict = {
+            "additional_kwargs": {
+                shared.STEER_CONTEXT_KEY: {"origin": "mod", "mod": _prompt_mod or ""}
+            }
+        }
+        messages.append(
+            HumanMessage(
+                content=f'Message from the "{_prompt_mod or "mod"}" mod:\n{_prompt_ctx}',
+                **({"id": f"modctx-{turn_id}"} if turn_id else {}),
+                **_ctx_kwargs,
+            )
+        )
 
     input_state = {
         "messages": messages,

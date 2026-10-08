@@ -56,7 +56,7 @@ export function SynthesisPanel() {
         ))}
       </div>
       <div className="border-t border-line px-4 py-2 text-[11px] text-faint">
-        <Link href="/settings/synthesis-quality" className="hover:text-txt">
+        <Link href="/settings/data/synthesis-quality" className="hover:text-txt">
           {t("qualityLink")}
         </Link>
       </div>

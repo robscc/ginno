@@ -423,6 +423,33 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         )
                         await ws.send_text(_ev("message.end", {}, turn_id))
                         continue
+                    if plan.mod_command is not None:
+                        # Mod-registered slash command (claude-code-mods-design.md
+                        # §5.3 command.run): raise the event — the broker routes
+                        # it to the owning mod's runner — and deliver its reply
+                        # as a notice, exactly like a builtin. No graph turn.
+                        _mc_name, _mc_tail = plan.mod_command
+                        _mc_reply: str | None = None
+                        try:
+                            from ...mods.events import dispatch_command_run
+
+                            _mc_reply = await dispatch_command_run(
+                                session_id, _mc_name, _mc_tail
+                            )
+                        except Exception:
+                            _log.exception("mod_command_failed name=%s session=%s", _mc_name, session_id)
+                        await ws.send_text(
+                            _ev(
+                                "notice",
+                                {
+                                    "message": _mc_reply
+                                    or f"/{_mc_name} executed by mod (no reply).",
+                                },
+                                turn_id,
+                            )
+                        )
+                        await ws.send_text(_ev("message.end", {}, turn_id))
+                        continue
                     user_text = plan.text
                     # Busy check: a turn task is already live for this session
                     # (multi-tab race — the frontend gates sends on `running`).
@@ -901,6 +928,48 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                 except Exception:
                     return  # socket died between recv and send
+            elif kind == "mod.ui.press":
+                # Mod band button (design §7.2): forward to the mods channel;
+                # the broker validates the generation against its current
+                # drawing and routes to the owning mod's runner. Disconnected
+                # → silent no-op (a press on a dead band is not an error).
+                _action_id = msg.get("actionId")
+                if isinstance(_action_id, str) and _action_id:
+                    from ...mods.channel import get_channel
+
+                    try:
+                        await get_channel().notify(
+                            "ui.press",
+                            {
+                                "generation": int(msg.get("generation") or 0),
+                                "actionId": _action_id,
+                            },
+                            session=session_id,
+                        )
+                    except Exception as e:  # noqa: BLE001 — mods are additive
+                        _log.debug("mod.ui.press dropped session=%s: %s", session_id, e)
+            elif kind == "mod.ui.answer":
+                # $.ui.ask 的回答(claude-code-mods-design.md §7.3):前端在
+                # ModAskCard 上作答后回传,这里转发给 broker resolve 对应的
+                # ask Promise(id 用 mod.ask args 里的字符串 id,原样回传)。
+                # 晚到的 answer 是常态而非异常:broker 断连/60s 超时后 pending
+                # 已被扫掉,回 not-found(ok=false)——静默吞掉,不当错误抛。
+                _ask_id = msg.get("id")
+                if isinstance(_ask_id, str) and _ask_id:
+                    from ...mods.channel import get_channel
+                    from ...mods.ops import OpError
+
+                    try:
+                        await get_channel().call(
+                            "broker",
+                            "answer",
+                            {"id": _ask_id, "value": msg.get("value")},
+                            timeout=5.0,
+                        )
+                    except OpError as e:
+                        _log.debug("mod.ui.answer rejected session=%s: %s", session_id, e)
+                    except Exception as e:  # noqa: BLE001 — mods are additive
+                        _log.debug("mod.ui.answer dropped session=%s: %s", session_id, e)
             elif kind == "ping":
                 try:
                     await ws.send_text(_ev("pong", {}))

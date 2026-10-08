@@ -22,6 +22,7 @@ disturb a turn paused at a permission prompt.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from typing import Any
@@ -41,6 +42,8 @@ from .world_state import (
     render_reinjection,
     summary_lead_in,
 )
+
+log = logging.getLogger("ginno.compaction")
 
 # Structured summarization prompt (Claude-Code-style 9-section template with
 # Ginno adaptations: machine-marker guard + first-line UI preview contract +
@@ -217,6 +220,24 @@ async def maybe_compact_history(
     model = session.get("model")
     if model is None:
         return None
+
+    # Mods tap (claude-code-mods-design.md §5.3 session.compact, P2): a chain
+    # that answers {skip} aborts THIS compaction only — the next turn re-checks
+    # the threshold. Raised only once compaction is actually decided (not on
+    # every turn's threshold check); the 2s deadline keeps the turn path fast.
+    from .mods.events import dispatch_session_compact
+
+    session_id = str(session.get("session_id") or "")
+    if await dispatch_session_compact(
+        session_id,
+        tokens=int(estimate_messages_tokens(messages)),
+        threshold=threshold,
+        force=force,
+        messages=len(messages),
+    ):
+        log.info("compaction skipped by mod session=%s force=%s", session_id, force)
+        return None
+
     transcript = "\n".join(_msg_line(m) for m in old)
     summary_resp = await model.ainvoke(
         [

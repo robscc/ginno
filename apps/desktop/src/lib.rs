@@ -29,6 +29,11 @@
 //!      and never writes settings.json (PUT /api/settings is a full-document
 //!      overwrite owned by the web UI); the web UI pushes `floating` prefs
 //!      down via `pin_apply_prefs`.
+//!   7. Serve the mods broker in-process (design §2 桌面形态): the shell owns
+//!      the broker's Unix socket + token file (app data dir) and injects
+//!      GINNO_MOD_BROKER_SOCK / GINNO_MOD_BROKER_TOKEN / GINNO_MOD_RUNNER_PATH
+//!      into the sidecar env; if the broker fails to come up the sidecar gets
+//!      no env and falls back to its dev-spawn / discovery ladder.
 //!
 //! In dev (`tauri dev`), the user runs `pnpm dev:runtime` in a separate
 //! terminal; this file only spawns the runtime in release builds.
@@ -226,6 +231,67 @@ fn ginno_home_path<M: tauri::Manager<tauri::Wry>>(app: &M) -> std::path::PathBuf
         .unwrap_or_else(|_| std::path::PathBuf::from(".ginno"))
 }
 
+// ---------------------------------------------------------------------------
+// In-process mods broker — design §2 (桌面形态): one crate, two hosts. The
+// desktop shell serves the broker's Unix socket from inside this process
+// (dev/web spawns the same crate's CLI instead) and injects the endpoint into
+// the sidecar's env; the runtime's ModChannel then connects here instead of
+// spawning its own broker (bridge_utils.py::ensure_broker). The broker
+// outlives sidecar restarts on purpose (design 目标 4: runtime restart never
+// touches the broker or the runners).
+// ---------------------------------------------------------------------------
+
+/// Endpoint facts handed to the sidecar via env at spawn. Everything `None`
+/// means the broker never came up: the sidecar gets no mods env and falls
+/// back to its existing dev-spawn / repo-target / ~/.ginno/bin discovery
+/// ladder (bridge_utils.py) — the documented degradation path.
+#[derive(Default)]
+struct ModBrokerState {
+    /// Unix socket path (GINNO_MOD_BROKER_SOCK).
+    sock: Option<PathBuf>,
+    /// The broker's sibling `<sock>.token` file, 0600 (GINNO_MOD_BROKER_TOKEN
+    /// — Python reads the file, the token never travels as a value).
+    token: Option<PathBuf>,
+    /// mod-runner.mjs staged inside the app bundle's Resources
+    /// (GINNO_MOD_RUNNER_PATH). None in dev builds: the runtime's repo-dist
+    /// ladder finds packages/mod-runner/dist/mod-runner.mjs itself.
+    runner: Option<PathBuf>,
+}
+
+/// Start the broker on Tauri's async runtime and wait (bounded) for its
+/// socket + token to appear. Failure is non-fatal: mods simply run on the
+/// runtime's fallback ladder (see [`ModBrokerState`]).
+fn start_mod_broker<M: tauri::Manager<tauri::Wry>>(app: &M) -> Option<(PathBuf, PathBuf)> {
+    let dir = app.path().app_local_data_dir().ok()?;
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        shell_log(app, &format!("mods broker: create {}: {e}", dir.display()));
+        return None;
+    }
+    let sock = dir.join("ginno-mod-broker.sock");
+    // Sibling token file, exactly the naming runtime.rs::token_path_of uses
+    // (the CLI's `<socket>.token` convention, design §8.6).
+    let token = dir.join("ginno-mod-broker.sock.token");
+    let spawned = sock.clone();
+    tauri::async_runtime::spawn(async move {
+        // The store path rides the config push from Python (the broker holds
+        // no on-disk config — same None as the CLI's standalone serve).
+        let broker = ginno_mod_broker::Broker::new(None);
+        if let Err(e) = ginno_mod_broker::runtime::serve(broker, spawned).await {
+            eprintln!("[ginno-desktop] mods broker exited: {e}");
+        }
+    });
+    // serve() binds within milliseconds, but stay bounded: if neither file
+    // shows up in 5s, treat the broker as down and fall back.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if sock.exists() && token.exists() {
+            return Some((sock, token));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    None
+}
+
 /// 壳侧孤立用户可见文案（菜单 / 窗口标题 / splash、error 页）的 en/zh 选边。
 /// 读 settings.json 的 `language`（与 load_pin_prefs 同一容错风格）：仅
 /// "zh-CN" → zh；en / "auto" / 缺失 / 非法 → en。设计 §1 规定壳不做 locale
@@ -357,6 +423,19 @@ fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Child, String
         Command::new(runtime_exe)
     };
     cmd.stdin(Stdio::null());
+    // Mods broker endpoint (design §2.1 step 2): socket + token-file env so
+    // the runtime's ModChannel connects to the in-shell broker, plus the
+    // bundled runner path. Absent entries simply don't get set — the runtime
+    // then walks its dev-spawn / discovery ladder as before.
+    if let Some(state) = app.try_state::<ModBrokerState>() {
+        if let (Some(sock), Some(token)) = (&state.sock, &state.token) {
+            cmd.env("GINNO_MOD_BROKER_SOCK", sock);
+            cmd.env("GINNO_MOD_BROKER_TOKEN", token);
+        }
+        if let Some(runner) = &state.runner {
+            cmd.env("GINNO_MOD_RUNNER_PATH", runner);
+        }
+    }
     if let Some(log) = open_log_file_for(app) {
         let log_err = log
             .try_clone()
@@ -1692,6 +1771,32 @@ pub fn run() {
             app.manage(RuntimeProcess(Mutex::new(None)));
             app.manage(RestartLock(Mutex::new(())));
             app.manage(KeepAwake(Mutex::new(None)));
+
+            // In-process mods broker (design §2 桌面形态), started before the
+            // sidecar so its env is meaningful at spawn. Down = no env → the
+            // runtime falls back to dev-spawn / ~/.ginno/bin discovery.
+            let (broker_sock, broker_token) = match start_mod_broker(app) {
+                Some((sock, token)) => (Some(sock), Some(token)),
+                None => {
+                    shell_log(app, "mods broker did not come up — runtime falls back to dev-spawn/discovery");
+                    (None, None)
+                }
+            };
+            // Bundled runner (release): staged by `make sidecar` next to the
+            // runtime bundle. Dev builds don't package resources; the None
+            // lets the runtime find packages/mod-runner/dist/ itself.
+            let broker_runner = app
+                .path()
+                .resource_dir()
+                .ok()
+                .map(|r| r.join("resources").join("mod-runner.mjs"))
+                .filter(|p| p.is_file());
+            app.manage(ModBrokerState {
+                sock: broker_sock,
+                token: broker_token,
+                runner: broker_runner,
+            });
+
             if let Err(e) = install_debug_menu(app) {
                 shell_log(app, &format!("install_debug_menu FAILED: {e}"));
             }

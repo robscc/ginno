@@ -61,6 +61,10 @@ class TurnPlan:
     agent_override: str | None = None  # first resolved @agent mention
     files_extra: list[dict] = field(default_factory=list)  # [{"artifact_id": id}]
     skill_name: str | None = None
+    # Mod-registered slash command (design §5.3 command.run): ``(name, tail)``.
+    # The WS layer raises the command.run event instead of starting a turn.
+    # Never set for a name that shadows a builtin or a skill (P1 不拦截内置).
+    mod_command: tuple[str, str] | None = None
 
 
 def _user_invocable_skill_names(project_slug: str | None) -> set[str]:
@@ -249,6 +253,19 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
         return TurnPlan(
             text=text, builtin_reply=builtin.handler(slug, session, tail)
         )
+
+    # 1.5) Mod-registered slash command (design §5.3): only when neither the
+    # builtin registry nor a user-invocable skill matched (both keep priority).
+    # Kept out of parse_slash on purpose — that helper's None must keep meaning
+    # "pass through as a plain message" for every other caller.
+    if cmd is None:
+        from . import mod_commands
+
+        m = _SLASH_RE.match(text or "")
+        if m and mod_commands.lookup(m.group(1)):
+            name = m.group(1)
+            _log.info("mod_cmd name=%s slug=%s", name, slug)
+            return TurnPlan(text=text, mod_command=(name, (m.group(2) or "").strip()))
 
     # 2) Mentions (structured authoritative + text fallback).
     resolved, agent_override = resolve_mentions(msg.get("mentions"), text, slug)

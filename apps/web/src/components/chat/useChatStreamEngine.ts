@@ -37,6 +37,10 @@ import {
   useEventI18nText,
   type Block,
 } from "@/components/chat/blocks";
+import type { ModBandGroup } from "@/components/chat/mod/ModBand";
+import type { ModAskState } from "@/components/chat/mod/ModAskCard";
+import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToastHost";
+import { pushModPane, registerModPanePressSender, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type {
   ContextChange,
   Goal,
@@ -89,6 +93,21 @@ export interface EngineDeps {
   setProposeResult: (
     v: ProposeResult | null | ((p: ProposeResult | null) => ProposeResult | null),
   ) => void;
+  // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):按 sid 存
+  // 的 band 分段数组(每 mod 一段,各有 generation),渲染归 ChatStream
+  // (composer 内),store 不参与。
+  setModBands: (
+    v:
+      | Record<string, ModBandGroup[]>
+      | ((p: Record<string, ModBandGroup[]>) => Record<string, ModBandGroup[]>),
+  ) => void;
+  // $.ui.ask(claude-code-mods-design.md §7.3):按 sid 存的待答问题(同一会话
+  // 同时最多展示最新一条),渲染归 ChatStream 浮层 ModAskCard。
+  setModAsks: (
+    v:
+      | Record<string, ModAskState | null>
+      | ((p: Record<string, ModAskState | null>) => Record<string, ModAskState | null>),
+  ) => void;
   // Refs owned by the component (shared with composer / scroll code there).
   stickRef: { current: boolean };
   connectRef: { current: () => void };
@@ -119,7 +138,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
-    setFileAttachments, setComposerHint, setProposeResult,
+    setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
   } = deps;
@@ -1612,8 +1631,117 @@ export function useChatStreamEngine(deps: EngineDeps) {
         flushSteerQueue(sid);
         break;
       }
+      // ─── Claude Code Mods(claude-code-mods-design.md §7)──────────────────────
+      // 归属守卫:frame_session 检查已在 socket onmessage 里统一做过,这里的
+      // sid 即归属会话,无需再防串线。
+      case "mod.bands": {
+        // 整树替换(§7.1 per-mod:每 mod 一段,generation 按 mod 递增,过期
+        // press 由 broker 侧按 mod 校验忽略)。旧帧形状(单树 {generation,
+        // tree, mod})兜底成一段,树空则清空。
+        const groups: ModBandGroup[] = [];
+        if (Array.isArray(ev.mods)) {
+          for (const entry of ev.mods) {
+            if (!entry || typeof entry !== "object") continue;
+            const tree = Array.isArray(entry.tree) ? (entry.tree as ModBandGroup["tree"]) : [];
+            if (tree.length === 0) continue; // 空树 mod 不占位
+            groups.push({
+              mod: typeof entry.mod === "string" ? entry.mod : undefined,
+              generation: Number(entry.generation) || 0,
+              tree,
+            });
+          }
+        } else if (Array.isArray(ev.tree)) {
+          const tree = ev.tree as ModBandGroup["tree"];
+          if (tree.length > 0) {
+            groups.push({
+              mod: typeof ev.mod === "string" ? ev.mod : undefined,
+              generation: Number(ev.generation) || 0,
+              tree,
+            });
+          }
+        }
+        setModBands((prev) => ({ ...prev, [sid]: groups }));
+        break;
+      }
+      case "mod.toast": {
+        const level: ModToastLevel = ev.level === "warn" || ev.level === "error" ? ev.level : "info";
+        pushModToast(level, String(ev.text ?? ""));
+        break;
+      }
+      case "mod.state.changed": {
+        // mod 装载/启停/配置变化:设置页若开着就重拉;没有对应的 store 动作,
+        // 页面不在时该事件自然无处消费,静默。
+        try {
+          window.dispatchEvent(new CustomEvent("ginno:mods-state-changed"));
+        } catch {
+          /* 非浏览器环境(SSG) */
+        }
+        break;
+      }
+      case "mod.ask": {
+        // $.ui.ask(§7.3):问题浮层,按 sid 存最新一条。choices 可为字符串,
+        // 也兼容 {label}/{value} 对象形状;自由输入恒可用。
+        const rawChoices = Array.isArray(ev.choices) ? ev.choices : [];
+        const ask: ModAskState = {
+          id: String(ev.id ?? ""),
+          mod: typeof ev.mod === "string" ? ev.mod : undefined,
+          message: String(ev.message ?? ""),
+          choices: rawChoices
+            .map((c) =>
+              typeof c === "string"
+                ? c
+                : c && typeof c === "object"
+                  ? String((c as { label?: unknown; value?: unknown }).label ??
+                    (c as { value?: unknown }).value ?? "")
+                  : "",
+            )
+            .filter((c) => c !== ""),
+        };
+        if (!ask.id) break; // 无法回发的问题直接丢弃
+        setModAsks((prev) => ({ ...prev, [sid]: ask }));
+        break;
+      }
+      // mod.pane.*(§7.4,P2):右栏 pane 区,经 paneBus 交给 ModPaneHost;
+      // 本分支只做转发,归属(会话切换移除)由宿主按 sid 自行守卫。
+      case "mod.pane.open":
+      case "mod.pane.update":
+      case "mod.pane.close": {
+        const kind = ev.event === "mod.pane.open" ? "open" : ev.event === "mod.pane.update" ? "update" : "close";
+        pushModPane(sid, kind, {
+          id: String(ev.id ?? ""),
+          title: typeof ev.title === "string" ? ev.title : String(ev.id ?? ""),
+          mod: typeof ev.mod === "string" ? ev.mod : undefined,
+          generation: Number(ev.generation) || 0,
+          tree: Array.isArray(ev.tree) ? (ev.tree as ModPaneSnapshot["tree"]) : [],
+        });
+        break;
+      }
     }
     syncDisplay(sid);
+  }
+  // Band 按钮 press 回发(§7.1):后端/broker 未就绪时静默——按钮是「禁用
+  // 样式但可点」,发送失败不该打扰用户;过期代际由 broker 侧忽略。
+  // value 仅 pane 的 Input/Select 提交携带(随帧多余字段,broker 按需取用)。
+  function sendModUiPress(sid: string, generation: number, actionId: string, value?: string) {
+    const sock = socketsRef.current[sid];
+    if (!sock || sock.readyState !== WebSocket.OPEN) return;
+    try {
+      sock.send(JSON.stringify(value === undefined ? { type: "mod.ui.press", generation, actionId } : { type: "mod.ui.press", generation, actionId, value }));
+    } catch {
+      /* socket closing */
+    }
+  }
+  // $.ui.ask 回答回发(§7.3):乐观清卡——即使 broker 侧已超时/孤儿,回答
+  // 被丢弃也比让用户对着一张死卡片重试好;卡没了问题自然消失。
+  function sendModUiAnswer(sid: string, id: string, value: string) {
+    setModAsks((prev) => (prev[sid] ? { ...prev, [sid]: null } : prev));
+    const sock = socketsRef.current[sid];
+    if (!sock || sock.readyState !== WebSocket.OPEN) return;
+    try {
+      sock.send(JSON.stringify({ type: "mod.ui.answer", id, value }));
+    } catch {
+      /* socket closing */
+    }
   }
   // Docs/native paths dropped while on the landing home (no session yet):
   // buffered with optimistic chips, uploaded right after lazy creation.
@@ -1979,6 +2107,13 @@ export function useChatStreamEngine(deps: EngineDeps) {
     syncDisplay(sid);
   }
 
+  // Pane 的 press 回发沿本 hook 的 session socket(§7.4):注册进 paneBus,
+  // 右栏 ModPaneHost 不需要自己的连接。挂载一次即可——sender 是稳定闭包,
+  // 经 socketsRef 间接取当前 socket。
+  useEffect(() => {
+    registerModPanePressSender((sid, generation, actionId, value) => sendModUiPress(sid, generation, actionId, value));
+  }, []);
+
   return {
     // refs
     liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
@@ -1996,5 +2131,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     recallSteers, flushSteerQueue, dropAbsorbedSteers,
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
+    sendModUiPress, sendModUiAnswer,
   };
 }

@@ -66,6 +66,9 @@ import {
 import { useChatStreamEngine, HOME_SLOT } from "./useChatStreamEngine";
 import { useSummarizeFlow } from "./useSummarizeFlow";
 import { SubagentPlanCard } from "./subagentPlanCard";
+import { ModBand } from "./mod/ModBand";
+import { ModAskCard, type ModAskState } from "./mod/ModAskCard";
+import type { ModBandGroup } from "./mod/ModBand";
 
 export function ChatStream({
   session,
@@ -145,6 +148,12 @@ export function ChatStream({
   const [proposeResult, setProposeResult] = useState<
     { decision: "allow" | "deny"; workflowId: string; fromVersion: number } | null
   >(null);
+  // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):按 sid 存的
+  // band 分段数组(每 mod 一段),composer 上方渲染。会话内瞬态,本地 state
+  // 即可,不进全局 store。
+  const [modBands, setModBands] = useState<Record<string, ModBandGroup[]>>({});
+  // $.ui.ask(§7.3):按 sid 存的待答问题,浮层渲染(见文件尾部 ModAskCard)。
+  const [modAsks, setModAsks] = useState<Record<string, ModAskState | null>>({});
 
   const {
     activeSidRef, curSessionIdRef, storeRef, liveBySessionRef,
@@ -155,12 +164,13 @@ export function ChatStream({
     dropSteer, showComposerHint, enqueueSteer, recallSteers,
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
+    sendModUiPress, sendModUiAnswer,
   } = useChatStreamEngine({
     g, steerQ, session, onUsageChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
-    setFileAttachments, setComposerHint, setProposeResult,
+    setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
     finishSynthesisWait,
@@ -1062,6 +1072,16 @@ export function ChatStream({
                 onPick={pickItem}
                 onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
               />
+            )}
+            {session && (modBands[session.id]?.some((g) => g.tree.length > 0) ?? false) && (
+              // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):
+              // composerHint 之上、与 hint/steer 条同级;每 mod 一段。空树零渲染。
+              <div className="mb-2">
+                <ModBand
+                  groups={modBands[session.id]!}
+                  onPress={(actionId, generation) => sendModUiPress(session.id, generation, actionId)}
+                />
+              </div>
             )}
             {composerHint && (
               // Blocked send, made visible. A silent return here read as a
@@ -2044,6 +2064,14 @@ export function ChatStream({
         </div>
       </div>
         </>
+      )}
+      {session && modAsks[session.id] && (
+        // $.ui.ask 浮层(claude-code-mods-design.md §7.3):mod 的提问独立于
+        // turn(interrupt),session 切走即不可见;回答经 engine 回发后乐观清卡。
+        <ModAskCard
+          ask={modAsks[session.id]!}
+          onAnswer={(value) => sendModUiAnswer(session.id, modAsks[session.id]!.id, value)}
+        />
       )}
     </div>
   );

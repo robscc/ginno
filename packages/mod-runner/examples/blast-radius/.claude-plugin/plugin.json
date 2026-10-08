@@ -1,0 +1,5 @@
+{
+  "name": "blast-radius",
+  "version": "0.1.0",
+  "description": "Guards dangerous shell commands: deny list + confirm-via-ask + a band switch. Ginno P1 acceptance sample (mirrors the official Blast Radius scenario)."
+}

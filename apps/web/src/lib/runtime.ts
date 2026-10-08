@@ -1000,6 +1000,76 @@ export async function getExternalAgents(): Promise<
 > {
   return json(`${BASE}/external-agents`);
 }
+
+// ---- mods(Claude Code Mods 兼容层,claude-code-mods-design.md §7.5)----
+// 后端由 runtime 侧并行实现;前端类型取宽容形状(字段缺失时设置页优雅降级)。
+/** Per-mod compatibility counters (channel.compat_summary, design §7.5
+ *  持续项): events × fired, the Python-backed op slice × ok, and the
+ *  unimplemented `$` mentions the runner reported. Empty until first hello. */
+export interface ModCompat {
+  events?: Record<string, { registered?: boolean; fired?: number; failed?: number }>;
+  ops?: Record<string, { called?: number; ok?: number }>;
+  unimplemented?: Record<string, number>;
+}
+
+export interface ModInfo {
+  name: string;
+  version?: string;
+  /** loaded | error | disabled | restarting */
+  status?: string;
+  /** global | project */
+  source?: string;
+  dir?: string;
+  error?: string;
+  enabled?: boolean;
+  config?: Record<string, unknown>;
+  /** grants 白名单(JS mods: fs.read/http/process…;classic hooks: classic 三态) */
+  grants?: Record<string, unknown>;
+  /** 兼容度计数(见 ModCompat);断连清零,新会话从空开始。 */
+  compat?: ModCompat;
+}
+
+export interface ModsStatus {
+  ok?: boolean;
+  mods?: ModInfo[];
+  /** GET /api/mods 的 runtime 字段 = ModChannel.availability()。引导判断看
+   *  brokerPath/nodePath 是否解析得到,而不是 status(零 mod 时 status 是
+   *  disabled 但二进制都正常,见 mods/channel.py availability)。 */
+  runtime?: {
+    status?: string;
+    detail?: string;
+    connected?: boolean;
+    envSocket?: boolean;
+    brokerPath?: string | null;
+    nodePath?: string | null;
+  } | null;
+}
+
+export async function listMods() {
+  return json<ModsStatus>(`${BASE}/mods`);
+}
+
+export async function updateMod(
+  name: string,
+  patch: { enabled?: boolean; config?: Record<string, unknown>; grants?: Record<string, unknown> },
+) {
+  return json<ModInfo & { ok?: boolean; error?: string }>(
+    `${BASE}/mods/${encodeURIComponent(name)}`,
+    {
+      method: "PUT",
+      headers: H,
+      body: JSON.stringify(patch),
+    },
+  );
+}
+
+export async function validateMod(name: string) {
+  return json<Record<string, unknown>>(`${BASE}/mods/validate`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ name }),
+  });
+}
 export async function getSettings() {
   return json<Record<string, unknown>>(`${BASE}/settings`);
 }

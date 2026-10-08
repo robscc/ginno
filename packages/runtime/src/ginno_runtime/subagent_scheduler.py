@@ -520,6 +520,48 @@ async def create_subagent(
             ),
         }
 
+    # Mods tap (claude-code-mods-design.md §5.3 agent.spawn): the chain may
+    # answer {deny} to refuse the spawn outright. Placed after the cheap
+    # validations (an invalid spawn should not burn a mod hook) and before any
+    # state changes. P2 does not honor a model rewrite — observe or deny only.
+    from .mods.events import dispatch_agent_spawn
+
+    verdict = await dispatch_agent_spawn(
+        parent_session_id,
+        st.name if st is not None else (agent_type or "").strip(),
+        goal,
+        origin=origin,
+        depth=depth,
+    )
+    if verdict:
+        reason = str(verdict.get("deny") or "denied by mod")
+        mod_name = str(verdict.get("mod") or "")
+        by = f" {mod_name}" if mod_name else ""
+        await _push_session_event(
+            parent_session_id,
+            "notice",
+            {
+                "message": (
+                    f"Subagent spawn denied by mod {mod_name}: {reason}"
+                    if mod_name
+                    else f"Subagent spawn denied by a mod: {reason}"
+                ),
+                "i18n_key": "chat.mods.agentSpawnDenied",
+                "params": {"mod": mod_name, "reason": reason},
+            },
+        )
+        _log.info(
+            "subagent_spawn_denied_by_mod parent=%s mod=%s reason=%r goal=%r",
+            parent_session_id, mod_name, reason, goal[:80],
+        )
+        return {
+            "ok": False,
+            "error": t(
+                f"[error] Subagent spawn denied by mod{by}: {reason}",
+                f"[error] 子代理启动被 mod{by}拒绝：{reason}",
+            ),
+        }
+
     cap = max_concurrent()
     async with _SPAWN_LOCK:
         running = _running_subagent_metas()

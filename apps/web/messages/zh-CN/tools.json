@@ -16,6 +16,14 @@
   "settings": {
     "nav": {
       "title": "设置",
+      "groups": {
+        "connections": "模型与连接",
+        "agents": "智能体",
+        "knowledge": "知识与上下文",
+        "security": "权限与钩子",
+        "data": "用量与数据",
+        "general": "通用"
+      },
       "groupSecurity": "安全",
       "groupSystem": "系统",
       "items": {
@@ -36,7 +44,8 @@
         "notifications": "通知",
         "floating": "悬浮窗",
         "toolLabels": "工具标签",
-        "externalAgents": "外部代理"
+        "externalAgents": "外部代理",
+        "mods": "Mods 扩展"
       }
     },
     "view": {
@@ -647,6 +656,54 @@
       "modeAuto": "模型自选（默认 read-only）",
       "modeEdit": "始终 edit",
       "modeReadOnly": "始终 read-only"
+    },
+    "mods": {
+      "title": "Mods 扩展",
+      "intro": "兼容 Claude Code 的 mod 扩展：每个 mod 跑在独立沙箱 Node 进程里，能力经 grants 管控。",
+      "refresh": "刷新",
+      "runtime": "运行时",
+      "broker": "Mod broker",
+      "brokerVersion": "v{version}",
+      "brokerUnavailable": "未连接——broker 二进制缺失或未启动",
+      "nodePath": "Node：",
+      "notDiscovered": "未发现",
+      "dirHint": "mod 从 ~/.ginno/mods/ 目录加载，把 mod 仓库放进去即可安装。",
+      "list": "已安装 mod",
+      "loading": "加载中……",
+      "noMods": "暂未安装 mod。把 mod 仓库 clone 到 ~/.ginno/mods/ 即可加载。",
+      "enable": "启用",
+      "source.global": "全局",
+      "source.project": "项目",
+      "grantsClassic": "Classic hooks 权限",
+      "grant.ask": "拦截并提示（默认）",
+      "grant.deny": "拦截",
+      "grant.allow": "放行",
+      "grantsHint": "危险命令（安装软件包、改写宿主 settings）仅在「放行」时执行",
+      "dirLabel": "目录",
+      "editConfig": "编辑配置",
+      "configHint": "JSON 格式 · 保存到 mods.<name>.config，覆盖 mod 默认值",
+      "saveConfig": "保存配置",
+      "configSaved": "配置已保存",
+      "configInvalid": "JSON 解析失败：{msg}",
+      "validate": "验证",
+      "validateReport": "验证报告——{name}",
+      "validateFailed": "验证失败（runtime 不可达？）",
+      "actionFailed": "操作失败",
+      "compat": "兼容度",
+      "compatEmpty": "本次会话还没有记录到活动",
+      "compat.events": "事件（注册 × 实际触发）",
+      "compat.ops": "$ 调用（宿主后端部分）",
+      "compat.unimplemented": "未实现的 $ 调用",
+      "compat.fired": "触发 {n} 次",
+      "compat.failed": "失败 {n} 次",
+      "compat.called": "调用 {n} 次 · 成功 {ok}",
+      "status": {
+        "loaded": "已加载",
+        "error": "错误",
+        "disabled": "已停用",
+        "restarting": "重启中",
+        "unknown": "未知"
+      }
     }
   }
 }

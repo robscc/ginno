@@ -27,6 +27,8 @@
       "ariaStatusClickable": "Connection status: {status}, click to reconnect"
     },
     "composer": {
+      "modBandCollapse": "Collapse mod band",
+      "modBandExpand": "Expand mod band",
       "hintImagesProcessing": "Note: images still processing — please wait before sending",
       "hintFileUploading": "Note: file upload in progress — please wait before sending",
       "resizeTitle": "Drag to resize the input box (double-click to restore auto height)",
@@ -46,6 +48,12 @@
       "newSession": "+ New Session",
       "delegationReadonly": "Delegation replay · read-only",
       "delegationRunning": "running"
+    },
+    "mods": {
+      "promptBlocked": "This prompt was blocked by a mod.",
+      "promptBlockedHook": "Prompt blocked by a hook.",
+      "askPlaceholder": "Or type your answer…",
+      "askSend": "Send"
     },
     "queue": {
       "pending": "Pending ({count})",
