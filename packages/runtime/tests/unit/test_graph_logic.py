@@ -91,32 +91,36 @@ def test_skill_extra_allow_widens_after_activation(isolated_home):
     assert "bash" not in extra2
 
 
-# ------------------- lazy browser activation (skill ladder) ------------------- #
+# ------------------- lazy tool families (skill ladder) ------------------- #
 def test_browser_tools_lazily_gated():
-    """browser_* never pre-binds via tools_allow (even "*") — the ~2.9k schema
-    tokens ride a session only after use_skill("browser") activated."""
+    """Lazily-gated families (browser_*, todo_*) never pre-bind via
+    tools_allow (even "*") — their schema tokens ride a session only after
+    use_skill activated the family's sticky skill."""
     a = _agent(["*"])
     assert tool_allowed(a, "browser_computer") is False
-    assert tool_allowed(a, "browser_navigate") is False
+    assert tool_allowed(a, "todo_create") is False
     # activation surface: the pattern lands in extra via the skill ladder
     assert tool_allowed(a, "browser_computer", ["browser_*"]) is True
+    assert tool_allowed(a, "todo_create", ["todo_*"]) is True
 
 
-def test_browser_sticky_channel_widens_extra():
+def test_sticky_channel_widens_extra():
     from ginno_runtime.graph import _skill_extra_allow
 
     # active_skills is empty (reset by the WS layer each turn) yet the sticky
-    # session channel keeps the toolset bound after the first activation
-    extra = _skill_extra_allow({"active_skills": [], "browser_activated": True})
+    # session channel keeps the toolsets bound after the first activation
+    extra = _skill_extra_allow({"active_skills": [], "sticky_skills": ["browser"]})
     assert "browser_*" in extra
+    extra = _skill_extra_allow({"active_skills": [], "sticky_skills": ["todo"]})
+    assert "todo_list" in extra and "todo_create" in extra
     # and it merges with live skills
-    extra = _skill_extra_allow({"active_skills": ["x"], "browser_activated": True})
-    assert "browser_*" in extra
+    extra = _skill_extra_allow({"active_skills": ["browser"], "sticky_skills": ["todo"]})
+    assert "browser_*" in extra and "todo_link" in extra
 
 
 async def test_use_skill_browser_sets_sticky_channel(isolated_home):
-    """use_skill("browser") flips the session-persistent channel (the builtin
-    skill ships with the package — no fixture needed beyond isolated_home)."""
+    """use_skill("browser") lands the sticky skill on the session-persistent
+    append-only channel (the builtin skill ships with the package)."""
     from ginno_runtime.graph import build_graph
     from ginno_runtime.testing.fake_model import script_tool_call
     from ginno_runtime.tools.skill_tools import build_skill_tools
@@ -146,10 +150,10 @@ async def test_use_skill_browser_sets_sticky_channel(isolated_home):
         },
         config=cfg,
     )
-    assert result.get("browser_activated") is True
+    assert result.get("sticky_skills") == ["browser"]
     assert "browser" in (result.get("active_skills") or [])
-    # next turn: WS input_state omits browser_activated → checkpoint value
-    # survives; active_skills resets (WS always re-sends it)
+    # next turn: WS input_state sends sticky_skills=[] (append-only reducer →
+    # no-op) and active_skills=[] (per-turn reset); the sticky value survives
     model2 = ScriptedChatModel(scripts=[script(text="still active")])
     graph2 = build_graph(
         model=model2, project_slug="default", workspace="/tmp", mcp_tools=[],
@@ -161,13 +165,13 @@ async def test_use_skill_browser_sets_sticky_channel(isolated_home):
             "workspace": "/tmp",
             "project_slug": "default",
             "agent_id": "dev",
-            "active_skills": [],  # per-turn reset, as turn.py does
+            "active_skills": [],
+            "sticky_skills": [],  # reducer no-op — value survives
             "pending_tool_calls": [],
-            # browser_activated deliberately NOT re-sent
         },
         config=cfg,
     )
-    assert result2.get("browser_activated") is True
+    assert result2.get("sticky_skills") == ["browser"]
 
 
 async def test_use_skill_activates_skill_on_state(isolated_home):

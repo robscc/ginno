@@ -426,3 +426,33 @@ def test_slash_browser_passthrough_when_disabled(ginno_home):
     text, name = substitute_skill("/browser open example.com", "default")
     assert name == "browser"
     assert "browser_tabs_context" in text  # skill body substituted
+
+
+def test_sticky_frontmatter_parsed():
+    """The builtin browser/todo skills declare `sticky: true` — the flag that
+    keeps their lazily-gated tool families bound for the whole session."""
+    from ginno_runtime.skills.loader import SkillLoader
+
+    loader = SkillLoader(project_slug="default")
+    assert loader.get("browser").sticky is True
+    assert loader.get("todo").sticky is True
+
+
+def test_slash_sticky_appends(isolated_home, monkeypatch, tmp_path):
+    """turn.py's slash path feeds sticky_skills with the invoked skill only
+    when it declares sticky; [] otherwise (append reducer no-op)."""
+    monkeypatch.setenv("GINNO_HOME", str(tmp_path))
+    (tmp_path / "settings.json").write_text("{}")
+    from ginno_runtime.api.stream.turn import _slash_sticky
+
+    assert _slash_sticky("browser", "default") == ["browser"]
+    assert _slash_sticky("todo", "default") == ["todo"]
+    assert _slash_sticky(None, "default") == []
+    # a non-sticky user skill (or unknown name) contributes nothing
+    d = tmp_path / "skills" / "plain"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: plain\ndescription: p\ntrigger: both\n---\n\nB.\n", encoding="utf-8"
+    )
+    assert _slash_sticky("plain", "default") == []
+    assert _slash_sticky("nope", "default") == []

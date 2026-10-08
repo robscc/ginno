@@ -114,7 +114,7 @@ def build_skill_tools(
             # Same gate as the skills index (world_state._browser_tools_enabled):
             # with browser disabled the browser_* tools don't exist, so
             # activating the skill would bind nothing. The error return also
-            # keeps it off active_skills / browser_activated (the tools node
+            # keeps it off active_skills / sticky_skills (the tools node
             # only records non-error use_skill results).
             from ..world_state import _browser_tools_enabled
 

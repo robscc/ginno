@@ -2,6 +2,7 @@
 name: todo
 description: 快速管理用户的每日 TODO 清单（增删改查、完成、关联产物）。Use when the user wants to add/list/edit/complete/delete TODO items.
 trigger: both
+sticky: true
 tools: [todo_list, todo_create, todo_update, todo_done, todo_delete, todo_link]
 ---
 

@@ -57,9 +57,14 @@ def _resolve_agent(agent_id: str | None):
     return lst[0] if lst else None
 
 
+# Tool families that bind ONLY through skill activation (see tool_allowed).
+# Each family's builtin SKILL.md declares `sticky: true` + `tools: <prefix>*`,
+# so one use_skill("<skill>") binds the family for the whole session.
+_LAZY_TOOL_PREFIXES = ("browser_", "todo_")
+
+
 def tool_allowed(agent, tool_name: str, extra_allow: list[str] | None = None) -> bool:
-    if tool_name in RENDER_TOOL_NAMES:
-        return True  # structured-output tools are available to every agent
+    if tool_name in RENDER_TOOL_NAMES:        return True  # structured-output tools are available to every agent
     if tool_name in WORKFLOW_TOOL_NAMES or tool_name in ARTIFACT_TOOL_NAMES:
         return True
     # use_skill is how the model auto-invokes a matching skill. Every role
@@ -88,13 +93,13 @@ def tool_allowed(agent, tool_name: str, extra_allow: list[str] | None = None) ->
                 return False
     if extra_allow and any(fnmatch.fnmatch(tool_name, p) for p in extra_allow):
         return True
-    # Lazy browser activation (browser-skill design): the browser_* toolset
-    # binds ONLY through extra_allow ("browser_*" arrives there once
-    # use_skill("browser") has activated the skill, or via the sticky
-    # browser_activated channel) — a persona's tools_allow (even "*") never
-    # pre-binds it. ~2.9k schema tokens per request otherwise ride every
-    # session while the extension is merely enabled.
-    if tool_name.startswith("browser_"):
+    # Lazy toolset families (browser-skill design): these tool prefixes bind
+    # ONLY through skill activation — extra_allow, which carries the family
+    # once a `sticky: true` skill (browser, todo) has been activated via
+    # use_skill or a slash invoke. A persona's tools_allow (even "*") never
+    # pre-binds them; several thousand schema tokens per request would
+    # otherwise ride every session that merely has the features enabled.
+    if tool_name.startswith(_LAZY_TOOL_PREFIXES):
         return False
     if not agent:
         return True
@@ -112,26 +117,21 @@ def _skill_extra_allow(state: dict | None) -> list[str]:
     a slash invoke) has put the skill on active_skills this turn.
     """
     names = list((state or {}).get("active_skills") or [])
-    if not names and not (state or {}).get("browser_activated"):
-        return []
-    extra: list[str] = []
-    if (state or {}).get("browser_activated"):
-        # Lazy browser activation (browser-skill design): the builtin browser
-        # skill rides the skill ladder, but active_skills resets every turn —
-        # the session-persistent browser_activated channel keeps the pattern
-        # in the extra set after the first activation. The pattern is fixed
-        # here (not resolved via SkillLoader) so the sticky path costs no
-        # per-superstep file scan and never breaks on a missing/overridden
-        # SKILL.md. connectors_deny still outranks this (tool_allowed checks
-        # it BEFORE extra_allow).
-        extra.append("browser_*")
+    names += [n for n in (state or {}).get("sticky_skills") or [] if n not in names]
     if not names:
-        return extra
+        return []
+    # Lazy toolset activation (browser-skill design, generalized): a skill
+    # marked `sticky: true` rides sticky_skills for the whole session (the WS
+    # layer resets active_skills every turn but never re-sends sticky_skills),
+    # so ONE use_skill keeps its `tools:` family — browser_*, todo_* — bound.
+    # connectors_deny still outranks all of this (tool_allowed checks it
+    # BEFORE extra_allow).
     slug = (state or {}).get("project_slug") or None
     from .skills.loader import SkillLoader
 
     loader = SkillLoader(project_slug=slug)
-    seen: set[str] = set(extra)
+    extra: list[str] = []
+    seen: set[str] = set()
     for name in names:
         skill = loader.get(name)
         if not skill:
@@ -1534,12 +1534,18 @@ def _tools_node_factory(all_tools):
                 if n not in existing:
                     existing.append(n)
             update["active_skills"] = existing
-            # Sticky lazy browser activation: use_skill("browser") flips a
-            # session-persistent channel (NOT reset per turn by the WS layer,
-            # unlike active_skills) so the browser_* toolset stays bound for
-            # the rest of the session after one activation.
-            if "browser" in activated:
-                update["browser_activated"] = True
+            # Sticky lazy activation (generalized): a skill declaring
+            # `sticky: true` in its SKILL.md also lands on the session-
+            # persistent sticky_skills channel — its `tools:` family (lazily
+            # gated in tool_allowed) stays bound for the rest of the session
+            # after ONE activation. The channel is APPEND-only (operator.add),
+            # so the reducer accumulates; send just the new names.
+            from .skills.loader import SkillLoader as _Loader
+
+            loader = _Loader(project_slug=state.get("project_slug") or None)
+            sticky_now = [n for n in activated if (sk := loader.get(n)) and sk.sticky]
+            if sticky_now:
+                update["sticky_skills"] = sticky_now
         return update
 
     return tools_node

@@ -2,6 +2,7 @@
 name: browser
 description: 操作用户的 Chrome 浏览器（打开/切换标签页、点击、输入、截图、读页面、跑 JS、抓网络请求）。Use when the user asks to browse/open/scrape/automate a web page.
 trigger: both
+sticky: true
 tools: [browser_*]
 ---
 

@@ -295,6 +295,22 @@ def _bound_workflow_view(session: dict) -> dict | None:
     return wf
 
 
+def _slash_sticky(skill_name: str | None, project_slug: str) -> list[str]:
+    """[skill_name] when a slash-invoked skill declares `sticky: true`, else [].
+
+    The sticky_skills channel has an append-only reducer, so this never
+    disturbs entries accumulated from earlier turns."""
+    if not skill_name:
+        return []
+    try:
+        from ...skills.loader import SkillLoader
+
+        sk = SkillLoader(project_slug=project_slug).get(skill_name)
+        return [skill_name] if sk and sk.sticky else []
+    except Exception:  # noqa: BLE001 — activation bookkeeping must never block a turn
+        return []
+
+
 async def _run_stream(
     ws: WebSocket | None,
     graph,
@@ -567,6 +583,11 @@ async def _run_stream(
         "project_slug": session["project_slug"],
         "agent_id": effective_agent,
         "active_skills": [skill_name] if skill_name else [],
+        # Slash-invoked sticky skills (sticky: true in SKILL.md — browser,
+        # todo) also enter the session-persistent sticky channel. Append-only
+        # reducer: [] is a no-op, and prior entries from earlier turns are
+        # never cleared. use_skill activations append from the tools node.
+        "sticky_skills": _slash_sticky(skill_name, session["project_slug"]),
         "pending_tool_calls": [],
         "attached_files": attached,
         # Always present (even []) so the channel resets per turn — mentions

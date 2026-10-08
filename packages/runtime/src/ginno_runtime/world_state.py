@@ -516,10 +516,11 @@ def _agent_allowed_names(agent, all_tool_names: list[str]) -> list[str]:
         if name in RENDER_TOOL_NAMES or name in WORKFLOW_TOOL_NAMES or name in ARTIFACT_TOOL_NAMES:
             out.append(name)
             continue
-        # Mirror the lazy browser gate (graph.tool_allowed): browser_* never
-        # pre-binds via tools_allow — only skill activation exposes it, which
-        # this persona-level snapshot doesn't model.
-        if name.startswith("browser_"):
+        # Mirror the lazy tool families (graph.tool_allowed /
+        # _LAZY_TOOL_PREFIXES): browser_* / todo_* never pre-bind via
+        # tools_allow — only skill activation exposes them, which this
+        # persona-level snapshot doesn't model.
+        if name.startswith(("browser_", "todo_")):
             continue
         if "*" in allow or any(fnmatch.fnmatch(name, p) for p in allow):
             out.append(name)
