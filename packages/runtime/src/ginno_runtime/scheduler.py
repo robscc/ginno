@@ -331,8 +331,16 @@ def _skip_missed(task: dict, point: float) -> float | None:
 
 def _advance_next(task: dict, from_point: float) -> None:
     """调度触发后推进 next_run_at 并持久化（manual 触发不动计划）。执行期间
-    错过的中间点同样逐条补记 missed（与 _tick 对账同语义）。"""
-    future = _skip_missed(task, from_point)
+    错过的中间点同样逐条补记 missed（与 _tick 对账同语义）。
+
+    必须先【无条件步进过】刚触发的 ``from_point`` 再交给 _skip_missed：刚触发
+    的点距 now 只有几秒，GRACE 循环不会跳过它——直接 _skip_missed 会把
+    next_run_at 原样写回这个已过去的点，随后每个 tick 都再触发一次（run 未
+    结束 → skipped_overlap；结束/出错 → 重复真跑），GRACE 过后再给这个实际
+    已执行过的点补一条幽灵 missed（2026-10-07/08/09 每天「三个 run」的根因，
+    10-06 的跨进程租约修的是另一个方向，没治住这条）。"""
+    future = _step_point(task, time.time(), from_point)
+    future = _skip_missed(task, future) if future is not None else None
     if sch_kind(task) == "once" and future is None:
         # 单次任务到点执行完自动暂停（§3.2）
         store.patch_task(task["id"], {"next_run_at": None, "enabled": False})

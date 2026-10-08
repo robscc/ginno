@@ -385,3 +385,47 @@ async def test_workflow_missing_input_records_error(isolated_home):
     assert rows[0]["status"] == "error"
     assert rows[0]["error"].startswith("missing_input")
     assert "repo" in rows[0]["error"]
+
+
+# ---- 触发后 next_run_at 必须越过已触发点（三个 run 根因回归钉）----------------
+async def test_trigger_advances_past_fired_point(isolated_home, monkeypatch):
+    """2026-10-07/08/09「同一计划点出 3 条 run」的根因：_advance_next 曾把
+    next_run_at 原样写回刚触发的点（GRACE 内 _skip_missed 不跳它），随后
+    tick 再触发 → skipped_overlap / 重复真跑，GRACE 过后还补一条幽灵 missed。
+    修后：触发即推进到严格未来；后续 tick（含 GRACE 内外）零产出。"""
+
+    async def fake_execute(task, row):
+        await asyncio.sleep(3600)  # 模拟长跑（> GRACE），停在 running
+
+    monkeypatch.setattr(scheduler, "_execute_run", fake_execute)
+    now = time.time()
+    store.save_config({"enabled": True, "keep_awake": False, "tasks": [
+        _task(next_run_at=now - 2),  # 刚到点（延迟 2s ≤ GRACE）
+    ]})
+    await scheduler._tick()
+    rid = next(iter(scheduler._RUNNING.values()))
+    assert rid  # 触发了
+
+    # next_run_at 必须严格在未来（daily → 明天同一时刻），不是刚触发的点
+    t = store.get_task("st-t1")
+    assert t["next_run_at"] > now + 3600
+
+    # 后续 tick（模拟 +30s 的 skipped_overlap 时点与 +61s/+120s 的 missed
+    # 时点）：不再触发、不再记账。fake clock 只替换 scheduler 模块内的
+    # time 引用，不动全局。
+    from types import SimpleNamespace
+
+    real_time = scheduler.time
+    for delta in (30, 61, 120):
+        monkeypatch.setattr(
+            scheduler, "time", SimpleNamespace(time=lambda d=delta: now - 2 + d)
+        )
+        await scheduler._tick()
+    monkeypatch.setattr(scheduler, "time", real_time)
+    for t in list(scheduler._RUN_TASKS.values()):
+        t.cancel()
+    rows = store.dedupe_runs(store.load_day(store._today()))
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == rid and rows[0]["status"] == "running"
+    # 任务也不会被 once 语义误停用
+    assert store.get_task("st-t1")["enabled"] is True
