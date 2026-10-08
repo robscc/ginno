@@ -35,3 +35,9 @@ class AgentState(TypedDict):
     context_dirs: list[dict]
     # Resolved path of the primary mount dir ("" = session files dir is cwd).
     primary_path: str
+    # Sticky lazy-activation of the browser toolset (browser-skill design):
+    # use_skill("browser") sets this once; unlike active_skills (reset every
+    # turn by the WS layer) it is NOT re-sent in input_state, so the
+    # checkpointed value survives turns and the 16 browser_* tools stay bound
+    # for the whole session after a single activation.
+    browser_activated: bool

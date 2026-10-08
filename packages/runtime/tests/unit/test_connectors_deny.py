@@ -99,7 +99,10 @@ def test_browser_deny_beats_wildcard_and_skills():
 def test_browser_dual_track_either_survives():
     ensure_builtin_connectors()
     a = _agent(deny=["chrome-extension"])  # profile track still allowed
-    assert tool_allowed(a, "browser_navigate") is True
+    # browser_* binds only through skill activation (extra_allow — the lazy
+    # browser gate in tool_allowed); with only the chrome-extension track
+    # denied the tool must STILL bind: the profile track survives.
+    assert tool_allowed(a, "browser_navigate", ["browser_*"]) is True
 
 
 def test_browser_deny_spares_other_tools():

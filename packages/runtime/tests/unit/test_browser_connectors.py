@@ -379,3 +379,50 @@ def test_materialize_generates_locales(ginno_home, monkeypatch, tmp_path):
     mf = json.loads((out / "manifest.json").read_text())
     assert mf["default_locale"] == "en"
     assert mf["name"] == "__MSG_ext_manifest_name__"
+
+
+# ---- lazy browser skill: disabled-state gating ---------------------------- #
+def _browser_settings(ginno_home, enabled: bool):
+    (ginno_home / "settings.json").write_text(
+        json.dumps({"browser": {"enabled": enabled}}), encoding="utf-8"
+    )
+
+
+def test_browser_skill_hidden_when_disabled(ginno_home):
+    """settings browser.enabled=false → the builtin skill must vanish from the
+    skills index (its tools don't exist; advertising it would mislead)."""
+    from ginno_runtime.world_state import SessionCtx, SkillsSection
+
+    _browser_settings(ginno_home, False)
+    ctx = SessionCtx(session_id="s", project_slug="default", agent_id="dev")
+    snap = SkillsSection().snapshot(ctx)
+    assert "browser" not in snap["names"]
+    assert "- browser:" not in snap["index"]
+
+    _browser_settings(ginno_home, True)
+    snap = SkillsSection().snapshot(ctx)
+    assert "browser" in snap["names"]
+    assert "- browser:" in snap["index"]
+
+
+def test_use_skill_browser_errors_when_disabled(ginno_home):
+    _browser_settings(ginno_home, False)
+    from ginno_runtime.tools.skill_tools import build_skill_tools
+
+    tools = {t.name: t for t in build_skill_tools("default", "s", "")}
+    out = tools["use_skill"].invoke({"name": "browser", "request": "x"})
+    assert out.startswith("[error]")
+    assert "disabled" in out
+
+
+def test_slash_browser_passthrough_when_disabled(ginno_home):
+    _browser_settings(ginno_home, False)
+    from ginno_runtime.commands.resolver import substitute_skill
+
+    text, name = substitute_skill("/browser open example.com", "default")
+    assert name is None  # not substituted — falls through as a plain message
+
+    _browser_settings(ginno_home, True)
+    text, name = substitute_skill("/browser open example.com", "default")
+    assert name == "browser"
+    assert "browser_tabs_context" in text  # skill body substituted

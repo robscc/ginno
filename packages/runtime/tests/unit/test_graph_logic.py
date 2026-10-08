@@ -91,6 +91,85 @@ def test_skill_extra_allow_widens_after_activation(isolated_home):
     assert "bash" not in extra2
 
 
+# ------------------- lazy browser activation (skill ladder) ------------------- #
+def test_browser_tools_lazily_gated():
+    """browser_* never pre-binds via tools_allow (even "*") — the ~2.9k schema
+    tokens ride a session only after use_skill("browser") activated."""
+    a = _agent(["*"])
+    assert tool_allowed(a, "browser_computer") is False
+    assert tool_allowed(a, "browser_navigate") is False
+    # activation surface: the pattern lands in extra via the skill ladder
+    assert tool_allowed(a, "browser_computer", ["browser_*"]) is True
+
+
+def test_browser_sticky_channel_widens_extra():
+    from ginno_runtime.graph import _skill_extra_allow
+
+    # active_skills is empty (reset by the WS layer each turn) yet the sticky
+    # session channel keeps the toolset bound after the first activation
+    extra = _skill_extra_allow({"active_skills": [], "browser_activated": True})
+    assert "browser_*" in extra
+    # and it merges with live skills
+    extra = _skill_extra_allow({"active_skills": ["x"], "browser_activated": True})
+    assert "browser_*" in extra
+
+
+async def test_use_skill_browser_sets_sticky_channel(isolated_home):
+    """use_skill("browser") flips the session-persistent channel (the builtin
+    skill ships with the package — no fixture needed beyond isolated_home)."""
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import script_tool_call
+    from ginno_runtime.tools.skill_tools import build_skill_tools
+
+    model = ScriptedChatModel(
+        scripts=[
+            script(tool_calls=[script_tool_call("use_skill", {"name": "browser", "request": "open example.com"})]),
+            script(text="browser skill loaded"),
+        ]
+    )
+    graph = build_graph(
+        model=model,
+        project_slug="default",
+        workspace="/tmp",
+        mcp_tools=[],
+        all_tools=build_skill_tools("default"),
+    )
+    cfg = {"configurable": {"thread_id": "t-browser", "project_slug": "default", "agent_id": "dev"}}
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="打开 example.com")],
+            "workspace": "/tmp",
+            "project_slug": "default",
+            "agent_id": "dev",
+            "active_skills": [],
+            "pending_tool_calls": [],
+        },
+        config=cfg,
+    )
+    assert result.get("browser_activated") is True
+    assert "browser" in (result.get("active_skills") or [])
+    # next turn: WS input_state omits browser_activated → checkpoint value
+    # survives; active_skills resets (WS always re-sends it)
+    model2 = ScriptedChatModel(scripts=[script(text="still active")])
+    graph2 = build_graph(
+        model=model2, project_slug="default", workspace="/tmp", mcp_tools=[],
+        all_tools=build_skill_tools("default"),
+    )
+    result2 = await graph2.ainvoke(
+        {
+            "messages": [HumanMessage(content="继续")],
+            "workspace": "/tmp",
+            "project_slug": "default",
+            "agent_id": "dev",
+            "active_skills": [],  # per-turn reset, as turn.py does
+            "pending_tool_calls": [],
+            # browser_activated deliberately NOT re-sent
+        },
+        config=cfg,
+    )
+    assert result2.get("browser_activated") is True
+
+
 async def test_use_skill_activates_skill_on_state(isolated_home):
     """After use_skill succeeds, active_skills carries the name so the next
     agent step can bind the skill's declared (or default bash) tools."""

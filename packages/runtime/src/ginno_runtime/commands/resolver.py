@@ -105,6 +105,14 @@ def substitute_skill(text: str, project_slug: str | None) -> tuple[str, str | No
         return text, None
     if not skill.user_invocable():
         return text, None
+    if skill.name == "browser":
+        # Same gate as use_skill / the skills index: with browser disabled the
+        # browser_* tools don't exist — substituting the skill body would hand
+        # the model instructions for tools it cannot call.
+        from ..world_state import _browser_tools_enabled
+
+        if not _browser_tools_enabled():
+            return text, None
     tail = (m.group(2) or "").strip()
     return wrap_skill_body(skill, tail), skill.name
 

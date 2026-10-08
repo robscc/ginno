@@ -159,9 +159,10 @@ def test_skills_budget_truncates(isolated_home):
 
     sec = SkillsSection()
     snap = sec.snapshot(ctx(project_slug="default"))
-    # 30 user skills + the always-present builtin "todo" skill.
-    assert snap is not None and len(snap["names"]) == 31
-    assert "todo" in snap["names"]
+    # 30 user skills + the always-present builtin "todo" and "browser" skills
+    # (browser rides the lazy-activation ladder; default settings enable it).
+    assert snap is not None and len(snap["names"]) == 32
+    assert "todo" in snap["names"] and "browser" in snap["names"]
     assert len(snap["index"]) <= 300 + 150  # budget + tail note slack (en note ~110 chars)
     assert "not listed" in snap["index"]  # tail note about dropped skills
 
@@ -170,16 +171,16 @@ def test_skills_change_detection(isolated_home):
     sec = SkillsSection()
     # Since the 2026-08 incident the snapshot exists even with ZERO user
     # skills — the install-dir context is most needed exactly then. The
-    # builtin tier (todo) is always present, so names is never empty.
+    # builtin tier (todo, browser) is always present, so names is never empty.
     before = sec.snapshot(ctx())
-    assert before is not None and before["names"] == ["todo"]
+    assert before is not None and before["names"] == ["browser", "todo"]
     d = isolated_home / "skills" / "hello"
     d.mkdir(parents=True, exist_ok=True)
     (d / "SKILL.md").write_text(
         "---\nname: hello\ndescription: hi\ntrigger: both\n---\n\nB.\n", encoding="utf-8"
     )
     after = sec.snapshot(ctx())
-    assert sorted(after["names"]) == ["hello", "todo"]
+    assert sorted(after["names"]) == ["browser", "hello", "todo"]
     text = sec.update_text(before, after)
     assert text and "hello" in text
     # unchanged names stay silent even though dirs/can_manage are in the snap

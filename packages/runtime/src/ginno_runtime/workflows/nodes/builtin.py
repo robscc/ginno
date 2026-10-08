@@ -47,6 +47,24 @@ def _usage_from_msg(msg) -> dict:
     return {}
 
 
+def _skill_extra_for(skill_names: list[str]) -> list[str]:
+    """Union of `tools:` declared by the node's skills — same widening the
+    main graph gives active_skills (graph._skill_extra_allow). Lets a
+    workflow agent node opt into the lazily-gated browser_* toolset (and any
+    skill-only tools) by listing the skill in ``skills:``."""
+    if not skill_names:
+        return []
+    from ...skills.loader import SkillLoader
+
+    loader = SkillLoader(project_slug="default")
+    extra: list[str] = []
+    for nm in skill_names:
+        sk = loader.get(nm)
+        if sk:
+            extra.extend(p for p in sk.effective_tools() if p not in extra)
+    return extra
+
+
 async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dict, str | None]:
     """One autonomous goal→tools loop (extracted for the parallel gather
     adapter, stability plan P3; AgentNode.execute keeps its own sequential
@@ -69,21 +87,24 @@ async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dic
         _prov = todo_providers.get_todo_provider(prov_id)
         if _prov and _prov.get("mcp"):
             mcp_prefix = f"mcp_{_prov['mcp']}_"
+    skill_names = [
+        wf_expr.render(s, render_ctx)
+        for s in (node.get("skills") or [])
+        if isinstance(s, str) and s.strip()
+    ]
     allowed = [
         t
         for t in tools
-        if (tool_allowed(agent, t.name) or (mcp_prefix and t.name.startswith(mcp_prefix)))
+        if (
+            tool_allowed(agent, t.name, _skill_extra_for(skill_names))
+            or (mcp_prefix and t.name.startswith(mcp_prefix))
+        )
         and not t.name.startswith("workflow_")
     ]
     bound = model.bind_tools(allowed) if allowed and hasattr(model, "bind_tools") else model
     tool_node = ToolNode(allowed, handle_tool_errors=True) if allowed else None
 
     sys_text = ah.build_system(goal, dict(state.get("context") or {}), agent)
-    skill_names = [
-        wf_expr.render(s, render_ctx)
-        for s in (node.get("skills") or [])
-        if isinstance(s, str) and s.strip()
-    ]
     if skill_names:
         from ...skills.loader import SkillLoader
 
@@ -452,6 +473,12 @@ class BrowserNode(AgentNode):
             "拿 tabId,截图确认页面状态后再操作,敏感操作用 browser_handoff "
             f"交给用户):\n{goal}",
         )
+        # The browser_* toolset is lazily gated (binds only through skill
+        # extra_allow now) — a browser node implicitly declares the builtin
+        # browser skill so its tools bind for this turn.
+        skills = [s for s in (patched.get("skills") or []) if isinstance(s, str)]
+        if "browser" not in skills:
+            patched["skills"] = [*skills, "browser"]
         return await AgentNode.execute(patched, cctx, state, config, eff)
 
 
