@@ -237,15 +237,47 @@ export function ModelConfigForm({
         </div>
 
         {isAnthropic && (
-          <label className="flex items-start gap-2 text-xs text-muted">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={!!draft.bearer_auth}
-              onChange={(e) => set("bearer_auth", e.target.checked)}
-            />
-            <span>{t("bearerAuth")}</span>
-          </label>
+          <>
+            <label className="flex items-start gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={!!draft.bearer_auth}
+                onChange={(e) => set("bearer_auth", e.target.checked)}
+              />
+              <span>{t("bearerAuth")}</span>
+            </label>
+
+            <div className="space-y-2 rounded-xl border border-line p-3">
+              <label className="flex items-start gap-2 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={!!draft.server_web_search}
+                  onChange={(e) => set("server_web_search", e.target.checked)}
+                />
+                <span>{t("serverWebSearch")}</span>
+              </label>
+              {draft.server_web_search && (
+                <div className="flex items-center gap-2 pl-5 text-xs text-muted">
+                  <span className="whitespace-nowrap">{t("serverWebSearchMaxUses")}</span>
+                  <input
+                    type="number"
+                    className="field w-20"
+                    min={1}
+                    max={20}
+                    value={draft.server_web_search_max_uses ?? 5}
+                    onChange={(e) =>
+                      set("server_web_search_max_uses", Number(e.target.value) || 5)
+                    }
+                  />
+                </div>
+              )}
+              <p className="text-[11px] leading-relaxed text-faint">
+                {t("serverWebSearchHint")}
+              </p>
+            </div>
+          </>
         )}
 
         {isResponses && (

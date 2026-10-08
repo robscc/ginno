@@ -103,6 +103,10 @@ export interface ProviderConfig {
   org_id?: string;
   // Anthropic-compatible gateways that expect `Authorization: Bearer` instead of x-api-key.
   bearer_auth?: boolean;
+  // Anthropic protocol only: bind the provider-side `web_search` server tool so
+  // the gateway runs the search, instead of Ginno scraping a public engine.
+  server_web_search?: boolean;
+  server_web_search_max_uses?: number;
   // Ask OpenAI-compatible gateways (e.g. Qwen / DashScope) to use the model's
   // built-in web search (request body `enable_search: true`).
   enable_search?: boolean;
@@ -128,6 +132,8 @@ export interface ModelConfig {
   api_key: string;
   org_id?: string; // openai-responses only
   bearer_auth?: boolean; // anthropic only: Authorization: Bearer instead of x-api-key
+  server_web_search?: boolean; // anthropic only: gateway-side web_search tool
+  server_web_search_max_uses?: number;
   models: string[]; // replaces the old single model/default_model field
   default_model: string; // must be a member of models
   max_tokens: number;

@@ -107,6 +107,51 @@ def upgrade_web_source(session_id: str, url: str, title: str = "", engine: str =
     )
 
 
+def register_server_search_hits(session_id: str, hits: list[dict]) -> list[dict]:
+    """Register provider-side web-search hits as turn sources.
+
+    The Anthropic ``web_search`` server tool runs on the gateway: its results
+    come back inside the assistant message as ``web_search_tool_result``
+    blocks rather than as a Ginno tool execution, so nothing would register
+    them and every ``[sN]`` the model cites would come back ``unverified``.
+
+    Each hit is ``{url, title, content, page_age}``. Blocks that carry a
+    ``type`` other than ``web_search_result`` are the gateway reporting a
+    search failure — skipped, since they have no url to cite. Deduplicated by
+    normalized url, mirroring register_source_for's one-entry-per-identity
+    contract, so a retried query doesn't pile up duplicates.
+    """
+    lst = _TURN_SOURCES.get(session_id)
+    if lst is None:
+        return []
+    out: list[dict] = []
+    seen = {
+        normalize_web_ref(s.get("identity", ""))
+        for s in lst
+        if s.get("kind") == "web"
+    }
+    for h in hits:
+        url = str((h or {}).get("url") or "").strip()
+        if not url or not url.startswith(("http://", "https://")):
+            continue
+        key = normalize_web_ref(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        src = {
+            "kind": "web",
+            "identity": url,
+            "title": str(h.get("title") or url).strip(),
+            "origin": "provider",
+            "depth": "snippet",
+            "engine": "server",
+        }
+        entry = register_source_for(session_id, src)
+        if entry:
+            out.append(entry)
+    return out
+
+
 def register_wiki_sources(results: list) -> list[dict]:
     """Register retrieval results as wiki sources of the active turn.
 
