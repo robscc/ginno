@@ -1,4 +1,4 @@
-"""Subagent tools: spawn_subagent / list_subagents / wait_subagents.
+"""Subagent tools: spawn_subagent / list_subagents.
 
 Bound to the calling session at construction (``build_subagent_tools``) like
 the goal tools; the scheduler (``subagent_scheduler``) owns the lifecycle.
@@ -10,6 +10,11 @@ Registration rules (subagent-design.md §7, contract 4):
 * ``spawn_subagent`` is deliberately NOT added to the permission exempt set
   (graph.permission_node) — same precedent as ``delegate_agent``: the default
   policy "ask" is what lets the user approve the goal itself before it runs.
+
+wait_subagents folded into list_subagents (wait=true) 2026-10-08: both are
+low-frequency observation-side actions, the standalone wrapper cost ~340
+schema tokens per request for a tool the prompt actively discourages, and the
+merged param surface has no conflicts.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from langchain_core.tools import tool
 
 from ..lang import t
 
-SUBAGENT_TOOL_NAMES = {"spawn_subagent", "list_subagents", "wait_subagents"}
+SUBAGENT_TOOL_NAMES = {"spawn_subagent", "list_subagents"}
 SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
 
 # Model-facing tool descriptions: the docstrings below (inside
@@ -55,9 +60,9 @@ _SPAWN_DOC_EN = """Spawn a subagent with its own independent context and convers
           away — briefly tell the user what you delegated and that results come
           back automatically, then stop. Do not redo the delegated work yourself
           (duplicate effort that wastes the user's tokens); do not block on
-          wait_subagents either — completion injects the result automatically and
-          wakes you. Use wait_subagents only when the user explicitly asks for a
-          synchronous wait
+          list_subagents(wait=true) either — completion injects the result
+          automatically and wakes you. Block-wait only when the user explicitly
+          asks for a synchronous wait
 
         Do not delegate: one-step lookups you can do faster yourself; changes to
         the file currently being edited (concurrent writes conflict).
@@ -76,27 +81,20 @@ _SPAWN_DOC_EN = """Spawn a subagent with its own independent context and convers
 
 _LIST_DOC_EN = """List the subagents spawned by this session (direct children + all
         descendants): id, title, goal, status
-        (running/waiting/done/failed/stopped), depth, elapsed seconds. Use it to
-        sense how many subagents are running and to revisit a finished
-        subagent's conclusions."""
+        (running/waiting/done/failed/stopped), depth, elapsed seconds.
 
-_WAIT_DOC_EN = """Block the current turn until the named (default: all direct) subagents
-        finish, then return each subagent's status and result summary in one go.
-
-        Do NOT use this tool by default: when a subagent finishes, its result is
-        injected into this conversation automatically and you are woken —
-        blocking here holds the turn and leaves the user waiting. Call it only
-        when the user explicitly asks to "wait for all results and answer in one
-        go".
-
-        With timeout_s > 0 it returns partial (with each subagent's current
-        status) at the deadline; the user stopping the current turn interrupts
-        the wait. Note: this waits only on the subagent tree spawned by this
-        session.
+        With wait=true it instead blocks until the named (default: all direct)
+        subagents finish and returns their result summaries in one go.
+        timeout_s > 0 returns partial at the deadline; the user stopping the
+        turn interrupts the wait.
 
         Args:
-            ids: The subagent session_ids to wait for; leave empty to wait for all direct children.
-            timeout_s: Max seconds to wait; 0 = wait until all finish.
+            wait: false = list immediately (default); true = block until the
+                target subagents finish.
+            ids: With wait=true: the subagent session_ids to wait for; empty =
+                all direct children. Ignored when wait=false.
+            timeout_s: Max seconds to wait (wait=true only); 0 = until all
+                finish.
         """
 
 
@@ -142,9 +140,9 @@ def build_subagent_tools(
           产出（尤其路径、代码）前先自行核验关键事实
         - 委派后的行为：把所有子任务 spawn 完就直接结束本轮输出——向用户
           简述委派了什么、结果会自动回传，然后停下。不要自己再做已委派的
-          工作（那是重复劳动且浪费用户 token）；也不要 wait_subagents 阻塞
-          等待——结果完成会自动注入并唤醒你，仅当用户明确要求同步等待时
-          才用 wait_subagents
+          工作（那是重复劳动且浪费用户 token）；也不要 list_subagents
+          (wait=true) 阻塞等待——结果完成会自动注入并唤醒你，仅当用户明确
+          要求同步等待时才阻塞等待
 
         不委派的情况：一步就能完成的查证（自己查更快）；需要修改当前正在
         编辑的文件（并发写会冲突）。
@@ -191,41 +189,40 @@ def build_subagent_tools(
             "are woken to summarize — no polling, and do not redo the "
             "delegated work yourself. If this is your last action this turn: "
             "now output one or two sentences telling the user what you "
-            "delegated and end the turn (do NOT wait_subagents, do not output "
-            "anything else).",
+            "delegated and end the turn (do NOT block-wait via "
+            "list_subagents(wait=true), do not output anything else).",
             f"subagent 已启动 session_id={res['session_id']}"
             f" 标题={res['title']} depth={res['depth']}\n"
             "它在后台独立运行，结果完成后会自动注入本对话并唤醒你汇总，"
             "无需轮询、不要自己做这件已委派的事。这是本轮最后一个动作的话："
-            "现在就输出一两句委派说明并结束回合（不要 wait_subagents，"
-            "不要继续输出别的内容）。",
+            "现在就输出一两句委派说明并结束回合（不要 list_subagents"
+            "(wait=true) 阻塞等待，不要继续输出别的内容）。",
         )
 
-    def list_subagents() -> str:
+    async def list_subagents(
+        wait: bool = False,
+        ids: list[str] | None = None,
+        timeout_s: int = 0,
+    ) -> str:
         """列出本会话发起的 subagent（直属 + 全部后代）：id、标题、goal、
         状态（running/waiting/done/failed/stopped）、层级、已运行秒数。
-        用于感知当前有多少子代理在跑、回查已完成子代理的结论。"""
+
+        wait=true 时改为阻塞，直到指定的（默认：全部直属）子代理结束并
+        一次性返回各自结果摘要。timeout_s > 0 时到点返回 partial；用户
+        停止当前回合会中断等待。
+
+        Args:
+            wait: false = 立即列出（默认）；true = 阻塞等待目标子代理结束。
+            ids: wait=true 时要等待的子代理 session_id 列表；空 = 全部直属
+                子代理。wait=false 时忽略。
+            timeout_s: 最长等待秒数（仅 wait=true）；0 = 直到全部结束。
+        """
+        if wait:
+            return await wait_for_subagents(session_id, ids, timeout_s)
         rows = collect_subagent_rows(slug, session_id)
         return json.dumps(
             {"count": len(rows), "subagents": rows}, ensure_ascii=False
         )
-
-    async def wait_subagents(ids: list[str] | None = None, timeout_s: int = 0) -> str:
-        """阻塞当前回合，直到指定的（默认：全部直属）子代理结束，然后一次性
-        返回各子代理的状态与结果摘要。
-
-        默认不要用这个工具：子代理完成后结果会自动注入本对话并唤醒你，
-        阻塞等待会占住本轮让用户干等。仅当用户明确要求「等全部结果
-        一次性回答」时才调用。
-
-        timeout_s > 0 时到点返回 partial（带各子代理当前状态）；用户停止当前
-        回合会中断等待。注意：这只等直属发起的子代理树。
-
-        Args:
-            ids: 要等待的子代理 session_id 列表；留空等待全部直属子代理。
-            timeout_s: 最长等待秒数，0 = 一直等到全部结束。
-        """
-        return await wait_for_subagents(session_id, ids, timeout_s)
 
     # Resolve the model-facing docstrings to the settings language BEFORE
     # decoration: langchain parses them (description + Args help) when the tool
@@ -233,12 +230,9 @@ def build_subagent_tools(
     # not at module import — so t() does not freeze the language.
     spawn_subagent.__doc__ = t(_SPAWN_DOC_EN, spawn_subagent.__doc__)
     list_subagents.__doc__ = t(_LIST_DOC_EN, list_subagents.__doc__)
-    wait_subagents.__doc__ = t(_WAIT_DOC_EN, wait_subagents.__doc__)
     spawn_subagent = tool(spawn_subagent)
     list_subagents = tool(list_subagents)
-    wait_subagents = tool(wait_subagents)
 
-    tools: list = [list_subagents, wait_subagents]
-    if subagent_depth is None or subagent_depth < SUBAGENT_MAX_DEPTH:
-        tools.insert(0, spawn_subagent)
-    return tools
+    return [spawn_subagent, list_subagents] if (
+        subagent_depth is None or subagent_depth < SUBAGENT_MAX_DEPTH
+    ) else [list_subagents]

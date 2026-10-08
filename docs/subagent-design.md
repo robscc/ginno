@@ -154,7 +154,7 @@ subagent 的 turn 自然结束后（`message.end` 且无后续 pending），runt
 **两层机制**：
 
 1. **结构性完成门（调度器侧，硬保证）**：subagent 的完成判定 = **自己 turn 结束 ∧ 无运行中子代**。turn 结束但子代仍在跑 → status 转为 `waiting`（侧栏 ⏳），不触发摘要/上报；最后一个子代完成时，其结果照 §5.5 注入父 subagent（此时它 idle → 开新 turn），父 subagent 整合子代结果后再次到达 turn 边界——此时无运行中子代，才真正 `done` 并向上汇报。**该门对任意深度都成立**：中间层只要还有活的后代就停在 `waiting`。
-2. **显式等待工具（模型侧，主动汇聚）**：`wait_subagents(ids?, timeout_s?)`——阻塞当前 turn 直到指定的（默认全部）直属子代结束，子代摘要作为工具结果一次性返回。这是主 agent/subagent 收敛结果的惯用姿势：spawn 若干 → `wait_subagents()` → 对照验收写最终报告。带 `timeout_s` 到点返回各子代当前状态（partial 语义，模仿 Claude Code 的 partial 标注）；用户 stop 可以打断等待（协作式，复用 `_TURN_STOP`）。
+2. **显式等待工具（模型侧，主动汇聚）**：`list_subagents(wait=true, ids?, timeout_s?)`——阻塞当前 turn 直到指定的（默认全部）直属子代结束，子代摘要作为工具结果一次性返回。这是主 agent/subagent 收敛结果的惯用姿势：spawn 若干 → `list_subagents(wait=true)` → 对照验收写最终报告。带 `timeout_s` 到点返回各子代当前状态（partial 语义，模仿 Claude Code 的 partial 标注）；用户 stop 可以打断等待（协作式，复用 `_TURN_STOP`）。（2026-10-08 前该能力是独立工具 `wait_subagents`，为省每请求 schema 开销并入 `list_subagents`，语义不变。）
 
 **配套规则**：
 
@@ -214,7 +214,7 @@ subagent 首个 turn 结束后，用当前模型对 goal + 首轮产物生成动
 
 | 改动 | 位置 |
 |---|---|
-| `spawn_subagent` / `list_subagents` / `wait_subagents` 工具 | `tools/builtin.py`（或新 `tools/subagent.py`），`graph.build_all_tools` 拼装，depth≥2 时不注册 spawn；完成门（turn 结束 ∧ 无运行中子代）与 waiting 状态机在调度器 |
+| `spawn_subagent` / `list_subagents`（含 `wait=true` 阻塞语义，原 `wait_subagents` 已并入）工具 | `tools/builtin.py`（或新 `tools/subagent.py`），`graph.build_all_tools` 拼装，depth≥2 时不注册 spawn；完成门（turn 结束 ∧ 无运行中子代）与 waiting 状态机在调度器 |
 | subagent 调度器（完成监听 → 摘要 → 注入父对话） | `api/stream.py` 旁路任务，模式参照 `_WF_RUN_TASKS` / `spawn_bg`；注入复用 `steer_enqueue`（running）与 invoke（idle） |
 | `/subagent` 命令（含拆分型 builtin_async） | `commands/registry.py` + `resolver.py` |
 | SessionMeta 扩展 + 反向索引 | `session_meta.py` / `server_shared.py`（`_SESSIONS` 内存表加 `children` 索引） |

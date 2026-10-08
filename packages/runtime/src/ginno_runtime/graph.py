@@ -255,17 +255,18 @@ def build_stable_system(
             t(
                 "Subagent delegation discipline (hard rule): once all subtasks are "
                 "spawned, state in one or two sentences what you delegated and end "
-                "the turn immediately — do not call wait_subagents to block (it "
-                "parks this turn while the user watches a spinner), and do not do "
-                "the delegated work yourself. When a subagent finishes, its result "
-                "is injected into this conversation and wakes you up; summarize "
-                "then. wait_subagents is allowed only when the user explicitly "
-                "asks to wait for all results and answer in one go.",
+                "the turn immediately — do not block-wait via "
+                "list_subagents(wait=true) (it parks this turn while the user "
+                "watches a spinner), and do not do the delegated work yourself. "
+                "When a subagent finishes, its result is injected into this "
+                "conversation and wakes you up; summarize then. Blocking wait is "
+                "allowed only when the user explicitly asks to wait for all "
+                "results and answer in one go.",
                 "Subagent 委派纪律（硬规则）：spawn 完所有子任务后，输出一两句话说明"
-                "委派了什么，然后立即结束回合——不要调用 wait_subagents 阻塞等待"
-                "（那会占住本轮、用户只能看着转圈），也不要自己去做已委派的工作。"
-                "子代理完成后其结果会自动注入本对话并唤醒你，届时再汇总。"
-                "只有用户明确要求「等全部结果一次性回答」时才允许 wait_subagents。",
+                "委派了什么，然后立即结束回合——不要用 list_subagents(wait=true) "
+                "阻塞等待（那会占住本轮、用户只能看着转圈），也不要自己去做已委派的"
+                "工作。子代理完成后其结果会自动注入本对话并唤醒你，届时再汇总。"
+                "只有用户明确要求「等全部结果一次性回答」时才允许阻塞等待。",
             )
         )
         # Subagent type registry (P3 contract 1): the stable layer names the

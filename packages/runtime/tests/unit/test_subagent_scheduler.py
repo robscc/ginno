@@ -470,15 +470,16 @@ def test_toolset_depth_gating(isolated_home):
         return {t.name for t in build_all_tools(**kw)}
 
     main = names(session_id="s1")
-    assert {"spawn_subagent", "list_subagents", "wait_subagents"} <= main
+    assert {"spawn_subagent", "list_subagents"} <= main
+    assert "wait_subagents" not in main  # folded into list_subagents(wait=true)
     d0 = names(session_id="s1", subagent_depth=0)
     assert "spawn_subagent" in d0
     d2 = names(session_id="s1", subagent_depth=2)
-    # structural cap: no spawn at depth 2, but the read/wait tools remain
+    # structural cap: no spawn at depth 2, but the read/wait tool remains
     assert "spawn_subagent" not in d2
-    assert {"list_subagents", "wait_subagents"} <= d2
+    assert "list_subagents" in d2
     # workflow engine / listing endpoints get none
-    assert not {"spawn_subagent", "list_subagents", "wait_subagents"} & names()
+    assert not {"spawn_subagent", "list_subagents"} & names()
 
 
 def test_result_message_format_contract():
