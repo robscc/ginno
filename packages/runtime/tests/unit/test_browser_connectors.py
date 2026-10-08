@@ -379,3 +379,80 @@ def test_materialize_generates_locales(ginno_home, monkeypatch, tmp_path):
     mf = json.loads((out / "manifest.json").read_text())
     assert mf["default_locale"] == "en"
     assert mf["name"] == "__MSG_ext_manifest_name__"
+
+
+# ---- lazy browser skill: disabled-state gating ---------------------------- #
+def _browser_settings(ginno_home, enabled: bool):
+    (ginno_home / "settings.json").write_text(
+        json.dumps({"browser": {"enabled": enabled}}), encoding="utf-8"
+    )
+
+
+def test_browser_skill_hidden_when_disabled(ginno_home):
+    """settings browser.enabled=false → the builtin skill must vanish from the
+    skills index (its tools don't exist; advertising it would mislead)."""
+    from ginno_runtime.world_state import SessionCtx, SkillsSection
+
+    _browser_settings(ginno_home, False)
+    ctx = SessionCtx(session_id="s", project_slug="default", agent_id="dev")
+    snap = SkillsSection().snapshot(ctx)
+    assert "browser" not in snap["names"]
+    assert "- browser:" not in snap["index"]
+
+    _browser_settings(ginno_home, True)
+    snap = SkillsSection().snapshot(ctx)
+    assert "browser" in snap["names"]
+    assert "- browser:" in snap["index"]
+
+
+def test_use_skill_browser_errors_when_disabled(ginno_home):
+    _browser_settings(ginno_home, False)
+    from ginno_runtime.tools.skill_tools import build_skill_tools
+
+    tools = {t.name: t for t in build_skill_tools("default", "s", "")}
+    out = tools["use_skill"].invoke({"name": "browser", "request": "x"})
+    assert out.startswith("[error]")
+    assert "disabled" in out
+
+
+def test_slash_browser_passthrough_when_disabled(ginno_home):
+    _browser_settings(ginno_home, False)
+    from ginno_runtime.commands.resolver import substitute_skill
+
+    text, name = substitute_skill("/browser open example.com", "default")
+    assert name is None  # not substituted — falls through as a plain message
+
+    _browser_settings(ginno_home, True)
+    text, name = substitute_skill("/browser open example.com", "default")
+    assert name == "browser"
+    assert "browser_tabs_context" in text  # skill body substituted
+
+
+def test_sticky_frontmatter_parsed():
+    """The builtin browser/todo skills declare `sticky: true` — the flag that
+    keeps their lazily-gated tool families bound for the whole session."""
+    from ginno_runtime.skills.loader import SkillLoader
+
+    loader = SkillLoader(project_slug="default")
+    assert loader.get("browser").sticky is True
+    assert loader.get("todo").sticky is True
+
+
+def test_slash_sticky_appends(isolated_home, monkeypatch, tmp_path):
+    """turn.py's slash path feeds sticky_skills with the invoked skill only
+    when it declares sticky; [] otherwise (append reducer no-op)."""
+    monkeypatch.setenv("GINNO_HOME", str(tmp_path))
+    (tmp_path / "settings.json").write_text("{}")
+    from ginno_runtime.api.stream.turn import _slash_sticky
+
+    assert _slash_sticky("browser", "default") == ["browser"]
+    assert _slash_sticky("todo", "default") == ["todo"]
+    assert _slash_sticky(None, "default") == []
+    # a non-sticky user skill (or unknown name) contributes nothing
+    d = tmp_path / "skills" / "plain"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: plain\ndescription: p\ntrigger: both\n---\n\nB.\n", encoding="utf-8"
+    )
+    assert _slash_sticky("plain", "default") == []
+    assert _slash_sticky("nope", "default") == []

@@ -162,6 +162,19 @@ def external_agents_enabled() -> bool:
     return bool(context_settings().get("external_agents_enabled"))
 
 
+def _browser_tools_enabled() -> bool:
+    """Mirror of the browser toolset's own gate (tools/browser_tools.py
+    reads the same settings block). Keeps the skills index / use_skill
+    gating in agreement with what build_browser_tools actually registers —
+    the builtin browser skill must vanish exactly when its tools do."""
+    try:
+        from .browser.config import load_browser_config
+
+        return bool(load_browser_config().enabled)
+    except Exception:  # noqa: BLE001 — config read must never break the snapshot
+        return False
+
+
 def _sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:12]
 
@@ -503,6 +516,12 @@ def _agent_allowed_names(agent, all_tool_names: list[str]) -> list[str]:
         if name in RENDER_TOOL_NAMES or name in WORKFLOW_TOOL_NAMES or name in ARTIFACT_TOOL_NAMES:
             out.append(name)
             continue
+        # Mirror the lazy tool families (graph.tool_allowed /
+        # _LAZY_TOOL_PREFIXES): browser_* / todo_* never pre-bind via
+        # tools_allow — only skill activation exposes them, which this
+        # persona-level snapshot doesn't model.
+        if name.startswith(("browser_", "todo_")):
+            continue
         if "*" in allow or any(fnmatch.fnmatch(name, p) for p in allow):
             out.append(name)
     return out
@@ -620,6 +639,12 @@ class SkillsSection:
         from .graph import tool_allowed  # local import: avoid cycle
 
         skills = SkillLoader(project_slug=ctx.project_slug).load()
+        if not _browser_tools_enabled():
+            # The builtin browser skill is the lazy-activation surface for the
+            # browser_* toolset; with browser disabled in settings the tools
+            # don't exist, so advertising (or activating) the skill would
+            # bind nothing and mislead the model.
+            skills = [s for s in skills if s.name != "browser"]
         names = sorted(s.name for s in skills)
         agent = ctx.agent or _agent_by_id(ctx.agent_id)
         return {

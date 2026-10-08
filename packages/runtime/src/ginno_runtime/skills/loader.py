@@ -41,6 +41,11 @@ class Skill:
     # Declares this skill as the sync adapter for an external TODO platform
     # (todo-provider design); makes it show up in todo provider discovery.
     todo_provider: str = ""
+    # Lazy toolset activation (browser-skill design): the skill's `tools:`
+    # family binds only through skill activation, and ONE use_skill keeps it
+    # bound for the REST OF THE SESSION (the sticky_skills state channel —
+    # unlike active_skills, which the WS layer resets every turn).
+    sticky: bool = False
     body: str = ""
     path: Path | None = None
     builtin: bool = False  # shipped with Ginno; not deletable via the API
@@ -102,6 +107,7 @@ def _parse_skill_file(p: Path, builtin: bool = False) -> Skill | None:
         trigger=meta.get("trigger", "both"),
         allowed_tools=meta.get("tools", []) or [],
         todo_provider=str(meta.get("todo_provider") or ""),
+        sticky=bool(meta.get("sticky", False)),
         body=body,
         path=p,
         builtin=builtin,

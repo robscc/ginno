@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage
@@ -14,6 +15,14 @@ class AgentState(TypedDict):
     project_slug: str
     agent_id: str
     active_skills: list[str]
+    # Sticky lazy activation (browser-skill design, generalized): names of
+    # skills whose `tools:` family is lazily gated in tool_allowed and stays
+    # bound for the REST OF THE SESSION after one use_skill (SKILL.md
+    # frontmatter `sticky: true`). APPEND-only (operator.add): the tools node
+    # (use_skill path) and turn.py (slash-invoke path) both ADD names, and
+    # neither ever resets — unlike active_skills, which the WS layer clears
+    # every turn.
+    sticky_skills: Annotated[list[str], operator.add]
     pending_tool_calls: list[dict]
     # Files attached to the current turn (uploaded or path-referenced). Each
     # item: {id, name, path, kind, schema?}. Injected into the system prompt

@@ -110,6 +110,19 @@ def build_skill_tools(
         skill = SkillLoader(project_slug=slug or None).get(name)
         if not skill:
             return f"[error] unknown skill: {name}"
+        if name == "browser":
+            # Same gate as the skills index (world_state._browser_tools_enabled):
+            # with browser disabled the browser_* tools don't exist, so
+            # activating the skill would bind nothing. The error return also
+            # keeps it off active_skills / sticky_skills (the tools node
+            # only records non-error use_skill results).
+            from ..world_state import _browser_tools_enabled
+
+            if not _browser_tools_enabled():
+                return (
+                    "[error] browser toolset is disabled in settings — the "
+                    "browser skill cannot be activated."
+                )
         if not skill.model_invocable():
             return (
                 f"[error] skill {name!r} is user-invocable only "
