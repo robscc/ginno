@@ -756,10 +756,13 @@ class ModChannel:
 
     async def push_config(self) -> None:
         """Re-push config after a settings change (broker diffs → per-mod
-        reload). No-op when not connected; the next hello carries it anyway."""
+        reload). No-op when not connected; the next hello carries it anyway.
+        Method name must match the broker's dispatch ("apply-config" — a
+        plain "config" gets no-implementation and the re-push silently
+        no-ops, leaving runners stale until the next reconnect)."""
         if not self.is_connected:
             return
-        await self.call("broker", "config", {"role": "runtime", "config": self.build_config()})
+        await self.call("broker", "apply-config", {"role": "runtime", "config": self.build_config()})
 
     def availability(self) -> dict:
         """Two-level probe for the settings page (external-agents 同款):

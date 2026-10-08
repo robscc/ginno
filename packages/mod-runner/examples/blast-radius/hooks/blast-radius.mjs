@@ -5,6 +5,9 @@
 //   2. MEDIUM-RISK commands (package installs, force pushes, recursive rm) →
 //      strict mode: denied; normal mode: $.ui.ask the user.
 //   3. Band: live counters + a Button toggling strict mode (press → state → redraw).
+//
+// Event shape: the runner hands hooks the payload itself as `e` — for
+// tool.call that is { tool, args } (NOT { payload: { tool, args } }).
 
 const STATE = { plugin: "blast-radius", key: "core" };
 
@@ -41,9 +44,10 @@ function classify(command) {
 }
 
 export function register(on) {
-  // Guard Bash tool calls. Pass-through is `next(e)`; deny/ask per contract.
-  on("tool.call", { tool: "Bash" }, async ($, e, next) => {
-    const command = e?.payload?.args?.command ?? e?.payload?.input?.command ?? "";
+  // Guard Bash tool calls (provider casing varies: "Bash"/"bash").
+  // Pass-through is `next(e)`; deny/ask per the P1 contract.
+  on("tool.call", { tool: ["Bash", "bash"] }, async ($, e, next) => {
+    const command = e?.args?.command ?? e?.input?.command ?? e?.command ?? "";
     const level = classify(command);
     if (level === "ok") return next(e);
     const core = await loadCore($);
