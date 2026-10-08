@@ -1341,6 +1341,25 @@ def _project_observer(project_slug: str | None, session_id: str | None):
     return _observe
 
 
+def _server_web_search_active() -> bool:
+    """True when the *currently selected* provider searches the web itself.
+
+    Kept in lockstep with models.server_web_search_on — both read the same
+    provider config, so the tool we skip here is exactly the one the gateway
+    replaces. Any failure (no settings yet, provider mid-edit) falls back to
+    Gin's own tool: the model can then search, which is the safer default.
+    """
+    try:
+        from . import models as models_mod
+        from . import providers as prov_mod
+
+        pid = prov_mod.get_default_config()
+        cfg = prov_mod.get_config(pid) if pid else None
+        return bool(cfg) and models_mod.server_web_search_on(cfg)
+    except Exception:
+        return False
+
+
 def build_all_tools(
     mcp_tools: list | None = None,
     workspace: str | None = None,
@@ -1381,6 +1400,12 @@ def build_all_tools(
     from .tools.subagent import build_subagent_tools
     from .tools.web_tools import build_web_tools
 
+    # Anthropic-protocol providers may search on the gateway itself (the
+    # server-side web_search tool bound in models.py). Leave Gin's own
+    # web_search unbound then: the public engines it scrapes are unreachable on
+    # networks that need the gateway's search in the first place, and offering
+    # both just makes the model search twice and fail once.
+    web_tools = [] if _server_web_search_active() else build_web_tools(session_id)
     goal_tools = (
         build_goal_tools(project_slug, session_id)
         if (project_slug and session_id)
@@ -1406,8 +1431,9 @@ def build_all_tools(
         + ALL_ARTIFACT_TOOLS
         + ALL_DOCUMENT_TOOLS
         # Web search/fetch (citations-design.md §4.2) — [] when disabled in
-        # settings; session_id binds citation source registration.
-        + build_web_tools(session_id)
+        # settings; session_id binds citation source registration. Also [] when
+        # the provider searches server-side (see _server_web_search_active).
+        + web_tools
         # Browser tools (browser-companion-extension-design.md §4) — [] when
         # disabled in settings; extension relay preferred, dedicated-profile
         # Chrome as fallback. browser_js / browser_file_upload deliberately

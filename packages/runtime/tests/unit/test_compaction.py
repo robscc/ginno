@@ -7,7 +7,12 @@ import json
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from ginno_runtime.compaction import _copy_with_new_id, find_split_index, maybe_compact_history
+from ginno_runtime.compaction import (
+    _copy_with_new_id,
+    _parse_summary_output,
+    find_split_index,
+    maybe_compact_history,
+)
 from ginno_runtime.world_state import REINJECT_MSG_PREFIX, SUMMARY_MSG_PREFIX
 
 pytestmark = pytest.mark.unit
@@ -57,7 +62,11 @@ def test_copy_with_new_id_preserves_content_and_changes_id():
     h2 = _copy_with_new_id(h)
     assert h2.content == "hello" and h2.id != "old"
 
-    ai = AIMessage(content="x", tool_calls=[{"name": "bash", "args": {}, "id": "c1", "type": "tool_call"}], id="oldai")
+    ai = AIMessage(
+        content="x",
+        tool_calls=[{"name": "bash", "args": {}, "id": "c1", "type": "tool_call"}],
+        id="oldai",
+    )
     ai2 = _copy_with_new_id(ai)
     assert ai2.tool_calls == ai.tool_calls and ai2.id != "oldai"
 
@@ -142,7 +151,12 @@ async def test_force_compact_bypasses_threshold_and_disabled_flag(isolated_home)
         await graph.ainvoke(
             {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
         )
-    session = {"graph": graph, "model": model, "project_slug": "default", "session_id": "comp-force"}
+    session = {
+        "graph": graph,
+        "model": model,
+        "project_slug": "default",
+        "session_id": "comp-force",
+    }
 
     # auto path stays blocked (disabled flag + threshold)
     assert await maybe_compact_history(session, config) is None
@@ -166,7 +180,9 @@ async def test_compaction_respects_disabled_flag(isolated_home):
     model = ScriptedChatModel(scripts=[script(text="r0")])
     graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
     config = {"configurable": {"thread_id": "comp-2", "project_slug": "default"}}
-    await graph.ainvoke({"messages": [HumanMessage(content="hi")], "project_slug": "default"}, config)
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="hi")], "project_slug": "default"}, config
+    )
     session = {"graph": graph, "model": model, "project_slug": "default", "session_id": "comp-2"}
     assert await maybe_compact_history(session, config) is None
 
@@ -184,7 +200,9 @@ async def test_compaction_reinjects_world_state(isolated_home):
     graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
     config = {"configurable": {"thread_id": "comp-3", "project_slug": "default"}}
     for q in ("q-one", "q-two"):
-        await graph.ainvoke({"messages": [HumanMessage(content=q)], "project_slug": "default"}, config)
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
+        )
 
     session = {"graph": graph, "model": model, "project_slug": "default", "session_id": "comp-3"}
 
@@ -195,3 +213,63 @@ async def test_compaction_reinjects_world_state(isolated_home):
     assert stats is not None
     assert stats["reinject"].startswith(REINJECT_MSG_PREFIX)
     assert "<environment>" in stats["reinject"]
+
+
+# --------------------------------------------------------------------------- #
+# summary output parsing (structured template upgrade)
+# --------------------------------------------------------------------------- #
+def test_parse_summary_extracts_tag_and_drops_analysis():
+    raw = "<analysis>private thinking</analysis>\n<summary>1. Primary Request: X</summary>"
+    assert _parse_summary_output(raw) == "1. Primary Request: X"
+
+
+def test_parse_summary_plain_text_fallback():
+    # Models that ignore the requested format pass through unchanged.
+    assert _parse_summary_output("plain summary") == "plain summary"
+
+
+def test_parse_summary_strips_analysis_without_summary_tag():
+    assert _parse_summary_output("<analysis>x</analysis>\nbody text") == "body text"
+
+
+def test_parse_summary_empty():
+    assert _parse_summary_output("") == ""
+
+
+async def test_compact_strips_analysis_block_from_state(isolated_home):
+    """The <analysis> draft never lands in the checkpoint — only the
+    <summary> body does."""
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    settings = {"context": {"compact_threshold_tokens": 10, "compact_keep_turns": 1}}
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+
+    model = ScriptedChatModel(
+        scripts=[
+            script(text="r0"),
+            script(text="r1"),
+            script(text="<analysis>SECRET_TRACE</analysis>\n<summary>这是结构化摘要。</summary>"),
+        ]
+    )
+    graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
+    config = {"configurable": {"thread_id": "comp-parse", "project_slug": "default"}}
+    for q in ("问题A", "问题B"):
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
+        )
+
+    session = {
+        "graph": graph,
+        "model": model,
+        "project_slug": "default",
+        "session_id": "comp-parse",
+    }
+    stats = await maybe_compact_history(session, config, ctx_factory=None)
+    assert stats is not None and stats["summary_chars"] > 0
+
+    state = await graph.aget_state(config)
+    joined = "\n".join(str(getattr(m, "content", "")) for m in state.values["messages"])
+    assert "这是结构化摘要。" in joined  # summary body landed
+    assert "SECRET_TRACE" not in joined  # analysis discarded
+    assert "<analysis>" not in joined and "<summary>" not in joined

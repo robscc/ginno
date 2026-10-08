@@ -26,7 +26,7 @@ import type {
   SessionMeta,
   SessionUsage,
   Todo,
-  UsageHourly,
+  UsageGrid,
   UsageOverview,
   UsageRequests,
   UsageSessions,
@@ -170,8 +170,12 @@ export async function getUsageOverview(days = 30) {
   return json<UsageOverview>(`${BASE}/usage/overview?days=${days}`);
 }
 
-export async function getUsageHourly(date?: string) {
-  return json<UsageHourly>(`${BASE}/usage/hourly${date ? `?date=${date}` : ""}`);
+export async function getUsageGrid(opts?: { from?: string; to?: string }) {
+  const q = new URLSearchParams();
+  if (opts?.from) q.set("from", opts.from);
+  if (opts?.to) q.set("to", opts.to);
+  const s = q.toString();
+  return json<UsageGrid>(`${BASE}/usage/grid${s ? `?${s}` : ""}`);
 }
 
 export async function getUsageSessions(opts?: { from?: string; to?: string; sort?: string; limit?: number }) {
@@ -1080,8 +1084,14 @@ export async function putSettings(data: Record<string, unknown>) {
     body: JSON.stringify(data),
   });
 }
+export type McpServerStatus = {
+  name: string;
+  connected: boolean;
+  tools: number;
+  error?: string | null;
+};
 export async function getMcp() {
-  return json<{ servers: string[]; tools: string[] }>(`${BASE}/mcp`);
+  return json<{ servers: string[]; tools: string[]; status?: McpServerStatus[] }>(`${BASE}/mcp`);
 }
 export async function getMcpConfig() {
   return json<{ mcpServers: Record<string, unknown> }>(`${BASE}/mcp/config`);
@@ -1091,6 +1101,9 @@ export async function putMcp(data: unknown) {
 }
 export async function reloadMcp() {
   return json<{ ok: boolean; servers: string[] }>(`${BASE}/mcp/reload`, { method: "POST" });
+}
+export async function reconnectMcp() {
+  return json<{ ok: boolean; status?: McpServerStatus[] }>(`${BASE}/mcp/reconnect`, { method: "POST" });
 }
 export async function createSkill(data: { name: string; body: string }) {
   return json<{ ok: boolean; error?: string }>(`${BASE}/skills`, {

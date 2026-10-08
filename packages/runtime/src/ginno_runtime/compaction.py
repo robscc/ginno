@@ -23,6 +23,7 @@ disturb a turn paused at a permission prompt.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -44,12 +45,61 @@ from .world_state import (
 
 log = logging.getLogger("ginno.compaction")
 
+# Structured summarization prompt (Claude-Code-style 9-section template with
+# Ginno adaptations: machine-marker guard + first-line UI preview contract +
+# "Work Completed"/"Context for Continuing Work" tail for the kept-turns
+# layout). The bracketed marker list below must stay in sync with
+# world_state.ALL_CONTEXT_PREFIXES.
 _SUMMARY_SYSTEM = (
-    "You are a conversation summarizer. Condense the transcript into a dense, "
-    "faithful summary the assistant can continue working from: user goals, "
-    "decisions, file paths, tool results that still matter, open questions. "
-    "Keep concrete values (names, numbers, paths) — drop small talk. Answer in "
-    "the transcript's primary language. No preamble, just the summary."
+    "You are the conversation summarizer for an AI agent. Your output REPLACES "
+    "the original messages in the agent's context — everything after your "
+    "summary continues the session, so the summary must let the agent keep "
+    "working without re-reading anything.\n\n"
+
+    "Output format (strict):\n"
+    "- First write a private <analysis> block: walk through the conversation "
+    "chronologically and note every user request, decision, file, error and "
+    "open thread. This block will be discarded before the summary is used.\n"
+    "- Then write the final <summary> block. Its FIRST line must be a single "
+    "short overview sentence (it is shown as the UI preview); the numbered "
+    "sections follow.\n\n"
+
+    "Verbatim-retention rules (highest priority):\n"
+    "- Quote the user's own words precisely: constraints, preferences, "
+    "corrections, and anything about safety, permissions, privacy or "
+    "credentials must be preserved verbatim (word for word), never "
+    "paraphrased.\n"
+    "- Keep concrete values: file paths, commands, numbers, names, URLs, "
+    "error strings.\n"
+    "- 'User messages' means only what the human actually typed. Messages "
+    "starting with bracketed machine markers such as [world state update], "
+    "[turn context], [conversation summary], [world state re-injection] or "
+    "[goal context] are system-injected context, NOT user messages; tool "
+    "calls and tool outputs are not user messages either.\n\n"
+
+    "The summary must contain these numbered sections (keep the English "
+    "headings, write the content in the conversation's primary language):\n"
+    "1. Primary Request and Intent — all explicit requests and intent.\n"
+    "2. Key Technical Concepts — technologies/frameworks involved.\n"
+    "3. Files and Code Sections — files created/read/modified and why; "
+    "include the important snippets, signatures or paths.\n"
+    "4. Errors and Fixes — every error encountered and how it was fixed, "
+    "including user feedback that triggered the fix.\n"
+    "5. Problem Solving — problems solved, investigations and conclusions.\n"
+    "6. All User Messages — list ALL actual user messages (excluding the "
+    "machine-marker messages above); preserve safety-relevant instructions "
+    "verbatim.\n"
+    "7. Pending Tasks — everything still open.\n"
+    "8. Work Completed — what the just-compacted earlier part accomplished "
+    "(recent turns are kept verbatim after the summary).\n"
+    "9. Context for Continuing Work — everything needed to seamlessly "
+    "continue: current state, decisions that constrain the future, and the "
+    "immediate next step with the verbatim quote of the last relevant "
+    "request.\n\n"
+
+    "Style: dense and faithful; keep every fact listed above and drop small "
+    "talk. No preamble, no closing remarks, no offers to help. Output only "
+    "the <analysis> block followed by the <summary> block."
 )
 
 
@@ -200,7 +250,7 @@ async def maybe_compact_history(
             ),
         ]
     )
-    summary = str(getattr(summary_resp, "content", "") or "").strip()
+    summary = _parse_summary_output(str(getattr(summary_resp, "content", "") or "")).strip()
     if not summary:
         return None
 
@@ -226,6 +276,25 @@ async def maybe_compact_history(
         "summary_chars": len(summary),
         "reinject": reinject_text,
     }
+
+
+_SUMMARY_TAG_RE = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
+_ANALYSIS_TAG_RE = re.compile(r"<analysis>\s*.*?\s*</analysis>", re.DOTALL)
+
+
+def _parse_summary_output(raw: str) -> str:
+    """Extract the summary body from the model output.
+
+    Priority: ``<summary>...</summary>`` if present; otherwise strip any
+    ``<analysis>`` block and use the remainder. Plain text (models that
+    ignore the requested format) passes through unchanged.
+    """
+    if not raw:
+        return ""
+    m = _SUMMARY_TAG_RE.search(raw)
+    if m:
+        return m.group(1).strip()
+    return _ANALYSIS_TAG_RE.sub("", raw).strip()
 
 
 def _summary_system_message():

@@ -638,6 +638,12 @@ S1–S4 由多轮并行 agent 实现（每轮：**文件所有权互斥** + 阶�
 
 **一个已接受的固有竞态**：`stat` 判 version 与 `os.replace` 之间是 check-then-write 窗口，两个写者同一瞬间仍可能后写覆盖先写。原子 replace 保证不会出现半个文件，但真正的 CAS 需要文件锁——**未做，需另开**。
 
+**（2026-10-08 更新）这不是"整个系统都没锁"**：agent 侧的内置 `write_file`/`edit_file` 已在
+`tools/builtin.py` 加了**进程级写锁 + 原子写**（锁覆盖 `edit_file` 的 read→write 全程），修掉的是
+"同一消息里多个 tool call 并发改同一文件互相踩踏"。本节说的 check-then-write 窗口是**另一条路径**
+——`PUT /api/code/write`（用户在面板里保存）对上磁盘/agent，且锁是进程内的、覆盖不到 `bash` 或外部进程，
+所以窗口依旧存在，两者不冲突。
+
 ### 10.2 S3 与 agent 合流 + git
 
 **传输通路照抄既有的 `<!--ginno-images:-->` 那一套**（新增 `files/code_changes.py` 的 encode/parse/strip + `match_root_id`），标记加在 `write_file`/`edit_file` 的返回里，**三处剥离**：agent 节点、`messages_ui` 渲染、`stream.py` 送出前。**不用 Hook 系统**（`PostToolUse` 只声明未 dispatch——§7 已列为已验证不可行）。

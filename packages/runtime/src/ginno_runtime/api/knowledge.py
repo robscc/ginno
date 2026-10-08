@@ -57,7 +57,9 @@ def _server_roots(name: str) -> list[str]:
 
 async def _kb_call_one(live, tool_name: str, args: dict) -> list[str]:
     out: list[str] = []
-    if not live.session or not any(t.name == tool_name for t in live.tools):
+    # live 可能因服务未连上而在 _live 里缺席（调用方 .get() 出 None），
+    # 先判 None 再访问属性，避免 'NoneType' object has no attribute 'session'
+    if live is None or not live.session or not any(t.name == tool_name for t in live.tools):
         return out
     try:
         res = await live.session.call_tool(tool_name, args)

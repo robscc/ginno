@@ -103,6 +103,10 @@ export interface ProviderConfig {
   org_id?: string;
   // Anthropic-compatible gateways that expect `Authorization: Bearer` instead of x-api-key.
   bearer_auth?: boolean;
+  // Anthropic protocol only: bind the provider-side `web_search` server tool so
+  // the gateway runs the search, instead of Ginno scraping a public engine.
+  server_web_search?: boolean;
+  server_web_search_max_uses?: number;
   // Ask OpenAI-compatible gateways (e.g. Qwen / DashScope) to use the model's
   // built-in web search (request body `enable_search: true`).
   enable_search?: boolean;
@@ -128,6 +132,8 @@ export interface ModelConfig {
   api_key: string;
   org_id?: string; // openai-responses only
   bearer_auth?: boolean; // anthropic only: Authorization: Bearer instead of x-api-key
+  server_web_search?: boolean; // anthropic only: gateway-side web_search tool
+  server_web_search_max_uses?: number;
   models: string[]; // replaces the old single model/default_model field
   default_model: string; // must be a member of models
   max_tokens: number;
@@ -639,15 +645,15 @@ export interface UsageOverview {
   models: UsageModelAgg[];
   sources?: UsageSourceAgg[];
 }
-export interface UsageHourPoint extends UsageCounters {
-  hour: number;
-  /** Per-model SKU rows for the hour (bar-hover breakdown), tokens desc. */
-  models?: UsageModelAgg[];
-}
-export interface UsageHourly {
+/** 一个 2 小时桶的用量：[gross, net, out, cache, requests] */
+export type UsageGridCell = [gross: number, net: number, out: number, cache: number, requests: number];
+
+/** 连续日历的 2 小时点格矩阵。grid[i] 对应 days[i]，每天固定 12 个桶（本地时间 00:00–24:00）。
+ *  没有 jsonl 文件的日子也占一列，整行全 0 —— 前端不区分「无文件」与「零请求」。 */
+export interface UsageGrid {
   ok: boolean;
-  date: string;
-  hours: UsageHourPoint[];
+  days: string[];
+  grid: UsageGridCell[][];
 }
 export interface UsageSessionRow extends UsageCounters {
   session_id: string;

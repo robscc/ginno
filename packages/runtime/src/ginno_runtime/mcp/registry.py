@@ -42,6 +42,8 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
 from .. import paths
+from .. import server_shared
+from ..lang import t
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +54,35 @@ def _full_tool_name(server_name: str, tool_name: str) -> str:
     never drift (2026-08-10: comparing raw vs wrapped names would have made
     the per-turn graph-refresh fingerprint mismatch on EVERY turn)."""
     return f"mcp_{server_name}_{tool_name}"
+
+
+def _compact_connect_error(e: BaseException) -> str:
+    """连接失败根因压成单行（设置页状态展示用）。
+
+    MCP 客户端经 anyio TaskGroup + httpx/httpcore 多层包装，异常组外层
+    只会说 "unhandled errors in a TaskGroup"，真正的原因（如
+    httpx.ConnectError: DNS 解析失败）在最内层——逐层剥到叶子再取。
+    """
+    while isinstance(e, BaseExceptionGroup):
+        e = e.exceptions[0]
+    text = f"{type(e).__name__}: {e}".strip()
+    return text[:300]
+
+
+def _resolve_live(server_name: str) -> "_LiveServer | None":
+    """调用时解析 server_name 当前的 _LiveServer（不闭包构建时的对象）。
+
+    会话图会把工具包装器缓存很久：重连创建新的 _LiveServer、
+    /api/mcp/reload 整体重建 registry——闭包旧对象就会永久失效
+    （AttributeError: NoneType.call_tool 的根因）。每次调用都经
+    server_shared._mcp 解析，重连/重载后旧包装器自动路由到新连接，
+    无需重建图，工具集也不会因连接抖动被剥掉。shared 为空（单测、
+    启动早期）时由调用方回退到构建时的 self。
+    """
+    reg = server_shared._mcp
+    if isinstance(reg, MCPRegistry):
+        return reg._live.get(server_name)
+    return None
 
 
 def _unpack_rw(ctx_res: tuple) -> tuple[Any, Any]:
@@ -222,7 +253,22 @@ class _LiveServer:
                         payload[k] = json.dumps(parsed, ensure_ascii=False)
                 elif isinstance(v, (list, dict)):
                     payload[k] = json.dumps(v, ensure_ascii=False)
-            result = await self.session.call_tool(tool_name, payload)
+            # 调用时解析当前连接：重连/重载后旧包装器自动路由到新 _LiveServer；
+            # 解析不到（shared 未就绪）回退到构建时的 self。
+            live = _resolve_live(server_name) or self
+            session = live.session
+            if session is None:
+                # 连接断开/重连中：给模型一个可恢复的双语错误信息而不是裸异常
+                # （原来直接 self.session.call_tool 会炸 AttributeError:
+                # 'NoneType' object has no attribute 'call_tool'）。
+                return t(
+                    f"MCP server '{server_name}' is not connected (it was "
+                    "disconnected or reconfigured). Try the call again; if it "
+                    "keeps failing, ask the user to check Settings → MCP.",
+                    f"MCP 服务「{server_name}」未连接（已断开或被重新配置）。"
+                    "请重试；若持续失败，请让用户在 设置 → MCP 中检查。",
+                )
+            result = await session.call_tool(tool_name, payload)
             # MCP returns CallToolResult with .content list
             contents = getattr(result, "content", None) or []
             texts: list[str] = []
@@ -272,6 +318,8 @@ class MCPRegistry:
         # of that attempt. retry_failed() re-attempts them on a cooldown so a
         # dead DNS/network window isn't hammered on every turn/UI poll.
         self._failed: dict[str, float] = {}
+        # 最近一次连接失败的根因（单行字符串），供 /api/mcp status 展示。
+        self._last_error: dict[str, str] = {}
         self._retry_busy = False
 
     def load(self) -> dict[str, MCPServerConfig]:
@@ -308,8 +356,10 @@ class MCPRegistry:
                 await asyncio.wait_for(live.connect(), timeout=cfg.connect_timeout)
                 self._live[name] = live
                 self._failed.pop(name, None)
-            except Exception:
+                self._last_error.pop(name, None)
+            except Exception as e:
                 self._failed[name] = time.monotonic()
+                self._last_error[name] = _compact_connect_error(e)
                 log.exception("mcp[%s] failed to connect (skipped)", name)
                 try:
                     await live.close()
@@ -332,6 +382,35 @@ class MCPRegistry:
     def failed_servers(self) -> list[str]:
         """Configured servers that are not live (last connect failed)."""
         return [n for n in self._failed if n not in self._live]
+
+    def status(self) -> list[dict[str, Any]]:
+        """每个配置服务器的连接状态，设置页逐行展示（GET /api/mcp）。"""
+        self.ensure_loaded()
+        out: list[dict[str, Any]] = []
+        for name in self.servers:
+            live = self._live.get(name)
+            out.append({
+                "name": name,
+                "connected": live is not None,
+                "tools": len(live.tools) if live else 0,
+                "error": self._last_error.get(name),
+            })
+        return out
+
+    def unconfigured_wrapped_names(self, wrapped_names: set[str]) -> set[str]:
+        """wrapped_names 里已不属于任何当前配置服务器的名字（服务器被删）。
+
+        未连上的服务器无法离线拿到它的工具清单，所以「是否仍在配置里」
+        只能按服务器名前缀（mcp_{server}_{tool}）判断——这正是会话图
+        区分「连接抖动导致的缺失」（保留工具）和「用户删掉服务器」
+        （允许收缩重建）的依据。
+        """
+        self.ensure_loaded()
+        configured = list(self.servers.keys())
+        return {
+            n for n in wrapped_names
+            if not any(n.startswith(f"mcp_{s}_") for s in configured)
+        }
 
     def has_pending_failures(self, cooldown_s: float = 120.0) -> bool:
         """True when a retry is due: failures exist, none is being retried

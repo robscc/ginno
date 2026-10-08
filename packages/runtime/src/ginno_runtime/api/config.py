@@ -106,7 +106,7 @@ async def import_skills_dir(data: dict) -> dict:
 @router.get("/api/mcp")
 async def list_mcp() -> dict:
     if not shared._mcp:
-        return {"servers": [], "tools": [], "failed": []}
+        return {"servers": [], "tools": [], "failed": [], "status": []}
     reg = shared._mcp
     # Lazy healing (2026-08-10 incident): a startup-time DNS/network blip
     # used to leave MCP dead until a manual reload or app restart. The UI
@@ -119,6 +119,8 @@ async def list_mcp() -> dict:
         "servers": list(reg.ensure_loaded().keys()),
         "tools": reg.list_tools(),
         "failed": reg.failed_servers,
+        # 逐服务器连接状态（设置页展示）：name/connected/tools/error
+        "status": reg.status(),
     }
 
 
@@ -147,6 +149,19 @@ async def reload_mcp_endpoint() -> dict:
     shared._mcp.load()
     await shared._mcp.connect_all()
     return {"ok": True, "servers": list(shared._mcp.ensure_loaded().keys())}
+
+
+@router.post("/api/mcp/reconnect")
+async def reconnect_mcp_endpoint() -> dict:
+    """重试未连上的服务器，不动已连接的（连接是幂等的：只补 pending）。
+
+    与 reload 的区别：reload 重建整个 registry（会断开在用连接、让会话里
+    缓存的工具包装器全部失效）；reconnect 只补缺口，适合设置页的重试按钮。
+    """
+    if not shared._mcp:
+        return {"ok": True, "status": []}
+    await shared._mcp.connect_all()
+    return {"ok": True, "status": shared._mcp.status()}
 
 
 # ---- settings (general) ----

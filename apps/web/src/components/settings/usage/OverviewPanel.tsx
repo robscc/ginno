@@ -1,26 +1,16 @@
 "use client";
 
-/** 概览：KPI → 每日趋势 → 小时分布 → Provider/模型分布。
- * 页签内的「统计窗口」只影响本页（评审决议：时间控制不跨页签）。 */
+/** 概览：KPI → 两小时点格图 → 来源/Provider/模型分布。
+ * 页签内的「统计窗口」只影响本页（评审决议：时间控制不跨页签）。
+ * 时间序列视图已由 GridPanel 接管（设计见 usage-cadence-design.md）。 */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { RefreshCw } from "lucide-react";
 import * as api from "@/lib/runtime";
-import type { UsageHourly, UsageOverview } from "@/lib/types";
-import {
-  CACHE_WRITE_COLOR,
-  exact,
-  fmt,
-  pct,
-  providerColor,
-  SERIES,
-  SeriesLegend,
-  SkuBreakdown,
-  StackedBars,
-  TipRow,
-  useTip,
-} from "./charts";
+import type { UsageOverview } from "@/lib/types";
+import { fmt, pct, providerColor, SERIES, TipRow, useTip } from "./charts";
+import { GridPanel } from "./GridPanel";
 
 function Delta({ v, suffix = "", goodUp = true }: { v: number; suffix?: string; goodUp?: boolean }) {
   const up = v >= 0;
@@ -47,8 +37,6 @@ export function OverviewPanel() {
   const t = useTranslations("settings.usage.overview");
   const [range, setRange] = useState(30);
   const [ov, setOv] = useState<UsageOverview | null>(null);
-  const [hourly, setHourly] = useState<UsageHourly | null>(null);
-  const [hourDate, setHourDate] = useState<string>("");
   const [err, setErr] = useState("");
   const alive = useRef(true);
 
@@ -58,23 +46,10 @@ export function OverviewPanel() {
       if (!alive.current) return;
       setOv(o);
       setErr("");
-      if (!hourDate && o.window?.to) {
-        setHourDate(o.window.to);
-        api.getUsageHourly(o.window.to).then((h) => alive.current && setHourly(h)).catch(() => {});
-      }
     } catch {
       if (alive.current) setErr(t("loadFailed"));
     }
-  }, [hourDate, t]);
-
-  const loadHour = useCallback(async (date: string) => {
-    try {
-      const h = await api.getUsageHourly(date);
-      if (alive.current) setHourly(h);
-    } catch {
-      /* keep previous */
-    }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     alive.current = true;
@@ -85,11 +60,6 @@ export function OverviewPanel() {
       clearInterval(timer);
     };
   }, [range, load]);
-
-  function pickDay(date: string) {
-    setHourDate(date);
-    loadHour(date);
-  }
 
   if (err) return <div className="py-10 text-center text-sm text-faint">{err}</div>;
   if (!ov) return <div className="py-10 text-center text-sm text-faint">{t("loading")}</div>;
@@ -125,7 +95,7 @@ export function OverviewPanel() {
         <button
           className="flex h-7 w-7 items-center justify-center rounded-lg border border-line text-muted hover:bg-card"
           title={t("refresh")}
-          onClick={() => { load(range); if (hourDate) loadHour(hourDate); }}
+          onClick={() => load(range)}
         >
           <RefreshCw className="h-3.5 w-3.5" />
         </button>
@@ -157,108 +127,10 @@ export function OverviewPanel() {
             />
           </div>
 
-          {/* 每日趋势 */}
-          <div className="mt-3 rounded-xl border border-line bg-card px-4 pb-2 pt-3.5">
-            <div className="mb-2 flex flex-wrap items-baseline gap-3">
-              <h3 className="text-[13px] font-semibold">{t("dailyTrend")}</h3>
-              <span className="text-[11px] text-faint">{t("dailyTrendHint")}</span>
-              <SeriesLegend />
-            </div>
-            <StackedBars
-              ariaLabel={t("ariaDaily")}
-              data={daily.map((d) => ({
-                key: d.date,
-                label: d.date.slice(5),
-                cache: d.cache_read_tokens,
-                inputNet: Math.max(0, d.input_tokens - d.cache_read_tokens - d.cache_creation_tokens),
-                output: d.output_tokens,
-              }))}
-              selected={hourDate}
-              onPick={pickDay}
-              tipFor={(d) => {
-                const p = daily.find((x) => x.date === d.key);
-                if (!p) return null;
-                return (
-                  <>
-                    <b className="text-txt">{p.date}</b> · {t("tipRequests", { count: p.calls })} · {t("tipHit", { value: pct(p.cache_hit_ratio) })}
-                    {p.models?.length ? (
-                      <SkuBreakdown models={p.models} />
-                    ) : (
-                      /* 旧 runtime 无 per-model 明细 — 退回按天聚合（精确数字） */
-                      <>
-                        <TipRow label={t("labelInputNonCache")} value={exact(Math.max(0, p.input_tokens - p.cache_read_tokens - p.cache_creation_tokens))} swatch={SERIES.input} />
-                        <TipRow label={t("labelCacheWrite")} value={exact(p.cache_creation_tokens)} swatch={CACHE_WRITE_COLOR} />
-                        <TipRow label={t("labelCacheRead")} value={exact(p.cache_read_tokens)} swatch={SERIES.cache} />
-                        <TipRow label={t("labelOutput")} value={exact(p.output_tokens)} swatch={SERIES.output} />
-                      </>
-                    )}
-                    <div className="mt-1.5 border-t border-white/10 pt-1">
-                      <TipRow label={t("labelTotal")} value={exact(p.input_tokens + p.output_tokens)} />
-                    </div>
-                    <div className="mt-0.5 text-faint">{t("tipClickDay")}</div>
-                  </>
-                );
-              }}
-            />
-          </div>
-
-          {/* 小时分布 */}
-          <div className="mt-3 rounded-xl border border-line bg-card px-4 pb-2 pt-3.5">
-            <div className="mb-2 flex flex-wrap items-baseline gap-3">
-              <h3 className="text-[13px] font-semibold">{t("hourlyDist")}</h3>
-              <div className="flex items-center gap-1.5">
-                {daily.slice(-5).map((d) => (
-                  <button
-                    key={d.date}
-                    onClick={() => pickDay(d.date)}
-                    className={`rounded-md border px-2 py-0.5 text-[11.5px] ${d.date === hourDate ? "border-line2 bg-card2 text-txt" : "border-line text-muted hover:text-txt"}`}
-                  >
-                    {d.date === hourDate ? d.date : d.date.slice(5)}
-                  </button>
-                ))}
-              </div>
-              <span className="text-[11px] text-faint">{t("hourlyHint")}</span>
-              <SeriesLegend />
-            </div>
-            {hourly && hourly.date === hourDate ? (
-              <StackedBars
-                ariaLabel={t("ariaHourly", { date: hourDate })}
-                height={210}
-                xEvery={3}
-                data={hourly.hours.map((h) => ({
-                  key: String(h.hour),
-                  label: `${h.hour}h`,
-                  cache: h.cache_read_tokens,
-                  inputNet: Math.max(0, h.input_tokens - h.cache_read_tokens - (h.cache_creation_tokens ?? 0)),
-                  output: h.output_tokens,
-                }))}
-                tipFor={(d) => {
-                  const h = hourly.hours[Number(d.key)];
-                  const cw = h.cache_creation_tokens ?? 0;
-                  return (
-                    <>
-                      <b className="text-txt">{hourDate} {String(h.hour).padStart(2, "0")}:00–{String(h.hour).padStart(2, "0")}:59</b> · {t("tipRequests", { count: h.calls })}
-                      {h.models?.length ? (
-                        <SkuBreakdown models={h.models} />
-                      ) : (
-                        /* 旧 runtime 无 per-model 明细 — 退回按小时聚合（精确数字） */
-                        <>
-                          <TipRow label={t("labelInputNonCache")} value={exact(Math.max(0, h.input_tokens - h.cache_read_tokens - cw))} swatch={SERIES.input} />
-                          <TipRow label={t("labelCacheWrite")} value={exact(cw)} swatch={CACHE_WRITE_COLOR} />
-                          <TipRow label={t("labelCacheRead")} value={exact(h.cache_read_tokens)} swatch={SERIES.cache} />
-                          <TipRow label={t("labelOutput")} value={exact(h.output_tokens)} swatch={SERIES.output} />
-                        </>
-                      )}
-                      <div className="mt-1.5 border-t border-white/10 pt-1">
-                        <TipRow label={t("labelTotal")} value={exact(h.input_tokens + h.output_tokens)} />
-                      </div>
-                    </>
-                  );
-                }}
-              />
-            ) : (
-              <div className="py-12 text-center text-xs text-faint">{t("loading")}</div>
-            )}
+          {/* 两小时点格图（替掉原每日趋势 + 24h 分布两张图） */}
+          <div className="mt-3">
+            {/* GridPanel 自带窗口/口径控件与取数，无需传参 */}
+            <GridPanel />
           </div>
 
           {/* 来源 / Provider / 模型 */}

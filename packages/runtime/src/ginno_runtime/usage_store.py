@@ -32,6 +32,8 @@ from .usage import cache_hit_ratio
 _log = logging.getLogger("ginno.usage")
 
 RETENTION_DAYS = 90
+_GRID_BINS = 12          # 24h / 2h 一桶，点格图的固定行数（设计 §2）
+_GRID_DEFAULT_DAYS = 30  # 与 /api/usage/overview 的默认窗口一致
 _FILE_PREFIX = "requests-"
 _SOURCES = {"chat", "goal", "compaction", "workflow", "memory", "kb", "probe", "external", "schedule", "mods", "other"}
 
@@ -223,6 +225,15 @@ def _with_ratio(acc: dict[str, int]) -> dict:
     return {**acc, "cache_hit_ratio": cache_hit_ratio(acc)}
 
 
+def _grid_cell(acc: dict[str, int]) -> list[int]:
+    """One 点格图 cell as the flat 5-tuple the frontend consumes:
+    ``[gross, net, out, cache, calls]``."""
+    inp = acc["input_tokens"]
+    out = acc["output_tokens"]
+    cache = acc["cache_read_tokens"] + acc["cache_creation_tokens"]
+    return [inp + out, inp - cache + out, out, cache, acc["calls"]]
+
+
 def _model_rows(models: dict[str, dict]) -> list[dict]:
     """Per-model SKU rows sorted by total tokens desc. The acc dicts carry
     provider/model keys stuffed in by the caller (same trick as the global
@@ -297,27 +308,45 @@ def aggregate_overview(days: int) -> dict:
     }
 
 
-def aggregate_hourly(date_str: str | None = None) -> dict:
-    """Per-hour counters + model×SKU rows (same shape as the daily buckets:
-    full _acc fields incl. cache_creation_tokens, plus cache_hit_ratio)."""
-    ds = _parse_date(date_str, _today())
-    accs = [_acc() for _ in range(24)]
-    hour_models: list[dict[str, dict]] = [{} for _ in range(24)]
-    for e in load_day(ds):
-        h = int(time.localtime(float(e.get("ts") or 0)).tm_hour)
-        if not (0 <= h < 24):
-            continue
-        _add(accs[h], e)
-        p = e.get("provider") or "?"
-        ma = hour_models[h].setdefault(_model_key(e), _acc())
-        _add(ma, e)
-        ma["provider"] = p  # type: ignore[assignment]
-        ma["model"] = e.get("model") or "?"  # type: ignore[assignment]
-    hours = [
-        {"hour": h, **_with_ratio(accs[h]), "models": _model_rows(hour_models[h])}
-        for h in range(24)
-    ]
-    return {"date": ds, "hours": hours}
+def aggregate_grid(from_: str | None = None, to: str | None = None) -> dict:
+    """点格图数据（usage-cadence-design.md §7）：连续日历 × 每天 12 个 2h 桶。
+
+    ``days`` 是连续日历（含没有 jsonl 文件的日子），``grid[i][j]`` 对应
+    ``days[i]`` 当天 ``j*2`` 点到 ``j*2+2`` 点的桶，每个格子是
+    ``[gross, net, out, cache, calls]`` 五个整数。空格子全 0——前端不区分
+    「无文件」和「零请求」，两者渲染相同，所以这里不返回 have 之类的标记。
+
+    口径沿用 usage.py 的归一化约定：``input_tokens`` 是整段提示词（langchain
+    1.x 已把 cache 加回 input），因此 gross = in + out 会把缓存重复计入，
+    这是有意的（缓存热度本身是图上要表达的信息）；net 则扣掉缓存部分。
+    """
+    to_str = _parse_date(to, _today())
+    default_from = (
+        datetime.strptime(to_str, "%Y-%m-%d") - timedelta(days=_GRID_DEFAULT_DAYS - 1)
+    ).strftime("%Y-%m-%d")
+    frm = _parse_date(from_, default_from)
+    start = datetime.strptime(frm, "%Y-%m-%d")
+    end = datetime.strptime(to_str, "%Y-%m-%d")
+    if start > end:
+        start, end = end, start
+    if (end - start).days + 1 > RETENTION_DAYS:
+        # 窗口上限对齐保留期，多出来的从 from 侧砍掉
+        start = end - timedelta(days=RETENTION_DAYS - 1)
+    days: list[str] = []
+    grid: list[list[list[int]]] = []
+    d = start
+    while d <= end:
+        ds = d.strftime("%Y-%m-%d")
+        accs = [_acc() for _ in range(_GRID_BINS)]
+        for e in load_day(ds):
+            # 本地时间分桶，与 aggregate_overview 的 daily 一样按本地日历日
+            slot = int(time.localtime(float(e.get("ts") or 0)).tm_hour) // 2
+            if 0 <= slot < _GRID_BINS:
+                _add(accs[slot], e)
+        days.append(ds)
+        grid.append([_grid_cell(a) for a in accs])
+        d += timedelta(days=1)
+    return {"days": days, "grid": grid}
 
 
 def aggregate_sessions(from_date: str | None, to_date: str | None, sort: str = "total", limit: int = 200) -> list[dict]:

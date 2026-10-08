@@ -27,8 +27,9 @@ glob and killed the whole turn).
 from __future__ import annotations
 
 import os
-import time
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -189,6 +190,29 @@ def _ws(base: Path, p: str) -> Path:
     return (base / p).resolve() if not Path(p).is_absolute() else Path(p)
 
 
+# 内置文件写操作的进程级串行锁。langgraph ToolNode 会并发执行同一条 AIMessage
+# 里的所有 tool call（asyncio.gather / 线程池），而 edit_file 是 read-modify-write、
+# write_file 是 truncate-write，均无版本校验 —— 2026-10-08 事故：模型一条消息里
+# 对同一文件发了 4 个 edit_file，四线程互相踩踏，文件被写成"缝合怪"（一整段替换
+# 丢失 + 错位插入 + size=0 撕裂窗口），且每个调用各自返回 ok，工具层毫无冲突信号。
+# 锁必须覆盖 edit 的 read→match→replace→write 全程：分两段拿锁仍会丢更新
+# （B 在 A 的 read 和 write 之间写入，A 再用旧快照写回）。bash 不持锁——命令
+# 任意且可能长跑，持锁会串行死全部会话；跨进程并发本就不在此机制的守备范围。
+_FILE_WRITE_LOCK = threading.Lock()
+
+
+def _atomic_write_text(p: Path, text: str) -> None:
+    """tempfile → os.replace 原子写。外部观察者（code panel / bash）因此不会
+    读到 write_text 的截断窗口（事故里 edit 结果的 version 标记出现过
+    ``0:<mtime>`` 的 stat 快照，即他线程刚 truncate 未写入的瞬间）。"""
+    tmp = p.with_name(p.name + ".ginno-tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, p)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _code_marker(p: Path, op: str) -> str:
     """``<!--ginno-code:[...]-->`` trailer for a file this tool just wrote.
 
@@ -345,8 +369,9 @@ def build_builtin_tools(
         if mount_access(p, mounts) == "ro":
             return _ro_write_msg(path)
         try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content, encoding="utf-8")
+            with _FILE_WRITE_LOCK:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_write_text(p, content)
         except OSError as e:
             return f"[error] cannot write {p}: {type(e).__name__}: {e}"
         # ``_code_marker`` before the discovery notes, like bash's image marker:
@@ -516,20 +541,21 @@ def build_builtin_tools(
             return _deny_msg(path)
         if mount_access(p, mounts) == "ro":
             return _ro_write_msg(path)
-        try:
-            text = p.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return f"[error] file not found: {path}"
-        except OSError as e:
-            return f"[error] cannot read {path}: {type(e).__name__}: {e}"
-        if text.count(old) > 1:
-            return "[error] multiple matches"
-        if text.count(old) == 0:
-            return "[error] not found"
-        try:
-            p.write_text(text.replace(old, new, 1), encoding="utf-8")
-        except OSError as e:
-            return f"[error] cannot write {path}: {type(e).__name__}: {e}"
+        with _FILE_WRITE_LOCK:
+            try:
+                text = p.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return f"[error] file not found: {path}"
+            except OSError as e:
+                return f"[error] cannot read {path}: {type(e).__name__}: {e}"
+            if text.count(old) > 1:
+                return "[error] multiple matches"
+            if text.count(old) == 0:
+                return "[error] not found"
+            try:
+                _atomic_write_text(p, text.replace(old, new, 1))
+            except OSError as e:
+                return f"[error] cannot write {path}: {type(e).__name__}: {e}"
         # Same ``<!--ginno-code:-->`` trailer as write_file, with op="edit" so
         # the panel can tell an in-place edit from a full overwrite.
         return "ok" + _code_marker(p, "edit") + _observe(p)

@@ -9,6 +9,7 @@ tool result, never an exception that kills the turn.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,42 @@ def test_edit_not_found(tools):
     tools["write_file"].invoke({"path": "a.txt", "content": "foo"})
     out = tools["edit_file"].invoke({"path": "a.txt", "old": "zzz", "new": "x"})
     assert "not found" in out
+
+
+def test_concurrent_edits_to_same_file_all_land(tools):
+    # 2026-10-08 四联编辑事故回归：langgraph ToolNode 并发执行同一条 AIMessage
+    # 里的所有 tool call，同一文件的 4 个 edit_file 曾互相踩踏（lost update +
+    # 错位插入 + size=0 撕裂窗口），且各自返回 ok。内置文件工具现在持有进程级
+    # 写锁，并发编辑必须逐个完整落盘。
+    import threading
+
+    tools["write_file"].invoke(
+        {"path": "race.txt", "content": "".join(f"line-{i}-anchor\n" for i in range(1, 5))}
+    )
+
+    def run(i: int):
+        out = tools["edit_file"].invoke(
+            {"path": "race.txt", "old": f"line-{i}-anchor", "new": f"done-{i}"}
+        )
+        assert out.startswith("ok"), out
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(1, 5)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    final = tools["read_file"].invoke({"path": "race.txt"})
+    for i in range(1, 5):
+        assert f"done-{i}" in final
+        assert f"line-{i}-anchor" not in final
+
+
+def test_atomic_edit_leaves_no_tmp_file(tools, ws):
+    # _atomic_write_text 的临时文件必须被清理，不污染工作区（glob / 用户可见）。
+    tools["write_file"].invoke({"path": "a.txt", "content": "foo"})
+    assert tools["edit_file"].invoke({"path": "a.txt", "old": "foo", "new": "bar"}).startswith("ok")
+    assert not any(n.endswith(".ginno-tmp") for n in os.listdir(ws))
 
 
 def test_bash_captures_exit_and_output(tools):

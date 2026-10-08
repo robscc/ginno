@@ -222,16 +222,28 @@ def _maybe_refresh_session_graph(session: dict) -> None:
     research session still offered the single MCP tool it had frozen with,
     and the world diff kept announcing counts the agent could not call.
 
+    Drift rule (2026-10-07): rebuild only on GAINS (new tools appeared) or on
+    servers removed from the config. A pure LOSS (server configured but down —
+    DNS blip, restart window) must NOT strip tools from the session: the model
+    keeps seeing them, calls fail with a recoverable "not connected" message,
+    and the wrappers re-route to the fresh connection on heal (call-time
+    resolution in registry._wrap_tool) — no rebuild, no mid-conversation
+    toolset churn that breaks the provider cache prefix and the model's
+    narrative continuity.
+
     Fast path is cheap: ``list_wrapped_tools()`` reads graph-facing tool
     names without constructing langchain wrappers; the heavy rebuild only
-    runs on change. Agent tools_allow needs no rebuild — agent_node
+    runs on real drift. Agent tools_allow needs no rebuild — agent_node
     re-resolves the agent and re-filters per step.
     """
     reg = shared._mcp
     if not reg:
         return
-    live = sorted(reg.list_wrapped_tools())
-    if live == sorted(session.get("mcp_tool_names") or []):
+    live = set(reg.list_wrapped_tools())
+    frozen = set(session.get("mcp_tool_names") or [])
+    gained = live - frozen
+    orphaned = reg.unconfigured_wrapped_names(frozen)
+    if not gained and not orphaned:
         return
     mcp_tools = reg.all_langchain_tools()
     slug = session.get("project_slug") or "default"

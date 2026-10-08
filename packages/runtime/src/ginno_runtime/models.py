@@ -166,6 +166,77 @@ def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     return (float(temperature) if temperature is not None else None, model_kwargs)
 
 
+def server_web_search_on(cfg: dict) -> bool:
+    """True when this provider searches the web *itself*, through the
+    Anthropic protocol's server-side ``web_search`` tool.
+
+    Gin's own ``web_search`` tool (tools/web_tools.py) scrapes a search engine
+    from the machine; that is unreachable on networks that block the public
+    engines, and duplicating it makes the model search twice. Gateways that
+    implement Anthropic's server tools (corporate model hubs, proxies) run the
+    search on their side and return the results inline with the answer, so we
+    bind their tool instead and leave ours unbound — see
+    graph.build_all_tools.
+    """
+    return bool(cfg.get("protocol") == "anthropic" and cfg.get("server_web_search"))
+
+
+# The server-side tool dict, passed through to the API verbatim. langchain-anthropic
+# recognises any tool type starting with `web_search_` as builtin (its
+# _BUILTIN_TOOL_PREFIXES) and forwards it without conversion, and web_search is GA
+# so it needs no beta header. `max_uses` bounds gateway-side search calls per turn.
+_SERVER_WEB_SEARCH_TYPE = "web_search_20250305"
+
+
+def _server_web_search_tool(cfg: dict) -> dict[str, Any]:
+    try:
+        max_uses = int(cfg.get("server_web_search_max_uses") or 5)
+    except (TypeError, ValueError):
+        max_uses = 5
+    return {
+        "type": _SERVER_WEB_SEARCH_TYPE,
+        "name": "web_search",
+        "max_uses": max(1, min(max_uses, 20)),
+    }
+
+
+def _anthropic_with_server_search(model, cfg: dict):
+    """Return *model* with every ``bind_tools`` call carrying the gateway's
+    server-side web_search tool.
+
+    The graph binds the per-agent tool allowlist itself
+    (graph.agent_node_factory → model.bind_tools(allowed)), so pre-binding here
+    would hand back a RunnableBinding with no bind_tools and the allowlist
+    would be dropped. Subclassing keeps the normal bind path intact and makes
+    the server tool unconditional — it is a model capability, not a tool the
+    agent's allowlist can (or should) revoke.
+    """
+    base = type(model)
+
+    class _WithServerWebSearch(base):
+        def bind_tools(self, tools=None, **kwargs):
+            merged = list(tools or [])
+            if not any(
+                isinstance(t, dict)
+                and str(t.get("type") or "").startswith("web_search_")
+                for t in merged
+            ):
+                merged.append(_server_web_search_tool(cfg))
+            return super().bind_tools(merged, **kwargs)
+
+    # Rebuild the same model as the subclass so pydantic validation still runs
+    # (a plain __class__ assignment is rejected by pydantic's __setattr__).
+    return _WithServerWebSearch(**cfg_dump_fields(model))
+
+
+def cfg_dump_fields(model) -> dict[str, Any]:
+    """The constructor fields of a pydantic model instance (best effort)."""
+    try:
+        return {k: getattr(model, k) for k in type(model).model_fields}
+    except Exception:
+        return {}
+
+
 def build_model(provider_id: str, model_name: str | None = None, enable_search: bool | None = None):
     """Return a LangChain chat model for the given provider id.
 
@@ -225,7 +296,10 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         # Anthropic API uses x-api-key, so this is opt-in via `bearer_auth`.
         if cfg.get("bearer_auth"):
             chat_kwargs["default_headers"] = {"Authorization": f"Bearer {key}"}
-        return ChatAnthropic(**chat_kwargs)
+        m = ChatAnthropic(**chat_kwargs)
+        if server_web_search_on(cfg):
+            m = _anthropic_with_server_search(m, cfg)
+        return m
 
     if proto == "openai-responses":
         # Official OpenAI Responses API (and Responses-compatible gateways).

@@ -73,10 +73,15 @@ async def usage_overview(days: int = 30) -> dict:
     return {"ok": True, **usage_store.aggregate_overview(days)}
 
 
-@router.get("/api/usage/hourly")
-async def usage_hourly(date: str | None = None) -> dict:
-    """24-hour distribution for one day (defaults to today, local time)."""
-    return {"ok": True, **usage_store.aggregate_hourly(date)}
+@router.get("/api/usage/grid")
+async def usage_grid(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = None,
+) -> dict:
+    """点格图数据：连续日历 × 每天 12 个 2 小时桶（usage-cadence-design.md §7）。
+    默认最近 30 天，窗口上限对齐保留期。无 jsonl 文件的日子照样出现在 days 里，
+    整列全 0——前端对「无文件」和「零请求」渲染同一个空格子。"""
+    return {"ok": True, **usage_store.aggregate_grid(from_, to)}
 
 
 @router.get("/api/usage/sessions")

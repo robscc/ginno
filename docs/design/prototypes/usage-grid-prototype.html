@@ -1,0 +1,426 @@
+<title>Token Cadence</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  /* ---- tokens: light is the base block; dark + explicit stamps override ---- */
+  :root{
+    --base:248 248 250; --panel:255 255 255; --card:255 255 255; --card2:243 243 247;
+    --line:226 226 234; --line2:212 212 222; --txt:23 23 30; --muted:90 90 102; --faint:130 130 142;
+    --accent:#0891b2;
+    --heat0:#eef1f5; --heat0b:224 229 236;
+    --h1:#cfe0ee; --h2:#a4c6e0; --h3:#6ba0d0; --h4:#2a78d6; --h5:#b45309;
+    --grid-gap:3px; --cell:15px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --base:10 10 15; --panel:14 14 21; --card:21 21 29; --card2:27 27 37;
+      --line:38 38 50; --line2:52 52 63; --txt:233 233 240; --muted:154 154 166; --faint:98 98 110;
+      --accent:#2dd4bf;
+      --heat0:#191921; --heat0b:38 38 50;
+      --h1:#16324a; --h2:#1d4f74; --h3:#2f7aa8; --h4:#63aede; --h5:#eda100;
+    }
+  }
+  :root[data-theme="dark"]{
+    --base:10 10 15; --panel:14 14 21; --card:21 21 29; --card2:27 27 37;
+    --line:38 38 50; --line2:52 52 63; --txt:233 233 240; --muted:154 154 166; --faint:98 98 110;
+    --accent:#2dd4bf;
+    --heat0:#191921; --heat0b:38 38 50;
+    --h1:#16324a; --h2:#1d4f74; --h3:#2f7aa8; --h4:#63aede; --h5:#eda100;
+  }
+
+  *{box-sizing:border-box}
+  html,body{background:rgb(var(--base));color:rgb(var(--txt));
+    font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  body{margin:0;padding:40px 32px 72px;max-width:1220px}
+  .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+
+  h1{font-size:19px;font-weight:600;letter-spacing:-0.01em;margin:0}
+  .lede{color:rgb(var(--muted));font-size:13.5px;line-height:1.6;margin:6px 0 0;max-width:62ch}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;
+    padding-bottom:18px;border-bottom:1px solid rgb(var(--line));margin-bottom:22px}
+
+  .card{background:rgb(var(--card));border:1px solid rgb(var(--line));border-radius:0.9rem}
+
+  /* ---- KPI ---- */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+  .kpi{padding:13px 15px}
+  .kpi .lab{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:rgb(var(--faint))}
+  .kpi .val{font-size:23px;font-weight:600;margin-top:5px;letter-spacing:-0.02em}
+  .kpi .sub{font-size:11.5px;color:rgb(var(--muted));margin-top:3px}
+
+  /* ---- toolbar ---- */
+  .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .ctl{display:flex;align-items:center;gap:9px}
+  .ctl .cl{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:rgb(var(--faint))}
+  .seg{display:flex;background:rgb(var(--card2));border:1px solid rgb(var(--line));border-radius:7px;padding:2px}
+  .seg button{font:inherit;font-size:12px;color:rgb(var(--muted));background:none;border:0;
+    padding:4px 11px;border-radius:5px;cursor:pointer;line-height:1.4}
+  .seg button:hover{color:rgb(var(--txt))}
+  .seg button[aria-pressed="true"]{background:rgb(var(--line2));color:rgb(var(--txt));font-weight:500}
+  .seg button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+  /* ---- the grid ---- */
+  /* padding-top reserves the band the date labels live in, so they can't escape the card */
+  .gridwrap{padding:34px 18px 14px;overflow-x:auto}
+  .gridinner{display:flex;gap:8px;min-width:min-content}
+  .gutter{display:grid;grid-template-rows:repeat(12,var(--cell));gap:var(--grid-gap);flex:none}
+  .gutter span{font-size:9.5px;color:rgb(var(--faint));line-height:var(--cell);height:var(--cell);
+    display:flex;align-items:center;font-variant-numeric:tabular-nums}
+  .dates{position:absolute;top:0;left:0;right:0;height:16px;pointer-events:none}
+  .daycol{position:relative;display:grid;grid-template-rows:repeat(12,var(--cell));
+    gap:var(--grid-gap);flex:none}
+  #cols{display:flex;gap:var(--grid-gap);position:relative;min-width:min-content}
+  .daycol .dt{position:absolute;top:-19px;left:1px;font-size:9.5px;color:rgb(var(--faint));
+    white-space:nowrap;font-variant-numeric:tabular-nums}
+  .cell{width:var(--cell);height:var(--cell);border-radius:2.5px;background:var(--heat0);
+    box-shadow:inset 0 0 0 1px rgb(var(--heat0b));cursor:pointer;border:0;padding:0}
+  .cell.l1{background:var(--h1);box-shadow:none}
+  .cell.l2{background:var(--h2);box-shadow:none}
+  .cell.l3{background:var(--h3);box-shadow:none}
+  .cell.l4{background:var(--h4);box-shadow:none}
+  .cell.l5{background:var(--h5);box-shadow:none}
+  .cell:hover{outline:1.5px solid var(--accent);outline-offset:1px}
+  .cell:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .cell[data-sel="1"]{outline:2px solid var(--accent);outline-offset:1px}
+  .weeksep{position:absolute;top:-19px;bottom:-4px;width:1px;background:rgb(var(--line2))}
+  /* a day with no telemetry file renders exactly like an idle cell — same square, no special case */
+  /* bins that haven't happened yet today */
+  .future{background:transparent;box-shadow:inset 0 0 0 1px rgb(var(--line));opacity:.5;cursor:default}
+  .future:hover{outline:none}
+  .nowcell{outline:1.5px solid var(--accent);outline-offset:1px}
+
+  .legend{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    margin-top:14px;padding-top:12px;border-top:1px solid rgb(var(--line));
+    font-size:11px;color:rgb(var(--muted))}
+  .sw{display:inline-flex;align-items:center;gap:5px}
+  .sw i{width:11px;height:11px;border-radius:2.5px;display:inline-block;
+    box-shadow:inset 0 0 0 1px rgb(var(--heat0b))}
+  .sw i.f1{background:var(--h1);box-shadow:none}
+  .sw i.f2{background:var(--h2);box-shadow:none}
+  .sw i.f3{background:var(--h3);box-shadow:none}
+  .sw i.f4{background:var(--h4);box-shadow:none}
+  .sw i.f5{background:var(--h5);box-shadow:none}
+  .note{margin-left:auto;font-size:11px;color:rgb(var(--faint))}
+
+  /* ---- detail ---- */
+  .detail{display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:14px;overflow:hidden}
+  .detail>div{padding:15px 18px}
+  .detail>div+div{border-left:1px solid rgb(var(--line))}
+  .dtitle{font-size:12.5px;font-weight:600;margin:0 0 2px}
+  .dsub{font-size:11px;color:rgb(var(--faint));margin:0 0 11px}
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:4.5px 0;font-size:12px;
+    border-top:1px solid rgb(var(--line))}
+  .kv:first-of-type{border-top:0}
+  .kv span:first-child{color:rgb(var(--muted))}
+  .kv span:last-child{font-weight:500}
+  .bar-mini{height:5px;border-radius:3px;background:var(--h4);margin-top:3px}
+  .stack{display:flex;height:7px;border-radius:4px;overflow:hidden;background:rgb(var(--card2));margin-bottom:10px}
+  .stack i{display:block;height:100%}
+  .dim{color:rgb(var(--muted))}
+
+  /* ---- distribution panels (unchanged from the current overview) ---- */
+  .dists{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:14px}
+  .dist{padding:15px 18px}
+  .dist h3{font-size:12.5px;font-weight:600;margin:0 0 11px}
+  .drow{margin-bottom:9px}
+  .drow:last-child{margin-bottom:0}
+  .dtop{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;margin-bottom:4px}
+  .dtop .k{color:rgb(var(--muted));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dtop .v{font-weight:500;flex:none}
+  .dbar{height:5px;border-radius:3px;background:rgb(var(--card2));overflow:hidden}
+  .dbar i{display:block;height:100%;border-radius:3px}
+  .dmore{font-size:11px;color:rgb(var(--faint));margin-top:9px}
+  @media (max-width:900px){ .dists{grid-template-columns:1fr} .kpis{grid-template-columns:repeat(2,1fr)} }
+
+  footer{margin-top:26px;padding-top:16px;border-top:1px solid rgb(var(--line));
+    font-size:11.5px;color:rgb(var(--faint));line-height:1.7}
+  footer b{color:rgb(var(--muted));font-weight:500}
+  .tip{position:fixed;pointer-events:none;z-index:9;background:rgb(var(--panel));
+    border:1px solid rgb(var(--line2));border-radius:7px;padding:8px 10px;font-size:11.5px;
+    box-shadow:0 8px 26px rgba(0,0,0,.42);opacity:0;transition:opacity .09s;max-width:250px}
+  .tip[data-on="1"]{opacity:1}
+  .tip .tt{font-weight:600;margin-bottom:4px}
+  .tip .tr{display:flex;justify-content:space-between;gap:14px;color:rgb(var(--muted))}
+  .tip .tr b{color:rgb(var(--txt));font-weight:500}
+</style>
+
+<header>
+  <div>
+    <h1>Token Cadence</h1>
+    <p class="lede">Two-hour bins, one column per day. Real records from <code>~/.ginno/usage</code>.</p>
+  </div>
+  <div class="ctl">
+    <span class="cl">theme</span>
+    <div class="seg"><button id="tsys">Auto</button><button id="tlit">Light</button><button id="tdrk">Dark</button></div>
+  </div>
+</header>
+
+<div class="kpis" id="kpis"></div>
+
+<div class="bar">
+  <div class="ctl">
+    <span class="cl">window</span>
+    <div class="seg" id="segWin"></div>
+  </div>
+  <div class="ctl">
+    <span class="cl">metric</span>
+    <div class="seg" id="segMet"></div>
+  </div>
+</div>
+
+<div class="card gridwrap">
+  <div class="gridinner">
+    <div class="gutter" id="gutter"></div>
+    <div style="position:relative" id="cols"></div>
+  </div>
+  <div class="legend" id="legend"></div>
+</div>
+
+<div class="card detail">
+  <div id="dL"></div>
+  <div id="dR"></div>
+</div>
+
+<div class="dists" id="dists"></div>
+
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = {"days":["2026-08-08","2026-08-09","2026-08-10","2026-08-11","2026-08-12","2026-08-13","2026-08-14","2026-08-15","2026-08-16","2026-08-17","2026-08-18","2026-08-19","2026-08-20","2026-08-21","2026-08-22","2026-08-23","2026-08-24","2026-08-25","2026-08-26","2026-08-27","2026-08-28","2026-08-29","2026-08-30","2026-08-31","2026-09-01","2026-09-02","2026-09-03","2026-09-04","2026-09-05","2026-09-06","2026-09-07","2026-09-08","2026-09-09","2026-09-10","2026-09-11","2026-09-12","2026-09-13","2026-09-14","2026-09-15","2026-09-16","2026-09-17","2026-09-18","2026-09-19","2026-09-20","2026-09-21","2026-09-22","2026-09-23","2026-09-24","2026-09-25","2026-09-26","2026-09-27","2026-09-28","2026-09-29","2026-09-30","2026-10-01","2026-10-02","2026-10-03","2026-10-04","2026-10-05","2026-10-06","2026-10-07","2026-10-08"],"have":["2026-08-08","2026-08-09","2026-08-10","2026-08-11","2026-08-12","2026-08-13","2026-08-14","2026-08-17","2026-08-18","2026-08-19","2026-08-20","2026-08-21","2026-08-23","2026-08-24","2026-08-25","2026-08-26","2026-08-27","2026-08-28","2026-08-31","2026-09-01","2026-09-02","2026-09-03","2026-09-07","2026-09-09","2026-09-10","2026-09-11","2026-09-15","2026-09-16","2026-09-19","2026-09-20","2026-09-21","2026-09-22","2026-09-23","2026-09-24","2026-09-29","2026-09-30","2026-10-03","2026-10-04","2026-10-05","2026-10-07","2026-10-08"],"grid":[[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[96893,71396,10231,25497,4],[1659434,1104645,49509,554789,30],[0,0,0,0,0],[124314,115771,485,8543,2],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[4877928,3941118,15463,936810,43],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[1784714,1241990,13585,542724,44],[151202,123200,95,28002,4],[2020936,1371055,12301,649881,36],[293737,178287,2363,115450,6],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[20377,20377,65,0,1],[40775,40775,141,0,2],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[683992,423654,6052,260338,16],[1471411,1030839,12002,440572,23],[1195175,894785,8699,300390,17],[460628,260388,1141,200240,11],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[453941,273698,3960,180243,10],[3712631,2330466,22202,1382165,75],[0,0,0,0,0],[0,0,0,0,0],[202181,126505,7697,75676,6],[0,0,0,0,0],[504758,305785,1804,198973,14],[1982520,1328379,10509,654141,44]],[[169582,145847,2362,23735,5],[0,0,0,0,0],[0,0,0,0,0],[351401,330990,2881,20411,10],[176168,134352,1124,41816,3],[1245611,814156,9765,431455,25],[2403334,1751343,12803,651991,39],[3366883,2400576,39122,966307,45],[3031448,2030147,12736,1001301,41],[283541,224837,6680,58704,3],[363348,240491,1504,122857,7],[2910459,2079203,12728,831256,49]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[96504,96504,268,0,3],[0,0,0,0,0],[1240263,790303,21602,449960,15],[1100360,746820,4324,353540,12],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[3066092,1845311,17242,1220781,40],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[180558,116248,5226,64310,3],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[154323,122170,1345,32153,2],[7248068,5363300,34174,1884768,65],[1848568,1324654,25319,523914,17],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[1313853,869976,10721,443877,19],[621571,414743,9303,206828,8],[5295999,4085357,36093,1210642,44],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[37593,22233,6504,15360,1],[12294663,9187257,100313,3107406,111],[0,0,0,0,0],[590795,494651,1683,96144,4],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[2064810,1229535,15013,835275,26],[4132288,2996314,28455,1135974,39],[0,0,0,0,0],[1314144,1067636,13525,246508,9],[623504,531065,5196,92439,4],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[2319014,1609305,14783,709709,26],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[4407520,3172802,78698,1234718,44],[0,0,0,0,0],[0,0,0,0,0],[3669308,3237139,28241,432169,16],[218938,218938,2597,0,1]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[10811252,8408617,76429,2402635,76],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[102965,69753,199,33212,2],[8937224,7780141,40098,1157083,39],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[688587,7875,7773,680712,17],[0,0,0,0,0],[33941,55,49,33886,1],[0,0,0,0,0],[1839128,25603,25477,1813525,21],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[1261638,6171,6081,1255467,15],[1354740,14927,14843,1339813,14],[443372,3041,3017,440331,4],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[35912,2060,2054,33852,1],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[289831,3711,3681,286120,5]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[2284104,9215,9071,2274889,24],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[96458,110,104,96348,1],[0,0,0,0,0],[3193590,41710,41470,3151880,40],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[4486799,40932,40668,4445867,44],[837283,7898,7814,829385,14],[12238220,89826,89214,12148394,102],[11556563,58979,58643,11497584,56],[1436130,5312,5276,1430818,6],[11623940,73645,73231,11550295,69],[0,0,0,0,0]],[[1749978,26696,26546,1723282,25],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[4279958,38823,38643,4241135,30],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[1213146,9634,9592,1203512,7],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[790252,6345,6297,783907,8],[1484397,19107,19029,1465290,13],[0,0,0,0,0],[5817377,52005,51645,5765372,60],[12848026,90227,89807,12757799,70]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[978284,5250,5154,973034,16],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[6888956,53848,53476,6835108,62],[9181679,68101,67729,9113578,62],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[2144498,21509,21329,2122989,30],[6209797,81806,81542,6127991,44],[0,0,0,0,0],[4461506,23472,23352,4438034,20],[5373213,30843,30681,5342370,27],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[48911,48911,162,0,1],[6150619,935515,24764,5215104,38],[253772,55308,4111,198464,5],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[359204,100836,12677,258368,5],[654893,12724,12658,642169,11],[0,0,0,0,0],[10887989,245260,65698,10642729,57],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[2597623,199543,8394,2398080,14],[10166218,491658,27815,9674560,52],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[2049851,24321,24207,2025530,19],[0,0,0,0,0],[0,0,0,0,0],[4823461,58587,58281,4764874,51],[1091739,182894,9539,908845,10],[305505,6065,6029,299440,6],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[2496167,225767,18304,2270400,24],[1383806,106494,8914,1277312,15],[15768062,96803,96095,15671259,118],[42968424,327207,325527,42641217,280]],[[2342700,6223,6169,2336477,9],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[6763980,41389,41173,6722591,36],[23818642,208491,207741,23610151,125],[6497146,200903,61132,6296243,42],[13380573,144709,137042,13235864,78],[10737714,89625,89235,10648089,65],[590357,4304,4280,586053,4],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[7833007,58538,57865,7774469,66],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[2420279,19649,19475,2400630,29],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[572706,7383,7323,565323,10]],[[1594726,150588,29983,1444138,20],[8743669,79545,62323,8664124,123],[835408,92338,9859,743070,16],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[47610,422,416,47188,1],[5073092,754628,64192,4318464,50],[0,0,0,0,0],[0,0,0,0,0],[1836100,426116,17681,1409984,41],[9246576,504752,48122,8741824,165]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[7742775,366022,52353,7376753,47],[23987278,2758030,210338,21229248,159],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[4552303,931631,55895,3620672,44],[22520119,3522551,206387,18997568,166],[2591747,599875,26715,1991872,18],[22838457,2919801,161580,19918656,153],[5935686,478790,42886,5456896,67],[4105373,560797,43365,3544576,49],[0,0,0,0,0],[0,0,0,0,0]]]};
+const DISTS = {"source":[{"k":"chat","g":518037885,"n":97671757,"c":4302,"p":98.6},{"k":"external","g":5042271,"n":1114463,"c":77,"p":1.0},{"k":"workflow","g":2153868,"n":1194124,"c":47,"p":0.4},{"k":"other","g":134152,"n":47816,"c":8,"p":0.0},{"k":"goal","g":96893,"n":71396,"c":4,"p":0.0}],"provider":[{"k":"anthropic","g":429671424,"n":89778451,"c":3620,"p":81.8},{"k":"custom","g":41070003,"n":3448115,"c":380,"p":7.8},{"k":"—","g":30112541,"n":2397249,"c":180,"p":5.7},{"k":"prov_d8dfb246","g":19568830,"n":3361278,"c":181,"p":3.7},{"k":"claude-code","g":5024053,"n":1100469,"c":63,"p":1.0},{"k":"pi","g":18218,"n":13994,"c":14,"p":0.0}],"model":[{"k":"qwen3.8-max","g":342739061,"n":54503276,"c":2586,"p":65.2},{"k":"deepseek-v4.1-flash","g":45389822,"n":6461182,"c":349,"p":8.6},{"k":"aliyun/qwen3.7-plus","g":41542541,"n":28813993,"c":685,"p":7.9},{"k":"—","g":30112541,"n":2397249,"c":180,"p":5.7},{"k":"GLM-5.3-Flash","g":29364489,"n":2627657,"c":191,"p":5.6},{"k":"glm-5.3-flash","g":23659064,"n":3808120,"c":248,"p":4.5},{"k":"glm-5.3","g":7615280,"n":373616,"c":122,"p":1.4}]};
+const DAYS = DATA.days, GRID = DATA.grid;
+const TODAY = DAYS[DAYS.length - 1];
+const NOWBIN = Math.min(11, Math.floor(new Date().getHours() / 2));
+
+const S = { win:30, metric:"gross", scale:"pct", sel:null, hover:null };
+
+const val = (c, m) => m === "net" ? c[1] : c[0];
+const fmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+"B"
+              : n >= 1e6 ? (n/1e6).toFixed(2)+"M"
+              : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n|0);
+const $ = s => document.querySelector(s);
+
+/* ---------- window slice ---------- */
+function slice(){
+  const n = S.win === 0 ? DAYS.length : Math.min(S.win, DAYS.length);
+  return { days: DAYS.slice(-n), grid: GRID.slice(-n), from: DAYS.length - n };
+}
+
+/* ---------- thresholds — five levels, auto-bucketed over the window ---------- */
+function thresholds(cells){
+  const nz = cells.filter(c => c[4] > 0).map(c => val(c, S.metric)).sort((a,b)=>a-b);
+  if (!nz.length) return [0,0,0,0];
+  const q = p => nz[Math.min(nz.length-1, Math.floor(p*nz.length))];
+  return [q(0.20), q(0.40), q(0.60), q(0.80)];
+}
+function level(c, th){
+  if (!c || !c[4]) return 0;
+  const v = val(c, S.metric);
+  if (v <= th[0]) return 1;
+  if (v <= th[1]) return 2;
+  if (v <= th[2]) return 3;
+  if (v <= th[3]) return 4;
+  return 5;
+}
+
+/* cells stay square; grow to fill the card so a 14d window isn't a stamp in the corner */
+function fitCells(n){
+  const wrap = $(".gridwrap"), cs = getComputedStyle(wrap);
+  const avail = wrap.clientWidth
+    - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 30 - 8;
+  const gap = 3;
+  const cell = Math.max(10, Math.min(22, Math.floor((avail - (n-1)*gap) / n)));
+  wrap.style.setProperty("--cell", cell + "px");
+  wrap.style.setProperty("--grid-gap", gap + "px");
+}
+
+/* ---------- render ---------- */
+function render(){
+  paintSegs();
+  const { days, grid } = slice();
+  fitCells(days.length);
+  const cells = grid.flat();
+  const th = thresholds(cells);
+
+  // KPIs
+  let gross=0, net=0, out=0, req=0, act=0;
+  cells.forEach(c => { gross+=c[0]; net+=c[1]; out+=c[2]; req+=c[4]; if(c[4]) act++; });
+  const mk = (lab, v, sub) => `<div class="card kpi"><div class="lab">${lab}</div>
+    <div class="val mono">${v}</div><div class="sub">${sub}</div></div>`;
+  const peak = grid.flat().reduce((a,c)=>c[4] && c[0]>a[1][0] ? [c[0],c] : a, [0,[0,0,0,0,0]]);
+  let peakWhen = "—";
+  grid.forEach((day,di) => day.forEach((c,h) => {
+    if (c[0] === peak[0]) peakWhen = DAYS[di].slice(5) + " " + String(h*2).padStart(2,"0") + ":00";
+  }));
+  $("#kpis").innerHTML =
+    mk("Gross tokens", fmt(gross), "input + output · cache counted") +
+    mk("Net tokens", fmt(net), "excludes cache reads · " + (gross/(net||1)).toFixed(1) + "× lower") +
+    mk("Requests", req.toLocaleString(), "across " + act + " active 2h bins") +
+    mk("Peak bin", fmt(peak[0]), peakWhen + " · " + peak[1][4] + " requests");
+
+  // gutter
+  $("#gutter").innerHTML = Array.from({length:12},(_,h)=>
+    `<span class="mono">${String(h*2).padStart(2,"0")}</span>`).join("");
+
+  // columns — continuous calendar: every day in the window gets a column,
+  // days with no telemetry file render hatched, not empty.
+  const cols = days.map((d,i) => {
+    const isToday = d === TODAY;
+    let lbl = "";
+    if (i === 0 || d.slice(8) === "01") lbl = `<span class="dt mono">${d.slice(5)}</span>`;
+    const sep = d.slice(8) === "01" && i > 0 ? `<span class="weeksep" style="left:-4px"></span>` : "";
+    // no branch for "day has no file" — it renders as ordinary idle cells, same as a day you didn't work
+    const cs = grid[i].map((c,h) => {
+      const future = isToday && h > NOWBIN;
+      if (future) return `<div class="cell future" aria-hidden="true"></div>`;
+      const lv = level(c, th);
+      const sel = S.sel && S.sel.d===d && S.sel.h===h ? ' data-sel="1"' : "";
+      const now = isToday && h === NOWBIN ? " nowcell" : "";
+      return `<button class="cell l${lv}${now}"${sel} data-d="${d}" data-h="${h}"
+        aria-label="${d} ${String(h*2).padStart(2,"0")}:00, ${c[4]?c[4]+" requests":"no requests"}"></button>`;
+    }).join("");
+    return `<div class="daycol">${sep}${lbl}${cs}</div>`;
+  }).join("");
+  $("#cols").innerHTML = cols;
+
+  // legend — five levels, no jargon
+  $("#legend").innerHTML =
+    `<span>Less</span><span class="sw"><i></i></span>` +
+    [1,2,3,4,5].map(i=>`<span class="sw"><i class="f${i}"></i></span>`).join("") +
+    `<span>More</span>` +
+    `<span class="note">${TODAY === days[days.length-1] ? "today still in progress" : ""}</span>`;
+
+  // detail
+  const pick = S.sel || S.hover;
+  if (pick){
+    const ci = days.indexOf(pick.d), c = grid[ci] ? grid[ci][pick.h] : null;
+    if (c && c[4]){
+      const g = c[0], n = c[1], o = c[2], ca = c[3];
+      const wk = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date(pick.d+"T00:00:00").getDay()];
+      $("#dL").innerHTML =
+        `<p class="dtitle">${wk} ${pick.d} · ${String(pick.h*2).padStart(2,"0")}:00–${String(pick.h*2+2).padStart(2,"0")}:00</p>
+         <p class="dsub">${S.sel ? "pinned — click the cell again to release" : "hovering — click to pin"}</p>
+         <div class="stack">
+           <i style="width:${o/g*100}%;background:var(--h5)"></i>
+           <i style="width:${(n-o)/g*100}%;background:var(--h4)"></i>
+           <i style="width:${ca/g*100}%;background:var(--h2)"></i>
+         </div>
+         <div class="kv"><span>Cache reads</span><span class="mono">${fmt(ca)} · ${(ca/g*100).toFixed(0)}%</span></div>
+         <div class="kv"><span>Input (ex-cache)</span><span class="mono">${fmt(n-o)}</span></div>
+         <div class="kv"><span>Output</span><span class="mono">${fmt(o)}</span></div>
+         <div class="kv"><span>Gross total</span><span class="mono">${fmt(g)}</span></div>`;
+      // that day's full 24h
+      const day = grid[ci];
+      const bars = day.map((x,h)=> x[4] ? `<div class="kv"><span class="mono">${String(h*2).padStart(2,"0")}:00</span>
+          <span class="mono">${fmt(val(x,S.metric))}</span></div>` : "").join("");
+      const dayTot = day.reduce((a,x)=>a+val(x,S.metric),0);
+      $("#dR").innerHTML =
+        `<p class="dtitle">${pick.d} in full</p>
+         <p class="dsub">${day.filter(x=>x[4]).length} of 12 bins active · ${fmt(dayTot)} total</p>
+         ${bars || `<p class="dim" style="font-size:12px">No requests on this day.</p>`}`;
+    } else { blankDetail(days, grid); }
+  } else blankDetail(days, grid);
+
+  /* no footer — the page is the grid */
+
+/* source / provider / model panels — carried over unchanged from the overview */
+const CAT = ["var(--chart-1)","var(--chart-2)","var(--chart-3)","var(--chart-4)","var(--chart-5)"];
+function distPanel(title, rows, colored, more){
+  const mi = S.metric === "net" ? 1 : 0;
+  const max = Math.max(...rows.map(r => r[mi] === undefined ? r.n : r[mi])) || 1;
+  const body = rows.map((r,i) => {
+    const v = mi ? r.n : r.g;
+    return `<div class="drow">
+      <div class="dtop"><span class="k">${r.k}</span><span class="v mono">${fmt(v)}</span></div>
+      <div class="dbar"><i style="width:${Math.max(1.5, v/max*100)}%;
+        background:${colored ? CAT[i%CAT.length] : "var(--h4)"}"></i></div>
+    </div>`;
+  }).join("");
+  return `<div class="card dist"><h3>${title}</h3>${body}
+    ${more ? `<p class="dmore">${more}</p>` : ""}</div>`;
+}
+$("#dists").innerHTML =
+  distPanel("Source", DISTS.source, true, "") +
+  distPanel("Provider", DISTS.provider, true, "") +
+  distPanel("Model", DISTS.model, false, "gross tokens · " + DISTS.model.length + " shown");
+}
+
+function blankDetail(days, grid){
+  const tot = grid.flat().reduce((a,c)=>a+c[0],0);
+  const best = days.map((d,i)=>[d, grid[i].reduce((a,c)=>a+c[0],0)])
+                   .sort((a,b)=>b[1]-a[1])[0];
+  $("#dL").innerHTML = `<p class="dtitle">Hover a cell</p>
+    <p class="dsub">click to pin · esc to release</p>
+    <p class="dim" style="font-size:12px;line-height:1.65">Each cell is one two-hour window. The tooltip splits
+    it into cache reads, fresh input and output; the right panel opens out the whole day.</p>`;
+  $("#dR").innerHTML = `<p class="dtitle">Window summary</p>
+    <p class="dsub">${days[0]} → ${days[days.length-1]}</p>
+    <div class="kv"><span>Gross total</span><span class="mono">${fmt(tot)}</span></div>
+    <div class="kv"><span>Busiest day</span><span class="mono">${best[0]}</span></div>
+    <div class="kv"><span>Peak bin</span><span class="mono">${(()=>{const m=grid.flat().reduce((a,c)=>c[0]>a[0]?c:a,[0,0,0,0,0]);return fmt(m[0]);})()}</span></div>
+    <div class="kv"><span>Empty rows</span><span class="mono">${
+      Array.from({length:12},(_,h)=>h).filter(h => !grid.some(r=>r[h][4])).length} / 12</div>`;
+}
+
+/* ---------- controls ---------- */
+const SEGS = {
+  "#segWin":{key:"win", opts:[{v:14,l:"14d"},{v:30,l:"30d"},{v:60,l:"60d"},{v:0,l:"All"}]},
+  "#segMet":{key:"metric", opts:[{v:"gross",l:"Gross"},{v:"net",l:"Net ex-cache"}]},
+};
+function paintSegs(){
+  for (const host in SEGS){
+    const { key, opts } = SEGS[host];
+    $(host).querySelectorAll("button").forEach(b =>
+      b.setAttribute("aria-pressed", String(String(S[key]) === b.dataset.v)));
+  }
+}
+for (const host in SEGS){
+  const { opts } = SEGS[host];
+  $(host).innerHTML = opts.map(o=>`<button data-v="${o.v}" aria-pressed="false">${o.l}</button>`).join("");
+  $(host).onclick = e => { const b = e.target.closest("button"); if(!b) return;
+    const v = b.dataset.v;
+    S[SEGS[host].key] = v === "0" ? 0 : (isNaN(+v) ? v : +v);
+    render(); };
+}
+
+/* ---------- interaction ---------- */
+const tip = $("#tip");
+$("#cols").addEventListener("mousemove", e => {
+  const b = e.target.closest(".cell"); if(!b || !b.dataset.d){ tip.dataset.on="0"; return; }
+  const d = b.dataset.d, h = +b.dataset.h;
+  const sl = slice(), ci = sl.days.indexOf(d), c = sl.grid[ci][h];
+  if (!c || !c[4]){
+    tip.innerHTML = `<div class="tt mono">${d.slice(5)} · ${String(h*2).padStart(2,"0")}:00</div>
+       <div class="tr"><span>no requests</span></div>`;
+  } else {
+    tip.innerHTML = `<div class="tt mono">${d.slice(5)} · ${String(h*2).padStart(2,"0")}:00</div>
+       <div class="tr"><span>cache</span><b class="mono">${fmt(c[3])}</b></div>
+       <div class="tr"><span>in / out</span><b class="mono">${fmt(c[1]-c[2])} / ${fmt(c[2])}</b></div>
+       <div class="tr"><span>requests</span><b class="mono">${c[4]}</b></div>`;
+  }
+  tip.dataset.on = "1";
+  const r = b.getBoundingClientRect();
+  tip.style.left = Math.min(r.left, innerWidth-260) + "px";
+  // flip below when the cell sits in the top rows and the tip would leave the card
+  const above = r.top - 8;
+  if (above - tip.offsetHeight > 12){ tip.style.top = above+"px"; tip.style.transform="translateY(-100%)"; }
+  else { tip.style.top = (r.bottom + 8)+"px"; tip.style.transform="none"; }
+});
+$("#cols").addEventListener("mouseleave", ()=>{ tip.dataset.on="0"; });
+$("#cols").addEventListener("click", e => {
+  const b = e.target.closest(".cell"); if(!b) return;
+  const d = b.dataset.d, h = +b.dataset.h;
+  S.sel = (S.sel && S.sel.d===d && S.sel.h===h) ? null : {d,h};
+  render();
+});
+addEventListener("keydown", e => { if(e.key==="Escape"){ S.sel=null; render(); }});
+addEventListener("resize", () => render());
+
+/* theme switcher */
+$("#tsys").onclick = () => document.documentElement.removeAttribute("data-theme");
+$("#tlit").onclick = () => document.documentElement.setAttribute("data-theme","light");
+$("#tdrk").onclick = () => document.documentElement.setAttribute("data-theme","dark");
+
+render();
+</script>
