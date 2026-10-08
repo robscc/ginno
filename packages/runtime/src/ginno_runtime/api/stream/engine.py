@@ -1184,8 +1184,23 @@ async def _stream_graph(
                             # cites from its answer resolve. Best-effort — the
                             # registry is a no-op outside a live turn.
                             if getattr(m, "type", None) in ("ai", "AIMessage") and _SERVER_SEARCH_BUFFER:
-                                for hits in _SERVER_SEARCH_BUFFER:
-                                    cit.register_server_search_hits(session_id, hits)
+                                registered = [
+                                    s
+                                    for hits in _SERVER_SEARCH_BUFFER
+                                    for s in cit.register_server_search_hits(session_id, hits)
+                                ]
+                                if registered:
+                                    # The one visible trace of a gateway-side
+                                    # search: no local tool runs, so without
+                                    # this line there is nothing in the log to
+                                    # tell server search from parametric recall.
+                                    _log.info(
+                                        "server_search session=%s turn=%s hits=%d urls=%s",
+                                        session_id,
+                                        turn_id,
+                                        len(registered),
+                                        ",".join(s["identity"] for s in registered)[:400],
+                                    )
                                 _SERVER_SEARCH_BUFFER.clear()
                             # A steered message COMMITTED with this superstep
                             # (docs/steering-design.md §3.2): its ack was already
