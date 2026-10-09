@@ -463,14 +463,18 @@ chrome.debugger.onDetach.addListener((src) => {
   if (src.tabId) S.attachedTabs.delete(src.tabId);
 });
 
-async function ensureScripts(tabId) {
-  if (S.readyTabs.has(tabId)) return;
+async function ensureScripts(tabId, force = false) {
+  // force=true 重新注入。缓存的失效条件只有 chrome.tabs.onUpdated 的
+  // status==="loading"，而 SPA（pushState 客户端路由）不触发该事件——新
+  // 的 JS 上下文里 __ginnoBridge/__ginnoAT 已不存在，缓存却仍说"就绪"。
+  // 桥接调用方用 evalBridge() 在拿到 undefined 时以 force 重试一次。
+  if (!force && S.readyTabs.has(tabId)) return;
   try {
     const [r] = await chrome.scripting.executeScript({
       target: { tabId },
       func: () => !!(globalThis.__ginnoAT && globalThis.__ginnoBridge),
     });
-    if (r && r.result === true) { S.readyTabs.add(tabId); return; }
+    if (!force && r && r.result === true) { S.readyTabs.add(tabId); return; }
   } catch (e) {}
   try {
     await chrome.scripting.executeScript({
@@ -509,6 +513,28 @@ async function evalInPage(tabId, expression) {
   const r = out.result || {};
   if (r.subtype === "null") return null;
   return r.value;
+}
+
+/** Evaluate an expression that NEEDS __ginnoBridge/__ginnoAT, healing a lost
+ *  injection once before giving up.
+ *
+ *  2026-10-08 (turn 4b3a219e): 36kr is an SPA, and its client-side route
+ *  changes never fire onUpdated/loading — so readyTabs stayed "ready" while
+ *  the new document's context had neither script. `__ginnoBridge && ...`
+ *  then short-circuited to undefined and browser_page_text failed with the
+ *  content-free "正文抽取不可用". The agent had picked the RIGHT tool (one call
+ *  per article) and fell back to a hand-rolled navigate+browser_js pair per
+ *  article — 2x the round trips until the turn hit the step budget.
+ *
+ *  `expr` must be a boolean guard over the call, so a missing bridge is
+ *  distinguishable from a legitimate falsy result. */
+async function evalBridge(tabId, expr) {
+  await ensureScripts(tabId);
+  let out = await evalInPage(tabId, expr);
+  if (typeof out !== "undefined") return out;
+  // Bridge gone (SPA navigation) — force a re-inject and retry exactly once.
+  await ensureScripts(tabId, true);
+  return evalInPage(tabId, expr);
 }
 
 /* CDP input helpers — trusted events, human cadence (设计 §5) */
@@ -622,7 +648,7 @@ async function invoke(tool, a) {
 }
 
 async function resolveRef(tabId, ref) {
-  const c = await evalInPage(tabId,
+  const c = await evalBridge(tabId,
     `globalThis.__ginnoAT && __ginnoAT.coords(${JSON.stringify(ref)}, true)`);
   if (!c) throw new Error(`Element not found: ${ref}. Use browser_read_page or browser_find to get a fresh ref.`);
   return c;
@@ -768,8 +794,7 @@ async function screenshot(tabId, a) {
 }
 
 async function readPage(tabId, a) {
-  await ensureScripts(tabId);
-  const out = await evalInPage(tabId,
+  const out = await evalBridge(tabId,
     `globalThis.__ginnoAT && __ginnoAT.generate({mode: ${JSON.stringify(a.filter || "all")},` +
     ` depth: ${a.depth || 15}, max_chars: ${a.max_chars || 50000},` +
     ` ref_id: ${JSON.stringify(a.ref_id || "")}})`);
@@ -780,8 +805,7 @@ async function readPage(tabId, a) {
 }
 
 async function findEls(tabId, a) {
-  await ensureScripts(tabId);
-  const out = await evalInPage(tabId,
+  const out = await evalBridge(tabId,
     `globalThis.__ginnoBridge && __ginnoBridge.find(${JSON.stringify(a.query || "")}, ${a.max_results || 20})`);
   const rows = (out && out.results) || [];
   if (!rows.length) return L(
@@ -791,18 +815,22 @@ async function findEls(tabId, a) {
 }
 
 async function formInput(tabId, a) {
-  await ensureScripts(tabId);
-  const out = await evalInPage(tabId,
+  const out = await evalBridge(tabId,
     `globalThis.__ginnoBridge && __ginnoBridge.fill(${JSON.stringify(a.ref)}, ${JSON.stringify(a.value)})`);
   if (!out || !out.success) throw new Error((out && out.error) || L("form_input failed", "form_input 失败"));
   return `Filled ${a.ref} (field: ${out.fieldName})`;
 }
 
 async function pageText(tabId, a) {
-  await ensureScripts(tabId);
-  const out = await evalInPage(tabId,
+  const out = await evalBridge(tabId,
     `globalThis.__ginnoBridge && __ginnoBridge.pageText(${a.max_chars || 50000})`);
-  if (!out || out.error) throw new Error((out && out.error) || L("Page text extraction unavailable", "正文抽取不可用"));
+  if (!out || out.error) throw new Error((out && out.error) || L(
+    "Page text unavailable — the page may still be loading, or it navigated "
+    + "and dropped the injected script. Re-run browser_navigate on this tab "
+    + "to re-establish it (or fall back to browser_js, which needs no script).",
+    "正文抽取不可用——页面可能还在加载,或刚刚跳转导致注入的脚本失效。"
+    + "对该 tab 重新执行一次 browser_navigate 即可恢复"
+    + "(或退回 browser_js,它不依赖注入脚本)。"));
   return `Title: ${out.title}\nURL: ${out.url}\n\n${out.content}`;
 }
 
@@ -857,7 +885,7 @@ async function fileUpload(tabId, a) {
   const attr = "data-ginno-file-ref";
   if (!paths.length) throw new Error(L("paths must not be empty", "paths 不能为空"));
   if (a.ref) {
-    await evalInPage(tabId, `globalThis.__ginnoAT && __ginnoAT.markRef(${JSON.stringify(a.ref)}, ${JSON.stringify(attr)})`);
+    await evalBridge(tabId, `globalThis.__ginnoAT && __ginnoAT.markRef(${JSON.stringify(a.ref)}, ${JSON.stringify(attr)})`);
     try {
       const doc = await cdp(tabId, "DOM.getDocument");
       const sel = await cdp(tabId, "DOM.querySelector", {

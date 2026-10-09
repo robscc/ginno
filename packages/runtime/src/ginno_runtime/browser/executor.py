@@ -503,10 +503,28 @@ class ProfileBackend:
 
     # ---- semantic ops (bridge scripts) ----------------------------------------
 
+    async def _eval_bridge(self, tab_id: int, expr: str) -> Any:
+        """Evaluate a bridge-dependent expression, healing a lost injection once.
+
+        Same defect as the A 轨 fix (extension background.js evalBridge): the
+        scripts are registered via Page.addScriptToEvaluateOnNewDocument, which
+        does NOT re-fire on an SPA's pushState route change — the new document's
+        context has neither __ginnoBridge nor __ginnoAT, so
+        ``globalThis.__ginnoBridge && ...`` short-circuits to undefined and the
+        op fails with a content-free "bridge unavailable". Re-inject and retry
+        exactly once before giving up.
+        """
+        tab = await self._tab(tab_id)
+        out = await tab.eval_js(expr)
+        if out is not None:
+            return out
+        await tab.inject_scripts(scripts.BRIDGE_SOURCES)
+        return await tab.eval_js(expr)
+
     async def read_page(self, tab_id: int, mode: str = "all", depth: int = 15,
                         max_chars: int = 50000, ref_id: str | None = None) -> dict:
-        tab = await self._tab(tab_id)
-        out = await tab.eval_js(
+        out = await self._eval_bridge(
+            tab_id,
             "globalThis.__ginnoAT && __ginnoAT.generate({mode: %r, depth: %d,"
             " max_chars: %d, ref_id: %r})"
             % (mode, depth, max_chars, ref_id or "")
@@ -519,23 +537,30 @@ class ProfileBackend:
         return out
 
     async def find_elements(self, tab_id: int, query: str, max_results: int = 20) -> dict:
-        tab = await self._tab(tab_id)
-        out = await tab.eval_js(
+        out = await self._eval_bridge(
+            tab_id,
             "globalThis.__ginnoBridge && __ginnoBridge.find(%r, %d)"
             % (query, max_results))
         return out or {"results": []}
 
     async def form_input(self, tab_id: int, ref: str, value: Any) -> dict:
-        tab = await self._tab(tab_id)
-        out = await tab.eval_js(
+        out = await self._eval_bridge(
+            tab_id,
             "globalThis.__ginnoBridge && __ginnoBridge.fill(%r, %r)" % (ref, value))
         return out or {"success": False, "error": "bridge unavailable"}
 
     async def page_text(self, tab_id: int, max_chars: int = 50000) -> dict:
-        tab = await self._tab(tab_id)
-        out = await tab.eval_js(
+        out = await self._eval_bridge(
+            tab_id,
             "globalThis.__ginnoBridge && __ginnoBridge.pageText(%d)" % max_chars)
-        return out or {"error": "bridge unavailable"}
+        if out is None:
+            return {"error": t(
+                "Page text unavailable — the page navigated and dropped the "
+                "injected script. Re-run browser_navigate on this tab to "
+                "re-establish it (or fall back to browser_js).",
+                "正文抽取不可用——页面跳转导致注入的脚本失效。对该 tab 重新"
+                "执行一次 browser_navigate 即可恢复(或退回 browser_js)。")}
+        return out
 
     async def eval_js(self, tab_id: int, code: str) -> Any:
         tab = await self._tab(tab_id)
@@ -551,9 +576,8 @@ class ProfileBackend:
         return (out or {}).get("value") if isinstance(out, dict) else out
 
     async def scroll_to(self, tab_id: int, ref: str) -> dict:
-        tab = await self._tab(tab_id)
-        out = await tab.eval_js(
-            "globalThis.__ginnoAT && __ginnoAT.coords(%r, true)" % ref)
+        out = await self._eval_bridge(
+            tab_id, "globalThis.__ginnoAT && __ginnoAT.coords(%r, true)" % ref)
         if not out:
             raise CDPError(f"Element not found: {ref}. "
                            "Use browser_read_page or browser_find to get a fresh ref.")
