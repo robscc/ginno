@@ -184,6 +184,7 @@ async def maybe_compact_history(
     config: dict,
     ctx_factory=None,
     force: bool = False,
+    on_summary_start=None,
 ) -> dict | None:
     """Check threshold and compact. Returns stats dict or None.
 
@@ -195,6 +196,12 @@ async def maybe_compact_history(
     it bypasses the token threshold AND the ``compaction_enabled`` auto flag.
     The interrupt guard below still applies — never rewrite state of a turn
     parked at a permission prompt.
+
+    ``on_summary_start`` (async callable) fires right before the summarizer
+    LLM call — i.e. only when compaction is actually decided, after every
+    cheap early-return check. Callers use it to push a "compacting…"
+    status event; the summary call is the only slow step, so the UI hint
+    brackets exactly the wait the user would otherwise stare at.
     """
     from .world_state import context_settings
 
@@ -239,6 +246,11 @@ async def maybe_compact_history(
         return None
 
     transcript = "\n".join(_msg_line(m) for m in old)
+    if on_summary_start is not None:
+        try:
+            await on_summary_start()
+        except Exception:
+            log.warning("compaction_status_callback_failed session=%s", session_id)
     summary_resp = await model.ainvoke(
         [
             _summary_system_message(),

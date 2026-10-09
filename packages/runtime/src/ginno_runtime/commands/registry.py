@@ -501,7 +501,16 @@ async def _compact_async_handler(
         _log.exception("compact_cmd_microcompact_failed session=%s", sid)
 
     try:
-        stats = await maybe_compact_history(session, config, force=True)
+        # 「压缩中…」状态事件（与 turn 入口的自动压缩同一条 UI 契约）：
+        # 只在真正决定压缩（过完所有早退检查）后、总结 LLM 调用前发出。
+        from ..server_shared import _push_session_event
+
+        async def _announce_compacting() -> None:
+            await _push_session_event(sid, "context.compacting", {})
+
+        stats = await maybe_compact_history(
+            session, config, force=True, on_summary_start=_announce_compacting
+        )
     except Exception as e:
         _log.exception("compact_cmd_failed session=%s", sid)
         return t(

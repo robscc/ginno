@@ -24,6 +24,7 @@
     "stream": {
       "interrupted": "(interrupted)",
       "clearedToolOutputs": "Cleared {count} older tool outputs to save context.",
+      "compacting": "Compacting… older messages are being summarized",
       "compacted": "Conversation compacted: {count} older messages replaced with a summary.",
       "unknownError": "Unknown error",
       "connNotReady": "Connection not ready, reconnecting…",

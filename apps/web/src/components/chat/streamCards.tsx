@@ -267,6 +267,7 @@ agent,
 agentName,
 blocks,
 streaming,
+statusOverride,
 turnId,
 failed,
 onAnswerQuestion,
@@ -278,6 +279,8 @@ agentName?: string;
 subagentTypeName?: string;
 blocks: Block[];
 streaming?: boolean;
+/** 瞬态状态行文案（如「压缩中…」）：非空时优先于 connecting/thinking 计时文案 */
+statusOverride?: string | null;
 turnId?: string;
 failed?: boolean;
 // ask_user resume channel (see InnerBlocks): a parked question card is
@@ -306,10 +309,11 @@ useEffect(() => {
 
 // Dynamic status text based on elapsed time
 const statusText = useMemo(() => {
+  if (statusOverride) return statusOverride;
   if (elapsed < 2) return tc("stream.connecting");
   if (elapsed < 10) return tc("stream.thinking");
   return tc("stream.stillThinking", { seconds: elapsed });
-}, [elapsed, tc]);
+}, [statusOverride, elapsed, tc]);
 return (
   <div className="min-w-0">
     {/* C+ 方案②归属徽标：agent 色 dot + 名字 pill（原型风格），替代原先的

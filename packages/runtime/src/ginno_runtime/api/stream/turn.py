@@ -486,11 +486,18 @@ async def _run_stream(
     # E3 — history compaction, checked BEFORE this turn's messages land.
     # Never fires while an interrupt is pending (guarded inside). Failures are
     # logged and swallowed: compaction is an optimization, never a blocker.
+    # on_summary_start → context.compacting brackets the summarizer LLM call
+    # (the only slow step): the UI shows「压缩中…」until the next turn event.
     compaction_stats = None
     try:
         from ...compaction import maybe_compact_history
 
-        compaction_stats = await maybe_compact_history(session, config, ctx_factory=_world_ctx)
+        async def _announce_compacting() -> None:
+            await _push_session_event(session_id, "context.compacting", {}, turn_id)
+
+        compaction_stats = await maybe_compact_history(
+            session, config, ctx_factory=_world_ctx, on_summary_start=_announce_compacting
+        )
     except Exception:
         _log.exception("compaction_failed session=%s", session_id)
     if compaction_stats:

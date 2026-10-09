@@ -84,6 +84,9 @@ export interface EngineDeps {
   setPropose: (v: VersionPropose | null | ((p: VersionPropose | null) => VersionPropose | null)) => void;
   setStreamAgent: (v: string | null | ((p: string | null) => string | null)) => void;
   setServerRunning: (v: boolean | ((p: boolean) => boolean)) => void;
+  // context.compacting 状态镜像（E3 压缩中的「压缩中…」提示）：set 仅写
+  // 当前显示会话的布尔值，真源是 compactingBySessionRef。
+  setCompacting: (v: boolean | ((p: boolean) => boolean)) => void;
   setInput: (v: string | ((p: string) => string)) => void;
   setAttachments: (v: Attachment[] | ((p: Attachment[]) => Attachment[])) => void;
   setTarget: (v: string | null | ((p: string | null) => string | null)) => void;
@@ -137,7 +140,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     g, steerQ, session, onUsageChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
-    setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
+    setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
@@ -388,6 +391,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const hintTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Per-session mirror of the `serverRunning` state (see syncDisplay).
   const serverRunningRef = useRef<Record<string, boolean>>({});
+  // E3 压缩进行中（context.compacting 已到、压缩结果/后续流事件未到）。
+  // 置位只在总结 LLM 调用前发生,清除由「该会话任何下一个事件」兜底——
+  // 压缩期间没有别的流事件,首个到达的事件必属压缩之后。
+  const compactingBySessionRef = useRef<Record<string, boolean>>({});
   const streamAgentRef   = useRef<Record<string, string | null>>({});
   // Orphan-stream tracking: this instance adopted an ALREADY-RUNNING turn
   // (remount mid-turn — the user navigated to another page while a reply was
@@ -442,6 +449,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     setPropose(proposeRef.current[sid] ?? null);
     setStreamAgent(streamAgentRef.current[sid] ?? null);
     setServerRunning(!!serverRunningRef.current[sid]);
+    setCompacting(!!compactingBySessionRef.current[sid]);
     // The steer queue is no longer mirrored here — useSteerQueue re-renders the
     // component itself when the queue changes, and `steerItems` reads it live.
   };
@@ -461,6 +469,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
         steerQ.clear(id);
         delete serverRunningRef.current[id];
+        delete compactingBySessionRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
         delete watchTimerRef.current[id]; delete reconnTimerRef.current[id];
         delete lastSeenRef.current[id];   delete reconcileTimerRef.current[id];
@@ -820,6 +829,13 @@ export function useChatStreamEngine(deps: EngineDeps) {
     );
   }
   function handle(sid: string, ev: { event: string; [k: string]: unknown }) {
+    // 「压缩中…」收尾：压缩期间该会话不会有其他流事件,所以除置位事件本身
+    // 之外的任何事件到达 = 压缩已结束(成功→context.compacted/流恢复;失败
+    // →turn 照常继续,compaction 从不当 blocker)。含 turn.stopped/error。
+    if (ev.event !== "context.compacting" && compactingBySessionRef.current[sid]) {
+      compactingBySessionRef.current[sid] = false;
+      syncDisplay(sid);
+    }
     switch (ev.event) {
       case "token.delta":
       case "thinking.delta":
@@ -1383,6 +1399,13 @@ export function useChatStreamEngine(deps: EngineDeps) {
             ],
           },
         ];
+        syncDisplay(sid);
+        break;
+      }
+      case "context.compacting": {
+        // E3 总结 LLM 调用前发出的瞬态状态(无 payload):live 气泡状态行
+        // 从「正在思考…」切到「压缩中…」。不落 store,不进历史。
+        compactingBySessionRef.current[sid] = true;
         syncDisplay(sid);
         break;
       }
@@ -2118,7 +2141,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // refs
     liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
     storeRef, liveBySessionRef, socketsRef, statusRef, permsRef, proposeRef,
-    busyBySessionRef, hintTimerRef, serverRunningRef, streamAgentRef,
+    busyBySessionRef, hintTimerRef, serverRunningRef, compactingBySessionRef, streamAgentRef,
     orphanStreamRef, seenTurnStartRef, pingTimerRef, watchTimerRef,
     reconcileTimerRef, reconnTimerRef, lastSeenRef, ioSeqRef, probeSeqRef,
     sendSeqRef, draftCacheRef, mentionsRef, runsBySessionRef,

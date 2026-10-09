@@ -24,6 +24,7 @@
     "stream": {
       "interrupted": "（已中断）",
       "clearedToolOutputs": "已清理 {count} 条较早的工具输出以节省上下文。",
+      "compacting": "压缩中……历史对话正在被摘要整理",
       "compacted": "对话已压缩：{count} 条较早的消息已替换为摘要。",
       "unknownError": "未知错误",
       "connNotReady": "连接未就绪，正在重连…",

@@ -212,6 +212,9 @@ export function PinStream({
   const t = useTranslations("pin.stream");
   const [messages, setMessages] = useState<PinMsg[]>([]);
   const [liveId, setLiveId] = useState<string | null>(null);
+  // E3 压缩进行中（context.compacting）——live 气泡空块时 spinner 旁的
+  // 「压缩中…」文案开关。
+  const [compacting, setCompacting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [permission, setPermission] = useState<PermissionPrompt | null>(null);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting">("connecting");
@@ -398,6 +401,10 @@ export function PinStream({
     steerRef.current.handleEvent(ev, sessionId);
     if (absorbedEntry) appendSteerBand(absorbedEntry, ev);
 
+    // 「压缩中…」瞬态：与主窗口同一契约——置位事件之外的任何事件都意味着
+    // 压缩已结束（压缩期间没有别的流事件）。
+    if (ev.event !== "context.compacting") setCompacting(false);
+
     switch (ev.event) {
       case "turn.start": {
         busyRef.current = true;
@@ -442,6 +449,11 @@ export function PinStream({
       }
       case "context.microcompacted":
         addSystemRow(t("clearedToolOutputs", { count: Number(ev.cleared_tool_outputs ?? 0) }));
+        break;
+      case "context.compacting":
+        // E3 总结 LLM 调用前的瞬态状态：live 气泡空块时的 spinner 旁显示
+        // 「压缩中…」（见下方 streaming && blocks.length===0 渲染分支）。
+        setCompacting(true);
         break;
       case "context.compacted":
         addSystemRow(t("compacted", { count: Number(ev.compacted_messages ?? 0) }));
@@ -954,7 +966,10 @@ export function PinStream({
                 <InnerBlocks blocks={m.blocks} streaming={streaming} />
               </div>
               {streaming && m.blocks.length === 0 && (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-faint" />
+                <span className="flex items-center gap-1.5 text-faint">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {compacting && t("compacting")}
+                </span>
               )}
             </div>
           );
