@@ -543,3 +543,21 @@ async def delete_agent_endpoint(agent_id: str) -> dict:
     if ok:
         await _push_global_event("agents.changed", {})
     return {"ok": ok}
+
+
+@router.post("/api/agents/reorder")
+async def reorder_agents_endpoint(data: dict) -> dict:
+    """持久化 agents.order（agent 排序设计 D3）。列表第一位 = 新会话默认
+    agent（D1 耦合）。读-改-写 settings.json 而非复用 PUT /settings ——
+    那是整文件覆盖，会和其它设置页的并发保存互踩。"""
+    order = data.get("order")
+    if not isinstance(order, list) or not all(isinstance(x, str) for x in order):
+        return {"ok": False, "error": "order must be a list of agent ids"}
+    # 必须恰好覆盖当前 agent 集合（无缺、无重、无幽灵）——防并发增删
+    # 期间的漂移顺序写进 settings
+    current = {a.id for a in agents_reg.list_agents()}
+    if len(order) != len(set(order)) or set(order) != current:
+        return {"ok": False, "error": "order must list every agent exactly once"}
+    agents_reg.set_agent_order(order)
+    await _push_global_event("agents.changed", {})
+    return {"ok": True}

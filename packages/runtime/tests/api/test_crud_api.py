@@ -30,6 +30,31 @@ def test_agent_duplicate_returns_error(client):
     assert r["ok"] is False and "already exists" in r["error"]
 
 
+def test_agent_reorder_roundtrip(client):
+    ids = [a["id"] for a in client.get("/api/agents").json()]
+    assert ids == sorted(ids)  # 无 order 键 → 字母序起点
+    rev = list(reversed(ids))
+    assert client.post("/api/agents/reorder", json={"order": rev}).json()["ok"] is True
+    assert [a["id"] for a in client.get("/api/agents").json()] == rev
+
+
+def test_agent_reorder_validates_payload(client):
+    ids = [a["id"] for a in client.get("/api/agents").json()]
+    # 非列表 body
+    r = client.post("/api/agents/reorder", json={"order": "dev"}).json()
+    assert r["ok"] is False
+    # 缺员（必须恰好覆盖全集）
+    r = client.post("/api/agents/reorder", json={"order": ids[:1]}).json()
+    assert r["ok"] is False
+    # 重复 + 幽灵 id
+    r = client.post("/api/agents/reorder", json={"order": ids + [ids[0]]}).json()
+    assert r["ok"] is False
+    r = client.post("/api/agents/reorder", json={"order": ids + ["ghost"]}).json()
+    assert r["ok"] is False
+    # 校验失败不得落盘
+    assert [a["id"] for a in client.get("/api/agents").json()] == ids
+
+
 # ------------------------------ todos ------------------------------ #
 def test_todos_seeded_by_lifespan(client):
     assert len(client.get("/api/todos").json()) == 7

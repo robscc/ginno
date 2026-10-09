@@ -139,6 +139,9 @@
       "title": "Agents",
       "description": "Per-agent persona / tool subset / model / appearance.",
       "storedIn": "Stored in ~/.ginno/agents/<id>.json.",
+      "orderNote": "The first agent is the default for new sessions. Use the arrows on each card to reorder.",
+      "moveUpTitle": "Move up",
+      "moveDownTitle": "Move down",
       "groups": {
         "browser": "Browser"
       },

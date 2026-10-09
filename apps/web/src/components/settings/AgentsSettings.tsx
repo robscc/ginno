@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ConnectorInfo } from "@/lib/runtime";
@@ -96,6 +97,8 @@ export function AgentsSettings() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [conns, setConns] = useState<ConnectorInfo[]>([]);
   const [denyDraft, setDenyDraft] = useState<Record<string, string[]>>({});
+  // 单飞标志：移动期间禁用全部 ↑/↓，防连点把过期顺序提交给后端。
+  const [moveBusy, setMoveBusy] = useState(false);
 
   // Connector list feeds the per-agent capability toggles + status dots.
   // 10s poll matches the sidebar aggregate dot's cadence.
@@ -215,6 +218,29 @@ export function AgentsSettings() {
     }
   }
 
+  // 排序设计 D2：↑/↓ 一步一动，新顺序整体提交（后端要求恰好覆盖全集）。
+  // 列表第一位 = 新会话默认 agent（D1 耦合）。
+  async function move(a: AgentConfig, dir: -1 | 1) {
+    const ids = g.agents.map((x) => x.id);
+    const i = ids.indexOf(a.id);
+    const j = i + dir;
+    if (moveBusy || i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    setMoveBusy(true);
+    try {
+      const r = await api.reorderAgents(ids);
+      if (r.ok) {
+        await g.reloadAgents();
+      } else {
+        setMsg((m) => ({ ...m, [a.id]: { text: r.error || t("saveFailed"), ok: false } }));
+      }
+    } catch {
+      setMsg((m) => ({ ...m, [a.id]: { text: t("connError"), ok: false } }));
+    } finally {
+      setMoveBusy(false);
+    }
+  }
+
   const trimmedId = newId.trim();
   const idError =
     trimmedId && !ID_RE.test(trimmedId)
@@ -248,8 +274,9 @@ export function AgentsSettings() {
       <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
       <p className="mt-1 text-sm text-muted">{t("description")}</p>
       <p className="mt-0.5 text-xs text-faint">{t("storedIn")}</p>
+      <p className="mt-0.5 text-xs text-faint">{t("orderNote")}</p>
       <div className="mt-4 space-y-3">
-        {g.agents.map((a) => {
+        {g.agents.map((a, idx) => {
           const cur = {
             name: get(a.id, "name", a.name),
             icon: get(a.id, "icon", a.icon),
@@ -280,9 +307,27 @@ export function AgentsSettings() {
                 </span>
                 <span className="font-medium text-txt">{cur.name}</span>
                 <span className="text-xs text-faint">@{a.id}</span>
-                <button onClick={() => del(a.id)} className="ml-auto text-xs text-faint hover:text-red">
-                  {t("delete")}
-                </button>
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    onClick={() => void move(a, -1)}
+                    disabled={moveBusy || idx === 0}
+                    title={t("moveUpTitle")}
+                    className="text-faint hover:text-txt disabled:opacity-40"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => void move(a, 1)}
+                    disabled={moveBusy || idx === g.agents.length - 1}
+                    title={t("moveDownTitle")}
+                    className="text-faint hover:text-txt disabled:opacity-40"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                  <button onClick={() => del(a.id)} className="text-xs text-faint hover:text-red">
+                    {t("delete")}
+                  </button>
+                </div>
               </div>
               <label className="field-label mt-2">{t("nameLabel")}</label>
               <input

@@ -368,6 +368,14 @@ export async function updateAgent(id: string, data: Partial<AgentConfig>) {
 export async function deleteAgent(id: string) {
   return json<{ ok: boolean }>(`${BASE}/agents/${id}`, { method: "DELETE" });
 }
+// 服务端校验 order 必须恰好覆盖当前 agent 集合（读-改-写 settings.json）。
+export async function reorderAgents(order: string[]) {
+  return json<{ ok: boolean; error?: string }>(`${BASE}/agents/reorder`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ order }),
+  });
+}
 
 // ---- todos ----
 export async function listTodos() {

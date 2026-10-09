@@ -13,6 +13,7 @@ from .registry import (
     fork_agent,
     get_agent,
     list_agents,
+    set_agent_order,
     update_agent,
 )
 
@@ -24,6 +25,7 @@ __all__ = [
     "update_agent",
     "delete_agent",
     "fork_agent",
+    "set_agent_order",
     "ensure_todo_tools",
     "ensure_research_discipline",
     "ensure_goal_tools",

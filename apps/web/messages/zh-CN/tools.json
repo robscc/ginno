@@ -139,6 +139,9 @@
       "title": "智能体",
       "description": "每个智能体独立的人设 / 工具子集 / 模型 / 外观。",
       "storedIn": "存放于 ~/.ginno/agents/<id>.json。",
+      "orderNote": "列表第一位的智能体是新会话的默认智能体，用卡片上的箭头调整顺序。",
+      "moveUpTitle": "上移",
+      "moveDownTitle": "下移",
       "groups": {
         "browser": "浏览器"
       },

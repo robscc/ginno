@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ginno_runtime.agents import registry
@@ -133,3 +135,47 @@ def test_ensure_goal_tools_migration(isolated_home):
     # idempotent: running again does not duplicate the pattern
     registry.ensure_goal_tools()
     assert registry.get_agent("research").tools_allow.count("goal_*") == 1
+
+
+# ------------------------- agents.order sorting ------------------------- #
+def _write_order(home, order):
+    """Directly materialize agents.order in the isolated settings.json."""
+    sp = home / "settings.json"
+    data = json.loads(sp.read_text() or "{}") if sp.exists() else {}
+    data["agents"] = {**(data.get("agents") or {}), "order": order}
+    sp.write_text(json.dumps(data))
+
+
+def test_order_reorders_and_appends_missing(isolated_home):
+    registry.ensure_seeded()
+    _write_order(isolated_home, ["writer", "dev"])
+    ids = [a.id for a in registry.list_agents()]
+    # in-order agents first, the rest appended alphabetically
+    assert ids[:2] == ["writer", "dev"]
+    assert ids[2:] == sorted(ids[2:])
+
+
+def test_order_stale_ids_ignored(isolated_home):
+    registry.ensure_seeded()
+    # "ghost" no longer exists — silently dropped, no error
+    _write_order(isolated_home, ["dev", "ghost", "research"])
+    ids = [a.id for a in registry.list_agents()]
+    assert "ghost" not in ids
+    assert ids[:2] == ["dev", "research"]
+
+
+def test_no_order_falls_back_alphabetical(isolated_home):
+    # 键缺失 = 排序功能落地前的行为（字母序），老安装零迁移
+    registry.ensure_seeded()
+    ids = [a.id for a in registry.list_agents()]
+    assert ids == sorted(ids)
+
+
+def test_set_agent_order_roundtrip(isolated_home):
+    registry.ensure_seeded()
+    registry.set_agent_order(["research", "dev", "writer", "workflow-dev"])
+    ids = [a.id for a in registry.list_agents()]
+    assert ids == ["research", "dev", "writer", "workflow-dev"]
+    # 读-改-写不得碰掉 settings 里已有的其它键
+    data = json.loads((isolated_home / "settings.json").read_text())
+    assert data["agents"]["order"][0] == "research"

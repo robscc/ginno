@@ -377,6 +377,35 @@ def ensure_research_discipline() -> None:
         update_agent("research", {"system_prompt": _RESEARCH_PROMPT})
 
 
+def _order_from_settings() -> list[str]:
+    """读 settings.json 的 agents.order（agent 排序设计 D3：集中存）。
+
+    键缺失 / 文件损坏 → []（= 纯字母序，即排序功能落地前的行为）。
+    """
+    try:
+        data = json.loads(paths.settings_path().read_text() or "{}")
+    except (OSError, json.JSONDecodeError):
+        return []
+    order = (data.get("agents") or {}).get("order") or []
+    return [x for x in order if isinstance(x, str)]
+
+
+def set_agent_order(order: list[str]) -> None:
+    """读-改-写 settings.json 的 agents.order。
+
+    只在本模块的 reorder 端点里调用（专用的读改写，避开前端
+    PUT /settings 的整文件覆盖与其它设置页并发互踩）；集合校验在 API 层。
+    """
+    p = paths.settings_path()
+    try:
+        data = json.loads(p.read_text() or "{}")
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data["agents"] = {**(data.get("agents") or {}), "order": list(order)}
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+
+
 def list_agents() -> list[AgentConfig]:
     ensure_seeded()
     out: list[AgentConfig] = []
@@ -388,6 +417,13 @@ def list_agents() -> list[AgentConfig]:
         out.append(
             AgentConfig(**{k: v for k, v in data.items() if k in AgentConfig.__dataclass_fields__})
         )
+    # agents.order 优先（排序设计）：在 order 里的按其先后；不在的（新建
+    # agent、workflow fork）稳定追加末尾保持字母序；order 里已删除的残留
+    # id 自然忽略（自愈，无需清理）。
+    order = _order_from_settings()
+    if order:
+        rank = {aid: i for i, aid in enumerate(order)}
+        out.sort(key=lambda c: (rank.get(c.id, len(rank)), c.id))
     return out
 
 
