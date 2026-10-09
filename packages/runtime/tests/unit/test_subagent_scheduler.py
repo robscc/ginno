@@ -1391,7 +1391,7 @@ async def test_recursion_wrap_is_one_shot(isolated_home, fake_stream):
 
 async def test_turn_recursion_limit_sources(monkeypatch, isolated_home):
     """turn_recursion_limit: default 128, settings runtime.recursion_limit,
-    GINNO_RECURSION_LIMIT wins, clamped to [25, 1000]."""
+    GINNO_RECURSION_LIMIT wins, clamped to [25, 10000]."""
     from ginno_runtime.api.stream import engine
 
     monkeypatch.delenv("GINNO_RECURSION_LIMIT", raising=False)
@@ -1407,7 +1407,10 @@ async def test_turn_recursion_limit_sources(monkeypatch, isolated_home):
     assert engine.turn_recursion_limit() == 300
 
     monkeypatch.setenv("GINNO_RECURSION_LIMIT", "5000")
-    assert engine.turn_recursion_limit() == 1000
+    assert engine.turn_recursion_limit() == 5000
+
+    monkeypatch.setenv("GINNO_RECURSION_LIMIT", "20000")
+    assert engine.turn_recursion_limit() == 10000
 
 
 async def test_idle_injections_coalesce_into_one_wake(monkeypatch, isolated_home, fake_stream):

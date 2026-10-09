@@ -329,7 +329,7 @@ def turn_recursion_limit() -> int:
     raw: str | None = os.environ.get("GINNO_RECURSION_LIMIT")
     if raw and raw.strip():
         try:
-            return max(25, min(1000, int(raw.strip())))
+            return max(25, min(10000, int(raw.strip())))
         except ValueError:
             _log.warning("recursion_limit_env_invalid value=%r", raw)
     try:
@@ -342,7 +342,7 @@ def turn_recursion_limit() -> int:
                 else {}
             ).get("recursion_limit")
             if val is not None:
-                return max(25, min(1000, int(val)))
+                return max(25, min(10000, int(val)))
     except (OSError, ValueError, TypeError):
         _log.info("recursion_limit_settings_unreadable", exc_info=True)
     return TURN_RECURSION_LIMIT_DEFAULT
