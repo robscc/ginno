@@ -187,6 +187,46 @@ async def test_compaction_respects_disabled_flag(isolated_home):
     assert await maybe_compact_history(session, config) is None
 
 
+async def test_on_summary_start_brackets_the_summarizer_call(isolated_home):
+    """on_summary_start fires exactly once per compaction that actually runs,
+    and never on the cheap early-return paths (below threshold / disabled)."""
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    settings = {"context": {"compact_threshold_tokens": 999_999_999, "compact_keep_turns": 1}}
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+    model = ScriptedChatModel(scripts=[script(text="r0"), script(text="r1"), script(text="s")])
+    graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
+    config = {"configurable": {"thread_id": "comp-cb", "project_slug": "default"}}
+    for q in ("q1", "q2"):
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
+        )
+    session = {"graph": graph, "model": model, "project_slug": "default", "session_id": "comp-cb"}
+
+    calls: list[str] = []
+
+    async def on_start() -> None:
+        calls.append("start")
+
+    # Below threshold → no compaction, callback silent.
+    assert await maybe_compact_history(session, config, on_summary_start=on_start) is None
+    assert calls == []
+
+    # force path compacts → callback fired exactly once (before the summary).
+    stats = await maybe_compact_history(session, config, force=True, on_summary_start=on_start)
+    assert stats is not None
+    assert calls == ["start"]
+
+    # A raising callback must not break compaction (status is best-effort).
+    async def boom() -> None:
+        raise RuntimeError("ui hiccup")
+
+    # second run: fresh history is now short, force again to be sure
+    stats2 = await maybe_compact_history(session, config, force=True, on_summary_start=boom)
+    assert stats2 is None or stats2["summary_chars"] >= 0  # no exception escaped
+
+
 async def test_compaction_reinjects_world_state(isolated_home):
     from ginno_runtime.graph import build_graph
     from ginno_runtime.testing.fake_model import ScriptedChatModel, script

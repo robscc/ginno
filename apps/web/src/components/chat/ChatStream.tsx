@@ -111,6 +111,9 @@ export function ChatStream({
   // from history — after a full reload liveId is null, yet a parked ask_user
   // still accepts answers (backend resumes them from ANY socket).
   const [serverRunning, setServerRunning] = useState(false);
+  // E3 压缩进行中（context.compacting）：live 气泡状态行显示「压缩中…」。
+  // 瞬态显示层状态,真源在 engine 的 compactingBySessionRef。
+  const [compacting, setCompacting] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
   const [composerH, setComposerH] = useState<number | undefined>(undefined);
@@ -169,7 +172,7 @@ export function ChatStream({
     g, steerQ, session, onUsageChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
-    setStreamAgent, setServerRunning, setInput, setAttachments, setTarget, setMenu,
+    setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,
     setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
@@ -1801,6 +1804,7 @@ export function ChatStream({
                   }
                   blocks={m.blocks}
                   streaming={m.id === liveId}
+                  statusOverride={compacting ? tc("stream.compacting") : null}
                   turnId={m.turnId}
                   failed={m.failed}
                   onAnswerQuestion={answerQuestion}

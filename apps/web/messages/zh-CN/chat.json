@@ -155,6 +155,7 @@
     "stream": {
       "connecting": "正在连接模型……",
       "thinking": "模型思考中……",
+      "compacting": "压缩中……历史对话正在被摘要整理",
       "stillThinking": "还在思考——可能需要一点时间……（{seconds}s）",
       "justNow": "刚刚",
       "interrupted": "回复已中断——本条回复不完整。点击下方错误卡片的「从头重试」可重新开始",

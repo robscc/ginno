@@ -155,6 +155,7 @@
     "stream": {
       "connecting": "Connecting to model…",
       "thinking": "Model is thinking…",
+      "compacting": "Compacting… older messages are being summarized",
       "stillThinking": "Still thinking — this may take a moment… ({seconds}s)",
       "justNow": "just now",
       "interrupted": "Reply interrupted — this reply is incomplete. Click \"Retry from scratch\" on the error card below to start over",
