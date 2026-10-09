@@ -408,6 +408,43 @@ def _server_search_hits(block: dict, block_types: frozenset[str]) -> list[dict]:
     return out
 
 
+# How many times one turn may be resumed with a fresh step budget after a
+# USER steer pushed it past the limit. A steered turn is doing more than the
+# budget was sized for, so dying at the wall would silently drop the user's
+# own request; but an unbounded refresh lets a runaway loop live forever.
+# Each resume preserves tool work by continuing from the latest checkpoint.
+STEER_CONT_MAX = 2
+
+# steer_id namespace for Ginno-injected steering (as opposed to a human
+# steer). Prefixed so _steer_absorbed can tell the two apart.
+STEER_ID_SYSTEM_PREFIX = "recursion-warn-"
+
+
+def _is_user_steer(entry: dict) -> bool:
+    """True when a drained steering entry came from the human.
+
+    Ginno-injected steering (the recursion pre-warn) is tagged with
+    STEER_ID_SYSTEM_PREFIX. An entry with no steer_id is treated as user —
+    conservative, because granting budget is the less harmful miss.
+    """
+    return not str(entry.get("steer_id") or "").startswith(STEER_ID_SYSTEM_PREFIX)
+
+
+def recursion_warn_threshold(limit: int) -> int:
+    """Agent-step count at which the recursion pre-warn steer fires.
+
+    Each agent round costs ~2 supersteps (agent + tools), so the steer goes
+    out once ``2 * agent_steps`` comes within the margin. The margin is
+    proportional (10%) with a 10-step floor: the floor alone would warn only
+    10 steps from a raised 400-step wall, leaving no room to write the
+    wrap-up. Returns the minimum ``agent_steps`` that trips the warning.
+    """
+    if limit <= 0:
+        return 0
+    margin = max(10, limit // 10)
+    return max(1, -(-(limit - margin) // 2))
+
+
 def turn_error_fields(e: BaseException) -> dict:
     """Full error-event payload fields (i18n-design.md §3): ``message``
     (English fallback text) + ``i18n_key`` + ``params`` so the web UI renders
@@ -432,8 +469,50 @@ def turn_error_fields(e: BaseException) -> dict:
     }
 
 
+# Provider-side OUTPUT classifier rejection. anthropic raises
+# APIStatusError(code="InvalidParameter", message="Output data may contain
+# inappropriate content.") MID-STREAM, while the model is writing its answer
+# — distinct from a refusal (which completes normally with refusal text) and
+# from an input-side rejection (which fails before generation). First seen
+# 2026-10-08 turn 4b3a219e: summarizing ten scraped news pages aggregated
+# enough text to trip the classifier mid-answer.
+#
+# NOT transient: the same material is rejected again on retry, so this must
+# never ride the auto-retry path (400 status keeps it out of that path
+# already — _is_transient_model_error only retries 408/429/5xx).
+_CONTENT_FILTER_MARKERS = (
+    "output data may contain inappropriate content",
+    "output_will_be_blocked",
+    "content_policy_violation",
+)
+
+
+def _is_content_filter_error(exc: BaseException) -> bool:
+    """True when the provider's OUTPUT filter rejected generated content.
+
+    Walks the __cause__/__context__ chain the same way
+    _is_transient_model_error does — langgraph surfaces the model error
+    directly, but wrappers (RetryError, task groups) can nest the real one.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        e = stack.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        text = str(e).lower()
+        if any(m in text for m in _CONTENT_FILTER_MARKERS):
+            return True
+        if e.__cause__ is not None:
+            stack.append(e.__cause__)
+        if e.__context__ is not None:
+            stack.append(e.__context__)
+    return False
+
+
 def _langgraph_error_hint(e: BaseException) -> tuple[str, dict, str] | None:
-    """Classify a langgraph turn failure for the error card.
+    """Classify a turn failure for the error card.
 
     Returns ``(i18n key suffix under stream.turn_failed, params, English
     hint)`` or ``None`` for unknown / control-flow exceptions.
@@ -488,6 +567,18 @@ def _langgraph_error_hint(e: BaseException) -> tuple[str, dict, str] | None:
             " call, not a Ginno fault."
             "\nRetry; if it repeats, check the provider's status"
             " (traceback: ~/.ginno/logs/sidecar.log).",
+        )
+    if _is_content_filter_error(e):
+        return (
+            "content_filter",
+            {},
+            "The provider's safety filter blocked the model's OUTPUT while it"
+            " was writing the answer — usually because a large amount of"
+            " fetched material (many scraped pages, long documents) was"
+            " summarized in one go."
+            "\nRetrying the same request will be blocked the same way. Ask for"
+            " a narrower slice (fewer pages, or summarize them in batches), and"
+            " quote sources instead of pasting long passages.",
         )
     return None
 
@@ -848,8 +939,20 @@ async def _stream_graph(
         # In-flight bookkeeping below makes the ack durable again: it is cleared
         # by the commit, committed by the heal if the turn is stopped first, and
         # re-stashed when a parked exit means the resumed segment will re-drain.
+        # Did the USER add work mid-turn? Distinguishes a human steer from the
+        # system's own recursion-warn steer (see the pre-warn below): a user
+        # steer legitimately needs more budget, the system one must NOT get it
+        # (its whole job is to break a runaway loop — more budget would let the
+        # loop run longer). A steered turn that still hits the wall is resumed
+        # from its checkpoint with a fresh budget, up to STEER_CONT_MAX times.
+        _steer_user_arrived = False
+
         async def _steer_absorbed(entries: list[dict]) -> None:
+            nonlocal _steer_user_arrived
             shared.steer_mark_inflight(session_id, entries)
+            for _e in entries:
+                if _is_user_steer(_e):
+                    _steer_user_arrived = True
             for _e in entries:
                 _log.info(
                     "steer_absorbed session=%s steer=%s turn=%s",
@@ -876,12 +979,12 @@ async def _stream_graph(
         else:
             stream = graph.astream(input_state, config=config, stream_mode=["messages", "updates"])
         saw_interrupt = False
-        # Recursion-budget pre-warn (subagent sessions only): once the consumed
-        # supersteps get within _RECURSION_WARN_MARGIN of the limit, one
-        # synthetic steer tells the model to stop calling tools and write its
-        # final report — most recursion deaths are then avoided outright; the
-        # ones that still hit the limit are salvaged by the scheduler's
-        # wrap-up continuation (subagent_scheduler on_turn_settled).
+        # Recursion-budget pre-warn (every session): once the consumed
+        # supersteps come within the margin of the limit, one synthetic
+        # steer tells the model to stop calling tools and wrap up — most
+        # recursion deaths are then avoided outright. Subagents that still
+        # hit the wall are additionally salvaged by the scheduler's wrap-up
+        # continuation (subagent_scheduler on_turn_settled).
         _r_limit = int(config.get("recursion_limit") or 0)
         _r_warned = False
         _agent_steps = 0
@@ -1101,29 +1204,48 @@ async def _stream_graph(
                         # the remainder narrows to the margin.
                         _agent_steps += 1
                         if (
-                            _is_subagent_session
-                            and _r_limit
+                            _r_limit
                             and not _r_warned
-                            and 2 * _agent_steps >= _r_limit - 10
+                            and _agent_steps >= recursion_warn_threshold(_r_limit)
                         ):
                             _r_warned = True
+                            # Was subagent-only; 2026-10-08 turn 4b3a219e died
+                            # at the wall with no warning because MAIN sessions
+                            # were excluded. The steer matters MORE here — only
+                            # the subagent scheduler has a wrap-up continuation
+                            # to salvage what the wall doesn't kill.
+                            _wrap_en, _wrap_zh = (
+                                (
+                                    "Stop issuing new tool calls and immediately"
+                                    " write your final report from the material"
+                                    " gathered so far.",
+                                    "请停止发起新的工具调用，基于已有材料"
+                                    "立即输出最终报告。",
+                                )
+                                if _is_subagent_session
+                                else (
+                                    "Stop issuing new tool calls and immediately"
+                                    " answer the user with what you have gathered"
+                                    " so far.",
+                                    "请停止发起新的工具调用，基于已有材料"
+                                    "立即给用户答复。",
+                                )
+                            )
                             shared.steer_enqueue(
                                 session_id,
                                 {
-                                    "steer_id": f"recursion-warn-{turn_id}",
+                                    "steer_id": (
+                                        f"{STEER_ID_SYSTEM_PREFIX}{turn_id}"
+                                    ),
                                     # Model-facing steering (i18n 分流规则):
                                     # inline bilingual t(), never a catalog key.
                                     "text": t(
                                         "[System reminder] This turn is about to "
                                         f"hit the step limit (~{2 * _agent_steps}/"
-                                        f"{_r_limit} steps used). Stop issuing new "
-                                        "tool calls and immediately write your "
-                                        "final report from the material gathered "
-                                        "so far.",
+                                        f"{_r_limit} steps used). {_wrap_en}",
                                         "【系统提醒】本回合即将达到步数上限"
                                         f"（已用约 {2 * _agent_steps}/{_r_limit} 步）。"
-                                        "请停止发起新的工具调用，基于已有材料"
-                                        "立即输出最终报告。",
+                                        f"{_wrap_zh}",
                                     ),
                                 },
                             )
@@ -1524,6 +1646,64 @@ async def _stream_graph(
         except Exception:
             _log.exception("mods_turn_complete_failed session=%s", session_id)
     except Exception as e:
+        # A turn the USER steered mid-flight outran the budget it was sized
+        # for: resume from the checkpoint with a fresh budget instead of
+        # failing, or the user's own request dies at the wall. Bounded by
+        # STEER_CONT_MAX. Only for user steers — the system's recursion-warn
+        # steer deliberately gets no extension (it exists to stop runaway
+        # loops, and more budget would just let one run longer).
+        _steer_cont = int(_cfg_conf.get("_steer_cont") or 0)
+        if _steer_user_arrived and _steer_cont < STEER_CONT_MAX:
+            from langgraph.errors import GraphRecursionError
+
+            if isinstance(e, GraphRecursionError):
+                try:
+                    _snap = await graph.aget_state(config)
+                    _has_ckpt = bool(getattr(_snap, "values", None) or {})
+                except Exception:
+                    _has_ckpt = False
+                if _has_ckpt:
+                    _log.warning(
+                        "turn_steer_continue session=%s turn=%s cont=%d/%d",
+                        session_id, turn_id, _steer_cont + 1, STEER_CONT_MAX,
+                    )
+                    await safe_send(
+                        emit(
+                            "notice",
+                            {
+                                "message": (
+                                    "You steered this turn past its step budget; "
+                                    "continuing with a fresh budget"
+                                    f" ({_steer_cont + 1}/{STEER_CONT_MAX})…"
+                                ),
+                                "i18n_key": "stream.steer_continue",
+                                "params": {
+                                    "attempt": _steer_cont + 1,
+                                    "max": STEER_CONT_MAX,
+                                },
+                            },
+                        )
+                    )
+                    await _stream_graph(
+                        graph,
+                        {
+                            **config,
+                            "configurable": {
+                                **_cfg_conf,
+                                # Derived exec id: the abandoned original's
+                                # checkpoint writes would be refused.
+                                "turn_id": (
+                                    f"{ui_turn_id}--s{_steer_cont + 1}-"
+                                    f"{uuid.uuid4().hex[:6]}"
+                                ),
+                                "_ui_turn_id": ui_turn_id,
+                                "_steer_cont": _steer_cont + 1,
+                            },
+                        },
+                        input_state=None,
+                        command=None,
+                    )
+                    return
         # Transient provider/network failure (SSL drop, connection error,
         # 429/5xx, stall watchdog): auto-retry from the latest checkpoint with
         # a backoff instead of failing the turn — see AUTO_RETRY_MAX notes.

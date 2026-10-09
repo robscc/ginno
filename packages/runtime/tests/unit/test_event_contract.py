@@ -91,7 +91,13 @@ def test_turn_failed_note_keys_exist_in_web_catalogs():
     can't see it — pin the suffix set against the catalogs explicitly."""
     for locale_dir in ("en", "zh-CN"):
         cat = _load_catalog(locale_dir, "stream")["stream"]["turn_failed_note"]
-        assert set(cat) == {"recursion_limit", "empty_input", "state", "node_timeout"}
+        assert set(cat) == {
+            "recursion_limit",
+            "empty_input",
+            "state",
+            "node_timeout",
+            "content_filter",
+        }
 
 
 @pytest.mark.skipif(not _MESSAGES_DIR.exists(), reason="web checkout not present")
