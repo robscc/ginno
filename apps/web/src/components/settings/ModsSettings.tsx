@@ -192,9 +192,12 @@ export function ModsSettings() {
     }
   };
 
-  // 引导看二进制可解析性(brokerPath/nodePath),不看 status —— 零 mod 时
+  // 引导看可达性(brokerPath 或 envSocket),不看 status —— 零 mod 时
   // channel 是 disabled 但环境其实是好的(runtime-dev2 的对齐注意点)。
-  const brokerUp = !!broker?.brokerPath;
+  // 桌面形态 broker 在壳进程内运行(dev/web 才 spawn CLI 二进制),没有
+  // brokerPath 可解析,envSocket(壳注入的 GINNO_MOD_BROKER_SOCK)才是信号;
+  // 只看 brokerPath 会把桌面形态永远误报成「未连接」。
+  const brokerUp = !!(broker?.brokerPath || broker?.envSocket);
   const nodePath = broker?.nodePath ?? undefined;
 
   return (
