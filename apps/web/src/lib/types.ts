@@ -276,6 +276,8 @@ export interface FolderEntry {
   name: string;
   access: "ro" | "rw";
   load_rules: boolean;
+  /** 新建会话自动挂载(home-mount-picker-design.md §2.2)——首页 pending 预填来源 */
+  auto_mount?: boolean;
   added?: string;
   last_used?: string;
 }

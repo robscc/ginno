@@ -86,7 +86,12 @@
       "mountTitle": "Register in the folder library and mount (read-write by default; the first mount becomes the primary working folder)",
       "manage": "Manage folder library (access levels / rule toggles)",
       "errOperation": "Operation failed",
-      "errMount": "Failed to mount"
+      "errMount": "Failed to mount",
+      "libraryTitle": "Library",
+      "autoTitle": "Auto-mount on new session (pre-fills the home composer)",
+      "quickAddTitle": "Mount this folder",
+      "browseTitle": "Browse for a folder…",
+      "errBrowse": "Could not open the system folder picker"
     },
     "search": {
       "dialogLabel": "Search sessions",

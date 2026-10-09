@@ -29,6 +29,7 @@ async def create_folder(req: dict) -> dict:
         name=(req.get("name") or "").strip() or None,
         access=(req.get("access") or cf.DEFAULT_ACCESS),
         load_rules=bool(req.get("load_rules", True)),
+        auto_mount=bool(req.get("auto_mount", False)),
     )
     return {"ok": True, "folder": folder, "probe": p}
 

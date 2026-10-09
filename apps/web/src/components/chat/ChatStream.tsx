@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, Check, RotateCcw, Globe } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
@@ -17,6 +17,7 @@ import { t } from "@/i18n/provider";
 import { agentHex } from "@/lib/theme";
 import { greeting, relTime } from "@/lib/utils";
 import { Icon } from "@/components/icons";
+import { ContextFoldersChip } from "@/components/shell/ContextFoldersChip";
 import { ContextBlocks, SteerBand, SubagentBlocks, SubagentGroupCard, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
@@ -603,6 +604,29 @@ export function ChatStream({
   );
   const homeCreatingRef = useRef(false);
 
+  // 首页待挂载目录(home-mount-picker-design.md §2.3)：随首条消息的建会话请求
+  // 生效，会话打开后 TopBar chip 以同一批 id 接管。初始值/发送后重置值都是
+  // 库里 auto_mount 条目——手动改动只活到本次发送。
+  const [pendingMounts, setPendingMounts] = useState<{ ids: string[]; primary: string | null }>({
+    ids: [],
+    primary: null,
+  });
+  const resetPendingMounts = useCallback(async () => {
+    try {
+      const r = await api.listFolders();
+      const autos = (r.folders || []).filter((f) => f.auto_mount);
+      setPendingMounts(
+        autos.length ? { ids: autos.map((f) => f.id), primary: autos[0].id } : { ids: [], primary: null },
+      );
+    } catch {
+      /* 无 sidecar：保持空 pending，chip 仍可手输路径 */
+    }
+  }, []);
+  // 仅组件挂载时预填一次；发送成功后的重置在 createAndSend 里显式触发。
+  useEffect(() => {
+    void resetPendingMounts();
+  }, [resetPendingMounts]);
+
   // ── composer inline controls (open-experience redesign M3) ──────────────
   // Model chip = per-session provider/model switch (server drops the graph,
   // next WS connect rebuilds).
@@ -690,7 +714,12 @@ export function ChatStream({
     homeCreatingRef.current = true;
     try {
       const agentId = target ?? g.agents[0]?.id ?? null;
-      const s = await g.newSession(agentId, homeModel ? { ...homeModel } : undefined);
+      const s = await g.newSession(agentId, {
+        ...(homeModel ?? {}),
+        // 出生即挂载：pending 目录随建会话请求提交(后端 create_session 原生支持)
+        context_folders: pendingMounts.ids.length ? pendingMounts.ids : undefined,
+        primary_folder: pendingMounts.primary ?? undefined,
+      });
       if (!s) return; // sessionError banner carries the reason; composer keeps text
       curSessionIdRef.current = s.id;
       connectSession(s.id);
@@ -723,6 +752,8 @@ export function ChatStream({
       setFileAttachments([]);
       setTarget(null);
       setMenu(null);
+      // 下一个新会话按库里的 auto_mount 条目重新预填(手动改动不跨会话残留)。
+      void resetPendingMounts();
     } finally {
       homeCreatingRef.current = false;
     }
@@ -1378,6 +1409,15 @@ export function ChatStream({
                 })()}
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              {/* 首页挂载 chip(home-mount-picker-design.md §2.1)：操作的是「首条
+                  消息将生效」的 pending 列表；会话内由 TopBar 的 live chip 负责。 */}
+              {!session && (
+                <ContextFoldersChip
+                  ids={pendingMounts.ids}
+                  primary={pendingMounts.primary}
+                  onChange={(ids, primary) => setPendingMounts({ ids, primary })}
+                />
+              )}
               {running && goalActive && session?.type !== "delegation" && (
                 <button
                   onClick={() => void g.setGoalStatus(session!.id, "paused")}

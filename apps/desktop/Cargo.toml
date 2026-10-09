@@ -23,6 +23,11 @@ tauri-plugin-global-shortcut = "2"
 # panel reaches it only through the `code_reveal` / `code_open_external`
 # commands, which re-check containment themselves.
 tauri-plugin-opener = "2"
+# Home mount picker (docs/home-mount-picker-design.md §2.2): native directory
+# picker for the mount panel's Browse… button. The webview reaches it via
+# @tauri-apps/plugin-dialog; only `dialog:allow-open` is granted in
+# capabilities/default.json — no ask/message/confirm/save surface.
+tauri-plugin-dialog = "2"
 # Design D6: deleting from the file tree moves the entry to the OS trash
 # (restorable), never an unlink. Used by the `code_trash` command.
 trash = "5"

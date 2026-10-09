@@ -208,6 +208,17 @@ export function ContextFoldersSettings() {
                   />
                   {t("rulesLabel")}
                 </label>
+                <label
+                  className="flex shrink-0 items-center gap-1.5 text-xs text-muted"
+                  title={t("autoTooltip")}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!f.auto_mount}
+                    onChange={(e) => patch(f.id, { auto_mount: e.target.checked })}
+                  />
+                  {t("autoLabel")}
+                </label>
                 <button
                   onClick={() => remove(f)}
                   className="shrink-0 rounded-lg p-1.5 text-faint hover:bg-card2 hover:text-red-400"

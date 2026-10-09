@@ -86,7 +86,12 @@
       "mountTitle": "注册进文件夹库并挂载（默认读写；首个挂载成为主工作文件夹）",
       "manage": "管理文件夹库（访问级别 / 规则开关）",
       "errOperation": "操作失败",
-      "errMount": "挂载失败"
+      "errMount": "挂载失败",
+      "libraryTitle": "目录库",
+      "autoTitle": "新建会话时自动挂载（预填首页）",
+      "quickAddTitle": "挂载此目录",
+      "browseTitle": "浏览选择目录…",
+      "errBrowse": "系统目录选择器打开失败"
     },
     "search": {
       "dialogLabel": "搜索会话",

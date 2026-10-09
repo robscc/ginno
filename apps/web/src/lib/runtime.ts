@@ -96,6 +96,9 @@ export async function createSession(req: {
   provider?: string;
   model?: string;
   workflow_id?: string;
+  // 出生即挂载(home-mount-picker-design.md §3)——后端 CreateSessionRequest 原生支持
+  context_folders?: string[];
+  primary_folder?: string | null;
   // "quick" marks floating quick-chat sessions (floating-window-design.md §1.1)
   type?: string;
 }) {
@@ -240,6 +243,7 @@ export async function createFolder(data: {
   name?: string;
   access?: "ro" | "rw";
   load_rules?: boolean;
+  auto_mount?: boolean;
 }) {
   return json<{
     ok: boolean;

@@ -282,7 +282,15 @@ interface GinnoState {
   patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
   newSession: (
     agent_id?: string,
-    opts?: { title?: string; provider?: string; model?: string; workflow_id?: string },
+    opts?: {
+      title?: string;
+      provider?: string;
+      model?: string;
+      workflow_id?: string;
+      /** 出生即挂载(home-mount-picker-design.md §3)——首页 composer 的 pending 目录 */
+      context_folders?: string[];
+      primary_folder?: string | null;
+    },
   ) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
   removeSession: (id: string, opts?: { cascade?: boolean }) => Promise<void>;
@@ -1105,7 +1113,15 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   const newSession = useCallback(
     async (
       agent_id?: string,
-      opts?: { title?: string; provider?: string; model?: string; workflow_id?: string },
+      opts?: {
+        title?: string;
+        provider?: string;
+        model?: string;
+        workflow_id?: string;
+        /** 出生即挂载(home-mount-picker-design.md §3)——首页 composer 的 pending 目录 */
+        context_folders?: string[];
+        primary_folder?: string | null;
+      },
     ) => {
       if (creatingRef.current) return null;
       creatingRef.current = true;
@@ -1118,6 +1134,8 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
           provider: opts?.provider,
           model: opts?.model,
           workflow_id: opts?.workflow_id,
+          context_folders: opts?.context_folders,
+          primary_folder: opts?.primary_folder ?? undefined,
         });
         if (s && s.ok !== false && s.id) {
           setSessions((prev) => [s, ...prev.filter((x) => x.id !== s.id)]);

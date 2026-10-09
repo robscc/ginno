@@ -101,6 +101,7 @@ def add_folder(
     name: str | None = None,
     access: str = DEFAULT_ACCESS,
     load_rules: bool = True,
+    auto_mount: bool = False,
 ) -> dict:
     """Register a directory. Idempotent on resolved path: re-adding an
     existing path returns the existing entry (updated fields win)."""
@@ -118,6 +119,9 @@ def add_folder(
             if bool(load_rules) != bool(f.get("load_rules", True)):
                 f["load_rules"] = bool(load_rules)
                 changed = True
+            if bool(auto_mount) != bool(f.get("auto_mount", False)):
+                f["auto_mount"] = bool(auto_mount)
+                changed = True
             if changed:
                 _save_library(folders)
             return f
@@ -127,6 +131,7 @@ def add_folder(
         "name": (name or Path(real).name or real),
         "access": access if access in ACCESS_TIERS else DEFAULT_ACCESS,
         "load_rules": bool(load_rules),
+        "auto_mount": bool(auto_mount),
         "added": _now_iso(),
         "last_used": "",
     }
@@ -147,6 +152,8 @@ def update_folder(folder_id: str, patch: dict) -> dict | None:
             f["access"] = patch["access"]
         if "load_rules" in patch:
             f["load_rules"] = bool(patch["load_rules"])
+        if "auto_mount" in patch:
+            f["auto_mount"] = bool(patch["auto_mount"])
         if "path" in patch and str(patch["path"] or "").strip():
             f["path"] = norm_path(str(patch["path"]))
         target = f

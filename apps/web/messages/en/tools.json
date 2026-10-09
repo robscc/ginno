@@ -271,7 +271,9 @@
       "rulesLabel": "Rules",
       "rulesTooltip": "Whether to inject this folder’s AGENTS.md / CLAUDE.md / GINNO.md into sessions that mount it",
       "removeTitle": "Remove from library",
-      "securityNote": "Security boundary: mounting only grants file access — a folder’s settings / hooks / skills are never loaded (access ≠ config); the read-only level is a hard constraint at the tool layer, independent of Privileged Mode."
+      "securityNote": "Security boundary: mounting only grants file access — a folder’s settings / hooks / skills are never loaded (access ≠ config); the read-only level is a hard constraint at the tool layer, independent of Privileged Mode.",
+      "autoLabel": "Auto-mount",
+      "autoTooltip": "Pre-mount this folder when creating a new session from the home composer"
     },
     "web": {
       "title": "Web Search",

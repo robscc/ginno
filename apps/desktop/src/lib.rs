@@ -1631,6 +1631,13 @@ pub fn run() {
                 .open_js_links_on_click(false)
                 .build(),
         )
+        // Home mount picker (docs/home-mount-picker-design.md §2.2): the mount
+        // panel's Browse… button opens the native directory picker from the
+        // webview. Registered with the default builder; the webview-side grant
+        // is deliberately narrow — capabilities/default.json carries only
+        // `dialog:allow-open`, so the page can pick directories but cannot
+        // spawn ask/message/confirm dialogs.
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             pin_toggle,
             pin_set_mode,
