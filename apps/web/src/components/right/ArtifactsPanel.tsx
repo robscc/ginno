@@ -47,7 +47,7 @@ export const KIND_LABEL: Record<
 };
 
 // Registry file kinds — the classification that steers prompt tool guidance
-// (analyze_table for spreadsheet/table, parse_document otherwise).
+// (schema summary shown for tables, parse_document for documents).
 const FILE_KINDS = ["spreadsheet", "table", "document", "presentation", "pdf", "data", "text", "image"];
 // 同上：file_kind → 文案 key 映射。
 const FILE_KIND_LABEL: Record<string, "fileKind.spreadsheet" | "fileKind.table" | "fileKind.document" | "fileKind.presentation" | "fileKind.pdf" | "fileKind.data" | "fileKind.text" | "fileKind.image" | "fileKind.unknown"> = {

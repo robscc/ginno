@@ -93,7 +93,6 @@ def test_session_dirs_layout(isolated_home):
     d = paths.session_files_dir("default", "sid123")
     assert d == paths.project_sessions_dir("default") / "sid123"
     assert paths.session_uploads_dir("default", "sid123") == d / "uploads"
-    assert paths.session_results_dir("default", "sid123") == d / "results"
 
 
 def test_session_dir_coexists_with_checkpoint_file(isolated_home):

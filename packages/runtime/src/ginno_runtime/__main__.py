@@ -5,14 +5,6 @@
 """
 import sys
 
-# Hidden analysis mode (see bin/ginno-runtime.py): exec a piped-in script and
-# exit without starting the HTTP server. Checked before the heavy imports.
-if "--analyze" in sys.argv:
-    from .analyze_runner import run as _analyze_run
-
-    _analyze_run()
-    raise SystemExit(0)
-
 # Native messaging host mode (browser-companion design §2 备用传输): Chrome
 # spawns the frozen binary with --native-host; speak the length-prefixed JSON
 # stdio protocol (port discovery + WS bridge) and exit when stdin closes.

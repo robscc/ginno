@@ -1,7 +1,7 @@
 """Best-effort startup migration of session files into per-session dirs.
 
 Historically uploads lived in a shared workspace (`<workspace>/uploads/<sid>/`,
-often `/tmp/gw/...`) and analyze_table results next to the source file
+often `/tmp/gw/...`) and analysis results sat next to the source file
 (`<source>/results/...`). The session-scoped layout moves both under
 `projects/<slug>/sessions/<sid>/{uploads,results}/`.
 
@@ -75,7 +75,7 @@ def migrate_session_files() -> dict:
                 continue
 
             # Legacy shape heuristic: files under a "results/" parent were
-            # analyze_table outputs; everything else (uploads) goes to uploads/.
+            # analysis outputs; everything else (uploads) goes to uploads/.
             subdir = "results" if src.parent.name == "results" else "uploads"
             dest_dir = paths.session_files_dir(slug, session_id) / subdir
             try:

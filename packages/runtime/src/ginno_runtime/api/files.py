@@ -229,7 +229,7 @@ async def update_artifact_endpoint(
     """User corrections from the metadata inspector. ``name/kind/ref/schema``
     land on the artifact record (``schema`` becomes the injection override);
     ``file_kind`` corrects the registry's classification, which steers the
-    prompt's tool guidance (analyze_table vs parse_document)."""
+    prompt's tool guidance (schema summary shown for tables)."""
     if art_store.get_artifact(project_slug, artifact_id) is None:
         return {"ok": False, "error": "not found"}
     patch = {k: data[k] for k in ("name", "kind", "ref", "schema") if data.get(k) is not None}

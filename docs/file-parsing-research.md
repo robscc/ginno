@@ -11,6 +11,10 @@ aliases: [文件解析方案, office 文件分析, document parsing]
 
 # Ginno 多类型文件解析与分析方案研究
 
+> **后续变更（2026-10）**：`analyze_table` 工具已移除，表格数值问题改用 `bash`（pandas）实现——
+> 独立的隔离子进程 runner（`--analyze` 隐藏模式）随之删除。本文以下为该方案当时的设计记录。
+
+
 > [!abstract] 摘要
 > Ginno 知识库目前只摄入 Markdown（`indexer.py` 中 `INDEX_EXTENSIONS = {".md", ".markdown"}`），`read_file` 工具也只能读 UTF-8 文本。要支持 CSV/Excel/Word/PPT/PDF，需要区分**两类本质不同的需求**：①「内容提取 → 入库检索」（适合 Word/PPT/PDF，转 Markdown 后喂给现有 indexer）；②「数据分析」（适合 CSV/Excel，文本抽取无法回答"求平均值"，需要 LLM 生成 pandas 代码在沙箱执行）。
 >

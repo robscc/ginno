@@ -1,8 +1,7 @@
 """API/E2E tests: WS wiring for attached files + reactive preview refresh.
 
 Covers: invoke with files → attachment context reaches the model; history
-carries file blocks; analyze_table derived result → preview.emit + artifact
-with session_id; write_file touch → preview.invalidate.
+carries file blocks; write_file touch → preview.invalidate.
 """
 
 from __future__ import annotations
@@ -105,7 +104,7 @@ def test_invoke_files_inject_attachment_context(client, create_session, ws_conv,
     assert "attached_files" in turn_ctx
     assert "data.csv" in turn_ctx
     assert up["path"] in turn_ctx  # the uploaded (registry-canonical) path
-    assert "analyze_table" in turn_ctx  # steering guidance
+    assert "bash" in turn_ctx  # steering guidance (tables → bash/pandas)
     assert "a(object)" in turn_ctx or "a(" in turn_ctx  # schema summary present
     # stable system layer stays free of per-turn attachments (B2)
     assert "attached_files" not in seen_prompts[0]
@@ -148,61 +147,6 @@ def test_history_carries_file_blocks(client, create_session, ws_conv, ws_dir):
     # auto-registered as an artifact with session attribution
     arts = client.get("/api/artifacts?project_slug=default").json()
     assert any(a["kind"] == "file" and a["session_id"] == sid for a in arts)
-
-
-def test_analyze_table_derived_result_emits_preview_open(client, create_session, ws_conv, ws_dir):
-    """analyze_table with a DataFrame result → preview.emit {open:true} +
-    artifact registered (the 'result auto-opens' moment)."""
-    f = _csv(ws_dir, name="sales.csv", body="地区,金额\n北,100\n南,300\n")
-    code = "result = df.groupby('地区')['金额'].sum().reset_index()"
-    scripted = [
-        script(
-            tool_calls=[
-                script_tool_call("analyze_table", {"path": str(f), "code": code})
-            ]
-        ),
-        script(text="分析完成。"),
-    ]
-    sid = create_session(scripted, workspace=str(ws_dir))
-    up = _upload(client, sid, "sales.csv", f.read_bytes())
-
-    with ws_conv(sid) as conv:
-        conv.send(
-            {
-                "type": "invoke",
-                "message": "按地区汇总",
-                "files": [{"id": up["id"]}],
-            }
-        )
-        events = conv.recv_until("message.end", "error")
-
-    emits = [e for e in events if e["event"] == "preview.emit"]
-    assert emits, f"no preview.emit in {[e['event'] for e in events]}"
-    assert emits[0]["open"] is True
-    assert emits[0]["name"].startswith("sales-result-")
-    # derived file is previewable through the API
-    pv = client.get(f"/api/files/{emits[0]['file_id']}/preview").json()
-    assert pv["ok"] is True
-    assert pv["rows"]  # has data
-    # and registered as a session artifact, relocated into the session's
-    # results/ dir (not left next to the source file)
-    arts = client.get("/api/artifacts?project_slug=default").json()
-    derived = [
-        a
-        for a in arts
-        if a.get("ref", "").endswith(".csv")
-        and a.get("session_id") == sid
-        and "results" in a.get("ref", "")
-    ]
-    assert derived, f"no derived artifact in {arts}"
-    assert f"/sessions/{sid}/results/" in derived[0]["ref"], derived[0]["ref"]
-    # physical file actually lives there
-    from pathlib import Path
-
-    assert Path(derived[0]["ref"]).is_file()
-    # scoped artifacts query returns it too
-    scoped = client.get(f"/api/artifacts?project_slug=default&session_id={sid}").json()
-    assert any(a["id"] == derived[0]["id"] for a in scoped)
 
 
 def test_write_file_touch_emits_invalidate(client, create_session, ws_conv):

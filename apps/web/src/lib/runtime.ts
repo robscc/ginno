@@ -796,7 +796,7 @@ export async function getArtifactMetadata(id: string, project_slug = "default") 
 }
 
 // User corrections from the inspector. schema → injection override;
-// file_kind → registry classification fix (steers analyze_table vs parse_document).
+// file_kind → registry classification fix.
 export async function updateArtifact(
   id: string,
   patch: import("./types").ArtifactPatch,

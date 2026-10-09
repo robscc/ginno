@@ -70,9 +70,6 @@ async def _tool_file_effects(
        gets ``preview.invalidate`` for that file.
     2. Opaque tools (bash / MCP) → best-effort: any registered path appearing
        in the tool args is touched.
-    3. ``analyze_table`` table results → register the derived CSV as an
-       artifact and emit ``preview.emit {open: true}`` so the result sheet
-       opens automatically in the UI.
     """
     if not slug or not name_args:
         return
@@ -80,7 +77,7 @@ async def _tool_file_effects(
     reg = files_mod.get_registry(slug)
     touched: list[str] = []
 
-    if name in ("write_file", "edit_file", "read_file", "parse_document", "analyze_table"):
+    if name in ("write_file", "edit_file", "read_file", "parse_document"):
         p = (args or {}).get("path")
         if p:
             pp = Path(p).expanduser()
@@ -98,48 +95,6 @@ async def _tool_file_effects(
         for e in reg.list_session(session_id) or reg.list_all():
             if e.get("path") and e["path"] in blob:
                 touched.append(e["path"])
-
-    if name == "analyze_table" and content:
-        try:
-            d = json.loads(content)
-        except (json.JSONDecodeError, TypeError):
-            d = None
-        dp = d.get("derived_path") if isinstance(d, dict) and d.get("ok") else None
-        if dp and Path(dp).is_file():
-            # Relocate the derived CSV into the session's results/ dir so every
-            # session artifact lives under sessions/<sid>/ — the tool writes it
-            # next to the source file, which may sit outside the session dir
-            # (e.g. an external path the user analyzed). Happens in-turn, before
-            # registration, so the artifact is stored at its final path.
-            import shutil
-
-            results_dir = paths.session_results_dir(slug, session_id)
-            try:
-                results_dir.mkdir(parents=True, exist_ok=True)
-                final = files_mod.unique_dest(results_dir / Path(dp).name)
-                shutil.move(str(dp), str(final))
-                dp = str(final)
-            except OSError:
-                pass  # keep the tool's original location if the move fails
-            norm_ref = files_mod.norm_path(dp)
-            art = art_store.add_artifact(slug, "file", Path(dp).name, norm_ref, session_id)
-            entry = reg.register(
-                Path(dp).name, dp, kind="table", session_id=session_id, artifact_id=art.get("id")
-            )
-            await safe_send(
-                emit(
-                    "preview.emit",
-                    {
-                        "file_id": entry["id"],
-                        "name": entry["name"],
-                        "path": entry["path"],
-                        "kind": "table",
-                        "open": True,
-                    },
-                )
-            )
-            await safe_send(emit("artifacts.changed", {}))
-            touched.append(norm_ref)
 
     # Code-generated images (inline-images design): the bash tool appends a
     # machine marker listing pictures the command wrote into the workspace.

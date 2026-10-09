@@ -8,8 +8,7 @@
       "grep_files": "Searching content",
       "bash": "Running command",
       "delegate_agent": "Delegating to external agent",
-      "parse_document": "Parsing document",
-      "analyze_table": "Analyzing table"
+      "parse_document": "Parsing document"
     },
     "mcp_call": "Calling MCP: {server}"
   }

@@ -228,14 +228,14 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
 | Workflow | `workflow_list, workflow_get, workflow_create, workflow_run, workflow_run_status, workflow_step` |
 | Workflow-dev | `workflow_propose_edit, workflow_dry_run` |
 | Artifact | `artifact_register` |
-| 文档 | `parse_document, analyze_table` |
+| 文档 | `parse_document` |
 | Web | `web_search, web_fetch`（引擎可插拔；`settings.web.enabled=false` 时不注册） |
 | MCP | `mcp_{server}_{tool}`（动态，默认含 playwright） |
 
 > `render_widget` / `attach_ref` 是 **no-op 工具**，WS 层拦截其调用发 `widget.emit`/`ref.emit`
 > 事件，不产生普通工具气泡、对所有 Agent 恒允许、免权限。图表是 `render_widget(kind="chart")`
-> （**没有独立的 `render_chart` 工具**）；`analyze_table` 在隔离子进程跑 pandas（打包走
-> `ginno-runtime --analyze` 隐藏模式）。
+> （**没有独立的 `render_chart` 工具**）。表格的数值问题交给 `bash` 跑 pandas，
+> 不再有独立的 `analyze_table` 工具。
 >
 > **引用与来源**（`docs/citations-design.md`）：每轮维护 SourceRegistry（注入的 wiki 页 +
 > web_search 结果编号 `sN`）；模型按引用契约在回复末尾附 `<ginno_citations>` 块，turn 结束时

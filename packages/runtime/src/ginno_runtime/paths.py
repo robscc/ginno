@@ -64,7 +64,7 @@ _DEFAULT_SETTINGS = {
     "permissions": {
         "allow": ["Read(*)", "Glob(*)", "Grep(*)", "read_file", "glob_files", "grep_files", "parse_document", "web_search", "web_fetch", "mcp_vault_read_*", "mcp_vault_list_*", "mcp_vault_search_*", "mcp_vault_directory_*", "mcp_vault_get_*"],
         "deny": ["Bash(rm -rf *)", "bash(rm -rf *)", "Bash(sudo *)", "bash(sudo *)", "Write(~/.ssh/**)", "Write(~/.gnupg/**)"],
-        "ask": ["Bash(*)", "bash(*)", "Write(*)", "Edit(*)", "write_file", "edit_file", "analyze_table", "mcp_vault_write_*", "mcp_vault_edit_*", "mcp_vault_create_*", "mcp_vault_move_*"],
+        "ask": ["Bash(*)", "bash(*)", "Write(*)", "Edit(*)", "write_file", "edit_file", "mcp_vault_write_*", "mcp_vault_edit_*", "mcp_vault_create_*", "mcp_vault_move_*"],
     },
     "hooks": {},
     # Tool display labels: friendly names for tool call bubbles in the UI.
@@ -80,7 +80,6 @@ _DEFAULT_SETTINGS = {
         "grep_files": "Searching content",
         "bash": "Running command",
         "parse_document": "Parsing document",
-        "analyze_table": "Analyzing table",
     },
     # Context engineering (docs/design/world-state-plan.md). All keys have
     # safe defaults in world_state.context_settings(); values here override.
@@ -449,11 +448,6 @@ def session_files_dir(slug: str, session_id: str) -> Path:
 def session_uploads_dir(slug: str, session_id: str) -> Path:
     """Where uploaded / drag-attached files for the session live."""
     return session_files_dir(slug, session_id) / "uploads"
-
-
-def session_results_dir(slug: str, session_id: str) -> Path:
-    """Where analyze_table derived CSVs for the session live."""
-    return session_files_dir(slug, session_id) / "results"
 
 
 # ---- knowledge / LLMWiki + memory refinery ----

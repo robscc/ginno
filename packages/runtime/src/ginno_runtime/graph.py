@@ -239,8 +239,7 @@ def build_stable_system(
             "automatically — in the answer that delivers one, call "
             "attach_ref(kind='file', name='<file name>', ref_id='<absolute "
             "path>') to register it (chip + panel entry). write_file outputs "
-            "need the same attach_ref echo. analyze_table's derived CSV "
-            "auto-registers. Image files (.png/.jpg/.gif/.webp/...) generated "
+            "need the same attach_ref echo. Image files (.png/.jpg/.gif/.webp/...) generated "
             "by bash are the exception: they are detected, registered, and "
             "shown inline in the chat automatically — do NOT attach_ref them. "
             "Skip intermediates (.~* lock files, .DS_Store, "
@@ -409,14 +408,13 @@ def build_turn_context(
                 )
         lines.append(
             t(
-                "For tabular files (spreadsheet/table) prefer analyze_table(path, code) — "
-                "write pandas code and assign the answer to result (scalar, list, or "
-                "DataFrame); never paste a whole table into the reply. For documents "
-                "(document/presentation/pdf) use parse_document(path) to read the content.",
-                "表格类（spreadsheet/table）优先用 analyze_table(path, code) 分析——"
-                "编写 pandas 代码并把答案赋给 result（标量/列表/DataFrame 皆可），"
-                "切勿把整表贴进回复；文档类（document/presentation/pdf）用 "
-                "parse_document(path) 读取内容。",
+                "For numeric questions about a table (spreadsheet/table/data), read it "
+                "with bash (e.g. pandas) and print only the answer — never paste the "
+                "whole table into the reply. For documents (document/presentation/pdf) "
+                "use parse_document(path) to read the content.",
+                "表格类（spreadsheet/table/data）的数值问题，用 bash（如 pandas）读取"
+                "并只打印答案——切勿把整表贴进回复；文档类（document/presentation/"
+                "pdf）用 parse_document(path) 读取内容。",
             )
         )
         parts.append(wrap_context_section("attached_files", "\n".join(lines)))

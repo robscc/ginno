@@ -19,7 +19,7 @@ def _fresh(isolated_home):
 
 
 def _seed_legacy(isolated_home, tmp_path, sid="s1"):
-    """Create a legacy upload + a legacy analyze result, registered + artifed."""
+    """Create a legacy upload + a legacy analysis result, registered + artifed."""
     reg = get_registry("default")
 
     # legacy upload at <workspace>/uploads/<sid>/<file>  (shared workspace shape)
@@ -29,7 +29,7 @@ def _seed_legacy(isolated_home, tmp_path, sid="s1"):
     art_up = art_store.add_artifact("default", "file", "data.xlsx", norm_path(up), sid)
     e_up = reg.register("data.xlsx", up, session_id=sid, artifact_id=art_up["id"])
 
-    # legacy analyze result at <source>/results/<stem>-result-<hex>.csv
+    # legacy analysis result at <source>/results/<stem>-result-<hex>.csv
     res = tmp_path / "elsewhere" / "results" / "data-result-deadbeef.csv"
     res.parent.mkdir(parents=True, exist_ok=True)
     res.write_text("a,b\n1,2\n")
@@ -48,10 +48,10 @@ def test_migration_moves_legacy_files_into_session_dirs(isolated_home, tmp_path)
     assert stats["errors"] == 0
 
     up_dir = paths.session_uploads_dir("default", sid)
-    res_dir = paths.session_results_dir("default", sid)
+    res_dir = paths.session_files_dir("default", sid) / "results"
     new_up = reg.get(e_up["id"])["path"]
     new_res = reg.get(e_res["id"])["path"]
-    # upload → uploads/, analyze result → results/
+    # upload → uploads/, analysis result → results/
     assert norm_path(new_up).startswith(norm_path(up_dir))
     assert norm_path(new_res).startswith(norm_path(res_dir))
     # physical files moved (old gone, new present)
