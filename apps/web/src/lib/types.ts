@@ -73,6 +73,10 @@ export interface AgentConfig {
   /** Mirrors runtime provider_is_deliberate: the provider was deliberately
    * chosen for this agent (saved via Agents settings), not the seed value. */
   provider_explicit?: boolean;
+  /** Per-type sub-agent model overrides (model-assignment-design.md §2.1):
+   *  key = subagent type name; absent = inherit (type frontmatter → parent
+   *  session model). Saved via the Agents page's Sub-agent models section. */
+  subagent_models?: Record<string, { provider: string; model: string }>;
   tools_allow: string[];
   /** Connector ids this agent may NOT use (connector-module-design §8).
    *  Denylist: [] = all enabled connectors; per-agent can only restrict. */

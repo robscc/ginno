@@ -268,6 +268,10 @@ def _maybe_refresh_session_graph(session: dict) -> None:
         mcp_tools=mcp_tools,
         hook_dispatcher=shared._hooks,
         all_tools=all_tools,
+        # 模型热切（design §3.2）：MCP 漂移重建同样走 getter，不把模型烤死。
+        model_getter=shared.make_session_model_getter(
+            session.get("session_id", ""), session["model"]
+        ),
     )
     session["all_tool_names"] = [t.name for t in all_tools]
     session["mcp_tool_names"] = [t.name for t in mcp_tools]

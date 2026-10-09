@@ -122,7 +122,10 @@ def test_patch_explicit_title_stops_auto_follow(client, patch_build_model):
     assert r["session"]["title_auto"] is False
 
 
-def test_patch_model_switch_updates_meta_and_drops_graph(client, patch_build_model):
+def test_patch_model_switch_updates_meta_and_keeps_entry(client, patch_build_model):
+    """模型热切语义变更（model-assignment-design.md §3.2）：非结构切换原地更新
+    内存条目——graph 经 make_session_model_getter 逐调用解析模型，运行中的
+    turn 下一个 superstep 生效，不再 pop + 断线重连重建。"""
     patch_build_model(script(text="ok"))
     sid = _post_session(client).json()["id"]
     from ginno_runtime.server_shared import _SESSIONS
@@ -131,8 +134,9 @@ def test_patch_model_switch_updates_meta_and_drops_graph(client, patch_build_mod
     r = client.patch(f"/api/sessions/{sid}", json={"model": "other-model"}).json()
     assert r["ok"] is True
     assert r["session"]["model"] == "other-model"
-    # in-memory graph dropped → rebuilt with the new model on next WS connect
-    assert sid not in _SESSIONS
+    # 条目仍在（graph 不重建）；绑定字段原地换新
+    assert sid in _SESSIONS
+    assert _SESSIONS[sid]["model_name"] == "other-model"
 
 
 def test_patch_model_switch_rejects_invalid(client, monkeypatch):
@@ -303,3 +307,76 @@ def test_session_icon_follows_agent_icon_empty_falls_back(client, patch_build_mo
     registry.update_agent("dev", {"icon": ""})
     blank = _post_session(client, agent_id="dev", title="blank").json()
     assert blank["icon"] == ""
+
+
+# ------- 模型热切 PATCH（model-assignment-design.md §3.2）-------
+def test_patch_model_switch_is_inplace(client, patch_build_model, monkeypatch):
+    """model-only 切换 = 原地更新：条目不弹、graph 不重建、无需断线重连。"""
+    patch_build_model(script(text="ok"))
+    sid = _post_session(client).json()["id"]
+    from ginno_runtime import server_shared
+    from ginno_runtime.server_shared import _SESSIONS
+
+    entry = _SESSIONS[sid]
+    fresh = object()  # 与创建实例不同的新模型对象
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: fresh)
+    pushed: list = []
+
+    async def fake_push(session_id, event, data, turn_id=None):
+        pushed.append((session_id, event, data))
+
+    monkeypatch.setattr(server_shared, "_push_session_event", fake_push)
+
+    data = client.patch(f"/api/sessions/{sid}", json={"provider": "custom", "model": "glm-4.7"}).json()
+    assert data["ok"] is True
+    assert _SESSIONS[sid] is entry  # 同一条目：运行中的 turn 不受打断
+    assert entry["model"] is fresh
+    assert entry["model_provider"] == "custom"
+    assert entry["model_name"] == "glm-4.7"
+    # meta 落盘（重启后 _ensure_session 用它重建）
+    index = json.loads(paths.session_index_path("default").read_text())
+    hit = next(m for m in index if m["id"] == sid)
+    assert hit["model"] == "glm-4.7"
+    # WS 事件：下一个 superstep 生效语义
+    assert pushed and pushed[0][1] == "session.model_changed"
+    assert pushed[0][2]["model"] == "glm-4.7"
+    assert pushed[0][2]["effective"] == "next_step"
+
+
+def test_patch_model_with_agent_rebind_still_rebuilds(client, patch_build_model, monkeypatch):
+    """模型切换叠加 agent 换绑 = 结构变更：维持 pop → 下次连接重建。"""
+    patch_build_model(script(text="ok"))
+    sid = _post_session(client).json()["id"]
+    from ginno_runtime.server_shared import _SESSIONS
+
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", lambda *a, **k: object())
+    data = client.patch(
+        f"/api/sessions/{sid}",
+        json={"provider": "custom", "model": "glm-4.7", "agent_id": "research"},
+    ).json()
+    assert data["ok"] is True
+    assert sid not in _SESSIONS
+
+
+def test_patch_model_build_failure_returns_ok_false(client, patch_build_model, monkeypatch):
+    patch_build_model(script(text="ok"))
+    sid = _post_session(client).json()["id"]
+
+    def boom(*a, **k):
+        raise ValueError("no such model")
+
+    monkeypatch.setattr("ginno_runtime.api.sessions.build_model", boom)
+    data = client.patch(f"/api/sessions/{sid}", json={"model": "broken"}).json()
+    assert data["ok"] is False and "no such model" in data["error"]
+
+
+def test_make_session_model_getter_follows_and_memos(isolated_home):
+    from ginno_runtime.server_shared import _SESSIONS, make_session_model_getter
+
+    m1, m2 = object(), object()
+    get = make_session_model_getter("s1", m1)
+    assert get() is m1  # 无条目 → 初值兜底
+    _SESSIONS["s1"] = {"model": m2}
+    assert get() is m2  # 跟随原地热切
+    _SESSIONS.pop("s1", None)
+    assert get() is m2  # 清表窗口回落 memo，绝不返回 None

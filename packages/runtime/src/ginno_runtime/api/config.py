@@ -512,6 +512,19 @@ async def list_agents_endpoint() -> list[dict]:
     return [a.to_dict() for a in agents_reg.list_agents()]
 
 
+@router.get("/api/subagent_types")
+async def list_subagent_types_endpoint() -> list[dict]:
+    """Agents 页 Sub-agent models 区块的数据源（model-assignment-design.md
+    §2.3）：[{name, description, model}]——model 为类型 frontmatter 的默认
+    覆盖原文（provider/model 或裸名），供 UI 显示继承链落点。"""
+    from ..subagent_types import load_subagent_types
+
+    return [
+        {"name": t.name, "description": t.description, "model": t.model}
+        for t in sorted(load_subagent_types().values(), key=lambda t: t.name)
+    ]
+
+
 @router.post("/api/agents")
 async def create_agent_endpoint(data: dict) -> dict:
     try:

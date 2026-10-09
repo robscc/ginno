@@ -164,7 +164,7 @@ export function ChatStream({
     socketsRef, permsRef, proposeRef, busyBySessionRef, streamAgentRef,
     seenTurnStartRef, ioSeqRef, sendSeqRef, draftCacheRef, mentionsRef,
     runsBySessionRef, pendingDocsRef, pendingPathsRef,
-    syncDisplay, connectSession, cycleSessionSocket, waitForSocketOpen,
+    syncDisplay, connectSession, waitForSocketOpen,
     dropSteer, showComposerHint, enqueueSteer, recallSteers,
     respond, stopTurn, respondPropose, answerQuestion, decideSubagentPlan,
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
@@ -628,8 +628,10 @@ export function ChatStream({
   }, [resetPendingMounts]);
 
   // ── composer inline controls (open-experience redesign M3) ──────────────
-  // Model chip = per-session provider/model switch (server drops the graph,
-  // next WS connect rebuilds).
+  // Model chip = per-session provider/model switch. In-place on the server
+  // (model-assignment-design.md §3.2): the running graph resolves its model
+  // per LLM call, so switching mid-turn takes effect at the next step — no
+  // socket cycle, no stream interruption.
   const [modelOpen, setModelOpen] = useState(false);
   async function pickModel(pid: string, model: string) {
     setModelOpen(false);
@@ -649,7 +651,6 @@ export function ChatStream({
       const r = await api.patchSession(session.id, { provider: pid, model });
       if (!r?.ok || !r.session) throw new Error(r?.error ?? "switch failed");
       g.applySessionPatch(session.id, r.session);
-      cycleSessionSocket(session.id);
     } catch {
       g.applySessionPatch(session.id, { provider: prevProvider, model: prevModel });
     }
@@ -1429,11 +1430,13 @@ export function ChatStream({
                 </button>
               )}
               {/* model chip: per-session provider/model switch (home: pick for
-                  the session that first send will create) */}
+                  the session that first send will create). Enabled while a
+                  turn runs — the switch is in-place server-side and takes
+                  effect at the next LLM call (model-assignment-design.md
+                  §3.2). */}
               <div className="relative">
                 <button
                   type="button"
-                  disabled={running || parked}
                   onClick={() => setModelOpen((v) => !v)}
                   title={
                     session

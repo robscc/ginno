@@ -1510,3 +1510,101 @@ async def test_child_turn_does_not_inherit_parent_llm_context(
         var_child_runnable_config.reset(token)
 
     assert seen.get("cfg") is None, "child turn inherited the parent's run config"
+
+
+# --------------------------------------------------------------------------- #
+# spawn 模型解析链（model-assignment-design.md §2.2：agent per-type 覆盖 >
+# 类型 frontmatter > 父会话模型）
+# --------------------------------------------------------------------------- #
+def _seed_type_md(fm_model=None):
+    from ginno_runtime import subagent_types as st
+
+    d = st.subagents_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    fm = "name: researcher\ndescription: 只读调研类型\n"
+    if fm_model:
+        fm += f"model: {fm_model}\n"
+    (d / "researcher.md").write_text(f"---\n{fm}---\n\nbody\n", encoding="utf-8")
+    st._CACHE = None
+    st._DIR_STATE = None
+
+
+@pytest.fixture
+def providers_stub(monkeypatch):
+    """p1 = enabled、带模型清单的 provider；custom = 父会话所在的种子位。"""
+    from ginno_runtime import providers as prov_mod
+
+    monkeypatch.setattr(
+        prov_mod,
+        "load_providers",
+        lambda: {"p1": {"enabled": True}, "custom": {"enabled": True}},
+    )
+    monkeypatch.setattr(prov_mod, "get_default_provider", lambda: "custom")
+    monkeypatch.setattr(prov_mod, "load_configs", lambda: [{"id": "custom"}, {"id": "p1"}])
+    monkeypatch.setattr(prov_mod, "get_config", lambda pid: {"name": pid, "models": ["agent-model", "type-model"]})
+    monkeypatch.setattr(prov_mod, "model_for_provider", lambda providers, pid: "p1-default")
+    return prov_mod
+
+
+async def test_spawn_model_chain_agent_override_wins(isolated_home, parent_session, capture, monkeypatch, providers_stub):
+    _seed_type_md(fm_model="custom/type-model")
+    from ginno_runtime.agents import registry as agents_reg
+    agents_reg.ensure_seeded()
+    agents_reg.update_agent(
+        "dev", {"subagent_models": {"researcher": {"provider": "p1", "model": "agent-model"}}}
+    )
+    server_shared._SESSIONS[parent_session]["model_name"] = "parent-model"
+
+    res = await sched.create_subagent(parent_session, "调研", agent_type="researcher")
+    assert res["ok"]
+    meta, _ = sched._find_meta(res["session_id"])
+    # agent 覆盖（最高优先）压过类型 frontmatter 与父会话模型
+    assert meta["provider"] == "p1" and meta["model"] == "agent-model"
+
+
+async def test_spawn_model_chain_type_frontmatter_beats_parent(isolated_home, parent_session, capture, providers_stub):
+    _seed_type_md(fm_model="custom/type-model")
+    server_shared._SESSIONS[parent_session]["model_name"] = "parent-model"
+    res = await sched.create_subagent(parent_session, "调研", agent_type="researcher")
+    assert res["ok"]
+    meta, _ = sched._find_meta(res["session_id"])
+    assert meta["provider"] == "custom" and meta["model"] == "type-model"
+
+
+async def test_spawn_model_chain_parent_when_no_type(isolated_home, parent_session, capture, providers_stub):
+    server_shared._SESSIONS[parent_session]["model_name"] = "parent-model"
+    res = await sched.create_subagent(parent_session, "调研")
+    assert res["ok"]
+    meta, _ = sched._find_meta(res["session_id"])
+    assert meta["provider"] == "custom" and meta["model"] == "parent-model"
+
+
+def test_agent_type_model_override_degrades_on_dead_binding(isolated_home, monkeypatch, providers_stub):
+    from ginno_runtime.agents import registry as agents_reg
+
+    agents_reg.ensure_seeded()
+    _seed_type_md()
+    # 合法绑定：原样返回
+    agents_reg.update_agent(
+        "dev", {"subagent_models": {"researcher": {"provider": "p1", "model": "agent-model"}}}
+    )
+    assert sched._agent_type_model_override("dev", "researcher") == ("p1", "agent-model")
+    # 空 model → provider 默认
+    agents_reg.update_agent(
+        "dev", {"subagent_models": {"researcher": {"provider": "p1", "model": ""}}}
+    )
+    assert sched._agent_type_model_override("dev", "researcher") == ("p1", "p1-default")
+    # 显式模型脱离 models[] → 降级（None，落回类型/父会话层）
+    agents_reg.update_agent(
+        "dev", {"subagent_models": {"researcher": {"provider": "p1", "model": "agent-model"}}}
+    )
+    monkeypatch.setattr(providers_stub, "get_config", lambda pid: {"name": pid, "models": ["other"]})
+    assert sched._agent_type_model_override("dev", "researcher") is None
+    # provider 禁用 → 降级
+    monkeypatch.setattr(
+        providers_stub, "load_providers", lambda: {"p1": {"enabled": False}, "custom": {"enabled": True}}
+    )
+    assert sched._agent_type_model_override("dev", "researcher") is None
+    # 无绑定 / 未知 agent → None
+    assert sched._agent_type_model_override("ghost-agent", "researcher") is None
+    assert sched._agent_type_model_override("dev", "no-such-type") is None

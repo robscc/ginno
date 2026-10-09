@@ -919,6 +919,23 @@ export function useChatStreamEngine(deps: EngineDeps) {
         // Agent CRUD in Settings — keep the picker/mention list in sync.
         g.reloadAgents();
         break;
+      case "session.model_changed": {
+        // 模型热切回流（model-assignment-design.md §3.2）：服务端已原地换掉
+        // 会话条目的模型对象，下一个 superstep 生效。发起端乐观更新过，这里
+        // 兜底其它视图（回放页/另一窗口）并给一条轻提示。applySessionPatch
+        // 是裸 spread，未携带的键不能以 undefined 进 patch（会清字段）。
+        const patch: Partial<{ provider: string; model: string }> = {};
+        if (typeof ev.provider === "string") patch.provider = ev.provider;
+        if (typeof ev.model === "string") patch.model = ev.model;
+        if (patch.provider || patch.model) g.applySessionPatch(sid, patch);
+        pushModToast(
+          "info",
+          patch.model
+            ? `Model switched to ${patch.model} — takes effect next step`
+            : "Model switched — takes effect next step",
+        );
+        break;
+      }
       case "workflows.changed":
         g.reloadWorkflows();
         g.reloadWorkflowRuns();

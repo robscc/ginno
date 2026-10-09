@@ -24,6 +24,7 @@ persona, model binding, tool allowlist, and (via memory.py) memory scope.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,10 @@ class AgentConfig:
     # 判据,2026-10-02)。未标记的历史值用 provider != "custom" 兼容推断。
     provider_explicit: bool = False
     model: str = ""
+    # Per-type sub-agent model overrides (model-assignment-design.md §2.1):
+    # {type_name: {"provider": str, "model": str}}。键缺席 = 继承（类型
+    # frontmatter → 父会话模型）；model 空串 = 该 provider 的默认模型。
+    subagent_models: dict[str, dict[str, str]] = field(default_factory=dict)
     tools_allow: list[str] = field(default_factory=lambda: ["*"])
     # Per-agent connector denial (connector-module-design.md §8). Denylist on
     # purpose: per-agent config can only RESTRICT below the global connectors
@@ -225,6 +230,53 @@ def validate_model_binding(provider: str | None, model: str | None) -> None:
         )
 
 
+def validate_subagent_models(value: Any, strict: bool = True) -> dict[str, dict[str, str]]:
+    """Normalize + validate the per-type override map (design §2.1).
+
+    strict=True（create/update API 路径）：未知类型名 / 非法绑定直接抛错，
+    拼写错误当场暴露。strict=False（_read 手改文件容错）：坏条目丢弃 +
+    警告，不让一个畸形字段废掉整个 agent。返回清洗后的 map；null 条目 =
+    UI 的 Inherit 项，规范化为缺席（缺席即继承）。"""
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        if strict:
+            raise ValueError("subagent_models must be an object keyed by sub-agent type")
+        logging.getLogger(__name__).warning(
+            "agent subagent_models not a dict; ignored value=%r", value
+        )
+        return {}
+    from ..subagent_types import load_subagent_types  # lazy: 注册表初始化顺序
+
+    known = load_subagent_types()
+    out: dict[str, dict[str, str]] = {}
+    for type_name, binding in value.items():
+        name = str(type_name or "").strip().lower()
+        try:
+            if binding is None:
+                continue  # null = 显式 Inherit（UI），语义上等于缺席——无需知道类型
+            if not name or name not in known:
+                raise ValueError(
+                    f"unknown sub-agent type {name!r}; available: "
+                    f"{', '.join(sorted(known)) or '(registry is empty)'}"
+                )
+            if not isinstance(binding, dict):
+                raise ValueError(f"subagent_models[{name!r}] must be an object")
+            provider = str(binding.get("provider") or "").strip()
+            model = str(binding.get("model") or "").strip()
+            if not provider:
+                raise ValueError(f"subagent_models[{name!r}].provider is required")
+            validate_model_binding(provider, model)
+            out[name] = {"provider": provider, "model": model}
+        except ValueError as e:
+            if strict:
+                raise
+            logging.getLogger(__name__).warning(
+                "agent subagent_models entry dropped: %s", e
+            )
+    return out
+
+
 def _read(agent_id: str) -> AgentConfig | None:
     p = _agent_path(agent_id)
     if not p.exists():
@@ -233,7 +285,11 @@ def _read(agent_id: str) -> AgentConfig | None:
         data = json.loads(p.read_text() or "{}")
     except json.JSONDecodeError:
         return None
-    return AgentConfig(**{k: v for k, v in data.items() if k in AgentConfig.__dataclass_fields__})
+    cfg = AgentConfig(**{k: v for k, v in data.items() if k in AgentConfig.__dataclass_fields__})
+    # 手改文件可能塞进畸形 subagent_models（非 dict / 未知类型）：容错清洗
+    # 而非整个 agent 失效，坏条目丢弃 + 警告。
+    cfg.subagent_models = validate_subagent_models(cfg.subagent_models, strict=False)
+    return cfg
 
 
 def _write(cfg: AgentConfig) -> None:
@@ -410,13 +466,9 @@ def list_agents() -> list[AgentConfig]:
     ensure_seeded()
     out: list[AgentConfig] = []
     for p in sorted(paths.agents_dir().glob("*.json")):
-        try:
-            data = json.loads(p.read_text() or "{}")
-        except json.JSONDecodeError:
-            continue
-        out.append(
-            AgentConfig(**{k: v for k, v in data.items() if k in AgentConfig.__dataclass_fields__})
-        )
+        cfg = _read(p.stem)  # 与 _read 同一套解析（含 subagent_models 容错清洗）
+        if cfg is not None:
+            out.append(cfg)
     # agents.order 优先（排序设计）：在 order 里的按其先后；不在的（新建
     # agent、workflow fork）稳定追加末尾保持字母序；order 里已删除的残留
     # id 自然忽略（自愈，无需清理）。
@@ -433,6 +485,9 @@ def get_agent(agent_id: str) -> AgentConfig | None:
 
 
 def create_agent(data: dict[str, Any]) -> AgentConfig:
+    data = dict(data)
+    if "subagent_models" in data:
+        data["subagent_models"] = validate_subagent_models(data.get("subagent_models"))
     cfg = AgentConfig(**{k: v for k, v in data.items() if k in AgentConfig.__dataclass_fields__})
     if not cfg.id:
         raise ValueError("agent id required")
@@ -447,6 +502,9 @@ def update_agent(agent_id: str, data: dict[str, Any]) -> AgentConfig:
     existing = _read(agent_id)
     if not existing:
         raise ValueError(f"agent {agent_id} not found")
+    data = dict(data)
+    if "subagent_models" in data:
+        data["subagent_models"] = validate_subagent_models(data.get("subagent_models"))
     merged = existing.to_dict()
     merged.update({k: v for k, v in data.items() if k in AgentConfig.__dataclass_fields__})
     # 带着 provider 字段的更新都来自用户编辑 → 刻意绑定(跟随全局默认的语义

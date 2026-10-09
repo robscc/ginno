@@ -467,6 +467,23 @@ async def _push_global_event(event: str, data: dict) -> None:
         await _push_session_event(sid, event, data)
 
 
+def make_session_model_getter(session_id: str, initial: Any) -> Any:
+    """模型热切解析器（model-assignment-design.md §3.2）：graph 的 agent 节点
+    在每次 LLM 调用前调用它取当前模型对象。PATCH 原地更新
+    ``_SESSIONS[sid]["model"]`` 后，运行中的 turn 下一个 superstep 自然换
+    模型。条目缺失（清表重建窗口等时序空档）时回落最近一次成功解析的
+    实例，绝不返回 None。"""
+    memo: list[Any] = [initial]
+
+    def _resolve() -> Any:
+        entry = _SESSIONS.get(session_id)
+        if entry is not None and entry.get("model") is not None:
+            memo[0] = entry["model"]
+        return memo[0]
+
+    return _resolve
+
+
 def _turn_lock(session_id: str) -> asyncio.Lock:
     lk = _TURN_LOCKS.get(session_id)
     if lk is None:

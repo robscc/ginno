@@ -179,3 +179,73 @@ def test_set_agent_order_roundtrip(isolated_home):
     # 读-改-写不得碰掉 settings 里已有的其它键
     data = json.loads((isolated_home / "settings.json").read_text())
     assert data["agents"]["order"][0] == "research"
+
+
+# ------------------- subagent_models (model-assignment P1) ------------------- #
+def _seed_type(home, name="explore", fm_model=None):
+    """落一个合法类型文件并失效注册表缓存（缓存按目录 mtime 续命）。"""
+    from ginno_runtime import subagent_types as st
+
+    d = home / "agents" / "subagents"
+    d.mkdir(parents=True, exist_ok=True)
+    fm = f"name: {name}\ndescription: test type\n"
+    if fm_model:
+        fm += f"model: {fm_model}\n"
+    (d / f"{name}.md").write_text(f"---\n{fm}---\n\nbody\n", encoding="utf-8")
+    st._CACHE = None
+    st._DIR_STATE = None
+
+
+def test_validate_subagent_models_roundtrip(isolated_home):
+    _seed_type(isolated_home, "explore")
+    out = registry.validate_subagent_models(
+        {"explore": {"provider": "p1", "model": "m1"}, "ghost": None}
+    )
+    # null（UI 的 Inherit 项）规范化为缺席
+    assert out == {"explore": {"provider": "p1", "model": "m1"}}
+
+
+def test_validate_subagent_models_rejects_unknown_type(isolated_home):
+    _seed_type(isolated_home, "explore")
+    with pytest.raises(ValueError, match="unknown sub-agent type"):
+        registry.validate_subagent_models({"nope": {"provider": "p1", "model": "m1"}})
+
+
+def test_validate_subagent_models_enforces_binding(isolated_home, monkeypatch):
+    _seed_type(isolated_home, "explore")
+    monkeypatch.setattr(
+        registry.prov_mod, "get_config", lambda pid: {"name": pid, "models": ["m1"]}
+    )
+    with pytest.raises(registry.AgentModelBindingError):
+        registry.validate_subagent_models({"explore": {"provider": "p1", "model": "m2"}})
+
+
+def test_update_agent_persists_and_merges_subagent_models(isolated_home):
+    registry.ensure_seeded()
+    _seed_type(isolated_home, "explore")
+    _seed_type(isolated_home, "researcher")
+    registry.update_agent(
+        "dev", {"subagent_models": {"explore": {"provider": "p1", "model": "m1"}}}
+    )
+    assert registry.get_agent("dev").subagent_models == {
+        "explore": {"provider": "p1", "model": "m1"}
+    }
+    # 不带该字段的更新走 merge，已存覆盖不被清空
+    registry.update_agent("dev", {"name": "Dev 2"})
+    assert registry.get_agent("dev").subagent_models["explore"]["model"] == "m1"
+    assert registry.get_agent("dev").name == "Dev 2"
+
+
+def test_read_sanitizes_malformed_subagent_models(isolated_home, caplog):
+    """手改文件塞进畸形值：容忍清洗（丢条目+警告），不能废掉整个 agent。"""
+    import logging
+
+    registry.ensure_seeded()
+    p = isolated_home / "agents" / "dev.json"
+    data = json.loads(p.read_text())
+    data["subagent_models"] = {"ghost-type": {"provider": "p1", "model": "m1"}, "bad": 42}
+    p.write_text(json.dumps(data))
+    with caplog.at_level(logging.WARNING):
+        cfg = registry.get_agent("dev")
+    assert cfg is not None
+    assert cfg.subagent_models == {}  # 未知类型 + 非 dict 条目都被清掉

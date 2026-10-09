@@ -5,7 +5,7 @@ import { useTranslations } from "next-intl";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
-import type { ConnectorInfo } from "@/lib/runtime";
+import type { ConnectorInfo, SubagentTypeInfo } from "@/lib/runtime";
 import { AGENT_HEX, agentHex } from "@/lib/theme";
 import { AgentIcon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
@@ -82,6 +82,19 @@ function groupDot(conns: ConnectorInfo[]): { cls: string; titleKey: DotKey } {
 
 type Feedback = { text: string; ok: boolean };
 
+// Sub-agent models 草稿值解码："" = Inherit；JSON.stringify([pid, model]) =
+// 显式绑定。返回 null = 继承（或不可解码的草稿，按继承兜底）。
+function parseSubValue(v: string): { pid: string; m: string } | null {
+  if (!v) return null;
+  try {
+    const [pid, m] = JSON.parse(v) as [string, string];
+    if (typeof pid === "string" && typeof m === "string" && pid && m) return { pid, m };
+  } catch {
+    /* fallthrough */
+  }
+  return null;
+}
+
 export function AgentsSettings() {
   const g = useGinno();
   const t = useTranslations("settings.agents");
@@ -97,8 +110,27 @@ export function AgentsSettings() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [conns, setConns] = useState<ConnectorInfo[]>([]);
   const [denyDraft, setDenyDraft] = useState<Record<string, string[]>>({});
+  // 子代理类型注册表（Sub-agent models 区块）。类型文件很少变，挂载时拉一次。
+  const [subTypes, setSubTypes] = useState<SubagentTypeInfo[]>([]);
+  // per-agent per-type 草稿：值 "" = Inherit，否则 JSON.stringify([pid, model])。
+  const [subDraft, setSubDraft] = useState<Record<string, Record<string, string>>>({});
   // 单飞标志：移动期间禁用全部 ↑/↓，防连点把过期顺序提交给后端。
   const [moveBusy, setMoveBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .listSubagentTypes()
+      .then((r) => {
+        if (alive && Array.isArray(r)) setSubTypes(r);
+      })
+      .catch(() => {
+        /* sidecar 未起 / 无类型目录：区块显示空态 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Connector list feeds the per-agent capability toggles + status dots.
   // 10s poll matches the sidebar aggregate dot's cadence.
@@ -171,7 +203,50 @@ export function AgentsSettings() {
   );
   const connGroups = connectorGroups(conns);
 
+  // 与 chat 模型 chip 同一套模型枚举：enabled provider × models[]（缺省回落
+  // default_model）。主模型下拉与 Sub-agent models 的 optgroup 共用。
+  const enabledModelGroups = Object.entries(g.providers)
+    .filter(([, p]) => p.enabled)
+    .map(([pid, p]) => ({
+      pid,
+      name: p.name || pid,
+      models: (
+        Array.isArray(p.models) && p.models.length
+          ? p.models
+          : [p.default_model || p.model || ""]
+      ).filter((m): m is string => !!m),
+    }));
+  const providerModelList = (pid: string): string[] => {
+    const p = g.providers[pid];
+    if (!p) return [];
+    return (
+      Array.isArray(p.models) && p.models.length
+        ? p.models
+        : [p.default_model || p.model || ""]
+    ).filter(Boolean);
+  };
+
+  const subFor = (a: AgentConfig, typeName: string): string => {
+    const d = subDraft[a.id]?.[typeName];
+    if (d !== undefined) return d;
+    const b = a.subagent_models?.[typeName];
+    return b ? JSON.stringify([b.provider, b.model]) : "";
+  };
+  const setSub = (id: string, typeName: string, val: string) => {
+    setSubDraft((d) => ({ ...d, [id]: { ...d[id], [typeName]: val } }));
+    clearMsg(id);
+  };
+
   async function save(a: AgentConfig) {
+    // Sub-agent models 只在类型表加载成功时提交（整表替换语义）——拉取失败
+    // 时发 {} 会把已保存的覆盖清空。
+    const subagent_models: Record<string, { provider: string; model: string }> = {};
+    if (subTypes.length > 0) {
+      for (const ty of subTypes) {
+        const b = parseSubValue(subFor(a, ty.name));
+        if (b) subagent_models[ty.name] = { provider: b.pid, model: b.m };
+      }
+    }
     const data = {
       name: get(a.id, "name", a.name).trim() || a.id,
       system_prompt: get(a.id, "system_prompt", a.system_prompt),
@@ -181,6 +256,7 @@ export function AgentsSettings() {
       icon: get(a.id, "icon", a.icon),
       color: get(a.id, "color", a.color),
       connectors_deny: denyFor(a),
+      ...(subTypes.length > 0 ? { subagent_models } : {}),
     };
     setBusy((b) => ({ ...b, [a.id]: true }));
     clearMsg(a.id);
@@ -293,6 +369,10 @@ export function AgentsSettings() {
             cur.provider && !enabledProviders.has(cur.provider)
               ? t("providerWarn", { provider: cur.provider, default: g.defaultProvider || "custom" })
               : "";
+          // 主模型下拉的清单 + 幽灵项（model 自由文本改下拉后，遗留非法值仍可见可改）
+          const modelList = providerModelList(cur.provider);
+          const curModel = get(a.id, "model", a.model);
+          const modelGhost = curModel && !modelList.includes(curModel) ? curModel : "";
           const iconOptions = cur.icon && !AGENT_ICONS.includes(cur.icon)
             ? [cur.icon, ...AGENT_ICONS]
             : AGENT_ICONS;
@@ -434,12 +514,25 @@ export function AgentsSettings() {
                 </div>
                 <div>
                   <label className="field-label">{t("modelLabel")}</label>
-                  <input
+                  <select
                     className="field"
-                    value={get(a.id, "model", a.model)}
-                    placeholder={g.providers[cur.provider]?.default_model || t("providerDefaultModel")}
+                    value={curModel}
                     onChange={(e) => set(a.id, "model", e.target.value)}
-                  />
+                  >
+                    <option value="">{t("providerDefaultModel")}</option>
+                    {/* 幽灵项：保留非法/遗留值可见（同 provider 下拉的处理），
+                        否则 select 静默跳回默认项，一保存就丢值。 */}
+                    {modelGhost && (
+                      <option value={modelGhost}>
+                        {modelGhost} · {t("modelNotInList")}
+                      </option>
+                    )}
+                    {modelList.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className="field-label">{t("iconLabel")}</label>
@@ -462,6 +555,62 @@ export function AgentsSettings() {
                 <div className="mt-1 rounded-md border border-yellow/40 bg-yellow/10 px-2 py-1 text-[11px] text-yellow">
                   {providerWarn}
                 </div>
+              )}
+              {/* Sub-agent models（model-assignment-design.md §2.3）：本 agent
+                  派出各类型子代理时用的模型，缺席 = 继承（类型 frontmatter →
+                  父会话模型）。 */}
+              <label className="field-label mt-2">{t("subModelsLabel")}</label>
+              {subTypes.length === 0 ? (
+                <div className="mt-0.5 text-[11px] text-faint">{t("subModelsEmpty")}</div>
+              ) : (
+                <>
+                  <div className="mt-1 space-y-1">
+                    {subTypes.map((ty) => {
+                      const v = subFor(a, ty.name);
+                      const b = parseSubValue(v);
+                      const ghost =
+                        b && !(enabledModelGroups.find((x) => x.pid === b.pid)?.models.includes(b.m))
+                          ? b
+                          : null;
+                      return (
+                        <div key={ty.name} className="flex items-center gap-2">
+                          <span
+                            className="w-28 shrink-0 truncate font-mono text-[11px] text-muted"
+                            title={ty.description}
+                          >
+                            {ty.name}
+                          </span>
+                          <select
+                            className="field"
+                            value={v}
+                            onChange={(e) => setSub(a.id, ty.name, e.target.value)}
+                          >
+                            <option value="">
+                              {ty.model
+                                ? t("subInheritTypeDefault", { model: ty.model })
+                                : t("subInheritParent")}
+                            </option>
+                            {ghost && (
+                              <option value={v}>
+                                {ghost.pid} / {ghost.m} · {t("modelNotInList")}
+                              </option>
+                            )}
+                            {enabledModelGroups.map((grp) => (
+                              <optgroup key={grp.pid} label={grp.name}>
+                                {grp.models.map((m) => (
+                                  <option key={`${grp.pid}:${m}`} value={JSON.stringify([grp.pid, m])}>
+                                    {m}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-faint">{t("subModelsNote")}</div>
+                </>
               )}
               <label className="field-label mt-2">{t("colorLabel")}</label>
               <div className="mt-1 flex items-center gap-1.5">

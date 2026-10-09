@@ -598,6 +598,9 @@ async def create_session(req: CreateSessionRequest) -> dict:
         mcp_tools=mcp_tools,
         hook_dispatcher=shared._hooks,
         all_tools=all_tools,
+        # 模型热切（design §3.2）：graph 每次调用解析当前模型，PATCH 原地
+        # 换模型对运行中的 turn 也生效。
+        model_getter=shared.make_session_model_getter(session_id, model),
     )
     ag = _agent_lookup(agent_id)
     if ag:
@@ -730,11 +733,15 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     patch = req.model_dump()
 
     # Per-session model switch (composer model chip): validate before touching
-    # meta, then drop the in-memory graph so the next WS connect rebuilds it
-    # via _ensure_session with the new model — same heal path as
-    # PUT /api/providers. A goal driver holding the old session object keeps
-    # the old model until that reconnect; accepted.
+    # meta. NON-structural switches are IN-PLACE (model-assignment-design.md
+    # §3.2): the live graph resolves its model through
+    # server_shared.make_session_model_getter at every LLM call, so swapping
+    # the entry's model takes effect at the next superstep — a running turn
+    # keeps streaming its current call on the OLD model, no reconnect needed.
+    # Structural patches (agent/workflow rebinding) still pop the entry so the
+    # next WS connect rebuilds the graph, same heal path as PUT /api/providers.
     switched = patch.get("provider") is not None or patch.get("model") is not None
+    new_model = None
     if switched:
         cur_meta = next(
             (m for m in _session_meta_list(slug) if m.get("id") == session_id), None
@@ -749,7 +756,7 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
                 prov_mod.load_providers(), patch["provider"]
             )
         try:
-            build_model(provider, patch.get("model"))
+            new_model = build_model(provider, patch.get("model"))
         except ValueError as e:
             return {"ok": False, "error": str(e)}
 
@@ -765,14 +772,44 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     patch["title_auto"] = title_auto
 
     updated = _session_meta_patch(slug, session_id, patch)
-    if switched:
+    structural = patch.get("agent_id") is not None or patch.get("workflow_id") is not None
+    if switched and structural:
+        # agent/workflow 换绑是结构变更（persona/toolset/turn context 都变），
+        # graph 必须重建：维持既有 pop → 下次连接 _ensure_session 重建。
         _SESSIONS.pop(session_id, None)
         s = None
-    if s:
+    elif s is not None:
+        if new_model is not None:
+            # 模型热切原地更新（design §3.2）：内存条目换模型对象 + 绑定字段。
+            # 运行中的 turn 不受打断——graph 的 getter 下一个 superstep 生效；
+            # compaction 等读 session["model"] 的路径自动跟随。
+            s["model"] = new_model
+            s["model_provider"] = provider
+            s["model_name"] = patch.get("model")
         for k, v in patch.items():
-            if v is not None:
+            # provider/model 走 meta 键名，条目里对应 model_provider/model_name，
+            # 已在上面显式更新——跳过，避免写进错误键。
+            if v is not None and k not in ("provider", "model"):
                 s[k] = v
         s["title_auto"] = title_auto
+    if new_model is not None:
+        _log.info(
+            "session_model_switched session=%s provider=%s model=%s running=%s",
+            session_id,
+            provider,
+            patch.get("model"),
+            session_id in shared._RUNNING_TURNS,
+        )
+        await shared._push_session_event(
+            session_id,
+            "session.model_changed",
+            {
+                "session_id": session_id,
+                "provider": provider,
+                "model": patch.get("model"),
+                "effective": "next_step",
+            },
+        )
     return {
         "ok": True,
         "session": updated or (s and {k: v for k, v in s.items() if k != "graph"}),
@@ -1050,6 +1087,8 @@ def _apply_context_to_live_session(
         mcp_tools=mcp_tools,
         hook_dispatcher=shared._hooks,
         all_tools=all_tools,
+        # 模型热切：重建也不能把模型重新烤死（design §3.2），继续走 getter。
+        model_getter=shared.make_session_model_getter(s.get("session_id", ""), s["model"]),
     )
     s["all_tool_names"] = [t.name for t in all_tools]
     s["mcp_tool_names"] = [t.name for t in mcp_tools]
@@ -1216,6 +1255,8 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         mcp_tools=mcp_tools,
         hook_dispatcher=shared._hooks,
         all_tools=all_tools,
+        # 模型热切（design §3.2）：重启重建的会话同样支持运行中换模型。
+        model_getter=shared.make_session_model_getter(session_id, model),
     )
     s = {
         "session_id": session_id,

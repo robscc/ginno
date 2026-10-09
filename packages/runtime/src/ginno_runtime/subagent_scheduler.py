@@ -435,6 +435,51 @@ async def _push_both(parent_id: str | None, child_id: str, event: str, data: dic
 # spawn (contract 4/5, design §5.1/§5.3)
 # --------------------------------------------------------------------------- #
 
+def _agent_type_model_override(agent_id: str | None, type_name: str) -> tuple[str, str] | None:
+    """Agents 页 per-agent per-type 模型覆盖（model-assignment-design.md §2.2，
+    解析链最高层）。绑定失效（provider 禁用/删除、模型脱离 models[]、provider
+    无默认模型）时降级：警告 + 返回 None，落回类型 frontmatter / 父会话
+    模型——比一路跌到全局默认更接近用户意图。"""
+    if not agent_id or not type_name:
+        return None
+    from . import providers as prov_mod
+    from .agents.registry import get_agent
+
+    agent = get_agent(agent_id)
+    binding = (agent.subagent_models if agent is not None else None) or {}
+    binding = binding.get(type_name)
+    if not isinstance(binding, dict):
+        return None
+    provider = str(binding.get("provider") or "").strip()
+    if not provider:
+        return None
+    providers = prov_mod.load_providers()
+    if not (providers.get(provider) or {}).get("enabled"):
+        _log.warning(
+            "agent_type_model_override_dropped agent=%s type=%s provider=%s reason=disabled",
+            agent_id, type_name, provider,
+        )
+        return None
+    # 显式 model 查成员（同 validate_model_binding 的硬约束）；空串 = 该
+    # provider 的默认模型，解析自配置本身，不再反向查成员。
+    explicit = str(binding.get("model") or "").strip()
+    listed = (prov_mod.get_config(provider) or {}).get("models") or []
+    if explicit and listed and explicit not in listed:
+        _log.warning(
+            "agent_type_model_override_dropped agent=%s type=%s model=%s reason=not-in-models",
+            agent_id, type_name, explicit,
+        )
+        return None
+    model = explicit or prov_mod.model_for_provider(providers, provider)
+    if not model:
+        _log.warning(
+            "agent_type_model_override_dropped agent=%s type=%s provider=%s reason=no-default-model",
+            agent_id, type_name, provider,
+        )
+        return None
+    return provider, model
+
+
 async def create_subagent(
     parent_session_id: str,
     goal: str,
@@ -592,9 +637,15 @@ async def create_subagent(
         if st is not None:
             from .subagent_types import resolve_type_model
 
+            # 解析链（model-assignment-design.md §2.2）：类型 frontmatter 覆盖
+            # 父会话模型；Agents 页 per-agent per-type 覆盖再压一层（最高
+            # 优先，失效时在 helper 内降级）。
             provider, model_name = resolve_type_model(
                 st, (provider, model_name)
             )
+            override = _agent_type_model_override(parent.get("agent_id"), st.name)
+            if override is not None:
+                provider, model_name = override
         title = goal.replace("\n", " ")[:40]
         req = CreateSessionRequest(
             project_slug=slug,
@@ -604,7 +655,8 @@ async def create_subagent(
             type="subagent",
             # Inherit the parent's model config + mounts; the workspace itself
             # stays per-session (create_session supersedes it by design). A
-            # matched type may override the model and tightens the toolset.
+            # matched type may override the model (frontmatter), and the Agents
+            # 页 per-agent override outranks it; the type also tightens tools.
             provider=provider,
             model=model_name,
             context_folders=list(parent_meta.get("context_folders") or []),

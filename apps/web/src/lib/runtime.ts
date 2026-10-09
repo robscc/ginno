@@ -355,6 +355,17 @@ export async function verifyModelConfig(draft: Partial<ModelConfig>) {
 export async function listAgents() {
   return json<AgentConfig[]>(`${BASE}/agents`);
 }
+/** 子代理类型注册表（~/.ginno/agents/subagents/*.md）——Agents 页
+ *  Sub-agent models 区块的数据源（model-assignment-design.md §2.3）。
+ *  model 为类型 frontmatter 的默认覆盖原文（provider/model 或裸名）。 */
+export interface SubagentTypeInfo {
+  name: string;
+  description: string;
+  model: string;
+}
+export async function listSubagentTypes() {
+  return json<SubagentTypeInfo[]>(`${BASE}/subagent_types`);
+}
 export async function createAgent(data: Partial<AgentConfig>) {
   return json<{ ok: boolean; agent?: AgentConfig; error?: string }>(`${BASE}/agents`, {
     method: "POST",

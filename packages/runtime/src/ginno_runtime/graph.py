@@ -919,8 +919,16 @@ def _wrap_steered_for_model(history: list) -> list:
     return out
 
 
-def agent_node_factory(model, all_tools):
+def agent_node_factory(model_getter, all_tools):
+    """``model_getter``：无参可调用，返回当前模型对象。本节点在每个
+    superstep 入口（即每次 LLM 调用前）解析一次真实实例——模型热切
+    （model-assignment-design.md §3.2）靠它生效：PATCH 原地换掉会话条目
+    的 ``model`` 后，这里下一次解析自然拿到新模型。后续所有用法
+    （bind_tools / _is_anthropic_model / ainvoke）都作用于解析出的实例，
+    所以类型检查与 provider 特性判断不受影响。"""
+
     async def agent_node(state: AgentState, config=None) -> dict:
+        model = model_getter()
         agent = _resolve_agent(_turn_agent_id(state, config))
         extra = _skill_extra_allow(state)
         allowed = [t for t in all_tools if tool_allowed(agent, t.name, extra)]
@@ -1559,11 +1567,16 @@ def build_graph(
     all_tools: list | None = None,
     context_dirs: list[dict] | None = None,
     primary_path: str | None = None,
+    model_getter=None,
 ):
     """Compose the main agent graph (single graph, union toolset).
 
     Callers may pass a pre-built ``all_tools`` list so the session can keep
     the exact tool names for WorldState sections (mcp/agent snapshots).
+    ``model_getter``（模型热切）：agent 节点每次 LLM 调用前调用它取当前模
+    型；缺省退化为静态 ``model``。会话构建方应传
+    ``server_shared.make_session_model_getter(session_id, model)``，让运行中
+    的 turn 也能跟随 PATCH 换模型（model-assignment-design.md §3.2）。
     """
     if all_tools is None:
         all_tools = build_all_tools(
@@ -1575,8 +1588,9 @@ def build_graph(
         )
     policy = PermissionPolicy.from_settings()
 
+    resolve_model = model_getter or (lambda: model)
     g = StateGraph(AgentState)
-    g.add_node("agent", agent_node_factory(model, all_tools))
+    g.add_node("agent", agent_node_factory(resolve_model, all_tools))
     g.add_node("permission", permission_node_factory(policy, hook_dispatcher, all_tools))
     g.add_node("tools", _tools_node_factory(all_tools))
 
