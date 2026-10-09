@@ -59,6 +59,7 @@ def _session_facts(session_id: str) -> dict:
         "slug": _slug or entry.get("project_slug") or "",
         "workspace": entry.get("workspace") or (meta or {}).get("workspace") or "",
         "model": entry.get("model_name") or (meta or {}).get("model") or "",
+        "provider": entry.get("model_provider") or (meta or {}).get("provider") or "",
     }
 
 
@@ -145,13 +146,23 @@ async def _op_usage(args: dict, session_id: str) -> dict:
     built on it), so returning the flat usage-store totals here silently broke
     every reading mod. Context size proxies the LAST LLM call's whole-prompt
     input (cumulative totals span calls and are not the window occupancy).
-    The runtime does not track a model context window; ``mods.contextWindow``
-    (default 200k) stands in. Unknown session → zero tokens, never null."""
+
+    The window comes from the RUNTIME: the session's model config
+    (``providers.context_window_for`` — Settings → Model API) with a model-name
+    fallback. ``mods.contextWindow`` is only an optional override of last
+    resort. Unknown session → zero tokens, never null."""
     from .. import usage_store
+    from ..providers import context_window_for, get_config
     from ..server_shared import _USAGE_BY_SESSION
     from .bridge_utils import load_mods_settings
 
-    window = int(load_mods_settings().get("contextWindow") or 200_000)
+    # Window resolution: runtime (model config → known model name) first; if the
+    # runtime knows nothing, an explicit mods.contextWindow override; else 200k.
+    facts = _session_facts(session_id)
+    provider = facts.get("provider") or ""
+    model = facts.get("model") or ""
+    runtime_window = context_window_for(get_config(provider) if provider else None, model)
+    window = runtime_window or int(load_mods_settings().get("contextWindow") or 0) or 200_000
     tokens = 0
     try:
         rows = usage_store.query_requests(session_id=session_id, page=1, page_size=1).get("rows") or []

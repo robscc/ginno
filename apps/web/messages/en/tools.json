@@ -506,6 +506,8 @@
         "noModelListNote": "This provider has no model list yet — enter a model id directly, or add them line by line in the “Model list” field on the left",
         "notInListModel": "{model} is not in the model list",
         "maxTokens": "Max Tokens",
+        "contextWindowLabel": "Context Window",
+        "contextWindowHint": "Model context window (tokens). Blank = auto (by model name). Reading mods (token-weather) show % of this.",
         "temperature": "Temperature",
         "timeoutS": "Timeout (s)",
         "stillReferenced": "Still referenced by: {refs} (rebind first, then retry)",

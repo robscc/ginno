@@ -506,6 +506,8 @@
         "noModelListNote": "该提供商还没有模型列表 —— 直接输入模型 id，或在左侧「模型列表」中逐行添加",
         "notInListModel": "{model} 不在模型列表中",
         "maxTokens": "最大 Token 数",
+        "contextWindowLabel": "上下文窗口",
+        "contextWindowHint": "模型上下文窗口（tokens）。留空=按模型名自动。Token Weather 等插件按它显示百分比。",
         "temperature": "温度",
         "timeoutS": "超时（秒）",
         "stillReferenced": "仍被引用：{refs}（请先改绑，再重试）",

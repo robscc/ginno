@@ -37,7 +37,7 @@ DEFAULT_MODS_SETTINGS: dict = {
     "allowOverrideDenyRules": False,
     "nodePath": "",   # '' = auto-discover (settings override, design §9)
     "brokerPath": "",  # '' = auto-discover (dev/web only)
-    "contextWindow": 200_000,  # the runtime tracks no model window; $.session.usage().context.window proxies this
+    "contextWindow": 0,  # 0 = use the runtime's model context window; set >0 only to force an override
     "items": {},      # name → {enabled, source, grants, config}
 }
 

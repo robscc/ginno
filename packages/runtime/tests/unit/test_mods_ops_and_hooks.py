@@ -41,12 +41,55 @@ async def test_session_read_family(isolated_home):
     assert await mods_ops.handle("session", "root", {}, "abc") == ""
     assert await mods_ops.handle("session", "turns", {}, "abc") == 0  # no checkpoint
     # 未知会话返回零 tokens 而不是 None:mods 规范里 usage 恒为对象(mod 会解构
-    # .context);window 取 mods.contextWindow 默认(runtime 不跟踪模型窗口)
+    # .context);窗口来自 runtime 模型配置→按模型名兜底(此处无 session/模型 → 200k)
     assert await mods_ops.handle("session", "usage", {}, "abc") == {
         "context": {"tokens": 0, "window": 200_000, "percent": 0.0},
         "rateLimits": [],
     }
     assert await mods_ops.handle("session", "messages", {}, "abc") == []
+
+
+async def test_session_usage_window_from_model_config(isolated_home):
+    """窗口取自 runtime 的模型配置(context_window),不再是写死的 mods 常量。"""
+    from ginno_runtime import providers, paths
+    from ginno_runtime.server_shared import _SESSIONS
+
+    # 会话绑定到 provider="custom"、model="my-model"
+    _SESSIONS["s1"] = {"model_provider": "custom", "model_name": "my-model"}
+    # 模型配置声明 context_window=400000
+    paths.settings_path().write_text(
+        json.dumps(
+            {
+                "model_configs": [
+                    {
+                        "id": "custom",
+                        "name": "C",
+                        "protocol": "openai-compatible",
+                        "base_url": "http://x",
+                        "api_key": "k",
+                        "models": ["my-model"],
+                        "default_model": "my-model",
+                        "context_window": 400000,
+                    }
+                ]
+            }
+        )
+    )
+    out = await mods_ops.handle("session", "usage", {}, "s1")
+    assert out["context"]["window"] == 400000
+
+    # 会话无 provider(配置取不到),模型名已知(claude…) → 按名字表 200k
+    _SESSIONS["s2"] = {"model_name": "claude-3-7-sonnet"}
+    assert (await mods_ops.handle("session", "usage", {}, "s2"))["context"]["window"] == 200_000
+
+
+def test_context_window_for_precedence():
+    from ginno_runtime import providers
+
+    assert providers.context_window_for({"context_window": 512000}, "gpt-4o") == 512000
+    assert providers.context_window_for({}, "claude-3-7-sonnet") == 200_000
+    assert providers.context_window_for({}, "gpt-4o") == 128_000
+    assert providers.context_window_for({}, "unknown-model") == 0
 
 
 def test_to_canonical_shapes():

@@ -117,6 +117,10 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     # 300s default (P2 contract 7): a stored per-config ``timeout_s`` in
     # settings.json overrides this via normalize_config's merge.
     "timeout_s": 300,
+    # Model context window (tokens). 0 = unknown → callers fall back to the
+    # name lookup then the mods-level default. This is what $.session.usage()
+    # reports as ``context.window`` for reading mods (e.g. token-weather).
+    "context_window": 0,
     "enable_search": False,
     "enable_thinking": False,
     # Anthropic protocol only: bind the provider-side `web_search` server tool
@@ -257,6 +261,39 @@ def save_configs(
         settings["default_config"] = default_config
     _write_settings(settings)
     return normalized
+
+
+# Model-name → context window (tokens), used when a config declares no explicit
+# ``context_window``. Substring match; conservative builtin defaults.
+_CONTEXT_WINDOW_BY_MODEL: tuple[tuple[str, int], ...] = (
+    ("claude", 200_000),
+    ("gpt-3.5", 16_385),
+    ("gpt-4", 128_000),
+    ("gemini", 1_000_000),
+)
+
+
+def context_window_for(
+    config: dict[str, Any] | None, model_name: str | None = None
+) -> int:
+    """The context window (tokens) the runtime knows for a session's model.
+
+    Order: the model config's explicit ``context_window`` (Settings → Model API)
+    → a model-name lookup → ``0`` (unknown; the caller decides the final
+    fallback). Reading mods (e.g. token-weather) get this via
+    ``$.session.usage().context.window``.
+    """
+    try:
+        cw = int((config or {}).get("context_window") or 0)
+        if cw > 0:
+            return cw
+    except (TypeError, ValueError):
+        pass
+    name = (model_name or (config or {}).get("default_model") or "").lower()
+    for pat, win in _CONTEXT_WINDOW_BY_MODEL:
+        if pat in name:
+            return win
+    return 0
 
 
 def get_config(config_id: str, settings: dict[str, Any] | None = None) -> dict[str, Any] | None:

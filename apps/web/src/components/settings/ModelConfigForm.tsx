@@ -124,7 +124,7 @@ export function ModelConfigForm({
 
   // Blank input = omit the field so the backend applies its per-protocol
   // default; temperature 0 is a literal greedy decode, not "default".
-  const num = (key: "max_tokens" | "timeout_s" | "temperature", v: string) => {
+  const num = (key: "max_tokens" | "timeout_s" | "temperature" | "context_window", v: string) => {
     const n = v === "" ? undefined : Number(v);
     setDraft((d) => ({ ...d, [key]: n != null && Number.isFinite(n) ? n : undefined }));
   };
@@ -488,6 +488,15 @@ export function ModelConfigForm({
                   className="field"
                   value={draft.max_tokens ?? ""}
                   onChange={(e) => num("max_tokens", e.target.value)}
+                />
+              </Field>
+              <Field label={t("contextWindowLabel")} hint={t("contextWindowHint")}>
+                <input
+                  type="number"
+                  className="field"
+                  placeholder="200000"
+                  value={draft.context_window ?? ""}
+                  onChange={(e) => num("context_window", e.target.value)}
                 />
               </Field>
               <Field label={t("temperature")}>

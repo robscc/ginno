@@ -137,6 +137,7 @@ export interface ModelConfig {
   models: string[]; // replaces the old single model/default_model field
   default_model: string; // must be a member of models
   max_tokens: number;
+  context_window?: number; // model context window (tokens); 0/absent = unknown
   temperature: number;
   timeout_s: number;
   enable_search?: boolean; // openai-compatible private body param (Qwen/DashScope…)
