@@ -39,7 +39,7 @@ RUNTIME_RES := $(ROOT)/apps/desktop/resources/runtime
 # Contents/Resources/resources/ and lib.rs points GINNO_MOD_RUNNER_PATH at it.
 RUNNER_RES := $(ROOT)/apps/desktop/resources/mod-runner.mjs
 
-.PHONY: all app sidecar runtime web mod-broker mod-runner clean help e2e-ui
+.PHONY: all app app-force sidecar runtime web mod-broker mod-runner clean help e2e-ui
 
 all: app
 
@@ -69,6 +69,19 @@ app: check guard-app-not-running mod-broker mod-runner sidecar
 	@echo "✅ Built:"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/dmg/"
+
+## app-force: `app` without the running-app guard (FORCE=1) — convenience alias
+# Exists because typing FORCE=1 in front of `make app` is easy to forget. It is
+# a THIN alias: the guard's own warning and its reasoning are unchanged, and the
+# post-build reminder below is printed unconditionally. If you want the safe
+# path, quit Ginno first and use plain `make app`.
+app-force:
+	@$(MAKE) app FORCE=1
+	@echo ""
+	@echo "⚠️  Built while Ginno may have been running (guard skipped)."
+	@echo "   FULLY QUIT AND RELAUNCH Ginno before verifying anything —"
+	@echo "   otherwise lazy imports fail with 'zlib error: incorrect header"
+	@echo "   check' and only a restart recovers (CLAUDE.md 已知故障 #1)."
 
 ## sidecar: stage the runtime onedir bundle as a Tauri resource
 sidecar: runtime
@@ -178,4 +191,4 @@ clean:
 
 ## help: list targets
 help:
-	@grep -E '^## ' $(MAKEFILE) | sed 's/## /  /'
+	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## /  /'
