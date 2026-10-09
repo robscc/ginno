@@ -1107,14 +1107,41 @@ export async function putSettings(data: Record<string, unknown>) {
     body: JSON.stringify(data),
   });
 }
+// MCP 状态（结构化设置页契约）。enabled / disabledTools / toolDetails 由并行
+// 的后端改造逐步补齐——前端一律可选读取，字段缺失时优雅降级到旧行为
+// （缺 enabled 视为启用、缺 disabledTools 视为全启用、缺 toolDetails 只展示
+// getMcp().tools 的名字列表）。
+export type McpToolDetail = {
+  name: string;
+  description?: string | null;
+  /** 服务端 annotations.readOnlyHint */
+  readOnly?: boolean;
+  /** 服务端 annotations.destructiveHint */
+  destructive?: boolean;
+};
 export type McpServerStatus = {
   name: string;
   connected: boolean;
   tools: number;
   error?: string | null;
+  enabled?: boolean;
+  /** 本 server 被关掉的 tool 短名（不带 mcp_<server>_ 前缀） */
+  disabledTools?: string[];
+  /** 仅 GET /api/mcp?tools=1 时返回（设计文档 §4.1）；字段缺失时 UI 降级为纯名单 */
+  toolDetails?: McpToolDetail[];
+  /** 归一化后的 transport / 脱敏后的 url（卡片副行只吃这个，不自行拼原始 URL） */
+  transport?: string;
+  url?: string;
+  /** 连接成功/最近失败的 wall-clock 时间戳（ms）——「connected for 3d」类 meta 的来源 */
+  connectedAt?: number;
+  lastErrorAt?: number;
 };
-export async function getMcp() {
-  return json<{ servers: string[]; tools: string[]; status?: McpServerStatus[] }>(`${BASE}/mcp`);
+// tools=true → ?tools=1（详情页 Tools tab / 工具明细）；5s 轮询保持无参轻查询。
+// 后端未支持该参数时忽略之，前端按字段缺失降级。
+export async function getMcp(opts?: { tools?: boolean }) {
+  return json<{ servers: string[]; tools: string[]; failed?: string[]; status?: McpServerStatus[] }>(
+    `${BASE}/mcp${opts?.tools ? "?tools=1" : ""}`,
+  );
 }
 export async function getMcpConfig() {
   return json<{ mcpServers: Record<string, unknown> }>(`${BASE}/mcp/config`);
@@ -1125,8 +1152,14 @@ export async function putMcp(data: unknown) {
 export async function reloadMcp() {
   return json<{ ok: boolean; servers: string[] }>(`${BASE}/mcp/reload`, { method: "POST" });
 }
-export async function reconnectMcp() {
-  return json<{ ok: boolean; status?: McpServerStatus[] }>(`${BASE}/mcp/reconnect`, { method: "POST" });
+// server 可选：带 ?server=<name> 时只重连该 server（绕过 120s 冷却）。
+// 已连接/已禁用名幂等 no-op；未配置名返回 {ok:false, error}。
+export async function reconnectMcp(server?: string) {
+  const q = server ? `?server=${encodeURIComponent(server)}` : "";
+  return json<{ ok: boolean; error?: string | null; status?: McpServerStatus[] }>(
+    `${BASE}/mcp/reconnect${q}`,
+    { method: "POST" },
+  );
 }
 export async function createSkill(data: { name: string; body: string }) {
   return json<{ ok: boolean; error?: string }>(`${BASE}/skills`, {

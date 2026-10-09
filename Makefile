@@ -160,6 +160,7 @@ runtime: web
 	  --add-data "$(ROOT)/packages/extension/src:extension_src" \
 	  --add-data "$(ROOT)/packages/extension/native-host:extension_src_native_host" \
 	  --add-data "$(RUNTIME)/src/ginno_runtime/i18n:ginno_runtime/i18n" \
+	  --add-data "$(RUNTIME)/src/ginno_runtime/skills/builtin:ginno_runtime/skills/builtin" \
 	  --add-data "$(ROOT)/apps/web/messages:web_messages" \
 	  bin/ginno-runtime.py
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"

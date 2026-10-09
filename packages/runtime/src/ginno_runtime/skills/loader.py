@@ -8,6 +8,8 @@ Skill format (Claude-Code-inspired):
 
 Precedence on name conflict: builtin < global < project (a user copy
 overrides a built-in without breaking it; built-ins can't be deleted).
+A copy that omits `tools:`/`sticky:` inherits those bindings from the
+built-in it shadows, so an old copy can't orphan a lazy tool family.
 
     ---
     name: summarize-notes
@@ -119,13 +121,31 @@ def _scan_dir(root: Path, builtin: bool, into: dict[str, Skill]) -> None:
         return
     for p in root.glob("*/SKILL.md"):
         s = _parse_skill_file(p, builtin=builtin)
-        if s:
-            into[s.name] = s
+        if not s:
+            continue
+        prev = into.get(s.name)
+        if prev is not None and prev.builtin and not s.builtin:
+            # A user copy overrides a built-in for the *instructions* — it must
+            # not silently drop the built-in's tool bindings: the lazy families
+            # (graph._LAZY_TOOL_PREFIXES) bind only through a `sticky: true`
+            # skill's `tools:` declaration, and an old copy predating those
+            # frontmatter keys would orphan the whole family (a user-installed
+            # Obsidian-style `todo` did exactly that). The binding is inherited
+            # as a WHOLE: a copy that omits `tools:` takes the built-in's
+            # tools+sticky; one that declares its own `tools:` owns the entire
+            # binding (no inherited stickiness for a self-declared toolset).
+            if not s.allowed_tools:
+                s.allowed_tools = list(prev.allowed_tools)
+                if not s.sticky:
+                    s.sticky = prev.sticky
+        into[s.name] = s
 
 
 def load_all_skills(project_slug: str | None = None) -> list[Skill]:
     """Load builtin + global + project skills. Later tiers win on conflict
-    (builtin < global < project), so a user copy overrides a built-in."""
+    (builtin < global < project), so a user copy overrides a built-in —
+    except that undeclared ``tools:``/``sticky:`` bindings are inherited
+    from the built-in (see _scan_dir)."""
     skills: dict[str, Skill] = {}
 
     _scan_dir(paths.builtin_skills_dir(), builtin=True, into=skills)

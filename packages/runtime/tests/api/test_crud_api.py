@@ -148,7 +148,8 @@ def test_mcp_config_get_put(client):
 
 def test_mcp_empty_registry(client):
     r = client.get("/api/mcp").json()
-    assert r == {"servers": [], "tools": [], "failed": []}
+    # status 数组（逐服务器连接状态，含 enabled/disabledTools/toolDetails）已进契约
+    assert r == {"servers": [], "tools": [], "failed": [], "status": []}
 
 
 def test_kb_servers_empty(client):

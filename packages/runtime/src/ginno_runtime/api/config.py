@@ -4,6 +4,7 @@ MCP server config, and skills management."""
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 
@@ -22,6 +23,8 @@ from ..session_meta import _session_meta_list
 from ..skills.loader import SkillLoader
 
 router = APIRouter()
+
+log = logging.getLogger(__name__)
 
 
 # ---- skills ----
@@ -104,7 +107,12 @@ async def import_skills_dir(data: dict) -> dict:
 
 
 @router.get("/api/mcp")
-async def list_mcp() -> dict:
+async def list_mcp(tools: bool = False) -> dict:
+    """``?tools=1`` 才返回逐服务器明细（status[].disabledTools/toolDetails）。
+
+    前端 5s 轮询走不带参的轻负载（status 只有 name/connected/tools/error/
+    enabled/connectedAt），进工具 tab / 详情视图才带参取明细。
+    """
     if not shared._mcp:
         return {"servers": [], "tools": [], "failed": [], "status": []}
     reg = shared._mcp
@@ -119,8 +127,9 @@ async def list_mcp() -> dict:
         "servers": list(reg.ensure_loaded().keys()),
         "tools": reg.list_tools(),
         "failed": reg.failed_servers,
-        # 逐服务器连接状态（设置页展示）：name/connected/tools/error
-        "status": reg.status(),
+        # 逐服务器连接状态（设置页展示）：基础字段 + enabled/connectedAt，
+        # ?tools=1 再追加 disabledTools/toolDetails（服务器/工具级开关契约）
+        "status": reg.status(include_tools=tools),
     }
 
 
@@ -138,6 +147,16 @@ async def get_mcp_config_endpoint() -> dict:
 @router.put("/api/mcp")
 async def put_mcp_endpoint(data: dict) -> dict:
     paths.mcp_config_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    # 落盘后热更新运行中 registry 的内存 configs（2026-10-09 开关无响应修复）。
+    # 此前只写文件：status() 停留在 load() 时刻的旧 enabled，5s 轮询把前端
+    # 乐观翻转的开关翻回去，reconnect?server= 也读旧配置而无法逐出已禁用的
+    # 服务器。sync_configs 只热同步开关字段（enabled/disabled_tools）并驱离
+    # disabled 服务器；连接参数变更仍由前端走 /api/mcp/reload 全量重建。
+    if shared._mcp:
+        try:
+            shared._mcp.sync_configs(data)
+        except Exception:
+            log.exception("mcp sync_configs after PUT failed (file is written)")
     return {"ok": True}
 
 
@@ -152,15 +171,24 @@ async def reload_mcp_endpoint() -> dict:
 
 
 @router.post("/api/mcp/reconnect")
-async def reconnect_mcp_endpoint() -> dict:
+async def reconnect_mcp_endpoint(server: str | None = None) -> dict:
     """重试未连上的服务器，不动已连接的（连接是幂等的：只补 pending）。
 
     与 reload 的区别：reload 重建整个 registry（会断开在用连接、让会话里
     缓存的工具包装器全部失效）；reconnect 只补缺口，适合设置页的重试按钮。
+
+    可选 ``?server=<name>`` 只重试指定服务器（设置页的行级重试按钮）：
+    同样不重建 registry、保持冷却簿记语义；对已连接/已禁用的名字是幂等
+    no-op，未配置的名字返回 ok:false。
     """
     if not shared._mcp:
         return {"ok": True, "status": []}
-    await shared._mcp.connect_all()
+    only = None
+    if server is not None:
+        if server not in shared._mcp.ensure_loaded():
+            return {"ok": False, "error": f"unknown mcp server: {server}"}
+        only = {server}
+    await shared._mcp.connect_all(only=only)
     return {"ok": True, "status": shared._mcp.status()}
 
 

@@ -30,6 +30,7 @@
       "enable": "启用",
       "disable": "停用"
     },
+    "disabledHint": "此连接器已停用——重新启用后 Ginno 才能再次使用它。",
     "config": {
       "empty": "此连接器没有可配置项。",
       "onePerLine": "每行一个",

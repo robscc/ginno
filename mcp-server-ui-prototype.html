@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Ginno · Settings — MCP Servers (Prototype v2)</title>
+<style>
+/* ===== Ginno 真实 token（globals.css 实测值；html.light 类切亮色；Inter） ===== */
+:root{color-scheme:dark;
+--base:10 10 15;--panel:14 14 21;--card:21 21 29;--card2:27 27 37;--line:38 38 50;--line2:52 52 63;
+--txt:233 233 240;--muted:154 154 166;--faint:98 98 110;--scroll:44 44 56;--code-bg:14 14 20;--ic:233 170 200;
+--ok:#22c55e;--err:#ef4444;--warn:#f59e0b;--ind:#6366f1;--ind2:#4f46e5}
+html.light{color-scheme:light;
+--base:248 248 250;--panel:255 255 255;--card:255 255 255;--card2:243 243 247;--line:226 226 234;--line2:212 212 222;
+--txt:23 23 30;--muted:90 90 102;--faint:130 130 142;--scroll:212 212 220;--code-bg:245 245 249;--ic:170 60 105}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:rgb(var(--base));color:rgb(var(--txt));font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;font-size:14px;-webkit-font-smoothing:antialiased}
+button{font-family:inherit}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+[hidden]{display:none!important}
+*{scrollbar-width:thin;scrollbar-color:rgb(var(--scroll)) transparent}
+.proto-banner{display:flex;gap:10px;align-items:center;justify-content:center;padding:7px 12px;font-size:12px;color:rgb(var(--muted));background:rgb(var(--card2));border-bottom:1px solid rgb(var(--line))}
+.proto-banner b{color:rgb(var(--txt))}
+.settings{display:flex;min-height:100vh}
+.snav{width:192px;flex:none;border-right:1px solid rgb(var(--line));padding:20px 12px;background:rgb(var(--panel))}
+.snav-h{margin-bottom:12px;padding:0 12px;font-size:14px;font-weight:600;color:rgb(var(--txt))}
+.gbtn{display:flex;width:100%;align-items:center;gap:10px;border:0;border-radius:8px;padding:8px 12px;font-size:14px;background:transparent;color:#9a9aa6;cursor:pointer;text-align:left;transition:background .12s,color .12s}
+.gbtn:hover{background:rgb(var(--card2))}
+.gbtn.sel{color:#fff}
+.gbtn svg{width:16px;height:16px;flex:none}
+.smain{flex:1;min-width:0;display:flex;flex-direction:column}
+.stabs{display:flex;gap:2px;align-items:center;border-bottom:1px solid rgb(var(--line));padding:0 32px}
+.stab{background:none;border:0;padding:11px 13px;font-size:13px;color:rgb(var(--muted));cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.stab:hover{color:rgb(var(--txt))}
+.stab.on{color:rgb(var(--txt));border-color:var(--ind);font-weight:500}
+.content{padding:28px 32px 80px;max-width:860px}
+h2{font-size:18px;font-weight:600}
+.sub{margin-top:4px;font-size:13px;color:rgb(var(--muted));max-width:560px;line-height:1.5}
+.page-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:16px}
+.head-actions{display:flex;gap:8px;flex:none}
+.btn{display:inline-flex;align-items:center;gap:7px;border-radius:8px;border:1px solid rgb(var(--line2));background:transparent;color:rgb(var(--txt));padding:7px 13px;font-size:13px;font-weight:500;cursor:pointer}
+.btn:hover{background:rgb(var(--card2))}
+.btn.primary{background:var(--ind);border-color:var(--ind);color:#fff}
+.btn.primary:hover{background:var(--ind2)}
+.btn.sm{padding:5px 10px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:default}
+.icon-btn{width:28px;height:28px;border-radius:8px;border:0;background:transparent;color:rgb(var(--faint));cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+.icon-btn:hover{background:rgb(var(--card2));color:rgb(var(--txt))}
+.stats{display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:rgb(var(--muted));padding:9px 14px;background:rgb(var(--card));border:1px solid rgb(var(--line));border-radius:8px;margin-bottom:14px}
+.st{display:inline-flex;gap:6px;align-items:center}
+.st b{color:rgb(var(--txt));font-weight:600}
+.stats .right{margin-left:auto;color:rgb(var(--faint))}
+.dot{width:6px;height:6px;border-radius:50%;flex:none}
+.d-running{background:var(--ok)}
+.d-error{background:var(--err)}
+.d-restarting{background:var(--warn);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.35}}
+.list-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.hint{font-size:12px;color:rgb(var(--faint))}
+.cards{display:flex;flex-direction:column;gap:8px}
+.card{display:flex;gap:12px;align-items:center;background:rgb(var(--card));border:1px solid rgb(var(--line));border-radius:8px;padding:12px 14px;position:relative}
+.card:hover{border-color:rgb(var(--line2))}
+.c-main{display:flex;gap:10px;align-items:center;flex:1;min-width:0;cursor:pointer}
+.c-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.c-name{font-weight:600;font-size:14px}
+.c-line{font-size:12px;color:rgb(var(--faint));margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:440px}
+.c-err{font-size:12px;color:var(--err);margin-top:3px}
+.c-side{display:flex;align-items:center;gap:10px;flex:none;position:relative}
+.c-tools{font-size:12px;color:rgb(var(--muted));min-width:64px;text-align:right}
+.badge{font:600 10px/1 ui-monospace,Menlo,monospace;letter-spacing:.05em;text-transform:uppercase;padding:3px 6px;border-radius:5px;border:1px solid rgb(var(--line2));color:rgb(var(--muted))}
+.b-http{color:#60a5fa;border-color:#2b4a6b;background:rgba(59,130,246,.08)}
+.b-stdio{color:#a78bfa;border-color:#42376b;background:rgba(139,92,246,.08)}
+.b-sse{color:#fbbf24;border-color:#5c4a1f;background:rgba(245,158,11,.08)}
+.menu{position:absolute;top:30px;right:0;background:rgb(var(--card2));border:1px solid rgb(var(--line2));border-radius:8px;padding:4px;min-width:172px;z-index:40;box-shadow:0 12px 32px rgba(0,0,0,.45)}
+.menu button{display:flex;width:100%;border:0;background:transparent;color:rgb(var(--txt));font-size:13px;padding:7px 10px;border-radius:6px;cursor:pointer;text-align:left;gap:8px;align-items:center}
+.menu button:hover{background:rgb(var(--card))}
+.menu button.danger{color:var(--err)}
+.menu hr{border:0;border-top:1px solid rgb(var(--line));margin:4px 4px}
+.sw{position:relative;display:inline-block;width:32px;height:19px;flex:none}
+.sw input{display:none}
+.sw span{position:absolute;inset:0;border-radius:19px;background:rgb(var(--line2));transition:.15s;cursor:pointer}
+.sw span:before{content:'';position:absolute;width:13px;height:13px;border-radius:50%;left:3px;top:3px;background:rgb(var(--txt));opacity:.75;transition:.15s}
+.sw input:checked+span{background:var(--ind)}
+.sw input:checked+span:before{transform:translateX(13px);background:#fff;opacity:1}
+
+.tabs2{display:flex;gap:2px;border-bottom:1px solid rgb(var(--line));margin:14px 0 0}
+.tabbtn{background:none;border:0;padding:8px 12px;font-size:13px;color:rgb(var(--muted));cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabbtn.on{color:rgb(var(--txt));border-color:var(--ind);font-weight:500}
+.tabpane{padding-top:16px}
+.form{max-width:580px}
+.field{margin-bottom:14px}
+.field>label{display:block;font-size:12px;color:rgb(var(--muted));margin-bottom:5px;font-weight:500}
+.inp{width:100%;background:rgb(var(--card2));border:1px solid rgb(var(--line));border-radius:8px;padding:8px 11px;color:rgb(var(--txt));font-size:13px;outline:none;font-family:inherit}
+.inp:focus{border-color:var(--ind)}
+textarea.inp{resize:vertical}
+.kv{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.kv .inp:first-child{flex:0 0 170px}
+.note{font-size:11.5px;color:rgb(var(--faint));margin-top:6px;line-height:1.5}
+.dashed{border:1px dashed rgb(var(--line2));background:none;border-radius:8px;padding:7px 12px;color:rgb(var(--muted));font-size:12.5px;cursor:pointer;width:100%}
+.dashed:hover{color:rgb(var(--txt));border-color:var(--ind)}
+details.adv{border:1px solid rgb(var(--line));border-radius:8px;padding:10px 14px;margin:16px 0;max-width:640px}
+details.adv summary,details.paste summary{cursor:pointer;font-size:12.5px;color:rgb(var(--muted));user-select:none}
+.form-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;max-width:580px}
+.okbox{background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:10px 13px;font-size:12.5px;color:rgb(var(--muted));margin:12px 0;max-width:600px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.errbox{background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:10px 13px;font-size:12.5px;color:rgb(var(--muted));margin:12px 0;max-width:600px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.hintbox{background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:10px 13px;font-size:12.5px;color:rgb(var(--muted));margin:12px 0;max-width:600px}
+.d-head{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+.d-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+.d-sub{font-size:12.5px;color:rgb(var(--faint));margin-top:6px}
+.d-errline{display:flex;gap:10px;align-items:center;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);color:var(--err);font-size:12.5px;border-radius:8px;padding:8px 12px;margin:12px 0 0;max-width:640px}
+.tools-bar{display:flex;gap:10px;align-items:center;margin-bottom:4px}
+.tools-bar .inp{flex:0 1 240px}
+#toolCount{margin-left:auto;font-size:12px;color:rgb(var(--muted))}
+.sample{font-size:11.5px;color:rgb(var(--faint));margin:6px 2px 10px}
+.tbl{width:100%;border:1px solid rgb(var(--line));border-radius:8px;overflow:hidden;border-collapse:separate;border-spacing:0;background:rgb(var(--card));font-size:13px}
+.tbl th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgb(var(--faint));padding:9px 14px;border-bottom:1px solid rgb(var(--line));font-weight:600}
+.tbl td{padding:9px 14px;border-bottom:1px solid rgb(var(--line))}
+.tbl tr:last-child td{border-bottom:0}
+.tbl tr:hover td{background:rgb(var(--card2))}
+.tool-name{font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+.fullname{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:rgb(var(--faint))}
+.tg{font:600 10px/1 ui-monospace,Menlo,monospace;padding:3px 6px;border-radius:5px;letter-spacing:.04em}
+.t-ro{color:var(--ok);border:1px solid rgba(34,197,94,.35)}
+.t-de{color:var(--err);border:1px solid rgba(239,68,68,.35)}
+.t-none{color:rgb(var(--faint));border:1px solid rgb(var(--line2))}
+.psec{margin-bottom:16px;max-width:640px}
+.psec .lbl2{font-size:12px;font-weight:600;margin-bottom:6px}
+.pchips{display:flex;gap:6px;flex-wrap:wrap}
+.pchip{display:inline-flex;align-items:center;gap:6px;font:12px ui-monospace,Menlo,monospace;border:1px solid rgb(var(--line2));border-radius:6px;padding:4px 8px;color:rgb(var(--muted));background:rgb(var(--card))}
+.pchip.allow{border-color:rgba(34,197,94,.35);color:#4ade80}
+.pchip.ask{border-color:rgba(245,158,11,.4);color:#fbbf24}
+.pchip.deny{border-color:rgba(239,68,68,.4);color:#f87171}
+.pchip .x{cursor:pointer;opacity:.6}
+.pchip .x:hover{opacity:1}
+.padd{display:flex;gap:8px;margin-top:8px}
+.padd .inp{flex:0 1 300px}
+.tl{list-style:none;max-width:620px;margin-top:4px}
+.tl li{display:grid;grid-template-columns:84px 12px 1fr;gap:10px;padding:6px 0;font-size:12.5px;color:rgb(var(--muted));align-items:center}
+.tl .t{color:rgb(var(--faint));font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.k{width:7px;height:7px;border-radius:50%;display:inline-block}
+.k-ok{background:var(--ok)}.k-warn{background:var(--warn)}.k-err{background:var(--err)}.k-gray{background:rgb(var(--faint))}
+.log{background:rgb(var(--code-bg));border:1px solid rgb(var(--line));border-radius:8px;padding:12px 14px;font:12px/1.8 ui-monospace,Menlo,monospace;color:rgb(var(--muted));overflow:auto;max-width:760px;margin-top:14px}
+.log .ts{color:rgb(var(--faint))}
+.lv{font-weight:700;margin-right:8px;display:inline-block;min-width:44px}
+.lv.INFO{color:#60a5fa}.lv.WARN{color:#fbbf24}.lv.ERROR{color:#f87171}
+.log-foot{font-size:11.5px;color:rgb(var(--faint));margin-top:8px}
+.modal{position:fixed;inset:0;background:rgba(3,5,9,.66);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px}
+.mcard{width:min(640px,94vw);max-height:88vh;overflow:auto;background:rgb(var(--panel));border:1px solid rgb(var(--line2));border-radius:12px;box-shadow:0 24px 64px rgba(0,0,0,.5)}
+.mhead{display:flex;align-items:center;gap:12px;padding:15px 20px;border-bottom:1px solid rgb(var(--line))}
+.mhead h3{font-size:15px;font-weight:600}
+.mhead .steps{font-size:12px;color:rgb(var(--faint));margin-left:auto}
+.mhead .steps b{color:rgb(var(--txt))}
+.mbody{padding:20px}
+.mfoot{display:flex;gap:8px;align-items:center;padding:16px 0 0}
+.opt-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:10px;margin-bottom:4px}
+.opt{border:1px solid rgb(var(--line));border-radius:10px;padding:14px;cursor:pointer}
+.opt:hover{border-color:rgb(var(--line2))}
+.opt.sel{border-color:var(--ind);background:rgba(99,102,241,.06)}
+.opt .oi{color:var(--ind);margin-bottom:8px}
+.opt b{display:block;font-size:13.5px;margin-bottom:4px}
+.opt span{font-size:12px;color:rgb(var(--muted));line-height:1.45;display:block}
+.lbl{font-size:11.5px;color:rgb(var(--faint));text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin:14px 0 8px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{border:1px solid rgb(var(--line2));background:rgb(var(--card));border-radius:999px;padding:6px 13px;font-size:12.5px;color:rgb(var(--muted));cursor:pointer}
+.chip:hover{color:rgb(var(--txt))}
+.chip.sel{border-color:var(--ind);color:rgb(var(--txt));background:rgba(99,102,241,.08)}
+details.paste{margin-top:14px;border:1px solid rgb(var(--line));border-radius:8px;padding:10px 14px}
+details.paste textarea{width:100%;margin-top:10px}
+.testlog{background:rgb(var(--code-bg));border:1px solid rgb(var(--line));border-radius:8px;padding:12px 14px;font:12px/1.9 ui-monospace,Menlo,monospace;color:rgb(var(--muted));min-height:90px;margin-bottom:14px}
+.tl-ok{color:var(--ok)}
+.res-ok{display:flex;gap:10px;align-items:flex-start;background:rgba(34,197,94,.07);border:1px solid rgba(34,197,94,.3);border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.res-ok svg{color:var(--ok);flex:none;margin-top:1px}
+.res-ok b{display:block;font-size:13.5px;margin-bottom:2px}
+.res-ok span{font-size:12px;color:rgb(var(--muted))}
+.res-err{display:flex;gap:10px;align-items:flex-start;background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.35);border-radius:8px;padding:12px 14px;margin-bottom:6px}
+.res-err svg{color:var(--err);flex:none;margin-top:1px}
+.res-err b{display:block;font-size:13.5px;margin-bottom:2px}
+.res-err span{font-size:12px;color:rgb(var(--muted))}
+.tool-preview{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}
+.tool-preview span{font:11px ui-monospace,Menlo,monospace;border:1px solid rgb(var(--line2));border-radius:6px;padding:3px 8px;color:rgb(var(--muted))}
+.warnnote{font-size:12px;color:var(--warn);margin-top:6px}
+.fail-sim{margin-right:auto;font-size:12px;color:rgb(var(--faint));display:flex;gap:6px;align-items:center;cursor:pointer;user-select:none}
+.imp-row{display:flex;gap:10px;align-items:center;padding:9px 10px;border:1px solid rgb(var(--line));border-radius:8px;margin-top:6px;font-size:13px;cursor:pointer}
+.imp-row .mono{font-size:11.5px;color:rgb(var(--faint))}
+#toasts{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px;z-index:80}
+.toast{background:rgb(var(--card2));border:1px solid rgb(var(--line2));color:rgb(var(--txt));border-radius:8px;padding:9px 16px;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,.45);animation:tin .16s ease}
+.toast.ok{border-color:rgba(34,197,94,.45)}
+.toast.err{border-color:rgba(239,68,68,.5)}
+.toast.warn{border-color:rgba(245,158,11,.5)}
+@keyframes tin{from{opacity:0;transform:translateY(6px)}}
+.footer-note{margin-top:24px;font-size:11.5px;color:rgb(var(--faint))}
+</style></head>
+<body>
+<div class="proto-banner"><b>Prototype v2</b> - aligned with real Ginno: McpSettings.tsx upgrade, settings tokens, real server data. Click around. <button class="icon-btn" onclick="this.parentNode.remove()">&#10005;</button></div>
+<div class="settings">
+<nav class="snav">
+  <div class="snav-h">Settings</div>
+  <button class="gbtn sel" style="background:rgba(167,139,250,.12)" onclick="toast('connections group - mock')"><svg viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>Connections</button>
+  <button class="gbtn" onclick="toast('agents group - mock')"><svg viewBox="0 0 24 24" fill="none" stroke="#fb923c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Agents</button>
+  <button class="gbtn" onclick="toast('knowledge group - mock')"><svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>Knowledge</button>
+  <button class="gbtn" onclick="toast('security group - mock')"><svg viewBox="0 0 24 24" fill="none" stroke="#f87171" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>Security</button>
+  <button class="gbtn" onclick="toast('data group - mock')"><svg viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>Data</button>
+  <button class="gbtn" onclick="toast('general group - mock')"><svg viewBox="0 0 24 24" fill="none" stroke="#facc15" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>General</button>
+</nav>
+<div class="smain">
+  <div class="stabs">
+    <button class="stab" onclick="toast('Model API - mock')">Model API</button>
+    <button class="stab on">MCP</button>
+    <button class="stab" onclick="toast('Mods - mock')">Mods</button>
+    <button class="stab" onclick="toast('Web Search - mock')">Web Search</button>
+    <button class="stab" onclick="toast('External Agents - mock')">External Agents</button>
+    <span style="margin-left:auto;padding:6px 0"><button class="btn sm" id="themeBtn" onclick="setTheme()">Theme</button></span>
+  </div>
+  <div class="content">
+
+<section id="scr-list">
+  <header class="page-head">
+    <div>
+      <h2>MCP Servers</h2>
+      <p class="sub" id="headDesc"></p>
+    </div>
+    <div class="head-actions">
+      <button class="btn" onclick="openImport()">&#8595; Import JSON</button>
+      <button class="btn primary" onclick="openWizard()">+ Add Server</button>
+    </div>
+  </header>
+  <div class="stats" id="stats"></div>
+  <div class="list-bar">
+    <button class="btn sm" data-act="recon">&#8635; Reconnect failed</button>
+    <span class="hint">stored in ~/.ginno/mcp/mcp.json</span>
+  </div>
+  <div id="cards" class="cards"></div>
+  <details class="adv" style="margin-top:18px">
+    <summary>Advanced - edit raw config (mcp.json)</summary>
+    <textarea id="advJson" class="inp mono" rows="11" spellcheck="false" style="margin-top:10px;font-size:12px">{
+  "mcpServers": {
+    "钉钉文档": {
+      "type": "streamable-http",
+      "url": "https://mcp-gw.dingtalk.com/server/3501c3acc57b...?key=***"
+    },
+    "火山引擎联网搜索服务": {
+      "type": "streamable_http",
+      "url": "http://ai-mcp-gw.sf-express.com/volc-web-search/mcp",
+      "headers": {}
+    },
+    "钉钉待办": {
+      "type": "streamable-http",
+      "url": "https://mcp-gw.dingtalk.com/server/206ce6f3e588...?key=***"
+    }
+  }
+}</textarea>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+      <button class="btn sm primary" data-act="advsave">Save &amp; Reload</button>
+      <span class="note" style="margin-top:0">putMcp &#8594; reloadMcp - registry is fully rebuilt. registry.py accepts <span class="mono">type</span> or <span class="mono">transport</span>; <span class="mono">streamable_http</span> spellings are normalized to <span class="mono">streamable-http</span>.</span>
+    </div>
+  </details>
+  <p class="footer-note">v2 prototype &#183; grows out of McpSettings.tsx (status rows + raw JSON textarea) &#183; backend APIs unchanged: getMcp / putMcp / reloadMcp / reconnectMcp</p>
+</section>
+
+<section id="scr-detail" hidden>
+  <div id="dHead"></div>
+  <nav class="tabs2">
+    <button class="tabbtn on" data-tab="config" onclick="switchTab('config')">Configuration</button>
+    <button class="tabbtn" data-tab="tools" onclick="switchTab('tools')">Tools</button>
+    <button class="tabbtn" data-tab="perms" onclick="switchTab('perms')">Permissions</button>
+    <button class="tabbtn" data-tab="activity" onclick="switchTab('activity')">Activity</button>
+  </nav>
+  <div class="tabpane" id="pane-config"></div>
+  <div class="tabpane" id="pane-tools" hidden></div>
+  <div class="tabpane" id="pane-perms" hidden></div>
+  <div class="tabpane" id="pane-activity" hidden></div>
+</section>
+
+</div>
+</div>
+</div>
+
+<div class="modal" id="wz" hidden>
+ <div class="mcard">
+  <div class="mhead"><h3>Add MCP Server</h3><span class="steps" id="wSteps"><b>1 Transport</b> &#183; 2 Configure &#183; 3 Test</span><button class="icon-btn" onclick="closeWizard()">&#10005;</button></div>
+  <div class="mbody">
+   <div id="ws1">
+     <div class="opt-grid">
+       <div class="opt sel" data-t="http" onclick="selTransport('http')">
+         <div class="oi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/></svg></div>
+         <b>Remote server &#183; streamable-http</b>
+         <span>Paste the gateway URL. DingTalk MCP gateway URLs carry ?key= auth in the query string - no headers needed. SSE also supported.</span>
+       </div>
+       <div class="opt" data-t="stdio" onclick="selTransport('stdio')">
+         <div class="oi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 4 4-4 4M11 17h8"/></svg></div>
+         <b>Local process &#183; stdio</b>
+         <span>Runs a command on this machine (npx / uvx). Inherits the parent env so bundled node/npx resolve.</span>
+       </div>
+     </div>
+     <div class="lbl">Start from a template</div>
+     <div class="chips" id="tplChips"></div>
+     <details class="paste">
+       <summary>Or paste config JSON (Claude Desktop &#183; Cursor &#183; .mcp.json)</summary>
+       <textarea id="pasteJson" class="inp mono" rows="7">{
+  "mcpServers": {
+    "钉钉日历": {
+      "type": "streamable-http",
+      "url": "https://mcp-gw.dingtalk.com/server/xxxx?key=yyy"
+    }
+  }
+}</textarea>
+       <div style="margin-top:8px"><button class="btn sm" onclick="wParse()">Parse</button></div>
+     </details>
+     <div class="mfoot"><span style="margin-right:auto"></span><button class="btn primary" onclick="showStep(2)">Continue &#8594;</button></div>
+   </div>
+   <div id="ws2" hidden>
+     <div class="form">
+       <div class="field"><label>Display name</label><input id="wName" class="inp" placeholder="钉钉文档"></div>
+       <div id="wHttp">
+         <div class="field"><label>Server URL</label><input id="wUrl" class="inp mono" placeholder="https://mcp-gw.dingtalk.com/server/...?key=..."></div>
+         <div class="field"><label>Headers - optional</label><div class="kv"><input class="inp mono" id="wHk" placeholder="Authorization"><input class="inp mono" type="password" id="wHv" placeholder="value"></div><div class="note">Gateway URLs with ?key= auth need no headers.</div></div>
+       </div>
+       <div id="wStdio" hidden>
+         <div class="field"><label>Command</label><input id="wCmd" class="inp mono" placeholder="npx"></div>
+         <div class="field"><label>Arguments - one per line</label><textarea id="wArgs" class="inp mono" rows="2"></textarea></div>
+         <div class="field"><label>Environment</label><div class="kv"><input class="inp mono" id="wEk" placeholder="GITHUB_TOKEN"><input class="inp mono" type="password" id="wEv" placeholder="value"></div></div>
+       </div>
+       <div class="field"><label>connect_timeout (seconds)</label><input id="wTo" class="inp mono" value="15.0"></div>
+     </div>
+     <div class="mfoot">
+       <label class="fail-sim"><input type="checkbox" id="wFail"> simulate failure</label>
+       <button class="btn" onclick="showStep(1)">&#8592; Back</button>
+       <button class="btn primary" onclick="showStep(3);runTest()">Test Connection</button>
+     </div>
+   </div>
+   <div id="ws3" hidden>
+     <div class="testlog" id="testLog"></div>
+     <div id="testOk" hidden>
+       <div class="res-ok"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><div><b id="okTitle"></b><span id="okSub"></span></div></div>
+       <div class="lbl">Tools discovered - graph-facing names</div>
+       <div class="tool-preview" id="okTools"></div>
+       <div class="warnnote">&#9888; Tools are injected into every turn - disable unused ones in the Tools tab to save tokens.</div>
+     </div>
+     <div id="testErr" hidden>
+       <div class="res-err"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg><div><b>Connect failed</b><span id="errSub"></span></div></div>
+       <div class="hintbox">Tip: check the URL and key; a single-line root cause is shown in the server list (from _compact_connect_error).</div>
+     </div>
+     <div class="mfoot"><span style="margin-right:auto"></span><button class="btn" onclick="showStep(2)">&#8592; Back</button><button class="btn primary" id="wSave" onclick="saveServer()" disabled>Save &amp; Reload</button></div>
+   </div>
+  </div>
+ </div>
+</div>
+
+<div class="modal" id="imp" hidden>
+ <div class="mcard">
+  <div class="mhead"><h3>Import MCP config</h3><button class="icon-btn" onclick="closeImport()" style="margin-left:auto">&#10005;</button></div>
+  <div class="mbody">
+    <div class="lbl">Paste configuration</div>
+    <textarea id="impJson" class="inp mono" rows="9">{
+  "mcpServers": {
+    "linear": {
+      "command": "npx",
+      "args": ["-y", "@linear/mcp-server"],
+      "env": { "LINEAR_API_KEY": "lin_api_..." }
+    },
+    "postgres": {
+      "command": "uvx",
+      "args": ["mcp-server-postgres", "postgresql://localhost/ginno"]
+    }
+  }
+}</textarea>
+    <div style="margin-top:10px"><button class="btn sm" onclick="impParse()">Detect &amp; Parse</button></div>
+    <div id="parseResult" style="margin-top:6px"></div>
+    <div class="mfoot"><button class="btn" onclick="closeImport()">Cancel</button><button class="btn primary" id="impGoBtn" onclick="doImport()" disabled>Import</button></div>
+  </div>
+ </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+var IC={
+eye:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+xbig:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'};
+var TPL={
+'钉钉文档':{t:'http',name:'钉钉文档',url:'https://mcp-gw.dingtalk.com/server/3501c3acc57b...?key=***'},
+'火山联网搜索':{t:'http',name:'火山引擎联网搜索服务',url:'http://ai-mcp-gw.sf-express.com/volc-web-search/mcp'},
+'Sentry':{t:'http',name:'sentry',url:'https://mcp.sentry.dev/mcp'},
+'GitHub (stdio)':{t:'stdio',name:'github',cmd:'npx',args:'-y @modelcontextprotocol/server-github',env:'GITHUB_TOKEN'},
+'Filesystem (stdio)':{t:'stdio',name:'filesystem',cmd:'uvx',args:'mcp-server-filesystem ~/workspace',env:''}};
+var servers=[
+{id:'dingtalk-doc',name:'钉钉文档',transport:'streamable-http',status:'running',enabled:true,line:'https://mcp-gw.dingtalk.com/server/3501c3acc57b...?key=***',meta:'up 3d',err:'',toolsTotal:24,sampleNote:'Showing 10 of 24 tools - prototype sample',tools:[
+{n:'get_document_info',d:'Fetch document metadata',a:'ro',on:true},
+{n:'get_document_content',d:'Fetch document content as markdown',a:'ro',on:true},
+{n:'list_document_blocks',d:'List blocks of a document',a:'ro',on:true},
+{n:'search_documents',d:'Search documents',a:'ro',on:true},
+{n:'download_file',d:'Download a file attachment',a:'ro',on:true},
+{n:'create_document',d:'Create a new document',a:'de',on:true},
+{n:'insert_document_block',d:'Insert a block into a document',a:'de',on:true},
+{n:'add_permission',d:'Grant document permission',a:'de',on:true},
+{n:'rename_document',d:'Rename a document',a:'de',on:true},
+{n:'delete_document',d:'Delete a document',a:'de',on:false}]},
+{id:'volc-search',name:'火山引擎联网搜索服务',transport:'streamable-http',status:'running',enabled:true,line:'http://ai-mcp-gw.sf-express.com/volc-web-search/mcp',meta:'up 3d',err:'',toolsTotal:3,sampleNote:'',tools:[
+{n:'web_search',d:'Web search via Volcengine',a:'ro',on:true},
+{n:'web_fetch',d:'Fetch a URL as readable text',a:'ro',on:true},
+{n:'image_search',d:'Image search',a:'ro',on:true}]},
+{id:'dingtalk-todo',name:'钉钉待办',transport:'streamable-http',status:'error',enabled:true,line:'https://mcp-gw.dingtalk.com/server/206ce6f3e588...?key=***',meta:'last ok 09:58',err:'HTTPError: 401 Unauthorized - key expired',toolsTotal:11,sampleNote:'Showing 4 of 11 tools - tools unavailable while disconnected',tools:[
+{n:'list_todo_tasks',d:'List todo tasks',a:'ro',on:true},
+{n:'create_todo_task',d:'Create a todo task',a:'de',on:true},
+{n:'update_todo_task',d:'Update a todo task',a:'de',on:true},
+{n:'delete_todo_task',d:'Delete a todo task',a:'de',on:false}]},
+{id:'dingtalk-cal',name:'钉钉日历',transport:'streamable-http',status:'running',enabled:true,line:'https://mcp-gw.dingtalk.com/server/6801783e9c0a...?key=***',meta:'up 3d',err:'',toolsTotal:9,sampleNote:'Showing 5 of 9 tools - prototype sample',tools:[
+{n:'query_calendar',d:'Query calendar events',a:'ro',on:true},
+{n:'list_events',d:'List events of a day',a:'ro',on:true},
+{n:'create_schedule',d:'Create a calendar event',a:'de',on:true},
+{n:'update_schedule',d:'Update a calendar event',a:'de',on:true},
+{n:'accept_event',d:'Accept an invitation',a:'de',on:true}]},
+{id:'dingtalk-sheet',name:'钉钉 AI 表格',transport:'streamable-http',status:'running',enabled:true,line:'https://mcp-gw.dingtalk.com/server/6d61c8ae561b...?key=***',meta:'up 2d',err:'',toolsTotal:7,sampleNote:'Showing 5 of 7 tools - prototype sample',tools:[
+{n:'list_records',d:'List records of a table',a:'ro',on:true},
+{n:'query_table',d:'Query table schema',a:'ro',on:true},
+{n:'add_record',d:'Add records',a:'de',on:true},
+{n:'update_record',d:'Update records',a:'de',on:true},
+{n:'delete_record',d:'Delete records',a:'de',on:false}]},
+{id:'dingtalk-note',name:'钉钉AI听记官方',transport:'streamable-http',status:'running',enabled:true,line:'https://mcp-gw.dingtalk.com/server/d1b43015586e...?key=***',meta:'up 2d',err:'',toolsTotal:5,sampleNote:'Showing 4 of 5 tools - prototype sample',tools:[
+{n:'list_transcripts',d:'List transcripts',a:'ro',on:true},
+{n:'get_transcript_summary',d:'Fetch transcript summary',a:'ro',on:true},
+{n:'query_meeting',d:'Query meeting info',a:'ro',on:true},
+{n:'create_folder',d:'Create a folder',a:'de',on:true}]}];
+var curId=null,wiz={transport:'http'};
+
+/* ===== helpers ===== */
+function $(id){return document.getElementById(id)}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function toast(msg,type){var t=document.createElement('div');t.className='toast '+(type||'');t.textContent=msg;$('toasts').appendChild(t);setTimeout(function(){t.remove()},2800)}
+function toolsOn(s){var n=0;for(var i=0;i<s.tools.length;i++)if(s.tools[i].on)n++;return n}
+function fmtTok(n){return n>=1000?(n/1000).toFixed(1)+'k':''+n}
+function byId(id){for(var i=0;i<servers.length;i++)if(servers[i].id===id)return servers[i];return null}
+function fullName(s,t){return 'mcp_'+s.name+'_'+t.n}
+function badgeTr(s){var c=s.transport==='stdio'?'b-stdio':s.transport==='sse'?'b-sse':'b-http';return '<span class="badge '+c+'">'+esc(s.transport)+'</span>'}
+function go(scr){$('scr-list').hidden=scr!=='list';$('scr-detail').hidden=scr!=='detail';if(scr==='list'){renderList()}closeMenus();window.scrollTo(0,0)}
+function closeMenus(){var m=document.querySelectorAll('.menu');for(var i=0;i<m.length;i++)m[i].hidden=true}
+/* ===== 事件代理 ===== */
+document.addEventListener('click',function(e){
+  var t=e.target.closest('[data-act]');
+  if(t){var a=t.getAttribute('data-act'),id=t.getAttribute('data-id');
+    if(a==='open'){openDetail(id)}
+    else if(a==='menu'){e.stopPropagation();var m=$('m-'+id);var w=m.hidden;closeMenus();m.hidden=!w}
+    else if(a==='restart'){restartServer(id)}
+    else if(a==='rm'){removeServer(id)}
+    else if(a==='tools'){openDetail(id,'tools')}
+    else if(a==='perms'){openDetail(id,'perms')}
+    else if(a==='list'){go('list')}
+    else if(a==='dtest'){runDetailTest(id)}
+    else if(a==='eye'){eyeToggle(t.getAttribute('data-eye'))}
+    else if(a==='recon'){reconnectFailed()}
+    else if(a==='advsave'){toast('Saved - putMcp ok, reloadMcp: registry rebuilt (6 servers)','ok')}
+    else if(a==='savecfg'){var s=byId(curId);toast('Saved & reloaded - mcp['+(s?s.name:'')+'] '+(s?s.toolsTotal:0)+' tools re-registered','ok')}
+    else if(a==='tpl'){selTemplate(t.getAttribute('data-tpl'))}
+    else if(a==='prmadd'){toast('Pattern added to settings.json permissions','ok');openDetail(curId,'perms')}
+    else if(a==='prmx'){toast('Pattern removed from settings.json permissions')}
+    return}
+  closeMenus();
+});
+document.addEventListener('change',function(e){
+  var t=e.target.closest('[data-chg]');if(!t)return;
+  var c=t.getAttribute('data-chg'),id=t.getAttribute('data-id');
+  if(c==='srv'){toggleServer(id,t.checked)}
+  else if(c==='tool'){toolToggle(parseInt(t.getAttribute('data-i'),10),t.checked)}
+});
+/* ===== list ===== */
+function renderList(){
+  var c='';
+  servers.forEach(function(s){
+    var err=s.status==='error'?'<div class="c-err">'+esc(s.err)+' - '+s.toolsTotal+' tools cached</div>':'';
+    c+='<div class="card"><div class="c-main" data-act="open" data-id="'+s.id+'"><span class="dot d-'+s.status+'"></span><div style="min-width:0"><div class="c-title"><span class="c-name">'+esc(s.name)+'</span>'+badgeTr(s)+'</div><div class="c-line mono">'+esc(s.line)+(s.meta?' &#183; '+esc(s.meta):'')+'</div>'+err+'</div></div><div class="c-side"><span class="c-tools">'+toolsOn(s)+'/'+s.toolsTotal+' tools</span><label class="sw"><input type="checkbox" data-chg="srv" data-id="'+s.id+'" '+(s.enabled?'checked':'')+'><span></span></label><button class="icon-btn" data-act="menu" data-id="'+s.id+'">&#8942;</button><div class="menu" id="m-'+s.id+'" hidden><button data-act="open" data-id="'+s.id+'">Edit configuration</button><button data-act="tools" data-id="'+s.id+'">Manage tools</button><button data-act="perms" data-id="'+s.id+'">Permissions</button><button data-act="restart" data-id="'+s.id+'">Reconnect</button><hr><button class="danger" data-act="rm" data-id="'+s.id+'">Remove server</button></div></div></div>';
+  });
+  $('cards').innerHTML=c;updateStats();
+}
+function updateStats(){
+  var r=0,er=0,ta=0;
+  servers.forEach(function(s){if(s.status==='error')er++;else if(s.enabled)r++;if(s.enabled&&s.status!=='error')ta+=toolsOn(s)});
+  $('headDesc').textContent=servers.length+' servers configured &#183; '.replace('&#183;','·')+ (ta+er?'':'');
+  $('headDesc').textContent=servers.length+' servers - tools are injected into every turn; disable unused ones to save tokens.';
+  $('stats').innerHTML='<span class="st"><span class="dot d-running"></span><b>'+r+'</b> connected</span><span class="st"><span class="dot d-error"></span><b>'+er+'</b> failed</span><span class="right">'+ta+' tools active &#183; ~'+fmtTok(ta*130)+' tokens / turn</span>';
+}
+function toggleServer(id,on){var s=byId(id);if(!s)return;s.enabled=on;renderList();if(curId===id){renderDetailHead(s)}toast(on?'Enabled - tools available on the next turn':'Disabled - tools removed on the next turn')}
+function restartServer(id){var s=byId(id);if(!s)return;closeMenus();s.status='restarting';renderList();if(curId===id)renderDetailHead(s);setTimeout(function(){s.status='running';s.meta='up 0m';s.err='';renderList();if(curId===id){renderDetailHead(s);renderActivityPane(s)}toast(s.name+' reconnected - lazy retry succeeded','ok')},1100)}
+function removeServer(id){var s=byId(id);if(!s)return;closeMenus();servers=servers.filter(function(x){return x.id!==id});renderList();toast('Removed '+s.name+' - reload the page to restore this mock','warn')}
+function reconnectFailed(){var bad=servers.filter(function(s){return s.status==='error'});if(bad.length===0){toast('All servers connected - nothing to retry');return}bad.forEach(function(s){s.status='restarting'});renderList();toast('reconnectMcp - retrying '+bad.length+' failed server(s), registry NOT rebuilt');setTimeout(function(){bad.forEach(function(s){s.status='running';s.meta='up 0m';s.err=''});renderList();if(curId&&byId(curId)){renderDetailHead(byId(curId));renderActivityPane(byId(curId))}toast('钉钉待办 reconnected (poll picked it up)','ok')},1400)}
+/* ===== detail ===== */
+function openDetail(id,tab){curId=id;var s=byId(id);if(!s)return;renderDetailHead(s);renderConfigPane(s);renderToolsPane(s);renderPermsPane(s);renderActivityPane(s);switchTab(tab||'config');$('scr-list').hidden=true;$('scr-detail').hidden=false;closeMenus();window.scrollTo(0,0)}
+function switchTab(t){var b=document.querySelectorAll('.tabbtn');for(var i=0;i<b.length;i++)b[i].classList.toggle('on',b[i].getAttribute('data-tab')===t);$('pane-config').hidden=t!=='config';$('pane-tools').hidden=t!=='tools';$('pane-perms').hidden=t!=='perms';$('pane-activity').hidden=t!=='activity'}
+function renderDetailHead(s){
+  var errLine='';
+  if(s.status==='error'){errLine='<div class="d-errline"><span>'+esc(s.err)+'</span></div>'}
+  $('dHead').innerHTML='<div style="margin-bottom:12px"><button class="btn sm" data-act="list">&#8592; All servers</button></div><div class="d-head"><span class="dot d-'+s.status+'"></span><h2>'+esc(s.name)+'</h2>'+badgeTr(s)+'<div class="d-actions"><button class="btn sm" data-act="dtest" data-id="'+s.id+'">Test connection</button><button class="btn sm" data-act="restart" data-id="'+s.id+'">Reconnect</button><label class="sw"><input type="checkbox" data-chg="srv" data-id="'+s.id+'" '+(s.enabled?'checked':'')+'><span></span></label></div></div><div class="d-sub mono">'+esc(s.line)+(s.meta?' &#183; '+esc(s.meta):'')+'</div>'+errLine;
+}
+function runDetailTest(id){var s=byId(id);if(!s)return;toast('Connecting to '+s.name+'...');setTimeout(function(){toast('Connected - '+s.toolsTotal+' tools, 96 ms','ok')},900)}
+function eyeToggle(id){var e=$(id);if(e)e.type=e.type==='password'?'text':'password'}
+function renderConfigPane(s){
+  var h='<div class="form"><div class="field"><label>Display name</label><input class="inp" value="'+esc(s.name)+'"></div>';
+  h+='<div class="field"><label>Transport</label><select class="inp mono"><option'+(s.transport==='streamable-http'?' selected':'')+'>streamable-http</option><option'+(s.transport==='sse'?' selected':'')+'>sse</option><option'+(s.transport==='stdio'?' selected':'')+'>stdio</option></select><div class="note">registry.py accepts <b>type</b> or <b>transport</b> (Claude-style configs use type); streamable_http / Streamable_HTTP are normalized to streamable-http.</div></div>';
+  if(s.transport==='stdio'){
+    var p=s.line.split(' ');
+    h+='<div class="field"><label>Command</label><input class="inp mono" value="'+esc(p[0])+'"></div><div class="field"><label>Arguments - one per line</label><textarea class="inp mono" rows="2">'+esc(p.slice(1).join('\n'))+'</textarea></div><div class="field"><label>Environment</label><div class="note" style="margin:0 0 6px">Merged over the parent env (PATH inherited - bundled node/npx resolve).</div><div class="kv"><input class="inp mono" placeholder="KEY"><input class="inp mono" type="password" placeholder="value"></div><button class="dashed" data-act="addvar">+ Add variable</button></div>';
+  }else{
+    h+='<div class="field"><label>Server URL</label><input class="inp mono" value="'+esc(s.line)+'"><div class="note">Gateway URLs carry ?key= auth in the query string.</div></div><div class="field"><label>Headers - optional</label><div class="kv"><input class="inp mono" placeholder="Authorization"><input class="inp mono" type="password" id="hv0" placeholder="value"></div><div class="note">This server needs no headers.</div></div>';
+  }
+  h+='<div class="field"><label>connect_timeout (seconds)</label><input class="inp mono" value="15.0"></div>';
+  h+='<div class="form-foot"><button class="btn" data-act="list">Cancel</button><button class="btn primary" data-act="savecfg">Save &amp; Reload</button></div></div>';
+  $('pane-config').innerHTML=h;
+}
+function renderToolsPane(s){
+  var h='<div class="tools-bar"><input class="inp" id="toolSearch" placeholder="Filter tools..." oninput="renderToolsRows()"><span id="toolCount"></span></div>';
+  if(s.sampleNote){h+='<div class="sample">'+esc(s.sampleNote)+'</div>'}
+  h+='<table class="tbl"><thead><tr><th style="width:40px"></th><th>Tool</th><th>Graph name</th><th>Description</th><th style="width:100px">Hints</th></tr></thead><tbody id="toolRows"></tbody></table><div class="note" style="margin-top:10px">Estimate ~130 tokens per enabled tool per turn. Badges come from server annotations (readOnlyHint / destructiveHint). Graph name is what the model and permissions see.</div>';
+  $('pane-tools').innerHTML=h;renderToolsRows();
+}
+function renderToolsRows(){
+  var s=byId(curId);if(!s)return;
+  var q=($('toolSearch').value||'').toLowerCase();
+  var rows='',on=0;
+  s.tools.forEach(function(t2,i){
+    if(t2.on)on++;
+    if(q&&t2.n.indexOf(q)<0&&t2.d.toLowerCase().indexOf(q)<0)return;
+    var tg=t2.a==='ro'?'<span class="tg t-ro">read-only</span>':t2.a==='de'?'<span class="tg t-de">destructive</span>':'<span class="tg t-none">-</span>';
+    rows+='<tr><td><label class="sw"><input type="checkbox" data-chg="tool" data-i="'+i+'" '+(t2.on?'checked':'')+'><span></span></label></td><td class="tool-name">'+esc(t2.n)+'</td><td class="fullname">'+esc(fullName(s,t2))+'</td><td style="color:rgb(var(--muted))">'+esc(t2.d)+'</td><td>'+tg+'</td></tr>';
+  });
+  if(!rows){rows='<tr><td colspan="5" class="hint" style="padding:14px">No tools match.</td></tr>'}
+  $('toolRows').innerHTML=rows;
+  $('toolCount').textContent=on+' of '+s.tools.length+' enabled';
+}
+function toolToggle(i,on){var s=byId(curId);if(!s)return;s.tools[i].on=on;renderToolsRows();renderList()}
+function renderPermsPane(s){
+  var verbs={allow:[],ask:[],deny:[]};
+  s.tools.forEach(function(t2){
+    var v=t2.n.split('_')[0];
+    var k=(!t2.on)?'deny':(t2.a==='de'?'ask':'allow');
+    if(verbs[k].indexOf(v)<0)verbs[k].push(v);
+  });
+  if(s.id==='dingtalk-doc'){verbs.deny.push('transfer_owner')}
+  var sec=function(label,kind,arr){
+    var chips=arr.map(function(v){return '<span class="pchip '+kind+'">mcp_'+esc(s.name)+'_'+esc(v)+'_*<span class="x" data-act="prmx">&#10005;</span></span>'}).join('');
+    return '<div class="psec"><div class="lbl2" style="color:'+(kind==='allow'?'var(--ok)':kind==='ask'?'var(--warn)':'var(--err)')+'">'+label+'</div><div class="pchips">'+chips+'</div><div class="padd"><input class="inp mono" placeholder="mcp_'+esc(s.name)+'_verb_*"><button class="btn sm" data-act="prmadd">Add</button></div></div>';
+  };
+  $('pane-perms').innerHTML=sec('Allow - run without asking','allow',verbs.allow)+sec('Ask - confirm before running','ask',verbs.ask)+sec('Deny - never available','deny',verbs.deny)+'<div class="note" style="max-width:640px">Synced to <b>settings.json &#8594; permissions</b> (allow / ask / deny lists). Managed centrally in Security &#8594; Permissions; patterns use the mcp_&lt;server&gt;_&lt;tool&gt; namespace with * wildcards.</div>';
+}
+function renderActivityPane(s){
+  var h='';
+  if(s.status==='error'){h+='<div class="errbox"><b style="color:var(--err)">'+esc(s.err)+'</b><span style="font-size:12px;color:rgb(var(--faint))">at 09:58 &#183; initialize (root cause compressed by _compact_connect_error)</span></div>'}
+  h+='<ul class="tl">';
+  if(s.status==='running'||s.status==='restarting'){h+='<li><span class="t">10:42</span><span class="k k-ok"></span><span>Connected - '+s.toolsTotal+' tools registered (pid 48213)</span></li>'}
+  if(s.status==='error'){h+='<li><span class="t">09:58</span><span class="k k-err"></span><span>initialize failed - HTTP 401 Unauthorized, lazy retry scheduled (60s cooldown)</span></li>'}
+  h+='<li><span class="t">Oct 06</span><span class="k k-gray"></span><span>Added via config</span></li></ul>';
+  h+='<div class="log">';
+  if(s.status!=='error'){h+='<div><span class="ts">10:42:07</span><span class="lv INFO">INFO</span>mcp['+esc(s.name)+'] initialize ok &#183; transport='+esc(s.transport)+' &#183; timeout=15.0s</div><div><span class="ts">10:42:08</span><span class="lv INFO">INFO</span>mcp['+esc(s.name)+'] tools/list &#8594; '+s.toolsTotal+' tools wrapped as StructuredTool</div>'}
+  if(s.status==='error'){h+='<div><span class="ts">09:58:41</span><span class="lv ERROR">ERROR</span>mcp['+esc(s.name)+'] initialize failed: HTTP 401 Unauthorized</div><div><span class="ts">09:58:41</span><span class="lv WARN">WARN</span>mcp['+esc(s.name)+'] tools unavailable this turn; retry with cooldown</div>'}
+  h+='<div><span class="ts">10:58:03</span><span class="lv INFO">INFO</span>api GET /api/mcp &#8594; '+servers.length+' servers &#183; status polled every 5s</div></div><div class="log-foot">Filtered from ~/.ginno/logs/sidecar.log - full history there</div>';
+  $('pane-activity').innerHTML=h;
+}
+
+/* ===== wizard ===== */
+function openWizard(){$('wz').hidden=false;showStep(1)}
+function closeWizard(){$('wz').hidden=true}
+function showStep(n){
+  for(var i=1;i<=3;i++){$('ws'+i).hidden=i!==n}
+  var names=['Transport','Configure','Test'],out=[];
+  for(var j=0;j<3;j++){out.push(j+1===n?'<b>'+(j+1)+' '+names[j]+'</b>':(j+1)+' '+names[j])}
+  $('wSteps').innerHTML=out.join(' &#183; ');
+  if(n===2)applyTransport();
+}
+function selTransport(t){wiz.transport=t;var o=document.querySelectorAll('.opt');for(var i=0;i<o.length;i++)o[i].classList.toggle('sel',o[i].getAttribute('data-t')===t)}
+function selTemplate(name){
+  var p=TPL[name];selTransport(p.t);
+  var ch=document.querySelectorAll('.chip');for(var i=0;i<ch.length;i++)ch[i].classList.toggle('sel',ch[i].textContent===name);
+  $('wName').value=p.name;
+  if(p.t==='stdio'){$('wCmd').value=p.cmd||'';$('wArgs').value=p.args||'';$('wEk').value=p.env||'';$('wEv').value=''}
+  else{$('wUrl').value=p.url||''}
+  showStep(2);toast(name+' template loaded','ok');
+}
+function applyTransport(){var st=wiz.transport==='stdio';$('wStdio').hidden=!st;$('wHttp').hidden=st}
+function wParse(){
+  try{
+    var j=JSON.parse($('pasteJson').value);var m=j.mcpServers;if(!m)throw new Error('no mcpServers');
+    var names=Object.keys(m);var first=names[0];var e=m[first];
+    var tr=(e.transport||e.type||'stdio').toString().replace(/_/g,'-').toLowerCase();
+    selTransport(tr==='stdio'?'stdio':'http');$('wName').value=first;
+    if(e.command){$('wCmd').value=e.command;$('wArgs').value=(e.args||[]).join('\n');var ek=Object.keys(e.env||{});$('wEk').value=ek[0]||'';$('wEv').value=ek[0]?(e.env[ek[0]]||''):''}
+    else{$('wUrl').value=e.url||''}
+    showStep(2);toast('Parsed '+names.length+' server(s) - loaded "'+first+'" (spelling normalized)','ok');
+  }catch(err){toast('Could not parse JSON config','err')}
+}
+function runTest(){
+  $('testLog').innerHTML='';$('testOk').hidden=true;$('testErr').hidden=true;$('wSave').disabled=true;
+  var st=wiz.transport==='stdio';
+  var tgt=st?($('wCmd').value||'npx'):($('wUrl').value||'...');
+  var lines=[st?'Spawn process: '+tgt:'POST '+tgt+' - initialize handshake','tools/list - enumerating','Validating schemas'];
+  var i=0;
+  var tm=setInterval(function(){
+    if(i<lines.length){$('testLog').innerHTML+='<div><span class="tl-ok">&#10003;</span> '+esc(lines[i])+'</div>';i++}
+    else{clearInterval(tm);
+      if($('wFail').checked){$('errSub').textContent=st?'SpawnError: ENOENT - node not found in PATH':'HTTPError: 401 Unauthorized - check the URL key';$('testErr').hidden=false}
+      else{
+        var nv=$('wName').value.trim()||'custom-server';
+        $('okTitle').textContent='Connected - '+nv+' - 21 tools';
+        $('okSub').textContent=(st?'stdio - local process':'streamable-http')+' - 96 ms - connect_timeout 15.0s';
+        $('okTools').innerHTML='<span>mcp_'+esc(nv)+'_search</span><span>mcp_'+esc(nv)+'_get_detail</span><span>mcp_'+esc(nv)+'_create_item</span><span>+18 more</span>';
+        $('testOk').hidden=false;$('wSave').disabled=false;
+      }
+    }
+  },450);
+}
+function slug(n){return n.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'server'}
+function genTools(){return [{n:'search',d:'Prototype placeholder tool',a:'ro',on:true},{n:'get_detail',d:'Prototype placeholder tool',a:'ro',on:true},{n:'create_item',d:'Prototype placeholder tool',a:'de',on:true},{n:'update_item',d:'Prototype placeholder tool',a:'de',on:true}]}
+function saveServer(){
+  var st=wiz.transport==='stdio';
+  var nv=$('wName').value.trim()||'custom-server';
+  var line=st?(($('wCmd').value||'npx')+' '+$('wArgs').value.replace(/\n/g,' ')).trim():($('wUrl').value||'https://example.com/mcp');
+  var ns={id:slug(nv)+'-'+Date.now().toString(36).slice(-3),name:nv,transport:st?'stdio':'streamable-http',status:'running',enabled:true,line:line,meta:'just added',err:'',toolsTotal:4,sampleNote:'Showing 4 of 4 tools',tools:genTools()};
+  servers.push(ns);
+  closeWizard();go('list');toast(nv+' saved - registry reloaded, 4 tools available on the next turn','ok');
+}
+/* ===== import ===== */
+function openImport(){$('imp').hidden=false;$('parseResult').innerHTML='';$('impGoBtn').disabled=true;$('impGoBtn').textContent='Import'}
+function closeImport(){$('imp').hidden=true}
+function impParse(){
+  try{
+    var j=JSON.parse($('impJson').value);var m=j.mcpServers;if(!m)throw new Error('x');
+    window.__imp=m;var names=Object.keys(m);
+    var h='<div class="note">Detected: mcpServers format - '+names.length+' server(s) - type/transport and spelling auto-normalized on save</div>';
+    names.forEach(function(n){
+      var e=m[n];var tr=e.command?'stdio':'streamable-http';
+      var line=e.command?e.command+' '+(e.args||[]).join(' '):e.url;
+      h+='<label class="imp-row"><input type="checkbox" checked data-n="'+esc(n)+'"><b>'+esc(n)+'</b><span class="badge '+(tr==='stdio'?'b-stdio':'b-http')+'">'+tr+'</span><span class="mono">'+esc(line)+' &#183; '+Object.keys(e.env||{}).length+' env var(s)</span></label>';
+    });
+    $('parseResult').innerHTML=h;$('impGoBtn').disabled=false;$('impGoBtn').textContent='Import '+names.length+' server(s)';
+  }catch(err){toast('Could not parse - expected JSON with mcpServers','err')}
+}
+function doImport(){
+  var boxes=document.querySelectorAll('#parseResult input[type="checkbox"]');var n=0;
+  boxes.forEach(function(b){
+    if(!b.checked)return;
+    var name=b.getAttribute('data-n');var e=window.__imp[name];
+    servers.push({id:slug(name)+'-'+Date.now().toString(36).slice(-3),name:name,transport:e.command?'stdio':'streamable-http',status:'error',enabled:true,line:e.command?e.command+' '+(e.args||[]).join(' '):e.url,meta:'imported - not yet connected',err:'Not connected yet - press Reconnect failed',toolsTotal:4,sampleNote:'Showing 4 of 4 tools',tools:genTools()});
+    n++;
+  });
+  closeImport();go('list');toast('Imported '+n+' server(s) - saved to mcp.json, connect on next reload','ok');
+}
+/* ===== theme + init ===== */
+function setTheme(){var h=document.documentElement;if(h.classList.contains('light')){h.classList.remove('light')}else{h.classList.add('light')}}
+(function init(){
+  var tc='';
+  Object.keys(TPL).forEach(function(k){tc+='<button class="chip" data-act="tpl" data-tpl="'+k+'">'+k+'</button>'});
+  $('tplChips').innerHTML=tc;
+  renderList();
+  // 模拟 5s 轮询把惰性重试的成功翻绿（对应 McpSettings 的 setInterval(load, 5000)）
+  setTimeout(function(){var bad=byId('dingtalk-todo');if(bad&&bad.status==='error'){bad.status='restarting';renderList();setTimeout(function(){bad.status='running';bad.meta='up 0m';bad.err='';renderList();toast('钉钉待办 reconnected - 5s poll picked up the lazy retry','ok')},1200)}},9000);
+})();
+</script>
+</body>
+</html>

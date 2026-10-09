@@ -30,6 +30,7 @@
       "enable": "Enable",
       "disable": "Disable"
     },
+    "disabledHint": "This connector is disabled — enable it to let Ginno use it again.",
     "config": {
       "empty": "This connector has no configurable options.",
       "onePerLine": "One per line",

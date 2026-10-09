@@ -64,7 +64,9 @@ function metaLine(c: ConnectorInfo): string {
   if (c.version) bits.push(`v${c.version}`);
   const extra = c.extra || {};
   if (typeof extra.browserType === "string") bits.push(String(extra.browserType));
-  if (c.status === "connected" && c.statusDetail) bits.push(c.statusDetail);
+  // 停用时不拼 statusDetail——"已停用"徽标下再显示 "Connected · Chrome" 会误导
+  // (底层 relay 可能仍连着,但用户视角此连接器已不可用)。
+  if (c.enabled && c.status === "connected" && c.statusDetail) bits.push(c.statusDetail);
   return bits.join(" · ");
 }
 
@@ -264,13 +266,17 @@ export default function ConnectorsPage() {
       ) : (
         <div className="space-y-3">
           {connectors.map((c) => {
-            const meta = STATUS_META[c.status] || STATUS_META.not_installed;
+            // 徽标优先反映 enabled 开关:后端从不把 status 置为 disabled
+            // (STATUS_DISABLED 无人上报,停用只落在 settings.json 的
+            // connectors.<id>.enabled)——按 c.enabled 派生展示态才能一目了然。
+            const meta = !c.enabled
+              ? STATUS_META.disabled
+              : (STATUS_META[c.status] || STATUS_META.not_installed);
             const Icon = iconFor(c);
-            const isActive = c.status !== "disabled";
             return (
               <div
                 key={c.id}
-                className="rounded-xl border border-line bg-card p-4"
+                className={`rounded-xl border border-line bg-card p-4 ${!c.enabled ? "opacity-70" : ""}`}
               >
                 <div className="flex items-start gap-3">
                   <Icon className="mt-0.5 h-5 w-5 shrink-0 text-faint" />
@@ -288,11 +294,35 @@ export default function ConnectorsPage() {
                       <div className="mt-0.5 truncate text-xs text-faint">{metaLine(c)}</div>
                     )}
                     <p className="mt-1.5 text-xs leading-relaxed text-faint">{c.description}</p>
+                    {!c.enabled && (
+                      <p className="mt-1 text-xs text-faint">{tConn("disabledHint")}</p>
+                    )}
                   </div>
                 </div>
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  {c.id === "chrome-extension" && !c.enabled ? null : (
+                  {!c.enabled ? (
+                    <>
+                      {/* 停用态只留恢复路径:一键启用(主色,一目了然)+ 配置。
+                          安装向导 / 实例启停在停用态无意义,不展示——原实现把整个
+                          操作区渲染成 null,导致停用后没有任何地方能再启用。 */}
+                      <button
+                        onClick={async () => {
+                          await api.patchConnectorConfig(c.id, { enabled: true });
+                          refresh();
+                        }}
+                        className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
+                      >
+                        {tConn("actions.enable")}
+                      </button>
+                      <button
+                        onClick={() => setConfigFor(configFor === c.id ? null : c.id)}
+                        className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
+                      >
+                        {tConn("actions.configure")}
+                      </button>
+                    </>
+                  ) : (
                     <>
                       {(c.status === "not_installed" || c.status === "disconnected" || c.status === "error") &&
                         (c.installSteps?.length ? (
@@ -324,12 +354,12 @@ export default function ConnectorsPage() {
                       </button>
                       <button
                         onClick={async () => {
-                          await api.patchConnectorConfig(c.id, { enabled: !c.enabled });
+                          await api.patchConnectorConfig(c.id, { enabled: false });
                           refresh();
                         }}
                         className="rounded-lg border border-line px-3 py-1.5 text-xs text-faint hover:bg-hover"
                       >
-                        {isActive ? tConn("actions.disable") : tConn("actions.enable")}
+                        {tConn("actions.disable")}
                       </button>
                     </>
                   )}

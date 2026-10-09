@@ -20,10 +20,19 @@ mcp.json format:
         },
         "remote": {
           "transport": "streamable-http",
-          "url": "https://example.com/mcp"
+          "url": "https://example.com/mcp",
+          "enabled": false,
+          "disabled_tools": ["dangerous_tool"]
         }
       }
     }
+
+每个 server 还支持两个可选开关字段（设置页 UI 化用）：
+- ``enabled``（bool，默认 true）：false 时不建立连接、不注册任何工具，
+  但 GET /api/mcp 的 status 里仍会出现（connected=false + enabled 标记）。
+- ``disabled_tools``（str 数组，默认 []）：元素是服务器 tools/list 上报的
+  原始工具名；命中者不包装进 graph，但 status 的 toolDetails 里仍可见，
+  前端结合 disabledTools 数组渲染禁用标记。
 """
 
 from __future__ import annotations
@@ -34,7 +43,7 @@ import logging
 import os
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +110,11 @@ class MCPServerConfig:
     env: dict[str, str] | None = None
     url: str | None = None
     connect_timeout: float = 15.0
+    # 服务器级开关：False 时不建立连接、不注册任何工具（status 里仍可见）。
+    enabled: bool = True
+    # 工具级黑名单：元素为服务器 tools/list 上报的原始工具名，命中者不包装
+    # 进 graph（status 的 toolDetails 里仍完整可见，由前端打禁用标记）。
+    disabled_tools: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, name: str, cfg: dict[str, Any]) -> "MCPServerConfig":
@@ -118,6 +132,10 @@ class MCPServerConfig:
         # underscores, so fold them to hyphens + lowercase.
         transport = str(cfg.get("transport") or cfg.get("type") or "stdio")
         transport = transport.strip().lower().replace("_", "-")
+        # disabled_tools 容忍 null / 非数组（历史手编配置常见），逐元素转
+        # str 防御数字型工具名；enabled 只认显式 false 为关闭（缺省即开启）。
+        raw_disabled = cfg.get("disabled_tools")
+        disabled_tools = [str(x) for x in raw_disabled] if isinstance(raw_disabled, list) else []
         return cls(
             name=name,
             transport=transport,
@@ -126,6 +144,8 @@ class MCPServerConfig:
             env=cfg.get("env"),
             url=cfg.get("url"),
             connect_timeout=float(cfg.get("connect_timeout", 15.0)),
+            enabled=bool(cfg.get("enabled", True)),
+            disabled_tools=disabled_tools,
         )
 
 
@@ -142,6 +162,8 @@ class _LiveServer:
         self.config = config
         self.session = None
         self.tools: list[Any] = []
+        # 连接成功时刻（epoch 秒），GET /api/mcp 的 connectedAt / 前端 uptime 用
+        self.connected_at: float | None = None
         self._task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
         self._ready = asyncio.Event()
@@ -208,6 +230,7 @@ class _LiveServer:
             tools_result = await session.list_tools()
             self.session = session
             self.tools = list(tools_result.tools)
+            self.connected_at = time.time()
             log.info("mcp[%s] connected, %d tools", self.config.name, len(self.tools))
             self._ready.set()
 
@@ -224,9 +247,19 @@ class _LiveServer:
 
     def to_langchain_tools(self) -> list[StructuredTool]:
         out: list[StructuredTool] = []
-        for t in self.tools:
-            out.append(self._wrap_tool(t))
+        for tool in self._active_tools():
+            out.append(self._wrap_tool(tool))
         return out
+
+    def _active_tools(self) -> list[Any]:
+        """会包装进 graph 的工具 = 服务器上报的全集去掉 disabled_tools。
+
+        「graph 视角」一律走这里（to_langchain_tools / list_wrapped_tools）；
+        ``self.tools`` 保留服务器原始上报（list_tools / status 的 toolDetails
+        仍用它，禁用的工具对设置页保持可见）。
+        """
+        disabled = set(self.config.disabled_tools or ())
+        return [t for t in self.tools if t.name not in disabled]
 
     def _wrap_tool(self, mcp_tool: Any) -> StructuredTool:
         server_name = self.config.name
@@ -273,9 +306,11 @@ class _LiveServer:
             contents = getattr(result, "content", None) or []
             texts: list[str] = []
             for c in contents:
-                t = getattr(c, "text", None)
-                if t:
-                    texts.append(t)
+                # 注意不能叫 t：会遮蔽模块级 i18n 函数 t，让上面 session 为
+                # None 的分支 return t(...) 变成 UnboundLocalError（F823）。
+                text = getattr(c, "text", None)
+                if text:
+                    texts.append(text)
                 else:
                     texts.append(json.dumps(c.model_dump() if hasattr(c, "model_dump") else str(c)))
             return "\n".join(texts) or "(empty tool result)"
@@ -293,6 +328,22 @@ class _LiveServer:
             coroutine=_arun,
             args_schema=model,
         )
+
+
+def _tool_detail(mcp_tool: Any) -> dict[str, Any]:
+    """单个工具的设置页详情（GET /api/mcp status[].toolDetails 元素）。
+
+    annotations 的 readOnlyHint/destructiveHint 是 MCP 的可选 hint：旧版 SDK
+    或未声明 annotations 的工具按「未知 → False」处理（不凭空宣称只读/危险），
+    前端只做展示，不依赖它做权限决策。
+    """
+    ann = getattr(mcp_tool, "annotations", None)
+    return {
+        "name": mcp_tool.name,
+        "description": getattr(mcp_tool, "description", None),
+        "readOnly": bool(getattr(ann, "readOnlyHint", False)) if ann is not None else False,
+        "destructive": bool(getattr(ann, "destructiveHint", False)) if ann is not None else False,
+    }
 
 
 def _schema_to_model(name: str, schema: dict) -> type[BaseModel]:
@@ -338,7 +389,7 @@ class MCPRegistry:
             self.load()
         return self.servers
 
-    async def connect_all(self) -> dict[str, _LiveServer]:
+    async def connect_all(self, only: set[str] | None = None) -> dict[str, _LiveServer]:
         """Spawn/connect all configured servers concurrently. Idempotent.
 
         Each server is given a connect timeout so a hung spawn (e.g. `npx`
@@ -346,9 +397,17 @@ class MCPRegistry:
         caller — the HTTP/WS server must come up regardless so the UI can
         connect and chat even when an MCP server is misbehaving. Connections
         are started concurrently so N servers cost ~max(latency), not sum.
+
+        ``only`` 限定本次只尝试这些服务器（POST /api/mcp/reconnect?server=
+        用它做单服务器重试）；None 表示全部。enabled=False 的服务器永远
+        不连接（不建 _LiveServer、也不进 _failed —— 禁用不是失败）。
         """
         self.ensure_loaded()
-        pending = {n: c for n, c in self.servers.items() if n not in self._live}
+        pending = {
+            n: c
+            for n, c in self.servers.items()
+            if n not in self._live and c.enabled and (only is None or n in only)
+        }
 
         async def _connect_one(name: str, cfg: MCPServerConfig) -> None:
             live = _LiveServer(cfg)
@@ -378,39 +437,171 @@ class MCPRegistry:
                 pass
         self._live.clear()
 
+    def _spawn_close(self, live: "_LiveServer") -> None:
+        """后台收尾一条已从 _live 逐出的连接。
+
+        PUT /api/mcp 是设置页的高频轻操作，不能为 hung 进程的 close（最长
+        10s 超时）阻塞——_live 簿记已在 sync_configs 里同步完成（状态立即
+        一致），真正的连接关闭丢进事件循环 fire-and-forget。_shutdown 事件
+        触发后 _run 退出 AsyncExitStack；期间在途调用经包装器的
+        _resolve_live 回退语义自然收尾。无事件循环（同步单测上下文）时跳过
+        ——close 由进程退出兜底。
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _close() -> None:
+            try:
+                await live.close()
+            except Exception:
+                pass
+
+        loop.create_task(_close())
+
+    def sync_configs(self, raw: dict[str, Any]) -> list[str]:
+        """PUT /api/mcp 落盘后热更新内存 configs（2026-10-09 开关无响应修复）。
+
+        修复的断点：PUT 只写文件，self.servers 停留在 load() 时刻——
+        status() 永远报旧 enabled（5s 轮询把前端乐观翻转的开关翻回去），
+        connect_all 也读旧配置而无法逐出已禁用的服务器。
+
+        语义（对应 docs/mcp-server-ui-design.md §3.3/§4.2/§4.3）：
+        - **开关字段热同步**：enabled / disabled_tools 在既有 MCPServerConfig
+          对象上原位改写——对象身份保留，_LiveServer.config 与
+          self.servers[name] 是同一对象，已连接服务器的 _active_tools()
+          立即按新黑名单过滤；unconfigured_wrapped_names 下一 turn 据此
+          触发会话图收缩重建（「下一 turn 生效」语义不变）。
+        - **disable 逐出**：enabled 翻 False 的已连接服务器当场弹出 _live
+          （关闭放 _spawn_close 后台），status 立即 connected=false；
+          _failed/_last_error 一并清理——禁用不是失败。
+        - **删除**：条目从 servers/_live/_failed/_last_error 全部清掉。
+        - **新增**：解析进内存（未连接，由 reconnect / retry_failed 补连，
+          status 里立即可见）。
+        - **连接参数刻意不热同步**（url/command/args/env/transport/
+          connect_timeout）：已建立连接仍按旧参数通信，内存必须与连接保持
+          一致——改参数走 Save & Reload 的全量重建（api/mcp/reload）。
+
+        返回被逐出（disable / 删除）的服务器名列表。逐条 try/except：单条
+        坏配置只跳过该条，不影响其余（文件已落盘，由调用方决定是否 reload）。
+        """
+        self.ensure_loaded()
+        raw_servers = raw.get("mcpServers") or raw.get("servers") or {}
+        if not isinstance(raw_servers, dict):
+            return []
+        evicted: list[str] = []
+
+        for name in list(self.servers.keys()):
+            old = self.servers[name]
+            new_raw = raw_servers.get(name)
+            if new_raw is None:
+                # 服务器被删：连人带簿记清掉
+                live = self._live.pop(name, None)
+                if live is not None:
+                    evicted.append(name)
+                    self._spawn_close(live)
+                self._failed.pop(name, None)
+                self._last_error.pop(name, None)
+                del self.servers[name]
+                continue
+            try:
+                new_cfg = MCPServerConfig.from_dict(name, new_raw)
+            except Exception:
+                log.exception("mcp[%s] sync_configs: bad entry, keeping old config", name)
+                continue
+            was_enabled = old.enabled
+            old.enabled = new_cfg.enabled
+            old.disabled_tools = new_cfg.disabled_tools
+            if was_enabled and not old.enabled:
+                # disable：当场逐出（禁用不是失败，清失败簿记）
+                live = self._live.pop(name, None)
+                if live is not None:
+                    evicted.append(name)
+                    self._spawn_close(live)
+                self._failed.pop(name, None)
+                self._last_error.pop(name, None)
+
+        for name, c in raw_servers.items():
+            if name in self.servers:
+                continue
+            try:
+                self.servers[name] = MCPServerConfig.from_dict(name, c)
+            except Exception:
+                log.exception("mcp[%s] sync_configs: bad new entry ignored", name)
+        if evicted:
+            log.info("mcp sync_configs evicted: %s", ", ".join(evicted))
+        return evicted
+
     @property
     def failed_servers(self) -> list[str]:
         """Configured servers that are not live (last connect failed)."""
         return [n for n in self._failed if n not in self._live]
 
-    def status(self) -> list[dict[str, Any]]:
-        """每个配置服务器的连接状态，设置页逐行展示（GET /api/mcp）。"""
+    def status(self, include_tools: bool = False) -> list[dict[str, Any]]:
+        """每个配置服务器的连接状态，设置页逐行展示（GET /api/mcp）。
+
+        每项基础字段：name/connected/tools/error/enabled，外加 connectedAt
+        （连接成功的 epoch 秒，算 uptime 用；未连为 null）。
+        ``include_tools=True``（对应 ?tools=1）才追加明细：disabledTools
+        （工具黑名单原始名）与 toolDetails（服务器上报的完整工具清单详情，
+        含被禁用的——前端结合 disabledTools 打禁用标记）。5s 轮询走轻负载，
+        只有工具 tab/详情视图才带参取明细。多词字段一律 camelCase，与本
+        端点前端类型（McpServerStatus）一致。
+        """
         self.ensure_loaded()
         out: list[dict[str, Any]] = []
         for name in self.servers:
+            cfg = self.servers[name]
             live = self._live.get(name)
-            out.append({
+            connected_at = getattr(live, "connected_at", None) if live else None
+            item: dict[str, Any] = {
                 "name": name,
                 "connected": live is not None,
                 "tools": len(live.tools) if live else 0,
                 "error": self._last_error.get(name),
-            })
+                "enabled": cfg.enabled,
+                "connectedAt": int(connected_at) if connected_at else None,
+            }
+            if include_tools:
+                item["disabledTools"] = list(cfg.disabled_tools)
+                item["toolDetails"] = [
+                    _tool_detail(t) for t in (live.tools if live else [])
+                ]
+            out.append(item)
         return out
 
     def unconfigured_wrapped_names(self, wrapped_names: set[str]) -> set[str]:
-        """wrapped_names 里已不属于任何当前配置服务器的名字（服务器被删）。
+        """wrapped_names 里已不属于任何当前配置服务器「可用工具」的名字。
 
-        未连上的服务器无法离线拿到它的工具清单，所以「是否仍在配置里」
-        只能按服务器名前缀（mcp_{server}_{tool}）判断——这正是会话图
-        区分「连接抖动导致的缺失」（保留工具）和「用户删掉服务器」
-        （允许收缩重建）的依据。
+        包括三类：服务器被删、服务器被禁用（enabled=false）、工具被禁用
+        （列入 disabled_tools）。后两类是用户在设置页的显式动作而非连接
+        抖动——与「服务器被删」同侧，允许会话图收缩重建，禁用才能对已
+        打开的会话在下一 turn 生效。
+
+        未连上的服务器无法离线拿到它的工具清单，所以「属于哪个服务器」
+        只能按名字前缀（mcp_{server}_{tool}）判断；前缀拼接有损，多个
+        服务器名互为前缀时取最长匹配以还原工具名。
         """
         self.ensure_loaded()
-        configured = list(self.servers.keys())
-        return {
-            n for n in wrapped_names
-            if not any(n.startswith(f"mcp_{s}_") for s in configured)
-        }
+        configured = sorted(self.servers.keys(), key=len, reverse=True)
+
+        def _owner(n: str) -> str | None:
+            for s in configured:
+                if n.startswith(f"mcp_{s}_"):
+                    return s
+            return None
+
+        out: set[str] = set()
+        for n in wrapped_names:
+            owner = _owner(n)
+            if owner is None:
+                out.add(n)  # 服务器已删
+                continue
+            cfg = self.servers[owner]
+            if not cfg.enabled or n[len(f"mcp_{owner}_"):] in cfg.disabled_tools:
+                out.add(n)  # 服务器或工具被禁用
+        return out
 
     def has_pending_failures(self, cooldown_s: float = 120.0) -> bool:
         """True when a retry is due: failures exist, none is being retried
@@ -474,7 +665,7 @@ class MCPRegistry:
         return [
             _full_tool_name(name, t.name)
             for name, live in self._live.items()
-            for t in live.tools
+            for t in live._active_tools()
         ]
 
     def server_tools(self, server_name: str) -> list[str]:

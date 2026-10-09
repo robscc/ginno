@@ -98,6 +98,23 @@ def test_global_copy_overrides_builtin(isolated_home):
     s = SkillLoader().get("todo")
     assert s.builtin is False and s.description == "CUSTOM"
     assert s.body == "custom body"
+    # Undeclared tools:/sticky: are inherited from the built-in — an old copy
+    # predating lazy activation must not orphan the todo_* family.
+    assert "todo_list" in s.allowed_tools
+    assert s.sticky is True
+    assert "todo_list" in s.effective_tools()
+
+
+def test_global_copy_with_own_tools_keeps_them(isolated_home):
+    _write_skill(
+        paths.global_skills_dir(),
+        "todo",
+        "---\nname: todo\ndescription: CUSTOM\ntools: [bash]\n---\ncustom body\n",
+    )
+    s = SkillLoader().get("todo")
+    # Explicit declarations in the copy win over builtin inheritance.
+    assert s.allowed_tools == ["bash"]
+    assert s.sticky is False
 
 
 def test_builtin_skill_dir_resolves(isolated_home):
