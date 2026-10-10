@@ -38,13 +38,19 @@ export function McpToggle({
           checked ? "translate-x-[13px] bg-white" : "translate-x-0 bg-txt/75"
         } ${pending ? "opacity-70 animate-pulse" : ""}`}
       />
-      {/* spinner 落在轨道空着的一侧（= 目标侧），不与滑块重叠 */}
+      {/* spinner 落在轨道空着的一侧（= 目标侧），不与滑块重叠。
+          定位与旋转必须分层：animate-spin 的 keyframes 覆盖整个 transform，
+          与 -translate-y-1/2 叠在同一元素上会把定位插值掉——spinner 一边转
+          一边漂移。外层 span 只管定位，内层 icon 只管转。 */}
       {pending && (
-        <Loader2
-          className={`absolute top-1/2 h-3 w-3 -translate-y-1/2 animate-spin ${
-            checked ? "left-[4px] text-white/90" : "right-[4px] text-txt/60"
+        <span
+          aria-hidden
+          className={`absolute top-[3px] flex h-[13px] w-[13px] items-center justify-center ${
+            checked ? "left-[3px]" : "right-[3px]"
           }`}
-        />
+        >
+          <Loader2 className={`h-3 w-3 animate-spin ${checked ? "text-white/90" : "text-txt/60"}`} />
+        </span>
       )}
     </button>
   );
