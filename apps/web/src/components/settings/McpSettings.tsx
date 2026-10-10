@@ -19,7 +19,7 @@ type ConfirmState = { title: string; message: string; confirmLabel?: string; onC
 // 路由不变；向导 / 导入 / 确认均为模态。写路径全部走 useMcp().mutate 的读改写。
 export function McpSettings() {
   const t = useTranslations("settings.mcp");
-  const { cfg, graphTools, status, detailByName, load, loadDetail, mutate, applyStatus } = useMcp();
+  const { cfg, cfgError, graphTools, status, detailByName, load, loadDetail, mutate, applyStatus } = useMcp();
 
   // 详情页选中的 server（页内切换，无新路由）；tab 用于卡片菜单直达对应面板
   const [sel, setSel] = useState<{ name: string; tab?: McpDetailTab } | null>(null);
@@ -33,12 +33,19 @@ export function McpSettings() {
   const [pendingByServer, setPendingByServer] = useState<Record<string, { on: boolean }>>({});
   const [toast, setToast] = useState<Toast | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
-  const [advText, setAdvText] = useState<string | null>(null); // null = 未编辑（跟 cfg 同步）
+  const [advText, setAdvText] = useState<string | null>(null); // null = 未编辑（显示冻结快照）
+  const [advSnapshot, setAdvSnapshot] = useState<string | null>(null); // 展开时刻冻结的 cfg 快照
   const [advError, setAdvError] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string, tone: Toast["tone"] = "ok") => {
     setToast({ msg, tone });
   }, []);
+  // 写失败统一出口：损坏锁写时给出针对性文案（而非误导性的「保存失败」），
+  // 其余（网络断开 / 后端 500）保持 saveFailed。cfgError 来自 ≤5s 前的轮询，
+  // 足够新——损坏文件在挂载首载就会置位。
+  const saveFailToast = useCallback(() => {
+    showToast(cfgError ? t("cfgCorruptBlocked") : t("saveFailed"), "err");
+  }, [cfgError, t, showToast]);
   useEffect(() => {
     if (!toast) return;
     const tm = setTimeout(() => setToast(null), 2800);
@@ -183,20 +190,23 @@ export function McpSettings() {
         if (connected) {
           showToast(t("enabledToast"));
         } else {
-          // 回弹 OFF：配置回滚为 disabled（与开关一致），错误行复用后端根因
-          await mutate((servers) => {
+          // 回弹 OFF：配置回滚为 disabled（与开关一致），错误行复用后端根因。
+          // 回滚本身失败（网络抖动等）不能静默——配置停在 enabled:true +
+          // 连接失败，用户看到的开关位置与文件不一致，必须显式告知。
+          const rollbackOk = await mutate((servers) => {
             const e = servers[name];
             if (!e || typeof e !== "object" || Array.isArray(e)) return;
             const next = { ...(e as McpServerEntry) };
             next.enabled = false;
             servers[name] = next;
           });
-          showToast(lastError || t("notConnected"), "err");
+          showToast(rollbackOk ? lastError || t("notConnected") : t("rollbackFailed"), "err");
         }
       } else {
         let confirmed = false;
         let lastError = "";
         const deadline = Date.now() + 8000;
+        let confirmedViaStatus = false;
         for (;;) {
           try {
             const i = await api.getMcp();
@@ -204,20 +214,44 @@ export function McpSettings() {
             const st = (i.status ?? []).find((x) => x.name === name);
             if (!st || st.enabled === false) {
               confirmed = true; // server 已被移除也算完成
+              confirmedViaStatus = true;
               break;
             }
             lastError = st.error ?? lastError;
+            // 兜底真值源：PUT 已落盘，但 sync_configs 若在后端抛错（文件已写、
+            // 内存停留旧值），status 会永远报旧 enabled——8s 白等后开关被错误
+            // 地弹回 ON。配置文件才是持久层，状态没跟上时以文件为准确认。
+            const c = await api.getMcpConfig();
+            const e = (c.mcpServers ?? {})[name];
+            if (!e || (e as McpServerEntry).enabled === false) {
+              confirmed = true;
+              break;
+            }
           } catch {
             /* 继续等 */
           }
           if (Date.now() >= deadline) break;
           await wait(1000);
         }
-        if (confirmed) showToast(t("disabledToast"));
-        else showToast(lastError || t("saveFailed"), "err");
+        if (confirmed) {
+          // 文件已确认但 status 始终没跟上 = sync_configs 后端异常，内存与
+          // 文件分叉——全量 reload 对齐（会断开重连所有连接，仅此异常路径）。
+          if (!confirmedViaStatus) {
+            try {
+              await api.reloadMcp();
+              const i = await api.getMcp();
+              applyStatus(i.status ?? []);
+            } catch {
+              /* 下一轮 5s 轮询兜底 */
+            }
+          }
+          showToast(t("disabledToast"));
+        } else {
+          showToast(lastError || t("saveFailed"), "err");
+        }
       }
     } catch {
-      showToast(t("saveFailed"), "err");
+      saveFailToast();
     } finally {
       setPendingByServer((p) => {
         if (!(name in p)) return p;
@@ -242,7 +276,7 @@ export function McpSettings() {
       servers[server] = next;
     }).then((ok) => {
       if (!ok) {
-        showToast(t("saveFailed"), "err");
+        saveFailToast();
         return;
       }
       showToast(t(on ? "enabledToast" : "disabledToast"));
@@ -270,7 +304,7 @@ export function McpSettings() {
         setConfirm(null);
         void mutate((s) => void delete s[name], { reload: true }).then((ok) => {
           if (!ok) {
-            showToast(t("saveFailed"), "err");
+            saveFailToast();
             return;
           }
           showToast(t("removedToast", { name }), "warn");
@@ -289,7 +323,7 @@ export function McpSettings() {
       if (r.ok === false && r.error) showToast(r.error, "err");
       if (r.status) applyStatus(r.status);
     } catch {
-      /* ignore */
+      showToast(t("reconnectFailedNet"), "err");
     } finally {
       setRestartSet((s) => {
         const n = new Set(s);
@@ -310,7 +344,7 @@ export function McpSettings() {
       const r = await api.reconnectMcp();
       if (r.status) applyStatus(r.status);
     } catch {
-      /* ignore */
+      showToast(t("reconnectFailedNet"), "err");
     } finally {
       setReconnecting(false);
     }
@@ -321,7 +355,7 @@ export function McpSettings() {
     const ok = await saveEntry(name, entry);
     setWizardOpen(false);
     if (ok) showToast(t("wzSaved", { name }));
-    else showToast(t("saveFailed"), "err");
+    else saveFailToast();
   };
 
   // 导入：只 putMcp 合并写回、不自动 reload（§5.3）——连接靠下轮轮询 / 重连入口
@@ -331,16 +365,21 @@ export function McpSettings() {
     });
     setImportOpen(false);
     if (ok) showToast(t("impDone", { count: picked.length }));
-    else showToast(t("saveFailed"), "err");
+    else saveFailToast();
   };
 
-  // Advanced 逃生舱：真值明文（§8.3）；保存前把 servers 顶层键归一成 mcpServers
+  // Advanced 逃生舱：真值明文（§8.3）；保存前把 servers 顶层键归一成 mcpServers。
+  // 展开时冻结快照（advSnapshot）——5s 轮询每轮重写 value 会打断选中文本/滚动；
+  // 只有真实编辑（advText 非空）才可保存，避免「未编辑的旧快照」覆盖外部改动。
+  // parse 错误与网络错误分流：此前共用一个 catch，断网也报「JSON 无效」。
   const saveAdvanced = async () => {
+    if (advText == null) return;
     setAdvError(null);
+    let m: { mcpServers: Record<string, unknown> };
     try {
-      const parsed = JSON.parse(advText ?? JSON.stringify(cfg, null, 2));
+      const parsed = JSON.parse(advText);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-      const m: { mcpServers: Record<string, unknown> } = {
+      m = {
         mcpServers:
           parsed.mcpServers && typeof parsed.mcpServers === "object"
             ? parsed.mcpServers
@@ -348,13 +387,19 @@ export function McpSettings() {
               ? parsed.servers
               : parsed,
       };
+    } catch (e) {
+      setAdvError(t("invalidJson", { error: (e as Error).message }));
+      return;
+    }
+    try {
       await api.putMcp(m);
       const r = await api.reloadMcp();
       setAdvText(null);
+      setAdvSnapshot(advText);
       showToast(t("saved", { servers: r.servers.join(", ") }));
       await load();
-    } catch (e) {
-      setAdvError(t("invalidJson", { error: (e as Error).message }));
+    } catch {
+      showToast(t("saveFailed"), "err");
     }
   };
 
@@ -409,6 +454,15 @@ export function McpSettings() {
               </button>
             </div>
           </div>
+
+          {/* ---- 损坏锁写横幅 ---- */}
+          {cfgError && (
+            <div className="mt-4 max-w-[640px] rounded-lg border border-red/40 bg-red/[0.08] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-red">
+              <b>{t("cfgCorruptTitle")}</b>
+              <div className="mt-0.5 font-mono text-[11.5px] text-red/80">{cfgError}</div>
+              <div className="mt-1 text-muted">{t("cfgCorruptBody")}</div>
+            </div>
+          )}
 
           {/* ---- 统计条 ---- */}
           <div className="mt-4 flex flex-wrap items-center gap-4 rounded-lg border border-line bg-card px-3.5 py-2 text-[12.5px] text-muted">
@@ -486,7 +540,11 @@ export function McpSettings() {
           <details
             className="mt-4 max-w-[640px] rounded-lg border border-line px-3.5 py-2.5"
             onToggle={(e) => {
-              if ((e.target as HTMLDetailsElement).open) setAdvText(null);
+              if ((e.target as HTMLDetailsElement).open) {
+                // 冻结展开时刻的快照：之后 5s 轮询刷新 cfg 也不重写 textarea
+                setAdvText(null);
+                setAdvSnapshot(JSON.stringify(cfg, null, 2));
+              }
             }}
           >
             <summary className="cursor-pointer text-[12.5px] text-muted select-none">{t("advanced")}</summary>
@@ -494,7 +552,7 @@ export function McpSettings() {
               className="field mt-2.5 font-mono text-xs"
               rows={11}
               spellCheck={false}
-              value={advText ?? JSON.stringify(cfg, null, 2)}
+              value={advText ?? advSnapshot ?? ""}
               onChange={(e) => setAdvText(e.target.value)}
             />
             {advError && <p className="mt-1.5 text-xs text-red">{advError}</p>}
@@ -502,7 +560,8 @@ export function McpSettings() {
               <button
                 type="button"
                 onClick={() => void saveAdvanced()}
-                className="rounded-lg bg-indigo px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-indigo2"
+                disabled={advText == null}
+                className="rounded-lg bg-indigo px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-indigo2 disabled:opacity-45"
               >
                 {t("saveReload")}
               </button>

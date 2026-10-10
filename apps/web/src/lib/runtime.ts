@@ -1143,8 +1143,10 @@ export async function getMcp(opts?: { tools?: boolean }) {
     `${BASE}/mcp${opts?.tools ? "?tools=1" : ""}`,
   );
 }
+// parseError 非空 = mcp.json 损坏（后端拒绝伪装成空配置）。此时 mcpServers
+// 恒为空对象，UI 必须锁写并报警，否则读改写会把原配置整个覆盖掉。
 export async function getMcpConfig() {
-  return json<{ mcpServers: Record<string, unknown> }>(`${BASE}/mcp/config`);
+  return json<{ mcpServers: Record<string, unknown>; parseError?: string }>(`${BASE}/mcp/config`);
 }
 export async function putMcp(data: unknown) {
   return json<{ ok: boolean }>(`${BASE}/mcp`, { method: "PUT", headers: H, body: JSON.stringify(data) });

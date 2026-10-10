@@ -146,6 +146,19 @@ def test_mcp_config_get_put(client):
     assert "vault" in client.get("/api/mcp/config").json()["mcpServers"]
 
 
+def test_mcp_config_corrupt_reports_parse_error(client):
+    """损坏的 mcp.json 不能伪装成空配置（否则前端读改写会覆盖原文件）：
+    GET 带 parseError 报警，轮询端点也不得 500。"""
+    from ginno_runtime import paths
+
+    p = paths.mcp_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{ not valid json")
+    r = client.get("/api/mcp/config").json()
+    assert r["mcpServers"] == {} and r["parseError"]
+    assert client.get("/api/mcp").status_code == 200
+
+
 def test_mcp_empty_registry(client):
     r = client.get("/api/mcp").json()
     # status 数组（逐服务器连接状态，含 enabled/disabledTools/toolDetails）已进契约

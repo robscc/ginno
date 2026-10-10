@@ -121,7 +121,6 @@
       "reconnectFailedNone": "所有服务器均已连接 — 无需重试",
       "reconnectFailedBusy": "正在重试 {count} 个失败的服务器…",
       "toolsOn": "{on}/{total} 个工具",
-      "toolsCached": "缓存 {count} 个工具",
       "enabledToast": "已启用 — 工具将在下一轮生效",
       "disabledToast": "已停用 — 工具将在下一轮移除",
       "removedToast": "已移除「{name}」",
@@ -240,7 +239,13 @@
       "logInitOk": "mcp[{name}] initialize ok · transport={transport} · timeout={timeout}s",
       "logInitFail": "mcp[{name}] initialize failed: {error}",
       "logRetry": "mcp[{name}] 惰性重试已排程（120s 冷却）",
-      "logPoll": "api GET /api/mcp → 状态每 5s 轮询"
+      "logPoll": "api GET /api/mcp → 状态每 5s 轮询",
+      "cfgCorruptTitle": "mcp.json 解析失败 — 写入已锁定",
+      "cfgCorruptBody": "列表暂时按空配置显示。开关 / 添加 / 导入的写入已被锁定，防止把原配置整个覆盖。可在下方「高级」粘贴修正后的完整 JSON 保存修复，或手动修复 ~/.ginno/mcp/mcp.json。",
+      "cfgCorruptBlocked": "mcp.json 已损坏，写入被锁定 — 请先在「高级」中修复",
+      "rollbackFailed": "开启失败，且回滚失败：配置仍为启用状态，请重试或手动停用",
+      "reconnectFailedNet": "重连请求失败 — 请检查 runtime 是否在运行",
+      "disabledLabel": "已禁用"
     },
     "skills": {
       "title": "技能",

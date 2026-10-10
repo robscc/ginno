@@ -140,8 +140,12 @@ async def get_mcp_config_endpoint() -> dict:
         return {"mcpServers": {}}
     try:
         return json.loads(p.read_text() or '{"mcpServers": {}}')
-    except json.JSONDecodeError:
-        return {"mcpServers": {}}
+    except json.JSONDecodeError as e:
+        # 损坏文件不能伪装成空配置：前端会把「空列表」当真值源做读改写，
+        # 任何一次 PUT（toggle / 添加 / 导入）都会把用户的原配置整个覆盖
+        # 掉。带上 parseError 让设置页锁写并横幅报警（Advanced 全文覆盖
+        # 保存仍是修复通道）。
+        return {"mcpServers": {}, "parseError": f"{type(e).__name__}: {e}"}
 
 
 @router.put("/api/mcp")

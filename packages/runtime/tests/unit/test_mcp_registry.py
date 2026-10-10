@@ -525,3 +525,86 @@ async def test_put_mcp_endpoint_hot_syncs_registry(tmp_path, fake_live, monkeypa
     assert st["enabled"] is False and st["connected"] is False
     # 文件也落盘了
     assert json.loads(cfg_path.read_text())["mcpServers"]["s1"]["enabled"] is False
+
+
+# --------------------------------------------------------------------------- #
+# 损坏容错与并发连接守卫（2026-10-10 设置页错误场景修复）。
+# --------------------------------------------------------------------------- #
+def test_corrupt_config_loads_empty_without_raising(tmp_path):
+    """手编坏 JSON 不能让 status / turn 路径 500：load 容错为空 + 记录根因。"""
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{ not valid json")
+    reg = MCPRegistry(config_path=cfg)
+    reg.load()
+    assert reg.servers == {}
+    assert reg.load_error
+    # 5s 轮询端点走的 status() / ensure_loaded() 不得 raise
+    assert reg.status() == []
+    assert reg.list_tools() == []
+
+
+def test_corrupt_config_recovered_by_valid_load(tmp_path):
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{ broken")
+    reg = MCPRegistry(config_path=cfg)
+    reg.load()
+    assert reg.load_error
+    cfg.write_text(json.dumps({"mcpServers": {"s1": {"type": "stdio", "command": "x"}}}))
+    reg.load()
+    assert reg.load_error is None and "s1" in reg.servers
+
+
+async def test_concurrent_connect_all_spawns_single_connection(tmp_path, monkeypatch):
+    """轮询惰性 retry 与手动 reconnect 撞车：同名只允许一条连接 spawn。
+    （旧行为：两边各 spawn 一条 _LiveServer，后完成者覆盖 _live[name]，
+    先者的 stdio 子进程泄漏。）"""
+    reg = _registry_with(tmp_path, names=("s1",))
+    spawns: list[str] = []
+
+    class _SlowLive:
+        def __init__(self, config) -> None:
+            spawns.append(config.name)
+            self.config = config
+            self.tools = []
+
+        async def connect(self) -> None:
+            await asyncio.sleep(0.05)  # 拉宽竞态窗口
+            self.tools = [_FakeTool("tool_a")]
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(reg_mod, "_LiveServer", _SlowLive)
+    await asyncio.gather(reg.connect_all(), reg.connect_all())
+    assert spawns == ["s1"]
+    assert "s1" in reg._live
+    assert not reg._connecting  # 守卫集合清空，不阻塞后续重连
+
+
+async def test_connect_completing_after_disable_is_not_registered(tmp_path, monkeypatch):
+    """连接进行中服务器被禁用：完成后不得注册进 _live（否则 status 报
+    connected=true 与 enabled=false 自相矛盾，且连接成孤儿）。"""
+    reg = _registry_with(tmp_path)
+    gate = asyncio.Event()
+
+    class _GatedLive:
+        def __init__(self, config) -> None:
+            self.config = config
+            self.tools = []
+
+        async def connect(self) -> None:
+            await gate.wait()
+            self.tools = [_FakeTool("tool_a")]
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(reg_mod, "_LiveServer", _GatedLive)
+    task = asyncio.create_task(reg.connect_all())
+    await asyncio.sleep(0)  # 让 _connect_one 进入 connect()
+    reg.sync_configs({"mcpServers": {"s1": {"type": "streamable-http", "url": "http://x/mcp", "enabled": False}}})
+    gate.set()
+    await task
+    assert "s1" not in reg._live
+    st = reg.status()[0]
+    assert st["enabled"] is False and st["connected"] is False

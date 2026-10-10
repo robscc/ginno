@@ -34,20 +34,25 @@ export function McpServerCard({
   const t = useTranslations("settings.mcp");
   const [menu, setMenu] = useState(false);
   const transport = transportOf(entry);
-  const err = !s.connected ? (s.error || t("notConnected")) : null;
+  // enabled 合并视图（与统计条/详情页同口径）：status 优先，旧后端回落配置
+  const enabled = s.enabled ?? entry.enabled !== false;
+  const err = enabled && !s.connected ? (s.error || t("notConnected")) : null;
   const onCount = Math.max(0, s.tools - (s.disabledTools?.length ?? 0));
   return (
     <div className="relative flex items-center gap-3 rounded-lg border border-line bg-card px-3.5 py-3 transition-colors hover:border-line2">
       {/* 左侧主体：点击进详情 */}
       <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-2.5 text-left">
-        {/* 状态点：绿=已连接 红=失败 黄=重连中（脉冲） */}
+        {/* 状态点：绿=已连接 红=失败（仅启用态）灰=已禁用 黄=重连中（脉冲）。
+            禁用不是失败——此前 disabled 也渲染红点，用户会当成故障去点重连。 */}
         <span
           className={`h-1.5 w-1.5 shrink-0 rounded-full ${
             restarting
               ? "animate-pulse bg-yellow"
-              : s.connected
-                ? "bg-green"
-                : "bg-red"
+              : !enabled
+                ? "bg-faint"
+                : s.connected
+                  ? "bg-green"
+                  : "bg-red"
           }`}
         />
         <span className="min-w-0">
@@ -62,11 +67,12 @@ export function McpServerCard({
           <span className="mt-0.5 block max-w-[440px] truncate font-mono text-xs text-faint">
             {serverLine(entry) || "—"}
           </span>
-          {err && (
+          {err ? (
             <span className="mt-0.5 block truncate text-xs text-red" title={err}>
               {err}
-              {s.tools > 0 && !s.connected ? ` · ${t("toolsCached", { count: s.tools })}` : ""}
             </span>
+          ) : (
+            !enabled && <span className="mt-0.5 block text-xs text-faint">{t("disabledLabel")}</span>
           )}
         </span>
       </button>
@@ -74,9 +80,7 @@ export function McpServerCard({
       {/* 右侧：工具数 + 开关 + 菜单 */}
       <div className="relative flex shrink-0 items-center gap-2.5">
         <span className="min-w-16 text-right text-xs text-muted">
-          {s.connected || s.tools > 0
-            ? t("toolsOn", { on: onCount, total: s.tools })
-            : "—"}
+          {s.connected && enabled ? t("toolsOn", { on: onCount, total: s.tools }) : "—"}
         </span>
         <McpToggle checked={switchOn} pending={switchPending} onChange={onToggle} label={s.name} />
         <button

@@ -121,7 +121,6 @@
       "reconnectFailedNone": "All servers connected — nothing to retry",
       "reconnectFailedBusy": "Retrying {count} failed server(s)…",
       "toolsOn": "{on}/{total} tools",
-      "toolsCached": "{count} tools cached",
       "enabledToast": "Enabled — tools available on the next turn",
       "disabledToast": "Disabled — tools removed on the next turn",
       "removedToast": "Removed “{name}”",
@@ -240,7 +239,13 @@
       "logInitOk": "mcp[{name}] initialize ok · transport={transport} · timeout={timeout}s",
       "logInitFail": "mcp[{name}] initialize failed: {error}",
       "logRetry": "mcp[{name}] lazy retry scheduled (120s cooldown)",
-      "logPoll": "api GET /api/mcp → status polled every 5s"
+      "logPoll": "api GET /api/mcp → status polled every 5s",
+      "cfgCorruptTitle": "mcp.json is not valid JSON — writes are locked",
+      "cfgCorruptBody": "The list shows as empty for now. Toggles, adding and importing are locked so the original config is not overwritten. Paste a corrected full JSON under Advanced below to repair, or fix ~/.ginno/mcp/mcp.json by hand.",
+      "cfgCorruptBlocked": "mcp.json is corrupted; writes are locked — repair it under Advanced first",
+      "rollbackFailed": "Enable failed and rollback failed too: config stays enabled — retry or disable manually",
+      "reconnectFailedNet": "Reconnect request failed — check that the runtime is running",
+      "disabledLabel": "Disabled"
     },
     "skills": {
       "title": "Skills",

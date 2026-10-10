@@ -372,13 +372,34 @@ class MCPRegistry:
         # 最近一次连接失败的根因（单行字符串），供 /api/mcp status 展示。
         self._last_error: dict[str, str] = {}
         self._retry_busy = False
+        # In-flight connect 守卫：connect_all 可被并发触发（5s 轮询的惰性
+        # retry_failed 后台任务 + 设置页 reconnect?server= / reload 同时到达），
+        # pending 快照在注册 _live 之前算好——没有守卫时两边各自 spawn
+        # _LiveServer，后完成者覆盖 self._live[name]，先者的 stdio 子进程
+        # 永久泄漏。标记在 connect_all 的同步段完成，asyncio 任务不会插进
+        # 「算 pending」与「标记」之间。
+        self._connecting: set[str] = set()
+        # load() 遇到损坏 JSON 时记录根因（不 raise——status/turn 路径不能
+        # 因为一个手编坏文件 500），GET /api/mcp/config 用它向前端报警。
+        self.load_error: str | None = None
 
     def load(self) -> dict[str, MCPServerConfig]:
         if not self.config_path.exists():
             self.servers = {}
             self._loaded = True
             return self.servers
-        raw = json.loads(self.config_path.read_text() or "{}")
+        try:
+            raw = json.loads(self.config_path.read_text() or "{}")
+        except json.JSONDecodeError as e:
+            # 容忍损坏文件：servers 置空 + 记录根因。后续 PUT /api/mcp 是
+            # 全文覆盖，本身就是修复路径；raise 会让 GET /api/mcp（5s 轮询）
+            # 和 turn 路径整体 500。
+            log.exception("mcp config is not valid JSON, acting as empty")
+            self.load_error = str(e)
+            self.servers = {}
+            self._loaded = True
+            return self.servers
+        self.load_error = None
         servers = raw.get("mcpServers") or raw.get("servers") or {}
         self.servers = {name: MCPServerConfig.from_dict(name, c) for name, c in servers.items()}
         self._loaded = True
@@ -401,18 +422,30 @@ class MCPRegistry:
         ``only`` 限定本次只尝试这些服务器（POST /api/mcp/reconnect?server=
         用它做单服务器重试）；None 表示全部。enabled=False 的服务器永远
         不连接（不建 _LiveServer、也不进 _failed —— 禁用不是失败）。
+
+        并发安全：同名 in-flight（``_connecting``）直接跳过，防止轮询惰性
+        retry 与设置页手动 reconnect 撞车时 spawn 出第二条连接（泄漏 stdio
+        子进程）。连接完成时还会复核配置仍在且未被禁用——中途被删/被禁的
+        server 不注册进 _live，后台关闭。
         """
         self.ensure_loaded()
         pending = {
             n: c
             for n, c in self.servers.items()
-            if n not in self._live and c.enabled and (only is None or n in only)
+            if n not in self._live and n not in self._connecting and c.enabled and (only is None or n in only)
         }
+        self._connecting.update(pending.keys())
 
         async def _connect_one(name: str, cfg: MCPServerConfig) -> None:
             live = _LiveServer(cfg)
             try:
                 await asyncio.wait_for(live.connect(), timeout=cfg.connect_timeout)
+                cur = self.servers.get(name)
+                if cur is None or not cur.enabled:
+                    # 连接期间被删除（sync_configs/重命名）或被禁用：不注册，
+                    # 后台关闭，防止孤儿连接/子进程。
+                    self._spawn_close(live)
+                    return
                 self._live[name] = live
                 self._failed.pop(name, None)
                 self._last_error.pop(name, None)
@@ -424,6 +457,8 @@ class MCPRegistry:
                     await live.close()
                 except Exception:
                     pass
+            finally:
+                self._connecting.discard(name)
 
         if pending:
             await asyncio.gather(*(_connect_one(n, c) for n, c in pending.items()))
