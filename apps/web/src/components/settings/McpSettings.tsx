@@ -99,11 +99,13 @@ export function McpSettings() {
     [status, entryOf],
   );
 
-  // 开关的显示值：pending 覆盖轮询（确认驱动语义），无 pending 才跟 status/config。
+  // 开关的显示值：pending 覆盖轮询，但显示「翻转前」的状态（!p.on）——
+  // 确认驱动语义：滑块不乐观位移，spinner 在目标侧指示方向，pending 清除
+  // （status 确认 / 超时回弹）后 checked 才真正翻转、滑块才滑动。
   const switchStateOf = useCallback(
     (name: string) => {
       const p = pendingByServer[name];
-      if (p) return p.on;
+      if (p) return !p.on;
       return enabledOf(name);
     },
     [pendingByServer, enabledOf],
