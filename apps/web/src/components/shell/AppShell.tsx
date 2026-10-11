@@ -784,6 +784,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [setActiveSessionForNav, router]);
 
+  // Backspace 不触发页面后退（2026-10-11 用户反馈）。macOS WKWebView 的
+  // 默认行为：非可编辑焦点处按 Backspace = history.back()，在 Tauri 壳里
+  // 会把用户「弹」回上一个路由。输入框/文本域/contentEditable（含
+  // CodeMirror 类编辑器）里的退格是删字符，必须放行；带修饰键的组合
+  // （Cmd/Ctrl/Alt+Backspace）不是后退路径，也不拦。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Backspace" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Floating quick-chat window (docs/floating-window-design.md §4 Phase 3):
   // the /pin route renders PinApp bare — no sidebar, workspace, or ChatStream.
   // Placed after every hook so the rules-of-hooks order is untouched; the
