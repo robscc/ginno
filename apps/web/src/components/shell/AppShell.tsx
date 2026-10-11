@@ -35,6 +35,7 @@ import { ChatStream } from "@/components/chat/ChatStream";
 import { SUBAGENT_STATUS_META, SubagentKindBadges, useStatusLabel } from "@/components/chat/blocks";
 import { RunSubSessionView } from "@/components/chat/RunSubSessionView";
 import { ScheduleRunView } from "@/components/chat/ScheduleRunView";
+import { UnseenBadge } from "@/components/scheduled/UnseenBadge";
 import { RUN_STATUS_META, useRunStatusLabel } from "@/components/chat/RunBlocks";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { ModToastHost } from "@/components/chat/mod/ModToastHost";
@@ -274,17 +275,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   // 定时任务状态点（scheduled-tasks-design §3.1/§6 + schedule-unseen）：红 =
-  // 存在未查看的执行结果（unseen.total > 0，点开记录/全部已读后消除）；灰 =
-  // 全局关闭；无点 = 无未读。冷数据 GET 兜底（60s），运行中由 /api/ws/schedule
-  // 的 run_finished/missed/task_updated/runs_seen 事件即时刷新；挂这一条轻量
-  // WS 只为状态点，页面级订阅归 /scheduled 自己（§6）。
+  // 存在未查看的执行结果（实心红圆 + 白色数字徽章，点开记录/全部已读后
+  // 消除）；灰 = 全局关闭；无点 = 无未读。冷数据 GET 兜底（60s），运行中由
+  // /api/ws/schedule 的 run_finished/missed/task_updated/runs_seen 事件即时
+  // 刷新；挂这一条轻量 WS 只为状态点，页面级订阅归 /scheduled 自己（§6）。
   const [scheduleDot, setScheduleDot] = useState<"" | "off" | "error">("");
+  const [scheduleUnseen, setScheduleUnseen] = useState(0);
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       try {
         const cfg = await api.listSchedule();
         if (!alive) return;
+        setScheduleUnseen(cfg.unseen?.total ?? 0);
         if (!cfg?.enabled) {
           setScheduleDot("off");
           return;
@@ -899,7 +902,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <AlarmClock className="h-4 w-4 shrink-0" />
             <span className="truncate">{t("nav.scheduled")}</span>
             {scheduleDot === "error" ? (
-              <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-red-500" title={t("navDots.scheduleError")} />
+              <UnseenBadge n={scheduleUnseen} title={t("navDots.scheduleError")} className="ml-auto" />
             ) : scheduleDot === "off" ? (
               <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-faint" title={t("navDots.scheduleOff")} />
             ) : null}

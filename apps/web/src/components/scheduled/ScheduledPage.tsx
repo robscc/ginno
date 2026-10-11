@@ -14,6 +14,7 @@ import type { ScheduleConfig, ScheduleTask } from "@/lib/types";
 import { setKeepAwake } from "@/lib/desktop";
 import { DayTimeline } from "./DayTimeline";
 import { RunsPanel } from "./RunsPanel";
+import { UnseenBadge } from "./UnseenBadge";
 import { TasksPanel } from "./TasksPanel";
 import { TaskEditor } from "./TaskEditor";
 import { dateStr, fmtClock, fmtDayPrefix } from "./shared";
@@ -228,9 +229,9 @@ export function ScheduledPage() {
             }}
           />
 
-          {/* 页签（任务 | 执行记录）。执行记录带未读角标（schedule-unseen）：
-              红点 + 未读数，另有 error / missed 分桶数——一眼看出有多少结果
-              没看、其中多少是坏的。全部已读后角标消失。 */}
+          {/* 页签（任务 | 执行记录）。执行记录带未读徽章（schedule-unseen）：
+              实心红圆 + 白色数字（与侧栏同一形），后随 error / missed 分桶
+              小字——一眼看出有多少结果没看、其中多少是坏的。全部已读后消失。 */}
           <div className="mb-3 mt-5 flex items-center gap-1 border-b border-line">
             {(
               [
@@ -256,10 +257,7 @@ export function ScheduledPage() {
                   {label}
                   {!!unseen && unseen.total > 0 && (
                     <span className="flex items-center gap-1.5 text-[11px] font-normal">
-                      <span className="flex items-center gap-1 text-red">
-                        <span className="h-1.5 w-1.5 rounded-full bg-red" />
-                        {unseen.total}
-                      </span>
+                      <UnseenBadge n={unseen.total} />
                       {unseen.error > 0 && (
                         <span className="text-red/70" title={tr("status.error")}>
                           ✕{unseen.error}
