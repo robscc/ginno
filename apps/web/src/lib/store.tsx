@@ -96,6 +96,15 @@ export interface CodeOpenRequest {
   nonce: number;
 }
 
+/** A pending "insert this text at the composer caret" request, published by the
+ *  code panel (tree row dragged onto the composer) and consumed by ChatStream.
+ *  Same nonce pattern as CodeOpenRequest: inserting the same path twice still
+ *  re-triggers. Pure UI bridge — never persisted. */
+export interface ComposerInsertRequest {
+  text: string;
+  nonce: number;
+}
+
 /** Live in-flight tool call for a workflow run step (workflow-ux-redesign P1):
  *  shown under the running step in LiveRunBlock; cleared by tool_result /
  *  node_exit / terminal events. Ephemeral — never persisted. */
@@ -242,6 +251,15 @@ interface GinnoState {
   codeOpenRequest: CodeOpenRequest | null;
   clearCodeOpenRequest: () => void;
   openInCode: (target: { rootId: string; path: string; line?: number }) => void;
+  // ---- composer insert (code tree → composer drag; one-shot bridge) ----
+  composerInsert: ComposerInsertRequest | null;
+  insertToComposer: (text: string) => void;
+  clearComposerInsert: () => void;
+  /** True while a tree-file pointer drag hovers the composer (drop highlight).
+   *  Set from the tree's drag loop; ChatStream merges it into the same violet
+   *  border the Finder HTML5 drop uses. */
+  composerDragOver: boolean;
+  setComposerDragOver: (v: boolean) => void;
   // ---- agent file changes (design §4.7 S3) ----
   /** Absolute path → the agent's last write/edit, from `code.changed`. Feeds
    *  the tree's agent marks (cumulative). */
@@ -496,6 +514,10 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     [],
   );
   const codeOpenNonceRef = useRef(0);
+  // ---- composer insert (tree → composer drag) ----
+  const [composerInsert, setComposerInsert] = useState<ComposerInsertRequest | null>(null);
+  const composerInsertNonceRef = useRef(0);
+  const [composerDragOver, setComposerDragOver] = useState(false);
   // Artifact ids that arrived while collapsed — replayed as a pulse on reopen
   // so the highlight isn't lost to the hidden window.
   const pendingFlashRef = useRef<string[]>([]);
@@ -811,6 +833,15 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   }, []);
   const clearCodeOpenRequest = useCallback(() => {
     setCodeOpenRequest(null);
+  }, []);
+  // 树行拖到输入框（pointer 拖拽，非 HTML5 DnD）：发布一次性插入请求，由
+  // ChatStream 在光标处落地。nonce 保证同一路径连续两次拖入也重新触发。
+  const insertToComposer = useCallback((text: string) => {
+    composerInsertNonceRef.current += 1;
+    setComposerInsert({ text, nonce: composerInsertNonceRef.current });
+  }, []);
+  const clearComposerInsert = useCallback(() => {
+    setComposerInsert(null);
   }, []);
   // Unified jump-from-chat entry point: switch to the code tab, open the panel
   // if collapsed, and publish an open request. Deliberately does NOT touch the
@@ -1527,6 +1558,11 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     notifyCodeChange,
     clearCodeOpenRequest,
     openInCode,
+    composerInsert,
+    insertToComposer,
+    clearComposerInsert,
+    composerDragOver,
+    setComposerDragOver,
     openPreview,
     closePreview,
     notifyPreviewInvalidate,

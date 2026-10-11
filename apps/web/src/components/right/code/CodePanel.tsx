@@ -847,6 +847,21 @@ export function CodePanel() {
     [absInActiveRoot, t],
   );
 
+  // 拖树行到输入框：折算要插入的路径文本。只有 agent 的 cwd 基准根（primary
+  // 挂载根，或无 primary 时的 session 根）用 root-relative——那正是相对路径的
+  // 解析基准；其余根（普通挂载 / 有 primary 时的 session 根）用绝对路径，
+  // 相对路径对它们没有意义。注意根目录一级文件的相对路径就是裸文件名，
+  // 这是预期行为。
+  const onDragToComposer = useCallback(
+    (rel: string) => {
+      const session = g.sessions.find((s) => s.id === sessionId);
+      const primaryId = session?.primary_folder ?? null;
+      const isCwdBase = primaryId ? effectiveRootId === primaryId : effectiveRootId === "session";
+      g.insertToComposer(isCwdBase ? rel : absInActiveRoot(rel) ?? rel);
+    },
+    [g, sessionId, effectiveRootId, absInActiveRoot],
+  );
+
   // Reveal / open-external are Tauri-only; invoking them in a plain browser
   // throws, so gate on `isDesktop()` and pass ABSOLUTE paths (the shell
   // re-checks containment against the root it is given).
@@ -1041,6 +1056,7 @@ export function CodePanel() {
           onCopyPath={onCopyPath}
           onReveal={onTreeReveal}
           onOpenExternal={onTreeOpenExternal}
+          onDragToComposer={onDragToComposer}
           className="h-full"
         />
       </div>

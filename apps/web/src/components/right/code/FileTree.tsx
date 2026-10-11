@@ -28,8 +28,12 @@
  *     `dragDropEnabled: true` in tauri.conf.json makes Tauri swallow the native
  *     drag events, and turning it off would break the app's existing file-drop
  *     (brief §1-7). The pointer pattern follows the live `PanelResizer`.
+ * The same pointer drag also targets the chat COMPOSER (`[data-composer]`):
+ * dropping a row there inserts its path text at the input's caret via
+ * `onDragToComposer` (the panel decides relative vs absolute wording).
  * Cross-root moves are out of scope by design — a tree is one root, so a drop
- * target can only ever be inside it.
+ * target can only ever be inside it (the composer drop is an insert, not a
+ * move, so it is exempt).
  */
 
 import {
@@ -148,6 +152,10 @@ export interface FileTreeProps {
   onReveal?: (path: string) => void;
   /** Open with the OS default app (Tauri `code_open_external`). */
   onOpenExternal?: (path: string) => void;
+  /** 拖行到会话输入框：在光标处插入该行路径的文本（panel 注入——它知道根的
+   *  语义，负责把 root-relative 路径折算成要插入的文本）。与树内移动共用
+   *  pointer 拖拽：悬停 `[data-composer]` 元素即视为输入框放置目标。 */
+  onDragToComposer?: (path: string) => void;
 
   className?: string;
 }
@@ -170,9 +178,10 @@ export function FileTree({
   onCopyPath,
   onReveal,
   onOpenExternal,
+  onDragToComposer,
   className,
 }: FileTreeProps) {
-  const { openInCode } = useGinno();
+  const { openInCode, setComposerDragOver } = useGinno();
   const t = useTranslations("code");
   const [state, dispatch] = useReducer(treeReducer, undefined, initialTreeState);
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
@@ -530,11 +539,25 @@ export function FileTree({
   const dragRef = useRef<{ path: string; name: string } | null>(null);
   // Mirrors `dropDir` for the pointerup listener (state would be stale there).
   const dropDirRef = useRef<string | null>(null);
+  // True while the pointer drag hovers the composer (`[data-composer]`); the
+  // pointerup listener reads it to route the drop to the insert callback.
+  const composerHoverRef = useRef(false);
   // Set after a real drag so the click that follows the pointerup does not also
   // activate the row we just dropped.
   const suppressClickRef = useRef(false);
   const onMoveRef = useRef(onMove);
   onMoveRef.current = onMove;
+  const onDragToComposerRef = useRef(onDragToComposer);
+  onDragToComposerRef.current = onDragToComposer;
+  // Tree-internal drops need a writable root + the move callback. Refreshed
+  // each render because beginPress no longer gates the whole drag on them —
+  // read-only roots can still drag a row into the composer.
+  const movableRef = useRef(false);
+  movableRef.current = writable && !!onMove;
+  // Same mirror for the store's composer-hover flag (stable in practice, but
+  // the register-once effect must not capture component scope directly).
+  const setComposerDragOverRef = useRef(setComposerDragOver);
+  setComposerDragOverRef.current = setComposerDragOver;
   // Body-level cursor lock, saved at drag start and restored at drop.
   const prevCursorRef = useRef("");
 
@@ -568,11 +591,14 @@ export function FileTree({
     const endDrag = () => {
       const dragging = dragRef.current;
       const target = dropDirRef.current;
+      const overComposer = composerHoverRef.current;
       dragRef.current = null;
       pressRef.current = null;
       dropDirRef.current = null;
+      composerHoverRef.current = false;
       setGhost(null);
       setDropDir(null);
+      setComposerDragOverRef.current(false);
       if (!dragging) return;
       document.body.classList.remove("select-none");
       document.body.style.cursor = prevCursorRef.current;
@@ -580,6 +606,12 @@ export function FileTree({
       window.setTimeout(() => {
         suppressClickRef.current = false;
       }, 250);
+      // Composer drop wins: insert the row's path into the chat input instead
+      // of interpreting it as a tree move.
+      if (overComposer) {
+        onDragToComposerRef.current?.(dragging.path);
+        return;
+      }
       if (target != null && canDropInto(dragging.path, target)) void doMoveRef.current(dragging.path, target);
     };
 
@@ -596,18 +628,27 @@ export function FileTree({
       const drag = dragRef.current;
       setGhost({ x: e.clientX, y: e.clientY, name: drag.name });
 
-      // Resolve the drop target from the element under the pointer. A directory
-      // row is a valid target; the empty area below the rows means the root; a
-      // FILE row means "not here" (null), never the root.
+      // Resolve the drop target from the element under the pointer. The
+      // composer (`[data-composer]`) is checked first — hovering it inserts the
+      // path into the chat input on release. Otherwise a directory row inside
+      // the tree is a valid target; the empty area below the rows means the
+      // root; a FILE row means "not here" (null), never the root. Tree-internal
+      // targets count only while the root is movable (see movableRef).
       const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
       const container = treeRef.current;
+      const overComposer = !!(el && el.closest("[data-composer]"));
+      composerHoverRef.current = overComposer;
+      setComposerDragOverRef.current(overComposer);
       let target: string | null = null;
-      if (el && container && container.contains(el)) {
+      if (!overComposer && el && container && container.contains(el)) {
         const rowEl = el.closest("[data-row-path]");
         if (!rowEl) target = "";
         else target = el.closest("[data-row-drop]")?.getAttribute("data-row-path") ?? null;
       }
-      const valid = target != null && canDropInto(drag.path, target) ? target : null;
+      const valid =
+        !overComposer && movableRef.current && target != null && canDropInto(drag.path, target)
+          ? target
+          : null;
       dropDirRef.current = valid;
       setDropDir(valid);
     };
@@ -617,8 +658,10 @@ export function FileTree({
       dragRef.current = null;
       pressRef.current = null;
       dropDirRef.current = null;
+      composerHoverRef.current = false;
       setGhost(null);
       setDropDir(null);
+      setComposerDragOverRef.current(false);
       if (wasDragging) {
         document.body.classList.remove("select-none");
         document.body.style.cursor = prevCursorRef.current;
@@ -632,16 +675,20 @@ export function FileTree({
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", endDrag);
       window.removeEventListener("pointercancel", onPointerCancel);
-      // If the tree unmounts mid-drag, still release the body-level lock.
+      // If the tree unmounts mid-drag, still release the body-level lock and
+      // the composer's drop highlight.
       document.body.classList.remove("select-none");
       document.body.style.cursor = "";
+      setComposerDragOverRef.current(false);
     };
   }, []);
 
   const beginPress = (e: React.PointerEvent<HTMLDivElement>, row: TreeRow) => {
-    // No move callback → no drag affordance at all (a drag that silently does
-    // nothing is worse than no drag).
-    if (e.button !== 0 || !writable || !onMove || editing || pendingDelete) return;
+    // A press can turn into a drag only if some drop target can use it: an
+    // in-tree move (writable + onMove) or the composer insert. With neither, a
+    // drag that silently does nothing is worse than no drag.
+    if (e.button !== 0 || editing || pendingDelete) return;
+    if (!(writable && onMove) && !onDragToComposer) return;
     pressRef.current = { path: row.path, name: row.name, x: e.clientX, y: e.clientY };
   };
 

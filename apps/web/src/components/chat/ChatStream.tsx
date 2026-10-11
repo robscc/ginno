@@ -1069,6 +1069,39 @@ export function ChatStream({
     if (!session) textareaRef.current?.focus();
   }, [session]);
 
+  // 拖文件进输入框（code 工作区树 → composer）：消费 store 的一次性插入请求，
+  // 在光标（textarea 未聚焦时 selectionStart 仍保留上次位置）处插入路径文本，
+  // 前面非空白时补一个分隔空格，然后把焦点和光标落到插入文本之后。
+  const composerInsert = g.composerInsert;
+  useEffect(() => {
+    if (!composerInsert) return;
+    g.clearComposerInsert();
+    const el = textareaRef.current;
+    const caret = el?.selectionStart ?? input.length;
+    const before = input.slice(0, caret);
+    const sep = before && !/\s$/.test(before) ? " " : "";
+    const text = `${before}${sep}${composerInsert.text}${input.slice(caret)}`;
+    const newCaret = caret + sep.length + composerInsert.text.length;
+    setInput(text);
+    // 与 onChange 同步逻辑对齐：插入可能打断已解析的 mention token（拖到
+    // 半个 `@agent:xx` 中间），prune 掉不再出现的条目。
+    if (session) {
+      mentionsRef.current[session.id] = pruneMentions(
+        mentionsRef.current[session.id] ?? [],
+        text,
+      );
+    }
+    requestAnimationFrame(() => {
+      const el2 = textareaRef.current;
+      if (el2) {
+        el2.focus();
+        el2.setSelectionRange(newCaret, newCaret);
+      }
+      recomputeMenu(text);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composerInsert]);
+
   // Composer box extracted so the landing home can center it. Same single
   // instance; the two keyed slots force a clean remount on home↔session
   // transitions (all composer state lives on ChatStream — only DOM focus is
@@ -1077,6 +1110,8 @@ export function ChatStream({
         const composerBoxEl = (
           <div
             ref={composerBoxRef}
+            /* 树拖拽（pointer events）用 elementFromPoint 识别这里为放置目标 */
+            data-composer="1"
             onDragOver={(e) => {
               e.preventDefault();
               setDragOver(true);
@@ -1088,7 +1123,7 @@ export function ChatStream({
               void addFiles(e.dataTransfer.files);
             }}
             className={`relative rounded-2xl border bg-card p-2.5 transition-colors focus-within:border-line2 ${
-              dragOver ? "border-violet/70 ring-2 ring-violet/30" : "border-line"
+              dragOver || g.composerDragOver ? "border-violet/70 ring-2 ring-violet/30" : "border-line"
             }`}
           >
             <div
