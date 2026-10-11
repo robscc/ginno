@@ -110,6 +110,11 @@ _CONTEXT_DEFAULTS = {
     # error. Parallel loops are opt-in behind this flag plus the DSL field.
     "workflow_strict_multi_edge": True,
     "workflow_parallel_loops": False,
+    # Cross-run step result cache (odw-comparison P1-①): replays the
+    # prefix-matching cached results of pure-LLM nodes on retry / rerun_from /
+    # fresh runs. Content-addressed fingerprints make it safe by construction;
+    # per-run ``no_cache`` and this flag are the opt-outs.
+    "workflow_result_cache": True,
     # External coding-agent delegation (external-agents-design.md): spends
     # money at external providers and can edit files, and the permission
     # node's "ask" is dormant while bypass_permissions is on — so opt-in.
@@ -146,6 +151,22 @@ def workflow_parallel_enabled() -> bool:
     if env:
         return env in ("1", "true", "yes", "on")
     return bool(context_settings().get("workflow_parallel_loops"))
+
+
+def workflow_result_cache_enabled() -> bool:
+    """Gate for the cross-run step result cache (odw-comparison P1-①).
+
+    Default ON — replay only skips work whose fingerprint (rendered input +
+    writes schema + model) matches a recorded success, so it is safe by
+    construction. ``GINNO_WF_RESULT_CACHE`` overrides settings for tests/ops
+    (1/true/on vs 0/false/off); unset falls back to settings.context."""
+
+    import os
+
+    env = (os.environ.get("GINNO_WF_RESULT_CACHE") or "").strip().lower()
+    if env:
+        return env in ("1", "true", "yes", "on")
+    return bool(context_settings().get("workflow_result_cache"))
 
 
 def external_agents_enabled() -> bool:

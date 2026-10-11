@@ -197,6 +197,12 @@ def workflow_propose_edit(workflow_id: str, new_dsl_json: str, rationale: str = 
     diff with Apply/Reject. Only creates a new immutable version when the human
     applies. new_dsl_json = the full proposed DSL object as JSON.
 
+    Proposal output convention: structure the rationale as four sections —
+    (1) Summary: what changes and why, one paragraph; (2) Findings: the review
+    checklist results ranked Critical/High/Medium/Low with node ids ("none"
+    per rank when clean); (3) Diff walkthrough: per-hunk explanation;
+    (4) Rollback: the previous version number and what a revert would re-break.
+
     Returns the outcome text (new version number on apply, or the rejection)."""
     try:
         new_dsl = json.loads(new_dsl_json) if isinstance(new_dsl_json, str) else new_dsl_json

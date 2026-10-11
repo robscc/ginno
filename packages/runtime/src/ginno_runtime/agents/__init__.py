@@ -10,6 +10,7 @@ from .registry import (
     ensure_web_tools,
     ensure_workflow_dev_tools,
     ensure_workflow_dev,
+    ensure_workflow_dev_discipline,
     fork_agent,
     get_agent,
     list_agents,
@@ -32,4 +33,5 @@ __all__ = [
     "ensure_web_tools",
     "ensure_workflow_dev_tools",
     "ensure_workflow_dev",
+    "ensure_workflow_dev_discipline",
 ]

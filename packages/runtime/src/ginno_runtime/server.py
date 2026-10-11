@@ -129,6 +129,7 @@ async def lifespan(app: FastAPI):
     agents_reg.ensure_web_tools()
     agents_reg.ensure_workflow_dev_tools()
     agents_reg.ensure_workflow_dev()
+    agents_reg.ensure_workflow_dev_discipline()
     # Upgraded installs never got the web tools in permissions.allow (defaults
     # seed only fresh homes) — migrate so they don't fall through to `ask`.
     try:

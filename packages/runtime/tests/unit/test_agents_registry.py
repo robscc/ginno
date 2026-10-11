@@ -124,6 +124,34 @@ def test_research_discipline_migration_is_idempotent(isolated_home):
     assert registry.get_agent("research").system_prompt == registry._RESEARCH_PROMPT
 
 
+# ------- workflow-dev review-discipline migration (odw-comparison P2-⑤) -------
+
+
+def test_workflow_dev_discipline_migration_upgrades_legacy_seed(isolated_home):
+    registry.ensure_seeded()
+    # Simulate an old install still carrying the pre-discipline seed prompt.
+    registry.update_agent("workflow-dev", {"system_prompt": registry._LEGACY_WORKFLOW_DEV_PROMPT})
+    registry.ensure_workflow_dev_discipline()
+    prompt = registry.get_agent("workflow-dev").system_prompt
+    assert prompt == registry._WORKFLOW_DEV_PROMPT
+    assert "Review discipline" in prompt and "Critical / High / Medium / Low" in prompt
+
+
+def test_workflow_dev_discipline_migration_preserves_user_prompt(isolated_home):
+    registry.ensure_seeded()
+    custom = "You are my hand-tuned workflow persona. Behave differently."
+    registry.update_agent("workflow-dev", {"system_prompt": custom})
+    registry.ensure_workflow_dev_discipline()
+    assert registry.get_agent("workflow-dev").system_prompt == custom
+
+
+def test_workflow_dev_discipline_migration_is_idempotent(isolated_home):
+    registry.ensure_seeded()
+    registry.ensure_workflow_dev_discipline()
+    registry.ensure_workflow_dev_discipline()
+    assert registry.get_agent("workflow-dev").system_prompt == registry._WORKFLOW_DEV_PROMPT
+
+
 def test_ensure_goal_tools_migration(isolated_home):
     registry.ensure_seeded()
     registry.ensure_goal_tools()

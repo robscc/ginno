@@ -247,6 +247,22 @@ async def _execute_parallel_body(node, owner, cctx, state, eff, config=None) -> 
     emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter",
           "node_type": "step", "parallel": True, "of": len(items)})
 
+    # Cross-run result cache (result_cache.py): items whose fingerprint hits
+    # the per-workflow index replay as progress entries — riding the SAME skip
+    # machinery checkpoint-resume uses, so a cached item costs no model call.
+    # Per-item misses never trip the run's prefix latch: items are independent.
+    cache = (cctx.get("run_ctx") or {}).get("result_cache")
+    cached_idx: set[int] = set()
+    if cache is not None:
+        for i, item in enumerate(items):
+            if i in progress:
+                continue
+            rctx = {**context, as_var: item, **(eff or {})}
+            hit = cache.lookup_item(node, rctx, cctx, item)
+            if hit is not None:
+                progress[i] = {"text": str(hit.get("text") or ""), "vals": dict(hit.get("writes") or {})}
+                cached_idx.add(i)
+
     sem = asyncio.Semaphore(max(1, max_conc))
     texts: list[str] = [""] * len(items)
     values: dict[str, list] = {k: [None] * len(items) for k in writes_schema}
@@ -261,8 +277,12 @@ async def _execute_parallel_body(node, owner, cctx, state, eff, config=None) -> 
     async def _one(i: int, item) -> None:
         if i in progress:
             # Finished in a previous activation — restored above; do not re-run.
-            emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_iter",
-                  "index": i, "of": len(items), "parallel": True, "resumed": True})
+            # cached = replayed from the cross-run result cache; resumed =
+            # restored from this run's own checkpoint progress.
+            ev = {"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_iter",
+                  "index": i, "of": len(items), "parallel": True}
+            ev["cached" if i in cached_idx else "resumed"] = True
+            emit(ev)
             return
         async with sem:
             from .. import engine as wf_engine
@@ -273,10 +293,21 @@ async def _execute_parallel_body(node, owner, cctx, state, eff, config=None) -> 
             emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "loop_iter",
                   "index": i, "of": len(items), "parallel": True})
             render_ctx = {**context, as_var: item, **(eff or {})}
+            # Tool-call counting for cache eligibility (result_cache.py only
+            # replays pure-LLM turns): wrap this item's emit so only ITS
+            # tool_call events count against it.
+            tool_calls_seen = 0
+
+            def _emit_counting(ev):
+                nonlocal tool_calls_seen
+                if ev.get("kind") == "tool_call":
+                    tool_calls_seen += 1
+                emit(ev)
+
             attempt = 1
             while True:
                 try:
-                    text, usage, _warn = await _run_agent_turn(node, cctx, state, render_ctx, emit)
+                    text, usage, _warn = await _run_agent_turn(node, cctx, state, render_ctx, _emit_counting)
                     vals, err = await extract_from_text(
                         text, per_item_schema, cctx["model"], run_ctx, f"{node_id}[{i}]",
                         fast_path=True, extract_model_name=node.get("extract_model"),
@@ -306,6 +337,9 @@ async def _execute_parallel_body(node, owner, cctx, state, eff, config=None) -> 
             # crash-retry) skips this item. Best-effort — losing it degrades to
             # the old whole-batch replay, never breaks the run.
             progress[i] = {"text": text, "vals": {k: vals.get(k) for k in writes_schema}}
+            if cache is not None and tool_calls_seen == 0:
+                cache.record_item(node, render_ctx, cctx, item, text=text,
+                                  vals={k: vals.get(k) for k in writes_schema})
             if ckpt is not None and config is not None:
                 try:
                     ckpt.put_writes(

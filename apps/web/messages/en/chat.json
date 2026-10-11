@@ -295,7 +295,9 @@
       "retryFailed": "Retry failed",
       "retryFailedNoConn": "Retry failed: cannot connect to the runtime",
       "retryNoConnection": "Cannot connect to the runtime",
-      "delete": "Delete"
+      "delete": "Delete",
+      "reused": "reused",
+      "reusedTitle": "Replayed from the cross-run result cache; no model call"
     },
     "runView": {
       "deleted": "This run record has been deleted",

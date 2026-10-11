@@ -337,6 +337,8 @@ export interface WorkflowStep {
   status: string;
   output?: string;
   agent_id?: string | null;
+  /** Replayed from the cross-run result cache — no model call (odw-comparison P1-①). */
+  cached?: boolean;
 }
 
 export interface WorkflowDef {

@@ -118,6 +118,11 @@ async def delete_workflow_endpoint(wf_id: str) -> dict:
         return {"ok": False, "error": "Built-in workflow; cannot be deleted"}
     ok = wf_store.delete_def(wf_id)
     if ok:
+        # The workflow's cross-run result cache indexes its steps' outputs;
+        # with the definition gone the entries are unreachable (and stale).
+        from ..workflows.result_cache import RunResultCache
+
+        RunResultCache.drop(wf_id)
         await _push_global_event("workflows.changed", {})
     return {"ok": ok}
 
@@ -1071,7 +1076,15 @@ async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen)
                 run_id, "run.steps", {"steps": (wf_store.get_run(run_id) or {}).get("steps", [])}
             )
         elif kind == "node_exit" and nid in node_to_step:
-            wf_store.update_step(run_id, node_to_step[nid], "done" if ev.get("status") != "failed" else "failed")
+            # A cache-replayed node_exit carries the recorded text in
+            # ``output`` (real executions never set it) — persist it so the
+            # step table shows what was replayed, not an empty string.
+            wf_store.update_step(
+                run_id, node_to_step[nid],
+                "done" if ev.get("status") != "failed" else "failed",
+                output=str(ev.get("output") or ""),
+                cached=bool(ev.get("cached")),
+            )
             await _push_run_event(
                 run_id, "run.steps", {"steps": (wf_store.get_run(run_id) or {}).get("steps", [])}
             )
@@ -1236,11 +1249,18 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
             # finishes. Announce the run at START too, so the Workflow panel
             # lists it as running immediately instead of materialising late.
             await _push_global_event("workflows.changed", {})
+        # Cross-run result cache (odw-comparison P1-①): prefix replay for
+        # fresh runs AND retries. Gated by settings + the run's own
+        # cache_disabled (create-run "no_cache").
+        from ..workflows import result_cache as wf_rc
+
+        rc = wf_rc.build_run_cache(run0, workflow_id)
         agen = wf_engine.run_workflow(
             dsl, run_id=run_id, model=model, tools=tools,
             context_override=context_override,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
             transcript_session=transcript_sid,
+            result_cache=rc,
         )
         await _drive_run_events(run_id, present_in, wf, agen)
         sync_ledger.set_status(run_id, "ok")
@@ -1448,6 +1468,7 @@ async def create_workflow_run_endpoint(data: dict) -> dict:
     run = wf_store.create_run(
         wf, session_id=session_id, present_in_session_id=present_in, context_override=override,
         supervisor_override=sup_override,
+        cache_disabled=bool(data.get("no_cache")),
     )
     _spawn_run_task(run["id"], _run_workflow_bg(run["id"], workflow_id, override, present_in))
     return {"ok": True, "run": run}
@@ -1839,9 +1860,20 @@ async def _rerun_from_bg(
         if not target_cid:
             raise ValueError(f"节点 {node_id} 没有可回溯的检查点（未调度过，或检查点已清理）")
         _truncate_checkpoint_to(run_id, target_cid)
+        # Cross-run result cache: the truncated prefix never passes through
+        # the node wrapper (checkpoint-committed), so no false hits there.
+        # The TARGET node is force-live (the user asked to re-execute it);
+        # its suffix replays only where fingerprints still match, and the
+        # re-executed results refresh the index.
+        from ..workflows import result_cache as wf_rc
+
+        rc = wf_rc.build_run_cache(wf_store.get_run(run_id) or {}, workflow_id)
+        if rc is not None:
+            rc.force_live_node = node_id
         agen = wf_engine.continue_workflow(
             pinned_dsl, run_id=run_id, model=model, tools=tools,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
+            result_cache=rc,
         )
         await _drive_run_events(run_id, present_in, wf, agen)
         sync_ledger.set_status(run_id, "ok")

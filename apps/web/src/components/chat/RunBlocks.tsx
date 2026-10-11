@@ -266,6 +266,13 @@ export function LiveRunBlock({
               <div className="flex items-center gap-2 text-xs">
                 {waitingHuman ? <HumanWaitGlyph /> : <Glyph status={s.status} />}
                 <span className={s.status === "done" ? "text-muted line-through" : "text-txt"}>{s.title}</span>
+                {s.cached && (
+                  // 跨 run 结果缓存命中（odw-comparison P1-①）：重放上次结果，
+                  // 无模型调用。来自 run JSON step 行的持久标记。
+                  <span className="text-[10px] text-faint" title={tc("run.reusedTitle")}>
+                    ↻ {tc("run.reused")}
+                  </span>
+                )}
               </div>
               {/* live tool call under the running step (P1): latest in-flight
                   call only; cleared when its tool_result lands. */}

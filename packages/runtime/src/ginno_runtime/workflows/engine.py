@@ -183,6 +183,7 @@ async def run_workflow(
     project_slug: str = "default",
     usage_attr: dict | None = None,
     transcript_session: str | None = None,
+    result_cache: Any = None,
 ) -> AsyncIterator[dict]:
     d = wf_dsl.normalize_dsl(dsl)
     initial = dict((d.get("context") or {}).get("initial") or {})
@@ -199,6 +200,9 @@ async def run_workflow(
         # their full dialogue here so workflow runs read like scheduled tasks.
         "transcript_session": transcript_session,
         "project_slug": project_slug,
+        # Cross-run result cache (result_cache.py): None = disabled (resume /
+        # retry_from_checkpoint never set it — the checkpoint is authoritative).
+        "result_cache": result_cache,
     }
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
@@ -354,6 +358,7 @@ async def continue_workflow(
     tools: list,
     project_slug: str = "default",
     usage_attr: dict | None = None,
+    result_cache: Any = None,
 ) -> AsyncIterator[dict]:
     """Retry-from-failure (workflow-ux-redesign P2): stream the graph with
     input=None on the run's thread so LangGraph re-executes the pending node
@@ -363,7 +368,8 @@ async def continue_workflow(
     before starting; if the checkpoint is missing/empty the graph has nothing
     to continue and this yields an error event."""
     d = wf_dsl.normalize_dsl(dsl)
-    run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
+    run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {}),
+                               "result_cache": result_cache}
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))

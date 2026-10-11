@@ -152,6 +152,8 @@
       "clearFilter": "清除筛选 [{node}]",
       "rerunStep": "重跑",
       "rerunStepTitle": "从该节点重跑：fork 出一次新运行，只重新执行该节点及其后继（沿用本次运行固定的版本）",
+      "reused": "复用",
+      "reusedTitle": "该步骤由跨 run 结果缓存重放，未产生模型调用",
       "eventStream": "事件流"
     },
     "dev": {

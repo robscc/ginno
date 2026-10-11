@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ginno × Open Dynamic Workflow 借鉴对比</title>
+<style>
+:root{
+  --bg:#f4f4f8; --surface:#ffffff; --surface2:#ececf3;
+  --ink:#1d1d2b; --muted:#5c5c70; --faint:#8b8b9e;
+  --line:#dcdce8; --line2:#c9c9da;
+  --ginno:#6450d6; --ginno-soft:#eceaf9; --ginno-line:#c9c2ef;
+  --odw:#0e7a6e; --odw-soft:#e4f2ef; --odw-line:#b3d9d2;
+  --ok:#1e7a4d; --ok-soft:#e5f2ea;
+  --warn:#9c6a00; --warn-soft:#f7efdb;
+  --bad:#b23a30; --bad-soft:#f8e9e7;
+  --code-bg:#f0f0f6; --chip:#e8e8f1;
+  --shadow:0 1px 3px rgba(29,29,43,.07), 0 8px 24px rgba(29,29,43,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#131318; --surface:#1c1c25; --surface2:#232330;
+    --ink:#eaeaf4; --muted:#a4a4b8; --faint:#737387;
+    --line:#2f2f3e; --line2:#3d3d4f;
+    --ginno:#a493f7; --ginno-soft:#262341; --ginno-line:#4a4279;
+    --odw:#5ec8b8; --odw-soft:#15312d; --odw-line:#2f5a52;
+    --ok:#5fc48d; --ok-soft:#1b2c23;
+    --warn:#d9a94e; --warn-soft:#2e2714;
+    --bad:#e58a80; --bad-soft:#33201d;
+    --code-bg:#22222e; --chip:#2a2a38;
+    --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131318; --surface:#1c1c25; --surface2:#232330;
+  --ink:#eaeaf4; --muted:#a4a4b8; --faint:#737387;
+  --line:#2f2f3e; --line2:#3d3d4f;
+  --ginno:#a493f7; --ginno-soft:#262341; --ginno-line:#4a4279;
+  --odw:#5ec8b8; --odw-soft:#15312d; --odw-line:#2f5a52;
+  --ok:#5fc48d; --ok-soft:#1b2c23;
+  --warn:#d9a94e; --warn-soft:#2e2714;
+  --bad:#e58a80; --bad-soft:#33201d;
+  --code-bg:#22222e; --chip:#2a2a38;
+  --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  font-size:15px; line-height:1.75; -webkit-font-smoothing:antialiased;
+}
+.mono,code,pre,kbd{font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace}
+a{color:var(--ginno); text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--ginno); outline-offset:2px; border-radius:3px}
+header.masthead{
+  border-bottom:1px solid var(--line);
+  background:
+    linear-gradient(115deg, var(--ginno-soft) 0%, transparent 34%),
+    linear-gradient(245deg, var(--odw-soft) 0%, transparent 34%),
+    var(--surface);
+}
+.masthead-inner{max-width:980px; margin:0 auto; padding:52px 24px 40px}
+.kicker{
+  display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+  font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted);
+  margin-bottom:18px;
+}
+.kicker .dot{width:7px; height:7px; border-radius:50%; background:var(--ginno)}
+h1{font-size:32px; line-height:1.25; margin:0 0 10px; letter-spacing:-.01em}
+.subtitle{font-size:16px; color:var(--muted); margin:0 0 20px; max-width:760px}
+.meta-row{display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--faint)}
+.meta-row b{color:var(--muted); font-weight:600}
+main{max-width:980px; margin:0 auto; padding:36px 24px 80px}
+section{margin:0 0 56px}
+h2{
+  font-size:22px; margin:0 0 6px; letter-spacing:-.01em;
+  display:flex; align-items:baseline; gap:12px;
+}
+h2 .no{font-size:13px; color:var(--faint); font-weight:500; font-variant-numeric:tabular-nums}
+h2 + p.lead{margin-top:0}
+p.lead{color:var(--muted); margin:0 0 20px}
+h3{font-size:16.5px; margin:28px 0 10px}
+.card{
+  background:var(--surface); border:1px solid var(--line); border-radius:12px;
+  padding:20px 22px; box-shadow:var(--shadow); margin:0 0 16px;
+}
+.tldr{border-left:3px solid var(--ginno)}
+.tldr ul{margin:10px 0 0; padding-left:22px}
+.tldr li{margin:7px 0}
+table{width:100%; border-collapse:collapse; font-size:13.5px; background:var(--surface);
+  border:1px solid var(--line); border-radius:12px; overflow:hidden; box-shadow:var(--shadow)}
+.table-wrap{overflow-x:auto; margin:0 0 16px}
+th,td{text-align:left; padding:10px 14px; border-bottom:1px solid var(--line); vertical-align:top}
+th{font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);
+  background:var(--surface2); white-space:nowrap}
+tr:last-child td{border-bottom:none}
+td .dim{color:var(--muted)}
+code{
+  background:var(--code-bg); border:1px solid var(--line); border-radius:5px;
+  padding:.08em .38em; font-size:.88em;
+}
+pre{
+  background:var(--code-bg); border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px; overflow-x:auto; font-size:12.5px; line-height:1.6;
+}
+pre code{background:none; border:none; padding:0}
+.tag{
+  display:inline-block; font-size:11px; font-weight:600; letter-spacing:.04em;
+  border-radius:999px; padding:1px 9px; margin-right:6px; vertical-align:1px;
+  border:1px solid var(--line2); color:var(--muted); background:var(--surface2);
+}
+.tag.p1{background:var(--bad-soft); border-color:transparent; color:var(--bad)}
+.tag.p2{background:var(--warn-soft); border-color:transparent; color:var(--warn)}
+.tag.p3{background:var(--chip); border-color:transparent; color:var(--muted)}
+.tag.no{background:var(--surface2); border-color:var(--line2); color:var(--faint)}
+.tag.win{background:var(--ok-soft); border-color:transparent; color:var(--ok)}
+.pitem{
+  background:var(--surface); border:1px solid var(--line); border-radius:12px;
+  padding:18px 20px; margin:0 0 14px; box-shadow:var(--shadow);
+}
+.pitem h4{margin:0 0 8px; font-size:15.5px}
+.pitem .why{color:var(--muted); font-size:13.5px; margin:0 0 8px}
+.pitem .loc{font-size:12.5px; color:var(--faint)}
+.pitem .loc code{font-size:.92em}
+.two-col{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+@media (max-width:760px){ .two-col{grid-template-columns:1fr} }
+.pill-panel{border-radius:12px; padding:18px 20px; border:1px solid}
+.pill-panel.ginno{background:var(--ginno-soft); border-color:var(--ginno-line)}
+.pill-panel.odw{background:var(--odw-soft); border-color:var(--odw-line)}
+.pill-panel h4{margin:0 0 8px; font-size:14px; letter-spacing:.02em}
+.pill-panel ul{margin:0; padding-left:20px}
+.pill-panel li{margin:5px 0; font-size:13.5px}
+.vs-table td:first-child{font-weight:600; white-space:nowrap}
+.ok{color:var(--ok); font-weight:600}
+.warn{color:var(--warn); font-weight:600}
+.bad{color:var(--bad); font-weight:600}
+footer{
+  border-top:1px solid var(--line); color:var(--faint); font-size:12.5px;
+  max-width:980px; margin:0 auto; padding:24px;
+}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="kicker"><span class="dot"></span>GINNO 对比研究 · 第三篇</div>
+    <h1>Ginno × Open Dynamic Workflow</h1>
+    <p class="subtitle">travisliu/open-dynamic-workflow 是一个本地优先的一次性编排脚本运行器,把外部编码代理 CLI 统一成可测试、可复现的工作流原语。本报告逐维度对账,给出分层借鉴清单。</p>
+    <div class="meta-row">
+      <span><b>调研日期</b> 2026-10-12</span>
+      <span><b>对象</b> github.com/travisliu/open-dynamic-workflow(README / SKILL.md / api-document / cli-commands / configuration 五份文档级调研)</span>
+      <span><b>前序</b> OpenHuman(2026-08-16)、DeepSeek Harness(2026-08-30)</span>
+      <span><b>状态</b> 调研完成,未实施</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============ 1 TLDR ============ -->
+<section id="tldr">
+  <h2><span class="no">01</span>一句话结论</h2>
+  <div class="card tldr">
+    <p style="margin:0">这是「workflow」同名不同种的<b>第三个数据点</b>(OpenHuman 画布引擎 → dsh 一次性脚本 → ODW 确定性重放运行器),再次验证此前结论:持久化轴上 Ginno 领先,不需要动摇方向。ODW 真正值钱的不是它的 DSL,而是围绕「<b>可复现性</b>」做的三件事——<b>指纹前缀重放的跨 run 结果缓存</b>、<b>per-step 独立产物目录</b>、<b>确定性冒烟(mock provider)</b>——恰好都补在 Ginno 的空档上。另有预算闸门与 secret 脱敏两个安全/成本短板可低成本补齐。Ginno 的人审、合成、版本化、调度等资产 ODW 全部没有且明确声明不做。</p>
+  </div>
+</section>
+
+<!-- ============ 2 项目画像 ============ -->
+<section id="profile">
+  <h2><span class="no">02</span>项目画像:Open Dynamic Workflow 是什么</h2>
+  <p class="lead">TypeScript 编写的本地 CLI 运行器(npm 包 <code>@travisliu/open-dynamic-workflow</code>),MIT,2026 年开仓,84 stars / 148 commits,单人项目。定位是「agent 编排版的工作流引擎」——不自研 agent,通过 provider 适配器调外部编码代理 CLI。</p>
+
+  <div class="two-col">
+    <div class="pill-panel odw">
+      <h4>核心机制</h4>
+      <ul>
+        <li><b>DSL = 受限 TS 脚本</b>:六个原语 <code>agent()</code> / <code>parallel()</code> / <code>pipeline()</code> / <code>workflow()</code>(子工作流) / <code>loop()</code> / <code>tool()</code>,沙箱化——禁止任意 import、fs、网络、shell</li>
+        <li><b>8 家 provider 适配器</b>:codex / gemini / copilot / opencode / antigravity / pi / cursor / <b>mock</b>(确定性干跑),config.yaml 可自定义 command/args</li>
+        <li><b>确定性重放 resume</b>:重跑时从头执行脚本,每个 agent 调用按指纹(id+prompt+schema+provider+model+retry 策略)与上次 run 前缀比对,命中即复用缓存结果,首个分歧之后全部实跑</li>
+        <li><b>Artifacts 恒开</b>:每次 run 落 <code>runs/&lt;runId&gt;/</code>,含 manifest / calls.jsonl / events.jsonl / report.json + 每个 agent 的独立目录(prompt、stdout/stderr、raw/normalized 结果、schema、validation-error)</li>
+        <li><b>结构化输出</b>:JSON Schema + transport(prompt 注入 + 本地验证),验证失败可作为带反馈的重试依据</li>
+      </ul>
+    </div>
+    <div class="pill-panel odw">
+      <h4>工程与安全</h4>
+      <ul>
+        <li><b>默认值纪律</b>:concurrency 4、timeout 900s、maxLoopRounds 20、maxDepth 8、retry(exponential, 3 attempts, 30s cap, jitter)</li>
+        <li><b>预算闸门</b>:<code>maxAgentCalls</code> 限制活跃 provider 调用数,<b>含重试尝试</b></li>
+        <li><b>secret 卫生</b>:<code>redactEnv</code> 默认脱敏 <code>*_KEY / *_TOKEN / *_SECRET / PASSWORD</code> 等;<code>passEnv</code> 默认空白名单;doctor 不打印 secret</li>
+        <li><b>profiles</b>:继承式执行预设(fast/deep),字段安全白名单,禁止改 provider command 与安全策略</li>
+        <li><b>SKILL.md 教 AI 写/审工作流</b>:11 步生成流程 + Critical/High/Medium/Low 评审清单 + 四段式输出模板(workflow / how to run / design notes / validation checklist)</li>
+        <li><b>明确不做</b>持久化、审批门、DAG、worktree 隔离、分布式、可恢复运行状态(见 §6)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 3 逐维度对账 ============ -->
+<section id="matrix">
+  <h2><span class="no">03</span>逐维度对账</h2>
+  <p class="lead">✅ = 双方都有且大体相当;/ginno 列标注 Ginno 现状与关键文件。Ginno 侧现状经本地全码核实(2026-10-12)。</p>
+  <div class="table-wrap">
+  <table class="vs-table">
+    <thead><tr><th style="width:15%">维度</th><th style="width:42%">ODW</th><th>Ginno 现状</th><th style="width:9%">差距</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>工作流定义</td>
+        <td>受限 TS 脚本,六原语组合;AI 经 SKILL.md 生成/评审</td>
+        <td>JSON DSL(entry/nodes/edges/context/supervisor),节点注册表插件化;AI 合成 summarize-from-session + agent 侧 propose_edit/dry_run(<code>workflows/dsl.py</code>)</td>
+        <td><span class="ok">✅</span></td>
+      </tr>
+      <tr>
+        <td>执行引擎</td>
+        <td>直接解释执行脚本,promise 组合</td>
+        <td>DSL → LangGraph 每run编译,FileCheckpointer(<code>workflows/compiler.py:166</code>、<code>checkpointer.py:104</code>)</td>
+        <td><span class="ok">✅</span></td>
+      </tr>
+      <tr>
+        <td>持久化 / 状态</td>
+        <td><span class="dim">无——明示不做;一次性运行</span></td>
+        <td>checkpoint/resume/human interrupt/手动 pause 全套;版本化 DSL 快照 + diff/rollback(<code>workflows/store.py</code>)</td>
+        <td><span class="ok">Ginno 胜</span></td>
+      </tr>
+      <tr>
+        <td>外部代理调用</td>
+        <td>8 家 CLI 适配器矩阵,provider alias 预设</td>
+        <td>delegate_agent 双后端(claude-code/codex,默认关,<code>tools/external_agent.py</code>);workflow step 经共享 build_all_tools 理论可调,但无 workflow 专属 delegate 节点、无用量归属</td>
+        <td><span class="warn">部分</span></td>
+      </tr>
+      <tr>
+        <td>结构化输出</td>
+        <td>JSON Schema + transport,验证失败带反馈重试</td>
+        <td>writes 声明 + extract 节点独立抽取模型 + 类型校验,≤2 次自纠错(<code>nodes/extract.py</code>)</td>
+        <td><span class="ok">✅</span></td>
+      </tr>
+      <tr>
+        <td>retry / 超时 / on_error</td>
+        <td>per-agent retry(exponential 默认) + 全局 timeout;超时/取消不重试</td>
+        <td>per-node retry{1..10, fixed|exponential} + on_error stop|continue + 双超时 + recursion 预算(<code>dsl.py:37-71</code>)</td>
+        <td><span class="ok">✅</span></td>
+      </tr>
+      <tr>
+        <td>并发</td>
+        <td>全局 concurrency(默认 4)+ pipeline 级 strategy/concurrency/failFast</td>
+        <td>仅 loop 级 parallel(max_concurrency 1..8,默认 4);无 run 级并发上限</td>
+        <td><span class="warn">缺</span></td>
+      </tr>
+      <tr>
+        <td>预算闸门</td>
+        <td>maxAgentCalls(含重试尝试)</td>
+        <td>仅 recursion_limit;无显式调用数预算</td>
+        <td><span class="warn">缺</span></td>
+      </tr>
+      <tr>
+        <td>跨 run 结果缓存</td>
+        <td><b>指纹前缀重放</b>:前缀命中复用,分歧后实跑;tool 结果也缓存;非确定性代码触发校验警告</td>
+        <td>无通用缓存;仅并行 loop per-item 进度恢复 + checkpoint 天然跳过已提交 superstep</td>
+        <td><span class="bad">缺</span></td>
+      </tr>
+      <tr>
+        <td>失败修复闭环</td>
+        <td>无——失败靠改脚本重跑(resume 缓存让重跑变便宜)</td>
+        <td>retry / retry_from_checkpoint / rerun_from 三种 + supervisor auto 裁决器 + synth outcome 回填(<code>api/workflows.py:1641+</code>)</td>
+        <td><span class="ok">Ginno 胜</span></td>
+      </tr>
+      <tr>
+        <td>运行产物</td>
+        <td><b>per-step 独立目录</b>:prompt/stdout/raw/normalized/schema/validation-error 分文件 + calls/events/report.jsonl</td>
+        <td>run JSON(per-step 状态表)+ events.jsonl(全事件流)+ transcript 会话镜像;无独立 per-step 产物文件</td>
+        <td><span class="warn">弱</span></td>
+      </tr>
+      <tr>
+        <td>干跑 / 冒烟</td>
+        <td>dry-run(不落盘)+ <b>mock provider 全流程确定性冒烟</b> + init --run-smoke-test</td>
+        <td>dry-run 零 LLM 静态预检(dryrun.py)+ doctor 静态 lint;但无 stub 模型端到端跑通整图的能力(fake model 仅存在于单测)</td>
+        <td><span class="warn">缺</span></td>
+      </tr>
+      <tr>
+        <td>人审 / 审批</td>
+        <td><span class="dim">无——明示「不得假设审批门存在」</span></td>
+        <td>human 节点 + supervisor 门(auto|human)+ decision inbox UI,一等公民</td>
+        <td><span class="ok">Ginno 胜</span></td>
+      </tr>
+      <tr>
+        <td>权限 / 安全模型</td>
+        <td>provider 标志映射(默认只读,dangerous 需注释理由)+ <b>redactEnv/passEnv 白名单</b></td>
+        <td>headless run 不走 permission policy;仅 tools_allow + connector 硬拒绝;<b>无任何 secret 脱敏层</b>,context_override 全文落盘</td>
+        <td><span class="bad">缺</span></td>
+      </tr>
+      <tr>
+        <td>触发器 / 无人值守</td>
+        <td>无(CI 里靠外部调度)</td>
+        <td>scheduler(interval/daily/weekly/once)→ headless workflow run,origin+⏰ 徽标</td>
+        <td><span class="ok">Ginno 胜</span></td>
+      </tr>
+      <tr>
+        <td>执行预设</td>
+        <td>profiles(继承、白名单字段、hash 元数据注入)</td>
+        <td>无 run 级预设概念(agent 角色承担部分职责)</td>
+        <td><span class="warn">缺</span></td>
+      </tr>
+      <tr>
+        <td>AI 生成辅助</td>
+        <td>SKILL.md:11 步生成流程 + 四级评审清单 + 四段式输出模板</td>
+        <td>workflow-dev prompt(图模式 + dry-run 预检绑定);无结构化评审清单</td>
+        <td><span class="warn">弱</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ============ 4 可借鉴清单 ============ -->
+<section id="borrow">
+  <h2><span class="no">04</span>可借鉴清单(分层)</h2>
+  <p class="lead"><span class="tag p1">P1 可立即排期</span>低成本、补真实空档;<span class="tag p2">P2 值得排期</span>中等成本、明确收益;<span class="tag p3">P3 远期</span>;每项标注 Ginno 侧落点。</p>
+
+  <div class="pitem">
+    <h4><span class="tag p1">P1</span>① 跨 run step 结果缓存:指纹前缀重放</h4>
+    <p class="why">ODW 的招牌机制。重跑 = 从头执行 + 逐节点指纹比对,前缀命中复用上次结果,首个分歧节点之后实跑。指纹 = (节点稳定 id, prompt, writes schema, model, retry 策略)。它把「改了一处、整个 workflow 重跑烧钱」变成「只有分歧下游实跑」——直接强化三类场景:<b>失败修复</b>(修好一个坏节点后重跑,上游全部命中缓存)、<b>L0-L4 评测回放</b>(换一个节点的模型/prompt 做对比)、<b>synth 迭代</b>。Ginno 的基础全在:节点本来就有稳定 id,run JSON 已有 per-step output,唯一要建的是指纹规则 + 缓存索引 + 「复用结果」的事件标记(重放结果需在 UI/events 中显式标注,不能伪装成实跑)。</p>
+    <p class="loc">落点:<code>workflows/store.py</code>(run JSON 旁加 cache-index)、<code>engine.py</code>(节点进入前查缓存)、<code>nodes/builtin.py</code>(prompt 组装处取指纹)。注意:Python 节点/含工具调用的 agent 节点默认不参与缓存,只对纯 LLM step 开放,避免重放副作用——ODW 用「tool 结果也缓存」解决此问题,可作二期。</p>
+  </div>
+
+  <div class="pitem">
+    <h4><span class="tag p1">P1</span>② secret 脱敏层:redactEnv + passEnv 白名单</h4>
+    <p class="why">Ginno workflow 模块目前<b>没有任何 secret 卫生机制</b>:context_override 全文落盘 run JSON,agent step 的工具输出原样进 events.jsonl,delegate_agent 子进程继承全量 env。ODW 的做法很轻:默认脱敏 <code>*_KEY/*_TOKEN/*_SECRET/PASSWORD</code>,<code>passEnv</code> 默认空白名单(白名单内的才传给子进程)。至少应覆盖三处:run JSON/events 落盘前的值级脱敏、delegate_agent 的 env 传递、doctor/inspector 的展示层。</p>
+    <p class="loc">落点:<code>workflows/store.py</code>(序列化前过滤)、<code>tools/external_agent.py</code>(子进程 env 构造)、新增一个 <code>workflows/redact.py</code> 单一事实源。</p>
+  </div>
+
+  <div class="pitem">
+    <h4><span class="tag p1">P1</span>③ 预算闸门:maxAgentCalls(含重试)+ run 级并发上限</h4>
+    <p class="why">Ginno 有 recursion_limit 但没有「活跃 LLM 调用数预算」。<code>maxAgentCalls</code> 的语义好在<b>把重试尝试也计入</b>——retry 放大了成本失控面,只数首次调用是不够的。调度触发的 headless run(无人值守)尤其需要这个闸门,呼应 OpenHuman 报告的「无人值守安全闸门」结论。run 级并发上限同理:多 run 并行时目前无全局节流。</p>
+    <p class="loc">落点:<code>workflows/engine.py</code>(预算计数器,与 recursion 预算并列)、<code>nodes/agent_helpers.py</code>(record 处挂计数)、DSL 根级 <code>limits{max_llm_calls, max_concurrency}</code>。</p>
+  </div>
+
+  <div class="pitem">
+    <h4><span class="tag p2">P2</span>④ mock/stub 模型 provider:确定性全流程冒烟</h4>
+    <p class="why">Ginno 的 dry-run 是零 LLM 静态检查,不执行;单测里有 fake model 但无法从产品面跑通整张图。ODW 的 mock provider 能把<b>整条 workflow 用确定性桩模型真跑一遍</b>,并作为 init 冒烟测试与 CI 示例的默认。对 Ginno 的直接价值:e2e/UI 测试从「假模型 + 单测」升级为「真实引擎全链路冒烟」;将来建最小 CI(dsh 借鉴清单 #2)时,workflow 冒烟可以是第一条门禁。stub 规则可以很简单:按节点 id/序号回放录制的响应,或命中 writes schema 的最小合法 JSON。</p>
+    <p class="loc">落点:<code>nodes/base.py</code>(模型工厂加 stub 实现)、run API 加 <code>stub: true</code> 参数(仅 dev 模式暴露,防止生产误用)。</p>
+  </div>
+
+  <div class="pitem">
+    <h4><span class="tag p2">P2</span>⑤ workflow-dev prompt 吸收 SKILL.md 的评审纪律</h4>
+    <p class="why">ODW 给「AI 写工作流」定了一套机器可检查的纪律:生成走 11 步(澄清→选模式→先写 meta→只用原语→provider 有理由→schema→权限最小化→显式并发/失败行为→先 validate 后 run→按清单终审→四段式输出),评审按 Critical/High/Medium/Low 出 findings。Ginno 的 workflow-dev prompt(图模式 + dry-run 预检)方向一致但缺<b>结构化评审输出</b>。低成本改法:在 <code>workflow_propose_edit</code> 的提示词中加一张固定评审清单(node id 稳定性、loop 有界、on_error 显式、权限最小、无未声明写入),让 agent 的每次提案自带 findings——正好也是 quality funnel L1-L2 的输入。</p>
+    <p class="loc">落点:<code>tools/workflow_tools.py</code>(propose_edit prompt)、<code>docs/workflow-master-plan.md</code>(质量漏斗对账)。</p>
+  </div>
+
+  <div class="pitem">
+    <h4><span class="tag p2">P2</span>⑥ per-step 独立产物目录(normalized 结果 + 验证错误分文件)</h4>
+    <p class="why">Ginno 的 events.jsonl + transcript 镜像信息完备,但调试单个坏 step 要靠回放拼接;ODW 把每个 agent 的 prompt / raw / normalized / schema / validation-error 分文件落盘,「schema 校验为什么失败」一眼可见。对 Ginno 的取舍:不必照搬全量,只在<b>失败 step + extract 自纠错耗尽</b>的节点落独立目录(原始回复、抽取结果、校验错误三件套),UI 的 WorkflowInspector 加「查看原始输出」入口。成本小,把最痛的调试场景(抽取/校验失败)从考古变成看文件。</p>
+    <p class="loc">落点:<code>workflows/nodes/extract.py</code>(自纠错耗尽处落盘)、<code>store.py</code>(run 目录布局)、前端 Inspector。</p>
+  </div>
+
+  <div class="pitem">
+    <h4><span class="tag p3">P3</span>⑦ profiles 执行预设(质量档位)</h4>
+    <p class="why">ODW 的 profile = 继承式预设(fast/deep:换模型、改并发、收紧 retry),字段白名单防越权,运行时注入 hash 元数据保证可追溯。对 Ginno 的映射是「同一 workflow 按档位执行」——schedule 无人值守跑 fast 档、人工触发跑 deep 档。当前 agent 角色承担了部分职责,若 ①③ 落地后出现「按场景换全局参数」的真实需求再做不迟。</p>
+    <p class="loc">落点:DSL 根级 <code>profile</code> 字段 + meta.json 预设表(远期)。</p>
+  </div>
+</section>
+
+<!-- ============ 5 不跟 ============ -->
+<section id="skip">
+  <h2><span class="no">05</span>明确不跟</h2>
+  <div class="card">
+    <ul>
+      <li><b>TS 脚本 DSL 与六原语组合</b>——ODW 用 promise 组合替代图结构,证明了「结构化原语可以不开自由 DAG 就表达 fan-out/fan-in」(<code>parallel()</code> + 汇总节点)。这对 Ginno 是个<b>反向确认</b>:现有 linear + 并行 loop 的受控结构够了,不需要为 DAG fan-out 推翻 DSL;真需要扇出时,优先学它的「结构化原语」思路扩展 loop/branch 语义,而不是开放任意边。</li>
+      <li><b>8 家 CLI 适配器矩阵</b>——Ginno 的 delegate_agent 刻意只做 claude-code/codex 双后端(dsh 报告与 external-agents-design 的裁定),适配器矩阵是平台玩法,且 ODW 自己也承认 transport <code>native</code> 至今被所有 adapter 拒绝——适配层越宽,统一抽象越浅。</li>
+      <li><b>无持久化哲学</b>——「一次性脚本 + 全量 artifacts 事后可查」是刻意的简单性,Ginno 的业务流程引擎(人审、定时、修复闭环)必须持久化,不适用。</li>
+      <li><b>maxRounds 硬顶替代引擎兜底</b>——ODW 把无限循环防护完全交给静态上限(全局 maxLoopRounds=20);Ginno 的 recursion 预算 + supervisor 已覆盖,无需改。</li>
+      <li><b>分享 runs 产物的模式</b>——ODW 自己警告 artifacts 含 prompt 与源码片段;Ginno 若做「导出/分享 run」,必须先过 ② 的脱敏层。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 6 Ginno 独有资产 ============ -->
+<section id="assets">
+  <h2><span class="no">06</span>Ginno 独有资产(ODW 明确不做或没有)</h2>
+  <div class="two-col">
+    <div class="pill-panel ginno">
+      <h4>ODW README 明示「不得假设存在」的</h4>
+      <ul>
+        <li>持久化状态与可恢复运行(ODW:一次性)</li>
+        <li>审批门 / human-in-the-loop(ODW:无)</li>
+        <li>worktree / 容器隔离、分布式执行</li>
+        <li>自动打补丁/提交/合并的默认行为</li>
+      </ul>
+    </div>
+    <div class="pill-panel ginno">
+      <h4>ODW 生态位之外、Ginno 已有的</h4>
+      <ul>
+        <li>checkpoint/resume/pause 全套 + DSL 版本化 diff 审批</li>
+        <li>会话 → workflow 合成(synth-5)+ outcome 回填台账</li>
+        <li>scheduler 定时触发 headless run(双方都还没有事件触发器,仍是共同空档)</li>
+        <li>supervisor 裁决器、decision inbox、quality funnel L0-L4</li>
+        <li>run 会话镜像回到对话、run 全 UI 集成</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 7 附录 ============ -->
+<section id="appendix">
+  <h2><span class="no">07</span>附录:ODW 关键机制细节(供实施时参照)</h2>
+
+  <h3>指纹前缀重放</h3>
+  <pre><code>resume 入口:run &lt;wf&gt; --resume &lt;runId&gt;   # 或 resume &lt;runId&gt;
+重放模型 :脚本从头执行,每个 agent() 调用与上次 run 同位置记录比对
+指纹组成 :id + prompt + schema + provider + model + 解析后 retry 策略
+命中规则 :前缀全命中 → 逐个复用;首个分歧之后 → 全部实跑
+loop     :前缀式缓存,在第一个分歧 loop marker 处停止
+tool     :tool 调用结果同样缓存重放(自定义 tool 里的 Date.now() 也安全)
+卫生要求 :循环内用稳定 id(round-N);Date.now/Math.random 触发非阻塞警告
+落盘     :续跑写入全新目录,不污染旧 run;复用原 run 记录的精确 workflowFile(按名字解析可能已漂移)</code></pre>
+
+  <h3>Artifacts 目录布局</h3>
+  <pre><code>runs/&lt;runId&gt;/
+  manifest.json  workflow.input.ts  config.resolved.json  run-input.json
+  calls.jsonl    cache-index.json   events.jsonl          report.json
+  agents/&lt;agentId&gt;/{prompt.txt, stdout.log, stderr.log,
+                    raw-result.json, normalized-result.json,
+                    schema.json, validation-error.json}
+  pipelines/&lt;id&gt;/items/&lt;i&gt;/stages/&lt;name&gt;/stage-result.json
+  workflows/&lt;invocationId&gt;/{input, result, error, summary}.json
+  tools/&lt;toolCallId&gt;/{metadata, input, output, error}.json</code></pre>
+
+  <h3>默认值与优先级</h3>
+  <pre><code>concurrency 4 · timeoutMs 900_000 · maxLoopRounds 20 · maxDepth 8 · failFast false
+retry 默认:maxAttempts 3 · delayMs 1000 · backoff exponential · maxDelayMs 30_000 · jitter true
+          (省略 retry = 单次尝试;false = 显式禁用;超时/取消/安全违规不重试)
+优先级    :agent DSL 参数 &gt; CLI 覆盖 &gt; profile/alias &gt; YAML 配置 &gt; 内置默认
+outDir    :--out &gt; profile.outDir &gt; 顶层 outDir &gt; 内置 runs/(独立解析)</code></pre>
+
+  <h3>安全模型</h3>
+  <pre><code>权限:默认 {mode:"default"} 不传写使能标志;dangerously-full-access 需注释理由
+     映射:codex --dangerously-bypass-approvals-and-sandbox / gemini --approval-mode yolo
+          / copilot --yolo / opencode·antigravity --dangerously-skip-permissions / cursor --force
+env :redactEnv 默认脱敏 OPENAI_API_KEY、GEMINI_API_KEY、GOOGLE_API_KEY、*_KEY、*_TOKEN、*_SECRET、PASSWORD
+     passEnv 默认 [](白名单外一律不传给 provider 子进程)
+纪律:prompt/log 不得含密钥与完整私有源码;分享 runs 产物视为泄密面</code></pre>
+
+  <h3>调研方法</h3>
+  <p style="font-size:13px; color:var(--muted)">ODW 侧:README、SKILL.md、references/api-document.md、references/cli-commands.md、references/configuration.md 五份文档全文调研(2026-10-12,未克隆源码;机制细节以官方文档为准)。Ginno 侧:workflow 子系统本地全码核实(<code>packages/runtime/src/ginno_runtime/workflows/</code> 为主,28 次检索)。关联前序报告:<code>docs/workflow-openhuman-comparison.html</code>、<code>docs/ginno-deepseek-harness-comparison.html</code>。</p>
+</section>
+
+</main>
+
+<footer>
+  Ginno 对比研究 · Ginno × Open Dynamic Workflow · 2026-10-12 · 未实施,借鉴清单待排期裁定
+</footer>
+
+</body>
+</html>

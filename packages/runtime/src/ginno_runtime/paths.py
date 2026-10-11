@@ -396,6 +396,13 @@ def workflows_dir() -> Path:
     return home() / "workflows"
 
 
+def workflow_cache_dir() -> Path:
+    """Cross-run step result cache (result_cache.py): content-addressed by
+    fingerprint, keyed per workflow definition (like workflows_dir, not the
+    per-project workflow_runs_dir)."""
+    return home() / "workflow_cache"
+
+
 def workflow_runs_dir(slug: str) -> Path:
     return project_dir(slug) / "workflow_runs"
 

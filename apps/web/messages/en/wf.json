@@ -152,6 +152,8 @@
       "clearFilter": "Clear filter [{node}]",
       "rerunStep": "Rerun",
       "rerunStepTitle": "Rerun from this node: forks a new run, re-executing only this node and its successors (using the version pinned by this run)",
+      "reused": "reused",
+      "reusedTitle": "Replayed from the cross-run result cache; no model call",
       "eventStream": "Event stream"
     },
     "dev": {

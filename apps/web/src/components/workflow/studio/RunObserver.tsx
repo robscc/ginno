@@ -281,7 +281,14 @@ export function RunObserver({
                   {statusLabel(s.status)}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-txt">{s.title || s.id}</span>
-                {st.latencyMs !== undefined && (
+                {st.cached && (
+                  // 跨 run 结果缓存命中：无真实模型调用，latency/tokens 无意义，
+                  // 徽标位置直接标「复用」（odw-comparison P1-①）。
+                  <span className="shrink-0 text-[9.5px] text-faint" title={t("reusedTitle")}>
+                    {t("reused")}
+                  </span>
+                )}
+                {!st.cached && st.latencyMs !== undefined && (
                   <span className="shrink-0 tabular-nums text-faint">
                     {st.latencyMs >= 1000 ? `${(st.latencyMs / 1000).toFixed(1)}s` : `${Math.round(st.latencyMs)}ms`}
                   </span>

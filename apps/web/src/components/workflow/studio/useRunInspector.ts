@@ -7,6 +7,8 @@ import type { WorkflowRun, WorkflowRunEvent } from "@/lib/types";
 export interface NodeStat {
   latencyMs?: number;
   tokens?: number;
+  /** node_exit.cached — step replayed from the cross-run result cache. */
+  cached?: boolean;
 }
 
 type WsFrame = {
@@ -204,6 +206,7 @@ export function useRunInspector(runId: string | null) {
       if (e.kind === "node_exit" && typeof e.ts === "number") {
         const s = (stats[nid] ??= {});
         if (enter[nid] !== undefined) s.latencyMs = Math.max(0, (e.ts - enter[nid]) * 1000);
+        if (e.cached) s.cached = true;
         const u = e.usage;
         if (u) s.tokens = (s.tokens || 0) + (u.input_tokens || 0) + (u.output_tokens || 0);
       }

@@ -270,7 +270,25 @@ class BaseNode:
                 if action == "skip":
                     return _with_patch(cls._post(state, node, cctx, {}), patch, state)
                 eff = decision.get("input", eff)
-            update = await cls._execute_resilient(node, cctx, state, config, eff)
+            # Cross-run result cache (result_cache.py): replay a recorded
+            # pure-LLM success instead of executing. The lookup is placed
+            # after validation/supervisor so a coerced input still counts as
+            # the same execution, and before _execute_resilient so retries
+            # never fire on a hit. A hit skips model calls entirely (usage
+            # stays zero); a miss trips the run's prefix latch — the whole
+            # suffix executes live.
+            cache = (cctx.get("run_ctx") or {}).get("result_cache")
+            hit = cache.lookup(node, state, eff, cctx) if cache is not None else None
+            if hit is not None:
+                from ..result_cache import synth_cached_update
+
+                update = synth_cached_update(node, cctx, state, hit)
+            else:
+                update = await cls._execute_resilient(node, cctx, state, config, eff)
+                if cache is not None and update is not None:
+                    # Record before __output__ is popped below — the entry
+                    # needs text + writes from the intact update dict.
+                    cache.maybe_record(node, state, eff, cctx, update)
             if update is None:
                 # on_error="continue" soft failure (stability plan P2): the error
                 # event was emitted with handled:true and soft_failures bumped;

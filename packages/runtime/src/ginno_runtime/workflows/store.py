@@ -419,6 +419,7 @@ def create_run(
     retried_from: str | None = None,
     supervisor_override: dict[str, Any] | None = None,
     origin: str | None = None,
+    cache_disabled: bool = False,
 ) -> dict[str, Any]:
     now = time.time()
     d, ver = _wf_dsl_and_version(wf)
@@ -477,6 +478,11 @@ def create_run(
         "started": now,
         "updated": now,
     }
+    # Cross-run result cache opt-out (odw-comparison P1-①): create-run
+    # ``no_cache`` pins this run to full live execution. Only persisted when
+    # set — absent field = cache eligible (legacy runs included).
+    if cache_disabled:
+        run["cache_disabled"] = True
     # 触发来源标记（scheduled-tasks-design.md §3.6）：定时调度器创建的 run 打
     # "schedule"，Workflows 页运行列表据此显示「⏰ 定时」徽标；普通路径不落此字段。
     if origin:
@@ -485,7 +491,9 @@ def create_run(
     return run
 
 
-def update_step(run_id: str, step_id: str, status: str, output: str = "") -> dict[str, Any] | None:
+def update_step(
+    run_id: str, step_id: str, status: str, output: str = "", cached: bool = False
+) -> dict[str, Any] | None:
     run = get_run(run_id)
     if not run:
         return None
@@ -494,6 +502,12 @@ def update_step(run_id: str, step_id: str, status: str, output: str = "") -> dic
             s["status"] = status
             if output:
                 s["output"] = output
+            # Cache-replay marker (odw-comparison P1-①): the step's result came
+            # from the cross-run result cache, not a live model call. Persisted
+            # so the chat run block (which only sees the run JSON, not events)
+            # can badge it.
+            if cached:
+                s["cached"] = True
     # Only a run that is still "running" may have its overall status
     # recomputed from its steps. A late step update must never demote a
     # terminal status (failed/cancelled/interrupted) or a paused run back to

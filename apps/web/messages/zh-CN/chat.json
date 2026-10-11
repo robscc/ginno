@@ -295,7 +295,9 @@
       "retryFailed": "重试失败",
       "retryFailedNoConn": "重试失败：无法连接 runtime",
       "retryNoConnection": "无法连接 runtime",
-      "delete": "删除"
+      "delete": "删除",
+      "reused": "复用",
+      "reusedTitle": "该步骤由跨 run 结果缓存重放，未产生模型调用"
     },
     "runView": {
       "deleted": "该运行记录已被删除",
