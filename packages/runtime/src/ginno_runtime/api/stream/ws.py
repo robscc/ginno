@@ -351,25 +351,26 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         if session_id in _RUNNING_TURNS or (
                             _busy is not None and not _busy.done()
                         ):
-                            await ws.send_text(
-                                _ev(
-                                    "notice",
-                                    {
-                                        "message": f"A turn is already running; wait for it to finish before running /{plan.builtin_async}",
-                                        "i18n_key": "stream.busy_wait_command",
-                                        "params": {"command": plan.builtin_async},
-                                    },
-                                    turn_id,
-                                )
+                            await _push_session_event(
+                                session_id,
+                                "notice",
+                                {
+                                    "message": f"A turn is already running; wait for it to finish before running /{plan.builtin_async}",
+                                    "i18n_key": "stream.busy_wait_command",
+                                    "params": {"command": plan.builtin_async},
+                                },
+                                turn_id,
                             )
-                            await ws.send_text(_ev("message.end", {}, turn_id))
+                            await _push_session_event(
+                                session_id, "message.end", {}, turn_id
+                            )
                             continue
                         if plan.builtin_async in _BACKGROUND_ASYNC_COMMANDS:
                             # P3 contract 5 (P2 遗留): the subagent family's
                             # decompose/spawn runs OFF the receive loop — the
                             # LLM decompose takes tens of seconds and used to
                             # block this socket's ping/stop/steer the whole
-                            # time. The invoking socket gets message.end
+                            # time. Every live socket gets message.end
                             # immediately; the result notice (and, from the
                             # split form, the subagent.plan broadcast inside
                             # issue_plan) lands when the job finishes.
@@ -383,7 +384,9 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                                     turn_id,
                                 )
                             )
-                            await ws.send_text(_ev("message.end", {}, turn_id))
+                            await _push_session_event(
+                                session_id, "message.end", {}, turn_id
+                            )
                             continue
                         _reply_key: str | None = None
                         _reply_params: dict | None = None
@@ -413,16 +416,28 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         if _reply_key:
                             _notice_payload["i18n_key"] = _reply_key
                             _notice_payload["params"] = _reply_params
-                        await ws.send_text(_ev("notice", _notice_payload, turn_id))
-                        await ws.send_text(_ev("message.end", {}, turn_id))
+                        # 会话级回复一律广播（与 turn 帧同一通道），绝不直发
+                        # 本 socket：命令可运行 60-90s（/compact 摘要 + 429 退避
+                        # 重试），期间客户端断线重连后旧 socket 已死——直发等于
+                        # 回复永久丢失，还炸 "send after websocket.close"，UI 永远
+                        # 卡「发送失败」（2026-10-12 实测，turn 帧早因 2026-08-05
+                        # 同类事故改广播，命令回复是漏网之鱼）。
+                        await _push_session_event(
+                            session_id, "notice", _notice_payload, turn_id
+                        )
+                        await _push_session_event(
+                            session_id, "message.end", {}, turn_id
+                        )
                         continue
                     if plan.builtin_reply is not None:
                         # Built-in command: reply directly, no graph turn, no agent
                         # persistence, no checkpoint write (ephemeral by design).
-                        await ws.send_text(
-                            _ev("notice", {"message": plan.builtin_reply}, turn_id)
+                        await _push_session_event(
+                            session_id, "notice", {"message": plan.builtin_reply}, turn_id
                         )
-                        await ws.send_text(_ev("message.end", {}, turn_id))
+                        await _push_session_event(
+                            session_id, "message.end", {}, turn_id
+                        )
                         continue
                     if plan.mod_command is not None:
                         # Mod-registered slash command (claude-code-mods-design.md
@@ -439,28 +454,29 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             )
                         except Exception:
                             _log.exception("mod_command_failed name=%s session=%s", _mc_name, session_id)
-                        await ws.send_text(
-                            _ev(
-                                "notice",
-                                {
-                                    "message": _mc_reply
-                                    or f"/{_mc_name} executed by mod (no reply).",
-                                    # mod 无回复时的兜底文案走 key(message 是
-                                    # 旧 bundle 的英文回退);有回复时 reply 是
-                                    # mod 自己的成品文本,不翻译。
-                                    **(
-                                        {}
-                                        if _mc_reply
-                                        else {
-                                            "i18n_key": "chat.mods.commandNoReply",
-                                            "params": {"command": _mc_name},
-                                        }
-                                    ),
-                                },
-                                turn_id,
-                            )
+                        await _push_session_event(
+                            session_id,
+                            "notice",
+                            {
+                                "message": _mc_reply
+                                or f"/{_mc_name} executed by mod (no reply).",
+                                # mod 无回复时的兜底文案走 key(message 是
+                                # 旧 bundle 的英文回退);有回复时 reply 是
+                                # mod 自己的成品文本,不翻译。
+                                **(
+                                    {}
+                                    if _mc_reply
+                                    else {
+                                        "i18n_key": "chat.mods.commandNoReply",
+                                        "params": {"command": _mc_name},
+                                    }
+                                ),
+                            },
+                            turn_id,
                         )
-                        await ws.send_text(_ev("message.end", {}, turn_id))
+                        await _push_session_event(
+                            session_id, "message.end", {}, turn_id
+                        )
                         continue
                     user_text = plan.text
                     # Busy check: a turn task is already live for this session
@@ -469,15 +485,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     # here: our task simply queues on _turn_lock, as before.
                     _busy = _TURN_TASKS.get(session_id)
                     if _busy is not None and not _busy.done():
-                        await ws.send_text(
-                            _ev(
-                                "notice",
-                                {
-                                    "message": "A turn is already running; please wait for it to finish",
-                                    "i18n_key": "stream.busy_wait",
-                                },
-                                turn_id,
-                            )
+                        await _push_session_event(
+                            session_id,
+                            "notice",
+                            {
+                                "message": "A turn is already running; please wait for it to finish",
+                                "i18n_key": "stream.busy_wait",
+                            },
+                            turn_id,
                         )
                         continue
                     if session_id in _MANAGED_TURNS:
@@ -491,15 +506,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         # The composer routes mid-run input to `steer`
                         # (subagent-design §6.2), so this only catches the
                         # invoke↔turn.start race — say "busy", don't queue.
-                        await ws.send_text(
-                            _ev(
-                                "notice",
-                                {
-                                    "message": "A turn is already running; please wait for it to finish",
-                                    "i18n_key": "stream.busy_wait",
-                                },
-                                turn_id,
-                            )
+                        await _push_session_event(
+                            session_id,
+                            "notice",
+                            {
+                                "message": "A turn is already running; please wait for it to finish",
+                                "i18n_key": "stream.busy_wait",
+                            },
+                            turn_id,
                         )
                         continue
                     # Pre-arm the cooperative stop signal BEFORE spawning the
@@ -639,19 +653,12 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                 except Exception as e:
                     # Inline-phase failure (command/mention resolution, task
-                    # spawn) — report on this socket; the turn never started.
+                    # spawn) — broadcast: the turn never started, and the
+                    # invoking socket may already have reconnected.
                     _log.exception("invoke_error session=%s", session_id)
-                    try:
-                        await ws.send_text(
-                            _ev(
-                                "error",
-                                {
-                                    **turn_error_fields(e),
-                                },
-                            )
-                        )
-                    except Exception:
-                        return  # socket died while reporting; nothing to do
+                    await _push_session_event(
+                        session_id, "error", {**turn_error_fields(e)}
+                    )
             elif kind == "steer":
                 # A message the user sent while a turn was running
                 # (docs/steering-design.md §3.2). NOT a turn: it is stashed and
@@ -667,28 +674,34 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     # State-rewriting commands (/compact) can NEVER run here:
                     # the steer branch by definition has a live turn whose
                     # supersteps would race the rewrite. Tell the user to wait.
-                    await ws.send_text(
-                        _ev(
-                            "notice",
-                            {
-                                "message": f"/{plan.builtin_async} can only run after the current turn finishes",
-                                "i18n_key": "stream.command_only_after_turn",
-                                "params": {"command": plan.builtin_async},
-                            },
-                            _steer_turn,
-                        )
+                    await _push_session_event(
+                        session_id,
+                        "notice",
+                        {
+                            "message": f"/{plan.builtin_async} can only run after the current turn finishes",
+                            "i18n_key": "stream.command_only_after_turn",
+                            "params": {"command": plan.builtin_async},
+                        },
+                        _steer_turn,
                     )
-                    await ws.send_text(_ev("message.end", {}, _steer_turn))
+                    await _push_session_event(
+                        session_id, "message.end", {}, _steer_turn
+                    )
                     continue
                 if plan.builtin_reply is not None:
                     # Built-in commands answer immediately and never queue — the
                     # same rule `invoke` gets for free (its builtin branch sits
                     # BEFORE the busy check) and the same as Claude Code's
                     # immediate commands.
-                    await ws.send_text(
-                        _ev("notice", {"message": plan.builtin_reply}, _steer_turn)
+                    await _push_session_event(
+                        session_id,
+                        "notice",
+                        {"message": plan.builtin_reply},
+                        _steer_turn,
                     )
-                    await ws.send_text(_ev("message.end", {}, _steer_turn))
+                    await _push_session_event(
+                        session_id, "message.end", {}, _steer_turn
+                    )
                     continue
                 # plan.mention_ctx / files_extra / agent_override are deliberately
                 # DROPPED (design §3.1, decided): v1 steers plain text only, so an
@@ -719,15 +732,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     # Nothing to absorb into. The client gates on busy/parked, so
                     # this is a race (the turn just ended): say so instead of
                     # swallowing the message — the client falls back to `invoke`.
-                    await ws.send_text(
-                        _ev(
-                            "error",
-                            {
-                                "message": "No turn is currently running; please send again",
-                                "i18n_key": "stream.no_turn_running",
-                            },
-                            _steer_turn,
-                        )
+                    await _push_session_event(
+                        session_id,
+                        "error",
+                        {
+                            "message": "No turn is currently running; please send again",
+                            "i18n_key": "stream.no_turn_running",
+                        },
+                        _steer_turn,
                     )
                     continue
                 try:
@@ -784,8 +796,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     len(_payload["files"]),
                     _payload["text"][:120],
                 )
-                await ws.send_text(
-                    _ev("steer.accepted", {"steer_id": steer_id}, _steer_turn)
+                # Broadcast (not the invoking socket): the ack must also reach
+                # the tab that RE-SENT this steer after a mid-enqueue reconnect
+                # — the queue dedups by steer_id, so other tabs ignore it.
+                await _push_session_event(
+                    session_id,
+                    "steer.accepted",
+                    {"steer_id": steer_id},
+                    _steer_turn,
                 )
             elif kind == "permission_response":
                 # The prompt broadcasts to every socket of the session (tabs),
@@ -1038,15 +1056,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     turn_id = f"{ui_turn_id_r}--r{uuid.uuid4().hex[:6]}"
                 _busy = _TURN_TASKS.get(session_id)
                 if _busy is not None and not _busy.done():
-                    await ws.send_text(
-                        _ev(
-                            "notice",
-                            {
-                                "message": "A turn is already running; please wait for it to finish",
-                                "i18n_key": "stream.busy_wait",
-                            },
-                            turn_id,
-                        )
+                    await _push_session_event(
+                        session_id,
+                        "notice",
+                        {
+                            "message": "A turn is already running; please wait for it to finish",
+                            "i18n_key": "stream.busy_wait",
+                        },
+                        turn_id,
                     )
                     continue
                 slug = session.get("project_slug")
@@ -1087,8 +1104,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     # finally pops the registry entry.
                     _job_stop_evt = _TURN_STOP.get(session_id)
                     try:
-                        await ws.send_text(
-                            _ev("turn.start", {"turn_id": _ui_tid, "agent_id": retry_agent or "", "name": retry_agent or "Agent", "from_checkpoint": True})
+                        # Broadcast like every other turn frame (the stream
+                        # below already does): the socket that asked for the
+                        # retry may have reconnected while the job waited on
+                        # the turn lock.
+                        await _push_session_event(
+                            session_id,
+                            "turn.start",
+                            {"turn_id": _ui_tid, "agent_id": retry_agent or "", "name": retry_agent or "Agent", "from_checkpoint": True},
                         )
                         async with _turn_lock(session_id):
                             # Pass input_state=None to resume from latest checkpoint
