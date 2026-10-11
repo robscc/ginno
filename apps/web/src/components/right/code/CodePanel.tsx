@@ -87,6 +87,21 @@ function fsError(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
+/** i18n-design.md §7 契约:Rust code_* 命令拒绝值是 {code, detail} 对象
+ *  (壳不持文案)。code 是稳定标识符 → code.notice.err.<code>;detail 是
+ *  OS/路径原始上下文,原样插值。旧壳的 string 错误/其它形状返回 null,
+ *  由调用方走既有 fallback 路径。 */
+function codeCmdErrParts(err: unknown): { code: string; detail: string } | null {
+  if (err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string") {
+    const detail = (err as { detail?: unknown }).detail;
+    return {
+      code: (err as { code: string }).code,
+      detail: typeof detail === "string" ? detail : "",
+    };
+  }
+  return null;
+}
+
 /** Escape user text so it matches LITERALLY inside the server's regex.
  *  Content search compiles `q` as a regex while the result highlight compares
  *  literal text (SearchView.Highlighted); leaving `foo.bar` unescaped would
@@ -131,6 +146,18 @@ interface Jump {
 export function CodePanel() {
   const g = useGinno();
   const t = useTranslations("code");
+  // notice.err.<code> 是运行时动态 key(Rust 侧错误码),宽化后经 has() 门控,
+  // 未命中走 err.unknown —— 与事件契约的 evText 同一防御姿态。
+  const tr = t as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  const codeCmdNotice = (p: { code: string; detail: string }): string => {
+    const key = `notice.err.${p.code}`;
+    return tr.has(key)
+      ? tr(key, { detail: p.detail })
+      : tr("notice.err.unknown", { detail: p.detail || p.code });
+  };
   const sessionId = g.activeSessionId;
   const panelWidth = g.rightPanelWidth;
   const wide = panelWidth >= WIDE_PX;
@@ -800,7 +827,8 @@ export function CodePanel() {
           });
         }
       } catch (err) {
-        return fsError(err, t("fs.deleteFailed"));
+        const coded = codeCmdErrParts(err);
+        return coded ? codeCmdNotice(coded) : fsError(err, t("fs.deleteFailed"));
       }
       setRefreshNonce((n) => n + 1);
       return null;
@@ -827,9 +855,16 @@ export function CodePanel() {
       if (!isDesktop() || !activeRoot) return;
       const abs = absInActiveRoot(path);
       if (!abs) return;
-      invoke("code_reveal", { root: activeRoot.path, path: abs }).catch((err) =>
-        setNotice(typeof err === "string" ? err : t("notice.revealFailed")),
-      );
+      invoke("code_reveal", { root: activeRoot.path, path: abs }).catch((err) => {
+        const coded = codeCmdErrParts(err);
+        setNotice(
+          coded
+            ? codeCmdNotice(coded)
+            : typeof err === "string"
+              ? err
+              : t("notice.revealFailed"),
+        );
+      });
     },
     [activeRoot, absInActiveRoot, t],
   );
@@ -839,9 +874,16 @@ export function CodePanel() {
       if (!isDesktop() || !activeRoot) return;
       const abs = absInActiveRoot(path);
       if (!abs) return;
-      invoke("code_open_external", { root: activeRoot.path, path: abs }).catch((err) =>
-        setNotice(typeof err === "string" ? err : t("notice.openExternalFailed")),
-      );
+      invoke("code_open_external", { root: activeRoot.path, path: abs }).catch((err) => {
+        const coded = codeCmdErrParts(err);
+        setNotice(
+          coded
+            ? codeCmdNotice(coded)
+            : typeof err === "string"
+              ? err
+              : t("notice.openExternalFailed"),
+        );
+      });
     },
     [activeRoot, absInActiveRoot, t],
   );

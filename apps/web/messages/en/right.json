@@ -61,6 +61,7 @@
       "review": "Review",
       "promoteTitle": "Promote to Knowledge Base",
       "empty": "No global memory yet. Conversations accumulate into the pool automatically; click \"Distill draft\" to review and write.",
+      "poolEmpty": "Memory pool is empty — nothing to distill yet",
       "promoteHint": "Hover over a section to \"Promote to Knowledge Base\" — the memory becomes a searchable knowledge page.",
       "kbHint": "Once a Knowledge Base (vault) is configured in Settings, memory sections can be promoted into searchable knowledge pages.",
       "draftFailed": "Failed to draft",

@@ -29,7 +29,18 @@
       "copied": "已复制：{path}",
       "copyFailed": "复制失败",
       "revealFailed": "无法在文件管理器中显示",
-      "openExternalFailed": "无法用默认应用打开"
+      "openExternalFailed": "无法用默认应用打开",
+      "err": {
+        "resolveRoot": "无法解析工作区根目录：{detail}",
+        "resolvePath": "无法解析路径（可能已不存在）：{detail}",
+        "outsideRoot": "路径在工作区根目录之外：{detail}",
+        "revealFailed": "在 Finder 中显示失败：{detail}",
+        "notFile": "只能打开文件，不能打开目录：{detail}",
+        "openFailed": "无法用默认应用打开：{detail}",
+        "rootNotDeletable": "工作区根目录本身不能删除",
+        "trashFailed": "移入废纸篓失败：{detail}",
+        "unknown": "操作失败：{detail}"
+      }
     },
     "fs": {
       "createFailed": "创建失败",

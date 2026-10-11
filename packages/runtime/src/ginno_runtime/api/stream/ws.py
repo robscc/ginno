@@ -445,6 +445,17 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                                 {
                                     "message": _mc_reply
                                     or f"/{_mc_name} executed by mod (no reply).",
+                                    # mod 无回复时的兜底文案走 key(message 是
+                                    # 旧 bundle 的英文回退);有回复时 reply 是
+                                    # mod 自己的成品文本,不翻译。
+                                    **(
+                                        {}
+                                        if _mc_reply
+                                        else {
+                                            "i18n_key": "chat.mods.commandNoReply",
+                                            "params": {"command": _mc_name},
+                                        }
+                                    ),
                                 },
                                 turn_id,
                             )

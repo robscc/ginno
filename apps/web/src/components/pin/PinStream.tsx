@@ -24,6 +24,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import { useEventI18nText } from "@/components/chat/blocks";
 import { AlertCircle, ArrowUp, Loader2, Paperclip, RotateCcw, Square, X } from "lucide-react";
 import { getSessionHistory, openSessionSocket } from "@/lib/runtime";
 import { loadToolLabels, toolLabel } from "@/lib/toolLabels";
@@ -174,10 +175,18 @@ function applyBlock(blocks: Block[], ev: { event: string; [k: string]: unknown }
   }
 }
 
-function mapHistory(res: {
-  messages?: Array<{ id?: string; role: "user" | "assistant"; blocks: Block[]; turnId?: string }>;
-  last_error?: { message?: string; turn_id?: string } | null;
-}): PinMsg[] {
+function mapHistory(
+  res: {
+    messages?: Array<{ id?: string; role: "user" | "assistant"; blocks: Block[]; turnId?: string }>;
+    last_error?: {
+      message?: string; turn_id?: string;
+      i18n_key?: string; params?: Record<string, string | number>;
+    } | null;
+  },
+  // 事件契约翻译器(useEventI18nText 的返回值):last_error 带 key 时落地
+  // 翻译,与 ChatStream 的 mapHistory 同语义。缺省时英文 message 原样直显。
+  evText?: (ev: { i18n_key?: unknown; params?: unknown } | null | undefined, fallback: string) => string,
+): PinMsg[] {
   const msgs: PinMsg[] = (res.messages ?? []).map((m) => ({
     id: m.id ?? mid(),
     role: m.role === "user" ? "user" : "assistant",
@@ -193,7 +202,14 @@ function mapHistory(res: {
       id: mid(),
       role: "assistant",
       error: true,
-      blocks: [{ kind: "text", text: res.last_error.message }],
+      blocks: [
+        {
+          kind: "text",
+          text: evText
+            ? evText(res.last_error, res.last_error.message)
+            : res.last_error.message,
+        },
+      ],
       retryText: text && "text" in text ? text.text : undefined,
     });
   }
@@ -210,6 +226,7 @@ export function PinStream({
 }) {
   // 悬浮窗会话视图的 UI 文案 catalog（i18n Wave2）
   const t = useTranslations("pin.stream");
+  const evText = useEventI18nText();
   const [messages, setMessages] = useState<PinMsg[]>([]);
   const [liveId, setLiveId] = useState<string | null>(null);
   // E3 压缩进行中（context.compacting）——live 气泡空块时 spinner 旁的
@@ -350,7 +367,7 @@ export function PinStream({
 
   function reconcileFromHistory() {
     getSessionHistory(sessionId)
-      .then((res) => setMessages(mapHistory(res)))
+      .then((res) => setMessages(mapHistory(res, evText)))
       .catch(() => {
         /* sidecar down — the reconnect loop will retry */
       });
@@ -457,6 +474,15 @@ export function PinStream({
         break;
       case "context.compacted":
         addSystemRow(t("compacted", { count: Number(ev.compacted_messages ?? 0) }));
+        break;
+      case "history.cleared":
+        // /clear 清空了 checkpoint —— 本地 transcript 整体丢弃，live 气泡
+        // 状态复位（紧随其后的收据 notice 会经 ensureLive 新开气泡）。
+        liveRef.current = null;
+        setLiveId(null);
+        busyRef.current = false;
+        setBusy(false);
+        setMessages([]);
         break;
       case "turn.state":
         // Answer to the post-reconnect probe: no turn running → whatever we
@@ -621,7 +647,7 @@ export function PinStream({
     connect();
     getSessionHistory(sessionId)
       .then((res) => {
-        if (alive) setMessages(mapHistory(res));
+        if (alive) setMessages(mapHistory(res, evText));
       })
       .catch(() => {
         /* sidecar down — events will populate once it returns */

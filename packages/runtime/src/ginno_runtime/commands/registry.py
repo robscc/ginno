@@ -1,8 +1,9 @@
 """Built-in slash command registry.
 
 Built-ins short-circuit the turn: the handler renders a reply directly and the
-graph never runs (no LLM call, no checkpoint write). V1 ships only ``/help``;
-``/new``, ``/clear`` etc. are reserved names for future built-ins.
+graph never runs (no LLM call, no checkpoint write). ``/clear`` is the one
+exception handler-side: its async path rewrites the checkpoint (empties the
+messages channel) before replying.
 
 Skills are NOT registered here — they live on disk (SKILL.md) and are resolved
 by the resolver via ``SkillLoader``. Names collide → built-in wins (documented
@@ -14,6 +15,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+
+from langchain_core.messages import RemoveMessage
 
 from ..goals import store as goal_store
 from ..goals.events import notify_goal_changed
@@ -556,6 +559,81 @@ async def _compact_async_handler(
     return "\n".join(lines)
 
 
+def _clear_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    # Never reached through the resolver (async_handler routes it); kept so
+    # the registry entry is well-formed and direct sync calls get a hint.
+    return t(
+        "Run /clear through the async entry point (WS invoke)",
+        "请通过异步入口（WS invoke）运行 /clear",
+    )
+
+
+async def _clear_async_handler(
+    project_slug: str | None = None, session=None, args=None
+) -> str:
+    """/clear — wipe this session's conversation history, start fresh.
+
+    Same session_id keeps its identity: files dir, mounts, goal, settings all
+    survive; only the checkpoint's ``messages`` channel is emptied (the delete-
+    rewrite pattern of microcompact.py, minus the re-add). Busy-gated like
+    /compact — a history rewrite must never race a live turn. After the
+    rewrite, ``history.cleared`` is broadcast so every open UI drops its local
+    transcript (the /history endpoint now rebuilds from an empty checkpoint);
+    the receipt notice that follows lands as the first bubble of the fresh chat.
+    """
+    if not session:
+        return t("(/clear must be used inside a session)", "（/clear 必须在会话内使用）")
+    sid = session.get("session_id") or ""
+    graph = session.get("graph")
+    if graph is None or not sid:
+        return t("Session is not ready yet; try again shortly", "会话尚未就绪；请稍后再试")
+    slug = session.get("project_slug") or project_slug or "default"
+    config = {"configurable": {"thread_id": sid, "project_slug": slug}}
+
+    from ..tokens import estimate_messages_tokens
+
+    try:
+        snap = await graph.aget_state(config)
+    except Exception:
+        snap = None
+    msgs = list((getattr(snap, "values", None) or {}).get("messages") or [])
+    if not msgs:
+        return t("This session's context is already empty", "本会话上下文已经是空的")
+    if getattr(snap, "next", None):
+        return t(
+            "The current turn is paused at a confirmation step (permission / question); finish it before running /clear",
+            "当前回合停在确认步骤（权限 / 提问）上；请先完成再运行 /clear",
+        )
+    if any(not getattr(m, "id", None) for m in msgs):
+        # id-less messages can't be delete-rewritten (microcompact bails the
+        # same way); nothing re-added means they'd survive as ghosts.
+        return t(
+            "Some history messages carry no id and cannot be removed safely; run /compact instead",
+            "部分历史消息缺少 id，无法安全清除；请改用 /compact",
+        )
+
+    freed = estimate_messages_tokens(msgs)
+    await graph.aupdate_state(
+        config,
+        {"messages": [RemoveMessage(id=m.id) for m in msgs]},
+        as_node="agent",
+    )
+    from ..server_shared import _push_session_event
+
+    await _push_session_event(sid, "history.cleared", {})
+    return (
+        t(
+            f"🧹 Context cleared — removed {len(msgs)} message(s) (~{freed} tokens freed).",
+            f"🧹 上下文已清空 —— 移除了 {len(msgs)} 条消息（约释放 {freed} tokens）。",
+        )
+        + "\n"
+        + t(
+            "The conversation starts fresh; session files, mounts and settings are kept.",
+            "对话从新开始；会话文件、挂载与设置均保留。",
+        )
+    )
+
+
 _SUBAGENT_USAGE_EN = (
     "**Subagent usage**\n"
     "- `/subagent <goal>` — create 1 subagent right away (constraints/acceptance "
@@ -682,6 +760,15 @@ BUILTINS: dict[str, BuiltinCommand] = {
         ),
         handler=_compact_handler,
         async_handler=_compact_async_handler,
+    ),
+    "clear": BuiltinCommand(
+        name="clear",
+        description=(
+            "Clear this session's conversation history and start fresh (files, mounts and settings are kept)",
+            "清空本会话的对话上下文，重新开始（会话文件、挂载与设置保留）",
+        ),
+        handler=_clear_handler,
+        async_handler=_clear_async_handler,
     ),
     "goal": BuiltinCommand(
         name="goal",

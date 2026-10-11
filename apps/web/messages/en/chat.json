@@ -52,8 +52,11 @@
     "mods": {
       "promptBlocked": "This prompt was blocked by a mod.",
       "promptBlockedHook": "Prompt blocked by a hook.",
+      "agentSpawnDenied": "Subagent spawn denied by mod {mod}: {reason}",
       "askPlaceholder": "Or type your answer…",
-      "askSend": "Send"
+      "askSend": "Send",
+      "commandNoReply": "/{command} executed by mod (no reply).",
+      "grantsBlocked": "Mods grants blocked a \"{mod}\" hook command ({danger}) — denied by the default ask grant. Allow it in the Mods settings page if you trust this mod."
     },
     "queue": {
       "pending": "Pending ({count})",
@@ -66,6 +69,8 @@
     },
     "model": {
       "switchTitle": "Switch this session's model · takes effect next turn and persists",
+      "switchToast": "Model switched to {model} — takes effect next step",
+      "switchToastNoModel": "Model switched — takes effect next step",
       "pickTitle": "Choose the model for the new session",
       "fromAgentTitle": "Next session starts on the model bound to {agent} ({model}) — change it in Settings → Agents, or pick below to override for that session",
       "fromDefaultTitle": "Next session starts on the app default model ({model}) — change it in Settings → Model API, or pick below",

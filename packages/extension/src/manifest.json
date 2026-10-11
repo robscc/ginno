@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ginno Browser Connector",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Let Ginno work for you in your own Chrome — shared logins, visible actions, stoppable at any time.",
   "icons": {
     "16": "icons/16.png",

@@ -24,6 +24,7 @@
       "sendFailed": "Send failed",
       "sendFailedReason": "Send failed: {reason}",
       "sendErr": "❌ {reason}",
+      "sendErrNotHttp": "This page is not http(s); cannot send",
       "metaVersion": "Extension v{version}",
       "metaConnectedAt": "Connected at {time}",
       "helpA": "Not connected? Make sure the Ginno desktop app is running, and see the install guide on Ginno's ",

@@ -74,8 +74,11 @@ export function MemoryPanel() {
     try {
       const r = await api.summarizeMemory();
       if (r.ok) {
-        if (r.message) {
-          setMsg(r.message); // pool empty
+        if (r.pool_entries === 0) {
+          // runtime 的 "pool empty" 是英文单语兜底;结构化标志在此翻译。
+          setMsg(t("poolEmpty"));
+        } else if (r.message) {
+          setMsg(r.message);
         } else {
           await load();
           setDraftOpen(true); // straight into review

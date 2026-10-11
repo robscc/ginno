@@ -29,7 +29,18 @@
       "copied": "Copied: {path}",
       "copyFailed": "Failed to copy",
       "revealFailed": "Could not reveal in the file manager",
-      "openExternalFailed": "Could not open with the default app"
+      "openExternalFailed": "Could not open with the default app",
+      "err": {
+        "resolveRoot": "Failed to resolve workspace root: {detail}",
+        "resolvePath": "Failed to resolve path (it may no longer exist): {detail}",
+        "outsideRoot": "Path is outside the workspace root: {detail}",
+        "revealFailed": "Failed to reveal in Finder: {detail}",
+        "notFile": "Only files can be opened, not directories: {detail}",
+        "openFailed": "Failed to open with the default app: {detail}",
+        "rootNotDeletable": "The workspace root itself cannot be deleted",
+        "trashFailed": "Failed to move to Trash: {detail}",
+        "unknown": "Operation failed: {detail}"
+      }
     },
     "fs": {
       "createFailed": "Failed to create",

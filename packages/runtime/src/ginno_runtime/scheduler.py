@@ -37,6 +37,7 @@ from . import usage as usage_mod
 from . import usage_store
 from . import workflows as wf_store
 from .i18n import _
+from .lang import t
 from .schedule_store import MIN_INTERVAL_MIN
 
 _log = logging.getLogger("ginno.schedule")
@@ -437,7 +438,11 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
     )
     meta = await _sessions_api.create_session(req)
     if meta.get("ok") is False or not meta.get("id"):
-        return {"ok": False, "error": str(meta.get("error") or "会话创建失败"), "text": ""}
+        return {
+            "ok": False,
+            "error": str(meta.get("error") or t("session creation failed", "会话创建失败")),
+            "text": "",
+        }
     session_id = meta["id"]
     row["session_id"] = session_id
     # 运行中即可回放：把 session_id 回填进 running 行（jsonl 末行胜出），并广播
@@ -451,7 +456,7 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
 
     session = shared._SESSIONS.get(session_id)
     if not session:
-        return {"ok": False, "error": "会话未就绪", "text": ""}
+        return {"ok": False, "error": t("session not ready yet", "会话未就绪"), "text": ""}
     agent_id = session.get("agent_id")
     turn_id = uuid.uuid4().hex  # headless 一轮 = 一 turn
     text = str(target.get("prompt") or "")

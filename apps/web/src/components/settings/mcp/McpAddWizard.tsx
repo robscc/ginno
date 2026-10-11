@@ -210,7 +210,7 @@ export function McpAddWizard({
                         : "border-line2 bg-card text-muted hover:text-txt"
                     }`}
                   >
-                    {p.label}
+                    {t(p.labelKey)}
                   </button>
                 ))}
               </div>

@@ -189,6 +189,13 @@
       "wzOptRemoteDesc": "粘贴网关 URL。钉钉 MCP 网关在查询串里带 ?key= 鉴权 — 无需 headers。也支持 SSE。",
       "wzOptStdioTitle": "本地进程 · stdio",
       "wzOptStdioDesc": "在本机运行一个命令（npx / uvx）。继承父环境，打包版 node/npx 可直接解析。",
+      "tpl": {
+        "dingtalkDocs": "钉钉文档",
+        "volcSearch": "火山联网搜索",
+        "sentry": "Sentry",
+        "github": "GitHub (stdio)",
+        "filesystem": "文件系统 (stdio)"
+      },
       "wzTplLabel": "从模板开始",
       "wzPasteLabel": "或粘贴配置 JSON（Claude Desktop · Cursor · .mcp.json）",
       "wzParse": "解析",

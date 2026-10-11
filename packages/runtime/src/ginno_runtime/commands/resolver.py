@@ -27,6 +27,7 @@ from typing import Any
 from .. import agents as agents_reg
 from .. import artifacts as art_store
 from .. import workflows as wf_store
+from ..lang import t
 from ..skills.loader import SkillLoader, wrap_skill_body
 from ..workflows import dsl as wf_dsl
 from .registry import BUILTINS
@@ -230,12 +231,12 @@ def resolve_mentions(
 def _workflow_summary(wf: dict) -> str:
     lines = []
     if wf.get("description"):
-        lines.append(f"描述: {wf['description']}")
+        lines.append(f"{t('Description:', '描述：')} {wf['description']}")
     steps = wf.get("steps") or []
     if not steps and wf.get("dsl"):
         steps = wf_dsl.steps_from_dsl(wf.get("dsl") or {})
     if steps:
-        lines.append("步骤:")
+        lines.append(t("Steps:", "步骤："))
         for s in steps:
             title = s.get("title") or s.get("id") or ""
             lines.append(f"- {title}")
@@ -295,8 +296,12 @@ def resolve_turn(msg: dict, session: dict) -> TurnPlan:
                 # No duplicate mentioned_* section for it.
                 plan.files_extra.append({"artifact_id": art["id"]})
                 continue
-            summary = f"类型: {art.get('kind') or 'artifact'}"
-            summary += f"\n引用: {ref}" if ref else "\n引用: （无文件 — 非文件类产物）"
+            summary = f"{t('Kind:', '类型：')} {art.get('kind') or 'artifact'}"
+            summary += (
+                f"\n{t('Ref:', '引用：')} {ref}"
+                if ref
+                else f"\n{t('Ref: (none — non-file artifact)', '引用：（无文件 — 非文件类产物）')}"
+            )
             plan.mention_ctx.append(
                 {"kind": "artifact", "id": r["id"], "name": r["label"], "summary": summary}
             )

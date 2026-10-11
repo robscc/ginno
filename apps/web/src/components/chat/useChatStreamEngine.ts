@@ -280,7 +280,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
       agentId?: string | null;
       turnId?: string;
     }>;
-    last_error?: { message?: string; turn_id?: string } | null;
+    last_error?: {
+    message?: string; turn_id?: string;
+    i18n_key?: string; params?: Record<string, string | number>;
+  } | null;
   }): ChatMsg[] {
     // 服务端只给 user 消息带 turnId；assistant 消息继承其前一条 user 消息的
     // turnId——中途接入的实时流要靠它认领「历史里本轮已存在的半截气泡」
@@ -315,7 +318,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
       mapped.push({
         id: mid(),
         role: "assistant",
-        blocks: [{ kind: "text", text: err.message }],
+        // 与 live 错误卡同语义:带 key 落地翻译(快照),未命中回退英文 message。
+        blocks: [
+          { kind: "text", text: i18nRef.current.evText(err, err.message) },
+        ],
         turnId: err.turn_id ?? lastUser?.turnId,
         error: true,
         sendPayload: lastUser
@@ -969,12 +975,20 @@ export function useChatStreamEngine(deps: EngineDeps) {
         if (typeof ev.provider === "string") patch.provider = ev.provider;
         if (typeof ev.model === "string") patch.model = ev.model;
         if (patch.provider || patch.model) g.applySessionPatch(sid, patch);
-        pushModToast(
-          "info",
-          patch.model
-            ? `Model switched to ${patch.model} — takes effect next step`
-            : "Model switched — takes effect next step",
-        );
+        // 轻提示走 catalog（chat.model.switchToast*）：socket 闭包里用 ref
+        // 镜像的翻译句柄，key 未命中（旧 catalog）回退英文原文。
+        {
+          const { tr } = i18nRef.current;
+          const key = patch.model ? "model.switchToast" : "model.switchToastNoModel";
+          pushModToast(
+            "info",
+            tr.has(key)
+              ? tr(key, patch.model ? { model: patch.model } : undefined)
+              : patch.model
+                ? `Model switched to ${patch.model} — takes effect next step`
+                : "Model switched — takes effect next step",
+          );
+        }
         break;
       }
       case "workflows.changed":
@@ -1506,6 +1520,19 @@ export function useChatStreamEngine(deps: EngineDeps) {
         syncDisplay(sid);
         break;
       }
+      case "history.cleared": {
+        // /clear 已把 checkpoint 的 messages 清空：本地 transcript 整体丢弃，
+        // 流式状态一并复位（ensureLive 会在空 store 上为紧随其后的 /clear
+        // 收据 notice 新开一个气泡，作为新对话的第一条）。
+        storeRef.current[sid] = [];
+        liveBySessionRef.current[sid] = null;
+        streamAgentRef.current[sid] = null;
+        busyBySessionRef.current[sid] = false;
+        orphanStreamRef.current[sid] = false;
+        retryNoticeRef.current[sid] = null;
+        syncDisplay(sid);
+        break;
+      }
       case "usage": {
         // Session-cumulative model usage (D2) → TopBar counter via callback.
         const s = ev.session as SessionUsage | undefined;
@@ -1764,7 +1791,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
       }
       case "mod.toast": {
         const level: ModToastLevel = ev.level === "warn" || ev.level === "error" ? ev.level : "info";
-        pushModToast(level, String(ev.text ?? ""));
+        // 事件契约:带 i18n_key 时落地翻译(evText),否则成品文本原样直显
+        // (broker toast / mod 自己的文案是成品字符串)。
+        pushModToast(level, i18nRef.current.evText(ev, String(ev.text ?? "")));
         break;
       }
       case "mod.state.changed": {

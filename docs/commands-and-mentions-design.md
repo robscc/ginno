@@ -5,7 +5,7 @@
 ## 0. TL;DR
 
 - **`/<技能名> [prompt]`**：消息以已知技能名开头时，服务端把 `SKILL.md` 正文替换进本轮用户消息（`<skill name="X">…</skill>` + `User request: <tail>`）。仅 `user-invocable`/`both` 技能可被斜杠调用（trigger 门控）。
-- **内置命令注册表**（`ginno_runtime/commands/registry.py`）：可扩展；本期只内置 **`/help`** —— 不走模型、不写 checkpoint，直接经新 WS 事件 `notice` 返回命令/技能清单。`/new`、`/clear` 等命名预留。
+- **内置命令注册表**（`ginno_runtime/commands/registry.py`）：可扩展；本期只内置 **`/help`** —— 不走模型、不写 checkpoint，直接经新 WS 事件 `notice` 返回命令/技能清单。`/new` 等命名预留。
 - **@ 提及四件套**（本期完整可用）：
   - `@artifact` → 文件类产物并入本轮附件（复用 `attached_files` 管线 + schema 注入）；非文件类 → `<mentioned_artifact>` 文本段。
   - `@agent` → 本轮路由覆盖（等同 “Ask X”，不注入 persona 上下文）。
@@ -139,4 +139,5 @@ re.compile(r"</?\s*(?:mentioned_\w+|attached_files|skill)\b[^>]*>", re.IGNORECAS
 | `use_skill` 模型工具 | 已补：模型对匹配意图调用 `use_skill(name, request)`；slash 路径仍在。`tools:` 未声明的脚本技能默认放开 `bash`。 |
 | `/api/commands` | 未加端点；客户端以常量镜像注册表（只有一个内置命令时足够） |
 | `composerMenu.ts` vitest | 纯模块已抽出，后续可直接补前端单测 |
-| `/new` `/clear` 等 | 命名预留，未实现 |
+| `/new` 等 | 命名预留，未实现 |
+| `/clear` | **已实现**（async builtin）：busy-gated；清空 checkpoint 的 messages 通道（microcompact 的 delete-rewrite，无 re-add），广播 `history.cleared` 让所有打开的 UI 丢弃本地 transcript；会话身份/文件/挂载/目标保留 |

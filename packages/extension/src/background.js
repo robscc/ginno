@@ -1093,7 +1093,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab || !tab.url || !/^https?:/i.test(tab.url)) {
+          // 错误码而非成品文案:popup 侧映射 chrome.i18n(ext.popup.sendErrNotHttp),
+          // 壳/扩展不持双语文案(i18n-design.md §7/§8);error 字段留作旧 popup 兜底。
           try { chrome.runtime.sendMessage({ type: "GINNO_SEND_PAGE_ACK", ok: false,
+            error_code: "not_http",
             error: "This page is not http(s); cannot send" }); } catch (e) {}
           return;
         }

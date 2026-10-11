@@ -138,7 +138,14 @@ export function parseMcpServersJson(text: string): ParsedServer[] {
 /** 原型 v2 的模板 chips（占位 URL 由用户粘贴真实值）。 */
 export type McpTemplate = {
   key: string;
-  label: string;
+  /** chip 文案走 settings.mcp.tpl.<labelKey> catalog（品牌名双语各译）。
+   *  字面量联合让 tsc 校验 key 合法性（next-intl AppConfig 类型闸）。 */
+  labelKey:
+    | "tpl.dingtalkDocs"
+    | "tpl.volcSearch"
+    | "tpl.sentry"
+    | "tpl.github"
+    | "tpl.filesystem";
   transport: "http" | "stdio";
   name: string;
   url?: string;
@@ -150,22 +157,22 @@ export type McpTemplate = {
 export const MCP_TEMPLATES: McpTemplate[] = [
   {
     key: "dingtalk-docs",
-    label: "钉钉文档",
+    labelKey: "tpl.dingtalkDocs",
     transport: "http",
     name: "钉钉文档",
     url: "https://mcp-gw.dingtalk.com/server/...?key=...",
   },
   {
     key: "volc-search",
-    label: "火山联网搜索",
+    labelKey: "tpl.volcSearch",
     transport: "http",
     name: "火山引擎联网搜索服务",
     url: "http://ai-mcp-gw.sf-express.com/volc-web-search/mcp",
   },
-  { key: "sentry", label: "Sentry", transport: "http", name: "sentry", url: "https://mcp.sentry.dev/mcp" },
+  { key: "sentry", labelKey: "tpl.sentry", transport: "http", name: "sentry", url: "https://mcp.sentry.dev/mcp" },
   {
     key: "github",
-    label: "GitHub (stdio)",
+    labelKey: "tpl.github",
     transport: "stdio",
     name: "github",
     command: "npx",
@@ -174,7 +181,7 @@ export const MCP_TEMPLATES: McpTemplate[] = [
   },
   {
     key: "filesystem",
-    label: "Filesystem (stdio)",
+    labelKey: "tpl.filesystem",
     transport: "stdio",
     name: "filesystem",
     command: "uvx",

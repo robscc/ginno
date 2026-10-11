@@ -141,7 +141,11 @@ export async function getSessionHistory(id: string) {
     }>;
     // Persisted turn failure (server-side); the client re-surfaces it as an
     // error card so the retry affordance survives reloads / switches.
-    last_error?: { turn_id?: string; message?: string } | null;
+    // i18n_key+params(事件契约 §3)随行持久化,回放时翻译。
+    last_error?: {
+      turn_id?: string; message?: string;
+      i18n_key?: string; params?: Record<string, string | number>;
+    } | null;
   }>(`${BASE}/sessions/${id}/history`);
 }
 

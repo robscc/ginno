@@ -52,8 +52,11 @@
     "mods": {
       "promptBlocked": "本轮输入已被 mod 拦截。",
       "promptBlockedHook": "输入被 hook 拦截。",
+      "agentSpawnDenied": "子代理启动被 mod {mod} 拒绝：{reason}",
       "askPlaceholder": "或者输入你的回答……",
-      "askSend": "发送"
+      "askSend": "发送",
+      "commandNoReply": "/{command} 已由 mod 执行（无回复）。",
+      "grantsBlocked": "Mods 授权拦截了「{mod}」的 hook 命令（{danger}）——默认 ask 授权予以拒绝。若信任此 mod，可在 设置 → Mods 中放行。"
     },
     "queue": {
       "pending": "待注入（{count}）",
@@ -66,6 +69,8 @@
     },
     "model": {
       "switchTitle": "切换本会话的模型 · 下一回合生效并一直保留",
+      "switchToast": "模型已切换为 {model} — 下一回合生效",
+      "switchToastNoModel": "模型已切换 — 下一回合生效",
       "pickTitle": "为新会话选择模型",
       "fromAgentTitle": "下一个会话将使用 {agent} 绑定的模型（{model}）——可在 设置 → Agents 修改，或在下方选择以覆盖该会话",
       "fromDefaultTitle": "下一个会话将使用应用默认模型（{model}）——可在 设置 → 模型 API 修改，或在下方选择",

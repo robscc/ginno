@@ -189,6 +189,13 @@
       "wzOptRemoteDesc": "Paste the gateway URL. DingTalk MCP gateway URLs carry ?key= auth in the query string — no headers needed. SSE also supported.",
       "wzOptStdioTitle": "Local process · stdio",
       "wzOptStdioDesc": "Runs a command on this machine (npx / uvx). Inherits the parent env so bundled node/npx resolve.",
+      "tpl": {
+        "dingtalkDocs": "DingTalk Docs",
+        "volcSearch": "Volcano Web Search",
+        "sentry": "Sentry",
+        "github": "GitHub (stdio)",
+        "filesystem": "Filesystem (stdio)"
+      },
       "wzTplLabel": "Start from a template",
       "wzPasteLabel": "Or paste config JSON (Claude Desktop · Cursor · .mcp.json)",
       "wzParse": "Parse",

@@ -669,8 +669,12 @@ class LoopNode(BaseNode):
         par, _mc = wf_dsl.loop_parallel_spec(node)
         if par and not ws_mod.workflow_parallel_enabled():
             emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "warning",
-                  "message": f"loop '{node_id}' declares parallel, but settings "
-                  "workflow_parallel_loops is off; falling back to sequential execution"})
+                  "message": t(
+                      f"loop '{node_id}' declares parallel, but settings "
+                      "workflow_parallel_loops is off; falling back to sequential execution",
+                      f"循环「{node_id}」声明了 parallel，但设置 workflow_parallel_loops "
+                      "已关闭；回退为顺序执行",
+                  )})
             par = False
         if st.get("parallel"):
             st["done"] = True

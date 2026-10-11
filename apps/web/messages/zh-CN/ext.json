@@ -24,6 +24,7 @@
       "sendFailed": "发送失败",
       "sendFailedReason": "发送失败：{reason}",
       "sendErr": "❌ {reason}",
+      "sendErrNotHttp": "此页面不是 http(s) 页面，无法发送",
       "metaVersion": "扩展 v{version}",
       "metaConnectedAt": "连接于 {time}",
       "helpA": "未连接？请确认 Ginno 桌面应用正在运行，安装指南见 Ginno 的「",

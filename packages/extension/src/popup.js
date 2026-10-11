@@ -96,8 +96,10 @@ chrome.runtime.onMessage.addListener((msg) => {
     $("sendMsg").style.display = "block";
     $("sendMsg").textContent = msg.ok
       ? i18nMsg("ext_popup_sendOk", "✅ Sent — see the Connectors page in Ginno")
-      : i18nMsg("ext_popup_sendErr", "❌ {0}",
-          [msg.error || i18nMsg("ext_popup_sendFailed", "Send failed")]);
+      : msg.error_code === "not_http"
+        ? i18nMsg("ext_popup_sendErrNotHttp", "This page is not http(s); cannot send")
+        : i18nMsg("ext_popup_sendErr", "❌ {0}",
+            [msg.error || i18nMsg("ext_popup_sendFailed", "Send failed")]);
   }
   return false;
 });

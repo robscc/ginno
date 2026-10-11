@@ -164,6 +164,12 @@ class HookDispatcher:
                         f"({', '.join(danger)}) — denied by the default ask grant. "
                         "Allow it in the Mods settings page if you trust this mod."
                     ),
+                    "i18n_key": "chat.mods.grantsBlocked",
+                    "params": {
+                        "mod": mod,
+                        "cmd": cmd,
+                        "danger": ", ".join(danger),
+                    },
                 },
             )
         except Exception:  # noqa: BLE001 — notification is best-effort

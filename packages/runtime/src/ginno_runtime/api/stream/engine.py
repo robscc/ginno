@@ -464,7 +464,9 @@ def turn_error_fields(e: BaseException) -> dict:
     suffix, params, hint = hit
     return {
         "message": f"{text}\n{hint}",
-        "i18n_key": f"stream.turn_failed.{suffix}",
+        # 对齐 web catalog 的 stream.turn_failed_note.<suffix>(平铺键
+        # stream.turn_failed 已被通用 case 占用,分类提示必须挂 _note 子树)。
+        "i18n_key": f"stream.turn_failed_note.{suffix}",
         "params": {"error": text, **params},
     }
 
@@ -514,8 +516,8 @@ def _is_content_filter_error(exc: BaseException) -> bool:
 def _langgraph_error_hint(e: BaseException) -> tuple[str, dict, str] | None:
     """Classify a turn failure for the error card.
 
-    Returns ``(i18n key suffix under stream.turn_failed, params, English
-    hint)`` or ``None`` for unknown / control-flow exceptions.
+    Returns ``(i18n key suffix under stream.turn_failed_note, params,
+    English hint)`` or ``None`` for unknown / control-flow exceptions.
     """
     from langgraph.errors import (  # lazy: import cost
         EmptyChannelError,
@@ -1794,6 +1796,10 @@ async def _stream_graph(
                 "last_error": {
                     "turn_id": ui_turn_id,
                     "message": _err_fields["message"],
+                    # key+params 随行持久化:history 回放重放错误卡时按事件
+                    # 契约落地翻译,而不是退化为英文 message(i18n-design §3)。
+                    "i18n_key": _err_fields.get("i18n_key"),
+                    "params": _err_fields.get("params"),
                     "at": time.time(),
                 }
             },
