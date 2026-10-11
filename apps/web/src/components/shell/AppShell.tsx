@@ -273,10 +273,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // 定时任务状态点（scheduled-tasks-design §3.1/§6）：红 = 最近一次执行失败或
-  // 近 7 天存在 missed；灰 = 全局关闭；无点 = 正常。冷数据 GET 兜底（60s），
-  // 运行中由 /api/ws/schedule 的 run_finished/missed/task_updated 事件即时刷新；
-  // 挂这一条轻量 WS 只为状态点，页面级订阅归 /scheduled 自己（§6）。
+  // 定时任务状态点（scheduled-tasks-design §3.1/§6 + schedule-unseen）：红 =
+  // 存在未查看的执行结果（unseen.total > 0，点开记录/全部已读后消除）；灰 =
+  // 全局关闭；无点 = 无未读。冷数据 GET 兜底（60s），运行中由 /api/ws/schedule
+  // 的 run_finished/missed/task_updated/runs_seen 事件即时刷新；挂这一条轻量
+  // WS 只为状态点，页面级订阅归 /scheduled 自己（§6）。
   const [scheduleDot, setScheduleDot] = useState<"" | "off" | "error">("");
   useEffect(() => {
     let alive = true;
@@ -288,14 +289,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           setScheduleDot("off");
           return;
         }
-        let bad = (cfg.tasks ?? []).some((task) => task.last_run?.status === "error");
-        if (!bad) {
-          const r = await api.listScheduleRuns({ status: "missed", sort: "desc", page: 1 });
-          if (!alive) return;
-          const cutoff = Date.now() / 1000 - 7 * 86400;
-          bad = (r.rows ?? []).some((x) => (x.scheduled_at ?? x.started_at ?? 0) >= cutoff);
-        }
-        if (alive) setScheduleDot(bad ? "error" : "");
+        setScheduleDot((cfg.unseen?.total ?? 0) > 0 ? "error" : "");
       } catch {
         /* sidecar 未起时静默——保持上次状态 */
       }
@@ -308,7 +302,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data) as { type?: string };
-          if (msg.type === "run_finished" || msg.type === "missed" || msg.type === "task_updated") {
+          if (
+            msg.type === "run_finished" ||
+            msg.type === "missed" ||
+            msg.type === "task_updated" ||
+            msg.type === "runs_seen"
+          ) {
             void tick();
           }
         } catch {

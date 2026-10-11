@@ -13,7 +13,7 @@
     "navDots": {
       "connectorError": "Connector error",
       "connectorWarn": "Some connectors are not connected",
-      "scheduleError": "Last run failed or there are missed scheduled points",
+      "scheduleError": "You have unseen scheduled-task results",
       "scheduleOff": "Scheduled tasks globally disabled"
     },
     "groups": {

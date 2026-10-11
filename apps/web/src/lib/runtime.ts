@@ -1943,6 +1943,8 @@ export async function listScheduleRuns(
     target_type?: string;
     status?: string;
     trigger?: string;
+    /** "unseen" | "seen"（schedule-unseen 过滤） */
+    seen?: string;
     sort?: "asc" | "desc";
     page?: number;
   } = {},
@@ -1953,10 +1955,19 @@ export async function listScheduleRuns(
   if (opts.target_type) q.set("target_type", opts.target_type);
   if (opts.status) q.set("status", opts.status);
   if (opts.trigger) q.set("trigger", opts.trigger);
+  if (opts.seen) q.set("seen", opts.seen);
   if (opts.sort) q.set("sort", opts.sort);
   if (opts.page) q.set("page", String(opts.page));
   const s = q.toString();
   return json(`${BASE}/schedule/runs${s ? `?${s}` : ""}`);
+}
+
+/** 标记执行结果已读（schedule-unseen）：单条 {run_id} 或一键 {all:true}。
+ *  返回最新 unseen 摘要；侧栏红点/页签角标经 runs_seen WS 事件即时刷新。 */
+export async function markScheduleRunsSeen(
+  body: { run_id?: string; all?: boolean },
+): Promise<{ ok?: boolean; unseen?: import("./types").ScheduleUnseen }> {
+  return json(`${BASE}/schedule/runs/seen`, { method: "POST", headers: H, body: JSON.stringify(body) });
 }
 
 export async function getScheduleTimeline(

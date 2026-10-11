@@ -200,6 +200,35 @@ def test_runs_endpoint_filters_and_pagination(client):
     assert page["total"] == 2 and len(page["rows"]) == 1
 
 
+def test_runs_seen_endpoint_and_unseen_payload(client):
+    """schedule-unseen：GET /api/schedule 带 unseen 摘要；POST runs/seen 标
+    单条/全部；rows 每行带 seen 标记、支持 seen 过滤。"""
+    now = time.time()
+    for rid, st in [("sr-1", "ok"), ("sr-2", "error"), ("sr-3", "missed")]:
+        store.record_run({
+            "run_id": rid, "task_id": "st-a", "task_name": "A",
+            "target_type": "prompt", "trigger": "schedule", "status": st,
+            "scheduled_at": now, "started_at": now, "finished_at": now,
+        })
+    # GET /api/schedule 的 unseen 摘要（侧栏红点数据源）
+    payload = client.get("/api/schedule").json()
+    assert payload["unseen"] == {"total": 3, "error": 1, "missed": 1}
+    # rows 默认带 seen=false
+    rows = client.get("/api/schedule/runs").json()["rows"]
+    assert all(r["seen"] is False for r in rows)
+    # 标单条 → 摘要减一，seen 过滤生效
+    r = client.post("/api/schedule/runs/seen", json={"run_id": "sr-2"}).json()
+    assert r["ok"] and r["unseen"] == {"total": 2, "error": 0, "missed": 1}
+    assert client.get("/api/schedule/runs", params={"seen": "unseen"}).json()["total"] == 2
+    assert client.get("/api/schedule/runs", params={"seen": "seen"}).json()["rows"][0]["run_id"] == "sr-2"
+    # 一键全部已读 → 归零
+    r = client.post("/api/schedule/runs/seen", json={"all": True}).json()
+    assert r["unseen"] == {"total": 0, "error": 0, "missed": 0}
+    assert client.get("/api/schedule").json()["unseen"]["total"] == 0
+    # 空 body → 400
+    assert client.post("/api/schedule/runs/seen", json={}).status_code == 400
+
+
 def test_timeline_runs_and_planned(client):
     interval = {"kind": "interval", "minutes": 30}
     t = client.post("/api/schedule/tasks", json=_prompt_task(schedule=interval)).json()

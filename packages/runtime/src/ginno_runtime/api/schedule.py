@@ -5,8 +5,9 @@
 - PATCH/DELETE /api/schedule/tasks/{id}
 - POST /api/schedule/tasks/{id}/run   — 立即执行（manual，按 target 分流）
 - GET  /api/schedule/runs             — 执行记录分页 + 过滤（同 run_id 去重）
+- POST /api/schedule/runs/seen        — 标记已读（单条 / 一键全部，schedule-unseen）
 - GET  /api/schedule/timeline         — 当天 runs + 剩余计划点
-- WS   /api/ws/schedule               — run_started/run_finished/task_updated/missed
+- WS   /api/ws/schedule               — run_started/run_finished/task_updated/missed/runs_seen
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ def _schedule_payload() -> dict:
         "enabled": bool(cfg.get("enabled", True)),
         "keep_awake": bool(cfg.get("keep_awake", False)),
         "tasks": cfg.get("tasks") or [],
+        # 未读执行结果统计（schedule-unseen）：侧栏红点与执行记录页签角标
+        # 的数据源，与任务列表同端点返回，AppShell 一次冷轮询全拿。
+        "unseen": store.unseen_summary(),
     }
 
 
@@ -158,21 +162,42 @@ async def list_runs(
     target_type: str | None = Query(None),
     status: str | None = Query(None),
     trigger: str | None = Query(None),
+    seen: str | None = Query(None),
     sort: str = Query("desc"),
     page: int = Query(1),
     page_size: int = Query(50),
 ) -> dict:
-    """执行记录分页（同 run_id 去重，§4.2）。"""
+    """执行记录分页（同 run_id 去重，§4.2）。``seen=unseen|seen`` 过滤未读/
+    已读（schedule-unseen）；每行附带 ``seen`` 布尔。"""
     return store.query_runs(
         date_str=date,
         task_id=task_id,
         target_type=target_type,
         status=status,
         trigger=trigger,
+        seen=seen if seen in ("unseen", "seen") else None,
         sort="asc" if sort == "asc" else "desc",
         page=page,
         page_size=page_size,
     )
+
+
+@router.post("/api/schedule/runs/seen")
+async def mark_runs_seen(data: dict) -> dict:
+    """标记执行结果已读（schedule-unseen）。body ``{"run_id": "..."}`` 标单条
+    （前端点开某行）；``{"all": true}`` 一键全部已读（watermark=now）。
+    返回最新未读摘要，并向 /api/ws/schedule 发 ``runs_seen`` 事件（侧栏
+    红点 / 页签角标即时刷新）。"""
+    data = data or {}
+    if data.get("all"):
+        summary = store.mark_runs_seen(None)
+    else:
+        rid = str(data.get("run_id") or "")
+        if not rid:
+            raise HTTPException(status_code=400, detail="run_id required (or all:true)")
+        summary = store.mark_runs_seen([rid])
+    scheduler.schedule_events().emit("runs_seen", {"unseen": summary, "all": bool(data.get("all"))})
+    return {"ok": True, "unseen": summary}
 
 
 @router.get("/api/schedule/timeline")

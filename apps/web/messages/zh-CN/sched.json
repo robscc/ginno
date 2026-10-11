@@ -97,7 +97,12 @@
       "rowMissed": "错过（机器休眠或应用未运行）",
       "open": "打开 ↗",
       "prev": "上一页",
-      "next": "下一页"
+      "next": "下一页",
+      "seenAll": "已读：全部",
+      "seenUnseen": "未查看",
+      "seenSeen": "已查看",
+      "markAllSeen": "全部标为已读（{n}）",
+      "markAllSeenTitle": "把所有未查看的执行结果标为已读，消除侧栏红点"
     },
     "tasks": {
       "new": "新建任务",

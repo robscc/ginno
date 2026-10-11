@@ -13,7 +13,7 @@
     "navDots": {
       "connectorError": "连接器出错",
       "connectorWarn": "部分连接器未连接",
-      "scheduleError": "最近一次执行失败，或近期有错过的定时点",
+      "scheduleError": "有未查看的定时任务执行结果",
       "scheduleOff": "定时任务已全局停用"
     },
     "groups": {

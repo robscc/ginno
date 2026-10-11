@@ -317,6 +317,7 @@ def query_runs(
     target_type: str | None = None,
     status: str | None = None,
     trigger: str | None = None,
+    seen: str | None = None,
     sort: str = "desc",
     page: int = 1,
     page_size: int = 50,
@@ -326,6 +327,8 @@ def query_runs(
     ``date_str`` 给定 → 只查该日；缺省 → 聚合保留期内全部日期（前端「近
     N 天」范围与 footer 状态点不带 date 拉取，靠客户端过滤收窄）。跨日同
     run_id（执行跨午夜）按日期升序去重，末行（最新日）胜出（§4.2）。
+    ``seen="unseen"|"seen"`` 按已读状态过滤（schedule-unseen）；无论过滤
+    与否，每行都附带计算好的 ``seen`` 布尔（前端行级红点直接用）。
     响应行键为 ``rows``（对齐 usage 请求日志；timeline 用 ``runs``，勿混）。"""
     page = max(1, page)
     page_size = max(1, min(page_size, 200))
@@ -349,6 +352,11 @@ def query_runs(
         rows = [e for e in rows if e.get("status") == status]
     if trigger:
         rows = [e for e in rows if e.get("trigger") == trigger]
+    seen_state = _load_seen()
+    if seen in ("unseen", "seen"):
+        want = seen == "seen"
+        rows = [e for e in rows if _is_seen(e, seen_state) == want]
+    rows = [dict(e, seen=_is_seen(e, seen_state)) for e in rows]
     def _ts(e: dict):
         return e.get("finished_at") or e.get("started_at") or e.get("scheduled_at") or 0
 
@@ -371,3 +379,99 @@ def iter_range(from_date: str, to_date: str):
     while d <= end:
         yield from load_day(d.strftime("%Y-%m-%d"))
         d += timedelta(days=1)
+
+
+# --------------------------------------------------------------------------- #
+# 已读状态（schedule-unseen：红点 = 未查看的执行结果，不再是「错误/missed」）
+#
+# ``schedule-runs/seen.json``：{"watermark": <epoch 秒>, "ids": [run_id, ...]}。
+# 一条 run 已读 ⟺ run_id ∈ ids，或其排序时间戳（finished/started/scheduled）
+# ≤ watermark——「一键全部已读」只写 watermark 一条时间线，不必逐条列举；
+# watermark 之后逐条点开的 run_id 进 ids。runs-*.jsonl 保持纯 append，
+# 已读状态独立成文件，两条写路径互不干扰。running 行没有结果，永不计数。
+# --------------------------------------------------------------------------- #
+# 有结果的终态（计入未读统计）；running 之外 skipped_overlap 也算一次结果。
+_TERMINAL_STATUSES = {"ok", "error", "missed", "skipped_overlap"}
+
+
+def _seen_path() -> Path:
+    return paths.schedule_runs_dir() / "seen.json"
+
+
+def _run_ts(e: dict) -> float:
+    """与 query_runs 排序同一把尺子：finished > started > scheduled。"""
+    return float(e.get("finished_at") or e.get("started_at") or e.get("scheduled_at") or 0)
+
+
+def _load_seen() -> dict:
+    try:
+        raw = json.loads(_seen_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"watermark": 0.0, "ids": []}
+    if not isinstance(raw, dict):
+        return {"watermark": 0.0, "ids": []}
+    return {
+        "watermark": float(raw.get("watermark") or 0),
+        "ids": [str(x) for x in raw.get("ids") or []],
+    }
+
+
+def _save_seen(state: dict) -> None:
+    try:
+        paths.schedule_runs_dir().mkdir(parents=True, exist_ok=True)
+        _seen_path().write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        _log.warning("schedule seen-state write failed", exc_info=True)
+
+
+def _is_seen(entry: dict, state: dict) -> bool:
+    rid = entry.get("run_id") or ""
+    return rid in state["ids"] or _run_ts(entry) <= state["watermark"]
+
+
+def _all_runs_deduped() -> list[dict]:
+    d = paths.schedule_runs_dir()
+    if not d.is_dir():
+        return []
+    days = sorted(p.name[len(_FILE_PREFIX):-len(".jsonl")] for p in d.glob(f"{_FILE_PREFIX}*.jsonl"))
+    rows: list[dict] = []
+    for day in days:
+        rows.extend(load_day(day))
+    return dedupe_runs(rows)
+
+
+def mark_runs_seen(run_ids: list[str] | None) -> dict:
+    """标记已读。``run_ids=None`` = 全部已读（watermark=now，ids 清到只剩
+    watermark 之后的）；否则把给定 run_id 并入 ids。返回最新的未读摘要。"""
+    state = _load_seen()
+    if run_ids is None:
+        # 一键全部已读：watermark 前移到 now 即覆盖全部现存行；ids 只在
+        # watermark 之上才有区分意义，整体清空。
+        state["watermark"] = time.time()
+        state["ids"] = []
+    else:
+        have = set(state["ids"])
+        for rid in run_ids:
+            if rid:
+                have.add(str(rid))
+        state["ids"] = list(have)
+    _save_seen(state)
+    return unseen_summary()
+
+
+def unseen_summary() -> dict:
+    """未读统计（侧栏红点 + 执行记录页签角标）：``{"total","error","missed"}``。
+    total 含全部终态（ok/error/missed/skipped_overlap），running 不算结果。"""
+    state = _load_seen()
+    out = {"total": 0, "error": 0, "missed": 0}
+    for e in _all_runs_deduped():
+        if e.get("status") not in _TERMINAL_STATUSES:
+            continue
+        if _is_seen(e, state):
+            continue
+        out["total"] += 1
+        if e.get("status") == "error":
+            out["error"] += 1
+        elif e.get("status") == "missed":
+            out["missed"] += 1
+    return out

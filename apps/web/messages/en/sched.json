@@ -97,7 +97,12 @@
       "rowMissed": "Missed (machine asleep or app not running)",
       "open": "Open ↗",
       "prev": "Prev",
-      "next": "Next"
+      "next": "Next",
+      "seenAll": "Seen: all",
+      "seenUnseen": "Unseen",
+      "seenSeen": "Seen",
+      "markAllSeen": "Mark all seen ({n})",
+      "markAllSeenTitle": "Mark every unseen run result as seen and clear the sidebar dot"
     },
     "tasks": {
       "new": "New Task",

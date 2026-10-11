@@ -170,3 +170,62 @@ def test_record_run_never_raises(isolated_home, monkeypatch):
     monkeypatch.setattr(paths, "schedule_runs_dir", lambda: blocker / "schedule-runs")
     store.record_run({"run_id": "sr-z", "status": "ok"})  # must not raise
     store._maybe_cleanup("1970-01-01")  # cleanup path likewise never raises
+
+
+# ---- 已读状态（schedule-unseen：红点 = 未查看的执行结果） ---------------------
+def _record(rid: str, st: str, ts: float) -> None:
+    store.record_run({
+        "run_id": rid, "task_id": "st-1", "task_name": "T", "target_type": "prompt",
+        "trigger": "schedule", "status": st,
+        "scheduled_at": ts, "started_at": ts, "finished_at": ts,
+    })
+
+
+def test_unseen_summary_counts_terminal_only(isolated_home):
+    now = time.time()
+    _record("sr-run", "running", now)  # 进行中没有结果，不计
+    _record("sr-ok", "ok", now)
+    _record("sr-err", "error", now)
+    _record("sr-miss", "missed", now)
+    _record("sr-skip", "skipped_overlap", now)
+    s = store.unseen_summary()
+    assert s == {"total": 4, "error": 1, "missed": 1}
+
+
+def test_mark_all_seen_watermark_and_new_runs(isolated_home):
+    now = time.time()
+    _record("sr-a", "ok", now)
+    _record("sr-b", "missed", now)
+    assert store.unseen_summary()["total"] == 2
+    # 一键全部已读 → watermark=now，存量全部已读
+    s = store.mark_runs_seen(None)
+    assert s["total"] == 0
+    assert store.unseen_summary() == {"total": 0, "error": 0, "missed": 0}
+    # watermark 之后的新结果重新计未读
+    _record("sr-c", "ok", time.time())
+    assert store.unseen_summary()["total"] == 1
+
+
+def test_mark_single_seen(isolated_home):
+    now = time.time()
+    _record("sr-a", "error", now)
+    _record("sr-b", "ok", now)
+    store.mark_runs_seen(["sr-a"])
+    s = store.unseen_summary()
+    assert s == {"total": 1, "error": 0, "missed": 0}  # 只剩 sr-b（ok）
+
+
+def test_query_runs_seen_filter_and_row_flag(isolated_home):
+    now = time.time()
+    _record("sr-a", "ok", now)
+    _record("sr-b", "error", now)
+    store.mark_runs_seen(["sr-a"])
+    # 无过滤：每行带 seen 标记
+    rows = store.query_runs()["rows"]
+    byid = {r["run_id"]: r["seen"] for r in rows}
+    assert byid == {"sr-a": True, "sr-b": False}
+    # unseen / seen 过滤
+    assert [r["run_id"] for r in store.query_runs(seen="unseen")["rows"]] == ["sr-b"]
+    assert [r["run_id"] for r in store.query_runs(seen="seen")["rows"]] == ["sr-a"]
+    # 与状态过滤组合
+    assert store.query_runs(status="error", seen="unseen")["total"] == 1

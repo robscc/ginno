@@ -752,11 +752,21 @@ export interface ScheduleTask {
   last_run?: ScheduleLastRun | null;
 }
 
+/** 未读执行结果统计（schedule-unseen）：侧栏红点 + 执行记录页签角标。 */
+export interface ScheduleUnseen {
+  /** 全部终态未读（ok/error/missed/skipped_overlap；running 不算结果） */
+  total: number;
+  error: number;
+  missed: number;
+}
+
 /** GET /api/schedule → 全局配置 + 任务列表。keep_awake 是唯一真值（§3.3）。 */
 export interface ScheduleConfig {
   enabled: boolean;
   keep_awake: boolean;
   tasks: ScheduleTask[];
+  /** 后端未见该字段时按 0 处理（旧 runtime 降级） */
+  unseen?: ScheduleUnseen;
 }
 
 /** 执行记录行（§4.2 jsonl，同 run_id 末行胜出；API 已去重）。 */
@@ -779,6 +789,8 @@ export interface ScheduleRun {
   error: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** 已读标记（GET /api/schedule/runs 每行附带；缺省视为已读，不画红点） */
+  seen?: boolean;
 }
 
 /** GET /api/schedule/runs → 分页行（store.query_runs 的返回形状：``rows``）。

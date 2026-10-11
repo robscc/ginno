@@ -65,7 +65,8 @@ export function ScheduledPage() {
           msg.type === "run_started" ||
           msg.type === "run_finished" ||
           msg.type === "task_updated" ||
-          msg.type === "missed"
+          msg.type === "missed" ||
+          msg.type === "runs_seen"
         ) {
           void refresh();
           bump();
@@ -227,7 +228,9 @@ export function ScheduledPage() {
             }}
           />
 
-          {/* 页签（任务 | 执行记录） */}
+          {/* 页签（任务 | 执行记录）。执行记录带未读角标（schedule-unseen）：
+              红点 + 未读数，另有 error / missed 分桶数——一眼看出有多少结果
+              没看、其中多少是坏的。全部已读后角标消失。 */}
           <div className="mb-3 mt-5 flex items-center gap-1 border-b border-line">
             {(
               [
@@ -237,20 +240,41 @@ export function ScheduledPage() {
                 ],
                 ["runs", tr("page.tabRuns")],
               ] as Array<["tasks" | "runs", string]>
-            ).map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => {
-                  setTab(k);
-                  if (k === "tasks") setRunsDateFilter(null);
-                }}
-                className={`-mb-px border-b-2 px-3 py-1.5 text-sm transition-colors ${
-                  tab === k ? "border-violet text-txt" : "border-transparent text-faint hover:text-muted"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+            ).map(([k, label]) => {
+              const unseen = k === "runs" ? cfg.unseen : undefined;
+              return (
+                <button
+                  key={k}
+                  onClick={() => {
+                    setTab(k);
+                    if (k === "tasks") setRunsDateFilter(null);
+                  }}
+                  className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-sm transition-colors ${
+                    tab === k ? "border-violet text-txt" : "border-transparent text-faint hover:text-muted"
+                  }`}
+                >
+                  {label}
+                  {!!unseen && unseen.total > 0 && (
+                    <span className="flex items-center gap-1.5 text-[11px] font-normal">
+                      <span className="flex items-center gap-1 text-red">
+                        <span className="h-1.5 w-1.5 rounded-full bg-red" />
+                        {unseen.total}
+                      </span>
+                      {unseen.error > 0 && (
+                        <span className="text-red/70" title={tr("status.error")}>
+                          ✕{unseen.error}
+                        </span>
+                      )}
+                      {unseen.missed > 0 && (
+                        <span className="text-faint" title={tr("status.missed")}>
+                          ◌{unseen.missed}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {tab === "tasks" ? (
@@ -261,6 +285,10 @@ export function ScheduledPage() {
               refreshKey={refreshKey}
               dateFilter={runsDateFilter}
               onClearDateFilter={() => setRunsDateFilter(null)}
+              onSeenChange={() => {
+                void refresh();
+                bump();
+              }}
             />
           )}
         </>

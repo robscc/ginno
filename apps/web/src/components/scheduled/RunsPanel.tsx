@@ -29,12 +29,15 @@ export function RunsPanel({
   refreshKey,
   dateFilter,
   onClearDateFilter,
+  onSeenChange,
 }: {
   cfg: ScheduleConfig;
   refreshKey: number;
   /** 时间条点进来的单日过滤（YYYY-MM-DD）；null = 用范围选择。 */
   dateFilter: string | null;
   onClearDateFilter: () => void;
+  /** 已读状态变化（单条/全部）：父级重拉 cfg（页签角标）+ bump 本面板。 */
+  onSeenChange: () => void;
 }) {
   const g = useGinno();
   const tr = useTranslations("sched");
@@ -52,6 +55,7 @@ export function RunsPanel({
   const [taskId, setTaskId] = useState("");
   const [targetType, setTargetType] = useState("");
   const [status, setStatus] = useState("");
+  const [seen, setSeen] = useState<"" | "unseen" | "seen">("");
   const [range, setRange] = useState("7");
   const [page, setPage] = useState(0);
 
@@ -66,6 +70,7 @@ export function RunsPanel({
             task_id: taskId || undefined,
             target_type: targetType || undefined,
             status: status || undefined,
+            seen: seen || undefined,
             date: dateFilter ?? undefined,
             sort,
             page: p,
@@ -86,7 +91,7 @@ export function RunsPanel({
     return () => {
       alive = false;
     };
-  }, [taskId, targetType, status, sort, dateFilter, refreshKey]);
+  }, [taskId, targetType, status, seen, sort, dateFilter, refreshKey]);
 
   // 日期范围（近 N 天）客户端过滤；dateFilter 模式下服务端已按单日过滤。
   const filtered = useMemo(() => {
@@ -98,8 +103,27 @@ export function RunsPanel({
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+  // schedule-unseen：点开一条结果 = 已读。可点行进回放；missed/skipped 没有
+  // 回放可进，点击仅消红点（否则错过记录永远无法标已读）。已读先本地乐观
+  // 置位（行红点立即消失），父级 onSeenChange 刷新页签角标，侧栏红点由
+  // runs_seen WS 事件即时消除。
+  const markOne = (r: ScheduleRun) => {
+    if (r.seen !== false) return;
+    setRows((prev) => prev.map((x) => (x.run_id === r.run_id ? { ...x, seen: true } : x)));
+    void api.markScheduleRunsSeen({ run_id: r.run_id }).then(() => onSeenChange());
+  };
+
+  const markAll = () => {
+    setRows((prev) => prev.map((x) => ({ ...x, seen: true })));
+    void api.markScheduleRunsSeen({ all: true }).then(() => onSeenChange());
+  };
+
   const openRun = (r: ScheduleRun) => {
-    if (!runClickable(r)) return;
+    if (!runClickable(r)) {
+      markOne(r); // missed/skipped：无回放，点击只消红点
+      return;
+    }
+    markOne(r);
     if (r.target_type === "workflow" && r.workflow_run_id) {
       g.openRunView(r.workflow_run_id);
       router.push("/");
@@ -145,6 +169,25 @@ export function RunsPanel({
           <option value="missed">{tr("status.missed")}</option>
           <option value="skipped_overlap">{tr("status.skipped")}</option>
         </select>
+        {/* 已读过滤（schedule-unseen）——与状态过滤正交，可组合 */}
+        <select
+          className="field w-auto px-2 py-1 text-xs"
+          value={seen}
+          onChange={(e) => setSeen(e.target.value as "" | "unseen" | "seen")}
+        >
+          <option value="">{tr("runs.seenAll")}</option>
+          <option value="unseen">{tr("runs.seenUnseen")}</option>
+          <option value="seen">{tr("runs.seenSeen")}</option>
+        </select>
+        {(cfg.unseen?.total ?? 0) > 0 && (
+          <button
+            onClick={markAll}
+            title={tr("runs.markAllSeenTitle")}
+            className="flex items-center gap-1 rounded-lg border border-red/40 px-2 py-1 text-red transition-colors hover:bg-red/10"
+          >
+            ● {tr("runs.markAllSeen", { n: cfg.unseen?.total ?? 0 })}
+          </button>
+        )}
         {dateFilter ? (
           <span className="flex items-center gap-1.5 rounded-lg border border-violet/50 bg-violet/10 px-2 py-1 text-violet">
             {dateFilter}
@@ -202,6 +245,8 @@ export function RunsPanel({
                     title={clickable ? tr("runs.rowClick") : r.status === "missed" ? tr("runs.rowMissed") : undefined}
                   >
                     <td className="whitespace-nowrap px-3 py-2 text-muted tabular-nums">
+                      {/* 未读红点（schedule-unseen）：点开该行即消除 */}
+                      {r.seen === false && <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-red align-middle" />}
                       {fmtDayPrefix(r.scheduled_at ?? r.started_at)} {fmtClock(r.started_at ?? r.scheduled_at)}
                     </td>
                     <td className="max-w-[160px] truncate px-3 py-2 text-txt" title={r.task_name}>
