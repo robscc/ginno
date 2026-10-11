@@ -23,9 +23,21 @@ export function providerColor(p: string): string {
   return PROVIDER_COLORS[p] || "#6366f1";
 }
 
+/** Compact-number suffix ladder (K→M→B→T→Q). Table-driven so a new tier is
+ *  one line, never another branch chain. Precision keeps the old rule: one
+ *  decimal below 10× the tier, integers from there up. */
+const FMT_UNITS: [number, string][] = [
+  [1e15, "Q"],
+  [1e12, "T"],
+  [1e9, "B"],
+  [1e6, "M"],
+  [1e3, "K"],
+];
+
 export function fmt(n: number): string {
-  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)}K`;
+  for (const [scale, suffix] of FMT_UNITS) {
+    if (n >= scale) return `${(n / scale).toFixed(n >= scale * 10 ? 0 : 1)}${suffix}`;
+  }
   return String(Math.round(n));
 }
 

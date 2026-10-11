@@ -11,9 +11,19 @@ import { AgentIcon } from "@/components/icons";
 import { GoalChip } from "./GoalChip";
 import { ContextFoldersChip } from "./ContextFoldersChip";
 
+/** Compact token counts, same ladder idea as usage/charts.tsx `fmt` (this one
+ *  keeps one decimal at every tier and lowercase k). */
+const TOKEN_UNITS: [number, string][] = [
+  [1e12, "T"],
+  [1e9, "B"],
+  [1e6, "M"],
+  [1e3, "k"],
+];
+
 function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  for (const [scale, suffix] of TOKEN_UNITS) {
+    if (n >= scale) return `${(n / scale).toFixed(1)}${suffix}`;
+  }
   return String(n);
 }
 
