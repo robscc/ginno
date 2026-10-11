@@ -25,6 +25,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { useEventI18nText } from "@/components/chat/blocks";
+import {
+  appendEntry,
+  caretOnFirstLine,
+  caretOnLastLine,
+  initHistory,
+  navDown,
+  navUp,
+  seedEntries,
+  userTextFromBlocks,
+  type HistoryState,
+} from "@/components/chat/inputHistory";
 import { AlertCircle, ArrowUp, Loader2, Paperclip, RotateCcw, Square, X } from "lucide-react";
 import { getSessionHistory, openSessionSocket } from "@/lib/runtime";
 import { loadToolLabels, toolLabel } from "@/lib/toolLabels";
@@ -280,6 +291,10 @@ export function PinStream({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Last user text, kept for the error card's retry button.
   const lastUserTextRef = useRef<string | null>(null);
+  // Composer ↑/↓ input history. PinApp keys PinStream by session id, so this
+  // single instance is per-session by remount; the seed comes from the loaded
+  // user messages (see histFor).
+  const histRef = useRef<HistoryState>(initHistory());
 
   // Tool display labels come from settings (module-cached — see toolLabels).
   // 语言加载由根部 I18nProvider 负责（原 loadPromptLang 已移除）。
@@ -777,6 +792,7 @@ export function PinStream({
       // A turn is running → this is a mid-turn injection, not a new turn: the
       // shared queue owns the frame, the acks and the re-sends. Text AND
       // attachments ride the steer (brief §4.4); an empty-text steer is legal.
+      histRef.current = appendEntry(histFor(), text);
       steerRef.current.enqueue({
         sessionId,
         turnId: turnIdRef.current,
@@ -827,6 +843,9 @@ export function PinStream({
     const turnId = newTurnId();
     const uid = mid();
     const lid = mid();
+    // 记入输入历史(队列 flush 会二次 append,连续去重吸收)。socket 断开的
+    // connNotReady 早退路径不记——内容还在输入框里。
+    histRef.current = appendEntry(histFor(), text);
     lastUserTextRef.current = text;
     turnIdRef.current = turnId;
     busyRef.current = true;
@@ -919,10 +938,60 @@ export function PinStream({
     setPermission(null);
   }
 
+  /** 懒构建历史种子:entries 仍为空时从已加载的 user 消息现拼(text/skill 块,
+   *  注入/纯附件消息在此天然滤空)。一旦有任何条目(种子或本地发送)就不再
+   *  重建,后续只靠发送时 appendEntry 增量。 */
+  function histFor(): HistoryState {
+    if (histRef.current.entries.length === 0) {
+      histRef.current = initHistory(
+        seedEntries(
+          messages
+            .filter((m) => m.role === "user")
+            .map((m) => userTextFromBlocks(m.blocks)),
+        ),
+      );
+    }
+    return histRef.current;
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
+    // IME guard 补全 keyCode 229(对齐 ChatStream:只查 isComposing 会漏掉
+    // 部分 CJK 输入法的候选确认)。
+    const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !composing) {
       e.preventDefault();
       sendText(input);
+    }
+    // ↑/↓ input history(与主 composer 同款;这里无命令菜单、无 steer-↑召回,
+    // 只有 IME guard 在前):光标在首行 ↑ / 末行 ↓ 才触发,多行编辑保持原生
+    // 光标移动。无内容可导航时放行原生行为。
+    if (!composing && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      const el = textareaRef.current;
+      const caret = el?.selectionStart ?? input.length;
+      const r =
+        e.key === "ArrowUp"
+          ? caretOnFirstLine(input, caret)
+            ? navUp(histFor(), input)
+            : null
+          : caretOnLastLine(input, caret)
+            ? navDown(histFor(), input)
+            : null;
+      if (r) {
+        e.preventDefault();
+        histRef.current = r.state;
+        setInput(r.text);
+        requestAnimationFrame(() => {
+          const el2 = textareaRef.current;
+          if (el2) {
+            el2.focus();
+            el2.setSelectionRange(r.text.length, r.text.length);
+            // auto-grow 只挂在 onInput(用户键入)上,程序化回填不会触发,
+            // 召回多行长文本时必须手动重算高度,否则显示截断。
+            el2.style.height = "auto";
+            el2.style.height = `${Math.min(el2.scrollHeight, 112)}px`;
+          }
+        });
+      }
     }
     // Esc / ⌘↵ bubble up to PinApp's window-level handlers (collapse / open main).
   }

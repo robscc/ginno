@@ -10,55 +10,28 @@
 // recomputeMenu/finishSynthesisWait）改为经 deps 解构注入——名字不变，
 // 闭包语义与原来逐 render 重建一致。syncDisplay 所镜像的 React 状态仍
 // 由组件持有，这里只负责写入。
+//
+// 内聚主题拆到 engine/ 子模块（ctx 全量注入，主文件每 render 组装一次）：
+// engine/handle（事件 reducer）、engine/connect（socket 就绪/历史对账）、
+// engine/steer（steer 队列管线）、engine/actions（权限/重试等 socket 动作）。
+// 本文件保留 ref 表、syncDisplay、WS 连接生命周期与 session 切换编排。
 
 import { useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
-import {
-  openSessionSocket,
-  getSessionHistory,
-  getWorkflowRun,
-  subagentPlanCancelFrame,
-  subagentPlanConfirmFrame,
-} from "@/lib/runtime";
-import { notifyNative } from "@/lib/desktop";
-import { notifyPrefs } from "@/lib/notifyPrefs";
+import { openSessionSocket, getSessionHistory } from "@/lib/runtime";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
-import {
-  pruneMentions,
-  type MenuItem,
-  type ResolvedMention,
-  type Trigger,
-} from "@/components/chat/commandMenu";
-import {
-  foldSubagentResultBlocks,
-  hasPendingTool,
-  parseSubagentResult,
-  useEventI18nText,
-  type Block,
-} from "@/components/chat/blocks";
+import { pruneMentions, type ResolvedMention } from "@/components/chat/commandMenu";
+import { useEventI18nText, type Block } from "@/components/chat/blocks";
+import { registerModPanePressSender } from "@/components/chat/mod/paneBus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
 import type { ModAskState } from "@/components/chat/mod/ModAskCard";
-import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToastHost";
-import { pushModPane, registerModPanePressSender, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type {
-  ContextChange,
-  Goal,
   SessionMeta,
   SessionUsage,
-  SubagentPlanEvent,
-  SubagentPlanSubtask,
-  SubagentSpawnEvent,
-  SubagentStatusEvent,
   WorkflowRun,
 } from "@/lib/types";
 import {
-  applyBlock,
-  closePendingBlocks,
-  mid,
-  newTurnId,
-  payloadFromBlocks,
-  toolArgsPreview,
   type Attachment,
   type ChatMsg,
   type FileAttachment,
@@ -66,6 +39,50 @@ import {
   type SendPayload,
   type VersionPropose,
 } from "./streamCore";
+import {
+  MenuState,
+  ProposeResult,
+  WsStatus,
+  type EngineCtx,
+} from "./engine/ctx";
+import {
+  armSocketReady as armSocketReadyImpl,
+  waitForSocketOpen as waitForSocketOpenImpl,
+  abandonLiveTurn as abandonLiveTurnImpl,
+  mapHistory as mapHistoryImpl,
+  reconcileTurnFromHistory as reconcileTurnFromHistoryImpl,
+} from "./engine/connect";
+import {
+  dropAbsorbedSteers as dropAbsorbedSteersImpl,
+  dropSteer as dropSteerImpl,
+  enqueueSteer as enqueueSteerImpl,
+  flushSteerQueue as flushSteerQueueImpl,
+  liveTurnIdFor as liveTurnIdForImpl,
+  recallSteers as recallSteersImpl,
+  requeueSteersOnResume as requeueSteersOnResumeImpl,
+  steerFrameSender as steerFrameSenderImpl,
+} from "./engine/steer";
+import {
+  markDelivered as markDeliveredImpl,
+  adoptOrphanStream as adoptOrphanStreamImpl,
+  ensureLive as ensureLiveImpl,
+  mutateLive as mutateLiveImpl,
+  handle as handleImpl,
+} from "./engine/handle";
+import {
+  retryFailed as retryFailedImpl,
+  editResend as editResendImpl,
+  dismissFailed as dismissFailedImpl,
+  retryError as retryErrorImpl,
+  retryFromCheckpoint as retryFromCheckpointImpl,
+  respond as respondImpl,
+  stopTurn as stopTurnImpl,
+  respondPropose as respondProposeImpl,
+  answerQuestion as answerQuestionImpl,
+  decideSubagentPlan as decideSubagentPlanImpl,
+  sendModUiPress as sendModUiPressImpl,
+  sendModUiAnswer as sendModUiAnswerImpl,
+} from "./engine/actions";
 
 export interface EngineDeps {
   g: ReturnType<typeof useGinno>;
@@ -127,10 +144,6 @@ export interface EngineDeps {
   finishSynthesisWait: (id: string) => Promise<void>;
 }
 
-type WsStatus = "connecting" | "live" | "reconnecting" | "offline";
-interface MenuState { items: MenuItem[]; active: number; trigger: Trigger }
-interface ProposeResult { decision: "allow" | "deny"; workflowId: string; fromVersion: number }
-
 // Draft slot id for the session-less landing view (ChatStream 共用：上传完成的
 // 文件回执要按 slot 归还，不能串会话）。
 export const HOME_SLOT = "__home__";
@@ -145,63 +158,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
   } = deps;
-  // 运行中的委托回放页（P1 实时流前端侧）：后端 bg 每 3s 节流回填部分转录，
-  // 这里同步轮询 history 替换消息——回放内容随委托进度"长"出来，终态即停。
-  const delegationReplayLive =
-    session?.type === "delegation" && session?.stop_reason === "running";
-  useEffect(() => {
-    if (!delegationReplayLive || !session?.id) return;
-    let alive = true;
-    const tick = async () => {
-      try {
-        const res = await getSessionHistory(session.id);
-        if (!alive) return;
-        const mapped = mapHistory(res ?? {});
-        // 必须同步写 per-session store:只写显示层的话,任何 syncDisplay
-        // (WS 状态变化/权限事件等)都会把视图弹回进入会话时的旧 store 快照
-        // ——运行中表现为"时不时闪白";结束后轮询停止,重进会话又被
-        // `if (!storeRef[sid])` 非空守卫挡住不再拉 history,视图冻结在旧
-        // 内容上,只有重启(清空 store)才恢复。
-        storeRef.current[session.id] = mapped;
-        setMessages(mapped);
-        pinToBottom();
-      } catch {
-        /* 轮询失败静默——下一轮再试 */
-      }
-    };
-    void tick();
-    const iv = setInterval(tick, 3000);
-    return () => {
-      alive = false;
-      clearInterval(iv);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [delegationReplayLive, session?.id]);
-  // 终态补一拍:轮询随 stop_reason 翻转立即停止,而终态 finalize(完整转录+
-  // 结果注记)恰在最后一次轮询之后落盘——不补拉,回放会冻结在倒数第二个
-  // 快照上;同时覆盖"结束后切走再切回"的入口(store 非空不再走初始加载,
-  // 由这里刷新到最终内容)。
-  useEffect(() => {
-    if (delegationReplayLive || session?.type !== "delegation" || !session?.id)
-      return;
-    const sid = session.id;
-    let alive = true;
-    getSessionHistory(sid)
-      .then((res) => {
-        if (!alive) return;
-        const mapped = mapHistory(res ?? {});
-        storeRef.current[sid] = mapped;
-        setMessages(mapped);
-        pinToBottom();
-      })
-      .catch(() => {
-        /* 补拍失败静默——终态内容不随轮询自愈,这里也别打扰 */
-      });
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [delegationReplayLive, session?.id, session?.type, session?.stop_reason]);
 
   // ---- i18n（chat 域 + 事件契约）----
   // 本 hook 处理 runtime 事件文本的落地：error / notice 等事件可带 i18n_key+params
@@ -228,156 +184,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
   >({});
   // Draft-slot tracking incl. the landing home ("__home__"); see switch effect.
   const prevSlotRef = useRef<string | null>(null);
-  function armSocketReady(sid: string) {
-    let resolve!: () => void;
-    let reject!: (e: unknown) => void;
-    const promise = new Promise<void>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    promise.catch(() => {}); // closes without a waiter are normal
-    socketReadyRef.current[sid] = { promise, resolve, reject };
-  }
-  /** Resolves true once the sid's socket is OPEN; false on timeout/close. */
-  function waitForSocketOpen(sid: string, timeoutMs = 8000): Promise<boolean> {
-    const sock = socketsRef.current[sid];
-    if (sock?.readyState === WebSocket.OPEN) return Promise.resolve(true);
-    const entry = socketReadyRef.current[sid];
-    if (!entry) return Promise.resolve(false);
-    return Promise.race([
-      entry.promise.then(
-        () => true,
-        () => false,
-      ),
-      new Promise<boolean>((res) => setTimeout(() => res(false), timeoutMs)),
-    ]);
-  }
-
-  // Abandon an in-flight turn after a socket drop that the server cannot
-  // answer for (legacy fallback): the user bubble keeps its retry payload.
-  function abandonLiveTurn(sid: string) {
-    liveBySessionRef.current[sid] = null;
-    streamAgentRef.current[sid] = null;
-    busyBySessionRef.current[sid] = false;
-    serverRunningRef.current[sid] = false;
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
-      m.role === "user" && m.status === "sending"
-        ? // failReason 存稳定 key（渲染时经 chat.sendFailed.* 翻译），避免把
-          // 成品文案烤进状态——语言切换后历史气泡仍能跟上。
-          { ...m, status: "failed" as const, failReason: "connLost" }
-        : m,
-    );
-    syncDisplay(sid);
-  }
-
-  // Map a /history response into chat bubbles (shared by the initial load and
-  // the post-reconnect reconciliation).
-  function mapHistory(res: {
-    messages?: Array<{
-      id?: string;
-      role: ChatMsg["role"];
-      blocks: Block[];
-      agentId?: string | null;
-      turnId?: string;
-    }>;
-    last_error?: {
-    message?: string; turn_id?: string;
-    i18n_key?: string; params?: Record<string, string | number>;
-  } | null;
-  }): ChatMsg[] {
-    // 服务端只给 user 消息带 turnId；assistant 消息继承其前一条 user 消息的
-    // turnId——中途接入的实时流要靠它认领「历史里本轮已存在的半截气泡」
-    // （否则同一轮渲染成两块，2026-10-01 子会话渲染问题）。
-    let carryTurn: string | undefined;
-    const mapped: ChatMsg[] = (res.messages ?? []).map((m) => {
-      const own = m.turnId ?? (m.role === "user" ? m.id : undefined);
-      if (m.role === "user" && own) carryTurn = own;
-      return {
-      id: m.id ?? mid(),
-      role: m.role,
-      // 运行时注入的子代理结果（契约 3：<ginno_subagent_result> 包裹的
-      // HumanMessage）在重放时折成结果卡片块，避免原始标签以文本气泡出现。
-      blocks: foldSubagentResultBlocks(m.blocks),
-      agentId: m.agentId,
-      turnId: own ?? (m.role === "assistant" ? carryTurn : undefined),
-      // Rebuild the retry payload for history user bubbles too — without
-      // it, a retry that fails again would produce an error card with no
-      // payload (no retry button), and the error handler's "last user with
-      // payload" lookup would come up empty.
-      sendPayload:
-        m.role === "user"
-          ? payloadFromBlocks(m.blocks, m.agentId ?? session?.agent_id ?? null)
-          : undefined,
-      };
-    });
-    // Re-surface a persisted turn failure as an error card (with retry)
-    // so the last error survives reloads and route/session switches.
-    const err = res.last_error;
-    if (err?.message) {
-      const lastUser = [...mapped].reverse().find((m) => m.role === "user");
-      mapped.push({
-        id: mid(),
-        role: "assistant",
-        // 与 live 错误卡同语义:带 key 落地翻译(快照),未命中回退英文 message。
-        blocks: [
-          { kind: "text", text: i18nRef.current.evText(err, err.message) },
-        ],
-        turnId: err.turn_id ?? lastUser?.turnId,
-        error: true,
-        sendPayload: lastUser
-          ? payloadFromBlocks(lastUser.blocks, lastUser.agentId ?? session?.agent_id ?? null)
-          : undefined,
-        sourceMsgId: lastUser?.id,
-      });
-    }
-    return mapped;
-  }
-
-  // The server says no turn is running for this session (post-reconnect
-  // turn_state probe): the stream will not resume. Reload persisted history —
-  // a turn that FINISHED while we were disconnected is fully restored from
-  // the checkpoint. A user bubble still "sending" that never reached the
-  // graph survives as a failed bubble with its retry payload.
-  function reconcileTurnFromHistory(sid: string) {
-    getSessionHistory(sid).then((res) => {
-      // Skill blocks (history-replayed slash turns) normalize back to the
-      // "/name request" text the live bubble carries, or the two never match
-      // and a phantom "undelivered" duplicate appears.
-      const textOf = (m: ChatMsg) =>
-        m.blocks
-          .map((b) =>
-            b.kind === "text"
-              ? b.text
-              : b.kind === "skill"
-                ? (b.text ? `/${b.name} ${b.text}` : `/${b.name}`)
-                : "",
-          )
-          .join("\n")
-          .replace(/\s+/g, " ")
-          .trim();
-      const pending = (storeRef.current[sid] ?? []).filter(
-        (m) => m.role === "user" && m.status === "sending",
-      );
-      const mapped = mapHistory(res ?? {});
-      // A steer_id present in history was absorbed even if the ack was lost to
-      // the socket drop that caused this reconcile — drop those entries instead
-      // of re-sending them (design §3.3, exactly-once).
-      dropAbsorbedSteers(sid, mapped);
-      for (const p of pending) {
-        const delivered = mapped.some(
-          (m) => m.role === "user" && textOf(m) === textOf(p),
-        );
-        if (!delivered) {
-          mapped.push({ ...p, status: "failed" as const, failReason: "connLost" });
-        }
-      }
-      storeRef.current[sid] = mapped;
-      liveBySessionRef.current[sid] = null;
-      streamAgentRef.current[sid] = null;
-      busyBySessionRef.current[sid] = false;
-      syncDisplay(sid);
-    });
-  }
   // Which session is currently shown; used by syncDisplay to skip background updates
   const curSessionIdRef = useRef<string | null>(null);
   // ─── Per-session persistent stores ─────────────────────────────────────────
@@ -445,6 +251,11 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const mentionsRef      = useRef<Record<string, ResolvedMention[]>>({});
   // In-chat live workflow runs bound to each session (design A: run 回到对话)
   const runsBySessionRef = useRef<Record<string, WorkflowRun[]>>({});
+  // Docs/native paths dropped while on the landing home (no session yet):
+  // buffered with optimistic chips, uploaded right after lazy creation.
+  const pendingDocsRef = useRef<Array<{ file: File; tmpId: string }>>([]);
+  const pendingPathsRef = useRef<Array<{ path: string; tmpId: string }>>([]);
+
   // Push the given session's ref state into React display state.
   // No-op when sid is not the currently displayed session (background socket).
   const syncDisplay = (sid: string) => {
@@ -463,6 +274,85 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // The steer queue is no longer mirrored here — useSteerQueue re-renders the
     // component itself when the queue changes, and `steerItems` reads it live.
   };
+
+  // 子模块共用的 ctx：每 render 组装一次，闭包语义与拆分前逐 render 重建一致。
+  const ctx: EngineCtx = {
+    g, steerQ, session, onUsageChange, propose,
+    input, attachments, fileAttachments,
+    setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
+    setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,
+    setFileAttachments, setComposerHint, setProposeResult, setModBands, setModAsks,
+    stickRef, connectRef, focusLatestRef, textareaRef, sumPendingRef,
+    pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
+    i18nRef,
+    liveIdRef, activeSidRef, socketReadyRef, prevSlotRef, curSessionIdRef,
+    storeRef, liveBySessionRef, socketsRef, statusRef, permsRef, proposeRef,
+    busyBySessionRef, hintTimerRef, serverRunningRef, compactingBySessionRef, streamAgentRef,
+    orphanStreamRef, adoptedTurnRef, retryNoticeRef, seenTurnStartRef, pingTimerRef, watchTimerRef,
+    reconcileTimerRef, reconnTimerRef, lastSeenRef, ioSeqRef, probeSeqRef,
+    sendSeqRef, draftCacheRef, mentionsRef, runsBySessionRef,
+    pendingDocsRef, pendingPathsRef,
+    syncDisplay,
+  };
+
+  // 运行中的委托回放页（P1 实时流前端侧）：后端 bg 每 3s 节流回填部分转录，
+  // 这里同步轮询 history 替换消息——回放内容随委托进度"长"出来，终态即停。
+  const delegationReplayLive =
+    session?.type === "delegation" && session?.stop_reason === "running";
+  useEffect(() => {
+    if (!delegationReplayLive || !session?.id) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const res = await getSessionHistory(session.id);
+        if (!alive) return;
+        const mapped = mapHistory(res ?? {});
+        // 必须同步写 per-session store:只写显示层的话,任何 syncDisplay
+        // (WS 状态变化/权限事件等)都会把视图弹回进入会话时的旧 store 快照
+        // ——运行中表现为"时不时闪白";结束后轮询停止,重进会话又被
+        // `if (!storeRef[sid])` 非空守卫挡住不再拉 history,视图冻结在旧
+        // 内容上,只有重启(清空 store)才恢复。
+        storeRef.current[session.id] = mapped;
+        setMessages(mapped);
+        pinToBottom();
+      } catch {
+        /* 轮询失败静默——下一轮再试 */
+      }
+    };
+    void tick();
+    const iv = setInterval(tick, 3000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delegationReplayLive, session?.id]);
+  // 终态补一拍:轮询随 stop_reason 翻转立即停止,而终态 finalize(完整转录+
+  // 结果注记)恰在最后一次轮询之后落盘——不补拉,回放会冻结在倒数第二个
+  // 快照上;同时覆盖"结束后切走再切回"的入口(store 非空不再走初始加载,
+  // 由这里刷新到最终内容)。
+  useEffect(() => {
+    if (delegationReplayLive || session?.type !== "delegation" || !session?.id)
+      return;
+    const sid = session.id;
+    let alive = true;
+    getSessionHistory(sid)
+      .then((res) => {
+        if (!alive) return;
+        const mapped = mapHistory(res ?? {});
+        storeRef.current[sid] = mapped;
+        setMessages(mapped);
+        pinToBottom();
+      })
+      .catch(() => {
+        /* 补拍失败静默——终态内容不随轮询自愈,这里也别打扰 */
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delegationReplayLive, session?.id, session?.type, session?.stop_reason]);
+
   // Drop per-session state for deleted sessions to prevent memory leaks.
   useEffect(() => {
     const live = new Set(g.sessions.map((s) => s.id));
@@ -500,6 +390,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
       }
     };
   }, []);
+
   // Open (or reuse) a per-session WebSocket. Sockets stay open when the user
   // switches sessions; they are only closed on unmount or session delete.
   function connectSession(sid: string) {
@@ -597,6 +488,20 @@ export function useChatStreamEngine(deps: EngineDeps) {
       }, 3000);
     };
   }
+
+  function cycleSessionSocket(sid: string) {
+    const old = socketsRef.current[sid];
+    if (old) {
+      try {
+        old.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    delete socketsRef.current[sid];
+    connectSession(sid);
+  }
+
   // When the active session changes: save draft, restore draft, connect socket,
   // load history, and sync display state from refs → React state.
   useEffect(() => {
@@ -752,1156 +657,6 @@ export function useChatStreamEngine(deps: EngineDeps) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
-  // Delivery confirmed (the server started or finished the turn) → clear the
-  // "sending" marker off user bubbles.
-  function markDelivered(sid: string) {
-    const list = storeRef.current[sid];
-    if (!list?.some((m) => m.status === "sending")) return;
-    storeRef.current[sid] = list.map((m) =>
-      m.status === "sending" ? { ...m, status: undefined, failReason: undefined } : m,
-    );
-  }
-
-  // The server is streaming a turn this component instance never saw start
-  // (remount mid-turn after navigating away). Mark the stream orphaned so the
-  // split self-heals on message.end, and backfill the session's agent so the
-  // continuation bubble's header shows the right name instead of "Agent".
-  function adoptOrphanStream(sid: string) {
-    if (seenTurnStartRef.current[sid] || orphanStreamRef.current[sid]) return;
-    orphanStreamRef.current[sid] = true;
-    busyBySessionRef.current[sid] = true;
-    if (!streamAgentRef.current[sid]) streamAgentRef.current[sid] = session?.agent_id ?? null;
-  }
-
-  function ensureLive(sid: string, evTurn?: string): string {
-    const existing = liveBySessionRef.current[sid];
-    if (existing) return existing;
-    // 承接本轮已存在的气泡（2026-10-01 子会话渲染成两块）：socket 在 turn 中途
-    // 才连上时，历史重放里已经有这一轮的半截气泡（带正确的 agent 名与 turnId），
-    // 若此时新建气泡，同一轮会渲染成「历史半截 + 无 agent 的实时块」两块。流事件
-    // 应当认领承载同一 turnId 的气泡——没有 turnId 可比时才新建。
-    if (evTurn) {
-      const rows = storeRef.current[sid] ?? [];
-      for (let i = rows.length - 1; i >= 0; i--) {
-        const m = rows[i];
-        if (m.role === "assistant" && m.turnId === evTurn) {
-          liveBySessionRef.current[sid] = m.id;
-          if (!streamAgentRef.current[sid]) streamAgentRef.current[sid] = m.agentId ?? null;
-          return m.id;
-        }
-      }
-    }
-    const id = mid();
-    storeRef.current[sid] = [
-      ...(storeRef.current[sid] ?? []),
-      { id, role: "assistant", blocks: [], agentId: streamAgentRef.current[sid], turnId: evTurn || newTurnId() },
-    ];
-    liveBySessionRef.current[sid] = id;
-    return id;
-  }
-
-  function mutateLive(sid: string, ev: { event: string; [k: string]: unknown }) {
-    const id = ensureLive(sid, ev.turn_id as string | undefined);
-    // 气泡归属体检（2026-10-01 串线排查）：流事件带的 turn_id 必须与它落入的
-    // 气泡 turnId 一致；不一致说明内容串进了别轮的气泡。release webview 没有
-    // 可读控制台，所以同时上报服务端日志（client_diag）留证。
-    const evTurn = ev.turn_id as string | undefined;
-    const bubble = (storeRef.current[sid] ?? []).find((m) => m.id === id);
-    // 孤儿流认领（2026-10-01 串线排查）：客户端在 turn 进行中途才连上 socket
-    // （子会话常态——spawn 后隔几十秒才被打开），拿不到 turn.start，气泡带着
-    // 本地占位 turnId。首个带 turn_id 的事件到来时认领服务端 id，否则该会话的
-    // 每个事件都对不上气泡、（更要紧）steer 帧会带一个服务端不认的 turn_id。
-    if (evTurn && bubble && bubble.turnId !== evTurn) {
-      if (orphanStreamRef.current[sid] && !adoptedTurnRef.current[sid]) {
-        adoptedTurnRef.current[sid] = true;
-        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
-          m.id === id ? { ...m, turnId: evTurn } : m,
-        );
-      }
-    }
-    if (evTurn && bubble?.turnId && evTurn !== bubble.turnId && !orphanStreamRef.current[sid]) {
-      const detail = {
-        event: ev.event,
-        ev_turn: evTurn,
-        bubble_turn: bubble.turnId,
-        session: sid,
-        head: String((ev.content as string) ?? "").slice(0, 40),
-      };
-      console.warn("[ginno] stream event landed in another turn's bubble", detail);
-      try {
-        socketsRef.current[sid]?.send(
-          JSON.stringify({ type: "client_diag", diag_kind: "bubble_turn_mismatch", detail }),
-        );
-      } catch { /* socket may be closing */ }
-    }
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
-      msg.id === id ? { ...msg, blocks: applyBlock(msg.blocks, ev) } : msg,
-    );
-  }
-  // 从 live 气泡的文本块里精确摘掉一段此前 append 的瞬态文本（auto-retry
-  // 提示的原位替换/撤行）。只在「最近一个含该文本的 text 块」上动手；摘空
-  // 的块整块移除，不留空段落。找不到（气泡已被 history 重建等）则静默。
-  function stripFromLive(sid: string, chunk: string) {
-    const id = liveBySessionRef.current[sid];
-    if (!id || !chunk) return;
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) => {
-      if (msg.id !== id) return msg;
-      for (let i = msg.blocks.length - 1; i >= 0; i--) {
-        const b = msg.blocks[i];
-        if (b.kind === "text" && typeof b.text === "string" && b.text.includes(chunk)) {
-          const newText = b.text.replace(chunk, "");
-          const blocks = newText ? msg.blocks.slice() : msg.blocks.filter((_, j) => j !== i);
-          if (newText) blocks[i] = { kind: "text", text: newText };
-          return { ...msg, blocks };
-        }
-      }
-      return msg;
-    });
-  }
-  function handle(sid: string, ev: { event: string; [k: string]: unknown }) {
-    // 「压缩中…」收尾：压缩期间该会话不会有其他流事件,所以除置位事件本身
-    // 之外的任何事件到达 = 压缩已结束(成功→context.compacted/流恢复;失败
-    // →turn 照常继续,compaction 从不当 blocker)。含 turn.stopped/error。
-    if (ev.event !== "context.compacting" && compactingBySessionRef.current[sid]) {
-      compactingBySessionRef.current[sid] = false;
-      syncDisplay(sid);
-    }
-    switch (ev.event) {
-      case "token.delta":
-      case "thinking.delta":
-        // 重试恢复出流：瞬态 auto-retry 提示撤行（若随后又失败，新的 notice
-        // 会重新落地）。只认本会话还有挂着的提示时才动 store。
-        if (retryNoticeRef.current[sid]) {
-          const prev = retryNoticeRef.current[sid];
-          retryNoticeRef.current[sid] = null;
-          stripFromLive(sid, prev ?? "");
-        }
-      // fall through
-      case "tool.start":
-      case "tool.args":
-      case "tool.end":
-      // Transcript block, not a ref-based prompt like permission.request: the
-      // card lives (and is merged by id) inside the live bubble's blocks.
-      case "user.question":
-      case "widget.emit":
-      case "ref.emit":
-      case "image.emit":
-      case "workflow.emit":
-        adoptOrphanStream(sid);
-        mutateLive(sid, ev);
-        break;
-      case "turn.start": {
-        markDelivered(sid);
-        seenTurnStartRef.current[sid] = true;
-        // 新 turn 清上一轮的 auto-retry 提示追踪（残留 chunk 属于旧气泡，
-        // stripFromLive 找不到本来也无害，这里只是不让它跨 turn 存活）。
-        retryNoticeRef.current[sid] = null;
-        // 服务端起的 turn（子代理调度器的 brief/wake、goal 续跑）没有本地
-        // attemptSend 帮忙置位 —— busy 必须在这里补。漏了它，一直开着的子会话
-        // 视图 busy 恒为 false：running 中的输入走 invoke 而不是 steer，还被
-        // runtime 排在 turn lock 后面悬到 turn 结束才变成新 turn（2026-10-10
-        // 子会话 steering 失效）。attemptSend 已置位时重复写无害。
-        busyBySessionRef.current[sid] = true;
-        // Sidebar ordering (reactivated sessions float up): the runtime bumps
-        // `updated` on every invoke, but only this socket knows it happened —
-        // patch the store's copy so the day-group resort is live, not stale
-        // until the next full reload.
-        g.applySessionPatch(sid, { updated: Math.floor(Date.now() / 1000) });
-        // authoritative agent for this turn (server-resolved, never null).
-        // The server echoes the turn_id we sent (or mints one); adopt it as the
-        // bubble's trace UUID so it matches the sidecar logs exactly.
-        const srvTurn = ev.turn_id as string | undefined;
-        const evAgent = (ev.agent_id as string) || null;
-        // Headless (goal continuation) turns have NO client bubble yet — the
-        // first token.delta would otherwise create one with a null agent and
-        // render the generic "Agent". Prime the bubble here so the
-        // server-provided agent name is kept (bug: continuation showed "Agent").
-        if (evAgent) streamAgentRef.current[sid] = evAgent;
-        const id = liveBySessionRef.current[sid] ?? ensureLive(sid);
-        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) =>
-          msg.id === id
-            ? {
-                ...msg,
-                agentId: evAgent,
-                agentName: (ev.name as string) || undefined,
-                turnId: srvTurn || msg.turnId,
-              }
-            : msg,
-        );
-        // keep the user bubble's UUID in sync with the server's authoritative one
-        if (srvTurn) {
-          storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg, i, arr) =>
-            msg.role === "user" && !msg.turnId && i === arr.length - 2
-              ? { ...msg, turnId: srvTurn }
-              : msg,
-          );
-        }
-        break;
-      }
-      case "permission.request":
-        permsRef.current[sid] = { tool: ev.tool as string, args: ev.args };
-        break;
-      case "version.propose":
-        proposeRef.current[sid] = {
-          workflow_id: ev.workflow_id as string,
-          from_version: (ev.from_version as number) ?? 0,
-          diff: (ev.diff as string) ?? "",
-          rationale: (ev.rationale as string) ?? "",
-        };
-        break;
-      case "todos.changed":
-        g.reloadTodos();
-        break;
-      case "skills.changed":
-        // A turn (install_skills tool, bash) or the Settings page mutated
-        // ~/.ginno/skills — refresh the slash menu's skill list live.
-        g.reloadSkills();
-        break;
-      case "memory.changed":
-        // Memory refinery transition (auto-draft ready, applied, discarded) —
-        // refresh the Memory tab badge; the panel itself refetches on open.
-        g.reloadMemoryBadge();
-        break;
-      case "agents.changed":
-        // Agent CRUD in Settings — keep the picker/mention list in sync.
-        g.reloadAgents();
-        break;
-      case "session.model_changed": {
-        // 模型热切回流（model-assignment-design.md §3.2）：服务端已原地换掉
-        // 会话条目的模型对象，下一个 superstep 生效。发起端乐观更新过，这里
-        // 兜底其它视图（回放页/另一窗口）并给一条轻提示。applySessionPatch
-        // 是裸 spread，未携带的键不能以 undefined 进 patch（会清字段）。
-        const patch: Partial<{ provider: string; model: string }> = {};
-        if (typeof ev.provider === "string") patch.provider = ev.provider;
-        if (typeof ev.model === "string") patch.model = ev.model;
-        if (patch.provider || patch.model) g.applySessionPatch(sid, patch);
-        // 轻提示走 catalog（chat.model.switchToast*）：socket 闭包里用 ref
-        // 镜像的翻译句柄，key 未命中（旧 catalog）回退英文原文。
-        {
-          const { tr } = i18nRef.current;
-          const key = patch.model ? "model.switchToast" : "model.switchToastNoModel";
-          pushModToast(
-            "info",
-            tr.has(key)
-              ? tr(key, patch.model ? { model: patch.model } : undefined)
-              : patch.model
-                ? `Model switched to ${patch.model} — takes effect next step`
-                : "Model switched — takes effect next step",
-          );
-        }
-        break;
-      }
-      case "workflows.changed":
-        g.reloadWorkflows();
-        g.reloadWorkflowRuns();
-        break;
-      case "synthesis.event":
-        // Background summarization progressed — refresh the 总结 panel list
-        // (started/attempt/finished all change what it shows). If THIS is the
-        // case the summarize button is waiting on, resolve the wait (the ref
-        // guard inside finishSynthesisWait dedupes vs the polling fallback).
-        void g.reloadSynthesisCases();
-        if (ev.kind === "finished" && ev.synthesis_id === sumPendingRef.current) {
-          void finishSynthesisWait(ev.synthesis_id as string);
-        }
-        break;
-      case "run.bind": {
-        const runId = ev.run_id as string;
-        // 侧栏伪条目即时出现（run view 方案）：in-chat 卡片走下面的拉取，
-        // store 的全量运行列表也同步刷新，工作流面板/角标不用等 30s 轮询。
-        void g.reloadWorkflowRuns();
-        getWorkflowRun(runId).then((r) => {
-          if (!r?.run) return;
-          const list = runsBySessionRef.current[sid] ?? [];
-          if (!list.some((x) => x.id === runId)) list.push(r.run);
-          runsBySessionRef.current[sid] = [...list];
-          syncDisplay(sid);
-        });
-        break;
-      }
-      case "run.event": {
-        const runId = ev.run_id as string;
-        const inner = (ev.payload ?? {}) as Record<string, unknown>;
-        const list = runsBySessionRef.current[sid] ?? [];
-        const run = list.find((x) => x.id === runId);
-        // Live tool-call visibility (workflow-ux-redesign P1): show the
-        // in-flight tool under the running step; results/exit clear it.
-        const innerKind = inner.kind as string | undefined;
-        if (innerKind === "tool_call") {
-          const calls = (inner.calls as Array<{ name?: string; args?: unknown }>) ?? [];
-          const latest = calls[calls.length - 1]; // batched calls: show the newest
-          if (latest?.name) {
-            g.notifyRunToolActivity(runId, {
-              nodeId: (inner.node_id as string) ?? "",
-              toolName: latest.name,
-              argsPreview: toolArgsPreview(latest.args),
-            });
-          }
-        } else if (
-          innerKind === "tool_result" || innerKind === "node_exit" ||
-          innerKind === "error" || innerKind === "done"
-        ) {
-          g.notifyRunToolActivity(runId, null);
-        }
-        if (run) {
-          const nid = inner.node_id as string | undefined;
-          const kind2 = inner.kind as string | undefined;
-          // Mirror the server's per-event _touch_run: without this the in-chat
-          // card's adaptive stuck check fires during long steps that DO emit
-          // tool traffic (the 1.5s panel poll doesn't cover the chat list).
-          run.updated = Date.now() / 1000;
-          if (nid && (kind2 === "node_enter" || kind2 === "node_exit")) {
-            // node_exit carries the step's real outcome — a failed step must not
-            // render as done (green) in the live card.
-            const stepStatus =
-              kind2 === "node_enter" ? "running" : inner.status === "failed" ? "failed" : "done";
-            run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: stepStatus } : s));
-            runsBySessionRef.current[sid] = [...list];
-          } else if (kind2 === "interrupt") {
-            // A node suspended the graph (P1): stamp the payload so the card
-            // renders immediately, without waiting for the reload round-trip.
-            // nature: "human" (question card) vs "manual" (user pause, #14);
-            // HumanNode events carry no nature and default to human. The step
-            // flips to running (done on resume — except manual pauses, whose
-            // step re-executes and settles via node_enter/exit).
-            run.pending_interrupt = {
-              ...(inner as object),
-              kind: (inner.nature as string) || "human",
-            } as typeof run.pending_interrupt;
-            if (nid) run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "running" } : s));
-            runsBySessionRef.current[sid] = [...list];
-          } else if (kind2 === "resume") {
-            run.pending_interrupt = null;
-            if (nid && inner.nature !== "manual") {
-              run.steps = run.steps.map((s) => (s.id === nid ? { ...s, status: "done" } : s));
-            }
-            runsBySessionRef.current[sid] = [...list];
-          } else if (kind2 === "error") {
-            // Show the failure one beat before run.status lands, and stamp the
-            // structured diagnostic so RunErrorBox renders without a lazy fetch.
-            if (typeof inner.error === "string") run.error = inner.error;
-            run.error_detail = {
-              node_id: (inner.node_id as string | null) ?? null,
-              traceback: (inner.traceback as string | undefined) ?? null,
-            };
-            runsBySessionRef.current[sid] = [...list];
-          }
-          syncDisplay(sid);
-        }
-        break;
-      }
-      case "run.status": {
-        const runId = ev.run_id as string;
-        const status = ev.status as string;
-        const list = runsBySessionRef.current[sid] ?? [];
-        const run = list.find((x) => x.id === runId);
-        if (run) {
-          run.status = status;
-          if (typeof ev.error === "string") run.error = ev.error;
-          // P1: the paused push carries WHY (human question); terminal states
-          // and fresh resumes clear it.
-          if (status === "paused") {
-            run.pending_interrupt =
-              (ev.pending_interrupt as typeof run.pending_interrupt) ?? run.pending_interrupt ?? null;
-          } else {
-            run.pending_interrupt = null;
-          }
-          runsBySessionRef.current[sid] = [...list];
-        }
-        syncDisplay(sid);
-        g.reloadWorkflowRuns();
-        break;
-      }
-      case "artifacts.changed":
-        g.reloadArtifacts();
-        break;
-      case "code.changed":
-        // The agent wrote or edited a file (design §4.7 S3). The event carries
-        // the POST-WRITE version, which is what lets the code panel reuse its
-        // conflict bar for a dirty buffer instead of inventing a second UI —
-        // see the S3 brief §0.
-        if (typeof ev.path === "string" && (ev.op === "write" || ev.op === "edit")) {
-          g.notifyCodeChange({
-            path: ev.path,
-            op: ev.op as "write" | "edit",
-            version: typeof ev.version === "string" ? ev.version : "",
-          });
-        }
-        break;
-      case "preview.emit":
-        // Agent produced a previewable file (e.g. analysis result) → open it.
-        if (ev.open && ev.file_id) {
-          g.openPreview({
-            id: ev.file_id as string,
-            name: (ev.name as string) || "result",
-            path: (ev.path as string) || "",
-            kind: ev.kind as string | undefined,
-          });
-        }
-        g.reloadArtifacts();
-        break;
-      case "preview.invalidate":
-        // A tracked file changed (tool wrote it / mtime watcher) → the
-        // SheetViewer refetches if that file is the one being viewed.
-        if (ev.file_id) g.notifyPreviewInvalidate(ev.file_id as string);
-        break;
-      case "steer.accepted":
-        // The server stashed the entry (design §3.1). It stays in the queue bar
-        // until it is absorbed; this only flips it out of "sending" (the shared
-        // hook owns that queue mutation).
-        steerQ.handleEvent(ev, sid);
-        break;
-      case "steer.absorbed": {
-        // The steered message was DRAINED into state (the server acks at drain
-        // time, not at superstep commit — see docs/steering-design.md): move it
-        // out of the queue bar into the transcript as a band at the injection
-        // point — appended to the live assistant bubble, because one turn is one
-        // bubble (design §4.2/§4.3).
-        const absorbedId = ev.steer_id as string | undefined;
-        if (!absorbedId) break;
-        // Capture the entry BEFORE delegating — the hook drops it from the queue.
-        const entry = steerQ.itemsFor(sid).find((i) => i.steerId === absorbedId);
-        if (!entry) break; // already dropped — a history reconcile got there first
-        // Same timing/order as before: remove from the queue first, then render.
-        steerQ.handleEvent(ev, sid);
-        // runtime 注入的子代理结果走同一条 steer 通道（契约 3）：折成结果卡片，
-        // 而不是把 <ginno_subagent_result> 原始标签渲染成一条注入带。
-        const injectedResult = parseSubagentResult(entry.text);
-        if (injectedResult) {
-          const store = storeRef.current[sid] ?? [];
-          const already = store.some((m) =>
-            m.blocks.some(
-              (b) =>
-                b.kind === "subagent_result" && b.sessionId === injectedResult.sessionId,
-            ),
-          );
-          if (!already) {
-            storeRef.current[sid] = [
-              ...store,
-              {
-                id: mid(),
-                role: "system" as const,
-                blocks: [
-                  {
-                    kind: "subagent_result",
-                    sessionId: injectedResult.sessionId,
-                    goal: injectedResult.goal,
-                    summary: injectedResult.summary,
-                  },
-                ],
-              },
-            ];
-          }
-          syncDisplay(sid);
-          break;
-        }
-        const band: Block = {
-          kind: "steer",
-          text: entry.text,
-          steerId: entry.steerId,
-          injectedAt: Number(ev.injected_at) || Math.floor(Date.now() / 1000),
-          // Attachments ride the band so the injection point shows what the
-          // user actually sent. Images arrive as display URLs (data URL), files
-          // as name/path chips — mirroring the replay shape the server emits.
-          ...(entry.images.length
-            ? { images: entry.images.map((a) => ({ name: a.name, url: a.preview })) }
-            : {}),
-          ...(entry.files.length
-            ? {
-                files: entry.files.map((f) => ({
-                  id: f.id,
-                  name: f.name,
-                  path: f.path,
-                  kind: f.kind,
-                })),
-              }
-            : {}),
-        };
-        const liveMsgId = liveBySessionRef.current[sid];
-        const store = storeRef.current[sid] ?? [];
-        if (liveMsgId && store.some((m) => m.id === liveMsgId)) {
-          storeRef.current[sid] = store.map((m) =>
-            m.id === liveMsgId ? { ...m, blocks: [...m.blocks, band] } : m,
-          );
-        } else {
-          // No live bubble of ours (adopted orphan / goal continuation): the
-          // band lands as its own full-width row, and the next history
-          // reconcile rebuilds the merged bubble from the checkpoint.
-          storeRef.current[sid] = [
-            ...store,
-            { id: mid(), role: "user" as const, blocks: [band], turnId: entry.turnId },
-          ];
-        }
-        syncDisplay(sid);
-        break;
-      }
-      case "delegate_update": {
-        // P1 委托实时进度：运行中的系统行同 id 刷新；running=false 撤行
-        //（结果卡由 subagent.status 通道补位，已有 dedup 与跳转）。
-        const did = ev.delegation_id as string;
-        if (!did) break;
-        const liveId = `delegate-live-${did}`;
-        const store0 = storeRef.current[sid] ?? [];
-        const without = store0.filter((m) => m.id !== liveId);
-        if (ev.running === false) {
-          storeRef.current[sid] = without;
-          // 显示同步必须走 syncDisplay(带当前会话守卫):委托运行期间本事件
-          // 持续打在父会话 socket 上,若用户正在看别的会话(典型:运行中的
-          // 子会话回放页),裸 setMessages 会把父会话消息刷进当前视图——
-          // "subsession 自动刷新主 session 内容"即此。store 照常落,切回
-          // 父会话时由 syncDisplay 统一呈现。
-          syncDisplay(sid);
-        } else {
-          const nxt = [
-            ...without,
-            {
-              id: liveId,
-              role: "system" as const,
-              blocks: [
-                {
-                  kind: "text",
-                  text: `🤖 ${ev.backend ?? "delegation"} · ${ev.text ?? "working…"}`,
-                } as Block,
-              ],
-            },
-          ];
-          storeRef.current[sid] = nxt;
-          syncDisplay(sid);
-        }
-        break;
-      }
-      case "notice":
-        // Built-in command reply (e.g. /help): no graph turn ran, so the server
-        // pushes the rendered text directly into the live bubble as one delta.
-        // 事件契约：带 i18n_key 时落地即翻译，否则原样直显 message。
-        markDelivered(sid);
-        let _txt = i18nRef.current.evText(ev, (ev.message as string) || "");
-        // auto-retry 是瞬态系统提示——包成 code span + ⚠️，气泡里呈现为
-        // 琥珀色等宽小条而不是混入正文的普通文本（用户反馈样式不显眼）。
-        if ((ev.i18n_key as string) === "stream.auto_retry") {
-          // 原位更新（2026-10-11 用户反馈：此前每次 append，N 轮重试堆 N 行）：
-          // 新一轮提示替换上一轮；文本里带分隔符整体进出，替换/撤行都精确。
-          const prev = retryNoticeRef.current[sid];
-          if (prev) stripFromLive(sid, prev);
-          const live = (storeRef.current[sid] ?? []).find(
-            (m) => m.id === liveBySessionRef.current[sid],
-          );
-          const lastB = (live?.blocks[live.blocks.length - 1] ?? null) as {
-            kind?: string;
-            text?: string;
-          } | null;
-          const sep =
-            lastB && (lastB.kind === "text" || lastB.kind === "thinking") && lastB.text
-              ? "\n\n"
-              : "";
-          const chunk = `${sep}\`⚠️ ${_txt}\``;
-          retryNoticeRef.current[sid] = chunk;
-          mutateLive(sid, { event: "token.delta", content: chunk });
-          break;
-        }
-        mutateLive(sid, {
-          event: "token.delta",
-          content: _txt,
-        });
-        break;
-      case "goal.updated":
-        // Live goal snapshot (created/status/accounting) → TopBar chip.
-        g.notifyGoal(sid, (ev.goal as Goal) ?? null);
-        break;
-      case "goal.cleared":
-        g.notifyGoal(sid, null);
-        break;
-      case "session_title":
-        // Auto-title from the first user message (runtime _touch_session_title):
-        // sidebar + TopBar rename live without a sessions reload.
-        g.applySessionPatch(sid, { title: (ev.title as string) ?? "", title_auto: false });
-        break;
-      case "session.context":
-        // Mount set changed server-side (context-folders-design.md): /mount
-        // command or another client ran PUT /sessions/{id}/context. Patch the
-        // store so the TopBar chip re-renders without a full reload.
-        g.applySessionPatch(sid, {
-          context_folders: ((ev.context_folders as string[]) ?? []),
-          primary_folder: (ev.primary_folder as string | null) ?? null,
-        });
-        break;
-      case "subagent.spawned": {
-        // 子代理生命周期事件（契约 2：广播到父 session 与子 session 的所有
-        // socket）。Store 侧 upsert 会话列表的子会话行；只有当本会话就是
-        // 发起父时，transcript 里追加一张发起卡片（子 socket 收到同帧但不渲染）。
-        g.notifySubagentSpawned(ev as unknown as SubagentSpawnEvent);
-        // delegation 的 spawned 只为侧栏建行服务:transcript 不加发起卡——
-        // 委托的实时进度/结果卡由 delegate_update + subagent.status 通道负责,
-        // 叠加发起卡会双渲染。
-        if (ev.parent_session_id === sid && ev.type !== "delegation") {
-          storeRef.current[sid] = [
-            ...(storeRef.current[sid] ?? []),
-            {
-              id: mid(),
-              role: "system" as const,
-              blocks: [
-                {
-                  kind: "subagent_spawn",
-                  sessionId: ev.session_id as string,
-                  goal: (ev.goal as string) || "",
-                  constraints: (ev.constraints as string) || "",
-                  acceptance: (ev.acceptance as string) || "",
-                  title: (ev.title as string) || "",
-                  depth: (ev.depth as number) ?? 0,
-                  origin: (ev.origin as "user" | "agent") || "agent",
-                  spawnedAt: Math.floor(Date.now() / 1000),
-                },
-              ],
-            },
-          ];
-        }
-        break;
-      }
-      case "subagent.status": {
-        // 状态机推进（running/waiting/done/failed/stopped）：store 的子会话行
-        // 即时换挡（侧栏状态点、卡片状态共用）。终态且本会话是发起父时追加
-        // 结果卡片——stopped 按契约不注入（用户/级联亲手杀的），跳过。
-        g.notifySubagentStatus(ev as unknown as SubagentStatusEvent);
-        const st = ev.status as string;
-        if (
-          ev.parent_session_id === sid &&
-          (st === "done" || st === "failed")
-        ) {
-          const childId = ev.session_id as string;
-          const store = storeRef.current[sid] ?? [];
-          // 去重：同一子会话的结果卡片只出现一次（注入消息的 steer.absorbed
-          // 路径可能已经先渲染过）。
-          const already = store.some((m) =>
-            m.blocks.some((b) => b.kind === "subagent_result" && b.sessionId === childId),
-          );
-          if (!already) {
-            storeRef.current[sid] = [
-              ...store,
-              {
-                id: mid(),
-                role: "system" as const,
-                blocks: [
-                  {
-                    kind: "subagent_result",
-                    sessionId: childId,
-                    summary: (ev.result_summary as string) || "",
-                    error: (ev.error as string) || undefined,
-                  },
-                ],
-              },
-            ];
-          }
-        }
-        break;
-      }
-      case "subagent.plan": {
-        // 拆分方案（P2 共享契约 1）：/subagent 拆分 的 LLM decompose 结果，
-        // 广播到当前 session 的 socket。折成系统行里的 subagent_plan 卡片；
-        // 未确认前再次到来（契约 3 的「覆盖旧 plan」）→ 就地替换还在 pending
-        // 的旧卡片，已决定过的卡片保留作为记录。
-        const plan = ev as unknown as SubagentPlanEvent;
-        const store = storeRef.current[sid] ?? [];
-        const newBlock: Block = {
-          kind: "subagent_plan",
-          planId: plan.plan_id,
-          task: plan.task || "",
-          subtasks: Array.isArray(plan.subtasks) ? plan.subtasks : [],
-          status: "pending",
-        };
-        const pendingIdx = store.findIndex((m) =>
-          m.blocks.some((b) => b.kind === "subagent_plan" && b.status === "pending"),
-        );
-        if (pendingIdx >= 0) {
-          storeRef.current[sid] = store.map((m, i) =>
-            i === pendingIdx ? { ...m, blocks: [newBlock] } : m,
-          );
-        } else {
-          storeRef.current[sid] = [
-            ...store,
-            { id: mid(), role: "system" as const, blocks: [newBlock] },
-          ];
-        }
-        syncDisplay(sid);
-        break;
-      }
-      case "subagent.plan.cancelled": {
-        // 拆分方案被取消（P3 共享契约 5）：另一个窗口发了 subagent.plan.cancel，
-        // runtime 广播回执——把本窗口里该 plan 还在 pending 的卡片翻成已取消态。
-        // 本地发起的取消已在 decideSubagentPlan 里乐观定格，这里幂等（只动 pending）。
-        const cancelledPlanId = ev.plan_id as string | undefined;
-        if (!cancelledPlanId) break;
-        storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) => ({
-          ...m,
-          blocks: m.blocks.map((b) =>
-            b.kind === "subagent_plan" && b.planId === cancelledPlanId && b.status === "pending"
-              ? { ...b, status: "cancelled" as const }
-              : b,
-          ),
-        }));
-        break;
-      }
-      case "context.updated": {
-        // WorldState change announcement (world-state-plan §7). Chip display
-        // level table: environment-only changes (date rollover) stay SILENT in
-        // the UI; everything else gets a centered context row.
-        const changes = ((ev.changes as ContextChange[]) || []).filter(Boolean);
-        const visible = changes.filter((c) => c.section !== "environment");
-        if (!visible.length) break; // environment-only (date rollover) = silent
-        // 事件契约（i18n-design.md §3）：单条 change 可带 i18n_key+params，
-        // 透传给 ContextBlocks 渲染时翻译；旧 runtime 只有成品 summary，直显。
-        const rows = visible.map((c): Block => {
-          const extra = c as { i18n_key?: unknown; params?: unknown };
-          return {
-            kind: "context",
-            text: c.summary,
-            ...(typeof extra.i18n_key === "string"
-              ? {
-                  i18n_key: extra.i18n_key,
-                  ...(extra.params != null ? { params: extra.params as Record<string, string | number> } : {}),
-                }
-              : {}),
-          };
-        });
-        storeRef.current[sid] = [
-          ...(storeRef.current[sid] ?? []),
-          { id: mid(), role: "system" as const, blocks: rows },
-        ];
-        syncDisplay(sid);
-        break;
-      }
-      case "context.microcompacted": {
-        // Stale tool outputs cleared to placeholders (E2.5) — always visible.
-        const n = Number(ev.cleared_tool_outputs ?? 0);
-        storeRef.current[sid] = [
-          ...(storeRef.current[sid] ?? []),
-          {
-            id: mid(),
-            role: "system" as const,
-            blocks: [
-              {
-                kind: "context",
-                // 契约：key 命中渲染时翻译（chat.context.microcompacted）；
-                // text 是旧 runtime / key 未命中时的英文兜底（与历史版本一致）。
-                text: `Cleared ${n} older tool outputs to save context; call the tools again to re-fetch when needed.`,
-                i18n_key: "chat.context.microcompacted",
-                params: { n },
-              },
-            ],
-          },
-        ];
-        syncDisplay(sid);
-        break;
-      }
-      case "context.compacting": {
-        // E3 总结 LLM 调用前发出的瞬态状态(无 payload):live 气泡状态行
-        // 从「正在思考…」切到「压缩中…」。不落 store,不进历史。
-        compactingBySessionRef.current[sid] = true;
-        syncDisplay(sid);
-        break;
-      }
-      case "context.compacted": {
-        // History compaction announcement (E3) — always visible.
-        const n = Number(ev.compacted_messages ?? 0);
-        storeRef.current[sid] = [
-          ...(storeRef.current[sid] ?? []),
-          {
-            id: mid(),
-            role: "system" as const,
-            blocks: [
-              {
-                kind: "context",
-                text: `Conversation compacted: ${n} older messages were replaced with a summary; recent messages are kept verbatim.`,
-                i18n_key: "chat.context.compacted",
-                params: { n },
-              },
-            ],
-          },
-        ];
-        syncDisplay(sid);
-        break;
-      }
-      case "history.cleared": {
-        // /clear 已把 checkpoint 的 messages 清空：本地 transcript 整体丢弃，
-        // 流式状态一并复位（ensureLive 会在空 store 上为紧随其后的 /clear
-        // 收据 notice 新开一个气泡，作为新对话的第一条）。
-        storeRef.current[sid] = [];
-        liveBySessionRef.current[sid] = null;
-        streamAgentRef.current[sid] = null;
-        busyBySessionRef.current[sid] = false;
-        orphanStreamRef.current[sid] = false;
-        retryNoticeRef.current[sid] = null;
-        syncDisplay(sid);
-        break;
-      }
-      case "usage": {
-        // Session-cumulative model usage (D2) → TopBar counter via callback.
-        const s = ev.session as SessionUsage | undefined;
-        if (s && typeof s.input_tokens === "number") onUsageChange?.(s);
-        break;
-      }
-      case "turn.state": {
-        // Answer to the post-reconnect probe: is a turn still running (or
-        // parked at an interrupt) for this session?
-        if (reconcileTimerRef.current[sid]) {
-          clearTimeout(reconcileTimerRef.current[sid]!);
-          reconcileTimerRef.current[sid] = null;
-        }
-        if (serverRunningRef.current[sid] !== !!ev.running) {
-          serverRunningRef.current[sid] = !!ev.running;
-          // Mirror into React state — this is what makes a history-rebuilt
-          // pending question card interactive after a reload (questionLive).
-          syncDisplay(sid);
-        }
-        if (ev.running) break; // the broadcast stream resumes on this socket
-        // ...unless our newest send is NEWER than the probe this answers. The
-        // answer can only describe the session as it was when the server
-        // handled the probe; reconciling a send that postdates it reads a
-        // /history with no checkpoint yet and stamps the bubble 「未送达」 on a
-        // turn that is running fine (first message of a new session: the socket
-        // is opened by the send, probe at t0, invoke at t0+13ms). Wait for the
-        // stream instead — it always ends in message.end or error, both of
-        // which reconcile a genuinely dead turn.
-        if ((sendSeqRef.current[sid] ?? 0) > (probeSeqRef.current[sid] ?? 0)) break;
-        // Not running: rebuild from persisted history ONLY when this client
-        // believed a turn was in flight (the probe now fires on every open —
-        // an idle reconnect must not replace the loaded store). This is also
-        // what flips a pending question card of a genuinely dead turn into
-        // the checkpoint's healed "(interrupted)" → skipped replay.
-        if (
-          liveBySessionRef.current[sid] ||
-          busyBySessionRef.current[sid] ||
-          orphanStreamRef.current[sid]
-        ) {
-          reconcileTurnFromHistory(sid);
-        }
-        break;
-      }
-      case "message.end": {
-        markDelivered(sid);
-        const wasOrphan = !!orphanStreamRef.current[sid];
-        orphanStreamRef.current[sid] = false;
-        adoptedTurnRef.current[sid] = false;
-        liveBySessionRef.current[sid] = null;
-        streamAgentRef.current[sid] = null;
-        busyBySessionRef.current[sid] = false;
-        serverRunningRef.current[sid] = false;
-        // Orphaned continuation (remount mid-turn): the visible store holds a
-        // history-rendered partial bubble PLUS a second live section. The
-        // persisted history renders the whole turn as ONE merged bubble (with
-        // the right agent name) — rebuild from it to heal the split.
-        if (wasOrphan) reconcileTurnFromHistory(sid);
-        // Turn done → desktop notification unless the user is watching this
-        // exact session right now (visible ∧ workspace route ∧ active session).
-        // Socket callbacks capture stale closures (sockets outlive session
-        // switches) — read refs / live values only. The session title may be
-        // stale too (rename after connect); cosmetic, accepted.
-        {
-          // Settings → Notifications (settings.json; sync cache — see
-          // lib/notifyPrefs.ts for why this isn't React state).
-          const np = notifyPrefs();
-          const watching =
-            document.visibilityState === "visible" &&
-            window.location.pathname === "/" &&
-            activeSidRef.current === sid;
-          if (np.enabled && !watching) {
-            const title = g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
-            const raw = typeof ev.text === "string" ? ev.text.trim() : "";
-            const body = raw || i18nRef.current.tr("notify.replyCompleted");
-            void notifyNative({
-              kind: "session",
-              id: sid,
-              title,
-              body,
-              sound: np.sound ? np.soundName : undefined,
-            }).then((sent) => {
-              if (sent) return;
-              // Plain-browser dev fallback — WKWebView has no Notification API,
-              // so inside the packaged app this branch is a silent no-op.
-              if (typeof Notification === "undefined") return;
-              if (Notification.permission === "default") {
-                try {
-                  void Notification.requestPermission();
-                } catch {
-                  /* unsupported */
-                }
-                return;
-              }
-              if (Notification.permission !== "granted") return;
-              try {
-                const n = new Notification(title, { body });
-                n.onclick = () => {
-                  window.focus();
-                  g.setActiveSession(sid); // stable setter — stale closure safe
-                  window.dispatchEvent(
-                    new CustomEvent("ginno:focus-latest", { detail: sid }),
-                  );
-                  n.close();
-                };
-              } catch {
-                /* blocked/unsupported */
-              }
-            });
-          }
-        }
-        // The turn ended with steer entries still unacknowledged: the oldest
-        // becomes the next turn (design §3.3). Skipped on the orphan path above
-        // — its history reconcile owns that decision, and flushing here could
-        // re-send an entry the reconcile is about to see as absorbed.
-        if (!wasOrphan) flushSteerQueue(sid);
-        break;
-      }
-      case "turn.stopped": {
-        // User pressed stop: the server abandoned the in-flight step and
-        // healed the persisted state; everything already streamed is kept.
-        // Close out the live stream like message.end, force-close pending
-        // tool blocks like the error handler — but no error card and no
-        // "turn done" notification (the turn didn't complete).
-        markDelivered(sid);
-        const wasOrphan = !!orphanStreamRef.current[sid];
-        orphanStreamRef.current[sid] = false;
-        adoptedTurnRef.current[sid] = false;
-        const liveMsgId = liveBySessionRef.current[sid];
-        liveBySessionRef.current[sid] = null;
-        streamAgentRef.current[sid] = null;
-        busyBySessionRef.current[sid] = false;
-        serverRunningRef.current[sid] = false;
-        // ⏹ means stop, so what was queued for absorption is handed back to the
-        // composer rather than discarded or auto-sent (design §4.1). Done here,
-        // in the event, so a stop from another tab recalls on this one too.
-        recallSteers(sid);
-        // Stop also clears a parked prompt (server heals those too) — every
-        // tab of the session leaves the running state together.
-        permsRef.current[sid] = null;
-        proposeRef.current[sid] = null;
-        setPermission(null);
-        setPropose(null);
-        if (wasOrphan) {
-          reconcileTurnFromHistory(sid);
-          break;
-        }
-        const list = storeRef.current[sid] ?? [];
-        storeRef.current[sid] = list
-          // An empty live bubble (stopped before the first token) would
-          // render as a confusing "（空回复）" — drop it; streamed text stays.
-          .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
-          // Close out any in-flight tool blocks (and pending question cards —
-          // the backend heals a parked ask_user to "(interrupted)" too, which
-          // replay reads as skipped) so `running` unsticks.
-          .map((msg) =>
-            hasPendingTool(msg.blocks)
-              ? { ...msg, blocks: closePendingBlocks(msg.blocks) }
-              : msg,
-          );
-        break;
-      }
-      case "error": {
-        // The turn reached the server (it is the run, not the delivery, that
-        // failed) → the user bubble counts as delivered; the failure becomes
-        // a dedicated error card with a retry action.
-        markDelivered(sid);
-        const liveMsgId = liveBySessionRef.current[sid];
-        liveBySessionRef.current[sid] = null;
-        streamAgentRef.current[sid] = null;
-        busyBySessionRef.current[sid] = false;
-        serverRunningRef.current[sid] = false;
-        // Orphaned turn that failed: reconcile from history instead of
-        // building a card on the split store — mapHistory re-surfaces the
-        // persisted last_error as a proper error card with retry.
-        if (orphanStreamRef.current[sid]) {
-          orphanStreamRef.current[sid] = false;
-          adoptedTurnRef.current[sid] = false;
-        adoptedTurnRef.current[sid] = false;
-          reconcileTurnFromHistory(sid);
-          break;
-        }
-        const list = storeRef.current[sid] ?? [];
-        const liveBubble = list.find((m) => m.id === liveMsgId);
-        // Retry payload: the originating user turn's snapshot (live turns
-        // always carry one). Absent → the card renders without a retry button.
-        const lastUser = [...list].reverse().find((m) => m.role === "user" && m.sendPayload);
-        storeRef.current[sid] = [
-          ...list
-            // An empty live bubble (error before any token) would render as a
-            // confusing "（空回复）" right above the error card — drop it.
-            .filter((m) => !(m.id === liveMsgId && m.blocks.length === 0))
-            // Close out any in-flight tool blocks as interrupted so `running` unsticks,
-            // and mark the live bubble as `failed` so the UI can show a visual
-            // indicator (red border + "回复中断" label) instead of looking like
-            // a normal completed assistant reply.
-            .map((msg) => {
-              const marked = msg.id === liveMsgId ? { ...msg, failed: true } : msg;
-              if (!hasPendingTool(marked.blocks)) return marked;
-              return { ...marked, blocks: closePendingBlocks(marked.blocks) };
-            }),
-          {
-            id: mid(),
-            role: "assistant" as const,
-            // 事件契约（i18n-design.md §3）：error 事件可带 i18n_key+params，
-            // 落地即翻译；未命中/缺失回退服务端成品 message，再退「未知错误」。
-            blocks: [
-              {
-                kind: "text",
-                text:
-                  i18nRef.current.evText(ev, String(ev.message || "")) ||
-                  i18nRef.current.tr("error.unknown"),
-              },
-            ],
-            turnId: liveBubble?.turnId,
-            error: true,
-            sendPayload: lastUser?.sendPayload,
-            sourceMsgId: lastUser?.id,
-          },
-        ];
-        // The turn died with entries still unacknowledged → the oldest becomes
-        // the next turn, same rule as a normal end (design §3.3).
-        flushSteerQueue(sid);
-        break;
-      }
-      // ─── Claude Code Mods(claude-code-mods-design.md §7)──────────────────────
-      // 归属守卫:frame_session 检查已在 socket onmessage 里统一做过,这里的
-      // sid 即归属会话,无需再防串线。
-      case "mod.bands": {
-        // 整树替换(§7.1 per-mod:每 mod 一段,generation 按 mod 递增,过期
-        // press 由 broker 侧按 mod 校验忽略)。旧帧形状(单树 {generation,
-        // tree, mod})兜底成一段,树空则清空。
-        const groups: ModBandGroup[] = [];
-        if (Array.isArray(ev.mods)) {
-          for (const entry of ev.mods) {
-            if (!entry || typeof entry !== "object") continue;
-            const tree = Array.isArray(entry.tree) ? (entry.tree as ModBandGroup["tree"]) : [];
-            if (tree.length === 0) continue; // 空树 mod 不占位
-            groups.push({
-              mod: typeof entry.mod === "string" ? entry.mod : undefined,
-              generation: Number(entry.generation) || 0,
-              tree,
-            });
-          }
-        } else if (Array.isArray(ev.tree)) {
-          const tree = ev.tree as ModBandGroup["tree"];
-          if (tree.length > 0) {
-            groups.push({
-              mod: typeof ev.mod === "string" ? ev.mod : undefined,
-              generation: Number(ev.generation) || 0,
-              tree,
-            });
-          }
-        }
-        setModBands((prev) => ({ ...prev, [sid]: groups }));
-        break;
-      }
-      case "mod.toast": {
-        const level: ModToastLevel = ev.level === "warn" || ev.level === "error" ? ev.level : "info";
-        // 事件契约:带 i18n_key 时落地翻译(evText),否则成品文本原样直显
-        // (broker toast / mod 自己的文案是成品字符串)。
-        pushModToast(level, i18nRef.current.evText(ev, String(ev.text ?? "")));
-        break;
-      }
-      case "mod.state.changed": {
-        // mod 装载/启停/配置变化:设置页若开着就重拉;没有对应的 store 动作,
-        // 页面不在时该事件自然无处消费,静默。
-        try {
-          window.dispatchEvent(new CustomEvent("ginno:mods-state-changed"));
-        } catch {
-          /* 非浏览器环境(SSG) */
-        }
-        break;
-      }
-      case "mod.ask": {
-        // $.ui.ask(§7.3):问题浮层,按 sid 存最新一条。choices 可为字符串,
-        // 也兼容 {label}/{value} 对象形状;自由输入恒可用。
-        const rawChoices = Array.isArray(ev.choices) ? ev.choices : [];
-        const ask: ModAskState = {
-          id: String(ev.id ?? ""),
-          mod: typeof ev.mod === "string" ? ev.mod : undefined,
-          message: String(ev.message ?? ""),
-          choices: rawChoices
-            .map((c) =>
-              typeof c === "string"
-                ? c
-                : c && typeof c === "object"
-                  ? String((c as { label?: unknown; value?: unknown }).label ??
-                    (c as { value?: unknown }).value ?? "")
-                  : "",
-            )
-            .filter((c) => c !== ""),
-        };
-        if (!ask.id) break; // 无法回发的问题直接丢弃
-        setModAsks((prev) => ({ ...prev, [sid]: ask }));
-        break;
-      }
-      // mod.pane.*(§7.4,P2):右栏 pane 区,经 paneBus 交给 ModPaneHost;
-      // 本分支只做转发,归属(会话切换移除)由宿主按 sid 自行守卫。
-      case "mod.pane.open":
-      case "mod.pane.update":
-      case "mod.pane.close": {
-        const kind = ev.event === "mod.pane.open" ? "open" : ev.event === "mod.pane.update" ? "update" : "close";
-        pushModPane(sid, kind, {
-          id: String(ev.id ?? ""),
-          title: typeof ev.title === "string" ? ev.title : String(ev.id ?? ""),
-          mod: typeof ev.mod === "string" ? ev.mod : undefined,
-          generation: Number(ev.generation) || 0,
-          tree: Array.isArray(ev.tree) ? (ev.tree as ModPaneSnapshot["tree"]) : [],
-        });
-        break;
-      }
-    }
-    syncDisplay(sid);
-  }
-  // Band 按钮 press 回发(§7.1):后端/broker 未就绪时静默——按钮是「禁用
-  // 样式但可点」,发送失败不该打扰用户;过期代际由 broker 侧忽略。
-  // value 仅 pane 的 Input/Select 提交携带(随帧多余字段,broker 按需取用)。
-  function sendModUiPress(sid: string, generation: number, actionId: string, value?: string) {
-    const sock = socketsRef.current[sid];
-    if (!sock || sock.readyState !== WebSocket.OPEN) return;
-    try {
-      sock.send(JSON.stringify(value === undefined ? { type: "mod.ui.press", generation, actionId } : { type: "mod.ui.press", generation, actionId, value }));
-    } catch {
-      /* socket closing */
-    }
-  }
-  // $.ui.ask 回答回发(§7.3):乐观清卡——即使 broker 侧已超时/孤儿,回答
-  // 被丢弃也比让用户对着一张死卡片重试好;卡没了问题自然消失。
-  function sendModUiAnswer(sid: string, id: string, value: string) {
-    setModAsks((prev) => (prev[sid] ? { ...prev, [sid]: null } : prev));
-    const sock = socketsRef.current[sid];
-    if (!sock || sock.readyState !== WebSocket.OPEN) return;
-    try {
-      sock.send(JSON.stringify({ type: "mod.ui.answer", id, value }));
-    } catch {
-      /* socket closing */
-    }
-  }
-  // Docs/native paths dropped while on the landing home (no session yet):
-  // buffered with optimistic chips, uploaded right after lazy creation.
-  const pendingDocsRef = useRef<Array<{ file: File; tmpId: string }>>([]);
-  const pendingPathsRef = useRef<Array<{ path: string; tmpId: string }>>([]);
-  function cycleSessionSocket(sid: string) {
-    const old = socketsRef.current[sid];
-    if (old) {
-      try {
-        old.close();
-      } catch {
-        /* ignore */
-      }
-    }
-    delete socketsRef.current[sid];
-    connectSession(sid);
-  }
-  // ─── Mid-turn steering (docs/steering-design.md) ──────────────────────────────
-  /** The running turn's id for a session (the steer rides it). Empty string
-   *  when unknown — the server then falls back to its own running-turn id,
-   *  which is the only correct answer for a turn nobody here invoked (an
-   *  adopted orphan, or a goal continuation). */
-  function liveTurnIdFor(sid: string): string {
-    const live = liveBySessionRef.current[sid];
-    const msg = live ? (storeRef.current[sid] ?? []).find((m) => m.id === live) : undefined;
-    return msg?.turnId ?? "";
-  }
-
-  /** Drop one queued entry (the ✕ on a queue-bar row). */
-  function dropSteer(sid: string, steerId: string) {
-    steerQ.remove(sid, [steerId]);
-  }
 
   /** Transient, visible feedback in the composer (never a silent no-op). */
   function showComposerHint(msg: string) {
@@ -1910,6 +665,50 @@ export function useChatStreamEngine(deps: EngineDeps) {
     hintTimerRef.current = setTimeout(() => setComposerHint(null), 4000);
   }
 
+  // Pane 的 press 回发沿本 hook 的 session socket(§7.4):注册进 paneBus,
+  // 右栏 ModPaneHost 不需要自己的连接。挂载一次即可——sender 是稳定闭包,
+  // 经 socketsRef 间接取当前 socket。
+  useEffect(() => {
+    registerModPanePressSender((sid, generation, actionId, value) => sendModUiPress(sid, generation, actionId, value));
+  }, []);
+
+  // ─── 子模块包装（engine/*）：名字与签名保持拆分前原样，实现见各子模块 ──────
+  function mapHistory(res: Parameters<typeof mapHistoryImpl>[1]): ChatMsg[] {
+    return mapHistoryImpl(ctx, res);
+  }
+  function armSocketReady(sid: string) {
+    armSocketReadyImpl(ctx, sid);
+  }
+  function waitForSocketOpen(sid: string, timeoutMs?: number): Promise<boolean> {
+    return waitForSocketOpenImpl(ctx, sid, timeoutMs);
+  }
+  function abandonLiveTurn(sid: string) {
+    abandonLiveTurnImpl(ctx, sid);
+  }
+  function reconcileTurnFromHistory(sid: string) {
+    reconcileTurnFromHistoryImpl(ctx, sid);
+  }
+  function markDelivered(sid: string) {
+    markDeliveredImpl(ctx, sid);
+  }
+  function adoptOrphanStream(sid: string) {
+    adoptOrphanStreamImpl(ctx, sid);
+  }
+  function ensureLive(sid: string, evTurn?: string): string {
+    return ensureLiveImpl(ctx, sid, evTurn);
+  }
+  function mutateLive(sid: string, ev: { event: string; [k: string]: unknown }) {
+    mutateLiveImpl(ctx, sid, ev);
+  }
+  function handle(sid: string, ev: { event: string; [k: string]: unknown }) {
+    handleImpl(ctx, sid, ev);
+  }
+  function liveTurnIdFor(sid: string): string {
+    return liveTurnIdForImpl(ctx, sid);
+  }
+  function dropSteer(sid: string, steerId: string) {
+    dropSteerImpl(ctx, sid, steerId);
+  }
   function enqueueSteer(
     sid: string,
     text: string,
@@ -1917,330 +716,63 @@ export function useChatStreamEngine(deps: EngineDeps) {
     images: Attachment[] = [],
     files: FileAttachment[] = [],
   ) {
-    steerQ.enqueue({
-      sessionId: sid,
-      turnId: liveTurnIdFor(sid),
-      text,
-      images,
-      files,
-      agentId,
-      send: steerFrameSender(sid),
-    });
+    enqueueSteerImpl(ctx, sid, text, agentId, images, files);
   }
-
-  /** Raw-frame sender for a session's socket, handed to the shared queue (which
-   *  owns the frame shape and swallows a dead socket so the entry stays queued).
-   *  Each window passes its own socket here — the pin has its own. */
   function steerFrameSender(sid: string): (frame: unknown) => void {
-    return (frame) => {
-      socketsRef.current[sid]?.send(JSON.stringify(frame));
-    };
+    return steerFrameSenderImpl(ctx, sid);
   }
-
-  /** Re-send every queued entry as `steer` — done right before we resume a
-   *  parked turn, so an entry stashed in the segment that parked is not lost.
-   *  Safe to repeat: server-side enqueue replaces by steer_id (design §3.2). */
   function requeueSteersOnResume(sid: string) {
-    steerQ.onResume(sid, steerFrameSender(sid));
+    requeueSteersOnResumeImpl(ctx, sid);
   }
-
-  /** ⏹ means stop: hand what is still queued back to the composer — multi-line,
-   *  in order, ABOVE whatever is already typed (the ↑ recall's placement) —
-   *  rather than silently discarding what the user wrote (design §4.1). */
   function recallSteers(sid: string) {
-    const items = steerQ.recall(sid);
-    if (!items.length) return;
-    const recalled = items.map((i) => i.text).join("\n");
-    // Attachments come back too — a recalled steer must not lose its pictures
-    // or file chips (the whole reason they are kept on the entry, brief §5.1).
-    const recalledImgs = items.flatMap((i) => i.images);
-    const recalledFiles = items.flatMap((i) => i.files);
-    if (sid !== curSessionIdRef.current) {
-      // Background session: park it in that session's draft, so switching back
-      // shows it in the composer instead of dropping it on the floor.
-      const d = draftCacheRef.current[sid] ?? { input: "", attachments: [] };
-      draftCacheRef.current[sid] = {
-        ...d,
-        input: d.input ? `${recalled}\n${d.input}` : recalled,
-        attachments: [...recalledImgs, ...d.attachments],
-        files: [...recalledFiles, ...(d.files ?? [])],
-      };
-      return;
-    }
-    setInput((cur) => (cur ? `${recalled}\n${cur}` : recalled));
-    if (recalledImgs.length) setAttachments((a) => [...recalledImgs, ...a]);
-    if (recalledFiles.length) setFileAttachments((f) => [...recalledFiles, ...f]);
+    recallSteersImpl(ctx, sid);
   }
-
-  /** The turn ended with entries still unacknowledged: the OLDEST becomes the
-   *  next turn — Claude Code's rule verbatim ("when the turn ends with messages
-   *  still queued, Claude Code sends only the oldest as the next turn"). The
-   *  rest stay queued and follow the same rule on that turn's end (design §3.3). */
   function flushSteerQueue(sid: string) {
-    // Pop the oldest out of the queue (the shared hook owns the ref write), then
-    // promote it to the next turn here — turning it into a turn is this window's
-    // concern, not the queue's.
-    const head = steerQ.takeOldest(sid);
-    if (!head) return;
-    attemptSend(sid, {
-      text: head.text,
-      // The entry's attachments ride the invoke that becomes the next turn —
-      // dropping them here is the other half of the silent-loss bug.
-      images: head.images,
-      files: head.files,
-      mentions: [],
-      agentId: head.agentId,
-    });
+    flushSteerQueueImpl(ctx, sid);
   }
-
-  /** History is authoritative: a steer_id it carries was absorbed even if the
-   *  ack was lost to a socket drop, so drop those entries instead of re-sending
-   *  them. This is what keeps delivery exactly-once (design §3.3). The history
-   *  scan stays here (it reads this window's mapped bubbles); the hook does the
-   *  queue write. */
   function dropAbsorbedSteers(sid: string, mapped: ChatMsg[]) {
-    const absorbed = new Set<string>();
-    for (const m of mapped) {
-      for (const b of m.blocks) {
-        if (b.kind === "steer" && b.steerId) absorbed.add(b.steerId);
-      }
-    }
-    if (absorbed.size) steerQ.remove(sid, absorbed);
+    dropAbsorbedSteersImpl(ctx, sid, mapped);
   }
-  /** Click on the red ❗: resend the exact payload with a fresh turn id (a
-   * retry is a genuinely new turn). Operates on the failed bubble IN PLACE —
-   * the bubble flips back to "sending" and the response slots in right after
-   * it; no duplicate message is appended. */
   function retryFailed(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid || busyBySessionRef.current[sid]) return; // one turn at a time
-    const list = storeRef.current[sid] ?? [];
-    const msg = list.find((m) => m.id === msgId);
-    if (!msg || msg.role !== "user" || msg.status !== "failed" || !msg.sendPayload) return;
-    attemptSend(sid, msg.sendPayload, msg.id);
+    retryFailedImpl(ctx, msgId);
   }
-
-  /** Pull the failed payload back into the composer (text, images, files,
-   * mentions, target agent) and drop the bubble — content is never lost. */
   function editResend(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    const msg = (storeRef.current[sid] ?? []).find((m) => m.id === msgId);
-    if (!msg || msg.status !== "failed" || !msg.sendPayload) return;
-    const p = msg.sendPayload;
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).filter((m) => m.id !== msgId);
-    setInput(p.text);
-    setAttachments(p.images);
-    setFileAttachments(p.files);
-    setTarget(p.agentId);
-    mentionsRef.current[sid] = p.mentions;
-    syncDisplay(sid);
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(p.text.length, p.text.length);
-      }
-      recomputeMenu(p.text);
-    });
+    editResendImpl(ctx, msgId);
   }
-
   function dismissFailed(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).filter(
-      (m) => !(m.id === msgId && m.status === "failed"),
-    );
-    syncDisplay(sid);
+    dismissFailedImpl(ctx, msgId);
   }
-
-  /** Retry on a turn-error card: keep the error card in place as a record of
-   * the failure, then append a brand-new user bubble + assistant placeholder
-   * at the tail of the chat. The new turn gets a fresh turnId so the server
-   * treats it as a new attempt (no checkpoint dedup collision). */
   function retryError(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid || busyBySessionRef.current[sid]) return; // one turn at a time
-    const list = storeRef.current[sid] ?? [];
-    const card = list.find((m) => m.id === msgId);
-    if (!card?.error || !card.sendPayload) return;
-    // Keep the error card — don't remove it. Just start a fresh turn at the bottom.
-    attemptSend(sid, card.sendPayload);
+    retryErrorImpl(ctx, msgId);
   }
-
-  /** Retry from checkpoint: resume the failed turn from its latest checkpoint
-   * instead of re-executing from the start. Preserves tool calls and
-   * intermediate results. */
   function retryFromCheckpoint(msgId: string) {
-    const sid = curSessionIdRef.current;
-    if (!sid || busyBySessionRef.current[sid]) return;
-    const list = storeRef.current[sid] ?? [];
-    const card = list.find((m) => m.id === msgId);
-    if (!card?.error) return;
-    // Remove the error card
-    storeRef.current[sid] = list.filter((m) => m.id !== msgId);
-    syncDisplay(sid);
-    // Mark as busy
-    busyBySessionRef.current[sid] = true;
-    const turnId = card.turnId || crypto.randomUUID();
-    const sock = socketsRef.current[sid];
-    if (!sock || sock.readyState !== WebSocket.OPEN) {
-      busyBySessionRef.current[sid] = false;
-      return;
-    }
-    try {
-      sock.send(
-        JSON.stringify({
-          type: "retry_from_checkpoint",
-          turn_id: turnId,
-        }),
-      );
-    } catch {
-      busyBySessionRef.current[sid] = false;
-    }
+    retryFromCheckpointImpl(ctx, msgId);
   }
-
   function respond(decision: "allow" | "deny") {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    // Anything still in the steer queue belongs to this turn: re-send it as
-    // `steer` BEFORE the resume, so the resumed segment absorbs it (design
-    // §3.4). Idempotent by steer_id, so a duplicate can't inject it twice.
-    requeueSteersOnResume(sid);
-    try {
-      socketsRef.current[sid]?.send(JSON.stringify({ type: "permission_response", decision }));
-    } catch {
-      /* socket gone — reconnect re-emits the prompt if still pending */
-    }
-    permsRef.current[sid] = null;
-    setPermission(null);
+    respondImpl(ctx, decision);
   }
-
   function stopTurn() {
-    // Hard-stop the running turn (server abandons the in-flight step, keeps
-    // what already streamed, heals state). Idempotent server-side; a stopped
-    // turn ends with a turn.stopped broadcast that clears `running`.
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    try {
-      socketsRef.current[sid]?.send(JSON.stringify({ type: "stop" }));
-    } catch {
-      /* socket gone — reconnect reconciles via turn_state */
-    }
+    stopTurnImpl(ctx);
   }
-
-  /** 拆分方案卡片的决定（P2 共享契约 2）：上行 confirm/cancel 帧到该 plan 所在
-   *  会话的 socket，并把 store 里对应卡片的 status 定格为回执态。confirm 带
-   *  用户编辑过的 subtasks（缺省 = 原样采纳），runtime 逐个 spawn 后经既有
-   *  subagent.spawned 事件回流。socket 不必是当前展示的会话——按 planId 反查
-   *  所在 store，用户在卡片存活期间切走会话再点仍能发对地方。 */
+  function respondPropose(decision: "allow" | "deny") {
+    respondProposeImpl(ctx, decision);
+  }
+  function answerQuestion(id: string, answer: string, optionIndex: number | null, skip: boolean) {
+    answerQuestionImpl(ctx, id, answer, optionIndex, skip);
+  }
   function decideSubagentPlan(
     planId: string,
     decision: "confirm" | "cancel",
-    subtasks?: SubagentPlanSubtask[],
+    subtasks?: import("@/lib/types").SubagentPlanSubtask[],
   ) {
-    let sid: string | null = null;
-    for (const [k, list] of Object.entries(storeRef.current)) {
-      if (list.some((m) => m.blocks.some((b) => b.kind === "subagent_plan" && b.planId === planId))) {
-        sid = k;
-        break;
-      }
-    }
-    if (!sid) return;
-    let sent = false;
-    try {
-      const sock = socketsRef.current[sid];
-      if (sock && sock.readyState === WebSocket.OPEN) {
-        sock.send(
-          JSON.stringify(
-            decision === "confirm"
-              ? subagentPlanConfirmFrame(planId, subtasks)
-              : subagentPlanCancelFrame(planId),
-          ),
-        );
-        sent = true;
-      }
-    } catch {
-      /* socket flipped CLOSING/CLOSED between check and send */
-    }
-    // 帧没发出去就不定格：卡片留在 pending，重连后可再点一次——静默丢一次
-    // confirm 等于整批子任务凭空消失，比卡片晚一拍定格严重得多。
-    if (!sent) return;
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) => ({
-      ...m,
-      blocks: m.blocks.map((b) =>
-        b.kind === "subagent_plan" && b.planId === planId && b.status === "pending"
-          ? { ...b, status: decision === "confirm" ? ("confirmed" as const) : ("cancelled" as const) }
-          : b,
-      ),
-    }));
-    syncDisplay(sid);
+    decideSubagentPlanImpl(ctx, planId, decision, subtasks);
   }
-
-  function respondPropose(decision: "allow" | "deny") {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    // Reuses the permission_response channel; the server resumes the proposal
-    // interrupt with {decision}, and the propose_edit tool applies on allow.
-    requeueSteersOnResume(sid);
-    try {
-      socketsRef.current[sid]?.send(JSON.stringify({ type: "permission_response", decision }));
-    } catch {
-      /* socket gone — reconnect re-emits version.propose if still pending */
-    }
-    const p = propose;
-    proposeRef.current[sid] = null;
-    setPropose(null);
-    // P0 polish: the card unmounts on decide, so leave a short receipt line
-    // ("已应用 · v3 → 新版本" / "已拒绝") where the card used to be.
-    if (p) {
-      setProposeResult({ decision, workflowId: p.workflow_id, fromVersion: p.from_version });
-      window.setTimeout(() => setProposeResult(null), 4000);
-    }
+  function sendModUiPress(sid: string, generation: number, actionId: string, value?: string) {
+    sendModUiPressImpl(ctx, sid, generation, actionId, value);
   }
-
-  // Answer a parked ask_user card. The server ignores the message unless the
-  // session is actually parked on a user_question interrupt (stale/duplicate
-  // answers are dropped there, not here). The optimistic fold collapses EVERY
-  // pending copy of the card by id — a post-reload re-emit can briefly have
-  // the history card and a live one on screen; the authoritative receipt still
-  // arrives via the tool's tool.end.
-  function answerQuestion(id: string, answer: string, optionIndex: number | null, skip: boolean) {
-    const sid = curSessionIdRef.current;
-    if (!sid) return;
-    // Same rule as the permission path: queued entries belong to this turn, so
-    // re-send them as `steer` before the answer resumes it (design §3.4).
-    requeueSteersOnResume(sid);
-    try {
-      socketsRef.current[sid]?.send(
-        JSON.stringify({ type: "user_answer", answer, option_index: optionIndex, skip }),
-      );
-    } catch {
-      /* socket gone — reconnect re-emits user.question if still parked */
-    }
-    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((m) =>
-      m.blocks.some((b) => b.kind === "question" && b.id === id && b.status === "pending")
-        ? {
-            ...m,
-            blocks: m.blocks.map((b) =>
-              b.kind === "question" && b.id === id && b.status === "pending"
-                ? skip
-                  ? { ...b, status: "skipped" as const }
-                  : { ...b, status: "answered" as const, answer, optionIndex }
-                : b,
-            ),
-          }
-        : m,
-    );
-    syncDisplay(sid);
+  function sendModUiAnswer(sid: string, id: string, value: string) {
+    sendModUiAnswerImpl(ctx, sid, id, value);
   }
-
-  // Pane 的 press 回发沿本 hook 的 session socket(§7.4):注册进 paneBus,
-  // 右栏 ModPaneHost 不需要自己的连接。挂载一次即可——sender 是稳定闭包,
-  // 经 socketsRef 间接取当前 socket。
-  useEffect(() => {
-    registerModPanePressSender((sid, generation, actionId, value) => sendModUiPress(sid, generation, actionId, value));
-  }, []);
 
   return {
     // refs

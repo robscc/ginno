@@ -312,6 +312,12 @@
       "close": "Close",
       "prev": "Previous image",
       "next": "Next image"
+    },
+    "notice": {
+      "modelSwitchFailed": "Could not switch to {model} — the session kept its previous model",
+      "openModelSettings": "Model settings",
+      "dismiss": "Dismiss",
+      "homeModelPicked": "Next session will start on {model}"
     }
   }
 }

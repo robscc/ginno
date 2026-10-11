@@ -39,6 +39,7 @@ import { UnseenBadge } from "@/components/scheduled/UnseenBadge";
 import { RUN_STATUS_META, useRunStatusLabel } from "@/components/chat/RunBlocks";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { ModToastHost } from "@/components/chat/mod/ModToastHost";
+import { NoticeHost } from "@/components/notice/NoticeHost";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
 import type { SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
@@ -960,6 +961,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {session && (
               <TopBar session={session} agent={agent} running={running} usage={usage} />
             )}
+            {/* 全局通知中心（notice-center-design.md）：零高度定位锚紧跟 TopBar，
+                通知因此始终贴在顶栏正下方、不参与布局（不顶动内容）。absolute
+                右对齐，而右侧栏是本列的兄弟节点 → 天然不会被通知覆盖。 */}
+            <div className="relative z-30 h-0">
+              <NoticeHost />
+            </div>
             <ChatStream
               session={session}
               onRunningChange={setRunning}

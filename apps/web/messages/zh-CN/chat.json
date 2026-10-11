@@ -312,6 +312,12 @@
       "close": "关闭",
       "prev": "上一张",
       "next": "下一张"
+    },
+    "notice": {
+      "modelSwitchFailed": "切换到 {model} 失败 — 该会话仍使用原模型",
+      "openModelSettings": "模型设置",
+      "dismiss": "关闭",
+      "homeModelPicked": "下一个会话将使用 {model}"
     }
   }
 }

@@ -1,37 +1,46 @@
 """Workflow endpoints: definition CRUD + versioning, DSL synthesis from a
 session trace, and the background run engine (create/cancel/resume/decide/
-retry/delete/cleanup + orphan reconciliation)."""
+retry/delete/cleanup + orphan reconciliation).
+
+The synthesis loop lives in ``workflows_synthesis.py`` and the run-engine
+drivers in ``workflows_runs.py`` (both imported at the BOTTOM of this module —
+they must not be imported directly). This module keeps the whole REST surface:
+every helper name remains an attribute here, so server.py / todos.py /
+stream.engine / scheduler.py imports and the tests' monkeypatching of
+``ginno_runtime.api.workflows.*`` (build_model, build_all_tools, _SYNTH_TASKS)
+keep working unchanged."""
 
 from __future__ import annotations
 
-import asyncio
+import asyncio  # noqa: F401  (kept: module-surface parity; _base consumers)
 import json
 import shutil
 import time
-from pathlib import Path
+from pathlib import Path  # noqa: F401  (kept: module-surface parity)
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-from .. import agents as agents_reg
-from .. import paths
+from .. import agents as agents_reg  # noqa: F401  (kept: _base consumers)
+from .. import paths  # noqa: F401  (kept: _base consumers)
 from .. import providers as prov_mod
-from .. import server_shared as shared
+from .. import server_shared as shared  # noqa: F401  (kept: _base consumers)
 from .. import workflows as wf_store
 from ..checkpointer import FileCheckpointer
-from ..graph import build_all_tools, text_of_content
+from ..graph import build_all_tools  # noqa: F401  (kept: monkeypatch surface)
+from ..graph import text_of_content
 from ..models import build_model
 from ..server_shared import (
     _RUN_WS,
     _WF_RUN_TASKS,
     _ev,
-    _log,
+    _log,  # noqa: F401  (kept: _base consumers + endpoint error logs)
     _push_global_event,
     _push_run_event,
     _push_session_event,
 )
 from ..session_meta import _session_slug
 from ..todos import sync_ledger
-from ..workflows import dsl as wf_dsl
+from ..workflows import dsl as wf_dsl  # noqa: F401  (kept: _base consumers)
 from ..workflows import events as wf_events
 from ..workflows import store as wf_storemod
 
@@ -209,393 +218,6 @@ async def dry_run_workflow_endpoint(data: dict) -> dict:
     from ..workflows.dryrun import dry_run_dsl
 
     return dry_run_dsl(dsl)
-
-
-# ---- P6: synthesize a workflow DSL draft from a session's conversation ----
-# Bump on any change to the prompt above so synthesis cases can be grouped by
-# the prompt that produced them (quality-plan §3.2 A/B).
-# synth-5: doctor dataflow findings (loop.over.no_source et al.) are fed back
-# into the retry loop alongside validate_dsl errors, and the node-type catalog
-# is rendered from the single-source contracts module.
-SYNTH_PROMPT_VERSION = "synth-5"
-# The node-type section is rendered at call time from workflows/contracts.py
-# (single source of truth: registry schemas + structural rules) so the prompt
-# can no longer drift from the engine's real node surface. {{NODE_CATALOG}}
-# is the injection point; see _synthesize_prompt().
-_SYNTHESIZE_PROMPT_TEMPLATE = (
-    "You are a workflow synthesizer. Given a conversation trace between a user and "
-    "an agent (including tool calls), produce a reusable workflow DSL that captures "
-    "the repeatable process as a directed graph.\n\n"
-    "DSL object shape:\n"
-    '{\n  "name": "<short imperative name>",\n  "description": "<one line>",\n'
-    '  "entry": "<first node id>",\n'
-    '  "context": {"schema": {"type":"object","properties":{...}}, "initial": {...}},\n'
-    '  "nodes": [ {"id","type","agent","goal", ...} ],\n'
-    '  "edges": [ {"from","to"} ]\n}\n\n'
-    "Node contract (every type the engine accepts, with fields and rules):\n"
-    "{{NODE_CATALOG}}\n\n"
-    "Rules:\n"
-    "- `entry` MUST be an existing node id; every edge endpoint MUST exist.\n"
-    "- Put any per-run inputs the conversation revealed into context.schema + context.initial.\n"
-    "- Default to a simple linear step chain; only add branch/loop when the trace clearly shows conditionals or repetition.\n"
-    "- Mechanical fetch/normalize/compute steps: PREFER the deterministic `python` "
-    "node (whitelisted entry, no LLM) over an agent step.\n"
-    "- Any per-run placeholder you use in goal/prompt fields ({{variable_name}}) MUST also appear "
-    'in context.schema.properties with type:"string" and in context.initial as "" '
-    "so the caller can fill them before running.\n"
-    # Dataflow contract (master-plan §2.2.9): steps that hand data to later steps
-    # declare `writes`; the engine injects an implicit extractor that produces
-    # strict JSON. The model must NOT be told to emit WRITE_JSON in its goal.
-    "- When a step produces data a LATER step (or a loop) consumes, declare a "
-    '`writes` field on that step mapping context keys to JSON Schema. Lists of '
-    'items: {"type":"array","items":{"type":"object"}}. Single text: {"type":"string"}. '
-    "The key name must match the {{context.key}} reference used downstream. "
-    "Example: {\"id\":\"search\",\"type\":\"step\",\"agent\":\"research\","
-    "\"goal\":\"Select the top stocks.\",\"writes\":{\"stocks\":{\"type\":\"array\",\"items\":{\"type\":\"object\"}}}}. "
-    "A loop over such a list reads over:\"context.stocks\".\n"
-    "- Do NOT put WRITE_JSON instructions in goals; the engine extracts structured "
-    "output automatically from declared writes.\n\n"
-    "Reply with ONLY the JSON object, no prose, no markdown fences."
-)
-
-
-def _synthesize_prompt() -> str:
-    """Assemble the synthesizer prompt with the live node catalog (P1b).
-
-    Lazy on purpose: importing contracts touches the nodes registry, which
-    must not happen at server-module import time (circular via agents)."""
-    from ..workflows import contracts as wf_contracts
-
-    return _SYNTHESIZE_PROMPT_TEMPLATE.replace(
-        "{{NODE_CATALOG}}", wf_contracts.render_catalog()
-    )
-
-
-def _resolve_trace_window(
-    messages: list, data: dict
-) -> tuple[list, dict | None]:
-    """Resolve the ``last_n`` / ``range`` selection of a summarize request into
-    (sliced messages, descriptor recorded on the synthesis case).
-
-    方案B 阶段4: ``range`` = ``{start?, end?}`` — INCLUSIVE indices into the
-    session's checkpoint message list (the same indexing
-    ``/api/workflows/summarize-trace/{sid}`` previews). ``start`` clamps to 0,
-    ``end`` clamps to the last index. Back-compat: ``last_n`` (tail window)
-    wins when both are given. Raises 400 when the selection is empty (no
-    messages at all, or a range that clamps past itself)."""
-    last_n = data.get("last_n")
-    last_n = last_n if isinstance(last_n, int) and not isinstance(last_n, bool) and last_n > 0 else None
-    if last_n:
-        return messages[-last_n:], {"last_n": last_n}
-    rng = data.get("range")
-    if isinstance(rng, dict):
-        n = len(messages)
-        start = rng.get("start")
-        end = rng.get("end")
-        lo = max(0, start) if isinstance(start, int) and not isinstance(start, bool) else 0
-        hi = min(n - 1, end) if isinstance(end, int) and not isinstance(end, bool) else n - 1
-        if lo > hi:
-            raise HTTPException(
-                status_code=400,
-                detail=f"range selects no messages (session has {n}; got start={start}, end={end})",
-            )
-        return messages[lo : hi + 1], {"start": lo, "end": hi}
-    return messages, None
-
-
-def _trace_text(messages, last_n: int | None = None) -> str:
-    """Compact readable trace of a session for the synthesizer.
-
-    Truncation strategy (workflow-ux-redesign S4a): file-read tool outputs are
-    collapsed to their first lines (the full content never helps synthesis),
-    other long outputs keep head + tail (endings carry the conclusion), plain
-    messages keep their first 500 chars. ``last_n`` limits the trace to the
-    most recent N messages (S5 range control). Callers pass an ALREADY-sliced
-    message list for the 阶段4 ``range`` selection — see
-    ``_resolve_trace_window``."""
-    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-
-    FILE_READ_TOOLS = {"read_file", "Read", "cat", "head", "tail", "view_file"}
-    msgs = messages or []
-    if last_n and last_n > 0:
-        msgs = msgs[-last_n:]
-    lines: list[str] = []
-    for m in msgs:
-        if isinstance(m, HumanMessage):
-            c = text_of_content(m.content)
-            lines.append(f"USER: {c[:500]}")
-        elif isinstance(m, AIMessage):
-            c = text_of_content(m.content)
-            if c.strip():
-                lines.append(f"AGENT: {c[:500]}")
-            for tc in getattr(m, "tool_calls", None) or []:
-                lines.append(f"  -> tool {tc.get('name')}({json.dumps(tc.get('args') or {}, ensure_ascii=False)[:200]})")
-        elif isinstance(m, ToolMessage):
-            c = m.content if isinstance(m.content, str) else str(m.content)
-            name = getattr(m, "name", "tool") or "tool"
-            if name in FILE_READ_TOOLS:
-                preview = "\n".join(c.splitlines()[:3])[:200]
-                lines.append(f"  <= {name}: {preview}… [file content elided]")
-            elif len(c) > 400:
-                lines.append(f"  <= {name}: {c[:200]}…[…]…{c[-100:]}")
-            else:
-                lines.append(f"  <= {name}: {c[:200]}")
-    return "\n".join(lines)
-
-
-def _extract_json_obj(text: str) -> dict | None:
-    import re
-
-    text = (text or "").strip()
-    # strip markdown fences if the model added them despite instructions
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    try:
-        v = json.loads(text)
-        return v if isinstance(v, dict) else None
-    except json.JSONDecodeError:
-        pass
-    # fallback: first balanced {...}
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        try:
-            v = json.loads(text[start : end + 1])
-            return v if isinstance(v, dict) else None
-        except json.JSONDecodeError:
-            return None
-    return None
-
-
-# In-process synthesis task registry (mirrors _WF_RUN_TASKS for workflow runs;
-# separate because the run registry's done-callback is run-specific). Sole
-# source of "running" for synthesis cases: after a restart it is empty, so
-# cases left without output.json render as 未完成 — no reconciliation needed.
-_SYNTH_TASKS: dict[str, asyncio.Task] = {}
-
-
-async def _run_synthesis(
-    trace: str,
-    model,
-    case_dir,
-    usage_attr: dict | None = None,
-    on_attempt=None,
-) -> dict:
-    """The ≤3-attempt self-correcting synthesis loop (shared by the live
-    endpoint and offline replay). Returns a result dict::
-
-        {"ok", "dsl", "raw", "errors", "fail_stage", "attempts_used", "total_ms"}
-
-    Records each attempt onto ``case_dir`` when provided (quality-plan §3.1).
-    Each model call is also logged to the global usage store (source=workflow,
-    usage-stats-design §3.6) when ``usage_attr`` carries the attribution.
-    ``on_attempt`` (optional async callback) is invoked after each recorded
-    attempt with ``{attempt, parse, validate_errors, latency_ms}`` (no raw —
-    the case-detail API provides that); replay leaves it None.
-    """
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    from ..workflows import doctor as wf_doctor
-    from ..workflows import synthesis as wf_synth
-    from ..workflows.nodes import agent_helpers as ah
-
-    extra_hint = ""
-    dsl = None
-    raw = ""
-    errs: list[str] = ["no attempt made"]
-    doc_errs: list[str] = []  # last attempt's doctor messages (report fallback)
-    fail_stage = None
-    doctor_warnings: list[dict] = []
-    t_start = time.time()
-    attempt = 0
-    for attempt in range(3):
-        t0 = time.time()
-        resp = await model.ainvoke(
-            [SystemMessage(content=_synthesize_prompt()), HumanMessage(content=trace + extra_hint)]
-        )
-        ah.record_model_usage(resp, usage_attr)
-        latency_ms = int((time.time() - t0) * 1000)
-        raw = text_of_content(resp.content)
-        dsl = _extract_json_obj(raw)
-        if not isinstance(dsl, dict):
-            extra_hint = (
-                "\n\n[Previous attempt error: the reply was not a JSON object. "
-                "Reply ONLY with a single {...} JSON object.]"
-            )
-            errs = ["model did not return a JSON DSL object"]
-            fail_stage = "format.not_json"
-            wf_synth.record_attempt(case_dir, attempt=attempt + 1, latency_ms=latency_ms,
-                                    raw=raw, parse="not_json", validate_errors=[],
-                                    hint_fed_back=extra_hint)
-            if on_attempt:
-                await on_attempt({"attempt": attempt + 1, "parse": "not_json",
-                                  "validate_errors": [], "latency_ms": latency_ms})
-            continue
-        dsl = wf_dsl.normalize_dsl(dsl)
-        errs = wf_dsl.validate_dsl(dsl)
-        # Dataflow lint (stability plan P1a): validate passes structural checks
-        # but not dataflow ones (loop.over without a source, dangling
-        # {{context.x}} refs) — the doctor catches exactly the incident class,
-        # so its errors join the self-correction loop; warnings only surface.
-        doc_errs: list[str] = []
-        doc_rules: list[str] = []
-        doctor_warnings = []
-        if not errs:
-            dr = wf_doctor.run_doctor(dsl)
-            doctor_warnings = list(dr.get("warnings") or [])
-            for e in dr.get("errors") or []:
-                doc_rules.append(e.get("rule") or "unknown")
-                doc_errs.append(f"{e.get('rule')}: {e.get('message')}")
-        wf_synth.record_attempt(
-            case_dir, attempt=attempt + 1, latency_ms=latency_ms, raw=raw, parse="ok",
-            validate_errors=list(errs), doctor_errors=list(doc_errs),
-            hint_fed_back=None if not (errs or doc_errs)
-            else "[DSL errors: " + "; ".join(errs or doc_errs) + "]",
-        )
-        if on_attempt:
-            await on_attempt({"attempt": attempt + 1, "parse": "ok",
-                              "validate_errors": list(errs),
-                              "doctor_errors": list(doc_errs),
-                              "latency_ms": latency_ms})
-        if not errs and not doc_errs:
-            fail_stage = None
-            break
-        if errs:
-            fail_stage = "schema." + (errs[0].split(":")[0][:40] if errs else "unknown")
-            extra_hint = (
-                "\n\n[Previous attempt DSL errors: " + "; ".join(errs) +
-                ". Fix them and reply ONLY with the corrected JSON object.]"
-            )
-        else:
-            fail_stage = "doctor." + (doc_rules[0][:40] if doc_rules else "unknown")
-            extra_hint = (
-                "\n\n[Previous attempt dataflow errors: " + "; ".join(doc_errs) +
-                ". Fix the dataflow — declare the missing `writes` on the producing "
-                "step or add the key to context.initial — and reply ONLY with the "
-                "corrected JSON object.]"
-            )
-    return {
-        # fail_stage is None only on a clean break (no validate AND no doctor
-        # errors) — a last attempt that died on dataflow errors is not ok even
-        # though ``errs`` (validate) is empty.
-        "ok": isinstance(dsl, dict) and fail_stage is None,
-        "dsl": dsl if isinstance(dsl, dict) else None,
-        "raw": raw,
-        # Validate errors take precedence; when the DSL is schema-clean but
-        # dataflow-dirty, report the doctor messages instead of an empty list.
-        "errors": errs or doc_errs,
-        "fail_stage": fail_stage,
-        "attempts_used": max(1, attempt + 1),
-        "total_ms": int((time.time() - t_start) * 1000),
-        "doctor_warnings": doctor_warnings,
-    }
-
-
-def _synth_error_text(result: dict) -> str:
-    """User-facing failure text for a failed synthesis result (carried by the
-    background finished-event and readable in the panel/chat error copy)."""
-    if result.get("dsl") is None:
-        return "model did not return a JSON DSL object"
-    return "synthesized DSL invalid: " + "; ".join(result.get("errors") or [])
-
-
-async def _run_synthesis_bg(
-    session_id: str,
-    synthesis_id: str,
-    case_dir: Path,
-    trace: str,
-    model,
-    usage_attr: dict | None,
-) -> None:
-    """Background driver: runs the ≤3-attempt loop, records the case outcome,
-    and pushes live ``synthesis.event`` WS events (started/attempt/finished)
-    so the right-dock 总结 panel and the waiting chat UI update in real time.
-
-    Invariant: when this task ends normally the case always has output.json
-    (written here, or healed by ``_spawn_synth_task``'s done-callback)."""
-    from ..workflows import synthesis as wf_synth
-
-    _log.info("synthesis_start synthesis=%s session=%s", synthesis_id, session_id)
-    await _push_session_event(session_id, "synthesis.event",
-                             {"synthesis_id": synthesis_id, "kind": "started"})
-    try:
-        async def _on_attempt(info: dict) -> None:
-            _log.info(
-                "synthesis_attempt synthesis=%s attempt=%s parse=%s errors=%d",
-                synthesis_id, info.get("attempt"), info.get("parse"),
-                len(info.get("validate_errors") or []),
-            )
-            await _push_session_event(
-                session_id, "synthesis.event",
-                {"synthesis_id": synthesis_id, "kind": "attempt", **info},
-            )
-
-        result = await _run_synthesis(trace, model, case_dir, usage_attr=usage_attr,
-                                      on_attempt=_on_attempt)
-        wf_synth.finish_case(
-            case_dir,
-            status="ok" if result["ok"] else "failed",
-            dsl=result["dsl"],
-            fail_stage=result["fail_stage"],
-            total_latency_ms=result["total_ms"],
-            attempts_used=result["attempts_used"],
-        )
-        _log.info(
-            "synthesis_finish synthesis=%s ok=%s fail_stage=%s attempts=%s ms=%s",
-            synthesis_id, result["ok"], result["fail_stage"],
-            result["attempts_used"], result["total_ms"],
-        )
-        await _push_session_event(session_id, "synthesis.event", {
-            "synthesis_id": synthesis_id,
-            "kind": "finished",
-            "ok": result["ok"],
-            "fail_stage": result["fail_stage"],
-            "attempts_used": result["attempts_used"],
-            "total_ms": result["total_ms"],
-            "error": None if result["ok"] else _synth_error_text(result),
-            # Stability plan P1a: advisory dataflow warnings ride the finished
-            # frame so the UI can surface them without blocking the draft.
-            "doctor_warnings": result.get("doctor_warnings") or [],
-        })
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        _log.exception("synthesis_failed synthesis=%s session=%s", synthesis_id, session_id)
-        wf_synth.finish_case(case_dir, status="failed", dsl=None,
-                             fail_stage="internal.error", total_latency_ms=0, attempts_used=0)
-        await _push_session_event(session_id, "synthesis.event", {
-            "synthesis_id": synthesis_id, "kind": "finished", "ok": False,
-            "fail_stage": "internal.error", "attempts_used": 0, "total_ms": 0,
-            "error": "internal error during synthesis",
-        })
-
-
-def _spawn_synth_task(synthesis_id: str, case_dir: Path, coro) -> asyncio.Task:
-    """Register a synthesis background task with the permanent safety net
-    (mirrors ``_spawn_run_task``): a non-cancelled task that ends while the
-    case still has no output.json is healed to failed/internal.error."""
-    from ..workflows import synthesis as wf_synth
-
-    task = asyncio.create_task(coro)
-    _SYNTH_TASKS[synthesis_id] = task
-
-    def _on_done(t: asyncio.Task) -> None:
-        _SYNTH_TASKS.pop(synthesis_id, None)
-        if t.cancelled():
-            return
-        try:
-            t.exception()  # consume: already logged inside the task
-            if not (case_dir / "output.json").exists():
-                wf_synth.finish_case(case_dir, status="failed", dsl=None,
-                                     fail_stage="internal.error",
-                                     total_latency_ms=0, attempts_used=0)
-                _log.error("synthesis_guard_healed synthesis=%s (no output.json)",
-                           synthesis_id)
-        except Exception:
-            _log.exception("synthesis_guard_failed synthesis=%s", synthesis_id)
-
-    task.add_done_callback(_on_done)
-    return task
 
 
 @router.post("/api/workflows/summarize-from-session")
@@ -841,613 +463,6 @@ async def synthesis_replay_endpoint(synthesis_id: str, data: dict | None = None)
     }
 
 
-# ---- workflow execution (P2 engine) ----
-def _wf_mcp_tools() -> list:
-    try:
-        return shared._mcp.all_langchain_tools() if shared._mcp else []
-    except Exception:
-        return []
-
-
-def _wf_build_deps(run_id: str, workflow_id: str, pinned_version: int | None = None):
-    """Resolve (wf, dsl, model, tools, fork_id, usage_attr) for a run by forking
-    its source agent. Returns a 6-tuple of None when the workflow def is missing.
-
-    ``usage_attr`` carries the attribution (provider/model/agent/run) the LLM
-    nodes stamp on their per-call usage records (source=workflow); the driver
-    adds ``session_id`` (present_in) before handing it to the engine.
-
-    ``pinned_version``: CONTINUING a run (resume / retry-from-checkpoint /
-    rerun_from) must compile the version the run STARTED with — resuming on the
-    CURRENT def after an edit executes a different graph under the same run id
-    (2026-09-25: a v5 edit made run bb1b394c re-execute half its nodes on the
-    new topology and garble the step table). Raises ValueError when the pinned
-    version no longer exists (driver marks the run failed with that reason).
-
-    NOTE: fork_agent/build_model can RAISE (unknown agent, disabled/keyless
-    provider) — callers must invoke this inside a try/except that marks the run
-    failed, or the run is stranded in "running" forever.
-    """
-    wf = wf_store.get_def(workflow_id)
-    if not wf:
-        return None, None, None, None, None, None
-    if pinned_version is not None:
-        dsl = wf_storemod.get_version(workflow_id, int(pinned_version))
-        if not dsl:
-            raise ValueError(
-                f"version v{pinned_version} of workflow '{workflow_id}' no longer "
-                "exists — start a new run of the current version"
-            )
-    else:
-        dsl = wf["dsl"]
-    src_agent_id = None
-    for n in dsl.get("nodes") or []:
-        if n.get("agent"):
-            src_agent_id = n["agent"]
-            break
-    src_agent_id = src_agent_id or wf.get("agent_id")
-    # Fallback instead of fail when the referenced agent doesn't exist
-    # (LLM-drafted DSLs invent role names — 2026-08-10 incident: the run
-    # died at fork time before the first node). Same rule as AgentNode; a
-    # warning event keeps the substitution visible. Only raises when NO
-    # agent exists at all.
-    from ..workflows.nodes import agent_helpers as ah
-
-    resolved, agent_warn = ah.resolve_agent(src_agent_id)
-    if resolved is None:
-        raise ValueError(agent_warn or "no agents available")
-    if agent_warn:
-        _log.warning("workflow_run run=%s agent fallback: %s", run_id, agent_warn)
-        wf_events.append_event(run_id, "warning", message=agent_warn)
-    fork = agents_reg.fork_agent(resolved.id, f"wf-{run_id[:8]}-{resolved.id}")
-    model = build_model(fork.provider, fork.model or None)
-    # Bind the run's file tools to a REAL workspace. With no workspace the
-    # builtin tools fall back to the process cwd — for a packaged app that is
-    # "/" and an agent's glob_files then walked the ENTIRE filesystem
-    # (2026-09-25 incident). The Ginno home is always defined and its
-    # sensitive subdirs are hard-denied by the tool layer anyway.
-    tools = build_all_tools(_wf_mcp_tools(), workspace=str(paths.home()))
-    usage_attr = {
-        "provider": fork.provider or "",
-        "model": fork.model or getattr(model, "model", None) or getattr(model, "model_name", "") or "",
-        "agent_id": resolved.id,
-        "run_id": run_id,
-    }
-    return wf, dsl, model, tools, fork.id, usage_attr
-
-
-def _set_run_status(
-    run_id: str,
-    status: str,
-    error: str | None = None,
-    only_from: tuple[str, ...] | None = None,
-    error_detail: dict | None = None,
-) -> None:
-    """Persist a run status transition.
-
-    ``error`` is stored when given and cleared on ``done``; terminal statuses
-    stamp ``finished``. ``error_detail`` ({"node_id", "traceback"}) is the
-    structured companion for localization UIs; it follows the same lifecycle
-    as ``error``. ``only_from`` guards races (e.g. a queued engine "done"
-    must not overwrite a user cancel that landed first).
-    """
-    run = wf_store.get_run(run_id)
-    if not run:
-        return
-    if only_from is not None and run.get("status") not in only_from:
-        return
-    run["status"] = status
-    run["updated"] = time.time()
-    if error is not None:
-        run["error"] = error
-    if error_detail is not None:
-        run["error_detail"] = error_detail
-    if status == "done":
-        run["error"] = None
-        run["error_detail"] = None
-    if status in wf_storemod.TERMINAL_STATUSES and not run.get("finished"):
-        run["finished"] = run["updated"]
-    wf_storemod._write_json(wf_storemod._run_path(run_id), run)
-
-
-def _touch_run(run_id: str) -> None:
-    """Bump ``updated`` so the UI's stuck-detection sees activity even while a
-    single long step runs (called per engine event)."""
-    run = wf_store.get_run(run_id)
-    if run:
-        run["updated"] = time.time()
-        wf_storemod._write_json(wf_storemod._run_path(run_id), run)
-
-
-def _set_run_pending_interrupt(run_id: str, payload: dict | None) -> None:
-    """Stamp/clear ``pending_interrupt`` on the run JSON (workflow-ux-redesign
-    P1). Lets any UI (panel, dock badge) tell WHY a run is paused — a human
-    question vs. a generic interrupt — without fetching events.jsonl. The
-    payload mirrors the interrupt event (kind/node/question)."""
-    run = wf_store.get_run(run_id)
-    if not run:
-        return
-    run["pending_interrupt"] = payload
-    run["updated"] = time.time()
-    wf_storemod._write_json(wf_storemod._run_path(run_id), run)
-
-
-def _backfill_first_run(workflow_id: str, run: dict) -> None:
-    """Quality-plan §3.1: when a synthesized workflow's first run terminates,
-    record the outcome on its synthesis case (L3 signal). Best-effort."""
-    try:
-        from ..workflows import synthesis as wf_synth
-
-        meta = wf_storemod._read_meta(workflow_id) or {}
-        syn = (meta.get("synthesized_from") or {}).get("synthesis_id")
-        if not syn:
-            return
-        outcome = wf_synth.load_case(syn) or {}
-        first_run = (outcome.get("outcome") or {}).get("first_run")
-        if first_run:
-            return  # only record the FIRST run
-        wf_synth.backfill_outcome(
-            wf_synth.find_case_by_synthesis_id(syn),
-            first_run={
-                "run_id": run.get("id"),
-                "status": run.get("status"),
-                "failed_node": (run.get("error_detail") or {}).get("node_id"),
-            },
-        )
-    except Exception:
-        pass
-
-
-async def _push_both(
-    present_in: str | None, run_id: str, event: str, data: dict
-) -> None:
-    """One run event, two channels (design B P2): the presenting session's
-    sockets (in-chat rendering, design A) AND the run-scoped sockets (Studio
-    observer, headless watchers). Identical frame on both."""
-    await _push_session_event(present_in, event, data)
-    await _push_run_event(run_id, event, data)
-
-
-async def _push_run_status(present_in: str | None, run_id: str, data: dict) -> None:
-    """run.status frames also carry the fresh run JSON for run-scoped clients
-    (the observer needs the step table, not just the status word)."""
-    await _push_both(present_in, run_id, "run.status", data)
-    await _push_run_event(run_id, "run.snapshot", {"run": wf_store.get_run(run_id)})
-
-
-async def _mark_run_failed(run_id: str, exc: BaseException, present_in: str | None = None) -> None:
-    """The one place a run failure is persisted: error event + run.error +
-    ledger + run.status push (so chat/panel show the reason immediately).
-
-    Driver-level failures (agent fork / model+tool build) have no engine
-    events, so the traceback is captured here; node_id stays None because no
-    node ever started."""
-    from ..workflows.engine import _trimmed_traceback
-
-    err = f"{type(exc).__name__}: {exc}"
-    tb = _trimmed_traceback(exc)
-    ev = wf_events.append_event(run_id, "error", error=err, traceback=tb)
-    _set_run_status(
-        run_id, "failed", error=err, error_detail={"node_id": None, "traceback": tb}
-    )
-    sync_ledger.set_status(run_id, "failed", err)
-    await _push_session_event(
-        present_in, "run.status",
-        {"run_id": run_id, "status": "failed", "error": err, "node_id": None},
-    )
-    await _push_run_event(run_id, "run.event", {"run_id": run_id, "payload": ev})
-    await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "failed", "error": err, "node_id": None})
-
-
-async def _drive_run_events(run_id: str, present_in: str | None, wf: dict, agen) -> None:
-    """Persist + push each engine event; keep run step status + terminal state in sync."""
-    # Build the node->step map from the RUN's steps (which include injected
-    # ``<id>__extract`` steps; the definition's steps do not), so extract-node
-    # events update their step and the run-status recomputation accounts for them.
-    _run0 = wf_store.get_run(run_id) or {}
-    node_to_step = {s["id"]: s["id"] for s in _run0.get("steps", [])}
-    # loop node id -> body node id (to mark the body "skipped" when an
-    # on_empty=skip loop completes with zero iterations; master-plan §2.1).
-    loop_body: dict[str, str] = {}
-    for _n in (wf.get("dsl") or {}).get("nodes") or []:
-        if isinstance(_n, dict) and _n.get("type") == "loop" and _n.get("body"):
-            loop_body[_n.get("id")] = _n["body"]
-    last_interrupt: dict | None = None  # latest human-interrupt payload (P1)
-    async for ev in agen:
-        stored = wf_events.append_event(run_id, ev.get("kind", ""), **{
-            k: v for k, v in ev.items() if k not in ("kind", "run_id", "seq")
-        })
-        _touch_run(run_id)
-        await _push_both(present_in, run_id, "run.event", {"run_id": run_id, "payload": stored})
-        kind = ev.get("kind")
-        nid = ev.get("node_id")
-        if kind == "node_enter" and nid in node_to_step:
-            wf_store.update_step(run_id, node_to_step[nid], "running")
-            # Step-status refresh on the run channel: the Studio observer
-            # renders run.steps from snapshots, and mid-run there are no
-            # status transitions — without this the step table stays at the
-            # connect-time snapshot (all pending) while events flow around it
-            # (2026-09-25: the「运行中的节点没有运行的标志」report). Deliberately
-            # a run.steps frame, NOT a run.snapshot: the full snapshot carries
-            # run.status, and update_step already recomputes "done" when the
-            # last step lands — a snapshot here would announce done before the
-            # engine's terminal event (and break snapshot ordering guarantees).
-            await _push_run_event(
-                run_id, "run.steps", {"steps": (wf_store.get_run(run_id) or {}).get("steps", [])}
-            )
-        elif kind == "node_exit" and nid in node_to_step:
-            # A cache-replayed node_exit carries the recorded text in
-            # ``output`` (real executions never set it) — persist it so the
-            # step table shows what was replayed, not an empty string.
-            wf_store.update_step(
-                run_id, node_to_step[nid],
-                "done" if ev.get("status") != "failed" else "failed",
-                output=str(ev.get("output") or ""),
-                cached=bool(ev.get("cached")),
-            )
-            await _push_run_event(
-                run_id, "run.steps", {"steps": (wf_store.get_run(run_id) or {}).get("steps", [])}
-            )
-        elif kind == "loop_skip":
-            # on_empty=skip: the loop finished with zero iterations. The loop
-            # node's own step lands "done" via its node_exit; its body never ran,
-            # so mark the body step "skipped" (master-plan §2.1).
-            body = loop_body.get(nid)
-            if body and body in node_to_step:
-                wf_store.update_step(run_id, node_to_step[body], "skipped")
-        elif kind == "interrupt":
-            # A node suspended the graph (human question or manual pause,
-            # workflow-ux-redesign #14) — remember the payload so the "paused"
-            # transition below can stamp it on the run JSON. nature
-            # distinguishes the two; HumanNode events carry none and keep the
-            # historical "human" default.
-            last_interrupt = {k: v for k, v in ev.items() if k not in ("run_id", "kind")}
-            last_interrupt["kind"] = ev.get("nature") or "human"
-            _set_run_pending_interrupt(run_id, last_interrupt)
-            # HumanNode suspends before its node_enter/exit events fire, so the
-            # step would stay "pending" forever — mark it running while waiting.
-            if nid in node_to_step:
-                wf_store.update_step(run_id, node_to_step[nid], "running")
-        elif kind == "resume":
-            last_interrupt = None
-            _set_run_pending_interrupt(run_id, None)
-            # A manually paused step RE-EXECUTES after resume (checkpoint
-            # rewind) — its node_exit marks it done; don't flip it here.
-            if nid in node_to_step and ev.get("nature") != "manual":
-                wf_store.update_step(run_id, node_to_step[nid], "done")
-        elif kind == "error" and ev.get("handled"):
-            # Soft failure (stability plan P2, on_error="continue"): the node
-            # exhausted its retries but the run GOES ON. Fail only the
-            # attributed step, count a warning on the run, and never flip the
-            # run status — the terminal done/failed event still decides it.
-            raw_nid = ev.get("node_id")
-            attr_nid = (
-                raw_nid[: -len("__extract")]
-                if isinstance(raw_nid, str) and raw_nid.endswith("__extract")
-                else raw_nid
-            )
-            if attr_nid in node_to_step:
-                wf_store.update_step(run_id, node_to_step[attr_nid], "failed")
-            _runw = wf_store.get_run(run_id)
-            if _runw:
-                _runw["warnings"] = int(_runw.get("warnings") or 0) + 1
-                wf_storemod._write_json(wf_storemod._run_path(run_id), _runw)
-        elif kind == "done":
-            _set_run_pending_interrupt(run_id, None)
-            _set_run_status(run_id, "done", only_from=("running", "paused"))
-            _fin = wf_store.get_run(run_id)
-            _warn = int((_fin or {}).get("warnings") or 0)
-            await _push_run_status(
-                present_in, run_id,
-                {"run_id": run_id, "status": "done", **({"warnings": _warn} if _warn else {})},
-            )
-            if _fin:
-                _backfill_first_run(wf.get("id"), _fin)
-        elif kind == "paused":
-            # "done" is allowed here deliberately: an end-of-graph supervisor
-            # gate (<N>__sup with continue_to=None) is not a step-table row, so
-            # the last real step's completion recomputes the run to "done"
-            # BEFORE the gate suspends the engine. The engine's paused event is
-            # authoritative over that premature done (studio e2e
-            # test_studio_supervisor: a run parked at its final gate must stay
-            # decidable — decide 409s on anything but "paused").
-            _set_run_status(run_id, "paused", only_from=("running", "paused", "done"))
-            await _push_run_status(
-                present_in, run_id,
-                {"run_id": run_id, "status": "paused", "pending_interrupt": last_interrupt},
-            )
-            # Pause transitions must reach EVERY client (the decision inbox
-            # lists paused runs across recipes) — the session/run channels only
-            # reach subscribers of this run.
-            await _push_global_event("workflows.changed", {})
-        elif kind == "error":
-            # Mark the run failed FIRST: flipping a still-running step to
-            # "failed" via update_step while the run were still "running" would
-            # recompute it to "done" (all steps terminal) and the failed write
-            # below would then be a no-op. With the run already "failed",
-            # update_step only touches the step, not the run status.
-            #
-            # Extract-node attribution (master-plan §2.2.6): a failure raised by
-            # a synthesized ``<src>__extract`` node is really the producing step's
-            # failure — attribute error_detail.node_id to the source step so the
-            # UI localizes it correctly, but keep the extract node id for detail.
-            raw_nid = ev.get("node_id")
-            attr_nid = raw_nid
-            extract_nid = None
-            if isinstance(raw_nid, str) and raw_nid.endswith("__extract"):
-                extract_nid = raw_nid
-                attr_nid = raw_nid[: -len("__extract")]
-            _set_run_pending_interrupt(run_id, None)
-            _set_run_status(
-                run_id, "failed",
-                error=str(ev.get("error") or ""),
-                only_from=("running", "paused"),
-                error_detail={
-                    "node_id": attr_nid,
-                    "extract_node_id": extract_nid,
-                    "traceback": ev.get("traceback"),
-                },
-            )
-            run = wf_store.get_run(run_id)
-            if run:
-                for s in run.get("steps", []):
-                    # Fail the attributed step (and any still-running step).
-                    if s.get("id") == attr_nid or s.get("status") == "running":
-                        wf_store.update_step(run_id, s["id"], "failed")
-            await _push_run_status(
-                present_in, run_id,
-                {
-                    "run_id": run_id,
-                    "status": "failed",
-                    "error": str(ev.get("error") or ""),
-                    "node_id": attr_nid,
-                },
-            )
-            _backfill_first_run(wf.get("id"), wf_store.get_run(run_id) or {})
-
-
-def _apply_supervisor_override(run: dict | None, dsl: dict) -> dict:
-    """Config layer 2 (方案B 阶段3): merge the run's ``supervisor_override``
-    into the supervisor block BEFORE compiling. Deep-copies first — the stored
-    version snapshot (and the def) must NEVER be mutated: resuming later must
-    still see the pristine pinned DSL."""
-    ov = (run or {}).get("supervisor_override")
-    if not isinstance(ov, dict) or not ov:
-        return dsl
-    d = json.loads(json.dumps(dsl, ensure_ascii=False))
-    d["supervisor"] = {**(d.get("supervisor") or {}), **ov}
-    return d
-
-
-async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict | None, present_in: str | None = None) -> None:
-    """Background driver: fork agent, stream the engine, persist + push events.
-
-    Invariant: the run NEVER ends this coroutine still marked "running" — every
-    failure (including dependency-building errors) lands as "failed" with the
-    error persisted. CancelledError is re-raised: the cancel endpoint /
-    shutdown path owns that status flip.
-    """
-    from ..workflows import engine as wf_engine
-
-    fork_id = None
-    try:
-        run0 = wf_store.get_run(run_id) or {}
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=run0.get("dsl_version"))
-        if not wf:
-            raise ValueError(f"workflow '{workflow_id}' not found")
-        dsl = _apply_supervisor_override(run0, dsl)
-        # Replayable transcript session (transcript.py): every run gets one so
-        # its agent steps read like scheduled agent tasks in the sessions list.
-        from ..workflows import transcript as wf_transcript
-
-        transcript_sid = await wf_transcript.begin_run_session(wf, {"id": run_id})
-        if present_in:
-            await _push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
-        else:
-            # Headless run (todo-sync et al.): there is no chat to carry run.*
-            # events, and the completion push below only fires when the run
-            # finishes. Announce the run at START too, so the Workflow panel
-            # lists it as running immediately instead of materialising late.
-            await _push_global_event("workflows.changed", {})
-        # Cross-run result cache (odw-comparison P1-①): prefix replay for
-        # fresh runs AND retries. Gated by settings + the run's own
-        # cache_disabled (create-run "no_cache").
-        from ..workflows import result_cache as wf_rc
-
-        rc = wf_rc.build_run_cache(run0, workflow_id)
-        agen = wf_engine.run_workflow(
-            dsl, run_id=run_id, model=model, tools=tools,
-            context_override=context_override,
-            usage_attr={**(usage_attr or {}), "session_id": present_in},
-            transcript_session=transcript_sid,
-            result_cache=rc,
-        )
-        await _drive_run_events(run_id, present_in, wf, agen)
-        sync_ledger.set_status(run_id, "ok")
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        _log.exception("workflow_run_failed run=%s workflow=%s", run_id, workflow_id)
-        await _mark_run_failed(run_id, exc, present_in)
-    finally:
-        # The fork is a per-run scratch agent; drop it so the Agents list
-        # doesn't accumulate wf-* clutter (reruns/resumes re-fork idempotently).
-        if fork_id:
-            try:
-                agents_reg.delete_agent(fork_id)
-            except Exception:
-                pass
-        # Headless runs (todo sync et al.) have no present_in session; push
-        # globally so the Workflow panel lists them without a manual refresh.
-        await _push_global_event("workflows.changed", {})
-
-
-async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict, present_in: str | None = None) -> None:
-    """Background driver to continue a paused run (human/supervisor decision).
-    Same never-silent-running invariant as :func:`_run_workflow_bg`."""
-    from ..workflows import engine as wf_engine
-
-    fork_id = None
-    try:
-        run0 = wf_store.get_run(run_id) or {}
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=run0.get("dsl_version"))
-        if not wf:
-            raise ValueError(f"workflow '{workflow_id}' not found")
-        dsl = _apply_supervisor_override(run0, dsl)
-        _set_run_status(run_id, "running")
-        # paused→running must be ANNOUNCED: the chat run card (and any run-
-        # scoped observer) only learns of the flip from this push — the next
-        # terminal push would otherwise leave it showing 已暂停 the whole time.
-        await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
-        # Manual pauses (#14) carry no node-side resume event — tell the engine
-        # to emit it from the run's pending_interrupt nature instead.
-        _nature = ((wf_store.get_run(run_id) or {}).get("pending_interrupt") or {}).get("kind")
-        agen = wf_engine.resume_workflow(
-            dsl, run_id=run_id, model=model, tools=tools, resume_value=resume_value,
-            usage_attr={**(usage_attr or {}), "session_id": present_in},
-            resume_nature="manual" if _nature == "manual" else None,
-        )
-        await _drive_run_events(run_id, present_in, wf, agen)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        _log.exception("workflow_resume_failed run=%s workflow=%s", run_id, workflow_id)
-        await _mark_run_failed(run_id, exc, present_in)
-    finally:
-        # paused-at-interrupt runs re-fork idempotently on next resume
-        if fork_id:
-            try:
-                agents_reg.delete_agent(fork_id)
-            except Exception:
-                pass
-
-
-def _spawn_run_task(run_id: str, coro) -> asyncio.Task:
-    """Register a run's background task and attach the permanent safety net.
-
-    The done-callback guarantees the "never silently running" invariant even if
-    a future code path forgets a status write: a non-cancelled task that ends
-    while the on-disk run is still "running" is healed to "failed". Also prunes
-    ``_WF_RUN_TASKS`` (the ``_await`` endpoint falls back to a disk read).
-    """
-    task = asyncio.create_task(coro)
-    _WF_RUN_TASKS[run_id] = task
-
-    def _on_done(t: asyncio.Task) -> None:
-        _WF_RUN_TASKS.pop(run_id, None)
-        if t.cancelled():
-            return
-        try:
-            run = wf_store.get_run(run_id)
-            if run and run.get("status") == "running":
-                exc = t.exception()
-                if exc is not None:
-                    from ..workflows.engine import _trimmed_traceback
-
-                    err = f"{type(exc).__name__}: {exc}"
-                    detail = {"node_id": None, "traceback": _trimmed_traceback(exc)}
-                else:
-                    err = "run task ended without emitting a terminal event"
-                    detail = None
-                wf_events.append_event(
-                    run_id, "error", error=err,
-                    traceback=(detail or {}).get("traceback"),
-                )
-                _set_run_status(run_id, "failed", error=err, error_detail=detail)
-                sync_ledger.set_status(run_id, "failed", err)
-                _log.error("workflow_run_guard_healed run=%s err=%s", run_id, err)
-        except Exception:
-            _log.exception("workflow_run_guard_failed run=%s", run_id)
-
-    task.add_done_callback(_on_done)
-    return task
-
-
-def _reconcile_orphan_runs() -> None:
-    """Heal runs stranded by a previous process exit (startup reconciliation).
-
-    Called once in the lifespan startup: at that moment ``_WF_RUN_TASKS`` is
-    empty and no run task can possibly be alive, so every run still marked
-    "running" is by definition an orphan from a crash/quit. Each is flipped to
-    the terminal ``interrupted`` status with a persisted reason + an event (which
-    also (re)creates its events file). "paused" runs are left untouched — their
-    checkpoint is intact and they stay resumable. Failed runs missing an inline
-    ``error`` get it backfilled from their last error event so the UI can show
-    the reason without parsing events.jsonl.
-    """
-    interrupted = 0
-    backfilled = 0
-    for run in wf_store.list_runs():
-        rid = run.get("id")
-        status = run.get("status")
-        if status == "running":
-            reason = "sidecar restarted during run (orphaned)"
-            wf_events.append_event(rid, "interrupted", error=reason)
-            _set_run_status(rid, "interrupted", error=reason)
-            sync_ledger.set_status(rid, "interrupted", reason)
-            interrupted += 1
-        elif status == "failed" and not run.get("error"):
-            errs = wf_events.read_events(rid, kind="error")
-            if errs:
-                last_ev = errs[-1]
-                last = last_ev.get("error") or ""
-                if last:
-                    run["error"] = last
-                    # Carry the diagnostic fields along too, so historical
-                    # failed runs enjoy the same localization data.
-                    if last_ev.get("traceback") or last_ev.get("node_id"):
-                        run["error_detail"] = {
-                            "node_id": last_ev.get("node_id"),
-                            "traceback": last_ev.get("traceback"),
-                        }
-                    wf_storemod._write_json(wf_storemod._run_path(rid), run)
-                    backfilled += 1
-    if interrupted or backfilled:
-        _log.info(
-            "run_reconciliation interrupted=%d backfilled=%d", interrupted, backfilled
-        )
-
-
-async def _shutdown_run_tasks() -> None:
-    """Graceful shutdown: cancel live run tasks, then mark any run still
-    "running" on disk as interrupted. Runs already paused stay paused."""
-    pending = [(rid, t) for rid, t in list(_WF_RUN_TASKS.items()) if not t.done()]
-    for _, t in pending:
-        t.cancel()
-    if pending:
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*(t for _, t in pending), return_exceptions=True),
-                timeout=3.0,
-            )
-        except (TimeoutError, asyncio.CancelledError):
-            pass
-    for rid, _ in pending:
-        run = wf_store.get_run(rid)
-        if run and run.get("status") == "running":
-            reason = "sidecar shut down during run"
-            wf_events.append_event(rid, "interrupted", error=reason)
-            _set_run_status(rid, "interrupted", error=reason)
-            sync_ledger.set_status(rid, "interrupted", reason)
-
-
-async def _shutdown_synth_tasks() -> None:
-    """Graceful shutdown: cancel live synthesis tasks. Deliberately does NOT
-    write output.json for them — the leftover cases render as 未完成 after the
-    restart (crash semantics), the intended reconciliation-free behavior."""
-    pending = [t for t in list(_SYNTH_TASKS.values()) if not t.done()]
-    for t in pending:
-        t.cancel()
-    if pending:
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*pending, return_exceptions=True),
-                timeout=3.0,
-            )
-        except (TimeoutError, asyncio.CancelledError):
-            pass
-
-
 @router.post("/api/workflow_runs")
 async def create_workflow_run_endpoint(data: dict) -> dict:
     """Trigger a workflow run: creates the run (bound to a session for in-chat
@@ -1644,21 +659,6 @@ async def await_workflow_run_endpoint(run_id: str) -> dict:
     return {"ok": True, "run": wf_store.get_run(run_id), "error": err}
 
 
-def _run_checkpoint_path(run_id: str) -> Path:
-    """Checkpoint artifact for a run. Engine compiles with
-    ``FileCheckpointer("default")`` + ``thread_id=run_id`` (server never
-    overrides the slug), so all run checkpoints land in the default project's
-    sessions dir under the run id. Exact-name only — never glob (per-session
-    dirs share prefixes; same rule as delete_session)."""
-    return paths.project_sessions_dir("default") / f"{run_id}.json"
-
-
-def _remove_run_artifacts(run_id: str) -> None:
-    """Delete a run's persisted files: run JSON + events JSONL + checkpoint."""
-    wf_store.delete_run(run_id)
-    _run_checkpoint_path(run_id).unlink(missing_ok=True)
-
-
 @router.post("/api/workflow_runs/{run_id}/retry")
 async def retry_workflow_run_endpoint(run_id: str) -> dict:
     """Re-run a failed/interrupted/cancelled run as a NEW run.
@@ -1698,41 +698,6 @@ async def retry_workflow_run_endpoint(run_id: str) -> dict:
     )
     await _push_global_event("workflows.changed", {})
     return {"ok": True, "run": new, "source_run_id": run_id}
-
-
-async def _continue_run_bg(run_id: str, workflow_id: str, present_in: str | None = None) -> None:
-    """Background driver for retry-from-checkpoint (P2): same never-silent-
-    running invariant as the other drivers; streams the graph with input=None
-    on the copied checkpoint so completed steps are not re-executed."""
-    from ..workflows import engine as wf_engine
-
-    fork_id = None
-    try:
-        run0 = wf_store.get_run(run_id) or {}
-        wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=run0.get("dsl_version"))
-        if not wf:
-            raise ValueError(f"workflow '{workflow_id}' not found")
-        dsl = _apply_supervisor_override(run0, dsl)
-        _set_run_status(run_id, "running")
-        await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
-        agen = wf_engine.continue_workflow(
-            dsl, run_id=run_id, model=model, tools=tools,
-            usage_attr={**(usage_attr or {}), "session_id": present_in},
-        )
-        await _drive_run_events(run_id, present_in, wf, agen)
-        sync_ledger.set_status(run_id, "ok")
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        _log.exception("workflow_continue_failed run=%s workflow=%s", run_id, workflow_id)
-        await _mark_run_failed(run_id, exc, present_in)
-    finally:
-        if fork_id:
-            try:
-                agents_reg.delete_agent(fork_id)
-            except Exception:
-                pass
-        await _push_global_event("workflows.changed", {})
 
 
 @router.post("/api/workflow_runs/{run_id}/retry_from_checkpoint")
@@ -1794,101 +759,6 @@ async def retry_from_checkpoint_endpoint(run_id: str) -> dict:
     )
     await _push_global_event("workflows.changed", {})
     return {"ok": True, "run": new, "source_run_id": run_id}
-
-
-def _truncate_checkpoint_to(run_id: str, checkpoint_id: str) -> None:
-    """Trim the run's checkpoint record so its HEAD is ``checkpoint_id``
-    (rerun_from). Entries are append-only with parent links *within* the file,
-    so a prefix cut stays self-consistent for delta reconstruction — anything
-    after the cut (later supersteps, newer interrupts) simply ceases to exist
-    for this fork."""
-    p = _run_checkpoint_path(run_id)
-    try:
-        rec = json.loads(p.read_text() or "{}")
-    except Exception:
-        return
-    cps = rec.get("checkpoints") or []
-    idx = next((i for i, c in enumerate(cps) if c.get("checkpoint_id") == checkpoint_id), None)
-    if idx is None or idx == len(cps) - 1:
-        return
-    rec["checkpoints"] = cps[: idx + 1]
-    # Strip the head entry's pending_writes: they are the ORIGINAL superstep's
-    # completed-task outputs (put_writes land on the checkpoint that scheduled
-    # the node). surface_pending_writes would then tell langgraph "this task
-    # already finished" and SKIP the very node we were asked to re-run — the
-    # opposite of rerun_from. Dropping them forces re-execution from scratch.
-    rec["checkpoints"][-1].pop("pending_writes", None)
-    p.write_text(json.dumps(rec, ensure_ascii=False, default=str))
-
-
-async def _rerun_from_bg(
-    run_id: str, workflow_id: str, node_id: str, pinned_dsl: dict, present_in: str | None = None
-) -> None:
-    """Background driver for rerun-from-node (design B 屏2「从节点重跑」):
-
-    walks the copied checkpoint's state history (newest first) for the last
-    snapshot where ``node_id`` was scheduled, truncates the record so that
-    snapshot is the head, then continues like retry_from_checkpoint — only
-    the target node and its suffix re-execute, with the source run's context.
-
-    Fidelity limits (accepted, see the review doc): side effects after the
-    fork point re-fire; for loop bodies the LAST scheduling wins; the compiled
-    graph comes from the run's PINNED dsl_version (never the current one)."""
-    from ..checkpointer import FileCheckpointer
-    from ..workflows import compiler as wf_compiler
-    from ..workflows import engine as wf_engine
-
-    fork_id = None
-    try:
-        wf, _cur, model, tools, fork_id, usage_attr = _wf_build_deps(
-            run_id, workflow_id, pinned_version=int(pinned_dsl.get("dsl_version") or 0) or None
-        )
-        if not wf:
-            raise ValueError(f"workflow '{workflow_id}' not found")
-        pinned_dsl = _apply_supervisor_override(wf_store.get_run(run_id), pinned_dsl)
-        _set_run_status(run_id, "running")
-        await _push_run_status(present_in, run_id, {"run_id": run_id, "status": "running"})
-        graph = wf_compiler.compile_workflow(
-            pinned_dsl, model, tools, {"run_id": run_id, "events": []},
-            checkpointer=FileCheckpointer("default", surface_pending_writes=True),
-        )
-        target_cid: str | None = None
-        async for snap in graph.aget_state_history({"configurable": {"thread_id": run_id}}):
-            if node_id in (getattr(snap, "next", ()) or ()):
-                target_cid = (snap.config.get("configurable") or {}).get("checkpoint_id")
-                break  # newest first → the last time the node was scheduled
-        if not target_cid:
-            raise ValueError(f"节点 {node_id} 没有可回溯的检查点（未调度过，或检查点已清理）")
-        _truncate_checkpoint_to(run_id, target_cid)
-        # Cross-run result cache: the truncated prefix never passes through
-        # the node wrapper (checkpoint-committed), so no false hits there.
-        # The TARGET node is force-live (the user asked to re-execute it);
-        # its suffix replays only where fingerprints still match, and the
-        # re-executed results refresh the index.
-        from ..workflows import result_cache as wf_rc
-
-        rc = wf_rc.build_run_cache(wf_store.get_run(run_id) or {}, workflow_id)
-        if rc is not None:
-            rc.force_live_node = node_id
-        agen = wf_engine.continue_workflow(
-            pinned_dsl, run_id=run_id, model=model, tools=tools,
-            usage_attr={**(usage_attr or {}), "session_id": present_in},
-            result_cache=rc,
-        )
-        await _drive_run_events(run_id, present_in, wf, agen)
-        sync_ledger.set_status(run_id, "ok")
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        _log.exception("workflow_rerun_from_failed run=%s node=%s", run_id, node_id)
-        await _mark_run_failed(run_id, exc, present_in)
-    finally:
-        if fork_id:
-            try:
-                agents_reg.delete_agent(fork_id)
-            except Exception:
-                pass
-        await _push_global_event("workflows.changed", {})
 
 
 @router.post("/api/workflow_runs/{run_id}/rerun_from")
@@ -2013,3 +883,47 @@ async def cleanup_workflow_runs_endpoint(data: dict) -> dict:
                 p.unlink(missing_ok=True)
     await _push_global_event("workflows.changed", {})
     return {"ok": True, "deleted": deleted}
+
+
+# Re-export surface: the synthesis loop and the run-engine drivers were split
+# into sibling modules (imported here at the BOTTOM so the api.workflows ↔
+# api.todos module-level cycle keeps its current resolution order). Every name
+# below stays an attribute of THIS module — server.py, todos.py,
+# stream/engine.py and scheduler.py import them from here, and the tests
+# monkeypatch ``ginno_runtime.api.workflows.build_model`` / ``build_all_tools``
+# expecting the drivers to see the patch.
+from .workflows_synthesis import (  # noqa: E402
+    SYNTH_PROMPT_VERSION,
+    _SYNTH_TASKS,
+    _extract_json_obj,
+    _resolve_trace_window,
+    _run_synthesis,
+    _run_synthesis_bg,
+    _shutdown_synth_tasks,
+    _spawn_synth_task,
+    _synth_error_text,
+    _synthesize_prompt,
+    _trace_text,
+)
+from .workflows_runs import (  # noqa: E402
+    _apply_supervisor_override,
+    _backfill_first_run,
+    _continue_run_bg,
+    _drive_run_events,
+    _mark_run_failed,
+    _push_both,
+    _push_run_status,
+    _reconcile_orphan_runs,
+    _remove_run_artifacts,
+    _rerun_from_bg,
+    _resume_workflow_bg,
+    _run_checkpoint_path,
+    _run_workflow_bg,
+    _set_run_pending_interrupt,
+    _set_run_status,
+    _shutdown_run_tasks,
+    _spawn_run_task,
+    _touch_run,
+    _wf_build_deps,
+    _wf_mcp_tools,
+)

@@ -1,24 +1,17 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Loader2, Square, Zap, ChevronDown, Check, RotateCcw, Globe } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Square, Check, RotateCcw } from "lucide-react";
 import { useGinno } from "@/lib/store";
-import * as api from "@/lib/runtime";
-import { debugLog, attachFilePath } from "@/lib/runtime";
 import { useSteerQueue } from "@/lib/steerQueue";
-import {
-  readImage,
-  uploadDoc,
-  isImageFile,
-} from "@/lib/composerAttachments";
 import { loadToolLabels } from "@/lib/toolLabels";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import { agentHex } from "@/lib/theme";
-import { greeting, relTime } from "@/lib/utils";
+import { greeting } from "@/lib/utils";
 import { Icon } from "@/components/icons";
 import { ContextFoldersChip } from "@/components/shell/ContextFoldersChip";
-import { ContextBlocks, SteerBand, SubagentBlocks, SubagentGroupCard, UserBlocks, hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
+import { hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
@@ -33,22 +26,22 @@ import {
   type ResolvedMention,
   type Trigger,
 } from "@/components/chat/commandMenu";
-import {
-  cancelWorkflowRun,
-  decideWorkflowRun,
-  deleteWorkflowRun,
-  pauseWorkflowRun,
-  retryWorkflowRun,
-  retryWorkflowRunFromCheckpoint,
-} from "@/lib/runtime";
 import type { WorkflowRun } from "@/lib/types";
 import type { SessionMeta, SessionUsage } from "@/lib/types";
 import {
-  foldConsecutiveSpawnCards,
+  appendEntry,
+  caretOnFirstLine,
+  caretOnLastLine,
+  initHistory,
+  navDown,
+  navUp,
+  seedEntries,
+  type HistoryState,
+} from "./inputHistory";
+import {
   mid,
   newTurnId,
   recommendAgentId,
-  TABLE_KINDS,
   type Attachment,
   type ChatMsg,
   type FileAttachment,
@@ -56,20 +49,24 @@ import {
   type SendPayload,
   type VersionPropose,
 } from "./streamCore";
-import {
-  AssistantBubble,
-  ErrorCard,
-  HandoffDivider,
-  ProposeCard,
-  SubagentTopBar,
-  TurnIdChip,
-} from "./streamCards";
+import { ProposeCard, SubagentTopBar } from "./streamCards";
 import { useChatStreamEngine, HOME_SLOT } from "./useChatStreamEngine";
+import { useComposerFiles } from "./useComposerFiles";
+import { useRunActions } from "./useRunActions";
+import { useModelPick } from "./useModelPick";
+import { useRouter } from "next/navigation";
 import { useSummarizeFlow } from "./useSummarizeFlow";
-import { SubagentPlanCard } from "./subagentPlanCard";
 import { ModBand } from "./mod/ModBand";
 import { ModAskCard, type ModAskState } from "./mod/ModAskCard";
 import type { ModBandGroup } from "./mod/ModBand";
+import { QueueBar } from "./stream/QueueBar";
+import { ModelChipMenu } from "./stream/ModelChipMenu";
+import { ConnStatusChip } from "./stream/ConnStatusChip";
+import { ComposerAttachmentRows, ImagesReadingRow } from "./stream/ComposerAttachmentRows";
+import { DelegationStatusBar } from "./stream/DelegationStatusBar";
+import { PermissionPromptCard } from "./stream/PermissionPromptCard";
+import { SummarizeMenu } from "./stream/SummarizeMenu";
+import { TranscriptList } from "./stream/TranscriptList";
 
 export function ChatStream({
   session,
@@ -86,18 +83,8 @@ export function ChatStream({
   // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
   // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
   const tc = useTranslations("chat");
-  const tr = tc as unknown as {
-    (key: string, values?: Record<string, string | number>): string;
-    has(key: string): boolean;
-  };
-  // failReason 存稳定 key（attemptSend / engine 写入），渲染时翻译；
-  // 未识别的值（未来来源）原样显示。
-  const failText = (fr?: string) =>
-    fr ? (tr.has(`sendFailed.${fr}`) ? tr(`sendFailed.${fr}`) : fr) : tc("sendFailed.unknownReason");
+  const router = useRouter();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
-  // 连续的子代理发起卡并成一张委派卡（2026-10-01 空间优化）：并行委派 3 个
-  // 子代理时，主对话原本出现 3 张同构卡，把主 agent 的内容挤下去。
-  const spawnFold = useMemo(() => foldConsecutiveSpawnCards(messages), [messages]);
   const [liveId, setLiveId] = useState<string | null>(null);
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -124,10 +111,6 @@ export function ChatStream({
   // quick-chat window; the hook owns the queue + acks, this component renders
   // it. `steerItems` (below) is read during render.
   const steerQ = useSteerQueue();
-  // Images currently being read/compressed by readImage. The Attachment only
-  // reaches `attachments` when that async read resolves, so a send fired in the
-  // meantime would silently drop the picture. This counter gates the send.
-  const [imagesReading, setImagesReading] = useState(0);
   // Visible feedback for a send blocked by an in-flight attachment (image
   // compression / document upload). Both paths used to return silently — the
   // user pressed send and NOTHING happened. Auto-clears after a few seconds.
@@ -138,6 +121,10 @@ export function ChatStream({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Composer ↑/↓ input history, per session (shell-style recall; the seed
+  // comes from the session's already-loaded user messages, so a reload or
+  // device switch still recalls the full history). See inputHistory.ts.
+  const inputHistoryRef = useRef<Record<string, HistoryState>>({});
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   // connectRef: the reconnect button always calls this; updated on each session switch
   const connectRef = useRef<() => void>(() => {});
@@ -159,6 +146,26 @@ export function ChatStream({
   // $.ui.ask(§7.3):按 sid 存的待答问题,浮层渲染(见文件尾部 ModAskCard)。
   const [modAsks, setModAsks] = useState<Record<string, ModAskState | null>>({});
 
+  // 文件/图片挂载管线（useComposerFiles）与 engine 互相依赖：engine 的 deps
+  // 要 uploadOneDoc/attachOne，而它们要读 engine 的共享 ref。经 holder 打破环
+  // ——engine 调用后立即填充，函数体只在调用期读取（见 useComposerFiles 注释）。
+  const composerRefsHolder = useRef<{
+    curSessionIdRef: { current: string | null };
+    draftCacheRef: {
+      current: Record<
+        string,
+        { input: string; attachments: Attachment[]; files?: FileAttachment[]; mentions?: ResolvedMention[] }
+      >;
+    };
+    pendingDocsRef: { current: Array<{ file: File; tmpId: string }> };
+    pendingPathsRef: { current: Array<{ path: string; tmpId: string }> };
+  } | null>(null);
+  const {
+    imagesReading, addFiles, attachPaths, uploadOneDoc, attachOne,
+  } = useComposerFiles({
+    g, session, setAttachments, setFileAttachments, refs: composerRefsHolder,
+  });
+
   const {
     activeSidRef, curSessionIdRef, storeRef, liveBySessionRef,
     socketsRef, permsRef, proposeRef, busyBySessionRef, streamAgentRef,
@@ -179,6 +186,7 @@ export function ChatStream({
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu,
     finishSynthesisWait,
   });
+  composerRefsHolder.current = { curSessionIdRef, draftCacheRef, pendingDocsRef, pendingPathsRef };
   const sumFlow = useSummarizeFlow({
     g, session, sumPendingRef, runsBySessionRef, syncDisplay,
   });
@@ -193,6 +201,18 @@ export function ChatStream({
   function finishSynthesisWait(id: string) {
     return sumFlow.finishSynthesisWait(id);
   }
+
+  // 运行卡片操作（取消/暂停/继续/重试/删除）。
+  const {
+    cancelRun, pauseRun, continueRun, retryRun, retryRunFromCheckpoint, deleteRun,
+  } = useRunActions({ g, curSessionIdRef, runsBySessionRef, syncDisplay });
+
+  // 模型 chip：home 待生效模型/挂载目录 + 服务端热切。
+  const {
+    homeModel, homeCreatingRef, pendingMounts, setPendingMounts, resetPendingMounts,
+    modelOpen, setModelOpen, pickModel, enabledProviders,
+    targetAgent, homeEffective, homeModelSource, modelChipLabel,
+  } = useModelPick({ g, session, target });
 
   // 页面刷新后的 run 卡片水合（run view 方案）：runsBySessionRef 只由
   // run.bind 推送填充，刷新后历史绑定会丢。store 的 workflowRuns 是全量
@@ -356,411 +376,6 @@ export function ChatStream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-
-
-
-  // 上传/挂载是异步的：等待期间用户可能已切走会话。完成回执必须落回文件
-  // 所属的那个 slot——用户还在就更新 state，切走了就写它的草稿，切回来时
-  // 芯片已是就绪态。直接 setFileAttachments 会把文件串进当前会话（或让
-  // 旧会话草稿里的芯片永远停在「上传中」）。
-  function landFile(slot: string, fn: (a: FileAttachment[]) => FileAttachment[]) {
-    const cur = curSessionIdRef.current ?? HOME_SLOT;
-    if (cur === slot) {
-      setFileAttachments(fn);
-      return;
-    }
-    const d = draftCacheRef.current[slot];
-    if (d) d.files = fn(d.files ?? []);
-  }
-  // 表格类文件落盘后自动开预览——但仅当用户还在文件所属的会话里；切走后
-  // 弹预览只会打断别的会话。
-  function maybeAutoPreview(slot: string, entry: { id: string; name: string; path: string; kind: string }) {
-    if (TABLE_KINDS.has(entry.kind) && (curSessionIdRef.current ?? HOME_SLOT) === slot) {
-      g.openPreview({ id: entry.id, name: entry.name, path: entry.path, kind: entry.kind });
-    }
-  }
-
-  async function uploadOneDoc(sid: string, f: File, tmpId: string): Promise<FileAttachment | null> {
-    try {
-      // The upload + response telemetry live in the shared composerAttachments
-      // module (used by the floating window too); it throws on failure.
-      const entry = await uploadDoc(sid, f);
-      landFile(sid, (a) =>
-        a.map((x) =>
-          x.id === tmpId
-            ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
-            : x,
-        ),
-      );
-      // spreadsheets/tables auto-open the preview on drop
-      maybeAutoPreview(sid, entry);
-      g.reloadArtifacts();
-      return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
-    } catch (e) {
-      void debugLog({ where: "addFiles:upload-error", name: f.name, error: String(e) });
-      landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
-      return null;
-    }
-  }
-
-  async function addFiles(files: FileList | File[] | null) {
-    // [DEBUG] telemetry for WKWebView drag & drop diagnosis
-    void debugLog({
-      where: "addFiles:enter",
-      hasSession: !!session,
-      count: files?.length ?? 0,
-      files: Array.from(files ?? []).map((f) => ({ name: f.name, type: f.type, size: f.size })),
-    });
-    if (!files?.length) return;
-    const sid = session?.id ?? null;
-    const list = Array.from(files);
-    // Images keep the base64 → multimodal path; everything else is uploaded
-    // to the sidecar and attached by registry ref (docs §7.2).
-    const images = list.filter(isImageFile);
-    const docs = list.filter((f) => !isImageFile(f));
-    void debugLog({ where: "addFiles:split", images: images.length, docs: docs.length });
-    if (images.length) {
-      // Bracket the async read so send() can gate on it: until this resolves,
-      // `attachments` does not contain these pictures and sending would drop
-      // them silently (see imagesReading).
-      setImagesReading((n) => n + 1);
-      try {
-        const items = await Promise.all(images.map(readImage));
-        const ok = items.filter((x): x is Attachment => !!x);
-        if (ok.length) setAttachments((a) => [...a, ...ok]);
-      } finally {
-        setImagesReading((n) => Math.max(0, n - 1));
-      }
-    }
-    for (const f of docs) {
-      // optimistic chip (uploading state) so the user gets instant feedback
-      const tmpId = `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      setFileAttachments((a) => [
-        ...a,
-        { id: tmpId, name: f.name, path: "", kind: "", uploading: true },
-      ]);
-      if (!sid) {
-        pendingDocsRef.current.push({ file: f, tmpId });
-        continue;
-      }
-      await uploadOneDoc(sid, f, tmpId);
-    }
-  }
-
-  // Native OS file-drop bridge for the desktop app. WKWebView never fires the
-  // HTML5 onDrop for Finder drags, so the Tauri shell handles the drop and
-  // forwards the native paths here (lib.rs → window.eval). Browsers use the
-  // HTML5 path above instead; this is a no-op there (nothing calls it).
-  useEffect(() => {
-    (window as unknown as { __ginnoFileDrop?: (p: string[]) => void }).__ginnoFileDrop = (
-      paths: string[],
-    ) => void attachPaths(paths);
-    return () => {
-      delete (window as unknown as { __ginnoFileDrop?: unknown }).__ginnoFileDrop;
-    };
-  });
-
-  async function attachOne(sid: string, p: string, tmpId: string): Promise<FileAttachment | null> {
-    const name = p.split("/").pop() || p;
-    try {
-      const r = await attachFilePath(sid, p);
-      void debugLog({ where: "attachPaths:resp", name, ok: r?.ok, error: r?.error });
-      if (r.ok && r.file) {
-        const entry = r.file;
-        landFile(sid, (a) =>
-          a.map((x) =>
-            x.id === tmpId
-              ? { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind }
-              : x,
-          ),
-        );
-        maybeAutoPreview(sid, entry);
-        g.reloadArtifacts();
-        return { id: entry.id, name: entry.name, path: entry.path, kind: entry.kind };
-      } else {
-        landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
-        return null;
-      }
-    } catch (e) {
-      void debugLog({ where: "attachPaths:error", name, error: String(e) });
-      landFile(sid, (a) => a.filter((x) => x.id !== tmpId));
-      return null;
-    }
-  }
-
-  async function attachPaths(paths: string[]) {
-    void debugLog({ where: "attachPaths", paths });
-    if (!paths?.length) return;
-    const sid = session?.id ?? null;
-    for (const p of paths) {
-      const name = p.split("/").pop() || p;
-      const tmpId = `path-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      setFileAttachments((a) => [...a, { id: tmpId, name, path: p, kind: "", uploading: true }]);
-      if (!sid) {
-        pendingPathsRef.current.push({ path: p, tmpId });
-        continue;
-      }
-      await attachOne(sid, p, tmpId);
-    }
-  }
-
-
-  function cancelRun(runId: string) {
-    cancelWorkflowRun(runId);
-  }
-  function pauseRun(runId: string) {
-    // Manual pause (#14): cooperative — the run flips to paused via the
-    // run.status push once it reaches a safe boundary.
-    void pauseWorkflowRun(runId);
-  }
-  function continueRun(runId: string) {
-    decideWorkflowRun(runId, "continue");
-  }
-  function retryRun(runId: string): Promise<{ ok?: boolean; detail?: string } | void> {
-    // The retry creates a NEW run bound to the same session; the run.bind push
-    // (or the workflows.changed reload) surfaces it. Refresh the local list too.
-    // Returns the outcome so LiveRunBlock can shake + show the reason on failure.
-    return retryWorkflowRun(runId)
-      .then((r) => {
-        g.reloadWorkflowRuns();
-        const body = r as { ok?: boolean; detail?: string } | undefined;
-        if (body && body.ok === false) return { ok: false, detail: body.detail };
-        return undefined;
-      })
-      .catch(() => ({ ok: false, detail: tc("run.retryNoConnection") }));
-  }
-  function retryRunFromCheckpoint(runId: string): Promise<{ ok?: boolean; detail?: string } | void> {
-    // P2: re-execute from the persisted checkpoint (failed node + suffix only).
-    return retryWorkflowRunFromCheckpoint(runId)
-      .then((r) => {
-        g.reloadWorkflowRuns();
-        const body = r as { ok?: boolean; detail?: string } | undefined;
-        if (body && body.ok === false) return { ok: false, detail: body.detail };
-        return undefined;
-      })
-      .catch(() => ({ ok: false, detail: tc("run.retryNoConnection") }));
-  }
-  function deleteRun(runId: string) {
-    void deleteWorkflowRun(runId).then(() => {
-      const sid = curSessionIdRef.current;
-      if (sid) {
-        const list = (runsBySessionRef.current[sid] ?? []).filter((r) => r.id !== runId);
-        runsBySessionRef.current[sid] = list;
-        syncDisplay(sid);
-      }
-      g.reloadWorkflowRuns();
-    });
-  }
-
-  // ─── Command / mention autocomplete ────────────────────────────────────────
-  // Re-evaluate whether the composer's current text+caret opens a menu. Called
-  // on every input change and after programmatic edits (the "/" button).
-  function recomputeMenu(text: string) {
-    const caret = textareaRef.current?.selectionStart ?? text.length;
-    const trigger = detectTrigger(text, caret);
-    if (!trigger) {
-      setMenu(null);
-      return;
-    }
-    const items = buildMenuItems(trigger, {
-      skills: g.skills,
-      agents: g.agents,
-      workflows: g.workflows,
-      artifacts: g.artifacts,
-    });
-    setMenu(items.length ? { items, active: 0, trigger } : null);
-  }
-
-  // Insert the picked item, record its resolved mention, and refocus the caret
-  // right after the inserted token (ready to type the prompt).
-  function pickItem(item: MenuItem) {
-    if (!menu) return;
-    const caret = textareaRef.current?.selectionStart ?? input.length;
-    const r = applySelection(input, caret, menu.trigger, item);
-    setInput(r.text);
-    setMenu(null);
-    if (r.mention && session) {
-      const sid = session.id;
-      const rest = (mentionsRef.current[sid] ?? []).filter(
-        (m) => !(m.kind === r.mention!.kind && m.id === r.mention!.id),
-      );
-      mentionsRef.current[sid] = [...rest, r.mention];
-    }
-    // @agent also retargets the turn — same code path as the "Ask X" chips, so
-    // the structured mention and agent_id never disagree from the UI.
-    if (item.kind === "agent") setTarget(item.id);
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(r.caret, r.caret);
-      }
-    });
-  }
-
-  // Home-state model pick (composer model chip, M3) consumed on lazy creation.
-  const [homeModel, setHomeModel] = useState<{ provider?: string; model?: string } | undefined>(
-    undefined,
-  );
-  const homeCreatingRef = useRef(false);
-
-  // 首页待挂载目录(home-mount-picker-design.md §2.3)：随首条消息的建会话请求
-  // 生效，会话打开后 TopBar chip 以同一批 id 接管。初始值/发送后重置值都是
-  // 库里 auto_mount 条目——手动改动只活到本次发送。
-  const [pendingMounts, setPendingMounts] = useState<{ ids: string[]; primary: string | null }>({
-    ids: [],
-    primary: null,
-  });
-  const resetPendingMounts = useCallback(async () => {
-    try {
-      const r = await api.listFolders();
-      const autos = (r.folders || []).filter((f) => f.auto_mount);
-      setPendingMounts(
-        autos.length ? { ids: autos.map((f) => f.id), primary: autos[0].id } : { ids: [], primary: null },
-      );
-    } catch {
-      /* 无 sidecar：保持空 pending，chip 仍可手输路径 */
-    }
-  }, []);
-  // 仅组件挂载时预填一次；发送成功后的重置在 createAndSend 里显式触发。
-  useEffect(() => {
-    void resetPendingMounts();
-  }, [resetPendingMounts]);
-
-  // ── composer inline controls (open-experience redesign M3) ──────────────
-  // Model chip = per-session provider/model switch. In-place on the server
-  // (model-assignment-design.md §3.2): the running graph resolves its model
-  // per LLM call, so switching mid-turn takes effect at the next step — no
-  // socket cycle, no stream interruption.
-  const [modelOpen, setModelOpen] = useState(false);
-  async function pickModel(pid: string, model: string) {
-    setModelOpen(false);
-    // Never select an empty model. The chip label falls back to the provider id
-    // (`model || provider`), so an empty model leaves the label unchanged and the
-    // click reads as "nothing happened" — the exact shape of the "cannot pick a
-    // model" report. The menu cannot produce one; this is the guard behind it.
-    if (!model) return;
-    if (!session) {
-      setHomeModel({ provider: pid, model });
-      return;
-    }
-    const prevProvider = session.provider;
-    const prevModel = session.model;
-    g.applySessionPatch(session.id, { provider: pid, model });
-    try {
-      const r = await api.patchSession(session.id, { provider: pid, model });
-      if (!r?.ok || !r.session) throw new Error(r?.error ?? "switch failed");
-      g.applySessionPatch(session.id, r.session);
-    } catch {
-      g.applySessionPatch(session.id, { provider: prevProvider, model: prevModel });
-    }
-  }
-  const enabledProviders = Object.entries(g.providers).filter(([, p]) => p.enabled);
-  // At home nothing is chosen yet, so the chip should name what WOULD be used —
-// the default provider's own model — not the provider id. A bare "custom" there
-// reads as a model name and looks unchangeable (the "default is customer"
-// report), and the id is the one thing the user cannot act on.
-  const defaultProviderCfg = g.providers[g.defaultProvider];
-  // 生效模型解析——镜像服务端 _resolve_provider_model / provider_is_deliberate
-  // 的优先级:显式选择 > 目标 agent 的 deliberate 绑定 > 全局默认。chip 显示
-  // 什么,首个会话就用什么;此前 label 只认全局默认、懒创建又只在主动点选时
-  // 才下发,agent 绑定在服务端悄悄接管——「选了 glm 进去变 qwen」的根因。
-  const targetAgent =
-    g.agents.find((a) => a.id === (target ?? g.agents[0]?.id)) ?? null;
-  const agentBindingPid =
-    targetAgent?.provider &&
-    (targetAgent.provider !== "custom" || targetAgent.provider_explicit) &&
-    g.providers[targetAgent.provider]?.enabled
-      ? targetAgent.provider
-      : null;
-  const homeEffective = homeModel
-    ? { ...homeModel }
-    : agentBindingPid
-      ? {
-          provider: agentBindingPid,
-          model:
-            targetAgent?.model ||
-            g.providers[agentBindingPid]?.default_model ||
-            g.providers[agentBindingPid]?.model ||
-            "",
-        }
-      : {
-          provider: g.defaultProvider,
-          model:
-            defaultProviderCfg?.default_model ||
-            defaultProviderCfg?.model ||
-            "",
-        };
-  // 首页态的模型来源:picked=用户点选 / agent=agent 绑定 / default=应用默认
-  const homeModelSource: "picked" | "agent" | "default" = homeModel
-    ? "picked"
-    : agentBindingPid
-      ? "agent"
-      : "default";
-  const modelChipLabel = session
-    ? session.model || session.provider
-    : homeEffective.model ||
-      homeEffective.provider ||
-      defaultProviderCfg?.name ||
-      g.defaultProvider;
-
-  /** Lazy creation: home composer send creates the session, flushes buffered
-   *  attachments, awaits the socket, then posts the turn. */
-  async function createAndSend(payload: {
-    text: string;
-    images: Attachment[];
-    files: FileAttachment[];
-  }) {
-    if (homeCreatingRef.current) return;
-    homeCreatingRef.current = true;
-    try {
-      const agentId = target ?? g.agents[0]?.id ?? null;
-      const s = await g.newSession(agentId, {
-        ...(homeModel ?? {}),
-        // 出生即挂载：pending 目录随建会话请求提交(后端 create_session 原生支持)
-        context_folders: pendingMounts.ids.length ? pendingMounts.ids : undefined,
-        primary_folder: pendingMounts.primary ?? undefined,
-      });
-      if (!s) return; // sessionError banner carries the reason; composer keeps text
-      curSessionIdRef.current = s.id;
-      connectSession(s.id);
-      const docs = pendingDocsRef.current;
-      pendingDocsRef.current = [];
-      const natives = pendingPathsRef.current;
-      pendingPathsRef.current = [];
-      // Collect the resolved entries so they ride in the turn payload — the
-      // fileAttachments state update below hasn't rendered yet in this closure.
-      const flushed: FileAttachment[] = [];
-      for (const d of docs) {
-        const e = await uploadOneDoc(s.id, d.file, d.tmpId);
-        if (e) flushed.push(e);
-      }
-      for (const n of natives) {
-        const e = await attachOne(s.id, n.path, n.tmpId);
-        if (e) flushed.push(e);
-      }
-      // The socket race fix: await open instead of failing fast. Timeout
-      // degrades to attemptSend's retryable failed bubble.
-      await waitForSocketOpen(s.id);
-      attemptSend(s.id, {
-        ...payload,
-        files: [...payload.files, ...flushed],
-        mentions: [],
-        agentId,
-      });
-      setInput("");
-      setAttachments([]);
-      setFileAttachments([]);
-      setTarget(null);
-      setMenu(null);
-      // 下一个新会话按库里的 auto_mount 条目重新预填(手动改动不跨会话残留)。
-      void resetPendingMounts();
-    } finally {
-      homeCreatingRef.current = false;
-    }
-  }
-
-
   /** The pending ask_user card of the displayed session, if any. */
   function pendingQuestionBlock(): QuestionBlock | null {
     for (const m of storeRef.current[curSessionIdRef.current ?? ""] ?? []) {
@@ -802,6 +417,24 @@ export function ChatStream({
     answerQuestion(q.id ?? "", "", null, true);
   }
 
+  // ---- composer ↑/↓ input history (inputHistory.ts) ----------------------
+  /** 懒构建该会话的输入历史(首次按 ↑/↓ 或首次发送时调用一次):种子 =
+   *  store 已重建的 user 消息文本。payloadFromBlocks 对 subagent 注入/纯附件
+   *  消息产出的 text 为空,seedEntries 滤空即天然排除,无需块类型黑名单。 */
+  function historyFor(sid: string): HistoryState {
+    const st = inputHistoryRef.current[sid];
+    if (st) return st;
+    const seeded = initHistory(
+      seedEntries(
+        (storeRef.current[sid] ?? [])
+          .filter((m) => m.role === "user")
+          .map((m) => m.sendPayload?.text ?? ""),
+      ),
+    );
+    inputHistoryRef.current[sid] = seeded;
+    return seeded;
+  }
+
   function send() {
     const text = input.trim();
     const readyFiles = fileAttachments.filter((f) => !f.uploading);
@@ -828,6 +461,7 @@ export function ChatStream({
     // deliberately not gated on attachments — it carries text only.)
     if (parked) {
       if (!text) return;
+      inputHistoryRef.current[sid] = appendEntry(historyFor(sid), text);
       handleParkedSend(sid, text, target ?? session.agent_id ?? g.agents[0]?.id ?? null);
       setInput("");
       setMenu(null);
@@ -846,6 +480,7 @@ export function ChatStream({
       // AND attachments ride the steer (steer-attachments v2) — with nothing to
       // send, do nothing.
       if (!text && attachments.length === 0 && readyFiles.length === 0) return;
+      inputHistoryRef.current[sid] = appendEntry(historyFor(sid), text);
       enqueueSteer(
         sid,
         text,
@@ -867,6 +502,7 @@ export function ChatStream({
     // whose @kind:label token is still present are sent. The server treats this
     // structured list as authoritative (text tokens are its raw-client fallback).
     const mentions = dedupeMentions(pruneMentions(mentionsRef.current[sid] ?? [], input));
+    inputHistoryRef.current[sid] = appendEntry(historyFor(sid), text);
     // Not connected? No silent no-op — the bubble is still created and lands
     // in the failed state (red ❗) so the send attempt always has a visible
     // outcome and can be retried.
@@ -1054,12 +690,6 @@ export function ChatStream({
   }
 
   const agentById = (id?: string | null) => g.agents.find((a) => a.id === id) ?? null;
-  // Only the LAST failed/error bubble is retryable — re-invoking earlier ones
-  // would re-insert stale user messages out of order in the server history.
-  const lastRetryableId = messages.reduce<string | null>(
-    (last, m) => ((m.status === "failed" || m.error) && m.sendPayload ? m.id : last),
-    null,
-  );
 
   const isHome = !session;
 
@@ -1101,6 +731,108 @@ export function ChatStream({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [composerInsert]);
+
+  // ─── Command / mention autocomplete ────────────────────────────────────────
+  // Re-evaluate whether the composer's current text+caret opens a menu. Called
+  // on every input change and after programmatic edits (the "/" button).
+  function recomputeMenu(text: string) {
+    const caret = textareaRef.current?.selectionStart ?? text.length;
+    const trigger = detectTrigger(text, caret);
+    if (!trigger) {
+      setMenu(null);
+      return;
+    }
+    const items = buildMenuItems(trigger, {
+      skills: g.skills,
+      agents: g.agents,
+      workflows: g.workflows,
+      artifacts: g.artifacts,
+    });
+    setMenu(items.length ? { items, active: 0, trigger } : null);
+  }
+
+  // Insert the picked item, record its resolved mention, and refocus the caret
+  // right after the inserted token (ready to type the prompt).
+  function pickItem(item: MenuItem) {
+    if (!menu) return;
+    const caret = textareaRef.current?.selectionStart ?? input.length;
+    const r = applySelection(input, caret, menu.trigger, item);
+    setInput(r.text);
+    setMenu(null);
+    if (r.mention && session) {
+      const sid = session.id;
+      const rest = (mentionsRef.current[sid] ?? []).filter(
+        (m) => !(m.kind === r.mention!.kind && m.id === r.mention!.id),
+      );
+      mentionsRef.current[sid] = [...rest, r.mention];
+    }
+    // @agent also retargets the turn — same code path as the "Ask X" chips, so
+    // the structured mention and agent_id never disagree from the UI.
+    if (item.kind === "agent") setTarget(item.id);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(r.caret, r.caret);
+      }
+    });
+  }
+
+  /** Lazy creation: home composer send creates the session, flushes buffered
+   *  attachments, awaits the socket, then posts the turn. */
+  async function createAndSend(payload: {
+    text: string;
+    images: Attachment[];
+    files: FileAttachment[];
+  }) {
+    if (homeCreatingRef.current) return;
+    homeCreatingRef.current = true;
+    try {
+      const agentId = target ?? g.agents[0]?.id ?? null;
+      const s = await g.newSession(agentId, {
+        ...(homeModel ?? {}),
+        // 出生即挂载：pending 目录随建会话请求提交(后端 create_session 原生支持)
+        context_folders: pendingMounts.ids.length ? pendingMounts.ids : undefined,
+        primary_folder: pendingMounts.primary ?? undefined,
+      });
+      if (!s) return; // sessionError banner carries the reason; composer keeps text
+      curSessionIdRef.current = s.id;
+      connectSession(s.id);
+      const docs = pendingDocsRef.current;
+      pendingDocsRef.current = [];
+      const natives = pendingPathsRef.current;
+      pendingPathsRef.current = [];
+      // Collect the resolved entries so they ride in the turn payload — the
+      // fileAttachments state update below hasn't rendered yet in this closure.
+      const flushed: FileAttachment[] = [];
+      for (const d of docs) {
+        const e = await uploadOneDoc(s.id, d.file, d.tmpId);
+        if (e) flushed.push(e);
+      }
+      for (const n of natives) {
+        const e = await attachOne(s.id, n.path, n.tmpId);
+        if (e) flushed.push(e);
+      }
+      // The socket race fix: await open instead of failing fast. Timeout
+      // degrades to attemptSend's retryable failed bubble.
+      await waitForSocketOpen(s.id);
+      attemptSend(s.id, {
+        ...payload,
+        files: [...payload.files, ...flushed],
+        mentions: [],
+        agentId,
+      });
+      setInput("");
+      setAttachments([]);
+      setFileAttachments([]);
+      setTarget(null);
+      setMenu(null);
+      // 下一个新会话按库里的 auto_mount 条目重新预填(手动改动不跨会话残留)。
+      void resetPendingMounts();
+    } finally {
+      homeCreatingRef.current = false;
+    }
+  }
 
   // Composer box extracted so the landing home can center it. Same single
   // instance; the two keyed slots force a clean remount on home↔session
@@ -1161,58 +893,14 @@ export function ChatStream({
                 <span>{composerHint}</span>
               </div>
             )}
-            {imagesReading > 0 && (
-              <div className="mb-2 flex items-center gap-1.5 text-xs text-faint">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                <span>{tc("composer.processingImages")}</span>
-              </div>
-            )}
-            {attachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {attachments.map((a, i) => (
-                  <div key={i} className="group relative">
-                    <img
-                      src={a.preview}
-                      alt={a.name}
-                      title={a.name}
-                      className="h-14 w-14 rounded-lg border border-line object-cover"
-                    />
-                    <button
-                      onClick={() => setAttachments((l) => l.filter((_, j) => j !== i))}
-                      aria-label={tc("composer.removeNamed", { name: a.name })}
-                      className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {fileAttachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {fileAttachments.map((f, i) => (
-                  <div
-                    key={f.id}
-                    className="group relative flex items-center gap-1.5 rounded-lg border border-line bg-card2 px-2.5 py-1.5 text-xs text-txt"
-                  >
-                    <span>{TABLE_KINDS.has(f.kind) ? "📊" : "📄"}</span>
-                    <span className="max-w-[180px] truncate" title={f.name}>
-                      {f.name}
-                    </span>
-                    {f.uploading && (
-                      <span className="text-faint">{session ? tc("composer.uploading") : tc("composer.uploadsOnSend")}</span>
-                    )}
-                    <button
-                      onClick={() => setFileAttachments((l) => l.filter((_, j) => j !== i))}
-                      aria-label={tc("composer.removeNamed", { name: f.name })}
-                      className="absolute -right-1.5 -top-1.5 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-red text-white opacity-0 shadow transition-opacity group-hover:opacity-100"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            {imagesReading > 0 && <ImagesReadingRow />}
+            <ComposerAttachmentRows
+              attachments={attachments}
+              fileAttachments={fileAttachments}
+              uploadingLabel={session ? tc("composer.uploading") : tc("composer.uploadsOnSend")}
+              onRemoveImage={(i) => setAttachments((l) => l.filter((_, j) => j !== i))}
+              onRemoveFile={(i) => setFileAttachments((l) => l.filter((_, j) => j !== i))}
+            />
             {session?.type === "subagent" && running && (
               // 子任务视图的输入语义（subagent-design.md §6.2）：running 时的输入
               // 走既有 steering 通道（useSteerQueue，同主对话），这里只把语义标出来。
@@ -1222,53 +910,7 @@ export function ChatStream({
               </div>
             )}
             {session && steerItems.length > 0 && (
-              // Queue bar (design §4.1): what the user typed into a running turn,
-              // waiting for the next superstep to absorb it. Ordered, single-line,
-              // removable, and recallable with ↑ — Claude Code's shape.
-              <div className="mb-1 rounded-lg border border-line bg-card2/60 px-2 py-1.5">
-                <div className="flex items-center justify-between px-0.5 pb-1 text-[10px] text-muted">
-                  <span>{tc("queue.pending", { count: steerItems.length })}</span>
-                  <span className="text-faint">{tc("queue.recallHint")}</span>
-                </div>
-                <ol className="space-y-0.5">
-                  {steerItems.map((it, i) => (
-                    <li
-                      key={it.steerId}
-                      className="group flex items-start gap-1.5 px-0.5 text-xs text-txt"
-                    >
-                      <span className="mt-[1px] shrink-0 text-faint">{i + 1}</span>
-                      <span className="min-w-0 flex-1 truncate" title={it.text}>
-                        {it.text || (it.images.length + it.files.length ? tc("queue.attachmentsOnly") : "")}
-                      </span>
-                      {it.images.length + it.files.length > 0 && (
-                        // The queued entry carries attachments too — surface the
-                        // count so the row is not read as text-only.
-                        <span
-                          className="mt-[1px] flex shrink-0 items-center gap-0.5 text-faint"
-                          title={tc("queue.attachTooltip", { images: it.images.length, files: it.files.length })}
-                        >
-                          <Paperclip className="h-3 w-3" />
-                          {it.images.length + it.files.length}
-                        </span>
-                      )}
-                      {it.status === "sending" && (
-                        <Loader2
-                          className="mt-[1px] h-3 w-3 shrink-0 animate-spin text-faint"
-                          aria-label={tc("queue.submitting")}
-                        />
-                      )}
-                      <button
-                        onClick={() => dropSteer(session.id, it.steerId)}
-                        className="shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
-                        title={tc("queue.removeTitle")}
-                        aria-label={tc("queue.removeAria")}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </li>
-                  ))}
-                </ol>
-              </div>
+              <QueueBar items={steerItems} sessionId={session.id} onDrop={dropSteer} />
             )}
             <textarea
               ref={textareaRef}
@@ -1332,6 +974,38 @@ export function ChatStream({
                   e.preventDefault();
                   recallSteers(session.id);
                   return;
+                }
+                // ↑/↓ input history recall (shell-style): only when the caret
+                // sits on the first (↑) / last (↓) line — multi-line editing
+                // keeps native caret moves. Priority: IME > command menu >
+                // steer recall (above) > this. Nothing to navigate → fall
+                // through to native behavior (no preventDefault).
+                if (!composing && session && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+                  const el = textareaRef.current;
+                  const caret = el?.selectionStart ?? input.length;
+                  const base = historyFor(session.id);
+                  const r =
+                    e.key === "ArrowUp"
+                      ? caretOnFirstLine(input, caret)
+                        ? navUp(base, input)
+                        : null
+                      : caretOnLastLine(input, caret)
+                        ? navDown(base, input)
+                        : null;
+                  if (r) {
+                    e.preventDefault();
+                    inputHistoryRef.current[session.id] = r.state;
+                    setInput(r.text);
+                    setMenu(null); // 程序化回填后菜单必须关(与 pickItem 一致)
+                    requestAnimationFrame(() => {
+                      const el2 = textareaRef.current;
+                      if (el2) {
+                        el2.focus();
+                        el2.setSelectionRange(r.text.length, r.text.length);
+                      }
+                    });
+                    return;
+                  }
                 }
                 if (e.key === "Escape" && !composing && running && !parked) {
                   e.preventDefault();
@@ -1397,52 +1071,12 @@ export function ChatStream({
                 >
                   <Keyboard className="h-4 w-4" />
                 </button>
-                {!isHome && (() => {
-                  const live = wsStatus === "live";
-                  const dot =
-                    wsStatus === "live"
-                      ? "#22c55e"
-                      : wsStatus === "offline"
-                        ? "#ef4444"
-                        : "#eab308";
-                  const label =
-                    wsStatus === "live"
-                      ? tc("conn.connected")
-                      : wsStatus === "reconnecting"
-                        ? tc("conn.reconnecting")
-                        : wsStatus === "offline"
-                          ? tc("conn.offline")
-                          : tc("conn.connecting");
-                  const tip = live
-                    ? tc("conn.tipLive")
-                    : wsStatus === "reconnecting"
-                      ? tc("conn.tipReconnecting")
-                      : wsStatus === "offline"
-                        ? tc("conn.tipOffline")
-                        : tc("conn.tipConnecting");
-                  return (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!live) connectRef.current();
-                      }}
-                      title={tip}
-                      aria-label={live ? tc("conn.ariaStatus", { status: label }) : tc("conn.ariaStatusClickable", { status: label })}
-                      className={`ml-1 flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
-                        live ? "cursor-default" : "cursor-pointer hover:bg-card2"
-                      }`}
-                      style={{ color: dot }}
-                    >
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          live || wsStatus === "offline" ? "" : "animate-pulse"
-                        }`}
-                        style={{ background: dot }}
-                      />
-                      {label}
-                    </button>
-                  );
-                })()}
+                {!isHome && (
+                  <ConnStatusChip
+                    wsStatus={wsStatus}
+                    onReconnect={() => connectRef.current()}
+                  />
+                )}
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1.5">
               {/* 首页挂载 chip(home-mount-picker-design.md §2.1)：操作的是「首条
@@ -1469,88 +1103,18 @@ export function ChatStream({
                   turn runs — the switch is in-place server-side and takes
                   effect at the next LLM call (model-assignment-design.md
                   §3.2). */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setModelOpen((v) => !v)}
-                  title={
-                    session
-                      ? tc("model.switchTitle")
-                      : homeModelSource === "agent"
-                        ? tc("model.fromAgentTitle", {
-                            agent: targetAgent?.name ?? "",
-                            model: modelChipLabel,
-                          })
-                        : homeModelSource === "default"
-                          ? tc("model.fromDefaultTitle", { model: modelChipLabel })
-                          : tc("model.pickTitle")
-                  }
-                  className="flex items-center gap-1.5 rounded-md border border-line2 bg-card px-2 py-1 text-xs text-muted hover:border-line hover:bg-card2 hover:text-txt disabled:opacity-50"
-                >
-                  <Globe className="h-3.5 w-3.5 shrink-0" />
-                  <span className="max-w-[160px] truncate font-medium">{modelChipLabel}</span>
-                  <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
-                </button>
-                {modelOpen && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setModelOpen(false)} />
-                    <div className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[min(18rem,calc(100vw-2rem))] rounded-lg border border-line bg-card py-1 shadow-xl">
-                      {enabledProviders.length === 0 && (
-                        <div className="px-3 py-2 text-xs text-faint">
-                          {tc("model.noProviders")}
-                        </div>
-                      )}
-                      {enabledProviders.map(([pid, p]) => {
-                        // One row per MODEL, not per provider. The store keeps a
-                        // list (`models`) and a session can be pinned to any entry,
-                        // but showing only `default_model` left every extra model
-                        // unreachable from chat — which is exactly the "I cannot
-                        // pick GLM" report. Grouped by provider instead, and the
-                        // dangling `· ` disappears along with the single-row shape.
-                        const models = (
-                          Array.isArray(p.models) && p.models.length
-                            ? p.models
-                            : [p.default_model || p.model || ""]
-                        ).filter((m): m is string => !!m);
-                        // 菜单 ✓ 跟随「将要生效」的模型(含 agent 绑定/默认),与 chip 一致
-                        const curProvider = session ? session.provider : homeEffective?.provider;
-                        const curModel = session ? session.model : homeEffective?.model;
-                        return (
-                          <div key={pid}>
-                            <div className="px-3 pb-0.5 pt-1.5 text-[10px] uppercase tracking-wider text-faint">
-                              {p.name || pid}
-                            </div>
-                            {models.length === 0 ? (
-                              <div className="px-3 py-1 text-[11px] text-faint">
-                                {tc("model.noModels")}
-                              </div>
-                            ) : (
-                              models.map((m) => {
-                                const on = curProvider === pid && curModel === m;
-                                return (
-                                  <button
-                                    key={`${pid}:${m}`}
-                                    onClick={() => void pickModel(pid, m)}
-                                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-card2 ${
-                                      on ? "text-txt" : "text-muted"
-                                    }`}
-                                  >
-                                    <span className={on ? "" : "opacity-0"}>✓</span>
-                                    <span className="min-w-0 flex-1 truncate">{m}</span>
-                                  </button>
-                                );
-                              })
-                            )}
-                          </div>
-                        );
-                      })}
-                      <div className="mt-1 border-t border-line px-3 pt-1 text-[10px] text-faint">
-                        {tc(session ? "model.footnote" : "model.footnoteHome")}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
+              <ModelChipMenu
+                session={session}
+                label={modelChipLabel}
+                homeModelSource={homeModelSource}
+                targetAgent={targetAgent}
+                homeEffective={homeEffective}
+                enabledProviders={enabledProviders}
+                open={modelOpen}
+                onToggle={() => setModelOpen((v) => !v)}
+                onClose={() => setModelOpen(false)}
+                onPick={(pid, m) => void pickModel(pid, m)}
+              />
               {running && session && !parked ? (
                 <button
                   onClick={stopTurn}
@@ -1619,18 +1183,6 @@ export function ChatStream({
       })}
     </>
   );
-
-  // C+ 方案②「X 接手」分隔线：与上一条 agentId 已知的 assistant 气泡不同
-  // agent 时插入。旧会话无标记（两侧任一 agentId 为空）自动跳过，不渲染。
-  const handoffBefore: Record<number, true> = {};
-  {
-    let lastKnown: string | null = null;
-    messages.forEach((m, i) => {
-      if (m.role !== "assistant" || m.error) return;
-      if (m.agentId && lastKnown && m.agentId !== lastKnown) handoffBefore[i] = true;
-      if (m.agentId) lastKnown = m.agentId;
-    });
-  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1724,184 +1276,21 @@ export function ChatStream({
             </div>
           )}
 
-          {messages.map((m, idx) =>
-            spawnFold.hide.has(m.id) ? null : spawnFold.groupAt[m.id] ? (
-              <div key={m.id} className="flex flex-col items-center gap-2">
-                <div className="w-full max-w-[85%]">
-                  <SubagentGroupCard
-                    rows={
-                      spawnFold.groupAt[m.id] as unknown as Array<
-                        Extract<Block, { kind: "subagent_spawn" }>
-                      >
-                    }
-                  />
-                </div>
-              </div>
-            ) : m.role === "system" ? (
-              <div key={m.id} className="flex flex-col items-center gap-2">
-                <ContextBlocks
-                  blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
-                />
-                {/* 子代理发起/结果卡片行（subagent-design.md §6.3）：与 context
-                    chips 同层——不是任何一方的气泡，是事件驱动的系统行。拆分方案
-                    卡片（P2）同层渲染，决定回调走 engine 的 socket 发送。 */}
-                <div className="flex w-full max-w-[85%] flex-col gap-2">
-                  {m.blocks
-                    .filter((b): b is Extract<Block, { kind: "subagent_plan" }> => b.kind === "subagent_plan")
-                    .map((b) => (
-                      <SubagentPlanCard key={b.planId} block={b} onDecide={decideSubagentPlan} />
-                    ))}
-                  <SubagentBlocks
-                    blocks={m.blocks.filter(
-                      (b): b is Extract<Block, { kind: "subagent_spawn" }> | Extract<Block, { kind: "subagent_result" }> =>
-                        b.kind === "subagent_spawn" || b.kind === "subagent_result",
-                    )}
-                  />
-                </div>
-              </div>
-            ) : m.role === "user" &&
-              m.blocks.some(
-                (b) => b.kind === "subagent_result" || b.kind === "subagent_brief",
-              ) ? (
-              // runtime 注入的子代理结果（契约 3）与子会话首条任务简报
-              // （<ginno_subagent_brief>）在历史重放中是 HumanMessage，重载后以
-              // user 角色回来：折成卡片系统行渲染，而不是落到 UserBlocks
-              // （它不认识这些块，会渲染成空气泡）。
-              <div key={m.id} className="flex flex-col items-center gap-2">
-                <div className="w-full max-w-[85%]">
-                  <SubagentBlocks
-                    session={session?.type === "subagent" ? session : undefined}
-                    blocks={m.blocks.filter(
-                      (
-                        b,
-                      ): b is Extract<
-                        Block,
-                        { kind: "subagent_result" | "subagent_brief" }
-                      > =>
-                        b.kind === "subagent_result" || b.kind === "subagent_brief",
-                    )}
-                  />
-                </div>
-              </div>
-            ) : m.role === "user" && m.blocks.some((b) => b.kind === "steer") ? (
-              // A steered message with no assistant step to attach to (absorbed
-              // by the turn's first model request, or the transcript ended on
-              // it): a full-width band, not a right-aligned bubble — it is not a
-              // turn of its own (design §4.2).
-              <div key={m.id} className="flex flex-col gap-1">
-                {m.blocks
-                  .filter((b): b is Extract<Block, { kind: "steer" }> => b.kind === "steer")
-                  .map((b) => (
-                    <SteerBand key={b.steerId ?? m.id} block={b} />
-                  ))}
-              </div>
-            ) : m.role === "user" ? (
-              <div key={m.id} className="flex flex-col items-end gap-1">
-                <TurnIdChip turnId={m.turnId} />
-                {/* w-full (not max-w-full): the row width must be definite so the
-                    bubble's max-w-[78%] resolves against the column, not against
-                    the row's own shrink-to-fit width — otherwise the percentage
-                    collapses the bubble and the text overflows to the right. */}
-                <div className="group flex w-full items-center justify-end gap-2">
-                  {m.status === "failed" && (
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      {m.id === lastRetryableId && (
-                        <>
-                          <button
-                            onClick={() => editResend(m.id)}
-                            className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-txt group-hover:opacity-100"
-                          >
-                            {tc("sendFailed.editResend")}
-                          </button>
-                          <button
-                            onClick={() => dismissFailed(m.id)}
-                            className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
-                          >
-                            {tc("sendFailed.delete")}
-                          </button>
-                        </>
-                      )}
-                      {m.id === lastRetryableId ? (
-                        <button
-                          onClick={() => retryFailed(m.id)}
-                          title={tc("sendFailed.titleRetry", { reason: failText(m.failReason) })}
-                          aria-label={tc("sendFailed.ariaRetry")}
-                          className="shrink-0 transition-transform hover:scale-110"
-                        >
-                          <AlertCircle className="h-[18px] w-[18px] text-red" />
-                        </button>
-                      ) : (
-                        <span title={tc("sendFailed.title", { reason: failText(m.failReason) })}>
-                          <AlertCircle className="h-[18px] w-[18px] shrink-0 text-red/50" />
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {m.status === "sending" && (
-                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-faint" aria-label={tc("composer.sendingAria")} />
-                  )}
-                  <div
-                    className={`max-w-[78%] rounded-2xl rounded-tr-md border px-4 py-2.5 text-sm leading-relaxed ${
-                      m.status === "failed"
-                        ? "border-red/40 bg-card2/60 text-muted"
-                        : "border-line bg-card2 text-txt"
-                    }`}
-                  >
-                    <UserBlocks blocks={m.blocks} />
-                  </div>
-                </div>
-                {m.status === "failed" && (
-                  <div className="text-[10px] text-red/80">
-                    {tc("sendFailed.label")}{m.failReason ? `: ${failText(m.failReason)}` : ""}
-                    {m.id === lastRetryableId && tc("sendFailed.retryHint")}
-                  </div>
-                )}
-              </div>
-            ) : m.error ? (
-              <ErrorCard
-                key={m.id}
-                message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
-                turnId={m.turnId}
-                canRetry={!!m.sendPayload && m.id === lastRetryableId}
-                busy={running}
-                onRetry={() => retryError(m.id)}
-                onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
-              />
-            ) : (
-              <Fragment key={m.id}>
-                {handoffBefore[idx] && (
-                  <HandoffDivider agent={agentById(m.agentId)} agentName={m.agentName} />
-                )}
-                <AssistantBubble
-                  agent={agentById(m.agentId)}
-                  agentName={m.agentName}
-                  subagentTypeName={
-                    session?.type === "subagent"
-                      ? (session.subagent as { agent_type?: string } | undefined)?.agent_type
-                      : undefined
-                  }
-                  blocks={m.blocks}
-                  streaming={m.id === liveId}
-                  statusOverride={compacting ? tc("stream.compacting") : null}
-                  turnId={m.turnId}
-                  failed={m.failed}
-                  onAnswerQuestion={answerQuestion}
-                  // questionLive: is this session's turn actually alive? A
-                  // parked question keeps the server turn running WITHOUT a
-                  // message.end, so two signals cover it: `liveId` (this client
-                  // is watching the stream) and `serverRunning` (the answer to
-                  // the turn_state probe, which is the ONLY one that survives a
-                  // full reload — history rebuilds the card as pending, and
-                  // without the probe it would render disabled even though the
-                  // backend would accept the answer).
-                  // Deliberately not `running`: its questionPending term comes
-                  // from the card itself (circular — a stale pending card would
-                  // keep itself interactive forever).
-                  questionLive={liveId !== null || serverRunning}
-                />
-              </Fragment>
-            ),
-          )}
+          <TranscriptList
+            messages={messages}
+            session={session}
+            liveId={liveId}
+            running={running}
+            compacting={compacting}
+            serverRunning={serverRunning}
+            decideSubagentPlan={decideSubagentPlan}
+            answerQuestion={answerQuestion}
+            editResend={editResend}
+            dismissFailed={dismissFailed}
+            retryFailed={retryFailed}
+            retryError={retryError}
+            retryFromCheckpoint={retryFromCheckpoint}
+          />
 
           {runs.map((r) => (
             <LiveRunBlock
@@ -1935,31 +1324,7 @@ export function ChatStream({
       )}
 
       {permission && (
-        <div className="mx-auto w-full max-w-3xl px-6">
-          <div className="mb-2 rounded-xl border border-yellow/40 bg-yellow/10 p-3">
-            <div className="mb-1 text-sm font-medium text-yellow">{tc("permission.title")}</div>
-            <div className="mb-2 text-xs text-muted">
-              {tc("permission.toolLabel")} <code className="font-mono text-txt">{permission.tool}</code>
-            </div>
-            <pre className="mb-3 max-h-28 overflow-auto rounded-lg bg-base/60 p-2 text-[11px] text-muted">
-              {JSON.stringify(permission.args, null, 2)}
-            </pre>
-            <div className="flex gap-2">
-              <button
-                onClick={() => respond("allow")}
-                className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
-              >
-                {tc("permission.allow")}
-              </button>
-              <button
-                onClick={() => respond("deny")}
-                className="rounded-lg border border-line2 px-3 py-1.5 text-xs text-muted hover:text-txt"
-              >
-                {tc("permission.deny")}
-              </button>
-            </div>
-          </div>
-        </div>
+        <PermissionPromptCard permission={permission} onRespond={respond} />
       )}
 
       {propose && <ProposeCard propose={propose} onDecide={respondPropose} />}
@@ -2034,111 +1399,24 @@ export function ChatStream({
             </button>
             {/* S1/S5: summarize entry — session picker + trace range (last N
                 messages) live in one dropdown. */}
-            <div className="relative">
-              <button
-                onClick={() => setSumMenuOpen((v) => !v)}
-                disabled={sumLoading || g.sessions.length === 0}
-                title={tc("summarize.buttonTitle")}
-                className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-2.5 py-1 text-xs text-violet hover:bg-violet/20 disabled:opacity-60"
-              >
-                {sumLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
-                {sumLoading ? tc("summarize.busy") : tc("summarize.button")}
-                <ChevronDown className="h-3 w-3 opacity-70" />
-              </button>
-              {sumMenuOpen && (
-                <div className="absolute bottom-full left-0 z-30 mb-1 w-64 max-w-[min(16rem,calc(100vw-2rem))] rounded-lg border border-line bg-card p-1 shadow-2xl">
-                  {/* S6: an unsaved draft is an OPT-IN restore, never a blocker. */}
-                  {savedDraft && (
-                    <div className="mb-1 flex items-center gap-1 rounded-md border border-violet/30 bg-violet/[0.06] px-2 py-1.5">
-                      <button
-                        onClick={openDraftModal}
-                        title={tc("summarize.restoreDraftTitle")}
-                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[11px] text-violet hover:opacity-80"
-                      >
-                        <RotateCcw className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{tc("summarize.restoreDraft", { time: relTime(savedDraft.savedAt / 1000) })}</span>
-                      </button>
-                      <button
-                        onClick={deleteDraft}
-                        title={tc("summarize.deleteDraftTitle")}
-                        className="shrink-0 rounded p-0.5 text-faint hover:bg-red/10 hover:text-red"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  )}
-                  <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-faint">
-                    {tc("summarize.pickSession")}
-                  </div>
-                  {g.sessions.slice(0, 10).map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => void openSummarize(s.id)}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-card2 hover:text-txt"
-                    >
-                      {s.id === session?.id && <span className="text-violet">●</span>}
-                      <span className="max-w-[150px] truncate">{s.title || tc("summarize.untitled")}</span>
-                      {s.id === session?.id && <span className="text-[10px] text-faint">{tc("summarize.recommended")}</span>}
-                      <span className="ml-auto shrink-0 text-[10px] text-faint">{relTime(s.updated)}</span>
-                    </button>
-                  ))}
-                  <div className="mt-1 border-t border-line2 px-2 pb-1 pt-1.5">
-                    <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">{tc("summarize.range")}</div>
-                    <div className="flex gap-1">
-                      {([null, 5, 10, 20] as const).map((n) => (
-                        <button
-                          key={String(n)}
-                          onClick={() => setSumLastN(n)}
-                          className={`rounded px-1.5 py-0.5 text-[10px] ${
-                            sumLastN === n
-                              ? "bg-violet/15 text-violet"
-                              : "text-faint hover:bg-card2 hover:text-muted"
-                          }`}
-                        >
-                          {n === null ? tc("summarize.all") : tc("summarize.lastN", { n })}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            <SummarizeMenu
+              sessions={g.sessions}
+              currentSessionId={session?.id}
+              open={sumMenuOpen}
+              onToggle={() => setSumMenuOpen((v) => !v)}
+              loading={sumLoading}
+              savedDraft={savedDraft}
+              onOpenDraftModal={openDraftModal}
+              onDeleteDraft={deleteDraft}
+              onPickSession={(sid) => void openSummarize(sid)}
+              lastN={sumLastN}
+              onLastN={setSumLastN}
+            />
           </div>
 
           <div key="composer-session">
               {session?.type === "delegation" ? (
-                (() => {
-                  // 回放状态栏：正确反馈 backend 运行态（用户需求 2026-10-05）
-                  const st = session.stop_reason ?? "running";
-                  const elapsed = Math.max(0, Math.round(Date.now() / 1000 - (session.created ?? Date.now() / 1000)));
-                  const mm = `${Math.floor(elapsed / 60)}m${String(elapsed % 60).padStart(2, "0")}s`;
-                  const color = st === "running" ? "#a78bfa" : st === "success" ? "#4ade80" : "#fb7185";
-                  return (
-                    <div className="flex items-center justify-center gap-2 rounded-2xl border border-line bg-card px-3 py-3 text-xs">
-                      {st === "running" ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color }} />
-                      ) : (
-                        <span style={{ color }}>●</span>
-                      )}
-                      <span className="font-mono text-txt">{session.backend ?? "delegation"}</span>
-                      <span className="text-faint">· {session.mode ?? ""}</span>
-                      <span style={{ color }}>
-                        {st === "running" ? `${tc("composer.delegationRunning")} · ${mm}` : st}
-                      </span>
-                      <span className="text-faint">· read-only</span>
-                      {st === "running" && (
-                        <button
-                          onClick={() =>
-                            import("@/lib/runtime").then((m) => m.stopDelegation(session.id))
-                          }
-                          className="ml-1 rounded-md border border-red/40 px-1.5 py-0.5 text-[10px] text-red hover:bg-red/10"
-                        >
-                          ✕ stop
-                        </button>
-                      )}
-                    </div>
-                  );
-                })()
+                <DelegationStatusBar session={session} />
               ) : (
                 composerBoxEl
               )}
@@ -2158,4 +1436,3 @@ export function ChatStream({
     </div>
   );
 }
-
