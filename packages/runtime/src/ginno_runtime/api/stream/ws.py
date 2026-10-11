@@ -22,6 +22,7 @@ from ... import server_shared as shared
 from ...checkpointer import ABANDONED_TURNS
 from ...goals import store as goal_store
 from ...server_shared import (
+    _MANAGED_TURNS,
     _PENDING_KIND,
     _PENDING_RESUME,
     _RUNNING_TURNS,
@@ -457,6 +458,28 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     # here: our task simply queues on _turn_lock, as before.
                     _busy = _TURN_TASKS.get(session_id)
                     if _busy is not None and not _busy.done():
+                        await ws.send_text(
+                            _ev(
+                                "notice",
+                                {
+                                    "message": "A turn is already running; please wait for it to finish",
+                                    "i18n_key": "stream.busy_wait",
+                                },
+                                turn_id,
+                            )
+                        )
+                        continue
+                    if session_id in _MANAGED_TURNS:
+                        # A scheduler-managed turn (subagent brief / result
+                        # wake) is streaming on this session. It has no
+                        # _TURN_TASKS entry, so the busy check above can't see
+                        # it — without this guard the invoke would queue
+                        # invisibly on the turn lock for the rest of the
+                        # (possibly minutes-long) subagent turn and then fire
+                        # as a surprise new turn (2026-10-10 steering bug).
+                        # The composer routes mid-run input to `steer`
+                        # (subagent-design §6.2), so this only catches the
+                        # invoke↔turn.start race — say "busy", don't queue.
                         await ws.send_text(
                             _ev(
                                 "notice",

@@ -80,6 +80,14 @@ _SESSION_WS: dict[str, list[Any]] = {}
 # "stream will resume" from "turn is gone — reconcile from history".
 _RUNNING_TURNS: dict[str, str] = {}
 
+# Sessions whose CURRENTLY streaming turn was started by the subagent scheduler
+# (_run_managed_turn: child brief / result-injection wake), not by a socket
+# invoke — they sit in _RUNNING_TURNS but have NO _TURN_TASKS entry. The invoke
+# busy check reads this to reject (instead of silently lock-queueing) a message
+# aimed at a running subagent (2026-10-10: 用户在子会话里的消息在 turn lock 上
+# 悬了几分钟，turn 一结束突然变成新 turn).
+_MANAGED_TURNS: dict[str, str] = {}
+
 # Live RUN-scoped WebSockets (run_id -> [WebSocket]); design B P2. The Studio
 # observer (and any headless-run watcher) subscribes by run_id — independent of
 # which session the run is presented in, unlike _SESSION_WS. Self-cleans on send

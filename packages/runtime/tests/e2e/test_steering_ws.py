@@ -304,3 +304,39 @@ def test_steer_at_permission_card_survives_the_park_gap(
     assert [e["steer_id"] for e in events_of(rest, "steer.absorbed")] == ["s-again"]
     assert len(_steer_bands(client, sid)) == 1
     assert _saw_in_one_call(model, "记一下这点", "AGAIN")
+
+def test_managed_running_turn_takes_steer_not_invoke(
+    client, create_session, ws_conv, bypass_on
+):
+    """A scheduler-managed turn (subagent brief / result wake) is streaming:
+    it sits in _RUNNING_TURNS + _MANAGED_TURNS with NO _TURN_TASKS entry.
+    The contract (subagent-design §6.2): input aimed at it is steering — and
+    an invoke that slips through the invoke↔turn.start race must be rejected
+    with the busy notice, never silently queued on the turn lock to fire as a
+    surprise new turn minutes later (2026-10-10, session 465e04fe)."""
+    model = RecordingScriptedChatModel(scripts=[script(text="unused")])
+    sid = create_session(model, agent_id="dev")
+    server_shared._RUNNING_TURNS[sid] = "managed-turn"
+    server_shared._MANAGED_TURNS[sid] = "managed-turn"
+    try:
+        with ws_conv(sid) as conv:
+            conv.invoke("不能并发启动吗")
+            reply = conv.recv_until("notice", "turn.start")
+            notices = events_of(reply, "notice")
+            assert notices and notices[0]["i18n_key"] == "stream.busy_wait", reply
+            # Rejected means rejected: no turn task spawned, nothing waits on
+            # the turn lock.
+            assert server_shared._TURN_TASKS.get(sid) is None
+
+            # The steer route through the SAME state is the one that works:
+            # stashed (accepted) for the running turn's next superstep.
+            _steer(conv, "换个思路", "steer-m1")
+            ack = conv.recv_until("steer.accepted", "error")
+            assert not events_of(ack, "error"), ack
+            assert events_of(ack, "steer.accepted")[0]["steer_id"] == "steer-m1"
+            drained = server_shared.steer_drain(sid)
+            assert [e["text"] for e in drained] == ["换个思路"]
+    finally:
+        server_shared._RUNNING_TURNS.pop(sid, None)
+        server_shared._MANAGED_TURNS.pop(sid, None)
+        server_shared.steer_clear(sid)

@@ -1608,3 +1608,35 @@ def test_agent_type_model_override_degrades_on_dead_binding(isolated_home, monke
     # 无绑定 / 未知 agent → None
     assert sched._agent_type_model_override("ghost-agent", "researcher") is None
     assert sched._agent_type_model_override("dev", "no-such-type") is None
+
+
+# --------------------------------------------------------------------------- #
+# _MANAGED_TURNS 注册表（2026-10-10 子会话 steering 修复：invoke busy 检查
+# 读它，调度器起的 turn 必须在流式期间登记、结束即注销）
+# --------------------------------------------------------------------------- #
+async def test_managed_turn_registers_and_clears_managed_registry(
+    isolated_home, monkeypatch
+):
+    """_run_managed_turn marks the session in _MANAGED_TURNS for the whole
+    streaming lifetime (the ws.py invoke busy check reads it — a managed turn
+    has no _TURN_TASKS entry, so without this mark a user invoke would queue
+    invisibly on the turn lock) and pops it once the turn settles."""
+    _put_meta(_sub_meta("ROOT"))
+    _put_meta(_sub_meta("MX", parent="ROOT", depth=0, status="running"))
+    server_shared._SESSIONS["ROOT"] = _sess("ROOT")
+    server_shared._SESSIONS["MX"] = _sess("MX", type_="subagent")
+
+    seen: dict = {}
+
+    async def probing_run_stream(*a, **kw):
+        seen["managed"] = server_shared._MANAGED_TURNS.get("MX")
+        seen["running"] = server_shared._RUNNING_TURNS.get("MX")
+
+    monkeypatch.setattr(stream_mod, "_run_stream", probing_run_stream)
+    await sched._run_managed_turn("MX", "子任务", None, asyncio.Event())
+
+    # Registered DURING the run, under the same turn id as _RUNNING_TURNS…
+    assert seen["managed"] is not None and seen["managed"] == seen["running"]
+    # …and cleared after the turn settled (both registries).
+    assert "MX" not in server_shared._MANAGED_TURNS
+    assert "MX" not in server_shared._RUNNING_TURNS

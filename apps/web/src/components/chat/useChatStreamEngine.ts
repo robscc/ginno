@@ -855,6 +855,12 @@ export function useChatStreamEngine(deps: EngineDeps) {
       case "turn.start": {
         markDelivered(sid);
         seenTurnStartRef.current[sid] = true;
+        // 服务端起的 turn（子代理调度器的 brief/wake、goal 续跑）没有本地
+        // attemptSend 帮忙置位 —— busy 必须在这里补。漏了它，一直开着的子会话
+        // 视图 busy 恒为 false：running 中的输入走 invoke 而不是 steer，还被
+        // runtime 排在 turn lock 后面悬到 turn 结束才变成新 turn（2026-10-10
+        // 子会话 steering 失效）。attemptSend 已置位时重复写无害。
+        busyBySessionRef.current[sid] = true;
         // Sidebar ordering (reactivated sessions float up): the runtime bumps
         // `updated` on every invoke, but only this socket knows it happened —
         // patch the store's copy so the day-group resort is live, not stale

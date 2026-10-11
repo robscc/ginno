@@ -32,6 +32,7 @@ from . import paths
 from . import server_shared
 from .lang import t
 from .server_shared import (
+    _MANAGED_TURNS,
     _PENDING_KIND,
     _PENDING_RESUME,
     _RUNNING_TURNS,
@@ -1005,6 +1006,13 @@ async def _run_managed_turn(
         }
     }
     _RUNNING_TURNS[session_id] = turn_id
+    # Mark the turn as scheduler-managed for its whole streaming lifetime: the
+    # invoke busy check in ws.py can't see it via _TURN_TASKS (it never spawns
+    # through a socket) and must not queue a user message on the turn lock for
+    # the rest of this (possibly minutes-long) turn. Popped unconditionally in
+    # the finally — a parked-at-interrupt turn is resumed by the WS path, and a
+    # free-text invoke aimed at a parked child is lock-queued like today.
+    _MANAGED_TURNS[session_id] = turn_id
     try:
         async with _turn_lock_of(session_id):
             await _run_stream(
@@ -1012,6 +1020,8 @@ async def _run_managed_turn(
                 user_extra_kwargs=extra_kwargs,
             )
     finally:
+        if _MANAGED_TURNS.get(session_id) == turn_id:
+            _MANAGED_TURNS.pop(session_id, None)
         if _RUNNING_TURNS.get(session_id) == turn_id and session_id not in _PENDING_RESUME:
             _RUNNING_TURNS.pop(session_id, None)
         _TURN_STOP.pop(session_id, None)
