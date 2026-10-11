@@ -257,7 +257,10 @@ export function ScheduledPage() {
                   {label}
                   {!!unseen && unseen.total > 0 && (
                     <span className="flex items-center gap-1.5 text-[11px] font-normal">
-                      <UnseenBadge n={unseen.total} />
+                      <UnseenBadge
+                        n={unseen.total}
+                        tone={unseen.error > 0 || unseen.missed > 0 ? "red" : "violet"}
+                      />
                       {unseen.error > 0 && (
                         <span className="text-red/70" title={tr("status.error")}>
                           ✕{unseen.error}

@@ -280,14 +280,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // /api/ws/schedule 的 run_finished/missed/task_updated/runs_seen 事件即时
   // 刷新；挂这一条轻量 WS 只为状态点，页面级订阅归 /scheduled 自己（§6）。
   const [scheduleDot, setScheduleDot] = useState<"" | "off" | "error">("");
-  const [scheduleUnseen, setScheduleUnseen] = useState(0);
+  const [scheduleUnseen, setScheduleUnseen] = useState<{ total: number; error: number; missed: number }>({
+    total: 0,
+    error: 0,
+    missed: 0,
+  });
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       try {
         const cfg = await api.listSchedule();
         if (!alive) return;
-        setScheduleUnseen(cfg.unseen?.total ?? 0);
+        setScheduleUnseen(cfg.unseen ?? { total: 0, error: 0, missed: 0 });
         if (!cfg?.enabled) {
           setScheduleDot("off");
           return;
@@ -918,7 +922,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <AlarmClock className="h-4 w-4 shrink-0" />
             <span className="truncate">{t("nav.scheduled")}</span>
             {scheduleDot === "error" ? (
-              <UnseenBadge n={scheduleUnseen} title={t("navDots.scheduleError")} className="ml-auto" />
+              <UnseenBadge
+                n={scheduleUnseen.total}
+                tone={scheduleUnseen.error > 0 || scheduleUnseen.missed > 0 ? "red" : "violet"}
+                title={t("navDots.scheduleError")}
+                className="ml-auto"
+              />
             ) : scheduleDot === "off" ? (
               <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-faint" title={t("navDots.scheduleOff")} />
             ) : null}

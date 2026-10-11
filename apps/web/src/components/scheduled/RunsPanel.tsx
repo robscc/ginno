@@ -183,7 +183,11 @@ export function RunsPanel({
           <button
             onClick={markAll}
             title={tr("runs.markAllSeenTitle")}
-            className="flex items-center gap-1 rounded-lg border border-red/40 px-2 py-1 text-red transition-colors hover:bg-red/10"
+            className={`flex items-center gap-1 rounded-lg border px-2 py-1 transition-colors ${
+              (cfg.unseen?.error ?? 0) + (cfg.unseen?.missed ?? 0) > 0
+                ? "border-red/40 text-red hover:bg-red/10"
+                : "border-violet/40 text-violet hover:bg-violet/10"
+            }`}
           >
             ● {tr("runs.markAllSeen", { n: cfg.unseen?.total ?? 0 })}
           </button>
@@ -245,8 +249,15 @@ export function RunsPanel({
                     title={clickable ? tr("runs.rowClick") : r.status === "missed" ? tr("runs.rowMissed") : undefined}
                   >
                     <td className="whitespace-nowrap px-3 py-2 text-muted tabular-nums">
-                      {/* 未读红点（schedule-unseen）：点开该行即消除 */}
-                      {r.seen === false && <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-red align-middle" />}
+                      {/* 未读点（schedule-unseen）：颜色跟状态走——红=错误、
+                          黄=错过、紫=成功/跳过；点开该行即消除 */}
+                      {r.seen === false && (
+                        <span
+                          className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${
+                            r.status === "error" ? "bg-red" : r.status === "missed" ? "bg-yellow" : "bg-violet"
+                          }`}
+                        />
+                      )}
                       {fmtDayPrefix(r.scheduled_at ?? r.started_at)} {fmtClock(r.started_at ?? r.scheduled_at)}
                     </td>
                     <td className="max-w-[160px] truncate px-3 py-2 text-txt" title={r.task_name}>
