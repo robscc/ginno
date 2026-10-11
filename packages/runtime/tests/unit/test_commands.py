@@ -7,8 +7,10 @@ skill trigger gating, mention token scanning, and TurnPlan assembly.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import HumanMessage
 
 from ginno_runtime import agents as agents_reg
 from ginno_runtime import artifacts as art_store
@@ -22,6 +24,10 @@ from ginno_runtime.commands.resolver import (
     resolve_turn,
     substitute_skill,
 )
+from ginno_runtime import server_shared
+from ginno_runtime.api import stream as api_stream
+from ginno_runtime import compaction as compaction_mod
+from ginno_runtime import microcompact as microcompact_mod
 
 pytestmark = pytest.mark.unit
 
@@ -305,3 +311,87 @@ def test_help_lists_builtins_and_excludes_model_only(isolated_home):
     out = BUILTINS["help"].handler("default")
     assert "/good-skill" in out
     assert "/hidden-skill" not in out
+
+
+# --------------------------------------------------------------------------- #
+# /compact async handler — zombie checkpoint vs live turn (2026-10-12 fix)
+# --------------------------------------------------------------------------- #
+class _CompactGraph:
+    """Fake graph whose `next` is settable, to stage either a clean state, a
+    live turn, or a half-committed zombie checkpoint (restart killed a
+    mid-superstep turn and the in-memory liveness registry died with it)."""
+
+    def __init__(self, messages, next_=()):
+        self._messages = messages
+        self._next = next_
+
+    async def aget_state(self, config):
+        return SimpleNamespace(next=self._next, values={"messages": self._messages})
+
+    async def aupdate_state(self, config, values, as_node=None):
+        self._next = ()
+        return None
+
+
+async def _run_compact(monkeypatch, graph, *, running=(), compact_exc=None):
+    """Drive BUILTINS['compact'].async_handler with everything server-side
+    stubbed at the modules the handler lazily imports from. Returns
+    (reply, calls) so tests assert on side effects, not on locale wording."""
+    calls = {"heal": 0, "micro": 0, "compact": 0}
+
+    async def _heal(graph, config):
+        calls["heal"] += 1
+
+    async def _micro(session, config):
+        calls["micro"] += 1
+        return None
+
+    async def _compact(session, config, force=False, on_summary_start=None):
+        calls["compact"] += 1
+        assert force is True  # manual /compact must always force
+        if compact_exc is not None:
+            raise compact_exc
+        return {"compacted_messages": 2, "summary_chars": 30, "kept_messages": 1}
+
+    monkeypatch.setattr(api_stream, "_heal_interrupted_turn", _heal)
+    monkeypatch.setattr(microcompact_mod, "maybe_microcompact_history", _micro)
+    monkeypatch.setattr(compaction_mod, "maybe_compact_history", _compact)
+    # The liveness registries are imported by name inside the handler, so
+    # replacing the module attributes is enough to stage each scenario.
+    monkeypatch.setattr(server_shared, "_RUNNING_TURNS", dict.fromkeys(running))
+    monkeypatch.setattr(server_shared, "_PENDING_RESUME", set())
+    monkeypatch.setattr(server_shared, "_TURN_TASKS", {})
+
+    session = {"session_id": "s1", "project_slug": "default", "graph": graph}
+    reply = await BUILTINS["compact"].async_handler("default", session, "")
+    return reply, calls
+
+
+async def test_compact_async_zombie_heals_then_compacts(isolated_home, monkeypatch):
+    # `next` non-empty but nothing live in this process → zombie checkpoint:
+    # heal it, then compact as usual instead of refusing forever.
+    graph = _CompactGraph([HumanMessage(content=f"m{i}") for i in range(3)], next_=("agent",))
+    reply, calls = await _run_compact(monkeypatch, graph)
+    assert calls["heal"] == 1 and calls["compact"] == 1
+    assert "✅" in reply  # success reply in either locale
+
+
+async def test_compact_async_live_turn_rejected(isolated_home, monkeypatch):
+    # `next` non-empty AND the turn is live in this process → refuse; heal
+    # must never run against a turn that may still write checkpoints.
+    graph = _CompactGraph([HumanMessage(content="m")], next_=("agent",))
+    reply, calls = await _run_compact(monkeypatch, graph, running=("s1",))
+    assert calls["heal"] == 0 and calls["compact"] == 0
+    assert "/compact" in reply  # rejection wording names the command
+
+
+async def test_compact_async_failure_returns_error_not_crash(isolated_home, monkeypatch):
+    # THE regression (2026-10-12): a summarizer failure (429 from the
+    # provider) reached the error logger and UnboundLocalError'd instead of
+    # reporting — a `from ..server_shared import _log` inside the handler's
+    # except block had made `_log` local to the whole function, so every
+    # later `_log.exception(...)` crashed when that import never ran.
+    graph = _CompactGraph([HumanMessage(content="m")])
+    reply, calls = await _run_compact(monkeypatch, graph, compact_exc=RuntimeError("boom"))
+    assert calls["compact"] == 1
+    assert "RuntimeError" in reply and "boom" in reply  # real cause surfaced

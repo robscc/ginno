@@ -480,10 +480,39 @@ async def _compact_async_handler(
             "本会话还没有可压缩的历史消息",
         )
     if getattr(snap, "next", None):
-        return t(
-            "The current turn is paused at a confirmation step (permission / question); finish it before running /compact",
-            "当前回合停在确认步骤（权限 / 提问）上；请先完成再运行 /compact",
+        # `next` 非空有两种含义：本进程里有活的 turn（流式进行中，或停在
+        # 权限/提问 interrupt——两者都在内存注册表里），此时拒绝压缩；或是
+        # 进程重启/崩溃把 checkpoint 留在半空中（内存注册表已随旧进程消失，
+        # 没有任何东西会再跑），此时应当修复（heal 清掉 next、补齐悬空
+        # tool_calls）后照常压缩，而不是永远拒绝（2026-10-12：重启杀掉进行
+        # 中 turn 后 /compact 一直报「停在确认步骤」）。
+        from ..server_shared import _PENDING_RESUME, _RUNNING_TURNS, _TURN_TASKS
+
+        _task = _TURN_TASKS.get(sid)
+        _live = (
+            sid in _RUNNING_TURNS
+            or sid in _PENDING_RESUME
+            or (_task is not None and not _task.done())
         )
+        if _live:
+            return t(
+                "The current turn is running or paused at a confirmation step (permission / question); finish or stop it before running /compact",
+                "当前回合仍在进行或停在确认步骤（权限 / 提问）上；请先完成或停止再运行 /compact",
+            )
+        try:
+            from ..api.stream import _heal_interrupted_turn
+            from ..server_shared import _turn_lock
+
+            # 与 _stop_parked_turn 相同的串行化：防止 heal 期间另一个 tab 的
+            # 新 invoke 与它交错写 checkpoint。heal 自身 best-effort。
+            async with _turn_lock(sid):
+                await _heal_interrupted_turn(graph, config)
+        except Exception:
+            # 绝不能在这里 `from ..server_shared import _log`：函数体内任何对
+            # `_log` 的赋值/import 都会让它变成整个函数的局部名，而该行只在
+            # heal 失败时执行——heal 成功后下面既有的 `_log.exception(...)`
+            # 就会 UnboundLocalError（2026-10-12 实测炸过）。用模块级 `_log`。
+            _log.exception("compact_cmd_zombie_heal_failed session=%s", sid)
     before_tokens = estimate_messages_tokens(msgs)
 
     notes: list[str] = []
