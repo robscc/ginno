@@ -404,6 +404,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const orphanStreamRef  = useRef<Record<string, boolean>>({});
   // 孤儿流是否已认领服务端 turn id（见 mutateLive 的认领逻辑）
   const adoptedTurnRef   = useRef<Record<string, boolean>>({});
+  // auto-retry 瞬态提示（stream.auto_retry notice）当前落在 live 气泡里的
+  // 精确文本块（含分隔符）。新一轮重试到来时原位替换（不 append 堆叠）；
+  // 恢复出流（token/thinking delta）即撤行。见 notice case。
+  const retryNoticeRef   = useRef<Record<string, string | null>>({});
   const seenTurnStartRef = useRef<Record<string, boolean>>({});
   const pingTimerRef     = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
   const watchTimerRef    = useRef<Record<string, ReturnType<typeof setInterval> | null>>({});
@@ -828,6 +832,26 @@ export function useChatStreamEngine(deps: EngineDeps) {
       msg.id === id ? { ...msg, blocks: applyBlock(msg.blocks, ev) } : msg,
     );
   }
+  // 从 live 气泡的文本块里精确摘掉一段此前 append 的瞬态文本（auto-retry
+  // 提示的原位替换/撤行）。只在「最近一个含该文本的 text 块」上动手；摘空
+  // 的块整块移除，不留空段落。找不到（气泡已被 history 重建等）则静默。
+  function stripFromLive(sid: string, chunk: string) {
+    const id = liveBySessionRef.current[sid];
+    if (!id || !chunk) return;
+    storeRef.current[sid] = (storeRef.current[sid] ?? []).map((msg) => {
+      if (msg.id !== id) return msg;
+      for (let i = msg.blocks.length - 1; i >= 0; i--) {
+        const b = msg.blocks[i];
+        if (b.kind === "text" && typeof b.text === "string" && b.text.includes(chunk)) {
+          const newText = b.text.replace(chunk, "");
+          const blocks = newText ? msg.blocks.slice() : msg.blocks.filter((_, j) => j !== i);
+          if (newText) blocks[i] = { kind: "text", text: newText };
+          return { ...msg, blocks };
+        }
+      }
+      return msg;
+    });
+  }
   function handle(sid: string, ev: { event: string; [k: string]: unknown }) {
     // 「压缩中…」收尾：压缩期间该会话不会有其他流事件,所以除置位事件本身
     // 之外的任何事件到达 = 压缩已结束(成功→context.compacted/流恢复;失败
@@ -839,6 +863,14 @@ export function useChatStreamEngine(deps: EngineDeps) {
     switch (ev.event) {
       case "token.delta":
       case "thinking.delta":
+        // 重试恢复出流：瞬态 auto-retry 提示撤行（若随后又失败，新的 notice
+        // 会重新落地）。只认本会话还有挂着的提示时才动 store。
+        if (retryNoticeRef.current[sid]) {
+          const prev = retryNoticeRef.current[sid];
+          retryNoticeRef.current[sid] = null;
+          stripFromLive(sid, prev ?? "");
+        }
+      // fall through
       case "tool.start":
       case "tool.args":
       case "tool.end":
@@ -855,6 +887,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
       case "turn.start": {
         markDelivered(sid);
         seenTurnStartRef.current[sid] = true;
+        // 新 turn 清上一轮的 auto-retry 提示追踪（残留 chunk 属于旧气泡，
+        // stripFromLive 找不到本来也无害，这里只是不让它跨 turn 存活）。
+        retryNoticeRef.current[sid] = null;
         // 服务端起的 turn（子代理调度器的 brief/wake、goal 续跑）没有本地
         // attemptSend 帮忙置位 —— busy 必须在这里补。漏了它，一直开着的子会话
         // 视图 busy 恒为 false：running 中的输入走 invoke 而不是 steer，还被
@@ -1230,7 +1265,25 @@ export function useChatStreamEngine(deps: EngineDeps) {
         // auto-retry 是瞬态系统提示——包成 code span + ⚠️，气泡里呈现为
         // 琥珀色等宽小条而不是混入正文的普通文本（用户反馈样式不显眼）。
         if ((ev.i18n_key as string) === "stream.auto_retry") {
-          _txt = "`⚠️ " + _txt + "`";
+          // 原位更新（2026-10-11 用户反馈：此前每次 append，N 轮重试堆 N 行）：
+          // 新一轮提示替换上一轮；文本里带分隔符整体进出，替换/撤行都精确。
+          const prev = retryNoticeRef.current[sid];
+          if (prev) stripFromLive(sid, prev);
+          const live = (storeRef.current[sid] ?? []).find(
+            (m) => m.id === liveBySessionRef.current[sid],
+          );
+          const lastB = (live?.blocks[live.blocks.length - 1] ?? null) as {
+            kind?: string;
+            text?: string;
+          } | null;
+          const sep =
+            lastB && (lastB.kind === "text" || lastB.kind === "thinking") && lastB.text
+              ? "\n\n"
+              : "";
+          const chunk = `${sep}\`⚠️ ${_txt}\``;
+          retryNoticeRef.current[sid] = chunk;
+          mutateLive(sid, { event: "token.delta", content: chunk });
+          break;
         }
         mutateLive(sid, {
           event: "token.delta",
