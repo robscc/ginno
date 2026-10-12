@@ -341,7 +341,14 @@
       "deleteAgentTitle": "Delete agent",
       "confirmDelete": "Delete agent “{id}”?\nIts memory directory ~/.ginno/agents/{id}/ will not be deleted.",
       "confirmDeleteLast": "\nThis is the last agent; after deletion the default dev / research / writer are restored automatically.",
-      "deleteLabel": "Delete"
+      "deleteLabel": "Delete",
+      "subTypesLabel": "Sub-agent types",
+      "subTypesNote": "Each type's tools_allow is the whitelist its spawned children bind. Empty list = no restriction (full toolset, incl. MCP).",
+      "subTypesEmpty": "No types found (~/.ginno/agents/subagents/*.md)",
+      "typeDescLabel": "Description",
+      "typeModelLabel": "Model override",
+      "typeModelNote": "provider/model or bare model name; empty = inherit",
+      "typeBodyLabel": "Persona prompt"
     },
     "workflows": {
       "title": "Workflows",

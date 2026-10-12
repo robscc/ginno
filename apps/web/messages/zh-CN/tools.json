@@ -341,7 +341,14 @@
       "deleteAgentTitle": "删除智能体",
       "confirmDelete": "删除智能体「{id}」？\n其记忆目录 ~/.ginno/agents/{id}/ 不会被删除。",
       "confirmDeleteLast": "\n这是最后一个智能体；删除后会自动恢复默认的 dev / research / writer。",
-      "deleteLabel": "删除"
+      "deleteLabel": "删除",
+      "subTypesLabel": "子代理类型",
+      "subTypesNote": "各类型的 tools_allow 是它 spawn 出的子代绑定的工具白名单；空清单 = 不收紧（全量工具集，含 MCP）。",
+      "subTypesEmpty": "未找到类型（~/.ginno/agents/subagents/*.md）",
+      "typeDescLabel": "描述",
+      "typeModelLabel": "模型覆盖",
+      "typeModelNote": "provider/model 或裸模型名；留空 = 继承",
+      "typeBodyLabel": "人设提示词"
     },
     "workflows": {
       "title": "工作流",

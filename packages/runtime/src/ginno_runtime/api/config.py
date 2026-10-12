@@ -547,14 +547,51 @@ async def list_agents_endpoint() -> list[dict]:
 @router.get("/api/subagent_types")
 async def list_subagent_types_endpoint() -> list[dict]:
     """Agents 页 Sub-agent models 区块的数据源（model-assignment-design.md
-    §2.3）：[{name, description, model}]——model 为类型 frontmatter 的默认
-    覆盖原文（provider/model 或裸名），供 UI 显示继承链落点。"""
+    §2.3）：[{name, description, model, tools_allow, body}]——model 为类型
+    frontmatter 的默认覆盖原文（provider/model 或裸名），供 UI 显示继承链
+    落点；tools_allow/body 供 Sub-agent types 编辑区回填。"""
     from ..subagent_types import load_subagent_types
 
     return [
-        {"name": t.name, "description": t.description, "model": t.model}
+        {
+            "name": t.name,
+            "description": t.description,
+            "model": t.model,
+            "tools_allow": t.tools_allow,
+            "body": t.body,
+        }
         for t in sorted(load_subagent_types().values(), key=lambda t: t.name)
     ]
+
+
+@router.put("/api/subagent_types/{name}")
+async def update_subagent_type_endpoint(name: str, data: dict) -> dict:
+    """Settings → Agents → Sub-agent types 的保存端点：原地改写类型 md 文件
+    （description / tools_allow / model / persona body；name 是文件标识不可
+    改）。tools_allow=[] 删除该键 = 不收紧（子代继承全量并集工具集，含
+    MCP）。失败走 {ok:false, error} 200——与 agents 端点同一约定。"""
+    from ..subagent_types import update_subagent_type
+
+    if "tools_allow" in data and not isinstance(data.get("tools_allow"), list):
+        return {"ok": False, "error": "tools_allow must be a list of patterns"}
+    fields = {
+        k: data.get(k)
+        for k in ("description", "tools_allow", "model", "body")
+        if k in data
+    }
+    t = update_subagent_type(name, **fields)
+    if t is None:
+        return {"ok": False, "error": f"unknown subagent type: {name}"}
+    return {
+        "ok": True,
+        "type": {
+            "name": t.name,
+            "description": t.description,
+            "model": t.model,
+            "tools_allow": t.tools_allow,
+            "body": t.body,
+        },
+    }
 
 
 @router.post("/api/agents")

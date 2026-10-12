@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -120,6 +121,60 @@ def _parse_file(p: Path) -> SubagentType | None:
         model=str(meta.get("model") or "").strip(),
         body=(body or "").strip(),
         source=str(p),
+    )
+
+
+def update_subagent_type(
+    name: str,
+    *,
+    description: str | None = None,
+    tools_allow: list[str] | None = None,
+    model: str | None = None,
+    body: str | None = None,
+) -> SubagentType | None:
+    """产品内编辑一个类型（Settings → Agents → Sub-agent types）：原地重写
+    它的 md 文件。None 字段保持原值；``tools_allow=[]`` 时整个键删除（=
+    不收紧，子代继承全量并集工具集）。name 是文件标识，不可改。
+
+    字符串值用 JSON 双引号风格序列化——frontmatter 走 yaml.safe_load 真解
+    析，裸值里的冒号/引号会把整个 meta 块炸成 {} 导致类型被跳过。文件重写
+    自然改变 mtime/size → 目录指纹失配，下次 load 自动换缓存。"""
+    key = (name or "").strip().lower()
+    if not _NAME_RE.match(key):
+        return None
+    cur = load_subagent_types().get(key)
+    if cur is None or not cur.source:
+        return None
+    desc = cur.description if description is None else str(description).strip()
+    tools = cur.tools_allow if tools_allow is None else _as_pattern_list(tools_allow)
+    mdl = cur.model if model is None else str(model).strip()
+    bdy = cur.body if body is None else str(body).strip()
+
+    def _q(v: str) -> str:
+        return json.dumps(v, ensure_ascii=False)
+
+    lines = ["---", f"name: {key}"]
+    if desc:
+        lines.append(f"description: {_q(desc)}")
+    if tools:
+        lines.append("tools_allow:")
+        lines.extend(f"  - {_q(p)}" for p in tools)
+    if mdl:
+        lines.append(f"model: {_q(mdl)}")
+    lines.append("---")
+    out = "\n".join(lines) + "\n" + (bdy + "\n" if bdy else "")
+    try:
+        Path(cur.source).write_text(out, encoding="utf-8")
+    except OSError:
+        _log.exception("subagent_type_write_failed name=%s", key)
+        return None
+    return SubagentType(
+        name=key,
+        description=desc,
+        tools_allow=tools,
+        model=mdl,
+        body=bdy,
+        source=cur.source,
     )
 
 
@@ -232,6 +287,7 @@ tools_allow:
 name: researcher
 description: 联网研究。跨来源检索、交叉验证、带引用地汇总某个主题的最新信息。适合需要时效性与多方来源的委派。
 tools_allow:
+  - mcp_*
   - web_search
   - web_fetch
   - read_file
@@ -264,6 +320,7 @@ tools_allow:
 name: implementer
 description: 并行实现。在明确的文件范围内独立完成一块编码任务（新增文件或改动约定好的模块），适合可切分且互不冲突的实现工作。
 tools_allow:
+  - mcp_*
   - read_file
   - write_file
   - edit_file

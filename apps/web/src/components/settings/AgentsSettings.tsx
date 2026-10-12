@@ -681,6 +681,15 @@ export function AgentsSettings() {
         {idError && <div className="mt-1 text-xs text-red">{idError}</div>}
       </div>
 
+      {/* Sub-agent types 编辑区：类型的工具白名单产品内可配（2026-10-12，
+          子代「用不了 MCP」的根因就是 implementer 的白名单没写 mcp_*） */}
+      <SubagentTypesEditor
+        subTypes={subTypes}
+        onUpdated={(ty) =>
+          setSubTypes((prev) => prev.map((x) => (x.name === ty.name ? ty : x)))
+        }
+      />
+
       {deleteTarget && (
         <ConfirmModal
           title={t("deleteAgentTitle")}
@@ -697,6 +706,196 @@ export function AgentsSettings() {
           onCancel={() => setDeleteTarget(null)}
         />
       )}
+    </div>
+  );
+}
+
+/** Sub-agent types 编辑区（2026-10-12 开放配置）：类型的 tools_allow 白名单
+ *  是 spawn 时套在子代身上的工具收紧层（subagent P3 contract 1）——白名单
+ *  里没写的工具子代结构上就不绑定、提示词也不广告。此前只能手改
+ *  ~/.ginno/agents/subagents/*.md；这里产品内编辑、原地改写类型文件。
+ *  空清单 = 不收紧（子代继承全量并集工具集，含 MCP）。 */
+function SubagentTypesEditor({
+  subTypes,
+  onUpdated,
+}: {
+  subTypes: SubagentTypeInfo[];
+  onUpdated: (t: SubagentTypeInfo) => void;
+}) {
+  const t = useTranslations("settings.agents");
+  type TypeDraft = { description: string; tools: string[]; model: string; body: string };
+  const [drafts, setDrafts] = useState<Record<string, TypeDraft>>({});
+  const [input, setInput] = useState<Record<string, string>>({});
+  const [bodyOpen, setBodyOpen] = useState<Record<string, boolean>>({});
+  const [msg, setMsg] = useState<Record<string, Feedback>>({});
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+
+  const draftOf = (ty: SubagentTypeInfo): TypeDraft =>
+    drafts[ty.name] ?? {
+      description: ty.description,
+      tools: [...(ty.tools_allow ?? [])],
+      model: ty.model,
+      body: ty.body ?? "",
+    };
+  const patch = (ty: SubagentTypeInfo, p: Partial<TypeDraft>) => {
+    setDrafts((d) => ({ ...d, [ty.name]: { ...draftOf(ty), ...p } }));
+    setMsg((m) => (m[ty.name] ? { ...m, [ty.name]: undefined as never } : m));
+  };
+  const addPattern = (ty: SubagentTypeInfo) => {
+    const d = draftOf(ty);
+    const raw = (input[ty.name] || "").trim();
+    setInput((m) => ({ ...m, [ty.name]: "" }));
+    if (!raw) return;
+    const next = [...d.tools];
+    for (const p of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+      if (!next.includes(p)) next.push(p);
+    }
+    patch(ty, { tools: next });
+  };
+  async function save(ty: SubagentTypeInfo) {
+    const d = draftOf(ty);
+    setBusy((b) => ({ ...b, [ty.name]: true }));
+    setMsg((m) => ({ ...m, [ty.name]: undefined as never }));
+    try {
+      const r = await api.updateSubagentType(ty.name, {
+        description: d.description,
+        tools_allow: d.tools,
+        model: d.model,
+        body: d.body,
+      });
+      if (r.ok && r.type) {
+        // 草稿作废回落到服务端回传值，避免本地态与文件漂移
+        setDrafts((prev) => {
+          const next = { ...prev };
+          delete next[ty.name];
+          return next;
+        });
+        onUpdated(r.type);
+        setMsg((m) => ({ ...m, [ty.name]: { text: t("saved"), ok: true } }));
+      } else {
+        setMsg((m) => ({ ...m, [ty.name]: { text: r.error || t("saveFailed"), ok: false } }));
+      }
+    } catch {
+      setMsg((m) => ({ ...m, [ty.name]: { text: t("connError"), ok: false } }));
+    } finally {
+      setBusy((b) => ({ ...b, [ty.name]: false }));
+    }
+  }
+
+  if (subTypes.length === 0) {
+    return (
+      <div className="mt-6">
+        <label className="field-label">{t("subTypesLabel")}</label>
+        <div className="mt-1 text-[11px] text-faint">{t("subTypesEmpty")}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-6">
+      <label className="field-label">{t("subTypesLabel")}</label>
+      <div className="mt-0.5 text-[11px] text-faint">{t("subTypesNote")}</div>
+      <div className="mt-2 space-y-3">
+        {subTypes.map((ty) => {
+          const d = draftOf(ty);
+          return (
+            <div key={ty.name} className="rounded-lg border border-line bg-card p-3">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-sm text-txt">{ty.name}</span>
+                {d.tools.length === 0 && (
+                  <span className="rounded-full border border-green/40 bg-green/10 px-1.5 text-[10px] leading-4 text-green">
+                    {t("emptyAllowsAll")}
+                  </span>
+                )}
+                <div className="ml-auto flex items-center gap-2">
+                  {msg[ty.name] && (
+                    <span className={`text-xs ${msg[ty.name]!.ok ? "text-violet" : "text-red"}`}>
+                      {msg[ty.name]!.text}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => void save(ty)}
+                    disabled={busy[ty.name]}
+                    className="rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {busy[ty.name] ? t("saving") : t("save")}
+                  </button>
+                </div>
+              </div>
+              <label className="field-label mt-2">{t("typeDescLabel")}</label>
+              <input
+                className="field text-sm"
+                value={d.description}
+                onChange={(e) => patch(ty, { description: e.target.value })}
+              />
+              <label className="field-label mt-2">{t("toolsAllowLabel")}</label>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 rounded-md border border-line2 bg-base/60 px-2 py-1.5">
+                {d.tools.map((tool) => (
+                  <span
+                    key={tool}
+                    className="flex items-center gap-1 rounded-full border border-line2 bg-card2/60 px-2 py-px font-mono text-[11px] text-muted"
+                  >
+                    {tool}
+                    <button
+                      onClick={() => patch(ty, { tools: d.tools.filter((x) => x !== tool) })}
+                      className="opacity-60 hover:opacity-100"
+                      title={t("removeTitle")}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <input
+                  className="min-w-[7rem] flex-1 bg-transparent text-xs text-txt outline-none placeholder:text-faint"
+                  placeholder={d.tools.length ? t("addPatternPlaceholder") : t("emptyAllowsAll")}
+                  list={`type-tools-${ty.name}`}
+                  value={input[ty.name] || ""}
+                  onChange={(e) => setInput((m) => ({ ...m, [ty.name]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === ",") {
+                      e.preventDefault();
+                      addPattern(ty);
+                    } else if (e.key === "Backspace" && !input[ty.name]) {
+                      patch(ty, { tools: d.tools.slice(0, -1) });
+                    }
+                  }}
+                  onBlur={() => addPattern(ty)}
+                />
+                <datalist id={`type-tools-${ty.name}`}>
+                  {TOOL_SUGGESTIONS.map((s) => (
+                    <option key={s} value={s} />
+                  ))}
+                </datalist>
+              </div>
+              <div className="mt-0.5 text-[11px] text-faint">{t("globsNote")}</div>
+              <div className="mt-2 grid grid-cols-[7rem_1fr] items-center gap-2">
+                <label className="field-label">{t("typeModelLabel")}</label>
+                <div>
+                  <input
+                    className="field text-sm"
+                    placeholder={t("typeModelNote")}
+                    value={d.model}
+                    onChange={(e) => patch(ty, { model: e.target.value })}
+                  />
+                </div>
+              </div>
+              <button
+                onClick={() => setBodyOpen((m) => ({ ...m, [ty.name]: !m[ty.name] }))}
+                className="mt-2 text-[11px] text-faint transition-colors hover:text-muted"
+              >
+                {bodyOpen[ty.name] ? "▾" : "▸"} {t("typeBodyLabel")}
+              </button>
+              {bodyOpen[ty.name] && (
+                <textarea
+                  className="field mt-1 min-h-40 font-mono text-xs leading-relaxed"
+                  value={d.body}
+                  onChange={(e) => patch(ty, { body: e.target.value })}
+                  spellCheck={false}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

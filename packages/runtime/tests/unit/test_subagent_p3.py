@@ -127,6 +127,35 @@ def _sub_meta(
     return m
 
 
+def test_update_subagent_type_roundtrip_and_yaml_escaping(isolated_home):
+    """产品内编辑（PUT /api/subagent_types 的内核）：写回→重载一致；空
+    tools_allow 删除该键（= 不收紧）；含冒号/引号的描述不炸 YAML。"""
+    _write_type("implementer", tools_allow="[read_file, bash]")
+    t = st_mod.update_subagent_type(
+        "implementer",
+        description="实现: 含冒号与\"引号\"的描述",
+        tools_allow=["mcp_*", "read_file", "bash"],
+        model="prov_x/glm-5.3",
+        body="你是实现型子代理。",
+    )
+    assert t is not None
+    reloaded = st_mod.load_subagent_types(force=True)["implementer"]
+    assert reloaded.tools_allow == ["mcp_*", "read_file", "bash"]
+    assert reloaded.description == "实现: 含冒号与\"引号\"的描述"
+    assert reloaded.model == "prov_x/glm-5.3"
+    assert reloaded.body == "你是实现型子代理。"
+
+    # 清空白名单 → 键整个删除 = 不收紧（子代继承全量并集，含 MCP）
+    t2 = st_mod.update_subagent_type("implementer", tools_allow=[])
+    assert t2 is not None and t2.tools_allow == []
+    raw = (st_mod.subagents_dir() / "implementer.md").read_text(encoding="utf-8")
+    assert "tools_allow" not in raw
+
+    # 不存在的类型 / 非法名 → None（端点层转 unknown-type 错误）
+    assert st_mod.update_subagent_type("nope") is None
+    assert st_mod.update_subagent_type("../evil") is None
+
+
 def _write_type(name: str, body: str = "你是只读调研员。", **fm) -> None:
     meta = {"name": name, "description": "只读调研类型", **fm}
     d = st_mod.subagents_dir()

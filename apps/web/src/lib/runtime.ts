@@ -361,14 +361,30 @@ export async function listAgents() {
 }
 /** 子代理类型注册表（~/.ginno/agents/subagents/*.md）——Agents 页
  *  Sub-agent models 区块的数据源（model-assignment-design.md §2.3）。
- *  model 为类型 frontmatter 的默认覆盖原文（provider/model 或裸名）。 */
+ *  model 为类型 frontmatter 的默认覆盖原文（provider/model 或裸名）；
+ *  tools_allow/body 供 Sub-agent types 编辑区回填（spawn 时按白名单收紧
+ *  子代工具集——2026-10-12 子代「用不了 MCP」即 implementer 白名单不含
+ *  mcp_*，产品内可改）。 */
 export interface SubagentTypeInfo {
   name: string;
   description: string;
   model: string;
+  tools_allow?: string[];
+  body?: string;
 }
 export async function listSubagentTypes() {
   return json<SubagentTypeInfo[]>(`${BASE}/subagent_types`);
+}
+/** 保存一个类型的编辑（原地改写 md 文件；name 不可改）。tools_allow=[]
+ *  = 不收紧（继承全量并集工具集，含 MCP）。 */
+export async function updateSubagentType(
+  name: string,
+  data: Partial<Pick<SubagentTypeInfo, "description" | "tools_allow" | "model" | "body">>,
+) {
+  return json<{ ok: boolean; type?: SubagentTypeInfo; error?: string }>(
+    `${BASE}/subagent_types/${encodeURIComponent(name)}`,
+    { method: "PUT", headers: H, body: JSON.stringify(data) },
+  );
 }
 export async function createAgent(data: Partial<AgentConfig>) {
   return json<{ ok: boolean; agent?: AgentConfig; error?: string }>(`${BASE}/agents`, {
