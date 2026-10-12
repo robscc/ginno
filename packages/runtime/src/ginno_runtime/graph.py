@@ -1423,6 +1423,7 @@ def build_all_tools(
     from .tools.browser_tools import build_browser_tools
     from .tools.external_agent import build_external_agent_tools
     from .tools.goal_tools import build_goal_tools
+    from .tools.plan_tools import build_plan_tools
     from .tools.subagent import build_subagent_tools
     from .tools.web_tools import build_web_tools
 
@@ -1475,6 +1476,9 @@ def build_all_tools(
         # permission exempt set, same delegate_agent precedent: the user
         # approves the goal itself (policy default "ask").
         + build_subagent_tools(session_id, project_slug, subagent_depth=subagent_depth)
+        # 任务清单编排（plan-orchestration §5）：建单/改单/取消。无
+        # session（workflow/列举端点）时为空，与 ask/subagent 同语义。
+        + build_plan_tools(session_id, project_slug)
     )
     patterns = [p for p in (restrict_tools or []) if isinstance(p, str) and p.strip()]
     if patterns:

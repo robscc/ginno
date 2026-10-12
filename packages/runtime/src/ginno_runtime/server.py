@@ -43,6 +43,19 @@ async def lifespan(app: FastAPI):
         reconcile_running_delegations()
     except Exception:  # noqa: BLE001 — 启动绝不因对账失败而中断
         pass
+    # 清单 watcher 恢复（subagent-plan-orchestration-design.md §6）：扫
+    # 全部 open 清单——active 的会话起 watcher 接着跑（running 条目靠 tick
+    # 对账自动校准）；pending_confirm 等用户，不起。会话已删除的跳过。
+    try:
+        from .plans import store as _plan_store, watcher as _plan_watcher
+
+        for _slug, _sid, _plan in _plan_store.all_active_plans():
+            _meta, _ = _find_meta(_sid) or ({}, None)
+            if not _meta or _plan.get("status") != _plan_store.PLAN_ACTIVE:
+                continue
+            _plan_watcher.ensure_watcher(_sid)
+    except Exception:  # noqa: BLE001 — 启动绝不因恢复失败而中断
+        _log.exception("plan watcher recovery failed (continuing)")
     # i18n bundle check (i18n-design.md §10.5): both catalogs loadable + key/
     # placeholder parity. A frozen-app packaging gap (the JSONs missing from
     # the bundle) must surface HERE, not on first use — same lesson as the
@@ -326,6 +339,7 @@ if WEB_OUT is not None and (WEB_OUT / "_next").exists():
 from .api import code as _code_api  # noqa: E402
 from .api import code_fsops as _code_fsops_api  # noqa: E402
 from .api import config as _config_api  # noqa: E402
+from .api import plans as _plans_api  # noqa: E402
 from .api import files as _files_api  # noqa: E402
 from .api import folders as _folders_api  # noqa: E402
 from .api import connectors as _connectors_api  # noqa: E402
@@ -343,6 +357,7 @@ app.include_router(_code_api.router)
 app.include_router(_connectors_api.router)
 app.include_router(_code_fsops_api.router)
 app.include_router(_config_api.router)
+app.include_router(_plans_api.router)
 app.include_router(_files_api.router)
 app.include_router(_folders_api.router)
 app.include_router(_knowledge_api.router)
