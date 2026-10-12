@@ -721,3 +721,58 @@ def test_replay_renders_standalone_attachment_group(isolated_home):
     ui = _messages_to_ui([HumanMessage(content="hi", id="h1"), msg], agent_id="dev")
     assert [m["role"] for m in ui] == ["user", "user"]
     assert [b["kind"] for b in ui[1]["blocks"]] == ["steer", "file", "image"]
+
+def test_injected_subagent_result_folds_to_card_not_steer_band(isolated_home):
+    """runtime 注入的 <ginno_subagent_result> 同时带 ginno_steer kw（
+    steer_messages 合并盖的章）——历史转换必须折成结果卡（契约 3），
+    不能落进 steer 带把原始 XML 直出（2026-10-12 真机：t17 delegation
+    回传整段信封在注入带裸渲染）。"""
+    sid = "3506e41b88954ca98c18f5bbfeaa8de1"
+    env = (
+        f'<ginno_subagent_result session="{sid}"'
+        ' goal="任务：把 Confluence 迁移物料批量写入钉钉文档">\n'
+        "[delegate backend=claude-code mode=edit stop=success turns=128]\n"
+        "| 指标 | 数量 |\n|---|---|\n| 创建 | 42 |\n"
+        "&lt;p&gt;〔迁移自 Confluence pageId=1〕\n"
+        "</ginno_subagent_result>"
+    )
+    msg = HumanMessage(
+        content=env,
+        id="h9",
+        additional_kwargs={
+            "ginno_steer": {"steer_id": f"subagent-{sid}-aa", "injected_at": 1.0},
+            "ginno_subagent_result": sid,
+        },
+    )
+    ui = _messages_to_ui([AIMessage(content="working", id="a1"), msg], "dev")
+    blocks = [b for g in ui for b in g.get("blocks", [])]
+    kinds = [b["kind"] for b in blocks]
+    assert "subagent_result" in kinds
+    assert "steer" not in kinds  # 修复点：不再折成带原始 XML 的 steer 带
+    card = next(b for b in blocks if b["kind"] == "subagent_result")
+    assert card["sessionId"] == sid
+    assert "delegate backend=claude-code" in card["summary"]
+    assert "<ginno_subagent_result" not in card["summary"]
+    # 正文实体解码（前端 DOMParser 的镜像）
+    assert "<p>〔迁移自" in card["summary"]
+
+
+def test_injected_subagent_result_multi_envelope(isolated_home):
+    """合并注入：一条消息多个信封 → 每张一张卡。"""
+    env = (
+        '<ginno_subagent_result session="c1" goal="g1">\nr1\n</ginno_subagent_result>\n'
+        '<ginno_subagent_result session="c2" goal="g2">\nr2\n</ginno_subagent_result>'
+    )
+    msg = HumanMessage(
+        content=env,
+        id="h10",
+        additional_kwargs={
+            "ginno_steer": {"steer_id": "subagent-merge", "injected_at": 2.0},
+            "ginno_subagent_result": "c1",
+        },
+    )
+    ui = _messages_to_ui([msg], "dev")
+    cards = [
+        b for g in ui for b in g.get("blocks", []) if b["kind"] == "subagent_result"
+    ]
+    assert [c["sessionId"] for c in cards] == ["c1", "c2"]

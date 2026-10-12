@@ -7,6 +7,7 @@ streaming layer for live rendering helpers.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from pathlib import Path
@@ -132,6 +133,48 @@ def _image_block_url(b: dict) -> str | None:
         if src.get("data"):
             return f"data:{src.get('media_type') or 'image/png'};base64,{src['data']}"
     return None
+
+
+_RESULT_ENV_RE = re.compile(
+    r"<ginno_subagent_result\b([^>]*)>(.*?)</ginno_subagent_result>", re.S
+)
+
+
+def _subagent_result_blocks(content: Any) -> list[dict] | None:
+    """runtime 注入的子代理结果（契约 3）折成结果卡，而不是原始 XML 当
+    steering 带直出（2026-10-12 真机：t17 delegation 回传整段信封裸渲染）。
+
+    注入消息同时带 ginno_steer kw（steer_messages 合并盖的章），必须在
+    steer 带分支【前】检查。合并注入时一条消息可带多个信封——逐个解析，
+    每张一张卡；一个都解析不出则回 None（落回 steer 带渲染，防御旧形状）。
+    属性与正文的转义由 runtime 侧 _xml_attr/_xml_text 负责，这里
+    html.unescape 是前端 DOMParser 解码的镜像。"""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            p.get("text") or ""
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    else:
+        return None
+    out: list[dict] = []
+    for m in _RESULT_ENV_RE.finditer(text):
+
+        def attr(name: str, attrs: str = m.group(1)) -> str:
+            am = re.search(rf'{name}="([^"]*)"', attrs)
+            return html.unescape(am.group(1)) if am else ""
+
+        out.append(
+            {
+                "kind": "subagent_result",
+                "sessionId": attr("session"),
+                "goal": attr("goal"),
+                "summary": html.unescape(m.group(2)).strip(),
+            }
+        )
+    return out or None
 
 
 def _steer_band_blocks(content: Any, steer_kw: dict) -> list[dict]:
@@ -558,6 +601,19 @@ def _messages_to_ui(
             # injection point renders as a full-width band inside it (§4.2/§4.3),
             # so the band joins the open accumulator instead of flushing it.
             steer_kw = (getattr(m, "additional_kwargs", None) or {}).get("ginno_steer")
+            # runtime 注入的子代理结果也带 ginno_steer（steer_messages 合并），
+            # 但它该折结果卡而非 steer 带——先于 steer 分支检查（契约 3）。
+            res_kw = (getattr(m, "additional_kwargs", None) or {}).get(
+                "ginno_subagent_result"
+            )
+            if res_kw:
+                cards = _subagent_result_blocks(content_raw)
+                if cards:
+                    if acc is not None:
+                        acc.extend(cards)
+                    else:
+                        pending_bands.append(cards)
+                    continue
             if steer_kw:
                 group = _steer_band_blocks(content_raw, steer_kw)
                 if acc is not None:
