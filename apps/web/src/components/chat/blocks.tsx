@@ -27,7 +27,15 @@ import { imageUrl, ImageGallery } from "./blocks/media";
 // ---- 原有导出整体保留：各内聚主题拆到 blocks/ 子模块，这里统一 re-export，
 // 保证所有现有 import 路径（@/components/chat/blocks）不变。 ----
 export { useEventI18nText } from "./blocks/i18n";
-export { SUBAGENT_STATUS_META, subagentStatusMeta, useStatusLabel } from "./blocks/types";
+export {
+  SUBAGENT_BUCKET_GLYPH,
+  SUBAGENT_BUCKET_ORDER,
+  SUBAGENT_STATUS_META,
+  subagentSessionBucket,
+  subagentStatusBucket,
+  subagentStatusMeta,
+  useStatusLabel,
+} from "./blocks/types";
 export type {
   SourceItem,
   Block,

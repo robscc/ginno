@@ -32,7 +32,14 @@ import { applyTheme } from "@/components/settings/GeneralSettings";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { ChatStream } from "@/components/chat/ChatStream";
-import { SUBAGENT_STATUS_META, SubagentKindBadges, useStatusLabel } from "@/components/chat/blocks";
+import {
+  SUBAGENT_BUCKET_GLYPH,
+  SUBAGENT_BUCKET_ORDER,
+  SUBAGENT_STATUS_META,
+  SubagentKindBadges,
+  subagentSessionBucket,
+  useStatusLabel,
+} from "@/components/chat/blocks";
 import { RunSubSessionView } from "@/components/chat/RunSubSessionView";
 import { ScheduleRunView } from "@/components/chat/ScheduleRunView";
 import { UnseenBadge } from "@/components/scheduled/UnseenBadge";
@@ -70,6 +77,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   };
   // C+ 方案③：侧边栏按 agent 筛选会话（null = 全部，再点一次取消）
   const [agentFilter, setAgentFilter] = useState<string | null>(null);
+  // 子会话三档分节的折叠覆盖（2026-10-12 收纳优化）：key = "<父会话>:<桶>"。
+  // 父级展开/折叠本身在 store（treeCollapsed）；节级折叠是会话内的 UI 态，
+  // 刷新后回到默认（运行中/失败展开、成功收起）即可。单子会话不分节。
+  const [subGroupFold, setSubGroupFold] = useState<Record<string, boolean>>({});
   // 子会话树的展开/折叠覆盖（subagent-design.md §6.1）已上收到 store
   // （g.treeCollapsed / g.setTreeCollapsed，ginno-sidebar-tree 持久化）；
   // 语义不变：undefined = 跟随默认，true = 用户折叠，false = 用户显式展开。
@@ -741,7 +752,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
         {hasKids && expanded && (
           <div className="space-y-0.5">
-            {childRows.map((c) => renderSessionRow(c, depth + 1, childrenOf.get(c.id) ?? []))}
+            {/* 子会话三档分节收纳（2026-10-12）：运行中 → 失败 → 成功，空节不
+                渲染；运行中/失败默认展开，成功默认收起（节头计数保证收起仍可
+                见——不是 2026-10-01 那种「跑完即消失」）。单子会话不分节。
+                孙代递归不受影响：节内行仍走 renderSessionRow(depth+1)。 */}
+            {childRows.length > 1
+              ? SUBAGENT_BUCKET_ORDER.map((bk) => {
+                  const group = childRows.filter((c) => subagentSessionBucket(c) === bk);
+                  if (!group.length) return null;
+                  const key = `${s.id}:${bk}`;
+                  const open = subGroupFold[key] ?? bk !== "done";
+                  return (
+                    <div key={bk} style={depth > 0 ? { marginLeft: `${depth * 16}px` } : undefined}>
+                      <button
+                        onClick={() => setSubGroupFold((m) => ({ ...m, [key]: !open }))}
+                        title={t("session.statusPrefix", { status: subStatusLabel(bk) })}
+                        className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-[10px] text-faint transition-colors hover:bg-card2/40 hover:text-muted"
+                      >
+                        <ChevronDown
+                          className={`h-3 w-3 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`}
+                        />
+                        <span className="shrink-0">{SUBAGENT_BUCKET_GLYPH[bk]}</span>
+                        <span>{subStatusLabel(bk)}</span>
+                        <span>· {group.length}</span>
+                      </button>
+                      {open &&
+                        group.map((c) => renderSessionRow(c, depth + 1, childrenOf.get(c.id) ?? []))}
+                    </div>
+                  );
+                })
+              : childRows.map((c) => renderSessionRow(c, depth + 1, childrenOf.get(c.id) ?? []))}
             {runRows.map((r) => renderRunRow(r, depth + 1))}
           </div>
         )}

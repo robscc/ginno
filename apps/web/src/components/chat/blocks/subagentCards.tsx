@@ -10,6 +10,9 @@ import { t } from "@/i18n/provider";
 import { useChatT } from "./i18n";
 import { parseDelegation } from "./delegation";
 import {
+  SUBAGENT_BUCKET_GLYPH,
+  SUBAGENT_BUCKET_ORDER,
+  subagentStatusBucket,
   subagentStatusMeta,
   useStatusLabel,
   type Block,
@@ -458,6 +461,10 @@ export function SubagentBriefCard({
  *  优化）。每行一个子任务——状态点 + 类型徽标（组内类型一致时收进组头）+
  *  标题 + 已运行时长；点行展开 goal/约束/验收与「查看完整对话」。
  *
+ *  2026-10-12 收纳优化：多行时按状态三档分节（运行中 / 失败 / 成功），每节
+ *  独立折叠——运行中、失败默认展开，成功默认收起（并行委派一多，全部平铺
+ *  会把主对话挤没；空节不渲染）。单行时不分节，维持原平铺。
+ *
  *  旧的单张发起卡（SubagentSpawnCard）仍保留：历史重放、单独一条等场景沿用。 */
 export function SubagentGroupCard({
   rows,
@@ -469,6 +476,10 @@ export function SubagentGroupCard({
   const { tc } = useChatT();
   const statusLabel = useStatusLabel();
   const [openId, setOpenId] = useState<string | null>(null);
+  // 三档分节的折叠态。成功默认收起是收纳主收益；标题上的计数保证它
+  // 「收起但可见」，不会像 2026-10-01 那次自动折叠一样像消失。
+  const [bucketOpen, setBucketOpen] = useState<Record<string, boolean>>({});
+  const bucketOpenOf = (b: string) => bucketOpen[b] ?? b !== "done";
   if (!rows.length) return null;
 
   // 类型徽标：组内一致 → 收到组头；混合 → 每行各自标注（用户指出的场景）。
@@ -485,6 +496,106 @@ export function SubagentGroupCard({
     if (window.location.pathname !== "/") router.push("/");
     window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: sid }));
   };
+
+  const renderRow = (r: Extract<Block, { kind: "subagent_spawn" }>, i: number) => {
+    const live = g.sessions.find((s) => s.id === r.sessionId);
+    const sub = live?.subagent;
+    const status = sub?.status ?? "running";
+    const meta = subagentStatusMeta(status);
+    const active = status === "running" || status === "waiting";
+    const title = r.title || sub?.goal || r.goal || tc("subagent.fallbackTitle");
+    const expanded = openId === r.sessionId;
+    const type = types[i];
+    return (
+      <div key={r.sessionId} className={`border-t border-line/40 first:border-t-0 ${!active ? "opacity-60" : ""}`}>
+        <button
+          onClick={() => setOpenId(expanded ? null : r.sessionId)}
+          className="flex w-full items-center gap-2 py-1 text-left transition-colors hover:bg-card2/40"
+          title={sub?.goal || r.goal}
+        >
+          <span className="shrink-0" title={tc("status.tooltip", { status: statusLabel(status) })}>{meta.glyph}</span>
+          {mixed && type && (
+            <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet">
+              {type}
+            </span>
+          )}
+          <span className="min-w-0 flex-1 truncate text-muted">{title}</span>
+          {r.spawnedAt && active && (
+            <span className="shrink-0 text-[10px] text-faint">
+              {tc("subagent.runningFor", { time: subagentElapsed(r.spawnedAt) })}
+            </span>
+          )}
+          <ChevronRight
+            className={`h-3 w-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
+          />
+        </button>
+        {expanded && (
+          <div className="pb-2 pl-5 pr-1">
+            {(sub?.goal || r.goal) && (
+              <div className="whitespace-pre-wrap break-words leading-relaxed text-muted">
+                {tc("subagent.goalLabel")}{sub?.goal || r.goal}
+              </div>
+            )}
+            {(sub?.constraints || r.constraints) && (
+              <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
+                {tc("subagent.constraintsLabel")}{sub?.constraints || r.constraints}
+              </div>
+            )}
+            {(sub?.acceptance || r.acceptance) && (
+              <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
+                {tc("subagent.acceptanceLabel")}{sub?.acceptance || r.acceptance}
+              </div>
+            )}
+            <div className="mt-1.5 flex items-center gap-2 text-[10px] text-faint">
+              <button
+                onClick={() => openChild(r.sessionId)}
+                className="rounded-md border border-line2 px-1.5 py-0.5 text-muted transition-colors hover:border-violet/50 hover:text-violet"
+              >
+                {tc("subagent.viewFullConversation")}
+              </button>
+              <span>{r.origin === "user" ? tc("subagent.startedByUser") : tc("subagent.startedByAgent")}</span>
+              {typeof r.depth === "number" && <span>{tc("subagent.depth", { n: r.depth + 1 })}</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // 单行不分节：一条子任务配节头是纯噪音。
+  if (rows.length === 1) {
+    return (
+      <div className="rounded-lg border border-line bg-card/60 px-3 py-2 text-xs">
+        <div className="flex items-center gap-1.5">
+          <span className="shrink-0">🧭</span>
+          <span className="min-w-0 truncate font-medium text-txt">
+            {tc("subagent.delegated", { count: rows.length })}
+          </span>
+          {uniformType && (
+            <span
+              className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet"
+              title={tc("subagent.typeTitle", { type: uniformType })}
+            >
+              {uniformType}
+            </span>
+          )}
+        </div>
+        <div className="mt-1.5 flex flex-col">{rows.map((r, i) => renderRow(r, i))}</div>
+      </div>
+    );
+  }
+
+  // 三档分节：桶序 = 运行中 → 失败 → 成功；行在桶内保持原顺序，
+  // 类型徽标的原始下标（types[i]）随之携带。
+  const bucketed = SUBAGENT_BUCKET_ORDER.map((b) => ({
+    bucket: b,
+    entries: rows
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => {
+        const sub = g.sessions.find((s) => s.id === r.sessionId);
+        return subagentStatusBucket(sub?.subagent?.status) === b;
+      }),
+  })).filter((b) => b.entries.length > 0);
 
   return (
     <div className="rounded-lg border border-line bg-card/60 px-3 py-2 text-xs">
@@ -503,67 +614,21 @@ export function SubagentGroupCard({
         )}
       </div>
       <div className="mt-1.5 flex flex-col">
-        {rows.map((r, i) => {
-          const live = g.sessions.find((s) => s.id === r.sessionId);
-          const sub = live?.subagent;
-          const status = sub?.status ?? "running";
-          const meta = subagentStatusMeta(status);
-          const active = status === "running" || status === "waiting";
-          const title = r.title || sub?.goal || r.goal || tc("subagent.fallbackTitle");
-          const expanded = openId === r.sessionId;
-          const type = types[i];
+        {bucketed.map(({ bucket, entries }) => {
+          const open = bucketOpenOf(bucket);
           return (
-            <div key={r.sessionId} className={`border-t border-line/40 first:border-t-0 ${!active ? "opacity-60" : ""}`}>
+            <div key={bucket} className="border-t border-line/40 first:border-t-0">
               <button
-                onClick={() => setOpenId(expanded ? null : r.sessionId)}
-                className="flex w-full items-center gap-2 py-1 text-left transition-colors hover:bg-card2/40"
-                title={sub?.goal || r.goal}
+                onClick={() => setBucketOpen((m) => ({ ...m, [bucket]: !open }))}
+                className="flex w-full items-center gap-1.5 py-1 text-[10px] text-faint transition-colors hover:text-muted"
+                title={statusLabel(bucket)}
               >
-                <span className="shrink-0" title={tc("status.tooltip", { status: statusLabel(status) })}>{meta.glyph}</span>
-                {mixed && type && (
-                  <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 text-[10px] leading-4 text-violet">
-                    {type}
-                  </span>
-                )}
-                <span className="min-w-0 flex-1 truncate text-muted">{title}</span>
-                {r.spawnedAt && active && (
-                  <span className="shrink-0 text-[10px] text-faint">
-                    {tc("subagent.runningFor", { time: subagentElapsed(r.spawnedAt) })}
-                  </span>
-                )}
-                <ChevronRight
-                  className={`h-3 w-3 shrink-0 text-faint transition-transform ${expanded ? "rotate-90" : ""}`}
-                />
+                <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+                <span>{SUBAGENT_BUCKET_GLYPH[bucket]}</span>
+                <span>{statusLabel(bucket)}</span>
+                <span>· {entries.length}</span>
               </button>
-              {expanded && (
-                <div className="pb-2 pl-5 pr-1">
-                  {(sub?.goal || r.goal) && (
-                    <div className="whitespace-pre-wrap break-words leading-relaxed text-muted">
-                      {tc("subagent.goalLabel")}{sub?.goal || r.goal}
-                    </div>
-                  )}
-                  {(sub?.constraints || r.constraints) && (
-                    <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
-                      {tc("subagent.constraintsLabel")}{sub?.constraints || r.constraints}
-                    </div>
-                  )}
-                  {(sub?.acceptance || r.acceptance) && (
-                    <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
-                      {tc("subagent.acceptanceLabel")}{sub?.acceptance || r.acceptance}
-                    </div>
-                  )}
-                  <div className="mt-1.5 flex items-center gap-2 text-[10px] text-faint">
-                    <button
-                      onClick={() => openChild(r.sessionId)}
-                      className="rounded-md border border-line2 px-1.5 py-0.5 text-muted transition-colors hover:border-violet/50 hover:text-violet"
-                    >
-                      {tc("subagent.viewFullConversation")}
-                    </button>
-                    <span>{r.origin === "user" ? tc("subagent.startedByUser") : tc("subagent.startedByAgent")}</span>
-                    {typeof r.depth === "number" && <span>{tc("subagent.depth", { n: r.depth + 1 })}</span>}
-                  </div>
-                </div>
-              )}
+              {open && <div className="flex flex-col">{entries.map(({ r, i }) => renderRow(r, i))}</div>}
             </div>
           );
         })}

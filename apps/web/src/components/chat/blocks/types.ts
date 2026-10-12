@@ -87,6 +87,41 @@ export function subagentStatusMeta(status?: string) {
   return SUBAGENT_STATUS_META[status ?? ""] ?? SUBAGENT_STATUS_META.running;
 }
 
+/** 状态三档分桶（2026-10-12 收纳优化）：waiting 并入运行中、stopped 并入
+ *  失败（被中止同样无产出）。侧栏子树折叠与主对话委派卡共用同一组桶
+ *  ——「运行中 / 失败 / 成功」各为一节，各自独立折叠；行内 glyph 仍保留
+ *  五态原貌，桶只是收纳粒度。 */
+export type SubagentBucket = "running" | "failed" | "done";
+
+export function subagentStatusBucket(status?: string): SubagentBucket {
+  if (status === "failed" || status === "stopped") return "failed";
+  if (status === "done") return "done";
+  return "running"; // running / waiting / 未知
+}
+
+/** 会话行的三档分桶：subagent 走 status；delegation 回放没有 subagent
+ *  status，按 stop_reason 折算（与结果卡同一套终态判定）。 */
+export function subagentSessionBucket(s: {
+  type?: string | null;
+  subagent?: { status?: string } | null;
+  stop_reason?: string | null;
+}): SubagentBucket {
+  if (s.type === "delegation") {
+    const stop = s.stop_reason ?? "";
+    if (!stop) return "running";
+    return stop === "error" || stop === "timeout" ? "failed" : "done";
+  }
+  return subagentStatusBucket(s.subagent?.status);
+}
+
+/** 桶的固定渲染序：运行中（活）→ 失败（要人看）→ 成功（归档）。 */
+export const SUBAGENT_BUCKET_ORDER: SubagentBucket[] = ["running", "failed", "done"];
+export const SUBAGENT_BUCKET_GLYPH: Record<SubagentBucket, string> = {
+  running: "🟢",
+  failed: "⚠️",
+  done: "✅",
+};
+
 /** 状态枚举的展示标签：chat.status.* 命中即译；未识别的状态回退 meta 的
  *  英文标签（SUBAGENT_STATUS_META 的导出形状不变——侧栏等外部使用方仍读它）。 */
 export function useStatusLabel() {
