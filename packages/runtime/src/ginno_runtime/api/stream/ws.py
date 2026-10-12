@@ -479,6 +479,31 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         )
                         continue
                     user_text = plan.text
+
+                    # ── AgentTeam 投递分支（agent-team-design.md §5.2 步骤 2）──
+                    # 在**团队主会话**里 @agent 不再是「本轮换 persona」，而是
+                    # 把消息投递给该成员自己的 session。放在 busy check 之前：
+                    # 投递目标是另一个 session，主会话自身忙不忙与它无关。
+                    # 非团队会话（found is None）走原路径，行为完全不变。
+                    if plan.agent_override:
+                        from ...teams.deliver import resolve_agent_mention
+
+                        _team_receipt = await resolve_agent_mention(
+                            session_id, plan.agent_override, user_text
+                        )
+                        if _team_receipt is not None:
+                            await _push_session_event(
+                                session_id,
+                                "team.delivered",
+                                {
+                                    "agent_id": plan.agent_override,
+                                    "text": user_text,
+                                    **_team_receipt,
+                                },
+                                turn_id,
+                            )
+                            continue
+
                     # Busy check: a turn task is already live for this session
                     # (multi-tab race — the frontend gates sends on `running`).
                     # A goal turn running inline holds the lock but has no entry

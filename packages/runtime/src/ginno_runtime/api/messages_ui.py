@@ -599,6 +599,10 @@ def _messages_to_ui(
     # exactly one turn, so the first tagged message wins; the session-level
     # ``agent_id`` argument stays as the fallback for old, untagged sessions.
     acc_agent: str | None = None
+    # AgentTeam 回帖标记（agent-team-design.md §5.2 要点 2）：成员产出写回主会话
+    # 时带 ``ginno_team_reply`` kw，序列化到 bubble 上让前端渲染成**回帖卡**
+    # （带头像、可折叠、点「展开全文」跳成员工作台），而不是普通 assistant 气泡。
+    acc_team_reply: dict | None = None
     # De-dupe generated-image blocks within a merged bubble (they can arrive via
     # the ginno_images anchor on several AIMessages and/or the bash tool marker).
     # Blocks accumulate separately and are appended at the bubble's end so the
@@ -616,14 +620,18 @@ def _messages_to_ui(
     pending_bands: list[list[dict]] = []
 
     def flush_assistant() -> None:
-        nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks
+        nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks, acc_team_reply
         if acc:
             if acc_img_blocks:
                 acc.extend(acc_img_blocks)
-            ui.append({"id": acc_id, "role": "assistant", "agentId": acc_agent or agent_id, "blocks": acc})
+            bubble = {"id": acc_id, "role": "assistant", "agentId": acc_agent or agent_id, "blocks": acc}
+            if acc_team_reply:
+                bubble["teamReply"] = acc_team_reply
+            ui.append(bubble)
         acc = None
         acc_id = None
         acc_agent = None
+        acc_team_reply = None
         acc_imgs = set()
         acc_img_blocks = []
 
@@ -730,6 +738,10 @@ def _messages_to_ui(
                     pending_bands.clear()
             if acc_agent is None:
                 acc_agent = (getattr(m, "additional_kwargs", None) or {}).get("agent_id")
+            if acc_team_reply is None:
+                acc_team_reply = (getattr(m, "additional_kwargs", None) or {}).get(
+                    "ginno_team_reply"
+                )
             step = list(_ai_content_blocks(getattr(m, "content", "")))
             # Resolve `web|sN` citation ids to URLs (from web_search outputs)
             # so the 来源 card is clickable on history replay.
