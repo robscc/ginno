@@ -742,11 +742,18 @@ export function ChatStream({
       setMenu(null);
       return;
     }
+    // artifact 菜单源 = 本会话条目在前 + 项目内其他会话条目（新会话也能
+    // @ 到历史产物；去重按 id，选中走结构化 mention 精确解析）。
+    const ownIds = new Set(g.artifacts.map((a) => a.id));
+    const others = g.projectArtifacts.filter(
+      (a) => !ownIds.has(a.id) && (!a.session_id || a.session_id !== session?.id),
+    );
     const items = buildMenuItems(trigger, {
       skills: g.skills,
       agents: g.agents,
       workflows: g.workflows,
-      artifacts: g.artifacts,
+      artifacts: [...g.artifacts, ...others],
+      sessionId: session?.id ?? null,
     });
     setMenu(items.length ? { items, active: 0, trigger } : null);
   }

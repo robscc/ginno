@@ -116,6 +116,8 @@ export interface MenuSources {
   agents: AgentConfig[];
   workflows: WorkflowDef[];
   artifacts: Artifact[];
+  /** 当前会话 id：非本会话的 artifact 在菜单里标注来源（跨会话选择）。 */
+  sessionId?: string | null;
 }
 
 /** Build the flat, group-ordered item list for the active trigger. */
@@ -180,7 +182,16 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
     });
   };
 
-  for (const a of src.artifacts) push("artifact", a.id, a.name, a.kind);
+  // 跨会话条目 detail 带来源标题——显式 @ 即授权（runtime 解析本就是项目级
+  // 按名/id 精确命中），agent 文件工具的边界不受菜单影响。
+  for (const a of src.artifacts) {
+    const fromOther = a.session_id && a.session_id !== src.sessionId;
+    const detail =
+      fromOther && a.session_title
+        ? `${a.kind} · ${a.session_title}`
+        : a.kind;
+    push("artifact", a.id, a.name, detail);
+  }
   for (const a of src.agents) push("agent", a.id, a.name);
   for (const w of src.workflows) push("workflow", w.id, w.name, w.description);
   push("memory", "global", "MEMORY.md", mentionKindMeta("memory").description);

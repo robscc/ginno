@@ -32,8 +32,24 @@ async def list_artifacts_endpoint(
     project_slug: str = "default", session_id: str | None = None
 ) -> list[dict]:
     """Artifacts belong to a session: pass ``session_id`` to scope the list to
-    that session (the Artifacts panel does this). Omit for all (back-compat)."""
-    return art_store.list_artifacts(project_slug, session_id)
+    that session (the Artifacts panel does this). Omit for all (back-compat;
+    the @ mention menu does this — cross-session picking is the explicit-mention
+    consent path, agent file tools' containment is untouched).
+
+    条目附 ``session_title``（来源会话标题，纯展示用——跨会话条目在菜单里
+    标注出处）；标题查不到留空。"""
+    items = art_store.list_artifacts(project_slug, session_id)
+    from ..session_meta import _find_meta
+
+    titles: dict[str, str] = {}
+    for a in items:
+        sid = a.get("session_id") or ""
+        if sid and sid not in titles:
+            meta, _ = _find_meta(sid) or ({}, None)
+            titles[sid] = (meta or {}).get("title") or ""
+    for a in items:
+        a["session_title"] = titles.get(a.get("session_id") or "", "")
+    return items
 
 
 @router.delete("/api/artifacts/{artifact_id}")

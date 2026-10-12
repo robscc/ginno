@@ -385,6 +385,7 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     }
     case "artifacts.changed":
       ctx.g.reloadArtifacts();
+      ctx.g.reloadProjectArtifacts(); // @ 菜单的跨会话列表同源刷新
       break;
     case "code.changed":
       // The agent wrote or edited a file (design §4.7 S3). The event carries

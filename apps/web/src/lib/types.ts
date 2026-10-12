@@ -425,6 +425,8 @@ export interface Artifact {
   session_id?: string | null;
   created: number;
   schema?: string; // user-corrected schema summary (prompt-injection override)
+  // 来源会话标题（纯展示——跨会话条目在 @ 菜单里标注出处）
+  session_title?: string;
 }
 
 // Metadata inspector payload for one artifact (GET /api/artifacts/{id}/metadata).

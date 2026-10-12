@@ -202,6 +202,7 @@ interface GinnoState {
   workflows: WorkflowDef[];
   workflowRuns: WorkflowRun[];
   artifacts: Artifact[];
+  projectArtifacts: Artifact[];
   providers: Providers;
   defaultProvider: string;
   activeSessionId: string | null;
@@ -296,6 +297,7 @@ interface GinnoState {
   liveToolActivity: Record<string, RunToolActivity>;
   notifyRunToolActivity: (runId: string, act: RunToolActivity | null) => void;
   reloadArtifacts: () => Promise<void>;
+  reloadProjectArtifacts: () => Promise<void>;
   removeArtifact: (id: string) => Promise<void>;
   patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
   newSession: (
@@ -406,6 +408,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     workflowRunsRef.current = workflowRuns;
   }, [workflowRuns]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  // 项目级 artifact 全量（@ 菜单跨会话选择用）：面板仍用会话级的
+  // artifacts，两者数据源同端点不同 scope。仅喂菜单，不做 diff/跟随。
+  const [projectArtifacts, setProjectArtifacts] = useState<Artifact[]>([]);
   // Ref mirror of the committed artifacts list: reloadArtifacts diffs against
   // it OUTSIDE the setState updater (side effects inside updaters double-fire
   // under dev StrictMode).
@@ -1091,6 +1096,16 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // @ 菜单的项目级列表：不带 session_id（端点语义 = 全量）。加载失败静默——
+  // 菜单退回仅本会话条目，不影响面板。
+  const reloadProjectArtifacts = useCallback(async () => {
+    try {
+      setProjectArtifacts(await api.listArtifacts("default"));
+    } catch {
+      /* sidecar 未起：菜单退回仅本会话 */
+    }
+  }, []);
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -1119,6 +1134,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         reloadWorkflowRuns(),
         reloadSynthesisCases(),
         reloadArtifacts(),
+        reloadProjectArtifacts(),
         // Notification gate + sound prefs (settings.json) into the sync cache
         // before any completion event can arrive.
         loadNotifyPrefs(),
@@ -1138,6 +1154,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     reloadWorkflowRuns,
     reloadSynthesisCases,
     reloadArtifacts,
+    reloadProjectArtifacts,
   ]);
 
   const creatingRef = useRef(false);
@@ -1512,6 +1529,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     workflows,
     workflowRuns,
     artifacts,
+    projectArtifacts,
     providers,
     defaultProvider,
     activeSessionId,
@@ -1585,6 +1603,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     liveToolActivity,
     notifyRunToolActivity,
     reloadArtifacts,
+    reloadProjectArtifacts,
     removeArtifact,
     patchArtifact,
     newSession,
