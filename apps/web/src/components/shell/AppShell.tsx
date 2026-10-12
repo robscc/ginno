@@ -381,7 +381,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       s.type !== "scheduled" &&
       (!agentFilter || s.agent_id === agentFilter),
   );
-  // 父 id → 直属子会话（按创建时间正序）。
+  // 父 id → 直属子会话（按创建时间倒序——最新的在最上，与主列表
+  // updated 倒序的阅读方向一致；2026-10-12 用户定稿）。状态分节在渲染
+  // 层保序，即每节内也是新→旧。
   const childrenOf = new Map<string, SessionMeta[]>();
   for (const s of visibleSessions) {
     if ((s.type !== "subagent" && s.type !== "delegation") || !s.parent_session_id) continue;
@@ -390,7 +392,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     childrenOf.set(s.parent_session_id, list);
   }
   for (const list of childrenOf.values()) {
-    list.sort((a, b) => (a.created ?? 0) - (b.created ?? 0));
+    list.sort((a, b) => (b.created ?? 0) - (a.created ?? 0));
   }
   // workflow 运行伪条目：把 present_in_session_id 指向可见父会话的运行挂在
   // 父行下（孤儿运行/被筛选掉的父会话不渲染），按开始时间正序，与子会话行
@@ -674,11 +676,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     />
                   </button>
                 )}
-                {isSub ? (
+                {isSub || s.type === "delegation" ? (
                   // 子会话行 hover 入口（P2 共享契约 4）：运行中/等待 → 停止
                   // （HTTP 端点，running 走协作式停止、waiting 级联停后代；
                   // 状态刷新依赖既有 subagent.status 事件）；结束态 → 清除行
-                  // （删除该子会话）。
+                  // （删除该子会话）。delegation 回放同属子会话家族——不进
+                  // 父会话的 pin/重命名/删除组（pin 对子会话是死按钮，
+                  // 2026-10-12 用户定稿子会话一律无 pin）。
                   subActive ? (
                     <button
                       onClick={(e) => {
