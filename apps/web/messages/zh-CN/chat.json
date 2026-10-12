@@ -335,7 +335,8 @@
       "attempts": "第 {n} 次尝试",
       "expand": "展开清单",
       "collapse": "折叠清单",
-      "updateTitle": "清单状态更新"
+      "updateTitle": "清单状态更新",
+      "dismiss": "不再显示（出错未终态的清单会一并取消）"
     }
   }
 }

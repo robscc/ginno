@@ -57,7 +57,6 @@ export {
   SubagentResultCard,
   SubagentBlocks,
   SubagentBriefCard,
-  SubagentGroupCard,
 } from "./blocks/subagentCards";
 export {
   parseSources,

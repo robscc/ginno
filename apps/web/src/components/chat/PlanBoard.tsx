@@ -12,7 +12,7 @@
 
 import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
-import { ChevronDown, ChevronRight, ClipboardList, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, ClipboardList, Loader2, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { cancelSessionPlan, confirmSessionPlan } from "@/lib/runtime";
 import type { Plan, PlanItem, PlanItemStatus } from "@/lib/types";
@@ -38,19 +38,58 @@ const PLAN_STATUS_KEY = {
   cancelled: "planBoard.statusCancelled",
 } as const;
 
+// 终态清单的「不再显示」：per-viewer UI 偏好（localStorage），不是共享状态——
+// 关掉只是本机不渲染，清单数据仍在（GET /plans、/plan 命令随时可查）。
+const DISMISS_KEY = "ginno.planBoard.dismissed";
+
+function loadDismissed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISS_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissed(ids: Set<string>) {
+  try {
+    localStorage.setItem(DISMISS_KEY, JSON.stringify([...ids]));
+  } catch {
+    /* 隐私模式/配额——仅丢失偏好 */
+  }
+}
+
 export function PlanBoard({ sessionId }: { sessionId: string }) {
   const g = useGinno();
   const t = useTranslations("chat");
   // 折叠覆盖以 plan_id 记忆；未记录过的清单按状态取默认（open 展开 / 终态折叠）。
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<Record<string, "confirm" | "cancel" | undefined>>({});
+  // 只 dismiss 终态清单；active/pending_confirm 是在途工作，最多折叠（取消走按钮）。
+  const [dismissed, setDismissed] = useState<Set<string>>(loadDismissed);
 
   const plans = useMemo(
     () =>
-      [...(g.plansBySession[sessionId] ?? [])].sort((a, b) => (b.updated ?? b.created ?? 0) - (a.updated ?? a.created ?? 0)),
-    [g.plansBySession, sessionId],
+      [...(g.plansBySession[sessionId] ?? [])]
+        .filter((p) => !dismissed.has(p.plan_id))
+        .sort((a, b) => (b.updated ?? b.created ?? 0) - (a.updated ?? a.created ?? 0)),
+    [g.plansBySession, sessionId, dismissed],
   );
   if (plans.length === 0) return null;
+
+  const dismiss = (plan: Plan) => {
+    // 出错但未终态的清单（失败条目阻塞 pending，永远到不了 completed）在关掉时
+    // 顺手 cancel：watcher 停摆收尾、数据面转 cancelled，不只是本机隐藏。
+    if (plan.status === "active" || plan.status === "pending_confirm") {
+      void act(plan, "cancel");
+    }
+    setDismissed((prev) => {
+      const next = new Set(prev);
+      next.add(plan.plan_id);
+      saveDismissed(next);
+      return next;
+    });
+  };
 
   const act = async (plan: Plan, action: "confirm" | "cancel") => {
     if (busy[plan.plan_id]) return;
@@ -76,6 +115,10 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
         const fold = collapsed[plan.plan_id] ?? terminal;
         const done = plan.items.filter((i) => i.status === "done").length;
         const failed = plan.items.filter((i) => (i.status === "failed" || i.status === "stopped")).length;
+        // 可关：终态；或「出错收场」——有失败条目且没有在跑的（失败依赖会卡死
+        // pending 清单，永远到不了 completed）。执行中/纯 pending 不给关。
+        const anyRunning = plan.items.some((i) => i.status === "running");
+        const dismissable = terminal || (failed > 0 && !anyRunning);
         return (
           <div
             key={plan.plan_id}
@@ -110,6 +153,15 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
               <span className="shrink-0 rounded-md border border-line2 bg-card2/60 px-1.5 py-0.5 text-[10px] text-muted">
                 {t(PLAN_STATUS_KEY[plan.status ?? "active"])}
               </span>
+              {dismissable && (
+                <button
+                  onClick={() => dismiss(plan)}
+                  className="shrink-0 rounded p-0.5 text-faint transition-colors hover:bg-card2 hover:text-muted"
+                  title={t("planBoard.dismiss")}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
             </div>
 
             {!fold && (

@@ -42,6 +42,10 @@ _SPAWN_DOC_EN = """Spawn a subagent with its own independent context and convers
           output accepted separately; do NOT delegate tasks that need the details
           of this conversation (the subagent cannot see it) — unless you use
           fork=true to explicitly inherit the full context
+        - BATCH RULE: for 3+ subtasks at once, or ANY dependencies between
+          subtasks (one needs another's output), use create_subagent_plan
+          INSTEAD of calling this repeatedly — one plan call handles
+          dependency order, concurrency, progress reporting and retries
         - For multiple independent subtasks, issue several calls in parallel in
           the same message
         - The goal must be self-contained: the subagent sees only the
@@ -130,6 +134,9 @@ def build_subagent_tools(
         使用判据：
         - 任务可独立描述清楚、产出可单独验收时才委派；需要当前对话细节的任务
           不要委派（子代理看不到本对话）——除非用 fork=true 显式继承完整上下文
+        - 批量判据：一次要委派 3 个及以上子任务，或子任务之间有任何依赖
+          （后一个要用前一个的产出）时，改用 create_subagent_plan 建任务清单——
+          一次建单覆盖依赖顺序、并发调度、进度汇报与失败重试，不要反复调本工具
         - 多个互不依赖的子任务，在同一条消息里并行发起多次调用
         - goal 必须自足：子代理只能看到你写的 goal/constraints/acceptance，
           看不到此对话——把它当作一个热心但完全不了解上下文的新同事来写：

@@ -335,7 +335,8 @@
       "attempts": "attempt {n}",
       "expand": "Expand plan",
       "collapse": "Collapse plan",
-      "updateTitle": "Plan status update"
+      "updateTitle": "Plan status update",
+      "dismiss": "Hide (an errored non-terminal plan is also cancelled)"
     }
   }
 }

@@ -5,7 +5,7 @@
 // 错误卡与 assistant 气泡的整段 map。委派卡折叠、handoff 分隔与「最后一条
 // 可重试」判定也随渲染段搬到这里（同一 render 期计算，行为不变）。
 
-import { Fragment, useMemo } from "react";
+import { Fragment } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
@@ -13,7 +13,6 @@ import {
   ContextBlocks,
   SteerBand,
   SubagentBlocks,
-  SubagentGroupCard,
   UserBlocks,
   type Block,
 } from "@/components/chat/blocks";
@@ -24,7 +23,7 @@ import {
   HandoffDivider,
   TurnIdChip,
 } from "../streamCards";
-import { foldConsecutiveSpawnCards, type ChatMsg } from "../streamCore";
+import { type ChatMsg } from "../streamCore";
 import type { SessionMeta } from "@/lib/types";
 
 export function TranscriptList({
@@ -80,9 +79,9 @@ export function TranscriptList({
     (last, m) => ((m.status === "failed" || m.error) && m.sendPayload ? m.id : last),
     null,
   );
-  // 连续的子代理发起卡并成一张委派卡（2026-10-01 空间优化）：并行委派 3 个
-  // 子代理时，主对话原本出现 3 张同构卡，把主 agent 的内容挤下去。
-  const spawnFold = useMemo(() => foldConsecutiveSpawnCards(messages), [messages]);
+  // 委派状态 2026-10-13 上收为顶部 SubagentBoard（PlanBoard 同款）：转录流
+  // 不再渲染 subagent_spawn 卡（组卡/单卡都不出）——清单模式的重复展示由此
+  // 消除；结果卡/简报卡保留（职责不同）。
 
   // C+ 方案②「X 接手」分隔线：与上一条 agentId 已知的 assistant 气泡不同
   // agent 时插入。旧会话无标记（两侧任一 agentId 为空）自动跳过，不渲染。
@@ -99,26 +98,14 @@ export function TranscriptList({
   return (
     <>
       {messages.map((m, idx) =>
-        spawnFold.hide.has(m.id) ? null : spawnFold.groupAt[m.id] ? (
-          <div key={m.id} className="flex flex-col items-center gap-2">
-            <div className="w-full max-w-[85%]">
-              <SubagentGroupCard
-                rows={
-                  spawnFold.groupAt[m.id] as unknown as Array<
-                    Extract<Block, { kind: "subagent_spawn" }>
-                  >
-                }
-              />
-            </div>
-          </div>
-        ) : m.role === "system" ? (
+        m.role === "system" ? (
           <div key={m.id} className="flex flex-col items-center gap-2">
             <ContextBlocks
               blocks={m.blocks.filter((b): b is Extract<Block, { kind: "context" }> => b.kind === "context")}
             />
-            {/* 子代理发起/结果卡片行（subagent-design.md §6.3）：与 context
-                chips 同层——不是任何一方的气泡，是事件驱动的系统行。拆分方案
-                卡片（P2）同层渲染，决定回调走 engine 的 socket 发送。 */}
+            {/* 拆分方案卡片（P2）与子代理结果卡：与 context chips 同层——不是
+                任何一方的气泡，是事件驱动的系统行。subagent_spawn 卡已停渲染
+                （顶部 SubagentBoard 接管，见文件头注释）。 */}
             <div className="flex w-full max-w-[85%] flex-col gap-2">
               {m.blocks
                 .filter((b): b is Extract<Block, { kind: "subagent_plan" }> => b.kind === "subagent_plan")
@@ -127,8 +114,8 @@ export function TranscriptList({
                 ))}
               <SubagentBlocks
                 blocks={m.blocks.filter(
-                  (b): b is Extract<Block, { kind: "subagent_spawn" }> | Extract<Block, { kind: "subagent_result" }> =>
-                    b.kind === "subagent_spawn" || b.kind === "subagent_result",
+                  (b): b is Extract<Block, { kind: "subagent_result" }> =>
+                    b.kind === "subagent_result",
                 )}
               />
             </div>

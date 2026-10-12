@@ -270,6 +270,25 @@ def build_stable_system(
                 "local ext item auto-syncs back to the platform — no manual platform call."
             )
     if "spawn_subagent" in allowed:
+        # 2026-10-13 真机回归（d08f4500）：prompt 未点名工具时模型默认逐个
+        # spawn_subagent，「编排 + 依赖」场景不再走清单。路由判据必须上系统
+        # 提示层——docstring 竞争不过 spawn 的调用惯性。
+        if "create_subagent_plan" in allowed:
+            parts.append(
+                t(
+                    "Subagent routing rule: orchestrating 3+ subtasks, or ANY "
+                    "dependencies between them (one consumes another's output), "
+                    "means create_subagent_plan — NOT repeated spawn_subagent "
+                    "calls. One plan call covers dependency order, concurrency, "
+                    "progress reporting and retries; spawn_subagent stays the "
+                    "zero-overhead path for one-off independent tasks.",
+                    "子代理路由判据：一次编排 3 个及以上子任务、或子任务之间存在任"
+                    "何依赖（后一个要用前一个的产出）时，用 create_subagent_plan 建"
+                    "任务清单，不要反复调 spawn_subagent。一次建单覆盖依赖顺序、并"
+                    "发调度、进度汇报与失败重试；spawn_subagent 保留给单件独立任务"
+                    "的零开销路径。",
+                )
+            )
         parts.append(
             t(
                 "Subagent delegation discipline (hard rule): once all subtasks are "
