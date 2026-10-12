@@ -100,7 +100,10 @@ export function subagentStatusBucket(status?: string): SubagentBucket {
 }
 
 /** 会话行的三档分桶：subagent 走 status；delegation 回放没有 subagent
- *  status，按 stop_reason 折算（与结果卡同一套终态判定）。 */
+ *  status，按 stop_reason 折算（与结果卡同一套终态判定）。注意
+ *  stop_reason 在运行期就是字面量 "running"（create_delegation 建骨架
+ *  时写入，终态才是 success/error/timeout）——非终态一律运行中，否则
+ *  正在跑的委托会被误进「已完成」（2026-10-12 用户实测报告）。 */
 export function subagentSessionBucket(s: {
   type?: string | null;
   subagent?: { status?: string } | null;
@@ -108,7 +111,7 @@ export function subagentSessionBucket(s: {
 }): SubagentBucket {
   if (s.type === "delegation") {
     const stop = s.stop_reason ?? "";
-    if (!stop) return "running";
+    if (!stop || stop === "running") return "running";
     return stop === "error" || stop === "timeout" ? "failed" : "done";
   }
   return subagentStatusBucket(s.subagent?.status);
