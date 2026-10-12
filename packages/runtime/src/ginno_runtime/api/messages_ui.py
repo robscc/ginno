@@ -139,6 +139,41 @@ _RESULT_ENV_RE = re.compile(
     r"<ginno_subagent_result\b([^>]*)>(.*?)</ginno_subagent_result>", re.S
 )
 
+_PLAN_ENV_RE = re.compile(
+    r"<ginno_plan_update\b([^>]*)>(.*?)</ginno_plan_update>", re.S
+)
+
+
+def _plan_update_blocks(content: Any) -> list[dict] | None:
+    """清单状态注入信封（plan-orchestration §4/§8 P3）折成专用清单卡，而非
+    子代理结果卡或裸 steering 带。与 _subagent_result_blocks 同一入口分支
+    调用（注入消息都带 ginno_subagent_result kw，child key 是 plan-<id>）。"""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(
+            p.get("text") or ""
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    else:
+        return None
+    out: list[dict] = []
+    for m in _PLAN_ENV_RE.finditer(text):
+        am = re.search(r'plan="([^"]*)"', m.group(1))
+        raw = html.unescape(m.group(2)).strip()
+        # 模型侧行动菜单（"You can: …"尾段）是给主 agent 的指令，卡片只展示
+        # 状态行；找不到结构分界则整段展示，宁多勿丢。
+        body = raw.split("You can:", 1)[0].strip() or raw
+        out.append(
+            {
+                "kind": "plan_update",
+                "planId": html.unescape(am.group(1)) if am else "",
+                "text": body,
+            }
+        )
+    return out or None
+
 
 def _subagent_result_blocks(content: Any) -> list[dict] | None:
     """runtime 注入的子代理结果（契约 3）折成结果卡，而不是原始 XML 当
@@ -607,7 +642,7 @@ def _messages_to_ui(
                 "ginno_subagent_result"
             )
             if res_kw:
-                cards = _subagent_result_blocks(content_raw)
+                cards = _subagent_result_blocks(content_raw) or _plan_update_blocks(content_raw)
                 if cards:
                     if acc is not None:
                         acc.extend(cards)

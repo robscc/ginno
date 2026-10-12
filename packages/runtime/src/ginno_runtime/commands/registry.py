@@ -386,6 +386,94 @@ def _umount_handler(project_slug: str | None = None, session=None, args=None) ->
     )
 
 
+def _fmt_plan_line(plan: dict) -> str:
+    items = plan.get("items") or []
+    done = sum(1 for i in items if i.get("status") == "done")
+    failed = sum(1 for i in items if i.get("status") in ("failed", "stopped"))
+    detail = ", ".join(
+        "{}: {}{}".format(
+            i.get("item_id"),
+            i.get("status"),
+            f" — {(i.get('error') or '')[:60]}" if i.get("status") == "failed" else "",
+        )
+        for i in items
+    )
+    return (
+        f"**{plan.get('plan_id')}** “{plan.get('title')}” — {plan.get('status')}, "
+        f"{done}/{len(items)}{f', {failed} failed' if failed else ''}\n"
+        f"  {detail}"
+    )
+
+
+def _plan_handler(project_slug: str | None = None, session=None, args=None) -> str:
+    """Sync fallback（无事件循环的调用面）：只读列表——confirm/cancel 必须走
+    async 路径（要踢 watcher）。"""
+    if not session:
+        return t("Usage: `/plan`", "用法：`/plan`")
+    plans = []
+    try:
+        from ..plans import store as plan_store
+
+        plans = plan_store.list_plans(
+            project_slug or session.get("project_slug") or "default",
+            session.get("session_id", ""),
+        )
+    except Exception:  # noqa: BLE001 — 命令面永不抛
+        pass
+    if not plans:
+        return t("No plans in this session.", "本会话没有任务清单。")
+    return "\n\n".join(_fmt_plan_line(p) for p in plans)
+
+
+async def _plan_async_handler(
+    project_slug: str | None = None, session=None, args=None
+) -> str:
+    """/plan — 用户面清单操作（plan-orchestration §1：cancel/确认用户命令可达）。
+
+    /plan 列出本会话清单；/plan confirm <id> 确认挂起清单；/plan cancel <id>
+    取消清单。async 是因为 confirm/cancel 要踢 watcher（需要事件循环）。"""
+    if not session:
+        return t(
+            "Usage: `/plan` (list) · `/plan confirm <id>` · `/plan cancel <id>`",
+            "用法：`/plan`（列表）· `/plan confirm <id>`（确认）· `/plan cancel <id>`（取消）",
+        )
+    sid = session.get("session_id", "")
+    slug = project_slug or session.get("project_slug") or "default"
+    from ..plans import store as plan_store
+    from ..plans import watcher as plan_watcher
+
+    argv = (args or "").split()
+    cmd = argv[0] if argv else ""
+    pid = argv[1] if len(argv) > 1 else ""
+    plans = plan_store.list_plans(slug, sid)
+    if not plans:
+        return t("No plans in this session.", "本会话没有任务清单。")
+    if cmd in ("confirm", "cancel") and not pid:
+        return "\n\n".join(
+            [t(f"Missing plan id for /plan {cmd}.", f"/plan {cmd} 缺少清单 id。")]
+            + [_fmt_plan_line(p) for p in plans]
+        )
+    if cmd == "confirm":
+        updated = plan_store.confirm_plan(slug, sid, pid)
+        if updated is None:
+            return t(
+                f"Plan {pid} not found or not awaiting confirmation.",
+                f"清单 {pid} 不存在或不在等待确认状态。",
+            )
+        plan_watcher.notify_change(sid)
+        return t(
+            f"Plan {pid} confirmed — scheduling started.",
+            f"清单 {pid} 已确认——开始调度。",
+        )
+    if cmd == "cancel":
+        updated = plan_store.cancel_plan(slug, sid, pid)
+        if updated is None:
+            return t(f"Plan {pid} not found or already terminal.", f"清单 {pid} 不存在或已是终态。")
+        plan_watcher.notify_change(sid)
+        return t(f"Plan {pid} cancelled.", f"清单 {pid} 已取消。")
+    return "\n\n".join([_fmt_plan_line(p) for p in plans])
+
+
 def _primary_handler(project_slug: str | None = None, session=None, args=None) -> str:
     if not session:
         return _mount_usage()
@@ -830,6 +918,15 @@ BUILTINS: dict[str, BuiltinCommand] = {
             "卸载一个上下文目录（/umount <名称|路径>）",
         ),
         handler=_umount_handler,
+    ),
+    "plan": BuiltinCommand(
+        name="plan",
+        description=(
+            "Task plans (/plan list; /plan confirm|cancel <id>)",
+            "任务清单（/plan 列出；/plan confirm|cancel <id> 确认/取消）",
+        ),
+        handler=_plan_handler,
+        async_handler=_plan_async_handler,
     ),
     "primary": BuiltinCommand(
         name="primary",

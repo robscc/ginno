@@ -119,6 +119,16 @@ _CONTEXT_DEFAULTS = {
     # money at external providers and can edit files, and the permission
     # node's "ask" is dormant while bypass_permissions is on — so opt-in.
     "external_agents_enabled": False,
+    # Plan orchestration (plan-orchestration §6/§7 D2): True = agent-built
+    # plans (create_subagent_plan) ALWAYS hold for user confirmation before
+    # scheduling, regardless of the tool's needs_confirm arg. Default False =
+    # autonomous start (the point of agent mode). The user split path has its
+    # own confirmation card either way.
+    "plan_confirm_agent_plans": False,
+    # §6: sidecar restart with orphan pending items — True (default) resumes
+    # scheduling; False cancels recovered active plans at startup instead of
+    # letting them run unattended.
+    "plan_resume_on_restart": True,
     "memory_max_chars": DEFAULT_MEMORY_MAX_CHARS,
     # Anti-abuse cap on ask_user per turn segment (see tools/ask_tools.py).
     "ask_user_max_per_turn": DEFAULT_ASK_MAX_PER_TURN,
@@ -181,6 +191,18 @@ def external_agents_enabled() -> bool:
     if env:
         return env in ("1", "true", "yes", "on")
     return bool(context_settings().get("external_agents_enabled"))
+
+
+def plan_confirm_agent_plans() -> bool:
+    """plan-orchestration §7 D2：True = agent 建单一律挂起等用户确认
+    （压过工具的 needs_confirm 参数）。默认 False = 自主启动。"""
+    return bool(context_settings().get("plan_confirm_agent_plans"))
+
+
+def plan_resume_on_restart() -> bool:
+    """plan-orchestration §6：重启恢复时孤儿 pending 是否继续调度。
+    False = 恢复期把 active 清单改为取消（不无人值守地跑）。"""
+    return bool(context_settings().get("plan_resume_on_restart", True))
 
 
 def _browser_tools_enabled() -> bool:

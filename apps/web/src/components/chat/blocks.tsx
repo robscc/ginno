@@ -10,6 +10,7 @@ import {
   SubagentSpawnCard,
   SubagentResultCard,
   SubagentBriefCard,
+  PlanUpdateCard,
 } from "./blocks/subagentCards";
 import {
   parseSources,
@@ -174,6 +175,8 @@ export function InnerBlocks({
       out.push(<SubagentSpawnCard key={`sa-spawn-${b.sessionId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_result") {
       out.push(<SubagentResultCard key={`sa-result-${b.sessionId}-${key++}`} block={b} />);
+    } else if (b.kind === "plan_update") {
+      out.push(<PlanUpdateCard key={`plan-upd-${b.planId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_brief") {
       out.push(<SubagentBriefCard key={`sa-brief-${key++}`} block={b} />);
     }

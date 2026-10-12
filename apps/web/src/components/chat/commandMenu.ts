@@ -46,7 +46,7 @@ export interface MenuItem {
  *  The server registry stays authoritative for parsing.
  *  命令名/触发词本身不翻译（i18n 硬性约束）；描述文案在 buildMenuItems 时
  *  走 composer 域 catalog 按当前 locale 取词。 */
-const BUILTIN_COMMAND_NAMES = ["help", "compact", "clear", "subagent"] as const;
+const BUILTIN_COMMAND_NAMES = ["help", "compact", "clear", "subagent", "plan"] as const;
 
 /** 内置命令的描述 + mention 类型的分组名/说明，均按当前 locale 从 catalog 取。 */
 function mentionKindMeta(kind: MentionKind): { group: string; description: string } {
@@ -131,6 +131,7 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
       compact: cat.commands.compactDesc,
       clear: cat.commands.clearDesc,
       subagent: cat.commands.subagentDesc,
+      plan: cat.commands.planDesc,
     };
     for (const name of BUILTIN_COMMAND_NAMES) {
       if (matches(name, trigger.query) || matches(desc[name], trigger.query)) {

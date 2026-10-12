@@ -96,6 +96,24 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
       out.push(b);
       continue;
     }
+    // 清单状态信封（plan-orchestration §4）：折专用清单卡（同一注入通道，
+    // child key 是 plan-<id>），与结果卡区分开。
+    const planDoc = parseEnvelope(b.text);
+    const planEls = planDoc
+      ? Array.from(planDoc.getElementsByTagName("ginno_plan_update"))
+      : [];
+    if (planEls.length) {
+      for (const el of planEls) {
+        const raw = (el.textContent ?? "").trim();
+        const body = raw.split("You can:", 1)[0].trim() || raw;
+        out.push({
+          kind: "plan_update",
+          planId: el.getAttribute("plan") ?? "",
+          text: body,
+        });
+      }
+      continue;
+    }
     const brief = parseSubagentBrief(b.text);
     if (brief) {
       out.push({ kind: "subagent_brief", ...brief });

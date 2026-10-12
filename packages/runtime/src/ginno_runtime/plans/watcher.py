@@ -174,6 +174,9 @@ async def _launch_item(slug: str, session_id: str, plan: dict, it: dict) -> bool
     """启动一个条目。True=已启动；False=启动失败（条目已标 failed）；
     None=并发帽满（保持 pending，下轮再试）。"""
     backend = it.get("backend") or store.BACKEND_GINNO
+    # 子代理 origin 沿清单作者：user split（/subagent 拆分确认）的子代理
+    # origin=user（侧栏「由用户发起」徽标），agent 建单则 agent。
+    origin = "user" if plan.get("author") == "user" else "agent"
     try:
         if backend == store.BACKEND_GINNO:
             from ..subagent_scheduler import create_subagent
@@ -183,7 +186,7 @@ async def _launch_item(slug: str, session_id: str, plan: dict, it: dict) -> bool
                 it["goal"],
                 it.get("constraints") or "",
                 it.get("acceptance") or "",
-                origin="agent",
+                origin=origin,
                 agent_type=it.get("agent_type") or "",
             )
             if res.get("ok"):
@@ -378,18 +381,25 @@ def _do_flush(session_id: str, buf: dict) -> None:
     text = "\n".join(buf["notes"])
     _log.info("plan_wake_flush session=%s notes=%d", session_id, len(buf["notes"]))
     from ..subagent_scheduler import _inject_result
+    from ..subagent_scheduler.brief import _xml_attr, _xml_text
 
-    # 注入走子代理结果同通道（steer 或 idle 唤醒）；child key 用 plan-<id>，
-    # 前端 P3 前按结果卡渲染（goal 取首行语义不完美但可读），P3 换专用卡。
+    # 注入走子代理结果同通道（steer 或 idle 唤醒）；child key 用 plan-<id>。
+    # 正文包一层专用 <ginno_plan_update> 信封（设计 §8 P3 专用卡）：模型侧
+    # 保留 [plan update] 行动菜单文本，前端按信封折专用清单卡而非裸渲染。
     keys = sorted(p for p in buf["plans"] if p)
     child_key = f"plan-{keys[0]}" if keys else "plan"
-    envelope = (
+    body = (
         "[plan update] Task list status changed:\n"
         f"{text}\n"
         "You can: verify the above results against acceptance; use "
         "amend_plan to reset/replace failed items (reset = retry); "
         "deliver the final report when all items are settled. Proceed "
         "autonomously unless a user decision is required."
+    )
+    envelope = (
+        f'<ginno_plan_update plan="{_xml_attr(keys[0] if keys else "")}">\n'
+        f"{_xml_text(body)}\n"
+        "</ginno_plan_update>"
     )
     try:
         spawn_bg(_inject_result(session_id, envelope, child_key))

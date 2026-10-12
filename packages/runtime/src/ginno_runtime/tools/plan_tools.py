@@ -61,13 +61,17 @@ def build_plan_tools(
                 scheduling (use for risky/destructive or credit-spending
                 batches). Default False = start immediately.
         """
+        from ..world_state import plan_confirm_agent_plans
+
         try:
             plan = store.create_plan(
                 session_id,
                 slug=slug,
                 title=title,
                 items=items,
-                needs_confirm=bool(needs_confirm),
+                # D2 设置（plan-orchestration §7）：confirm_agent_plans=True 时
+                # agent 建单一律挂起等确认，压过工具参数。
+                needs_confirm=bool(needs_confirm) or plan_confirm_agent_plans(),
                 author="agent",
             )
         except ValueError as e:

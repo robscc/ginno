@@ -46,14 +46,25 @@ async def lifespan(app: FastAPI):
     # 清单 watcher 恢复（subagent-plan-orchestration-design.md §6）：扫
     # 全部 open 清单——active 的会话起 watcher 接着跑（running 条目靠 tick
     # 对账自动校准）；pending_confirm 等用户，不起。会话已删除的跳过。
+    # plan_resume_on_restart=False（§6 开关）时改为取消恢复的 active 清单
+    # ——不无人值守地续跑。
     try:
         from .plans import store as _plan_store, watcher as _plan_watcher
+        from .world_state import plan_resume_on_restart
 
+        _resume = plan_resume_on_restart()
         for _slug, _sid, _plan in _plan_store.all_active_plans():
             _meta, _ = _find_meta(_sid) or ({}, None)
             if not _meta or _plan.get("status") != _plan_store.PLAN_ACTIVE:
                 continue
-            _plan_watcher.ensure_watcher(_sid)
+            if _resume:
+                _plan_watcher.ensure_watcher(_sid)
+            else:
+                _plan_store.cancel_plan(_slug, _sid, _plan["plan_id"])
+                _log.info(
+                    "plan_resume_disabled_cancelled session=%s plan=%s",
+                    _sid, _plan["plan_id"],
+                )
     except Exception:  # noqa: BLE001 — 启动绝不因恢复失败而中断
         _log.exception("plan watcher recovery failed (continuing)")
     # i18n bundle check (i18n-design.md §10.5): both catalogs loadable + key/

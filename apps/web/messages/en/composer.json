@@ -16,7 +16,8 @@
       "helpDesc": "List available commands and skills",
       "compactDesc": "Manually compact session context (the LLM summarizes older messages to free tokens)",
       "clearDesc": "Clear this session's conversation history and start fresh (files, mounts and settings are kept)",
-      "subagentDesc": "Spawn subagents: /subagent <goal> spawns 1 directly; /subagent split <task> decomposes via the LLM first, then batch-spawns after card confirmation"
+      "subagentDesc": "Spawn subagents: /subagent <goal> spawns 1 directly; /subagent split <task> decomposes via the LLM first, then batch-spawns after card confirmation",
+      "planDesc": "Task plans: list / confirm / cancel"
     },
     "mentions": {
       "artifactDesc": "Reference an artifact file as context for this turn",

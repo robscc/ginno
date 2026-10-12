@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, ClipboardList } from "lucide-react";
 import type { SessionMeta } from "@/lib/types";
 import { useGinno } from "@/lib/store";
 import { isSubagentConfirmed, markSubagentConfirmed } from "@/lib/subagentConfirm";
@@ -134,6 +134,35 @@ export function SubagentSpawnCard({
  * （invoke/steer 一条引用该结果的消息，主 agent 决定重拆/追问/接手）。
  * 验收判定不在这里解析——runtime 会在注入消息里引导主 agent 逐条对照
  * acceptance 给出一行判定（P2 共享契约 5），卡片只展示 acceptance 原文。 */
+/** 清单状态卡（plan-orchestration §4/§8 P3）：去抖合流注入的 <ginno_plan_update>
+ *  信封折成专用卡——区别于子代理结果卡（无单会话可跳，主体是多条目状态简报）。
+ *  常驻 PlanBoard 是清单的第一展示面，这张卡是时序留痕（何时报了什么）。 */
+export function PlanUpdateCard({
+  block,
+}: {
+  block: Extract<Block, { kind: "plan_update" }>;
+}) {
+  const { tc } = useChatT();
+  return (
+    <div className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2 text-xs">
+      <div className="flex items-center gap-1.5">
+        <ClipboardList className="h-3.5 w-3.5 shrink-0 text-violet" />
+        <span className="min-w-0 flex-1 font-medium text-txt">
+          {tc("planBoard.updateTitle")}
+        </span>
+        {block.planId && (
+          <span className="shrink-0 rounded bg-violet/15 px-1 py-px font-mono text-[10px] text-violet">
+            {block.planId}
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
+        {block.text}
+      </div>
+    </div>
+  );
+}
+
 export function SubagentResultCard({
   block,
 }: {

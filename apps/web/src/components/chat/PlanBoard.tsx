@@ -17,6 +17,7 @@ import { useGinno } from "@/lib/store";
 import { cancelSessionPlan, confirmSessionPlan } from "@/lib/runtime";
 import type { Plan, PlanItem, PlanItemStatus } from "@/lib/types";
 import { SUBAGENT_STATUS_META } from "@/components/chat/blocks/types";
+import { DuckStatusIcon } from "@/components/chat/blocks/duckStatus";
 
 /** 条目五态的展示元数据：running 及终态复用子代理词汇（设计 §2「前端零
  * 新词汇」），pending/blocked 是清单特有态、本地补齐。 */
@@ -181,9 +182,24 @@ function PlanItemRow({ item }: { item: PlanItem }) {
       }`}
     >
       <div className="flex items-center gap-1.5">
-        <span className="shrink-0 text-[11px] leading-none" style={{ color: meta.color }}>
-          {meta.glyph}
-        </span>
+        {/* 鸭子状态点（设计 §1「复用五态/鸭子三色」）：三桶态用动画鸭；pending/
+            blocked 无对应桶，保留灰点 glyph。 */}
+        {item.status === "pending" || item.status === "blocked" ? (
+          <span className="shrink-0 text-[11px] leading-none" style={{ color: meta.color }}>
+            {meta.glyph}
+          </span>
+        ) : (
+          <DuckStatusIcon
+            size={14}
+            status={
+              item.status === "done"
+                ? "done"
+                : item.status === "failed" || item.status === "stopped"
+                  ? "failed"
+                  : "running"
+            }
+          />
+        )}
         <span className="shrink-0 rounded bg-violet/10 px-1 py-px font-medium text-violet">{item.item_id}</span>
         <span className="min-w-0 flex-1 truncate text-muted" title={item.goal}>
           {item.goal}

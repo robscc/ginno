@@ -159,8 +159,8 @@ async def decompose_task(session: dict, task: str) -> list[dict]:
         )
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-    from .models import build_model
     from .graph import text_of_content
+    from .models import build_model
 
     model = build_model(session.get("model_provider"), session.get("model_name"))
     resp = await model.ainvoke(
@@ -319,9 +319,11 @@ async def run_background_command(
 async def confirm_plan(
     session_id: str, plan_id: str, subtasks_override=None
 ) -> str:
-    """Spawn every subtask of the confirmed plan (P2 contract 2): the EDITED
-    subtasks from the card win when provided; each goes through the EXISTING
-    spawn path with ``origin="user"``. Returns the summary notice text."""
+    """Confirm the split plan (P2 contract 2): the EDITED subtasks from the
+    card win when provided. Since plan-orchestration P4 (2026-10-13) the
+    confirmed batch becomes a PERSISTENT Plan under the watcher —
+    spawning/concurrency/writeback are the watcher's job (design §5 row 1:
+    确认后进入 watcher 调度，不再一次性全 spawn). Returns notice text."""
     plan = get_pending_plan(session_id, plan_id)
     if plan is None:
         # The refusal MUST be pushed, not just returned: the WS handler drops
@@ -344,38 +346,48 @@ async def confirm_plan(
             return text
     del _PENDING_PLANS[session_id]
 
-    from .subagent_scheduler import create_subagent  # lazy: heavy import chain
+    # _PENDING_PLANS → 持久化 Plan（author="user"）：并发帽/状态回写/完成
+    # 判定全部交给 watcher；reason（拆分理由）是确认卡独有的审阅物，
+    # 清单条目无对应字段，丢弃。
+    from .plans import store as plan_store
+    from .plans import watcher as plan_watcher
+    from .session_meta import _find_meta
 
-    spawned: list[str] = []
-    failed: list[str] = []
-    for st in subtasks:
-        res = await create_subagent(
+    meta, _ = _find_meta(session_id) or ({}, None)
+    slug = (meta or {}).get("project_slug") or "default"
+    try:
+        persistent = plan_store.create_plan(
             session_id,
-            st["goal"],
-            st["constraints"],
-            st["acceptance"],
-            origin="user",
+            slug=slug,
+            title=plan.get("task") or t("User split plan", "用户拆分方案"),
+            items=[
+                {
+                    "goal": st["goal"],
+                    "constraints": st.get("constraints") or "",
+                    "acceptance": st.get("acceptance") or "",
+                }
+                for st in subtasks
+            ],
+            needs_confirm=False,  # 用户刚刚在卡上确认过——不再二次确认
+            author="user",
         )
-        if res.get("ok"):
-            spawned.append(f"{res['session_id']} {st['goal'][:40]}")
-        else:
-            failed.append(f"{st['goal'][:40]}: {res.get('error') or 'unknown error'}")
-    lines = [
-        t(
-            f"Plan confirmed: {len(spawned)} subagent(s) started.",
-            f"方案已确认：已启动 {len(spawned)} 个子代理。",
-        )
-    ]
-    lines += [f"- ✅ {s}" for s in spawned]
-    if failed:
-        lines.append(
-            t(f"{len(failed)} failed to start:", f"{len(failed)} 个启动失败：")
-        )
-        lines += [f"- ❌ {f}" for f in failed]
-    text = "\n".join(lines)
+    except ValueError as e:
+        text = t(f"Plan creation failed: {e}", f"清单创建失败：{e}")
+        await _push_session_event(session_id, "notice", {"message": text})
+        return text
+    plan_watcher.notify_change(session_id)
+    text = "\n".join(
+        [
+            t(
+                f"Plan confirmed: task list {persistent['plan_id']} created with {len(subtasks)} item(s); the system schedules them by concurrency and reports progress on the plan board.",
+                f"方案已确认：已建立任务清单 {persistent['plan_id']}（{len(subtasks)} 条），系统将按并发调度并在清单卡上汇报进度。",
+            ),
+            *[f"- {st['goal'][:60]}" for st in subtasks],
+        ]
+    )
     await _push_session_event(session_id, "notice", {"message": text})
     _log.info(
-        "subagent_plan_confirmed session=%s plan=%s ok=%d failed=%d",
-        session_id, plan_id, len(spawned), len(failed),
+        "subagent_plan_confirmed session=%s plan=%s items=%d (→ watcher plan %s)",
+        session_id, plan_id, len(subtasks), persistent["plan_id"],
     )
     return text

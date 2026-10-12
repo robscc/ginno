@@ -58,6 +58,9 @@ export type Block =
   // subagent.status 终态事件（live 追加）驱动。
   | { kind: "subagent_result"; sessionId: string; goal?: string; summary: string;
       error?: string }
+  // 清单状态卡：注入的 <ginno_plan_update> 信封（plan-orchestration §4/§8
+  // P3）折成专用卡——去抖合流的条目状态简报，区别于子代理结果卡。
+  | { kind: "plan_update"; planId: string; text: string }
   // 任务简报卡片：子会话首条消息是 <ginno_subagent_brief> 原文（后接报告
   // 格式与输出纪律两段附录），历史重放折成卡片，避免裸 XML 长文刷屏。
   | { kind: "subagent_brief"; goal: string; constraints?: string;

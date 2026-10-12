@@ -16,7 +16,8 @@
       "helpDesc": "列出可用命令与技能",
       "compactDesc": "手动压缩会话上下文（由 LLM 摘要较早的消息以释放 token）",
       "clearDesc": "清空本会话的对话上下文并重新开始（会话文件、挂载与设置保留）",
-      "subagentDesc": "派生子代理：/subagent <目标> 直接派生 1 个；/subagent split <任务> 先经 LLM 拆分，确认卡片后批量派生"
+      "subagentDesc": "派生子代理：/subagent <目标> 直接派生 1 个；/subagent split <任务> 先经 LLM 拆分，确认卡片后批量派生",
+      "planDesc": "任务清单：列出 / 确认 / 取消"
     },
     "mentions": {
       "artifactDesc": "引用产物文件作为本轮上下文",

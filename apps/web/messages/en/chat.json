@@ -334,7 +334,8 @@
       "dependsTitle": "Depends on: {ids}",
       "attempts": "attempt {n}",
       "expand": "Expand plan",
-      "collapse": "Collapse plan"
+      "collapse": "Collapse plan",
+      "updateTitle": "Plan status update"
     }
   }
 }

@@ -285,23 +285,28 @@ async def _issue(monkeypatch, sid: str, task: str = "任务") -> dict:
 async def test_confirm_spawns_each_subtask_as_user(
     isolated_home, offline_spawn, fake_turn, radio, monkeypatch
 ):
+    """P4（2026-10-13）起 split 确认转持久化清单，由 watcher 逐条调度——
+    断言改为：清单建立（author=user）→ watcher 启动 → 子代理照常 spawn。"""
+    from ginno_runtime.plans import store as plan_store
+
     _put_meta({"id": "C1", "title": "main", "created": time.time(), "updated": time.time()})
     server_shared._SESSIONS["C1"] = _main_session("C1")
     plan = await _issue(monkeypatch, "C1")
 
     reply = await plan_mod.confirm_plan("C1", plan["plan_id"])
-    await asyncio.sleep(0)  # let the spawn_bg brief-turn tasks run
+    await asyncio.sleep(0.1)  # watcher tick + spawn_bg brief-turn tasks
 
-    assert "2 subagent(s) started" in reply
+    assert "task list" in reply  # 持久化清单已建（不再直接报启动数）
+    plans = plan_store.list_plans(SLUG, "C1")
+    assert len(plans) == 1 and plans[0]["author"] == "user"
+    assert plans[0]["status"] == plan_store.PLAN_ACTIVE
     children = server_shared.subagent_children("C1")
-    assert len(children) == 2
+    assert len(children) == 2  # watcher 调度照常 spawn（无依赖并行两条）
     for cid in children:
         meta, _ = _find_meta(cid)
         assert meta["subagent"]["origin"] == "user"
         assert meta["subagent"]["status"] == "running"
     assert len(fake_turn["turns"]) == 2  # each child got its brief turn
-    notices = [d for _s, e, d in radio["sent"] if e == "notice"]
-    assert notices and "2 subagent(s) started" in notices[-1]["message"]
     assert plan_mod.get_pending_plan("C1") is None  # consumed
 
 
@@ -312,8 +317,14 @@ async def test_confirm_with_edited_subtasks_overrides(isolated_home, offline_spa
 
     edited = [{"goal": "编辑后的子任务", "constraints": "只读", "acceptance": "有结论", "reason": "用户改过"}]
     reply = await plan_mod.confirm_plan("C2", plan["plan_id"], edited)
+    await asyncio.sleep(0.1)  # watcher 调度
 
-    assert "1 subagent(s) started" in reply
+    assert "task list" in reply  # 编辑版生效：清单里是编辑后的条目
+    from ginno_runtime.plans import store as plan_store
+
+    p = plan_store.list_plans(SLUG, "C2")[0]
+    assert [i["goal"] for i in p["items"]] == ["编辑后的子任务"]
+    assert p["items"][0]["constraints"] == "只读"
     meta, _ = _find_meta(server_shared.subagent_children("C2")[0])
     assert meta["subagent"]["goal"] == "编辑后的子任务"
 

@@ -334,7 +334,8 @@
       "dependsTitle": "依赖：{ids}",
       "attempts": "第 {n} 次尝试",
       "expand": "展开清单",
-      "collapse": "折叠清单"
+      "collapse": "折叠清单",
+      "updateTitle": "清单状态更新"
     }
   }
 }

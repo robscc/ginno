@@ -269,3 +269,199 @@ def test_plans_section_diff(isolated_home):
     assert text and "it_1" in text and "running" in text
     # 无变化 → None（基线幂等，不会重复报）
     assert sec.update_text(snap2, sec.snapshot(ctx)) is None
+
+
+# ---- 2026-10-13 收口批次：split→watcher / 设置开关 / /plan 命令 / 专用信封 --
+
+
+async def test_watcher_end_to_end_spawn_settle_complete(isolated_home, monkeypatch):
+    """全链路（真 watcher 循环 + 假 spawn）：建单 → 调度两条 running → 子会话
+    meta 翻 done → 对账回写 → plan completed；_do_flush 捕获去抖缓冲。"""
+    import asyncio
+
+    import ginno_runtime.session_meta as sm
+    import ginno_runtime.subagent_scheduler as sched
+    from ginno_runtime.plans import watcher
+
+    monkeypatch.setattr(watcher, "_TICK_S", 0.2)
+    monkeypatch.setattr(watcher, "_FLUSH_QUIET_S", 0.1)
+    monkeypatch.setattr(watcher, "_FLUSH_MAX_S", 0.5)
+    sm._session_meta_upsert(
+        "default", {"id": "s_e2e", "project_slug": "default", "type": "chat"}
+    )
+
+    async def fake_spawn(parent, goal, constraints, acceptance, origin, agent_type=""):
+        sid = f"child_{origin}_{goal[:4]}"
+        sm._session_meta_upsert(
+            "default",
+            {
+                "id": sid,
+                "project_slug": "default",
+                "type": "subagent",
+                "parent_session_id": parent,
+                "subagent": {"status": "running", "goal": goal},
+            },
+        )
+        return {"ok": True, "session_id": sid, "title": goal, "depth": 1}
+
+    monkeypatch.setattr(sched, "create_subagent", fake_spawn)
+    flushed: list[tuple[str, dict]] = []
+    monkeypatch.setattr(watcher, "_do_flush", lambda sid, buf: flushed.append((sid, dict(buf))))
+
+    plan = store.create_plan(
+        "s_e2e", slug="default", title="t", items=[{"goal": "aaaa"}, {"goal": "bbbb"}]
+    )
+    watcher.notify_change("s_e2e")
+    assert "s_e2e" in watcher._WATCHERS
+
+    async def wait_for(fn, tries=100):
+        for _ in range(tries):
+            if fn():
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    p = store.get_plan("default", "s_e2e", plan["plan_id"])
+    assert await wait_for(
+        lambda: all(
+            i["status"] == "running"
+            for i in store.get_plan("default", "s_e2e", plan["plan_id"])["items"]
+        )
+    ), store.get_plan("default", "s_e2e", plan["plan_id"])["items"]
+    # 子会话全部完成 → 对账 → 清单 completed
+    for it in store.get_plan("default", "s_e2e", plan["plan_id"])["items"]:
+        sm._session_meta_patch(
+            "default",
+            it["child_session_id"],
+            {
+                "subagent": {
+                    "status": "done",
+                    "result_summary": f"ok {it['item_id']}",
+                    "goal": it["goal"],
+                }
+            },
+        )
+    assert await wait_for(
+        lambda: store.get_plan("default", "s_e2e", plan["plan_id"])["status"] == "completed"
+    )
+    p = store.get_plan("default", "s_e2e", plan["plan_id"])
+    assert all(i["status"] == "done" and i["result_summary"] for i in p["items"])
+    assert await wait_for(lambda: bool(flushed))
+    assert flushed[0][0] == "s_e2e"
+    # watcher 自然收官（无 open 清单即退出）
+    assert await wait_for(lambda: "s_e2e" not in watcher._WATCHERS)
+
+
+async def test_split_confirm_creates_persistent_plan(isolated_home, monkeypatch):
+    """split 确认（subagent_plan.confirm_plan）转持久化 Plan（author=user，
+    watcher 接管调度），不再一次性全 spawn。"""
+    import ginno_runtime.subagent_plan as sp
+    from ginno_runtime.plans import watcher
+
+    monkeypatch.setattr(watcher, "notify_change", lambda sid: None)  # 不真起 watcher
+    sp._PENDING_PLANS["s_split"] = {
+        "plan_id": "pending_1",
+        "session_id": "s_split",
+        "task": "拆分任务",
+        "subtasks": [
+            {"goal": "g1", "constraints": "c1", "acceptance": "a1", "reason": "r"},
+            {"goal": "g2"},
+        ],
+        "created": 0,
+    }
+    out = await sp.confirm_plan("s_split", "pending_1")
+    assert "pending_1" not in out  # 返回的是持久化清单 id 而非启动明细
+    plans = store.list_plans("default", "s_split")
+    assert len(plans) == 1
+    p = plans[0]
+    assert p["author"] == "user" and p["status"] == store.PLAN_ACTIVE
+    assert [i["goal"] for i in p["items"]] == ["g1", "g2"]
+    assert p["items"][0]["constraints"] == "c1"
+    assert all(i["status"] == store.ITEM_PENDING for i in p["items"])
+
+
+async def test_agent_plan_confirm_setting_gates(isolated_home, tmp_path):
+    """D2 开关：context.plan_confirm_agent_plans=True 时 agent 建单一律
+    pending_confirm，压过工具的 needs_confirm=False。"""
+    import json as _json
+
+    from ginno_runtime.tools.plan_tools import build_plan_tools
+
+    (tmp_path / "settings.json").write_text(
+        _json.dumps({"context": {"plan_confirm_agent_plans": True}}), encoding="utf-8"
+    )
+    # isolated_home 的 GINNO_HOME 即 tmp_path
+    tools = {t.name: t for t in build_plan_tools("s_gate", "default")}
+    out = await tools["create_subagent_plan"].ainvoke({"title": "t", "items": [{"goal": "a"}]})
+    p = store.list_plans("default", "s_gate")[0]
+    assert p["status"] == store.PLAN_PENDING_CONFIRM
+    assert "awaiting user confirmation" in out
+
+
+async def test_plan_command_list_and_cancel(isolated_home):
+    """/plan 命令面：列表带进度；cancel 取消；未知 id 报错。"""
+    from ginno_runtime.commands.registry import _plan_async_handler
+
+    plan = _mk(session_id="s_cmd")
+    ok = _plan_async_handler(
+        project_slug="default",
+        session={"session_id": "s_cmd", "project_slug": "default"},
+        args="",
+    )
+    text = await ok
+    assert plan["plan_id"] in text and "0/2" in text
+    text = await _plan_async_handler(
+        project_slug="default",
+        session={"session_id": "s_cmd", "project_slug": "default"},
+        args=f"cancel {plan['plan_id']}",
+    )
+    assert "cancelled" in text
+    assert store.get_plan("default", "s_cmd", plan["plan_id"])["status"] == store.PLAN_CANCELLED
+    text = await _plan_async_handler(
+        project_slug="default",
+        session={"session_id": "s_cmd", "project_slug": "default"},
+        args="cancel ghost",
+    )
+    assert "not found" in text
+
+
+def test_plan_update_envelope_blocks(isolated_home):
+    """<ginno_plan_update> 信封 → 专用 plan_update 块（区别于结果卡/裸带）。"""
+    from ginno_runtime.api.messages_ui import _plan_update_blocks
+
+    content = (
+        '<ginno_plan_update plan="pl_x">\n'
+        "[plan update] Task list status changed:\n"
+        "- [done] it_1 ok\n"
+        "You can: verify the above results.\n"
+        "</ginno_plan_update>"
+    )
+    blocks = _plan_update_blocks(content)
+    assert blocks and blocks[0]["kind"] == "plan_update"
+    assert blocks[0]["planId"] == "pl_x"
+    assert "[done] it_1 ok" in blocks[0]["text"]
+    # 行动菜单尾段是模型指令，不进卡片
+    assert "You can" not in blocks[0]["text"]
+    assert _plan_update_blocks("plain text") is None
+
+
+async def test_do_flush_wraps_plan_envelope(isolated_home, monkeypatch):
+    """watcher._do_flush 产出 <ginno_plan_update> 信封（前端折专用卡）。"""
+    import asyncio
+
+    from ginno_runtime.plans import watcher
+
+    captured = {}
+
+    async def fake_inject(sid, text, child_key):
+        captured["text"] = text
+        captured["child_key"] = child_key
+
+    import ginno_runtime.subagent_scheduler as sched
+
+    monkeypatch.setattr(sched, "_inject_result", fake_inject)
+    watcher._do_flush("s_env", {"notes": ["- [done] it_1 ok"], "plans": {"pl_x"}})
+    await asyncio.sleep(0.05)  # spawn_bg 任务落地
+    assert captured["child_key"] == "plan-pl_x"
+    assert captured["text"].startswith("<ginno_plan_update plan=\"pl_x\">")
+    assert "[plan update]" in captured["text"]
