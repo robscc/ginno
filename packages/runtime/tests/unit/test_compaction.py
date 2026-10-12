@@ -171,6 +171,66 @@ async def test_force_compact_bypasses_threshold_and_disabled_flag(isolated_home)
     assert "问题二" in joined  # kept tail survives
 
 
+async def test_compaction_summarizer_records_usage(isolated_home):
+    """压缩摘要的模型调用必须记账（source="compaction"，会话归属）——
+    记账点挂在 _stream_graph 消息流上，compaction 直连 model.ainvoke
+    此前完全绕过（2026-10-12「压缩的也要算进去」）。"""
+    from ginno_runtime import usage_store
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    settings = {
+        "context": {
+            "compaction_enabled": False,
+            "compact_threshold_tokens": 999_999_999,
+            "compact_keep_turns": 1,
+        }
+    }
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+    model = ScriptedChatModel(
+        scripts=[
+            script(text="r0"),
+            script(text="r1"),
+            script(
+                text="摘要。",
+                usage={
+                    "input_tokens": 54617,
+                    "output_tokens": 206,
+                    "total_tokens": 54823,  # AIMessage 的 usage_metadata 必填
+                    "input_token_details": {"cache_read": 30000},
+                },
+            ),
+        ]
+    )
+    graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
+    config = {"configurable": {"thread_id": "comp-usage", "project_slug": "default"}}
+    for q in ("问题一", "问题二"):
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
+        )
+    session = {
+        "graph": graph,
+        "model": model,
+        "project_slug": "default",
+        "session_id": "comp-usage",
+    }
+    assert await maybe_compact_history(session, config, force=True) is not None
+
+    st = usage_store.session_totals("comp-usage")
+    assert st is not None
+    # 摘要调用的 tokens 落进了该会话的用量（graph 转身的两次调用来自
+    # ScriptedChatModel 的默认 usage——只断言压缩那笔在场且字段正确）。
+    assert st["input_tokens"] >= 54617
+    assert st["output_tokens"] >= 206
+    assert st["cache_read_tokens"] >= 30000
+    rows = usage_store.query_requests(session_id="comp-usage", page_size=10)
+    assert any(
+        r.get("source") == "compaction"
+        and r.get("input_tokens") == 54617
+        for r in rows["rows"]
+    )
+
+
 async def test_compaction_respects_disabled_flag(isolated_home):
     from ginno_runtime.graph import build_graph
     from ginno_runtime.testing.fake_model import ScriptedChatModel, script

@@ -262,6 +262,42 @@ async def maybe_compact_history(
             ),
         ]
     )
+    # 压缩摘要也是真金白银的模型调用：记入用量流水（source="compaction"，
+    # 会话归属）。此前完全没记账——记账点挂在 _stream_graph 的消息流上，
+    # 这里直连 model.ainvoke 绕过了它（2026-10-12 用户指出「压缩的也要
+    # 算进去」）。best-effort：绝不影响压缩主流程。
+    try:
+        from . import usage_store
+        from .usage import extract_usage
+
+        u = extract_usage(summary_resp)
+        if u:
+            _sreg: dict = {}
+            try:
+                from .server_shared import _SESSIONS
+
+                _sreg = _SESSIONS.get(session_id) or {}
+            except Exception:  # noqa: BLE001 — 注册表不可用也照记（缺 provider）
+                pass
+            _cfg_slug = (config.get("configurable") or {}).get("project_slug") or "default"
+            usage_store.record(
+                input_tokens=u["input_tokens"],
+                output_tokens=u["output_tokens"],
+                cache_read_tokens=u["cache_read_tokens"],
+                cache_creation_tokens=u["cache_creation_tokens"],
+                provider=_sreg.get("model_provider") or "",
+                model=_sreg.get("model_name") or "",
+                source="compaction",
+                session_id=session_id or None,
+                project_slug=_cfg_slug,
+                agent_id=(_sreg.get("agent_id") or None) if _sreg else None,
+            )
+            log.info(
+                "compaction_usage_recorded session=%s in=%d out=%d",
+                session_id, u["input_tokens"], u["output_tokens"],
+            )
+    except Exception:  # noqa: BLE001
+        log.debug("compaction_usage_record_failed session=%s", session_id, exc_info=True)
     summary = _parse_summary_output(str(getattr(summary_resp, "content", "") or "")).strip()
     if not summary:
         return None

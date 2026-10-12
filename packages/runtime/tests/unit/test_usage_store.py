@@ -186,6 +186,23 @@ def test_session_totals_and_empty(isolated_home):
     assert usage_store.session_totals("missing") is None
 
 
+def test_session_totals_many_aggregates_a_tree(isolated_home):
+    """集合版单趟聚合：一棵子会话树（父 + 多子）的合计，None 当且仅当
+    整棵树无记录（2026-10-12：TopBar 改全树口径的底座）。"""
+    _record(input_tokens=1000, session_id="parent")
+    _record(input_tokens=3000, session_id="kid-a")
+    _record(input_tokens=500, output_tokens=50, session_id="kid-b")
+    _record(input_tokens=999, session_id="unrelated")
+    tree = usage_store.session_totals_many({"parent", "kid-a", "kid-b"})
+    assert tree is not None
+    assert tree["input_tokens"] == 4500
+    # _record 的 output 默认 100：parent/kid-a 各 100 + kid-b 显式 50
+    assert tree["output_tokens"] == 250
+    assert tree["calls"] == 3
+    assert usage_store.session_totals_many({"nope"}) is None
+    assert usage_store.session_totals_many(set()) is None
+
+
 def test_requests_filter_and_paginate(isolated_home):
     for i in range(7):
         _record(session_id=f"s{i % 2}", provider="anthropic" if i % 2 else "openai")

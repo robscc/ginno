@@ -401,6 +401,25 @@ def session_totals(session_id: str, from_date: str | None = None, to_date: str |
     return _with_ratio(acc) if found else None
 
 
+def session_totals_many(
+    session_ids: set, from_date: str | None = None, to_date: str | None = None
+) -> dict | None:
+    """多个会话（一棵子会话树）的合计。一次扫描按集合匹配——对 N 个
+    子会话求和不能逐个调 session_totals（每次都是全日期段扫描，
+    2026-10-12 ae01d586 实测 127 个子会话）。None 当且仅当整棵树都没记账。"""
+    if not session_ids:
+        return None
+    frm = _parse_date(from_date, _date_str(time.time() - 86400 * RETENTION_DAYS))
+    to = _parse_date(to_date, _today())
+    acc = _acc()
+    found = False
+    for e in iter_range(frm, to):
+        if e.get("session_id") in session_ids:
+            _add(acc, e)
+            found = True
+    return _with_ratio(acc) if found else None
+
+
 def query_requests(
     date_str: str | None = None,
     provider: str | None = None,

@@ -22,9 +22,29 @@ async def get_session_usage(session_id: str) -> dict:
     it survives runtime restarts, so a session's total stays truthful across
     restarts — falling back to the in-memory accumulator when nothing was
     logged yet. Response shape is unchanged."""
-    logged = usage_store.session_totals(session_id)
-    if logged:
-        return {"ok": True, "usage": logged}
+    # 「总 token」按全树口径（2026-10-12 用户实测：ae01d586 下 127 个
+    # 子会话占全树 input 的 77%，父自身数字严重误导）。子孙集合走会话
+    # 索引的 parent 链；单趟集合聚合（session_totals_many），不为每个
+    # 子会话各扫一遍日期段。
+    found = _find_meta(session_id)
+    desc: list[dict] = []
+    if found:
+        _meta, _slug = found
+        try:
+            from ..session_meta import _session_meta_descendants
+
+            desc = _session_meta_descendants(_slug, session_id)
+        except Exception:  # noqa: BLE001 — 索引不可用时退回仅本会话
+            desc = []
+    ids = {session_id, *(d.get("id") for d in desc if d.get("id"))}
+    tree = (
+        usage_store.session_totals_many(ids)
+        if len(ids) > 1
+        else usage_store.session_totals(session_id)
+    )
+    if tree:
+        tree["descendant_sessions"] = len(desc)
+        return {"ok": True, "usage": tree}
     acc = _USAGE_BY_SESSION.get(session_id)
     if not acc:
         return {"ok": True, "usage": None}
