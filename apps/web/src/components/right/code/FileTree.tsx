@@ -30,7 +30,7 @@
  *     (brief §1-7). The pointer pattern follows the live `PanelResizer`.
  * The same pointer drag also targets the chat COMPOSER (`[data-composer]`):
  * dropping a row there inserts its path text at the input's caret via
- * `onDragToComposer` (the panel decides relative vs absolute wording).
+ * `onDragToComposer` (always the row's root-relative path).
  * Cross-root moves are out of scope by design — a tree is one root, so a drop
  * target can only ever be inside it (the composer drop is an insert, not a
  * move, so it is exempt).
@@ -152,9 +152,9 @@ export interface FileTreeProps {
   onReveal?: (path: string) => void;
   /** Open with the OS default app (Tauri `code_open_external`). */
   onOpenExternal?: (path: string) => void;
-  /** 拖行到会话输入框：在光标处插入该行路径的文本（panel 注入——它知道根的
-   *  语义，负责把 root-relative 路径折算成要插入的文本）。与树内移动共用
-   *  pointer 拖拽：悬停 `[data-composer]` 元素即视为输入框放置目标。 */
+  /** 拖行到会话输入框：在光标处插入该行路径的文本（恒为 root-relative
+   *  路径，panel 注入）。与树内移动共用 pointer 拖拽：悬停
+   *  `[data-composer]` 元素即视为输入框放置目标。 */
   onDragToComposer?: (path: string) => void;
 
   className?: string;
