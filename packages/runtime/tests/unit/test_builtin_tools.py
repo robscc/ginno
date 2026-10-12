@@ -263,3 +263,194 @@ def test_bash_allows_source_user_rc_but_still_denies_secrets(monkeypatch, tmp_pa
 
     denied_ssh = tools["bash"].invoke({"command": f"cat {Path.home() / '.ssh' / 'id_rsa'}"})
     assert denied_ssh.startswith("[error]")
+
+
+# --------------------------------------------------------------------------- #
+# 2026-10 perf pass (P1–P4): precomputed deny policy, build-dir pruning,
+# read_file pagination, rg delegation. Benchmarks that motivated it: the old
+# per-file _path_denied cost ~74µs; a 158k-file walk spent 21s in the check
+# against 1.5s of traversal, blowing GLOB_TIME_BUDGET_S by itself.
+# --------------------------------------------------------------------------- #
+def test_glob_prunes_build_dirs_by_default(tools, ws):
+    (Path(ws) / "node_modules" / "pkg").mkdir(parents=True)
+    (Path(ws) / "src").mkdir()
+    (Path(ws) / "node_modules" / "pkg" / "x.js").write_text("1")
+    (Path(ws) / "src" / "app.js").write_text("1")
+    out = tools["glob_files"].invoke({"pattern": "**/*.js"})
+    assert out.splitlines() == ["src/app.js"]
+    out = tools["glob_files"].invoke({"pattern": "**/*.js", "include_ignored": True})
+    assert sorted(out.splitlines()) == ["node_modules/pkg/x.js", "src/app.js"]
+
+
+def test_grep_prunes_build_dirs_by_default(tools, ws):
+    (Path(ws) / "node_modules" / "pkg").mkdir(parents=True)
+    (Path(ws) / "src").mkdir()
+    (Path(ws) / "node_modules" / "pkg" / "x.js").write_text("TOKEN")
+    (Path(ws) / "src" / "app.js").write_text("TOKEN")
+    out = tools["grep_files"].invoke({"pattern": "TOKEN"})
+    assert out.splitlines() == ["src/app.js:1:TOKEN"]
+    out = tools["grep_files"].invoke({"pattern": "TOKEN", "include_ignored": True})
+    assert sorted(out.splitlines()) == [
+        "node_modules/pkg/x.js:1:TOKEN",
+        "src/app.js:1:TOKEN",
+    ]
+
+
+def test_grep_skips_binary_oversized_and_symlinked_files(tools, ws):
+    w = Path(ws)
+    (w / "plain.txt").write_text("TOKEN\n")
+    (w / "bin.dat").write_bytes(b"TOKEN\x00binary")
+    (w / "huge.txt").write_bytes(b"TOKEN\n" + b"x" * (6 * 1024 * 1024))
+    (w / "link_target.txt").write_text("TOKEN\n")
+    (w / "link.txt").symlink_to(w / "link_target.txt")
+    out = tools["grep_files"].invoke({"pattern": "TOKEN"})
+    # The symlink is never followed (rg parity); the plain files match, the
+    # binary and oversized ones are skipped.
+    assert sorted(out.splitlines()) == ["link_target.txt:1:TOKEN", "plain.txt:1:TOKEN"]
+
+
+def test_glob_still_lists_allowed_symlinks_but_denies_escaping_ones(tools, ws):
+    w = Path(ws)
+    (w / "real.txt").write_text("x")
+    (w / "ok.txt").symlink_to(w / "real.txt")
+    out = tools["glob_files"].invoke({"pattern": "*.txt"})
+    assert "ok.txt" in out and "real.txt" in out
+
+
+def test_read_file_truncates_long_file_with_continue_note(tools, ws):
+    (Path(ws) / "big.txt").write_text(
+        "\n".join(f"L{i}" for i in range(1, 5001)), encoding="utf-8"
+    )
+    out = tools["read_file"].invoke({"path": "big.txt"})
+    lines = out.splitlines()
+    assert (lines[0], lines[1999]) == ("L1", "L2000")
+    assert lines[2000] == "... (lines 1-2000 of 5000 — pass offset=2001 to continue)"
+
+
+def test_read_file_offset_limit_pagination(tools, ws):
+    (Path(ws) / "big.txt").write_text(
+        "\n".join(f"L{i}" for i in range(1, 5001)), encoding="utf-8"
+    )
+    out = tools["read_file"].invoke({"path": "big.txt", "offset": 2001, "limit": 10})
+    lines = out.splitlines()
+    assert (lines[0], lines[9]) == ("L2001", "L2010")
+    assert lines[10] == "... (lines 2001-2010 of 5000 — pass offset=2011 to continue)"
+    # An explicit limit is honoured but hard-capped: reading past the end of
+    # a 5000-line file with limit=99999 yields everything, no note.
+    out = tools["read_file"].invoke({"path": "big.txt", "offset": 1, "limit": 99999})
+    assert out.splitlines()[-1] == "L5000"
+
+
+def test_read_file_small_file_is_byte_identical(tools, ws):
+    (Path(ws) / "s.txt").write_text("hi\n", encoding="utf-8")
+    assert tools["read_file"].invoke({"path": "s.txt"}) == "hi\n"
+
+
+def test_read_file_offset_beyond_end_is_error(tools, ws):
+    (Path(ws) / "s.txt").write_text("hi\n", encoding="utf-8")
+    assert tools["read_file"].invoke({"path": "s.txt", "offset": 99}).startswith("[error]")
+
+
+def test_edit_file_semantics_unchanged_after_find_rewrite(tools, ws):
+    (Path(ws) / "e.txt").write_text("aa bb aa", encoding="utf-8")
+    assert "multiple matches" in tools["edit_file"].invoke(
+        {"path": "e.txt", "old": "aa", "new": "x"}
+    )
+    assert "not found" in tools["edit_file"].invoke({"path": "e.txt", "old": "zz", "new": "x"})
+    assert tools["edit_file"].invoke({"path": "e.txt", "old": "bb", "new": "x"}).startswith("ok")
+    assert (Path(ws) / "e.txt").read_text() == "aa x aa"
+
+
+def test_deny_policy_branches_match_legacy_semantics(monkeypatch, tmp_path):
+    from ginno_runtime.tools.builtin import _deny_policy
+
+    fake_home = tmp_path / "fake_home"
+    ws = fake_home / "projects" / "default" / "sessions" / "s1"
+    ws.mkdir(parents=True)
+    (fake_home / "skills").mkdir()
+    monkeypatch.setattr("ginno_runtime.tools.builtin.paths.home", lambda: fake_home)
+
+    pol = _deny_policy(ws, [])
+    assert pol.denied(fake_home / "settings.json") is True  # home, no exemption
+    assert pol.denied(ws / "a.txt") is False  # inside session workspace
+    assert pol.denied(fake_home / "skills" / "x" / "SKILL.md") is False  # skill tree
+    assert pol.denied(tmp_path / "elsewhere" / "f.py") is False  # outside home
+    # A symlink out of the workspace into a denied region is still caught.
+    (fake_home / "settings.json").write_text("s", encoding="utf-8")
+    leak = ws / "leak"
+    leak.symlink_to(fake_home / "settings.json")
+    assert pol.denied(leak) is True
+    # A project skills/ dir that appears AFTER the policy was built is picked
+    # up on the next TTL revalidation.
+    (fake_home / "projects" / "p2").mkdir()
+    pol._skill_at = 0.0
+    assert pol.denied(fake_home / "projects" / "p2" / "skills" / "y") is False
+
+
+def _write_rg_stub(tmp_path: Path, body: str) -> Path:
+    stub = tmp_path / "rg-stub"
+    stub.write_text("#!/usr/bin/env python3\n" + body, encoding="utf-8")
+    stub.chmod(0o755)
+    return stub
+
+
+def test_grep_delegates_to_rg_when_available(tools, ws, monkeypatch, tmp_path):
+    """rg on PATH → its JSONL matches are parsed into file:line:text."""
+    import json as _json
+
+    w = Path(ws)
+    (w / "src").mkdir()
+    (w / "src" / "app.js").write_text("TOKEN", encoding="utf-8")
+    record = _json.dumps(
+        {
+            "type": "match",
+            "data": {
+                "path": {"text": str(w / "src" / "app.js")},
+                "line_number": 3,
+                "lines": {"text": "TOKEN here\n"},
+            },
+        }
+    )
+    stub = _write_rg_stub(tmp_path, f"print({record!r})\n")
+    monkeypatch.setattr("ginno_runtime.tools.builtin.shutil.which", lambda name: str(stub))
+    out = tools["grep_files"].invoke({"pattern": "TOKEN"})
+    assert out.splitlines() == ["src/app.js:3:TOKEN here"]
+
+
+def test_grep_rg_hits_are_capped_at_max_hits(tools, ws, monkeypatch, tmp_path):
+    import json as _json
+
+    records = "\n".join(
+        _json.dumps(
+            {
+                "type": "match",
+                "data": {
+                    "path": {"text": str(Path(ws) / f"f{i}.txt")},
+                    "line_number": 1,
+                    "lines": {"text": "TOKEN\n"},
+                },
+            }
+        )
+        for i in range(60)
+    )
+    stub = _write_rg_stub(tmp_path, f"print({records!r})\n")
+    monkeypatch.setattr("ginno_runtime.tools.builtin.shutil.which", lambda name: str(stub))
+    out = tools["grep_files"].invoke({"pattern": "TOKEN"})
+    lines = out.splitlines()
+    assert len(lines) == 51 and lines[-1] == "... (truncated)"
+
+
+def test_grep_falls_back_to_python_walk_when_rg_errors(tools, ws, monkeypatch, tmp_path):
+    """rg rc=2 (e.g. a Rust-incompatible regex like lookahead) → Python walk
+    runs instead, and an invalid pattern still reports [error] invalid regex."""
+    (Path(ws) / "app.js").write_text("TOKEN", encoding="utf-8")
+    stub = _write_rg_stub(tmp_path, "import sys; sys.exit(2)\n")
+    monkeypatch.setattr("ginno_runtime.tools.builtin.shutil.which", lambda name: str(stub))
+    out = tools["grep_files"].invoke({"pattern": "TOKEN"})
+    assert out.splitlines() == ["app.js:1:TOKEN"]
+    # Lookahead compiles in Python but not in Rust regex: rc=2 → fallback
+    # still answers from the Python engine instead of failing.
+    out = tools["grep_files"].invoke({"pattern": r"TOKE(?=N)"})
+    assert out.splitlines() == ["app.js:1:TOKEN"]
+    out = tools["grep_files"].invoke({"pattern": "("})
+    assert out.startswith("[error] invalid regex")

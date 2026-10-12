@@ -26,7 +26,10 @@ glob and killed the whole turn).
 
 from __future__ import annotations
 
+import json
 import os
+import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -50,6 +53,40 @@ GLOB_MAX_HITS = 500
 # instead of burning the tool timeout.
 GLOB_TIME_BUDGET_S = 10.0
 GLOB_MAX_DIRS = 20000
+
+# Dependency/build dirs pruned from glob/grep walks by default (pass
+# include_ignored=True to search them). Mirrors api/code.py's HEAVY_DIRS:
+# without this the walk budget is burned inside node_modules/target/… and the
+# matches the model actually wants drown in generated files.
+_WALK_IGNORE_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".next",
+        "dist",
+        "build",
+        "out",
+        "target",
+        "coverage",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".turbo",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".gradle",
+    }
+)
+# grep never reads a file larger than this (and passes the same value to rg as
+# --max-filesize): one giant generated artifact must not eat the walk budget.
+GREP_MAX_FILE_BYTES = 5 * 1024 * 1024
+# read_file pagination guards. A file read without offset/limit longer than
+# READ_MAX_LINES / READ_MAX_CHARS comes back truncated with a "pass offset=…"
+# note — one huge read used to flood the context and bloat every later turn.
+READ_MAX_LINES = 2000
+READ_MAX_CHARS = 200_000
+# Even an explicit limit= stays bounded by this (context protection).
+READ_HARD_MAX_LINES = 5000
 
 
 def _fs_root_guard(search_root) -> str | None:
@@ -121,10 +158,104 @@ def _inside(child_real: str, parent_real: str) -> bool:
     return child_real == parent_real or child_real.startswith(parent_real + os.sep)
 
 
+def _realpath_str(p) -> str:
+    try:
+        return os.path.realpath(p)
+    except OSError:
+        return str(p)
+
+
+# Revalidation cadence for the one LIVE value in _DenyPolicy: a project
+# skills/ dir can appear mid-session, so the exempt set cannot be frozen at
+# tool-build time — but it also must not cost an iterdir per checked path.
+_SKILL_ROOTS_TTL_S = 5.0
+
+
+class _DenyPolicy:
+    """Precomputed deny/exempt regions for one (base_dir, extra_roots) pair.
+
+    The pre-2026-10 `_path_denied` recomputed its static inputs on EVERY
+    call — `_skill_exempt_roots()` alone (iterdir of ~/.ginno/projects plus
+    one is_dir per project) plus realpath(home) and one realpath per mount —
+    ~74µs per call, paid per directory AND per file in the glob/grep walks:
+    walking this repo's ~158k files spent 21s in the check against 1.5s of
+    actual traversal, blowing GLOB_TIME_BUDGET_S by itself. Everything that
+    does not depend on the checked path is computed once here and reused via
+    `_deny_policy`'s cache; branch order is reordered so paths OUTSIDE the
+    sidecar home (the common repo case) never touch the skill-tree lookup.
+    """
+
+    __slots__ = ("always_deny", "extra_real", "home_real", "base_real", "_skill_real", "_skill_at")
+
+    def __init__(self, base_dir: Path | None, extra_roots: list[Path] | None):
+        self.always_deny: list[str] = [_realpath_str(r) for r in _always_deny_roots()]
+        self.extra_real: list[str] = sorted({_realpath_str(r) for r in (extra_roots or [])})
+        self.home_real = _realpath_str(paths.home())
+        self.base_real = _realpath_str(base_dir) if base_dir is not None else None
+        self._skill_real: list[str] | None = None
+        self._skill_at = 0.0
+
+    def _skill_roots(self) -> list[str]:
+        now = time.monotonic()
+        if self._skill_real is None or now - self._skill_at > _SKILL_ROOTS_TTL_S:
+            self._skill_real = sorted({_realpath_str(r) for r in _skill_exempt_roots()})
+            self._skill_at = now
+        return self._skill_real
+
+    def denied(self, p: Path) -> bool:
+        real = _realpath_str(p)
+        for root in self.always_deny:
+            if _inside(real, root):
+                return True
+        for root in self.extra_real:
+            if _inside(real, root):
+                return False  # explicitly mounted → reachable
+        # Skill trees and session workspaces all live INSIDE the sidecar
+        # home — a path outside it needs no further checks. This fast path is
+        # what keeps repo-wide walks cheap.
+        if not (real == self.home_real or real.startswith(self.home_real + os.sep)):
+            return False
+        if (
+            self.base_real is not None
+            # Exempt only a workspace that is a PROPER subdir of home (a real
+            # session workspace). base_dir == home is the workflow cwd fallback
+            # and must stay protected, else a cwd=home run reads all of ~/.ginno.
+            and self.base_real != self.home_real
+            and self.base_real.startswith(self.home_real + os.sep)
+            and _inside(real, self.base_real)
+        ):
+            return False  # inside the active session workspace → allowed
+        for root in self._skill_roots():
+            if _inside(real, root):
+                return False  # skill trees are user content, not runtime secrets
+        return True
+
+
+_POLICY_CACHE: dict[tuple[str, ...], _DenyPolicy] = {}
+
+
+def _deny_policy(base_dir: Path | None, extra_roots: list[Path] | None) -> _DenyPolicy:
+    """Per-(workspace, mounts) `_DenyPolicy`, built once and reused.
+
+    api/code.py's tree/search fences call `_path_denied` with the same
+    (workspace, mount_roots) pair, so they hit this cache too and get the
+    same speedup for free.
+    """
+    key = (
+        str(base_dir) if base_dir is not None else "",
+        *sorted(str(p) for p in (extra_roots or [])),
+    )
+    pol = _POLICY_CACHE.get(key)
+    if pol is None:
+        pol = _POLICY_CACHE[key] = _DenyPolicy(base_dir, extra_roots)
+    return pol
+
+
 def _path_denied(p: Path, base_dir: Path | None, extra_roots: list[Path] | None = None) -> bool:
     """True when ``p`` sits in a protected region (master-plan §2.3 baseline).
 
-    Layers:
+    Layers (semantics identical to the original inline version — see
+    ``_DenyPolicy`` for why the static inputs are precomputed now):
     * ``_always_deny_roots`` (ssh / keychains) are denied unconditionally.
     * EXEMPT: the active session workspace ``base_dir`` AND any mounted
       context dir (``extra_roots``) — user-chosen work locations win over the
@@ -140,39 +271,7 @@ def _path_denied(p: Path, base_dir: Path | None, extra_roots: list[Path] | None 
       SKILL.md and ``python3`` them. Settings / sessions / mcp / keys
       stay behind the home deny.
     """
-    try:
-        real = os.path.realpath(p)
-    except OSError:
-        real = str(p)
-    for denied in _always_deny_roots():
-        if _inside(real, denied):
-            return True
-    for root in extra_roots or []:
-        try:
-            root_real = os.path.realpath(root)
-        except OSError:
-            continue
-        if _inside(real, root_real):
-            return False  # explicitly mounted → reachable
-    for root in _skill_exempt_roots():
-        try:
-            root_real = os.path.realpath(root)
-        except OSError:
-            continue
-        if _inside(real, root_real):
-            return False  # skill trees are user content, not runtime secrets
-    home = os.path.realpath(paths.home())
-    if real == home or real.startswith(home + os.sep):
-        if base_dir is not None:
-            base_real = os.path.realpath(base_dir)
-            # Exempt only a workspace that is a PROPER subdir of home (a real
-            # session workspace). base_dir == home is the workflow cwd fallback
-            # and must stay protected, else a cwd=home run reads all of ~/.ginno.
-            if base_real != home and base_real.startswith(home + os.sep):
-                if _inside(real, base_real):
-                    return False  # inside the active session workspace → allowed
-        return True
-    return False
+    return _deny_policy(base_dir, extra_roots).denied(p)
 
 
 def _deny_msg(p: str) -> str:
@@ -276,6 +375,106 @@ def mount_access(p: Path, mounts: list[tuple[Path, str]]) -> str | None:
     return best
 
 
+def _grep_via_rg(
+    pattern: str, search_root: Path, max_hits: int, include_ignored: bool
+) -> list[str] | None:
+    """Delegate grep_files' search to ripgrep when it is on PATH.
+
+    Returns ``rel:line:text`` hit lines (with a trailing ``... (truncated)``
+    marker when capped), or ``None`` when rg is unavailable or failed — the
+    caller then runs its Python walk, which re-reports a genuinely invalid
+    pattern as ``[error] invalid regex`` itself.
+
+    Flags pin rg to the Python fallback's semantics: ``--hidden`` (the walk
+    visits dotfiles), ``--no-ignore`` (.gitignore is NOT honoured — the
+    fallback can't honour it either), ``--max-filesize`` mirrors
+    GREP_MAX_FILE_BYTES, and the ``_WALK_IGNORE_DIRS`` prune is expressed as
+    ``-g '!dir/**'`` globs so both paths skip the same trees. rg never
+    follows symlinks — matching the fallback, which skips them too.
+
+    Output is read on a daemon thread pumping a queue, so a silent rg on a
+    slow/huge tree still hits the GLOB_TIME_BUDGET_S wall instead of
+    blocking the tool call forever.
+    """
+    rg = shutil.which("rg")
+    if not rg:
+        return None
+    cmd = [
+        rg,
+        "--json",
+        "--hidden",
+        "--no-ignore",
+        "--max-filesize", f"{GREP_MAX_FILE_BYTES // (1024 * 1024)}M",
+    ]
+    if not include_ignored:
+        for d in sorted(_WALK_IGNORE_DIRS):
+            cmd += ["-g", f"!{d}/**"]
+    cmd += ["-e", pattern, str(search_root)]
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace"
+        )
+    except OSError:
+        return None
+    assert proc.stdout is not None
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def _pump() -> None:
+        try:
+            for raw in proc.stdout:  # type: ignore[union-attr]
+                lines.put(raw)
+        finally:
+            lines.put(None)
+
+    threading.Thread(target=_pump, daemon=True).start()
+    hits: list[str] = []
+    truncated = False
+    t0 = time.monotonic()
+    try:
+        while True:
+            try:
+                raw = lines.get(timeout=max(0.05, GLOB_TIME_BUDGET_S - (time.monotonic() - t0)))
+            except queue.Empty:
+                hits.append(
+                    f"... (search budget exhausted after {time.monotonic() - t0:.1f}s — "
+                    "narrow the pattern or pass a smaller root=)"
+                )
+                return hits
+            if raw is None:
+                break
+            try:
+                obj = json.loads(raw)
+            except ValueError:
+                continue
+            if obj.get("type") != "match":
+                continue
+            data = obj.get("data") or {}
+            ptext = (data.get("path") or {}).get("text")
+            if ptext is None:
+                continue  # non-UTF-8 path ({"bytes": …}) — skip like a binary
+            lnum = data.get("line_number")
+            ltext = ((data.get("lines") or {}).get("text") or "").rstrip("\r\n")
+            try:
+                rel = str(Path(ptext).relative_to(search_root))
+            except ValueError:
+                rel = ptext
+            hits.append(f"{rel}:{lnum}:{ltext}")
+            if len(hits) >= max_hits:
+                truncated = True
+                break
+    finally:
+        proc.kill()
+        proc.wait()
+    if proc.returncode not in (0, 1) and not hits:
+        # rc 2: rg-level error (unreadable root, or a Python-only regex
+        # construct like lookahead that Rust's regex cannot compile) — let
+        # the Python walk decide what the right error/result is.
+        return None
+    if truncated:
+        hits.append("... (truncated)")
+    return hits
+
+
 def build_builtin_tools(
     workspace: str | None = None,
     context_dirs: list[dict] | None = None,
@@ -340,18 +539,52 @@ def build_builtin_tools(
             "如需修改请让用户将其改为读写挂载。")
 
     @tool
-    def read_file(path: str) -> str:
+    def read_file(path: str, offset: int = 1, limit: int = 0) -> str:
         """Read a UTF-8 text file. Relative paths resolve against the session
-        working directory. Returns contents or an ``[error]`` string."""
+        working directory. ``offset`` (1-based line number) and ``limit`` (max
+        line count) paginate long files; without them a file longer than 2000
+        lines / 200k chars returns only its head plus a ``pass offset=… to
+        continue`` note, so one huge read cannot flood the context. Returns
+        contents or an ``[error]`` string."""
         try:
             p = _ws(base_dir, path)
             if _path_denied(p, base_dir, mount_roots):
                 return _deny_msg(path)
-            return p.read_text(encoding="utf-8", errors="replace") + _observe(p)
+            text = p.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
             return f"[error] file not found: {path}"
         except OSError as e:
             return f"[error] cannot read {path}: {type(e).__name__}: {e}"
+        lines = text.splitlines()
+        total = len(lines)
+        # Fast path — small file, no pagination: byte-identical to the
+        # pre-pagination behaviour (raw text, trailing newline included).
+        if offset <= 1 and not limit and total <= READ_MAX_LINES and len(text) <= READ_MAX_CHARS:
+            return text + _observe(p)
+        start = max(int(offset), 1) - 1
+        if start >= total:
+            return f"[error] offset {offset} is beyond the end of the file ({total} lines)"
+        cap = READ_HARD_MAX_LINES if limit else READ_MAX_LINES
+        take = min(max(int(limit), 1), cap) if limit else READ_MAX_LINES
+        sel = lines[start : start + take]
+        if len("\n".join(sel)) > READ_MAX_CHARS:
+            # Char guard (one giant line would sail past the line cap): cut at
+            # a line boundary, always keeping at least one line.
+            acc: list[str] = []
+            n = 0
+            for ln in sel:
+                if acc and n + len(ln) + 1 > READ_MAX_CHARS:
+                    break
+                acc.append(ln)
+                n += len(ln) + 1
+            sel = acc
+        body = "\n".join(sel)
+        if start + len(sel) < total:
+            body += (
+                f"\n... (lines {start + 1}-{start + len(sel)} of {total} — "
+                f"pass offset={start + len(sel) + 1} to continue)"
+            )
+        return body + _observe(p)
 
     @tool
     def write_file(path: str, content: str) -> str:
@@ -403,14 +636,16 @@ def build_builtin_tools(
             f"[error] root {root!r} 不在本会话的可达目录内（工作目录/挂载目录：{avail}）")
 
     @tool
-    def glob_files(pattern: str, root: str = "") -> str:
+    def glob_files(pattern: str, root: str = "", include_ignored: bool = False) -> str:
         """Glob files under the session working directory (recursive), or
         under an explicit ``root`` (must be the workspace or a mounted
         context dir — use ``root`` to search a mounted folder). Returns a
         newline-joined list of paths relative to the searched root, capped at
-        500 matches. Never raises — a bad base dir or pattern yields an
-        ``[error]`` string. Hard-denied dirs (runtime data / credentials) are
-        pruned and never scanned (master-plan §2.3)."""
+        500 matches. Dependency/build dirs (``.git``, ``node_modules``,
+        ``target``, ``dist``, ``__pycache__``, …) are skipped unless
+        ``include_ignored`` is true. Never raises — a bad base dir or pattern
+        yields an ``[error]`` string. Hard-denied dirs (runtime data /
+        credentials) are pruned and never scanned (master-plan §2.3)."""
         import fnmatch
 
         try:
@@ -425,6 +660,7 @@ def build_builtin_tools(
             guarded = _fs_root_guard(search_root)
             if guarded:
                 return guarded
+            policy = _deny_policy(base_dir, mount_roots)
             hits: list[str] = []
             truncated = False
             budget_note = ""
@@ -441,15 +677,28 @@ def build_builtin_tools(
                             "smaller root=)"
                         )
                         break
-                    # Prune hard-denied directories so they are never traversed.
-                    dirs[:] = [d for d in dirs if not _path_denied(Path(r) / d, base_dir, mount_roots)]
+                    # Prune hard-denied directories (never traversed) and —
+                    # unless the caller opted in — dependency/build dirs.
+                    dirs[:] = [
+                        d
+                        for d in dirs
+                        if (include_ignored or d not in _WALK_IGNORE_DIRS)
+                        and not policy.denied(Path(r) / d)
+                    ]
                     for name in files:
                         fp = Path(r) / name
-                        if _path_denied(fp, base_dir, mount_roots):
+                        # The directory verdict already covers regular files
+                        # (a non-symlink's realpath cannot leave its parent);
+                        # only a symlink can point into a denied region, so
+                        # only symlinks pay the full check.
+                        if fp.is_symlink() and policy.denied(fp):
                             continue
                         rel = str(fp.relative_to(search_root))
                         try:
-                            if not fnmatch.fnmatch(rel, pattern) and not fnmatch.fnmatch(name, pattern):
+                            if (
+                                not fnmatch.fnmatch(rel, pattern)
+                                and not fnmatch.fnmatch(name, pattern)
+                            ):
                                 continue
                         except Exception:
                             continue
@@ -474,12 +723,18 @@ def build_builtin_tools(
             return f"[error] glob failed: {type(e).__name__}: {e}"
 
     @tool
-    def grep_files(pattern: str, max_hits: int = 50, root: str = "") -> str:
-        """Grep files under the session working directory (recursive), or
-        under an explicit ``root`` (must be the workspace or a mounted
+    def grep_files(
+        pattern: str, max_hits: int = 50, root: str = "", include_ignored: bool = False
+    ) -> str:
+        """Grep (regex) files under the session working directory (recursive),
+        or under an explicit ``root`` (must be the workspace or a mounted
         context dir — use ``root`` to search a mounted folder). Returns
-        file:line:match. Never raises — a bad pattern or base dir yields an
-        ``[error]`` string."""
+        ``file:line:match`` lines, capped at ``max_hits``. Dependency/build
+        dirs (``.git``, ``node_modules``, ``target``, …) are skipped unless
+        ``include_ignored`` is true; binary files, files over 5 MB and
+        symlinked files are never read. When ripgrep (``rg``) is installed
+        the search is delegated to it. Never raises — a bad pattern or base
+        dir yields an ``[error]`` string."""
         import re
 
         try:
@@ -498,8 +753,14 @@ def build_builtin_tools(
             guarded = _fs_root_guard(search_root)
             if guarded:
                 return guarded
-            out: list[str] = []
             header = f"(root: {search_root})" if str(search_root) != str(base_dir) else ""
+            rg_hits = _grep_via_rg(pattern, search_root, max_hits, include_ignored)
+            if rg_hits is not None:
+                body = "\n".join(rg_hits) or "(no matches)"
+                return (header + "\n" + body) if header else body
+            # --- Python fallback (no rg on PATH, or rg failed) ---
+            policy = _deny_policy(base_dir, mount_roots)
+            out: list[str] = []
             _t0 = time.monotonic()
             _dirs_seen = 0
             for r, dirs, files in os.walk(search_root):
@@ -511,23 +772,36 @@ def build_builtin_tools(
                         "smaller root=)"
                     )
                     return (header + "\n" if header else "") + "\n".join(out)
-                # Prune hard-denied directories (master-plan §2.3).
-                dirs[:] = [d for d in dirs if not _path_denied(Path(r) / d, base_dir, mount_roots)]
+                # Prune hard-denied directories (master-plan §2.3) and —
+                # unless the caller opted in — dependency/build dirs.
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if (include_ignored or d not in _WALK_IGNORE_DIRS)
+                    and not policy.denied(Path(r) / d)
+                ]
                 for name in files:
                     f = Path(r) / name
-                    if _path_denied(f, base_dir, mount_roots):
+                    # Symlinks can point outside the root (rg never follows
+                    # them either); regular files inherit the directory's
+                    # deny verdict — their realpath cannot leave its parent.
+                    if f.is_symlink():
                         continue
                     try:
-                        for i, line in enumerate(
-                            f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1
-                        ):
-                            if rx.search(line):
-                                out.append(f"{f.relative_to(search_root)}:{i}:{line}")
-                                if len(out) >= max_hits:
-                                    out.append("... (truncated)")
-                                    return (header + "\n" if header else "") + "\n".join(out)
-                    except Exception:
+                        if f.stat().st_size > GREP_MAX_FILE_BYTES:
+                            continue
+                        data = f.read_bytes()
+                    except OSError:
                         continue
+                    if b"\x00" in data:
+                        continue  # binary — never searched
+                    text = data.decode("utf-8", errors="ignore")
+                    for i, line in enumerate(text.splitlines(), 1):
+                        if rx.search(line):
+                            out.append(f"{f.relative_to(search_root)}:{i}:{line}")
+                            if len(out) >= max_hits:
+                                out.append("... (truncated)")
+                                return (header + "\n" if header else "") + "\n".join(out)
             body = "\n".join(out) or "(no matches)"
             return (header + "\n" + body) if header else body
         except Exception as e:  # noqa: BLE001 — last-resort guard: never raise
@@ -548,12 +822,15 @@ def build_builtin_tools(
                 return f"[error] file not found: {path}"
             except OSError as e:
                 return f"[error] cannot read {path}: {type(e).__name__}: {e}"
-            if text.count(old) > 1:
-                return "[error] multiple matches"
-            if text.count(old) == 0:
+            # find instead of count×2: one scan locates the match and checks
+            # for a second one (huge files paid two full passes per edit).
+            idx = text.find(old)
+            if idx < 0:
                 return "[error] not found"
+            if text.find(old, idx + len(old)) != -1:
+                return "[error] multiple matches"
             try:
-                _atomic_write_text(p, text.replace(old, new, 1))
+                _atomic_write_text(p, text[:idx] + new + text[idx + len(old):])
             except OSError as e:
                 return f"[error] cannot write {path}: {type(e).__name__}: {e}"
         # Same ``<!--ginno-code:-->`` trailer as write_file, with op="edit" so
