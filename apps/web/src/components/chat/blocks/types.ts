@@ -116,11 +116,6 @@ export function subagentSessionBucket(s: {
 
 /** 桶的固定渲染序：运行中（活）→ 失败（要人看）→ 成功（归档）。 */
 export const SUBAGENT_BUCKET_ORDER: SubagentBucket[] = ["running", "failed", "done"];
-export const SUBAGENT_BUCKET_GLYPH: Record<SubagentBucket, string> = {
-  running: "🟢",
-  failed: "⚠️",
-  done: "✅",
-};
 
 /** 状态枚举的展示标签：chat.status.* 命中即译；未识别的状态回退 meta 的
  *  英文标签（SUBAGENT_STATUS_META 的导出形状不变——侧栏等外部使用方仍读它）。 */

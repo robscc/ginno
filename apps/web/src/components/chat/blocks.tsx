@@ -28,7 +28,6 @@ import { imageUrl, ImageGallery } from "./blocks/media";
 // 保证所有现有 import 路径（@/components/chat/blocks）不变。 ----
 export { useEventI18nText } from "./blocks/i18n";
 export {
-  SUBAGENT_BUCKET_GLYPH,
   SUBAGENT_BUCKET_ORDER,
   SUBAGENT_STATUS_META,
   subagentSessionBucket,
@@ -36,6 +35,7 @@ export {
   subagentStatusMeta,
   useStatusLabel,
 } from "./blocks/types";
+export { DuckStatusIcon } from "./blocks/duckStatus";
 export type {
   SourceItem,
   Block,

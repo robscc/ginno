@@ -33,9 +33,9 @@ import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
 import { ChatStream } from "@/components/chat/ChatStream";
 import {
-  SUBAGENT_BUCKET_GLYPH,
   SUBAGENT_BUCKET_ORDER,
   SUBAGENT_STATUS_META,
+  DuckStatusIcon,
   SubagentKindBadges,
   subagentSessionBucket,
   useStatusLabel,
@@ -772,7 +772,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         <ChevronDown
                           className={`h-3 w-3 shrink-0 transition-transform ${open ? "" : "-rotate-90"}`}
                         />
-                        <span className="shrink-0">{SUBAGENT_BUCKET_GLYPH[bk]}</span>
+                        <DuckStatusIcon status={bk} className="shrink-0" />
                         <span>{subStatusLabel(bk)}</span>
                         <span>· {group.length}</span>
                       </button>

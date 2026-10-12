@@ -461,3 +461,64 @@ html.pin-window,
 html.pin-window body {
   background: transparent;
 }
+
+/* ---- 鸭子状态动画图标（子会话三档节头）------------------------------------
+   定稿自 docs/design/prototypes/duck-status-prototype.html（2026-10-12）：
+   running=翻滚彩虹鸭 / done=领奖薄荷鸭 / failed=翻肚珊瑚鸭。
+   组件：components/chat/blocks/duckStatus.tsx（DuckStatusIcon）。
+   SVG 内 transform-origin 用用户坐标 px（与原型一致），不用百分比。 */
+.ginno-duck .gd-hue {
+  animation: ginno-duck-hue 5s linear infinite;
+}
+@keyframes ginno-duck-hue {
+  to { filter: hue-rotate(360deg); }
+}
+.ginno-duck .gd-roll {
+  animation: ginno-duck-roll 1.6s linear infinite;
+  transform-origin: 12px 12px;
+}
+@keyframes ginno-duck-roll {
+  to { transform: rotate(360deg); }
+}
+.ginno-duck .gd-ripple {
+  transform-origin: 12px 20px;
+}
+.ginno-duck .gd-r1 { animation: ginno-duck-ripple 1.2s ease-out infinite; }
+.ginno-duck .gd-r2 { animation: ginno-duck-ripple 1.2s ease-out infinite 0.6s; }
+.ginno-duck .gd-fr1 { animation: ginno-duck-ripple 2.4s ease-out infinite; }
+.ginno-duck .gd-fr2 { animation: ginno-duck-ripple 2.4s ease-out infinite 1.2s; }
+@keyframes ginno-duck-ripple {
+  0% { transform: scale(0.35); opacity: 0.9; }
+  75% { transform: scale(1.15); opacity: 0; }
+  100% { opacity: 0; }
+}
+.ginno-duck .gd-sway {
+  animation: ginno-duck-sway 2.4s ease-in-out infinite;
+  transform-origin: 12px 19px;
+}
+@keyframes ginno-duck-sway {
+  0%, 100% { transform: rotate(-2.5deg); }
+  50% { transform: rotate(2.5deg); }
+}
+.ginno-duck .gd-badge {
+  animation: ginno-duck-badge 2.4s ease-in-out infinite;
+  transform-origin: 18px 5.5px;
+}
+@keyframes ginno-duck-badge {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+}
+.ginno-duck .gd-float {
+  animation: ginno-duck-float 3s ease-in-out infinite;
+  transform-origin: 12px 12px;
+}
+@keyframes ginno-duck-float {
+  0%, 100% { transform: rotate(178deg) translateY(0); }
+  50% { transform: rotate(182deg) translateY(-1.6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* 全停但渐变保留：不动的彩虹仍是彩虹，颜色始终能分档 */
+  .ginno-duck * {
+    animation: none !important;
+  }
+}

@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ginno · 鸭子状态动画图标原型</title>
+<style>
+  /* Ginno 暗色主题近似值（--card/--line2/--violet 等） */
+  :root {
+    --bg: #17181f; --card: #1e2027; --card2: #262833; --line: #2a2c37;
+    --txt: #e6e6ea; --muted: #a7a9b4; --faint: #8b8d98;
+    --violet: #8b7cf8; --green: #22c55e; --red: #ef4444; --yellow: #eab308;
+    --duck: #eab65d; --water: #4f8eb3;
+    --duck-run: #8fd4f2; --duck-ok: #7fe6b2; --duck-fail: #ff9d9d;
+    --blush: #ffa1c9; --star: #ffe08a; --mint-deep: #3fd68f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--txt);
+    font: 13px/1.6 -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+    padding: 32px 40px 64px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h1 small { color: var(--faint); font-weight: 400; margin-left: 8px; }
+  .sub { color: var(--faint); margin: 0 0 28px; }
+  h2 {
+    font-size: 14px; margin: 36px 0 4px; color: var(--txt);
+    display: flex; align-items: center; gap: 8px;
+  }
+  h2 .hint { color: var(--faint); font-weight: 400; font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; display: flex; gap: 16px; align-items: center;
+  }
+  .big { flex: none; width: 72px; height: 72px; display: grid; place-items: center;
+         background: var(--card2); border-radius: 10px; }
+  .big svg { width: 48px; height: 48px; }
+  .meta { min-width: 0; }
+  .meta .name { font-weight: 600; }
+  .meta .desc { color: var(--faint); font-size: 12px; margin-top: 2px; }
+  .meta .row {
+    margin-top: 10px; display: flex; align-items: center; gap: 6px;
+    color: var(--muted); font-size: 11px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; width: fit-content;
+  }
+  .meta .row svg { width: 15px; height: 15px; }
+  .combo {
+    margin-top: 12px; display: flex; flex-direction: column; gap: 4px;
+    max-width: 360px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 10px 12px;
+  }
+  .combo .sec {
+    display: flex; align-items: center; gap: 8px; padding: 4px 6px;
+    border-radius: 6px; color: var(--faint); font-size: 12px; cursor: pointer;
+  }
+  .combo .sec:hover { background: var(--card2); color: var(--muted); }
+  .combo .sec svg { width: 16px; height: 16px; }
+  .combo .cnt { margin-left: 2px; }
+  .combo .child {
+    display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 30px;
+    color: var(--muted); font-size: 12px; opacity: .75;
+  }
+  .combo .child svg { width: 13px; height: 13px; }
+  code { font: 11px ui-monospace, monospace; color: var(--violet); }
+
+  /* ===================== 公共：鸭身路径 ===================== */
+  /* 状态染色（2026-10-12 追加）：三档各一色——运行中=品牌水蓝、成功=绿、
+     失败=红。鸭身整体染色，装饰（水波/对勾/星）同色系收口；16px 下
+     不看动画也能一眼分档。基类 .duck-path 仅作回退。 */
+  .duck-path { fill: var(--duck); }
+  .duck-path.dim { fill: var(--faint); opacity: .55; }
+  .rA .duck-path, .rB .duck-path, .rC .duck-path {
+    fill: url(#grad-rainbow);        /* 彩虹渐变 + 缓缓流转（运行中的「活」） */
+    animation: hue 5s linear infinite;
+  }
+  .sA .duck-path, .sB .duck-path, .sC .duck-path { fill: url(#grad-mint); }
+  .fA .duck-path.dim, .fB .duck-path.dim, .fC .duck-path.dim { fill: url(#grad-coral); opacity: 1; }
+  @keyframes hue { to { filter: hue-rotate(360deg); } }
+
+  /* ===================== 运行中 A · 划水鸭 ===================== */
+  /* 鸭身随水线上下浮动，脚下水波两圈交替扩散 */
+  .rA .duck { animation: rA-roll 1.6s linear infinite; transform-origin: 12px 12px; }
+  @keyframes rA-roll { to { transform: rotate(360deg); } }
+  .rA .ripple1 { animation: ripple 1.2s ease-out infinite; transform-origin: 12px 19.5px; }
+  .rA .ripple2 { animation: ripple 1.2s ease-out infinite .6s; transform-origin: 12px 19.5px; }
+  @keyframes ripple { 0% { transform: scale(.35); opacity: .9; } 75% { transform: scale(1.15); opacity: 0; } 100% { opacity: 0; } }
+
+  /* ===================== 运行中 B · 赶路鸭 ===================== */
+  /* 鸭子小幅左右摇摆快步走，身后速度线交替掠过（速度线同水蓝，色系收口） */
+  .rB .duck { animation: rB-waddle 1s ease-in-out infinite; transform-origin: 50% 80%; }
+  @keyframes rB-waddle { 0%,100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
+  .rB .dash1 { animation: rB-dash 1.2s linear infinite; }
+  .rB .dash2 { animation: rB-dash 1.2s linear infinite .4s; }
+  .rB .dash3 { animation: rB-dash 1.2s linear infinite .8s; }
+  @keyframes rB-dash { 0% { transform: translateX(4px); opacity: 0; } 30% { opacity: .9; } 100% { transform: translateX(-5px); opacity: 0; } }
+
+  /* ===================== 运行中 C · 转圈鸭 ===================== */
+  /* 轨道弧线绕鸭旋转（经典 loading 环，水蓝），鸭身轻微呼吸缩放 */
+  .rC .ring { animation: rC-spin 1.6s linear infinite; transform-origin: 12px 12px; }
+  @keyframes rC-spin { to { transform: rotate(360deg); } }
+  .rC .duck { animation: rC-breath 1.6s ease-in-out infinite; transform-origin: 50% 60%; }
+  @keyframes rC-breath { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+
+  /* ===================== 成功 A · 打卡鸭 ===================== */
+  /* 鸭子原地小跳，绿色对勾随跳弹出 + 光环 ping */
+  .sA .duck { animation: sA-hop 2s cubic-bezier(.3,1.6,.5,1) infinite; transform-origin: 50% 90%; }
+  @keyframes sA-hop { 0%,55%,100% { transform: translateY(0); } 25% { transform: translateY(-3px); } }
+  .sA .check { animation: sA-pop 2s ease infinite; transform-origin: 18.5px 6.5px; }
+  @keyframes sA-pop { 0%,50% { transform: scale(0); opacity: 0; } 62% { transform: scale(1.25); opacity: 1; } 72% { transform: scale(1); } 92%,100% { opacity: 1; transform: scale(1); } }
+  .sA .ping { animation: sA-ping 2s ease-out infinite; transform-origin: 18.5px 6.5px; }
+  @keyframes sA-ping { 0%,50% { transform: scale(.3); opacity: .8; } 80%,100% { transform: scale(1.6); opacity: 0; } }
+
+  /* ===================== 成功 B · 领奖鸭 ===================== */
+  /* 对勾徽章在头顶呼吸发光，鸭子满足地左右轻晃 */
+  .sB .duck { animation: sB-sway 2.4s ease-in-out infinite; transform-origin: 50% 85%; }
+  @keyframes sB-sway { 0%,100% { transform: rotate(-2.5deg); } 50% { transform: rotate(2.5deg); } }
+  .sB .badge { animation: sB-glow 2.4s ease-in-out infinite; transform-origin: 18px 5.5px; }
+  @keyframes sB-glow { 0%,100% { transform: scale(1); } 50% { transform: scale(1.18); } }
+
+  /* ===================== 成功 C · 点头鸭 ===================== */
+  /* 鸭子用力点头两下歇一下，胸前小星形闪烁 */
+  .sC .duck { animation: sC-nod 2.2s ease-in-out infinite; transform-origin: 50% 75%; }
+  @keyframes sC-nod { 0%,40%,100% { transform: rotate(0); } 15% { transform: rotate(7deg); } 28% { transform: rotate(2deg); } }
+  .sC .star { animation: sC-twinkle 2.2s ease-in-out infinite; transform-origin: 19px 16px; }
+  @keyframes sC-twinkle { 0%,40%,100% { transform: scale(.4); opacity: .2; } 18% { transform: scale(1); opacity: 1; } }
+
+  /* ===================== 失败 A · 晕圈鸭 ===================== */
+  /* 头顶两颗小星绕转（经典眩晕），鸭身无力地左右晃 */
+  .fA .duck { animation: fA-sag 2s ease-in-out infinite; transform-origin: 50% 85%; }
+  @keyframes fA-sag { 0%,100% { transform: rotate(-4deg) translateY(.6px); } 50% { transform: rotate(4deg); } }
+  .fA .stars { animation: fA-orbit 1.8s linear infinite; transform-origin: 12px 5px; }
+  @keyframes fA-orbit { to { transform: rotate(360deg); } }
+
+  /* ===================== 失败 B · 翻肚鸭 ===================== */
+  /* 鸭子翻面漂在水面缓缓打转（仰泳式放弃），水波托底 */
+  .fB .duck { animation: fB-float 3s ease-in-out infinite; transform-origin: 50% 50%; }
+  @keyframes fB-float { 0% { transform: rotate(178deg) translateY(0); } 50% { transform: rotate(182deg) translateY(-1.6px); } 100% { transform: rotate(178deg) translateY(0); } }
+  .fB .ripple1 { animation: ripple 2.4s ease-out infinite; transform-origin: 12px 20px; }
+  .fB .ripple2 { animation: ripple 2.4s ease-out infinite 1.2s; transform-origin: 12px 20px; }
+
+  /* ===================== 失败 C · 落汤鸭 ===================== */
+  /* 鸭子低头蔫着，头顶两滴雨轮流砸下溅开 */
+  .fC .duck { animation: fC-droop 2.6s ease-in-out infinite; transform-origin: 50% 85%; }
+  @keyframes fC-droop { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(-10deg) translateY(.8px); } }
+  .fC .drop1 { animation: fC-rain 1.3s ease-in infinite; }
+  .fC .drop2 { animation: fC-rain 1.3s ease-in infinite .65s; }
+  @keyframes fC-rain { 0% { transform: translateY(-6px); opacity: 0; } 25% { opacity: .95; } 70% { transform: translateY(3.2px); opacity: .95; } 82% { transform: translateY(4px) scale(1.6,.4); opacity: 0; } 100% { opacity: 0; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rA .duck,.rA .ripple1,.rA .ripple2,.rB .duck,.rB .dash1,.rB .dash2,.rB .dash3,
+    .rC .ring,.rC .duck,.sA .duck,.sA .check,.sA .ping,.sB .duck,.sB .badge,
+    .sC .duck,.sC .star,.fA .duck,.fA .stars,.fB .duck,.fB .ripple1,.fB .ripple2,
+    .fC .duck,.fC .drop1,.fC .drop2,
+    .rA .duck-path,.rB .duck-path,.rC .duck-path { animation: none; }
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="grad-rainbow" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#ff9d9d"/><stop offset=".2" stop-color="#ffc98a"/>
+    <stop offset=".4" stop-color="#ffeb9c"/><stop offset=".6" stop-color="#9fe8b8"/>
+    <stop offset=".8" stop-color="#8fd4f2"/><stop offset="1" stop-color="#c9b6f7"/>
+  </linearGradient>
+  <linearGradient id="grad-mint" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#c8f8de"/><stop offset="1" stop-color="#57d69f"/>
+  </linearGradient>
+  <linearGradient id="grad-coral" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ffd4ca"/><stop offset="1" stop-color="#ff9b9b"/>
+  </linearGradient>
+</defs></svg>
+
+<h1>🦆 鸭子状态动画图标 <small>成功 / 失败 / 运行中 · 每态 3 案</small></h1>
+<p class="sub">基于品牌鸭（icons.tsx 单路径）· 马卡龙配色 + 腮红 + 星星眼；运行中=彩虹渐变缓缓流转🌈，成功=薄荷渐变，失败=珊瑚渐变。每张卡片：左 48px 放大预览，下方是侧栏节头真实尺寸（16px）。挑好后说编号即可，如「运行 A、成功 B、失败 A」。</p>
+
+<h2>🟢 运行中</h2>
+<div class="grid">
+  <div class="card">
+    <div class="big">
+      <svg class="rA" viewBox="0 0 24 24" aria-hidden="true">
+        <ellipse class="ripple1" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1" opacity="0"/>
+        <ellipse class="ripple2" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1" opacity="0"/>
+        <g class="duck">
+          <path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">A · 翻滚鸭</div>
+      <div class="desc">彩虹鸭在水里不停向前翻滚（卖力扑腾），脚下水波加速交替扩散。</div>
+      <div class="row">
+        <svg class="rA" viewBox="0 0 24 24"><ellipse class="ripple1" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><ellipse class="ripple2" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g></svg>
+        运行中 · 2
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="big">
+      <svg class="rB" viewBox="0 0 24 24" aria-hidden="true">
+        <circle class="dash1" cx="4" cy="9" r=".9" fill="var(--duck-run)"/>
+        <circle class="dash2" cx="3.4" cy="13" r=".7" fill="var(--duck-run)"/>
+        <circle class="dash3" cx="4.8" cy="17" r=".55" fill="var(--duck-run)"/>
+        <g class="duck">
+          <path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">B · 赶路鸭</div>
+      <div class="desc">摇摆快走 + 身后速度线。动感最强，适合表达「卖力推进中」。</div>
+      <div class="row">
+        <svg class="rB" viewBox="0 0 24 24"><circle class="dash1" cx="4" cy="9" r="1" fill="var(--duck-run)"/><circle class="dash2" cx="3.4" cy="13" r=".8" fill="var(--duck-run)"/><circle class="dash3" cx="4.8" cy="17" r=".6" fill="var(--duck-run)"/><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g></svg>
+        运行中 · 2
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="big">
+      <svg class="rC" viewBox="0 0 24 24" aria-hidden="true">
+        <g class="ring">
+          <path d="M21.5 12a9.5 9.5 0 0 0-5.2-8.47" fill="none" stroke="var(--duck-run)" stroke-width="1.8" stroke-linecap="round"/>
+        </g>
+        <g class="duck">
+          <path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">C · 转圈鸭</div>
+      <div class="desc">经典 loading 轨道弧绕鸭旋转，鸭身呼吸微缩。系统感最强，一眼「加载中」。</div>
+      <div class="row">
+        <svg class="rC" viewBox="0 0 24 24"><g class="ring"><path d="M21.5 12a9.5 9.5 0 0 0-5.2-8.47" fill="none" stroke="var(--duck-run)" stroke-width="2" stroke-linecap="round"/></g><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g></svg>
+        运行中 · 2
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>✅ 成功</h2>
+<div class="grid">
+  <div class="card">
+    <div class="big">
+      <svg class="sA" viewBox="0 0 24 24" aria-hidden="true">
+        <g class="duck">
+          <path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+        <circle class="ping" cx="18.5" cy="6.5" r="3.4" fill="none" stroke="var(--mint-deep)" stroke-width="1" opacity="0"/>
+        <path class="check" d="M17 6.6l1.05 1.1L20.2 5.4" fill="none" stroke="var(--mint-deep)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">A · 打卡鸭</div>
+      <div class="desc">原地小跳 + 绿勾弹出带 ping 光环。庆祝感明确，收束在一个「✓」符号上。</div>
+      <div class="row">
+        <svg class="sA" viewBox="0 0 24 24"><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g><circle class="ping" cx="18.5" cy="6.5" r="3.4" fill="none" stroke="var(--mint-deep)" stroke-width="1.2" opacity="0"/><path class="check" d="M17 6.6l1.05 1.1L20.2 5.4" fill="none" stroke="var(--mint-deep)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        成功 · 8
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="big">
+      <svg class="sB" viewBox="0 0 24 24" aria-hidden="true">
+        <g class="duck">
+          <path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+        <g class="badge">
+          <circle cx="18" cy="5.5" r="3.2" fill="var(--mint-deep)" opacity=".22"/>
+          <circle cx="18" cy="5.5" r="3.2" fill="none" stroke="var(--mint-deep)" stroke-width="1.1"/>
+          <path d="M16.7 5.5l1 1.05 1.6-1.85" fill="none" stroke="var(--mint-deep)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">B · 领奖鸭</div>
+      <div class="desc">头顶对勾徽章呼吸发光，鸭身满足地轻晃。安静优雅，适合列表里长期挂着。</div>
+      <div class="row">
+        <svg class="sB" viewBox="0 0 24 24"><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g><g class="badge"><circle cx="18" cy="5.5" r="3.2" fill="var(--mint-deep)" opacity=".22"/><circle cx="18" cy="5.5" r="3.2" fill="none" stroke="var(--mint-deep)" stroke-width="1.3"/><path d="M16.7 5.5l1 1.05 1.6-1.85" fill="none" stroke="var(--mint-deep)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></g></svg>
+        成功 · 8
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="big">
+      <svg class="sC" viewBox="0 0 24 24" aria-hidden="true">
+        <g class="duck">
+          <path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+        <path class="star" d="M19 18.4c-.75-.5-2.4-1.6-2.4-2.95 0-.85.65-1.5 1.45-1.5.45 0 .8.22.95.5.15-.28.5-.5.95-.5.8 0 1.45.65 1.45 1.5 0 1.35-1.65 2.45-2.4 2.95z" fill="var(--blush)"/>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">C · 点头鸭</div>
+      <div class="desc">用力点头两下歇一下，胸前星星闪烁。「干得漂亮」的拟人情绪最足。</div>
+      <div class="row">
+        <svg class="sC" viewBox="0 0 24 24"><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g><path class="star" d="M19 18.4c-.75-.5-2.4-1.6-2.4-2.95 0-.85.65-1.5 1.45-1.5.45 0 .8.22.95.5.15-.28.5-.5.95-.5.8 0 1.45.65 1.45 1.5 0 1.35-1.65 2.45-2.4 2.95z" fill="var(--blush)"/></svg>
+        成功 · 8
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>⚠️ 失败</h2>
+<div class="grid">
+  <div class="card">
+    <div class="big">
+      <svg class="fA" viewBox="0 0 24 24" aria-hidden="true">
+        <g class="duck">
+          <path class="duck-path dim" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+        <g class="stars">
+          <path d="M8.2 1.6l.5 1 1.1.14-.8.76.2 1.08-.99-.52-1 .52.2-1.08-.8-.76 1.1-.14z" fill="var(--star)"/>
+          <path d="M15.6 1.2l.4.82.9.12-.66.62.17.88-.81-.43-.82.43.17-.88-.65-.62.9-.12z" fill="var(--star)" opacity=".8"/>
+        </g>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">A · 晕圈鸭</div>
+      <div class="desc">头顶小星绕转（经典眩晕），鸭身染红无力摇摆。「出问题了」一眼即懂。</div>
+      <div class="row">
+        <svg class="fA" viewBox="0 0 24 24"><g class="duck"><path class="duck-path dim" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g><g class="stars"><path d="M8.2 1.6l.5 1 1.1.14-.8.76.2 1.08-.99-.52-1 .52.2-1.08-.8-.76 1.1-.14z" fill="var(--star)"/><path d="M15.6 1.2l.4.82.9.12-.66.62.17.88-.81-.43-.82.43.17-.88-.65-.62.9-.12z" fill="var(--star)" opacity=".8"/></g></svg>
+        失败 · 1
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="big">
+      <svg class="fB" viewBox="0 0 24 24" aria-hidden="true">
+        <ellipse class="ripple1" cx="12" cy="20" rx="7.5" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1" opacity="0"/>
+        <ellipse class="ripple2" cx="12" cy="20" rx="7.5" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1" opacity="0"/>
+        <g class="duck">
+          <path class="duck-path dim" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+        <path d="M19.5 15.5l1.3 2.7 2.9.38-2.1 2.02.5 2.86-2.6-1.36-2.6 1.36.5-2.86-2.1-2.02 2.9-.38z" fill="none" stroke="var(--red)" stroke-width="0" />
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">B · 翻肚鸭</div>
+      <div class="desc">四脚朝天漂在水面缓缓打转，水波托底。幽默化解失败情绪，Ginno 的自嘲气质。</div>
+      <div class="row">
+        <svg class="fB" viewBox="0 0 24 24"><ellipse class="ripple1" cx="12" cy="20" rx="7.5" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><ellipse class="ripple2" cx="12" cy="20" rx="7.5" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><g class="duck"><path class="duck-path dim" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g></svg>
+        失败 · 1
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="big">
+      <svg class="fC" viewBox="0 0 24 24" aria-hidden="true">
+        <g class="duck">
+          <path class="duck-path dim" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/>
+        </g>
+        <g class="drop1">
+          <path d="M17.6 1.2c.9 1.2 1.4 2 1.4 2.7a1.4 1.4 0 1 1-2.8 0c0-.7.5-1.5 1.4-2.7z" fill="var(--duck-run)"/>
+        </g>
+        <g class="drop2">
+          <path d="M20.8 4.4c.7 .95 1.1 1.6 1.1 2.2a1.15 1.15 0 1 1-2.3 0c0-.6.4-1.25 1.2-2.2z" fill="var(--duck-run)" opacity=".8"/>
+        </g>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="name">C · 落汤鸭</div>
+      <div class="desc">低头蔫着，头顶雨点轮流砸下溅开。「落汤鸭」双关，情绪最直白。</div>
+      <div class="row">
+        <svg class="fC" viewBox="0 0 24 24"><g class="duck"><path class="duck-path dim" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g><g class="drop1"><path d="M17.6 1.2c.9 1.2 1.4 2 1.4 2.7a1.4 1.4 0 1 1-2.8 0c0-.7.5-1.5 1.4-2.7z" fill="var(--duck-run)"/></g><g class="drop2"><path d="M20.8 4.4c.7 .95 1.1 1.6 1.1 2.2a1.15 1.15 0 1 1-2.3 0c0-.6.4-1.25 1.2-2.2z" fill="var(--duck-run)" opacity=".8"/></g></svg>
+        失败 · 1
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>组合预览 <span class="hint">—— 换成侧栏真实节头 + 子行的样子（A/B/A 方案）</span></h2>
+<div class="combo">
+  <div class="sec">
+    <svg class="rA" viewBox="0 0 24 24"><ellipse class="ripple1" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><ellipse class="ripple2" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g></svg>
+    运行中 <span class="cnt">· 2</span>
+  </div>
+  <div class="child"><svg class="rA" viewBox="0 0 24 24"><ellipse class="ripple1" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><ellipse class="ripple2" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g></svg> 跑数据采集脚本</div>
+  <div class="child"><svg class="rA" viewBox="0 0 24 24"><ellipse class="ripple1" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><ellipse class="ripple2" cx="12" cy="19.5" rx="7" ry="1.8" fill="none" stroke="var(--duck-run)" stroke-width="1.2" opacity="0"/><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g></svg> 整理输出格式</div>
+  <div class="sec">
+    <svg class="fA" viewBox="0 0 24 24"><g class="duck"><path class="duck-path dim" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g><g class="stars"><path d="M8.2 1.6l.5 1 1.1.14-.8.76.2 1.08-.99-.52-1 .52.2-1.08-.8-.76 1.1-.14z" fill="var(--star)"/><path d="M15.6 1.2l.4.82.9.12-.66.62.17.88-.81-.43-.82.43.17-.88-.65-.62.9-.12z" fill="var(--star)" opacity=".8"/></g></svg>
+    失败 <span class="cnt">· 1</span>
+  </div>
+  <div class="child"><svg class="fA" viewBox="0 0 24 24"><g class="duck"><path class="duck-path dim" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g><g class="stars"><path d="M8.2 1.6l.5 1 1.1.14-.8.76.2 1.08-.99-.52-1 .52.2-1.08-.8-.76 1.1-.14z" fill="var(--star)"/><path d="M15.6 1.2l.4.82.9.12-.66.62.17.88-.81-.43-.82.43.17-.88-.65-.62.9-.12z" fill="var(--star)" opacity=".8"/></g></svg> 验证接口返回</div>
+  <div class="sec">
+    <svg class="sB" viewBox="0 0 24 24"><g class="duck"><path class="duck-path" d="M8.5,5A1.5,1.5 0 0,0 7,6.5A1.5,1.5 0 0,0 8.5,8A1.5,1.5 0 0,0 10,6.5A1.5,1.5 0 0,0 8.5,5M10,2A5,5 0 0,1 15,7C15,8.7 14.15,10.2 12.86,11.1C14.44,11.25 16.22,11.61 18,12.5C21,14 22,12 22,12C22,12 21,21 15,21H9C9,21 4,21 4,16C4,13 7,12 6,10C2,10 2,6.5 2,6.5C3,7 4.24,7 5,6.65C5.19,4.05 7.36,2 10,2Z"/><ellipse class="blush" cx="9.4" cy="9.1" rx=".95" ry=".55" fill="var(--blush)" opacity=".85"/><circle class="shine" cx="8.1" cy="6.1" r=".5" fill="#fff" opacity=".95"/></g><g class="badge"><circle cx="18" cy="5.5" r="3.2" fill="var(--mint-deep)" opacity=".22"/><circle cx="18" cy="5.5" r="3.2" fill="none" stroke="var(--mint-deep)" stroke-width="1.3"/><path d="M16.7 5.5l1 1.05 1.6-1.85" fill="none" stroke="var(--mint-deep)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></g></svg>
+    成功 <span class="cnt">· 8</span>
+  </div>
+</div>
+
+<p class="sub" style="margin-top:28px">实现说明：全部为内联 SVG + CSS keyframes（无 JS、无外部依赖），<code>prefers-reduced-motion</code> 已处理；进代码时会做成一个 <code>DuckStatusIcon</code> 组件替换现有 emoji glyph（🟢⚠️✅），复用品牌鸭路径。</p>
+
+</body>
+</html>

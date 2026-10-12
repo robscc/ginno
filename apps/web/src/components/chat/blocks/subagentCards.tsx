@@ -10,7 +10,6 @@ import { t } from "@/i18n/provider";
 import { useChatT } from "./i18n";
 import { parseDelegation } from "./delegation";
 import {
-  SUBAGENT_BUCKET_GLYPH,
   SUBAGENT_BUCKET_ORDER,
   subagentStatusBucket,
   subagentStatusMeta,
@@ -18,6 +17,7 @@ import {
   type Block,
   type SubagentCardBlock,
 } from "./types";
+import { DuckStatusIcon } from "./duckStatus";
 
 /** 子代理的 fork / 类型小徽标（P3 范围 3）：meta.subagent.mode === "fork" 时
  *  显示 fork 徽标；agent_type 仅在 runtime 侧确实把类型名记进了 meta 时渲染
@@ -624,7 +624,7 @@ export function SubagentGroupCard({
                 title={statusLabel(bucket)}
               >
                 <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-                <span>{SUBAGENT_BUCKET_GLYPH[bucket]}</span>
+                <DuckStatusIcon status={bucket} />
                 <span>{statusLabel(bucket)}</span>
                 <span>· {entries.length}</span>
               </button>
