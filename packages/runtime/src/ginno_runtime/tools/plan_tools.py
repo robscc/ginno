@@ -23,8 +23,13 @@ def build_plan_tools(
         return []
     slug = project_slug or "default"
 
+    # 这三个工具必须是 async def：ToolNode 把同步工具丢进 executor 线程池，
+    # 线程里没有 asyncio loop，watcher.ensure_watcher 的 get_running_loop()
+    # 会 RuntimeError 并被静默吞掉 —— watcher 永远不启动、条目永远 pending
+    # （2026-10-12 真机 e0f20014 turn 复现；spawn_subagent 一直没踩坑正因为
+    # 它是 async def，在事件循环上执行）。工具体本身是同步 store 调用。
     @tool
-    def create_subagent_plan(
+    async def create_subagent_plan(
         title: str,
         items: list[dict],
         needs_confirm: bool = False,
@@ -83,7 +88,7 @@ def build_plan_tools(
         )
 
     @tool
-    def amend_plan(
+    async def amend_plan(
         plan_id: str,
         add_items: list[dict] | None = None,
         remove_items: list[str] | None = None,
@@ -125,7 +130,7 @@ def build_plan_tools(
         return f"[plan amended] {plan_id} v{plan['version']} — {stat}."
 
     @tool
-    def cancel_plan(plan_id: str) -> str:
+    async def cancel_plan(plan_id: str) -> str:
         """Cancel a plan: unstarted items are dropped; running subagent
         children are stopped (delegation runs finish under their own
         timeout). Use when the plan's goal became moot."""

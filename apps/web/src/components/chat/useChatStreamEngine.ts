@@ -631,6 +631,9 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // Load the session's goal snapshot for the TopBar chip (goal-design.md).
     // Live updates then arrive via goal.updated / goal.cleared WS events.
     g.loadGoal(sid);
+    // 任务清单（plan-orchestration §2/P3）：同款——打开时 REST 拉取，之后
+    // plan.updated WS 事件实时刷。
+    g.loadPlans(sid);
 
     // Restore draft if any (mentions re-pruned against the restored text so a
     // token the user deleted before switching stays deleted)

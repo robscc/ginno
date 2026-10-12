@@ -318,6 +318,23 @@
       "openModelSettings": "模型设置",
       "dismiss": "关闭",
       "homeModelPicked": "下一个会话将使用 {model}"
+    },
+    "planBoard": {
+      "progress": "{done}/{total}",
+      "failedCount": "（{count} 失败）",
+      "statusPendingConfirm": "等待确认",
+      "statusActive": "执行中",
+      "statusCompleted": "已完成",
+      "statusCancelled": "已取消",
+      "confirm": "确认执行（{count} 条）",
+      "cancel": "取消清单",
+      "pendingHint": "确认后按依赖关系自动调度",
+      "amendHint": "重试/增删条目由主代理通过 amend_plan 完成",
+      "openChild": "查看该条目的子会话",
+      "dependsTitle": "依赖：{ids}",
+      "attempts": "第 {n} 次尝试",
+      "expand": "展开清单",
+      "collapse": "折叠清单"
     }
   }
 }

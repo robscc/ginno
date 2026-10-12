@@ -214,3 +214,58 @@ async def test_launch_item_failure_marks_failed(isolated_home, monkeypatch):
     updated = store.get_plan("default", "s1", pid)
     assert updated["items"][0]["status"] == store.ITEM_FAILED
     assert "mods denied" in updated["items"][0]["error"]
+
+
+async def test_plan_tools_are_async_and_start_watcher(isolated_home, monkeypatch):
+    """Regression（2026-10-12 真机 e0f20014 turn）：create_subagent_plan 曾是
+    同步 @tool —— ToolNode 把同步工具丢进 executor 线程，线程里没有 asyncio
+    loop，ensure_watcher 的 get_running_loop() 静默跳过，watcher 永远不启动、
+    条目永远 pending（spawn_subagent 一直是 async def 所以直发路径没事）。
+    三个 plan 工具必须保持 async def：ToolNode 会在事件循环上 await 它们。
+    """
+    from ginno_runtime.tools.plan_tools import build_plan_tools
+
+    async def _noop_reconcile(slug, session_id, plan):
+        return False
+
+    monkeypatch.setattr(watcher, "_reconcile", _noop_reconcile)
+    tools = {t.name: t for t in build_plan_tools("s_watch", "default")}
+    assert {"create_subagent_plan", "amend_plan", "cancel_plan"} <= set(tools)
+    out = await tools["create_subagent_plan"].ainvoke(
+        {"title": "t", "items": [{"goal": "a"}]}
+    )
+    assert out.startswith("[plan created]")
+    # watcher 必须已在本会话上注册（同步版在这里就是 0 个）
+    assert "s_watch" in watcher._WATCHERS
+    task = watcher._WATCHERS.pop("s_watch")
+    task.cancel()
+    try:
+        await task  # 让 CancelledError 落地，不留 "Task was destroyed" 警告
+    except Exception:  # noqa: BLE001
+        pass
+    watcher._WAKE.pop("s_watch", None)
+
+
+# ---- world_state 差分兜底（2026-10-13 补强：错误/退出场景的投递保证）------
+
+
+def test_plans_section_diff(isolated_home):
+    """PlansSection：无清单零成本；清单变更产出简报行；render 不进稳定提示。"""
+    from ginno_runtime.world_state import PlansSection, SessionCtx
+
+    sec = PlansSection()
+    ctx = SessionCtx(session_id="s1", project_slug="default")
+    # 无清单 → snapshot None（不进基线，零成本）
+    assert sec.snapshot(ctx) is None
+    # 建单 + 条目推进 → 差分行
+    plan = _mk()
+    snap1 = sec.snapshot(ctx)
+    assert snap1 is not None and plan["plan_id"] in snap1
+    assert sec.render(snap1) == ""  # 稳定提示零渲染（前缀缓存）
+    assert sec.update_text({}, snap1) is not None  # 新建清单 → 简报
+    store.mark_running("default", "s1", plan["plan_id"], "it_1", "child_x")
+    snap2 = sec.snapshot(ctx)
+    text = sec.update_text(snap1, snap2)
+    assert text and "it_1" in text and "running" in text
+    # 无变化 → None（基线幂等，不会重复报）
+    assert sec.update_text(snap2, sec.snapshot(ctx)) is None

@@ -318,6 +318,23 @@
       "openModelSettings": "Model settings",
       "dismiss": "Dismiss",
       "homeModelPicked": "Next session will start on {model}"
+    },
+    "planBoard": {
+      "progress": "{done}/{total}",
+      "failedCount": " ({count} failed)",
+      "statusPendingConfirm": "Awaiting confirmation",
+      "statusActive": "Running",
+      "statusCompleted": "Completed",
+      "statusCancelled": "Cancelled",
+      "confirm": "Confirm ({count} items)",
+      "cancel": "Cancel plan",
+      "pendingHint": "Scheduling by dependencies starts after confirmation",
+      "amendHint": "Retry/add/remove is the main agent's amend_plan job",
+      "openChild": "Open this item's sub-session",
+      "dependsTitle": "Depends on: {ids}",
+      "attempts": "attempt {n}",
+      "expand": "Expand plan",
+      "collapse": "Collapse plan"
     }
   }
 }

@@ -14,6 +14,7 @@ import { hasPendingTool, parseSubagentResult, type Block } from "@/components/ch
 import type {
   ContextChange,
   Goal,
+  Plan,
   SessionUsage,
   SubagentPlanEvent,
   SubagentSpawnEvent,
@@ -579,6 +580,11 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
     case "goal.updated":
       // Live goal snapshot (created/status/accounting) → TopBar chip.
       ctx.g.notifyGoal(sid, (ev.goal as Goal) ?? null);
+      break;
+    case "plan.updated":
+      // 任务清单实时刷（plan-orchestration §2）：watcher 每次落盘推整张
+      // 清单快照；store 按 plan_id upsert，PlanBoard 重渲染。
+      if (ev.plan) ctx.g.notifyPlanUpdated(ev.plan as Plan);
       break;
     case "goal.cleared":
       ctx.g.notifyGoal(sid, null);

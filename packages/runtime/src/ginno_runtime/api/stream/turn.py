@@ -530,6 +530,16 @@ async def _run_stream(
                 session_id, "context.updated", {"changes": chip_changes}, turn_id
             )
 
+    # plan-orchestration：父回合开头保活清单 watcher。server 启动的恢复扫描
+    # 只覆盖重启场景；运行期 watcher 崩溃（plan_watcher_crashed）后清单会
+    # 静默停摆——这里每回合兜底拉起（幂等，已有 watcher 时零开销）。
+    try:
+        from ...plans import watcher as _plan_watcher
+
+        _plan_watcher.ensure_watcher(session_id)
+    except Exception:  # noqa: BLE001 — 保活失败不带走回合
+        _log.exception("plan_watcher_ensure_failed session=%s", session_id)
+
     # B1 — per-turn volatile context (wiki retrieval / attached files /
     # @mentions) rides a tail message instead of the stable system prompt.
     # Citation framework (citations-design.md): begin this turn's source list

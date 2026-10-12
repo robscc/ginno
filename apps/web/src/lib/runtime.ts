@@ -2008,3 +2008,25 @@ export function wsScheduleUrl(): string {
   }
   return `ws://127.0.0.1:${OVERRIDE_PORT ?? 8787}/api/ws/schedule`;
 }
+
+// ---- 任务清单编排（subagent-plan-orchestration-design.md §2/P3）------------
+// 读面 REST + 用户侧确认/取消（写面的其余入口是 agent 的 plan 工具）。
+export async function listSessionPlans(sessionId: string) {
+  return json<import("./types").Plan[]>(
+    `${BASE}/sessions/${sessionId}/plans`,
+  );
+}
+
+export async function confirmSessionPlan(sessionId: string, planId: string) {
+  return json<{ ok: boolean; error?: string; plan?: import("./types").Plan }>(
+    `${BASE}/sessions/${sessionId}/plans/${planId}/confirm`,
+    { method: "POST" },
+  );
+}
+
+export async function cancelSessionPlan(sessionId: string, planId: string) {
+  return json<{ ok?: boolean; plan?: import("./types").Plan }>(
+    `${BASE}/sessions/${sessionId}/plans/${planId}/cancel`,
+    { method: "POST" },
+  );
+}

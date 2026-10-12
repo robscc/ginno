@@ -50,6 +50,7 @@ import {
   type VersionPropose,
 } from "./streamCore";
 import { ProposeCard, SubagentTopBar } from "./streamCards";
+import { PlanBoard } from "./PlanBoard";
 import { useChatStreamEngine, HOME_SLOT } from "./useChatStreamEngine";
 import { useComposerFiles } from "./useComposerFiles";
 import { useRunActions } from "./useRunActions";
@@ -1246,6 +1247,7 @@ export function ChatStream({
       ) : (
         <>
       {session.type === "subagent" && <SubagentTopBar session={session} />}
+      {session.type !== "subagent" && <PlanBoard sessionId={session.id} />}
       {!hideDel && goal && goalStalled && !resumeDismissed && (
         <div className="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />

@@ -820,3 +820,49 @@ export interface ScheduleWsEvent {
   type: "run_started" | "run_finished" | "task_updated" | "missed" | string;
   [k: string]: unknown;
 }
+
+// ---- 任务清单编排（subagent-plan-orchestration-design.md §2，2026-10-12）----
+// REST GET /sessions/{sid}/plans 与 WS 帧 plan.updated 共用的清单快照。
+export type PlanItemStatus =
+  | "pending"
+  | "blocked"
+  | "running"
+  | "done"
+  | "failed"
+  | "stopped";
+
+export interface PlanItem {
+  item_id: string;
+  goal: string;
+  constraints?: string;
+  acceptance?: string;
+  agent_type?: string;
+  /** "ginno"（默认内部子代理）或委托后端名（claude-code/codex/pi） */
+  backend?: string;
+  /** delegation 专用："read-only"（默认）| "edit" */
+  mode?: string;
+  depends_on?: string[];
+  status: PlanItemStatus;
+  /** spawn 后回填；点条目跳该子会话 */
+  child_session_id?: string | null;
+  attempts?: number;
+  result_summary?: string;
+  error?: string;
+  settled_at?: number;
+}
+
+export type PlanStatus = "pending_confirm" | "active" | "completed" | "cancelled";
+
+export interface Plan {
+  plan_id: string;
+  session_id: string;
+  project_slug?: string;
+  title: string;
+  status: PlanStatus;
+  version?: number;
+  created?: number;
+  updated?: number;
+  /** "agent"（工具建单）| "user"（split 路径） */
+  author?: string;
+  items: PlanItem[];
+}

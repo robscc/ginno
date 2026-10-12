@@ -15,7 +15,7 @@ import type { SynthesisCaseSummary } from "./runtime";
 import { notifyNative } from "./desktop";
 import { loadNotifyPrefs, notifyPrefs } from "./notifyPrefs";
 import { uiText } from "../i18n/uiText";
-import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Providers, SessionMeta, SkillSummary, SubagentSpawnEvent, SubagentStatusEvent, Todo, WorkflowDef, WorkflowRun } from "./types";
+import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Plan, Providers, SessionMeta, SkillSummary, SubagentSpawnEvent, SubagentStatusEvent, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis" | "code";
 
@@ -335,6 +335,12 @@ interface GinnoState {
   goalBySession: Record<string, Goal | null>;
   notifyGoal: (sessionId: string, goal: Goal | null) => void;
   loadGoal: (sessionId: string) => Promise<void>;
+  // ---- 任务清单编排（subagent-plan-orchestration-design.md §2/P3）----
+  // Per-session plan 快照：打开会话时 REST 拉取 + plan.updated WS 事件实时
+  // 刷（watcher 每次落盘推整张清单）。PlanBoard 消费。
+  plansBySession: Record<string, Plan[]>;
+  loadPlans: (sessionId: string) => Promise<void>;
+  notifyPlanUpdated: (plan: Plan) => void;
   setGoalObjective: (
     sessionId: string,
     objective: string,
@@ -1456,6 +1462,29 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // ---- 任务清单编排（§2/P3）：同 goal 的 (a) 打开会话拉取 + (b) WS 实时刷 ----
+  const [plansBySession, setPlansBySession] = useState<Record<string, Plan[]>>({});
+
+  const notifyPlanUpdated = useCallback((plan: Plan) => {
+    if (!plan?.plan_id || !plan.session_id) return;
+    setPlansBySession((prev) => {
+      const cur = prev[plan.session_id] ?? [];
+      const i = cur.findIndex((p) => p.plan_id === plan.plan_id);
+      const next =
+        i >= 0 ? cur.map((p, j) => (j === i ? plan : p)) : [...cur, plan];
+      return { ...prev, [plan.session_id]: next };
+    });
+  }, []);
+
+  const loadPlans = useCallback(async (sessionId: string) => {
+    try {
+      const r = await api.listSessionPlans(sessionId);
+      setPlansBySession((prev) => ({ ...prev, [sessionId]: r ?? [] }));
+    } catch {
+      /* sidecar down */
+    }
+  }, []);
+
   const setGoalObjective = useCallback(
     async (sessionId: string, objective: string, confirm?: boolean) => {
       try {
@@ -1623,6 +1652,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     goalBySession,
     notifyGoal,
     loadGoal,
+    plansBySession,
+    loadPlans,
+    notifyPlanUpdated,
     setGoalObjective,
     setGoalStatus,
     clearGoal,

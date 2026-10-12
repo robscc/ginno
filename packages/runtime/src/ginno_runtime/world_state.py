@@ -957,9 +957,89 @@ class GoalSection:
         return " ".join(l for l in lines if l) or None
 
 
+class PlansSection:
+    """plan-orchestration §4 的投递兜底（2026-10-13 补强，错误/退出场景）。
+
+    watcher 的 D4 去抖注入是进程内缓冲（``_PENDING_FLUSH`` 重启即弃）：
+    sidecar 重启、用户 stop 父回合、注入与停轮竞态，任何一条都会让主
+    agent 永远收不到「条目已终态」。world_state 的 turn-start 差分以落盘
+    world.json 为基线——漏掉的清单变更在下一个回合开头必然补投，自愈且
+    幂等（基线已写，不会重复报）。
+
+    ``render`` 刻意返回 ""：清单条目高频变化，进稳定系统提示会破坏前缀
+    字节稳定（plan B2 的前提）；本节只走 ``update_text`` 差分通道。与 D4
+    实时注入偶有内容重叠（同一条 done 报两次）——以可读的简报措辞换
+    投递保证。无清单会话 snapshot 为 None，零成本。
+    """
+
+    id = "plans"
+
+    def snapshot(self, ctx: SessionCtx) -> dict | None:
+        from .plans import store as plan_store
+
+        plans = plan_store.list_plans(ctx.project_slug or "default", ctx.session_id)
+        if not plans:
+            return None
+        out: dict[str, dict] = {}
+        for p in plans:
+            out[p["plan_id"]] = {
+                "title": p.get("title") or "",
+                "status": p.get("status") or "",
+                "items": {
+                    it.get("item_id") or "": it.get("status") or ""
+                    for it in p.get("items") or []
+                },
+            }
+        return out
+
+    def render(self, snap: dict) -> str:
+        return ""  # 稳定提示零渲染（前缀缓存），只走差分注入
+
+    def update_text(self, old: dict, new: dict) -> str | None:
+        lines: list[str] = []
+        for pid, p in new.items():
+            op = old.get(pid)
+            if op is None:
+                lines.append(
+                    t(
+                        f"task plan created: \"{p['title']}\" ({p['status']})",
+                        f"任务清单已创建：「{p['title']}」（{p['status']}）",
+                    )
+                )
+                continue
+            if op.get("status") != p.get("status"):
+                lines.append(
+                    t(
+                        f"plan \"{p['title']}\" status → {p['status']}",
+                        f"清单「{p['title']}」状态 → {p['status']}",
+                    )
+                )
+            for iid, st in (p.get("items") or {}).items():
+                ost = (op.get("items") or {}).get(iid)
+                if ost != st:
+                    lines.append(
+                        t(
+                            f"plan item {iid}: {ost or 'new'} → {st}",
+                            f"清单条目 {iid}：{ost or '新建'} → {st}",
+                        )
+                    )
+            for iid in (op.get("items") or {}):
+                if iid not in (p.get("items") or {}):
+                    lines.append(
+                        t(f"plan item {iid} removed", f"清单条目 {iid} 已移除")
+                    )
+        for pid, op in old.items():
+            if pid not in new:
+                lines.append(
+                    t(f"plan \"{op.get('title')}\" removed", f"清单「{op.get('title')}」已移除")
+                )
+        return "; ".join(lines) or None
+
+
 SECTIONS: list[Any] = [
     AgentSection(),
     GoalSection(),
+    PlansSection(),
     EnvironmentSection(),
     FolderRulesSection(),
     PermissionsSection(),
