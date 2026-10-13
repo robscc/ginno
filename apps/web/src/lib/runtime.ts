@@ -138,6 +138,8 @@ export async function getSessionHistory(id: string) {
       agentId?: string | null;
       blocks: any[];
       turnId?: string;
+      // AgentTeam 回帖标记（messages_ui 序列化，agent-team-design.md §5.2）。
+      teamReply?: import("./types").TeamReplyMeta | null;
     }>;
     // Persisted turn failure (server-side); the client re-surfaces it as an
     // error card so the retry affordance survives reloads / switches.
@@ -2028,5 +2030,108 @@ export async function cancelSessionPlan(sessionId: string, planId: string) {
   return json<{ ok?: boolean; plan?: import("./types").Plan }>(
     `${BASE}/sessions/${sessionId}/plans/${planId}/cancel`,
     { method: "POST" },
+  );
+}
+
+// ---- AgentTeam (agent-team-design.md §5.1 / §6 P1) ----
+// 状态一律由 runtime 的 teams.status 计算（§5.9 唯一权威来源），前端不自己判态。
+
+export async function listTeams(project_slug?: string, client = "main") {
+  const q = new URLSearchParams({ client });
+  if (project_slug) q.set("project_slug", project_slug);
+  return json<{ ok: boolean; teams: import("./types").Team[] }>(
+    `${BASE}/teams?${q.toString()}`,
+  );
+}
+
+export async function getTeam(teamId: string, client = "main") {
+  return json<{ ok: boolean; team?: import("./types").Team; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}?client=${encodeURIComponent(client)}`,
+  );
+}
+
+export async function createTeam(req: {
+  name: string;
+  project_slug?: string;
+  agent_id?: string;
+  workspace?: string;
+  context_folders?: string[];
+  primary_folder?: string | null;
+}) {
+  return json<{ ok: boolean; team?: import("./types").Team; error?: string }>(
+    `${BASE}/teams`,
+    { method: "POST", headers: H, body: JSON.stringify(req) },
+  );
+}
+
+export async function patchTeam(teamId: string, patch: Record<string, unknown>) {
+  return json<{ ok: boolean; team?: import("./types").Team; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}`,
+    { method: "PATCH", headers: H, body: JSON.stringify(patch) },
+  );
+}
+
+export async function deleteTeam(teamId: string) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function addTeamMember(
+  teamId: string,
+  req: { agent_id: string; display_name?: string; role?: "leader" | "member" },
+) {
+  return json<{
+    ok: boolean;
+    member?: { instance_id: string; session_id: string };
+    team?: import("./types").Team;
+    error?: string;
+  }>(`${BASE}/teams/${encodeURIComponent(teamId)}/members`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(req),
+  });
+}
+
+export async function patchTeamMember(
+  teamId: string,
+  instanceId: string,
+  patch: { display_name?: string; role?: "leader" | "member" },
+) {
+  return json<{ ok: boolean; member?: unknown; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(instanceId)}`,
+    { method: "PATCH", headers: H, body: JSON.stringify(patch) },
+  );
+}
+
+export async function removeTeamMember(teamId: string, instanceId: string) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(instanceId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** 用户打开了成员工作台 → done 转 idle（§3.3 seen 语义，每客户端独立记）。 */
+export async function markTeamMemberSeen(
+  teamId: string,
+  instanceId: string,
+  client = "main",
+) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(instanceId)}/seen?client=${encodeURIComponent(client)}`,
+    { method: "POST" },
+  );
+}
+
+/** @投递（§5.2）。返回三态回执；stalled 时不要自动重发（§5.3.3）。 */
+export async function deliverToMember(
+  teamId: string,
+  req: { instance_id?: string; agent_id?: string; text: string; wait?: boolean },
+  client = "main",
+) {
+  return json<import("./types").DeliverReceipt>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/deliver?client=${encodeURIComponent(client)}`,
+    { method: "POST", headers: H, body: JSON.stringify(req) },
   );
 }

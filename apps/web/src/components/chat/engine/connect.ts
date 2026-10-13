@@ -64,6 +64,8 @@ export function mapHistory(
       blocks: Block[];
       agentId?: string | null;
       turnId?: string;
+      // AgentTeam 回帖标记（messages_ui 序列化，§5.2 要点 2）。
+      teamReply?: import("@/lib/types").TeamReplyMeta | null;
     }>;
     last_error?: {
     message?: string; turn_id?: string;
@@ -85,6 +87,7 @@ export function mapHistory(
       // HumanMessage）在重放时折成结果卡片块，避免原始标签以文本气泡出现。
       blocks: foldSubagentResultBlocks(m.blocks),
       agentId: m.agentId,
+      teamReply: m.teamReply ?? null,
       turnId: own ?? (m.role === "assistant" ? carryTurn : undefined),
       // Rebuild the retry payload for history user bubbles too — without
       // it, a retry that fails again would produce an error card with no

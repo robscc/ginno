@@ -5,6 +5,7 @@
 import type { ComposerImage, ComposerFile } from "@/lib/composerAttachments";
 import type { ResolvedMention } from "@/components/chat/commandMenu";
 import type { Block, QuestionBlock } from "@/components/chat/blocks";
+import type { TeamReplyMeta } from "@/lib/types";
 
 export interface ChatMsg {
 id: string;
@@ -13,6 +14,10 @@ role: "user" | "assistant" | "system";
 blocks: Block[];
 agentId?: string | null;
 agentName?: string;
+// AgentTeam 回帖（agent-team-design.md §5.2 要点 2）：非空表示这条 assistant
+// 气泡是某成员从自己的 session 回帖到主会话的产出——渲染成回帖卡（可折叠、
+// 点「展开全文」跳成员工作台），而不是普通气泡。仅 team 主会话会出现。
+teamReply?: TeamReplyMeta | null;
 turnId?: string; // per-turn trace UUID (shown on the bubble, greppable in sidecar logs)
 // Delivery state — user bubbles only. "sending" = in flight to the sidecar;
 // "failed" = never delivered (red ❗, click to retry). Successful delivery

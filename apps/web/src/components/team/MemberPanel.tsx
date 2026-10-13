@@ -1,0 +1,222 @@
+"use client";
+
+// MemberPanel — AgentTeam 主会话右侧的常驻成员面板（agent-team-design.md
+// §5.1）。需求①「同时看到多个 Agent 当前状态」的主落点：每行一个成员实例，
+// 显示语义态（§3.3）+ 展示文本（§3.4，纯渲染）+ elapsed + 累计 token。
+//
+// 状态一律来自 runtime 的 teams.status（§5.9 唯一权威来源），前端不自己判态；
+// 本组件只把 TeamMemberRow 渲染出来，并做 §5.3.1 的状态上卷（团队行徽标）。
+//
+// 点击成员行 → onOpenMember（进成员工作台）。blocked 行高亮——「谁在等我」
+// 一眼可见（herdr 的产品主张）。
+
+import { useEffect, useState } from "react";
+import { Loader2, Plus, UserX } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useGinno } from "@/lib/store";
+import { agentHex } from "@/lib/theme";
+import type { Team, TeamMemberRow, TeamMemberStatus } from "@/lib/types";
+
+/** chat 域翻译 + 动态 key 收敛转型（本文件共用；理由见 blocks.tsx useChatT）。
+ *  状态徽标文案 key 是 `team.status.${s}` 动态拼的，强类型 tc 不接受 string，
+ *  故用 tr 转型版（与 RunBlocks / streamCards / TranscriptList 同款）。 */
+function useChatT() {
+  const tc = useTranslations("chat");
+  const tr = tc as unknown as {
+    (key: string, values?: Record<string, string | number>): string;
+    has(key: string): boolean;
+  };
+  return { tc, tr };
+}
+
+/** 语义态 → 圆点颜色 + 是否脉冲（working/blocked 脉冲，其余静止）。 */
+const STATUS_DOT: Record<TeamMemberStatus, { hex: string; pulse: boolean }> = {
+  working: { hex: "#4f8cff", pulse: true },
+  blocked: { hex: "#ffb020", pulse: true },
+  waiting: { hex: "#a78bfa", pulse: false },
+  done: { hex: "#34c77b", pulse: false },
+  error: { hex: "#ff5c5c", pulse: false },
+  unknown: { hex: "#5c6472", pulse: false },
+  idle: { hex: "#5c6472", pulse: false },
+};
+
+/** 语义态 → 徽标文案 key（chat.team.status.*）。 */
+function statusKey(s: TeamMemberStatus): string {
+  return `team.status.${s}`;
+}
+
+function StatusDot({ status }: { status: TeamMemberStatus }) {
+  const { hex, pulse } = STATUS_DOT[status] ?? STATUS_DOT.idle;
+  return (
+    <span
+      className={`h-2 w-2 shrink-0 rounded-full ${pulse ? "animate-pulse" : ""}`}
+      style={{ background: hex, boxShadow: `0 0 0 3px ${hex}22` }}
+    />
+  );
+}
+
+function fmtElapsed(s: number): string {
+  if (!s || s < 0) return "—";
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${Math.round(s % 60)}s`;
+  return `${Math.floor(m / 60)}h${m % 60}m`;
+}
+
+export function MemberPanel({
+  team,
+  activeInstanceId,
+  onOpenMember,
+  onAddMember,
+}: {
+  team: Team;
+  /** 当前打开工作台的成员（高亮该行）。 */
+  activeInstanceId?: string | null;
+  onOpenMember: (row: TeamMemberRow) => void;
+  onAddMember: () => void;
+}) {
+  const g = useGinno();
+  const { tc, tr } = useChatT();
+  const rows = team.member_rows ?? [];
+  const rollup = team.rollup;
+  // elapsed 每秒走字（仅 working/blocked 需要，但便宜起见统一 tick）。
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const agentById = (id: string) => g.agents.find((a) => a.id === id) ?? null;
+
+  return (
+    <aside className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-l border-line bg-panel">
+      {/* 头：成员数 + 上限 + 添加 */}
+      <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
+        <span className="text-xs font-medium text-muted">
+          {tc("team.membersTitle", { count: rows.length })}
+        </span>
+        <span className="text-[10px] text-faint">
+          {tc("team.memberCap", { cap: 6 })}
+        </span>
+        <button
+          onClick={onAddMember}
+          className="ml-auto rounded-md border border-line px-1.5 py-0.5 text-xs text-muted transition-colors hover:border-violet/50 hover:text-violet"
+          title={tc("team.addMember")}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* 上卷摘要（§5.3.1）：团队级状态 + needs_action 提示 */}
+      {rollup && (
+        <div className="border-b border-line bg-base/40 px-3 py-2 text-[10.5px] leading-relaxed text-faint">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {rollup.blocked > 0 && (
+              <span className="text-yellow-500">
+                {tc("team.rollupBlocked", { n: rollup.blocked })}
+              </span>
+            )}
+            {rollup.working > 0 && (
+              <span className="text-blue-400">
+                {tc("team.rollupWorking", { n: rollup.working })}
+              </span>
+            )}
+            {rollup.done_unread > 0 && (
+              <span className="text-green-500">
+                {tc("team.rollupDone", { n: rollup.done_unread })}
+              </span>
+            )}
+            {rollup.blocked === 0 && rollup.working === 0 && rollup.done_unread === 0 && (
+              <span>{tc("team.rollupQuiet")}</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 成员行 */}
+      {rows.length === 0 && (
+        <div className="px-3 py-6 text-center text-xs leading-relaxed text-faint">
+          <UserX className="mx-auto mb-2 h-5 w-5 opacity-50" />
+          {tc("team.noMembers")}
+          <br />
+          <button onClick={onAddMember} className="mt-1 text-violet hover:underline">
+            {tc("team.addFirst")}
+          </button>
+        </div>
+      )}
+
+      {rows.map((r) => {
+        const agent = agentById(r.agent_id);
+        const hex = agentHex(agent?.color);
+        const sel = activeInstanceId === r.instance_id;
+        const blocked = r.status === "blocked";
+        return (
+          <button
+            key={r.instance_id}
+            onClick={() => onOpenMember(r)}
+            className={`block w-full border-b border-line/60 px-3 py-2.5 text-left transition-colors hover:bg-card ${
+              sel ? "bg-card shadow-[inset_2px_0_0_var(--violet,#a78bfa)]" : ""
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <StatusDot status={r.status} />
+              <span
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold"
+                style={{ background: hex, color: "#0b0d10" }}
+              >
+                {(r.display_name || r.agent_id).slice(0, 1).toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-xs font-medium text-txt">
+                {r.display_name}
+              </span>
+              <span
+                className={`shrink-0 rounded-full border px-1.5 py-px text-[10px] ${
+                  blocked
+                    ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-500"
+                    : "border-line bg-card text-faint"
+                }`}
+              >
+                {tr(statusKey(r.status))}
+              </span>
+              <span className="shrink-0 text-[10px] tabular-nums text-faint">
+                {fmtElapsed(r.elapsed_s)}
+              </span>
+            </div>
+            {/* 展示文本（§3.4 纯渲染，绝不参与逻辑） */}
+            <div
+              className={`mt-1 truncate pl-[26px] text-[11px] ${
+                blocked ? "text-yellow-500/90" : "text-muted"
+              }`}
+              title={r.status_detail}
+            >
+              {r.status_detail || tc("team.noDetail")}
+            </div>
+            {r.role === "leader" && (
+              <div className="mt-1 pl-[26px] text-[10px] text-faint">
+                {tc("team.leaderBadge")}
+              </div>
+            )}
+          </button>
+        );
+      })}
+
+      {/* 脚注：共享/隔离说明（§5.4） */}
+      <div className="mt-auto border-t border-line px-3 py-2.5 text-[10px] leading-relaxed text-faint">
+        <div>
+          <b className="font-medium text-muted">{tc("team.footShared")}</b>{" "}
+          {team.shared_workspace?.primary_folder || "—"}
+        </div>
+        <div className="mt-0.5">{tc("team.footIsolated")}</div>
+      </div>
+    </aside>
+  );
+}
+
+/** 加载态占位（团队数据在路上）。 */
+export function MemberPanelSkeleton() {
+  return (
+    <aside className="flex w-[300px] shrink-0 items-center justify-center border-l border-line bg-panel">
+      <Loader2 className="h-4 w-4 animate-spin text-faint" />
+    </aside>
+  );
+}
