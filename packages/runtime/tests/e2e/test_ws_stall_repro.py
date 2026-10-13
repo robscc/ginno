@@ -147,6 +147,44 @@ def test_stall_watchdog_fails_fast(client, patch_build_model, monkeypatch):
     assert token_times and token_times[0] < 3, f"first token not immediate: {token_times}"
 
 
+def test_tool_heartbeat_prevents_false_stall(
+    client, patch_build_model, monkeypatch, isolated_home
+):
+    """长工具不得被 stall 看门狗误杀（2026-10-13 修复，方案 A）。
+
+    复现口径：工具执行期间图流零 chunk（messages 只在 LLM 流式时吐字、
+    updates 只在节点完成时发），看门狗按墙钟计——sleep 8 的 bash 在
+    CHUNK_TIMEOUT_S=3s 下修复前 3 秒即误判「模型流断流」。修复后
+    tools_node 每 0.5s 发 custom 心跳续命，turn 正常跑完（真断流——
+    无 LLM 输出且无工具在跑——仍由 watchdog 照杀，见上一个测试）。"""
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
+
+    sp = isolated_home / "settings.json"
+    s_ = json.loads(sp.read_text()) if sp.exists() else {}
+    # 决策序 deny→ask→allow：默认种子里 ask=["Bash(*)"] 会压过 allow——
+    # 整块替换，把 ask 清空（本测试只关心看门狗，不测权限）。
+    s_["permissions"] = {"allow": ["bash"], "ask": [], "deny": []}
+    sp.write_text(json.dumps(s_))
+    model = ScriptedChatModel(
+        scripts=[
+            script(tool_calls=[script_tool_call("bash", {"command": "sleep 8"})]),
+            script(text="survived"),
+        ]
+    )
+    patch_build_model(model)
+    monkeypatch.setattr("ginno_runtime.api.stream.CHUNK_TIMEOUT_S", 3.0)
+    monkeypatch.setattr("ginno_runtime.graph.TOOL_HEARTBEAT_S", 0.5)
+    sid = client.post(
+        "/api/sessions", json={"project_slug": "default", "workspace": "/tmp/wf-ws"}
+    ).json()["id"]
+    kinds = [(round(t, 1), k) for t, k in _run_and_collect(client, sid)]
+    end = [(t, k) for t, k in kinds if k in ("message.end", "error")]
+    assert end, f"turn never terminated; frames={kinds}"
+    assert end[0][1] == "message.end", f"false stall killed the turn: {kinds}"
+    # 工具真跑了 8s（若心跳缺席，3s 处就该 error）
+    assert end[0][0] >= 7.5, f"turn ended too early — did the tool run? {kinds}"
+
+
 class StallOnceModel(BaseChatModel):
     """Gateway-style stall on the FIRST call only; healthy afterwards.
 

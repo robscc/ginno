@@ -977,9 +977,9 @@ async def _stream_graph(
         config.setdefault("recursion_limit", turn_recursion_limit())
 
         if command is not None:
-            stream = graph.astream(command, config=config, stream_mode=["messages", "updates"])
+            stream = graph.astream(command, config=config, stream_mode=["messages", "updates", "custom"])
         else:
-            stream = graph.astream(input_state, config=config, stream_mode=["messages", "updates"])
+            stream = graph.astream(input_state, config=config, stream_mode=["messages", "updates", "custom"])
         saw_interrupt = False
         # Recursion-budget pre-warn (every session): once the consumed
         # supersteps come within the margin of the limit, one synthetic
@@ -1197,6 +1197,11 @@ async def _stream_graph(
                                         )
                             except (ValueError, TypeError):
                                 pass  # incomplete JSON, keep accumulating
+            elif mode == "custom":
+                # 工具心跳（graph.TOOL_HEARTBEAT_S）：chunked_stream 收到任何
+                # chunk 都会重置 stall 看门狗——custom 帧到这一步使命已完成，
+                # 不下发前端（前端对工具运行态已有 tool.start/end 表达）。
+                continue
             elif mode == "updates":
                 # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
                 for node_name, delta in (payload or {}).items():

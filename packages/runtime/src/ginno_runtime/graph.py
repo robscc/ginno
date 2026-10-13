@@ -11,7 +11,9 @@ history stays shared across agents in the same conversation.
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
+import time
 from typing import Literal
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -1509,6 +1511,12 @@ def build_all_tools(
     return tools
 
 
+# 工具心跳间隔（tools_node 内的 custom 心跳，见 _tools_node_factory 的
+# 注释）：远小于 engine.CHUNK_TIMEOUT_S（180s），留足余量；模块级常量
+# 供测试缩小。
+TOOL_HEARTBEAT_S = 30.0
+
+
 def _tools_node_factory(all_tools):
     """Wrap the prebuilt ToolNode with output truncation (plan E2).
 
@@ -1527,7 +1535,38 @@ def _tools_node_factory(all_tools):
     node = ToolNode(all_tools, handle_tool_errors=True)
 
     async def tools_node(state: AgentState, config=None) -> dict:
-        out = await node.ainvoke(state, config)
+        # 工具心跳（2026-10-13 stall 误杀修复·方案 A）：工具执行期间图流完全
+        # 安静——messages 只在 LLM 流式时吐字、updates 只在节点完成时发——
+        # CHUNK_TIMEOUT_S 看门狗（engine.chunked_stream）会在任何 ≥180s 的
+        # 工具跑到一半时误判「模型流断流」（监控 subagent 的 sleep 300 每轮
+        # 必死，实测 ae01d586 / 2baf4300）。节点执行期间每 TOOL_HEARTBEAT_S
+        # 秒经 get_stream_writer 发一个 custom 心跳，engine 的 stream_mode
+        # 已含 "custom"：chunked_stream 对任何 chunk 重置时钟；真断流（无
+        # LLM 输出且无工具在跑）照杀不误。writer 不可用（旧 langgraph/非流
+        # 式调用）时退化为无心跳，行为同旧版。
+        heartbeat: asyncio.Task | None = None
+        try:
+            writer = None
+            try:
+                from langgraph.config import get_stream_writer
+
+                writer = get_stream_writer()
+            except Exception:  # noqa: BLE001
+                writer = None
+            if writer is not None:
+                async def _beat() -> None:
+                    while True:
+                        await asyncio.sleep(TOOL_HEARTBEAT_S)
+                        try:
+                            writer({"ginno_tool_heartbeat": True, "ts": time.time()})
+                        except Exception:  # noqa: BLE001
+                            return  # 通道关闭：心跳退役，不拖垮工具节点
+
+                heartbeat = asyncio.get_running_loop().create_task(_beat())
+            out = await node.ainvoke(state, config)
+        finally:
+            if heartbeat is not None:
+                heartbeat.cancel()
         max_chars = int(context_settings().get("tool_output_max_chars", 20000))
         msgs = []
         activated: list[str] = []
