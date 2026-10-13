@@ -365,6 +365,9 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             await _push_session_event(
                                 session_id, "message.end", {}, turn_id
                             )
+                            # busy 拒绝也必须收尾：缺 message.end 时客户端把这次发送
+                            # 永远挂「运行中」（async 命令的 busy 分支有收尾，这里此前漏了）。
+                            await _push_session_event(session_id, "message.end", {}, turn_id)
                             continue
                         if plan.builtin_async in _BACKGROUND_ASYNC_COMMANDS:
                             # P3 contract 5 (P2 遗留): the subagent family's
@@ -721,11 +724,15 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     _RUNNING_TURNS[session_id] = turn_id
                     # Identity-checked pop: never delete a SUCCESSOR task that a
                     # later invoke stored under the same session id.
-                    task.add_done_callback(
-                        lambda t: _TURN_TASKS.pop(session_id, None)
-                        if _TURN_TASKS.get(session_id) is t
-                        else None
-                    )
+                    def _turn_done(t, _sid=session_id) -> None:
+                        if _TURN_TASKS.get(_sid) is t:
+                            _TURN_TASKS.pop(_sid, None)
+                        if not t.cancelled():
+                            exc = t.exception()  # 取回：未取回的异常可被彻底静默
+                            if exc is not None:
+                                _log.error("turn_task_dead session=%s err=%r", _sid, exc)
+
+                    task.add_done_callback(_turn_done)
                 except Exception as e:
                     # Inline-phase failure (command/mention resolution, task
                     # spawn) — broadcast: the turn never started, and the
