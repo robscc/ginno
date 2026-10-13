@@ -11,7 +11,8 @@
       "noWorkspace": "No workspace available",
       "reading": "Reading…",
       "emptyTitle": "Open a file from the tree to start reading",
-      "emptyHint": "Press ⌘B to expand the file tree"
+      "emptyHint": "Press ⌘B to expand the file tree",
+      "reloadFile": "Reload current file"
     },
     "notice": {
       "unsavedClose": "Unsaved changes: click close again to discard, or press ⌘S to save",

@@ -302,29 +302,7 @@ export function CodePanel() {
   const activeRead = activeKey ? reads[activeKey] : undefined;
   const activeMeta = activeKey ? tabMeta[activeKey] : undefined;
 
-  // 文件看守注册（自动刷新，2026-10-13）：把打开的 tab 集报给 WS 层 →
-  // runtime 的 stat 看守。bash 写文件不产生 code.changed（只有文件工具有
-  // 结果标记），看守补齐：外部修改 → 同形 code.changed → 干净 tab 自动
-  // 重载 / 脏 tab 冲突条（S3 语义原样复用）。
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!sessionId) {
-      g.setCodeWatch(null);
-      return;
-    }
-    g.setCodeWatch({
-      sessionId,
-      files: tabs.map((t) => ({ root: t.rootId, path: t.path })),
-    });
-  }, [sessionId, tabs]);
 
-  // 面板卸载（切走右侧 tab / 换会话路由）→ 清注册，服务端不再空转 stat。
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    return () => {
-      g.setCodeWatch(null);
-    };
-  }, []);
 
   // ---- git status for the active root (S3) ----------------------------------
   const [gitStatus, setGitStatus] = useState<Record<string, string> | null>(null);
@@ -1100,6 +1078,16 @@ export function CodePanel() {
         {/* While browsing there is nothing to toggle: the tree IS the panel. */}
         {browsing ? null : (
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {/* 手动刷新当前文件（2026-10-13）：bash/脚本改文件不产生
+                code.changed（只有文件工具有结果标记），S3 自动跟随收不到
+                信号——显式重载兜底。脏 tab 的未保存修改不会被覆盖：刷新
+                走 reloadTab，冲突时 S2 冲突条接管。 */}
+            <ToolButton
+              title={t("panel.reloadFile")}
+              onClick={() => activeKey && reloadTab(activeKey)}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </ToolButton>
             <ToolButton title={t("panel.treeToggle")} active={g.codeTreeOpen} onClick={toggleTree}>
               <FolderTree className="h-3.5 w-3.5" />
             </ToolButton>

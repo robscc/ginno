@@ -11,7 +11,8 @@
       "noWorkspace": "没有可用的工作区",
       "reading": "读取中…",
       "emptyTitle": "从文件树打开一个文件开始查看",
-      "emptyHint": "按 ⌘B 展开文件树"
+      "emptyHint": "按 ⌘B 展开文件树",
+      "reloadFile": "刷新当前文件"
     },
     "notice": {
       "unsavedClose": "有未保存的更改：再次点击关闭即放弃，或按 ⌘S 保存",
