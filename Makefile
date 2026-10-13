@@ -190,6 +190,31 @@ clean:
 	rm -rf $(RUNTIME_RES) $(RUNNER_RES) $(ROOT)/apps/desktop/binaries
 	rm -rf $(ROOT)/target $(ROOT)/crates/mod-broker/target
 
+.PHONY: loc
+## loc: 统计代码行数（按树分组，排除构建产物/依赖；零依赖 find+wc，无需 cloc）
+loc:
+	@ex='( -name node_modules -o -name .venv -o -name __pycache__ -o -name dist \
+	      -o -name build -o -name out -o -name target -o -name .next \
+	      -o -name coverage -o -name .turbo -o -name .git ) -prune -o -type f'; \
+	count() { \
+	  n=$$(find "$$1" $$ex \( $$2 \) -print 2>/dev/null | wc -l | tr -d ' '); \
+	  l=$$(find "$$1" $$ex \( $$2 \) -print0 2>/dev/null | xargs -0 cat 2>/dev/null | wc -l | tr -d ' '); \
+	  printf '%-26s %8s %12s\n' "$$3" "$$n" "$$l"; \
+	  tn=$$((tn + n)); tl=$$((tl + l)); \
+	}; \
+	tn=0; tl=0; \
+	printf '%-26s %8s %12s\n' 'tree' 'files' 'lines'; \
+	count $(RUNTIME)/src       '-name *.py'          'runtime src (py)'; \
+	count $(RUNTIME)/tests     '-name *.py'          'runtime tests (py)'; \
+	count $(ROOT)/apps/web/src '-name *.ts -o -name *.tsx' 'web src (ts/tsx)'; \
+	count $(ROOT)/apps/desktop/src '-name *.rs'      'desktop (rs)'; \
+	count $(ROOT)/crates/mod-broker/src '-name *.rs' 'mod-broker (rs)'; \
+	count $(ROOT)/packages/mod-runner '-name *.mjs -o -name *.ts' 'mod-runner'; \
+	count $(ROOT)/packages/extension '-name *.js -o -name *.py'   'extension'; \
+	count $(ROOT)/scripts     '-name *.py -o -name *.sh' 'scripts'; \
+	printf '%-26s %8s %12s\n' '──────' '──────' '────────'; \
+	printf '%-26s %8s %12s\n' 'total' "$$tn" "$$tl"
+
 ## help: list targets
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## /  /'
