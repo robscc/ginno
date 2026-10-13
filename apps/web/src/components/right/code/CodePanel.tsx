@@ -306,6 +306,7 @@ export function CodePanel() {
   // runtime 的 stat 看守。bash 写文件不产生 code.changed（只有文件工具有
   // 结果标记），看守补齐：外部修改 → 同形 code.changed → 干净 tab 自动
   // 重载 / 脏 tab 冲突条（S3 语义原样复用）。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!sessionId) {
       g.setCodeWatch(null);
@@ -315,7 +316,6 @@ export function CodePanel() {
       sessionId,
       files: tabs.map((t) => ({ root: t.rootId, path: t.path })),
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, tabs]);
 
   // 面板卸载（切走右侧 tab / 换会话路由）→ 清注册，服务端不再空转 stat。
