@@ -53,3 +53,4 @@ packages/runtime/dist/
 
 # Claude Code local state (worktrees, session artifacts)
 .claude/
+.build-cache/
