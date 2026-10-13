@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import { sourceFg } from "@/lib/sourceColor";
 import { RefreshCw } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { UsageOverview } from "@/lib/types";
@@ -146,20 +147,26 @@ export function OverviewPanel() {
 }
 
 /** 来源（usage-stats-design §3.6）：对话 vs 工作流 vs 后台任务。
- * 颜色与请求日志的 SrcChip 保持一致（RequestsPanel.SRC_STYLE 的 fg 列）。
+ * labelKey 存 catalog key（settings.usage.overview.source.*，字面量联合）；
+ * 颜色统一走 lib/sourceColor（正典表 + 未知来源按名称 hash 从 Ginno 色板
+ * 取色——runtime 侧来源不再白名单校验，前端配色随来源自然扩展）。
  * labelKey 存 catalog key（settings.usage.overview.source.*，字面量联合）。 */
 type SourceKey =
-  | "chat" | "goal" | "compaction" | "workflow" | "memory" | "kb" | "probe" | "external" | "other";
-const SOURCE_META: Record<string, { labelKey: SourceKey; color: string }> = {
-  chat: { labelKey: "chat", color: "#8d90f8" },
-  goal: { labelKey: "goal", color: "#b39df9" },
-  compaction: { labelKey: "compaction", color: "#d9a93e" },
-  workflow: { labelKey: "workflow", color: "#4ade80" },
-  memory: { labelKey: "memory", color: "#38bdf8" },
-  kb: { labelKey: "kb", color: "#60a5fa" },
-  probe: { labelKey: "probe", color: "#9a9aa6" },
-  external: { labelKey: "external", color: "#f472b6" },
-  other: { labelKey: "other", color: "#9a9aa6" },
+  | "chat" | "goal" | "compaction" | "workflow" | "memory" | "kb" | "probe" | "external" | "subagent" | "other";
+const SOURCE_META: Record<string, { labelKey: SourceKey }> = {
+  chat: { labelKey: "chat" },
+  goal: { labelKey: "goal" },
+  compaction: { labelKey: "compaction" },
+  workflow: { labelKey: "workflow" },
+  memory: { labelKey: "memory" },
+  kb: { labelKey: "kb" },
+  probe: { labelKey: "probe" },
+  external: { labelKey: "external" },
+  // 子代理 turn（subagent_scheduler.runner 的 usage_source="subagent"）：
+  // 2026-10-13 之前不在 usage_store 来源白名单，写入时被强转 "other"
+  // ——「来源分布」里凭空多出的『其他』即此。
+  subagent: { labelKey: "subagent" },
+  other: { labelKey: "other" },
 };
 
 function SourceDist({ ov }: { ov: UsageOverview }) {
@@ -176,7 +183,8 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
       </div>
       {sources.length === 0 && <div className="py-6 text-center text-xs text-faint">{t("noData")}</div>}
       {sources.map((s) => {
-        const meta = SOURCE_META[s.source] || { labelKey: null as SourceKey | null, color: "#9a9aa6" };
+        const meta = SOURCE_META[s.source] || { labelKey: null as SourceKey | null };
+        const color = sourceFg(s.source);
         const label = meta.labelKey ? t(`source.${meta.labelKey}`) : s.source;
         const v = s.input_tokens + s.output_tokens;
         return (
@@ -201,7 +209,7 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
           >
             <div className="flex items-center gap-2">
               <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted" title={label}>
-                <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: meta.color }} />
+                <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: color }} />
                 <span className="truncate">{label}</span>
               </span>
               <span className="ml-auto flex-none whitespace-nowrap text-xs tabular-nums text-muted">
@@ -209,7 +217,7 @@ function SourceDist({ ov }: { ov: UsageOverview }) {
               </span>
             </div>
             <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-card2">
-              <div className="h-full rounded-full" style={{ width: `${(v / vmax) * 100}%`, background: meta.color }} />
+              <div className="h-full rounded-full" style={{ width: `${(v / vmax) * 100}%`, background: color }} />
             </div>
           </div>
         );

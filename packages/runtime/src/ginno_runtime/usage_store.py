@@ -35,7 +35,16 @@ RETENTION_DAYS = 90
 _GRID_BINS = 12          # 24h / 2h 一桶，点格图的固定行数（设计 §2）
 _GRID_DEFAULT_DAYS = 30  # 与 /api/usage/overview 的默认窗口一致
 _FILE_PREFIX = "requests-"
-_SOURCES = {"chat", "goal", "compaction", "workflow", "memory", "kb", "probe", "external", "schedule", "mods", "other"}
+# 来源不校验（2026-10-13 用户定稿：自然统计）——写入端只做空值兜底，未知值
+# 照单全收，web 端对未知名退回显示原名。已知来源（供参考，非约束）：
+# chat / goal / compaction / workflow / memory / kb / probe / external /
+# schedule / mods / subagent / other。此前按白名单强转 other 的做法把
+# subagent 用量误归了一整天才被发现——静默改写比可见的未知名更糟。
+
+
+def _norm_source(s: str | None) -> str:
+    """空值兜底 + 防御性截长；不做任何白名单校验。"""
+    return (s or "").strip().lower()[:24] or "other"
 
 # Parsed COMPLETED days are immutable, so cache them. Today's file is always
 # re-read (it keeps growing). Key: (path, mtime_ns, size).
@@ -93,7 +102,7 @@ def record(
             "project_slug": project_slug,
             "agent_id": agent_id,
             "turn_id": turn_id,
-            "source": source if source in _SOURCES else "other",
+            "source": _norm_source(source),
             "provider": provider or "",
             "model": model or "",
             "input_tokens": int(input_tokens),

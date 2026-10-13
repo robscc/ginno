@@ -9,23 +9,13 @@ import { X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { UsageRequests } from "@/lib/types";
 import { fmt } from "./charts";
-
-const SRC_STYLE: Record<string, { bg: string; fg: string }> = {
-  chat: { bg: "#6366f122", fg: "#8d90f8" },
-  goal: { bg: "#8b5cf622", fg: "#b39df9" },
-  compaction: { bg: "#ca8a0422", fg: "#d9a93e" },
-  workflow: { bg: "#4ade8022", fg: "#4ade80" },
-  memory: { bg: "#38bdf822", fg: "#38bdf8" },
-  kb: { bg: "#60a5fa22", fg: "#60a5fa" },
-  probe: { bg: "#62626e22", fg: "#9a9aa6" },
-  external: { bg: "#ec489922", fg: "#f472b6" },
-};
+import { sourceBg, sourceFg } from "@/lib/sourceColor";
 
 function SrcChip({ src }: { src: string }) {
-  // 来源名是协议值（chat/goal/…），保持原样不翻译
-  const s = SRC_STYLE[src] || SRC_STYLE.probe;
+  // 来源名是协议值（chat/goal/…），保持原样不翻译；配色统一走
+  // lib/sourceColor（正典表 + 未知来源名称 hash 从 Ginno 色板取色）。
   return (
-    <span className="rounded-md px-1.5 py-0.5 text-[11px]" style={{ background: s.bg, color: s.fg }}>
+    <span className="rounded-md px-1.5 py-0.5 text-[11px]" style={{ background: sourceBg(src), color: sourceFg(src) }}>
       {src}
     </span>
   );

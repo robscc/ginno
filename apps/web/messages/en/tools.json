@@ -814,7 +814,8 @@
           "kb": "Knowledge Base",
           "probe": "Probe",
           "external": "External agents",
-          "other": "Other"
+          "other": "Other",
+          "subagent": "Subagent"
         }
       }
     },

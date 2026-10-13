@@ -814,7 +814,8 @@
           "kb": "知识库",
           "probe": "探测",
           "external": "外部智能体",
-          "other": "其他"
+          "other": "其他",
+          "subagent": "子代理"
         }
       }
     },
