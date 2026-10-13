@@ -288,6 +288,7 @@ def ensure_layout() -> None:
         "usage",
         "schedule-runs",
         "mods",
+        "teams",
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
@@ -390,6 +391,25 @@ def agents_dir() -> Path:
 
 def todos_path() -> Path:
     return home() / "todos.json"
+
+
+def teams_dir() -> Path:
+    """AgentTeam 编制目录（agent-team-design.md §3.2）。
+
+    每个团队一个 ``<team_id>.json``（成员实例、主会话、共享 workspace）。
+    全局而非 per-project：团队自带 ``project_slug`` 字段指向它所属的项目，
+    与 session 的归属解耦（待决问题 1 的当前取舍：绑 slug 但存全局，
+    便于将来跨项目复用同一批成员）。"""
+    return home() / "teams"
+
+
+def team_path(team_id: str) -> Path:
+    return teams_dir() / f"{team_id}.json"
+
+
+def team_member_notes_dir(team_id: str, instance_id: str) -> Path:
+    """实例记忆目录（§5.4）：``teams/<team_id>/members/<instance_id>/notes.md``。"""
+    return teams_dir() / team_id / "members" / instance_id
 
 
 def workflows_dir() -> Path:

@@ -359,6 +359,7 @@ from .api import memory as _memory_api  # noqa: E402
 from .api import schedule as _schedule_api  # noqa: E402
 from .api import sessions as _sessions_api  # noqa: E402
 from .api import stream as _stream_api  # noqa: E402
+from .api import teams as _teams_api  # noqa: E402
 from .api import todos as _todos_api  # noqa: E402
 from .api import usage as _usage_api  # noqa: E402
 from .api import workflows as _workflows_api  # noqa: E402
@@ -377,6 +378,7 @@ app.include_router(_mods_api.router)
 app.include_router(_schedule_api.router)
 app.include_router(_sessions_api.router)
 app.include_router(_stream_api.router)
+app.include_router(_teams_api.router)
 app.include_router(_todos_api.router)
 app.include_router(_usage_api.router)
 app.include_router(_workflows_api.router)

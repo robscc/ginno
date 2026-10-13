@@ -556,8 +556,14 @@ async def create_session(req: CreateSessionRequest) -> dict:
     # Subagent depth (subagent-design.md §4.2): one above the parent's; the
     # depth caps the toolset STRUCTURALLY (a depth-2 child never gets
     # spawn_subagent) and is rejected outright beyond it.
+    #
+    # AgentTeam 例外（agent-team-design.md §3.2）：``type="team-member"`` 的会话
+    # 也带 parent_session_id（指向主会话，复用级联删除 + 侧栏树），但它**不是**
+    # subagent——成员是常驻实体，不吃 subagent 的 depth 上限、不被塞 subagent
+    # 载荷、工具集不因 depth 收紧。所以这里显式跳过 subagent 处理。
+    is_team_member = req.type == "team-member"
     sub_depth: int | None = None
-    if req.parent_session_id:
+    if req.parent_session_id and not is_team_member:
         parent_meta, _ = _find_meta(req.parent_session_id) or ({}, None)
         sub_depth = subagent_depth_of(parent_meta) + 1
         if sub_depth > SUBAGENT_MAX_DEPTH:
@@ -625,6 +631,11 @@ async def create_session(req: CreateSessionRequest) -> dict:
     }
     if req.type:
         meta["type"] = req.type
+    if is_team_member:
+        # 团队成员：带 parent 链（指向主会话）以复用级联删除与侧栏树，但
+        # **不**写 subagent 载荷、不吃 depth（§3.2）。parent 链是磁盘索引上的
+        # 事实来源——_session_meta_descendants 只认 parent_session_id、不看类型。
+        meta["parent_session_id"] = req.parent_session_id
     if sub_depth is not None:
         # Subagent meta (contract 1): the parent link + the subagent payload
         # are part of the session meta the list API and the frontend read.
@@ -675,6 +686,11 @@ async def create_session(req: CreateSessionRequest) -> dict:
         # (turn.py's WorldState roster re-reads it too).
         "restrict_tools": [p for p in (req.restrict_tools or []) if isinstance(p, str) and p.strip()],
     }
+    if is_team_member:
+        # 内存条目也带 parent 链（团队树遍历/删除用），但**不**进 subagent 反向
+        # 索引 _SESSION_CHILDREN——那是 subagent 调度器（stop 级联、完成门）专用，
+        # 成员是常驻实体不参与 subagent 调度（§5.5 边界）。
+        s_entry["parent_session_id"] = req.parent_session_id
     if sub_depth is not None:
         s_entry["parent_session_id"] = req.parent_session_id
         s_entry["depth"] = sub_depth

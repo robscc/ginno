@@ -4,6 +4,7 @@
       "newSession": "新建会话",
       "newSessionHint": "返回首页；会话在首次发送时才真正创建",
       "searchSessions": "搜索会话",
+      "team": "AgentTeam",
       "connectors": "连接器",
       "scheduled": "定时任务",
       "kb": "知识库",

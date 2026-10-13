@@ -187,7 +187,7 @@ export interface SessionMeta {
   // linkage lives in parent_session_id/depth/subagent below.
   // "scheduled" = 定时任务影子会话（scheduled-tasks-design.md §4.3）；列表与
   // 搜索均整类隐藏（§10 决议 5），只能从 /scheduled 的执行记录/时间条进入回放。
-  type?: "quick" | "subagent" | "scheduled" | "delegation";
+  type?: "quick" | "subagent" | "scheduled" | "delegation" | "team" | "team-member";
   /** delegation 专用：running | success | error | timeout（bg 终态/启动对账写入） */
   stop_reason?: string;
   backend?: string;
@@ -865,4 +865,99 @@ export interface Plan {
   /** "agent"（工具建单）| "user"（split 路径） */
   author?: string;
   items: PlanItem[];
+}
+
+// ---- AgentTeam (agent-team-design.md §3) ----
+
+/** 成员语义态（§3.3）。herdr 五态 + Ginno 的 waiting/error。
+ *  注意 status(语义) 与 status_detail(展示) 严格分离（§3.4）——detail 只渲染，
+ *  绝不参与任何逻辑判断。 */
+export type TeamMemberStatus =
+  | "idle"
+  | "working"
+  | "blocked"
+  | "waiting"
+  | "done"
+  | "unknown"
+  | "error";
+
+/** 成员面板 / 总览卡的一行（teams.status.member_row 的镜像）。 */
+export interface TeamMemberRow {
+  instance_id: string;
+  agent_id: string;
+  display_name: string;
+  session_id: string;
+  role: "leader" | "member";
+  machine: string;
+  status: TeamMemberStatus;
+  /** 纯展示文本（§3.4）：如「正在跑 pytest」「等待权限确认」。 */
+  status_detail: string;
+  last_active: number;
+  elapsed_s: number;
+  /** status === "done"（完成未读，§3.3 收件箱语义）。 */
+  unread: boolean;
+}
+
+/** 状态上卷摘要（§5.3.1）。needs_action 是「该不该打扰用户」的判据——
+ *  只有 blocked 与 done_unread 为真（working 止于团队行，不冒泡到 Dock）。 */
+export interface TeamRollup {
+  status: TeamMemberStatus;
+  counts: Record<string, number>;
+  total: number;
+  working: number;
+  blocked: number;
+  done_unread: number;
+  needs_action: boolean;
+}
+
+/** 团队编制 + 成员行 + 上卷（teams.status.team_payload 的镜像）。 */
+export interface Team {
+  id: string;
+  name: string;
+  project_slug: string;
+  main_session_id: string;
+  leader_instance_id?: string;
+  members: Array<{
+    instance_id: string;
+    agent_id: string;
+    display_name: string;
+    session_id: string;
+    role: "leader" | "member";
+    status: TeamMemberStatus;
+    status_detail: string;
+    machine?: string;
+    last_active?: number;
+    created?: number;
+  }>;
+  shared_workspace?: {
+    workspace?: string;
+    context_folders?: string[];
+    primary_folder?: string | null;
+  };
+  created?: number;
+  updated?: number;
+  /** 前端渲染用：成员行（含实时状态）+ 上卷摘要。 */
+  member_rows?: TeamMemberRow[];
+  rollup?: TeamRollup;
+}
+
+/** @投递的三态回执（§5.3.3）。stalled 时不要自动重发——先看成员工作台。 */
+export interface DeliverReceipt {
+  ok: boolean;
+  receipt: "delivered" | "stalled" | "failed";
+  reason?: string;
+  instance_id?: string;
+  session_id?: string;
+  steer_id?: string;
+  channel?: "steer" | "turn";
+  error?: string;
+}
+
+/** 回帖标记（messages_ui 序列化出的 teamReply，§5.2 要点 2）。 */
+export interface TeamReplyMeta {
+  team_id: string;
+  instance_id: string;
+  member_session_id: string;
+  display_name: string;
+  truncated: boolean;
 }

@@ -17,6 +17,7 @@ import {
   type Block,
 } from "@/components/chat/blocks";
 import { SubagentPlanCard } from "../subagentPlanCard";
+import { TeamReplyCard } from "../TeamReplyCard";
 import {
   AssistantBubble,
   ErrorCard,
@@ -233,6 +234,10 @@ export function TranscriptList({
             {handoffBefore[idx] && (
               <HandoffDivider agent={agentById(m.agentId)} agentName={m.agentName} />
             )}
+            {m.teamReply ? (
+              // AgentTeam 成员回帖（§5.2 要点 2）：渲染成回帖卡而非普通气泡。
+              <TeamReplyCard meta={m.teamReply} agentId={m.agentId} blocks={m.blocks} />
+            ) : (
             <AssistantBubble
               agent={agentById(m.agentId)}
               agentName={m.agentName}
@@ -260,6 +265,7 @@ export function TranscriptList({
               // keep itself interactive forever).
               questionLive={liveId !== null || serverRunning}
             />
+            )}
           </Fragment>
         ),
       )}

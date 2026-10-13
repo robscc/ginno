@@ -1035,6 +1035,38 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       flushSteerQueue(ctx, sid);
       break;
     }
+    // ─── AgentTeam 回帖（agent-team-design.md §5.2 步骤 6）──────────────────
+    // 成员在自己的 session 跑完，产出以回帖写回主会话 checkpoint，并广播本事件。
+    // 这里把它作为一条**完成的** assistant 消息追加到主会话视图——否则用户要手动
+    // reload 才看得到（checkpoint 写入不触发主会话的实时流）。
+    //
+    // 去重：用服务端的 message_id 作 ChatMsg.id。它与 history reload 时
+    // mapHistory 读到的 AIMessage.id 相同，所以「实时追加」与「之后 reload」
+    // 指向同一条，不会双渲染。
+    case "team.reply": {
+      const msgId = (ev.message_id as string) || mid();
+      const store = ctx.storeRef.current[sid] ?? [];
+      if (store.some((m) => m.id === msgId)) break; // 已存在（reload 先到）
+      const text = (ev.text as string) || "";
+      ctx.storeRef.current[sid] = [
+        ...store,
+        {
+          id: msgId,
+          role: "assistant" as const,
+          agentId: (ev.agent_id as string) || null,
+          blocks: [{ kind: "text", text } as Block],
+          teamReply: {
+            team_id: (ev.team_id as string) || "",
+            instance_id: (ev.instance_id as string) || "",
+            member_session_id: (ev.member_session_id as string) || "",
+            display_name: (ev.display_name as string) || "",
+            truncated: Boolean(ev.truncated),
+          },
+        },
+      ];
+      ctx.syncDisplay(sid);
+      break;
+    }
     // ─── Claude Code Mods(claude-code-mods-design.md §7)──────────────────────
     // 归属守卫:frame_session 检查已在 socket onmessage 里统一做过,这里的
     // sid 即归属会话,无需再防串线。

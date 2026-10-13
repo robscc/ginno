@@ -18,6 +18,7 @@ import {
   PinOff,
   Square,
   Trash2,
+  Users,
 } from "lucide-react";
 import { GoalEditor } from "@/components/shell/GoalChip";
 import { useGinno, LAST_SESSION_KEY } from "@/lib/store";
@@ -225,6 +226,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onWorkflows = pathname.startsWith("/workflows");
   const onConnectors = pathname.startsWith("/connectors");
   const onScheduled = pathname.startsWith("/scheduled");
+  const onTeam = pathname.startsWith("/team");
 
   // Connector 聚合状态点(connector-module §2.1):有断连→黄,有错误→红,
   // 全部正常/未启用→不显示。10s 轮询即可——dot 只是个入口提示。
@@ -953,6 +955,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* footer nav */}
         <div className="border-t border-line px-2.5 py-3">
+          <Link href="/team" className={`nav-item ${onTeam ? "nav-item-active" : ""}`}>
+            <Users className="h-4 w-4 shrink-0" />
+            <span className="truncate">{t("nav.team")}</span>
+          </Link>
           <Link href="/connectors" className={`nav-item ${onConnectors ? "nav-item-active" : ""}`}>
             <Cable className="h-4 w-4 shrink-0" />
             <span className="truncate">{t("nav.connectors")}</span>
