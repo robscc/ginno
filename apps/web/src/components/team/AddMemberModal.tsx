@@ -5,11 +5,13 @@
 // runtime 会为成员建独立 session（api/teams.py add_member_endpoint）。
 
 import { useState } from "react";
+import { UserPlus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import type { Team } from "@/lib/types";
+import { NewAgentModal } from "./NewAgentModal";
 
 export function AddMemberModal({
   team,
@@ -27,6 +29,7 @@ export function AddMemberModal({
   const [role, setRole] = useState<"leader" | "member">("member");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
 
   const submit = async () => {
     if (busy) return;
@@ -82,6 +85,24 @@ export function AddMemberModal({
             );
           })}
         </div>
+        {/* 现场招人：新建独立配置的 Agent，建完即选中（NewAgentModal） */}
+        <button
+          onClick={() => setNewAgentOpen(true)}
+          className="mt-1.5 flex items-center gap-1 rounded-full border border-dashed px-2.5 py-1 text-[11px] text-faint transition-colors hover:border-violet/50 hover:text-violet"
+        >
+          <UserPlus className="h-3 w-3" />
+          {tc("team.agent.newAgent")}
+        </button>
+        {newAgentOpen && (
+          <NewAgentModal
+            onClose={() => setNewAgentOpen(false)}
+            onCreated={(a) => {
+              setNewAgentOpen(false);
+              setAgentId(a.id);
+              setDisplayName(a.name);
+            }}
+          />
+        )}
         <div className="mt-1.5 text-[10px] leading-relaxed text-faint">{tc("team.multiInstanceHint")}</div>
 
         <label className="mt-3 block text-xs text-muted">{tc("team.displayNameLabel")}</label>
@@ -95,19 +116,29 @@ export function AddMemberModal({
 
         <label className="mt-3 block text-xs text-muted">{tc("team.roleLabel")}</label>
         <div className="mt-1 flex gap-1.5">
-          {(["member", "leader"] as const).map((r) => (
-            <button
-              key={r}
-              onClick={() => setRole(r)}
-              className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
-                role === r
-                  ? "border-violet/50 bg-violet/10 text-violet"
-                  : "border-line text-muted hover:text-txt"
-              }`}
-            >
-              {tc(r === "leader" ? "team.roleLeader" : "team.roleMember")}
-            </button>
-          ))}
+          {(["member", "leader"] as const).map((r) => {
+            // 一个团队只能有一个领队（2026-10-14）：已有领队时禁任命，
+            // 与 runtime 校验双保险。
+            const hasLeader =
+              !!team.leader_instance_id ||
+              (team.members ?? []).some((m) => m.role === "leader");
+            const disabled = r === "leader" && hasLeader;
+            return (
+              <button
+                key={r}
+                onClick={() => !disabled && setRole(r)}
+                disabled={disabled}
+                title={disabled ? tc("team.leaderExistsHint") : undefined}
+                className={`rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-40 ${
+                  role === r
+                    ? "border-violet/50 bg-violet/10 text-violet"
+                    : "border-line text-muted hover:text-txt"
+                }`}
+              >
+                {tc(r === "leader" ? "team.roleLeader" : "team.roleMember")}
+              </button>
+            );
+          })}
         </div>
 
         {err && <div className="mt-3 text-xs text-red">{err}</div>}

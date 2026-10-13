@@ -42,15 +42,15 @@ function ModCompatView({ compat, tr }: { compat: api.ModCompat; tr: (key: string
     <div className="space-y-2.5 text-xs">
       {events.length > 0 && (
         <div>
-          <div className="mb-1 font-medium text-muted">{tr("compat.events")}</div>
+          <div className="mb-1 font-medium text-muted">{tr("compatEvents")}</div>
           <div className="space-y-1">
             {events.map(([event, s]) => (
               <div key={event} className="flex items-center gap-2">
                 <span className="w-40 truncate font-mono text-txt" title={event}>{event}</span>
                 <CompatBar ok={Math.max(0, (s.fired ?? 0) - (s.failed ?? 0))} bad={s.failed ?? 0} />
                 <span className="text-faint">
-                  {tr("compat.fired", { n: s.fired ?? 0 })}
-                  {(s.failed ?? 0) > 0 && <span className="text-red"> · {tr("compat.failed", { n: s.failed ?? 0 })}</span>}
+                  {tr("compatFired", { n: s.fired ?? 0 })}
+                  {(s.failed ?? 0) > 0 && <span className="text-red"> · {tr("compatFailed", { n: s.failed ?? 0 })}</span>}
                 </span>
               </div>
             ))}
@@ -59,13 +59,13 @@ function ModCompatView({ compat, tr }: { compat: api.ModCompat; tr: (key: string
       )}
       {ops.length > 0 && (
         <div>
-          <div className="mb-1 font-medium text-muted">{tr("compat.ops")}</div>
+          <div className="mb-1 font-medium text-muted">{tr("compatOps")}</div>
           <div className="space-y-1">
             {ops.map(([op, s]) => (
               <div key={op} className="flex items-center gap-2">
                 <span className="w-40 truncate font-mono text-txt" title={op}>{op}</span>
                 <CompatBar ok={s.ok ?? 0} bad={Math.max(0, (s.called ?? 0) - (s.ok ?? 0))} />
-                <span className="text-faint">{tr("compat.called", { n: s.called ?? 0, ok: s.ok ?? 0 })}</span>
+                <span className="text-faint">{tr("compatCalled", { n: s.called ?? 0, ok: s.ok ?? 0 })}</span>
               </div>
             ))}
           </div>
@@ -73,7 +73,7 @@ function ModCompatView({ compat, tr }: { compat: api.ModCompat; tr: (key: string
       )}
       {unimplemented.length > 0 && (
         <div>
-          <div className="mb-1 font-medium text-yellow">{tr("compat.unimplemented")}</div>
+          <div className="mb-1 font-medium text-yellow">{tr("compatUnimplemented")}</div>
           <div className="flex flex-wrap gap-1">
             {unimplemented.map(([op, n]) => (
               <span key={op} className="rounded bg-yellow/10 px-1.5 py-px font-mono text-[10px] text-yellow">
@@ -260,7 +260,7 @@ export function ModsSettings() {
                     </span>
                     {m.source && (
                       <span className="rounded bg-line/60 px-1.5 py-px text-[10px] text-muted">
-                        {tr(`source.${m.source}`)}
+                        {tr(m.source === "project" ? "sourceProject" : "sourceGlobal")}
                       </span>
                     )}
                     <label className="ml-auto flex cursor-pointer items-center gap-1.5">
@@ -293,9 +293,9 @@ export function ModsSettings() {
                         onChange={(e) => void setClassicGrant(m, e.target.value)}
                         className="rounded-md border border-line2 bg-card px-1.5 py-0.5 text-xs text-txt"
                       >
-                        <option value="ask">{t("grant.ask")}</option>
-                        <option value="deny">{t("grant.deny")}</option>
-                        <option value="allow">{t("grant.allow")}</option>
+                        <option value="ask">{t("grantAsk")}</option>
+                        <option value="deny">{t("grantDeny")}</option>
+                        <option value="allow">{t("grantAllow")}</option>
                       </select>
                     </label>
                     <span className="text-[10px] text-faint">{t("grantsHint")}</span>

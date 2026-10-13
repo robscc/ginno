@@ -39,15 +39,22 @@ RUNTIME_RES := $(ROOT)/apps/desktop/resources/runtime
 # Contents/Resources/resources/ and lib.rs points GINNO_MOD_RUNNER_PATH at it.
 RUNNER_RES := $(ROOT)/apps/desktop/resources/mod-runner.mjs
 
-.PHONY: all app app-force sidecar runtime web mod-broker mod-runner clean help e2e-ui
+.PHONY: all app app-force app-impl sidecar runtime web mod-broker mod-runner clean help e2e-ui
 
 all: app
+
+# 构建缓存（内容戳）：阶段未变则跳过。改一行 web 不再重跑 3-5 分钟的
+# PyInstaller；clean 会一并清掉。戳 = 输入文件列表的内容哈希。
+CACHE := $(ROOT)/.build-cache
 
 ## app: full rebuild — i18n check + web + runtime bundle + Tauri desktop app (+ dmg)
 # The running-app guard first: rebuilding the runtime bundle in place while a
 # live Ginno still maps it is the known zlib-extract corruption (CLAUDE.md
 # 已知故障 #1). FORCE=1 skips the guard.
-app: check guard-app-not-running mod-broker mod-runner sidecar
+# 内层 $(MAKE) -j app-impl：mod-broker / mod-runner / sidecar(web→runtime)
+# 三条独立链并行（guard 先串行通过，保持 fail-fast）。
+app: check guard-app-not-running
+	@$(MAKE) -j app-impl
 	@# Unlock the dedicated codesign keychain (locked after sleep/reboot). It
 	@# holds the self-signed "Ginno Local Code Signing" identity that keeps a
 	@# stable designated requirement across rebuilds, so macOS TCC grants
@@ -69,6 +76,9 @@ app: check guard-app-not-running mod-broker mod-runner sidecar
 	@echo "✅ Built:"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/macos/Ginno.app"
 	@echo "   $(ROOT)/apps/desktop/target/release/bundle/dmg/"
+
+## app-impl: app 的并行构建段（mod-broker / mod-runner / sidecar 三链并发）
+app-impl: mod-broker mod-runner sidecar
 
 ## app-force: `app` without the running-app guard (FORCE=1) — convenience alias
 # Exists because typing FORCE=1 in front of `make app` is easy to forget. It is
@@ -142,16 +152,32 @@ mod-broker:
 ## mod-runner: the mod-runner.mjs single-file bundle (esbuild)
 # Packaged form: sidecar stages it as a Tauri resource; dev/web form: the
 # runtime's resolve_runner() finds it at packages/mod-runner/dist/.
+# 内容戳：源未变且 dist 在 → 跳过。
 mod-runner:
-	cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/mod-runner build
+	@mkdir -p $(CACHE); \
+	h=$$( (find $(ROOT)/packages/mod-runner/src $(ROOT)/packages/mod-runner/package.json -type f 2>/dev/null | sort | xargs cat 2>/dev/null) | shasum | cut -d' ' -f1); \
+	if [ -f $(CACHE)/mod-runner.stamp ] && [ "$$(cat $(CACHE)/mod-runner.stamp)" = "$$h" ] && [ -f $(ROOT)/packages/mod-runner/dist/mod-runner.mjs ]; then \
+	  echo "⏭️  mod-runner 未变，跳过"; \
+	else \
+	  cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/mod-runner build && echo "$$h" > $(CACHE)/mod-runner.stamp; \
+	fi
 	@echo "✅ Runner bundle → $(ROOT)/packages/mod-runner/dist/mod-runner.mjs"
 
 ## runtime: PyInstaller onedir bundle with web_out + all deps (incl. docs extra)
 # `--extra docs` installs the file-parsing deps. files/extractors.py imports
 # them lazily (keeps startup light); the --collect-all flags bundle them
 # regardless, so no eager import at startup is needed (see _frozen_imports.py).
+# 内容戳：runtime 源/web_out/extension 未变且 bundle 在 → 跳过（改一行 web
+# 不再重跑几分钟的 PyInstaller）。FORCE_RUNTIME=1 强制重打。
 runtime: web
-	cd $(RUNTIME) && uv run --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
+	@mkdir -p $(CACHE); \
+	h=$$( (find $(RUNTIME)/src $(RUNTIME)/bin $(ROOT)/packages/extension/src $(ROOT)/packages/extension/native-host -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
+	       find $(WEB_OUT) -type f 2>/dev/null | sort | xargs shasum 2>/dev/null; \
+	       cat $(RUNTIME)/pyproject.toml) | shasum | cut -d' ' -f1); \
+	if [ "$(FORCE_RUNTIME)" != "1" ] && [ -f $(CACHE)/runtime.stamp ] && [ "$$(cat $(CACHE)/runtime.stamp)" = "$$h" ] && [ -x $(RUNTIME)/dist/ginno-runtime/ginno-runtime ]; then \
+	  echo "⏭️  runtime 输入未变，跳过 PyInstaller"; \
+	else \
+	  cd $(RUNTIME) && uv run --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
 	  --collect-all langchain_openai --collect-all langchain_anthropic \
 	  --collect-all langgraph --collect-all mcp --collect-all pydantic \
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
@@ -162,14 +188,23 @@ runtime: web
 	  --add-data "$(RUNTIME)/src/ginno_runtime/i18n:ginno_runtime/i18n" \
 	  --add-data "$(RUNTIME)/src/ginno_runtime/skills/builtin:ginno_runtime/skills/builtin" \
 	  --add-data "$(ROOT)/apps/web/messages:web_messages" \
-	  bin/ginno-runtime.py
+	  bin/ginno-runtime.py && echo "$$h" > $(CACHE)/runtime.stamp; \
+	fi
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 
 ## web: build the Next.js static export (bundled into the runtime as web_out/)
 # pnpm install first: a fresh pull may add deps (lockfile-synced, ~1s no-op
 # when up to date) — without it `next build` fails on missing modules.
+# 内容戳：src/messages/配置/lockfile 未变且 out/ 在 → 跳过。
 web:
-	cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/web build
+	@mkdir -p $(CACHE); \
+	h=$$( (find $(ROOT)/apps/web/src $(ROOT)/apps/web/messages -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
+	       cat $(ROOT)/apps/web/package.json $(ROOT)/apps/web/next.config.* $(ROOT)/apps/web/tailwind.config.* $(ROOT)/pnpm-lock.yaml 2>/dev/null) | shasum | cut -d' ' -f1); \
+	if [ -f $(CACHE)/web.stamp ] && [ "$$(cat $(CACHE)/web.stamp)" = "$$h" ] && [ -d $(WEB_OUT) ]; then \
+	  echo "⏭️  web 未变，跳过 next build"; \
+	else \
+	  cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/web build && echo "$$h" > $(CACHE)/web.stamp; \
+	fi
 
 .PHONY: check
 ## check: i18n catalog 一致性检查（i18n-design.md §10.2；app 的前置依赖，构建即拦截）
@@ -189,6 +224,7 @@ clean:
 	rm -rf $(RUNTIME)/dist $(RUNTIME)/build $(RUNTIME)/ginno-runtime.spec
 	rm -rf $(RUNTIME_RES) $(RUNNER_RES) $(ROOT)/apps/desktop/binaries
 	rm -rf $(ROOT)/target $(ROOT)/crates/mod-broker/target
+	rm -rf $(CACHE)
 
 .PHONY: loc
 ## loc: 统计代码行数（按树分组，排除构建产物/依赖；零依赖 find+wc，无需 cloc）

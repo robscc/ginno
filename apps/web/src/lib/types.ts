@@ -886,7 +886,11 @@ export interface TeamMemberRow {
   instance_id: string;
   agent_id: string;
   display_name: string;
+  /** 活跃会话（投递/状态/工作台默认目标）。 */
   session_id: string;
+  /** 全部会话（P2 多会话，2026-10-13）：换会话 = 换上下文，编制不动。
+   *  P1 存量成员为空数组，前端回退 [session_id]。 */
+  session_ids?: string[];
   role: "leader" | "member";
   machine: string;
   status: TeamMemberStatus;
@@ -936,6 +940,10 @@ export interface Team {
   };
   created?: number;
   updated?: number;
+  /** 归档（P2）：收起不删——主会话/成员/会话全保留，取消归档即恢复。 */
+  archived?: boolean;
+  /** 领队 persona（主会话的 agent id）：成员面板置顶展示「领队 · 主会话」。 */
+  main_agent_id?: string;
   /** 前端渲染用：成员行（含实时状态）+ 上卷摘要。 */
   member_rows?: TeamMemberRow[];
   rollup?: TeamRollup;

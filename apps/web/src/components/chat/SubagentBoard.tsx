@@ -95,7 +95,7 @@ export function SubagentBoard({ sessionId }: { sessionId: string }) {
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-faint" />
           )}
           <span className="shrink-0">🧭</span>
-          <span className="min-w-0 flex-1 truncate font-medium text-txt">
+          <span className="min-w-0 flex-1 truncate text-left font-medium text-txt">
             {t("subagent.delegated", { count: children.length })}
           </span>
         </button>
@@ -166,7 +166,7 @@ export function SubagentBoard({ sessionId }: { sessionId: string }) {
                               {c.backend || "delegation"}
                             </span>
                           )}
-                          <span className="min-w-0 flex-1 truncate text-muted">{title}</span>
+                          <span className="min-w-0 flex-1 truncate text-left text-muted">{title}</span>
                           {active && c.created && (
                             <span className="shrink-0 text-[10px] text-faint">
                               {t("subagent.runningFor", {

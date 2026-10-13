@@ -392,7 +392,41 @@
         "done": "完成未读",
         "unknown": "状态未知",
         "error": "出错"
-      }
+      },
+      "teamsTitle": "团队（{count}）",
+      "archivedSection": "已归档（{count}）",
+      "manage": "管理团队",
+      "rename": "重命名",
+      "archive": "归档",
+      "unarchive": "取消归档",
+      "disband": "解散团队",
+      "confirmDisband": "确认解散？",
+      "sessionsCount": "{count} 个会话",
+      "activeSession": "当前",
+      "newSession": "新会话（新上下文）",
+      "deleteSession": "删除会话",
+      "confirmDeleteSession": "确认删除？",
+      "disbandBlocked": "有成员正在运行，未删除：{names}。请先停止或等待其完成，再解散团队。",
+      "agent": {
+        "title": "新建 Agent",
+        "hint": "独立配置的 Agent：persona、模型、颜色。建完即可选为 Lead 或成员；进阶配置（工具白名单等）在 设置 → 智能体 里精调。",
+        "idLabel": "ID（唯一，小写）",
+        "idInvalid": "ID 只能是小写字母、数字、-、_",
+        "nameLabel": "显示名",
+        "namePlaceholder": "代码评审官",
+        "personaLabel": "Persona（系统提示）",
+        "personaPlaceholder": "这个 Agent 的职责、风格、边界…它是团队里的一位新同事，看不到任何对话历史。",
+        "modelLabel": "模型",
+        "modelDefault": "跟随全局默认",
+        "colorLabel": "颜色",
+        "create": "创建 Agent",
+        "createFailed": "创建失败（ID 可能已存在）",
+        "newAgent": "新建 Agent…"
+      },
+      "leadBadge": "领队",
+      "leadNote": "主会话 persona——汇总与验收结果",
+      "leaderExistsHint": "团队已有领队（先改现任为成员）",
+      "idCopyTitle": "团队 ID：{id}（点击复制）"
     }
   }
 }

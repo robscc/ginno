@@ -28,7 +28,7 @@
       "subSaved": "子代理并发上限已保存：{n}",
       "saveFailed": "保存失败",
       "workingDirLabel": "工作目录",
-      "workingDirValue": "~/workspace/<project>（agent 元数据在 ~/.ginno/projects/）"
+      "workingDirValue": "~/workspace/‹project›（agent 元数据在 ~/.ginno/projects/）"
     }
   }
 }

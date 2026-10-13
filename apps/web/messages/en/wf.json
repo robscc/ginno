@@ -259,7 +259,7 @@
       "hintOver": "Context array to iterate over, e.g. prs",
       "hintMaxIters": "Iteration cap (required)",
       "hintParallel": "true or '{\"max_concurrency\":1-8}'; body must declare array writes",
-      "hintCases": "['{\"when\":\"<expression>\",\"then\":\"<node id>\"}']",
+      "hintCases": "['{\"when\":\"‹expression›\",\"then\":\"<node id>\"}']",
       "hintDefault": "Node to take when no case matches",
       "hintQuestion": "Question asked to the human when paused"
     },

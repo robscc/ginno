@@ -174,7 +174,11 @@ def add_member(
             # 显示名与 instance_id 解耦（herdr `agent rename` 的等价物）：
             # 改名不动寻址键。缺省用 agent_id。
             "display_name": (display_name or "").strip() or agent_id,
+            # 活跃会话（投递/状态都指向它）。成员可多会话（P2 产品重构
+            # 2026-10-13）：session_ids 是全部历史/并行上下文，session_id 是
+            # 当前活跃那条——换会话 = 换上下文，实例与记忆编制不动。
             "session_id": session_id,
+            "session_ids": [session_id],
             "role": role if role in ("leader", "member") else "member",
             # 语义态与展示信息严格分离（§3.4）：status 驱动逻辑，
             # status_detail 只渲染。初始 idle。
@@ -243,6 +247,58 @@ def patch_member(team_id: str, instance_id: str, patch: dict) -> dict | None:
         return target
 
 
+def member_add_session(team_id: str, instance_id: str, session_id: str) -> dict | None:
+    """给成员加一条会话并设为活跃（新上下文，编制不动）。幂等去重。"""
+    with _LOCK:
+        data = _read(team_id)
+        if data is None:
+            return None
+        for m in data.get("members") or []:
+            if m.get("instance_id") != instance_id:
+                continue
+            ids = list(m.get("session_ids") or [])
+            if m.get("session_id") and m["session_id"] not in ids:
+                ids.insert(0, m["session_id"])  # 兼容 P1 只有 session_id 的存量
+            if session_id not in ids:
+                ids.append(session_id)
+            m["session_ids"] = ids
+            m["session_id"] = session_id
+            m["last_active"] = time.time()
+            data["updated"] = time.time()
+            try:
+                _write(team_id, data)
+            except OSError:
+                return None
+            return m
+        return None
+
+
+def member_remove_session(team_id: str, instance_id: str, session_id: str) -> dict | None:
+    """移除成员的一条会话。活跃被移除时切到最新剩余；一条不剩返回 None
+    （调用方应顺势 remove_member——没有会话的成员实例没有存在意义）。"""
+    with _LOCK:
+        data = _read(team_id)
+        if data is None:
+            return None
+        for m in data.get("members") or []:
+            if m.get("instance_id") != instance_id:
+                continue
+            ids = [s for s in (m.get("session_ids") or []) if s != session_id]
+            m["session_ids"] = ids
+            if m.get("session_id") == session_id:
+                m["session_id"] = ids[-1] if ids else ""
+            m["last_active"] = time.time()
+            data["updated"] = time.time()
+            if not ids:
+                return None  # 已写盘（session_ids 空），调用方收尾 remove_member
+            try:
+                _write(team_id, data)
+            except OSError:
+                return None
+            return m
+        return None
+
+
 def remove_member(team_id: str, instance_id: str) -> bool:
     with _LOCK:
         data = _read(team_id)
@@ -288,7 +344,7 @@ def team_of_session(session_id: str) -> tuple[dict, dict | None] | None:
         if team.get("main_session_id") == session_id:
             return team, None
         for m in team.get("members") or []:
-            if m.get("session_id") == session_id:
+            if session_id in (m.get("session_ids") or []) or m.get("session_id") == session_id:
                 return team, m
     return None
 

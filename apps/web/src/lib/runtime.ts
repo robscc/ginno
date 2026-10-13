@@ -2071,9 +2071,10 @@ export async function patchTeam(teamId: string, patch: Record<string, unknown>) 
   );
 }
 
-export async function deleteTeam(teamId: string) {
-  return json<{ ok: boolean; error?: string }>(
-    `${BASE}/teams/${encodeURIComponent(teamId)}`,
+export async function deleteTeam(teamId: string, force = false) {
+  // 防呆：runtime 拒绝删除有活 turn 的团队（点名成员）；force 才放行。
+  return json<{ ok: boolean; error?: string; live?: string[] }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}${force ? "?force=1" : ""}`,
     { method: "DELETE" },
   );
 }
@@ -2133,5 +2134,26 @@ export async function deliverToMember(
   return json<import("./types").DeliverReceipt>(
     `${BASE}/teams/${encodeURIComponent(teamId)}/deliver?client=${encodeURIComponent(client)}`,
     { method: "POST", headers: H, body: JSON.stringify(req) },
+  );
+}
+
+// ---- AgentTeam P2（2026-10-13 产品重构）：成员多会话 ----
+/** 给成员开新会话（新上下文），建完即设为活跃。 */
+export async function addTeamMemberSession(teamId: string, instanceId: string) {
+  return json<{ ok: boolean; error?: string; session_id?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(instanceId)}/sessions`,
+    { method: "POST" },
+  );
+}
+
+/** 删成员的一条会话；最后一条被删时成员一并移除（runtime 语义）。 */
+export async function deleteTeamMemberSession(
+  teamId: string,
+  instanceId: string,
+  sessionId: string,
+) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(instanceId)}/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
   );
 }

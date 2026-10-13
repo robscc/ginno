@@ -522,3 +522,15 @@ html.pin-window body {
     animation: none !important;
   }
 }
+
+/* ---- 设置页 Agent 卡片 Kanban 拖拽（Tauri DnD 实践，2026-10-14）----
+ * document mousemove 方案；body 级 grabbing 光标由 ginno-card-dragging 挂载，
+ * ghost 是独立 fixed 元素（见 AgentsSettings 的运行时创建）。 */
+body.ginno-card-dragging,
+body.ginno-card-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+.ginno-card-drag-ghost {
+  will-change: left, top;
+}

@@ -81,7 +81,7 @@ async def _await_turn_end(session_id: str, timeout_s: float) -> bool:
     return not _is_live(session_id)
 
 
-async def _final_text(slug: str, session_id: str) -> str:
+async def _final_text(slug: str, session_id: str, team_id: str = "") -> str:
     """成员 checkpoint 里最后一条 assistant 文本 = 回帖正文。
 
     与 subagent 的 ``_final_report_text`` 同一取法（读 FileCheckpointer 的最后
@@ -100,7 +100,7 @@ async def _final_text(slug: str, session_id: str) -> str:
                 if text:
                     return text
     except Exception:  # noqa: BLE001 — 取不到正文不该炸投递
-        _log.exception("team_reply_text_failed session=%s", session_id)
+        _log.exception("team_reply_text_failed team=%s session=%s", team_id or "?", session_id)
     return ""
 
 
@@ -135,7 +135,7 @@ async def post_reply(
     slug = str(team.get("project_slug") or "default")
     agent_id = str(member.get("agent_id") or "")
 
-    body = text if text else await _final_text(slug, member.get("session_id") or "")
+    body = text if text else await _final_text(slug, member.get("session_id") or "", team_id=team_id)
     body, cut = _truncate(body)
     truncated = truncated or cut
     if not body:

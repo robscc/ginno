@@ -216,6 +216,9 @@ def member_row(team: dict, member: dict, client: str = "main") -> dict:
         "agent_id": member.get("agent_id"),
         "display_name": member.get("display_name") or member.get("agent_id"),
         "session_id": member.get("session_id"),
+        # 成员全部会话（P2 多会话）：活跃条在前端由 session_id 区分，
+        # status/elapsed 只跟活跃会话走。
+        "session_ids": list(member.get("session_ids") or []),
         "role": member.get("role") or "member",
         "machine": member.get("machine") or "local",
         "status": status,
@@ -227,9 +230,18 @@ def member_row(team: dict, member: dict, client: str = "main") -> dict:
 
 
 def team_payload(team: dict, client: str = "main") -> dict:
-    """团队的完整前端载荷：编制 + 成员行 + 上卷摘要。"""
+    """团队的完整前端载荷：编制 + 成员行 + 上卷摘要 + 领队 persona。"""
     members = [member_row(team, m, client) for m in (team or {}).get("members") or []]
     payload = dict(team or {})
+    # 领队 persona（主会话的 agent）：成员面板置顶展示「领队 · 主会话」
+    # （2026-10-14 用户需求）。读主会话 meta，坏/缺按空串。
+    main_sid = str((team or {}).get("main_session_id") or "")
+    try:
+        from ..session_meta import _find_meta
+        meta, _ = _find_meta(main_sid) or ({}, None)
+        payload["main_agent_id"] = (meta or {}).get("agent_id") or ""
+    except Exception:  # noqa: BLE001 — 展示字段，绝不带崩 payload
+        payload["main_agent_id"] = ""
     payload["member_rows"] = members
     payload["rollup"] = rollup({**payload, "members": [
         {"status": r["status"]} for r in members

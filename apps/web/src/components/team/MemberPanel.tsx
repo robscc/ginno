@@ -11,9 +11,10 @@
 // 一眼可见（herdr 的产品主张）。
 
 import { useEffect, useState } from "react";
-import { Loader2, Plus, UserX } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Plus, UserX, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
+import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import type { Team, TeamMemberRow, TeamMemberStatus } from "@/lib/types";
 
@@ -66,19 +67,31 @@ function fmtElapsed(s: number): string {
 export function MemberPanel({
   team,
   activeInstanceId,
+  activeSessionId,
   onOpenMember,
+  onOpenMemberSession,
+  onMutate,
   onAddMember,
 }: {
   team: Team;
   /** 当前打开工作台的成员（高亮该行）。 */
   activeInstanceId?: string | null;
+  /** 当前打开工作台的具体会话（多会话下区分到条）。 */
+  activeSessionId?: string | null;
   onOpenMember: (row: TeamMemberRow) => void;
+  onOpenMemberSession: (instanceId: string, sessionId: string) => void;
+  /** 会话增删后的统一刷新（团队 + 会话列表）。 */
+  onMutate: () => Promise<void> | void;
   onAddMember: () => void;
 }) {
   const g = useGinno();
   const { tc, tr } = useChatT();
   const rows = team.member_rows ?? [];
   const rollup = team.rollup;
+  // 多会话展开态 + 新会话/删除会话的进行中标记 + 删除两步确认。
+  const [openIds, setOpenIds] = useState<Record<string, boolean>>({});
+  const [busySid, setBusySid] = useState<string | null>(null);
+  const [confirmDelSid, setConfirmDelSid] = useState<string | null>(null);
   // elapsed 每秒走字（仅 working/blocked 需要，但便宜起见统一 tick）。
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -133,6 +146,36 @@ export function MemberPanel({
         </div>
       )}
 
+      {/* 领队 persona（主会话的 agent）：置顶展示，与成员区隔（2026-10-14
+          用户需求：右边的智能体列表要能看到领队）。点行回主会话视图。 */}
+      {(() => {
+        const lead = g.agents.find((x) => x.id === team.main_agent_id);
+        if (!lead) return null;
+        const hex = agentHex(lead.color);
+        return (
+          <div className="border-b border-line bg-violet/[0.06] px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] leading-none">👑</span>
+              <span
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold"
+                style={{ background: hex, color: "#0b0d10" }}
+              >
+                {lead.name.slice(0, 1).toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-xs font-medium text-txt">
+                {lead.name}
+              </span>
+              <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 py-px text-[10px] text-violet">
+                {tc("team.leadBadge")}
+              </span>
+            </div>
+            <div className="mt-1 pl-[26px] text-[10px] leading-relaxed text-faint">
+              {tc("team.leadNote")}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* 成员行 */}
       {rows.length === 0 && (
         <div className="px-3 py-6 text-center text-xs leading-relaxed text-faint">
@@ -150,53 +193,154 @@ export function MemberPanel({
         const hex = agentHex(agent?.color);
         const sel = activeInstanceId === r.instance_id;
         const blocked = r.status === "blocked";
+        // 成员全部会话（P1 存量成员没有 session_ids，回退活跃一条）。
+        const sids = r.session_ids?.length ? r.session_ids : [r.session_id].filter(Boolean);
+        const expanded = openIds[r.instance_id] ?? false;
         return (
-          <button
+          <div
             key={r.instance_id}
-            onClick={() => onOpenMember(r)}
-            className={`block w-full border-b border-line/60 px-3 py-2.5 text-left transition-colors hover:bg-card ${
+            className={`border-b border-line/60 transition-colors hover:bg-card ${
               sel ? "bg-card shadow-[inset_2px_0_0_var(--violet,#a78bfa)]" : ""
             }`}
           >
-            <div className="flex items-center gap-2">
-              <StatusDot status={r.status} />
-              <span
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold"
-                style={{ background: hex, color: "#0b0d10" }}
-              >
-                {(r.display_name || r.agent_id).slice(0, 1).toUpperCase()}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-xs font-medium text-txt">
-                {r.display_name}
-              </span>
-              <span
-                className={`shrink-0 rounded-full border px-1.5 py-px text-[10px] ${
-                  blocked
-                    ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-500"
-                    : "border-line bg-card text-faint"
-                }`}
-              >
-                {tr(statusKey(r.status))}
-              </span>
-              <span className="shrink-0 text-[10px] tabular-nums text-faint">
-                {fmtElapsed(r.elapsed_s)}
-              </span>
-            </div>
-            {/* 展示文本（§3.4 纯渲染，绝不参与逻辑） */}
-            <div
-              className={`mt-1 truncate pl-[26px] text-[11px] ${
-                blocked ? "text-yellow-500/90" : "text-muted"
-              }`}
-              title={r.status_detail}
+            <button
+              onClick={() => onOpenMember(r)}
+              className="block w-full px-3 py-2.5 text-left"
             >
-              {r.status_detail || tc("team.noDetail")}
+              <div className="flex items-center gap-2">
+                <StatusDot status={r.status} />
+                <span
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold"
+                  style={{ background: hex, color: "#0b0d10" }}
+                >
+                  {(r.display_name || r.agent_id).slice(0, 1).toUpperCase()}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs font-medium text-txt">
+                  {r.display_name}
+                </span>
+                <span
+                  className={`shrink-0 rounded-full border px-1.5 py-px text-[10px] ${
+                    blocked
+                      ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-500"
+                      : "border-line bg-card text-faint"
+                  }`}
+                >
+                  {tr(statusKey(r.status))}
+                </span>
+                <span className="shrink-0 text-[10px] tabular-nums text-faint">
+                  {fmtElapsed(r.elapsed_s)}
+                </span>
+              </div>
+              {/* 展示文本（§3.4 纯渲染，绝不参与逻辑） */}
+              <div
+                className={`mt-1 truncate pl-[26px] text-[11px] ${
+                  blocked ? "text-yellow-500/90" : "text-muted"
+                }`}
+                title={r.status_detail}
+              >
+                {r.status_detail || tc("team.noDetail")}
+              </div>
+            </button>
+            <div className="flex items-center gap-2 px-3 pb-2 pl-[26px]">
+              {r.role === "leader" && (
+                <span className="text-[10px] text-faint">{tc("team.leaderBadge")}</span>
+              )}
+              <button
+                onClick={() => setOpenIds((m) => ({ ...m, [r.instance_id]: !expanded }))}
+                className="ml-auto flex items-center gap-1 text-[10px] text-faint transition-colors hover:text-muted"
+              >
+                {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                {tc("team.sessionsCount", { count: sids.length })}
+              </button>
             </div>
-            {r.role === "leader" && (
-              <div className="mt-1 pl-[26px] text-[10px] text-faint">
-                {tc("team.leaderBadge")}
+            {expanded && (
+              <div className="border-t border-line/40 bg-base/30 px-2 py-1.5">
+                {sids.map((sid) => {
+                  const meta = g.sessions.find((s) => s.id === sid);
+                  const active = r.session_id === sid;
+                  const viewing = activeSessionId === sid;
+                  return (
+                    <div
+                      key={sid}
+                      className={`group flex items-center gap-1.5 rounded px-1.5 py-1 text-[11px] transition-colors ${
+                        viewing ? "bg-violet/10 text-txt" : "text-muted hover:bg-card"
+                      }`}
+                    >
+                      <button
+                        onClick={() => onOpenMemberSession(r.instance_id, sid)}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                        title={meta?.title || sid}
+                      >
+                        <span className="min-w-0 flex-1 truncate">
+                          {meta?.title?.replace(/ · [^·]*$/, "") || sid.slice(0, 8)}
+                        </span>
+                        {active && (
+                          <span className="shrink-0 rounded bg-violet/15 px-1 text-[9px] text-violet">
+                            {tc("team.activeSession")}
+                          </span>
+                        )}
+                      </button>
+                      {confirmDelSid === sid ? (
+                        <button
+                          onClick={async () => {
+                            if (busySid) return;
+                            setBusySid(sid);
+                            setConfirmDelSid(null);
+                            try {
+                              await api.deleteTeamMemberSession(team.id, r.instance_id, sid);
+                              await onMutate();
+                            } finally {
+                              setBusySid(null);
+                            }
+                          }}
+                          className="shrink-0 font-medium text-red hover:underline"
+                        >
+                          {tc("team.confirmDeleteSession")}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmDelSid(sid)}
+                          disabled={busySid === sid}
+                          className="shrink-0 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
+                          title={tc("team.deleteSession")}
+                        >
+                          {busySid === sid ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <X className="h-3 w-3" />
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={async () => {
+                    if (busySid) return;
+                    setBusySid(r.instance_id);
+                    try {
+                      const res = await api.addTeamMemberSession(team.id, r.instance_id);
+                      if (res.ok && res.session_id) {
+                        onOpenMemberSession(r.instance_id, res.session_id);
+                      }
+                      await onMutate();
+                    } finally {
+                      setBusySid(null);
+                    }
+                  }}
+                  disabled={busySid === r.instance_id}
+                  className="mt-1 flex w-full items-center gap-1 rounded px-1.5 py-1 text-[11px] text-faint transition-colors hover:bg-card hover:text-violet disabled:opacity-50"
+                >
+                  {busySid === r.instance_id ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Plus className="h-3 w-3" />
+                  )}
+                  {tc("team.newSession")}
+                </button>
               </div>
             )}
-          </button>
+          </div>
         );
       })}
 

@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, UserPlus } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ConnectorInfo, SubagentTypeInfo } from "@/lib/runtime";
 import { AGENT_HEX, agentHex } from "@/lib/theme";
 import { AgentIcon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
+import { NewAgentModal } from "@/components/team/NewAgentModal";
 import type { AgentConfig } from "@/lib/types";
 
 // Agent id doubles as the filename ~/.ginno/agents/<id>.json and the memory
@@ -98,6 +99,9 @@ function parseSubValue(v: string): { pid: string; m: string } | null {
 export function AgentsSettings() {
   const g = useGinno();
   const t = useTranslations("settings.agents");
+  // 卡片化（2026-10-14）：默认全部收起为摘要卡，点开才进编辑体。
+  const [openIds, setOpenIds] = useState<Record<string, boolean>>({});
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [draft, setDraft] = useState<Record<string, Record<string, string>>>({});
   const [toolsDraft, setToolsDraft] = useState<Record<string, string[]>>({});
   const [toolInput, setToolInput] = useState<Record<string, string>>({});
@@ -116,6 +120,113 @@ export function AgentsSettings() {
   const [subDraft, setSubDraft] = useState<Record<string, Record<string, string>>>({});
   // 单飞标志：移动期间禁用全部 ↑/↓，防连点把过期顺序提交给后端。
   const [moveBusy, setMoveBusy] = useState(false);
+  // Kanban 拖拽（document 鼠标事件版，照 Tauri DnD 实践文章 2026-10-14）：
+  // in-app 拖拽绝不用 HTML5 DnD（WebView2/WKWebView 原生层拦截）；也不用
+  // 元素级 pointer 事件（快速拖动时阈值前的 move 会丢）。move/up 全挂
+  // document，ghost 是独立元素（pointer-events:none，不挡 elementFromPoint），
+  // ESC 取消，body 级 grabbing 光标，松手后的误 click 用 suppressClick 吞掉。
+  const [dragId, setDragId] = useState<string | null>(null);
+  const dragRef = useRef<{
+    id: string;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    el: HTMLElement;
+    ghost: HTMLElement | null;
+  } | null>(null);
+  const overIdRef = useRef<string | null>(null);
+  const suppressClick = useRef(false);
+  const [overId, setOverId] = useState<string | null>(null);
+
+  const setOver = (id: string | null) => {
+    if (overIdRef.current === id) return;
+    overIdRef.current = id;
+    setOverId(id);
+  };
+
+  const clearDragVisual = () => {
+    const d = dragRef.current;
+    if (d) {
+      d.el.classList.remove("opacity-40");
+      d.ghost?.remove();
+    }
+    document.body.classList.remove("ginno-card-dragging");
+  };
+
+  const onCardMouseDown = (e: React.MouseEvent, a: AgentConfig) => {
+    if (openIds[a.id] || e.button !== 0) return; // 展开态不拖；只认左键
+    dragRef.current = {
+      id: a.id,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      el: e.currentTarget as HTMLElement,
+      ghost: null,
+    };
+  };
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = e.clientX - d.startX;
+      const dy = e.clientY - d.startY;
+      if (!d.moved) {
+        if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return; // 阈值：点击不触发拖拽
+        d.moved = true;
+        setDragId(d.id);
+        d.el.classList.add("opacity-40");
+        document.body.classList.add("ginno-card-dragging");
+        // ghost：独立小卡跟随光标（pointer-events:none 是 elementFromPoint 命中目标的关键）
+        const ghost = document.createElement("div");
+        const label = d.el.querySelector("[data-agent-label]")?.textContent || d.id;
+        ghost.className =
+          "ginno-card-drag-ghost fixed z-[9999] select-none rounded-lg border border-violet/40 bg-card px-2.5 py-1.5 text-xs font-medium text-txt shadow-2xl";
+        ghost.style.pointerEvents = "none";
+        ghost.style.transform = "rotate(2.5deg) scale(1.04)";
+        ghost.textContent = label;
+        document.body.appendChild(ghost);
+        d.ghost = ghost;
+      }
+      if (d.ghost) {
+        d.ghost.style.left = `${e.clientX + 12}px`;
+        d.ghost.style.top = `${e.clientY + 12}px`;
+      }
+      const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-agent-id]");
+      const hitId = hit?.getAttribute("data-agent-id") || null;
+      setOver(hitId && hitId !== d.id ? hitId : null);
+    };
+    const onUp = () => {
+      const d = dragRef.current;
+      if (!d) return;
+      dragRef.current = null;
+      if (!d.moved) return; // 纯点击：交给 click 展开
+      const src = d.id;
+      const dst = overIdRef.current;
+      clearDragVisual();
+      suppressClick.current = true;
+      setDragId(null);
+      setOver(null);
+      finishDragRef.current(src, dst);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && dragRef.current?.moved) {
+        clearDragVisual();
+        dragRef.current = null;
+        suppressClick.current = true;
+        setDragId(null);
+        setOver(null);
+      }
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []); // 挂 document，一次安装；状态走 ref，无重挂
 
   useEffect(() => {
     let alive = true;
@@ -294,24 +405,37 @@ export function AgentsSettings() {
     }
   }
 
-  // 排序设计 D2：↑/↓ 一步一动，新顺序整体提交（后端要求恰好覆盖全集）。
-  // 列表第一位 = 新会话默认 agent（D1 耦合）。
-  async function move(a: AgentConfig, dir: -1 | 1) {
+  // document 监听器（useEffect [] 一次安装）只能拿到首渲染闭包——经此 ref
+  // 永远调用最新版 finishDrag（否则 g.agents 是挂载时的空列表，拖了也不生效）。
+  const finishDragRef = useRef<(src: string, dst: string | null) => void>(() => {});
+
+  // 松手提交：把 src 移到 dst 的位置。dst=null（拖到无效区域）只清理不提交。
+  function finishDrag(src: string, dst: string | null) {
+    if (!src || !dst || src === dst) return;
     const ids = g.agents.map((x) => x.id);
-    const i = ids.indexOf(a.id);
-    const j = i + dir;
-    if (moveBusy || i < 0 || j < 0 || j >= ids.length) return;
-    [ids[i], ids[j]] = [ids[j], ids[i]];
+    const from = ids.indexOf(src);
+    const to = ids.indexOf(dst);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    if (ids.join() !== g.agents.map((x) => x.id).join()) void persistOrder(ids);
+  }
+  finishDragRef.current = finishDrag;
+
+  // 排序（2026-10-14 Kanban 化）：拖拽卡片调整顺序，落手整体提交（后端要求
+  // 恰好覆盖全集）；列表第一位 = 新会话默认 agent（D1 耦合）。原来的 ↑/↓
+  // 按钮与卡片收起箭头有歧义，已移除。
+  async function persistOrder(order: string[]) {
+    if (moveBusy) return;
     setMoveBusy(true);
     try {
-      const r = await api.reorderAgents(ids);
+      const r = await api.reorderAgents(order);
       if (r.ok) {
         await g.reloadAgents();
       } else {
-        setMsg((m) => ({ ...m, [a.id]: { text: r.error || t("saveFailed"), ok: false } }));
+        setMsg((m) => ({ ...m, [order[0]]: { text: r.error || t("saveFailed"), ok: false } }));
       }
     } catch {
-      setMsg((m) => ({ ...m, [a.id]: { text: t("connError"), ok: false } }));
+      setMsg((m) => ({ ...m, [order[0]]: { text: t("connError"), ok: false } }));
     } finally {
       setMoveBusy(false);
     }
@@ -351,7 +475,10 @@ export function AgentsSettings() {
       <p className="mt-1 text-sm text-muted">{t("description")}</p>
       <p className="mt-0.5 text-xs text-faint">{t("storedIn")}</p>
       <p className="mt-0.5 text-xs text-faint">{t("orderNote")}</p>
-      <div className="mt-4 space-y-3">
+      <div
+        className="mt-4 grid gap-3"
+        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}
+      >
         {g.agents.map((a, idx) => {
           const cur = {
             name: get(a.id, "name", a.name),
@@ -376,8 +503,27 @@ export function AgentsSettings() {
           const iconOptions = cur.icon && !AGENT_ICONS.includes(cur.icon)
             ? [cur.icon, ...AGENT_ICONS]
             : AGENT_ICONS;
+          const open = !!openIds[a.id];
           return (
-            <div key={a.id} className="rounded-xl border border-line bg-card p-3">
+            <div
+              key={a.id}
+              data-agent-id={a.id}
+              onMouseDown={(e) => onCardMouseDown(e, a)}
+              onClick={() => {
+                if (suppressClick.current) {
+                  suppressClick.current = false;
+                  return;
+                }
+                if (!open) setOpenIds((m) => ({ ...m, [a.id]: true }));
+              }}
+              className={`rounded-xl border bg-card p-3 transition-[border-color,opacity,transform] ${
+                open
+                  ? "col-span-full border-violet/40"
+                  : `cursor-grab border-line hover:border-violet/30 active:cursor-grabbing ${
+                      dragId === a.id ? "opacity-40" : ""
+                    } ${dragId && overId === a.id && dragId !== a.id ? "ring-2 ring-violet/40" : ""}`
+              }`}
+            >
               <div className="flex items-center gap-2">
                 <span
                   className="flex h-6 w-6 items-center justify-center rounded-md"
@@ -385,31 +531,54 @@ export function AgentsSettings() {
                 >
                   <AgentIcon name={cur.icon} className="h-3.5 w-3.5" />
                 </span>
-                <span className="font-medium text-txt">{cur.name}</span>
+                <span data-agent-label className="font-medium text-txt">{cur.name}</span>
                 <span className="text-xs text-faint">@{a.id}</span>
+                {idx === 0 && (
+                  <span className="rounded-full border border-violet/40 bg-violet/10 px-1.5 py-px text-[10px] text-violet">
+                    {t("defaultBadge")}
+                  </span>
+                )}
                 <div className="ml-auto flex items-center gap-2">
-                  <button
-                    onClick={() => void move(a, -1)}
-                    disabled={moveBusy || idx === 0}
-                    title={t("moveUpTitle")}
-                    className="text-faint hover:text-txt disabled:opacity-40"
-                  >
-                    <ChevronUp className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    onClick={() => void move(a, 1)}
-                    disabled={moveBusy || idx === g.agents.length - 1}
-                    title={t("moveDownTitle")}
-                    className="text-faint hover:text-txt disabled:opacity-40"
-                  >
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  </button>
+                  {open && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenIds((m) => ({ ...m, [a.id]: false }));
+                      }}
+                      className="text-xs text-faint hover:text-violet"
+                      title={t("collapseCard")}
+                    >
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   <button onClick={() => del(a.id)} className="text-xs text-faint hover:text-red">
                     {t("delete")}
                   </button>
                 </div>
               </div>
-              <label className="field-label mt-2">{t("nameLabel")}</label>
+              {!open && (
+              <>
+                <div className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-muted" title={get(a.id, "system_prompt", a.system_prompt)}>
+                  {get(a.id, "system_prompt", a.system_prompt) || t("noPersona")}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-faint">
+                  <span className="rounded bg-card2 px-1.5 py-px">
+                    {cur.provider === "custom" &&
+                    !(draft[a.id]?.provider_explicit ?? a.provider_explicit)
+                      ? t("modelFollowDefault")
+                      : `${cur.provider} · ${curModel || "…"}`}
+                  </span>
+                  <span>{tools.length === 1 && tools[0] === "*" ? t("toolsAll") : t("toolsCount", { n: tools.length })}</span>
+                </div>
+              </>
+            )}
+            <div
+              className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${
+                open ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"
+              }`}
+            >
+              <div className="overflow-hidden">
+<label className="field-label mt-2">{t("nameLabel")}</label>
               <input
                 className="field"
                 value={cur.name}
@@ -639,11 +808,30 @@ export function AgentsSettings() {
                   <span className={`ml-2 text-xs ${fb.ok ? "text-violet" : "text-red"}`}>{fb.text}</span>
                 )}
               </div>
+              </div>
+            </div>
             </div>
           );
         })}
+        {/* 新建卡：与团队流程同一个 NewAgentModal（一处创建体验） */}
+        <button
+          onClick={() => setNewAgentOpen(true)}
+          className="flex min-h-[110px] flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-line text-xs text-faint transition-colors hover:border-violet/50 hover:text-violet"
+        >
+          <UserPlus className="h-4 w-4" />
+          {t("newAgentTile")}
+        </button>
+        {newAgentOpen && (
+          <NewAgentModal
+            onClose={() => setNewAgentOpen(false)}
+            onCreated={() => {
+              setNewAgentOpen(false);
+              // reloadAgents 已在 modal 内完成；这里收起即可。
+            }}
+          />
+        )}
         {g.agents.length === 0 && (
-          <div className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-xs text-faint">
+          <div className="col-span-full rounded-xl border border-dashed border-line px-4 py-10 text-center text-xs text-faint">
             {t("empty")}
           </div>
         )}
@@ -727,6 +915,8 @@ function SubagentTypesEditor({
   const [drafts, setDrafts] = useState<Record<string, TypeDraft>>({});
   const [input, setInput] = useState<Record<string, string>>({});
   const [bodyOpen, setBodyOpen] = useState<Record<string, boolean>>({});
+  // 卡片化（2026-10-14）：类型卡默认收起为摘要，点开进编辑体。
+  const [tyOpen, setTyOpen] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState<Record<string, Feedback>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
 
@@ -794,16 +984,33 @@ function SubagentTypesEditor({
     <div className="mt-6">
       <label className="field-label">{t("subTypesLabel")}</label>
       <div className="mt-0.5 text-[11px] text-faint">{t("subTypesNote")}</div>
-      <div className="mt-2 space-y-3">
+      <div
+        className="mt-2 grid gap-3"
+        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}
+      >
         {subTypes.map((ty) => {
           const d = draftOf(ty);
+          const open = !!tyOpen[ty.name];
           return (
-            <div key={ty.name} className="rounded-lg border border-line bg-card p-3">
+            <div
+              key={ty.name}
+              onClick={() => !open && setTyOpen((m) => ({ ...m, [ty.name]: true }))}
+              className={`rounded-lg border bg-card p-3 ${
+                open ? "col-span-full border-violet/40" : "cursor-pointer border-line hover:border-violet/30"
+              }`}
+            >
               <div className="flex items-center gap-2">
                 <span className="font-mono text-sm text-txt">{ty.name}</span>
-                {d.tools.length === 0 && (
+                {d.tools.length === 0 ? (
                   <span className="rounded-full border border-green/40 bg-green/10 px-1.5 text-[10px] leading-4 text-green">
                     {t("emptyAllowsAll")}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-faint">{t("toolsCount", { n: d.tools.length })}</span>
+                )}
+                {!open && (
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-faint" title={d.description}>
+                    {d.description}
                   </span>
                 )}
                 <div className="ml-auto flex items-center gap-2">
@@ -811,6 +1018,18 @@ function SubagentTypesEditor({
                     <span className={`text-xs ${msg[ty.name]!.ok ? "text-violet" : "text-red"}`}>
                       {msg[ty.name]!.text}
                     </span>
+                  )}
+                  {open && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTyOpen((m) => ({ ...m, [ty.name]: false }));
+                      }}
+                      className="text-faint hover:text-violet"
+                      title={t("collapseCard")}
+                    >
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    </button>
                   )}
                   <button
                     onClick={() => void save(ty)}
@@ -821,6 +1040,12 @@ function SubagentTypesEditor({
                   </button>
                 </div>
               </div>
+              <div
+                className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${
+                  open ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"
+                }`}
+              >
+                <div className="overflow-hidden">
               <label className="field-label mt-2">{t("typeDescLabel")}</label>
               <input
                 className="field text-sm"
@@ -892,6 +1117,8 @@ function SubagentTypesEditor({
                   spellCheck={false}
                 />
               )}
+                </div>
+              </div>
             </div>
           );
         })}

@@ -142,7 +142,7 @@ export function PlanBoard({ sessionId }: { sessionId: string }) {
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 text-faint" />
                 )}
                 <ClipboardList className="h-3.5 w-3.5 shrink-0 text-violet" />
-                <span className="min-w-0 flex-1 truncate font-medium text-txt" title={plan.title}>
+                <span className="min-w-0 flex-1 truncate text-left font-medium text-txt" title={plan.title}>
                   {plan.title}
                 </span>
               </button>
@@ -253,7 +253,7 @@ function PlanItemRow({ item }: { item: PlanItem }) {
           />
         )}
         <span className="shrink-0 rounded bg-violet/10 px-1 py-px font-medium text-violet">{item.item_id}</span>
-        <span className="min-w-0 flex-1 truncate text-muted" title={item.goal}>
+        <span className="min-w-0 flex-1 truncate text-left text-muted" title={item.goal}>
           {item.goal}
         </span>
         {(item.depends_on?.length ?? 0) > 0 && (

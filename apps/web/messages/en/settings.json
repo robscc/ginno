@@ -28,7 +28,7 @@
       "subSaved": "Subagent concurrency cap saved: {n}",
       "saveFailed": "Failed to save",
       "workingDirLabel": "Working directory",
-      "workingDirValue": "~/workspace/<project> (agent metadata in ~/.ginno/projects/)"
+      "workingDirValue": "~/workspace/‹project› (agent metadata in ~/.ginno/projects/)"
     }
   }
 }

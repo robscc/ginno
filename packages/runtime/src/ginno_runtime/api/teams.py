@@ -133,35 +133,55 @@ async def get_team_endpoint(team_id: str, client: str = "main") -> dict:
 @router.patch("/api/teams/{team_id}")
 async def patch_team_endpoint(team_id: str, data: dict) -> dict:
     allowed = {k: v for k, v in (data or {}).items()
-               if k in ("name", "leader_instance_id", "shared_workspace")}
+               if k in ("name", "leader_instance_id", "shared_workspace", "archived")}
     team = team_store.update_team(team_id, allowed)
     if team is None:
         return {"ok": False, "error": "not found"}
+    _log.info("team_patched team=%s fields=%s", team_id, ",".join(sorted(allowed)))
     await _broadcast(team_id)
     return {"ok": True, "team": _payload(team)}
 
 
 @router.delete("/api/teams/{team_id}")
-async def delete_team_endpoint(team_id: str) -> dict:
-    """解散团队：停全部成员 turn + 级联删成员 session（checkpoint 不保留）。
+async def delete_team_endpoint(team_id: str, force: int = 0) -> dict:
+    """解散团队（防呆三重，2026-10-13 用户要求）：
 
-    与 §5.6 的「归档不删」不同——这是用户显式解散，走删除语义；只想收起团队
-    应该用 PATCH 改名/归档而不是 DELETE。
+    1. **运行中拒绝**：任何成员（任意会话）或主会话有活 turn → 拒绝并点名
+       是谁，``?force=1`` 才放行。误删一个正在干活的团队是最贵的事故。
+    2. **主会话一并删**：roster 删掉后 type=team 的主会话会被主侧栏过滤、
+       /team 也找不到它——不删就永久搁浅。成员会话 parent=主会话，级联删
+       主会话即覆盖全部成员会话（多会话成员也含在内）。
+    3. 归档≠删除：只想收起用 PATCH archived=true（数据全保留）。
     """
     from .sessions import delete_session  # lazy: cycle
+    from ..teams import status as team_status
 
     team = team_store.get_team(team_id)
     if team is None:
         return {"ok": False, "error": "not found"}
+
+    # 防呆 1：活 turn 检查（成员全部会话 + 主会话）。
+    live: list[str] = []
+    main_sid = str(team.get("main_session_id") or "")
     for m in team_store.list_members(team_id):
-        sid = str(m.get("session_id") or "")
-        if sid:
-            try:
-                await delete_session(sid)
-            except Exception:  # noqa: BLE001 — 单个成员删不掉不该卡住解散
-                _log.exception("team_member_delete_failed team=%s session=%s", team_id, sid)
+        # 成员的**全部**会话都要查（多会话成员可能在非活跃会话里跑着）。
+        sids = {*(m.get("session_ids") or []), m.get("session_id") or ""}
+        if any(team_status._is_live_turn(s) for s in sids if s):
+            live.append(str(m.get("display_name") or m.get("agent_id") or "?"))
+    if team_status._is_live_turn(main_sid):
+        live.append("(main)")
+    if live and not force:
+        _log.warning("team_delete_refused_running team=%s live=%s", team_id, live)
+        return {"ok": False, "error": "team has running members", "live": live}
+
+    # 防呆 2：级联删主会话 = 成员会话（含多会话）全删；roster 最后删。
+    try:
+        if main_sid:
+            await delete_session(main_sid, cascade=True)
+    except Exception:  # noqa: BLE001 — 主会话删不掉也不留孤儿 roster
+        _log.exception("team_main_delete_failed team=%s main=%s", team_id, main_sid)
     ok = team_store.delete_team(team_id)
-    _log.info("team_deleted id=%s ok=%s", team_id, ok)
+    _log.info("team_deleted id=%s ok=%s force=%s", team_id, ok, force)
     return {"ok": ok}
 
 
@@ -185,6 +205,13 @@ async def add_member_endpoint(team_id: str, req: AddMemberRequest) -> dict:
         return {"ok": False, "error": "agent_id 必填"}
     if len(team_store.list_members(team_id)) >= team_store.MAX_MEMBERS:
         return {"ok": False, "error": f"成员数已达上限（{team_store.MAX_MEMBERS}），请先归档不活跃成员"}
+    # 一个团队只能有一个领队（2026-10-14 用户需求）：已有领队再任命 → 拒绝，
+    # 先把现任改回 member。
+    if req.role == "leader" and (
+        team.get("leader_instance_id")
+        or any(m.get("role") == "leader" for m in team_store.list_members(team_id))
+    ):
+        return {"ok": False, "error": "团队已有领队；先把现任领队改为成员，再任命新领队"}
 
     sw = team.get("shared_workspace") or {}
     slug = str(team.get("project_slug") or "default")
@@ -234,7 +261,24 @@ async def add_member_endpoint(team_id: str, req: AddMemberRequest) -> dict:
 @router.patch("/api/teams/{team_id}/members/{instance_id}")
 async def patch_member_endpoint(team_id: str, instance_id: str, data: dict) -> dict:
     allowed = {k: v for k, v in (data or {}).items()
-               if k in ("display_name", "role")}
+               if k in ("display_name", "role", "session_id")}
+    if allowed.get("role") == "leader":
+        team = team_store.get_team(team_id)
+        cur = team_store.get_member(team_id, instance_id)
+        already = (team or {}).get("leader_instance_id") or any(
+            m.get("role") == "leader"
+            for m in team_store.list_members(team_id)
+            if m.get("instance_id") != instance_id
+        )
+        if already and cur and cur.get("role") != "leader":
+            return {"ok": False, "error": "团队已有领队；先把现任领队改为成员，再任命新领队"}
+    # 切换活跃会话（P2 多会话）：session_id 必须在该成员的 session_ids 里。
+    if "session_id" in allowed:
+        member = team_store.get_member(team_id, instance_id)
+        if member is None:
+            return {"ok": False, "error": "not found"}
+        if allowed["session_id"] not in (member.get("session_ids") or []):
+            return {"ok": False, "error": "session 不属于该成员"}
     member = team_store.patch_member(team_id, instance_id, allowed)
     if member is None:
         return {"ok": False, "error": "not found"}
@@ -249,15 +293,85 @@ async def remove_member_endpoint(team_id: str, instance_id: str) -> dict:
     member = team_store.get_member(team_id, instance_id)
     if member is None:
         return {"ok": False, "error": "not found"}
-    sid = str(member.get("session_id") or "")
-    if sid:
-        try:
-            await delete_session(sid)   # 内部含 stop 级联
-        except Exception:  # noqa: BLE001
-            _log.exception("team_member_session_delete_failed session=%s", sid)
+    for sid in {*(member.get("session_ids") or []), member.get("session_id") or ""}:
+        if sid:
+            try:
+                await delete_session(sid)   # 内部含 stop 级联
+            except Exception:  # noqa: BLE001
+                _log.exception("team_member_session_delete_failed session=%s", sid)
     ok = team_store.remove_member(team_id, instance_id)
+    _log.info("team_member_removed team=%s instance=%s ok=%s", team_id, instance_id, ok)
     await _broadcast(team_id)
     return {"ok": ok}
+
+
+# ---- 成员多会话（P2 产品重构 2026-10-13）------------------------------------
+
+async def _create_member_session(team: dict, agent_id: str, display: str) -> dict:
+    """按编制给成员建一条新会话（与 add_member 同参，供「新会话」复用）。"""
+    from .sessions import CreateSessionRequest, create_session  # lazy: cycle
+
+    sw = team.get("shared_workspace") or {}
+    return await create_session(CreateSessionRequest(
+        project_slug=str(team.get("project_slug") or "default"),
+        workspace=str(sw.get("workspace") or ""),
+        agent_id=agent_id,
+        title=f"{display} · {team.get('name') or ''}".strip(),
+        type="team-member",
+        context_folders=list(sw.get("context_folders") or []),
+        primary_folder=sw.get("primary_folder"),
+        parent_session_id=str(team.get("main_session_id") or "") or None,
+    ))
+
+
+@router.post("/api/teams/{team_id}/members/{instance_id}/sessions")
+async def add_member_session_endpoint(team_id: str, instance_id: str) -> dict:
+    """给成员开新会话（新上下文）：建 session + 设为活跃。编制不动。"""
+    team = team_store.get_team(team_id)
+    member = team_store.get_member(team_id, instance_id)
+    if team is None or member is None:
+        return {"ok": False, "error": "not found"}
+    resp = await _create_member_session(
+        team, str(member.get("agent_id") or ""), str(member.get("display_name") or "")
+    )
+    if not resp.get("ok"):
+        return {"ok": False, "error": str(resp.get("error") or "会话创建失败")}
+    updated = team_store.member_add_session(team_id, instance_id, str(resp["id"]))
+    if updated is None:
+        try:
+            from .sessions import delete_session
+            await delete_session(str(resp["id"]))
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": False, "error": "编制写入失败"}
+    _log.info("team_member_session_added team=%s instance=%s session=%s",
+              team_id, instance_id, resp["id"])
+    await _broadcast(team_id)
+    return {"ok": True, "session_id": resp["id"], "member": updated}
+
+
+@router.delete("/api/teams/{team_id}/members/{instance_id}/sessions/{session_id}")
+async def delete_member_session_endpoint(team_id: str, instance_id: str, session_id: str) -> dict:
+    """删成员的一条会话。最后一条被删时成员一并移除（无会话的实例无意义）。"""
+    from .sessions import delete_session  # lazy: cycle
+
+    member = team_store.get_member(team_id, instance_id)
+    if member is None:
+        return {"ok": False, "error": "not found"}
+    if session_id not in {*(member.get("session_ids") or []), member.get("session_id") or ""}:
+        return {"ok": False, "error": "session 不属于该成员"}
+    try:
+        await delete_session(session_id)   # 内部含 stop 级联
+    except Exception:  # noqa: BLE001
+        _log.exception("team_member_session_delete_failed team=%s instance=%s session=%s", team_id, instance_id, session_id)
+    updated = team_store.member_remove_session(team_id, instance_id, session_id)
+    if updated is None:
+        # 一条不剩：移除成员实例本身。
+        team_store.remove_member(team_id, instance_id)
+    _log.info("team_member_session_deleted team=%s instance=%s session=%s member_gone=%s",
+              team_id, instance_id, session_id, updated is None)
+    await _broadcast(team_id)
+    return {"ok": True, "member": updated}
 
 
 @router.post("/api/teams/{team_id}/members/{instance_id}/seen")

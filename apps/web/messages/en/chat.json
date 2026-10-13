@@ -392,7 +392,41 @@
         "done": "done · unread",
         "unknown": "unknown",
         "error": "error"
-      }
+      },
+      "teamsTitle": "Teams ({count})",
+      "archivedSection": "Archived ({count})",
+      "manage": "Manage team",
+      "rename": "Rename",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "disband": "Disband team",
+      "confirmDisband": "Confirm disband?",
+      "sessionsCount": "{count} sessions",
+      "activeSession": "active",
+      "newSession": "New session (new context)",
+      "deleteSession": "Delete session",
+      "confirmDeleteSession": "Confirm delete?",
+      "disbandBlocked": "Not deleted — running members: {names}. Stop them (or wait) before disbanding.",
+      "agent": {
+        "title": "New Agent",
+        "hint": "An independently configured agent: persona, model, color. Pick it as lead or member right after; advanced options (tool allowlist, …) live in Settings → Agents.",
+        "idLabel": "ID (unique, lowercase)",
+        "idInvalid": "ID: lowercase letters, digits, - and _ only",
+        "nameLabel": "Display name",
+        "namePlaceholder": "Code Reviewer",
+        "personaLabel": "Persona (system prompt)",
+        "personaPlaceholder": "This agent's responsibilities, style, boundaries… it's a new teammate with no conversation history.",
+        "modelLabel": "Model",
+        "modelDefault": "Follow global default",
+        "colorLabel": "Color",
+        "create": "Create agent",
+        "createFailed": "Creation failed (id may already exist)",
+        "newAgent": "New agent…"
+      },
+      "leadBadge": "Lead",
+      "leadNote": "Main-session persona — summarizes & accepts results",
+      "leaderExistsHint": "Team already has a leader (demote the current one first)",
+      "idCopyTitle": "Team id: {id} (click to copy)"
     }
   }
 }

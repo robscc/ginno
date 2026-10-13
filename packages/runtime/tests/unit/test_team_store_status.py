@@ -336,3 +336,36 @@ def test_team_payload_shape(team, monkeypatch):
     assert row["unread"] is False
     assert "elapsed_s" in row
     assert payload["rollup"]["status"] == "working"
+
+
+# ---- P2 产品重构（2026-10-13）：成员多会话 ----
+
+
+def test_member_multi_session_lifecycle(isolated_home):
+    from ginno_runtime.teams import store as ts
+
+    t = ts.create_team("T", "default", "main_s")
+    m = ts.add_member("default" if False else t["id"], "dev", "s1")
+    assert m["session_ids"] == ["s1"]
+    # 加会话 → 设为活跃，旧会话保留
+    m2 = ts.member_add_session(t["id"], m["instance_id"], "s2")
+    assert m2["session_ids"] == ["s1", "s2"] and m2["session_id"] == "s2"
+    # 幂等去重
+    m3 = ts.member_add_session(t["id"], m["instance_id"], "s2")
+    assert m3["session_ids"] == ["s1", "s2"]
+    # 删非活跃 → 活跃不变
+    m4 = ts.member_remove_session(t["id"], m["instance_id"], "s1")
+    assert m4["session_ids"] == ["s2"] and m4["session_id"] == "s2"
+    # 删活跃 → 切到最新剩余
+    ts.member_add_session(t["id"], m["instance_id"], "s3")
+    m5 = ts.member_remove_session(t["id"], m["instance_id"], "s2")
+    assert m5["session_id"] == "s3"
+    # 删最后一条 → None（调用方应顺势 remove_member）
+    assert ts.member_remove_session(t["id"], m["instance_id"], "s3") is None
+    # team_of_session 认得成员的任意会话（含 P1 存量 session_id 兼容）
+    ts.create_team("T2", "default", "main2")
+    legacy = ts.add_member(t["id"], "pm", "legacy_s")
+    found = ts.team_of_session("legacy_s")
+    assert found and found[1]["instance_id"] == legacy["instance_id"]
+    found = ts.team_of_session("main2")
+    assert found and found[1] is None

@@ -5,11 +5,13 @@
 // runtime 自动建主会话 session（api/teams.py create_team_endpoint）。
 
 import { useState } from "react";
+import { UserPlus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import type { Team } from "@/lib/types";
+import { NewAgentModal } from "./NewAgentModal";
 
 export function NewTeamModal({
   onClose,
@@ -24,6 +26,7 @@ export function NewTeamModal({
   const [agentId, setAgentId] = useState<string>(g.agents[0]?.id ?? "dev");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
 
   const submit = async () => {
     if (!name.trim() || busy) return;
@@ -84,6 +87,14 @@ export function NewTeamModal({
               </button>
             );
           })}
+          {/* 现场招人：新建独立配置的 Agent（NewAgentModal），建完即选中 */}
+          <button
+            onClick={() => setNewAgentOpen(true)}
+            className="flex items-center gap-1.5 rounded-full border border-dashed px-2.5 py-1 text-xs text-faint transition-colors hover:border-violet/50 hover:text-violet"
+          >
+            <UserPlus className="h-3 w-3" />
+            {tc("team.agent.newAgent")}
+          </button>
         </div>
         <div className="mt-1.5 text-[10px] leading-relaxed text-faint">{tc("team.leadHint")}</div>
 
@@ -104,6 +115,16 @@ export function NewTeamModal({
             {busy ? tc("team.creating") : tc("team.create")}
           </button>
         </div>
+
+        {newAgentOpen && (
+          <NewAgentModal
+            onClose={() => setNewAgentOpen(false)}
+            onCreated={(a) => {
+              setNewAgentOpen(false);
+              setAgentId(a.id);
+            }}
+          />
+        )}
       </div>
     </div>
   );

@@ -381,6 +381,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       // 影子会话整类隐藏（scheduled-tasks-design §3.6/§10 决议 5）：不进列表
       // 也不进搜索，只能从 /scheduled 的执行记录/时间条进入回放。
       s.type !== "scheduled" &&
+      // AgentTeam 完全隔离（P2 产品重构 2026-10-13）：团队主会话（type=team）
+      // 与成员会话（type=team-member）只活在 /team 空间——主侧栏是「我的
+      // 对话」，混入会造成双入口不一致（主界面裸 ChatStream vs /team 完整形态）。
+      s.type !== "team" &&
+      s.type !== "team-member" &&
       (!agentFilter || s.agent_id === agentFilter),
   );
   // 父 id → 直属子会话（按创建时间倒序——最新的在最上，与主列表
