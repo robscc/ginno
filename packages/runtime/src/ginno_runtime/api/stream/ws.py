@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -171,6 +172,74 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 continue
 
     _watcher_task = asyncio.create_task(_file_watcher())
+
+    # ---- 代码面板文件看守（2026-10-13 自动刷新）--------------------------
+    # code.changed 只由文件工具的结果标记驱动；bash/脚本写的文件零事件，
+    # S3 的「干净 tab 跟随」收不到信号。客户端把打开的 tab 集经 code.watch
+    # 报上来，这里每 3s stat 一遍：变更即广播与文件工具同形的 code.changed
+    # （干净 tab 自动重载、脏 tab 走 S2 冲突条——同一套语义）。基线在注册/
+    # 重报时取样，不发声；socket 关闭随连接一起销毁。
+    _code_watch_files: dict[str, tuple[int, int]] = {}  # abs path -> (size, mtime_ns)
+    _code_watch_wake = asyncio.Event()
+    _code_watch_stop = asyncio.Event()
+
+    def _rebuild_code_watch(entries: list) -> None:
+        from ...api.code import CodeAccessError, _session_ctx, resolve_code_target
+
+        ctx = _session_ctx(None, session_id) if session_id else None
+        next_files: dict[str, tuple[int, int]] = {}
+        for e in entries or []:
+            if not isinstance(e, dict):
+                continue
+            root_id = str(e.get("root") or "session")
+            rel = str(e.get("path") or "")
+            try:
+                if ctx is None:
+                    continue
+                target, _ri = resolve_code_target(ctx, root_id, rel, write=False)
+                st = target.stat()
+            except (CodeAccessError, OSError, ValueError):
+                continue  # 根没了/越界/文件不存在：这一条不进看守
+            next_files[str(target)] = (st.st_size, st.st_mtime_ns)
+        _code_watch_files.clear()
+        _code_watch_files.update(next_files)
+        _code_watch_wake.set()
+
+    async def _code_watcher() -> None:
+        while not _code_watch_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(_code_watch_wake.wait()), timeout=3.0
+                )
+                _code_watch_wake.clear()
+            except asyncio.TimeoutError:
+                pass
+            if _code_watch_stop.is_set() or not _code_watch_files:
+                continue
+            for abs_path, prev in list(_code_watch_files.items()):
+                try:
+                    st = os.stat(abs_path)
+                except OSError:
+                    continue  # 暂不可达（临时挪走/删除）：保留条目等它回来
+                cur = (st.st_size, st.st_mtime_ns)
+                if cur == prev:
+                    continue
+                _code_watch_files[abs_path] = cur
+                # 与文件工具的 code.changed 同形（engine._broadcast_code_
+                # changes），S3 客户端处理器零改动复用
+                await _push_session_event(
+                    session_id,
+                    "code.changed",
+                    {
+                        "session_id": session_id,
+                        "path": abs_path,
+                        "op": "edit",
+                        "version": f"{cur[0]}:{cur[1]}",
+                    },
+                )
+                _log.info("code_watch_changed session=%s path=%s", session_id, abs_path)
+
+    _code_watcher_task = asyncio.create_task(_code_watcher())
 
     # Re-emit any permission interrupt left pending from a previous connection:
     # the graph pauses at permission_node awaiting a resume, so a reconnect or a
@@ -1022,6 +1091,11 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                         _log.debug("mod.ui.answer rejected session=%s: %s", session_id, e)
                     except Exception as e:  # noqa: BLE001 — mods are additive
                         _log.debug("mod.ui.answer dropped session=%s: %s", session_id, e)
+            elif kind == "code.watch":
+                # 代码面板 tab 集（全量替换语义；空列表 = 停止看守）
+                entries = msg.get("files")
+                if isinstance(entries, list):
+                    _rebuild_code_watch(entries)
             elif kind == "ping":
                 try:
                     await ws.send_text(_ev("pong", {}))
@@ -1187,6 +1261,8 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         _log.info("ws_close session=%s", session_id)
         _watch_stop.set()
         _watcher_task.cancel()
+        _code_watch_stop.set()
+        _code_watcher_task.cancel()
         # Drop this socket from the broadcast registry (a dead entry would
         # otherwise linger until the next send attempt pruned it).
         _SESSION_WS[session_id] = [

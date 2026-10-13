@@ -194,6 +194,8 @@ export function useChatStreamEngine(deps: EngineDeps) {
   const storeRef         = useRef<Record<string, ChatMsg[]>>({});
   const liveBySessionRef = useRef<Record<string, string | null>>({});
   const socketsRef       = useRef<Record<string, WebSocket>>({});
+  // 代码面板看守集镜像：socket onopen 闭包读它做重连重报（2026-10-13）
+  const codeWatchRef = useRef<{ sessionId: string; files: { root: string; path: string }[] } | null>(null);
   const statusRef        = useRef<Record<string, "connecting" | "live" | "reconnecting" | "offline">>({});
   const permsRef         = useRef<Record<string, PermissionPrompt | null>>({});
   const proposeRef       = useRef<Record<string, VersionPropose | null>>({});
@@ -391,6 +393,17 @@ export function useChatStreamEngine(deps: EngineDeps) {
     };
   }, []);
 
+  // 代码面板看守注册：tab 集变化 → 发给该会话的 socket（全量替换语义）
+  useEffect(() => {
+    codeWatchRef.current = g.codeWatch;
+    const cw = g.codeWatch;
+    if (!cw) return;
+    const sock = socketsRef.current[cw.sessionId];
+    if (sock?.readyState === WebSocket.OPEN) {
+      try { sock.send(JSON.stringify({ type: "code.watch", files: cw.files })); } catch { /* ignore */ }
+    }
+  }, [g.codeWatch]);
+
   // Open (or reuse) a per-session WebSocket. Sockets stay open when the user
   // switches sessions; they are only closed on unmount or session delete.
   function connectSession(sid: string) {
@@ -419,6 +432,11 @@ export function useChatStreamEngine(deps: EngineDeps) {
         probeSeqRef.current[sid] = ++ioSeqRef.current;
         sock.send(JSON.stringify({ type: "turn_state" }));
       } catch { /* ignore */ }
+      // 看守重连重报：看守集随连接销毁，新连接必须重新注册（同 S3 的
+      // ws_open 补发 interrupt 同理）
+      if (codeWatchRef.current?.sessionId === sid && codeWatchRef.current.files.length) {
+        try { sock.send(JSON.stringify({ type: "code.watch", files: codeWatchRef.current.files })); } catch { /* ignore */ }
+      }
       if (liveBySessionRef.current[sid] || busyBySessionRef.current[sid]) {
         // A turn was in flight when this socket's predecessor dropped. Turn
         // events broadcast to EVERY socket of the session, so the running

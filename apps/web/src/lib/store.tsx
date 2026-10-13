@@ -298,6 +298,11 @@ interface GinnoState {
   notifyRunToolActivity: (runId: string, act: RunToolActivity | null) => void;
   reloadArtifacts: () => Promise<void>;
   reloadProjectArtifacts: () => Promise<void>;
+  // 代码面板打开 tab 集（自动刷新看守注册，2026-10-13）：CodePanel 上报，
+  // WS 层发给 runtime 的 stat 看守——bash 写文件不产生 code.changed，看守
+  // 补齐外部修改的跟随。null/空 = 无打开 tab。
+  codeWatch: { sessionId: string; files: { root: string; path: string }[] } | null;
+  setCodeWatch: (v: { sessionId: string; files: { root: string; path: string }[] } | null) => void;
   removeArtifact: (id: string) => Promise<void>;
   patchArtifact: (id: string, patch: ArtifactPatch) => Promise<{ ok: boolean; error?: string }>;
   newSession: (
@@ -1102,6 +1107,12 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // 代码面板看守注册（值语义：全量替换，CodePanel 的 tabs effect 是唯一写者）
+  const [codeWatch, setCodeWatch] = useState<{
+    sessionId: string;
+    files: { root: string; path: string }[];
+  } | null>(null);
+
   // @ 菜单的项目级列表：不带 session_id（端点语义 = 全量）。加载失败静默——
   // 菜单退回仅本会话条目，不影响面板。
   const reloadProjectArtifacts = useCallback(async () => {
@@ -1559,6 +1570,8 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     workflowRuns,
     artifacts,
     projectArtifacts,
+    codeWatch,
+    setCodeWatch,
     providers,
     defaultProvider,
     activeSessionId,
