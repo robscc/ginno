@@ -727,11 +727,13 @@ export interface ScheduleTargetWorkflow {
 
 export type ScheduleTarget = ScheduleTargetPrompt | ScheduleTargetWorkflow;
 
-/** 四种预置计划（§4.1）。weekly.weekday 0=周日；once.at 为本地时间字符串。 */
+/** 四种预置计划（§4.1）。weekly 多选：weekdays 0=周日（新契约，非空数组）；
+ * 旧单值 weekday 仍在读侧兼容（无数据迁移，新写一律 weekdays）。
+ * once.at 为本地时间字符串。 */
 export type SchedulePlan =
   | { kind: "interval"; minutes: number }
   | { kind: "daily"; at: string }
-  | { kind: "weekly"; weekday: number; at: string }
+  | { kind: "weekly"; weekdays?: number[]; weekday?: number; at: string }
   | { kind: "once"; at: string };
 
 /** 冗余展示字段：最近一次执行的摘要（§4.1 last_run）。 */
@@ -749,6 +751,8 @@ export interface ScheduleTask {
   schedule: SchedulePlan;
   enabled: boolean;
   notify?: boolean; // P1
+  /** 任务级模型覆盖（仅 prompt 目标生效）；null/缺省 = 跟随 agent/全局默认。 */
+  model?: { provider: string; model: string } | null;
   created: number;
   updated: number;
   /** 调度器回写（epoch 秒）；UI 冷启动即有值。null/缺省 = 暂停或单次已完成。 */

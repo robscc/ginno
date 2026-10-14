@@ -97,6 +97,40 @@ def test_next_run_weekly_sunday_is_zero(isolated_home):
     assert _wall(nxt3) == (2026, 10, 9, 18, 0)
 
 
+def test_next_run_weekly_multi_day(isolated_home):
+    """weekdays 多选（0=周日）。2026-10-02 是周五：早 8 点选 [周日,周五]
+    → 当天 18:00；晚 19 点 → 跳到周日；与旧单值 weekday 语义等价。"""
+    now = datetime(2026, 10, 2, 8, 0, tzinfo=NY).timestamp()
+    nxt = scheduler.next_run_ts({"kind": "weekly", "weekdays": [0, 5], "at": "18:00"}, now=now, tz=NY)
+    assert _wall(nxt) == (2026, 10, 2, 18, 0)
+    now2 = datetime(2026, 10, 2, 19, 0, tzinfo=NY).timestamp()
+    nxt2 = scheduler.next_run_ts({"kind": "weekly", "weekdays": [0, 5], "at": "18:00"}, now=now2, tz=NY)
+    assert _wall(nxt2) == (2026, 10, 4, 18, 0)
+    assert nxt2 == scheduler.next_run_ts({"kind": "weekly", "weekday": 0, "at": "18:00"}, now=now2, tz=NY)
+    # 工作日组合：周五 19 点选 [周一,周三] → 下周一
+    nxt3 = scheduler.next_run_ts({"kind": "weekly", "weekdays": [1, 3], "at": "18:00"}, now=now2, tz=NY)
+    assert _wall(nxt3) == (2026, 10, 5, 18, 0)
+
+
+def test_step_point_weekly_multi(isolated_home):
+    """多选 weekly 的 missed 链按所选天步进：周五点 → 下一个所选天（周一）。"""
+    wk = _task(schedule={"kind": "weekly", "weekdays": [1, 4], "at": "18:00"})  # 周一、周四
+    pt = datetime(2026, 10, 2, 18, 0).astimezone().timestamp()  # 周五
+    d1 = datetime.fromtimestamp(scheduler._step_point(wk, time.time(), pt))
+    assert (d1.year, d1.month, d1.day, d1.hour, d1.minute) == (2026, 10, 5, 18, 0)
+    d2 = datetime.fromtimestamp(scheduler._step_point(wk, time.time(), d1.timestamp()))
+    assert (d2.year, d2.month, d2.day, d2.hour, d2.minute) == (2026, 10, 8, 18, 0)
+
+
+def test_planned_points_weekly_multi(isolated_home):
+    """时间条计划点：只在所选天出点，其他天为空。"""
+    task = _task(schedule={"kind": "weekly", "weekdays": [0, 5], "at": "18:00"})
+    now = datetime(2026, 10, 2, 8, 0).astimezone().timestamp()  # 周五
+    pts = scheduler.planned_points(task, "2026-10-02", now=now)
+    assert [datetime.fromtimestamp(p).strftime("%Y-%m-%d %H:%M") for p in pts] == ["2026-10-02 18:00"]
+    assert scheduler.planned_points(task, "2026-10-03", now=now) == []
+
+
 def test_next_run_once(isolated_home):
     now = datetime(2026, 10, 2, 8, 0, tzinfo=NY).timestamp()
     nxt = scheduler.next_run_ts({"kind": "once", "at": "2026-10-05T18:00:00"}, now=now, tz=NY)
@@ -313,6 +347,47 @@ async def test_prompt_target_dispatch(isolated_home, monkeypatch):
     assert rows[0]["session_id"] == sid
     assert rows[0]["summary"] and "巡检" in rows[0]["summary"]
     assert scheduler._RUNNING.get(task["id"]) is None  # 释放重叠槽
+
+
+async def test_prompt_target_model_passthrough(isolated_home, monkeypatch):
+    """任务级模型覆盖：CreateSessionRequest 带上 provider/model（走既有解析链，
+    provider 被禁用时 _resolve_provider_model 兜底）；未配置则不传。"""
+    from ginno_runtime import server_shared as shared
+
+    captured = {}
+    sid = "shadow789"
+
+    async def fake_create_session(req):
+        captured["req"] = req
+        shared._SESSIONS[sid] = {
+            "session_id": sid, "project_slug": req.project_slug,
+            "graph": object(), "agent_id": "dev",
+        }
+        from ginno_runtime.session_meta import _session_meta_upsert
+
+        _session_meta_upsert(req.project_slug, {"id": sid, "type": req.type, "title": req.title})
+        return {"id": sid, "ok": True, "type": req.type}
+
+    async def fake_run_stream(ws, graph, config, text, session, agent_id):
+        pass
+
+    async def fake_last_text(session_id, slug):
+        return ""  # 空 text → 不触发 LLM 摘要后台任务
+
+    monkeypatch.setattr("ginno_runtime.api.sessions.create_session", fake_create_session)
+    monkeypatch.setattr("ginno_runtime.api.stream._run_stream", fake_run_stream)
+    monkeypatch.setattr("ginno_runtime.api.sessions._turn_last_error", lambda s, t: None)
+    monkeypatch.setattr(scheduler, "_last_assistant_text", fake_last_text)
+
+    rid = scheduler.trigger_task(_task(model={"provider": "prov-a", "model": "big-model"}), trigger="manual")
+    await scheduler._RUN_TASKS[rid]
+    assert captured["req"].provider == "prov-a"
+    assert captured["req"].model == "big-model"
+
+    captured.clear()
+    rid2 = scheduler.trigger_task(_task(), trigger="manual")
+    await scheduler._RUN_TASKS[rid2]
+    assert captured["req"].provider is None and captured["req"].model is None
 
 
 async def test_prompt_running_row_has_session_id(isolated_home, monkeypatch):

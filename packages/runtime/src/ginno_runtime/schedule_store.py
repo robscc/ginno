@@ -104,14 +104,15 @@ def upsert_task(task: dict) -> dict:
 
 def patch_task(task_id: str, patch: dict) -> dict | None:
     """部分更新一个任务；id 不存在返回 None。``None`` 值不落（同 meta patch 约定），
-    唯 ``next_run_at=None`` 例外——「无下次」是调度器的真实状态，必须能显式清除。"""
+    唯 ``next_run_at`` / ``model=None`` 例外——「无下次」与「清除模型覆盖」是
+    调度器的真实状态，必须能显式写入。"""
     cfg = load_config()
     target = None
     for t in cfg.get("tasks") or []:
         if t.get("id") == task_id:
             t.update({
                 k: v for k, v in patch.items()
-                if v is not None or k == "next_run_at"
+                if v is not None or k in ("next_run_at", "model")
             })
             t["updated"] = time.time()
             target = t
@@ -137,6 +138,31 @@ def new_task_id() -> str:
 
 
 # ---- 校验 -----------------------------------------------------------------
+def _weekly_days_value(sch: dict) -> list[int] | None:
+    """weekly 计划的星期取值（0=周日，升序去重）；非法/缺失返回 None。
+    优先 ``weekdays`` 列表（多选），回落旧单值 ``weekday``（无数据迁移）。"""
+    v = sch.get("weekdays")
+    if isinstance(v, list):
+        if not v:
+            return None
+        days = []
+        for w in v:
+            if not isinstance(w, int) or isinstance(w, bool) or not 0 <= w <= 6:
+                return None
+            days.append(w)
+        return sorted(set(days))
+    wd = sch.get("weekday")
+    if isinstance(wd, int) and not isinstance(wd, bool) and 0 <= wd <= 6:
+        return [wd]
+    return None
+
+
+def weekly_py_weekdays(sch: dict) -> set[int]:
+    """weekly 计划的星期集合（Python Monday=0 约定，(wd+6)%7 换算）。
+    next_run_ts / planned_points 共用；坏值兜底周日。"""
+    return {(w + 6) % 7 for w in (_weekly_days_value(sch) or [0])}
+
+
 def _valid_hhmm(s) -> bool:
     if not isinstance(s, str):
         return False
@@ -160,6 +186,14 @@ def validate_task(data: dict) -> list[str]:
             errs.append("prompt 目标必须填写提示词")
         if target["type"] == "workflow" and not str(target.get("workflow_id") or "").strip():
             errs.append("workflow 目标必须选择配方")
+    # 任务级模型覆盖（仅 prompt 目标生效）：null/缺省 = 跟随 agent/全局默认
+    model = data.get("model")
+    if model is not None and (
+        not isinstance(model, dict)
+        or not str(model.get("provider") or "").strip()
+        or not str(model.get("model") or "").strip()
+    ):
+        errs.append("model 必须是 {provider, model}（非空字符串）或 null")
     sch = data.get("schedule")
     if not isinstance(sch, dict) or sch.get("kind") not in SCHEDULE_KINDS:
         errs.append("schedule.kind 必须是 interval/daily/weekly/once")
@@ -174,9 +208,8 @@ def validate_task(data: dict) -> list[str]:
             if not _valid_hhmm(sch.get("at")):
                 errs.append("daily 计划的 at 必须是 HH:MM")
         elif kind == "weekly":
-            wd = sch.get("weekday")
-            if not isinstance(wd, int) or isinstance(wd, bool) or not 0 <= wd <= 6:
-                errs.append("weekly 计划的 weekday 必须是 0-6（0=周日）")
+            if _weekly_days_value(sch) is None:
+                errs.append("weekly 计划的 weekdays 必须是 0-6 的非空列表（0=周日）")
             if not _valid_hhmm(sch.get("at")):
                 errs.append("weekly 计划的 at 必须是 HH:MM")
         elif kind == "once":

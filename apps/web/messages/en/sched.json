@@ -25,6 +25,7 @@
       "everyMinutes": "every {n}m",
       "daily": "daily {at}",
       "weekly": "weekly {day} {at}",
+      "weeklyMulti": "weekly {days} {at}",
       "once": "once {when}"
     },
     "trigger": {
@@ -146,6 +147,8 @@
       "promptPlaceholder": "Summarize ERRORs in ~/.ginno/logs/sidecar.log over the past 24h and suggest top 3 fixes…",
       "agent": "Agent",
       "project": "Project",
+      "model": "Model",
+      "modelDefault": "Default (follow agent / global setting)",
       "workflow": "Workflow",
       "workflowPlaceholder": "Pick a workflow…",
       "wfDeletedWarn": "The original workflow was deleted — pick another, or keep it (runs will fail until then)",
@@ -166,6 +169,7 @@
       "errMinInterval": "Minimum interval is 5 minutes",
       "errPickDaily": "Pick a daily time",
       "errPickWeekly": "Pick a weekly time",
+      "errPickWeeklyDay": "Pick at least one day of the week",
       "errPickOnce": "Pick a date and time",
       "errNameRequired": "Task name is required",
       "errPromptRequired": "Prompt is required",

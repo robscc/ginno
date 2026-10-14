@@ -25,6 +25,7 @@
       "everyMinutes": "每 {n} 分钟",
       "daily": "每天 {at}",
       "weekly": "每周{day} {at}",
+      "weeklyMulti": "每周{days} {at}",
       "once": "单次 {when}"
     },
     "trigger": {
@@ -146,6 +147,8 @@
       "promptPlaceholder": "汇总 ~/.ginno/logs/sidecar.log 过去 24h 的 ERROR，并给出前 3 个修复建议…",
       "agent": "Agent",
       "project": "项目",
+      "model": "模型",
+      "modelDefault": "默认（跟随 Agent / 全局设置）",
       "workflow": "工作流",
       "workflowPlaceholder": "选择一个工作流…",
       "wfDeletedWarn": "原工作流已删除——请改选其他配方，或暂时保留（触发时会执行失败）",
@@ -166,6 +169,7 @@
       "errMinInterval": "最小间隔为 5 分钟",
       "errPickDaily": "请选择每天的时间",
       "errPickWeekly": "请选择每周的时间",
+      "errPickWeeklyDay": "请至少选择一个星期",
       "errPickOnce": "请选择日期和时间",
       "errNameRequired": "任务名称必填",
       "errPromptRequired": "提示词必填",

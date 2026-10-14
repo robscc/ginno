@@ -15,6 +15,12 @@ function weekdayName(i: number): string {
   return schedText(`weekday.${WEEKDAY_KEYS[((i % 7) + 7) % 7]}`);
 }
 
+/** weekly 计划的星期集合归一化：weekdays 多选优先，回落旧单值 weekday（0=周日）。 */
+export function weeklyDays(p: Extract<SchedulePlan, { kind: "weekly" }>): number[] {
+  if (Array.isArray(p.weekdays) && p.weekdays.length) return [...new Set(p.weekdays)];
+  return [p.weekday ?? 0];
+}
+
 /** 计划的人类描述（§3.2 任务卡第二段）：每 30 分钟 / 每天 09:30 / 每周五 18:00 / 单次。 */
 export function planDescription(p: SchedulePlan): string {
   switch (p.kind) {
@@ -24,8 +30,12 @@ export function planDescription(p: SchedulePlan): string {
         : schedText("plan.everyMinutes", { n: p.minutes });
     case "daily":
       return schedText("plan.daily", { at: p.at });
-    case "weekly":
-      return schedText("plan.weekly", { day: weekdayName(p.weekday), at: p.at });
+    case "weekly": {
+      const days = weeklyDays(p).slice().sort((a, b) => a - b);
+      if (days.length === 1) return schedText("plan.weekly", { day: weekdayName(days[0]), at: p.at });
+      if (days.length === 7) return schedText("plan.daily", { at: p.at });
+      return schedText("plan.weeklyMulti", { days: days.map(weekdayName).join("、"), at: p.at });
+    }
     case "once": {
       const d = new Date(p.at);
       if (isNaN(d.getTime())) return schedText("plan.once", { when: p.at });

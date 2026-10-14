@@ -102,6 +102,43 @@ def test_validate_targets_and_schedules():
     assert store.validate_task(_task(schedule={"kind": "once", "at": "2026-10-05T18:00:00"})) == []
 
 
+def test_validate_weekdays_multi_and_legacy():
+    # weekdays 多选（0=周日）：合法；空/越界/bool/非 int → 非法
+    assert store.validate_task(_task(schedule={"kind": "weekly", "weekdays": [0, 2, 4], "at": "09:00"})) == []
+    assert store.validate_task(_task(schedule={"kind": "weekly", "weekdays": [], "at": "09:00"}))
+    assert store.validate_task(_task(schedule={"kind": "weekly", "weekdays": [7], "at": "09:00"}))
+    assert store.validate_task(_task(schedule={"kind": "weekly", "weekdays": [True], "at": "09:00"}))
+    assert store.validate_task(_task(schedule={"kind": "weekly", "weekdays": ["mon"], "at": "09:00"}))
+    # 旧单值 weekday 仍合法（读侧兼容，无数据迁移）；两者都没给 → 非法
+    assert store.validate_task(_task(schedule={"kind": "weekly", "weekday": 5, "at": "09:00"})) == []
+    assert store.validate_task(_task(schedule={"kind": "weekly", "at": "09:00"}))
+
+
+def test_weekly_py_weekdays_prefers_list():
+    # 0=周日 → Python Sunday=6；5=周五 → 4
+    assert store.weekly_py_weekdays({"weekdays": [0, 5]}) == {6, 4}
+    assert store.weekly_py_weekdays({"weekday": 0}) == {6}
+    assert store.weekly_py_weekdays({}) == {6}  # 坏值兜底周日
+
+
+def test_validate_task_model_shape():
+    assert store.validate_task(_task(model={"provider": "p1", "model": "m1"})) == []
+    assert store.validate_task(_task(model=None)) == []
+    assert store.validate_task(_task(model={"provider": "", "model": "m"}))
+    assert store.validate_task(_task(model={"provider": "p"}))  # 缺 model
+    assert store.validate_task(_task(model="p1/m1"))  # 非对象
+
+
+def test_patch_task_model_none_clears(isolated_home):
+    """model=None 是真实状态（清除覆盖），必须能显式写掉；其余 None 仍不落。"""
+    t = _task(model={"provider": "p1", "model": "m1"})
+    store.upsert_task(t)
+    store.patch_task(t["id"], {"model": None})
+    assert store.get_task(t["id"]).get("model") is None
+    store.patch_task(t["id"], {"name": None})
+    assert store.get_task(t["id"])["name"] == "日志巡检"
+
+
 def test_missing_required_inputs():
     schema = {"type": "object", "properties": {"repo": {"type": "string"}}, "required": ["repo"]}
     assert store.missing_required_inputs(schema, {}, {}) == ["repo"]

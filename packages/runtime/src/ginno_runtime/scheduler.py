@@ -172,10 +172,10 @@ def next_run_ts(schedule: dict, now: float | None = None, tz=None) -> float | No
     if kind == "weekly":
         h, m = _parse_hhmm(sch.get("at") or "00:00")
         cand = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-        # 契约：weekday 0=周日（§4.1）；Python 日历 Monday=0 … Sunday=6，换算之
-        target_wd = (int(sch.get("weekday") or 0) + 6) % 7
+        # 契约：0=周日（§4.1）；weekdays 多选优先，回落旧单值 weekday
+        targets = store.weekly_py_weekdays(sch)
         # 先对齐到目标时刻，再前进到目标星期；<= 判断保证「严格未来」
-        while cand <= now_dt or cand.weekday() != target_wd:
+        while cand <= now_dt or cand.weekday() not in targets:
             cand += timedelta(days=1)
         return _wall_ts(cand, tz)
     if kind == "once":
@@ -429,12 +429,18 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
 
     target = task.get("target") or {}
     slug = target.get("project_slug") or "default"
+    # 任务级模型覆盖（仅 prompt 目标）：传给 CreateSessionRequest 走既有解析链
+    # （provider 被禁用/删除时 _resolve_provider_model 优雅回退默认）；
+    # session meta 持久化 provider/model，摘要调用 _llm_summary 自动同模型。
+    model = task.get("model") if isinstance(task.get("model"), dict) else None
     req = _sessions_api.CreateSessionRequest(
         project_slug=slug,
         workspace="",  # create_session 以每会话目录为准（忽略该字段）
         agent_id=target.get("agent_id"),
         title=f"⏰ {task.get('name') or _('schedule.default_task_title')}",
         type="scheduled",
+        provider=(model or {}).get("provider") or None,
+        model=(model or {}).get("model") or None,
     )
     meta = await _sessions_api.create_session(req)
     if meta.get("ok") is False or not meta.get("id"):
@@ -814,7 +820,7 @@ def planned_points(task: dict, day: str, now: float | None = None) -> list[float
         except ValueError:
             return []
         cand = day_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-        if kind == "weekly" and cand.weekday() != (int(sch.get("weekday") or 0) + 6) % 7:
+        if kind == "weekly" and cand.weekday() not in store.weekly_py_weekdays(sch):
             return []
         ts = _wall_ts(cand, tz)
         return [ts] if ts >= now else []

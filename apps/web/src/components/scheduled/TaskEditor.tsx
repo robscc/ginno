@@ -12,7 +12,7 @@ import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { SchedulePlan, ScheduleTask, ScheduleTarget } from "@/lib/types";
 import { ContextEditor } from "@/components/workflow/ContextEditor";
-import { WEEKDAY_KEYS } from "./shared";
+import { WEEKDAY_KEYS, weeklyDays } from "./shared";
 
 type ScheduleKind = SchedulePlan["kind"];
 
@@ -65,8 +65,9 @@ export function TaskEditor({
     initial?.schedule.kind === "interval" && initial.schedule.minutes % 60 === 0 ? "h" : "m",
   );
   const [dailyAt, setDailyAt] = useState(initial?.schedule.kind === "daily" ? initial.schedule.at : "09:30");
-  const [weeklyWeekday, setWeeklyWeekday] = useState(
-    initial?.schedule.kind === "weekly" ? initial.schedule.weekday : 1,
+  // weekly 多选（0=周日，契约同后端）；新建默认周一。
+  const [weeklyWeekdays, setWeeklyWeekdays] = useState<number[]>(
+    initial?.schedule.kind === "weekly" ? weeklyDays(initial.schedule) : [1],
   );
   const [weeklyAt, setWeeklyAt] = useState(initial?.schedule.kind === "weekly" ? initial.schedule.at : "18:00");
   const [onceAt, setOnceAt] = useState(
@@ -75,6 +76,35 @@ export function TaskEditor({
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // ---- 任务级模型覆盖（仅 prompt 目标；""=跟随 agent/全局默认）----
+  // 选择值编码为 "pid::model"，避免与模型名里的分隔符歧义。
+  const [modelPick, setModelPick] = useState(
+    initial?.model ? `${initial.model.provider}::${initial.model.model}` : "",
+  );
+  // 与 AgentsSettings/chat 模型 chip 同一套枚举：enabled provider × models[]
+  //（缺省回落 default_model）。
+  const modelGroups = useMemo(
+    () =>
+      Object.entries(g.providers)
+        .filter(([, p]) => p.enabled)
+        .map(([pid, p]) => ({
+          pid,
+          name: p.name || pid,
+          models: (
+            Array.isArray(p.models) && p.models.length
+              ? p.models
+              : [p.default_model || p.model || ""]
+          ).filter((m): m is string => !!m),
+        })),
+    [g.providers],
+  );
+  // 已存模型不在当前列表（provider 禁用/模型改名）→ 合成 option，不静默重置。
+  const knownModelValues = new Set(modelGroups.flatMap((grp) => grp.models.map((m) => `${grp.pid}::${m}`)));
+  const staleModel =
+    initial?.model && !knownModelValues.has(`${initial.model.provider}::${initial.model.model}`)
+      ? initial.model
+      : null;
 
   const wf = g.workflows.find((w) => w.id === workflowId) ?? null;
   // 编辑中的任务原指向的配方 id（判别联合先拆开，回调里要用）。
@@ -105,7 +135,8 @@ export function TaskEditor({
         return { kind: "daily", at: dailyAt };
       case "weekly":
         if (!weeklyAt) return { error: tr("editor.errPickWeekly") };
-        return { kind: "weekly", weekday: weeklyWeekday, at: weeklyAt };
+        if (!weeklyWeekdays.length) return { error: tr("editor.errPickWeeklyDay") };
+        return { kind: "weekly", weekdays: [...weeklyWeekdays].sort((a, b) => a - b), at: weeklyAt };
       case "once": {
         if (!onceAt) return { error: tr("editor.errPickOnce") };
         // datetime-local 给 "YYYY-MM-DDTHH:mm"；契约是本地时间 "…THH:mm:ss"。
@@ -141,9 +172,17 @@ export function TaskEditor({
     const plan = buildSchedule();
     if ("error" in plan) return setError(plan.error);
 
+    // 模型覆盖显式随 body 提交（PATCH 时 null = 清除；省略会沿用旧值）。
+    // workflow 目标不生效，统一 null 清掉可能的残留。
+    const sep = modelPick.indexOf("::");
+    const model =
+      targetType === "prompt" && sep > 0
+        ? { provider: modelPick.slice(0, sep), model: modelPick.slice(sep + 2) }
+        : null;
+
     setBusy(true);
     try {
-      const body = { name: name.trim(), target, schedule: plan, enabled: initial?.enabled ?? true };
+      const body = { name: name.trim(), target, schedule: plan, enabled: initial?.enabled ?? true, model };
       const r = initial
         ? await api.patchScheduleTask(initial.id, body)
         : await api.createScheduleTask(body);
@@ -237,6 +276,26 @@ export function TaskEditor({
                   placeholder="default"
                 />
               </div>
+            </div>
+            <div className="mt-3">
+              <div className="field-label">{tr("editor.model")}</div>
+              <select className="field" value={modelPick} onChange={(e) => setModelPick(e.target.value)}>
+                <option value="">{tr("editor.modelDefault")}</option>
+                {modelGroups.map((grp) => (
+                  <optgroup key={grp.pid} label={grp.name}>
+                    {grp.models.map((m) => (
+                      <option key={`${grp.pid}::${m}`} value={`${grp.pid}::${m}`}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+                {staleModel && (
+                  <option value={`${staleModel.provider}::${staleModel.model}`}>
+                    {staleModel.provider} / {staleModel.model}
+                  </option>
+                )}
+              </select>
             </div>
           </>
         ) : (
@@ -350,22 +409,33 @@ export function TaskEditor({
               />
             )}
             {kind === "weekly" && (
-              <span className="flex items-center gap-1.5 text-xs text-muted">
+              <span className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
                 {tr("editor.on")}
-                <select
-                  className="field w-16 px-1 py-1"
-                  value={weeklyWeekday}
-                  onChange={(e) => setWeeklyWeekday(Number(e.target.value))}
-                >
-                  {WEEKDAY_KEYS.map((k) => (
-                    <option key={k} value={WEEKDAY_KEYS.indexOf(k)}>
+                {WEEKDAY_KEYS.map((k, i) => {
+                  const on = weeklyWeekdays.includes(i);
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() =>
+                        setWeeklyWeekdays(
+                          on ? weeklyWeekdays.filter((d) => d !== i) : [...weeklyWeekdays, i],
+                        )
+                      }
+                      className={`rounded-md border px-1.5 py-1 transition-colors ${
+                        on
+                          ? "border-violet bg-violet/20 text-violet"
+                          : "border-line text-muted hover:text-txt"
+                      }`}
+                    >
                       {tr(`weekday.${k}`)}
-                    </option>
-                  ))}
-                </select>
+                    </button>
+                  );
+                })}
                 <input
                   type="time"
-                  className="field w-32 px-2 py-1"
+                  className="field w-28 px-2 py-1"
                   value={weeklyAt}
                   onChange={(e) => setWeeklyAt(e.target.value)}
                 />

@@ -99,6 +99,68 @@ def test_create_task_interval_below_minimum_400(client):
     assert "5 分钟" in r.json()["detail"]
 
 
+def test_create_task_weekdays_and_model(client):
+    """weekly 多选 + 任务级模型覆盖一起落库；next_run_at 已算。"""
+    body = _prompt_task(
+        schedule={"kind": "weekly", "weekdays": [1, 3, 5], "at": "18:00"},
+        model={"provider": "prov-a", "model": "m1"},
+    )
+    r = client.post("/api/schedule/tasks", json=body)
+    assert r.status_code == 200
+    t = r.json()
+    assert t["schedule"]["weekdays"] == [1, 3, 5]
+    assert t["model"] == {"provider": "prov-a", "model": "m1"}
+    assert t["next_run_at"] > time.time()
+    # 旧单值 weekday 仍可保存（读侧兼容）
+    t2 = client.post("/api/schedule/tasks", json=_prompt_task(
+        schedule={"kind": "weekly", "weekday": 0, "at": "09:00"}
+    )).json()
+    assert t2["schedule"]["weekday"] == 0
+
+
+def test_create_task_bad_weekdays_400(client):
+    for days in ([], [7], [True]):
+        r = client.post("/api/schedule/tasks", json=_prompt_task(
+            schedule={"kind": "weekly", "weekdays": days, "at": "09:00"}
+        ))
+        assert r.status_code == 400
+    # 旧契约的坏值同样拒绝
+    r2 = client.post("/api/schedule/tasks", json=_prompt_task(
+        schedule={"kind": "weekly", "weekday": 7, "at": "09:00"}
+    ))
+    assert r2.status_code == 400
+
+
+def test_patch_task_model_none_clears_and_omit_keeps(client):
+    """PATCH model:null 清除覆盖；省略 model 的 PATCH 沿用现值。"""
+    t = client.post("/api/schedule/tasks", json=_prompt_task(
+        model={"provider": "p", "model": "m"}
+    )).json()
+    r = client.patch(f"/api/schedule/tasks/{t['id']}", json={"model": None})
+    assert r.status_code == 200
+    assert r.json().get("model") is None
+    t2 = client.post("/api/schedule/tasks", json=_prompt_task(
+        model={"provider": "p", "model": "m"}
+    )).json()
+    r2 = client.patch(f"/api/schedule/tasks/{t2['id']}", json={"name": "改名"})
+    assert r2.json()["model"] == {"provider": "p", "model": "m"}
+
+
+def test_patch_weekdays_recomputes_next_run(client):
+    from datetime import datetime
+
+    t = client.post("/api/schedule/tasks", json=_prompt_task(
+        schedule={"kind": "weekly", "weekday": 0, "at": "09:00"}
+    )).json()
+    r = client.patch(f"/api/schedule/tasks/{t['id']}", json={
+        "schedule": {"kind": "weekly", "weekdays": [1], "at": "09:00"}  # 改到周一
+    })
+    assert r.status_code == 200
+    nxt = r.json()["next_run_at"]
+    assert nxt and nxt > time.time()
+    assert datetime.fromtimestamp(nxt).weekday() == 0  # Python Monday=0
+
+
 def test_create_task_workflow_missing_required_input_400(client):
     from ginno_runtime.workflows import store as wf_store
 
