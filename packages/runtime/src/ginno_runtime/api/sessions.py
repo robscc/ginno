@@ -19,6 +19,7 @@ from .. import providers as prov_mod
 from .. import server_shared as shared
 from ..agents.memory import ensure_agent_memory
 from ..checkpointer import FileCheckpointer
+from ..classifier.middlewares import build_middlewares
 from ..goals import events as goal_events
 from ..goals import store as goal_store
 from ..goals import templates as goal_templates
@@ -597,6 +598,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         subagent_depth=sub_depth,
         restrict_tools=req.restrict_tools,
     )
+    router, tool_selector = build_middlewares(session_id)
     graph = build_graph(
         model=model,
         project_slug=req.project_slug,
@@ -607,6 +609,8 @@ async def create_session(req: CreateSessionRequest) -> dict:
         # 模型热切（design §3.2）：graph 每次调用解析当前模型，PATCH 原地
         # 换模型对运行中的 turn 也生效。
         model_getter=shared.make_session_model_getter(session_id, model),
+        router=router,
+        tool_selector=tool_selector,
     )
     ag = _agent_lookup(agent_id)
     if ag:
@@ -1096,6 +1100,7 @@ def _apply_context_to_live_session(
         # And the type-registry tightening (P3 contract 1).
         restrict_tools=s.get("restrict_tools") or [],
     )
+    router, tool_selector = build_middlewares(s.get("session_id", ""))
     s["graph"] = build_graph(
         model=s["model"],
         project_slug=slug,
@@ -1105,6 +1110,8 @@ def _apply_context_to_live_session(
         all_tools=all_tools,
         # 模型热切：重建也不能把模型重新烤死（design §3.2），继续走 getter。
         model_getter=shared.make_session_model_getter(s.get("session_id", ""), s["model"]),
+        router=router,
+        tool_selector=tool_selector,
     )
     s["all_tool_names"] = [t.name for t in all_tools]
     s["mcp_tool_names"] = [t.name for t in mcp_tools]
@@ -1264,6 +1271,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         subagent_depth=sub_depth,
         restrict_tools=restrict_tools,
     )
+    router, tool_selector = build_middlewares(session_id)
     graph = build_graph(
         model=model,
         project_slug=slug,
@@ -1273,6 +1281,8 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         all_tools=all_tools,
         # 模型热切（design §3.2）：重启重建的会话同样支持运行中换模型。
         model_getter=shared.make_session_model_getter(session_id, model),
+        router=router,
+        tool_selector=tool_selector,
     )
     s = {
         "session_id": session_id,

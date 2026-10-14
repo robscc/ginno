@@ -940,19 +940,60 @@ def _wrap_steered_for_model(history: list) -> list:
     return out
 
 
-def agent_node_factory(model_getter, all_tools):
+def _annotate_turn_tools(history: list, allowed: list) -> list:
+    """Copy-only: tell the model which tools are ACTUALLY bound this turn.
+
+    Classifier tool-selection (classifier/middlewares.py) may narrow the
+    bound toolset below what the stable system prompt declares. Rewriting
+    that declaration per turn would thrash the prompt prefix cache, so the
+    per-turn truth rides on the tail HumanMessage instead — which changes
+    every turn anyway, so caching loses nothing. Copy semantics match
+    _wrap_steered_for_model (persisted state untouched).
+    """
+    if not history:
+        return history
+    names = [t.name for t in allowed]
+    shown = ", ".join(names[:40]) + (", …" if len(names) > 40 else "")
+    note = f"[Bound tools this turn: {shown}. Calls to other tools will fail.]"
+    tail = history[-1]
+    if not isinstance(tail, HumanMessage):
+        return history
+    content = tail.content
+    if isinstance(content, str):
+        return history[:-1] + [tail.model_copy(update={"content": f"{content}\n\n{note}"})]
+    if isinstance(content, list):
+        return history[:-1] + [
+            tail.model_copy(update={"content": [*content, {"type": "text", "text": note}]})
+        ]
+    return history
+
+
+def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None):
     """``model_getter``：无参可调用，返回当前模型对象。本节点在每个
     superstep 入口（即每次 LLM 调用前）解析一次真实实例——模型热切
     （model-assignment-design.md §3.2）靠它生效：PATCH 原地换掉会话条目
     的 ``model`` 后，这里下一次解析自然拿到新模型。后续所有用法
     （bind_tools / _is_anthropic_model / ainvoke）都作用于解析出的实例，
-    所以类型检查与 provider 特性判断不受影响。"""
+    所以类型检查与 provider 特性判断不受影响。
+
+    ``router`` / ``tool_selector``（classifier/middlewares.py）：可选的
+    classifier 中间件。router 在解析之后、bind_tools 之前返回（可能不同的）
+    模型实例——沿用上面同一契约；tool_selector 在 ``tool_allowed`` 之后
+    收窄本 superstep 绑定的工具子集。两者都自带降级语义：任何失败/低置信度
+    返回原模型 / 全量列表，绝不抛异常打断 turn。"""
 
     async def agent_node(state: AgentState, config=None) -> dict:
         model = model_getter()
+        if router is not None:
+            model = await router.route(model, state, config)
         agent = _resolve_agent(_turn_agent_id(state, config))
         extra = _skill_extra_allow(state)
         allowed = [t for t in all_tools if tool_allowed(agent, t.name, extra)]
+        tools_filtered = False
+        if tool_selector is not None:
+            selected = await tool_selector.select(state, allowed)
+            tools_filtered = len(selected) != len(allowed)
+            allowed = selected
         bound = (
             model.bind_tools(allowed)
             if allowed and hasattr(model, "bind_tools")
@@ -1026,6 +1067,11 @@ def agent_node_factory(model_getter, all_tools):
         history = strip_tool_code_markers(history)
         # Tell the model that these arrived mid-turn (copy-only; see the helper).
         history = _wrap_steered_for_model(history)
+        # Classifier tool-selection narrowed the set below the stable system
+        # prompt's declaration — the per-turn truth rides on the tail message
+        # (copy-only) so the stable layer stays byte-identical for the cache.
+        if tools_filtered:
+            history = _annotate_turn_tools(history, allowed)
         # B3-tail — rolling cache breakpoints so the growing history caches too
         # (not just system+tools). Same gate as _system_message; the copy
         # semantics match the strip_* steps above (persisted state untouched).
@@ -1630,6 +1676,8 @@ def build_graph(
     context_dirs: list[dict] | None = None,
     primary_path: str | None = None,
     model_getter=None,
+    router=None,
+    tool_selector=None,
 ):
     """Compose the main agent graph (single graph, union toolset).
 
@@ -1639,6 +1687,9 @@ def build_graph(
     型；缺省退化为静态 ``model``。会话构建方应传
     ``server_shared.make_session_model_getter(session_id, model)``，让运行中
     的 turn 也能跟随 PATCH 换模型（model-assignment-design.md §3.2）。
+    ``router`` / ``tool_selector``：classifier 中间件（classifier 包），
+    由 ``classifier.build_middlewares(session_id)`` 构造；mode=off 时为
+    (None, None)，graph 行为与从前逐字节一致。
     """
     if all_tools is None:
         all_tools = build_all_tools(
@@ -1652,7 +1703,10 @@ def build_graph(
 
     resolve_model = model_getter or (lambda: model)
     g = StateGraph(AgentState)
-    g.add_node("agent", agent_node_factory(resolve_model, all_tools))
+    g.add_node(
+        "agent",
+        agent_node_factory(resolve_model, all_tools, router, tool_selector),
+    )
     g.add_node("permission", permission_node_factory(policy, hook_dispatcher, all_tools))
     g.add_node("tools", _tools_node_factory(all_tools))
 

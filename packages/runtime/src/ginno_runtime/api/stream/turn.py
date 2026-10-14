@@ -21,6 +21,7 @@ from ... import files as files_mod
 from ... import projects as projects_mod
 from ... import server_shared as shared
 from ... import workflows as wf_store
+from ...classifier.middlewares import build_middlewares
 from ...graph import build_all_tools, build_graph, build_turn_context
 from ...lang import t
 from ...server_shared import _log, _push_session_event, spawn_bg
@@ -261,6 +262,7 @@ def _maybe_refresh_session_graph(session: dict) -> None:
         # rebuild must not hand a restricted child its tools back.
         restrict_tools=session.get("restrict_tools") or [],
     )
+    router, tool_selector = build_middlewares(session.get("session_id", ""))
     session["graph"] = build_graph(
         model=session["model"],
         project_slug=slug,
@@ -272,6 +274,8 @@ def _maybe_refresh_session_graph(session: dict) -> None:
         model_getter=shared.make_session_model_getter(
             session.get("session_id", ""), session["model"]
         ),
+        router=router,
+        tool_selector=tool_selector,
     )
     session["all_tool_names"] = [t.name for t in all_tools]
     session["mcp_tool_names"] = [t.name for t in mcp_tools]
