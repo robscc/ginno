@@ -28,7 +28,7 @@ export function SessionSearchModal({
   const results = useMemo(() => {
     // 影子会话整类不进搜索（scheduled-tasks-design §3.6/§10 决议 5）。
     const sorted = [...g.sessions]
-      .filter((s) => s.type !== "scheduled")
+      .filter((s) => s.type !== "scheduled" && s.type !== "team" && s.type !== "team-member")
       .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
     const needle = q.trim().toLowerCase();
     if (!needle) return sorted;

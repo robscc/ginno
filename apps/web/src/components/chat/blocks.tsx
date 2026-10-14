@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { AskUserCard } from "./AskUserCard";
 import { useChatT } from "./blocks/i18n";
 import type { Block, SteerBandFile, SteerBandImage } from "./blocks/types";
+import { MentionText } from "./MentionText";
 import {
   SubagentSpawnCard,
   SubagentResultCard,
@@ -207,7 +208,7 @@ export function UserBlocks({ blocks }: { blocks: Block[] }) {
         // break-words: pasted terminal output carries long unbroken paths —
         // without it the transcript overflows the page into horizontal scroll
         <div key={i} className="min-w-0 whitespace-pre-wrap break-words">
-          {t}
+          <MentionText text={t} />
         </div>
       ))}
     </>

@@ -891,6 +891,8 @@ export interface TeamMemberRow {
   /** 全部会话（P2 多会话，2026-10-13）：换会话 = 换上下文，编制不动。
    *  P1 存量成员为空数组，前端回退 [session_id]。 */
   session_ids?: string[];
+  /** 活跃会话的模型（总览状态卡展示）。 */
+  model?: string;
   role: "leader" | "member";
   machine: string;
   status: TeamMemberStatus;

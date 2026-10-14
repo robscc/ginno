@@ -69,6 +69,105 @@ async def _broadcast(team_id: str, client: str = "main") -> None:
     )
 
 
+async def appoint_leader(team: dict, agent_id: str, display_name: str = "") -> dict | None:
+    """给团队任命实体领队（leader 成员实例，有自己的会话）。已有领队/满员/
+    agent 空 → None。建队端点与启动回填共用（2026-10-14 用户定稿：创建
+    Team 选了 Leader 就必须有实体 Leader——服务端保证，不依赖前端）。"""
+    from .sessions import CreateSessionRequest, create_session
+
+    if not agent_id or len(team.get("members") or []) >= team_store.MAX_MEMBERS:
+        return None
+    if team.get("leader_instance_id") or any(
+        m.get("role") == "leader" for m in team.get("members") or []
+    ):
+        return None
+    sw = team.get("shared_workspace") or {}
+    resp = await create_session(CreateSessionRequest(
+        project_slug=str(team.get("project_slug") or "default"),
+        workspace=str(sw.get("workspace") or ""),
+        agent_id=agent_id,
+        title=f"{display_name or agent_id} · {team.get('name') or ''}".strip(),
+        type="team-member",
+        context_folders=list(sw.get("context_folders") or []),
+        primary_folder=sw.get("primary_folder"),
+        parent_session_id=str(team.get("main_session_id") or "") or None,
+    ))
+    if not resp.get("ok"):
+        return None
+    member = team_store.add_member(
+        str(team["id"]), agent_id, str(resp["id"]),
+        display_name=display_name or agent_id, role="leader",
+    )
+    if member is None:
+        from .sessions import delete_session
+        try:
+            await delete_session(str(resp["id"]))
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    team_store.update_team(str(team["id"]), {"leader_instance_id": member["instance_id"]})
+    _log.info("team_leader_appointed team=%s agent=%s session=%s",
+              team["id"], agent_id, resp["id"])
+    return member
+
+
+async def recover_teams() -> None:
+    """启动恢复（2026-10-14）：
+
+    1. **领队回填**：领队实体化模型落地前建的存量团队没有 leader 实例——
+       路由模块（无 @ 默认路由领队）会回退旧语义。这里按主会话 persona
+       自动补一个 leader 成员实例（有自己的会话），行为与新团队对齐。
+    2. **孤儿团队会话清理**：type=team/team-member 但不被任何 roster 引用
+       的会话（旧解散只删 roster 漏删会话时期的遗留）——侧栏过滤 + /team
+       无 roster 都够不着它们，纯属泄漏，删除并留痕。
+    """
+    from .sessions import CreateSessionRequest, create_session, delete_session
+    from ..session_meta import _find_meta, _session_meta_list
+
+    for team in team_store.list_teams():
+        has_leader = team.get("leader_instance_id") or any(
+            m.get("role") == "leader" for m in team.get("members") or []
+        )
+        if has_leader:
+            continue
+        if len(team.get("members") or []) >= team_store.MAX_MEMBERS:
+            _log.warning("team_leader_backfill_skipped_full team=%s", team.get("id"))
+            continue
+        main_sid = str(team.get("main_session_id") or "")
+        meta, _ = _find_meta(main_sid) or ({}, None)
+        agent_id = str((meta or {}).get("agent_id") or "")
+        if not agent_id:
+            continue
+        try:
+            member = await appoint_leader(
+                team, agent_id,
+                display_name=str((meta or {}).get("title") or agent_id)[:24] or agent_id,
+            )
+            if member:
+                _log.info("team_leader_backfilled team=%s agent=%s", team["id"], agent_id)
+        except Exception:  # noqa: BLE001 — 恢复不因单队失败中断
+            _log.exception("team_leader_backfill_failed team=%s", team.get("id"))
+
+    # 孤儿清理：roster 引用集之外的所有团队类会话。
+    referenced: set[str] = set()
+    for team in team_store.list_teams():
+        referenced.add(str(team.get("main_session_id") or ""))
+        for m in team.get("members") or []:
+            referenced.update(str(x) for x in (m.get("session_ids") or []))
+            if m.get("session_id"):
+                referenced.add(str(m["session_id"]))
+    slugs = {str(t.get("project_slug") or "default") for t in team_store.list_teams()} | {"default"}
+    for slug in sorted(slugs):
+        for s in _session_meta_list(slug):
+            if s.get("type") in ("team", "team-member") and s.get("id") not in referenced:
+                try:
+                    await delete_session(str(s["id"]))
+                    _log.info("team_orphan_session_removed type=%s session=%s",
+                              s.get("type"), s.get("id"))
+                except Exception:  # noqa: BLE001
+                    _log.exception("team_orphan_remove_failed session=%s", s.get("id"))
+
+
 # --------------------------------------------------------------------------- #
 # 团队 CRUD
 # --------------------------------------------------------------------------- #
@@ -117,8 +216,15 @@ async def create_team_endpoint(req: CreateTeamRequest) -> dict:
     )
     if team is None:
         return {"ok": False, "error": "团队编制写入失败"}
+    # 建队即任命实体领队（用户选的 Lead persona → leader 成员实例）。
+    # 失败不阻塞建队（可后补），但正常路径必有。
+    if req.agent_id:
+        from ..session_meta import _find_meta as _fm
+        _meta, _ = _fm(main_sid) or ({}, None)
+        await appoint_leader(team, str(req.agent_id),
+                             display_name=str((_meta or {}).get("title") or "")[:24])
     _log.info("team_created id=%s name=%r main=%s", team["id"], name, main_sid)
-    return {"ok": True, "team": _payload(team)}
+    return {"ok": True, "team": _payload(team_store.get_team(team["id"]) or team)}
 
 
 @router.get("/api/teams/{team_id}")

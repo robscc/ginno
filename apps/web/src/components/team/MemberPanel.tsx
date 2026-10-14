@@ -86,7 +86,9 @@ export function MemberPanel({
 }) {
   const g = useGinno();
   const { tc, tr } = useChatT();
-  const rows = team.member_rows ?? [];
+  const allRows = team.member_rows ?? [];
+  // 领队实例由置顶 👑 行展示，成员列表不再重复（2026-10-14）。
+  const rows = allRows.filter((r) => r.instance_id !== team.leader_instance_id);
   const rollup = team.rollup;
   // 多会话展开态 + 新会话/删除会话的进行中标记 + 删除两步确认。
   const [openIds, setOpenIds] = useState<Record<string, boolean>>({});
@@ -146,14 +148,46 @@ export function MemberPanel({
         </div>
       )}
 
-      {/* 领队 persona（主会话的 agent）：置顶展示，与成员区隔（2026-10-14
-          用户需求：右边的智能体列表要能看到领队）。点行回主会话视图。 */}
+      {/* 领队（2026-10-14 定稿：领队 = 独立 leader 成员实例，有自己的会话，
+          与主会话「协作广场」分开）。有 leader 实例 → 活状态行，点开进领队
+          工作台；没有 → 回退显示主会话 persona（静态，提示可任命）。 */}
       {(() => {
+        const leadRow = rows.find((r) => r.instance_id === team.leader_instance_id);
+        if (leadRow) {
+          const agent = agentById(leadRow.agent_id);
+          const hex = agentHex(agent?.color);
+          return (
+            <button
+              onClick={() => onOpenMember(leadRow)}
+              className="block border-b border-line bg-violet/[0.06] px-3 py-2.5 text-left transition-colors hover:bg-violet/[0.1]"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] leading-none">👑</span>
+                <StatusDot status={leadRow.status} />
+                <span
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-bold"
+                  style={{ background: hex, color: "#0b0d10" }}
+                >
+                  {leadRow.display_name.slice(0, 1).toUpperCase()}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs font-medium text-txt">
+                  {leadRow.display_name}
+                </span>
+                <span className="shrink-0 rounded-full border border-violet/40 bg-violet/10 px-1.5 py-px text-[10px] text-violet">
+                  {tc("team.leadBadge")}
+                </span>
+              </div>
+              <div className="mt-1 truncate pl-[26px] text-[10px] leading-relaxed text-faint" title={leadRow.status_detail}>
+                {leadRow.status_detail || tc("team.leadInstanceNote")}
+              </div>
+            </button>
+          );
+        }
         const lead = g.agents.find((x) => x.id === team.main_agent_id);
         if (!lead) return null;
         const hex = agentHex(lead.color);
         return (
-          <div className="border-b border-line bg-violet/[0.06] px-3 py-2.5">
+          <div className="border-b border-line bg-violet/[0.06] px-3 py-2.5 opacity-80">
             <div className="flex items-center gap-2">
               <span className="text-[13px] leading-none">👑</span>
               <span

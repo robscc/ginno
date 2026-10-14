@@ -15,7 +15,7 @@ import type { SynthesisCaseSummary } from "./runtime";
 import { notifyNative } from "./desktop";
 import { loadNotifyPrefs, notifyPrefs } from "./notifyPrefs";
 import { uiText } from "../i18n/uiText";
-import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Plan, Providers, SessionMeta, SkillSummary, SubagentSpawnEvent, SubagentStatusEvent, Todo, WorkflowDef, WorkflowRun } from "./types";
+import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Plan, Providers, SessionMeta, SkillSummary, SubagentSpawnEvent, SubagentStatusEvent, Team, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis" | "code";
 
@@ -340,6 +340,10 @@ interface GinnoState {
   goalBySession: Record<string, Goal | null>;
   notifyGoal: (sessionId: string, goal: Goal | null) => void;
   loadGoal: (sessionId: string) => Promise<void>;
+  // ---- AgentTeam（agent-team-design.md §5.2：@ 投递可见范围等读面）----
+  teams: Team[];
+  reloadTeams: () => Promise<void>;
+  notifyTeamUpdated: (team: Team) => void;
   // ---- 任务清单编排（subagent-plan-orchestration-design.md §2/P3）----
   // Per-session plan 快照：打开会话时 REST 拉取 + plan.updated WS 事件实时
   // 刷（watcher 每次落盘推整张清单）。PlanBoard 消费。
@@ -1473,6 +1477,23 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const [teams, setTeams] = useState<Team[]>([]);
+  const notifyTeamUpdated = useCallback((team: Team) => {
+    if (!team?.id) return;
+    setTeams((prev) => {
+      const i = prev.findIndex((t) => t.id === team.id);
+      return i >= 0 ? prev.map((t, k) => (k === i ? team : t)) : [...prev, team];
+    });
+  }, []);
+  const reloadTeams = useCallback(async () => {
+    try {
+      const r = await api.listTeams();
+      setTeams(r.teams ?? []);
+    } catch {
+      /* sidecar down */
+    }
+  }, []);
+
   // ---- 任务清单编排（§2/P3）：同 goal 的 (a) 打开会话拉取 + (b) WS 实时刷 ----
   const [plansBySession, setPlansBySession] = useState<Record<string, Plan[]>>({});
 
@@ -1668,6 +1689,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     plansBySession,
     loadPlans,
     notifyPlanUpdated,
+    teams,
+    reloadTeams,
+    notifyTeamUpdated,
     setGoalObjective,
     setGoalStatus,
     clearGoal,

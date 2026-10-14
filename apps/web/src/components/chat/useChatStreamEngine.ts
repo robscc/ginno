@@ -652,6 +652,8 @@ export function useChatStreamEngine(deps: EngineDeps) {
     // 任务清单（plan-orchestration §2/P3）：同款——打开时 REST 拉取，之后
     // plan.updated WS 事件实时刷。
     g.loadPlans(sid);
+    // AgentTeam：@ 投递菜单可见范围需要 teams（team.changed 事件持续回流）。
+    void g.reloadTeams();
 
     // Restore draft if any (mentions re-pruned against the restored text so a
     // token the user deleted before switching stays deleted)

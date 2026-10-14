@@ -211,8 +211,16 @@ def member_row(team: dict, member: dict, client: str = "main") -> dict:
         slug, member.get("session_id") or "", member, client
     )
     last_active = float(member.get("last_active") or member.get("created") or 0)
+    # 总览状态卡（设计稿视图 2）展示用：活跃会话的模型。
+    try:
+        from ..session_meta import _find_meta as _fm
+        _meta, _ = _fm(member.get("session_id") or "") or ({}, None)
+        model = (_meta or {}).get("model") or ""
+    except Exception:  # noqa: BLE001
+        model = ""
     return {
         "instance_id": member.get("instance_id"),
+        "model": model,
         "agent_id": member.get("agent_id"),
         "display_name": member.get("display_name") or member.get("agent_id"),
         "session_id": member.get("session_id"),

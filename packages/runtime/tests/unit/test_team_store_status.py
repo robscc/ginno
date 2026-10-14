@@ -369,3 +369,28 @@ def test_member_multi_session_lifecycle(isolated_home):
     assert found and found[1]["instance_id"] == legacy["instance_id"]
     found = ts.team_of_session("main2")
     assert found and found[1] is None
+
+
+# ---- 路由模块（协作广场无 @ 消息的路由，2026-10-14 用户定稿）--------------
+
+
+def test_route_targets(isolated_home):
+    from ginno_runtime.teams import store as ts
+    from ginno_runtime.teams.route import route_targets
+
+    t = ts.create_team("T", "default", "main_r")
+    # 无领队实例 → 群聊广播：路由给全部成员（主会话不承担对话，2026-10-14）
+    m0 = ts.add_member(t["id"], "writer", "s_w")
+    assert route_targets(t) == [m0["instance_id"]]
+    # 任命领队 → 默认路由领队
+    lead = ts.add_member(t["id"], "dev", "s_lead", role="leader")
+    t = ts.get_team(t["id"])
+    assert route_targets(t) == [lead["instance_id"]]
+    # 有 @（mentions）→ 原样返回，去重保序
+    m2 = ts.add_member(t["id"], "research", "s_r")
+    assert route_targets(t, [lead["instance_id"], m2["instance_id"], lead["instance_id"]]) == [
+        lead["instance_id"], m2["instance_id"],
+    ]
+    # 领队实例被移除 → 回退群聊广播（其余全部成员，按加入序）
+    ts.remove_member(t["id"], lead["instance_id"])
+    assert route_targets(ts.get_team(t["id"])) == [m0["instance_id"], m2["instance_id"]]

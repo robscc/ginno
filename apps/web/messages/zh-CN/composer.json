@@ -156,6 +156,15 @@
         "human": "人工",
         "subflow": "子流程"
       }
+    },
+    "teamStatus": {
+      "working": "工作中",
+      "blocked": "⏸ 等你确认",
+      "waiting": "等待子任务",
+      "done": "✓ 完成 · 未读",
+      "idle": "空闲",
+      "unknown": "状态未知",
+      "error": "出错"
     }
   }
 }

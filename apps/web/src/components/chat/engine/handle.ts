@@ -581,6 +581,10 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // Live goal snapshot (created/status/accounting) → TopBar chip.
       ctx.g.notifyGoal(sid, (ev.goal as Goal) ?? null);
       break;
+    case "team.changed":
+      // AgentTeam 聚合状态回流：@ 投递菜单可见范围/总览卡都吃 store.teams。
+      if (ev.team) ctx.g.notifyTeamUpdated(ev.team as never);
+      break;
     case "plan.updated":
       // 任务清单实时刷（plan-orchestration §2）：watcher 每次落盘推整张
       // 清单快照；store 按 plan_id upsert，PlanBoard 重渲染。

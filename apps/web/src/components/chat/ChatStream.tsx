@@ -750,12 +750,23 @@ export function ChatStream({
     const others = g.projectArtifacts.filter(
       (a) => !ownIds.has(a.id) && (!a.session_id || a.session_id !== session?.id),
     );
+    const team = session?.type === "team" ? g.teams.find((t) => t.main_session_id === session.id) : undefined;
+    const teamMembers = team?.member_rows;
+    // @ 产物可见范围（独立空间）：团队主会话只见本团队产物——主会话 + 全部
+    // 成员会话（含多会话）；无 session 归属的项目级产物保留。其他会话不变。
+    const teamSessionIds = new Set<string>([
+      team?.main_session_id ?? "",
+      ...(team?.member_rows ?? []).flatMap((r) => r.session_ids?.length ? r.session_ids : [r.session_id]),
+    ].filter(Boolean));
+    const inTeamScope = (a: { session_id?: string | null }) =>
+      !team || !a.session_id || teamSessionIds.has(a.session_id);
     const items = buildMenuItems(trigger, {
       skills: g.skills,
       agents: g.agents,
       workflows: g.workflows,
-      artifacts: [...g.artifacts, ...others],
+      artifacts: [...g.artifacts, ...others].filter(inTeamScope),
       sessionId: session?.id ?? null,
+      teamMembers,
     });
     setMenu(items.length ? { items, active: 0, trigger } : null);
   }
@@ -884,6 +895,21 @@ export function ChatStream({
                 onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
               />
             )}
+            {/* @ 投递 steering 提示（设计稿视图 1）：收件人 working 时，
+                投递会在下个工具边界以 steering 注入，不打断当前 turn。 */}
+            {(() => {
+              if (session?.type !== "team") return null;
+              const team = g.teams.find((t) => t.main_session_id === session.id);
+              const working = (team?.member_rows ?? []).filter(
+                (r) => r.status === "working" && input.includes(`@agent:${r.agent_id}`),
+              );
+              if (!working.length) return null;
+              return (
+                <div className="mb-2 rounded-md border border-line bg-card/60 px-2.5 py-1.5 text-[11px] leading-relaxed text-faint">
+                  {tc("team.steerHint", { names: working.map((r) => r.display_name).join("、") })}
+                </div>
+              );
+            })()}
             {session && (modBands[session.id]?.some((g) => g.tree.length > 0) ?? false) && (
               // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):
               // composerHint 之上、与 hint/steer 条同级;每 mod 一段。空树零渲染。

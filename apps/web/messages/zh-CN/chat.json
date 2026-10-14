@@ -426,7 +426,27 @@
       "leadBadge": "领队",
       "leadNote": "主会话 persona——汇总与验收结果",
       "leaderExistsHint": "团队已有领队（先改现任为成员）",
-      "idCopyTitle": "团队 ID：{id}（点击复制）"
+      "idCopyTitle": "团队 ID：{id}（点击复制）",
+      "tabMain": "主会话",
+      "tabOverview": "团队总览",
+      "digestTitle": "你离开的 {min} 分钟里，团队做了这些",
+      "digestCollapse": "收起",
+      "digestUnread": "完成 · 未读",
+      "digestBlocked": "等你 · 已等 {time}",
+      "ovFilter": {
+        "all": "全部",
+        "active": "仅活跃",
+        "needs": "需要我"
+      },
+      "ovHint": "状态卡 · 点卡进成员工作台",
+      "ovSessions": "{n} 个会话",
+      "ovOpen": "进入工作台 →",
+      "ovEmpty": "没有匹配的成员",
+      "rowNeeds": "{n} 等你",
+      "workspaceShared": "共享 workspace · 独立上下文",
+      "steerHint": "{names} 正在工作中 → 本条将作为 steering 在下个工具边界注入，不打断当前 turn",
+      "idCopied": "已复制 ✓",
+      "leadInstanceNote": "领队实例 · 点开进入领队会话（与主会话分开）"
     }
   }
 }

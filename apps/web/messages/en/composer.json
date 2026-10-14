@@ -156,6 +156,15 @@
         "human": "Human",
         "subflow": "Subflow"
       }
+    },
+    "teamStatus": {
+      "working": "working",
+      "blocked": "⏸ needs you",
+      "waiting": "waiting on subtasks",
+      "done": "✓ done · unread",
+      "idle": "idle",
+      "unknown": "unknown",
+      "error": "error"
     }
   }
 }

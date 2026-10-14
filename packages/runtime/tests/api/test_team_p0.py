@@ -348,3 +348,24 @@ def test_ws_agent_mention_in_plain_session_keeps_persona_semantics(client, creat
     # 走的是普通 turn（有 message.end），不是 team.delivered
     assert "message.end" in names
     assert "team.delivered" not in names
+
+
+def test_create_team_appoints_entity_leader(client, patch_build_model):
+    """建队选了 Lead persona → 必有实体 leader 成员实例（2026-10-14 服务端保证）。
+
+    HiHi/DDD 存量缺领队的根因即旧版只写主会话 persona——现在 create 端点
+    直接任命，前端不参与。
+    """
+    patch_build_model(script(text="ok"))
+    r = client.post("/api/teams", json={"name": "L", "agent_id": "dev"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"], body
+    team = body["team"]
+    assert team["leader_instance_id"]
+    leaders = [m for m in team["members"] if m["role"] == "leader"]
+    assert len(leaders) == 1
+    assert leaders[0]["agent_id"] == "dev"
+    # 领队有自己的独立会话（≠ 主会话）
+    assert leaders[0]["session_id"]
+    assert leaders[0]["session_id"] != team["main_session_id"]

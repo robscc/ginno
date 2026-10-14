@@ -33,6 +33,8 @@ export function NewTeamModal({
     setBusy(true);
     setErr(null);
     try {
+      // 领队实体化（2026-10-14）：runtime 建队端点自动任命实体领队（服务端
+      // 保证，任何客户端不落空），前端无需重复调用。
       const r = await api.createTeam({ name: name.trim(), agent_id: agentId });
       if (r.ok && r.team) onCreated(r.team);
       else setErr(r.error || tc("team.createFailed"));

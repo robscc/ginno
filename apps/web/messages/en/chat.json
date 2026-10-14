@@ -426,7 +426,27 @@
       "leadBadge": "Lead",
       "leadNote": "Main-session persona — summarizes & accepts results",
       "leaderExistsHint": "Team already has a leader (demote the current one first)",
-      "idCopyTitle": "Team id: {id} (click to copy)"
+      "idCopyTitle": "Team id: {id} (click to copy)",
+      "tabMain": "Main",
+      "tabOverview": "Overview",
+      "digestTitle": "While you were away ({min} min), the team did this",
+      "digestCollapse": "Collapse",
+      "digestUnread": "done · unread",
+      "digestBlocked": "needs you · waited {time}",
+      "ovFilter": {
+        "all": "All",
+        "active": "Active",
+        "needs": "Needs me"
+      },
+      "ovHint": "Status cards · click to open workbench",
+      "ovSessions": "{n} sessions",
+      "ovOpen": "Open workbench →",
+      "ovEmpty": "No matching members",
+      "rowNeeds": "{n} await",
+      "workspaceShared": "shared workspace · isolated context",
+      "steerHint": "{names} is working → this delivery will be injected as steering at the next tool boundary, without interrupting the current turn",
+      "idCopied": "copied ✓",
+      "leadInstanceNote": "Lead instance · click to open the lead's own session (separate from main)"
     }
   }
 }

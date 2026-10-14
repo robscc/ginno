@@ -573,6 +573,55 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                             )
                             continue
 
+                    # ── AgentTeam 路由分支（路由模块 v1，2026-10-14）──
+                    # 协作广场里**不 @ 任何人**的消息不再由主会话自跑 turn，
+                    # 而是经 teams.route 决定响应成员：v1 默认路由给领队实例
+                    #（领队实体化闭环：跟广场说话 = 跟领队对话，落在领队自己的
+                    # 会话）。无领队实例的存量团队 → 路由返回空 → 旧语义不变。
+                    if not plan.agent_override and user_text.strip():
+                        from ...teams import store as _team_store
+                        from ...teams.deliver import deliver as _team_deliver
+                        from ...teams.route import route_targets
+
+                        _found_team = _team_store.team_of_session(session_id)
+                        if _found_team and _found_team[1] is None:
+                            _team, _ = _found_team
+                            _targets = route_targets(_team)
+                            for _iid in _targets:
+                                _receipt = await _team_deliver(
+                                    str(_team.get("id")), _iid, user_text
+                                )
+                                await _push_session_event(
+                                    session_id,
+                                    "team.delivered",
+                                    {
+                                        "agent_id": (
+                                            _team_store.get_member(
+                                                str(_team.get("id")), _iid
+                                            ) or {}
+                                        ).get("agent_id", ""),
+                                        "text": user_text,
+                                        "routed": True,
+                                        **_receipt,
+                                    },
+                                    turn_id,
+                                )
+                            if not _targets:
+                                # 空团队：广场无对话功能，提示先加成员（不起 turn）。
+                                from ...lang import t as _t
+                                await _push_session_event(
+                                    session_id,
+                                    "notice",
+                                    {"message": _t(
+                                        "This team has no members yet — add a member first; "
+                                        "the main session is a group plaza, not a conversation.",
+                                        "团队还没有成员——先添加成员；主会话是群聊广场，"
+                                        "不承担对话功能。")},
+                                    turn_id,
+                                )
+                            # 已路由给成员（或空团队提示）——主会话永不自跑 turn。
+                            continue
+
                     # Busy check: a turn task is already live for this session
                     # (multi-tab race — the frontend gates sends on `running`).
                     # A goal turn running inline holds the lock but has no entry

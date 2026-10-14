@@ -72,15 +72,16 @@ export function ComposerMenu({
                 type="button"
                 data-idx={i}
                 role="option"
-                aria-selected={isActive}
-                onMouseEnter={() => onHover(i)}
+                aria-selected={isActive && !item.disabled}
+                /* disabled（@ 投递的 blocked 成员）：可见不可选——防误投，
+                   运行时原子拒绝仍兜底。 */
+                onMouseEnter={() => !item.disabled && onHover(i)}
                 onMouseDown={(e) => {
-                  // mousedown (not click) so the textarea keeps focus/blur order
                   e.preventDefault();
-                  onPick(item);
+                  if (!item.disabled) onPick(item);
                 }}
                 className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm transition-colors ${
-                  isActive ? "bg-card2" : "hover:bg-card2/60"
+                  item.disabled ? "cursor-not-allowed opacity-40" : isActive ? "bg-card2" : "hover:bg-card2/60"
                 }`}
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: KIND_COLOR[item.kind] }} />

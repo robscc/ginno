@@ -67,6 +67,12 @@ async def lifespan(app: FastAPI):
                 )
     except Exception:  # noqa: BLE001 — 启动绝不因恢复失败而中断
         _log.exception("plan watcher recovery failed (continuing)")
+    # AgentTeam 恢复（2026-10-14）：存量领队回填 + 孤儿团队会话清理。
+    try:
+        from .api.teams import recover_teams
+        await recover_teams()
+    except Exception:  # noqa: BLE001
+        _log.exception("team recovery failed (continuing)")
     # i18n bundle check (i18n-design.md §10.5): both catalogs loadable + key/
     # placeholder parity. A frozen-app packaging gap (the JSONs missing from
     # the bundle) must surface HERE, not on first use — same lesson as the

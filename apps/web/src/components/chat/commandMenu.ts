@@ -40,6 +40,8 @@ export interface MenuItem {
   group: string;
   /** Token that replaces the trigger text on selection. */
   insert: string;
+  /** 禁选（可见不可选）：@ 投递菜单里 blocked 成员——设计稿 ⛔ 不可投递。 */
+  disabled?: boolean;
 }
 
 /** Client mirror of the server's builtin registry (discoverability subset).
@@ -118,6 +120,9 @@ export interface MenuSources {
   artifacts: Artifact[];
   /** 当前会话 id：非本会话的 artifact 在菜单里标注来源（跨会话选择）。 */
   sessionId?: string | null;
+  /** @ 投递可见范围（agent-team-design §5.2）：团队主会话里 @ 只见本团队
+   *  成员实例（blocked 禁选）；缺省（普通/工作台会话）保持全量 agent 菜单。 */
+  teamMembers?: import("@/lib/types").TeamMemberRow[];
 }
 
 /** Build the flat, group-ordered item list for the active trigger. */
@@ -167,7 +172,7 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
   const kindFilter = trigger.mentionKind; // null → all kinds
   const labelQ = trigger.labelQuery;
   const items: MenuItem[] = [];
-  const push = (kind: MentionKind, id: string, label: string, detail?: string) => {
+  const push = (kind: MentionKind, id: string, label: string, detail?: string, disabled?: boolean) => {
     if (kindFilter && kind !== kindFilter) return;
     const searchIn = kindFilter ? label : `${kind}:${label} ${detail ?? ""}`;
     const needle = kindFilter ? labelQ : q;
@@ -180,9 +185,27 @@ export function buildMenuItems(trigger: Trigger, src: MenuSources): MenuItem[] {
       detail: detail || meta.description,
       group: meta.group,
       insert: `@${kind}:${label} `,
+      disabled,
     });
   };
 
+  // 团队主会话的 @ 菜单（独立空间语义，2026-10-14 用户定稿）：
+  // 顺序 = 成员（投递目标，blocked 禁选）→ 产物（本团队范围，ChatStream 侧
+  // 已过滤）；工作流与记忆不出现——投递面保持最小。其他会话维持原顺序
+  // （产物 → agent → 工作流 → 记忆，persona 覆盖语义不变）。
+  if (src.teamMembers) {
+    const cat = composerCatalog().composer;
+    const statusOf = (st: string) =>
+      ((cat as unknown as Record<string, Record<string, string>>).teamStatus ?? {})[st] ?? st;
+    for (const m of src.teamMembers) {
+      const blocked = m.status === "blocked";
+      push("agent", m.agent_id, m.display_name, `${m.agent_id} · ${statusOf(m.status)}${blocked ? " ⛔" : ""}`, blocked);
+    }
+    for (const a of src.artifacts) {
+      push("artifact", a.id, a.name, a.kind);
+    }
+    return items;
+  }
   // 跨会话条目 detail 带来源标题——显式 @ 即授权（runtime 解析本就是项目级
   // 按名/id 精确命中），agent 文件工具的边界不受菜单影响。
   for (const a of src.artifacts) {

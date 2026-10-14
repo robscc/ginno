@@ -26,8 +26,17 @@ import { MemberPanel, MemberPanelSkeleton } from "./MemberPanel";
 import { AddMemberModal } from "./AddMemberModal";
 import { NewTeamModal } from "./NewTeamModal";
 
+function fmtAway(s: number): string {
+  if (!s || s < 0) return "—";
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${Math.round(s % 60)}s`;
+  return `${Math.floor(m / 60)}h${m % 60}m`;
+}
+
 type View =
   | { kind: "main" }
+  | { kind: "overview" }
   | { kind: "member"; instanceId: string; sessionId: string };
 
 export function TeamShell() {
@@ -46,11 +55,32 @@ export function TeamShell() {
   const [confirmDisbandId, setConfirmDisbandId] = useState<string | null>(null);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
+  // 团队 uuid 复制反馈（对齐 session TurnIdChip 的「✓ 已复制」模式）
+  const [idCopied, setIdCopied] = useState(false);
+  // 总览过滤（设计稿视图 2：全部 / 仅活跃 / 需要我）+ 未读横幅收起
+  const [ovFilter, setOvFilter] = useState<"all" | "active" | "needs">("all");
+  const [digestOpen, setDigestOpen] = useState(true);
 
   const team = useMemo(
     () => teams.find((t) => t.id === teamId) ?? null,
     [teams, teamId],
   );
+
+  const copyTeamId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = id;
+      ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setIdCopied(true);
+    setTimeout(() => setIdCopied(false), 1200);
+  };
 
   // ---- 拉团队列表 ----
   const refresh = useCallback(async () => {
@@ -224,7 +254,9 @@ export function TeamShell() {
         }}
       >
         {alert ? (
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-yellow-500" />
+          <span className="shrink-0 rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 text-[10px] leading-4 text-yellow-500">
+            {tc("team.rowNeeds", { n: (rollup?.blocked ?? 0) + (rollup?.done_unread ?? 0) })}
+          </span>
         ) : busy ? (
           <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-400" />
         ) : (
@@ -373,13 +405,32 @@ export function TeamShell() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-panel px-4">
           <span className="text-sm font-semibold">{team.name}</span>
+          {/* 视图 tab（设计稿三视图之二：主会话 / 团队总览；成员工作台从
+              面板/总览卡进入，返回按钮保留） */}
+          <div className="ml-1 flex items-center gap-1 rounded-lg border border-line p-0.5">
+            {(["main", "overview"] as const).map((k) => (
+              <button
+                key={k}
+                onClick={() => setView({ kind: k })}
+                className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+                  (view.kind === "main" && k === "main") || view.kind === k
+                    ? "bg-violet/15 text-violet"
+                    : "text-faint hover:text-muted"
+                }`}
+              >
+                {tc(k === "main" ? "team.tabMain" : "team.tabOverview")}
+              </button>
+            ))}
+          </div>
           {/* 团队 uuid（2026-10-14 用户需求）：排障对日志用，点击复制 */}
           <button
-            onClick={() => void navigator.clipboard?.writeText(team.id).catch(() => {})}
-            className="rounded px-1 py-0.5 font-mono text-[10px] text-faint transition-colors hover:bg-card2 hover:text-muted"
+            onClick={() => void copyTeamId(team.id)}
+            className={`rounded px-1 py-0.5 font-mono text-[10px] transition-colors hover:bg-card2 hover:text-muted ${
+              idCopied ? "text-green" : "text-faint"
+            }`}
             title={tc("team.idCopyTitle", { id: team.id })}
           >
-            {team.id}
+            {idCopied ? tc("team.idCopied") : team.id}
           </button>
           <span className="text-xs text-faint">
             {tc("team.memberCount", { count: team.member_rows?.length ?? 0 })}
@@ -410,18 +461,100 @@ export function TeamShell() {
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
             {view.kind === "main" ? (
-              mainSession ? (
-                <ChatStream session={mainSession} />
-              ) : (
-                <div className="flex flex-1 items-center justify-center text-xs text-faint">
-                  {tc("team.mainSessionMissing")}
-                </div>
-              )
+              <>
+                {/* 未读汇总横幅（设计稿视图 1 顶部）：done 未读 + blocked
+                    需要你，一屏收拢「谁在等我」；收起记忆到本组件。 */}
+                {(() => {
+                  const rows = team.member_rows ?? [];
+                  const notables = rows.filter(
+                    (r) => r.status === "done" || r.status === "blocked",
+                  );
+                  if (!digestOpen || notables.length === 0) return null;
+                  const last = Math.max(
+                    0,
+                    ...rows.map((r) => r.last_active || 0),
+                  );
+                  const awayMin = last
+                    ? Math.max(1, Math.round((Date.now() / 1000 - last) / 60))
+                    : 0;
+                  return (
+                    <div className="mx-4 mt-2 rounded-lg border border-line bg-card px-3 py-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span>⏱</span>
+                        <span className="flex-1 font-medium text-txt">
+                          {tc("team.digestTitle", { min: awayMin })}
+                        </span>
+                        <button
+                          onClick={() => setDigestOpen(false)}
+                          className="text-[11px] text-faint hover:text-muted"
+                        >
+                          {tc("team.digestCollapse")}
+                        </button>
+                      </div>
+                      <div className="mt-1.5 flex flex-col gap-1">
+                        {notables.map((r) => (
+                          <button
+                            key={r.instance_id}
+                            onClick={() => openMember(r)}
+                            className="flex items-center gap-2 rounded px-1 py-0.5 text-left transition-colors hover:bg-card2"
+                          >
+                            <span className="w-16 shrink-0 truncate text-muted">
+                              {r.display_name}
+                            </span>
+                            <span
+                              className={
+                                r.status === "blocked"
+                                  ? "shrink-0 text-yellow-500"
+                                  : "shrink-0 text-green-500"
+                              }
+                            >
+                              {r.status === "blocked"
+                                ? tc("team.digestBlocked", { time: fmtAway(r.elapsed_s) })
+                                : tc("team.digestUnread")}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-faint" title={r.status_detail}>
+                              {r.status_detail}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+                {mainSession ? (
+                  <ChatStream session={mainSession} />
+                ) : (
+                  <div className="flex flex-1 items-center justify-center text-xs text-faint">
+                    {tc("team.mainSessionMissing")}
+                  </div>
+                )}
+              </>
+            ) : view.kind === "overview" ? (
+              <TeamOverview
+                team={team}
+                filter={ovFilter}
+                onFilter={setOvFilter}
+                onOpen={openMemberSession}
+              />
             ) : memberSession ? (
               <>
-                {/* 成员工作台顶栏：提示这是独立 session + seen 语义 */}
-                <div className="flex items-center gap-2 border-b border-line bg-base/40 px-4 py-1.5 text-[11px] text-faint">
+                {/* 成员工作台顶栏（设计稿视图 3）：独立 session 说明 + 身份
+                    chips（实例/模型/共享 workspace），停止由 ChatStream 自带
+                    的运行控件承担。 */}
+                <div className="flex flex-wrap items-center gap-2 border-b border-line bg-base/40 px-4 py-1.5 text-[11px] text-faint">
                   <span className="text-violet">{tc("team.workspaceBanner")}</span>
+                  {(() => {
+                    const row = (team.member_rows ?? []).find(
+                      (x) => x.instance_id === view.instanceId,
+                    );
+                    return (
+                      <>
+                        {row && <span className="font-mono">{row.instance_id}</span>}
+                        {row?.model && <span>· {row.model}</span>}
+                        <span>· {tc("team.workspaceShared")}</span>
+                      </>
+                    );
+                  })()}
                 </div>
                 <ChatStream session={memberSession} />
               </>
@@ -468,6 +601,115 @@ export function TeamShell() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** 团队总览（设计稿视图 2，方案 B 降本版）：状态卡网格——不挂多路 WS，
+ *  只吃 team.changed 聚合快照 + 每卡 status_detail 摘要。状态语义与
+ *  MemberPanel 同源（teams.status 权威），卡是「谁在干什么/谁卡住了/谁
+ *  需要我」的一屏答案；要看全文点卡进成员工作台。 */
+function TeamOverview({
+  team,
+  filter,
+  onFilter,
+  onOpen,
+}: {
+  team: Team;
+  filter: "all" | "active" | "needs";
+  onFilter: (f: "all" | "active" | "needs") => void;
+  onOpen: (instanceId: string, sessionId: string) => void;
+}) {
+  const tc = useTranslations("chat");
+  const rows = team.member_rows ?? [];
+  const active = rows.filter((r) => r.status === "working" || r.status === "blocked" || r.status === "waiting" || r.status === "unknown");
+  const needs = rows.filter((r) => r.status === "blocked" || r.status === "done");
+  const shown = filter === "all" ? rows : filter === "active" ? active : needs;
+
+  const STATUS_CHIP: Record<string, string> = {
+    working: "border-blue-400/40 bg-blue-400/10 text-blue-400",
+    blocked: "border-yellow-500/40 bg-yellow-500/10 text-yellow-500",
+    waiting: "border-violet/40 bg-violet/10 text-violet",
+    done: "border-green/40 bg-green/10 text-green",
+    error: "border-red/40 bg-red/10 text-red",
+    unknown: "border-line bg-card2/60 text-faint",
+    idle: "border-line bg-card2/60 text-faint",
+  };
+
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+      {/* 过滤 chips（设计稿：全部/仅活跃/需要我，带计数） */}
+      <div className="flex items-center gap-1.5">
+        {([
+          ["all", rows.length],
+          ["active", active.length],
+          ["needs", needs.length],
+        ] as const).map(([k, n]) => (
+          <button
+            key={k}
+            onClick={() => onFilter(k)}
+            className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+              filter === k
+                ? "border-violet/50 bg-violet/10 text-violet"
+                : "border-line text-muted hover:text-txt"
+            }`}
+          >
+            {tc(`team.ovFilter.${k}`)} ({n})
+          </button>
+        ))}
+        <span className="ml-auto text-[11px] text-faint">
+          {tc("team.ovHint")}
+        </span>
+      </div>
+
+      <div
+        className="mt-3 grid gap-3"
+        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}
+      >
+        {shown.map((r) => {
+          const sids = r.session_ids?.length ? r.session_ids : [r.session_id].filter(Boolean);
+          const chip = STATUS_CHIP[r.status] ?? STATUS_CHIP.idle;
+          return (
+            <button
+              key={r.instance_id}
+              onClick={() => onOpen(r.instance_id, r.session_id)}
+              className="flex flex-col rounded-xl border border-line bg-card p-3 text-left transition-colors hover:border-violet/40"
+            >
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-txt">
+                  {r.instance_id === team.leader_instance_id ? "👑 " : ""}{r.display_name}
+                </span>
+                <span className={`shrink-0 rounded-full border px-1.5 py-px text-[10px] ${chip}`}>
+                  {tc(`team.status.${r.status}`)}
+                </span>
+                <span className="shrink-0 text-[10px] tabular-nums text-faint">
+                  {fmtAway(r.elapsed_s)}
+                </span>
+              </div>
+              {/* 最近活动摘要（权威 status_detail，不前端二次判态） */}
+              <div
+                className={`mt-1.5 line-clamp-3 text-[11px] leading-relaxed ${
+                  r.status === "blocked" ? "text-yellow-500/90" : "text-muted"
+                }`}
+                title={r.status_detail}
+              >
+                {r.status_detail || tc("team.noDetail")}
+              </div>
+              <div className="mt-auto flex items-center gap-2 pt-2 text-[10px] text-faint">
+                <span className="truncate font-mono">{r.agent_id}</span>
+                {r.model && <span className="truncate">· {r.model}</span>}
+                <span>· {tc("team.ovSessions", { n: sids.length })}</span>
+                <span className="ml-auto shrink-0 text-violet">{tc("team.ovOpen")}</span>
+              </div>
+            </button>
+          );
+        })}
+        {shown.length === 0 && (
+          <div className="col-span-full py-10 text-center text-xs text-faint">
+            {tc("team.ovEmpty")}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
