@@ -75,6 +75,10 @@ export const LAST_SESSION_KEY = "ginno-last-session";
 // 侧栏子树折叠覆盖（subagent-design.md §6.1，从 AppShell 本地状态上收持久化）。
 // shape: {session_id: boolean}——只存用户显式点过 chevron 的会话，其余走默认。
 const TREE_COLLAPSED_KEY = "ginno-sidebar-tree";
+// 侧栏会话未读小圆点：turn 在用户没盯着该会话时结束（message.end / turn
+// 报错 / 子代理终态）→ 标记未读；打开（或回到）该会话即视为已读并清除。
+// shape: {session_id: marked_at_epoch_s}。与折叠覆盖同一持久化模式。
+const UNREAD_KEY = "ginno-unread-sessions";
 
 export interface PreviewFile {
   id: string;
@@ -216,6 +220,11 @@ interface GinnoState {
   previewNonce: number;
   setConnected: (v: boolean) => void;
   setActiveSession: (id: string | null) => void;
+  // ---- 侧栏会话未读小圆点：turn 在用户没盯着该会话时结束（完成/报错/
+  // 子代理终态）标记未读；打开或（窗口可见时）回到该会话即清除。----
+  unreadSessions: Record<string, number>;
+  markSessionUnread: (id: string) => void;
+  clearSessionUnread: (id: string) => void;
   setRightTab: (tab: RightTab, opts?: { manual?: boolean }) => void;
   // ---- right panel open/width/badges (right-panel-redesign.md) ----
   rightPanelOpen: boolean;
@@ -785,6 +794,87 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     activeSessionRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  // ---- 侧栏会话未读小圆点（ginno-unread-sessions）----
+  const [unreadSessions, setUnreadSessionsState] = useState<Record<string, number>>({});
+  const unreadRef = useRef<Record<string, number>>({});
+  // 写时读 ref + 持久化时按 sessions 镜像裁剪，均与 treeCollapsed 同模式。
+  const persistUnread = useCallback((map: Record<string, number>) => {
+    let next = map;
+    if (sessionsRef.current.length) {
+      const alive = new Set(sessionsRef.current.map((s) => s.id));
+      const pruned: Record<string, number> = {};
+      for (const [k, v] of Object.entries(map)) {
+        if (alive.has(k)) pruned[k] = v;
+      }
+      next = pruned;
+    }
+    unreadRef.current = next;
+    setUnreadSessionsState(next);
+    try {
+      localStorage.setItem(UNREAD_KEY, JSON.stringify(next));
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+  // Hydrate once on mount：上一次运行期间标记的未读跨重启保留。
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(UNREAD_KEY);
+      if (!raw) return;
+      const v = JSON.parse(raw) as Record<string, unknown>;
+      if (!v || typeof v !== "object") return;
+      const next: Record<string, number> = {};
+      for (const [k, val] of Object.entries(v)) {
+        if (typeof val === "number") next[k] = val;
+      }
+      unreadRef.current = next;
+      setUnreadSessionsState(next);
+    } catch {
+      /* corrupted — keep empty */
+    }
+  }, []);
+  // 「正在看」判定与 turn-done 通知一致（handle.ts message.end）：窗口可见
+  // 且该会话是当前活跃会话 → turn 结束不算未读。窗口隐藏期间活跃会话跑完
+  // 会标记，回到窗口即由下方 visibility 监听清除。
+  const watchingSession = useCallback((id: string) => {
+    return (
+      activeSessionRef.current === id &&
+      typeof document !== "undefined" &&
+      document.visibilityState === "visible"
+    );
+  }, []);
+  const markSessionUnread = useCallback(
+    (id: string) => {
+      if (!id || watchingSession(id)) return;
+      if (unreadRef.current[id] !== undefined) return;
+      persistUnread({ ...unreadRef.current, [id]: Date.now() / 1000 });
+    },
+    [persistUnread, watchingSession],
+  );
+  const clearSessionUnread = useCallback(
+    (id: string) => {
+      if (unreadRef.current[id] === undefined) return;
+      const next = { ...unreadRef.current };
+      delete next[id];
+      persistUnread(next);
+    },
+    [persistUnread],
+  );
+  // 窗口重新可见/聚焦：正在盯着的活跃会话即视为已读（隐藏期间跑完的 turn
+  // 已标记，回来直接看到结果就不留点）。
+  useEffect(() => {
+    const clearActiveIfVisible = () => {
+      const sid = activeSessionRef.current;
+      if (sid && document.visibilityState === "visible") clearSessionUnread(sid);
+    };
+    window.addEventListener("focus", clearActiveIfVisible);
+    document.addEventListener("visibilitychange", clearActiveIfVisible);
+    return () => {
+      window.removeEventListener("focus", clearActiveIfVisible);
+      document.removeEventListener("visibilitychange", clearActiveIfVisible);
+    };
+  }, [clearSessionUnread]);
+
   // ---- workflow run 视图 ----
   const openRunView = useCallback((runId: string) => setActiveRunId(runId), []);
   const closeRunView = useCallback(() => setActiveRunId(null), []);
@@ -800,11 +890,16 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   // Consumer-facing setter：切换/清空会话时同步关掉 run 视图（中央区二选一）。
   // 内部 boot 路径仍用裸 setActiveSessionId；newSession / removeSession 里也
   // 各自清一次。
-  const setActiveSession = useCallback((id: string | null) => {
-    setActiveSessionId(id);
-    setActiveRunId(null);
-    setScheduleRun(null);
-  }, []);
+  const setActiveSession = useCallback(
+    (id: string | null) => {
+      setActiveSessionId(id);
+      setActiveRunId(null);
+      setScheduleRun(null);
+      // 打开会话 = 读过它 → 清未读小圆点
+      if (id) clearSessionUnread(id);
+    },
+    [clearSessionUnread],
+  );
 
   // The session scope artifacts were last loaded for. When the scope changes
   // (session switch/create/delete) the whole list swaps, which must NOT trigger
@@ -1288,6 +1383,19 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         /* storage unavailable */
       }
     }
+    // 未读小圆点同理：被删会话（含级联后代）的标记一并剪掉。
+    const doomedUnread = Object.keys(unreadRef.current).filter((k) => doomed.has(k));
+    if (doomedUnread.length) {
+      const next = { ...unreadRef.current };
+      for (const k of doomedUnread) delete next[k];
+      unreadRef.current = next;
+      setUnreadSessionsState(next);
+      try {
+        localStorage.setItem(UNREAD_KEY, JSON.stringify(next));
+      } catch {
+        /* storage unavailable */
+      }
+    }
     // 正在查看的会话（或其祖先被级联删除）没了，run 视图也一并关闭。
     const cur = activeSessionRef.current;
     const activeDoomed = !!cur && (doomed.has(cur) || cur === id);
@@ -1388,6 +1496,11 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
 
   const notifySubagentStatus = useCallback((ev: SubagentStatusEvent) => {
     if (!ev.session_id || !ev.status) return;
+    // 终态且用户没在盯这个子会话 → 侧栏未读小圆点（结果再也不会自己消失，
+    // 打开子会话看过才清）。watching 判定在 markSessionUnread 内部。
+    if (ev.status === "done" || ev.status === "failed" || ev.status === "stopped") {
+      markSessionUnread(ev.session_id);
+    }
     setSessions((prev) =>
       prev.map((s) =>
         s.id === ev.session_id
@@ -1415,7 +1528,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
           : s,
       ),
     );
-  }, []);
+  }, [markSessionUnread]);
 
   const addTodo = useCallback(async (data: Partial<Todo>) => {
     try {
@@ -1593,6 +1706,9 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     previewNonce,
     setConnected,
     setActiveSession,
+    unreadSessions,
+    markSessionUnread,
+    clearSessionUnread,
     activeRunId,
     openRunView,
     closeRunView,

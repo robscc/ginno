@@ -36,6 +36,7 @@
     "session": {
       "untitled": "未命名会话",
       "quickBadge": "速聊会话（来自悬浮速聊窗）",
+      "unreadHint": "有未读的新回复，点开查看",
       "statusPrefix": "状态：{status}",
       "moreNested": "还有 {count} 个更深层子任务",
       "activeKids": "{count} 个子任务/运行进行中",

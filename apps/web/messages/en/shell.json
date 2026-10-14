@@ -36,6 +36,7 @@
     "session": {
       "untitled": "Untitled",
       "quickBadge": "Quick Chat session (from the Floating Window)",
+      "unreadHint": "New unread replies — open to read",
       "statusPrefix": "Status: {status}",
       "moreNested": "{count} more nested subtasks",
       "activeKids": "{count} subtasks/runs in progress",

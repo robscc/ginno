@@ -652,8 +652,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     +{descendantCount(s.id) - childRows.length}
                   </span>
                 )}
-                <span className="ml-auto shrink-0 text-[10px] text-faint">
-                  {relTime(s.updated ?? s.created)}
+                {/* 未读小圆点：turn 在别处跑完、还没回来读过 → 标题右侧紫点，
+                    打开该会话即清除（会话行选中态本身意味着已读）。 */}
+                <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                  {g.unreadSessions[s.id] !== undefined && !sel && (
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-violet"
+                      title={t("session.unreadHint")}
+                    />
+                  )}
+                  <span className="text-[10px] text-faint">
+                    {relTime(s.updated ?? s.created)}
+                  </span>
                 </span>
               </button>
               {/* 父行徽标：运行中子代理/运行数量（设计 §6.1 的「● 2 agents」） */}

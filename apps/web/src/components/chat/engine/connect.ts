@@ -128,6 +128,11 @@ export function mapHistory(
 // the checkpoint. A user bubble still "sending" that never reached the
 // graph survives as a failed bubble with its retry payload.
 export function reconcileTurnFromHistory(ctx: EngineCtx, sid: string) {
+  // We believed a turn was in flight and the server says it's gone → it
+  // finished while we were disconnected: no message.end ever reached us, so
+  // light the sidebar unread dot here too (message.end's mark is the same
+  // call — idempotent). Watching guard lives inside markSessionUnread.
+  ctx.g.markSessionUnread(sid);
   getSessionHistory(sid).then((res) => {
     // Skill blocks (history-replayed slash turns) normalize back to the
     // "/name request" text the live bubble carries, or the two never match
