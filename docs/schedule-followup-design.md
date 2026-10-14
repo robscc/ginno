@@ -56,8 +56,9 @@ POST /api/schedule/runs/{run_id}/fork
   零新组件）。
 - meta 记 `forked_from_run`（run_id）供追溯；run 行回写
   `forked_session_id`（最近一次 fork 的落点）。
-- **允许多次 fork**：每次生成独立副本（用户可能想分头追问不同方向）。
-  已 fork 过的 run，按钮旁出现「打开上次会话」快捷入口（P1）。
+- **一 run 一副本**（2026-10-14 定稿，覆盖早先「允许多次 fork」）：已
+  fork 且副本存活 → 按钮变「跳到对应对话」，后端幂等返回既有会话（防
+  旧 UI/其他窗口重复点击）；副本被删 → 回到可 fork 态重新创建。
 
 ### 1.3 各场景行为
 
@@ -86,8 +87,8 @@ POST /api/schedule/runs/{run_id}/fork
 - `ScheduleRunView` 顶栏加「继续沟通」按钮（终态且 session_id 在时渲染）：
   调 fork → `g.reloadSessions()` → `g.setActiveSession(new_id)` → 返回
   工作区路由 → 聚焦输入框。
-- 「打开上次会话」快捷入口（P1）：run 行有 `forked_session_id` 且会话
-  存活时显示。
+- 「跳到对应对话」（P1 定稿形态）：run 行有 `forked_session_id` 且会话
+  存活时，fork 按钮整体替换为跳转按钮——唯一动作是回到既有会话。
 - 回放页其余零改动（保持只读轮询渲染）。
 
 ## 3. 边界与安全
@@ -106,4 +107,4 @@ POST /api/schedule/runs/{run_id}/fork
 | 期 | 内容 | 判据 |
 |---|---|---|
 | P0 | fork 端点 + 回放页「继续沟通」按钮 | 一键 fork → 新会话出现在侧栏 → 追问一轮 → 上下文连贯 |
-| P1 | 「打开上次会话」入口 + 多副本管理（run 详情列出全部 fork） | 已 fork 的 run 可一键回到任一副本 |
+| P1 | 「跳到对应对话」直达（一 run 一副本；后端幂等守卫） | 已 fork 的 run 按钮变跳转，重复点击不产副本 |

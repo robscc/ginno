@@ -271,3 +271,33 @@ def test_fork_run_endpoint_guards(isolated_home):
         # 不存在的 run
         r3 = client.post("/api/schedule/runs/nope/fork").json()
         assert r3.get("ok") is False and "not found" in r3.get("error", "")
+
+
+def test_fork_run_idempotent_when_already_forked(
+    isolated_home, patch_build_model
+):
+    """一 run 一副本：run 行已有存活 forked_session_id → 幂等返回既有会话
+    （不新建、不重播种）；响应带 existing=True。"""
+    from fastapi.testclient import TestClient
+
+    from ginno_runtime import schedule_store as store
+    from ginno_runtime import server
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    patch_build_model(ScriptedChatModel(scripts=[script(text="ok")]))
+    with TestClient(server.app) as client:
+        sid = client.post(
+            "/api/sessions", json={"project_slug": "default", "workspace": "/tmp/wf-ws"}
+        ).json()["id"]
+        rid = store.new_run_id()
+        store.record_run({
+            "run_id": rid, "task_id": "st-1", "task_name": "T",
+            "status": "ok", "session_id": "shadow-1",
+            "forked_session_id": sid,
+        })
+        r = client.post(f"/api/schedule/runs/{rid}/fork").json()
+        assert r.get("ok") is True
+        assert r.get("existing") is True
+        assert r.get("session_id") == sid
+        # run 行未被改写（末行仍指向同一副本）
+        assert store.get_run(rid)["forked_session_id"] == sid

@@ -106,8 +106,9 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
 
   // ---- 继续沟通（schedule-followup）------------------------------------------
   // fork = 复制影子会话全量历史（id 重铸）到新普通会话；影子会话保持只读
-  // 快照，后续定时轮次不受影响。终态且会话在场才可 fork；已 fork 过则提供
-  // 「打开上次会话」直达（P1）。
+  // 快照，后续定时轮次不受影响。一 run 一副本（2026-10-14 定稿）：已 fork
+  // 且副本存活 → 按钮变「跳到对应对话」，不再重复 fork（后端同守卫幂等）；
+  // 副本被删 → 回到可 fork 态重新创建。
   const [forkBusy, setForkBusy] = useState(false);
   const [forkError, setForkError] = useState<string | null>(null);
   const finished = run.status === "ok" || run.status === "error";
@@ -170,16 +171,17 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
           {dur && <span className="shrink-0 text-faint">⏱ {dur}</span>}
           {tokens && <span className="shrink-0 text-faint" title={tr("view.tokensTitle")}>⇅ {tokens}</span>}
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
-            {forkedLive && (
+            {forkedLive ? (
+              // 一 run 一副本：已 fork → 唯一动作是跳进既有会话
               <button
                 onClick={() => enterSession(run.forked_session_id!)}
                 title={tr("view.openForkedTitle")}
-                className="flex shrink-0 items-center gap-1 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+                className="flex shrink-0 items-center gap-1 rounded-md border border-violet/40 bg-violet/10 px-2 py-0.5 text-[11px] text-violet transition-colors hover:bg-violet/20"
               >
+                <MessageSquarePlus className="h-3 w-3" />
                 {tr("view.openForked")}
               </button>
-            )}
-            {canFork && (
+            ) : canFork && (
               <button
                 onClick={() => void doFork()}
                 disabled={forkBusy}

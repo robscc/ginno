@@ -190,8 +190,8 @@
       "forkTitle": "把本轮记录 fork 成普通会话，在新会话里继续沟通",
       "forkBusy": "创建中…",
       "forkFailed": "fork 失败",
-      "openForked": "打开上次会话",
-      "openForkedTitle": "回到本轮最近 fork 出的会话"
+      "openForked": "跳到对应对话",
+      "openForkedTitle": "本轮已 fork 过——打开对应的会话"
     }
   }
 }

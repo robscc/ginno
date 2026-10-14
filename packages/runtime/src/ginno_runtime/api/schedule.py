@@ -190,8 +190,9 @@ async def fork_run(run_id: str) -> dict:
     新会话 = create_session（普通类型，agent/project 沿任务 target；任务已删
     则回落默认）+ _seed_fork_history 复制影子会话全量历史（id 全部重铸，顶部
     一条 [turn context] 溯源行）。影子会话本体不动——回放/下一轮定时照旧。
-    允许多次 fork，每次独立副本；run 行回写 forked_session_id（最近落点，
-    「打开上次会话」用）。"""
+    一 run 一副本：已 fork 且副本存活时幂等返回既有会话；副本被删则重新
+    fork。run 行回写 forked_session_id（
+    「跳到对应对话」用）。"""
     run = store.get_run(run_id)
     if not run:
         return {"ok": False, "error": "run not found"}
@@ -200,6 +201,17 @@ async def fork_run(run_id: str) -> dict:
     src = run.get("session_id")
     if not src:
         return {"ok": False, "error": "run has no session to fork"}
+
+    # 一 run 一副本（2026-10-14 产品定稿，覆盖早先「允许多次 fork」）：
+    # 已 fork 且副本仍存活 → 幂等返回既有会话（防其他窗口/旧 UI 重复点击
+    # 造出双胞胎）；副本被用户删了 → 清掉死引用走重新 fork。
+    existing = run.get("forked_session_id")
+    if existing:
+        from ..session_meta import _find_meta
+
+        if _find_meta(existing):
+            return {"ok": True, "session_id": existing, "existing": True}
+        run = {**run, "forked_session_id": None}
 
     task = store.get_task(run.get("task_id") or "") if run.get("task_id") else None
     target = (task or {}).get("target") or {}

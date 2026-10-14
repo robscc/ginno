@@ -190,8 +190,8 @@
       "forkTitle": "Fork this run's transcript into a regular session and keep chatting there",
       "forkBusy": "Forking…",
       "forkFailed": "Fork failed",
-      "openForked": "Open last forked session",
-      "openForkedTitle": "Reopen the session this run was last forked into"
+      "openForked": "Jump to conversation",
+      "openForkedTitle": "This run was already forked — open its conversation"
     }
   }
 }
