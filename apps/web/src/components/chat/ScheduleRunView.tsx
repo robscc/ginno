@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Fragment } from "react";
 import { useTranslations } from "next-intl";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, MessageSquarePlus } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ScheduleRun } from "@/lib/types";
@@ -102,6 +102,39 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
       ? `${(run.input_tokens ?? 0).toLocaleString()} / ${(run.output_tokens ?? 0).toLocaleString()}`
       : null;
 
+  // ---- 继续沟通（schedule-followup）------------------------------------------
+  // fork = 复制影子会话全量历史（id 重铸）到新普通会话；影子会话保持只读
+  // 快照，后续定时轮次不受影响。终态且会话在场才可 fork；已 fork 过则提供
+  // 「打开上次会话」直达（P1）。
+  const [forkBusy, setForkBusy] = useState(false);
+  const [forkError, setForkError] = useState<string | null>(null);
+  const finished = run.status === "ok" || run.status === "error";
+  const canFork = finished && !!run.session_id && !historyError;
+  const forkedLive =
+    !!run.forked_session_id && g.sessions.some((s) => s.id === run.forked_session_id);
+  const enterSession = (sid: string) => {
+    g.setActiveSession(sid);
+    g.closeScheduleRun();
+  };
+  const doFork = async () => {
+    if (forkBusy || !run.session_id) return;
+    setForkBusy(true);
+    setForkError(null);
+    try {
+      const r = await api.forkScheduleRun(run.run_id);
+      if (r.ok && r.session_id) {
+        await g.reloadSessions();
+        enterSession(r.session_id);
+      } else {
+        setForkError(r.error || tr("view.forkFailed"));
+      }
+    } catch {
+      setForkError(tr("view.forkFailed"));
+    } finally {
+      setForkBusy(false);
+    }
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 顶栏：版式对齐 SubagentTopBar（streamCards.tsx） */}
@@ -131,17 +164,48 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
           </span>
           {dur && <span className="shrink-0 text-faint">⏱ {dur}</span>}
           {tokens && <span className="shrink-0 text-faint" title={tr("view.tokensTitle")}>⇅ {tokens}</span>}
-          <button
-            onClick={() => g.closeScheduleRun()}
-            title={tr("view.backTitle")}
-            className="ml-auto flex shrink-0 items-center gap-1 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
-          >
-            <ArrowLeft className="h-3 w-3" /> {tr("view.back")}
-          </button>
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            {forkedLive && (
+              <button
+                onClick={() => enterSession(run.forked_session_id!)}
+                title={tr("view.openForkedTitle")}
+                className="flex shrink-0 items-center gap-1 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+              >
+                {tr("view.openForked")}
+              </button>
+            )}
+            {canFork && (
+              <button
+                onClick={() => void doFork()}
+                disabled={forkBusy}
+                title={tr("view.forkTitle")}
+                className="flex shrink-0 items-center gap-1 rounded-md border border-violet/40 bg-violet/10 px-2 py-0.5 text-[11px] text-violet transition-colors hover:bg-violet/20 disabled:opacity-50"
+              >
+                {forkBusy ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <MessageSquarePlus className="h-3 w-3" />
+                )}
+                {forkBusy ? tr("view.forkBusy") : tr("view.fork")}
+              </button>
+            )}
+            <button
+              onClick={() => g.closeScheduleRun()}
+              title={tr("view.backTitle")}
+              className="flex shrink-0 items-center gap-1 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+            >
+              <ArrowLeft className="h-3 w-3" /> {tr("view.back")}
+            </button>
+          </div>
         </div>
         {run.error && (
           <div className="mx-auto mt-1 max-w-3xl truncate text-[11px] text-red" title={run.error}>
             {run.error}
+          </div>
+        )}
+        {forkError && (
+          <div className="mx-auto mt-1 max-w-3xl truncate text-[11px] text-red" title={forkError}>
+            {forkError}
           </div>
         )}
       </div>

@@ -1984,6 +1984,15 @@ export async function listScheduleRuns(
   return json(`${BASE}/schedule/runs${s ? `?${s}` : ""}`);
 }
 
+/** 影子会话 fork 为普通会话（schedule-followup）：新会话复制该轮全部历史
+ *  （id 重铸），返回新会话 id；影子会话与后续定时轮次不受影响。 */
+export async function forkScheduleRun(runId: string) {
+  return json<{ ok: boolean; session_id?: string; error?: string }>(
+    `${BASE}/schedule/runs/${encodeURIComponent(runId)}/fork`,
+    { method: "POST", headers: H },
+  );
+}
+
 /** 标记执行结果已读（schedule-unseen）：单条 {run_id} 或一键 {all:true}。
  *  返回最新 unseen 摘要；侧栏红点/页签角标经 runs_seen WS 事件即时刷新。 */
 export async function markScheduleRunsSeen(

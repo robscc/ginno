@@ -6,6 +6,7 @@
 - POST /api/schedule/tasks/{id}/run   — 立即执行（manual，按 target 分流）
 - GET  /api/schedule/runs             — 执行记录分页 + 过滤（同 run_id 去重）
 - POST /api/schedule/runs/seen        — 标记已读（单条 / 一键全部，schedule-unseen）
+- POST /api/schedule/runs/{id}/fork   — 影子会话 fork 为普通会话（schedule-followup-design）
 - GET  /api/schedule/timeline         — 当天 runs + 剩余计划点
 - WS   /api/ws/schedule               — run_started/run_finished/task_updated/missed/runs_seen
 """
@@ -180,6 +181,75 @@ async def list_runs(
         page=page,
         page_size=page_size,
     )
+
+
+@router.post("/api/schedule/runs/{run_id}/fork")
+async def fork_run(run_id: str) -> dict:
+    """把一次执行的影子会话 fork 成普通会话（schedule-followup-design §1/§2）。
+
+    新会话 = create_session（普通类型，agent/project 沿任务 target；任务已删
+    则回落默认）+ _seed_fork_history 复制影子会话全量历史（id 全部重铸，顶部
+    一条 [turn context] 溯源行）。影子会话本体不动——回放/下一轮定时照旧。
+    允许多次 fork，每次独立副本；run 行回写 forked_session_id（最近落点，
+    「打开上次会话」用）。"""
+    run = store.get_run(run_id)
+    if not run:
+        return {"ok": False, "error": "run not found"}
+    if run.get("status") not in ("ok", "error"):
+        return {"ok": False, "error": "run is not finished"}
+    src = run.get("session_id")
+    if not src:
+        return {"ok": False, "error": "run has no session to fork"}
+
+    task = store.get_task(run.get("task_id") or "") if run.get("task_id") else None
+    target = (task or {}).get("target") or {}
+    slug = target.get("project_slug") or "default"
+    agent_id = target.get("agent_id")
+    base_name = (run.get("task_name") or "").lstrip("⏰").strip() or "Scheduled run"
+
+    from .sessions import CreateSessionRequest, create_session
+
+    meta = await create_session(
+        CreateSessionRequest(
+            project_slug=slug,
+            workspace="",
+            agent_id=agent_id,
+            title=base_name,
+        )
+    )
+    if meta.get("ok") is False or not meta.get("id"):
+        return {"ok": False, "error": str(meta.get("error") or "session creation failed")}
+    new_id = meta["id"]
+
+    from ..lang import t
+    from ..session_meta import _session_meta_patch
+
+    started = run.get("started_at") or 0
+    stamp = time.strftime("%m-%d %H:%M", time.localtime(started)) if started else ""
+    brief = t(
+        f"[turn context] Continued from scheduled task <{base_name}>"
+        f" (run of {stamp}). Its full transcript follows — keep discussing the"
+        " results here.",
+        f"[turn context] 续自定时任务〈{base_name}〉（{stamp} 执行）。以下为其"
+        "完整记录，可就结果继续沟通。",
+    )
+    try:
+        from ..subagent_scheduler import _seed_fork_history
+
+        await _seed_fork_history(src, new_id, slug, brief)
+    except Exception as e:  # noqa: BLE001 — 种子失败要显式报错（副本没历史不能用）
+        from ..server_shared import _log
+
+        _log.exception("schedule_fork_seed_failed run=%s src=%s child=%s", run_id, src, new_id)
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    _session_meta_patch(slug, new_id, {"forked_from_run": run_id})
+    # run 行回写最近 fork 落点（jsonl 末行胜出语义 = append）
+    store.record_run({**run, "forked_session_id": new_id})
+    from ..server_shared import _log
+
+    _log.info("schedule_run_forked run=%s src=%s child=%s", run_id, src, new_id)
+    return {"ok": True, "session_id": new_id}
 
 
 @router.post("/api/schedule/runs/seen")

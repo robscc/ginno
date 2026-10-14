@@ -185,7 +185,13 @@
       "endSuffix": " · 结束 {clock}",
       "historyError": "会话已删除或无法读取——执行记录仍保留。",
       "runningEmpty": "影子会话仍在运行——稍后重新打开…",
-      "empty": "没有可回放的消息。"
+      "empty": "没有可回放的消息。",
+      "fork": "继续沟通",
+      "forkTitle": "把本轮记录 fork 成普通会话，在新会话里继续沟通",
+      "forkBusy": "创建中…",
+      "forkFailed": "fork 失败",
+      "openForked": "打开上次会话",
+      "openForkedTitle": "回到本轮最近 fork 出的会话"
     }
   }
 }

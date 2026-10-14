@@ -185,7 +185,13 @@
       "endSuffix": " · End {clock}",
       "historyError": "The session was deleted or cannot be read — the run record is kept.",
       "runningEmpty": "The shadow session is still running — reopen later…",
-      "empty": "No messages to replay."
+      "empty": "No messages to replay.",
+      "fork": "Continue in a session",
+      "forkTitle": "Fork this run's transcript into a regular session and keep chatting there",
+      "forkBusy": "Forking…",
+      "forkFailed": "Fork failed",
+      "openForked": "Open last forked session",
+      "openForkedTitle": "Reopen the session this run was last forked into"
     }
   }
 }

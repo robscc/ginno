@@ -229,3 +229,45 @@ def test_query_runs_seen_filter_and_row_flag(isolated_home):
     assert [r["run_id"] for r in store.query_runs(seen="seen")["rows"]] == ["sr-a"]
     # 与状态过滤组合
     assert store.query_runs(status="error", seen="unseen")["total"] == 1
+
+
+def test_get_run_cross_day_last_wins(isolated_home):
+    """fork 端点的取数底座：跨日扫描 + 同 run_id 末行胜出（与 query_runs
+    同语义）；缺录返回 None。"""
+    from ginno_runtime import schedule_store as store
+    from datetime import date, timedelta
+
+    rid = store.new_run_id()
+    yest = (date.today() - timedelta(days=1)).isoformat()
+    store.record_run({"run_id": rid, "task_id": "st-1", "task_name": "T", "status": "running"})
+    store.record_run({"run_id": rid, "task_id": "st-1", "task_name": "T", "status": "ok",
+                      "finished_at": 1.0, "session_id": "s1"})
+    got = store.get_run(rid)
+    assert got is not None and got["status"] == "ok" and got["session_id"] == "s1"
+    assert store.get_run("nope") is None
+
+
+def test_fork_run_endpoint_guards(isolated_home):
+    """POST /api/schedule/runs/{id}/fork 的守卫分支：缺 run / 未终态 /
+    无会话都拒绝且不建会话。"""
+    from fastapi.testclient import TestClient
+
+    from ginno_runtime import schedule_store as store
+    from ginno_runtime import server
+
+    with TestClient(server.app) as client:
+        rid = store.new_run_id()
+        # 未终态（running）拒绝
+        store.record_run({"run_id": rid, "task_id": "st-1", "task_name": "T",
+                          "status": "running", "session_id": "s1"})
+        r = client.post(f"/api/schedule/runs/{rid}/fork").json()
+        assert r.get("ok") is False and "not finished" in r.get("error", "")
+        # 无会话（missed 形态）拒绝
+        rid2 = store.new_run_id()
+        store.record_run({"run_id": rid2, "task_id": "st-1", "task_name": "T",
+                          "status": "error", "session_id": None})
+        r2 = client.post(f"/api/schedule/runs/{rid2}/fork").json()
+        assert r2.get("ok") is False and "no session" in r2.get("error", "")
+        # 不存在的 run
+        r3 = client.post("/api/schedule/runs/nope/fork").json()
+        assert r3.get("ok") is False and "not found" in r3.get("error", "")

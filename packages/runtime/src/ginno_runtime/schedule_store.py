@@ -302,6 +302,28 @@ def load_day(date_str: str) -> list[dict]:
     return entries
 
 
+def get_run(run_id: str) -> dict | None:
+    """单条执行记录（保留期内跨日扫描，同 run_id 末行胜出）。fork 端点用。"""
+    if not run_id:
+        return None
+    today = _today()
+    seen_today = False
+    hit: dict | None = None
+    # 今日 → 往返保留期（与 query_runs 的聚合方向一致：末行胜出，按日升序扫）
+    from datetime import date, timedelta
+
+    d0 = date.today()
+    for i in range(RETENTION_DAYS, -1, -1):
+        ds = (d0 - timedelta(days=i)).isoformat()
+        entries = load_day(ds)
+        for e in entries:
+            if e.get("run_id") == run_id:
+                hit = e
+                if ds == today:
+                    seen_today = True
+    return hit
+
+
 def dedupe_runs(entries: list[dict]) -> list[dict]:
     """同 run_id 末行胜出（design §4.2）；输出按出现顺序（末行替位）。"""
     out: dict[str, dict] = {}

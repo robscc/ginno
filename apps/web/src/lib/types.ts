@@ -795,6 +795,8 @@ export interface ScheduleRun {
   output_tokens: number | null;
   /** 已读标记（GET /api/schedule/runs 每行附带；缺省视为已读，不画红点） */
   seen?: boolean;
+  /** 最近一次 fork 出的普通会话（schedule-followup；「打开上次会话」用） */
+  forked_session_id?: string | null;
 }
 
 /** GET /api/schedule/runs → 分页行（store.query_runs 的返回形状：``rows``）。
