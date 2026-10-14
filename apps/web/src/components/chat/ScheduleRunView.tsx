@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Fragment } from "react";
 import { useTranslations } from "next-intl";
+import { useRouter } from "next/navigation";
 import { ArrowLeft, Loader2, MessageSquarePlus } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
@@ -29,6 +30,7 @@ type HistoryMessage = {
 export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
   const g = useGinno();
   const tr = useTranslations("sched");
+  const router = useRouter();
   const [run, setRun] = useState<ScheduleRun>(snapshot);
   const [messages, setMessages] = useState<HistoryMessage[] | null>(null); // null = 加载中
   const [historyError, setHistoryError] = useState(false);
@@ -113,8 +115,11 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
   const forkedLive =
     !!run.forked_session_id && g.sessions.some((s) => s.id === run.forked_session_id);
   const enterSession = (sid: string) => {
+    // setActiveSession 自带清掉回放覆盖层；但本视图挂在 /scheduled 路由上，
+    // 只切会话不清路由的话人还停在定时任务页——回工作区路由才是「进入会话」
+    // （与侧栏 openChild / 发起卡 openChild 同一模式）。
     g.setActiveSession(sid);
-    g.closeScheduleRun();
+    if (window.location.pathname !== "/") router.push("/");
   };
   const doFork = async () => {
     if (forkBusy || !run.session_id) return;
