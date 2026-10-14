@@ -204,7 +204,20 @@ web:
 	  echo "⏭️  web 未变，跳过 next build"; \
 	else \
 	  cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/web build && echo "$$h" > $(CACHE)/web.stamp; \
-	fi
+	fi; \
+	# 防呆（2026-10-14 icon 事故）：next build 曾静默漏拷整个 public/ 到 out/
+	# （app 内 /icon.png 被 sidecar catch-all 兜底成 index.html → icon 消失，
+	# 构建全程无报错；且 stamp 已写，后续构建跳过重建、沿用坏产物）。校验
+	# 因此必须独立于 skip/重建两条路径、每次都跑：缺了就补拷自愈，补不上
+	# 则构建失败——宁可 loudly fail，不可静默带病出包。
+	for f in $(ROOT)/apps/web/public/*; do \
+	  [ -e "$$f" ] || continue; \
+	  b=$$(basename "$$f"); \
+	  if [ ! -e "$(WEB_OUT)/$$b" ]; then \
+	    echo "⚠️  导出缺 public 资源 $$b，已补拷"; \
+	    cp -R "$$f" "$(WEB_OUT)/$$b" || { echo "❌ 补拷失败：$$b"; exit 1; }; \
+	  fi; \
+	done
 
 .PHONY: check
 ## check: i18n catalog 一致性检查（i18n-design.md §10.2；app 的前置依赖，构建即拦截）
