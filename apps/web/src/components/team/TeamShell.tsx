@@ -25,6 +25,7 @@ import { ChatStream } from "@/components/chat/ChatStream";
 import { MemberPanel, MemberPanelSkeleton } from "./MemberPanel";
 import { AddMemberModal } from "./AddMemberModal";
 import { NewTeamModal } from "./NewTeamModal";
+import { TeamMemoryModal } from "./TeamMemoryModal";
 
 function fmtAway(s: number): string {
   if (!s || s < 0) return "—";
@@ -55,6 +56,9 @@ export function TeamShell() {
   const [confirmDisbandId, setConfirmDisbandId] = useState<string | null>(null);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
+  // 记忆分层（§5.4）：TEAM.md 编辑（团队级）与 notes.md 编辑（实例级）。
+  const [mdEditorFor, setMdEditorFor] = useState<string | null>(null);
+  const [notesEditorFor, setNotesEditorFor] = useState<string | null>(null);
   // 团队 uuid 复制反馈（对齐 session TurnIdChip 的「✓ 已复制」模式）
   const [idCopied, setIdCopied] = useState(false);
   // 总览过滤（设计稿视图 2：全部 / 仅活跃 / 需要我）+ 未读横幅收起
@@ -296,6 +300,16 @@ export function TeamShell() {
               className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-muted hover:bg-card2 hover:text-txt"
               onClick={() => {
                 setMenuId(null);
+                setMdEditorFor(t.id);
+              }}
+            >
+              <span className="w-3 text-center text-[10px]">📝</span>
+              {tc("team.teamMd")}
+            </button>
+            <button
+              className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-muted hover:bg-card2 hover:text-txt"
+              onClick={() => {
+                setMenuId(null);
                 void patchTeamLocal(t.id, { archived: !t.archived });
               }}
             >
@@ -435,6 +449,16 @@ export function TeamShell() {
           <span className="text-xs text-faint">
             {tc("team.memberCount", { count: team.member_rows?.length ?? 0 })}
           </span>
+          {/* 团队共享记忆非空 → 显示已注入 chip（点击进编辑） */}
+          {team.has_team_md && (
+            <button
+              onClick={() => setMdEditorFor(team.id)}
+              className="rounded-full border border-line px-2 py-0.5 text-[10px] text-faint transition-colors hover:border-violet/40 hover:text-violet"
+              title={tc("team.teamMdChipTitle")}
+            >
+              👥 TEAM.md
+            </button>
+          )}
 
           {view.kind === "member" && (
             <button
@@ -552,9 +576,19 @@ export function TeamShell() {
                         {row && <span className="font-mono">{row.instance_id}</span>}
                         {row?.model && <span>· {row.model}</span>}
                         <span>· {tc("team.workspaceShared")}</span>
+                        {row?.has_notes && (
+                          <span title={tc("team.notesChipTitle")}>📝 {tc("team.notesChip")}</span>
+                        )}
                       </>
                     );
                   })()}
+                  <button
+                    onClick={() => setNotesEditorFor(view.instanceId)}
+                    className="ml-auto rounded border border-line px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/40 hover:text-violet"
+                    title={tc("team.notesEditTitle")}
+                  >
+                    📝 {tc("team.notesEdit")}
+                  </button>
                 </div>
                 <ChatStream session={memberSession} />
               </>
@@ -598,6 +632,34 @@ export function TeamShell() {
             setNewTeamOpen(false);
             await afterMutate();
             setTeamId(t.id);
+          }}
+        />
+      )}
+      {mdEditorFor && (
+        <TeamMemoryModal
+          title={tc("team.teamMdTitle")}
+          hint={tc("team.teamMdHint")}
+          load={async () => (await api.getTeamMd(mdEditorFor)).text ?? ""}
+          save={async (text) => (await api.putTeamMd(mdEditorFor, text)).ok}
+          onClose={() => {
+            setMdEditorFor(null);
+            void refresh();
+          }}
+        />
+      )}
+      {notesEditorFor && (
+        <TeamMemoryModal
+          title={tc("team.notesTitle", {
+            name:
+              team.member_rows?.find((r) => r.instance_id === notesEditorFor)
+                ?.display_name ?? notesEditorFor,
+          })}
+          hint={tc("team.notesHint")}
+          load={async () => (await api.getMemberNotes(team.id, notesEditorFor)).text ?? ""}
+          save={async (text) => (await api.putMemberNotes(team.id, notesEditorFor, text)).ok}
+          onClose={() => {
+            setNotesEditorFor(null);
+            void refresh();
           }}
         />
       )}

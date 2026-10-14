@@ -41,6 +41,7 @@
 mod code_cmds;
 mod common;
 mod keep_awake;
+mod badge;
 mod menu;
 mod notify;
 mod pin;
@@ -298,6 +299,9 @@ pub fn run() {
             if let Err(e) = install_tray(app) {
                 shell_log(app, &format!("install_tray FAILED: {e}"));
             }
+            // Dock badge: only team blocked/done bubble up (agent-team §5.3.1).
+            // Self-throttling poller; no-ops while the sidecar is down.
+            badge::spawn_badge_watcher(app.handle().clone());
             register_pin_hotkey(app.handle(), &prefs.hotkey);
             if show_on_launch {
                 let h = app.handle().clone();

@@ -908,6 +908,8 @@ export interface TeamMemberRow {
   elapsed_s: number;
   /** status === "done"（完成未读，§3.3 收件箱语义）。 */
   unread: boolean;
+  /** 实例记忆 notes.md 非空（§5.4）——「📝 实例记忆」chip 的有无判据。 */
+  has_notes?: boolean;
 }
 
 /** 状态上卷摘要（§5.3.1）。needs_action 是「该不该打扰用户」的判据——
@@ -952,6 +954,8 @@ export interface Team {
   archived?: boolean;
   /** 领队 persona（主会话的 agent id）：成员面板置顶展示「领队 · 主会话」。 */
   main_agent_id?: string;
+  /** 团队共享记忆 TEAM.md 非空（§5.4）——「👥 TEAM.md」chip / 编辑入口判据。 */
+  has_team_md?: boolean;
   /** 前端渲染用：成员行（含实时状态）+ 上卷摘要。 */
   member_rows?: TeamMemberRow[];
   rollup?: TeamRollup;
@@ -965,7 +969,7 @@ export interface DeliverReceipt {
   instance_id?: string;
   session_id?: string;
   steer_id?: string;
-  channel?: "steer" | "turn";
+  channel?: "steer" | "turn" | "queue";
   error?: string;
 }
 

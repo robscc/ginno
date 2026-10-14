@@ -10,6 +10,9 @@
 - DELETE /api/teams/{id}/members/{iid}    — 移除成员（停 turn + 删 session）
 - POST   /api/teams/{id}/members/{iid}/seen   — 标记已查看（done → idle）
 - POST   /api/teams/{id}/deliver          — @ 投递（三态回执，§5.3.3）
+- GET/PUT /api/teams/{id}/team-md        — 团队共享记忆 TEAM.md（§5.4）
+- GET/PUT /api/teams/{id}/members/{iid}/notes — 实例记忆 notes.md（§5.4）
+- GET    /api/teams/badge                — 全局徽标摘要（Dock 冒泡，§5.3.1）
 
 状态一律经 :mod:`..teams.status` 计算（§5.9 唯一权威来源），本模块不自己判态。
 """
@@ -169,6 +172,25 @@ async def recover_teams() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 全局徽标（§5.3.1：只有 blocked / done 冒泡到 Dock；桌面壳轮询本端点）。
+# 必须注册在 /api/teams/{team_id} 之前，否则 "badge" 会被当成 team_id。
+# --------------------------------------------------------------------------- #
+
+@router.get("/api/teams/badge")
+async def teams_badge() -> dict:
+    """全部团队的 needs_action 计数（blocked + done 未读）。零刷新直读
+    roster 里已持久化的语义态——徽标轮询要的是廉价，不是新鲜。"""
+    blocked = 0
+    done_unread = 0
+    for t in team_store.list_teams():
+        r = team_status.rollup(t)
+        blocked += r.get("blocked", 0)
+        done_unread += r.get("done_unread", 0)
+    return {"ok": True, "needs": blocked + done_unread,
+            "blocked": blocked, "done_unread": done_unread}
+
+
+# --------------------------------------------------------------------------- #
 # 团队 CRUD
 # --------------------------------------------------------------------------- #
 
@@ -286,6 +308,7 @@ async def delete_team_endpoint(team_id: str, force: int = 0) -> dict:
             await delete_session(main_sid, cascade=True)
     except Exception:  # noqa: BLE001 — 主会话删不掉也不留孤儿 roster
         _log.exception("team_main_delete_failed team=%s main=%s", team_id, main_sid)
+    team_deliver.clear_queue(team_id)
     ok = team_store.delete_team(team_id)
     _log.info("team_deleted id=%s ok=%s force=%s", team_id, ok, force)
     return {"ok": ok}
@@ -492,6 +515,57 @@ async def mark_seen_endpoint(team_id: str, instance_id: str, client: str = "main
     team_status.refresh_team(team_id, client)
     await _broadcast(team_id, client)
     return {"ok": True, "member": member}
+
+
+# --------------------------------------------------------------------------- #
+# 记忆分层（§5.4）
+# --------------------------------------------------------------------------- #
+
+@router.get("/api/teams/{team_id}/team-md")
+async def get_team_md(team_id: str) -> dict:
+    if team_store.get_team(team_id) is None:
+        return {"ok": False, "error": "not found"}
+    from ..teams import memory
+
+    return {"ok": True, "text": memory.team_md(team_id)}
+
+
+@router.put("/api/teams/{team_id}/team-md")
+async def put_team_md(team_id: str, data: dict) -> dict:
+    if team_store.get_team(team_id) is None:
+        return {"ok": False, "error": "not found"}
+    from ..teams import memory
+
+    text = str((data or {}).get("text") or "")
+    if not memory.set_team_md(team_id, text):
+        return {"ok": False, "error": "TEAM.md 写入失败"}
+    _log.info("team_md_saved team=%s len=%d", team_id, len(text))
+    await _broadcast(team_id)
+    return {"ok": True, "text": memory.team_md(team_id)}
+
+
+@router.get("/api/teams/{team_id}/members/{instance_id}/notes")
+async def get_member_notes(team_id: str, instance_id: str) -> dict:
+    if team_store.get_member(team_id, instance_id) is None:
+        return {"ok": False, "error": "not found"}
+    from ..teams import memory
+
+    return {"ok": True, "text": memory.member_notes(team_id, instance_id)}
+
+
+@router.put("/api/teams/{team_id}/members/{instance_id}/notes")
+async def put_member_notes(team_id: str, instance_id: str, data: dict) -> dict:
+    if team_store.get_member(team_id, instance_id) is None:
+        return {"ok": False, "error": "not found"}
+    from ..teams import memory
+
+    text = str((data or {}).get("text") or "")
+    if not memory.set_member_notes(team_id, instance_id, text):
+        return {"ok": False, "error": "notes.md 写入失败"}
+    _log.info("team_member_notes_saved team=%s instance=%s len=%d",
+              team_id, instance_id, len(text))
+    await _broadcast(team_id)
+    return {"ok": True, "text": memory.member_notes(team_id, instance_id)}
 
 
 # --------------------------------------------------------------------------- #

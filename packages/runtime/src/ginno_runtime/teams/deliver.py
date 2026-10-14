@@ -54,6 +54,53 @@ DELIVER_WAIT_S = 1800.0
 # 任务不归我们所有（是用户那个 WS 起的），拿不到可靠的 task 句柄。
 _POLL_S = 0.4
 
+# 并发闸（§5.6）：team_id → 排队投递（FIFO）。满了不拒收——排队，turn
+# 结束自动 drain（原型语义「队列中还有 1 条待处理投递」）。进程内态：
+# 重启丢失可接受（steer stash 同款边界）。
+_QUEUES: dict[str, list[dict]] = {}
+
+
+def _running_members(team: dict) -> int:
+    """团队里此刻有活 turn 的成员数（按成员计，不按 turn 计——一个成员
+    同时只有一条活跃会话在跑，多会话成员也以「任一会话在跑」为 1）。"""
+    n = 0
+    for m in (team or {}).get("members") or []:
+        sids = {*(m.get("session_ids") or []), m.get("session_id") or ""}
+        if any(_is_live(s) for s in sids if s):
+            n += 1
+    return n
+
+
+def clear_queue(team_id: str) -> None:
+    _QUEUES.pop(team_id, None)
+
+
+async def _drain_queue(team_id: str) -> None:
+    """有成员 turn 结束后尝试放行排队投递。逐条走完整 deliver()（成员可能
+    已被移除/已 blocked/已自己在跑——各分支 deliver 自己会处理）。"""
+    queue = _QUEUES.get(team_id)
+    if not queue:
+        return
+    team = store.get_team(team_id)
+    if team is None:
+        _QUEUES.pop(team_id, None)
+        return
+    while queue and _running_members(team) < store.MAX_CONCURRENT_RUNNING:
+        entry = queue.pop(0)
+        # 成员已被移除 → 丢弃这条（failed 语义，无人可通知也不再有回执通道）。
+        if store.get_member(team_id, entry["instance_id"]) is None:
+            continue
+        _log.info(
+            "team_deliver_drained team=%s instance=%s queued=%d",
+            team_id, entry["instance_id"], len(queue),
+        )
+        # 走完整 deliver：此刻额度已空，正常路径是新开 turn。
+        await deliver(team_id, entry["instance_id"], entry["text"],
+                     client=entry.get("client") or "main")
+        team = store.get_team(team_id) or team
+    if not queue:
+        _QUEUES.pop(team_id, None)
+
 
 class DeliveryError(Exception):
     """投递失败（带机器可读的 reason，供 API 原样返回）。"""
@@ -236,6 +283,8 @@ async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
     })
     team_status.refresh_team(team_id)
     await _broadcast_status(team_id)
+    # 并发闸：腾出的额度放行下一条排队投递。
+    await _drain_queue(team_id)
 
 
 def _TURN_STOP_setdefault(session_id: str):
@@ -341,6 +390,25 @@ async def deliver(
                 "instance_id": instance_id, "session_id": sid,
                 "steer_id": steer_id, "channel": "steer"}
 
+    # ── 并发闸（§5.6）：满员排队，turn 结束自动 drain ──
+    if _running_members(team) >= store.MAX_CONCURRENT_RUNNING:
+        _QUEUES.setdefault(team_id, []).append({
+            "instance_id": instance_id, "text": text, "client": client,
+        })
+        store.patch_member(team_id, instance_id, {
+            "status_detail": "排队中（团队并发已满）",
+        })
+        await _broadcast_status(team_id, client)
+        _log.info(
+            "team_deliver_queued team=%s instance=%s running=%d queue=%d",
+            team_id, instance_id, store.MAX_CONCURRENT_RUNNING,
+            len(_QUEUES.get(team_id) or []),
+        )
+        # 证据 = 队列里确实有这条（纪律 3 的队列版）。
+        return {"ok": True, "receipt": "delivered", "channel": "queue",
+                "instance_id": instance_id, "session_id": sid,
+                "queued": len(_QUEUES.get(team_id) or [])}
+
     # ── 成员空闲 → 起一个 managed turn ──
     session = _SESSIONS.get(sid)
     if session is None:
@@ -388,6 +456,8 @@ async def _reply_after_current_turn(team_id: str, instance_id: str, sid: str) ->
     })
     team_status.refresh_team(team_id)
     await _broadcast_status(team_id)
+    # 并发闸：steer 的 turn 结束同样腾额度。
+    await _drain_queue(team_id)
 
 
 async def resolve_agent_mention(

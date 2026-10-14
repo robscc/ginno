@@ -29,6 +29,11 @@ _LOCK = threading.RLock()
 # 成员数硬上限（§5.6）：面板可读性 + 并发 token 成本。超出提示先归档。
 MAX_MEMBERS = 6
 
+# 同团队**同时在跑**的成员 turn 上限（§5.6「成本失控」风险项，原型
+# 「并发上限 3，当前 2/3」）：只限「投递新开 turn」，steer 不占额度
+# （它本来就依附在跑着的 turn 上）。满了排队，turn 结束自动 drain。
+MAX_CONCURRENT_RUNNING = 3
+
 
 def _write(team_id: str, data: dict) -> None:
     paths.teams_dir().mkdir(parents=True, exist_ok=True)

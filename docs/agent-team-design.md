@@ -1,7 +1,7 @@
 # AgentTeam 模式设计（Agent 实体化 + 团队协作）
 
-> 状态：产品方案（待评审）
-> 日期：2026-10-12（2026-10-13 重建）
+> 状态：**已实施（P0–P3 全部落地）**——实施对账见文末「§8 实施记录」
+> 日期：2026-10-12（2026-10-13 重建；2026-10-14 P3 + 记忆/并发闸/徽标收尾）
 > 前置：Ginno 现有 agent/session/subagent/delegation 机制（本文 §2 逐条对到文件与行号）
 > 外部对标：Claude Code Agent Teams、OpenAgents Workspace、herdr、Vibe Kanban、DeepSeek Harness `limuyang2/agent-team`、OpenHands delegation
 > 配套原型：`design-mocks/agent-team-design.html`（可交互，三个视图）
@@ -470,17 +470,22 @@ herdr 的第 3 条产品主张：*"The CLI and the socket API are the same surfa
 - 回帖卡片：折叠摘要 + 「展开全文」跳成员工作台。
 - 未读汇总条（§5.8）：WS 重连时推「你离开的 N 分钟里…」。
 
-### P2：总览页 + 记忆分层 + 持久性（约 3 天）
+### P2：总览页 + 记忆分层 + 持久性（约 3 天）✅ 已实施
 
 - 「团队总览」tab：状态卡网格（方案 B 的降本版），每卡 = 头像 + 状态 + 最近 3 行 + token 计数；点击进成员工作台。**不挂多路 WS**，只订阅 `team.changed` + 按需拉最近消息。
-- 实例记忆 + TEAM.md 注入（`wrap_context_section`）。
+- 实例记忆 + TEAM.md 注入（`wrap_context_section`）。✅ 2026-10-14 补齐（`teams/memory.py`，P2 当初只落了总览页/持久性）。
 - **重启恢复**（§5.8）：应用启动时从 teams 编制文件重建面板；`_heal_interrupted_turn` 愈合失败的成员标 `unknown`。
 
-### P3：Lead 自主分派 + wait 原语（约 2 天）
+### P3：Lead 自主分派 + wait 原语（约 2 天）✅ 已实施（2026-10-14）
 
 - `list_members(wait=True, until=[...], ids=None, timeout_s=0)`——**扩展已有的 `list_subagents(wait=true)`**，同一套阻塞语义与 `_TURN_STOP` 打断，换成成员实例寻址（§5.3.2）。
 - `deliver_to_member(instance_id, text)` / `assign_task(instance_id, goal)`：与 HTTP API **共用同一批函数**，工具层不复制状态逻辑（§5.9）。
 - 这是 Claude Code agent teams 的「self-coordination」+ herdr 的「agent-native」能力；放在最后，因为 P0-P2 已满足全部三条原始需求。
+
+### P3+（2026-10-14 顺带收尾，原型对照补齐）
+
+- **成员并发闸**（§5.6「成本失控」）：同团队同时在跑的成员 turn 上限 3（`MAX_CONCURRENT_RUNNING`）；满了排队（回执 `delivered` + `channel=queue`），turn 结束自动 drain；blocked 原子拒绝仍优先于排队。
+- **Dock 徽标冒泡**（§5.3.1）：`GET /api/teams/badge`（blocked + done 未读合计）→ Tauri 壳 `badge.rs` 轮询 → macOS Dock badge。只有 blocked/done 冒泡，working 止于团队行。
 
 ---
 
@@ -570,3 +575,27 @@ Ginno **站在 agent 里面**：permission 卡、ask_user 卡、turn 开始/结�
 | **主会话** | 未读汇总条（§5.8）→ @ 投递气泡 → 投递回执 → dev 回帖卡（可展开全文）→ 并行投递 2 条 → research 的 blocked 卡 → **投递被原子拒绝**（§5.3.3）→ Lead 汇总；右侧常驻成员面板（5 成员 × 语义态/展示文本/token/ctx 条 + 上卷说明）；@ 补全菜单（blocked 成员标 ⛔ 不可投递） |
 | **团队总览** | 方案 B 的降本版：状态卡网格（含一张 `unknown` 卡）+ 设计理由与 herdr 对比说明 |
 | **成员工作台** | 完整 ChatStream + 成员顶栏（三层记忆 chip）+ steering 输入框 |
+
+---
+
+## 11. 实施记录（对账）
+
+设计六里程碑全部落地；本节是「方案 → 代码」的索引，供排障与后续演进对照。
+
+| 批次 | 日期 | 内容 | 落点 |
+|---|---|---|---|
+| P0 | 2026-10-13 | 实体化 + @ 投递 + 回帖 + 状态聚合（commit `d5b6152`） | `teams/store.py`、`teams/status.py`、`teams/deliver.py`、`api/teams.py` |
+| P1 | 2026-10-13 | `/team` 独立空间 + 成员面板/工作台/回帖卡（commit `4a04cf4`） | `apps/web/src/components/team/`、`app/team/` |
+| P2 | 2026-10-13 | 产品重构：完全隔离 + 左栏团队列表 + 成员多会话 + 重启恢复 + 实体领队（commits `1f6a615`、`8752c38`） | `TeamShell.tsx`、`teams/route.py`、`api/teams.py::recover_teams` |
+| P2 尾巴 | 2026-10-14 | 记忆分层：TEAM.md + 实例 notes.md 注入（§5.4） | `teams/memory.py`、`api/stream/turn.py`（`team_context` 段）、`TeamMemoryModal.tsx` |
+| P3 | 2026-10-14 | Lead 自主分派：`list_members(wait=True)` / `deliver_to_member` / `assign_task`（§5.3.2/§5.9） | `tools/team.py`、`teams/wait.py` |
+| P3+ | 2026-10-14 | 成员并发闸（§5.6）+ Dock 徽标冒泡（§5.3.1） | `teams/deliver.py`（`_QUEUES`/`_drain_queue`）、`api/teams.py::/badge`、`apps/desktop/src/badge.rs` |
+
+**实现与设计的偏差**（均为实施时修正）：
+
+1. 团队不在主侧栏分组，而是**完全隔离的 `/team` 空间**（P2 产品重构定稿）——「我的对话」与「团队空间」是两个世界；设计稿的侧栏分组图按此理解。
+2. Lead 双落点：主会话 persona（无 @ 时路由模块默认投给它）+ 实体 leader 成员实例（有自己的会话，2026-10-14 用户定稿）。
+3. 成员间直接投递仍按 §5.2 要点 3 推迟（成员工作台里 @ 别人 = 旧 persona 语义）；多机（§5.8）`machine` 字段恒 `"local"`。
+4. 回帖上限实施为 1200 字截断（`REPLY_MAX_CHARS`），非 LLM 压缩——成员 turn 本身已有摘要，主会话侧截断已够。
+
+**测试索引**：`tests/unit/test_team_store_status.py`（存储/状态）、`tests/unit/test_team_p3.py`（记忆/wait/并发闸）、`tests/api/test_team_p0.py`（端到端 + 记忆/徽标/工具绑定端点）。

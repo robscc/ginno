@@ -369,3 +369,64 @@ def test_create_team_appoints_entity_leader(client, patch_build_model):
     # 领队有自己的独立会话（≠ 主会话）
     assert leaders[0]["session_id"]
     assert leaders[0]["session_id"] != team["main_session_id"]
+
+
+# --------------------------------------------------------------------------- #
+# P3（2026-10-14）：记忆分层端点 + 全局徽标 + Lead 工具绑定
+# --------------------------------------------------------------------------- #
+def test_team_md_and_notes_endpoints(client, patch_build_model):
+    patch_build_model(script(text="ok"))
+    team = _create_team(client)
+    m = _add_member(client, team["id"], "dev")
+    # TEAM.md：写 → 读回 → payload 带 has_team_md
+    r = client.put(f"/api/teams/{team['id']}/team-md", json={"text": "禁改 public API"})
+    assert r.status_code == 200 and r.json()["ok"]
+    assert client.get(f"/api/teams/{team['id']}/team-md").json()["text"] == "禁改 public API"
+    assert _get_team(client, team["id"])["has_team_md"] is True
+    # 实例 notes：写 → 读回 → 成员行带 has_notes
+    r2 = client.put(
+        f"/api/teams/{team['id']}/members/{m['instance_id']}/notes",
+        json={"text": "dev 先跑测试"},
+    )
+    assert r2.status_code == 200 and r2.json()["ok"]
+    got = client.get(f"/api/teams/{team['id']}/members/{m['instance_id']}/notes").json()
+    assert got["text"] == "dev 先跑测试"
+    row = _member_row(_get_team(client, team["id"]), "dev")
+    assert row["has_notes"] is True
+    # 404 分支
+    assert client.get("/api/teams/nope/team-md").json()["ok"] is False
+    assert client.get(f"/api/teams/{team['id']}/members/ai_nope/notes").json()["ok"] is False
+
+
+def test_badge_endpoint_counts_blocked_and_unread(client, patch_build_model):
+    patch_build_model(script(text="ok"))
+    team = _create_team(client)
+    m = _add_member(client, team["id"], "dev")
+    assert client.get("/api/teams/badge").json()["needs"] == 0
+    # blocked +1（直接改 roster 里的持久化语义态——rollup 只读它）
+    from ginno_runtime.teams import store as team_store
+    team_store.patch_member(team["id"], m["instance_id"], {"status": "blocked"})
+    assert client.get("/api/teams/badge").json()["needs"] == 1
+    # done 未读再 +1
+    team_store.patch_member(team["id"], m["instance_id"], {"status": "done"})
+    assert client.get("/api/teams/badge").json() == {
+        "ok": True, "needs": 1, "blocked": 0, "done_unread": 1,
+    }
+
+
+def test_lead_tools_bound_only_to_team_main(client, patch_build_model):
+    """build_team_tools：团队主会话拿全 3 件；普通会话/成员会话为空表。"""
+    from ginno_runtime.tools.team import build_team_tools
+
+    patch_build_model(script(text="ok"))
+    team = _create_team(client)
+    m = _add_member(client, team["id"], "dev")
+    main_tools = {t.name for t in build_team_tools(team["main_session_id"])}
+    assert main_tools == {"list_members", "deliver_to_member", "assign_task"}
+    assert build_team_tools(m["session_id"]) == []
+    # 普通会话 / 无 session
+    sid = client.post("/api/sessions", json={
+        "project_slug": "default", "workspace": "/tmp/x",
+    }).json()["id"]
+    assert build_team_tools(sid) == []
+    assert build_team_tools(None) == []

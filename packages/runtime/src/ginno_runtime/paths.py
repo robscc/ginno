@@ -412,6 +412,11 @@ def team_member_notes_dir(team_id: str, instance_id: str) -> Path:
     return teams_dir() / team_id / "members" / instance_id
 
 
+def team_md_path(team_id: str) -> Path:
+    """团队共享记忆（§5.4）：``teams/<team_id>/TEAM.md``，注入所有成员 turn。"""
+    return teams_dir() / team_id / "TEAM.md"
+
+
 def workflows_dir() -> Path:
     return home() / "workflows"
 

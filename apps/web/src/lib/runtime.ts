@@ -2146,6 +2146,36 @@ export async function deliverToMember(
   );
 }
 
+// ---- AgentTeam 记忆分层（agent-team-design §5.4）----
+
+/** 团队共享记忆 TEAM.md（注入团队全部成员 + 主会话的 turn）。 */
+export async function getTeamMd(teamId: string) {
+  return json<{ ok: boolean; text?: string; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/team-md`,
+  );
+}
+
+export async function putTeamMd(teamId: string, text: string) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/team-md`,
+    { method: "PUT", headers: H, body: JSON.stringify({ text }) },
+  );
+}
+
+/** 实例记忆 notes.md（仅注入该成员实例的 turn）。 */
+export async function getMemberNotes(teamId: string, instanceId: string) {
+  return json<{ ok: boolean; text?: string; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(instanceId)}/notes`,
+  );
+}
+
+export async function putMemberNotes(teamId: string, instanceId: string, text: string) {
+  return json<{ ok: boolean; error?: string }>(
+    `${BASE}/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(instanceId)}/notes`,
+    { method: "PUT", headers: H, body: JSON.stringify({ text }) },
+  );
+}
+
 // ---- AgentTeam P2（2026-10-13 产品重构）：成员多会话 ----
 /** 给成员开新会话（新上下文），建完即设为活跃。 */
 export async function addTeamMemberSession(teamId: string, instanceId: string) {

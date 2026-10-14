@@ -552,6 +552,10 @@ async def _run_stream(
     _turn_sources = _citations_mod.begin_turn_sources(session_id)
     _src_token = _citations_mod.CURRENT_TURN_SOURCES.set(_turn_sources)
     try:
+        # 团队记忆（agent-team-design §5.4）：TEAM.md + 实例 notes。非团队
+        # 会话返回空串；memory 内部自兜异常，绝不带走 turn。
+        from ...teams import memory as _team_memory
+
         turn_ctx_text = build_turn_context(
             query=user_text or "",
             attached_files=attached,
@@ -560,6 +564,7 @@ async def _run_stream(
             # Repos the file/shell tools reached by absolute path this session
             # (projects.py). Empty for a fresh session → zero-cost.
             projects=projects_mod.known(slug, session_id),
+            team_context=_team_memory.turn_context(session_id),
         )
     finally:
         _citations_mod.CURRENT_TURN_SOURCES.reset(_src_token)

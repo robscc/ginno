@@ -33,7 +33,7 @@ from ..server_shared import (
     _TURN_TASKS,
 )
 from ..session_meta import _session_meta_children
-from . import store
+from . import memory, store
 
 # 上卷优先级（§5.3.1）：blocked 最高——「谁卡住了」必须压过一切；unknown
 # 次之（不可判定也需要人看一眼）；working 再次；done（未读）随后。
@@ -234,6 +234,10 @@ def member_row(team: dict, member: dict, client: str = "main") -> dict:
         "last_active": last_active,
         "elapsed_s": round(max(0.0, time.time() - last_active), 1),
         "unread": status == "done",
+        # 记忆分层（§5.4）：前端「📝 实例记忆」chip 的有无判据。
+        "has_notes": bool(memory.member_notes(
+            str((team or {}).get("id") or ""), str(member.get("instance_id") or "")
+        )),
     }
 
 
@@ -241,6 +245,8 @@ def team_payload(team: dict, client: str = "main") -> dict:
     """团队的完整前端载荷：编制 + 成员行 + 上卷摘要 + 领队 persona。"""
     members = [member_row(team, m, client) for m in (team or {}).get("members") or []]
     payload = dict(team or {})
+    # 团队共享记忆（§5.4）：前端「👥 TEAM.md」chip / 编辑入口的有无判据。
+    payload["has_team_md"] = bool(memory.team_md(str((team or {}).get("id") or "")))
     # 领队 persona（主会话的 agent）：成员面板置顶展示「领队 · 主会话」
     # （2026-10-14 用户需求）。读主会话 meta，坏/缺按空串。
     main_sid = str((team or {}).get("main_session_id") or "")

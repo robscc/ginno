@@ -384,6 +384,7 @@ def build_turn_context(
     mention_context: list[dict] | None = None,
     bound_workflow: dict | None = None,
     projects: list[dict] | None = None,
+    team_context: str = "",
 ) -> str:
     """The PER-TURN volatile context (plan B1): wiki retrieval for this query,
     attached files, @mentions, discovered project roots, and (for workflow-dev
@@ -399,6 +400,9 @@ def build_turn_context(
     from .knowledge.injection import build_wiki_context, wrap_context_section
 
     parts: list[str] = []
+    # 团队记忆（agent-team-design §5.4：TEAM.md + 实例 notes）——空会话零成本。
+    if team_context:
+        parts.append(wrap_context_section("team_context", team_context))
     if bound_workflow:
         parts.append(wrap_context_section("bound_workflow", _format_bound_workflow(bound_workflow)))
     if query:
@@ -1446,6 +1450,7 @@ def build_all_tools(
     from .tools.goal_tools import build_goal_tools
     from .tools.plan_tools import build_plan_tools
     from .tools.subagent import build_subagent_tools
+    from .tools.team import build_team_tools
     from .tools.web_tools import build_web_tools
 
     # Anthropic-protocol providers may search on the gateway itself (the
@@ -1497,6 +1502,10 @@ def build_all_tools(
         # permission exempt set, same delegate_agent precedent: the user
         # approves the goal itself (policy default "ask").
         + build_subagent_tools(session_id, project_slug, subagent_depth=subagent_depth)
+        # Lead 自主分派工具（agent-team-design §6 P3）——只绑团队主会话
+        # （meta type == "team"），其余会话为空表。不进权限豁免集（同
+        # spawn_subagent 先例：默认 ask，用户批准的是分派本身）。
+        + build_team_tools(session_id)
         # 任务清单编排（plan-orchestration §5）：建单/改单/取消。无
         # session（workflow/列举端点）时为空，与 ask/subagent 同语义。
         + build_plan_tools(session_id, project_slug)
