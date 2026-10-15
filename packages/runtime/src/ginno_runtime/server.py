@@ -354,6 +354,7 @@ if WEB_OUT is not None and (WEB_OUT / "_next").exists():
 # ---- API routers (per-domain modules under ginno_runtime/api/) ------------
 # Included before the catch-all web route at the bottom of this module.
 from .api import code as _code_api  # noqa: E402
+from .api import badge as _badge_api  # noqa: E402
 from .api import code_fsops as _code_fsops_api  # noqa: E402
 from .api import config as _config_api  # noqa: E402
 from .api import plans as _plans_api  # noqa: E402
@@ -372,6 +373,7 @@ from .api import workflows as _workflows_api  # noqa: E402
 from .mods import api as _mods_api  # noqa: E402
 
 app.include_router(_code_api.router)
+app.include_router(_badge_api.router)
 app.include_router(_connectors_api.router)
 app.include_router(_code_fsops_api.router)
 app.include_router(_config_api.router)

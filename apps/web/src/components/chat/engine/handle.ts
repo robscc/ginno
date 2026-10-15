@@ -887,7 +887,10 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           ctx.activeSidRef.current === sid;
         // 侧栏未读小圆点：没在盯这个会话时 turn 跑完 → 标记未读（与上面的
         // 桌面通知同一 watching 判定，但不受通知开关影响——点是无声的）。
+        // 正在看则上报已读：服务端在 turn 收口时已写 last_finished，不压掉
+        // 的话下一次 reloadSessions 会把眼前这个会话点亮。
         if (!watching) ctx.g.markSessionUnread(sid);
+        else ctx.g.clearSessionUnread(sid);
         if (np.enabled && !watching) {
           const title = ctx.g.sessions.find((s) => s.id === sid)?.title?.trim() || "Ginno";
           const raw = typeof ev.text === "string" ? ev.text.trim() : "";
@@ -985,8 +988,9 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // a dedicated error card with a retry action.
       markDelivered(ctx, sid);
       // turn 以失败告终也算「运行结束」：没在盯的会话点未读小圆点（重试入口
-      // 在错误卡上，别让用户错过）。watching 判定在 markSessionUnread 内部。
-      ctx.g.markSessionUnread(sid);
+      // 在错误卡上，别让用户错过）；正盯着则上报已读压掉服务端的 last_finished。
+      if (ctx.g.watchingSession(sid)) ctx.g.clearSessionUnread(sid);
+      else ctx.g.markSessionUnread(sid);
       const liveMsgId = ctx.liveBySessionRef.current[sid];
       ctx.liveBySessionRef.current[sid] = null;
       ctx.streamAgentRef.current[sid] = null;

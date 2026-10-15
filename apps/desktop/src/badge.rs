@@ -1,8 +1,9 @@
-//! Dock badge (agent-team-design.md §5.3.1): ONLY blocked / done bubble up —
-//! working stays on the team row inside the app, never the Dock. Polls
-//! `GET /api/teams/badge` on the sidecar every 5s over plain TCP (loopback,
-//! no TLS → no HTTP dependency) and mirrors the `needs` count onto the macOS
-//! Dock badge. Sidecar down → badge cleared (nothing needs you).
+//! Dock badge: needs = unread sessions + unseen schedule runs + team
+//! blocked/done (agent-team-design.md §5.3.1 — working stays on the team row
+//! inside the app, never the Dock). Polls `GET /api/badge` on the sidecar
+//! every 5s over plain TCP (loopback, no TLS → no HTTP dependency) and
+//! mirrors the `needs` count onto the macOS Dock badge. Sidecar down → badge
+//! cleared (nothing needs you).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -41,7 +42,7 @@ fn fetch_needs() -> Result<i64, ()> {
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .map_err(|_| ())?;
-    let req = format!("GET /api/teams/badge HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let req = format!("GET /api/badge HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).map_err(|_| ())?;
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf).map_err(|_| ())?;

@@ -200,6 +200,10 @@ export interface SessionMeta {
   // 0/1/2 — main conversations and plain sessions omit the field.
   depth?: number;
   subagent?: SubagentMeta;
+  // 服务端会话未读（runtime session_unread 收件箱语义，list_sessions 装饰）：
+  // 侧栏紫点的单一事实源，跨重启保留；前端内存 map 只是 message.end 瞬时
+  // 的乐观覆盖层。
+  unread?: boolean;
 }
 
 export type SubagentStatus = "running" | "waiting" | "done" | "failed" | "stopped";

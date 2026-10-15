@@ -46,6 +46,7 @@ def reset_cache() -> None:
     global _LAST_CLEANUP_DAY
     _DAY_CACHE.clear()
     _LAST_CLEANUP_DAY = None
+    _UNSEEN_MEMO.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -516,9 +517,17 @@ def mark_runs_seen(run_ids: list[str] | None) -> dict:
 
 def unseen_summary() -> dict:
     """未读统计（侧栏红点 + 执行记录页签角标）：``{"total","error","missed"}``。
-    total 含全部终态（ok/error/missed/skipped_overlap），running 不算结果。"""
+    total 含全部终态（ok/error/missed/skipped_overlap），running 不算结果。
+
+    mtime 键控 memo：全量重读 90 天 runs-*.jsonl 不便宜，而 Dock 徽标每 5s
+    轮询本摘要（「廉价不新鲜」纪律）——只 stat 不 read，seen.json 或任一天
+    文件落盘即自动失效。"""
+    key = _unseen_key()
+    cached = _UNSEEN_MEMO.get(key)
+    if cached is not None:
+        return dict(cached)
     state = _load_seen()
-    out = {"total": 0, "error": 0, "missed": 0}
+    out: dict = {"total": 0, "error": 0, "missed": 0}
     for e in _all_runs_deduped():
         if e.get("status") not in _TERMINAL_STATUSES:
             continue
@@ -529,4 +538,21 @@ def unseen_summary() -> dict:
             out["error"] += 1
         elif e.get("status") == "missed":
             out["missed"] += 1
-    return out
+    _UNSEEN_MEMO.clear()
+    _UNSEEN_MEMO[key] = out
+    return dict(out)
+
+
+_UNSEEN_MEMO: dict[tuple, dict] = {}
+
+
+def _unseen_key() -> tuple:
+    """未读结果的决定因素指纹：runs 目录各天文件 + seen.json 的 (name, mtime)。"""
+    d = paths.schedule_runs_dir()
+    parts: list[tuple] = []
+    seen = _seen_path()
+    parts.append(("seen", seen.stat().st_mtime_ns if seen.exists() else -1))
+    if d.is_dir():
+        for p in sorted(d.glob(f"{_FILE_PREFIX}*.jsonl")):
+            parts.append((p.name, p.stat().st_mtime_ns))
+    return tuple(parts)

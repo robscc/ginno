@@ -653,9 +653,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </span>
                 )}
                 {/* 未读小圆点：turn 在别处跑完、还没回来读过 → 标题右侧紫点，
-                    打开该会话即清除（会话行选中态本身意味着已读）。 */}
+                    打开该会话即清除（会话行选中态本身意味着已读）。内存乐观层
+                    或服务端装饰（s.unread，session_unread 单一事实源）任一命中。 */}
                 <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                  {g.unreadSessions[s.id] !== undefined && !sel && (
+                  {(g.unreadSessions[s.id] !== undefined || s.unread) && !sel && (
                     <span
                       className="h-1.5 w-1.5 rounded-full bg-violet"
                       title={t("session.unreadHint")}

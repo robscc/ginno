@@ -48,6 +48,8 @@ from ..session_meta import (
     _session_slug,
     subagent_depth_of,
 )
+from ..session_unread import is_unread as _session_is_unread
+from ..session_unread import mark_session_seen as _mark_session_seen
 from ..subagent_scheduler import (
     SUBAGENT_MAX_DEPTH,
     _is_subagent,
@@ -718,9 +720,10 @@ async def list_sessions(project_slug: str | None = None) -> list[dict]:
     slug = project_slug or "default"
     on_disk = _session_meta_list(slug)
     if on_disk:
-        return on_disk
+        # unread 装饰：服务端收件箱语义（session_unread），侧栏紫点的单一事实源
+        return [{**m, "unread": _session_is_unread(m)} for m in on_disk]
     return [
-        {k: v for k, v in s.items() if k != "graph"}
+        {**{k: v for k, v in s.items() if k != "graph"}, "unread": _session_is_unread(s)}
         for s in _SESSIONS.values()
         if s.get("project_slug") == slug
     ]
@@ -731,7 +734,18 @@ async def get_session(session_id: str) -> dict | None:
     m = _resolve_session_meta(session_id)
     if m is None:
         return None
-    return {k: v for k, v in m.items() if k != "graph"}
+    return {k: v for k, v in m.items() if k != "graph"} | {"unread": _session_is_unread(m)}
+
+
+@router.post("/api/sessions/{session_id}/seen")
+async def mark_session_seen_endpoint(session_id: str) -> dict:
+    """会话已读上报（前端「正在看」成立时调用，幂等）。写入 touch=False：
+    读取不改变侧栏排序。"""
+    slug = _session_slug(session_id)
+    if slug is None:
+        return {"ok": False, "error": "not_found"}
+    _mark_session_seen(slug, session_id)
+    return {"ok": True}
 
 
 class PatchSessionRequest(BaseModel):

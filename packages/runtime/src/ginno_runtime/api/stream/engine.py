@@ -50,6 +50,7 @@ from ...server_shared import (
     spawn_bg,
 )
 from ...session_meta import _find_meta, _session_meta_patch
+from ...session_unread import note_turn_finished
 from ...todos import store as todo_store
 from ...tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from ...tools.ask_tools import begin_ask_budget
@@ -1604,6 +1605,12 @@ async def _stream_graph(
                 "turn_done session=%s turn=%s status=completed text_len=%d",
                 session_id, turn_id, len("".join(turn_text)),
             )
+            # Session unread inbox (session_unread.py): completed turns make
+            # the session unread unless the user is watching — the frontend
+            # clears it via POST /api/sessions/{id}/seen. Only this explicit
+            # terminal branch (not the finally leg: retry/interrupt parking
+            # traverse it too) and not paused_at_interrupt / TurnStopped.
+            note_turn_finished(slug, session_id)
             # Empty text (tool-only turn) → the UI falls back to a generic body.
             # Mods turn.complete (claude-code-mods-design.md §5.3/§15.7):
             # detached dispatch BEFORE message.end; observe-only in P0.
@@ -1806,7 +1813,11 @@ async def _stream_graph(
                     "i18n_key": _err_fields.get("i18n_key"),
                     "params": _err_fields.get("params"),
                     "at": time.time(),
-                }
+                },
+                # Session unread inbox: error turns count as a finished turn
+                # (same patch — one index write). The auto-retry branch above
+                # `return`s before this point, so retried turns settle once.
+                "last_finished": time.time(),
             },
         )
         await safe_send(

@@ -87,6 +87,15 @@ export async function listSessions(project_slug = "default") {
   return json<SessionMeta[]>(`${BASE}/sessions?project_slug=${project_slug}`);
 }
 
+/** 会话已读上报（服务端收件箱语义，session_unread）：前端「正在看」成立时
+ * 调用——turn 在眼前跑完/点开会话/窗口回到前台。fire-and-forget，幂等。 */
+export async function markSessionSeen(session_id: string) {
+  return json<{ ok: boolean }>(
+    `${BASE}/sessions/${encodeURIComponent(session_id)}/seen`,
+    { method: "POST" },
+  );
+}
+
 export async function createSession(req: {
   project_slug?: string;
   workspace: string;

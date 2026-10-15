@@ -53,14 +53,17 @@ def _session_meta_upsert(slug: str, entry: dict) -> None:
         _write_index(slug, items)
 
 
-def _session_meta_patch(slug: str, session_id: str, patch: dict) -> dict | None:
+def _session_meta_patch(slug: str, session_id: str, patch: dict, *, touch: bool = True) -> dict | None:
+    """``touch=False``：不 bump ``updated``——侧栏按 updated 排序，像「已读」
+    这类读取型写入不得改变会话位置。"""
     with _IDX_LOCK:
         items = _session_meta_list(slug)
         target = None
         for m in items:
             if m.get("id") == session_id:
                 m.update({k: v for k, v in patch.items() if v is not None})
-                m["updated"] = time.time()
+                if touch:
+                    m["updated"] = time.time()
                 target = m
         if target is None:
             return None

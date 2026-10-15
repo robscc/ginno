@@ -77,8 +77,8 @@ export const LAST_SESSION_KEY = "ginno-last-session";
 const TREE_COLLAPSED_KEY = "ginno-sidebar-tree";
 // 侧栏会话未读小圆点：turn 在用户没盯着该会话时结束（message.end / turn
 // 报错 / 子代理终态）→ 标记未读；打开（或回到）该会话即视为已读并清除。
-// shape: {session_id: marked_at_epoch_s}。与折叠覆盖同一持久化模式。
-const UNREAD_KEY = "ginno-unread-sessions";
+// 单一事实源在服务端（session_unread 收件箱语义，随会话落盘跨重启）；
+// 这里只保留内存乐观层，shape: {session_id: marked_at_epoch_s}。
 
 export interface PreviewFile {
   id: string;
@@ -225,6 +225,9 @@ interface GinnoState {
   unreadSessions: Record<string, number>;
   markSessionUnread: (id: string) => void;
   clearSessionUnread: (id: string) => void;
+  // 「正在看」判定（活跃会话 ∧ 窗口可见）：handle.ts 与 reloadSessions 用它
+  // 决定 turn 收口后上报已读还是点亮紫点。
+  watchingSession: (id: string) => boolean;
   setRightTab: (tab: RightTab, opts?: { manual?: boolean }) => void;
   // ---- right panel open/width/badges (right-panel-redesign.md) ----
   rightPanelOpen: boolean;
@@ -794,11 +797,14 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     activeSessionRef.current = activeSessionId;
   }, [activeSessionId]);
 
-  // ---- 侧栏会话未读小圆点（ginno-unread-sessions）----
+  // ---- 侧栏会话未读小圆点（服务端 session_unread 单一事实源）----
+  // 内存 map 只是乐观覆盖层：message.end 瞬时先亮，reloadSessions 随后以
+  // 服务端装饰的 unread 布尔回写权威态；跨重启的紫点由服务端
+  // last_finished/seen 落盘保证（不再走 localStorage）。
   const [unreadSessions, setUnreadSessionsState] = useState<Record<string, number>>({});
   const unreadRef = useRef<Record<string, number>>({});
-  // 写时读 ref + 持久化时按 sessions 镜像裁剪，均与 treeCollapsed 同模式。
-  const persistUnread = useCallback((map: Record<string, number>) => {
+  // 写时读 ref + 按 sessions 镜像裁剪，均与 treeCollapsed 同模式。
+  const setUnreadMap = useCallback((map: Record<string, number>) => {
     let next = map;
     if (sessionsRef.current.length) {
       const alive = new Set(sessionsRef.current.map((s) => s.id));
@@ -810,28 +816,6 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     }
     unreadRef.current = next;
     setUnreadSessionsState(next);
-    try {
-      localStorage.setItem(UNREAD_KEY, JSON.stringify(next));
-    } catch {
-      /* storage unavailable */
-    }
-  }, []);
-  // Hydrate once on mount：上一次运行期间标记的未读跨重启保留。
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(UNREAD_KEY);
-      if (!raw) return;
-      const v = JSON.parse(raw) as Record<string, unknown>;
-      if (!v || typeof v !== "object") return;
-      const next: Record<string, number> = {};
-      for (const [k, val] of Object.entries(v)) {
-        if (typeof val === "number") next[k] = val;
-      }
-      unreadRef.current = next;
-      setUnreadSessionsState(next);
-    } catch {
-      /* corrupted — keep empty */
-    }
   }, []);
   // 「正在看」判定与 turn-done 通知一致（handle.ts message.end）：窗口可见
   // 且该会话是当前活跃会话 → turn 结束不算未读。窗口隐藏期间活跃会话跑完
@@ -847,18 +831,23 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     (id: string) => {
       if (!id || watchingSession(id)) return;
       if (unreadRef.current[id] !== undefined) return;
-      persistUnread({ ...unreadRef.current, [id]: Date.now() / 1000 });
+      setUnreadMap({ ...unreadRef.current, [id]: Date.now() / 1000 });
     },
-    [persistUnread, watchingSession],
+    [setUnreadMap, watchingSession],
   );
   const clearSessionUnread = useCallback(
     (id: string) => {
+      if (!id) return;
+      // 已读上报服务端（fire-and-forget，幂等）：服务端在 turn 收口时已写
+      // last_finished，「正在看」时也要上报才能压掉它。失败不重试——下一次
+      // clear 路径或 reloadSessions 会再对齐。
+      void api.markSessionSeen(id).catch(() => {});
       if (unreadRef.current[id] === undefined) return;
       const next = { ...unreadRef.current };
       delete next[id];
-      persistUnread(next);
+      setUnreadMap(next);
     },
-    [persistUnread],
+    [setUnreadMap],
   );
   // 窗口重新可见/聚焦：正在盯着的活跃会话即视为已读（隐藏期间跑完的 turn
   // 已标记，回来直接看到结果就不留点）。
@@ -1010,11 +999,26 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
   }, []);
   const reloadSessions = useCallback(async () => {
     try {
-      setSessions(await api.listSessions());
+      const rows = await api.listSessions();
+      setSessions(rows);
+      // 服务端未读权威态回写（收件箱语义，session_unread）：服务端说未读而
+      // 乐观层没标的补上（时间戳沿用旧值），服务端已读的撤掉本地残留。正在
+      // 看的会话即便服务端还有未读（例：重连 reconcile 竞态）也不亮点——
+      // 顺带上报已读自愈。
+      const next: Record<string, number> = {};
+      for (const s of rows) {
+        if (!s.unread) continue;
+        if (watchingSession(s.id)) {
+          void api.markSessionSeen(s.id).catch(() => {});
+          continue;
+        }
+        next[s.id] = unreadRef.current[s.id] ?? Date.now() / 1000;
+      }
+      setUnreadMap(next);
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [setUnreadMap, watchingSession]);
   const reloadTodos = useCallback(async () => {
     try {
       setTodos(await api.listTodos());
@@ -1383,18 +1387,14 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
         /* storage unavailable */
       }
     }
-    // 未读小圆点同理：被删会话（含级联后代）的标记一并剪掉。
+    // 未读小圆点同理：被删会话（含级联后代）的标记一并剪掉（服务端的
+    // last_finished/seen 随会话删除一并消失，无需上报）。
     const doomedUnread = Object.keys(unreadRef.current).filter((k) => doomed.has(k));
     if (doomedUnread.length) {
       const next = { ...unreadRef.current };
       for (const k of doomedUnread) delete next[k];
       unreadRef.current = next;
       setUnreadSessionsState(next);
-      try {
-        localStorage.setItem(UNREAD_KEY, JSON.stringify(next));
-      } catch {
-        /* storage unavailable */
-      }
     }
     // 正在查看的会话（或其祖先被级联删除）没了，run 视图也一并关闭。
     const cur = activeSessionRef.current;
@@ -1709,6 +1709,7 @@ export function GinnoProvider({ children }: { children: ReactNode }) {
     unreadSessions,
     markSessionUnread,
     clearSessionUnread,
+    watchingSession,
     activeRunId,
     openRunView,
     closeRunView,
