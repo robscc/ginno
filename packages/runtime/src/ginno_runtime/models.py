@@ -158,10 +158,19 @@ def _responses_chat_openai() -> type:
     return _RESPONSES_CLS
 
 def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
+    """Sampling params for the chat constructors.
+
+    max_tokens 语义(2026-10-16,office-bench 根因修复):正值 → 传;0 → 完全
+    不传(交由端点自决——thinking 模型的 reasoning 计入输出预算,一个过小的
+    上限会让重任务在思考阶段耗尽预算、content 一个字不吐);缺省(None,
+    只有未 normalize 的调用方)→ 沿用历史默认 8192。
+    """
     temperature = cfg.get("temperature")
     model_kwargs: dict[str, Any] = {}
     mt = cfg.get("max_tokens")
-    if mt:
+    if mt is None:
+        model_kwargs["max_tokens"] = 8192
+    elif int(mt) > 0:
         model_kwargs["max_tokens"] = int(mt)
     return (float(temperature) if temperature is not None else None, model_kwargs)
 
@@ -290,6 +299,7 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
             model_kwargs=model_kwargs or {"max_tokens": 4096},
             streaming=True,
             timeout=_chat_timeout(cfg),
+            max_retries=6,
         )
         # Some Anthropic-compatible gateways (corporate model hubs / proxies) expect
         # the token in `Authorization: Bearer ...` instead of `x-api-key`. The official
@@ -311,9 +321,10 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
             api_key=cfg.get("api_key") or "not-needed",
             base_url=base_url or "https://api.openai.com/v1",
             temperature=temperature if temperature is not None else 0.7,
-            model_kwargs=model_kwargs or {"max_tokens": 8192},
+            model_kwargs=model_kwargs,
             streaming=True,
             timeout=_chat_timeout(cfg),
+            max_retries=6,
             use_responses_api=True,
         )
         if cfg.get("org_id"):
@@ -329,9 +340,10 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         api_key=key or "not-needed",
         base_url=base_url,
         temperature=temperature if temperature is not None else 0.7,
-        model_kwargs=model_kwargs or {"max_tokens": 8192},
+        model_kwargs=model_kwargs,
         streaming=True,
         timeout=_chat_timeout(cfg),
+        max_retries=6,
     )
     # OpenAI-compatible gateway switches, forwarded verbatim into the request
     # body via `extra_body` (langchain-openai passes it through untouched):

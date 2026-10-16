@@ -314,7 +314,10 @@ async def _process_turn_citations(session_id: str, turn_id: str, text: str) -> i
 
 # Max seconds between stream chunks before the stall watchdog aborts the turn
 # (see chunked_stream in _stream_graph). Module-level so tests can shrink it.
-CHUNK_TIMEOUT_S = 180.0
+# 流断流看门狗:chunk 间隔超过该值即判死(防挂死 turn)。慢网关/限流退避
+# (SDK+代理重试可达数分钟无 chunk)会误伤,可用 GINNO_CHUNK_TIMEOUT_S 抬高
+# (ginno exec benchmark 模式默认抬高到 1200s,见 cli.py)。
+CHUNK_TIMEOUT_S = float(os.environ.get("GINNO_CHUNK_TIMEOUT_S", "180"))
 
 # LangGraph superstep budget per turn. The framework default (25) caps a turn
 # at roughly a dozen tool rounds — research-style subagent turns (many

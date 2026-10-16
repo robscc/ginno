@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import logging
 import time
 from typing import Literal
 from xml.sax.saxutils import escape as _xml_escape
@@ -44,6 +45,8 @@ from .tools.workflow_tools import (
 )
 from .truncation import truncate_tool_content
 from .world_state import SessionCtx, WorldState, context_settings
+
+_log = logging.getLogger(__name__)
 
 # permission-node deny messages are tagged so the WS layer can resolve the
 # matching "running" tool bubble (the model never streams these).
@@ -553,6 +556,43 @@ def build_agent_system_prompt(
     :func:`build_turn_context` for those.
     """
     return build_stable_system(agent, project_slug, all_tools)
+
+
+# Degenerate-final-reply recovery (见 agent_node_factory 内注释):thinking 模型
+# reasoning-only 收尾时的有界续跑。
+_EMPTY_REPLY_MAX_NUDGES = 3
+# Rate-limit backoff(2026-10-16,office-bench run4/5):429 类错误不该杀死
+# turn——SDK/代理侧重试耗尽后异常仍会冒到 agent_node,这里再兜一层指数
+# 退避,把「限流即失败」变成「限流即变慢」。
+_RATE_LIMIT_MAX_WAITS = 5
+_RATE_LIMIT_WAIT_S = 30.0  # 30/60/120/240/480s,共 ~15 分钟
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "429" in text or "rate limit" in text or "too many requests" in text
+
+
+async def _ainvoke_rate_limited(bound, msgs):
+    waited = 0
+    while True:
+        try:
+            return await bound.ainvoke(msgs)
+        except Exception as exc:  # noqa: BLE001 — 只吞限流,其余照抛
+            if waited >= _RATE_LIMIT_MAX_WAITS or not _is_rate_limit_error(exc):
+                raise
+            delay = _RATE_LIMIT_WAIT_S * (2 ** waited)
+            waited += 1
+            _log.warning(
+                "rate_limited_backoff wait=%.0fs attempt=%d/%d err=%.200s",
+                delay, waited, _RATE_LIMIT_MAX_WAITS, exc,
+            )
+            await asyncio.sleep(delay)
+_EMPTY_REPLY_NUDGE = (
+    "[system] Your last reply was empty — it carried reasoning but no visible "
+    "answer and no tool calls. Continue the task: finish the remaining work with "
+    "your tools, then reply with the final answer as normal message text."
+)
 
 
 def text_of_content(content) -> str:
@@ -1081,7 +1121,21 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
         # semantics match the strip_* steps above (persisted state untouched).
         if _is_anthropic_model(model) and context_settings().get("cache_control", True):
             history = _mark_cache_tail(history)
-        response = await bound.ainvoke([sys_msg] + history)
+        response = await _ainvoke_rate_limited(bound, [sys_msg] + history)
+        # Degenerate-final-reply recovery (2026-10-16, office-bench 根因):
+        # thinking 模型偶尔以「reasoning-only」消息收尾——content 为空、无
+        # tool_calls、finish=stop。对图来说这就是正常 END,turn 静默结束、零
+        # 可见产出。有界续跑:把空回复 + 提醒注入上下文再问一次,最多
+        # _EMPTY_REPLY_MAX_NUDGES 次;全部失败才照旧 END。空回复与提醒一并
+        # 落盘(重放一致),只在本次 superstep 的调用输入上追加。
+        empty_tail: list = []
+        for _ in range(_EMPTY_REPLY_MAX_NUDGES):
+            if (getattr(response, "tool_calls", None) or []) or text_of_content(
+                getattr(response, "content", "")
+            ).strip():
+                break
+            empty_tail += [response, HumanMessage(content=_EMPTY_REPLY_NUDGE)]
+            response = await _ainvoke_rate_limited(bound, [sys_msg] + history + empty_tail)
         # Attribution tag for history replay (C+ plan): messages_ui reads this
         # to label each bubble with the agent that actually answered. Lives in
         # additional_kwargs because langchain-core 1.x BaseMessage has no
@@ -1099,7 +1153,11 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
         tool_calls = getattr(response, "tool_calls", None) or []
         # Steered messages ride out WITH the response so they commit to state in
         # one update, ordered before it: [..., tool results, steer, response].
-        return {"messages": [*steered, response], "pending_tool_calls": tool_calls}
+        # empty_tail(空回复+提醒)同样按序落在 response 之前。
+        return {
+            "messages": [*steered, *empty_tail, response],
+            "pending_tool_calls": tool_calls,
+        }
 
     return agent_node
 
