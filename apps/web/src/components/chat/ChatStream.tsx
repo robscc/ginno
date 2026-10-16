@@ -807,6 +807,24 @@ export function ChatStream({
   }) {
     if (homeCreatingRef.current) return;
     homeCreatingRef.current = true;
+    // Fire 即清空 composer——必须赶在 g.newSession 之前(同步)。engine 的会话
+    // 切换 effect([session?.id])在 home→会话时把「当次渲染的 input/附件」存进
+    // HOME_SLOT 草稿槽；newSession 内部 setActiveSessionId 触发它时若 composer
+    // 还没清(原实现清在 await 链末尾，effect 闭包里是旧值)，已发送的文本就被
+    // 存成首页草稿——回到新建对话，发过的内容重新出现(用户报告 2026-10-15)。
+    // 先清则 effect 存进槽的是空值；未发送文本的 ⌘N 往返保留草稿是特性，不受
+    // 影响。创建失败/异常按原样恢复(保持「banner 报错、composer 留字」契约)。
+    const prevInput = input;
+    const prevImages = attachments;
+    const prevFiles = fileAttachments;
+    const restoreComposer = () => {
+      setInput(prevInput);
+      setAttachments(prevImages);
+      setFileAttachments(prevFiles);
+    };
+    setInput("");
+    setAttachments([]);
+    setFileAttachments([]);
     try {
       const agentId = target ?? g.agents[0]?.id ?? null;
       const s = await g.newSession(agentId, {
@@ -815,7 +833,10 @@ export function ChatStream({
         context_folders: pendingMounts.ids.length ? pendingMounts.ids : undefined,
         primary_folder: pendingMounts.primary ?? undefined,
       });
-      if (!s) return; // sessionError banner carries the reason; composer keeps text
+      if (!s) {
+        restoreComposer(); // sessionError banner carries the reason
+        return;
+      }
       curSessionIdRef.current = s.id;
       connectSession(s.id);
       const docs = pendingDocsRef.current;
@@ -823,7 +844,7 @@ export function ChatStream({
       const natives = pendingPathsRef.current;
       pendingPathsRef.current = [];
       // Collect the resolved entries so they ride in the turn payload — the
-      // fileAttachments state update below hasn't rendered yet in this closure.
+      // fileAttachments state update above hasn't rendered yet in this closure.
       const flushed: FileAttachment[] = [];
       for (const d of docs) {
         const e = await uploadOneDoc(s.id, d.file, d.tmpId);
@@ -842,13 +863,15 @@ export function ChatStream({
         mentions: [],
         agentId,
       });
-      setInput("");
-      setAttachments([]);
-      setFileAttachments([]);
       setTarget(null);
       setMenu(null);
       // 下一个新会话按库里的 auto_mount 条目重新预填(手动改动不跨会话残留)。
       void resetPendingMounts();
+    } catch (e) {
+      // 兜底：发送链上的任何异常都不吞用户文本——原实现清空在末尾，异常时
+      // 文本天然保留；清空前移后在这里补齐同等保证。
+      restoreComposer();
+      throw e;
     } finally {
       homeCreatingRef.current = false;
     }
