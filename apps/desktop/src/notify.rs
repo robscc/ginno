@@ -7,15 +7,17 @@ use tauri::Manager;
 use crate::common::shell_log;
 
 /// Payload of the `ginno:notify` event emitted by the web UI (see
-/// `notifyNative` in apps/web/src/lib/desktop.ts) when a session turn or
-/// workflow run finishes while the user isn't looking at it.
+/// `notifyNative` in apps/web/src/lib/desktop.ts) when a session turn,
+/// workflow run, or scheduled-task run finishes while the user isn't looking
+/// at it.
 #[derive(serde::Deserialize)]
 pub(crate) struct NotifyPayload {
-    /// `"session"`, `"workflow-run"` — decides which bridge global is called
-    /// on click — or `"test"` (Settings → Notifications test button), which
-    /// only refocuses the window.
+    /// `"session"`, `"workflow-run"`, `"schedule-run"` — decides which bridge
+    /// global is called on click — or `"test"` (Settings → Notifications test
+    /// button), which only refocuses the window.
     pub(crate) kind: String,
-    /// Session id (`kind == "session"`) or run id (`kind == "workflow-run"`).
+    /// Session id (`kind == "session"`), run id (`kind == "workflow-run"`), or
+    /// scheduled run id (`kind == "schedule-run"`).
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) body: String,
@@ -97,6 +99,12 @@ pub(crate) fn focus_and_open(app: &tauri::AppHandle, kind: &str, id: &str) {
         String::new()
     } else if kind == "workflow-run" {
         "window.__ginnoOpenWorkflowRun && window.__ginnoOpenWorkflowRun();".to_string()
+    } else if kind == "schedule-run" {
+        // AppShell registers __ginnoOpenScheduleRun(runId): opens the shadow-
+        // session replay for prompt targets, falls back to the /scheduled
+        // runs list when the row cache is gone (webview reloaded).
+        let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());
+        format!("window.__ginnoOpenScheduleRun && window.__ginnoOpenScheduleRun({id_js});")
     } else {
         let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());
         format!("window.__ginnoOpenSession && window.__ginnoOpenSession({id_js});")

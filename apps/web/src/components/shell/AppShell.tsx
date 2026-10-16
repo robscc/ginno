@@ -21,7 +21,7 @@ import {
   Users,
 } from "lucide-react";
 import { GoalEditor } from "@/components/shell/GoalChip";
-import { useGinno, LAST_SESSION_KEY } from "@/lib/store";
+import { useGinno, LAST_SESSION_KEY, notifyScheduleRunFinished } from "@/lib/store";
 import { openSocket, wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
 import { setKeepAwake } from "@/lib/desktop";
 import * as api from "@/lib/runtime";
@@ -50,7 +50,7 @@ import { ModToastHost } from "@/components/chat/mod/ModToastHost";
 import { NoticeHost } from "@/components/notice/NoticeHost";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
-import type { SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
+import type { ScheduleRun, SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const g = useGinno();
@@ -194,6 +194,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const setActiveSession = g.setActiveSession;
   const setRightTab = g.setRightTab;
   const setRightPanelOpenForBridge = g.setRightPanelOpen;
+  // 定时任务完成通知的点击回跳数据：run_finished 事件携带的行与用户点击通知
+  // 之间可能相隔数分钟，按 run_id 缓存最近 20 条供回跳查；webview 重载后缓存
+  // 为空 → 退回 /scheduled 执行记录页（Notification Center 里的旧通知仍可用）。
+  const scheduleNotifyRowsRef = useRef<Map<string, ScheduleRun>>(new Map());
+  const openScheduleRunFromNotifyRef = useRef<(runId: string) => void>(() => {});
+  openScheduleRunFromNotifyRef.current = (runId: string) => {
+    const row = scheduleNotifyRowsRef.current.get(runId);
+    if (row && row.target_type === "prompt" && row.session_id) {
+      // 与 RunsPanel.openRun 同语义：点开 = 已读（后端广播 runs_seen，状态点
+      // 即时消除），并挂 ScheduleRunView 影子会话回放（不离开当前路由）。
+      void api.markScheduleRunsSeen({ run_id: runId }).catch(() => {});
+      g.openScheduleRun(row);
+      return;
+    }
+    // 找不到行（重载后旧通知）或 workflow 目标：落到执行记录列表
+    if (window.location.pathname !== "/scheduled") router.push("/scheduled");
+  };
   useEffect(() => {
     const openSession = (sid: string) => {
       if (!sid) return;
@@ -214,9 +231,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       openSession;
     (window as unknown as { __ginnoOpenWorkflowRun?: () => void }).__ginnoOpenWorkflowRun =
       openWorkflowRun;
+    (window as unknown as { __ginnoOpenScheduleRun?: (runId: string) => void })
+      .__ginnoOpenScheduleRun = (runId: string) => openScheduleRunFromNotifyRef.current(runId);
     return () => {
       delete (window as unknown as { __ginnoOpenSession?: unknown }).__ginnoOpenSession;
       delete (window as unknown as { __ginnoOpenWorkflowRun?: unknown }).__ginnoOpenWorkflowRun;
+      delete (window as unknown as { __ginnoOpenScheduleRun?: unknown }).__ginnoOpenScheduleRun;
     };
   }, [setActiveSession, setRightTab, setRightPanelOpenForBridge, router]);
 
@@ -322,7 +342,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ws = openSocket(wsScheduleUrl());
       ws.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { type?: string };
+          const msg = JSON.parse(ev.data) as { type?: string; run?: ScheduleRun };
+          if (msg.type === "run_finished" && msg.run) {
+            // 点击回跳数据先落缓存（通知点击可能晚于事件数分钟），再发通知
+            // ——闸门/排除项（workflow 目标、skipped_overlap、窗口可见）在
+            // notifyScheduleRunFinished 内统一判定。
+            scheduleNotifyRowsRef.current.set(msg.run.run_id, msg.run);
+            if (scheduleNotifyRowsRef.current.size > 20) {
+              const oldest = scheduleNotifyRowsRef.current.keys().next().value;
+              if (oldest !== undefined) scheduleNotifyRowsRef.current.delete(oldest);
+            }
+            notifyScheduleRunFinished(msg.run, (runId) =>
+              openScheduleRunFromNotifyRef.current(runId),
+            );
+          }
           if (
             msg.type === "run_finished" ||
             msg.type === "missed" ||

@@ -15,7 +15,8 @@ import type { SynthesisCaseSummary } from "./runtime";
 import { notifyNative } from "./desktop";
 import { loadNotifyPrefs, notifyPrefs } from "./notifyPrefs";
 import { uiText } from "../i18n/uiText";
-import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Plan, Providers, SessionMeta, SkillSummary, SubagentSpawnEvent, SubagentStatusEvent, Team, Todo, WorkflowDef, WorkflowRun } from "./types";
+import { schedText } from "../i18n/schedText";
+import type { AgentConfig, Artifact, ArtifactPatch, FileEntry, Goal, GoalStatus, Plan, Providers, ScheduleRun, SessionMeta, SkillSummary, SubagentSpawnEvent, SubagentStatusEvent, Team, Todo, WorkflowDef, WorkflowRun } from "./types";
 
 export type RightTab = "todo" | "workflow" | "artifacts" | "memory" | "synthesis" | "code";
 
@@ -196,6 +197,72 @@ function notifyRunTransitions(
       }
     });
   }
+}
+
+// ---- 定时任务完成通知（schedule-unseen 的桌面提醒面）----
+// AppShell 的 /api/ws/schedule 通道收到 run_finished 时调用。与
+// notifyRunTransitions 同一闸门（Settings → Notifications 总开关 + 窗口隐藏），
+// 但事件驱动、无需状态 diff。两个刻意的排除：
+//   · workflow 目标不在这里通知——run 状态轮询的 notifyRunTransitions 已经
+//     覆盖（点击直达 workflow 面板），两路都发会连响两条；
+//   · skipped_overlap / missed 不发——前者是重叠让路无结果可看，后者在
+//     runtime 恢复时可能一次补记一批，会变成通知风暴（红点/徽标已覆盖）。
+// 正文优先用 run.summary（runtime 落终态行时已带截断好的结果摘要），错误行
+// 用 error 原文，都缺失再退到时长/泛化文案。
+export function notifyScheduleRunFinished(
+  run: Pick<
+    ScheduleRun,
+    "run_id" | "task_name" | "target_type" | "status" | "started_at" | "finished_at" | "summary" | "error"
+  >,
+  devOpen?: (runId: string) => void,
+): void {
+  const prefs = notifyPrefs();
+  if (!prefs.enabled) return;
+  if (typeof document !== "undefined" && document.visibilityState === "visible") return;
+  if (run.status !== "ok" && run.status !== "error") return;
+  if (run.target_type === "workflow") return;
+  const ok = run.status === "ok";
+  const name = (run.task_name || "").trim() || schedText("notify.defaultName");
+  const title = schedText(ok ? "notify.titleDone" : "notify.titleFailed", { name });
+  const raw = ok
+    ? (run.summary || "").trim() ||
+      schedText("notify.completed", {
+        duration: fmtRunElapsed({ started: run.started_at ?? 0, finished: run.finished_at }),
+      })
+    : (run.error || "").trim() || schedText("notify.failed");
+  // macOS 横幅只显示头几行——200 字符后省略（runtime 侧已截 160，此为兜底）
+  const body = raw.length > 200 ? `${raw.slice(0, 199)}…` : raw;
+  void notifyNative({
+    kind: "schedule-run",
+    id: run.run_id,
+    title,
+    body,
+    sound: prefs.sound ? prefs.soundName : undefined,
+  }).then((sent) => {
+    if (sent) return;
+    // Plain-browser dev fallback — WKWebView has no Notification API, so
+    // inside the packaged app this branch is a silent no-op.
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "default") {
+      try {
+        void Notification.requestPermission();
+      } catch {
+        /* unsupported */
+      }
+      return;
+    }
+    if (Notification.permission !== "granted") return;
+    try {
+      const n = new Notification(title, { body });
+      n.onclick = () => {
+        window.focus();
+        devOpen?.(run.run_id);
+        n.close();
+      };
+    } catch {
+      /* notification blocked/unsupported */
+    }
+  });
 }
 
 interface GinnoState {

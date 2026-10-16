@@ -196,6 +196,13 @@
       "forkFailed": "Fork failed",
       "openForked": "Jump to conversation",
       "openForkedTitle": "This run was already forked — open its conversation"
+    },
+    "notify": {
+      "titleDone": "✓ {name}",
+      "titleFailed": "✕ {name}",
+      "completed": "Scheduled task completed · took {duration}",
+      "failed": "Scheduled task run failed",
+      "defaultName": "Scheduled task"
     }
   }
 }
