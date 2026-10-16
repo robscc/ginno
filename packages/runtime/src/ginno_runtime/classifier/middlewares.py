@@ -274,6 +274,17 @@ def build_middlewares(session_id: str):
             model=cfg["model"],
             timeout_s=cfg["timeout_s"],
         )
+    elif backend_name == "laya":
+        # SF AI 网关私有部署 laya 的 HTTP 客户端（laya.py 模块 docstring：
+        # 协议要点、confidence 语义差异、失败降级路径）。网关自动路由
+        # checkpoint，无 model 字段；Bearer token 必须。
+        from .laya import LayaSystemOneModel
+
+        backend = LayaSystemOneModel(
+            api_key=cfg["api_key"] or os.environ.get("LAYA_API_KEY", ""),
+            base_url=cfg["base_url"],
+            timeout_s=cfg["timeout_s"],
+        )
     else:
         _log.warning("classifier: unknown backend %r, staying off", backend_name)
         return None, None

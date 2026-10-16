@@ -288,6 +288,204 @@ async def test_jev_backend_rejects_unknown_option(isolated_home, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Laya backend (SF AI gateway /api/v0.1/predictions)
+# --------------------------------------------------------------------------- #
+async def test_laya_backend_without_key_is_unavailable(isolated_home, monkeypatch):
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    with pytest.raises(ClassifierUnavailable, match="not configured"):
+        await LayaSystemOneModel().classify(_state(), [])
+
+
+async def test_laya_backend_parses_gateway_payload(isolated_home, monkeypatch):
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    async def fake_post(self, payload):
+        # SF 网关契约：请求体只有 state + questions（无 model 字段——服务端
+        # 按语言自动路由 checkpoint）。
+        assert set(payload) == {"state", "questions"}
+        qs = payload["questions"]
+        # ScoreQuestion expands to one noul per item (never sends laya "score")
+        assert "tool_select::bash" in qs and "tool_select::render_widget" in qs
+        assert all(v["type"] in ("noul", "choice") for v in qs.values())
+        # noul 不能带 criteria（带即 400，网关文档 §4.3）
+        for v in qs.values():
+            if v["type"] == "noul":
+                assert "criteria" not in v
+        # choice 的 criteria 是 {标签: 描述}，描述必须非空
+        assert qs["model_route"]["criteria"] == {
+            "qwen-flash": "qwen-flash", "claude-sonnet": "claude-sonnet",
+        }
+        return {
+            "answers": {
+                # Laya 的 confidence 是 1−熵，必须被忽略；answer_confidence
+                # 才是答案概率（middleware 阈值同语义）。分布字段叫 probs。
+                "model_route": {
+                    "type": "choice", "choice": "claude-sonnet",
+                    "confidence": 0.99, "answer_confidence": 0.72,
+                    "probs": {"qwen-flash": 0.28, "claude-sonnet": 0.72},
+                },
+                "tool_select::bash": {"type": "noul", "noul": 0.97},
+                "tool_select::render_widget": {"type": "noul", "noul": 0.1},
+            }
+        }
+
+    monkeypatch.setattr(LayaSystemOneModel, "_post", fake_post)
+    model = LayaSystemOneModel(api_key="k")
+    out = await model.classify(
+        _state(),
+        [
+            ChoiceQuestion(id="model_route", prompt="p", options=["qwen-flash", "claude-sonnet"]),
+            ScoreQuestion(id="tool_select", prompt="p", items=["bash", "render_widget"]),
+        ],
+    )
+    assert out[0].option == "claude-sonnet" and out[0].confidence == 0.72
+    assert out[1].scores == {"bash": 0.97, "render_widget": 0.1}
+
+
+async def test_laya_backend_choice_confidence_falls_back_to_probs(
+    isolated_home, monkeypatch
+):
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    async def fake_post(self, payload):
+        return {
+            "answers": {
+                "q": {
+                    "type": "choice", "choice": "a", "confidence": 0.88,
+                    "probs": {"a": 0.61, "b": 0.39},
+                }
+            }
+        }
+
+    monkeypatch.setattr(LayaSystemOneModel, "_post", fake_post)
+    out = await LayaSystemOneModel(api_key="k").classify(
+        _state(), [ChoiceQuestion(id="q", prompt="p", options=["a", "b"])]
+    )
+    assert out[0].confidence == 0.61  # max(probs), NOT the entropy field
+
+
+async def test_laya_backend_choice_confidence_layaserve_dialect(
+    isolated_home, monkeypatch
+):
+    """开源 laya-serve 方言：分布字段叫 probabilities（不是网关的 probs）。"""
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    async def fake_post(self, payload):
+        return {
+            "answers": {
+                "q": {
+                    "type": "choice", "choice": "b", "confidence": 0.9,
+                    "probabilities": {"a": 0.2, "b": 0.8},
+                }
+            }
+        }
+
+    monkeypatch.setattr(LayaSystemOneModel, "_post", fake_post)
+    out = await LayaSystemOneModel(api_key="k").classify(
+        _state(), [ChoiceQuestion(id="q", prompt="p", options=["a", "b"])]
+    )
+    assert out[0].confidence == 0.8
+
+
+async def test_laya_backend_choice_confidence_missing_is_zero(isolated_home, monkeypatch):
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    async def fake_post(self, payload):
+        return {"answers": {"q": {"type": "choice", "choice": "a", "confidence": 0.9}}}
+
+    monkeypatch.setattr(LayaSystemOneModel, "_post", fake_post)
+    out = await LayaSystemOneModel(api_key="k").classify(
+        _state(), [ChoiceQuestion(id="q", prompt="p", options=["a", "b"])]
+    )
+    # 熵集中度不冒充答案概率 → 0.0，让 min_confidence 闸门走安全路径
+    assert out[0].confidence == 0.0
+
+
+async def test_laya_backend_noul_uses_answer_confidence(isolated_home, monkeypatch):
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    async def fake_post(self, payload):
+        # 网关响应示例形状（文档 §五）：noul 也带 answer_confidence
+        return {"answers": {"q": {"type": "noul", "noul": 0.0226,
+                                  "confidence": 0.9774, "answer_confidence": 0.9774}}}
+
+    monkeypatch.setattr(LayaSystemOneModel, "_post", fake_post)
+    out = await LayaSystemOneModel(api_key="k").classify(
+        _state(), [BinaryQuestion(id="q", prompt="p")]
+    )
+    assert out[0].value is False and out[0].confidence == 0.9774
+
+
+async def test_laya_backend_rejects_unknown_option(isolated_home, monkeypatch):
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    async def fake_post(self, payload):
+        return {
+            "answers": {
+                "q": {"type": "choice", "choice": "bogus", "answer_confidence": 0.9}
+            }
+        }
+
+    monkeypatch.setattr(LayaSystemOneModel, "_post", fake_post)
+    with pytest.raises(ClassifierUnavailable, match="not an allowed option"):
+        await LayaSystemOneModel(api_key="k").classify(
+            _state(), [ChoiceQuestion(id="q", prompt="p", options=["a", "b"])]
+        )
+
+
+async def test_laya_backend_connection_error_is_unavailable(isolated_home, monkeypatch):
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    async def fake_post(self, payload):
+        raise OSError("connection refused")  # 网关不可达
+
+    monkeypatch.setattr(LayaSystemOneModel, "_post", fake_post)
+    with pytest.raises(ClassifierUnavailable, match="connection refused"):
+        await LayaSystemOneModel(api_key="k").classify(
+            _state(), [BinaryQuestion(id="q", prompt="p")]
+        )
+
+
+def test_laya_backend_url_composition(isolated_home):
+    """base_url 语义 = 完整 endpoint URL（含路径），原样使用不拼接；
+    默认是本地开源 laya-serve——公司网关等部署地址只进 settings 配置，
+    不写死进代码。"""
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    assert LayaSystemOneModel(api_key="k")._url == "http://127.0.0.1:8000/v1/systemone"
+    assert (
+        LayaSystemOneModel(
+            api_key="k", base_url="http://10.0.0.5:9001/svc/api/v0.1/predictions"
+        )._url
+        == "http://10.0.0.5:9001/svc/api/v0.1/predictions"
+    )
+
+
+def test_build_middlewares_laya_backend(isolated_home, monkeypatch):
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    _set_settings(
+        {"classifier": {"backend": "laya", "api_key": "settings-key"}}, isolated_home
+    )
+    monkeypatch.setenv("GINNO_CLASSIFIER_MODE", "shadow")
+    router, selector = build_middlewares("s1")
+    from ginno_runtime.classifier.laya import LayaSystemOneModel
+
+    assert isinstance(router.backend, LayaSystemOneModel)
+    assert isinstance(selector.backend, LayaSystemOneModel)
+    assert router.backend._api_key == "settings-key"
+
+
+def test_build_middlewares_laya_env_key_fallback(isolated_home, monkeypatch):
+    _set_settings({"classifier": {"backend": "laya"}}, isolated_home)
+    monkeypatch.setenv("GINNO_CLASSIFIER_MODE", "shadow")
+    monkeypatch.setenv("LAYA_API_KEY", "env-key")
+    router, _ = build_middlewares("s1")
+    assert router.backend._api_key == "env-key"
+
+
+# --------------------------------------------------------------------------- #
 # ModelRouterMiddleware
 # --------------------------------------------------------------------------- #
 def _router_cfg(isolated_home, monkeypatch, mode, candidates=("model-a", "model-b")):

@@ -8,10 +8,16 @@ Default OFF — the whole layer is inert unless the user opts in. Shape:
     {
       "classifier": {
         "mode": "off",              // off | shadow | enforce
-        "backend": "llm",           // llm | jev
-        "model": "",                // llm: bare chat model name; jev: decisions slug
-        "api_key": "",              // jev only; env OPENROUTER_API_KEY fallback
-        "base_url": "",             // jev only; "" → default decisions endpoint
+        "backend": "llm",           // llm | jev | laya
+        "model": "",                // llm: bare chat model name; jev: decisions
+                                    // slug; laya: unused (gateway auto-routes
+                                    // checkpoint by input language)
+        "api_key": "",              // jev: required, env OPENROUTER_API_KEY
+                                    // fallback; laya: gateway deployments
+                                    // require it, env LAYA_API_KEY fallback
+        "base_url": "",             // jev: "" → OpenRouter decisions endpoint;
+                                    // laya: FULL endpoint URL incl. path — ""
+                                    // → local laya-serve /v1/systemone
         "timeout_s": 8,
         "router": {"enabled": true, "candidates": [], "min_confidence": 0.7},
         "tools":  {"enabled": true, "min_confidence": 0.6, "skip_below": 12,
@@ -33,8 +39,12 @@ _DEFAULTS: dict = {
     "mode": "off",
     "backend": "llm",
     "model": "",
-    # jev backend only: Decisions API key + endpoint. api_key falls back to
-    # env OPENROUTER_API_KEY; base_url "" → the default decisions endpoint.
+    # HTTP decision backends (jev/laya): API key + endpoint. jev: api_key
+    # falls back to env OPENROUTER_API_KEY (required), base_url "" → the
+    # OpenRouter decisions endpoint. laya: api_key falls back to env
+    # LAYA_API_KEY (gateway deployments require it; local laya-serve is
+    # unauthenticated), base_url "" → local laya-serve /v1/systemone —
+    # gateway deployments configure the FULL endpoint URL (path included).
     "api_key": "",
     "base_url": "",
     "timeout_s": 8.0,
