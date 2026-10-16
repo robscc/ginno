@@ -34,6 +34,7 @@ docs = [
 
 [project.scripts]
 ginno-runtime = "ginno_runtime.server:main"
+ginno = "ginno_runtime.cli:main"
 
 [build-system]
 requires = ["hatchling"]

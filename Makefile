@@ -140,6 +140,15 @@ guard-app-not-running:
 	fi; \
 	echo "✅ No live Ginno / sidecar — safe to rebuild"
 
+## runtime-wheel: pure-python wheel of the runtime (benchmark harness delivery).
+# workbuddy-bench freezes this into a PyInstaller onefile inside manylinux_2_28
+# (configs/harnesses/ginno/docker/Dockerfile in the bench fork). Pure python →
+# the wheel built on macOS installs fine on Linux.
+runtime-wheel:
+	cd $(RUNTIME) && uv build --out-dir dist
+	@echo "✅ Wheel → $(RUNTIME)/dist/ginno_runtime-*.whl"
+	@echo "   stage into the bench: scripts/ginno/stage-wheel.sh <wheel>"
+
 ## mod-broker: the ginno-mod-broker CLI (dev/web mode — Python spawns it)
 # --target-dir $(ROOT)/target puts the binary exactly on the runtime's
 # discovery ladder (bridge_utils.py: <repo>/target/{debug,release}/). The
