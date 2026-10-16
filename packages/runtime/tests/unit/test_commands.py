@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, RemoveMessage
 
 from ginno_runtime import agents as agents_reg
 from ginno_runtime import artifacts as art_store
@@ -395,3 +395,67 @@ async def test_compact_async_failure_returns_error_not_crash(isolated_home, monk
     reply, calls = await _run_compact(monkeypatch, graph, compact_exc=RuntimeError("boom"))
     assert calls["compact"] == 1
     assert "RuntimeError" in reply and "boom" in reply  # real cause surfaced
+
+
+# --------------------------------------------------------------------------- #
+# /clear async handler — zombie checkpoint vs live turn (2026-10-15 fix,
+# same two meanings of non-empty `next` as /compact above)
+# --------------------------------------------------------------------------- #
+class _ClearGraph(_CompactGraph):
+    """Same staging surface as _CompactGraph; aupdate_state records the wipe."""
+
+    def __init__(self, messages, next_=()):
+        super().__init__(messages, next_=next_)
+        self.wipes: list[dict] = []
+
+    async def aupdate_state(self, config, values, as_node=None):
+        self.wipes.append(values)
+        self._next = ()
+        return None
+
+
+async def _run_clear(monkeypatch, graph, *, running=(), pending=()):
+    """Drive BUILTINS['clear'].async_handler with the server-side pieces the
+    handler lazily imports stubbed at their modules; returns (reply, calls)."""
+    calls = {"heal": 0, "event": 0}
+
+    async def _heal(graph_, config):
+        calls["heal"] += 1
+
+    async def _push(sid, event, payload, turn_id=None):
+        calls["event"] += 1
+
+    monkeypatch.setattr(api_stream, "_heal_interrupted_turn", _heal)
+    monkeypatch.setattr(server_shared, "_push_session_event", _push)
+    monkeypatch.setattr(server_shared, "_RUNNING_TURNS", dict.fromkeys(running))
+    monkeypatch.setattr(server_shared, "_PENDING_RESUME", set(pending))
+    monkeypatch.setattr(server_shared, "_TURN_TASKS", {})
+
+    session = {"session_id": "s1", "project_slug": "default", "graph": graph}
+    reply = await BUILTINS["clear"].async_handler("default", session, "")
+    return reply, calls
+
+
+async def test_clear_async_zombie_heals_then_clears(isolated_home, monkeypatch):
+    # `next` non-empty but nothing live in this process (restart killed the
+    # parked turn; the UI has no confirmation card to answer) → heal, then
+    # wipe as usual instead of refusing forever.
+    msgs = [HumanMessage(content=f"m{i}", id=f"m{i}") for i in range(3)]
+    graph = _ClearGraph(msgs, next_=("agent",))
+    reply, calls = await _run_clear(monkeypatch, graph)
+    assert calls["heal"] == 1
+    assert len(graph.wipes) == 1 and len(graph.wipes[0]["messages"]) == 3
+    assert all(isinstance(v, RemoveMessage) for v in graph.wipes[0]["messages"])
+    assert calls["event"] == 1  # history.cleared broadcast fired
+    assert "🧹" in reply  # success reply in either locale
+
+
+async def test_clear_async_live_parked_rejected(isolated_home, monkeypatch):
+    # `next` non-empty AND the turn is parked at a live interrupt in this
+    # process (a card the user can still answer) → refuse; the wipe must not
+    # run and heal must never touch a turn that may still resume.
+    graph = _ClearGraph([HumanMessage(content="m")], next_=("agent",))
+    reply, calls = await _run_clear(monkeypatch, graph, pending=("s1",))
+    assert calls["heal"] == 0 and calls["event"] == 0
+    assert graph.wipes == []
+    assert "/clear" in reply  # rejection wording names the command

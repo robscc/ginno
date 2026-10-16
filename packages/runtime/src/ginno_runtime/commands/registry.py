@@ -717,10 +717,34 @@ async def _clear_async_handler(
     if not msgs:
         return t("This session's context is already empty", "本会话上下文已经是空的")
     if getattr(snap, "next", None):
-        return t(
-            "The current turn is paused at a confirmation step (permission / question); finish it before running /clear",
-            "当前回合停在确认步骤（权限 / 提问）上；请先完成再运行 /clear",
+        # `next` 非空与 /compact 同理有两种含义（详见 /compact 处注释）：本进程
+        # 里有活的 turn（停在权限/提问 interrupt，UI 有卡可确认）→ 拒绝；进程
+        # 重启/崩溃留下的僵尸 checkpoint（内存注册表已随旧进程消失，UI 没有
+        # 任何可确认的地方，也没有东西会再跑）→ heal 后照常清空，而不是永远
+        # 拒绝（2026-10-15 用户报告：/clear 报「停在确认步骤」但无卡可确认）。
+        from ..server_shared import _PENDING_RESUME, _RUNNING_TURNS, _TURN_TASKS
+
+        _task = _TURN_TASKS.get(sid)
+        _live = (
+            sid in _RUNNING_TURNS
+            or sid in _PENDING_RESUME
+            or (_task is not None and not _task.done())
         )
+        if _live:
+            return t(
+                "The current turn is paused at a confirmation step (permission / question); finish it before running /clear",
+                "当前回合停在确认步骤（权限 / 提问）上；请先完成再运行 /clear",
+            )
+        try:
+            from ..api.stream import _heal_interrupted_turn
+            from ..server_shared import _turn_lock
+
+            # 与 _stop_parked_turn 相同的串行化（防止 heal 与新 invoke 交错写
+            # checkpoint）；heal 自身 best-effort，失败也继续清空。
+            async with _turn_lock(sid):
+                await _heal_interrupted_turn(graph, config)
+        except Exception:
+            _log.exception("clear_cmd_zombie_heal_failed session=%s", sid)
     if any(not getattr(m, "id", None) for m in msgs):
         # id-less messages can't be delete-rewritten (microcompact bails the
         # same way); nothing re-added means they'd survive as ghosts.
