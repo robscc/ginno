@@ -282,8 +282,14 @@ Ginno 是单机个人 Agent，用户即机主。核心场景：
 - **并发**：任务间允许并行；**同任务不重叠**——触发时上一次仍在跑则本次记
   `skipped_overlap`（间隔类任务防雪崩；workflow 常跑几分钟，这条对 ⚡ 目标尤其重
   要）。
-- **对账**：启动时（lifespan）扫当日 jsonl 中仍为 `running` 的孤儿行（上次崩溃/被杀）
-  改记 `error("interrupted")`，模式同孤儿 subagent/run 对账。
+- **对账 + 自动续跑**：启动时（lifespan）扫当日 jsonl 中仍为 `running` 的孤儿行
+  （上次崩溃/被杀）。窗口内（执行启动后 24h）且任务仍在启用 → **自动续跑**：
+  prompt 沿同一影子会话以「续跑指令 + 原 prompt」headless 补一轮（会话历史里
+  已有中断前的进度，指令要求接着做）；workflow 沿同一 wf run 的 checkpoint 以
+  input=None 从最后提交的 superstep 继续（`_continue_run_bg`，已完成步不重跑），
+  执行记录同 run_id 落回 running（末行胜出，UI 原地续显）。超窗、任务已删或
+  停用、无续跑锚点（会话/wf run 缺失）才改记 `error("interrupted")`。续跑本身
+  再次被停机打断 → 照常落 interrupted 行，下次启动再对账。
 - **时区**：全部本地时区；`next_run_at` 持久化（epoch 秒），DST 边界按本地日历语义
   重算（每日 09:30 在 DST 切换日仍为本地 09:30）。
 
@@ -433,7 +439,7 @@ source）。workflow 目标：维持既有 `source:"workflow"`（运行节点/�
 | 情形 | 处理 |
 |---|---|
 | Ginno 未运行 / 机器睡眠错过触发 | 启动/唤醒后 tick 对账记 `missed`（每错过的计划点一条），不补跑 |
-| runtime 崩溃留下 running 孤儿行 | 启动对账改 `error("interrupted")` |
+| runtime 崩溃留下 running 孤儿行 | 启动对账：窗口内自动续跑（同会话补一轮 / 同 checkpoint 断点继续），超窗或任务已删/停用改 `error("interrupted")` |
 | 同任务上次未跑完又到点 | 记 `skipped_overlap`，不排队 |
 | workflow 配方被删除后到点 | 记 `error("workflow_missing")`，任务列表标「配方已删除」 |
 | workflow 配方删除但历史 run 仍在 | 执行记录保留；回放走 run 视图（RunSubSessionView 已用 stub 配方名渲染） |
@@ -473,7 +479,8 @@ source）。workflow 目标：维持既有 `source:"workflow"`（运行节点/�
 3. 总开关关闭 → footer 状态点变灰、任务行禁用、无任何触发；单任务开关同理。
 4. keep_awake 开启后 `pmset -g assertions` 出现 caffeinate 断言；退出 Ginno 后断言消失。
 5. 制造睡眠错过（停 runtime 跨过一个计划点再启动）→ 记录出现 missed；runtime 运行中被
-  kill → 重启后该行变 error(interrupted)。
+  kill → 重启后该行自动续跑（窗口内）并在完成后落终态；删任务或禁用后再 kill →
+  该行变 error(interrupted)。
 6. 同任务上次未完又到点 → 第二次记 skipped_overlap。
 7. 执行记录按时间升降序切换正确；任务/目标类型/状态/日期过滤正确；分页正确。
 8. 配置 workflow 目标任务：表单按 `context.schema` 渲染、`initial` 预填默认值；带

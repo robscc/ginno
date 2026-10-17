@@ -531,3 +531,146 @@ async def test_tick_recomputes_invalid_weekly_next_run(isolated_home, monkeypatc
     nxt = task["next_run_at"]
     assert nxt > now
     assert datetime.fromtimestamp(nxt).weekday() in {0, 1, 2, 3, 4}  # 落回 Mon-Fri
+
+
+# ---- 启动对账自动续跑（2026-10-17）--------------------------------------------
+def _save_task(**kw):
+    t = _task(**kw)
+    store.upsert_task(t)
+    return t
+
+
+async def test_reconcile_resumes_recent_prompt_run(isolated_home, monkeypatch):
+    """窗口内的孤儿 running 行（有 session_id、任务仍启用）→ 同 run_id 落回
+    running、重占重叠槽、spawn 续跑协程，终态/last_run 正常回写。"""
+    _save_task()
+    row = {"run_id": "sr-r", "task_id": "st-t1", "task_name": "T", "target_type": "prompt",
+           "status": "running", "scheduled_at": time.time(), "started_at": time.time(),
+           "finished_at": None, "session_id": "sess-1", "summary": None, "error": None}
+    store.record_run(row)
+    calls = []
+
+    async def fake_resume(task, r):
+        calls.append((task["id"], r["run_id"], r["session_id"]))
+        return {"ok": True, "error": None, "text": "resumed!", "input_tokens": 1, "output_tokens": 2}
+
+    monkeypatch.setattr(scheduler, "_resume_prompt_target", fake_resume)
+    healed = scheduler.reconcile_interrupted()
+    assert healed == 0
+    assert scheduler._RUNNING.get("st-t1") == "sr-r"
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
+    assert rows["sr-r"]["status"] == "running"  # 续跑行（末行胜出）
+    assert calls == []
+    await scheduler._RUN_TASKS["sr-r"]  # 续跑协程收尾
+    assert calls == [("st-t1", "sr-r", "sess-1")]
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
+    assert rows["sr-r"]["status"] == "ok"
+    assert rows["sr-r"]["summary"] == "resumed!"
+    task = store.get_task("st-t1")
+    assert task["last_run"]["status"] == "ok"
+    assert scheduler._RUNNING.get("st-t1") is None  # 槽已释放
+
+
+async def test_reconcile_resume_workflow_target(isolated_home, monkeypatch):
+    """workflow 目标续跑分流：走 _resume_workflow_target（以行内 workflow_run_id 为锚）。"""
+    _save_task(target={"type": "workflow", "workflow_id": "wf-1"})
+    row = {"run_id": "sr-w", "task_id": "st-t1", "task_name": "T", "target_type": "workflow",
+           "status": "running", "scheduled_at": time.time(), "started_at": time.time(),
+           "finished_at": None, "workflow_id": "wf-1", "workflow_run_id": "wfr-1",
+           "summary": None, "error": None}
+    store.record_run(row)
+    calls = []
+
+    async def fake_resume(task, r):
+        calls.append(r["workflow_run_id"])
+        return {"ok": True, "error": None, "text": "wf resumed", "input_tokens": 0, "output_tokens": 0}
+
+    monkeypatch.setattr(scheduler, "_resume_workflow_target", fake_resume)
+    scheduler.reconcile_interrupted()
+    await scheduler._RUN_TASKS["sr-w"]
+    assert calls == ["wfr-1"]
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
+    assert rows["sr-w"]["status"] == "ok"
+
+
+def test_reconcile_stale_run_marks_interrupted(isolated_home):
+    """超窗（>24h）孤儿行不续跑，照旧记 interrupted。"""
+    _save_task()
+    ts = time.time() - scheduler.RESUME_WINDOW_S - 60
+    store.record_run({"run_id": "sr-old", "task_id": "st-t1", "task_name": "T",
+                      "target_type": "prompt", "status": "running", "scheduled_at": ts,
+                      "started_at": ts, "finished_at": None, "session_id": "sess-1",
+                      "summary": None, "error": None})
+    assert scheduler.reconcile_interrupted() == 1
+    day = time.strftime("%Y-%m-%d", time.localtime(ts))
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(day))}
+    assert rows["sr-old"]["status"] == "error"
+    assert rows["sr-old"]["error"] == "interrupted"
+    assert scheduler._RUNNING.get("st-t1") is None
+
+
+def test_reconcile_task_deleted_or_disabled_marks_interrupted(isolated_home):
+    """任务已删除 / 已停用 → 不续跑，记 interrupted。"""
+    _save_task(enabled=False)
+    ts = time.time()
+    store.record_run({"run_id": "sr-d1", "task_id": "st-t1", "task_name": "T",
+                      "target_type": "prompt", "status": "running", "scheduled_at": ts,
+                      "started_at": ts, "finished_at": None, "session_id": "sess-1",
+                      "summary": None, "error": None})
+    # 任务已删除：行指向不存在的 st-gone
+    store.record_run({"run_id": "sr-d2", "task_id": "st-gone", "task_name": "G",
+                      "target_type": "prompt", "status": "running", "scheduled_at": ts,
+                      "started_at": ts, "finished_at": None, "session_id": "sess-2",
+                      "summary": None, "error": None})
+    assert scheduler.reconcile_interrupted() == 2
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
+    for rid in ("sr-d1", "sr-d2"):
+        assert rows[rid]["status"] == "error" and rows[rid]["error"] == "interrupted"
+
+
+def test_reconcile_no_anchor_marks_interrupted(isolated_home):
+    """无续跑锚点（会话还没建就被杀，session_id 为空）→ interrupted。"""
+    _save_task()
+    ts = time.time()
+    store.record_run({"run_id": "sr-na", "task_id": "st-t1", "task_name": "T",
+                      "target_type": "prompt", "status": "running", "scheduled_at": ts,
+                      "started_at": ts, "finished_at": None, "session_id": None,
+                      "summary": None, "error": None})
+    assert scheduler.reconcile_interrupted() == 1
+
+
+def test_reconcile_resume_without_loop_falls_back_to_interrupted(isolated_home):
+    """无事件循环（同步直调）时不静默悬挂：可续跑行退回 interrupted 记账。"""
+    _save_task()
+    ts = time.time()
+    store.record_run({"run_id": "sr-nl", "task_id": "st-t1", "task_name": "T",
+                      "target_type": "prompt", "status": "running", "scheduled_at": ts,
+                      "started_at": ts, "finished_at": None, "session_id": "sess-1",
+                      "summary": None, "error": None})
+    assert scheduler.reconcile_interrupted() == 1
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
+    assert rows["sr-nl"]["status"] == "error"
+
+
+async def test_resume_cancelled_records_interrupted(isolated_home, monkeypatch):
+    """续跑被停机取消（再次打断）：落 interrupted 行并释放重叠槽。"""
+    _save_task()
+    ts = time.time()
+    row = {"run_id": "sr-c", "task_id": "st-t1", "task_name": "T", "target_type": "prompt",
+           "status": "running", "scheduled_at": ts, "started_at": ts,
+           "finished_at": None, "session_id": "sess-1", "summary": None, "error": None}
+    store.record_run(row)
+
+    async def hang(task, r):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(scheduler, "_resume_prompt_target", hang)
+    scheduler.reconcile_interrupted()
+    t = scheduler._RUN_TASKS["sr-c"]
+    await asyncio.sleep(0.01)
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+    assert scheduler._RUNNING.get("st-t1") is None
+    rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
+    assert rows["sr-c"]["status"] == "error" and rows["sr-c"]["error"] == "interrupted"

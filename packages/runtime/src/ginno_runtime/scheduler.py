@@ -13,6 +13,9 @@
   ``_spawn_run_task(_run_workflow_bg(...))``（即 POST /api/workflow_runs 的
   headless 内联版），5s 步进轮询 run 终态回写执行记录。
 * 同任务不重叠：上次仍在跑 → 记 skipped_overlap；任务间允许并行。
+* 启动续跑（2026-10-17）：重启后发现窗口内（24h）被打断的孤儿 running 行，
+  自动接回进程续跑——prompt 沿同一影子会话补一轮，workflow 从同一 checkpoint
+  断点继续；超窗或任务已删/停用才记 error("interrupted")。
 * LLM 摘要（§10 决议 6）：执行成功后一次 ≤160 字廉价调用，fire-and-forget
   不阻塞调度；失败回退纯截断；计入 usage（source="schedule"）。
 """
@@ -216,16 +219,93 @@ def ensure_next_run(task: dict) -> float | None:
 
 
 # --------------------------------------------------------------------------- #
-# 启动对账（§3.7）：当日 jsonl 里残留 running 的孤儿行改记 error("interrupted")
+# 启动对账（§3.7）：孤儿 running 行 → 自动续跑（窗口内）或 error("interrupted")
 # --------------------------------------------------------------------------- #
+# 自动续跑窗口：执行启动之后 24h 内因重启被打断的 run 值得续跑；更老的视为
+# 陈年孤儿（任务上下文可能早已失效），按 interrupted 记账。
+RESUME_WINDOW_S = 24 * 3600.0
+
+
+def _resumable(task: dict | None, row: dict, now: float) -> bool:
+    """孤儿 running 行是否值得自动续跑：任务还在且启用、中断够新、且有续跑锚点
+    （prompt → session_id；workflow → workflow_run_id）。任一不满足 → interrupted。"""
+    if not task or not task.get("enabled"):
+        return False
+    started = float(row.get("started_at") or 0)
+    if started <= 0 or now - started > RESUME_WINDOW_S:
+        return False
+    # 行里必须记录了执行体，否则无从续跑（如会话还没建就被杀）
+    if (row.get("target_type") or "prompt") == "workflow":
+        return bool(row.get("workflow_run_id"))
+    return bool(row.get("session_id"))
+
+
+def _record_interrupted_row(row: dict) -> None:
+    """落 interrupted 终态行（启动对账与停机取消共用）。"""
+    now = time.time()
+    row2 = {
+        **row, "status": "error", "error": "interrupted", "finished_at": now,
+        # User-facing row copy rendered server-side (no request context
+        # here — `_()` resolves the settings locale, i18n-design.md §5).
+        "summary": _("schedule.run_interrupted"),
+    }
+    store.record_run(row2)
+    schedule_events().emit("run_finished", {"run": row2})
+
+
+def _spawn_resumes(pairs: list[tuple[dict, dict]]) -> int:
+    """把可续跑的孤儿行接回进程：同 run_id 落一行 running（末行胜出，UI 从
+    「运行中」原地继续），重占重叠槽，spawn 续跑协程。返回实际 spawn 数。
+
+    无事件循环（同步单测直调对账）时退回 interrupted 记账——静默悬挂比
+    记账失败更糟。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        for _task, row in pairs:
+            _record_interrupted_row(row)
+        return 0
+    spawned = 0
+    for task, row in pairs:
+        tid = task.get("id") or ""
+        if not tid or tid in _RUNNING:
+            _record_interrupted_row(row)
+            continue
+        rid = row["run_id"]
+        _RUNNING[tid] = rid
+        row2 = {**row, "status": "running", "error": None, "finished_at": None,
+                "summary": _("schedule.run_resuming")}
+        store.record_run(row2)
+        store.patch_task(tid, {"last_run": {"run_id": rid, "status": "running", "started": row.get("started_at")}})
+        schedule_events().emit("run_started", {"run": row2})
+        schedule_events().emit("task_updated", {"task": store.get_task(tid) or task})
+        t = loop.create_task(_resume_run(task, row2))
+        _RUN_TASKS[rid] = t
+
+        def _done(_t: asyncio.Task, tid: str = tid, rid: str = rid) -> None:
+            _RUN_TASKS.pop(rid, None)
+            if _RUNNING.get(tid) == rid:
+                _RUNNING.pop(tid, None)
+
+        t.add_done_callback(_done)
+        spawned += 1
+    if spawned:
+        _log.info("schedule_run_reconciliation resumed=%d", spawned)
+    return spawned
+
+
 def reconcile_interrupted() -> int:
-    """孤儿 running 行（上次崩溃/被杀）→ error("interrupted")（§3.7）。
+    """孤儿 running 行（上次崩溃/被杀）→ 窗口内自动续跑，否则 error("interrupted")。
 
     扫今天与前一天两个日文件：跨午夜存活（昨天启动、今天被杀）的 running 行
-    落在前一天的文件里。按去重后的末行判断，天然不碰已有终态的 run。"""
+    落在前一天的文件里。按去重后的末行判断，天然不碰已有终态的 run。
+    返回值仍为改记 interrupted 的行数（续跑数单看日志 resumed=）。"""
     now = time.time()
     healed = 0
     seen: set[str] = set()
+    resume_pairs: list[tuple[dict, dict]] = []
+    cfg = store.load_config()
+    tasks = {t.get("id"): t for t in cfg.get("tasks") or [] if t.get("id")}
     for day in (store._date_str(now - 86400), store._today()):
         for e in store.dedupe_runs(store.load_day(day)):
             if e.get("status") != "running":
@@ -234,11 +314,19 @@ def reconcile_interrupted() -> int:
             if rid in seen:
                 continue
             seen.add(rid)
+            task = tasks.get(e.get("task_id") or "")
+            if _resumable(task, e, now):
+                resume_pairs.append((task, e))
+                continue
             e = {**e, "status": "error", "error": "interrupted", "finished_at": now}
             store.record_run(e)
             healed += 1
     if healed:
         _log.info("schedule_run_reconciliation interrupted=%d", healed)
+    if resume_pairs:
+        # spawn 失败退回 interrupted 记账的行计入 healed，返回值语义不变
+        spawned = _spawn_resumes(resume_pairs)
+        healed += len(resume_pairs) - spawned
     return healed
 
 
@@ -353,6 +441,42 @@ def sch_kind(task: dict) -> str:
     return (task.get("schedule") or {}).get("kind") or ""
 
 
+async def _finish_run(task: dict, row: dict, final: dict) -> None:
+    """终态回写 + 任务 last_run + 事件 + 摘要（正常执行与续跑共用尾）。"""
+    run_id = row["run_id"]
+    now = time.time()
+    ok = bool(final.get("ok"))
+    text = str(final.get("text") or "")
+    status_text = (
+        _("schedule.run_succeeded")
+        if ok
+        else _("schedule.run_failed", error=final.get("error") or "unknown error")
+    )
+    row2 = {
+        **row,
+        "status": "ok" if ok else "error",
+        "error": None if ok else (final.get("error") or "failed"),
+        "finished_at": now,
+        # 摘要永远不缺席：先落纯截断兜底，LLM 摘要成功后以同 run_id 末行替位（§10 决议 6）
+        "summary": (text[:SUMMARY_MAX_CHARS] if text else status_text)[:SUMMARY_MAX_CHARS],
+        "input_tokens": final.get("input_tokens"),
+        "output_tokens": final.get("output_tokens"),
+    }
+    store.record_run(row2)
+    store.patch_task(task["id"], {
+        "last_run": {
+            "run_id": run_id, "status": row2["status"],
+            "started": row["started_at"], "finished": now,
+        },
+    })
+    schedule_events().emit("run_finished", {"run": row2})
+    schedule_events().emit("task_updated", {"task": store.get_task(task["id"])})
+
+    if ok and text:
+        # LLM 摘要：fire-and-forget，不阻塞 next_run_at 推进（§3.7）
+        shared.spawn_bg(_llm_summary(task, row2, text))
+
+
 async def _execute_run(task: dict, row: dict) -> None:
     """单次执行的完整生命周期：分流 → 终态回写 → 摘要（fire-and-forget）。
 
@@ -370,51 +494,36 @@ async def _execute_run(task: dict, row: dict) -> None:
         except asyncio.CancelledError:
             # 停机取消在途执行：落 interrupted 终态行（与启动对账同语义），
             # 不走摘要。startup reconcile 以「running 存在」为准，不会重复记账。
-            now = time.time()
-            row2 = {
-                **row, "status": "error", "error": "interrupted", "finished_at": now,
-                # User-facing row copy rendered server-side (no request context
-                # here — `_()` resolves the settings locale, i18n-design.md §5).
-                "summary": _("schedule.run_interrupted"),
-            }
-            store.record_run(row2)
-            schedule_events().emit("run_finished", {"run": row2})
+            _record_interrupted_row(row)
             raise
         except Exception as exc:  # noqa: BLE001 — 执行器崩溃也要落终态行
             _log.exception("schedule_run_failed run=%s task=%s", run_id, task.get("id"))
             final = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "text": ""}
 
-        now = time.time()
-        ok = bool(final.get("ok"))
-        text = str(final.get("text") or "")
-        status_text = (
-            _("schedule.run_succeeded")
-            if ok
-            else _("schedule.run_failed", error=final.get("error") or "unknown error")
-        )
-        row2 = {
-            **row,
-            "status": "ok" if ok else "error",
-            "error": None if ok else (final.get("error") or "failed"),
-            "finished_at": now,
-            # 摘要永远不缺席：先落纯截断兜底，LLM 摘要成功后以同 run_id 末行替位（§10 决议 6）
-            "summary": (text[:SUMMARY_MAX_CHARS] if text else status_text)[:SUMMARY_MAX_CHARS],
-            "input_tokens": final.get("input_tokens"),
-            "output_tokens": final.get("output_tokens"),
-        }
-        store.record_run(row2)
-        store.patch_task(task["id"], {
-            "last_run": {
-                "run_id": run_id, "status": row2["status"],
-                "started": row["started_at"], "finished": now,
-            },
-        })
-        schedule_events().emit("run_finished", {"run": row2})
-        schedule_events().emit("task_updated", {"task": store.get_task(task["id"])})
+        await _finish_run(task, row, final)
+    finally:
+        _RUNNING.pop(tid, None)
 
-        if ok and text:
-            # LLM 摘要：fire-and-forget，不阻塞 next_run_at 推进（§3.7）
-            shared.spawn_bg(_llm_summary(task, row2, text))
+
+async def _resume_run(task: dict, row: dict) -> None:
+    """续跑已被上次进程中断的执行（启动对账 spawn）。生命周期与 ``_execute_run``
+    同构：再次停机取消同样落 interrupted 行，终态/摘要走共用尾。"""
+    run_id = row["run_id"]
+    tid = task.get("id") or ""
+    try:
+        try:
+            ttype = (task.get("target") or {}).get("type")
+            if ttype == "workflow":
+                final = await _resume_workflow_target(task, row)
+            else:
+                final = await _resume_prompt_target(task, row)
+        except asyncio.CancelledError:
+            _record_interrupted_row(row)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _log.exception("schedule_resume_failed run=%s task=%s", run_id, task.get("id"))
+            final = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "text": ""}
+        await _finish_run(task, row, final)
     finally:
         _RUNNING.pop(tid, None)
 
@@ -543,6 +652,92 @@ async def _run_workflow_target(task: dict, row: dict) -> dict:
     if status == "done":
         inp, out = _usage_tokens(run_id=run["id"], since=row["started_at"])
         text = await _run_final_output(run["id"], cur or {})
+        return {"ok": True, "error": None, "input_tokens": inp, "output_tokens": out, "text": text}
+    return {"ok": False, "error": (cur or {}).get("error") or f"run {status}", "text": ""}
+
+
+# --------------------------------------------------------------------------- #
+# 续跑目标（启动对账 spawn）：prompt 沿同一影子会话再跑一轮；workflow 沿同一
+# run 的 checkpoint 从断点继续（completed 前缀不重跑）。
+# --------------------------------------------------------------------------- #
+async def _resume_prompt_target(task: dict, row: dict) -> dict:
+    """prompt 目标续跑：``_ensure_session`` 懒重建上次中断的影子会话，再以
+    「续跑指令 + 原 prompt」headless 补一轮。会话历史里已有中断前的部分进度，
+    续跑指令明确要求接着做而不是重做；若中断发生在首 checkpoint 之前（历史为
+    空），指令自带完整原 prompt，等价于重跑。"""
+    from .api.sessions import _ensure_session
+    from .api.sessions import _turn_last_error
+    from .api import stream as _stream_api
+    from .tools.ask_tools import reset_interactive as _reset_interactive_turn
+    from .tools.ask_tools import set_interactive as _set_interactive_turn
+
+    session_id = row.get("session_id")
+    session = _ensure_session(session_id) if session_id else None
+    if not session:
+        return {"ok": False, "error": "session_missing", "text": ""}
+    agent_id = session.get("agent_id")
+    slug = session["project_slug"]
+    turn_id = uuid.uuid4().hex  # 续跑一轮 = 新 turn
+    prompt = str((task.get("target") or {}).get("prompt") or "")
+    text = _("schedule.run_resume_prompt", prompt=prompt)
+    config = {
+        "configurable": {
+            "thread_id": session_id,
+            "project_slug": slug,
+            "agent_id": agent_id,
+            "turn_id": turn_id,
+            "user_text": text,
+            "usage_source": "schedule",
+        }
+    }
+    _log.info(
+        "schedule_run_resume run=%s task=%s session=%s type=prompt",
+        row["run_id"], task.get("id"), session_id,
+    )
+    shared._RUNNING_TURNS[session_id] = turn_id
+    ask_tok = _set_interactive_turn(False)
+    try:
+        await _stream_api._run_stream(None, session["graph"], config, text, session, agent_id)
+    finally:
+        _reset_interactive_turn(ask_tok)
+        from .server_shared import _PENDING_RESUME, _RUNNING_TURNS
+
+        if _RUNNING_TURNS.get(session_id) == turn_id and session_id not in _PENDING_RESUME:
+            _RUNNING_TURNS.pop(session_id, None)
+
+    err = _turn_last_error(session_id, turn_id)
+    if err:
+        return {"ok": False, "error": err, "text": ""}
+    inp, out = _usage_tokens(session_id=session_id, since=row["started_at"])
+    last = await _last_assistant_text(session_id, slug)
+    return {"ok": True, "error": None, "text": last, "input_tokens": inp, "output_tokens": out}
+
+
+async def _resume_workflow_target(task: dict, row: dict) -> dict:
+    """workflow 目标续跑：同一 wf run（thread_id == run_id 的 checkpoint 在盘上）
+    用 ``_continue_run_bg`` 以 input=None 从最后提交的 superstep 继续——已完成
+    步不重跑。lifespan 里 workflows 的 ``_reconcile_orphan_runs`` 先把孤儿 run
+    翻成了 interrupted，``_continue_run_bg`` 会置回 running 并续跑；checkpoint
+    缺失时 engine 报 no-resumable-checkpoint，经终态轮询落 error。"""
+    from .api.workflows_runs import _continue_run_bg, _spawn_run_task
+
+    wf_run_id = row.get("workflow_run_id")
+    if not wf_run_id or not wf_store.get_run(wf_run_id):
+        return {"ok": False, "error": "workflow_run_missing", "text": ""}
+    _log.info(
+        "schedule_run_resume run=%s task=%s wf_run=%s type=workflow",
+        row["run_id"], task.get("id"), wf_run_id,
+    )
+    _spawn_run_task(wf_run_id, _continue_run_bg(wf_run_id, row.get("workflow_id") or "", None))
+    while True:
+        cur = wf_store.get_run(wf_run_id)
+        if not cur or cur.get("status") in wf_store.TERMINAL_STATUSES:
+            break
+        await asyncio.sleep(POLL_RUN_S)
+    status = (cur or {}).get("status")
+    if status == "done":
+        inp, out = _usage_tokens(run_id=wf_run_id, since=row["started_at"])
+        text = await _run_final_output(wf_run_id, cur or {})
         return {"ok": True, "error": None, "input_tokens": inp, "output_tokens": out, "text": text}
     return {"ok": False, "error": (cur or {}).get("error") or f"run {status}", "text": ""}
 

@@ -1,8 +1,10 @@
 {
   "errors.session_not_found": "会话 {id} 不存在",
-  "schedule.run_succeeded": "已成功",
+  "schedule.default_task_title": "定时任务",
+  "schedule.missed": "已错过（机器睡眠或应用未运行）",
   "schedule.run_failed": "失败：{error}",
   "schedule.run_interrupted": "运行被中断（应用退出）",
-  "schedule.missed": "已错过（机器睡眠或应用未运行）",
-  "schedule.default_task_title": "定时任务"
+  "schedule.run_resume_prompt": "上一次执行因应用重启被中断。请基于本会话已有进度继续完成下面的任务（不要重做已完成的部分；若尚无任何进度则从头执行）：\n\n{prompt}",
+  "schedule.run_resuming": "应用重启，自动续跑中…",
+  "schedule.run_succeeded": "已成功"
 }

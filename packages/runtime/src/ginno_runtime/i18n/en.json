@@ -1,8 +1,10 @@
 {
   "errors.session_not_found": "Session {id} not found",
-  "schedule.run_succeeded": "Succeeded",
+  "schedule.default_task_title": "Scheduled task",
+  "schedule.missed": "Missed (machine asleep or app not running)",
   "schedule.run_failed": "Failed: {error}",
   "schedule.run_interrupted": "Run interrupted (app quit)",
-  "schedule.missed": "Missed (machine asleep or app not running)",
-  "schedule.default_task_title": "Scheduled task"
+  "schedule.run_resume_prompt": "The previous run was interrupted by an app restart. Continue the task below from the progress already in this session — do not redo completed work. If nothing was done yet, start the task from scratch:\n\n{prompt}",
+  "schedule.run_resuming": "App restarted — auto-resuming…",
+  "schedule.run_succeeded": "Succeeded"
 }
