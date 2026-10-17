@@ -561,6 +561,23 @@ export function useChatStreamEngine(deps: EngineDeps) {
 
     if (!session || !sid) {
       curSessionIdRef.current = null;
+      // Home is its own display slot: the last displayed session's liveness
+      // state must NOT leak into it. ChatStream derives running/parked from
+      // these mirrored states, and with curSessionIdRef null every background
+      // syncDisplay() is a no-op — leaving them stale would keep the home
+      // send button disabled long after the user left that session (and no
+      // event ever heals it while home is shown). Per-session refs
+      // (storeRef/liveBySessionRef/permsRef/…) stay untouched; re-entering a
+      // session re-syncs everything via syncDisplay(sid).
+      setMessages([]);
+      setRuns([]);
+      setLiveId(null);
+      liveIdRef.current = null;
+      setPermission(null);
+      setPropose(null);
+      setStreamAgent(null);
+      setServerRunning(false);
+      setCompacting(false);
       const draft = draftCacheRef.current[HOME_SLOT];
       if (draft) {
         setInput(draft.input);
