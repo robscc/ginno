@@ -82,6 +82,11 @@ class _StreamTap:
     def _reset_turn(self) -> None:
         self._text: list[str] = []
         self._tools: list[dict] = []
+        # tool_use_id -> 执行结果文本（tool.end）；message.end 时随 user 帧
+        # 一次性输出（cc stream-json 里 tool_result 跟在 assistant 帧之后）。
+        self._tool_results: dict[str, str] = {}
+        # tool_use_id -> 完整入参（tool.input）；先到先存，块出现时回填。
+        self._tool_inputs: dict[str, dict] = {}
         self._usage: dict | None = None
 
     async def send_text(self, payload: str) -> str | None:
@@ -96,14 +101,28 @@ class _StreamTap:
         elif ev == "token.delta":
             self._text.append(str(frame.get("content") or ""))
         elif ev == "tool.start":
+            tc_id = str(frame.get("id") or "")
             self._tools.append(
                 {
                     "type": "tool_use",
-                    "id": str(frame.get("id") or ""),
+                    "id": tc_id,
                     "name": str(frame.get("name") or ""),
-                    "input": {},
+                    "input": self._tool_inputs.get(tc_id, {}),
                 }
             )
+        elif ev == "tool.input":
+            # 引擎在 updates 提交点下发完整入参（tool.args 只有展示预览）。
+            tc_id = str(frame.get("id") or "")
+            inp = frame.get("input")
+            if tc_id and isinstance(inp, dict):
+                self._tool_inputs[tc_id] = inp
+                for blk in self._tools:
+                    if blk["id"] == tc_id:
+                        blk["input"] = inp
+        elif ev == "tool.end":
+            tc_id = str(frame.get("id") or "")
+            if tc_id:
+                self._tool_results[tc_id] = str(frame.get("content") or "")
         elif ev == "usage":
             turn = frame.get("turn")
             if isinstance(turn, dict):
@@ -134,6 +153,17 @@ class _StreamTap:
             if text:
                 blocks.append({"type": "text", "text": text})
             blocks.extend(self._tools)
+            # 只为真拿到执行结果的 tool_use 配 tool_result；没跑完/被 permission
+            # 拒绝的调用引擎不下发带 id 的 tool.end，这里不虚构空结果。
+            result_blocks = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": blk["id"],
+                    "content": self._tool_results[blk["id"]],
+                }
+                for blk in self._tools
+                if blk["id"] in self._tool_results
+            ]
             usage = self._usage or {}
             _emit(
                 {
@@ -152,6 +182,17 @@ class _StreamTap:
                 }
             )
             self._reset_turn()
+            # cc stream-json 形状：assistant 的 tool_use 之后跟一条 user 消息
+            # 携带 tool_result 块（按 tool_use_id 对应）。没发起工具调用的
+            # turn 不发——保持「帧只增不改」：旧 harness 按类型过滤不受影响。
+            if result_blocks:
+                _emit(
+                    {
+                        "type": "user",
+                        "session_id": self.session_id,
+                        "message": {"role": "user", "content": result_blocks},
+                    }
+                )
         elif ev == "error":
             _emit(
                 {
@@ -198,6 +239,10 @@ def _write_exec_settings(world_state: bool) -> None:
     # turn 静默结束。GINNO_EXEC_MAX_OUTPUT_TOKENS 可显式覆盖。
     max_out = os.environ.get("GINNO_EXEC_MAX_OUTPUT_TOKENS", "").strip()
     entry["max_tokens"] = int(max_out) if max_out.isdigit() else 0
+    # 每请求超时(models._chat_timeout 读 timeout_s);缺省走模块默认。
+    timeout_s = os.environ.get("GINNO_EXEC_TIMEOUT_S", "").strip()
+    if timeout_s.isdigit():
+        entry["timeout_s"] = int(timeout_s)
     cfg["model_configs"] = [entry]
     cfg["default_config"] = "exec"
     cfg["default_provider"] = "custom"
@@ -559,6 +604,37 @@ async def _run(
     return 1 if err else 0
 
 
+def _exec_main(coro) -> int:
+    """跑 exec 主体；任何未捕获异常也 emit 一条 result 终帧再以非零码退出。
+
+    harness（workbuddy-bench / Multica runtime）把 ``type:"result"`` 帧当
+    终止信号——崩溃时缺帧会让消费者干等到超时。正常路径的帧不受影响
+    （_run/_run_remote 自己 emit 的 result 照旧）。
+    """
+    try:
+        return asyncio.run(coro)
+    except KeyboardInterrupt:
+        _emit(
+            {
+                "type": "result",
+                "subtype": "error_deterministic",
+                "is_error": True,
+                "error": "interrupted (KeyboardInterrupt)",
+            }
+        )
+        return 130
+    except Exception as exc:  # noqa: BLE001 — 兜底：崩溃路径也必须有终帧
+        _emit(
+            {
+                "type": "result",
+                "subtype": "error_deterministic",
+                "is_error": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        return 1
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     # `ginno exec -- <instruction>`（console script / frozen 入口都带子命令名）。
@@ -577,9 +653,15 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="ginno exec",
         description="Headless one-shot turn (benchmark harness entry). "
-        "Prompt goes after `--`; endpoint/model via GINNO_EXEC_* env.",
+        "Prompt goes after `--` (or --prompt-stdin); endpoint/model via GINNO_EXEC_* env.",
     )
     parser.add_argument("--cwd", default=os.getcwd(), help="workspace directory (default: $PWD)")
+    parser.add_argument(
+        "--prompt-stdin",
+        action="store_true",
+        help="read the instruction from stdin instead of argv (long prompts: "
+        "Windows caps a single argument at ~32K chars); conflicts with `--`",
+    )
     parser.add_argument(
         "--home", default="", help="GINNO_HOME override (default: fresh temp dir per run)"
     )
@@ -600,8 +682,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    if args.prompt_stdin and instruction:
+        parser.error("--prompt-stdin cannot be combined with a prompt after `--`")
+    if args.prompt_stdin:
+        instruction = sys.stdin.read().strip()
     if not instruction:
-        parser.error("instruction required after `--`")
+        parser.error("instruction required: after `--` or via --prompt-stdin")
 
     os.chdir(args.cwd)
     # 远端模式优先：本地有 Ginno app 在跑就连它（用 app 现成的 provider/状态）。
@@ -611,7 +697,7 @@ def main(argv: list[str] | None = None) -> None:
         port = int(os.environ.get("GINNO_RUNTIME_PORT") or 8787)
         if _probe_sidecar(port):
             raise SystemExit(
-                asyncio.run(
+                _exec_main(
                     _run_remote(
                         instruction, cwd=args.cwd, port=port, settle_timeout_s=args.settle_timeout
                     )
@@ -646,7 +732,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(2)
 
     raise SystemExit(
-        asyncio.run(
+        _exec_main(
             _run(
                 instruction,
                 cwd=args.cwd,

@@ -1064,6 +1064,9 @@ async def _stream_graph(
         # some models arrives too late (or simultaneously with ``tool.end``).
         _partial_tool_args: dict[str, str] = {}
         _emitted_tool_args: set[str] = set()
+        # 已下发完整入参的 tool_call id（tool.input 事件，headless 消费方用；
+        # updates 模式提交点 args 保证完整，每个 id 只发一次防 resume 重放重复）。
+        _emitted_tool_inputs: set[str] = set()
         turn_text: list[str] = []  # accumulate assistant text for memory capture
         # Fresh turn (not a permission resume): announce the resolved agent so the
         # UI can label the assistant bubble authoritatively (never the generic
@@ -1426,6 +1429,15 @@ async def _stream_graph(
                                 ):
                                     special_ids[tc_id] = nm
                                 elif tc_id:
+                                    # Full tool-call input on its own event
+                                    # (ginno exec 的 stream-json 转录用它回填
+                                    # tool_use.input；前端不消费该事件，属
+                                    # 纯增量）。updates 提交点 args 一定完整。
+                                    if tc_id not in _emitted_tool_inputs:
+                                        _emitted_tool_inputs.add(tc_id)
+                                        await safe_send(
+                                            emit("tool.input", {"id": tc_id, "input": args})
+                                        )
                                     # Show WHAT is running: surface the tool call's
                                     # args (e.g. the bash command) on the pending
                                     # tool bubble. Fires from the agent update —
