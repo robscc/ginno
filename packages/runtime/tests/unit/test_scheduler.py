@@ -504,3 +504,30 @@ async def test_trigger_advances_past_fired_point(isolated_home, monkeypatch):
     assert rows[0]["run_id"] == rid and rows[0]["status"] == "running"
     # 任务也不会被 once 语义误停用
     assert store.get_task("st-t1")["enabled"] is True
+
+
+async def test_tick_recomputes_invalid_weekly_next_run(isolated_home, monkeypatch):
+    """weekly next_run_at 落在非计划星期(脏数据,2026-10-17 实测:旧二进制把
+    Mon-Fri 任务的 next_run_at 写到周日,周五整点被静默跳过且无 missed 记账)
+    → tick 丢弃该落点、从 now 重算,不触发也不记 missed。"""
+    fired = []
+    monkeypatch.setattr(scheduler, "trigger_task", lambda task, **k: fired.append(task["id"]))
+    now = time.time()
+    # 找一个“now 之后最近的周日 06:00”——周日不在 Mon-Fri 集合内
+    sunday = now + 86400
+    while datetime.fromtimestamp(sunday).weekday() != 6 or datetime.fromtimestamp(sunday).hour < 7:
+        sunday += 86400
+    d = datetime.fromtimestamp(sunday).replace(hour=6, minute=0, second=0, microsecond=0)
+    sunday = d.timestamp()
+    store.save_config({"enabled": True, "keep_awake": False, "tasks": [
+        _task(schedule={"kind": "weekly", "weekdays": [1, 2, 3, 4, 5], "at": "06:00"},
+              next_run_at=sunday),
+    ]})
+    await scheduler._tick()
+    assert fired == []
+    day_rows = store.load_day(time.strftime("%Y-%m-%d", time.localtime(now)))
+    assert [r for r in day_rows if r["status"] == "missed"] == []
+    task = store.get_task("st-t1")
+    nxt = task["next_run_at"]
+    assert nxt > now
+    assert datetime.fromtimestamp(nxt).weekday() in {0, 1, 2, 3, 4}  # 落回 Mon-Fri

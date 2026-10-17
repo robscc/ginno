@@ -703,6 +703,22 @@ async def _tick() -> None:
             if nxt is None:
                 continue
         nxt = float(nxt)
+        # weekly 落点校验(2026-10-17):旧版本二进制把 next_run_at 写到非计划
+        # 星期(实测落在周日,Mon-Fri 任务静默跳过整个周五且无 missed 记账——
+        # 落点非法意味着它从来不是一个真实计划点,_skip_missed 链从它出发也
+        # 救不回更早的错过)。落点不在集合内 → 视为脏数据,从 now 重算。
+        if sch_kind(task) == "weekly":
+            targets = store.weekly_py_weekdays(task.get("schedule") or {})
+            if datetime.fromtimestamp(nxt).weekday() not in targets:
+                _log.warning(
+                    "schedule_next_run_invalid_weekday task=%s next=%s targets=%s — recomputing",
+                    tid, nxt, sorted(targets),
+                )
+                nxt = compute_next(task, now)
+                if nxt is None:
+                    store.patch_task(tid, {"next_run_at": None})
+                    continue
+                store.patch_task(tid, {"next_run_at": nxt})
         delta = now - nxt
         if delta < 0:
             continue  # 还没到点
