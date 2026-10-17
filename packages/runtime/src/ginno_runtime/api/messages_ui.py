@@ -16,6 +16,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from .. import workflows as wf_store
+from ..api import server_tools
 from ..goals.templates import context_row_text as goal_context_row
 from ..knowledge.citations import parse_citation_block, strip_citation_block
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
@@ -413,8 +414,14 @@ def _text_with_citations(t: str, blocks: list[dict]) -> None:
         )
 
 
-def _ai_content_blocks(content: Any) -> list[dict]:
-    """AIMessage.content (str or list of provider blocks) -> UI text/thinking/image blocks."""
+def _ai_content_blocks(content: Any, glm_blocks: dict[str, dict] | None = None) -> list[dict]:
+    """AIMessage.content (str or list of provider blocks) -> UI text/thinking/image blocks.
+
+    ``glm_blocks`` maps server_tool_use ids to pre-rendered tool blocks for
+    Z.ai/GLM gateway server-side searches (see server_tools.py): the request
+    block becomes a normal web_search tool bubble, its tool_result payload and
+    the gateway's raw-JSON narration text are machine metadata — dropped.
+    """
     blocks: list[dict] = []
     if isinstance(content, str):
         if content:
@@ -429,8 +436,14 @@ def _ai_content_blocks(content: Any) -> list[dict]:
                         blocks.append({"kind": "thinking", "text": t})
                 elif bt == "text":
                     t = b.get("text") or ""
-                    if t:
+                    if t and not server_tools.is_server_tool_narration(t):
                         _text_with_citations(t, blocks)
+                elif bt == "server_tool_use":
+                    tb = (glm_blocks or {}).get(str(b.get("id") or ""))
+                    if tb:
+                        blocks.append(dict(tb))
+                elif bt == "tool_result":
+                    pass  # gateway-side payload — surfaced via the block above
                 elif bt in ("image", "image_url"):
                     url = _image_block_url(b)
                     if url:
@@ -438,6 +451,38 @@ def _ai_content_blocks(content: Any) -> list[dict]:
             elif isinstance(b, str) and b:
                 _text_with_citations(b, blocks)
     return blocks
+
+
+def _glm_tool_blocks(messages: list[Any]) -> dict[str, dict]:
+    """tool_id -> synthesized web_search tool block for every Z.ai/GLM
+    server-side search in the transcript. Numbering is assigned sequentially
+    across ALL groups so the `[sN]` ids inside the rendered content are the
+    same ones `_web_ref_map`'s callers merge into the citation ref map."""
+    out: dict[str, dict] = {}
+    counter = 1
+    for m in messages:
+        if not isinstance(m, AIMessage):
+            continue
+        for grp in server_tools.glm_server_search_groups(getattr(m, "content", None)):
+            id_by_url: dict[str, str] = {}
+            pairs: list[tuple[str, dict]] = []
+            for h in grp["hits"]:
+                sid = f"s{counter}"
+                counter += 1
+                id_by_url[h["url"]] = sid
+                pairs.append((sid, h))
+            content = server_tools.format_hits_block(grp["name"], grp["query"], pairs)
+            out[grp["tool_id"]] = {
+                "kind": "tool",
+                "id": grp["tool_id"],
+                "name": server_tools.DISPLAY_TOOL_NAME,
+                "content": content,
+                "pending": False,
+                "argsPreview": _tool_args_preview(
+                    server_tools.DISPLAY_TOOL_NAME, {"query": grp["query"]}
+                ),
+            }
+    return out
 
 
 def _run_id_in(text: str) -> str | None:
@@ -589,7 +634,14 @@ def _messages_to_ui(
             results[getattr(m, "tool_call_id", None)] = _tool_content_str(raw)
     # Citation ids (web|sN) resolve against the web_search outputs of the SAME
     # transcript — build the map once, apply to every sources block below.
+    # Z.ai/GLM server-side searches have no ToolMessage: their synthesized
+    # web_search tool blocks carry the `[sN] …` lines instead, so merge those
+    # in from the same rendering the bubbles will show (ids stay consistent).
+    glm_blocks = _glm_tool_blocks(messages)
     ref_map = _web_ref_map(results)
+    for _tb in glm_blocks.values():
+        for _m in _WEB_RESULT_RE.finditer(_tb.get("content") or ""):
+            ref_map[_m.group(1).lower()] = _m.group(2)
 
     ui: list[dict] = []
     acc: list[dict] | None = None
@@ -742,7 +794,12 @@ def _messages_to_ui(
                 acc_team_reply = (getattr(m, "additional_kwargs", None) or {}).get(
                     "ginno_team_reply"
                 )
-            step = list(_ai_content_blocks(getattr(m, "content", "")))
+            step = list(_ai_content_blocks(getattr(m, "content", ""), glm_blocks))
+            # The gateway replays a turn's server_tool_use blocks on every
+            # continuation request — show each synthesized search bubble once.
+            for blk in step:
+                if blk.get("kind") == "tool" and blk.get("id") in glm_blocks:
+                    glm_blocks.pop(blk["id"])
             # Resolve `web|sN` citation ids to URLs (from web_search outputs)
             # so the 来源 card is clickable on history replay.
             for blk in step:

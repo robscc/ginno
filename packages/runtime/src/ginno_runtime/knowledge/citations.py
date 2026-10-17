@@ -243,6 +243,14 @@ def parse_citation_block(text: str) -> list[dict]:
         if not sep:
             # bare entry (legacy wiki block): assume wiki
             kind, ref = "wiki", line
+        elif "|" in ref and not nm:
+            # Contract is note=[…] but models also emit a bare description
+            # segment (`web|https://…|为什么用到` — GLM does this on every
+            # turn); peel it off so the ref stays a clean, resolvable ref
+            # instead of a URL polluted with the note (2026-10-17 turn
+            # a8951c7a: every entry came back unverified).
+            ref, extra = ref.split("|", 1)
+            note = extra.strip()
         kind = kind.strip().lower()
         ref = ref.strip()
         if kind not in VALID_KINDS or not ref:
@@ -278,7 +286,12 @@ def normalize_web_ref(ref: str) -> str:
     query_pairs = []
     for k, v in urllib.parse.parse_qsl(parts.query):
         kl = k.lower()
-        if kl in ("utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"):
+        # `tl` — reddit's locale selector; models cite the bare URL while the
+        # search hit carries ?tl=zh-hans, and the page is the same resource.
+        if kl in (
+            "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+            "fbclid", "gclid", "tl",
+        ):
             continue
         query_pairs.append((k, v))
     query = urllib.parse.urlencode(query_pairs)

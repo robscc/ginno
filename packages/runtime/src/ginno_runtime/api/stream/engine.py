@@ -23,9 +23,8 @@ from langgraph.types import Command
 from ... import agents as agents_reg
 from ... import artifacts as art_store
 from ... import files as files_mod
-from ... import paths
+from ... import paths, usage_store
 from ... import server_shared as shared
-from ... import usage_store
 from ... import workflows as wf_store
 from ...checkpointer import ABANDONED_TURNS
 from ...graph import BLOCK_PREFIX
@@ -35,8 +34,8 @@ from ...server_shared import (
     _PENDING_KIND,
     _PENDING_RESUME,
     _RUNNING_TURNS,
-    _SESSIONS,
     _SESSION_WS,
+    _SESSIONS,
     _TURN_STOP,
     _USAGE_BY_SESSION,
     _WF_RUN_TASKS,
@@ -58,9 +57,10 @@ from ...tools.render_tools import RENDER_TOOL_NAMES, widget_event
 from ...tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ...usage import add_usage, cache_hit_ratio, empty_usage, extract_usage
 from ...workflows import store as wf_storemod
+from .. import server_tools
 from ..files import _normalize_file_ref, _register_artifact_file, _session_workspace
 from ..messages_ui import _tool_args_preview, _tool_content_str, _truncate_for_ws
-from ..workflows import _run_workflow_bg, _spawn_run_task
+
 
 async def _tool_file_effects(
     safe_send, emit, slug: str, session_id: str, name_args: tuple[str, dict] | None, content: str
@@ -410,6 +410,45 @@ def _server_search_hits(block: dict, block_types: frozenset[str]) -> list[dict]:
                 }
             )
     return out
+
+
+async def _emit_glm_server_search(
+    safe_send, emit, session_id: str, turn_id: str, m: Any, started: set[str]
+) -> None:
+    """Z.ai/GLM gateway server-side search (``server_tool_use`` + ``tool_result``
+    inside the assistant message): register the hits under the same contract as
+    the Anthropic-native blocks, then close the tool bubble opened on the
+    streamed server_tool_use with the hits rendered in the standard
+    ``[sN] Title — host`` contract, so ``web|sN`` citations resolve both live
+    and on history replay."""
+    for grp in server_tools.glm_server_search_groups(getattr(m, "content", None)):
+        registered = cit.register_server_search_hits(session_id, grp["hits"])
+        id_by_url = {s["identity"]: s["id"] for s in registered}
+        pairs = [(id_by_url.get(h["url"]), h) for h in grp["hits"]]
+        content = server_tools.format_hits_block(grp["name"], grp["query"], pairs)
+        tid = grp["tool_id"]
+        if tid and tid not in started:
+            started.add(tid)
+            await safe_send(
+                emit("tool.start", {"name": server_tools.DISPLAY_TOOL_NAME, "id": tid})
+            )
+        if tid and grp["query"]:
+            preview = _tool_args_preview(
+                server_tools.DISPLAY_TOOL_NAME, {"query": grp["query"]}
+            )
+            if preview:
+                await safe_send(emit("tool.args", {"id": tid, "preview": preview}))
+        await safe_send(
+            emit("tool.end", {"id": tid, "content": _truncate_for_ws(content)})
+        )
+        _log.info(
+            "server_search session=%s turn=%s engine=%s hits=%d urls=%s",
+            session_id,
+            turn_id,
+            grp["name"],
+            len(grp["hits"]),
+            ",".join(h["url"] for h in grp["hits"])[:400],
+        )
 
 
 # How many times one turn may be resumed with a fresh step budget after a
@@ -1010,6 +1049,11 @@ async def _stream_graph(
         # final (non-streamed) assistant message arrives — see
         # _server_search_hits for why the streamed chunks aren't authoritative.
         _SERVER_SEARCH_BUFFER: list[list[dict]] = []
+        # Z.ai/GLM gateway narration: block indexes confirmed to be machine
+        # narration (their later stream fragments stay muted), and the
+        # server_tool_use ids whose tool.start already went out.
+        _ZAI_NARRATION_IDX: set = set()
+        _glm_started: set[str] = set()
         # Track tool names by id so we can emit ``tool.args`` from the chunks
         # stream (the first chunk carries the name, subsequent ones don't).
         _tool_name_by_id: dict[str, str] = {}
@@ -1129,10 +1173,38 @@ async def _stream_graph(
                                 await safe_send(emit("thinking.delta", {"content": txt}))
                         elif btype == "text":
                             txt = b.get("text") or ""
+                            # Z.ai/GLM gateway narration ("**🌐 Z.ai Built-in
+                            # Tool: …** / **Output:** …_result_summary: […json…]")
+                            # is machine metadata, not prose — never stream it
+                            # into the bubble (nor the memory buffer). Blocks
+                            # stream in fragments, so a block index confirmed
+                            # as narration stays muted for its later fragments.
+                            bid = b.get("index") if isinstance(b, dict) else None
+                            if bid is not None and bid in _ZAI_NARRATION_IDX:
+                                continue
+                            if server_tools.is_server_tool_narration(txt):
+                                if bid is not None:
+                                    _ZAI_NARRATION_IDX.add(bid)
+                                continue
                             if txt:
                                 turn_text.append(txt)
                                 seg_text.append(txt)
                                 await safe_send(emit("token.delta", {"content": txt}))
+                        elif btype == "server_tool_use":
+                            # Z.ai/GLM gateway server-side search request: open
+                            # the tool bubble the moment the model "calls" it
+                            # (the real execution happens inside the model);
+                            # tool.end with the formatted hits lands when the
+                            # committing message arrives in `updates` mode.
+                            tid = b.get("id") if isinstance(b, dict) else None
+                            if tid and tid not in _glm_started:
+                                _glm_started.add(tid)
+                                await safe_send(
+                                    emit(
+                                        "tool.start",
+                                        {"name": server_tools.DISPLAY_TOOL_NAME, "id": tid},
+                                    )
+                                )
                         elif btype in _SERVER_SEARCH_BLOCK_TYPES:
                             # Anthropic-protocol server-side web_search: the
                             # gateway ran the search, so the hits ride back
@@ -1290,6 +1362,12 @@ async def _stream_graph(
                                         ",".join(s["identity"] for s in registered)[:400],
                                     )
                                 _SERVER_SEARCH_BUFFER.clear()
+                            # Z.ai/GLM gateway server-side search — register the
+                            # hits and close the tool bubble (see the helper).
+                            if getattr(m, "type", None) in ("ai", "AIMessage"):
+                                await _emit_glm_server_search(
+                                    safe_send, emit, session_id, turn_id, m, _glm_started
+                                )
                             # A steered message COMMITTED with this superstep
                             # (docs/steering-design.md §3.2): its ack was already
                             # sent at drain time (see _steer_absorbed), so all

@@ -45,6 +45,18 @@ export function parseSources(text: string): SourceItem[] {
     } else {
       kind = line.slice(0, bar).trim().toLowerCase();
       ref = line.slice(bar + 1).trim();
+      // Contract is note=[…], but models also emit a bare description segment
+      // (`web|https://…|why cited` — GLM does this on every turn). Without
+      // peeling it off the ref stops being a URL and the row never opens.
+      if (!note && ref.includes("|")) {
+        const rbar = ref.indexOf("|");
+        note = ref
+          .slice(rbar + 1)
+          .trim()
+          .replace(/^\[|\]$/g, "")
+          .trim();
+        ref = ref.slice(0, rbar).trim();
+      }
     }
     if ((kind !== "wiki" && kind !== "web") || !ref) continue;
     const key = `${kind}:${ref.toLowerCase()}`;
