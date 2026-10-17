@@ -59,3 +59,45 @@ def test_parse_document_errors_are_json(tmp_path):
     f.write_bytes(b"MZ")
     d2 = json.loads(parse_document.invoke({"path": str(f)}))
     assert d2["ok"] is False and "不支持" in d2["error"]
+
+
+# ---- 载入行数帽（2026-10-17）：输出有帽、载入也有帽 ----------------------------
+def test_table_load_capped(monkeypatch, tmp_path):
+    """CSV 超过 LOAD_MAX_ROWS：只载入帽内行数，markdown 带 truncation 注记，
+    metadata 标 capped——不再「整表进内存才裁 50 行」。"""
+    from ginno_runtime.files import extractors as ex
+
+    monkeypatch.setattr(ex, "LOAD_MAX_ROWS", 10)
+    p = tmp_path / "t.csv"
+    p.write_text("a,b\n" + "".join(f"{i},{i * 2}\n" for i in range(30)), encoding="utf-8")
+    out = ex.extract(p)
+    assert "仅载入前 10 行" in out.markdown
+    sheet = out.metadata["sheets"][0]
+    assert sheet["rows"] == 10
+    assert sheet["capped"] is True
+
+
+def test_xlsx_load_capped(monkeypatch, tmp_path):
+    """xlsx 同帽生效（read_excel nrows 落到引擎层）。"""
+    pandas = pytest.importorskip("pandas")
+    from ginno_runtime.files import extractors as ex
+
+    monkeypatch.setattr(ex, "LOAD_MAX_ROWS", 5)
+    p = tmp_path / "s.xlsx"
+    pandas.DataFrame({"a": range(20), "b": range(20)}).to_excel(p, index=False)
+    out = ex.extract(p)
+    assert "仅载入前 5 行" in out.markdown
+    assert out.metadata["sheets"][0]["capped"] is True
+
+
+def test_read_table_below_cap_untouched(monkeypatch, tmp_path):
+    """帽下文件行为不变：无注记、capped=False、行数如实。"""
+    from ginno_runtime.files import extractors as ex
+
+    monkeypatch.setattr(ex, "LOAD_MAX_ROWS", 10)
+    p = tmp_path / "t.csv"
+    p.write_text("a,b\n1,2\n3,4\n", encoding="utf-8")
+    out = ex.extract(p)
+    assert "仅载入前" not in out.markdown
+    sheet = out.metadata["sheets"][0]
+    assert sheet["rows"] == 2 and sheet["capped"] is False

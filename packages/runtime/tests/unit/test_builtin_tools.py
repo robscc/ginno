@@ -537,3 +537,21 @@ def test_read_fast_path_empty_and_trailing_newline(tools, ws):
     assert tools["read_file"].invoke({"path": "empty.txt"}) == ""
     (Path(ws) / "nl.txt").write_text("a\nb\n")
     assert tools["read_file"].invoke({"path": "nl.txt"}) == "a\nb\n"
+
+
+# ---- bash 流式采集（2026-10-17）：head+tail 帽 + 超时保留部分输出 --------------
+def test_bash_caps_huge_output(tools, ws):
+    """5MB stdout 不再全量进内存/context：head+tail 采集，中间省略计数。"""
+    out = tools["bash"].invoke(
+        {"command": "python3 -c \"print('x' * 5000000)\"", "timeout": 60}
+    )
+    assert "[exit 0]" in out
+    assert "中间省略" in out
+    assert len(out) < 60_000  # 远小于 5MB——采集层已封顶
+
+
+def test_bash_timeout_keeps_partial_output(tools, ws):
+    """超时不再只回一行字：已产出的输出保留（旧行为直接全丢）。"""
+    out = tools["bash"].invoke({"command": "echo early; sleep 30", "timeout": 2})
+    assert "timeout after 2s" in out
+    assert "early" in out

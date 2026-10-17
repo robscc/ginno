@@ -30,6 +30,7 @@ import contextlib
 import json
 import os
 import weakref
+from collections import deque
 import queue
 import shutil
 import subprocess
@@ -369,6 +370,50 @@ def _path_rw_lock(p: Path) -> _RWLock:
         if lk is None:
             lk = _PATH_RW_LOCKS[key] = _RWLock()
         return lk
+
+
+# bash 输出采集预算（2026-10-17）：capture_output=True 全量进内存——cat 2GB
+# 日志先吞 2GB 再被 E2 截断（默认 20k/工具），OOM 发生在截断之前。改读线程
+# 流式 head+tail 采集：head 攒满后只滚动保留 tail，中间段丢弃并计数，内存
+# O(预算)。超时也不再丢弃已产出内容（旧行为超时只回一行字）。
+BASH_OUT_HEAD = 20_000
+BASH_OUT_TAIL = 10_000
+BASH_ERR_HEAD = 10_000
+BASH_ERR_TAIL = 5_000
+
+
+def _drain_pipe(stream, cap_head: int, cap_tail: int, state: dict) -> None:
+    """读线程主体。``state`` 由调用方在线程启动【前】建好、本线程原地更新
+    （GIL 下字段读写原子），主线程 join 超时也能安全拿到部分快照——proc.
+    kill 只杀直接子进程，握住管道不放的孙进程会让读线程迟迟不 EOF。"""
+    head: list = state["head"]
+    tail: deque = state["tail"]
+    while True:
+        chunk = stream.read(8192)
+        if not chunk:
+            break
+        state["total"] += len(chunk)
+        if state["head_len"] < cap_head:
+            head.append(chunk)
+            state["head_len"] += len(chunk)
+        else:
+            tail.append(chunk)
+            state["tail_len"] += len(chunk)
+            while tail and state["tail_len"] > cap_tail:
+                state["tail_len"] -= len(tail[0])
+                tail.popleft()
+
+
+def _compose_capped(state: dict, label: str) -> str:
+    head_len = state["head_len"]
+    if state["total"] <= head_len:
+        return "".join(state["head"])
+    dropped = state["total"] - head_len - state["tail_len"]
+    return (
+        f"{''.join(state['head'])}"
+        f"\n[{label}: 中间省略 {dropped} chars]\n"
+        f"{''.join(state['tail'])}"
+    )
 
 
 def _atomic_write_text(p: Path, text: str) -> None:
@@ -926,8 +971,8 @@ def build_builtin_tools(
     @tool
     def bash(command: str, timeout: int = 30) -> str:
         """Run a shell command with the session working directory (the primary
-        context folder when one is set) as cwd. Returns stdout+stderr. Never
-        raises."""
+        context folder when one is set) as cwd. Returns stdout+stderr, capped
+        head+tail（超预算中间段省略计数；超时保留已产出内容）. Never raises."""
         # Weak hard-deny guard (master-plan §2.3 decision-6 interim): scan the
         # command's path-like tokens through the same _path_denied check
         # (which exempts the workspace + mounted dirs). Not a sandbox —
@@ -965,18 +1010,46 @@ def build_builtin_tools(
             # Finder and the sidecar inherited a bare GUI environment.
             # Fall back to /bin/sh -lc if $SHELL is missing.
             user_shell = os.environ.get("SHELL") or "/bin/sh"
-            r = subprocess.run(
+            proc = subprocess.Popen(
                 [user_shell, "-lc", command],
                 cwd=cwd,
-                timeout=timeout,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
-            out = f"[exit {r.returncode}]\n{r.stdout}\n--- stderr ---\n{r.stderr}"
-        except subprocess.TimeoutExpired:
-            return f"[timeout after {timeout}s]"
         except OSError as e:
             return f"[error] cannot execute: {type(e).__name__}: {e}"
+        # 流式 head+tail 采集（预算见 _drain_pipe 上方注释）：state 先建好
+        # 再起读线程，原地更新；join 超时（孙进程握管道）也拿得到部分快照。
+        so = {"head": [], "tail": deque(), "head_len": 0, "tail_len": 0, "total": 0}
+        se = {"head": [], "tail": deque(), "head_len": 0, "tail_len": 0, "total": 0}
+        readers = [
+            threading.Thread(
+                target=_drain_pipe, args=(proc.stdout, BASH_OUT_HEAD, BASH_OUT_TAIL, so), daemon=True
+            ),
+            threading.Thread(
+                target=_drain_pipe, args=(proc.stderr, BASH_ERR_HEAD, BASH_ERR_TAIL, se), daemon=True
+            ),
+        ]
+        for t in readers:
+            t.start()
+        timed_out = False
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.kill()
+            rc = proc.wait()
+        for t in readers:
+            t.join(10)
+        out = (
+            f"[exit {rc}]\n{_compose_capped(so, 'stdout')}"
+            f"\n--- stderr ---\n{_compose_capped(se, 'stderr')}"
+        )
+        if timed_out:
+            out = f"[timeout after {timeout}s — partial output kept]\n{out}"
         if cwd:
             new_imgs = diff_images(img_before, snapshot_images(base_dir))
             if new_imgs:

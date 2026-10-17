@@ -48,6 +48,14 @@ class ExtractorUnavailable(RuntimeError):
     """The format is supported but its optional dependency is missing."""
 
 
+# 表格类解析的载入行数帽（2026-10-17）：输出层早有 max_rows=50 的显示帽，
+# 载入层却是全量——200 万行的 xlsx/CSV 会整表进内存才被裁 50 行展示
+# （「输出有帽、载入无帽」）。预览/摘要场景 5 万行绰绰有余；真要全量分析
+# 时让 agent 走 bash + python 直接读原文件，不经此处。运行时可改（测试
+# monkeypatch），默认取模块常量。
+LOAD_MAX_ROWS = 50_000
+
+
 class UnsupportedFormat(ValueError):
     """No extractor exists for this extension."""
 
@@ -82,12 +90,20 @@ def _require(module: str, pkg: str):
 # pandas helpers (shared by spreadsheet / table)
 # --------------------------------------------------------------------------
 
-def _read_spreadsheet(path: Path, sheet: str | None = None):
-    """Return (pandas, DataFrame or dict-of-frames). sheet=None → all sheets."""
+def _read_spreadsheet(path: Path, sheet: str | None = None, nrows: int | None = None):
+    """Return (pandas, DataFrame or dict-of-frames). sheet=None → all sheets.
+
+    ``nrows`` 载入行数帽（None = 取 :data:`LOAD_MAX_ROWS`）：openpyxl 引擎在
+    pandas 底层本就 read_only 打开，但 DataFrame 仍会收满全表——帽必须给到
+    read_excel 才真正止住内存。"""
     pd = _require("pandas", "Excel/CSV")
+    if nrows is None:
+        nrows = LOAD_MAX_ROWS
     engines = ["calamine", "openpyxl"]
     last_err: Exception | None = None
     kwargs: dict = {"sheet_name": sheet if sheet is not None else None}
+    if nrows is not None:
+        kwargs["nrows"] = nrows
     for eng in engines:
         try:
             return pd, pd.read_excel(path, engine=eng, **kwargs)
@@ -106,7 +122,7 @@ def _read_spreadsheet(path: Path, sheet: str | None = None):
     return pd, pd.read_excel(path, **kwargs)
 
 
-def read_table(path: str | Path, sep: str | None = None) -> "object":
+def read_table(path: str | Path, sep: str | None = None, nrows: int | None = None) -> "object":
     """Read a CSV/TSV into a DataFrame, robustly.
 
     More tolerant than a bare ``pd.read_csv``:
@@ -117,11 +133,15 @@ def read_table(path: str | Path, sep: str | None = None) -> "object":
       shouldn't kill the whole preview/analysis);
     - falls back to ``latin-1`` for files that aren't valid UTF-8.
     ``sep`` defaults from the extension (.tsv → tab, else comma).
+    ``nrows`` 载入行数帽：None = 取 :data:`LOAD_MAX_ROWS`；要全量就显式传一个
+    足够大的数（pandas 语义，0 = 只读表头）。
     """
     pd = _require("pandas", "CSV")
     if sep is None:
         sep = "\t" if Path(path).suffix.lower() == ".tsv" else ","
-    common = {"sep": sep, "on_bad_lines": "skip"}
+    if nrows is None:
+        nrows = LOAD_MAX_ROWS
+    common = {"sep": sep, "on_bad_lines": "skip", "nrows": nrows}
     try:
         return pd.read_csv(path, encoding="utf-8-sig", **common)
     except UnicodeDecodeError:
@@ -164,6 +184,9 @@ def _sheet_meta(pd, frames: dict) -> list[dict]:
                 "name": str(name),
                 "rows": int(len(df)),
                 "cols": int(len(df.columns)),
+                # 载入帽截断时 rows 是「已载入数」不是全表行数——标出来，
+                # schema_summary/preview 的消费方不至于拿 5 万当真总数。
+                "capped": int(len(df)) >= LOAD_MAX_ROWS,
                 "columns": [
                     {"name": str(c), "dtype": str(df[c].dtype)} for c in df.columns
                 ],
@@ -180,6 +203,8 @@ def _extract_spreadsheet(path: Path, max_rows: int) -> Extracted:
     for name, df in frames.items():
         parts.append(f"## Sheet: {name}（{len(df)} 行 × {len(df.columns)} 列）\n")
         parts.append(df_to_markdown(df, max_rows=max_rows))
+        if len(df) >= LOAD_MAX_ROWS:
+            parts.append(f"\n…（表过大，仅载入前 {LOAD_MAX_ROWS:,} 行；全量分析请用 bash + python 直读原文件）")
         parts.append("")
     return Extracted(
         kind="spreadsheet",
@@ -197,6 +222,8 @@ def _extract_table(path: Path, max_rows: int) -> Extracted:
     md = f"## {path.name}（{len(df)} 行 × {len(df.columns)} 列）\n\n" + df_to_markdown(
         df, max_rows=max_rows
     )
+    if len(df) >= LOAD_MAX_ROWS:
+        md += f"\n\n…（表过大，仅载入前 {LOAD_MAX_ROWS:,} 行；全量分析请用 bash + python 直读原文件）"
     return Extracted(
         kind="table",
         markdown=md,
