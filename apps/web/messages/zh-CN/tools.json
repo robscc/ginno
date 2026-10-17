@@ -614,7 +614,6 @@
       "defaultLabel": "默认",
       "setDefaultTooltip": "设为默认配置",
       "setDefault": "设为默认",
-      "editAria": "编辑 {name}",
       "deleteAria": "删除 {name}",
       "enableAria": "启用 {name}",
       "officialApi": "官方 API",
@@ -688,7 +687,8 @@
         "vApiKey": "此协议必须填写 API 密钥（仅兼容端点可留空）。",
         "vModels": "至少添加一个模型 id。",
         "vDefaultModel": "默认模型必须是列表中的模型之一。"
-      }
+      },
+      "collapseCard": "收起"
     },
     "usage": {
       "title": "用量统计",

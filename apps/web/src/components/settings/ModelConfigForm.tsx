@@ -33,11 +33,15 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
 export function ModelConfigForm({
   initial,
   isNew,
+  embedded = false,
   onCancel,
   onSaved,
 }: {
   initial: ModelConfig;
   isNew: boolean;
+  // 卡片化（2026-10-17）：嵌入展开卡的编辑体不带自己的边框/内边距——外框由
+  // ModelConfigCard 提供，避免卡中卡。
+  embedded?: boolean;
   onCancel: () => void;
   onSaved: (cfg: ModelConfig, latencyMs: number) => void;
 }) {
@@ -167,7 +171,7 @@ export function ModelConfigForm({
   };
 
   return (
-    <div className="rounded-2xl border border-indigo/40 bg-card p-5">
+    <div className={embedded ? "" : "rounded-2xl border border-indigo/40 bg-card p-5"}>
       <div className="mb-4 text-sm font-semibold text-txt">
         {isNew ? t("addTitle") : t("editTitle", { name: initial.name || initial.id })}
       </div>

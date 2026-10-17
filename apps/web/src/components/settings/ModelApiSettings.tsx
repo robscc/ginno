@@ -10,7 +10,7 @@ import { ModelConfigCard } from "./ModelConfigCard";
 import { ModelConfigForm } from "./ModelConfigForm";
 import { blankConfig, describeRefParts, formatRefParts, normalizeConfig } from "./modelConfigShared";
 
-const COLLAPSE_AT = 6; // Q9: no hard cap; fold beyond six cards
+const COLLAPSE_AT = 8; // Q9: no hard cap; fold beyond N cards（卡片化后单卡变矮，6→8）
 
 // Settings → 模型 API: config list + add/edit (multi-provider-model-config.md
 // §2). Talks only to /api/model_configs; deletion is a PUT with the entry
@@ -187,45 +187,60 @@ export function ModelApiSettings() {
           {loadError}
         </div>
       ) : (
-        <div className="mt-5 space-y-4">
+        <div
+          className="mt-5 grid gap-3"
+          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}
+        >
           {editing === "new" && (
-            <ModelConfigForm initial={blankConfig()} isNew onCancel={() => setEditing(null)} onSaved={onSaved} />
+            <div className="col-span-full">
+              <ModelConfigForm initial={blankConfig()} isNew onCancel={() => setEditing(null)} onSaved={onSaved} />
+            </div>
           )}
 
           {sorted.length === 0 && editing !== "new" && (
-            <div className="rounded-2xl border border-dashed border-line2 p-8 text-center">
+            <div className="col-span-full rounded-2xl border border-dashed border-line2 p-8 text-center">
               <p className="text-sm text-muted">{t("emptyTitle")}</p>
               <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-faint">{t("emptyHint")}</p>
             </div>
           )}
 
-          {visible.map((cfg) =>
-            editing === cfg.id ? (
+          {visible.map((cfg) => (
+            <ModelConfigCard
+              key={cfg.id}
+              cfg={cfg}
+              isDefault={cfg.id === defaultConfig}
+              busy={busy}
+              open={editing === cfg.id}
+              onOpen={() => setEditing(cfg.id)}
+              onClose={() => setEditing(null)}
+              onToggle={() => onToggle(cfg)}
+              onSetDefault={() => onSetDefault(cfg.id)}
+              onDelete={() => onDelete(cfg.id)}
+            >
+              {/* embedded：编辑体嵌进展开卡，不带自己的边框（卡片化 2026-10-17） */}
               <ModelConfigForm
-                key={cfg.id}
                 initial={cfg}
                 isNew={false}
+                embedded
                 onCancel={() => setEditing(null)}
                 onSaved={onSaved}
               />
-            ) : (
-              <ModelConfigCard
-                key={cfg.id}
-                cfg={cfg}
-                isDefault={cfg.id === defaultConfig}
-                busy={busy}
-                onToggle={() => onToggle(cfg)}
-                onSetDefault={() => onSetDefault(cfg.id)}
-                onEdit={() => setEditing(cfg.id)}
-                onDelete={() => onDelete(cfg.id)}
-              />
-            ),
-          )}
+            </ModelConfigCard>
+          ))}
+
+          {/* 新建 tile：与 agents 页同一虚线语言；与顶部按钮开同一展开态 */}
+          <button
+            onClick={() => setEditing(editing === "new" ? null : "new")}
+            className="flex min-h-[110px] flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-line text-xs text-faint transition-colors hover:border-violet/50 hover:text-violet"
+          >
+            <Plus className="h-4 w-4" />
+            {t("addConfig")}
+          </button>
 
           {sorted.length > COLLAPSE_AT && editing !== "new" && (
             <button
               onClick={() => setShowAll((v) => !v)}
-              className="w-full rounded-xl border border-line py-2 text-xs text-muted transition-colors hover:text-txt"
+              className="col-span-full rounded-xl border border-line py-2 text-xs text-muted transition-colors hover:text-txt"
             >
               {showAll ? t("collapse") : t("showAll", { count: sorted.length })}
             </button>

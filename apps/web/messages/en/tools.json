@@ -614,7 +614,6 @@
       "defaultLabel": "Default",
       "setDefaultTooltip": "Set as the default config",
       "setDefault": "Set default",
-      "editAria": "Edit {name}",
       "deleteAria": "Delete {name}",
       "enableAria": "Enable {name}",
       "officialApi": "official API",
@@ -688,7 +687,8 @@
         "vApiKey": "This protocol requires an API key (only compatible endpoints may leave it empty).",
         "vModels": "Add at least one model id.",
         "vDefaultModel": "The default model must be one of the models in the list."
-      }
+      },
+      "collapseCard": "Collapse"
     },
     "usage": {
       "title": "Usage",
