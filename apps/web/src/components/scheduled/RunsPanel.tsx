@@ -221,20 +221,23 @@ export function RunsPanel({
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-line">
-          {/* min-w 保列宽：窄容器横向滚动，而不是把列压扁——行尾 hover 的
-              「打开」入口随行完整保留，挤压布局时它会先于其他列被吃掉。
-              注意上限必须 ≤ 页面列的可用宽度（max-w-3xl 768 − px-6×2 = 720）：
-              之前设 760 导致默认宽度下也稳定溢出 40px，「打开」恰好被卡片
-              右边框切掉一半（GINNO-4）。700 留出余量，再窄才走横向滚动。 */}
-          <table className="w-full min-w-[700px] text-left text-xs">
+          {/* table-fixed：列宽由表头定死、表总宽恒等于容器宽——摘要列吃剩余
+              宽度并 truncate，任何窗口宽度下都不再出现横向滚动条（GINNO-6）。
+              之前 auto 布局下各列宽度上限之和 ≈ 820px（时间~108 + 任务160 +
+              目标48 + 触发48 + 状态~110 + 耗时~64 + 摘要304），远超页面列的
+              可用宽 720px（max-w-3xl 768 − px-6×2），min-w-[700px] 的下限根本
+              不起约束作用，默认宽度下也稳定溢出 ~100px 出滚动条。窄容器时
+              各固定列宽不变、摘要先被压缩，极端窄才可能溢出（wrapper 兜底
+              横向滚动）。「打开」hover 入口在摘要列内 shrink-0，不受挤压。 */}
+          <table className="w-full table-fixed text-left text-xs">
             <thead>
               <tr className="whitespace-nowrap border-b border-line text-[11px] text-faint">
-                <th className="px-3 py-2 font-medium">{tr("runs.colTime")}</th>
-                <th className="px-3 py-2 font-medium">{tr("runs.colTask")}</th>
-                <th className="px-3 py-2 font-medium">{tr("runs.colTarget")}</th>
-                <th className="px-3 py-2 font-medium">{tr("runs.colTrigger")}</th>
-                <th className="px-3 py-2 font-medium">{tr("runs.colStatus")}</th>
-                <th className="px-3 py-2 font-medium">{tr("runs.colDuration")}</th>
+                <th className="w-[108px] px-3 py-2 font-medium">{tr("runs.colTime")}</th>
+                <th className="w-[112px] px-3 py-2 font-medium">{tr("runs.colTask")}</th>
+                <th className="w-10 px-3 py-2 font-medium">{tr("runs.colTarget")}</th>
+                <th className="w-12 px-3 py-2 font-medium">{tr("runs.colTrigger")}</th>
+                <th className="w-[128px] px-3 py-2 font-medium">{tr("runs.colStatus")}</th>
+                <th className="w-16 px-3 py-2 font-medium">{tr("runs.colDuration")}</th>
                 <th className="px-3 py-2 font-medium">{tr("runs.colSummary")}</th>
               </tr>
             </thead>
@@ -253,7 +256,7 @@ export function RunsPanel({
                     }`}
                     title={clickable ? tr("runs.rowClick") : r.status === "missed" ? tr("runs.rowMissed") : undefined}
                   >
-                    <td className="whitespace-nowrap px-3 py-2 text-muted tabular-nums">
+                    <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-muted tabular-nums">
                       {/* 未读点（schedule-unseen）：颜色跟状态走——红=错误、
                           黄=错过、紫=成功/跳过；点开该行即消除 */}
                       {r.seen === false && (
@@ -265,12 +268,12 @@ export function RunsPanel({
                       )}
                       {fmtDayPrefix(r.scheduled_at ?? r.started_at)} {fmtClock(r.started_at ?? r.scheduled_at)}
                     </td>
-                    <td className="max-w-[160px] truncate px-3 py-2 text-txt" title={r.task_name}>
-                      {r.task_name}
+                    <td className="overflow-hidden px-3 py-2 text-txt" title={r.task_name}>
+                      <div className="truncate">{r.task_name}</div>
                     </td>
                     <td className="px-3 py-2">{r.target_type === "workflow" ? "⚡" : "💬"}</td>
-                    <td className="whitespace-nowrap px-3 py-2 text-faint">{r.trigger === "manual" ? tr("trigger.manual") : tr("trigger.scheduled")}</td>
-                    <td className="whitespace-nowrap px-3 py-2">
+                    <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-faint">{r.trigger === "manual" ? tr("trigger.manual") : tr("trigger.scheduled")}</td>
+                    <td className="overflow-hidden whitespace-nowrap px-3 py-2">
                       <span
                         className="inline-flex items-center gap-1 rounded-full border px-1.5 py-px"
                         style={{
@@ -284,7 +287,7 @@ export function RunsPanel({
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 text-faint tabular-nums">{dur}</td>
-                    <td className="max-w-[280px] px-3 py-2 text-muted">
+                    <td className="overflow-hidden px-3 py-2 text-muted">
                       <div className="flex items-center gap-1.5">
                         <div className="min-w-0 flex-1 truncate" title={r.summary ?? undefined}>
                           {r.summary ?? (r.error ? <span className="text-red">{r.error}</span> : "—")}
