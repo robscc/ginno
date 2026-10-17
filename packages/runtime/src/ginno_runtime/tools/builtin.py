@@ -26,8 +26,10 @@ glob and killed the whole turn).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import weakref
 import queue
 import shutil
 import subprocess
@@ -297,7 +299,76 @@ def _ws(base: Path, p: str) -> Path:
 # 锁必须覆盖 edit 的 read→match→replace→write 全程：分两段拿锁仍会丢更新
 # （B 在 A 的 read 和 write 之间写入，A 再用旧快照写回）。bash 不持锁——命令
 # 任意且可能长跑，持锁会串行死全部会话；跨进程并发本就不在此机制的守备范围。
-_FILE_WRITE_LOCK = threading.Lock()
+# 锁粒度（2026-10-17）：原来是全局一把，A 会话的大文件写会让 B 会话的 edit
+# 在锁上排队——线程池共享本该「隔壁零感知」，这里成了唯一反例。改为按规范
+# 路径（realpath，归一化 ../ 别名与挂载视角）建读写锁：read_file 拿读锁
+# （同路径并发读互不阻塞），write/edit 拿写锁（写独占；edit 的 read 被
+# 写锁覆盖——见上，read→replace→write 必须全程持锁）。写优先（等待中的
+# 写者挡住新读者）防读者饿死。注册表用 WeakValueDictionary：无持有者即
+# 蒸发（长跑 sidecar 读过几万个路径也不会累积锁对象）。安全性：guard 的
+# bound method 持锁的强引用直到 with 退出，使用中的锁不可能被回收、也不
+# 可能出现「同路径两把活锁」的竞态。
+class _RWLock:
+    """单进程读写锁：读共享、写独占、写优先。"""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._readers = 0
+        self._writer = False
+        self._waiting_writers = 0
+
+    def acquire_read(self) -> None:
+        with self._cond:
+            while self._writer or self._waiting_writers:
+                self._cond.wait()
+            self._readers += 1
+
+    def release_read(self) -> None:
+        with self._cond:
+            self._readers -= 1
+            if self._readers == 0:
+                self._cond.notify_all()
+
+    def acquire_write(self) -> None:
+        with self._cond:
+            self._waiting_writers += 1
+            while self._readers or self._writer:
+                self._cond.wait()
+            self._waiting_writers -= 1
+            self._writer = True
+
+    def release_write(self) -> None:
+        with self._cond:
+            self._writer = False
+            self._cond.notify_all()
+
+    def read_guard(self) -> "contextlib.AbstractContextManager[None]":
+        return _guard(self.acquire_read, self.release_read)
+
+    def write_guard(self) -> "contextlib.AbstractContextManager[None]":
+        return _guard(self.acquire_write, self.release_write)
+
+
+@contextlib.contextmanager
+def _guard(acquire: Callable[[], None], release: Callable[[], None]):
+    acquire()
+    try:
+        yield
+    finally:
+        release()
+
+
+_PATH_RW_LOCKS: "weakref.WeakValueDictionary[str, _RWLock]" = weakref.WeakValueDictionary()
+_PATH_RW_LOCKS_GUARD = threading.Lock()
+
+
+def _path_rw_lock(p: Path) -> _RWLock:
+    key = _realpath_str(p)
+    with _PATH_RW_LOCKS_GUARD:
+        lk = _PATH_RW_LOCKS.get(key)
+        if lk is None:
+            lk = _PATH_RW_LOCKS[key] = _RWLock()
+        return lk
 
 
 def _atomic_write_text(p: Path, text: str) -> None:
@@ -545,44 +616,59 @@ def build_builtin_tools(
         line count) paginate long files; without them a file longer than 2000
         lines / 200k chars returns only its head plus a ``pass offset=… to
         continue`` note, so one huge read cannot flood the context. Returns
-        contents or an ``[error]`` string."""
+        contents or an ``[error]`` string.
+
+        流式读取（2026-10-17）：按行窗口扫描，不再整文件 read_text 进内存
+        （200MB 日志从「白吞 200MB 再截断」变 O(窗口) 内存）；行计数器零保留
+        走完全程，「lines a–b of N」提示与旧行为逐字节一致。读期间持路径
+        读锁（与 write/edit 的写锁互斥，读者之间共享）。"""
         try:
             p = _ws(base_dir, path)
             if _path_denied(p, base_dir, mount_roots):
                 return _deny_msg(path)
-            text = p.read_text(encoding="utf-8", errors="replace")
+            start = max(int(offset), 1) - 1
+            cap = READ_HARD_MAX_LINES if limit else READ_MAX_LINES
+            take = min(max(int(limit), 1), cap) if limit else READ_MAX_LINES
+            # 窗口行（已去行尾 \n）；chars 按原始行（含 \n）计，等于旧行为的
+            # len(text)。window_done 之后只计数不保留——total 需要 EOF。
+            lines: list[str] = []
+            chars = 0
+            ends_nl = False
+            window_done = False
+            last_i = -1
+            with _path_rw_lock(p).read_guard(), p.open(
+                "r", encoding="utf-8", errors="replace"
+            ) as fh:
+                for last_i, raw in enumerate(fh):
+                    if last_i < start:
+                        continue
+                    if window_done:
+                        continue  # 只计数
+                    if lines and chars + len(raw) > READ_MAX_CHARS:
+                        # Char guard（一条巨行会顶穿行数帽）：整行切，至少保一行
+                        window_done = True
+                        continue
+                    ends_nl = raw.endswith("\n")
+                    lines.append(raw[:-1] if ends_nl else raw)
+                    chars += len(raw)
+                    if len(lines) >= take:
+                        window_done = True
+            total = last_i + 1
         except FileNotFoundError:
             return f"[error] file not found: {path}"
         except OSError as e:
             return f"[error] cannot read {path}: {type(e).__name__}: {e}"
-        lines = text.splitlines()
-        total = len(lines)
         # Fast path — small file, no pagination: byte-identical to the
         # pre-pagination behaviour (raw text, trailing newline included).
-        if offset <= 1 and not limit and total <= READ_MAX_LINES and len(text) <= READ_MAX_CHARS:
-            return text + _observe(p)
-        start = max(int(offset), 1) - 1
+        if offset <= 1 and not limit and total <= READ_MAX_LINES and chars <= READ_MAX_CHARS:
+            return "\n".join(lines) + ("\n" if lines and ends_nl else "") + _observe(p)
         if start >= total:
             return f"[error] offset {offset} is beyond the end of the file ({total} lines)"
-        cap = READ_HARD_MAX_LINES if limit else READ_MAX_LINES
-        take = min(max(int(limit), 1), cap) if limit else READ_MAX_LINES
-        sel = lines[start : start + take]
-        if len("\n".join(sel)) > READ_MAX_CHARS:
-            # Char guard (one giant line would sail past the line cap): cut at
-            # a line boundary, always keeping at least one line.
-            acc: list[str] = []
-            n = 0
-            for ln in sel:
-                if acc and n + len(ln) + 1 > READ_MAX_CHARS:
-                    break
-                acc.append(ln)
-                n += len(ln) + 1
-            sel = acc
-        body = "\n".join(sel)
-        if start + len(sel) < total:
+        body = "\n".join(lines)
+        if start + len(lines) < total:
             body += (
-                f"\n... (lines {start + 1}-{start + len(sel)} of {total} — "
-                f"pass offset={start + len(sel) + 1} to continue)"
+                f"\n... (lines {start + 1}-{start + len(lines)} of {total} — "
+                f"pass offset={start + len(lines) + 1} to continue)"
             )
         return body + _observe(p)
 
@@ -602,7 +688,7 @@ def build_builtin_tools(
         if mount_access(p, mounts) == "ro":
             return _ro_write_msg(path)
         try:
-            with _FILE_WRITE_LOCK:
+            with _path_rw_lock(p).write_guard():
                 p.parent.mkdir(parents=True, exist_ok=True)
                 _atomic_write_text(p, content)
         except OSError as e:
@@ -815,7 +901,7 @@ def build_builtin_tools(
             return _deny_msg(path)
         if mount_access(p, mounts) == "ro":
             return _ro_write_msg(path)
-        with _FILE_WRITE_LOCK:
+        with _path_rw_lock(p).write_guard():
             try:
                 text = p.read_text(encoding="utf-8")
             except FileNotFoundError:

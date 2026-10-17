@@ -454,3 +454,86 @@ def test_grep_falls_back_to_python_walk_when_rg_errors(tools, ws, monkeypatch, t
     assert out.splitlines() == ["app.js:1:TOKEN"]
     out = tools["grep_files"].invoke({"pattern": "("})
     assert out.startswith("[error] invalid regex")
+
+
+# ---- 路径读写锁（2026-10-17）：全局锁 → 按规范路径 RWLock（弱引用淘汰）--------
+def test_path_rw_lock_identity_and_eviction(tmp_path):
+    """持有期间同路径（含别名）同锁、异路径异锁；全部释放后条目蒸发
+    （WeakValueDictionary 淘汰，长跑不泄漏）。"""
+    import gc
+
+    from ginno_runtime.tools import builtin
+
+    f1 = tmp_path / "a.txt"
+    f1_alias = tmp_path / "sub" / ".." / "a.txt"  # realpath 后与 f1 同一文件
+    f2 = tmp_path / "b.txt"
+    lk1 = builtin._path_rw_lock(f1)
+    lk1b = builtin._path_rw_lock(f1_alias)
+    lk2 = builtin._path_rw_lock(f2)
+    assert lk1 is lk1b
+    assert lk1 is not lk2
+    n = len(builtin._PATH_RW_LOCKS)
+    assert n >= 2
+    del lk1, lk1b, lk2
+    gc.collect()
+    # f2 的锁无持有者 → 蒸发；注册表不再增长泄漏
+    assert len(builtin._PATH_RW_LOCKS) < n
+
+
+def test_rwlock_readers_share_writer_excludes():
+    """读共享：两个读者同时在临界区；写独占：读者未清零前写者进不来。"""
+    import threading as th
+
+    from ginno_runtime.tools.builtin import _RWLock
+
+    lk = _RWLock()
+    lk.acquire_read()
+    lk.acquire_read()  # 并发读者 ×2
+    got: list[str] = []
+
+    def writer():
+        lk.acquire_write()
+        got.append("w")
+        lk.release_write()
+
+    t = th.Thread(target=writer)
+    t.start()
+    t.join(0.2)
+    assert got == []  # 读者未清零，写者被挡（写优先也会挡住第 3 个读者）
+    lk.release_read()
+    lk.release_read()
+    t.join(2)
+    assert got == ["w"]  # 清零后写者进入
+    assert not t.is_alive()
+
+
+def test_write_edit_under_path_locks(tools, ws):
+    """功能回归：按路径锁下 write + edit 全程仍原子生效（原有语义保留）。"""
+    tools["write_file"].invoke({"path": "x.txt", "content": "hello"})
+    r = tools["edit_file"].invoke({"path": "x.txt", "old": "hello", "new": "world"})
+    assert r.startswith("ok")
+    assert (Path(ws) / "x.txt").read_text() == "world"
+
+
+def test_read_paginates_large_file_streaming(tools, ws):
+    """流式分页：3000 行大文件默认读前 2000 行 + of 3000 提示；offset 续读
+    剩余 1000 行且无 suffix——对外行为与整读版逐字节同构。"""
+    (Path(ws) / "big.txt").write_text("".join(f"line{i}\n" for i in range(1, 3001)))
+    out = tools["read_file"].invoke({"path": "big.txt"})
+    lines = out.splitlines()
+    assert len(lines) == 2001  # 2000 行 + 1 行 suffix
+    assert lines[0] == "line1" and lines[1999] == "line2000"
+    assert "of 3000" in lines[2000] and "offset=2001" in lines[2000]
+    out2 = tools["read_file"].invoke({"path": "big.txt", "offset": 2001})
+    lines2 = out2.splitlines()
+    assert len(lines2) == 1000
+    assert lines2[0] == "line2001" and lines2[-1] == "line3000"
+    assert "offset" not in out2
+
+
+def test_read_fast_path_empty_and_trailing_newline(tools, ws):
+    """快路径逐字节一致：空文件返回空串；行尾 \\n 保留。"""
+    (Path(ws) / "empty.txt").write_text("")
+    assert tools["read_file"].invoke({"path": "empty.txt"}) == ""
+    (Path(ws) / "nl.txt").write_text("a\nb\n")
+    assert tools["read_file"].invoke({"path": "nl.txt"}) == "a\nb\n"
