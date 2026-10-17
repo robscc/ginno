@@ -1,0 +1,602 @@
+<title>Ginno 会话与消息流</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* 设计计划：暖纸底 + 单一紫强调（Ginno 品牌），无渐变；
+     标题 Noto Serif SC，正文系统中文黑体，代码 IBM Plex Mono；
+     布局单栏 68ch，图示两个（流水线 + 时序），事件表一张。 */
+  :root {
+    --bg: #faf9f6;
+    --panel: #ffffff;
+    --fg: #212026;
+    --muted: #6b6875;
+    --faint: #9b98a5;
+    --line: #e3e0da;
+    --accent: #6d5ae6;
+    --accent-ink: #4d3cc9;
+    --accent-soft: #efecfd;
+    --code-bg: #f1efe9;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #19181d;
+      --panel: #201f26;
+      --fg: #e9e7e2;
+      --muted: #a29fae;
+      --faint: #726f7e;
+      --line: #34323c;
+      --accent: #9c8cf5;
+      --accent-ink: #b6a9ff;
+      --accent-soft: #2b2740;
+      --code-bg: #26252d;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #19181d;
+    --panel: #201f26;
+    --fg: #e9e7e2;
+    --muted: #a29fae;
+    --faint: #726f7e;
+    --line: #34323c;
+    --accent: #9c8cf5;
+    --accent-ink: #b6a9ff;
+    --accent-soft: #2b2740;
+    --code-bg: #26252d;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.75 -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  main { max-width: 720px; margin: 0 auto; padding-block: 48px 72px; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--accent-ink); margin: 0 0 10px;
+  }
+  h1 {
+    font-family: "Noto Serif SC", "Songti SC", serif;
+    font-size: 30px; line-height: 1.3; font-weight: 700;
+    margin: 0 0 12px; text-wrap: balance;
+  }
+  .lede { color: var(--muted); margin: 0 0 40px; max-width: 62ch; }
+  h2 {
+    font-family: "Noto Serif SC", "Songti SC", serif;
+    font-size: 20px; font-weight: 700; margin: 56px 0 14px; text-wrap: balance;
+  }
+  h2 .no {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px; color: var(--accent-ink); margin-right: 10px; font-weight: 400;
+  }
+  p { margin: 0 0 14px; }
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    font-size: .86em; background: var(--code-bg);
+    padding: .12em .38em; border-radius: 4px;
+  }
+  .ref { color: var(--faint); font-size: 12px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+  figure { margin: 26px 0; }
+  .fig-scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .fig-scroll svg { display: block; min-width: 620px; }
+  svg { max-width: 100%; height: auto; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; line-height: 1.6; }
+  figcaption b { color: var(--fg); font-weight: 600; }
+
+  .frame-sample {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 18px; font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12.5px; line-height: 1.8; overflow-x: auto; margin: 20px 0;
+  }
+  .frame-sample .k { color: var(--accent-ink); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 20px 0; }
+  th {
+    text-align: left; font-weight: 600; color: var(--muted);
+    font-size: 12px; letter-spacing: .04em;
+    border-bottom: 2px solid var(--line); padding: 8px 12px 8px 0;
+  }
+  td { border-bottom: 1px solid var(--line); padding: 9px 12px 9px 0; vertical-align: top; }
+  td:first-child { white-space: nowrap; }
+  td code { white-space: nowrap; }
+  .tbl-wrap { overflow-x: auto; }
+  .tbl-wrap table { min-width: 560px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 20px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .card h3 { margin: 0 0 6px; font-size: 13.5px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 600; }
+  .card p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.65; }
+  .card .slot { display: inline-block; font-size: 10px; letter-spacing: .1em; color: var(--accent-ink); margin-bottom: 6px; }
+
+  .note {
+    border-left: 3px solid var(--accent); background: var(--accent-soft);
+    border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 22px 0;
+    font-size: 13.5px; color: var(--fg);
+  }
+  .note b { font-weight: 600; }
+  .steps { margin: 18px 0; padding: 0; list-style: none; }
+  .steps li { display: flex; gap: 12px; padding: 7px 0; min-width: 0; }
+  .steps .n {
+    flex: 0 0 auto; font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px; color: var(--accent-ink); padding-top: 2px;
+  }
+  .steps .t { min-width: 0; }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+
+<main>
+  <p class="eyebrow">Ginno Runtime · 机制速览</p>
+  <h1>一个会话怎么诞生，<br>一条消息怎么流回屏幕</h1>
+  <p class="lede">
+    前端是 Next.js，运行时是 Python sidecar（FastAPI，<code>127.0.0.1:8787</code>）。
+    会话不是一条数据库记录，而是<span style="color:var(--accent-ink)">「磁盘 meta + 内存 graph + 文件 checkpoint」三样东西的组合</span>；
+    消息回传不靠轮询，靠一条 WebSocket 上的广播事件帧。
+  </p>
+
+  <!-- ============================================================ -->
+  <h2><span class="no">01</span>会话的诞生</h2>
+  <p>
+    入口只有一个：<code>POST /api/sessions</code> → <code>create_session()</code>（<span class="ref">api/sessions.py:550</span>）。
+    五步之内，一个 id 贯穿所有产物：
+  </p>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 780 508" role="img" aria-label="create_session 五步流水线，产物分别落在会话目录、磁盘 meta 索引与内存 _SESSIONS 表">
+      <defs>
+        <marker id="f1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 5, 0 10" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.4">
+        <!-- 前端 -->
+        <rect x="40" y="24" width="300" height="46" rx="8"/>
+        <!-- 流水线容器 -->
+        <rect x="40" y="118" width="300" height="290" rx="10" stroke-dasharray="none"/>
+        <!-- 存储三卡 -->
+        <rect x="446" y="140" width="294" height="58" rx="8"/>
+        <rect x="446" y="228" width="294" height="58" rx="8"/>
+        <rect x="446" y="316" width="294" height="58" rx="8"/>
+        <!-- 返回卡 -->
+        <rect x="40" y="440" width="704" height="50" rx="8"/>
+      </g>
+      <g font-family="-apple-system,'PingFang SC',sans-serif" fill="currentColor">
+        <text x="190" y="52" text-anchor="middle" font-size="13.5" font-weight="600">前端 · Composer「新会话」</text>
+        <text x="190" y="100" text-anchor="middle" font-size="12" fill="var(--muted)" font-family="'IBM Plex Mono',monospace">POST /api/sessions</text>
+
+        <text x="60" y="146" font-size="11.5" fill="var(--muted)" font-family="'IBM Plex Mono',monospace">create_session() · api/sessions.py</text>
+        <g font-size="12.5">
+          <text x="66" y="178">① 解析 provider · model · agent</text>
+          <text x="66" y="222">② build_all_tools（MCP + 内置）</text>
+          <text x="66" y="266">③ build_graph 编译 LangGraph</text>
+          <text x="66" y="310">④ meta 写盘（索引 JSON）</text>
+          <text x="66" y="354">⑤ _SESSIONS[id] = entry</text>
+          <text x="66" y="392" font-size="11" fill="var(--muted)">uuid4().hex ≙ session_id，贯穿全部产物</text>
+        </g>
+
+        <g font-size="12">
+          <text x="466" y="164" font-family="'IBM Plex Mono',monospace" font-size="11.5" fill="var(--accent-ink)">~/.ginno/projects/&lt;slug&gt;/files/&lt;id&gt;/</text>
+          <text x="466" y="184" fill="var(--muted)">每会话文件目录（删会话也保留）</text>
+          <text x="466" y="252" font-family="'IBM Plex Mono',monospace" font-size="11.5" fill="var(--accent-ink)">…/sessions/ meta 索引 JSON</text>
+          <text x="466" y="272" fill="var(--muted)">重启后 _ensure_session 靠它重建 graph</text>
+          <text x="466" y="340" font-family="'IBM Plex Mono',monospace" font-size="11.5" fill="var(--accent-ink)">_SESSIONS[session_id]</text>
+          <text x="466" y="360" fill="var(--muted)">进程内 live 表：graph / 模型 / 工具名单</text>
+        </g>
+
+        <text x="190" y="470" text-anchor="middle" font-size="12.5">返回 meta JSON —— 前端拿到 <tspan font-family="'IBM Plex Mono',monospace" fill="var(--accent-ink)">id</tspan>，立刻开 WebSocket</text>
+      </g>
+      <!-- 步骤间连线 -->
+      <g stroke="currentColor" stroke-width="1.4" fill="none">
+        <line x1="190" y1="70" x2="190" y2="114" marker-end="url(#f1-arrow)"/>
+        <line x1="190" y1="164" x2="190" y2="206" marker-end="url(#f1-arrow)" stroke="var(--line)"/>
+        <line x1="190" y1="208" x2="190" y2="250" marker-end="url(#f1-arrow)" stroke="var(--line)"/>
+        <line x1="190" y1="252" x2="190" y2="294" marker-end="url(#f1-arrow)" stroke="var(--line)"/>
+        <line x1="190" y1="296" x2="190" y2="338" marker-end="url(#f1-arrow)" stroke="var(--line)"/>
+        <!-- 步骤 → 存储（虚线） -->
+        <line x1="340" y1="222" x2="442" y2="172" stroke="var(--faint)" stroke-dasharray="4 4" marker-end="url(#f1-arrow)"/>
+        <line x1="340" y1="310" x2="442" y2="260" stroke="var(--faint)" stroke-dasharray="4 4" marker-end="url(#f1-arrow)"/>
+        <line x1="340" y1="354" x2="442" y2="344" stroke="var(--faint)" stroke-dasharray="4 4" marker-end="url(#f1-arrow)"/>
+        <!-- 返回箭头 -->
+        <path d="M 190 408 L 190 436" marker-end="url(#f1-arrow)"/>
+      </g>
+    </svg>
+    </div>
+    <figcaption>
+      同一个 <b>session_id</b>（uuid）串起五步：解析模型 → 绑工具 → 编译 graph → 写磁盘 meta → 进内存表。
+      虚线是各步的产物去向；<b>消息历史的真值不在这里</b>——在 FileCheckpointer 按超步追加的 checkpoint 文件里（见 03）。
+    </figcaption>
+  </figure>
+
+  <div class="note">
+    <b>谁还会走这个入口</b>：定时任务的影子会话（<code>type="scheduled"</code>）、subagent 派生、团队成员（team-member）、workflow 的 fork agent——
+    全部经由同一个 <code>create_session()</code>，只是 <code>type</code> 与载荷不同。
+  </div>
+
+  <ul class="steps">
+    <li><span class="n">重启后</span><span class="t"><code>_ensure_session(id)</code>（<span class="ref">api/sessions.py:1238</span>）从磁盘 meta 懒重建 graph 并塞回 <code>_SESSIONS</code>——会话因此活得比进程久。</span></li>
+    <li><span class="n">热切</span><span class="t">graph 持有 <code>model_getter</code> 而非裸模型引用，运行中 PATCH 换模型对在途 turn 也生效。</span></li>
+  </ul>
+
+  <!-- ============================================================ -->
+  <h2><span class="no">02</span>一条消息的往返</h2>
+  <p>
+    前端对每个会话开一条 WS（<code>ws://…/api/ws/sessions/{id}</code>），
+    服务端把 socket 挂进 <code>_SESSIONS_WS[id]</code> 广播注册表，然后进入接收循环。
+    你按下发送，走的是这样一条链：
+  </p>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 940 620" role="img" aria-label="invoke 消息时序图：前端到 WS 接收循环，spawn turn 任务，任务内 astream 图执行，事件帧广播回前端所有 socket">
+      <defs>
+        <marker id="f2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 5, 0 10" fill="currentColor"/>
+        </marker>
+      </defs>
+      <!-- 生命线头 -->
+      <g stroke="currentColor" stroke-width="1.4" fill="none">
+        <rect x="20"  y="18" width="150" height="40" rx="8"/>
+        <rect x="255" y="18" width="170" height="40" rx="8"/>
+        <rect x="520" y="18" width="150" height="40" rx="8"/>
+        <rect x="745" y="18" width="175" height="40" rx="8"/>
+      </g>
+      <g font-size="12.5" font-weight="600" fill="currentColor" text-anchor="middle" font-family="-apple-system,'PingFang SC',sans-serif">
+        <text x="95"  y="42">前端 ChatStream</text>
+        <text x="340" y="42">WS 接收循环</text>
+        <text x="595" y="42">turn 任务</text>
+        <text x="832" y="42">graph + emit</text>
+      </g>
+      <!-- 生命线竖线 -->
+      <g stroke="var(--line)" stroke-width="1.2" stroke-dasharray="3 5">
+        <line x1="95"  y1="58" x2="95"  y2="590"/>
+        <line x1="340" y1="58" x2="340" y2="590"/>
+        <line x1="595" y1="58" x2="595" y2="590"/>
+        <line x1="832" y1="58" x2="832" y2="590"/>
+      </g>
+      <!-- 消息箭头 -->
+      <g stroke="currentColor" stroke-width="1.4" fill="none">
+        <line x1="95"  y1="104" x2="336" y2="104" marker-end="url(#f2-arrow)"/>
+        <line x1="340" y1="238" x2="591" y2="238" marker-end="url(#f2-arrow)"/>
+        <line x1="595" y1="302" x2="828" y2="302" marker-end="url(#f2-arrow)"/>
+        <line x1="832" y1="428" x2="99"  y2="428" marker-end="url(#f2-arrow)" stroke="var(--accent)" stroke-width="1.8"/>
+        <line x1="832" y1="510" x2="99"  y2="510" marker-end="url(#f2-arrow)"/>
+      </g>
+      <!-- 自环（分流 / 图执行） -->
+      <g stroke="currentColor" stroke-width="1.4" fill="none">
+        <path d="M 340 128 h 44 v 62 h -44" marker-end="url(#f2-arrow)"/>
+        <path d="M 832 326 h 46 v 56 h -46" marker-end="url(#f2-arrow)"/>
+        <path d="M 95 534 h -40 v 44 h 36" marker-end="url(#f2-arrow)"/>
+      </g>
+      <g font-size="12" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">
+        <text x="112" y="96" font-family="'IBM Plex Mono',monospace" font-size="11.5">{type:"invoke", message, turn_id}</text>
+        <text x="396" y="152">resolve_turn 分流</text>
+        <text x="396" y="170" fill="var(--muted)" font-size="11">slash 命令→直答 · @成员→投递 · 普通文本↓</text>
+        <text x="396" y="188" fill="var(--muted)" font-size="11">busy 检查：已有 turn → 婉拒，不排队</text>
+        <text x="410" y="230" text-anchor="middle">spawn _turn_job（循环保持空闲）</text>
+        <text x="640" y="294" text-anchor="middle">_turn_lock 串行 → _run_stream</text>
+        <text x="700" y="352">graph.astream(stream_mode =</text>
+        <text x="700" y="370" font-family="'IBM Plex Mono',monospace" font-size="11">["messages","updates","custom"])</text>
+        <text x="700" y="398" fill="var(--muted)" font-size="11">LLM 流式 · 工具步 · 每超步 checkpoint 落盘</text>
+        <text x="466" y="420" text-anchor="middle" fill="var(--accent-ink)" font-weight="600">事件帧广播：该会话的每一个 socket</text>
+        <text x="466" y="446" text-anchor="middle" font-family="'IBM Plex Mono',monospace" font-size="11" fill="var(--muted)">token.delta · thinking.delta · tool.start/args/end · turn.start …</text>
+        <text x="466" y="502" text-anchor="middle" font-family="'IBM Plex Mono',monospace" font-size="11.5">message.end</text>
+        <text x="150" y="552" font-size="11.5">对账 /history 落定气泡 · 解锁输入框</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>
+      关键在第三个泳道：<b>turn 是后台任务</b>，接收循环从不为它阻塞——所以 turn 跑到一半，
+      <code>stop</code>、<code>steer</code>、<code>ping</code>、权限回答照样进得来。
+      紫色那条箭头是整条链的输出：<b>广播，不是点对点</b>。
+    </figcaption>
+  </figure>
+
+  <ul class="steps">
+    <li><span class="n">steer</span><span class="t">turn 进行中再发的消息走 <code>{type:"steer"}</code>：不入队新 turn，而是暂存进 steer 队列，由运行中 turn 的下一个 agent 超步「吸收」进上下文，前端只收一条 <code>steer.accepted / steer.absorbed</code> 标记。</span></li>
+    <li><span class="n">停车</span><span class="t">工具要权限 / <code>ask_user</code> 提问时，graph 在 interrupt 处停车：帧变成 <code>permission.request</code> / <code>user.question</code>，等前端回 <code>permission_response</code> / <code>user_answer</code> 再 <code>Command(resume)</code> 续跑。</span></li>
+  </ul>
+
+  <!-- ============================================================ -->
+  <h2><span class="no">03</span>事件帧：消息的运输形态</h2>
+  <p>
+    每一帧都是一行 JSON（<code>_ev()</code> 拼装，<span class="ref">server_shared.py:428</span>），两个记号负责「不串台」和「归组」：
+  </p>
+  <div class="frame-sample">{
+  <span class="k">"event"</span>: "token.delta",
+  <span class="k">"frame_session"</span>: "a1b2c3…",   ← 帧归属：不属于本会话的帧直接丢弃（结构上杜绝跨会话渲染泄漏）
+  <span class="k">"turn_id"</span>: "9f0e…",           ← 帧归组：前端按 turn_id 把 delta 归进对应气泡
+  <span class="k">"content"</span>: "好的，我先看一下文件"
+}</div>
+  <p>
+    广播语义是刻意设计：服务端遍历 <code>_SESSION_WS[id]</code> 里<b>所有</b>活 socket 逐个发送
+    （<code>_push_session_event</code>），发挂的顺手从注册表剔除。于是多开 tab 同见一条流，
+    headless turn（定时任务、goal 续跑）没有「发起 socket」也照样能被任何连着的 tab 看到。
+  </p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>事件</th><th>何时发</th><th>前端动作</th></tr></thead>
+    <tbody>
+      <tr><td><code>turn.start</code></td><td>invoke 受理、graph 开跑</td><td>建流式气泡，标明执行 agent</td></tr>
+      <tr><td><code>thinking.delta</code> / <code>token.delta</code></td><td>messages 流模式逐块</td><td>思考区 / 正文逐字上屏</td></tr>
+      <tr><td><code>tool.start</code> · <code>tool.args</code> · <code>tool.end</code></td><td>updates 提交点（args 由流式片段提前拼出）</td><td>工具卡生命周期</td></tr>
+      <tr><td><code>permission.request</code> / <code>user.question</code></td><td>graph interrupt 停车</td><td>权限卡 / 提问卡；回答走 resume</td></tr>
+      <tr><td><code>message.end</code></td><td>turn 收尾</td><td>对账 <code>/history</code>，解锁 composer</td></tr>
+      <tr><td><code>turn.stopped</code> / <code>error</code></td><td>用户停止 / 异常</td><td>错误卡（i18n_key + params）</td></tr>
+      <tr><td><code>artifacts.changed</code> / <code>todos.changed</code> / <code>preview.invalidate</code> …</td><td>custom 通道</td><td>对应面板刷新</td></tr>
+      <tr><td><code>keepalive</code></td><td>周期</td><td>保活</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2><span class="no">04</span>断线、重启与恢复</h2>
+  <p>
+    事件是火过就没的，真相在盘上。三样持久化兜住了所有「回来再看」的场景：
+  </p>
+  <div class="cards">
+    <div class="card"><span class="slot">CHECKPOINT</span><h3>FileCheckpointer</h3><p>LangGraph 每个超步追加写。<code>/history</code> 从它回放消息；<code>retry_from_checkpoint</code>、定时任务续跑从它断点继续。</p></div>
+    <div class="card"><span class="slot">META</span><h3>会话索引 JSON</h3><p>标题、agent、provider/model、挂载文件夹。重启后重建 graph 的唯一依据。</p></div>
+    <div class="card"><span class="slot">SOCKET</span><h3>重连三件事</h3><p>① 发 <code>turn_state</code> 探针：还跑着就继续听流；② checkpointer 里有挂起 interrupt → 重发权限/提问卡；③ 不在跑 → 对账 <code>/history</code>。</p></div>
+  </div>
+  <p>
+    所以「页面显示运行中」从来不是前端自己猜的——它要么正在收这个会话的帧，要么收到了 <code>turn.state.running: true</code>。
+    一旦 turn 结束，<code>message.end</code> 触发一次 <code>/history</code> 对账，气泡与磁盘状态严格一致。
+  </p>
+
+  <h2><span class="no">05</span>并发模型：协程，还是子进程？</h2>
+  <p>
+    全部控制流都是<b>同一个 Python 进程里的 asyncio 协程</b>——没有「每会话一个进程」。
+    真子进程只出现在工具执行层：shell 命令、外部代理 CLI、Node 的 mod-runner。
+  </p>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 780 540" role="img" aria-label="sidecar 进程内是协程全家福，只有工具执行层跨过进程边界拉起真子进程">
+      <defs>
+        <marker id="f3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 5, 0 10" fill="currentColor"/>
+        </marker>
+      </defs>
+      <!-- 进程容器 -->
+      <rect x="20" y="56" width="470" height="452" rx="12" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <text x="40" y="88" font-size="13.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">Python sidecar · 一个进程</text>
+      <text x="40" y="108" font-size="11" fill="var(--muted)" font-family="'IBM Plex Mono',monospace">asyncio 事件循环 · 127.0.0.1:8787</text>
+      <!-- 协程卡 -->
+      <g fill="none" stroke="currentColor" stroke-width="1.3">
+        <rect x="40" y="128" width="430" height="46" rx="8"/>
+        <rect x="40" y="182" width="430" height="46" rx="8"/>
+        <rect x="40" y="236" width="430" height="46" rx="8"/>
+        <rect x="40" y="290" width="430" height="46" rx="8"/>
+      </g>
+      <g font-size="12.5" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">
+        <text x="56" y="156">WS 接收循环 × N —— <tspan fill="var(--muted)" font-size="11.5">每条连接一个协程，断开即消失</tspan></text>
+        <text x="56" y="210">turn 任务 —— <tspan fill="var(--muted)" font-size="11.5">_turn_lock 每会话串行，跨会话并行</tspan></text>
+        <text x="56" y="264">scheduler_loop —— <tspan fill="var(--muted)" font-size="11.5">30s tick · flock 租约 · 定时任务续跑</tspan></text>
+        <text x="56" y="318">goal driver · 文件 watcher · steer/resume 短任务</text>
+      </g>
+      <!-- 工具执行层（仍在协程内） -->
+      <rect x="40" y="356" width="430" height="52" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.3"/>
+      <text x="56" y="378" font-size="12.5" font-weight="600" fill="var(--accent-ink)" font-family="-apple-system,'PingFang SC',sans-serif">工具执行层 tools/*</text>
+      <text x="56" y="396" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">仍在 turn 协程内调用——await 的那一刻，事件循环在跑别人</text>
+      <!-- headless 注记 -->
+      <text x="40" y="444" font-size="11.5" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">定时任务影子会话 · goal 续跑 · subagent：<tspan fill="var(--accent-ink)">零 socket 照常起 turn</tspan></text>
+      <text x="40" y="466" font-size="11.5" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">没人听时广播帧落地即弃——真相在 checkpoint，不在连接里</text>
+      <!-- 进程边界 -->
+      <line x1="537" y1="80" x2="537" y2="500" stroke="var(--faint)" stroke-width="1.2" stroke-dasharray="5 5"/>
+      <text x="537" y="72" text-anchor="middle" font-size="10.5" fill="var(--faint)" font-family="-apple-system,'PingFang SC',sans-serif">进程边界</text>
+      <!-- 子进程三卡 -->
+      <g fill="none" stroke="currentColor" stroke-width="1.3">
+        <rect x="585" y="128" width="175" height="58" rx="8"/>
+        <rect x="585" y="226" width="175" height="58" rx="8"/>
+        <rect x="585" y="324" width="175" height="58" rx="8"/>
+      </g>
+      <g font-size="12" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">
+        <text x="601" y="152" font-weight="600">bash / 命令</text>
+        <text x="601" y="170" font-size="10.5" fill="var(--muted)" font-family="'IBM Plex Mono',monospace">subprocess.Popen</text>
+        <text x="601" y="250" font-weight="600">外部代理 CLI</text>
+        <text x="601" y="268" font-size="10.5" fill="var(--muted)">claude-code / codex（带 _kill_tree）</text>
+        <text x="601" y="348" font-weight="600">mod-runner.mjs</text>
+        <text x="601" y="366" font-size="10.5" fill="var(--muted)">Node 子进程 · broker 拉起</text>
+      </g>
+      <!-- 跨边界箭头 -->
+      <g stroke="var(--accent)" stroke-width="1.6" fill="none">
+        <line x1="470" y1="370" x2="581" y2="164" marker-end="url(#f3-arrow)"/>
+        <line x1="470" y1="382" x2="581" y2="260" marker-end="url(#f3-arrow)"/>
+        <line x1="470" y1="396" x2="581" y2="356" marker-end="url(#f3-arrow)"/>
+      </g>
+      <text x="672" y="412" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">崩了 → 作为工具错误返回，</text>
+      <text x="672" y="430" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">turn 协程毫发无伤</text>
+    </svg>
+    </div>
+    <figcaption>
+      边界记忆法：<b>控制流 = 协程，干活的 = 子进程</b>。紫色箭头是仅有的三次跨界。
+      进程死则协程全灭——孤儿不是僵尸进程，而是 jsonl 里的 running 行，由启动对账接手（窗口内自动续跑）。
+    </figcaption>
+  </figure>
+
+  <div class="note">
+    <b>「不连 WS，会话协程就不启动？」——不会。</b>会话不是协程，是内存条目 + 磁盘状态；<code>create_session</code> 走 HTTP，
+    turn 也不需要任何 socket：定时任务影子会话、goal 续跑、subagent 全是 headless 跑的。
+    真正「连了才存在」的协程只有两个：WS 接收循环（invoke / stop / steer 的唯一入口）和文件 watcher
+    （在 <code>session_ws</code> 里 spawn，断开即停）。
+  </div>
+
+  <h2><span class="no">06</span>多会话会打架吗：竞争与闸门</h2>
+  <p>
+    会。但不是锁打架——单线程协作式调度下，两次 <code>await</code> 之间的同步代码是原子的，
+    危险的「读-改-写跨 await」都有显式闸门。真正的瓶颈在进程外面：共享的 provider 配额。
+  </p>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 780 470" role="img" aria-label="多会话 turn 经过每会话串行锁与事件循环切片，真正的竞争在共享 provider 配额，429 退避；文件 IO 走线程池，慢 tab 被 5 秒超时剔除">
+      <defs>
+        <marker id="f4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 5, 0 10" fill="currentColor"/>
+        </marker>
+      </defs>
+      <!-- 会话 turn 卡 -->
+      <g fill="none" stroke="currentColor" stroke-width="1.3">
+        <rect x="30" y="100" width="200" height="46" rx="8"/>
+        <rect x="30" y="170" width="200" height="46" rx="8"/>
+        <rect x="30" y="240" width="200" height="46" rx="8"/>
+        <rect x="30" y="330" width="200" height="46" rx="8" stroke-dasharray="5 4"/>
+      </g>
+      <g font-size="12.5" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">
+        <text x="46" y="128">会话 A · turn 任务</text>
+        <text x="46" y="198">会话 B · turn 任务</text>
+        <text x="46" y="268">会话 C · turn 任务</text>
+        <text x="46" y="358" fill="var(--muted)">会话 A · 第二个 invoke</text>
+      </g>
+      <!-- 闸门 1：turn_lock -->
+      <rect x="300" y="115" width="190" height="60" rx="8" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/>
+      <text x="316" y="140" font-size="12.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">_turn_lock</text>
+      <text x="316" y="160" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">同会话串行 · 跨会话并行</text>
+      <!-- 闸门 2：事件循环 -->
+      <rect x="300" y="225" width="190" height="60" rx="8" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/>
+      <text x="316" y="250" font-size="12.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">asyncio 事件循环</text>
+      <text x="316" y="270" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">await 处让出 · 毫秒级切片</text>
+      <!-- provider -->
+      <rect x="580" y="140" width="170" height="70" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+      <text x="596" y="168" font-size="12.5" font-weight="600" fill="var(--accent-ink)" font-family="-apple-system,'PingFang SC',sans-serif">LLM Provider</text>
+      <text x="596" y="188" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">共享 API key —— 真正的瓶颈</text>
+      <!-- to_thread -->
+      <rect x="580" y="272" width="170" height="58" rx="8" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="596" y="296" font-size="12" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">磁盘 checkpoint</text>
+      <text x="596" y="314" font-size="10.5" fill="var(--muted)" font-family="'IBM Plex Mono',monospace">asyncio.to_thread</text>
+      <!-- WS 广播 -->
+      <rect x="300" y="330" width="190" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="316" y="355" font-size="12.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">WS 帧广播</text>
+      <text x="316" y="375" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">5s 超时 · 慢 tab 剔除</text>
+      <!-- 箭头 -->
+      <g stroke="currentColor" stroke-width="1.4" fill="none">
+        <line x1="230" y1="123" x2="294" y2="137" marker-end="url(#f4-arrow)"/>
+        <line x1="230" y1="193" x2="294" y2="149" marker-end="url(#f4-arrow)"/>
+        <line x1="230" y1="263" x2="294" y2="161" marker-end="url(#f4-arrow)"/>
+        <line x1="395" y1="175" x2="395" y2="221" marker-end="url(#f4-arrow)"/>
+        <line x1="490" y1="248" x2="574" y2="182" marker-end="url(#f4-arrow)" stroke="var(--accent)"/>
+        <line x1="490" y1="272" x2="574" y2="298" marker-end="url(#f4-arrow)"/>
+        <line x1="395" y1="285" x2="395" y2="326" marker-end="url(#f4-arrow)"/>
+      </g>
+      <!-- 429 回退（虚线） -->
+      <line x1="574" y1="196" x2="496" y2="262" stroke="var(--faint)" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#f4-arrow)"/>
+      <text x="540" y="240" text-anchor="middle" font-size="10.5" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">429 · 退避重试</text>
+      <!-- busy 婉拒（虚线） -->
+      <line x1="230" y1="342" x2="322" y2="180" stroke="var(--faint)" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#f4-arrow)"/>
+      <text x="238" y="272" font-size="10.5" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">busy check → 婉拒不排队</text>
+      <text x="612" y="366" font-size="10.5" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">文件 IO 不堵循环</text>
+    </svg>
+    </div>
+    <figcaption>
+      紫色是唯一真正的竞争点：<b>多会话共用一个 API key</b>，撞上了就 429 退避——换任何并发模型它都在。
+      循环内部的竞争只有毫秒级互相延迟；数据竞争由「await 间原子 + 显式闸门」兜住。
+    </figcaption>
+  </figure>
+
+  <ul class="steps">
+    <li><span class="n">数据侧</span><span class="t">按会话分桶的 dict（key = session_id）结构上不共享字段；跨 await 的复合操作全部有闸：busy check、check-and-discard（两 tab 抢答只一个赢）、identity-checked pop（不误删后继任务）。</span></li>
+    <li><span class="n">卡死侧</span><span class="t">每 turn 180s chunk 看门狗（<code>CHUNK_TIMEOUT_S</code>）：停流的 turn 快速报错让位，不无限占坑。</span></li>
+    <li><span class="n">何时警惕</span><span class="t">若未来有会话内联做 CPU 重活（同步解析大文件再进上下文），它会让<b>所有</b>会话的流一起卡——照 checkpointer 的样子 <code>to_thread</code> 下去。</span></li>
+  </ul>
+
+  <h2><span class="no">07</span>线程池是共享的，隔壁为什么零感知</h2>
+  <p>
+    因为共享的是「<b>工人总数</b>」，不是「单个工人」。A 的 glob 领走 1 号工，
+    B 的工具直接领 2 号工——而两个协程在 <code>submit</code> 之后立即挂起，
+    事件循环连一纳秒都没有替它们等待。
+  </p>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 780 356" role="img" aria-label="会话A的glob占1号工线程，会话B的工具领2号工，协程挂起不占事件循环，排队区只在全部32个工人忙时才非空">
+      <defs>
+        <marker id="f5-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <polygon points="0 0, 10 5, 0 10" fill="currentColor"/>
+        </marker>
+      </defs>
+      <!-- 事件循环横条 -->
+      <rect x="30" y="24" width="730" height="52" rx="10" fill="var(--panel)" stroke="currentColor" stroke-width="1.5"/>
+      <text x="46" y="47" font-size="13" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">asyncio 事件循环 · 唯一的主线程</text>
+      <text x="46" y="66" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">派活后立即切走，从不替任何工具等待 —— 此刻它在给会话 C 推 token.delta</text>
+      <!-- 协程 A / B -->
+      <rect x="30" y="120" width="200" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="5 4"/>
+      <text x="46" y="144" font-size="12.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">会话 A · turn 协程</text>
+      <text x="46" y="164" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">状态：挂起（等 future）</text>
+      <rect x="30" y="204" width="200" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="5 4"/>
+      <text x="46" y="228" font-size="12.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">会话 B · turn 协程</text>
+      <text x="46" y="248" font-size="11" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">状态：挂起（等 future）</text>
+      <!-- 线程池容器 -->
+      <rect x="290" y="104" width="286" height="240" rx="10" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <text x="306" y="128" font-size="12" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">共享线程池 · 默认 ~32 个工人</text>
+      <!-- 工位 -->
+      <rect x="306" y="142" width="58" height="46" rx="6" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.4"/>
+      <text x="335" y="161" text-anchor="middle" font-size="10.5" font-weight="600" fill="var(--accent-ink)" font-family="-apple-system,'PingFang SC',sans-serif">1号工</text>
+      <text x="335" y="178" text-anchor="middle" font-size="10" fill="var(--accent-ink)" font-family="-apple-system,'PingFang SC',sans-serif">A·glob ≤10s</text>
+      <rect x="372" y="142" width="58" height="46" rx="6" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <text x="401" y="161" text-anchor="middle" font-size="10.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">2号工</text>
+      <text x="401" y="178" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">B·工具</text>
+      <g fill="none" stroke="var(--line)" stroke-width="1.2">
+        <rect x="438" y="142" width="58" height="46" rx="6"/>
+        <rect x="504" y="142" width="58" height="46" rx="6"/>
+        <rect x="306" y="196" width="58" height="46" rx="6"/>
+        <rect x="372" y="196" width="58" height="46" rx="6"/>
+        <rect x="438" y="196" width="58" height="46" rx="6"/>
+        <rect x="504" y="196" width="58" height="46" rx="6"/>
+      </g>
+      <g font-size="10.5" fill="var(--faint)" font-family="-apple-system,'PingFang SC',sans-serif">
+        <text x="467" y="169" text-anchor="middle">空位</text>
+        <text x="533" y="169" text-anchor="middle">空位</text>
+        <text x="335" y="223" text-anchor="middle">空位</text>
+        <text x="401" y="223" text-anchor="middle">空位</text>
+        <text x="467" y="223" text-anchor="middle">空位</text>
+        <text x="533" y="223" text-anchor="middle">空位</text>
+        <text x="306" y="262" font-size="10.5">…… 还有 24 个空位</text>
+      </g>
+      <!-- 排队区 -->
+      <rect x="306" y="282" width="256" height="42" rx="6" fill="none" stroke="var(--faint)" stroke-width="1.2" stroke-dasharray="5 4"/>
+      <text x="318" y="302" font-size="10.5" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">排队区 —— 32 个全忙时才非空；</text>
+      <text x="318" y="316" font-size="10.5" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">每工具 10s 帽，队必然清空</text>
+      <!-- 子进程 -->
+      <rect x="620" y="130" width="140" height="56" rx="8" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="634" y="152" font-size="11.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">rg 子进程</text>
+      <text x="634" y="170" font-size="10" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">CPU 不抢主线程的 GIL</text>
+      <rect x="620" y="222" width="140" height="56" rx="8" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <text x="634" y="244" font-size="11.5" font-weight="600" fill="currentColor" font-family="-apple-system,'PingFang SC',sans-serif">shell 子进程</text>
+      <text x="634" y="262" font-size="10" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">线程里阻塞等它，无感</text>
+      <!-- submit 箭头 -->
+      <g stroke="currentColor" stroke-width="1.4" fill="none">
+        <line x1="230" y1="146" x2="302" y2="158" marker-end="url(#f5-arrow)"/>
+        <line x1="230" y1="230" x2="368" y2="172" marker-end="url(#f5-arrow)"/>
+        <line x1="566" y1="168" x2="616" y2="160" marker-end="url(#f5-arrow)"/>
+        <line x1="576" y1="248" x2="616" y2="248" marker-end="url(#f5-arrow)"/>
+      </g>
+      <text x="264" y="126" font-size="10.5" fill="var(--muted)" font-family="-apple-system,'PingFang SC',sans-serif">submit → 立即挂起</text>
+    </svg>
+    </div>
+    <figcaption>
+      A 的慢 glob 只「贵」两样东西：<b>1 号工最多占 10 秒</b>（预算帽）+ A 自己的 turn 继续等。
+      B 的活领的是 2 号工；事件循环从头到尾没被任何人霸占——这就是「共享池但不互相感知」的全部机制。
+    </figcaption>
+  </figure>
+
+  <div class="note">
+    <b>唯一会漏到隔壁的路径</b>：纯 CPU 的 Python 代码在线程里长跑，会和主线程抢 GIL（毫秒级顿挫，不是卡死）。
+    glob 的答案是把 CPU 重的匹配交给 rg 子进程（另一个进程，GIL 都不共享），自己线程里只做 readdir 这类释放 GIL 的 IO。
+    32 个工人全忙时新工具会排队——但等的是「轮到自己」，循环照常推流。
+  </div>
+
+  <p style="margin-top:40px" class="ref">
+    源码锚点：api/sessions.py:550（create_session）· api/sessions.py:1238（_ensure_session）·
+    api/stream/ws.py:86（session_ws）· api/stream/engine.py:860（_stream_graph）· server_shared.py:442（_push_session_event）·
+    tools/builtin.py:414（Popen）· tools/builtin.py:48-54（glob 预算帽）· tools/external_agent.py:134（外部代理 CLI）·
+    server_shared.py:420（_WS_SEND_TIMEOUT_S）· checkpointer.py:449（aput → to_thread）
+  </p>
+</main>
