@@ -221,7 +221,9 @@ export function RunsPanel({
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-line">
-          <table className="w-full text-left text-xs">
+          {/* min-w 保列宽：窄容器横向滚动，而不是把列压扁——行尾 hover 的
+              「打开」入口随行完整保留，挤压布局时它会先于其他列被吃掉。 */}
+          <table className="w-full min-w-[760px] text-left text-xs">
             <thead>
               <tr className="border-b border-line text-[11px] text-faint">
                 <th className="px-3 py-2 font-medium">{tr("runs.colTime")}</th>
