@@ -208,7 +208,7 @@ export function RunsPanel({
             ))}
           </select>
         )}
-        <span className="ml-auto text-[11px] text-faint">{tr("runs.count", { n: filtered.length })}</span>
+        <span className="ml-auto whitespace-nowrap text-[11px] text-faint">{tr("runs.count", { n: filtered.length })}</span>
       </div>
 
       {loading ? (
@@ -222,10 +222,13 @@ export function RunsPanel({
       ) : (
         <div className="overflow-x-auto rounded-xl border border-line">
           {/* min-w 保列宽：窄容器横向滚动，而不是把列压扁——行尾 hover 的
-              「打开」入口随行完整保留，挤压布局时它会先于其他列被吃掉。 */}
-          <table className="w-full min-w-[760px] text-left text-xs">
+              「打开」入口随行完整保留，挤压布局时它会先于其他列被吃掉。
+              注意上限必须 ≤ 页面列的可用宽度（max-w-3xl 768 − px-6×2 = 720）：
+              之前设 760 导致默认宽度下也稳定溢出 40px，「打开」恰好被卡片
+              右边框切掉一半（GINNO-4）。700 留出余量，再窄才走横向滚动。 */}
+          <table className="w-full min-w-[700px] text-left text-xs">
             <thead>
-              <tr className="border-b border-line text-[11px] text-faint">
+              <tr className="whitespace-nowrap border-b border-line text-[11px] text-faint">
                 <th className="px-3 py-2 font-medium">{tr("runs.colTime")}</th>
                 <th className="px-3 py-2 font-medium">{tr("runs.colTask")}</th>
                 <th className="px-3 py-2 font-medium">{tr("runs.colTarget")}</th>
@@ -266,7 +269,7 @@ export function RunsPanel({
                       {r.task_name}
                     </td>
                     <td className="px-3 py-2">{r.target_type === "workflow" ? "⚡" : "💬"}</td>
-                    <td className="px-3 py-2 text-faint">{r.trigger === "manual" ? tr("trigger.manual") : tr("trigger.scheduled")}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-faint">{r.trigger === "manual" ? tr("trigger.manual") : tr("trigger.scheduled")}</td>
                     <td className="whitespace-nowrap px-3 py-2">
                       <span
                         className="inline-flex items-center gap-1 rounded-full border px-1.5 py-px"
