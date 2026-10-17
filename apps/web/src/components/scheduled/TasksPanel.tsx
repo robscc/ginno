@@ -109,14 +109,21 @@ export function TasksPanel({
                   cfg.enabled ? "" : "opacity-60"
                 }`}
               >
-                <div className="flex items-center gap-2.5">
+                {/* 首行可换行：窄卡下放不下的内容整体落到第二行，而不是把
+                    右侧操作菜单挤出卡片边界（菜单被截断/不可见的根因就是
+                    所有元素 shrink-0 且行不可 wrap——溢出直接画出卡片外）。 */}
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                   <span className="shrink-0 text-base leading-none" title={isWf ? tr("tasks.targetWorkflow") : tr("tasks.targetPrompt")}>
                     {isWf ? "⚡" : "💬"}
                   </span>
-                  <span className="min-w-0 truncate text-sm font-medium text-txt">{t.name}</span>
-                  <span className="shrink-0 text-xs text-muted">{planDescription(t.schedule)}</span>
+                  <span className="min-w-0 truncate text-sm font-medium text-txt" title={t.name}>
+                    {t.name}
+                  </span>
+                  <span className="shrink-0 text-xs text-muted" title={planDescription(t.schedule)}>
+                    {planDescription(t.schedule)}
+                  </span>
                   {!isWf && (
-                    <span className="hidden shrink-0 text-xs text-faint sm:inline">
+                    <span className="hidden max-w-[180px] shrink-0 truncate text-xs text-faint sm:inline-block sm:align-middle" title={agent ?? promptTarget?.project_slug ?? undefined}>
                       {agent ? tr("tasks.agentSuffix", { name: agent }) : ""}
                       {promptTarget?.project_slug
                         ? tr("tasks.projectSuffix", { slug: promptTarget.project_slug })
@@ -134,6 +141,7 @@ export function TasksPanel({
                     </span>
                   )}
 
+                  {/* shrink-0 保住操作菜单永不压缩；wrap 后整组右对齐落到新行 */}
                   <span className="ml-auto flex shrink-0 items-center gap-1.5">
                     <button
                       onClick={() => toggle(t)}
