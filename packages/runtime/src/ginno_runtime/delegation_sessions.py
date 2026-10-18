@@ -100,9 +100,87 @@ def _ir_to_messages(ir: list, prompt: str) -> list:
     return msgs
 
 
+def _pid_comm(pid: int) -> str:
+    """pid 的进程名（ps comm），查不到返回 ""——重启后 pid 可能已被复用，
+    击杀前必须做身份复核（Multica cursor watchdog 同款纪律）。"""
+    import subprocess as _sp
+
+    try:
+        r = _sp.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return (r.stdout or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+_BACKEND_CLI = {"claude-code": "claude", "codex": "codex", "pi": "pi"}
+
+
+def _reap_orphan_cli(pid, backend: str) -> str:
+    """识别并处置重启后仍存活的孤儿 CLI 进程。返回追加到中断注记的说明。
+
+    身份复核通过（comm 含 CLI 名）才杀——孤儿是 start_new_session 的独立
+    进程组，killpg 收整树；身份不符（pid 复用）绝不碰，只注明。"""
+    if not isinstance(pid, int) or pid <= 0:
+        return ""
+    comm = _pid_comm(pid)
+    if not comm:
+        return ""
+    cli = _BACKEND_CLI.get(backend or "", "")
+    low = comm.lower()
+    identified = bool(cli) and (cli in low or low.endswith("/" + cli) or "node" in low)
+    if not identified:
+        return (
+            f"; stale pid {pid} ({comm}) is alive but not identifiable as "
+            f"{cli or backend} — left untouched"
+        )
+    import signal as _signal
+
+    killed = False
+    for kill in (
+        lambda: os.killpg(pid, _signal.SIGKILL),
+        lambda: os.kill(pid, _signal.SIGKILL),
+    ):
+        try:
+            kill()
+            killed = True
+            break
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+    return (
+        f"; orphaned {cli} process (pid {pid}) was terminated"
+        if killed
+        else f"; orphaned {cli} process (pid {pid}) could not be killed"
+    )
+
+
+def _append_interrupt_note(slug: str, sid: str, note: str) -> None:
+    """往孤儿委托的转录末尾补一条中断注记——回放页看到的不再是莫名的
+    error 终态。读最后一条 checkpoint 的消息、追加、整体重写。绝不抛。"""
+    if not note:
+        return
+    try:
+        ckpt = FileCheckpointer(slug)
+        tup = ckpt.get_tuple({"configurable": {"thread_id": sid}})
+        msgs = []
+        if tup and getattr(tup, "checkpoint", None):
+            msgs = list(
+                (tup.checkpoint.get("channel_values") or {}).get("messages") or []
+            )
+        msgs.append(AIMessage(content=note))
+        _write_checkpoint(slug, sid, msgs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def reconcile_running_delegations() -> int:
     """启动对账：runtime 重启会把后台委托协程一并带走——凡 type=delegation
-    且 stop_reason=running 的存量条目一律改判 error（2026-10-05 真机事故）。
+    且 stop_reason=running 的存量条目一律改判 error，转录补中断注记，并
+    凭 meta.pid 处置仍存活的孤儿 CLI 进程（A5；2026-10-05 真机事故）。
     返回修正条数。绝不抛异常。"""
     n = 0
     try:
@@ -113,6 +191,12 @@ def reconcile_running_delegations() -> int:
             for m in _session_meta_list(slug):
                 if m.get("type") == "delegation" and m.get("stop_reason") == "running":
                     _session_meta_patch(slug, m["id"], {"stop_reason": "error"})
+                    note = (
+                        "[error] delegation interrupted: Ginno restarted while "
+                        "the external agent was running; its result was lost."
+                        + _reap_orphan_cli(m.get("pid"), m.get("backend") or "")
+                    )
+                    _append_interrupt_note(slug, m["id"], note)
                     n += 1
         if n:
             try:

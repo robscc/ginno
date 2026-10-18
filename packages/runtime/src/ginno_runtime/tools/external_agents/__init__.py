@@ -9,7 +9,10 @@ from .base import (  # noqa: F401 — 装配层与测试的稳定导入面
     _parse_json_lenient,
     _resolve_cli,
     _tail,
+    cli_version,
+    cli_version_warning,
     clear_cli_cache,
+    invalidate_cli,
 )
 from .claude_code import ClaudeCodeBackend
 from .codex import CodexBackend

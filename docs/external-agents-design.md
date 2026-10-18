@@ -256,3 +256,38 @@ usage 映射：pi `input+cacheRead` / claude `input_tokens+cache_*` 归一化为
 会泄入委托会话（`--strict-mcp-config` 能挡但代价是工具全灭，故接受泄漏）。最终 read-only =
 deny `Bash,Edit,Write,NotebookEdit`；edit = deny `Bash` + `--permission-mode=acceptEdits`；
 全部走 `--settings=` 等号紧凑 JSON 单值。
+
+### 9.7 A 层加固（2026-10-18，源自 Multica 对比 docs/multica-delegation-comparison.md）
+
+* **A1 fail-closed 终态判定**（`claude_code.py`）：无 `result` 事件的截断流
+  不再静默当成功——命中上下文溢出指纹（`_CONTEXT_EXHAUSTED_RE`，prompt
+  too long / window limit reached / context exhausted 等）→ `error` +
+  `meta.terminal_reason="context_exhausted"`（为 resume 层留决策依据）；有
+  文本可抢救 → success + `[note]` + `terminal_reason="stream_truncated"`；
+  全 tool_use 中断无文本 → error。指纹只作用于 result 缺席的流，正常收尾
+  流里模型讨论这些词不受影响。
+* **A2 版本探针 + 缓存自愈**（`base.py` + `external_agent.py`）：
+  `cli_version()` 走 `<cli> --version`（10s 超时、semver 提取、按解析路径
+  缓存）；`_MIN_CLI_VERSIONS`（claude≥2.0.0、codex≥0.100.0、pi 无门）低于
+  门在回执/结果前缀 `[warning]` 明示（不硬拦）。Popen `FileNotFoundError`
+  → `invalidate_cli()` 踢路径+版本缓存 → 重解析重拼 argv 重试一次（nvm
+  原地升级不再需要重启 Ginno）；二次 ENOENT 报错退出。
+* **A3 统一流式监督 + idle 看门狗**（`run_delegation`）：真实管道一律逐行
+  读取（同步 workflow 路径原来 `communicate(timeout=None)` 完全无监督）；
+  timeout>0 走墙钟，timeout=0 只豁免墙钟、30min 无 stdout 即杀（
+  `_IDLE_WATCHDOG_S`，`meta.terminal_reason="idle_timeout"`，header 显示
+  `idle 1800s`）——挂死委托不再永驻进程占死并发槽。
+* **A5 孤儿对账升级**（`delegation_sessions.py`）：`_register_delegation_proc`
+  把 pid 写进 delegation meta；`reconcile_running_delegations()`（lifespan
+  已接线）改判 error 之外——凭 pid + `ps comm` 身份复核处置仍存活的孤儿
+  CLI 进程（start_new_session 使其不随 sidecar 退出；身份相符 killpg 收
+  树，pid 复用绝不碰），转录末尾补「Ginno restarted」中断注记。
+* **A4 usage 契约测试**：`tests/unit/test_external_agents_usage_contracts.py`
+  每后端钉死「原始 usage JSON → ginno 四元组」（cache-inclusive input 口
+  径）；顺带修了 codex 降级路径丢 usage 的真 bug（`turn.completed` 已解
+  析出的量因答复通道降级被丢弃）。
+* 测试：4 个 delegation 测试文件 67 例全绿；全量 unit 11 failed 均为 main
+  既有（builtin_tools/mods_channel/scheduler/turn_error_format，与本改动无
+  关）。`tests/api/test_delegate_wiring.py::test_delegate_async_end_to_end`
+  在 main 上即失败（信封注入契约），待单独排查。
+

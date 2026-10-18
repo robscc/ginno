@@ -53,7 +53,9 @@ from .external_agents import (  # noqa: F401 — 兼容既有导入面（含旧�
     _parse_json_lenient,
     _resolve_cli,
     _tail,
+    cli_version_warning,
     clear_cli_cache,
+    invalidate_cli,
 )
 
 
@@ -62,6 +64,11 @@ _BACKENDS: dict[str, ExternalBackend] = {
     CodexBackend.name: CodexBackend(),
     PiBackend.name: PiBackend(),
 }
+
+# timeout=0（永不超时）的空闲看门狗：连续这么久无 stdout 即判挂死杀整树
+# （A3）。30min 的余量够长工具静默跑完（本机测试套件/构建），再久基本只
+# 会是失声的僵尸。墙钟路径（timeout>0）不受它影响。
+_IDLE_WATCHDOG_S = 1800
 
 
 def available_backends() -> list[str]:
@@ -119,9 +126,10 @@ def run_delegation(
 ) -> DelegationResult:
     """Run one delegation. NEVER raises — every failure becomes a result.
 
-    ``on_line``（bg 实时回填用）：给出回调则走流式路径——stdout 逐行读取并
-    回调（节流由调用方负责），stderr 并发排空防 64KB 管道阻塞，超时由看门狗
-    计时。无回调/子进程无真实 stdout（测试 fakes）时保持原 communicate 路径。
+    ``on_line``（bg 实时回填用）：给出回调则 stdout 逐行回调（节流由调用方
+    负责）。监督统一走流式读取——凡有真实 stdout 的子进程都在墙钟/空闲双
+    看门狗之下（timeout=0 只豁免墙钟，空闲看门狗仍生效）；仅测试 fakes
+    （无 stdout 属性）落回 communicate 路径。
     """
     import threading
     out_file: str | None = None
@@ -130,23 +138,45 @@ def run_delegation(
         os.close(fd)
     try:
         argv = backend.build_argv(prompt, mode, cwd, out_file)
-        try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=cwd,
-                # pi --mode json 会先读 stdin 等 EOF：不断开就会挂到超时
-                #（2026-10-04 真机发现；claude/codex headless 不读，DEVNULL 无害）。
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=(os.name == "posix"),
-            )
-        except (OSError, ValueError) as e:
+        proc = None
+        for attempt in (0, 1):
+            try:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=cwd,
+                    # pi --mode json 会先读 stdin 等 EOF：不断开就会挂到超时
+                    #（2026-10-04 真机发现；claude/codex headless 不读，DEVNULL 无害）。
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=(os.name == "posix"),
+                )
+                break
+            except (OSError, ValueError) as e:
+                # ENOENT 自愈（A2）：解析到的 CLI 路径消失（nvm 原地升级、
+                # brew unlink 等）→ 踢缓存重解析一次，路径变了重拼 argv 再试；
+                # 第二次仍失败或非 ENOENT → 报错退出（fail-loud 不假装）。
+                if (
+                    attempt == 0
+                    and isinstance(e, FileNotFoundError)
+                    and getattr(backend, "cli_name", "")
+                ):
+                    invalidate_cli(backend.cli_name)
+                    try:
+                        argv = backend.build_argv(prompt, mode, cwd, out_file)
+                        continue
+                    except Exception:  # noqa: BLE001
+                        pass
+                return DelegationResult(
+                    stop_reason="error",
+                    diagnostic=f"cannot launch {backend.name}: "
+                    f"{type(e).__name__}: {e}",
+                )
+        if proc is None:  # 重试后 build_argv 本身失败
             return DelegationResult(
                 stop_reason="error",
-                diagnostic=f"cannot launch {backend.name}: "
-                f"{type(e).__name__}: {e}",
+                diagnostic=f"cannot launch {backend.name}: cli re-resolution failed",
             )
         if proc_cb is not None:
             try:
@@ -154,19 +184,25 @@ def run_delegation(
             except Exception:  # noqa: BLE001
                 pass
         timed_out = False
-        if on_line is not None and getattr(proc, "stdout", None) is not None:
-            # 流式路径：真实管道逐行回调；fakes（无 stdout 属性）落回 communicate。
+        idle_timed_out = False
+        if getattr(proc, "stdout", None) is not None:
+            # 流式监督：真实管道（或可迭代的测试 fake）一律逐行读取——
+            # 统一墙钟/空闲双看门狗，同步路径也受监督（原实现 on_line 缺席
+            # 时走 communicate(timeout=None)，timeout=0 即完全无监督）。
             out_lines: list[str] = []
             err_lines: list[str] = []
+            activity = {"last": time.monotonic()}
 
             def _read_out() -> None:
                 try:
                     for line in proc.stdout:
                         out_lines.append(line)
-                        try:
-                            on_line(line)
-                        except Exception:  # noqa: BLE001 — 回调绝不拖垮读取
-                            pass
+                        activity["last"] = time.monotonic()
+                        if on_line is not None:
+                            try:
+                                on_line(line)  # noqa: BLE001 — 回调绝不拖垮读取
+                            except Exception:  # noqa: BLE001
+                                pass
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -181,9 +217,23 @@ def run_delegation(
             t_err = threading.Thread(target=_read_err, daemon=True)
             t_out.start()
             t_err.start()
-            t_out.join(timeout or None)
-            if t_out.is_alive():
-                timed_out = True
+            # 看门狗二选一：timeout>0 → 墙钟；timeout=0（永不超时）→ 空闲
+            # ——0 只豁免墙钟，不豁免失声：挂死的委托会永驻进程并占死并发
+            # 槽（Multica awakeclock 同思想，A3）。
+            idle_s = _IDLE_WATCHDOG_S if timeout == 0 else None
+            deadline = (time.monotonic() + timeout) if timeout else None
+            while True:
+                t_out.join(1.0)
+                if not t_out.is_alive():
+                    break
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    timed_out = True
+                    break
+                if idle_s is not None and now - activity["last"] >= idle_s:
+                    idle_timed_out = True
+                    break
+            if timed_out or idle_timed_out:
                 _kill_tree(proc)
                 t_out.join(5)
             else:
@@ -207,13 +257,22 @@ def run_delegation(
                     stdout, stderr = "", ""
         stdout = stdout or ""
         stderr = stderr or ""
-        if timed_out:
+        if timed_out or idle_timed_out:
+            reason = (
+                f"idle: no output for {idle_s}s"
+                if idle_timed_out
+                else f"killed after {timeout}s"
+            )
             return DelegationResult(
                 stop_reason="timeout",
                 diagnostic=_tail(
-                    f"killed after {timeout}s (process group terminated); "
-                    f"stderr: {stderr}"
+                    f"{reason} (process group terminated); stderr: {stderr}"
                 ),
+                meta={
+                    "terminal_reason": "idle_timeout"
+                    if idle_timed_out
+                    else "wall_timeout"
+                },
             )
         result = backend.parse_result(stdout, stderr, proc.returncode, out_file)
         # 原始事件流归档（截断 512KB）——delegation 子会话的
@@ -276,9 +335,22 @@ _ACTIVE_DELEGATIONS: dict[str, dict] = {}
 _ACTIVE_LOCK = threading.Lock()
 
 
-def _register_delegation_proc(did: str, session_id: str, proc) -> None:
+def _register_delegation_proc(
+    did: str, session_id: str, proc, project_slug=None
+) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_DELEGATIONS[did] = {"session_id": session_id, "proc": proc}
+    # pid 落 delegation meta（A5）：runtime 重启后对账凭它识别仍存活的孤儿
+    # CLI 进程（start_new_session 使其不随 sidecar 退出而死）。簿记失败不影响运行。
+    if did:
+        try:
+            from ..session_meta import _session_meta_patch
+
+            _session_meta_patch(
+                project_slug or "default", did, {"pid": getattr(proc, "pid", None)}
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # 并发上限(2026-10-05 事故:一次拉起 20 个并发委托——索引竞态+资源失控):
@@ -333,7 +405,10 @@ def _delegation_header(name: str, m: str, timeout_s: int, result) -> str:
     duration = result.meta.get("duration_ms")
     header = f"[delegate backend={name} mode={m} stop={result.stop_reason}"
     if result.stop_reason == "timeout":
-        header += f" after {timeout_s}s"
+        if (result.meta or {}).get("terminal_reason") == "idle_timeout":
+            header += f" idle {_IDLE_WATCHDOG_S}s"
+        elif timeout_s:
+            header += f" after {timeout_s}s"
     if turns is not None:
         header += f" turns={turns}"
     if duration is not None:
@@ -447,7 +522,9 @@ async def _delegation_bg(
         result = await asyncio.to_thread(
             run_delegation, be, prompt, m, cwd, timeout_s,
             on_line=_on_line,
-            proc_cb=lambda p: _register_delegation_proc(delegation_id, session_id, p),
+            proc_cb=lambda p: _register_delegation_proc(
+                delegation_id, session_id, p, project_slug
+            ),
         )
         _log.info(
             "delegation_bg_done id=%s stop=%s", delegation_id, result.stop_reason
@@ -663,6 +740,9 @@ def build_external_agent_tools(
                 else "no external agent CLI is installed"
             )
             return f"[error] {name} is not installed ({hint})"
+        # 最小版本门（A2）：低于门不硬拦，但结果里明示——老 CLI 的 schema
+        # 漂移是假成功/解析降级的常见根因。
+        ver_warn = cli_version_warning(getattr(be, "cli_name", ""))
         if not (prompt or "").strip():
             return t("[error] prompt must not be empty", "[error] prompt 不能为空")
         m = _forced_delegation_mode() or (mode or "").strip().lower()
@@ -723,9 +803,10 @@ def build_external_agent_tools(
             # 无会话上下文（workflow/脚本）：保持同步一次性语义。
             try:
                 result = run_delegation(be, prompt, m, cwd, timeout_s)
-                return _delegation_result_text(
+                text = _delegation_result_text(
                     name, m, timeout_s, result, delegation_id
                 )
+                return f"{ver_warn}\n{text}" if ver_warn else text
             finally:
                 _unregister_delegation_proc(_slot)
         # 异步化（spawn_subagent 同款待遇）：立即回执，后台执行——同步阻塞
@@ -762,7 +843,7 @@ def build_external_agent_tools(
                     )
                 except Exception:  # noqa: BLE001
                     pass
-        return t(
+        _receipt = t(
             f"[delegate backend={name} mode={m} started timeout={'no-timeout' if timeout_s == 0 else f'{timeout_s}s'}]\n"
             f"delegation={delegation_id}\n"
             "Running in the background — the result is injected into this "
@@ -774,6 +855,7 @@ def build_external_agent_tools(
             "已在后台运行，完成后结果自动注入本会话。不要重做被委托的工作、"
             "也不要等待；现在就结束回合，等 [delegate …] 结果到达后向用户转述。",
         )
+        return f"{ver_warn}\n{_receipt}" if ver_warn else _receipt
 
     # Availability is per machine — surface it in the tool schema so the
     # model picks an installed backend (detected once at build time).

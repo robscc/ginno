@@ -589,9 +589,10 @@ async def _ainvoke_rate_limited(bound, msgs):
             )
             await asyncio.sleep(delay)
 _EMPTY_REPLY_NUDGE = (
-    "[system] Your last reply was empty — it carried reasoning but no visible "
-    "answer and no tool calls. Continue the task: finish the remaining work with "
-    "your tools, then reply with the final answer as normal message text."
+    "[system] Your last reply was degenerate — it carried reasoning but no "
+    "visible answer and no tool calls. Do NOT deliberate further. Either call "
+    "the one tool you need next, or output the final answer as normal message "
+    "text immediately, in at most a few sentences."
 )
 
 
@@ -1130,9 +1131,11 @@ def agent_node_factory(model_getter, all_tools, router=None, tool_selector=None)
         # 落盘(重放一致),只在本次 superstep 的调用输入上追加。
         empty_tail: list = []
         for _ in range(_EMPTY_REPLY_MAX_NUDGES):
-            if (getattr(response, "tool_calls", None) or []) or text_of_content(
-                getattr(response, "content", "")
-            ).strip():
+            # 退化判定:无 tool_calls 且文本为空或 <2 字符——thinking 模型截断
+            # 后除了空 content 还会吐单字符残答("I"),对 benchmark 一样是废答。
+            if (getattr(response, "tool_calls", None) or []) or len(
+                text_of_content(getattr(response, "content", "")).strip()
+            ) >= 2:
                 break
             empty_tail += [response, HumanMessage(content=_EMPTY_REPLY_NUDGE)]
             response = await _ainvoke_rate_limited(bound, [sys_msg] + history + empty_tail)

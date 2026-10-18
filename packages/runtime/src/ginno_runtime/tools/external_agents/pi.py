@@ -64,6 +64,7 @@ class PiBackend:
     """
 
     name = "pi"
+    cli_name = "pi"
 
     def available(self) -> str | None:
         return _resolve_cli("pi")

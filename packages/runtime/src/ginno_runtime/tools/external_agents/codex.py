@@ -25,6 +25,7 @@ class CodexBackend:
     """
 
     name = "codex"
+    cli_name = "codex"
 
     def available(self) -> str | None:
         return _resolve_cli("codex")
@@ -150,6 +151,10 @@ class CodexBackend:
             return DelegationResult(
                 output=output,
                 stop_reason="success",
+                # 降级路径也带 usage——turn.completed 已经解析出来的量不能
+                # 因为答复通道降级就丢（否则账本静默少记，2026-10-18 契约
+                # 测试钉住）。
+                usage=usage,
                 diagnostic="no last-message file; showing stdout tail",
                 meta=meta,
                 transcript=transcript,

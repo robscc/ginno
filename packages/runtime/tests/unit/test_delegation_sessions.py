@@ -2,6 +2,8 @@
 
 conftest 的 isolated_home 已把 GINNO_HOME 指向每测试独立的 tmp_path。
 """
+from types import SimpleNamespace
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ginno_runtime.checkpointer import FileCheckpointer
@@ -152,3 +154,69 @@ def test_prune_skips_pinned_delegation_sessions(monkeypatch):
     assert "d0" in kept  # 置顶豁免：不被清掉
     # 未置顶的按上限只留最近 3 条（d4/d3/d2），置顶行不占额度
     assert kept == {"d0", "d4", "d3", "d2"}
+
+
+# ---- 孤儿对账（A5，2026-10-18）：重启后 running 条目改判 + 中断注记 ----
+
+def test_reconcile_patches_meta_and_appends_note():
+    from ginno_runtime.delegation_sessions import (
+        create_delegation,
+        reconcile_running_delegations,
+    )
+    from ginno_runtime.session_meta import _session_meta_list
+
+    sid = create_delegation(
+        parent_session_id=None, project_slug="default", backend="claude-code",
+        mode="read-only", prompt="long task", workspace="/tmp",
+    )
+    entry = next(m for m in _session_meta_list("default") if m["id"] == sid)
+    assert entry["stop_reason"] == "running"
+
+    assert reconcile_running_delegations() == 1
+    entry = next(m for m in _session_meta_list("default") if m["id"] == sid)
+    assert entry["stop_reason"] == "error"
+    # 转录末尾带中断注记——回放页不再是莫名的 error 终态
+    msgs = (FileCheckpointer("default").get_tuple(
+        {"configurable": {"thread_id": sid}}).checkpoint.get("channel_values") or {}
+    ).get("messages") or []
+    assert any(
+        isinstance(m, AIMessage) and "Ginno restarted" in (m.content or "")
+        for m in msgs
+    )
+    # 已终态的不重复处理
+    assert reconcile_running_delegations() == 0
+
+
+def test_reap_orphan_cli_identity_gate(monkeypatch):
+    from ginno_runtime import delegation_sessions as ds
+
+    # pid 已死 → 无说明
+    monkeypatch.setattr(ds, "_pid_comm", lambda pid: "")
+    assert ds._reap_orphan_cli(4242, "claude-code") == ""
+
+    # 身份相符（comm 含 CLI 名）→ 击杀
+    killed = []
+
+    def _fake_killpg(pgid, sig):
+        killed.append(pgid)
+
+    monkeypatch.setattr(ds, "_pid_comm", lambda pid: "claude")
+    monkeypatch.setattr(ds.os, "killpg", _fake_killpg)
+    note = ds._reap_orphan_cli(4242, "claude-code")
+    assert "terminated" in note and killed == [4242]
+
+    # pid 被复用（身份不符）→ 绝不碰，只注明
+    killed.clear()
+    monkeypatch.setattr(ds, "_pid_comm", lambda pid: "Discord")
+    note = ds._reap_orphan_cli(4242, "claude-code")
+    assert "left untouched" in note and killed == []
+
+
+def test_register_delegation_persists_pid():
+    from ginno_runtime.tools.external_agent import _register_delegation_proc
+
+    _register_delegation_proc(
+        "did-1", "parent-1", SimpleNamespace(pid=777), project_slug="default"
+    )
+    # 无对应 delegation meta 时静默不抛（簿记绝不影响运行）
+    _register_delegation_proc("", "parent-1", SimpleNamespace(pid=778))

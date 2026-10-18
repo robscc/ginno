@@ -66,9 +66,17 @@ def _stub_cli(monkeypatch, path):
     """CLI 桩：直接写 base._CLI_CACHE。adapter 拆分后各 backend 在导入期
     绑定了 _resolve_cli 引用，patch 模块属性够不到它们；cache 是共享
     dict（运行期读），一处注入对全部 adapter 生效。autouse 的
-    _cli_cache_clean 负责清理。"""
+    _cli_cache_clean 负责清理。
+
+    版本缓存一并预填（版本=各后端最小版本门）——cli_version 否则会真起
+    ``--version`` 子进程，被本文件 monkeypatch 的 Popen 截胡后污染
+    fake_popen 的 created[0]（2026-10-18 A2 引入探针后实测）。"""
     for _name in ("claude", "codex", "pi"):
         _xa_base._CLI_CACHE[_name] = path
+        _xa_base._CLI_VERSION_CACHE[_name] = (
+            path,
+            _xa_base._MIN_CLI_VERSIONS.get(_name),
+        )
 
 
 @pytest.fixture
@@ -135,16 +143,17 @@ def test_claude_argv_read_only(monkeypatch):
     assert argv[1] == "-p"
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in argv
-    ro_settings = next(a for a in argv if a.startswith("--settings="))
-    assert '"Bash"' in ro_settings and '"Edit"' in ro_settings  # BOTH modes — no shell（--restricted 已被 claude 2.x 移除）
-    assert not any(a.startswith("--permission-mode") for a in argv)
+    # 2026-10-05 用户决策：完整工具表 + --dangerously-skip-permissions
+    # （headless 无人应答权限提示），permissions.deny/--settings 已移除。
+    assert "--dangerously-skip-permissions" in argv
+    assert not any(a.startswith("--settings=") for a in argv)
     assert argv[-1] == "do it"
 
 
 def test_claude_argv_edit(monkeypatch):
     _stub_cli(monkeypatch, "/opt/claude")
     argv = ClaudeCodeBackend().build_argv("do it", "edit", "/ws", None)
-    assert '"Bash"' in next(a for a in argv if a.startswith("--settings="))
+    assert "--dangerously-skip-permissions" in argv
     assert "--permission-mode=acceptEdits" in argv
     assert "plan" not in argv
 
@@ -422,7 +431,8 @@ def test_resolve_cli_prefers_shutil_which(monkeypatch):
 
 
 def test_resolve_cli_falls_back_to_login_shell(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda n: None)
+    # which 桩须吃下第二次调用的 path= kwarg（2026-10-06 的显式目录补充）
+    monkeypatch.setattr(shutil, "which", lambda n, path=None: None)
     monkeypatch.setenv("SHELL", "/bin/zsh")
     seen = {}
 
@@ -437,7 +447,7 @@ def test_resolve_cli_falls_back_to_login_shell(monkeypatch):
 
 
 def test_resolve_cli_nowhere(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda n: None)
+    monkeypatch.setattr(shutil, "which", lambda n, path=None: None)
     monkeypatch.setattr(
         subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout="")
     )
@@ -472,3 +482,172 @@ def test_run_delegation_streaming_on_line(monkeypatch):
     )
     assert res.stop_reason == "success" and res.output == "ok"
     assert seen and seen[0].startswith("{")  # 逐行收到
+
+
+# --------------------------------------------------------------------------- #
+# A2（2026-10-18）：ENOENT 缓存自愈 + 版本探针/最小版本门
+# --------------------------------------------------------------------------- #
+def test_run_delegation_enoent_self_heals(monkeypatch):
+    """pinned 路径消失（ENOENT）→ 踢缓存重解析；新路径进入重试的 argv。"""
+    calls = {"n": 0, "invalidated": []}
+
+    class _P:
+        def __init__(self, argv, **kw):
+            calls["n"] += 1
+            calls["argv"] = list(argv)
+            if calls["n"] == 1:
+                raise FileNotFoundError(2, "No such file", argv[0])
+            self.pid = 4242
+            self.returncode = 0
+            self.stdout = None
+            self.stderr = None
+
+        def communicate(self, timeout=None):
+            return CLAUDE_OK, ""
+
+    monkeypatch.setattr(subprocess, "Popen", _P)
+    _stub_cli(monkeypatch, "/gone/claude")
+    monkeypatch.setattr(
+        external_agent, "invalidate_cli",
+        lambda name: calls["invalidated"].append(name) or _xa_base._CLI_CACHE.update({"claude": "/new/claude"}),
+    )
+    res = run_delegation(ClaudeCodeBackend(), "p", "read-only", "/ws", 30)
+    assert res.stop_reason == "success"
+    assert calls["n"] == 2
+    assert calls["invalidated"] == ["claude"]
+    assert calls["argv"][0] == "/new/claude"  # 重拼 argv 用了新路径
+
+
+def test_run_delegation_enoent_twice_is_error(monkeypatch):
+    """重解析后仍 ENOENT → 报错退出，不无限重试。"""
+
+    class _P:
+        def __init__(self, argv, **kw):
+            raise FileNotFoundError(2, "No such file", argv[0])
+
+    monkeypatch.setattr(subprocess, "Popen", _P)
+    _stub_cli(monkeypatch, "/gone/claude")
+    monkeypatch.setattr(external_agent, "invalidate_cli", lambda name: None)
+    res = run_delegation(ClaudeCodeBackend(), "p", "read-only", "/ws", 30)
+    assert res.stop_reason == "error" and "cannot launch" in res.diagnostic
+
+
+def test_cli_version_parse_and_cache(monkeypatch):
+    calls = []
+
+    def _fake_run(*a, **kw):
+        calls.append(a)
+        return SimpleNamespace(returncode=0, stdout="2.1.229 (Claude Code)", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    _stub_cli(monkeypatch, "/opt/claude")
+    # _stub_cli 预填了版本缓存（防探针截胡 fake_popen）——本测试要测探针
+    # 本身,先踢掉 claude 的版本条目。
+    _xa_base._CLI_VERSION_CACHE.pop("claude", None)
+    v = _xa_base.cli_version("claude")
+    assert v == (2, 1, 229)
+    assert calls  # 探针确实跑了一次 --version
+    # 缓存：同路径第二次不再起进程
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should be cached")),
+    )
+    assert _xa_base.cli_version("claude") == (2, 1, 229)
+
+
+def test_cli_version_warning_gate(monkeypatch):
+    _stub_cli(monkeypatch, "/opt/claude")
+    monkeypatch.setattr(_xa_base, "_CLI_VERSION_CACHE", {"claude": ("/opt/claude", (1, 9, 9))})
+    w = _xa_base.cli_version_warning("claude")
+    assert "v1.9.9" in w and "below the recommended minimum v2.0.0" in w
+    # 达标 / 无门 / 解析不出 → 无告警
+    monkeypatch.setattr(_xa_base, "_CLI_VERSION_CACHE", {"claude": ("/opt/claude", (2, 0, 0))})
+    assert _xa_base.cli_version_warning("claude") == ""
+    monkeypatch.setattr(_xa_base, "_CLI_VERSION_CACHE", {"pi": ("/opt/pi", None)})
+    assert _xa_base.cli_version_warning("pi") == ""
+
+
+def test_delegate_tool_surfaces_version_warning(monkeypatch, delegate):
+    _stub_cli(monkeypatch, "/opt/claude")
+    monkeypatch.setattr(
+        external_agent, "cli_version_warning",
+        lambda name: "[warning] too old" if name == "claude" else "",
+    )
+    fake_popen(monkeypatch, stdout=CLAUDE_OK)
+    out = delegate.invoke({"backend": "claude-code", "prompt": "p"})
+    assert out.startswith("[warning] too old\n")
+    assert "all done" in out
+
+
+# --------------------------------------------------------------------------- #
+# A3（2026-10-18）：timeout=0 的空闲看门狗
+# --------------------------------------------------------------------------- #
+def test_idle_watchdog_kills_silent_child(monkeypatch):
+    """timeout=0 时失声超过 idle 阈值 → 杀整树 + stop=timeout(idle)。"""
+    import io as _io
+    import threading as _th
+
+    hang = _th.Event()
+    signals = []
+
+    def _gen():
+        yield '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}\n'
+        hang.wait(10)  # 模拟失声挂死
+
+    class _HangP:
+        def __init__(self, argv, **kw):
+            self.pid = 4242
+            self.returncode = 0
+            self.stdout = _gen()
+            self.stderr = _io.StringIO("")
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", _HangP)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: signals.append((pgid, sig)))
+    monkeypatch.setattr(external_agent, "_IDLE_WATCHDOG_S", 1)
+    _stub_cli(monkeypatch, "/opt/claude")
+    res = run_delegation(ClaudeCodeBackend(), "p", "read-only", "/ws", 0)
+    hang.set()
+    assert res.stop_reason == "timeout"
+    assert res.meta["terminal_reason"] == "idle_timeout"
+    assert "idle" in res.diagnostic
+    assert signals and signals[0] == (4242, signal.SIGTERM)
+
+
+def test_wall_timeout_still_applies_when_nonzero(monkeypatch):
+    """timeout>0 时墙钟照旧（不因 idle 看门狗而弱化）。"""
+    import io as _io
+    import threading as _th
+
+    hang = _th.Event()
+
+    def _gen():
+        # 真·生成器：迭代即阻塞（无 yield 会退化成普通函数,stdout=None
+        # 落回 communicate 路径,测不到流式监督）。
+        yield from ()
+        hang.wait(10)
+
+    class _HangP:
+        def __init__(self, argv, **kw):
+            self.pid = 4242
+            self.returncode = 0
+            self.stdout = _gen()
+            self.stderr = _io.StringIO("")
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(subprocess, "Popen", _HangP)
+    _stub_cli(monkeypatch, "/opt/claude")
+    res = run_delegation(ClaudeCodeBackend(), "p", "read-only", "/ws", 1)
+    hang.set()
+    assert res.stop_reason == "timeout"
+    assert res.meta["terminal_reason"] == "wall_timeout"

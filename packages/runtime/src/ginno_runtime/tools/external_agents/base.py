@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -22,6 +23,14 @@ DELEGATE_TOOL_NAME = "delegate_agent"
 _TIMEOUT_MIN_S = 10
 _TIMEOUT_MAX_S = 1800
 _TIMEOUT_DEFAULT_S = 1800  # 2026-10-05：600→1800（用户要求）；0=永不超时
+
+# 最小版本门（Multica MinVersions 同思想）：低于门不硬拦，但在工具结果里
+# 明示「请升级」——老 CLI 的事件流 schema 漂移是解析器假成功的常见根因。
+# pi 无已知下限，不设门。
+_MIN_CLI_VERSIONS: dict[str, tuple[int, int, int]] = {
+    "claude": (2, 0, 0),
+    "codex": (0, 100, 0),
+}
 
 _DIAGNOSTIC_CAP = 2000
 
@@ -51,6 +60,9 @@ class ExternalBackend(Protocol):
     """A provider of external coding agents (one per CLI)."""
 
     name: str
+    # 二进制名（与 name 可能不同：claude-code → claude）——ENOENT 自愈与
+    # 版本探针按它踢缓存/探版本。
+    cli_name: str
 
     def available(self) -> str | None:
         """Absolute path of the CLI, or None when not installed."""
@@ -126,6 +138,66 @@ def _resolve_cli(name: str) -> str | None:
 def clear_cli_cache() -> None:
     """Drop the resolution cache (tests switch PATH between cases)."""
     _CLI_CACHE.clear()
+    _CLI_VERSION_CACHE.clear()
+
+
+def invalidate_cli(name: str) -> None:
+    """Drop ONE cli's cached path (and version) — ENOENT self-heal: a pinned
+    path can vanish mid-run (nvm in-place upgrade); the next resolve() then
+    re-walks PATH / login shell instead of failing forever until restart."""
+    _CLI_CACHE.pop(name, None)
+    _CLI_VERSION_CACHE.pop(name, None)
+
+
+# --------------------------------------------------------------------------- #
+# CLI version probe + minimum-version gate
+# --------------------------------------------------------------------------- #
+
+# path → (path, parsed tuple | None)：路径没变就复用解析结果（探一次
+# --version 要起一个进程，委托调用频率下不做每次现探）。
+_CLI_VERSION_CACHE: dict[str, tuple[str | None, tuple[int, int, int] | None]] = {}
+_SEMVER_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def cli_version(name: str) -> tuple[int, int, int] | None:
+    """``<cli> --version`` → (major, minor, patch)；解析不出返回 None。
+
+    10s 超时；stdout/stderr 都搜（有的 CLI 版本走 stderr）。缓存键是解析
+    路径——升级后路径变化自动失效，原地替换二进制则由 invalidate_cli 在
+    ENOENT 时踢掉。"""
+    cli = _resolve_cli(name)
+    if not cli:
+        return None
+    cached = _CLI_VERSION_CACHE.get(name)
+    if cached and cached[0] == cli:
+        return cached[1]
+    v: tuple[int, int, int] | None = None
+    try:
+        r = subprocess.run(
+            [cli, "--version"], capture_output=True, text=True, timeout=10
+        )
+        m = _SEMVER_RE.search((r.stdout or "") + "\n" + (r.stderr or ""))
+        if m:
+            v = (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+    except Exception:  # noqa: BLE001 — 版本探针绝不影响委托
+        v = None
+    _CLI_VERSION_CACHE[name] = (cli, v)
+    return v
+
+
+def cli_version_warning(name: str) -> str:
+    """低于最小版本门时的明示文案；无门 / 版本达标 / 解析不出 → ""。"""
+    minimum = _MIN_CLI_VERSIONS.get(name)
+    if not minimum:
+        return ""
+    v = cli_version(name)
+    if v is None or v >= minimum:
+        return ""
+    return (
+        f"[warning] {name} CLI v{v[0]}.{v[1]}.{v[2]} is below the recommended "
+        f"minimum v{minimum[0]}.{minimum[1]}.{minimum[2]} — upgrade the CLI; "
+        "older versions may misbehave or produce unparsable output"
+    )
 
 
 # --------------------------------------------------------------------------- #

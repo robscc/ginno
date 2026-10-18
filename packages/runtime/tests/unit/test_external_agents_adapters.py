@@ -94,17 +94,18 @@ def test_argv_matrices():
     ro = PiBackend().build_argv("P", "read-only", "/w", None)
     assert ro[ro.index("--tools") + 1] == "read,grep,find,ls"  # 无 bash/edit/write
     ed = PiBackend().build_argv("P", "edit", "/w", None)
-    assert ed[ed.index("--tools") + 1] == "read,edit,write,grep,find,ls"  # 仍无 bash
+    # 2026-10-05 用户决策：edit 不传 --tools，走 pi 默认全部内置工具（含 bash）
+    assert "--tools" not in ed
     assert "--no-session" in ro and "--no-extensions" in ro and "--mode" in ro
 
     c = ClaudeCodeBackend().build_argv("P", "read-only", "/w", None)
     assert "stream-json" in c and "--verbose" in c
-    ro_settings = next(a for a in c if a.startswith("--settings="))
-    assert '"Bash"' in ro_settings and '"Edit"' in ro_settings and '"Write"' in ro_settings
-    assert not any(a.startswith("--permission-mode") for a in c)  # plan 模式会饿死工具
+    # 2026-10-05 用户决策：完整工具表 + --dangerously-skip-permissions，
+    # permissions.deny/--settings 已移除（headless 无人应答权限提示）。
+    assert "--dangerously-skip-permissions" in c
+    assert not any(a.startswith("--settings=") for a in c)
     c2 = ClaudeCodeBackend().build_argv("P", "edit", "/w", None)
-    ed_settings = next(a for a in c2 if a.startswith("--settings="))
-    assert '"Bash"' in ed_settings and '"Edit"' not in ed_settings  # edit 放开写、仍无 shell
+    assert "--dangerously-skip-permissions" in c2
     assert "--permission-mode=acceptEdits" in c2
 
     x = CodexBackend().build_argv("P", "read-only", "/w", "/tmp/out.txt")
@@ -126,6 +127,66 @@ def test_claude_result_is_error_and_rc_nonzero():
     assert r.stop_reason == "error" and r.output == "partial" and r.usage
     r2 = ClaudeCodeBackend().parse_result(evs, "crash", 3, None)
     assert r2.stop_reason == "error" and "rc=3" in r2.diagnostic
+
+
+# ---- fail-closed 终态判定（A1，2026-10-18）：无 result 事件 ≠ 成功 ----
+
+def _truncated_stream(last_text: str) -> str:
+    """有 assistant 文本但流戛然而止（无 result 事件）的形态。"""
+    return "\n".join([
+        '{"type":"system","subtype":"init","session_id":"c1","model":"claude-x"}',
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}',
+        json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": last_text}]},
+        }),
+    ])
+
+
+def test_claude_truncated_stream_salvages_with_note():
+    r = ClaudeCodeBackend().parse_result(_truncated_stream("almost done"), "", 0, None)
+    assert r.stop_reason == "success" and r.output == "working\nalmost done"
+    assert r.meta["terminal_reason"] == "stream_truncated"
+    assert "without a result event" in r.diagnostic  # [note] 通道带出
+
+
+def test_claude_truncated_context_exhausted_is_error():
+    r = ClaudeCodeBackend().parse_result(
+        _truncated_stream("prompt is too long: 250000 tokens > 200000"), "", 0, None
+    )
+    assert r.stop_reason == "error"
+    assert r.meta["terminal_reason"] == "context_exhausted"
+    assert "context exhausted" in r.diagnostic
+
+    r2 = ClaudeCodeBackend().parse_result(
+        _truncated_stream("the context window limit was reached mid-task"), "boom", 1, None
+    )
+    assert r2.stop_reason == "error" and r2.meta["terminal_reason"] == "context_exhausted"
+
+    # stderr 里的指纹也算（CLI 级报错不一定进 assistant 文本）
+    r3 = ClaudeCodeBackend().parse_result(
+        _truncated_stream("continuing"), "request too large: 413", 1, None
+    )
+    assert r3.stop_reason == "error" and r3.meta["terminal_reason"] == "context_exhausted"
+
+
+def test_claude_truncated_without_text_is_error():
+    # 全是 tool_use 中途断掉：无可抢救，报 error 而非空成功
+    evs = "\n".join([
+        '{"type":"system","subtype":"init","session_id":"c1"}',
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"u1","name":"Read","input":{}}]}}',
+    ])
+    r = ClaudeCodeBackend().parse_result(evs, "killed", 0, None)
+    assert r.stop_reason == "error"
+    assert r.meta["terminal_reason"] == "stream_truncated"
+    assert "without any assistant text" in r.diagnostic
+
+
+def test_claude_normal_result_not_flagged():
+    # 正常收尾流里模型讨论到上下文措辞不算（指纹只作用于 result 缺席）
+    evs = CLAUDE_STREAM.replace('"result":"ok"', '"result":"the context window is fine"')
+    r = ClaudeCodeBackend().parse_result(evs, "", 0, None)
+    assert r.stop_reason == "success" and "terminal_reason" not in r.meta
 
 
 def test_unicode_and_multiline_survive():

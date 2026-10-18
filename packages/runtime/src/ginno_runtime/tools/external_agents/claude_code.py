@@ -5,6 +5,8 @@ stream-json 事件流（system/assistant/user/result）→ IR；解析不出事�
 """
 from __future__ import annotations
 
+import re
+
 from .base import (
     DelegationResult,
     _claude_usage,
@@ -13,6 +15,22 @@ from .base import (
     _parse_json_lenient,
     _tail,
     _tool_result_text,
+)
+
+# 流戛然而止（无 result 事件）时的上下文溢出指纹：命中 ⇒ 判 error 而非兜底
+# 成功——父模型拿半截回答还以为任务完成是委托最危险的假成功形态（借鉴
+# Multica context_exhausted：结构化 terminal_reason 优先，措辞指纹兜底）。
+# 只在 result 事件缺席时应用——正常收尾流里模型讨论到这些词不算。
+_CONTEXT_EXHAUSTED_RE = re.compile(
+    r"prompt is too long"
+    r"|prompt: \d+(?:\.\d+)?[km]? ?tokens? > \d+"
+    r"|(?:context|conversation).{0,40}(?:limit|window).{0,30}(?:exceed|full|overflow|reached)"
+    r"|exceeds?.{0,30}(?:maximum )?context"
+    r"|too many (?:input )?tokens"
+    r"|request.?too.?large"
+    r"|(?:input|context).{0,10}length.{0,20}exceed"
+    r"|(?:context|conversation).{0,30}exhaust",
+    re.IGNORECASE,
 )
 
 
@@ -30,6 +48,7 @@ class ClaudeCodeBackend:
     """
 
     name = "claude-code"
+    cli_name = "claude"
 
     def available(self) -> str | None:
         return _resolve_cli("claude")
@@ -119,6 +138,49 @@ class ClaudeCodeBackend:
                 final = ev
         if final is None and not transcript:
             return _parse_claude_legacy_json(stdout, stderr, rc)
+        if final is None and transcript:
+            # fail-closed 终态分类（Multica stream_json_result 同思想）：没有
+            # 显式 result 事件就不算完整成功。先查上下文溢出指纹——必须报
+            # error + terminal_reason，供将来的 resume 层决策；其余情况保留
+            # assistant 文本兜底，但带 [note] 显式标注这是截断抢救件。
+            probe = "\n".join(texts[-2:]) + "\n" + (stderr or "")
+            hit = _CONTEXT_EXHAUSTED_RE.search(probe)
+            if hit:
+                return DelegationResult(
+                    output="\n".join(texts),
+                    stop_reason="error",
+                    diagnostic=_tail(
+                        "context exhausted (stream ended without result "
+                        f"event; matched {hit.group(0)!r}); stderr: {stderr}"
+                    ),
+                    meta={**meta, "terminal_reason": "context_exhausted"},
+                    transcript=transcript,
+                )
+            salvage_note = (
+                "stream ended without a result event — output salvaged from "
+                "the last assistant text; the run may be incomplete"
+            )
+            output = "\n".join(texts) if texts else ""
+            if not output:
+                # 截断且连文本都没有（全是 tool_use 中途断掉）：无可抢救，
+                # 按失败报，别返回空成功。
+                return DelegationResult(
+                    stop_reason="error",
+                    diagnostic=_tail(
+                        "stream ended without result event and without any "
+                        f"assistant text; stderr: {stderr}"
+                    )
+                    or "truncated without output",
+                    meta={**meta, "terminal_reason": "stream_truncated"},
+                    transcript=transcript,
+                )
+            return DelegationResult(
+                output=output,
+                stop_reason="success",
+                diagnostic=salvage_note,
+                meta={**meta, "terminal_reason": "stream_truncated"},
+                transcript=transcript,
+            )
         output = ""
         usage: dict = {}
         is_error = rc != 0
@@ -135,9 +197,6 @@ class ClaudeCodeBackend:
                     or final.get("total_cost_usd"),
                 }
             )
-        if not output and texts:
-            # 流被截断（无 result 事件）——拼接 assistant 文本兜底。
-            output = "\n".join(texts)
         if is_error:
             return DelegationResult(
                 output=output,
