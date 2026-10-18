@@ -27,6 +27,7 @@ import { setKeepAwake } from "@/lib/desktop";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { relTime } from "@/lib/utils";
+import { hiddenSessionIds } from "@/lib/sessionVisibility";
 import { AgentIcon } from "@/components/icons";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { applyTheme } from "@/components/settings/GeneralSettings";
@@ -409,16 +410,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // subagent 树（subagent-design.md §6.1）：先按活动日分主行，再把子会话
   // （type==="subagent"）按 parent_session_id 挂到父行下嵌套渲染。子会话不进
   // 天分组——它的活动不应顶起父会话的排序（设计文档开放问题 2 的 UI 侧答案）。
+  // 影子/团队空间会话与其整条子树一并隐藏（sessionVisibility）：定时任务拉起
+  // 的 subagent 父行是隐藏的影子会话，若走下面孤儿回退会漏进主侧栏。
+  const hiddenIds = hiddenSessionIds(g.sessions);
   const visibleSessions = g.sessions.filter(
     (s) =>
-      // 影子会话整类隐藏（scheduled-tasks-design §3.6/§10 决议 5）：不进列表
-      // 也不进搜索，只能从 /scheduled 的执行记录/时间条进入回放。
-      s.type !== "scheduled" &&
-      // AgentTeam 完全隔离（P2 产品重构 2026-10-13）：团队主会话（type=team）
-      // 与成员会话（type=team-member）只活在 /team 空间——主侧栏是「我的
-      // 对话」，混入会造成双入口不一致（主界面裸 ChatStream vs /team 完整形态）。
-      s.type !== "team" &&
-      s.type !== "team-member" &&
+      !hiddenIds.has(s.id) &&
       (!agentFilter || s.agent_id === agentFilter),
   );
   // 父 id → 直属子会话（按创建时间倒序——最新的在最上，与主列表

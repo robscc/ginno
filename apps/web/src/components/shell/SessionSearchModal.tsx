@@ -8,6 +8,7 @@ import { relTime } from "@/lib/utils";
 import { agentHex } from "@/lib/theme";
 import { AgentIcon } from "@/components/icons";
 import type { SessionMeta } from "@/lib/types";
+import { hiddenSessionIds } from "@/lib/sessionVisibility";
 
 /** ⌘K session search: title ∪ agent-name substring filter over sessions
  *  sorted by last activity; ↑↓/Enter/click opens the session
@@ -26,9 +27,11 @@ export function SessionSearchModal({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const results = useMemo(() => {
-    // 影子会话整类不进搜索（scheduled-tasks-design §3.6/§10 决议 5）。
+    // 影子/团队空间会话整类不进搜索（scheduled-tasks-design §3.6/§10 决议 5），
+    // 其子树（定时任务拉起的 subagent 等）随父级一并排除（sessionVisibility）。
+    const hidden = hiddenSessionIds(g.sessions);
     const sorted = [...g.sessions]
-      .filter((s) => s.type !== "scheduled" && s.type !== "team" && s.type !== "team-member")
+      .filter((s) => !hidden.has(s.id))
       .sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
     const needle = q.trim().toLowerCase();
     if (!needle) return sorted;
