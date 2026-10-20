@@ -355,7 +355,10 @@ export function WidgetBlock({ kind, data }: { kind: string; data: unknown }) {
   return (
     <div className="my-2 rounded-lg border border-line bg-base/50 p-3">
       <div className="mb-1 text-xs font-medium text-violet">{tc("widget.label", { kind })}</div>
-      <pre className="whitespace-pre-wrap text-xs text-muted">{JSON.stringify(data, null, 2)}</pre>
+      {/* break-words: whitespace-pre-wrap only breaks at spaces — a long
+          unbreakable JSON token (base64, URL) would otherwise overflow the
+          widget box, same failure mode as the markdown bubble (2026-10-14). */}
+      <pre className="whitespace-pre-wrap break-words text-xs text-muted">{JSON.stringify(data, null, 2)}</pre>
     </div>
   );
 }

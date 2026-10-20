@@ -3,6 +3,7 @@
 import {
   Children,
   isValidElement,
+  memo,
   useState,
   type ReactElement,
   type ReactNode,
@@ -53,7 +54,10 @@ function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {
           {copied ? t("markdown.copied") : t("markdown.copy")}
         </button>
       </div>
-      <pre className="overflow-x-auto bg-[rgb(var(--code-bg))] p-3 text-xs leading-relaxed">
+      {/* overflow-wrap:normal cancels the break-words inherited from the
+          Markdown wrapper (see below): fenced code must scroll horizontally,
+          never wrap mid-token. */}
+      <pre className="overflow-x-auto bg-[rgb(var(--code-bg))] p-3 text-xs leading-relaxed [overflow-wrap:normal]">
         <code className={`hljs${lang ? ` language-${lang}` : ""}`}>{children}</code>
       </pre>
     </div>
@@ -68,7 +72,11 @@ function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {
  * globals.css so it follows the light/dark theme). Task lists render as
  * checkbox rows, visually distinct from plain bullet/numbered lists.
  */
-export function Markdown({
+// memo: markdown 解析 + highlight.js 是 transcript 里最贵的渲染（14KB 报告单条
+// 数 ms）。composer 每敲一个键 ChatStream 都会整体重渲染，没有 memo 时全部历史
+// 消息的 Markdown 每个键重跑一遍（实测 27ms/键）。text 不变即跳过；chat 路径
+// onWikilink 恒为 undefined，浅比较成立。
+export const Markdown = memo(function Markdown({
   text,
   onWikilink,
 }: {
@@ -83,157 +91,168 @@ export function Markdown({
       })
     : text;
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
-      components={{
-        pre({ children }) {
-          // Fenced code: consume the inner <code> element, keep its highlighted
-          // children, and wrap in a labeled/copyable chrome.
-          const el = Children.toArray(children).find(isValidElement) as
-            | ReactElement<{ className?: string; children?: ReactNode }>
-            | undefined;
-          const lang = /language-([\w+-]+)/.exec(el?.props?.className || "")?.[1];
-          return <CodeBlock lang={lang}>{el?.props?.children}</CodeBlock>;
-        },
-        code({ children }) {
-          // Inline code only — block code is handled by the pre override above.
-          return (
-            <code className="break-all rounded border border-line bg-card2/70 px-1 py-0.5 font-mono text-[0.85em] text-[rgb(var(--inline-code))]">
-              {children}
-            </code>
-          );
-        },
-        p({ children }) {
-          return <p className="my-2 leading-relaxed first:mt-0 last:mb-0">{children}</p>;
-        },
-        a({ href, children }) {
-          if (onWikilink && href && href.startsWith("#wl:")) {
-            const target = decodeURIComponent(href.slice(4));
+    /* break-words (overflow-wrap: break-word) is inherited, so one class on
+       this wrapper covers every prose node (p/li/td/blockquote/a/headings).
+       Without it a long unbreakable token — slash-joined identifiers like
+       （JobA/JobB/JobC）, bare paths, URLs — cannot wrap, overflows the chat
+       bubble, and drags a horizontal scrollbar across the whole transcript
+       (2026-10-14: turn 435558959885220985: one token laid out 1025px wide
+       against a 735px column -> transcript scrollWidth 1066 vs 783).
+       The CodeBlock <pre> re-asserts overflow-wrap:normal so fenced code
+       keeps scrolling horizontally instead of wrapping mid-token. */
+    <div className="break-words">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={{
+          pre({ children }) {
+            // Fenced code: consume the inner <code> element, keep its highlighted
+            // children, and wrap in a labeled/copyable chrome.
+            const el = Children.toArray(children).find(isValidElement) as
+              | ReactElement<{ className?: string; children?: ReactNode }>
+              | undefined;
+            const lang = /language-([\w+-]+)/.exec(el?.props?.className || "")?.[1];
+            return <CodeBlock lang={lang}>{el?.props?.children}</CodeBlock>;
+          },
+          code({ children }) {
+            // Inline code only — block code is handled by the pre override above.
             return (
-              <button
-                type="button"
-                onClick={() => onWikilink(target)}
-                title={t("markdown.openLink", { target })}
-                className="rounded bg-violet/15 px-1 py-0.5 text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:bg-violet/25 hover:decoration-violet"
+              <code className="break-all rounded border border-line bg-card2/70 px-1 py-0.5 font-mono text-[0.85em] text-[rgb(var(--inline-code))]">
+                {children}
+              </code>
+            );
+          },
+          p({ children }) {
+            return <p className="my-2 leading-relaxed first:mt-0 last:mb-0">{children}</p>;
+          },
+          a({ href, children }) {
+            if (onWikilink && href && href.startsWith("#wl:")) {
+              const target = decodeURIComponent(href.slice(4));
+              return (
+                <button
+                  type="button"
+                  onClick={() => onWikilink(target)}
+                  title={t("markdown.openLink", { target })}
+                  className="rounded bg-violet/15 px-1 py-0.5 text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:bg-violet/25 hover:decoration-violet"
+                >
+                  {children}
+                </button>
+              );
+            }
+            return (
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => {
+                  // WKWebView ignores target=_blank — hand http(s) links to the
+                  // sidecar, which opens the OS default browser (same route the
+                  // SourcesBlock citations use). Non-http schemes (mailto: …)
+                  // keep the default anchor behavior.
+                  if (href && /^https?:\/\//i.test(href)) {
+                    e.preventDefault();
+                    openLinkExternal(href);
+                  }
+                }}
+                className="text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:decoration-violet"
               >
                 {children}
-              </button>
+              </a>
             );
-          }
-          return (
-            <a
-              href={href}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => {
-                // WKWebView ignores target=_blank — hand http(s) links to the
-                // sidecar, which opens the OS default browser (same route the
-                // SourcesBlock citations use). Non-http schemes (mailto: …)
-                // keep the default anchor behavior.
-                if (href && /^https?:\/\//i.test(href)) {
-                  e.preventDefault();
-                  openLinkExternal(href);
-                }
-              }}
-              className="text-violet underline decoration-violet/40 underline-offset-2 transition-colors hover:decoration-violet"
-            >
-              {children}
-            </a>
-          );
-        },
-        ul({ className, children }) {
-          if (className?.includes("contains-task-list")) {
-            return <ul className="my-2 space-y-1.5">{children}</ul>;
-          }
-          return <ul className="my-2 list-disc space-y-1 pl-5 marker:text-faint">{children}</ul>;
-        },
-        ol({ children }) {
-          return <ol className="my-2 list-decimal space-y-1 pl-5 marker:text-faint">{children}</ol>;
-        },
-        li({ className, children }) {
-          if (className?.includes("task-list-item")) {
-            // GFM task item: first child is a disabled checkbox input.
-            const kids = Children.toArray(children);
-            const box = kids.find(
-              (k) => isValidElement(k) && (k.props as { type?: string }).type === "checkbox",
-            ) as ReactElement<{ checked?: boolean }> | undefined;
-            const checked = !!box?.props?.checked;
-            const rest = kids.filter((k) => k !== box);
+          },
+          ul({ className, children }) {
+            if (className?.includes("contains-task-list")) {
+              return <ul className="my-2 space-y-1.5">{children}</ul>;
+            }
+            return <ul className="my-2 list-disc space-y-1 pl-5 marker:text-faint">{children}</ul>;
+          },
+          ol({ children }) {
+            return <ol className="my-2 list-decimal space-y-1 pl-5 marker:text-faint">{children}</ol>;
+          },
+          li({ className, children }) {
+            if (className?.includes("task-list-item")) {
+              // GFM task item: first child is a disabled checkbox input.
+              const kids = Children.toArray(children);
+              const box = kids.find(
+                (k) => isValidElement(k) && (k.props as { type?: string }).type === "checkbox",
+              ) as ReactElement<{ checked?: boolean }> | undefined;
+              const checked = !!box?.props?.checked;
+              const rest = kids.filter((k) => k !== box);
+              return (
+                <li className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    readOnly
+                    className="mt-[3px] h-3.5 w-3.5 shrink-0 cursor-default rounded accent-violet"
+                  />
+                  <span className={checked ? "leading-relaxed text-muted line-through" : "leading-relaxed"}>
+                    {rest}
+                  </span>
+                </li>
+              );
+            }
+            return <li className="leading-relaxed">{children}</li>;
+          },
+          table({ children }) {
             return (
-              <li className="flex items-start gap-2">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  readOnly
-                  className="mt-[3px] h-3.5 w-3.5 shrink-0 cursor-default rounded accent-violet"
-                />
-                <span className={checked ? "leading-relaxed text-muted line-through" : "leading-relaxed"}>
-                  {rest}
-                </span>
-              </li>
+              <div className="my-3 overflow-x-auto rounded-lg border border-line">
+                <table className="w-full border-collapse text-[13px]">{children}</table>
+              </div>
             );
-          }
-          return <li className="leading-relaxed">{children}</li>;
-        },
-        table({ children }) {
-          return (
-            <div className="my-3 overflow-x-auto rounded-lg border border-line">
-              <table className="w-full border-collapse text-[13px]">{children}</table>
-            </div>
-          );
-        },
-        thead({ children }) {
-          return <thead className="bg-card2/60">{children}</thead>;
-        },
-        th({ children }) {
-          return (
-            <th className="border-b border-line px-3 py-1.5 text-left font-semibold text-txt">
-              {children}
-            </th>
-          );
-        },
-        td({ children }) {
-          return <td className="border-b border-line/60 px-3 py-1.5 text-muted">{children}</td>;
-        },
-        blockquote({ children }) {
-          return (
-            <blockquote className="my-2 border-l-2 border-violet/50 pl-3 text-muted">
-              {children}
-            </blockquote>
-          );
-        },
-        h1({ children }) {
-          return <h1 className="mb-2 mt-4 text-lg font-bold first:mt-0">{children}</h1>;
-        },
-        h2({ children }) {
-          // NOTE: text-[1rem], NOT text-base — the custom `base` color shadows
-          // Tailwind's `base` font-size keyword, so `text-base` also emits
-          // color:var(--base), painting the heading the background color
-          // (invisible in dark & light). Arbitrary size dodges the collision.
-          return <h2 className="mb-2 mt-4 text-[1rem] font-bold first:mt-0">{children}</h2>;
-        },
-        h3({ children }) {
-          return <h3 className="mb-1.5 mt-3 text-sm font-semibold first:mt-0">{children}</h3>;
-        },
-        h4({ children }) {
-          return <h4 className="mb-1 mt-2 text-sm font-semibold first:mt-0">{children}</h4>;
-        },
-        hr() {
-          return <hr className="my-3 border-line" />;
-        },
-        img({ src, alt }) {
-          return <img src={src} alt={alt || ""} className="my-2 max-h-72 rounded-lg border border-line" />;
-        },
-        strong({ children }) {
-          return <strong className="font-semibold text-txt">{children}</strong>;
-        },
-        del({ children }) {
-          return <del className="text-muted">{children}</del>;
-        },
-      }}
-    >
-      {src}
-    </ReactMarkdown>
+          },
+          thead({ children }) {
+            return <thead className="bg-card2/60">{children}</thead>;
+          },
+          th({ children }) {
+            return (
+              <th className="border-b border-line px-3 py-1.5 text-left font-semibold text-txt">
+                {children}
+              </th>
+            );
+          },
+          td({ children }) {
+            return <td className="border-b border-line/60 px-3 py-1.5 text-muted">{children}</td>;
+          },
+          blockquote({ children }) {
+            return (
+              <blockquote className="my-2 border-l-2 border-violet/50 pl-3 text-muted">
+                {children}
+              </blockquote>
+            );
+          },
+          h1({ children }) {
+            return <h1 className="mb-2 mt-4 text-lg font-bold first:mt-0">{children}</h1>;
+          },
+          h2({ children }) {
+            // NOTE: text-[1rem], NOT text-base — the custom `base` color shadows
+            // Tailwind's `base` font-size keyword, so `text-base` also emits
+            // color:var(--base), painting the heading the background color
+            // (invisible in dark & light). Arbitrary size dodges the collision.
+            return <h2 className="mb-2 mt-4 text-[1rem] font-bold first:mt-0">{children}</h2>;
+          },
+          h3({ children }) {
+            return <h3 className="mb-1.5 mt-3 text-sm font-semibold first:mt-0">{children}</h3>;
+          },
+          h4({ children }) {
+            return <h4 className="mb-1 mt-2 text-sm font-semibold first:mt-0">{children}</h4>;
+          },
+          hr() {
+            return <hr className="my-3 border-line" />;
+          },
+          img({ src, alt }) {
+            return <img src={src} alt={alt || ""} className="my-2 max-h-72 rounded-lg border border-line" />;
+          },
+          strong({ children }) {
+            return <strong className="font-semibold text-txt">{children}</strong>;
+          },
+          del({ children }) {
+            return <del className="text-muted">{children}</del>;
+          },
+        }}
+      >
+        {src}
+      </ReactMarkdown>
+    </div>
   );
-}
+});
