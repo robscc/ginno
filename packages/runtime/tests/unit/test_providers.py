@@ -78,7 +78,7 @@ def test_verify_anthropic_missing_key_no_network(isolated_home):
     # default anthropic provider has an empty key -> early return, no client call
     result = providers.verify("anthropic")
     assert result["ok"] is False
-    assert "API Key" in result["error"]
+    assert "API key" in result["error"]
 
 
 # ---- validate_configs: the `default_model ∈ models` gate ---------------------
@@ -117,7 +117,7 @@ def test_validate_repairs_a_case_only_default_model_mismatch():
 def test_validate_still_rejects_a_default_model_that_is_not_listed():
     """The repair covers case only. A genuinely absent model is a real
     misconfiguration (it would fail at the gateway), so it stays an error."""
-    with pytest.raises(ValueError, match="不在 models 内"):
+    with pytest.raises(ValueError, match="is not in models"):
         providers.validate_configs([_cfg(models=["glm-5.3"], default_model="gpt-4o")])
 
 

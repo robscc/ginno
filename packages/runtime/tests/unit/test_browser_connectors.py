@@ -248,7 +248,7 @@ async def test_relay_invoke_without_extension(ginno_home):
     assert relay_state().connected is False
     with pytest.raises(RelayError) as ei:
         await invoke_tool("browser_tabs_context", {})
-    assert "未连接" in str(ei.value)
+    assert "not connected" in str(ei.value)
 
 
 # ---- executor helpers ---------------------------------------------------------

@@ -110,9 +110,9 @@ def _msg_line(m: BaseMessage) -> str:
         parts = []
         for b in content:
             if isinstance(b, dict):
-                t = b.get("text") or ""
-                if t:
-                    parts.append(t)
+                chunk = b.get("text") or ""
+                if chunk:
+                    parts.append(chunk)
             elif isinstance(b, str):
                 parts.append(b)
         content = "\n".join(parts)
@@ -122,7 +122,10 @@ def _msg_line(m: BaseMessage) -> str:
     tcs = getattr(m, "tool_calls", None)
     if tcs:
         calls = ", ".join(tc.get("name", "?") for tc in tcs if isinstance(tc, dict))
-        text = (text + f"\n[调用工具: {calls}]").strip()
+        # Note: this marker is display-only (compaction transcript line); no
+        # matching logic anywhere depends on the literal Chinese form (rg
+        # "调用工具" = this one occurrence).
+        text = (text + t(f"\n[tools called: {calls}]", f"\n[调用工具: {calls}]")).strip()
     return f"{role}: {text}"
 
 

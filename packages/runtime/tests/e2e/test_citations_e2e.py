@@ -67,9 +67,10 @@ def test_citation_loop_end_to_end(create_session, ws_conv, kb_vault, client):
         events = conv.recv_until("message.end", "error")
     assert event_names(events)[-1] == "message.end"
 
-    # The injected page reached the model WITH the citation contract.
+    # The injected page reached the model WITH the citation contract
+    # (bilingual: whichever variant the env locale binds).
     turn_ctx = [h for h in model._humans if isinstance(h, str) and "injected_wiki" in h]
-    assert turn_ctx and "引用规范" in turn_ctx[-1]
+    assert turn_ctx and ("引用规范" in turn_ctx[-1] or "Citation rules" in turn_ctx[-1])
 
     # Ledger: verified citation counted, hallucination lands in _invalid.
     data = _ledger()

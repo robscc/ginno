@@ -543,11 +543,11 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                                 )
                             if not _targets:
                                 # 空团队：广场无对话功能，提示先加成员（不起 turn）。
-                                from ...lang import t as _t
+                                from ...lang import t
                                 await _push_session_event(
                                     session_id,
                                     "notice",
-                                    {"message": _t(
+                                    {"message": t(
                                         "This team has no members yet — add a member first; "
                                         "the main session is a group plaza, not a conversation.",
                                         "团队还没有成员——先添加成员；主会话是群聊广场，"

@@ -167,7 +167,7 @@ async def test_deliver_queues_when_concurrency_full(team, live_turns, monkeypatc
     assert res["queued"] == 1
     assert started == []  # 没有立刻开跑
     member = team_store.get_member(team["id"], _iid(team, "ops"))
-    assert "排队" in member["status_detail"]
+    assert "Queued" in member["status_detail"]
 
     # 腾出一个额度 → drain 自动放行排队投递
     server_shared._RUNNING_TURNS.pop("sess-dev", None)

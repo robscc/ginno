@@ -159,7 +159,10 @@ async def _seed_fork_history(
     child = _NS._SESSIONS.get(child_id)
     graph = (child or {}).get("graph")
     if graph is None:
-        raise RuntimeError(f"fork 子会话 {child_id} 无可用 graph")
+        raise RuntimeError(
+            _NS.t(f"fork child session {child_id} has no available graph",
+                  f"fork 子会话 {child_id} 无可用 graph")
+        )
     await graph.aupdate_state(
         {
             "configurable": {

@@ -22,6 +22,8 @@ import ssl
 import urllib.parse
 from html.parser import HTMLParser
 
+from ..lang import t
+
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -75,11 +77,11 @@ def _split_url(url: str) -> urllib.parse.SplitResult:
     try:
         parts = urllib.parse.urlsplit(url)
     except ValueError as e:
-        raise FetchError(f"URL 解析失败: {url}") from e
+        raise FetchError(t(f"Failed to parse URL: {url}", f"URL 解析失败: {url}")) from e
     if parts.scheme not in ("http", "https"):
-        raise FetchError(f"仅支持 http/https（收到 {parts.scheme or '空'} 协议）")
+        raise FetchError(t(f"Only http/https is supported (got {parts.scheme or 'empty'} scheme)", f"仅支持 http/https（收到 {parts.scheme or '空'} 协议）"))
     if not parts.hostname:
-        raise FetchError("URL 缺少主机名")
+        raise FetchError(t("URL has no host", "URL 缺少主机名"))
     return parts
 
 
@@ -93,9 +95,9 @@ def _resolve_public(host: str, port: int) -> list:
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
-        raise FetchError(f"域名解析失败: {host}") from e
+        raise FetchError(t(f"DNS resolution failed: {host}", f"域名解析失败: {host}")) from e
     if not infos:
-        raise FetchError(f"域名解析失败: {host}")
+        raise FetchError(t(f"DNS resolution failed: {host}", f"域名解析失败: {host}"))
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if (
@@ -106,7 +108,7 @@ def _resolve_public(host: str, port: int) -> list:
             or ip.is_multicast
             or ip.is_unspecified
         ):
-            raise FetchError(f"拒绝访问内网/本机地址: {host} -> {ip}")
+            raise FetchError(t(f"Refusing to access intranet/loopback address: {host} -> {ip}", f"拒绝访问内网/本机地址: {host} -> {ip}"))
     return infos
 
 
@@ -153,7 +155,7 @@ def _get_pinned(url: str, timeout_s: float) -> tuple[str, str, bytes]:
                     pass
                 conn = None
         if conn is None:
-            raise FetchError(f"连接失败: {host}: {last_err}")
+            raise FetchError(t(f"Connection failed: {host}: {last_err}", f"连接失败: {host}: {last_err}"))
 
         try:
             path = parts.path or "/"
@@ -177,7 +179,7 @@ def _get_pinned(url: str, timeout_s: float) -> tuple[str, str, bytes]:
                 except Exception:
                     pass
                 if not loc:
-                    raise FetchError("重定向缺少 Location")
+                    raise FetchError(t("Redirect missing Location", "重定向缺少 Location"))
                 current = urllib.parse.urljoin(current, loc)
                 continue
             if resp.status >= 400:
@@ -187,13 +189,13 @@ def _get_pinned(url: str, timeout_s: float) -> tuple[str, str, bytes]:
         except FetchError:
             raise
         except Exception as e:
-            raise FetchError(f"抓取失败: {type(e).__name__}: {e}") from e
+            raise FetchError(t(f"Fetch failed: {type(e).__name__}: {e}", f"抓取失败: {type(e).__name__}: {e}")) from e
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
-    raise FetchError(f"重定向次数过多（> {MAX_REDIRECTS}）")
+    raise FetchError(t(f"Too many redirects (> {MAX_REDIRECTS})", f"重定向次数过多（> {MAX_REDIRECTS}）"))
 
 
 def fetch_page(url: str, timeout_s: float = 15.0, max_chars: int = 20000) -> dict:

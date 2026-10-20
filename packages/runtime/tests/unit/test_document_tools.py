@@ -58,7 +58,7 @@ def test_parse_document_errors_are_json(tmp_path):
     f = tmp_path / "x.exe"
     f.write_bytes(b"MZ")
     d2 = json.loads(parse_document.invoke({"path": str(f)}))
-    assert d2["ok"] is False and "不支持" in d2["error"]
+    assert d2["ok"] is False and "Unsupported" in d2["error"]
 
 
 # ---- 载入行数帽（2026-10-17）：输出有帽、载入也有帽 ----------------------------
@@ -71,7 +71,7 @@ def test_table_load_capped(monkeypatch, tmp_path):
     p = tmp_path / "t.csv"
     p.write_text("a,b\n" + "".join(f"{i},{i * 2}\n" for i in range(30)), encoding="utf-8")
     out = ex.extract(p)
-    assert "仅载入前 10 行" in out.markdown
+    assert "loaded first 10 rows" in out.markdown
     sheet = out.metadata["sheets"][0]
     assert sheet["rows"] == 10
     assert sheet["capped"] is True
@@ -86,7 +86,7 @@ def test_xlsx_load_capped(monkeypatch, tmp_path):
     p = tmp_path / "s.xlsx"
     pandas.DataFrame({"a": range(20), "b": range(20)}).to_excel(p, index=False)
     out = ex.extract(p)
-    assert "仅载入前 5 行" in out.markdown
+    assert "loaded first 5 rows" in out.markdown
     assert out.metadata["sheets"][0]["capped"] is True
 
 

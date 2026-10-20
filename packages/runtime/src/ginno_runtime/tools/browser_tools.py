@@ -128,9 +128,9 @@ async def _dispatch(tool_name: str, args: dict, slow: bool = False) -> Any:
         out = await _profile_run(backend, tool_name, args)
     except Exception:
         # 状态上抛给连接器卡片,但异常继续走 never-raise 之外的真实路径
-        _report_profile("error", "B 轨执行失败")
+        _report_profile("error", t("B-track execution failed", "B 轨执行失败"))
         raise
-    _report_profile("connected", "运行中")
+    _report_profile("connected", t("Running", "运行中"))
     return out
 
 
@@ -194,8 +194,14 @@ def _looks_recoverable(e: RelayError) -> bool:
     """Only fall to B 轨 on transport-level failures; real tool errors
     (the extension answered with an error) must surface as-is."""
     msg = str(e)
-    return ("未连接" in msg or "队列已满" in msg or "发送到扩展失败" in msg
-            or "执行超时" in msg)
+    # 词表是双语对 (en, zh)：RelayError 文案经 t() 双语化后，任一 locale 的
+    # 传输层错误都必须仍被判为可恢复并落到 B 轨——两份关键词都要匹配。
+    return any(en in msg or zh in msg for en, zh in (
+        ("not connected", "未连接"),
+        ("queue full", "队列已满"),
+        ("Failed to send to extension", "发送到扩展失败"),
+        ("timed out", "执行超时"),
+    ))
 
 
 async def _profile_run(b, name: str, a: dict) -> Any:

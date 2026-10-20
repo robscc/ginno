@@ -61,6 +61,8 @@ from ..tools.ask_tools import set_interactive as _set_interactive_turn
 from .config import _agent_lookup
 from .messages_ui import _messages_to_ui
 
+from ..lang import t
+
 router = APIRouter()
 
 
@@ -573,7 +575,10 @@ async def create_session(req: CreateSessionRequest) -> dict:
             return {
                 "ok": False,
                 "error": (
-                    f"subagent 嵌套深度已达上限（{SUBAGENT_MAX_DEPTH + 1} 层）"
+                    t(
+                        f"subagent nesting depth limit reached ({SUBAGENT_MAX_DEPTH + 1} levels)",
+                        f"subagent 嵌套深度已达上限（{SUBAGENT_MAX_DEPTH + 1} 层）",
+                    )
                 ),
             }
     # Every session gets its own files directory, created now and PRESERVED on

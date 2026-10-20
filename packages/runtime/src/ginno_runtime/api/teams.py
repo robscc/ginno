@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from .. import server_shared as shared
 from ..server_shared import _log
+from ..lang import t
 from ..teams import status as team_status
 from ..teams import deliver as team_deliver
 from ..teams import store as team_store
@@ -209,7 +210,7 @@ async def create_team_endpoint(req: CreateTeamRequest) -> dict:
 
     name = (req.name or "").strip()
     if not name:
-        return {"ok": False, "error": "团队名不能为空"}
+        return {"ok": False, "error": t("Team name cannot be empty", "团队名不能为空")}
 
     main_sid = (req.main_session_id or "").strip()
     if not main_sid:
@@ -225,7 +226,7 @@ async def create_team_endpoint(req: CreateTeamRequest) -> dict:
             primary_folder=req.primary_folder,
         ))
         if not resp.get("ok"):
-            return {"ok": False, "error": str(resp.get("error") or "主会话创建失败")}
+            return {"ok": False, "error": str(resp.get("error") or t("Failed to create the main session", "主会话创建失败"))}
         main_sid = str(resp["id"])
 
     team = team_store.create_team(
@@ -237,7 +238,7 @@ async def create_team_endpoint(req: CreateTeamRequest) -> dict:
         primary_folder=req.primary_folder,
     )
     if team is None:
-        return {"ok": False, "error": "团队编制写入失败"}
+        return {"ok": False, "error": t("Failed to write the team roster", "团队编制写入失败")}
     # 建队即任命实体领队（用户选的 Lead persona → leader 成员实例）。
     # 失败不阻塞建队（可后补），但正常路径必有。
     if req.agent_id:
@@ -331,16 +332,20 @@ async def add_member_endpoint(team_id: str, req: AddMemberRequest) -> dict:
         return {"ok": False, "error": "not found"}
     agent_id = (req.agent_id or "").strip()
     if not agent_id:
-        return {"ok": False, "error": "agent_id 必填"}
+        return {"ok": False, "error": t("agent_id is required", "agent_id 必填")}
     if len(team_store.list_members(team_id)) >= team_store.MAX_MEMBERS:
-        return {"ok": False, "error": f"成员数已达上限（{team_store.MAX_MEMBERS}），请先归档不活跃成员"}
+        return {"ok": False, "error": t(
+            f"Member limit reached ({team_store.MAX_MEMBERS}); archive inactive members first",
+            f"成员数已达上限（{team_store.MAX_MEMBERS}），请先归档不活跃成员")}
     # 一个团队只能有一个领队（2026-10-14 用户需求）：已有领队再任命 → 拒绝，
     # 先把现任改回 member。
     if req.role == "leader" and (
         team.get("leader_instance_id")
         or any(m.get("role") == "leader" for m in team_store.list_members(team_id))
     ):
-        return {"ok": False, "error": "团队已有领队；先把现任领队改为成员，再任命新领队"}
+        return {"ok": False, "error": t(
+            "The team already has a lead; change the current lead to a member before appointing a new one",
+            "团队已有领队；先把现任领队改为成员，再任命新领队")}
 
     sw = team.get("shared_workspace") or {}
     slug = str(team.get("project_slug") or "default")
@@ -360,7 +365,7 @@ async def add_member_endpoint(team_id: str, req: AddMemberRequest) -> dict:
         parent_session_id=main_sid or None,
     ))
     if not resp.get("ok"):
-        return {"ok": False, "error": str(resp.get("error") or "成员 session 创建失败")}
+        return {"ok": False, "error": str(resp.get("error") or t("Failed to create the member session", "成员 session 创建失败"))}
 
     member = team_store.add_member(
         team_id, agent_id, str(resp["id"]),
@@ -374,7 +379,9 @@ async def add_member_endpoint(team_id: str, req: AddMemberRequest) -> dict:
             await delete_session(str(resp["id"]))
         except Exception:  # noqa: BLE001
             pass
-        return {"ok": False, "error": "成员编制写入失败（可能已达上限）"}
+        return {"ok": False, "error": t(
+            "Failed to write the member roster (member limit may have been reached)",
+            "成员编制写入失败（可能已达上限）")}
 
     if req.role == "leader" and not team.get("leader_instance_id"):
         team_store.update_team(team_id, {"leader_instance_id": member["instance_id"]})
@@ -400,14 +407,16 @@ async def patch_member_endpoint(team_id: str, instance_id: str, data: dict) -> d
             if m.get("instance_id") != instance_id
         )
         if already and cur and cur.get("role") != "leader":
-            return {"ok": False, "error": "团队已有领队；先把现任领队改为成员，再任命新领队"}
+            return {"ok": False, "error": t(
+                "The team already has a lead; change the current lead to a member before appointing a new one",
+                "团队已有领队；先把现任领队改为成员，再任命新领队")}
     # 切换活跃会话（P2 多会话）：session_id 必须在该成员的 session_ids 里。
     if "session_id" in allowed:
         member = team_store.get_member(team_id, instance_id)
         if member is None:
             return {"ok": False, "error": "not found"}
         if allowed["session_id"] not in (member.get("session_ids") or []):
-            return {"ok": False, "error": "session 不属于该成员"}
+            return {"ok": False, "error": t("The session does not belong to this member", "session 不属于该成员")}
     member = team_store.patch_member(team_id, instance_id, allowed)
     if member is None:
         return {"ok": False, "error": "not found"}
@@ -464,7 +473,7 @@ async def add_member_session_endpoint(team_id: str, instance_id: str) -> dict:
         team, str(member.get("agent_id") or ""), str(member.get("display_name") or "")
     )
     if not resp.get("ok"):
-        return {"ok": False, "error": str(resp.get("error") or "会话创建失败")}
+        return {"ok": False, "error": str(resp.get("error") or t("Failed to create the session", "会话创建失败"))}
     updated = team_store.member_add_session(team_id, instance_id, str(resp["id"]))
     if updated is None:
         try:
@@ -472,7 +481,7 @@ async def add_member_session_endpoint(team_id: str, instance_id: str) -> dict:
             await delete_session(str(resp["id"]))
         except Exception:  # noqa: BLE001
             pass
-        return {"ok": False, "error": "编制写入失败"}
+        return {"ok": False, "error": t("Failed to write the roster", "编制写入失败")}
     _log.info("team_member_session_added team=%s instance=%s session=%s",
               team_id, instance_id, resp["id"])
     await _broadcast(team_id)
@@ -488,7 +497,7 @@ async def delete_member_session_endpoint(team_id: str, instance_id: str, session
     if member is None:
         return {"ok": False, "error": "not found"}
     if session_id not in {*(member.get("session_ids") or []), member.get("session_id") or ""}:
-        return {"ok": False, "error": "session 不属于该成员"}
+        return {"ok": False, "error": t("The session does not belong to this member", "session 不属于该成员")}
     try:
         await delete_session(session_id)   # 内部含 stop 级联
     except Exception:  # noqa: BLE001
@@ -538,7 +547,7 @@ async def put_team_md(team_id: str, data: dict) -> dict:
 
     text = str((data or {}).get("text") or "")
     if not memory.set_team_md(team_id, text):
-        return {"ok": False, "error": "TEAM.md 写入失败"}
+        return {"ok": False, "error": t("Failed to write TEAM.md", "TEAM.md 写入失败")}
     _log.info("team_md_saved team=%s len=%d", team_id, len(text))
     await _broadcast(team_id)
     return {"ok": True, "text": memory.team_md(team_id)}
@@ -561,7 +570,7 @@ async def put_member_notes(team_id: str, instance_id: str, data: dict) -> dict:
 
     text = str((data or {}).get("text") or "")
     if not memory.set_member_notes(team_id, instance_id, text):
-        return {"ok": False, "error": "notes.md 写入失败"}
+        return {"ok": False, "error": t("Failed to write notes.md", "notes.md 写入失败")}
     _log.info("team_member_notes_saved team=%s instance=%s len=%d",
               team_id, instance_id, len(text))
     await _broadcast(team_id)
@@ -584,11 +593,12 @@ async def deliver_endpoint(team_id: str, req: DeliverRequest, client: str = "mai
         agent_id = (req.agent_id or "").strip()
         if not agent_id:
             return {"ok": False, "receipt": "failed", "reason": "no_target",
-                    "error": "需要 instance_id 或 agent_id"}
+                    "error": t("instance_id or agent_id is required", "需要 instance_id 或 agent_id")}
         target = team_store.member_of_agent(team_id, agent_id)
         if target is None:
             return {"ok": False, "receipt": "failed", "reason": "not_a_member",
-                    "error": f"「{agent_id}」不是本团队成员"}
+                    "error": t(f"\"{agent_id}\" is not a member of this team",
+                               f"「{agent_id}」不是本团队成员")}
         instance_id = str(target.get("instance_id"))
 
     result = await team_deliver.deliver(team_id, instance_id, req.text,

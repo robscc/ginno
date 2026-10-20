@@ -35,6 +35,7 @@ from copy import deepcopy
 from typing import Any
 
 from . import paths
+from .lang import t
 
 PROVIDER_IDS = ("anthropic", "openai", "custom")
 
@@ -100,8 +101,22 @@ _PROTOCOL_ALIASES = {
 _LEGACY_SLOT_NAMES = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
-    "custom": "自定义端点",
+    "custom": t("Custom endpoint", "自定义端点"),
 }
+
+# search_probe 的探针 prompt（模块常量，双语对 (en, zh)）：问一个时效性问题，
+# 让用户直观看到 provider 的模型是否真的联网检索；无法联网时要求明说，避免误判。
+_SEARCH_PROBE = (
+    (
+        'Search the web, then answer in one or two sentences: what are today\'s '
+        'important news? If you cannot access the internet, explicitly say '
+        '"I cannot access the internet".'
+    ),
+    (
+        "请联网检索后，用一两句话回答：今天有哪些重要新闻？"
+        "如果你无法联网，请明确说“我无法联网”。"
+    ),
+)
 
 CONFIG_DEFAULTS: dict[str, Any] = {
     "name": "",
@@ -215,14 +230,18 @@ def validate_configs(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         cfg = normalize_config(raw)
         cid = str(cfg.get("id") or "").strip()
         if not cid:
-            raise ValueError("配置缺少 id")
+            raise ValueError(t("Config is missing id", "配置缺少 id"))
         if cid in seen:
-            raise ValueError(f"配置 id 重复: {cid}")
+            raise ValueError(t(f"Duplicate config id: {cid}", f"配置 id 重复: {cid}"))
         seen.add(cid)
         if cfg["protocol"] not in CONFIG_PROTOCOLS:
             raise ValueError(
-                f"配置 {cid} 协议非法: {cfg['protocol']!r}，"
-                f"可选值: {', '.join(CONFIG_PROTOCOLS)}"
+                t(
+                    f"Config {cid} has invalid protocol: {cfg['protocol']!r}, "
+                    f"allowed: {', '.join(CONFIG_PROTOCOLS)}",
+                    f"配置 {cid} 协议非法: {cfg['protocol']!r}，"
+                    f"可选值: {', '.join(CONFIG_PROTOCOLS)}",
+                )
             )
         if cfg["default_model"] and cfg["models"] and cfg["default_model"] not in cfg["models"]:
             # Case-only mismatch → REPAIR to the listed spelling instead of
@@ -238,8 +257,12 @@ def validate_configs(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 cfg["default_model"] = _matched
             else:
                 raise ValueError(
-                    f"配置 {cid} 的 default_model {cfg['default_model']!r} "
-                    f"不在 models 内: {', '.join(cfg['models'])}"
+                    t(
+                        f"Config {cid}'s default_model {cfg['default_model']!r} "
+                        f"is not in models: {', '.join(cfg['models'])}",
+                        f"配置 {cid} 的 default_model {cfg['default_model']!r} "
+                        f"不在 models 内: {', '.join(cfg['models'])}",
+                    )
                 )
         cfg["id"] = cid
         out.append(cfg)
@@ -453,7 +476,8 @@ def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
     try:
         if proto == "anthropic":
             if not cfg.get("api_key"):
-                return {"ok": False, "error": "API Key 为空", "latency_ms": _latency()}
+                return {"ok": False, "error": t("API key is empty", "API Key 为空"),
+                        "latency_ms": _latency()}
             import anthropic
 
             client_kw: dict[str, Any] = {
@@ -545,7 +569,8 @@ def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
     proto = cfg.get("protocol")
     key = str(cfg.get("api_key") or "").strip()
     if not key:
-        return {"ok": False, "error": "API Key 为空", "latency_ms": _latency()}
+        return {"ok": False, "error": t("API key is empty", "API Key 为空"),
+                "latency_ms": _latency()}
     # trailing "/" would double up in the f-string below
     base = str(cfg.get("base_url") or "").strip().rstrip("/")
     headers: dict[str, str] = {}
@@ -573,7 +598,8 @@ def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
         if resp.status_code != 200:
             return {
                 "ok": False,
-                "error": f"拉取模型列表失败（HTTP {resp.status_code}）",
+                "error": t(f"Failed to list models (HTTP {resp.status_code})",
+                           f"拉取模型列表失败（HTTP {resp.status_code}）"),
                 "latency_ms": _latency(),
             }
         payload = resp.json()
@@ -581,7 +607,9 @@ def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(rows, list):
             return {
                 "ok": False,
-                "error": "拉取模型列表失败：响应缺少 data 列表，无法解析",
+                "error": t("Failed to list models: response has no data list, "
+                           "cannot parse",
+                           "拉取模型列表失败：响应缺少 data 列表，无法解析"),
                 "latency_ms": _latency(),
             }
         models: list[dict[str, Any]] = []
@@ -598,7 +626,8 @@ def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         return {
             "ok": False,
-            "error": f"拉取模型列表失败：{type(e).__name__}: {e}",
+            "error": t(f"Failed to list models: {type(e).__name__}: {e}",
+                       f"拉取模型列表失败：{type(e).__name__}: {e}"),
             "latency_ms": _latency(),
         }
 
@@ -626,7 +655,7 @@ def search_probe(provider_id: str) -> dict[str, Any]:
     if not cfg:
         return {"ok": False, "error": f"unknown provider: {provider_id}"}
     if not cfg.get("enabled"):
-        return {"ok": False, "error": "provider 未启用"}
+        return {"ok": False, "error": t("Provider not enabled", "provider 未启用")}
     t0 = time.time()
 
     def _latency() -> int:
@@ -640,10 +669,7 @@ def search_probe(provider_id: str) -> dict[str, Any]:
             [
                 {
                     "role": "user",
-                    "content": (
-                        "请联网检索后，用一两句话回答：今天有哪些重要新闻？"
-                        "如果你无法联网，请明确说“我无法联网”。"
-                    ),
+                    "content": t(*_SEARCH_PROBE),
                 }
             ]
         )

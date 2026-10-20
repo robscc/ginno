@@ -30,6 +30,7 @@ import uuid
 
 from langchain_core.messages import AIMessage
 
+from ..lang import t
 from ..server_shared import (
     _PENDING_RESUME,
     _RUNNING_TURNS,
@@ -186,7 +187,8 @@ async def post_reply(
     body, cut = _truncate(body)
     truncated = truncated or cut
     if not body:
-        body = "（本轮无文本产出，详见成员工作台）"
+        body = t("(no text output this turn; see the member workspace for details)",
+                 "（本轮无文本产出，详见成员工作台）")
 
     session = _SESSIONS.get(main_sid)
     if session is None or session.get("graph") is None:
@@ -267,7 +269,7 @@ async def _run_member_turn(team_id: str, instance_id: str, text: str) -> None:
     stop_evt = _TURN_STOP_setdefault(sid)
     store.patch_member(team_id, instance_id, {
         "status": "working",
-        "status_detail": "正在处理投递",
+        "status_detail": t("Delivering", "正在处理投递"),
     })
     await _broadcast_status(team_id)
     try:
@@ -325,21 +327,23 @@ async def deliver(
     text = (text or "").strip()
     if not text:
         return {"ok": False, "receipt": "failed", "reason": "empty_text",
-                "error": "投递内容不能为空"}
+                "error": t("Delivery content is empty", "投递内容不能为空")}
 
     team = store.get_team(team_id)
     if team is None:
         return {"ok": False, "receipt": "failed", "reason": "unknown_team",
-                "error": f"未知团队 {team_id}"}
+                "error": t(f"Unknown team {team_id}", f"未知团队 {team_id}")}
     member = store.get_member(team_id, instance_id)
     if member is None:
         return {"ok": False, "receipt": "failed", "reason": "unknown_member",
-                "error": f"团队里没有成员实例 {instance_id}"}
+                "error": t(f"No member instance in team {instance_id}",
+                           f"团队里没有成员实例 {instance_id}")}
 
     sid = str(member.get("session_id") or "")
     if not sid:
         return {"ok": False, "receipt": "failed", "reason": "no_session",
-                "error": "该成员没有绑定 session"}
+                "error": t("This member has no bound session",
+                           "该成员没有绑定 session")}
 
     # ── 纪律 1：blocked 时原子拒绝，一个字都不发 ──
     if sid in _PENDING_RESUME:
@@ -352,7 +356,10 @@ async def deliver(
             "reason": "agent_blocked",
             "instance_id": instance_id,
             "session_id": sid,
-            "error": (
+            "error": t(
+                "This member is stopped on a permission/question confirmation; "
+                "delivery was atomically refused (nothing was sent). "
+                "Answer its question first.",
                 "该成员正停在权限/提问确认上，投递已原子拒绝（未发送任何内容）。"
                 "请先回答它的问题。"
             ),
@@ -396,7 +403,8 @@ async def deliver(
             "instance_id": instance_id, "text": text, "client": client,
         })
         store.patch_member(team_id, instance_id, {
-            "status_detail": "排队中（团队并发已满）",
+            "status_detail": t("Queued (team concurrency is full)",
+                               "排队中（团队并发已满）"),
         })
         await _broadcast_status(team_id, client)
         _log.info(
@@ -417,7 +425,8 @@ async def deliver(
         session = _ensure_session(sid)
     if session is None:
         return {"ok": False, "receipt": "failed", "reason": "session_unavailable",
-                "error": f"成员 session {sid} 不可用"}
+                "error": t(f"Member session {sid} unavailable",
+                           f"成员 session {sid} 不可用")}
 
     spawn_bg(_run_member_turn(team_id, instance_id, text))
     # 证据 = turn 确实起来了（给 spawn_bg 一点时间登记 _RUNNING_TURNS）。
@@ -483,6 +492,8 @@ async def resolve_agent_mention(
             "ok": False,
             "receipt": "failed",
             "reason": "not_a_member",
-            "error": f"「{agent_id}」不是本团队成员。@ 只能投递给已加入的成员。",
+            "error": t(f'"{agent_id}" is not a member of this team. @ can only '
+                        "deliver to joined members.",
+                       f"「{agent_id}」不是本团队成员。@ 只能投递给已加入的成员。"),
         }
     return await deliver(team_id, str(target.get("instance_id")), text)

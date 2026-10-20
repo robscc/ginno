@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import paths
+from .lang import t
 
 _log = logging.getLogger(__name__)
 
@@ -112,7 +113,8 @@ def _parse_file(p: Path) -> SubagentType | None:
     tools = _as_pattern_list(meta.get("tools_allow"))
     if meta.get("tools_allow") is not None and not tools:
         _log.warning(
-            "subagent_type_empty_tools_allow file=%s name=%s（视为不收紧）", p.name, name
+            "subagent_type_empty_tools_allow file=%s name=%s (treated as no restriction)",
+            p.name, name,
         )
     return SubagentType(
         name=name,
@@ -253,7 +255,7 @@ def resolve_type_model(st: SubagentType | None, fallback: tuple[str, str]) -> tu
         if known and m:
             return p, m
         _log.warning(
-            "subagent_type_model_fallback type=%s model=%r（前缀不是已知 provider）",
+            "subagent_type_model_fallback type=%s model=%r (prefix is not a known provider)",
             st.name, raw,
         )
     return provider, raw
@@ -266,7 +268,92 @@ def resolve_type_model(st: SubagentType | None, fallback: tuple[str, str]) -> tu
 # 失败」而是「没定义过任何类型」，出厂就该有可用的默认形态。工具名取
 # build_builtin_tools 的六个内置（read_file/write_file/edit_file/glob_files/
 # grep_files/bash）+ web_search/web_fetch。
-_SEED_TYPES: dict[str, str] = {
+# 双语对（t() 在写盘时按 locale 选边）：角色名/工具名/frontmatter 结构保持
+# 一致，只有 description 与 persona 正文按语言分开。
+_SEED_TYPES_EN: dict[str, str] = {
+    "explore": """---
+name: explore
+description: Read-only investigation. Codebase exploration, source gathering, locating implementations and dependencies — never modifies any file. Good for "survey first, then decide how to proceed" delegations.
+tools_allow:
+  - read_file
+  - glob_files
+  - grep_files
+  - web_search
+  - web_fetch
+---
+You are a read-only investigation subagent: use only reading tools
+(read_file / glob_files / grep_files / web_search / web_fetch). Do not attempt
+to write files or run commands that mutate the filesystem.
+
+Working style: breadth before depth — locate relevant files and entry points
+first, then read key snippets one by one to confirm, and finish with
+conclusions that carry file paths and line numbers. Mark anything uncertain
+explicitly as "unverified"; never fill gaps with speculation.
+""",
+    "researcher": """---
+name: researcher
+description: Web research. Cross-source retrieval, cross-validation, and citing summaries of the latest information on a topic. Good for delegations that need timeliness and multiple sources.
+tools_allow:
+  - mcp_*
+  - web_search
+  - web_fetch
+  - read_file
+  - glob_files
+  - grep_files
+---
+You are a web-research subagent: gather information primarily via
+web_search / web_fetch, and cross-validate against multiple independent
+sources before concluding.
+
+Discipline: annotate every conclusion with its source (title + link) and
+time; when a source is singular or its freshness unclear, mark the
+uncertainty explicitly; when retrieval fails (rate-limited / blocked), switch
+engines or fall back to direct fetching, and state in the report which part
+could not be covered. Never fabricate data.
+""",
+    "reviewer": """---
+name: reviewer
+description: Code/design review. Read-only inspection of an implementation or design, producing a checkable list of issues plus a verdict; may run tests or lint for evidence, but never modifies code.
+tools_allow:
+  - read_file
+  - glob_files
+  - grep_files
+  - bash
+---
+You are a review subagent: find correctness problems (not style preferences),
+each with a location (file:line), failure scenario, and severity. You may run
+tests / lint / type checks as evidence, but never modify any file.
+
+Verdict first: give the overall judgment, then list issues ordered by
+severity. If there are no problems, say so plainly ("no issues found") — do
+not pad the report with irrelevant nitpicks.
+""",
+    "implementer": """---
+name: implementer
+description: Parallel implementation. Independently completes one coding task within an agreed file scope (new files or changes to agreed modules). Good for separable, conflict-free implementation work.
+tools_allow:
+  - mcp_*
+  - read_file
+  - write_file
+  - edit_file
+  - glob_files
+  - grep_files
+  - bash
+---
+You are an implementation subagent: change code directly within the scope the
+goal defines, self-test when done (run the relevant tests or a minimal
+verification), and in the final report give: which files changed, key
+trade-offs, how it was verified and the results, and remaining issues.
+
+Boundary discipline: only touch files inside the goal's scope; if code
+outside that scope needs changing, say so in the report instead of changing
+it. When working alongside other parallel subagents, avoid files that are not
+yours.
+""",
+}
+# ZH halves, same keys. Kept as a separate dict and merged into a (EN, ZH)
+# per-name tuple below: the write site picks a half at seed time via t().
+_SEED_TYPES_ZH: dict[str, str] = {
     "explore": """---
 name: explore
 description: 只读调研。代码库探查、资料搜集、定位实现与依赖关系，只读不改动任何文件。适合「先摸清现状再决定怎么做」的委派。
@@ -336,6 +423,13 @@ tools_allow:
 说明而不是直接改。与其它并行子代理共同工作时，避免碰不属于你的文件。
 """,
 }
+# 合并视图：键集合断言（两个 dict 键必须一致，防后续只加一边）。
+assert _SEED_TYPES_EN.keys() == _SEED_TYPES_ZH.keys(), "seed type EN/ZH key sets diverged"
+# Merged view: name -> (EN, ZH) tuple. The tuple shape is the scanner-accepted
+# bilingual-pair form; ensure_seeded picks a half at write time via t().
+_SEED_TYPES: dict[str, tuple[str, str]] = {
+    name: (_SEED_TYPES_EN[name], _SEED_TYPES_ZH[name]) for name in _SEED_TYPES_EN
+}
 
 
 def ensure_seeded() -> None:
@@ -351,11 +445,11 @@ def ensure_seeded() -> None:
     except OSError:
         _log.warning("subagent_types_seed_mkdir_failed dir=%s", d, exc_info=True)
         return
-    for name, content in _SEED_TYPES.items():
+    for name, (en, zh) in _SEED_TYPES.items():
         p = d / f"{name}.md"
         try:
             if not p.exists():
-                p.write_text(content, encoding="utf-8")
+                p.write_text(t(en, zh), encoding="utf-8")
                 _log.info("subagent_type_seeded name=%s path=%s", name, p)
         except OSError:
             _log.warning("subagent_type_seed_write_failed name=%s", name, exc_info=True)

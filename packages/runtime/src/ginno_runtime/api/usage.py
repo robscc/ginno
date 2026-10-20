@@ -9,6 +9,8 @@ from ..server_shared import _SESSIONS, _USAGE_BY_SESSION
 from ..session_meta import _find_meta
 from ..usage import cache_hit_ratio
 
+from ..lang import t
+
 router = APIRouter()
 
 
@@ -76,7 +78,7 @@ def _usage_session_display(sid: str) -> dict:
             "deleted": False,
         }
     return {
-        "title": f"(已删除) {sid[:6]}",
+        "title": t(f"(deleted) {sid[:6]}", f"(已删除) {sid[:6]}"),
         "icon": "message-square",
         "agent_id": None,
         "provider": "",
@@ -117,7 +119,7 @@ async def usage_sessions(
     for r in rows:
         sid = r.get("session_id")
         r.update(_usage_session_display(sid) if sid else {
-            "title": "(后台/系统)", "icon": "cpu", "agent_id": None,
+            "title": t("(background/system)", "(后台/系统)"), "icon": "cpu", "agent_id": None,
             "provider": "", "model": "", "deleted": False,
         })
     return {"ok": True, "sessions": rows}

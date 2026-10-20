@@ -70,7 +70,8 @@ def set_member_notes(team_id: str, instance_id: str, text: str) -> bool:
 def _clip(text: str, limit: int) -> tuple[str, bool]:
     if len(text) <= limit:
         return text, False
-    return text[:limit].rstrip() + "\n…（已截断，全文在文件中）", True
+    return text[:limit].rstrip() + t("\n…(truncated; full text in file)",
+                                     "\n…（已截断，全文在文件中）"), True
 
 
 def turn_context(session_id: str) -> str:

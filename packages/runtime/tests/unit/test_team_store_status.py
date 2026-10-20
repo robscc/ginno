@@ -189,7 +189,7 @@ def test_status_blocked_wins_over_everything(team, pending_resume, monkeypatch):
     monkeypatch.setitem(server_shared._RUNNING_TURNS, "sess-dev", "t1")
     status, detail = team_status.member_status("default", "sess-dev", _member(team, "dev"))
     assert status == "blocked"
-    assert "回答" in detail
+    assert "answer" in detail
 
 
 def test_status_working_when_turn_live(team, monkeypatch):

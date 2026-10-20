@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import paths
+from .lang import t
 
 _log = logging.getLogger("ginno.schedule")
 
@@ -178,15 +179,15 @@ def validate_task(data: dict) -> list[str]:
     """保存时校验（POST/PATCH 共用）。返回错误列表；空列表 = 合法。"""
     errs: list[str] = []
     if not isinstance(data.get("name"), str) or not data.get("name", "").strip():
-        errs.append("任务名称不能为空")
+        errs.append(t("Task name cannot be empty", "任务名称不能为空"))
     target = data.get("target")
     if not isinstance(target, dict) or target.get("type") not in TARGET_TYPES:
-        errs.append("target.type 必须是 prompt 或 workflow")
+        errs.append(t("target.type must be prompt or workflow", "target.type 必须是 prompt 或 workflow"))
     else:
         if target["type"] == "prompt" and not str(target.get("prompt") or "").strip():
-            errs.append("prompt 目标必须填写提示词")
+            errs.append(t("prompt target requires a prompt", "prompt 目标必须填写提示词"))
         if target["type"] == "workflow" and not str(target.get("workflow_id") or "").strip():
-            errs.append("workflow 目标必须选择配方")
+            errs.append(t("workflow target requires a workflow recipe", "workflow 目标必须选择配方"))
     # 任务级模型覆盖（仅 prompt 目标生效）：null/缺省 = 跟随 agent/全局默认
     model = data.get("model")
     if model is not None and (
@@ -194,30 +195,30 @@ def validate_task(data: dict) -> list[str]:
         or not str(model.get("provider") or "").strip()
         or not str(model.get("model") or "").strip()
     ):
-        errs.append("model 必须是 {provider, model}（非空字符串）或 null")
+        errs.append(t("model must be {provider, model} (non-empty strings) or null", "model 必须是 {provider, model}（非空字符串）或 null"))
     sch = data.get("schedule")
     if not isinstance(sch, dict) or sch.get("kind") not in SCHEDULE_KINDS:
-        errs.append("schedule.kind 必须是 interval/daily/weekly/once")
+        errs.append(t("schedule.kind must be interval/daily/weekly/once", "schedule.kind 必须是 interval/daily/weekly/once"))
     else:
         kind = sch["kind"]
         if kind == "interval":
             minutes = sch.get("minutes")
             bad_minutes = not isinstance(minutes, int) or isinstance(minutes, bool)
             if bad_minutes or minutes < MIN_INTERVAL_MIN:
-                errs.append(f"间隔不能小于 {MIN_INTERVAL_MIN} 分钟")
+                errs.append(t(f"Interval cannot be less than {MIN_INTERVAL_MIN} minutes", f"间隔不能小于 {MIN_INTERVAL_MIN} 分钟"))
         elif kind == "daily":
             if not _valid_hhmm(sch.get("at")):
-                errs.append("daily 计划的 at 必须是 HH:MM")
+                errs.append(t("daily schedule at must be HH:MM", "daily 计划的 at 必须是 HH:MM"))
         elif kind == "weekly":
             if _weekly_days_value(sch) is None:
-                errs.append("weekly 计划的 weekdays 必须是 0-6 的非空列表（0=周日）")
+                errs.append(t("weekly schedule weekdays must be a non-empty list of 0-6 (0=Sunday)", "weekly 计划的 weekdays 必须是 0-6 的非空列表（0=周日）"))
             if not _valid_hhmm(sch.get("at")):
-                errs.append("weekly 计划的 at 必须是 HH:MM")
+                errs.append(t("weekly schedule at must be HH:MM", "weekly 计划的 at 必须是 HH:MM"))
         elif kind == "once":
             try:
                 datetime.fromisoformat(str(sch.get("at") or ""))
             except ValueError:
-                errs.append("once 计划的 at 必须是本地时间 ISO 格式（YYYY-MM-DDTHH:MM[:SS]）")
+                errs.append(t("once schedule at must be a local-time ISO string (YYYY-MM-DDTHH:MM[:SS])", "once 计划的 at 必须是本地时间 ISO 格式（YYYY-MM-DDTHH:MM[:SS]）"))
     return errs
 
 

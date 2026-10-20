@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 from . import paths
+from .lang import t
 
 # Recognized rule files, in precedence order. AGENTS.md — the cross-product
 # standard — wins; CLAUDE.md sits in the middle (it is the dominant convention
@@ -190,13 +191,13 @@ def probe(raw_path: str) -> dict:
     """Inspect a path for the add-folder UI (never raises)."""
     raw = (raw_path or "").strip()
     if not raw:
-        return {"ok": False, "error": "路径为空"}
+        return {"ok": False, "error": t("Path is empty", "路径为空")}
     real = norm_path(raw)
     p = Path(real)
     if not p.exists():
-        return {"ok": False, "error": f"路径不存在：{real}", "path": real}
+        return {"ok": False, "error": t(f"Path does not exist: {real}", f"路径不存在：{real}"), "path": real}
     if not p.is_dir():
-        return {"ok": False, "error": f"不是目录：{real}", "path": real}
+        return {"ok": False, "error": t(f"Not a directory: {real}", f"不是目录：{real}"), "path": real}
     file_count = 0
     truncated = False
     try:

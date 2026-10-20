@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import time
 
+from ..lang import t
 from ..server_shared import (
     _PENDING_KIND,
     _PENDING_RESUME,
@@ -83,10 +84,10 @@ def member_status(
     if session_id in _PENDING_RESUME:
         kind = str(_PENDING_KIND.get(session_id) or "permission")
         detail = {
-            "permission": "等待权限确认",
-            "ask_user": "等你回答问题",
-            "version_propose": "等待版本确认",
-        }.get(kind, f"等待确认（{kind}）")
+            "permission": t("Waiting for permission confirmation", "等待权限确认"),
+            "ask_user": t("Waiting for your answer", "等你回答问题"),
+            "version_propose": t("Waiting for version confirmation", "等待版本确认"),
+        }.get(kind, t(f"Waiting for confirmation ({kind})", f"等待确认（{kind}）"))
         return "blocked", detail
 
     # 2) working：有活 turn。展示文本取最后一条工具调用的可读标签（§5.3）。
@@ -127,17 +128,17 @@ def _working_detail(session_id: str) -> str:
     """
     entry = _SESSIONS.get(session_id) or {}
     tool = str(entry.get("last_tool") or "").strip()
-    return f"正在调用 {tool}" if tool else "正在运行"
+    return t(f"Calling {tool}", f"正在调用 {tool}") if tool else t("Running", "正在运行")
 
 
 def _done_detail(member: dict) -> str:
     detail = str(member.get("status_detail") or "").strip()
-    return detail or "已完成，待查看"
+    return detail or t("Done, ready to review", "已完成，待查看")
 
 
 def _idle_detail(member: dict) -> str:
     detail = str(member.get("status_detail") or "").strip()
-    return detail or "空闲"
+    return detail or t("Idle", "空闲")
 
 
 def mark_seen(team_id: str, instance_id: str, client: str = "main") -> dict | None:

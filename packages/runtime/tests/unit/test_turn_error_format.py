@@ -54,7 +54,7 @@ def test_recursion_error_fields(monkeypatch, isolated_home):
     # The stale langchain docs link must not be echoed to the user.
     assert "langchain" not in fields["message"]
     # i18n: specific key, params carry the live configured limit.
-    assert fields["i18n_key"] == "stream.turn_failed.recursion_limit"
+    assert fields["i18n_key"] == "stream.turn_failed_note.recursion_limit"
     assert fields["params"] == {"error": fields["message"].splitlines()[0], "limit": 128}
 
 
@@ -70,7 +70,7 @@ def test_recursion_error_reports_configured_limit(monkeypatch, isolated_home):
 
 def test_empty_input_key():
     fields = turn_error_fields(EmptyInputError("Falsify nothing"))
-    assert fields["i18n_key"] == "stream.turn_failed.empty_input"
+    assert fields["i18n_key"] == "stream.turn_failed_note.empty_input"
     assert fields["params"]["error"].startswith("EmptyInputError:")
     assert "re-runs the original input" in fields["message"]
 
@@ -85,7 +85,7 @@ def test_empty_input_key():
 )
 def test_state_and_timeout_keys(exc, suffix):
     fields = turn_error_fields(exc)
-    assert fields["i18n_key"] == f"stream.turn_failed.{suffix}"
+    assert fields["i18n_key"] == f"stream.turn_failed_note.{suffix}"
     assert fields["message"].startswith(f"{type(exc).__name__}:")
     assert "sidecar.log" in fields["message"]
 
@@ -136,7 +136,7 @@ def test_content_filter_error_gets_specific_key():
     fields = turn_error_fields(
         _FakeAPIStatusError("Output data may contain inappropriate content.")
     )
-    assert fields["i18n_key"] == "stream.turn_failed.content_filter"
+    assert fields["i18n_key"] == "stream.turn_failed_note.content_filter"
     assert "Retrying the same request will be blocked" in fields["message"]
     assert "error" in fields["params"]
 
@@ -147,7 +147,7 @@ def test_content_filter_detected_through_cause_chain():
     inner = _FakeAPIStatusError("Output data may contain inappropriate content.")
     outer = RuntimeError("model call failed")
     outer.__cause__ = inner
-    assert turn_error_fields(outer)["i18n_key"] == "stream.turn_failed.content_filter"
+    assert turn_error_fields(outer)["i18n_key"] == "stream.turn_failed_note.content_filter"
 
 
 def test_content_filter_is_not_auto_retried():

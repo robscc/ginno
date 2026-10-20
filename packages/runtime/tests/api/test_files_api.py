@@ -150,7 +150,7 @@ def test_preview_unsupported_format(client, sid):
     assert up["ok"] is True  # upload itself is format-agnostic
     pv = client.get(f"/api/files/{up['file']['id']}/preview").json()
     assert pv["ok"] is False
-    assert "不支持" in pv["error"]
+    assert "Unsupported" in pv["error"]
 
 
 def test_preview_unknown_id(client):
@@ -223,7 +223,7 @@ def test_download_csv_export_rejects_docx(client, sid):
     ).json()
     r = client.get(f"/api/files/{up['file']['id']}/download?fmt=csv")
     assert r.status_code == 400
-    assert "表格" in r.json()["detail"]
+    assert "table-like" in r.json()["detail"]
 
 
 def test_download_unknown_id_404(client):

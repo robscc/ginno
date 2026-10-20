@@ -122,7 +122,7 @@ def test_sessions_endpoint_joins_meta_and_placeholder(client):
     rows = data["sessions"]
     assert rows[0]["session_id"] == "ghost-session"
     assert rows[0]["deleted"] is True
-    assert rows[0]["title"].startswith("(已删除)")
+    assert rows[0]["title"].startswith("(deleted)")
 
 
 def test_requests_endpoint_filters_and_paginates(client):

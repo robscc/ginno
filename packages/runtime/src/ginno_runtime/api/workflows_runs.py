@@ -18,6 +18,8 @@ from pathlib import Path
 
 from . import workflows as _base
 
+from ..lang import t
+
 
 def _wf_mcp_tools() -> list:
     try:
@@ -720,7 +722,10 @@ async def _rerun_from_bg(
                 target_cid = (snap.config.get("configurable") or {}).get("checkpoint_id")
                 break  # newest first → the last time the node was scheduled
         if not target_cid:
-            raise ValueError(f"节点 {node_id} 没有可回溯的检查点（未调度过，或检查点已清理）")
+            raise ValueError(t(
+                f"Node {node_id} has no traceable checkpoint (never scheduled, or checkpoints were cleaned up)",
+                f"节点 {node_id} 没有可回溯的检查点（未调度过，或检查点已清理）",
+            ))
         _truncate_checkpoint_to(run_id, target_cid)
         # Cross-run result cache: the truncated prefix never passes through
         # the node wrapper (checkpoint-committed), so no false hits there.

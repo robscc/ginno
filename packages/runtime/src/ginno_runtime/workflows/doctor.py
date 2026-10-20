@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 
 from .. import agents as agents_reg
+from ..lang import t
 from .dsl import normalize_dsl
 
 _CTX_REF = re.compile(r"\{\{\s*context\.([a-zA-Z0-9_]+)\s*\}\}")
@@ -69,8 +70,10 @@ def run_doctor(dsl: dict) -> dict:
             warnings.append({
                 "rule": "agent.not_found", "node_id": nid,
                 "message": (
-                    f"节点 '{nid}' 引用的 agent '{ag}' 不存在，"
-                    f"运行时将回退到默认 agent"
+                    t(f"Node '{nid}' references agent '{ag}' which does not exist; "
+                      f"falls back to the default agent at runtime",
+                      f"节点 '{nid}' 引用的 agent '{ag}' 不存在，"
+                      f"运行时将回退到默认 agent")
                 ),
             })
 
@@ -98,8 +101,10 @@ def run_doctor(dsl: dict) -> dict:
                                     "rule": "loop.parallel.body_writes_not_array",
                                     "node_id": nid,
                                     "message": (
-                                        f"parallel loop '{nid}' 的 body writes 键 '{k}' "
-                                        '必须为 {"type":"array"}（每 item 追加一元素）'
+                                        t(f"parallel loop '{nid}' body writes key '{k}' "
+                                          'must be {"type":"array"} (one element appended per item)',
+                                          f"parallel loop '{nid}' 的 body writes 键 '{k}' "
+                                          '必须为 {"type":"array"}（每 item 追加一元素）')
                                     ),
                                 })
                     if body.get("type") not in ("step", "agent"):
@@ -116,8 +121,10 @@ def run_doctor(dsl: dict) -> dict:
                     errors.append({
                         "rule": "loop.over.no_source", "node_id": nid,
                         "message": (
-                            f"loop '{nid}' over=context.{key} 无上游 writes/initial 来源"
-                            f"（'{key}' 从未被任何节点声明产出）"
+                            t(f"loop '{nid}' over=context.{key} has no upstream writes/initial source "
+                              f"('{key}' is never produced by any node)",
+                              f"loop '{nid}' over=context.{key} 无上游 writes/initial 来源"
+                              f"（'{key}' 从未被任何节点声明产出）")
                         ),
                     })
 
@@ -130,8 +137,10 @@ def run_doctor(dsl: dict) -> dict:
                 errors.append({
                     "rule": "goal.context_ref.no_source", "node_id": nid,
                     "message": (
-                        f"节点 '{nid}' 的 goal 引用 {{{{context.{key}}}}} "
-                        f"但该 key 无 writes/initial 来源"
+                        t(f"Node '{nid}' goal references {{{{context.{key}}}}} "
+                          f"but that key has no writes/initial source",
+                          f"节点 '{nid}' 的 goal 引用 {{{{context.{key}}}}} "
+                          f"但该 key 无 writes/initial 来源")
                     ),
                 })
 
@@ -145,8 +154,10 @@ def run_doctor(dsl: dict) -> dict:
                 warnings.append({
                     "rule": "goal.path_literal", "node_id": nid,
                     "message": (
-                        f"节点 '{nid}' 的 goal 含路径字面量，建议放入 "
-                        f"context.initial 并作为受控路径声明"
+                        t(f"Node '{nid}' goal contains a path literal; consider moving it into "
+                          f"context.initial as a declared controlled path",
+                          f"节点 '{nid}' 的 goal 含路径字面量，建议放入 "
+                          f"context.initial 并作为受控路径声明")
                     ),
                 })
 
@@ -184,8 +195,10 @@ def run_doctor(dsl: dict) -> dict:
             finding = {
                 "rule": "edges.multi_out.unsupported", "node_id": f,
                 "message": (
-                    f"节点 '{f}' 有 {c} 条显式出边，引擎只接第一条"
-                    "（并行分支未实现，多余边曾被静默丢弃）"
+                    t(f"Node '{f}' has {c} explicit out-edges; the engine only wires the first one "
+                      "(parallel branches not implemented; extra edges were previously dropped silently)",
+                      f"节点 '{f}' 有 {c} 条显式出边，引擎只接第一条"
+                      "（并行分支未实现，多余边曾被静默丢弃）")
                 ),
             }
             (errors if strict_multi else warnings).append(finding)

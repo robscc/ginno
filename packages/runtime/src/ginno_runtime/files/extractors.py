@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..lang import t
+
 # ext -> kind
 _KIND_BY_EXT = {
     ".xlsx": "spreadsheet",
@@ -81,8 +83,10 @@ def _require(module: str, pkg: str):
         return __import__(module)
     except ImportError as e:  # pragma: no cover - depends on environment
         raise ExtractorUnavailable(
-            f"解析 {pkg} 需要 docs 依赖（缺失模块 {module}）。"
-            "安装: uv sync --extra docs"
+            t(
+                f"Parsing {pkg} requires the docs extra (missing module {module}). Install: uv sync --extra docs",
+                f"解析 {pkg} 需要 docs 依赖（缺失模块 {module}）。安装: uv sync --extra docs",
+            )
         ) from e
 
 
@@ -116,7 +120,10 @@ def _read_spreadsheet(path: Path, sheet: str | None = None, nrows: int | None = 
             continue
     if last_err is not None:
         raise ExtractorUnavailable(
-            "解析 Excel 需要 python-calamine 或 openpyxl。安装: uv sync --extra docs"
+            t(
+                "Parsing Excel requires python-calamine or openpyxl. Install: uv sync --extra docs",
+                "解析 Excel 需要 python-calamine 或 openpyxl。安装: uv sync --extra docs",
+            )
         ) from last_err
     # default engine as last resort
     return pd, pd.read_excel(path, **kwargs)
@@ -172,7 +179,7 @@ def df_to_markdown(df, max_rows: int = 50) -> str:
         cells = [_cell(v).replace("|", "\\|").replace("\n", " ") for v in row]
         out.append("| " + " | ".join(cells) + " |")
     if len(df) > max_rows:
-        out.append(f"\n…（仅显示前 {max_rows} 行，共 {len(df)} 行）")
+        out.append(t(f"\n…(showing first {max_rows} of {len(df)} rows)", f"\n…（仅显示前 {max_rows} 行，共 {len(df)} 行）"))
     return "\n".join(out)
 
 
@@ -201,10 +208,13 @@ def _extract_spreadsheet(path: Path, max_rows: int) -> Extracted:
         frames = {path.stem: frames}
     parts = []
     for name, df in frames.items():
-        parts.append(f"## Sheet: {name}（{len(df)} 行 × {len(df.columns)} 列）\n")
+        parts.append(t(f"## Sheet: {name} ({len(df)} rows × {len(df.columns)} cols)\n", f"## Sheet: {name}（{len(df)} 行 × {len(df.columns)} 列）\n"))
         parts.append(df_to_markdown(df, max_rows=max_rows))
         if len(df) >= LOAD_MAX_ROWS:
-            parts.append(f"\n…（表过大，仅载入前 {LOAD_MAX_ROWS:,} 行；全量分析请用 bash + python 直读原文件）")
+            parts.append(t(
+                f"\n…(table too large, loaded first {LOAD_MAX_ROWS:,} rows; for full analysis use bash + python on the original file)",
+                f"\n…（表过大，仅载入前 {LOAD_MAX_ROWS:,} 行；全量分析请用 bash + python 直读原文件）",
+            ))
         parts.append("")
     return Extracted(
         kind="spreadsheet",
@@ -218,12 +228,15 @@ def _extract_table(path: Path, max_rows: int) -> Extracted:
     try:
         df = read_table(path)
     except Exception as e:
-        raise UnsupportedFormat(f"无法解析 CSV/TSV: {e}") from e
-    md = f"## {path.name}（{len(df)} 行 × {len(df.columns)} 列）\n\n" + df_to_markdown(
+        raise UnsupportedFormat(t(f"Failed to parse CSV/TSV: {e}", f"无法解析 CSV/TSV: {e}")) from e
+    md = t(f"## {path.name} ({len(df)} rows × {len(df.columns)} cols)\n\n", f"## {path.name}（{len(df)} 行 × {len(df.columns)} 列）\n\n") + df_to_markdown(
         df, max_rows=max_rows
     )
     if len(df) >= LOAD_MAX_ROWS:
-        md += f"\n\n…（表过大，仅载入前 {LOAD_MAX_ROWS:,} 行；全量分析请用 bash + python 直读原文件）"
+        md += t(
+            f"\n\n…(table too large, loaded first {LOAD_MAX_ROWS:,} rows; for full analysis use bash + python on the original file)",
+            f"\n\n…（表过大，仅载入前 {LOAD_MAX_ROWS:,} 行；全量分析请用 bash + python 直读原文件）",
+        )
     return Extracted(
         kind="table",
         markdown=md,
@@ -313,7 +326,7 @@ def _extract_pptx(path: Path, max_chars: int) -> Extracted:
         if slide.has_notes_slide:
             notes = (slide.notes_slide.notes_text_frame.text or "").strip()
             if notes:
-                out.append(f"> 备注: {notes}")
+                out.append(t(f"> Note: {notes}", f"> 备注: {notes}"))
         out.append("")
     md = "\n".join(out)[:max_chars]
     props = prs.core_properties
@@ -365,7 +378,7 @@ def extract(path: str | Path, max_rows: int = 50, max_chars: int = 200_000) -> E
     """Extract a file into markdown + metadata. Raises on unknown/unsupported."""
     p = Path(path).expanduser()
     if not p.is_file():
-        raise FileNotFoundError(f"文件不存在: {p}")
+        raise FileNotFoundError(t(f"File not found: {p}", f"文件不存在: {p}"))
     kind = classify(p)
     if kind == "spreadsheet":
         return _extract_spreadsheet(p, max_rows=max_rows)
@@ -381,7 +394,7 @@ def extract(path: str | Path, max_rows: int = 50, max_chars: int = 200_000) -> E
         return _extract_text(p, max_chars=max_chars, kind=kind)
     parseable = sorted(e for e, k in _KIND_BY_EXT.items() if k != "image")
     raise UnsupportedFormat(
-        f"不支持的文件格式: {p.suffix}。支持: {', '.join(parseable)}"
+        t(f"Unsupported file format: {p.suffix}. Supported: {', '.join(parseable)}", f"不支持的文件格式: {p.suffix}。支持: {', '.join(parseable)}")
     )
 
 
@@ -413,4 +426,4 @@ def schema_summary(path: str | Path, sample_rows: int = 5) -> dict:
                 [_cell(v) for v in row] for _, row in df.head(sample_rows).iterrows()
             ]
         return {"kind": kind, "sheets": sheets}
-    raise UnsupportedFormat(f"schema_summary 仅支持表格类文件，当前: {p.suffix}")
+    raise UnsupportedFormat(t(f"schema_summary only supports table-like files, got: {p.suffix}", f"schema_summary 仅支持表格类文件，当前: {p.suffix}"))

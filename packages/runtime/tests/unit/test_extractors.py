@@ -183,7 +183,7 @@ def test_extract_pptx(tmp_path):
     assert "## Slide 2" in res.markdown
     assert "欢迎" in res.markdown
     assert "正文内容" in res.markdown
-    assert "> 备注: 演讲备注" in res.markdown
+    assert "> Note: 演讲备注" in res.markdown
     assert res.metadata["slides"] == 2
     assert res.metadata["title"] == "产品演示"
 

@@ -42,6 +42,8 @@ from fastapi import APIRouter
 from . import code as code_panel
 from .code import CodeAccessError, _err, _norm_rel, _session_ctx, resolve_code_target
 
+from ..lang import t
+
 router = APIRouter()
 
 #: One path component may be at most this many bytes (design §4.6: ≤255 bytes).
@@ -90,15 +92,15 @@ def _name_error(name: str) -> str | None:
     an embedded separator or a NUL would be a problem even inside a root.
     """
     if not name:
-        return "名称不能为空"
+        return t("Name cannot be empty", "名称不能为空")
     if name in (".", ".."):
-        return "名称不能是 . 或 .."
+        return t("Name cannot be . or ..", "名称不能是 . 或 ..")
     if "/" in name or "\\" in name:
-        return "名称不能包含路径分隔符"
+        return t("Name cannot contain path separators", "名称不能包含路径分隔符")
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in name):
-        return "名称不能包含控制字符"
+        return t("Name cannot contain control characters", "名称不能包含控制字符")
     if len(name.encode("utf-8")) > NAME_MAX_BYTES:
-        return "名称过长（超过 255 字节）"
+        return t("Name is too long (over 255 bytes)", "名称过长（超过 255 字节）")
     return None
 
 
@@ -135,7 +137,9 @@ def _ctx_or_error(body: dict) -> tuple[dict | None, dict | None]:
     )
     if ctx is None:
         return None, _err(
-            "unknown-root", f"会话不存在或已被删除：{body.get('session_id')}"
+            "unknown-root",
+            t(f"Session not found or deleted: {body.get('session_id')}",
+              f"会话不存在或已被删除：{body.get('session_id')}"),
         )
     return ctx, None
 
@@ -164,7 +168,7 @@ async def code_mkdir(req: dict) -> dict:
     path = str(body.get("path") or "")
     kind = str(body.get("kind") or "dir").strip() or "dir"
     if kind not in ("dir", "file"):
-        return _err("bad-name", f"未知的 kind：{kind!r}")
+        return _err("bad-name", t(f"Unknown kind: {kind!r}", f"未知的 kind：{kind!r}"))
 
     parent_rel, name = _split_rel(path)
     bad = _name_error(name)
@@ -188,10 +192,14 @@ async def code_mkdir(req: dict) -> dict:
     except CodeAccessError as e:
         return _err(e.code, e.message)
     if not parent.is_dir():
-        return _err("not-directory", f"上级目录不存在：{parent_rel!r}")
+        return _err("not-directory",
+                    t(f"Parent directory does not exist: {parent_rel!r}",
+                      f"上级目录不存在：{parent_rel!r}"))
 
     if target.exists():
-        return _err("exists", f"已存在同名条目：{_norm_rel(path)!r}")
+        return _err("exists",
+                    t(f"An entry with the same name already exists: {_norm_rel(path)!r}",
+                      f"已存在同名条目：{_norm_rel(path)!r}"))
 
     try:
         if kind == "file":
@@ -202,9 +210,11 @@ async def code_mkdir(req: dict) -> dict:
         else:
             target.mkdir()
     except FileExistsError:
-        return _err("exists", f"已存在同名条目：{_norm_rel(path)!r}")
+        return _err("exists",
+                    t(f"An entry with the same name already exists: {_norm_rel(path)!r}",
+                      f"已存在同名条目：{_norm_rel(path)!r}"))
     except OSError as e:
-        return _err("denied-path", f"无法创建：{e}")
+        return _err("denied-path", t(f"Failed to create: {e}", f"无法创建：{e}"))
     return {"ok": True, "path": _norm_rel(path), "entry": code_panel._entry(target)}
 
 
@@ -237,9 +247,13 @@ async def _relocate(body: dict, *, what: str) -> dict:
 
     # Rule: a root is never renamed or moved (both ends).
     if not src_rel:
-        return _err("root-immutable", "工作区根自身不可重命名或移动")
+        return _err("root-immutable",
+                    t("The workspace root itself cannot be renamed or moved",
+                      "工作区根自身不可重命名或移动"))
     if not dst_rel:
-        return _err("root-immutable", "不能把条目移动到根自身")
+        return _err("root-immutable",
+                    t("An entry cannot be moved to the root itself",
+                      "不能把条目移动到根自身"))
 
     parent_rel, name = _split_rel(dst_rel)
     bad = _name_error(name)
@@ -251,7 +265,8 @@ async def _relocate(body: dict, *, what: str) -> dict:
     except CodeAccessError as e:
         return _err(e.code, e.message)
     if not src.exists():
-        return _err("absent", f"条目已不存在：{src_rel!r}")
+        return _err("absent",
+                    t(f"Entry no longer exists: {src_rel!r}", f"条目已不存在：{src_rel!r}"))
 
     try:
         dst, _droot = _resolve(ctx, root, dst_in)
@@ -259,9 +274,12 @@ async def _relocate(body: dict, *, what: str) -> dict:
     except CodeAccessError as e:
         return _err(e.code, e.message)
     if not dparent.is_dir():
-        return _err("not-directory", f"目标上级目录不存在：{parent_rel!r}")
+        return _err("not-directory",
+                    t(f"Target parent directory does not exist: {parent_rel!r}",
+                      f"目标上级目录不存在：{parent_rel!r}"))
     if dst.exists():
-        return _err("exists", f"目标已存在：{dst_rel!r}")
+        return _err("exists",
+                    t(f"Target already exists: {dst_rel!r}", f"目标已存在：{dst_rel!r}"))
 
     # A directory cannot be moved inside itself (``os.rename`` would raise, or
     # worse, succeed partially on a platform that allows it). Compared on the
@@ -270,14 +288,16 @@ async def _relocate(body: dict, *, what: str) -> dict:
         src_real = src.resolve()
         dst_real = dst.resolve()
         if dst_real == src_real or dst_real.is_relative_to(src_real):
-            return _err("invalid-target", "不能把目录移动到它自身内部")
+            return _err("invalid-target",
+                        t("Cannot move a directory into itself",
+                          "不能把目录移动到它自身内部"))
 
     try:
         # ``os.rename`` on macOS/Linux either moves atomically or fails; it never
         # overwrites here because ``dst`` does not exist (checked above).
         src.rename(dst)
     except OSError as e:
-        return _err("denied-path", f"无法{what}：{e}")
+        return _err("denied-path", t(f"Failed to {what}: {e}", f"无法{what}：{e}"))
     return {
         "ok": True,
         "from": src_rel,
@@ -289,13 +309,13 @@ async def _relocate(body: dict, *, what: str) -> dict:
 @router.post("/api/code/rename")
 async def code_rename(req: dict) -> dict:
     """Rename / relocate one entry within its root (see ``_relocate``)."""
-    return await _relocate(_body(req), what="重命名")
+    return await _relocate(_body(req), what=t("rename", "重命名"))
 
 
 @router.post("/api/code/move")
 async def code_move(req: dict) -> dict:
     """Drag-and-drop move — same-root only (see ``_relocate``)."""
-    return await _relocate(_body(req), what="移动")
+    return await _relocate(_body(req), what=t("move", "移动"))
 
 
 # ---- POST /api/code/delete -------------------------------------------------
@@ -331,7 +351,9 @@ async def code_delete(req: dict) -> dict:
     rel = _norm_rel(path_in)
 
     if not rel:
-        return _err("root-immutable", "工作区根自身不可删除")
+        return _err("root-immutable",
+                    t("The workspace root itself cannot be deleted",
+                      "工作区根自身不可删除"))
 
     try:
         # RAW, for the same reason as `_relocate`: normalization would drop an
@@ -340,7 +362,7 @@ async def code_delete(req: dict) -> dict:
     except CodeAccessError as e:
         return _err(e.code, e.message)
     if not target.exists() and not target.is_symlink():
-        return _err("absent", f"条目已不存在：{rel!r}")
+        return _err("absent", t(f"Entry no longer exists: {rel!r}", f"条目已不存在：{rel!r}"))
 
     # `check_only` runs the FENCE and reports the count WITHOUT deleting.
     #

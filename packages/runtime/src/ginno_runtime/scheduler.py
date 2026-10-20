@@ -852,9 +852,14 @@ async def _run_final_output(run_id: str, run: dict) -> str:
     return ""
 
 
+# (EN, ZH) system-prompt pair for the ≤160-char run summary; selected at call
+# time via t() (scheduler runs outside any request → settings-resolved locale).
 _SUMMARY_SYSTEM = (
+    "You are an execution summarizer. Compress the given execution result into "
+    "a summary of at most 160 characters. Output only the summary text itself "
+    "— no prefix, quotes, or explanation.",
     "你是执行摘要助手。把给定的执行结果压缩成不超过 160 字的中文摘要，"
-    "只输出摘要文本本身，不要任何前缀、引号或解释。"
+    "只输出摘要文本本身，不要任何前缀、引号或解释。",
 )
 
 
@@ -878,7 +883,7 @@ async def _llm_summary(task: dict, row: dict, text: str) -> None:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         resp = await model.ainvoke(
-            [SystemMessage(content=_SUMMARY_SYSTEM), HumanMessage(content=text[:4000])]
+            [SystemMessage(content=t(*_SUMMARY_SYSTEM)), HumanMessage(content=text[:4000])]
         )
         from .graph import text_of_content
 
@@ -975,7 +980,9 @@ async def scheduler_loop() -> None:
     have_lease = _try_acquire_lease()
     if not have_lease:
         _mark_standby()
-        _log.info("scheduler_lease_held_elsewhere; standby(持有者退出后接管)")
+        _log.info(
+            "scheduler_lease_held_elsewhere; standby (takes over after holder exits)"
+        )
     try:
         while True:
             try:

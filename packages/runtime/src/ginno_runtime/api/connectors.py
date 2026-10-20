@@ -19,6 +19,8 @@ from .. import paths
 from ..connectors import ensure_builtin_connectors
 from ..connectors import registry as conn_registry
 
+from ..lang import t
+
 router = APIRouter()
 
 
@@ -232,7 +234,8 @@ async def _mcp_call_tool(name: str, args: dict) -> dict:
     try:
         if name == "browser_handoff":
             return {"content": [{"type": "text", "text": (
-                "handoff 等待不适用于外部调用;请用 browser_stop 等工具。")}]}
+                t("handoff wait is not applicable to external calls; use tools like browser_stop.",
+                  "handoff 等待不适用于外部调用;请用 browser_stop 等工具。"))}]}
         res = await _dispatch(name, args)
         if isinstance(res, list):  # already content blocks
             texts = [b.get("text", "") for b in res

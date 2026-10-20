@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..lang import t
+
 from . import extractors as ex
 
 MAX_LIMIT = 500
@@ -70,7 +72,7 @@ def build_preview(
     if kind in ("document", "presentation", "pdf", "data", "text"):
         res = ex.extract(p)
         return {"kind": kind, "markdown": res.markdown, "metadata": res.metadata}
-    raise ex.UnsupportedFormat(f"不支持预览的文件格式: {p.suffix}")
+    raise ex.UnsupportedFormat(t(f"Unsupported file format for preview: {p.suffix}", f"不支持预览的文件格式: {p.suffix}"))
 
 
 def build_csv_export(
@@ -103,5 +105,5 @@ def build_csv_export(
         df = ex.read_table(p)
         out_name = f"{stem}.csv"
     else:
-        raise ex.UnsupportedFormat(f"CSV 导出仅支持表格类文件: {p.suffix}")
+        raise ex.UnsupportedFormat(t(f"CSV export only supports table-like files: {p.suffix}", f"CSV 导出仅支持表格类文件: {p.suffix}"))
     return out_name, df.to_csv(index=False).encode("utf-8-sig")

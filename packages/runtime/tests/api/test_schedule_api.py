@@ -96,7 +96,9 @@ def test_create_task_interval_below_minimum_400(client):
     body = _prompt_task(schedule={"kind": "interval", "minutes": 4})
     r = client.post("/api/schedule/tasks", json=body)
     assert r.status_code == 400
-    assert "5 分钟" in r.json()["detail"]
+    # Bilingual validate message: whichever variant the env locale binds.
+    detail = r.json()["detail"]
+    assert "less than 5 minutes" in detail or "不能小于 5 分钟" in detail
 
 
 def test_create_task_weekdays_and_model(client):

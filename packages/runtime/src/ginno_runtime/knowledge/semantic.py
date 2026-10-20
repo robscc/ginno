@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import paths
+from ..lang import t
 
 if TYPE_CHECKING:
     from .types import KnowledgeConfig, WikiEntry
@@ -39,11 +40,20 @@ DEFAULT_EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-
 
 # ---- optional deps, probed once at import time ----
 _ST: Any = None
-_SEMANTIC_REASON = ""
+# (EN, ZH) degradation reason pair, selected at read time (semantic_available);
+# the exception tail (type name) is appended at read time so this stays an
+# all-literal bilingual tuple (module-level t() would freeze the startup
+# locale for the whole process lifetime).
+_SEMANTIC_REASON = (
+    "sentence-transformers is not installed "
+    "(uv sync --extra rag to enable semantic retrieval): ",
+    "sentence-transformers 未安装（uv sync --extra rag 以启用语义检索）: ",
+)
+_EXC_TAIL = ""
 try:
     from sentence_transformers import SentenceTransformer as _ST  # type: ignore
 except Exception as e:  # noqa: BLE001
-    _SEMANTIC_REASON = f"sentence-transformers 未安装（uv sync --extra rag 以启用语义检索）: {type(e).__name__}"
+    _EXC_TAIL = type(e).__name__
 
 try:
     import lancedb as _lancedb  # type: ignore
@@ -53,7 +63,8 @@ except Exception:  # noqa: BLE001
 
 def semantic_available() -> tuple[bool, str]:
     """Whether embeddings can run at all (i.e. sentence-transformers present)."""
-    return (_ST is not None, _SEMANTIC_REASON)
+    reason = t(*_SEMANTIC_REASON) + _EXC_TAIL
+    return (_ST is not None, reason)
 
 
 def _text_for(e: "WikiEntry") -> str:

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...lang import t
+
 
 def _sum(records: list[dict], key: str) -> float:
     return sum(float(r.get(key) or 0) for r in records)
@@ -39,7 +41,7 @@ def _provider_stats(records: list[dict], list_prices: dict, provider: str) -> di
         if blended > 0 and payable > 0:
             tokens = payable / blended * 1000
             estimated_tokens = True
-            caveats.append(f"{provider}: 账单无 token 用量，按刊例混合单价估算 tokens")
+            caveats.append(t(f"{provider}: bill has no token usage; tokens estimated from list-price blended unit price", f"{provider}: 账单无 token 用量，按刊例混合单价估算 tokens"))
     price_per_1k = (payable / tokens * 1000) if tokens else None
     discount_rate = (discount / original) if original else None
     return {
@@ -84,11 +86,11 @@ def normalize_and_compare(args: dict) -> dict:
         winner = min(priced, key=lambda s: s["effective_per_1k_tokens"])["provider"]
     elif len(priced) == 1:
         winner = priced[0]["provider"]
-        caveats.append("仅一方有有效单价，胜负按可用数据判定")
+        caveats.append(t("Only one side has an effective unit price; the winner is decided on available data", "仅一方有有效单价，胜负按可用数据判定"))
     else:
         # No token basis at all — compare total payable as a last resort.
         winner = min(stats.values(), key=lambda s: s["payable"])["provider"]
-        caveats.append("双方均无 token 用量/刊例，退化为比较应付总额")
+        caveats.append(t("Neither side has token usage/list prices; falling back to comparing total payable", "双方均无 token 用量/刊例，退化为比较应付总额"))
 
     # Same-workload cost: what each provider would charge for the COMBINED
     # observed token volume (only meaningful where a unit price exists).

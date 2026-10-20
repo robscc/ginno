@@ -31,6 +31,7 @@ from ..connectors.registry import (
     STATUS_DISCONNECTED,
     STATUS_ERROR,
 )
+from ..lang import t
 
 log = logging.getLogger("ginno.browser.relay")
 
@@ -89,13 +90,18 @@ async def invoke_tool(tool: str, arguments: dict,
                       slow: bool = False) -> dict:
     """Route one tool call to the extension. Raises RelayError on failure."""
     if not _state.connected:
-        raise RelayError("浏览器扩展未连接。请打开 连接器 页面查看安装指引,"
-                         "或让用户用 Ginno 自带的浏览器实例。")
+        raise RelayError(t(
+            "Browser extension not connected. Open the Connectors page for "
+            "installation instructions, or have the user use Ginno's built-in "
+            "browser instance.",
+            "浏览器扩展未连接。请打开 连接器 页面查看安装指引,"
+            "或让用户用 Ginno 自带的浏览器实例。"))
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
     try:
         _state._queue.put_nowait((_state._next_id, {"tool": tool, "arguments": arguments}, fut))
     except asyncio.QueueFull:
-        raise RelayError("工具命令队列已满(QUEUE_FULL),请稍后重试。") from None
+        raise RelayError(t("Tool command queue full (QUEUE_FULL), please retry later.",
+                           "工具命令队列已满(QUEUE_FULL),请稍后重试。")) from None
     mid = _state._next_id
     _state._next_id += 1
     timeout = SCREENSHOT_TIMEOUT_S if slow else INVOKE_TIMEOUT_S
@@ -103,8 +109,11 @@ async def invoke_tool(tool: str, arguments: dict,
         return await asyncio.wait_for(fut, timeout)
     except TimeoutError:
         _state._pending.pop(mid, None)
-        raise RelayError("扩展执行超时(QUEUE_TIMEOUT)。若页面卡住,可让用户检查 Chrome。"
-                         ) from None
+        raise RelayError(t(
+            "Extension execution timed out (QUEUE_TIMEOUT). If the page seems "
+            "stuck, ask the user to check Chrome.",
+            "扩展执行超时(QUEUE_TIMEOUT)。若页面卡住,可让用户检查 Chrome。")
+        ) from None
 
 
 class RelayError(RuntimeError):
@@ -144,7 +153,8 @@ async def _queue_worker() -> None:
         mid, params, fut = await _state._queue.get()
         if _state.ws is None or fut.done():
             if not fut.done():
-                fut.set_exception(RelayError("扩展连接已断开"))
+                fut.set_exception(RelayError(t("Extension connection lost",
+                                               "扩展连接已断开")))
             continue
         try:
             await _state.ws.send_text(json.dumps(
@@ -152,7 +162,8 @@ async def _queue_worker() -> None:
             _state._pending[mid] = fut
         except Exception as e:  # noqa: BLE001
             if not fut.done():
-                fut.set_exception(RelayError(f"发送到扩展失败: {e}"))
+                fut.set_exception(RelayError(t(f"Failed to send to extension: {e}",
+                                               f"发送到扩展失败: {e}")))
 
 
 async def extension_endpoint(ws: WebSocket) -> None:
@@ -246,7 +257,8 @@ async def extension_endpoint(ws: WebSocket) -> None:
             _state.ws = None
             for fut in _state._pending.values():
                 if not fut.done():
-                    fut.set_exception(RelayError("扩展连接已断开"))
+                    fut.set_exception(RelayError(t("Extension connection lost",
+                                                   "扩展连接已断开")))
             _state._pending.clear()
             _report_status(status=STATUS_DISCONNECTED)
 

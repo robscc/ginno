@@ -86,7 +86,10 @@ def test_upsert_patch_delete(isolated_home):
 # ---- 校验 -------------------------------------------------------------------
 def test_validate_interval_minimum():
     errs = store.validate_task(_task(schedule={"kind": "interval", "minutes": 4}))
-    assert any("5 分钟" in e for e in errs)
+    # Bilingual validate messages: assert whichever variant the env locale binds.
+    assert any(
+        "less than 5 minutes" in e or "不能小于 5 分钟" in e for e in errs
+    )
     assert store.validate_task(_task(schedule={"kind": "interval", "minutes": 5})) == []
     assert store.validate_task(_task(schedule={"kind": "interval", "minutes": 30})) == []
 

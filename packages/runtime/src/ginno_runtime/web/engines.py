@@ -17,6 +17,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
+from ..lang import t
+
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -84,7 +86,10 @@ def _ddg(query: str, cfg: dict, timeout_s: float) -> list[SearchHit]:
             )
         )
     if not hits and body and "result__a" not in body:
-        raise EngineError("DuckDuckGo 返回了无法解析的页面（可能被限流），稍后重试或配置其它引擎")
+        raise EngineError(t(
+            "DuckDuckGo returned an unparsable page (possibly rate-limited); retry later or configure another engine",
+            "DuckDuckGo 返回了无法解析的页面（可能被限流），稍后重试或配置其它引擎",
+        ))
     return hits
 
 
@@ -106,7 +111,10 @@ def _ddg_unwrap(href: str) -> str:
 def _searxng(query: str, cfg: dict, timeout_s: float) -> list[SearchHit]:
     base = (cfg.get("base_url") or "").rstrip("/")
     if not base:
-        raise EngineError("searxng 未配置 base_url（settings.web.engines.searxng.base_url）")
+        raise EngineError(t(
+            "searxng base_url not configured (settings.web.engines.searxng.base_url)",
+            "searxng 未配置 base_url（settings.web.engines.searxng.base_url）",
+        ))
     url = base + "/search?" + urllib.parse.urlencode({"q": query, "format": "json"})
     data = json.loads(_http_get(url, timeout_s, {"Accept": "application/json"}).decode("utf-8", "replace"))
     return [
@@ -123,7 +131,10 @@ def _searxng(query: str, cfg: dict, timeout_s: float) -> list[SearchHit]:
 def _tavily(query: str, cfg: dict, timeout_s: float) -> list[SearchHit]:
     key = cfg.get("api_key") or ""
     if not key:
-        raise EngineError("tavily 未配置 api_key（settings.web.engines.tavily.api_key）")
+        raise EngineError(t(
+            "tavily api_key not configured (settings.web.engines.tavily.api_key)",
+            "tavily 未配置 api_key（settings.web.engines.tavily.api_key）",
+        ))
     data = _http_post_json(
         "https://api.tavily.com/search",
         {"api_key": key, "query": query, "max_results": 10, "include_answer": False},
@@ -156,7 +167,7 @@ ENGINE_NAMES = tuple(ENGINES)
 def search(query: str, engine: str, cfg: dict, timeout_s: float, max_results: int) -> list[SearchHit]:
     fn = ENGINES.get(engine)
     if fn is None:
-        raise EngineError(f"未知搜索引擎 {engine!r}，可用: {', '.join(ENGINES)}")
+        raise EngineError(t(f"Unknown search engine {engine!r}, available: {', '.join(ENGINES)}", f"未知搜索引擎 {engine!r}，可用: {', '.join(ENGINES)}"))
     hits = fn(query, cfg, timeout_s)
     out = [h for h in hits if h.url.startswith(("http://", "https://"))]
     return out[: max(1, min(max_results, 10))]

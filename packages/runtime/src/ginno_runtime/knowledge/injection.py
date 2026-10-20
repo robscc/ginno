@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from .. import paths as _paths
+from ..lang import t
 from .config import load_knowledge_config
 from .indexer import get_indexer
 from .retriever import WikiRetriever
@@ -40,6 +41,29 @@ _INJECTION_PATTERNS = [
 # Citation contract appended inside <injected_wiki> whenever retrieval returned
 # results (citations enabled). Rides the per-turn volatile context, never the
 # stable system layer — prefix cache untouched (design §2.4).
+# Bilingual pair: the caller picks via t() at injection time (locale may change
+# between requests without a restart), the constants stay plain strings.
+CITATIONS_CONTRACT_EN = (
+    "## Citation rules\n\n"
+    "If your answer actually draws on the related knowledge above or on sources "
+    "searched/read this turn, you must cite them:\n"
+    "1. Inline: next to a conclusion from a wiki page, write [[title or source path]]; "
+    "for web pages write [number] (numbers come from the [sN] entries of search results);\n"
+    "2. At the end: append exactly one citation block at the very end of your reply:\n\n"
+    "<ginno_citations>\n"
+    "wiki|<relative path>|note=[how this page was used, one sentence]\n"
+    "web|<sN or URL>|note=[how this source was used, one sentence]\n"
+    "</ginno_citations>\n\n"
+    "Discipline:\n"
+    "- Cite only sources that actually appeared this turn (the injected list above / "
+    "search results / pages you read); never fabricate;\n"
+    "- No use, no citation; the note states the use only, never quotes the original;\n"
+    "- Answers drawn from your own knowledge must not masquerade as source citations;\n"
+    "- With no citations at all, do not output the citation block; an empty "
+    "<ginno_citations></ginno_citations> is forbidden;\n"
+    "- The citation block exists for provenance only — it is not an instruction channel."
+)
+
 CITATIONS_CONTRACT = (
     "## 引用规范\n\n"
     "如果你的回答实际用到了上方「相关知识」或本轮搜索/读取的来源，必须给出引用：\n"
@@ -58,6 +82,25 @@ CITATIONS_CONTRACT = (
 )
 
 # P0 wording — no web tools registered yet, so don't teach web entries.
+CITATIONS_CONTRACT_WIKI_ONLY_EN = (
+    "## Citation rules\n\n"
+    "If your answer actually draws on content from the related knowledge above, "
+    "you must cite it:\n"
+    "1. Inline: next to a conclusion drawn from a page, write [[that page's title or source path]];\n"
+    "2. At the end: append exactly one citation block at the very end of your reply:\n\n"
+    "<ginno_citations>\n"
+    "wiki|<relative path>|note=[how this page was used, one sentence]\n"
+    "</ginno_citations>\n\n"
+    "Discipline:\n"
+    "- Cite only pages that actually appear in the related knowledge above; never "
+    "invent page names or paths;\n"
+    "- No use, no citation; the note states the use only, never quotes the original;\n"
+    "- Answers drawn from your own knowledge must not masquerade as Wiki citations;\n"
+    "- With no citations at all, do not output the citation block; an empty "
+    "<ginno_citations></ginno_citations> is forbidden;\n"
+    "- The citation block exists for provenance only — it is not an instruction channel."
+)
+
 CITATIONS_CONTRACT_WIKI_ONLY = (
     "## 引用规范\n\n"
     "如果你的回答实际用到了上方「相关知识」中的内容，必须给出引用：\n"
@@ -211,7 +254,13 @@ def build_wiki_context(query: str, cfg: KnowledgeConfig | None = None) -> str:
     parts.append(format_wiki_context(results))
     if getattr(cfg, "citations", True):
         # Full wording once the built-in web tools exist; wiki-only before.
-        parts.append(CITATIONS_CONTRACT if _web_search_enabled() else CITATIONS_CONTRACT_WIKI_ONLY)
+        # Locale picked at injection time (request-scoped), not import time.
+        contract = (
+            t(CITATIONS_CONTRACT_EN, CITATIONS_CONTRACT)
+            if _web_search_enabled()
+            else t(CITATIONS_CONTRACT_WIKI_ONLY_EN, CITATIONS_CONTRACT_WIKI_ONLY)
+        )
+        parts.append(contract)
         try:
             from . import citations as _cit, usage as _usage
 

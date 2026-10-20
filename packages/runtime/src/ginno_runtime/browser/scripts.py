@@ -214,8 +214,8 @@ PAGE_BRIDGE_JS = r"""
       var tag = el.tagName.toLowerCase();
       if (tag !== "input" && tag !== "select" && tag !== "textarea" &&
           !el.isContentEditable)
-        return { success: false, error: "ref 指向 " + tag +
-          " 元素,不是表单控件。请用 browser_read_page/browser_find 找到 input/select/textarea 的 ref。" };
+        return { success: false, error: "ref points to <" + tag +
+          ">, which is not a form control. Use browser_read_page or browser_find to get a ref to an input/select/textarea element." };
       if (tag === "select") {
         var ok = false;
         for (var i = 0; i < el.options.length; i++) {

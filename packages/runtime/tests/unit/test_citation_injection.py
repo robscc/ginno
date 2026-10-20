@@ -10,10 +10,13 @@ from ginno_runtime.knowledge import citations as cit
 from ginno_runtime.knowledge import usage
 from ginno_runtime.knowledge.injection import (
     CITATIONS_CONTRACT,
+    CITATIONS_CONTRACT_EN,
     CITATIONS_CONTRACT_WIKI_ONLY,
+    CITATIONS_CONTRACT_WIKI_ONLY_EN,
     build_wiki_context,
     sanitize_for_memory,
 )
+from ginno_runtime.lang import t
 
 pytestmark = pytest.mark.unit
 
@@ -28,10 +31,23 @@ def test_contract_appended_and_injection_counted(kb_vault):
     # Full wording: the web block defaults to enabled=True, and the contract
     # gate now delegates to the SAME reader that registers the web tools (one
     # reader owns the gate — tools and contract can never disagree again).
-    assert "引用规范" in ctx
+    # Bilingual contract: assert the bound-locale variant (suite pins EN).
+    assert "Citation rules" in ctx or "引用规范" in ctx
     assert "<ginno_citations>" in ctx
-    assert "wiki|<相对路径>" in ctx
-    assert ctx.endswith(CITATIONS_CONTRACT)
+    assert (
+        "wiki|<relative path>" in ctx or "wiki|<相对路径>" in ctx
+    )
+    from ginno_runtime.knowledge.injection import (
+        CITATIONS_CONTRACT_EN as _CT_EN,
+        CITATIONS_CONTRACT as _CT,
+        CITATIONS_CONTRACT_WIKI_ONLY_EN as _CTW_EN,
+        CITATIONS_CONTRACT_WIKI_ONLY as _CTW,
+    )
+    from ginno_runtime.lang import current_locale
+
+    contract = _CT_EN if current_locale() == "en" else _CT
+    wiki_only = _CTW_EN if current_locale() == "en" else _CTW
+    assert ctx.endswith(contract)
     assert "[sN]" in ctx
     # injection telemetry
     data = json.loads(usage.usage_path().read_text())
@@ -48,7 +64,7 @@ def test_wiki_only_wording_when_web_disabled(kb_vault, isolated_home):
     settings["web"] = {"enabled": False}
     (isolated_home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     ctx = build_wiki_context("权限节点怎么工作")
-    assert ctx.endswith(CITATIONS_CONTRACT_WIKI_ONLY)
+    assert ctx.endswith(t(CITATIONS_CONTRACT_WIKI_ONLY_EN, CITATIONS_CONTRACT_WIKI_ONLY))
     assert "[sN]" not in ctx
 
 
@@ -57,7 +73,7 @@ def test_full_wording_when_web_enabled(kb_vault, isolated_home):
     settings["web"] = {"enabled": True}
     (isolated_home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
     ctx = build_wiki_context("权限节点怎么工作")
-    assert ctx.endswith(CITATIONS_CONTRACT)
+    assert ctx.endswith(t(CITATIONS_CONTRACT_EN, CITATIONS_CONTRACT))
     assert "[sN]" in ctx
 
 

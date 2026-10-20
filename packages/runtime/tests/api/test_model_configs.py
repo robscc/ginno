@@ -143,7 +143,7 @@ def test_put_model_configs_validation_errors(client):
     dup = [_relay("relay-a"), _relay("relay-a")]
     r = client.put("/api/model_configs", json={"configs": dup})
     assert r.status_code == 400
-    assert "重复" in r.json()["error"]
+    assert "Duplicate" in r.json()["error"]
     bad_proto = _relay("relay-a", protocol="bedrock")
     r = client.put("/api/model_configs", json={"configs": [bad_proto]})
     assert r.status_code == 400
@@ -637,7 +637,7 @@ def test_list_models_seam_empty_key(monkeypatch):
     r = prov_mod._list_models(
         {"protocol": "openai-compatible", "base_url": "https://x/v1", "api_key": "  "}
     )
-    assert r["ok"] is False and "API Key" in r["error"]
+    assert r["ok"] is False and "API key" in r["error"]
 
 
 def test_list_models_endpoint_ok(client, monkeypatch):

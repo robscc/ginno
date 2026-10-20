@@ -25,6 +25,8 @@ from ..knowledge.semantic import (
     reset_semantic as _reset_kb_semantic,
 )
 
+from ..lang import t
+
 router = APIRouter()
 
 
@@ -476,7 +478,7 @@ def kb_wiki_promote_preview(data: dict) -> dict:
     if not title:
         first = next(
             (ln.strip().lstrip("#-* ").strip() for ln in text.splitlines() if ln.strip()),
-            "记忆",
+            t("Memory", "记忆"),
         )
         title = first[:40]
 
