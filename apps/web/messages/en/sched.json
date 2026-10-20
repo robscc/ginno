@@ -195,7 +195,10 @@
       "forkBusy": "Forking…",
       "forkFailed": "Fork failed",
       "openForked": "Jump to conversation",
-      "openForkedTitle": "This run was already forked — open its conversation"
+      "openForkedTitle": "This run was already forked — open its conversation",
+      "backToRun": "Back to run",
+      "backToRunTitle": "Back to this run's shadow session replay",
+      "subUntitled": "Untitled subagent"
     },
     "notify": {
       "titleDone": "✓ {name}",

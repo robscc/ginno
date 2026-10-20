@@ -14,9 +14,15 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, Loader2, MessageSquarePlus } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
-import type { ScheduleRun } from "@/lib/types";
+import type { ScheduleRun, SessionMeta } from "@/lib/types";
 import { ContextBlocks, UserBlocks, type Block } from "@/components/chat/blocks";
 import { AssistantBubble } from "@/components/chat/streamCards";
+import { SubagentOpenOverride } from "@/components/chat/blocks/subagentCards";
+import {
+  SUBAGENT_STATUS_META,
+  subagentStatusMeta,
+  useStatusLabel,
+} from "@/components/chat/blocks/types";
 import { fmtClock, fmtDayPrefix, fmtDuration, statusMeta } from "@/components/scheduled/shared";
 
 type HistoryMessage = {
@@ -60,16 +66,31 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
     return () => clearInterval(t);
   }, [run.status, run.task_id, run.run_id]);
 
-  // 拉影子会话全量消息（只读）。运行中每 5s 重拉——消息随执行流式落地，终态即停。
+  // ---- 子代理下钻（查看方式与影子会话同一套：只读回放，不进活跃会话）------
+  // 入口是 transcript 里的 subagent 发起/结果卡片（SubagentOpenOverride 改道
+  // 到这里）；栈结构支持嵌套 subagent 逐层进入，返回逐层弹出。
+  const [subStack, setSubStack] = useState<SessionMeta[]>([]);
+  useEffect(() => setSubStack([]), [snapshot.run_id]);
+  const focusSub = subStack[subStack.length - 1] ?? null;
+  const openSubReplay = (sid: string) => {
+    setSubStack((st) =>
+      st[st.length - 1]?.id === sid ? st : [...st, g.sessions.find((s) => s.id === sid) ?? ({ id: sid } as SessionMeta)],
+    );
+  };
+  const popSubReplay = () => setSubStack((st) => st.slice(0, -1));
+
+  // 拉当前视图会话（影子会话或下钻的子会话）的全量消息（只读）。运行中每 5s
+  // 重拉——消息随执行流式落地，终态即停。
+  const viewSessionId = focusSub?.id ?? run.session_id;
   useEffect(() => {
-    if (!run.session_id) {
+    if (!viewSessionId) {
       setMessages([]);
       return;
     }
     let stopped = false;
     const fetchOnce = () =>
       api
-        .getSessionHistory(run.session_id!)
+        .getSessionHistory(viewSessionId)
         .then((h) => {
           if (!alive.current || stopped) return;
           // ok:false 或空消息 = 会话已删（§4.2：记录保留、回放给「已删除」空态）。
@@ -92,7 +113,23 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
       stopped = true;
       if (timer !== undefined) clearInterval(timer);
     };
-  }, [run.session_id, run.status]);
+  }, [viewSessionId, run.status]);
+
+  // 子会话状态点：subagent 走 subagent.status；delegation 无该字段，按
+  // stop_reason 折算（running 期字面量即 "running"，与结果卡同一判定）。
+  const statusLabel = useStatusLabel();
+  const childStatusMeta = (s: SessionMeta) => {
+    if (s.type === "delegation") {
+      const stop = s.stop_reason ?? "";
+      if (!stop || stop === "running") return SUBAGENT_STATUS_META.running;
+      return stop === "error" || stop === "timeout"
+        ? SUBAGENT_STATUS_META.failed
+        : SUBAGENT_STATUS_META.done;
+    }
+    return subagentStatusMeta(s.subagent?.status);
+  };
+  // 下钻视图实时读 store（subagent.status 换挡无需重挂）。
+  const liveFocus = focusSub ? g.sessions.find((s) => s.id === focusSub.id) ?? focusSub : null;
 
   const meta = statusMeta(run.status);
   const dur =
@@ -143,8 +180,60 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* 顶栏：版式对齐 SubagentTopBar（streamCards.tsx） */}
+      {/* 顶栏：版式对齐 SubagentTopBar（streamCards.tsx）。下钻子会话时换
+          子代理版式（🤖 + goal + 状态 + 返回执行记录），回放仍是同一套只读
+          transcript。 */}
       <div className="border-b border-line bg-panel/60 px-6 py-2 text-xs">
+        {liveFocus ? (
+          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
+            <span className="shrink-0">🤖</span>
+            <span
+              className="min-w-0 max-w-[40%] truncate font-medium text-txt"
+              title={liveFocus.subagent?.goal || liveFocus.title || undefined}
+            >
+              {liveFocus.subagent?.goal || liveFocus.title || tr("view.subUntitled")}
+            </span>
+            {(() => {
+              const m = childStatusMeta(liveFocus);
+              const active =
+                liveFocus.subagent?.status === "running" ||
+                liveFocus.subagent?.status === "waiting" ||
+                (liveFocus.type === "delegation" &&
+                  (!liveFocus.stop_reason || liveFocus.stop_reason === "running"));
+              const label =
+                liveFocus.type === "delegation"
+                  ? statusLabel(
+                      !liveFocus.stop_reason || liveFocus.stop_reason === "running"
+                        ? "running"
+                        : liveFocus.stop_reason === "error" || liveFocus.stop_reason === "timeout"
+                          ? "failed"
+                          : "done",
+                    )
+                  : statusLabel(liveFocus.subagent?.status);
+              return (
+                <span
+                  className="flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-px"
+                  style={{ borderColor: m.color + "55", color: m.color }}
+                >
+                  {active && (
+                    <span
+                      className="h-1.5 w-1.5 animate-pulse rounded-full"
+                      style={{ background: m.color }}
+                    />
+                  )}
+                  {m.glyph} {label}
+                </span>
+              );
+            })()}
+            <button
+              onClick={popSubReplay}
+              title={tr("view.backToRunTitle")}
+              className="ml-auto flex shrink-0 items-center gap-1 rounded-md border border-line2 px-2 py-0.5 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+            >
+              <ArrowLeft className="h-3 w-3" /> {subStack.length > 1 ? tr("view.back") : tr("view.backToRun")}
+            </button>
+          </div>
+        ) : (
         <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
           <span className="shrink-0">⏰</span>
           <span className="min-w-0 max-w-[40%] truncate font-medium text-txt" title={run.task_name}>
@@ -205,20 +294,24 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
             </button>
           </div>
         </div>
-        {run.error && (
+        )}
+        {!liveFocus && run.error && (
           <div className="mx-auto mt-1 max-w-3xl truncate text-[11px] text-red" title={run.error}>
             {run.error}
           </div>
         )}
-        {forkError && (
+        {!liveFocus && forkError && (
           <div className="mx-auto mt-1 max-w-3xl truncate text-[11px] text-red" title={forkError}>
             {forkError}
           </div>
         )}
       </div>
 
-      {/* 主体：只读 transcript */}
+      {/* 主体：只读 transcript。卡片「查看对话/查看完整对话」经
+          SubagentOpenOverride 改道到本视图内部的只读下钻——影子子树不进
+          活跃会话。 */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
+        <SubagentOpenOverride.Provider value={{ open: openSubReplay }}>
         <div className="mx-auto flex max-w-3xl flex-col gap-5">
           {messages === null ? (
             <div className="flex h-40 items-center justify-center text-faint">
@@ -272,6 +365,7 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
             })
           )}
         </div>
+        </SubagentOpenOverride.Provider>
       </div>
     </div>
   );

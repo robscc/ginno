@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronRight, ClipboardList } from "lucide-react";
 import type { SessionMeta } from "@/lib/types";
@@ -55,6 +55,15 @@ export function SubagentKindBadges({
 // 主对话里的发起卡片 / 结果卡片。状态永远从 store 的会话元数据实时读——
 // subagent.status 事件刷新 store，卡片随之换挡，无需自己的事件订阅。
 
+/** 只读回放（定时任务影子会话等）的子代理入口改道：Provider 非空时，
+ *  「查看对话 / 查看完整对话」不再跳活跃会话（影子子树本就整类隐藏，
+ *  跳过去侧栏也无入口），改走回放视图内部的只读下钻——查看方式与
+ *  影子会话同一套（ScheduleRunView 注入）。 */
+export const SubagentOpenOverride = createContext<{ open(sessionId: string): void } | null>(null);
+export function useSubagentOpenOverride() {
+  return useContext(SubagentOpenOverride);
+}
+
 function subagentElapsed(from?: number): string {
   if (!from) return "";
   const s = Math.max(0, Math.round(Date.now() / 1000 - from));
@@ -78,7 +87,13 @@ export function SubagentSpawnCard({
   const status = sub?.status ?? "running";
   const meta = subagentStatusMeta(status);
   const active = status === "running" || status === "waiting";
+  const override = useSubagentOpenOverride();
   const openChild = () => {
+    // 只读回放语境：改道到回放视图内部的只读下钻，不切活跃会话。
+    if (override) {
+      override.open(block.sessionId);
+      return;
+    }
     // 与通知点击同一条路径：切会话 + 落到最新消息。
     g.setActiveSession(block.sessionId);
     if (window.location.pathname !== "/") router.push("/");
@@ -191,7 +206,13 @@ export function SubagentResultCard({
   const goal = sub?.goal || block.goal || "Subtask";
   const [confirmed, setConfirmed] = useState(() => isSubagentConfirmed(block.sessionId));
   const [problemOpen, setProblemOpen] = useState(false);
+  const override = useSubagentOpenOverride();
   const openChild = () => {
+    // 只读回放语境：改道到回放视图内部的只读下钻，不切活跃会话。
+    if (override) {
+      override.open(block.sessionId);
+      return;
+    }
     g.setActiveSession(block.sessionId);
     if (window.location.pathname !== "/") router.push("/");
     window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: block.sessionId }));

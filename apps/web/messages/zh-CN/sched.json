@@ -195,7 +195,10 @@
       "forkBusy": "创建中…",
       "forkFailed": "fork 失败",
       "openForked": "跳到对应对话",
-      "openForkedTitle": "本轮已 fork 过——打开对应的会话"
+      "openForkedTitle": "本轮已 fork 过——打开对应的会话",
+      "backToRun": "返回执行记录",
+      "backToRunTitle": "回到本轮执行的影子会话回放",
+      "subUntitled": "未命名子代理"
     },
     "notify": {
       "titleDone": "✓ {name}",
