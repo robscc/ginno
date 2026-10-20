@@ -89,3 +89,31 @@ describe('search and text', () => {
     expect(renderText(elements())).toBe('hello worldGotail')
   })
 })
+
+describe('P2 vocabulary: Input/Select/Markdown/Code (2026-10-21)', () => {
+  test('constructors produce the new element types', () => {
+    const ui = uiElements()
+    expect(ui.Input({ value: 'a', placeholder: 'type' }).type).toBe('Input')
+    expect(ui.Select({ options: [{ value: 'x' }], onSelect: () => {} }).type).toBe('Select')
+    expect(ui.Markdown({ children: '**bold**' }).type).toBe('Markdown')
+    expect(ui.Code({ children: 'let x', language: 'ts' }).type).toBe('Code')
+  })
+
+  test('treeProblem: Input/Select callback type checks, Markdown/Code string body', () => {
+    const ui = uiElements()
+    expect(treeProblem(ui.Input({ onInput: 'not-a-fn' as never }))).toContain('Input')
+    expect(treeProblem(ui.Select({ options: null as never }))).toContain('options')
+    expect(treeProblem(ui.Markdown({ children: 42 as never }))).toContain('string')
+    expect(treeProblem(ui.Code({ children: 'ok' }))).toBeUndefined()
+  })
+
+  test('serializeTree: callbacks become action ids, text bodies flatten to a string child', () => {
+    const ui = uiElements()
+    expect(serializeTree(ui.Input({ onInput: () => {} }), () => 'act-1')).toEqual([
+      { type: 'Input', props: {}, children: [], actionId: 'act-1' },
+    ])
+    expect(serializeTree(ui.Code({ children: 'let x', language: 'ts' }), () => 'a')).toEqual([
+      { type: 'Code', props: { language: 'ts' }, children: ['let x'] },
+    ])
+  })
+})

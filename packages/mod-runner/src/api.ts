@@ -114,7 +114,12 @@ export function createModsApi(binding: ApiBinding): ModsApi {
         return call('command.run', { command: input.command, args: input.args ?? '' })
       },
       list(): Promise<CommandInfo[]> {
-        return call('command.list', {})
+        // runtime op 返回 `{commands: [...]}`（op 表的统一信封）；此处解包成
+        // claude 侧的裸数组契约，mod 直接 .map()。
+        return call('command.list', {}).then((r: unknown) => {
+          const wrapped = r as { commands?: CommandInfo[] } | null
+          return Array.isArray(wrapped?.commands) ? wrapped!.commands! : (r as CommandInfo[])
+        })
       },
     }),
     tool: Object.freeze({
@@ -131,6 +136,27 @@ export function createModsApi(binding: ApiBinding): ModsApi {
     prompt: Object.freeze({
       submit(input: PromptSubmitArgs): Promise<{ text: string }> {
         return call('prompt.submit', { text: input.text, asUser: input.asUser === true })
+      },
+      fill(input: { text: string }): Promise<{ isFilled: boolean }> {
+        return call('prompt.fill', { text: input.text })
+      },
+      suggest(input: { text: string }): Promise<{ ok: boolean }> {
+        return call('prompt.suggest', { text: input.text })
+      },
+    }),
+    model: Object.freeze({
+      fork(input: { prompt: string; model?: string; maxTokens?: number }): Promise<{
+        sessionId: string
+        text: string
+        isAnswered: boolean
+      }> {
+        return call('model.fork', input)
+      },
+      complete(input: { prompt: string; system?: string; maxTokens?: number; model?: string }): Promise<{ text: string }> {
+        return call('model.complete', input)
+      },
+      classify(input: { input: string; labels: readonly string[]; model?: string }): Promise<{ label: string }> {
+        return call('model.classify', input)
       },
     }),
     session: Object.freeze({

@@ -40,7 +40,8 @@ const UNSERVED_OPS: &[&str] = &[
     "fs.ancestors",
     "ui.blit", "ui.focus", "ui.scroll", "ui.message",
     "config.list", "config.set",
-    "model.fork", // P2
+    // model.fork 已实装（2026-10-20，runtime ops.py `_op_model_fork`）——
+    // next-steps 这类「fork 会话上下文问下一步」的 mod 依赖它。
 ];
 
 /// One `$` call from a runner: grant gate, middleware chain through the mods

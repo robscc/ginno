@@ -371,6 +371,11 @@ class ModChannel:
         from ..commands import mod_commands
 
         mod_commands.clear()
+        # Mod-registered tools share the same connection-scoped lifetime
+        # (tools/mod_tools.py — re-registered on the next hello).
+        from ..tools import mod_tools
+
+        mod_tools._REGISTRY.clear()
         for fut in list(self._pending.values()):
             if not fut.done():
                 fut.set_exception(ChannelNotConnected("connection lost"))

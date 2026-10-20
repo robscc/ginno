@@ -1555,6 +1555,7 @@ def build_all_tools(
     from .tools.browser_tools import build_browser_tools
     from .tools.external_agent import build_external_agent_tools
     from .tools.goal_tools import build_goal_tools
+    from .tools.mod_tools import build_mod_tools
     from .tools.plan_tools import build_plan_tools
     from .tools.subagent import build_subagent_tools
     from .tools.team import build_team_tools
@@ -1599,6 +1600,10 @@ def build_all_tools(
         # Chrome as fallback. browser_js / browser_file_upload deliberately
         # NOT in the permission exempt set (default ask).
         + build_browser_tools(session_id, workspace, context_dirs)
+        # Mod-registered tools (claude-code-mods-design.md §5.4 P1) — [] when
+        # no mod registered anything or no session (same socket convention as
+        # the skill tools; broker's grant gate already vetted the registration).
+        + build_mod_tools(session_id)
         # Delegation to external coding agents (external-agents-design.md) —
         # [] when disabled in settings; session_id/project_slug bind usage
         # attribution. Deliberately NOT in the permission exempt set.

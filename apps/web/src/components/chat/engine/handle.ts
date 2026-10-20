@@ -1130,6 +1130,34 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       }
       break;
     }
+    case "mod.prompt.fill": {
+      // $.prompt.fill(mods ops):接管 composer 草稿(fill 语义=覆盖,与委派卡
+      // 的追加预填不同,走专用事件,ChatStream 侧替换落字)。
+      const text = String(ev.text ?? "");
+      if (!text) break;
+      try {
+        window.dispatchEvent(
+          new CustomEvent("ginno:mod-fill-input", { detail: { sessionId: sid, text } }),
+        );
+      } catch {
+        /* 非浏览器环境(SSG) */
+      }
+      break;
+    }
+    case "mod.prompt.suggest": {
+      // $.prompt.suggest(mods ops):幽灵建议的 v1 落地——composer 为空才
+      // 落字(建议语义),非空丢弃不打扰。ChatStream 侧裁决空与否。
+      const text = String(ev.text ?? "");
+      if (!text) break;
+      try {
+        window.dispatchEvent(
+          new CustomEvent("ginno:suggest-input", { detail: { sessionId: sid, text } }),
+        );
+      } catch {
+        /* 非浏览器环境(SSG) */
+      }
+      break;
+    }
     case "mod.ask": {
       // $.ui.ask(§7.3):问题浮层,按 sid 存最新一条。choices 可为字符串,
       // 也兼容 {label}/{value} 对象形状;自由输入恒可用。

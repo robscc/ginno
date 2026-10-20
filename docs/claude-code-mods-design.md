@@ -250,6 +250,8 @@ bridge_utils.py# node/broker 二进制发现(_resolve_cli 移植复用)、dev �
 | | `turn.abort` | 等价 `stop` |
 | **P2** | `model.complete/classify` | 走现有 model_configs,`maxTokens` ≤ 64000,用量记账 |
 | | `agent.register/spawn/list` | 对接 `agents/registry.py` + subagent 体系 |
+| **P2+（2026-10-20 实装）** | `model.fork` | 以会话 checkpoint 历史为上下文的单发模型调用（共享上下文摊薄缓存）；转录即弃不建影子会话，`sessionId` 为 fork 来源；用量记账 `source="mods"`。runner 侧 `$.model.fork`/`$.model.complete/classify` 同批补齐 |
+| | `prompt.fill/suggest` | `_push_session_event` → WS `mod.prompt.fill`/`mod.prompt.suggest` → 前端 composer：fill=接管草稿（替换），suggest=建议语义（composer 空才落字；v1 无 ghost-text）。`command.list` 同批并入项目 skills（source="skill"），否则 "/skill args" 类建议被 known 集合整条丢弃 |
 
 ---
 

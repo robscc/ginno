@@ -11,7 +11,7 @@ import type { SerializedNode } from './types.ts'
 
 /** One element a constructor returns; `props` are the constructor's argument, frozen. */
 export interface UiElement {
-  readonly type: 'Box' | 'Text' | 'Button'
+  readonly type: 'Box' | 'Text' | 'Button' | 'Input' | 'Select' | 'Markdown' | 'Code'
   readonly props: Readonly<Record<string, unknown>>
 }
 
@@ -48,20 +48,53 @@ export interface ButtonProps {
   readonly onPress?: (() => unknown) | undefined
 }
 
+/** `Input` props (P2 vocabulary): a one-line text field; `onInput(value)` rides
+ *  the same action-id round trip as Button's onPress. */
+export interface InputProps {
+  readonly value?: string | undefined
+  readonly placeholder?: string | undefined
+  readonly onInput?: ((value: string) => unknown) | undefined
+}
+
+/** `Select` props: an options list; `onSelect(value)` on pick. */
+export interface SelectProps {
+  readonly options: readonly { readonly value: string; readonly label?: string | undefined }[]
+  readonly value?: string | undefined
+  readonly onSelect?: ((value: string) => unknown) | undefined
+}
+
+/** `Markdown` props: inline Markdown body (untrusted text — the host renders
+ *  it read-only, no script execution). */
+export interface MarkdownProps {
+  readonly children?: string | undefined
+}
+
+/** `Code` props: preformatted body. */
+export interface CodeProps {
+  readonly children?: string | undefined
+  readonly language?: string | undefined
+}
+
 /** The constructors `$.ui.resolve(e)` returns. */
 export interface UiElements {
   readonly Box: (props: BoxProps) => UiElement
   readonly Text: (props: TextProps) => UiElement
   readonly Button: (props: ButtonProps) => UiElement
+  readonly Input: (props: InputProps) => UiElement
+  readonly Select: (props: SelectProps) => UiElement
+  readonly Markdown: (props: MarkdownProps) => UiElement
+  readonly Code: (props: CodeProps) => UiElement
 }
 
 export type { SerializedElement, SerializedNode } from './types.ts'
 
-/** What a serialized tree may carry per prop: scalars only. */
+/** What a serialized tree may carry per prop: scalars only. `onInput`/`onSelect`
+ *  ride the same action-id channel as `onPress`. */
+const CALLBACK_PROPS: ReadonlySet<string> = new Set(['onPress', 'onInput', 'onSelect'])
 function scalarProps(props: Readonly<Record<string, unknown>>): Record<string, string | number | boolean> {
   const scalars: Record<string, string | number | boolean> = {}
   for (const [name, value] of Object.entries(props)) {
-    if (name === 'children' || name === 'onPress') continue
+    if (name === 'children' || CALLBACK_PROPS.has(name)) continue
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') scalars[name] = value
   }
   return scalars
@@ -69,7 +102,8 @@ function scalarProps(props: Readonly<Record<string, unknown>>): Record<string, s
 
 const elementBrand = Symbol('claude-code-mods.element')
 
-function element(type: UiElement['type'], props: BoxProps | TextProps | ButtonProps): UiElement {
+type AnyElementProps = BoxProps | TextProps | ButtonProps | InputProps | SelectProps | MarkdownProps | CodeProps
+function element(type: UiElement['type'], props: AnyElementProps): UiElement {
   return Object.freeze({ type, props: Object.freeze({ ...props }), [elementBrand]: true })
 }
 
@@ -84,13 +118,17 @@ export function isUiElement(value: unknown): value is UiElement {
 
 /**
  * The element constructors for one render.
- * @returns `Box`, `Text`, and `Button`.
+ * @returns `Box`, `Text`, `Button`, `Input`, `Select`, `Markdown`, and `Code`.
  */
 export function uiElements(): UiElements {
   return Object.freeze({
     Box: (props: BoxProps) => element('Box', props),
     Text: (props: TextProps) => element('Text', props),
     Button: (props: ButtonProps) => element('Button', props),
+    Input: (props: InputProps) => element('Input', props),
+    Select: (props: SelectProps) => element('Select', props),
+    Markdown: (props: MarkdownProps) => element('Markdown', props),
+    Code: (props: CodeProps) => element('Code', props),
   })
 }
 
@@ -109,6 +147,12 @@ function childrenOf(node: UiNode): (UiElement | string)[] {
  * @param node - the hook's answer.
  * @returns undefined for a valid tree, or the reason it does not validate.
  */
+/** Element types whose payload is a single `children` text (Markdown/Code) —
+ *  serialized like Box children (a string child flattens to itself). */
+const TEXT_BODY_TYPES: ReadonlySet<string> = new Set(['Markdown', 'Code'])
+/** Element types with a host-invoked callback and no children (Button/Input/Select). */
+const CALLBACK_TYPES: ReadonlySet<string> = new Set(['Button', 'Input', 'Select'])
+
 export function treeProblem(node: UiNode): string | undefined {
   try {
     for (const child of childrenOf(node)) {
@@ -116,6 +160,19 @@ export function treeProblem(node: UiNode): string | undefined {
       if (child.type === 'Button') {
         if (typeof child.props['label'] !== 'string') return 'a Button needs a string label'
         if (child.props['onPress'] !== undefined && typeof child.props['onPress'] !== 'function') return 'a Button onPress must be a function'
+        continue
+      }
+      if (child.type === 'Input') {
+        if (child.props['onInput'] !== undefined && typeof child.props['onInput'] !== 'function') return 'an Input onInput must be a function'
+        continue
+      }
+      if (child.type === 'Select') {
+        if (!Array.isArray(child.props['options'])) return 'a Select needs an options array'
+        if (child.props['onSelect'] !== undefined && typeof child.props['onSelect'] !== 'function') return 'a Select onSelect must be a function'
+        continue
+      }
+      if (TEXT_BODY_TYPES.has(child.type)) {
+        if (child.props['children'] !== undefined && typeof child.props['children'] !== 'string') return `a ${child.type} body must be a string`
         continue
       }
       const nested = treeProblem(child.props['children'] as UiNode)
@@ -135,17 +192,22 @@ export function treeProblem(node: UiNode): string | undefined {
  * @param holdAction - stores one callback and returns its id.
  * @returns the serialized nodes, in drawing order.
  */
-export function serializeTree(node: UiNode, holdAction: (callback: () => unknown) => string): SerializedNode[] {
+export function serializeTree(node: UiNode, holdAction: (callback: (...args: never[]) => unknown) => string): SerializedNode[] {
   return childrenOf(node).map((child): SerializedNode => {
     if (typeof child === 'string') return child
-    if (child.type === 'Button') {
-      const onPress = child.props['onPress']
+    if (CALLBACK_TYPES.has(child.type)) {
+      // The single callback prop, whichever it is, becomes the action id.
+      const callback = child.props['onPress'] ?? child.props['onInput'] ?? child.props['onSelect']
       return {
-        type: 'Button',
+        type: child.type,
         props: scalarProps(child.props),
         children: [],
-        ...typeof onPress === 'function' ? { actionId: holdAction(onPress as () => unknown) } : {},
+        ...typeof callback === 'function' ? { actionId: holdAction(callback as (...args: never[]) => unknown) } : {},
       }
+    }
+    if (TEXT_BODY_TYPES.has(child.type)) {
+      // Markdown/Code: the body is a string child (already validated).
+      return { type: child.type, props: scalarProps(child.props), children: [String(child.props['children'] ?? '')] }
     }
     return { type: child.type, props: scalarProps(child.props), children: serializeTree(child.props['children'] as UiNode, holdAction) }
   })
@@ -155,6 +217,7 @@ export function serializeTree(node: UiNode, holdAction: (callback: () => unknown
 function textOf(node: UiElement | string): string {
   if (typeof node === 'string') return node
   if (node.type === 'Button') return String(node.props['label'])
+  if (TEXT_BODY_TYPES.has(node.type)) return String(node.props['children'] ?? '')
   return childrenOf(node.props['children'] as UiNode).map(textOf).join('')
 }
 
@@ -185,7 +248,9 @@ export function findAll(node: UiNode, pattern: TreePattern): UiElement[] {
     const matchesText = pattern.text === undefined || textMatches(pattern.text, textOf(child))
     const matchesLabel = pattern.label === undefined || (child.type === 'Button' && textMatches(pattern.label, String(child.props['label'])))
     if (matchesType && matchesText && matchesLabel) found.push(child)
-    if (child.type !== 'Button') for (const grandchild of childrenOf(child.props['children'] as UiNode)) visit(grandchild)
+    if (!CALLBACK_TYPES.has(child.type) && !TEXT_BODY_TYPES.has(child.type)) {
+      for (const grandchild of childrenOf(child.props['children'] as UiNode)) visit(grandchild)
+    }
   }
   for (const child of childrenOf(node)) visit(child)
   return found

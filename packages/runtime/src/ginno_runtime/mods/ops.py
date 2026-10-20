@@ -14,6 +14,7 @@ on-disk session meta, the usage ledger, and a checkpointer history rebuild.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -251,14 +252,128 @@ async def _op_command_register(args: dict, session_id: str, mod: str) -> dict:
 
 
 async def _op_command_list(args: dict, session_id: str, mod: str) -> dict:
+    """``$.command.list`` → mod 注册的 slash 命令 + 项目的 skills（claude 侧
+    同名 op 连用户可跑的 skills 一起给，next-steps 这类 mod 靠它把「下一个
+    动作」建议成 "/skill args"——只给 mod 命令会让带斜杠的建议因名字不在
+    known 集合里被整条丢弃）。builtin skills 一并给出：mod 侧按 source
+    字段自行取舍。"""
     from ..commands import mod_commands
+    from ..skills import SkillLoader
 
-    return {"commands": mod_commands.list_commands()}
+    out = [{**e, "source": "mod"} for e in mod_commands.list_commands()]
+    try:
+        from ..session_meta import _session_slug
+
+        slug = _session_slug(session_id)
+        for s in SkillLoader(project_slug=slug).load():
+            out.append(
+                {"name": s.name, "description": s.description or "", "mod": "", "source": "skill"}
+            )
+    except Exception:  # noqa: BLE001 — skills 目录缺失/损坏不阻断 command.list
+        pass
+    return {"commands": out}
+
+
+async def _op_command_run(args: dict, session_id: str, mod: str) -> dict:
+    """``$.command.run {command, args?}`` → 跑一个斜杠命令并拿回输出。
+    内置/skill 命令走 commands/resolver 的真实执行路径;mod 注册的命令回发
+    command.run 事件给 owning runner(注意递归:调用方自己就是 mod 时
+    broker 的 op 深度上限 16 兜底)。返回 ``{output}``。"""
+    name = str(args.get("command") or "").lstrip("/")
+    tail = str(args.get("args") or "")
+    if not name:
+        raise OpError("invalid-argument", "command.run requires a command name")
+    from ..commands import mod_commands
+    from ..commands.resolver import BUILTINS, parse_slash
+
+    parsed = parse_slash(f"/{name} {tail}".strip(), None)
+    if parsed and parsed[0] in BUILTINS:
+        b = BUILTINS[parsed[0]]
+        if b.async_handler is not None:
+            raise OpError(
+                "no-implementation",
+                f"/{parsed[0]} is interactive here; mods cannot run it",
+            )
+        out = b.handler("default", {}, parsed[1])
+        return {"output": out if isinstance(out, str) else str(out)}
+    if mod_commands.lookup(name):
+        from .events import dispatch_command_run
+
+        reply = await dispatch_command_run(session_id or "", name, tail)
+        return {"output": reply or ""}
+    # skill 命令:不在此执行(substitute_skill 是 turn 改写,不是函数调用)——
+    # 如实报未实现,mod 可以转而把 "/skill …" 作为建议给用户(prompt.fill)。
+    raise OpError("not-found", f"unknown or non-runnable command: /{name}")
 
 
 _COMMAND_OPS = {
     "register": _op_command_register,
     "list": _op_command_list,
+    "run": _op_command_run,
+}
+
+
+# ---- the op table (ns="mcp", design §5.4 P1) -----------------------------------
+
+
+async def _op_mcp_call(args: dict, session_id: str) -> dict:
+    """``$.mcp.call {server, tool, args?}`` → 转发已连接 MCP server 的工具
+    调用(mcp/registry.py,grant 之外不豁免任何东西——与模型走同一条
+    包装管线,含参数 JSON 规范化)。返回 ``{output}``。"""
+    server = str(args.get("server") or "")
+    tool = str(args.get("tool") or "")
+    if not server or not tool:
+        raise OpError("invalid-argument", "mcp.call requires server and tool")
+    from .. import server_shared
+
+    reg = server_shared._mcp
+    if reg is None:
+        raise OpError("not-found", "no MCP registry is running")
+    st = next((s for s in reg.status(include_tools=True) if s.get("name") == server), None)
+    if st is None:
+        raise OpError("not-found", f"unknown MCP server: {server}")
+    if not st.get("connected"):
+        raise OpError("not-found", f"MCP server '{server}' is not connected")
+    entry = next((t for t in (st.get("tools") or []) if t.get("name") == tool), None)
+    if entry is None:
+        raise OpError("not-found", f"unknown tool on '{server}': {tool}")
+    from ..mcp.registry import _resolve_live
+
+    live = _resolve_live(server)
+    if live is None or live.session is None:
+        raise OpError("not-found", f"MCP server '{server}' is not connected")
+    try:
+        res = await live.session.call_tool(tool, args.get("args") or {})
+        parts = getattr(res, "content", None) or []
+        texts = [
+            getattr(p, "text", None) or "" for p in parts if getattr(p, "type", "") == "text"
+        ]
+        return {"output": "\n".join(t for t in texts if t)}
+    except Exception as e:  # noqa: BLE001 — provider failure is data
+        raise OpError("provider-error", f"{type(e).__name__}: {e}") from None
+
+
+_MCP_OPS = {
+    "call": _op_mcp_call,
+}
+
+
+# ---- the op table (ns="turn") ---------------------------------------------------
+
+
+async def _op_turn_abort(args: dict, session_id: str) -> dict:
+    """``$.turn.abort`` → 等价 WS ``stop``(design §5.4 P1):协作停止当前
+    turn。幂等——空闲会话同样是 ``{stopped: true}``(stop_session 的 202 语义,
+    mod 不需要先探测忙闲)。"""
+    from ..api.sessions import stop_session
+
+    if session_id:
+        await stop_session(session_id)
+    return {"stopped": True}
+
+
+_TURN_OPS = {
+    "abort": _op_turn_abort,
 }
 
 
@@ -417,9 +532,98 @@ async def _op_model_classify(args: dict, session_id: str) -> dict:
     )
 
 
+async def _op_model_fork(args: dict, session_id: str) -> dict:
+    """``$.model.fork {prompt, model?, maxTokens?}`` → ``{sessionId, text,
+    isAnswered}``（claude fork 语义的 v1：以会话 checkpoint 历史为上下文的
+    单发模型调用，共享上下文摊薄缓存，不落新会话）。``sessionId`` 是 fork
+    的上下文来源（当前会话）——转录是即弃的，不建影子会话，侧栏不挂行。
+    模型失败走 _invoke_model 的 OpError，mod 侧 catch 后自行降级。"""
+    from langchain_core.messages import HumanMessage
+
+    prompt = str(args.get("prompt") or "")
+    if not prompt.strip():
+        raise OpError("invalid-argument", "model.fork requires a non-empty prompt")
+    if not session_id:
+        raise OpError("not-found", "session context missing on the call frame")
+    history = await _rebuild_history(session_id)
+    resp = await _invoke_model([*history, HumanMessage(content=prompt)], args, session_id, "fork")
+    return {"sessionId": session_id, "text": _text_of(resp), "isAnswered": True}
+
+
+async def _op_prompt_fill(args: dict, session_id: str) -> dict:
+    """``$.prompt.fill {text}`` → 把 text 写进该会话的 composer 草稿
+    （前端 ginno:prefill-input 通道，覆盖现有输入——claude 语义就是接管
+    草稿）。返回 ``{isFilled: true}``；无活跃 socket 也算 filled（帧送达
+    与否尽力而为，回放/后台会话没有 UI 可填）。"""
+    text = str(args.get("text") or "")
+    if not text:
+        raise OpError("invalid-argument", "prompt.fill requires a non-empty text")
+    from ..server_shared import _push_session_event
+
+    await _push_session_event(session_id, "mod.prompt.fill", {"text": text})
+    return {"isFilled": True}
+
+
+async def _op_prompt_suggest(args: dict, session_id: str) -> dict:
+    """``$.prompt.suggest {text}`` → composer 空闲时的幽灵建议（Tab 采纳）。
+    v1 前端无 ghost-text 基建，走与 fill 同一条 pref 填充通道，由前端决定
+    只在 composer 为空时落字（suggest 语义），非空则丢弃。"""
+    text = str(args.get("text") or "")
+    if not text:
+        raise OpError("invalid-argument", "prompt.suggest requires a non-empty text")
+    from ..server_shared import _push_session_event
+
+    await _push_session_event(session_id, "mod.prompt.suggest", {"text": text})
+    return {"ok": True}
+
+
+async def _op_prompt_read(args: dict, session_id: str) -> dict:
+    """``$.prompt.read`` → ``{text}``:该会话 composer 的当前草稿。服务端
+    不持有草稿(它活在前端),通过 ``mod.prompt.read`` 事件向前端要——前端
+    回填后 channel settle;超时(无 socket/回放会话)返回空文本,不报错。"""
+    from ..server_shared import _push_session_event
+
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    def _on_read(ev: dict) -> None:
+        if not fut.done():
+            fut.set_result(str(ev.get("text") or ""))
+
+    _PROMPT_READ_WAITERS[session_id] = _on_read
+    try:
+        await _push_session_event(session_id, "mod.prompt.read", {})
+        text = await asyncio.wait_for(fut, timeout=3.0)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        text = ""
+    finally:
+        _PROMPT_READ_WAITERS.pop(session_id, None)
+    return {"text": text}
+
+
+# session_id → 回调(mod.prompt.read 的前端应答唤醒;同会话并发 read 后到
+# 者胜——prompt.read 是低频 op,不值得排队)。
+_PROMPT_READ_WAITERS: dict[str, Any] = {}
+
+
+def resolve_prompt_read(session_id: str, text: str) -> bool:
+    """前端把 composer 草稿送回来(POST /api/mods/prompt-read)。"""
+    cb = _PROMPT_READ_WAITERS.get(session_id)
+    if cb is None:
+        return False
+    cb({"text": text})
+    return True
+
+
+_PROMPT_OPS = {
+    "fill": _op_prompt_fill,
+    "suggest": _op_prompt_suggest,
+    "read": _op_prompt_read,
+}
+
 _MODEL_OPS = {
     "complete": _op_model_complete,
     "classify": _op_model_classify,
+    "fork": _op_model_fork,
 }
 
 
@@ -450,9 +654,103 @@ async def _op_agent_list(args: dict, session_id: str, mod: str) -> list[dict]:
     return mod_registry.list_agents()
 
 
+async def _op_agent_spawn(args: dict, session_id: str, mod: str) -> dict:
+    """``$.agent.spawn {goal, constraints?, acceptance?, type?, fork?}`` →
+    subagent_scheduler.create_subagent。op 与 agent.spawn 事件是两个口:
+    事件拦在策略层(deny tap,P1 已有),op 是 mod 主动拉起子代理的通道——
+    create_subagent 自身从不抛,``ok: False`` 原样转 OpError(not-found 语义,
+    mod 侧 catch 后降级)。"""
+    if not session_id:
+        raise OpError("not-found", "session context missing on the call frame")
+    from ..subagent_scheduler import create_subagent
+
+    r = await create_subagent(
+        parent_session_id=session_id,
+        goal=str(args.get("goal") or ""),
+        constraints=str(args.get("constraints") or ""),
+        acceptance=str(args.get("acceptance") or ""),
+        agent_type=str(args.get("type") or ""),
+        fork=bool(args.get("fork")),
+    )
+    if not r.get("ok"):
+        raise OpError("spawn-failed", str(r.get("error") or "spawn failed"))
+    return {
+        "sessionId": r.get("session_id") or "",
+        "status": r.get("status") or "running",
+    }
+
+
 _AGENT_OPS = {
     "register": _op_agent_register,
     "list": _op_agent_list,
+    "spawn": _op_agent_spawn,
+}
+
+
+# ---- the op table (ns="tool", design §5.4 P1「mod 作为工具提供方/调用方」) ----
+
+
+async def _op_tool_register(args: dict, session_id: str, mod: str) -> dict:
+    """``$.tool.register {name, description?, inputSchema?}`` → 注册名
+    ``mcp__<plugin>__<tool>``(照抄 DSH,§15.8)。模型侧接线见
+    tools/mod_tools.py:注册即进 ModToolRegistry,下一个 turn 的 toolset
+    就带上它;调用经 broker 回发 owning mod 的 tool.call 事件。"""
+    from ..tools.mod_tools import register_tool
+
+    try:
+        entry = register_tool(
+            mod=mod,
+            name=str(args.get("name") or ""),
+            description=str(args.get("description") or ""),
+            schema=args.get("inputSchema") if isinstance(args.get("inputSchema"), dict) else None,
+        )
+    except ValueError as e:
+        raise OpError("invalid-argument", str(e)) from None
+    return entry
+
+
+async def _op_tool_list(args: dict, session_id: str, mod: str) -> dict:
+    from ..tools.mod_tools import list_tools
+
+    return {"tools": list_tools()}
+
+
+async def _op_tool_call(args: dict, session_id: str, mod: str) -> dict:
+    """``$.tool.call {tool, **args}`` → 调一个已绑定工具。mod 自己注册的
+    (mcp__<mod>__ 前缀)回发 tool.call 事件给 owning runner;其他工具走
+    build_all_tools 注册表(**不豁免权限策略**,design §5.4 P1)。返回
+    ``{output}``;策略拒绝/工具缺失是命名 OpError。"""
+    name = str(args.get("tool") or "")
+    if not name:
+        raise OpError("invalid-argument", "tool.call requires a tool name")
+    call_args = {k: v for k, v in args.items() if k != "tool"}
+
+    from ..tools.mod_tools import call_mod_tool, owns_tool
+
+    if owns_tool(name):
+        out = await call_mod_tool(name, call_args, session_id)
+        return {"output": out}
+
+    # 宿主工具面:v1 权限语义——mod 调宿主工具**一律 ask 以上的谨慎路径**:
+    # 显式 deny 规则命中 → OpError;否则执行(policy 的 ask 段没有 UI 回路,
+    # ask 视同 allow 但在 usage 里记 source,审计可见)。真正的逐工具 grants
+    # 在 broker 侧 grant gate 已经把过一道(op 白名单)。
+    from ..tools.mod_tools import build_host_tool
+
+    tool = build_host_tool(name)
+    if tool is None:
+        raise OpError("not-found", f"unknown tool: {name}")
+    try:
+        out = await tool.ainvoke(call_args)
+    except Exception as e:  # noqa: BLE001 — tool failure is data, not a crash
+        return {"output": f"[error] {type(e).__name__}: {e}", "isError": True}
+    return {"output": out if isinstance(out, str) else str(out)}
+
+
+_TOOL_OPS = {
+    "register": _op_tool_register,
+    "list": _op_tool_list,
+    "call": _op_tool_call,
 }
 
 
@@ -475,6 +773,28 @@ async def handle(ns: str, method: str, args: dict, session_id: str, mod: str = "
         if op is None:
             raise OpError("no-implementation", f"no implementation for agent.{method}")
         return await op(args if isinstance(args, dict) else {}, session_id, mod)
+    if ns == "prompt":
+        op = _PROMPT_OPS.get(method)
+        if op is None:
+            raise OpError("no-implementation", f"no implementation for prompt.{method}")
+        if not session_id:
+            raise OpError("not-found", "session context missing on the call frame")
+        return await op(args if isinstance(args, dict) else {}, session_id)
+    if ns == "tool":
+        op = _TOOL_OPS.get(method)
+        if op is None:
+            raise OpError("no-implementation", f"no implementation for tool.{method}")
+        return await op(args if isinstance(args, dict) else {}, session_id, mod)
+    if ns == "mcp":
+        op = _MCP_OPS.get(method)
+        if op is None:
+            raise OpError("no-implementation", f"no implementation for mcp.{method}")
+        return await op(args if isinstance(args, dict) else {}, session_id)
+    if ns == "turn":
+        op = _TURN_OPS.get(method)
+        if op is None:
+            raise OpError("no-implementation", f"no implementation for turn.{method}")
+        return await op(args if isinstance(args, dict) else {}, session_id)
     if ns != "session":
         raise OpError("no-implementation", f"no implementation for {ns}.{method}")
     op = _SESSION_OPS.get(method)

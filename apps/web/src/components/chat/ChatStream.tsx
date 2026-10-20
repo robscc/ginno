@@ -354,6 +354,31 @@ export function ChatStream({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // mods 的 $.prompt.fill（fill 语义 = 接管草稿：替换而非追加）与
+  // $.prompt.suggest（建议语义：composer 为空才落字，非空丢弃）。两者都
+  // 只作用于正在展示的会话——后台会话没有可接管的草稿，帧自然丢弃。
+  useEffect(() => {
+    const onModFill = (e: Event) => {
+      const d = (e as CustomEvent<{ sessionId?: string; text?: string }>).detail;
+      if (!d?.sessionId || !d.text || curSessionIdRef.current !== d.sessionId) return;
+      setInput(d.text);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    };
+    const onModSuggest = (e: Event) => {
+      const d = (e as CustomEvent<{ sessionId?: string; text?: string }>).detail;
+      if (!d?.sessionId || !d.text || curSessionIdRef.current !== d.sessionId) return;
+      // 建议语义:v1 无 ghost-text,composer 为空时替用户打好草稿,非空不打扰。
+      setInput((cur) => (cur.trim() === "" ? d.text! : cur));
+    };
+    window.addEventListener("ginno:mod-fill-input", onModFill);
+    window.addEventListener("ginno:suggest-input", onModSuggest);
+    return () => {
+      window.removeEventListener("ginno:mod-fill-input", onModFill);
+      window.removeEventListener("ginno:suggest-input", onModSuggest);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 子代理结果卡「让主对话处理」：在当前（主）会话以一条引用该结果的消息开工。
   // 忙时走 steer 队列（既有注入管线），闲时 invoke 开新 turn——与用户手打的
   // 消息完全同一条路径。agentId 置 null = 会话默认 agent。

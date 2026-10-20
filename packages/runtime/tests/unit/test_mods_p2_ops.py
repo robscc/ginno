@@ -403,3 +403,260 @@ def test_merged_mod_list_carries_scope(isolated_home, project_ws, monkeypatch):
     rows = {r["name"]: r for r in _merged_mod_list()}
     assert rows["alpha"]["scope"] == "project" and rows["alpha"]["installed"] is True
     assert rows["beta"]["scope"] == "global"
+
+
+# ---- model.fork / prompt.fill / prompt.suggest（2026-10-20，next-steps 移植）----
+
+def _seed_session_history(session_id: str, *, slug: str = "default") -> None:
+    """给 _rebuild_history 造可读的磁盘 checkpoint（FileCheckpointer full 模式）。"""
+    import asyncio
+
+    from ginno_runtime.checkpointer import FileCheckpointer
+    from ginno_runtime.server_shared import _SESSIONS
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    _SESSIONS[session_id] = {
+        "id": session_id,
+        "project_slug": slug,
+        "agent_id": "dev",
+        "model_provider": "custom",
+        "model_name": "m",
+    }
+    ckpt = FileCheckpointer(slug)
+    asyncio.run(
+        ckpt.aput(
+            {"configurable": {"thread_id": session_id}},
+            {
+                "v": 1,
+                "id": "c1",
+                "ts": "2026-10-20",
+                "channel_values": {
+                    "messages": [HumanMessage(content="hi"), AIMessage(content="hello")],
+                },
+                "channel_versions": {},
+                "versions_seen": {},
+            },
+            {"source": "input", "step": 0, "writes": {}},
+            {},
+        )
+    )
+
+
+def test_model_fork_answers_with_session_context(monkeypatch, isolated_home):
+    import asyncio
+
+    _seed_session_history("s-fork")
+    seen: dict = {}
+
+    class _SpyModel(ScriptedChatModel):
+        async def ainvoke(self, messages, *a, **k):
+            seen["messages"] = messages
+            return await super().ainvoke(messages, *a, **k)
+
+    model = _SpyModel(scripts=[script(text='[{"label":"l","prompt":"p"}]')])
+    monkeypatch.setattr(ops, "_build_model", lambda args: (model, "prov-x", "m-1"))
+    res = asyncio.run(ops.handle("model", "fork", {"prompt": "predict next"}, "s-fork"))
+    assert res["isAnswered"] is True
+    assert res["sessionId"] == "s-fork"
+    assert res["text"] == '[{"label":"l","prompt":"p"}]'  # scripted reply 原样返回
+    # 上下文 = checkpoint 历史 + fork prompt（共享上下文，不是裸 complete）
+    texts = [getattr(m, "content", "") for m in seen["messages"]]
+    assert texts == ["hi", "hello", "predict next"]
+    row = _last_usage_row(isolated_home)
+    assert row["source"] == "mods" and row["session_id"] == "s-fork"
+
+
+def test_model_fork_requires_prompt_and_session():
+    import asyncio
+
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("model", "fork", {"prompt": " "}, "s1"))
+    assert ei.value.code == "invalid-argument"
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("model", "fork", {"prompt": "p"}, ""))
+    assert ei.value.code == "not-found"
+
+
+def test_prompt_fill_and_suggest_push_session_event(monkeypatch):
+    import asyncio
+
+    pushed: list[tuple[str, str, dict]] = []
+    from ginno_runtime import server_shared
+
+    async def fake_push(session_id, event, data, turn_id=None):
+        pushed.append((session_id, event, data))
+
+    monkeypatch.setattr(server_shared, "_push_session_event", fake_push)
+    res = asyncio.run(ops.handle("prompt", "fill", {"text": "run the tests"}, "s1"))
+    assert res == {"isFilled": True}
+    res = asyncio.run(ops.handle("prompt", "suggest", {"text": "fix it"}, "s1"))
+    assert res == {"ok": True}
+    assert pushed == [
+        ("s1", "mod.prompt.fill", {"text": "run the tests"}),
+        ("s1", "mod.prompt.suggest", {"text": "fix it"}),
+    ]
+
+
+def test_prompt_ops_reject_empty_and_missing_session():
+    import asyncio
+
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("prompt", "fill", {"text": ""}, "s1"))
+    assert ei.value.code == "invalid-argument"
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("prompt", "suggest", {"text": "x"}, ""))
+    assert ei.value.code == "not-found"
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("prompt", "nope", {"text": "x"}, "s1"))
+    assert ei.value.code == "no-implementation"
+
+
+def test_command_list_merges_skills(monkeypatch, isolated_home):
+    """known 集合必须含 skills——next-steps 靠它放行 "/skill args" 建议。"""
+    import asyncio
+
+    from ginno_runtime.commands import mod_commands
+
+    mod_commands.register("modcmd", "some-mod", "a mod command")
+    monkeypatch.setattr(
+        "ginno_runtime.skills.SkillLoader.load",
+        lambda self: [SimpleNamespace(name="wiki", description="compile wiki", trigger=None, allowed_tools=None, builtin=False)],
+    )
+    res = asyncio.run(ops.handle("command", "list", {}, "s1"))
+    names = {c["name"]: c["source"] for c in res["commands"]}
+    assert names.get("modcmd") == "mod"
+    assert names.get("wiki") == "skill"
+
+
+# ---- P1/P2 op 族补全（2026-10-21：command.run / tool.* / mcp.call / turn.abort /
+# ---- agent.spawn / prompt.read）-------------------------------------------------
+
+def test_command_run_builtin_and_mod_paths(monkeypatch):
+    import asyncio
+
+    # builtin: /help 族里挑一个同步 handler 存在的命令(不稳定——直接验证
+    # 不存在的命令是命名错误,存在性由 resolver 自己的测试覆盖)。
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("command", "run", {"command": "definitely-not-a-cmd"}, "s1"))
+    assert ei.value.code == "not-found"
+    # mod 命令:注册后回发 command.run 事件(stub channel settle)
+    from ginno_runtime.commands import mod_commands
+
+    mod_commands.register("mycmd", "some-mod", "d")
+    stub = StubChannel()
+    stub.settle["command.run"] = {"reply": "mod says hi"}
+    monkeypatch.setattr(mods_channel, "get_channel", lambda: stub)
+    res = asyncio.run(ops.handle("command", "run", {"command": "/mycmd", "args": "x"}, "s1"))
+    assert res == {"output": "mod says hi"}
+
+
+def test_tool_register_list_and_ownership():
+    import asyncio
+
+    res = asyncio.run(
+        ops.handle("tool", "register", {"name": "lookup", "description": "d", "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}}, "s1", "some-mod")
+    )
+    assert res["fullName"] == "mcp__some-mod__lookup"
+    listed = asyncio.run(ops.handle("tool", "list", {}, "s1", "other-mod"))
+    assert [t["fullName"] for t in listed["tools"]] == ["mcp__some-mod__lookup"]
+    # 同名被别的 mod 抢注 → invalid-argument
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("tool", "register", {"name": "lookup"}, "s1", "other-mod"))
+    assert ei.value.code == "invalid-argument"
+
+
+def test_tool_call_routes_to_owning_mod(monkeypatch):
+    import asyncio
+
+    asyncio.run(ops.handle("tool", "register", {"name": "echo"}, "s1", "some-mod"))
+    stub = StubChannel()
+    stub.settle["tool.call"] = {"output": "echoed"}
+    monkeypatch.setattr(mods_channel, "get_channel", lambda: stub)
+    res = asyncio.run(
+        ops.handle("tool", "call", {"tool": "mcp__some-mod__echo", "q": "hi"}, "s1", "other-mod")
+    )
+    assert res == {"output": "echoed"}
+
+
+def test_mod_tools_model_side_wrapper():
+    """注册表 → StructuredTool 全链(模型侧接线)。"""
+    import asyncio
+
+    from ginno_runtime.tools import mod_tools
+
+    mod_tools._REGISTRY.clear()  # 前序用例的注册不能渗进来
+    try:
+        asyncio.run(ops.handle("tool", "register", {"name": "probe"}, "s1", "some-mod"))
+        tools = mod_tools.build_mod_tools("s1")
+        assert [t.name for t in tools] == ["mcp__some-mod__probe"]
+        assert tools[0].coroutine is not None
+    finally:
+        mod_tools._REGISTRY.clear()
+
+
+def test_turn_abort(monkeypatch):
+    import asyncio
+
+    stopped: list[str] = []
+
+    async def fake_stop(sid):
+        stopped.append(sid)
+
+    monkeypatch.setattr("ginno_runtime.api.sessions.stop_session", fake_stop)
+    res = asyncio.run(ops.handle("turn", "abort", {}, "s1"))
+    assert res == {"stopped": True} and stopped == ["s1"]
+
+
+def test_mcp_call_requires_live_server(monkeypatch):
+    import asyncio
+
+    class _Reg:
+        def status(self, include_tools=False):
+            return [{"name": "srv", "connected": True, "tools": [{"name": "t1"}]}]
+
+    import ginno_runtime.server_shared as shared
+
+    monkeypatch.setattr(shared, "_mcp", _Reg())
+    # _resolve_live 找不到 live session → not-found(不炸)
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("mcp", "call", {"server": "srv", "tool": "t1"}, "s1"))
+    assert ei.value.code == "not-found"
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("mcp", "call", {"server": "nope", "tool": "x"}, "s1"))
+    assert ei.value.code == "not-found"
+
+
+def test_agent_spawn_op_routes_to_scheduler(monkeypatch):
+    import asyncio
+
+    from ginno_runtime.subagent_scheduler import spawn as spawn_mod
+
+    async def fake_create(**kw):
+        return {"ok": bool(kw.get("goal")), "session_id": "child-1", "status": "running", "error": "" if kw.get("goal") else "goal must not be empty"}
+
+    monkeypatch.setattr(spawn_mod, "create_subagent", fake_create)
+    # create_subagent 是包内 re-export;op 经 ..subagent_scheduler 取——patch 包属性
+    import ginno_runtime.subagent_scheduler as ss
+
+    monkeypatch.setattr(ss, "create_subagent", fake_create)
+    res = asyncio.run(ops.handle("agent", "spawn", {"goal": "do it"}, "s1", "some-mod"))
+    assert res == {"sessionId": "child-1", "status": "running"}
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("agent", "spawn", {"goal": ""}, "s1", "some-mod"))
+    assert ei.value.code == "spawn-failed"
+
+
+def test_prompt_read_roundtrip(monkeypatch):
+    """真实时序:op 推事件后,前端应答(resolve_prompt_read)唤醒等待的 future。"""
+    import asyncio
+
+    from ginno_runtime import server_shared
+
+    async def fake_push(session_id, event, data, turn_id=None):
+        # 前端收到 mod.prompt.read → 立即回填草稿(模拟 ChatStream 分支)
+        if event == "mod.prompt.read":
+            ops.resolve_prompt_read(session_id, "draft text")
+
+    monkeypatch.setattr(server_shared, "_push_session_event", fake_push)
+    res = asyncio.run(ops.handle("prompt", "read", {}, "s1"))
+    assert res == {"text": "draft text"}

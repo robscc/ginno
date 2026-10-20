@@ -117,7 +117,7 @@ export interface ModDefinition {
 
 /** A serialized element: callbacks replaced by the action id the host holds for them. */
 export interface SerializedElement {
-  readonly type: 'Box' | 'Text' | 'Button'
+  readonly type: 'Box' | 'Text' | 'Button' | 'Input' | 'Select' | 'Markdown' | 'Code'
   readonly props: Readonly<Record<string, string | number | boolean>>
   readonly children: readonly SerializedNode[]
   /** Set on a `Button` whose `onPress` the host holds. */
@@ -454,6 +454,22 @@ export interface ModsApi {
   }
   readonly prompt: {
     submit(input: PromptSubmitArgs): Promise<{ text: string }>
+    /** 把 text 写进该会话的 composer 草稿（claude 语义：接管草稿）。 */
+    fill(input: { text: string }): Promise<{ isFilled: boolean }>
+    /** composer 空闲时的幽灵建议（Tab 采纳）；Ginno v1 前端无 ghost-text，
+     *  落字与否由前端按 suggest 语义决定。 */
+    suggest(input: { text: string }): Promise<{ ok: boolean }>
+  }
+  readonly model: {
+    /** 以会话 checkpoint 历史为上下文的单发 fork 调用（共享上下文摊薄
+     *  缓存）。isAnswered 恒 true——模型失败走 op 错误（promise 拒绝）。 */
+    fork(input: { prompt: string; model?: string; maxTokens?: number }): Promise<{
+      sessionId: string
+      text: string
+      isAnswered: boolean
+    }>
+    complete(input: { prompt: string; system?: string; maxTokens?: number; model?: string }): Promise<{ text: string }>
+    classify(input: { input: string; labels: readonly string[]; model?: string }): Promise<{ label: string }>
   }
   readonly session: {
     id(): Promise<string>
