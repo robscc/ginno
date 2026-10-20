@@ -528,7 +528,16 @@ def _grep_via_rg(
     cmd += ["-e", pattern, str(search_root)]
     try:
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace"
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
+            # rg 的 -g glob 按相对 cwd 的路径匹配：cwd 不落在搜索根下时 rg
+            # 走绝对路径，`!node_modules/**` 这类相对剪枝静默失效
+            # （2026-10-20：test_grep_prunes_build_dirs_by_default 从别的
+            # cwd 跑必漏 node_modules）。钉在搜索根上，glob/输出路径双稳。
+            cwd=search_root,
         )
     except OSError:
         return None
