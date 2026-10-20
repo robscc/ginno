@@ -65,6 +65,9 @@ test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
+    # DingTalk channel connector (docs/dingtalk-connector-design.md): Stream
+    # 模式 WebSocket 接入（事件推送 + 机器人消息 + 卡片回调）。
+    "dingtalk-stream>=0.20",
     "playwright>=1.45",
 ]
 

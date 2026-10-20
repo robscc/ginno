@@ -40,6 +40,7 @@ from ...subagent_plan import BACKGROUND_ASYNC_COMMANDS as _BACKGROUND_ASYNC_COMM
 from ..messages_ui import skill_display_text
 from ..sessions import _emit_goal_event, _ensure_session, _first_agent_id, _start_goal_driver
 from .engine import _stop_parked_turn, _stream_graph, turn_error_fields
+from .resume import resume_pending_interrupt
 from .turn import _attach_only_text, _prepare_steer_payload, _run_resume, _run_stream
 
 router = APIRouter()
@@ -236,74 +237,15 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     _start_goal_driver(session_id)
 
     def _spawn_resume(resume_value: dict) -> None:
-        """Resume the parked graph as its own task.
+        """Forward to the shared public resume entry (api/stream/resume.py).
 
-        Resume is a turn too — it must not block the receive loop (a `stop`
-        during a resumed turn has to get through). Shared by every interrupt
-        kind; only the resume payload differs.
+        Refactored (dingtalk-connector-design.md §4 F4): the peek/pop/spawn
+        protocol now lives in one place; the desktop WS passes its captured
+        turn config so behavior is byte-equivalent with the previous inline
+        implementation. External channels call ``resume_pending_interrupt``
+        directly with ``base_config=None``.
         """
-        # Resume under the agent that was active when the interrupt fired.
-        resume_agent = session.get("agent_id") or _first_agent_id()
-        resume_config = {
-            **config,
-            "configurable": {**config["configurable"], "agent_id": resume_agent},
-        }
-        _TURN_STOP.setdefault(session_id, asyncio.Event())
-        # Same capture-before-cleanup protocol as _turn_job's stop event above.
-        _resume_stop_evt = _TURN_STOP.get(session_id)
-
-        async def _resume_job(_cfg=resume_config, _val=resume_value) -> None:
-            try:
-                # Serialize behind _turn_lock: the paused turn's task may still
-                # be draining its stream generator, and the suspension
-                # checkpoint is only flushed during that drain. Resuming before
-                # it lands reads the PRE-interrupt checkpoint and re-runs the
-                # interrupted tool from scratch (it interrupts again — the turn
-                # never advances). The lock is held until the turn's
-                # _run_stream returns, i.e. after the drain. (The old inline
-                # receive loop got this serialization for free; task-ified
-                # turns need it explicitly.)
-                async with _turn_lock(session_id):
-                    await _run_resume(None, session["graph"], _cfg, _val)
-                _start_goal_driver(session_id)  # success path only
-            except Exception as e:
-                _log.exception("resume_error session=%s", session_id)
-                await _push_session_event(
-                    session_id,
-                    "error",
-                    # i18n-design.md §3: fields carry key+params for known
-                    # failures; a stale bundle falls back to message.
-                    turn_error_fields(e),
-                )
-            finally:
-                if _TURN_TASKS.get(session_id) is asyncio.current_task():
-                    _TURN_TASKS.pop(session_id, None)
-                _TURN_STOP.pop(session_id, None)
-                # Subagent completion gate for the resumed segment (a resumed
-                # subagent turn finishing is a turn settling like any other).
-                if session_id not in _PENDING_RESUME:
-                    try:
-                        from ...subagent_scheduler import on_turn_settled
-
-                        spawn_bg(
-                            on_turn_settled(
-                                session_id,
-                                _resume_stop_evt,
-                                str((_cfg.get("configurable") or {}).get("turn_id") or ""),
-                            )
-                        )
-                    except Exception:
-                        _log.exception(
-                            "subagent_settle_hook_failed session=%s", session_id
-                        )
-
-        task = asyncio.create_task(_resume_job())
-        _TURN_TASKS[session_id] = task
-        task.add_done_callback(
-            lambda t: _TURN_TASKS.pop(session_id, None)
-            if _TURN_TASKS.get(session_id) is t
-            else None
-        )
+        resume_pending_interrupt(session_id, resume_value, base_config=config)
 
     try:
         while True:

@@ -100,7 +100,7 @@ class ChromeExtensionConnector(Connector):
                 "enabled": {"type": "boolean", "title": "Enabled"},
                 "fallback_profile_mode": {
                     "type": "string", "enum": ["ask", "auto", "off"],
-                    "title": "Fallback browser when extension is missing",
+                    "title": "Fallback browser when extension missing",
                     "description": ("ask=prompt once before using / auto=silently "
                                     "use Ginno's built-in Chrome profile / "
                                     "off=extension track only"),
@@ -108,9 +108,9 @@ class ChromeExtensionConnector(Connector):
                 "tab_scope": {
                     "type": "string", "enum": ["group", "all"],
                     "title": "Tab visibility",
-                    "description": ("group=only tabs in the Ginno group (fenced; "
-                                    "the agent can't see your personal tabs) / "
-                                    "all=every tab in the browser (readable and "
+                    "description": ("group=only tabs in the Ginno group "
+                                    "(fenced; no personal tabs visible) / "
+                                    "all=every tab (readable and "
                                     "controllable; mind your privacy)"),
                 },
                 "sensitive_domains": {
@@ -189,17 +189,164 @@ def ensure_builtin_connectors() -> None:
     reg = registry()
     reg.register(ChromeExtensionConnector())
     reg.register(BrowserProfileConnector())
+    reg.register(DingTalkConnector())
     # 初始状态:扩展未安装;profile 轨道按需启动,先标 disconnected(未运行)
     if reg.status_of("chrome-extension")["status"] == STATUS_NOT_INSTALLED:
         pass  # stays not_installed until relay says otherwise
     if reg.status_of("browser-profile")["status"] == STATUS_NOT_INSTALLED:
-        reg.report("browser-profile", STATUS_DISCONNECTED, "Not running (starts on demand)",
+        reg.report("browser-profile", STATUS_DISCONNECTED,
+                   "Not running (starts on demand)", extra={"idle": True})
+    # 钉钉:默认 disabled(enabled=False),用户配好 appKey/appSecret 并启用后,
+    # apply_config 拉起 Stream 连接(F1)。
+    if reg.status_of("dingtalk-bot")["status"] == STATUS_NOT_INSTALLED:
+        reg.report("dingtalk-bot", STATUS_DISCONNECTED, "Not configured",
                    extra={"idle": True})
+
+
+class DingTalkConnector(Connector):
+    """钉钉机器人渠道连接器(docs/dingtalk-connector-design.md)。
+
+    Connector 只负责配置/安装引导/状态;协议对接在
+    ``channels/dingtalk/adapter.py``(ChannelAdapter 抽象的第一个实现)。
+    状态机(F1): apply_config(enabled+凭证齐全) → installing → adapter.start
+    → connected;WS 断开 → disconnected(重连退避中);鉴权失败 → error。
+    """
+
+    id = "dingtalk-bot"
+    name = "DingTalk Bot"
+    description = ("Chat with Ginno inside DingTalk: stream replies as AI "
+                   "cards, answer agent questions with buttons, send and "
+                   "preview files — your desktop Ginno stays the runtime.")
+    icon = "message-circle"
+    order = 30
+    # 入站渠道,不向 agent 提供 tools
+    tool_prefix = None
+
+    def default_config(self) -> dict:
+        return {
+            "enabled": False,
+            "app_key": "",
+            "app_secret": "",
+            "robot_code": "",
+            "card_template_id": "",
+            "allowed_staff_ids": [],
+            "default_agent_id": "",
+            "session_policy": "per_user",
+            "menus": [],
+            "ask_timeout_s": 600,
+            "tool_policy": "confirm_highrisk",
+        }
+
+    def config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "title": "Enabled"},
+                "app_key": {"type": "string", "title": "AppKey"},
+                "app_secret": {"type": "string", "title": "AppSecret",
+                               "format": "password"},
+                "robot_code": {
+                    "type": "string", "title": "robotCode",
+                    "description": "Needed for media upload; defaults to AppKey",
+                },
+                "card_template_id": {
+                    "type": "string", "title": "AI card template id",
+                    "description": ("Template published on the DingTalk card "
+                                    "platform; empty = plain markdown replies "
+                                    "(no typewriter streaming)"),
+                },
+                "allowed_staff_ids": {
+                    "type": "array", "items": {"type": "string"},
+                    "title": "Allowed staffIds",
+                    "description": ("Empty = everyone in the app's visibility "
+                                    "scope can drive the agent"),
+                },
+                "default_agent_id": {
+                    "type": "string", "title": "Default agent for this channel",
+                },
+                "session_policy": {
+                    "type": "string", "enum": ["per_user", "per_conversation"],
+                    "title": "Session policy",
+                    "description": ("per_user (P0): each staffId maps to its "
+                                    "own session; per_conversation (P1 groups): "
+                                    "one shared session per conversation"),
+                },
+                "menus": {
+                    "type": "array", "title": "Menus / commands",
+                    "description": ("trigger (exact or /prefix, case-"
+                                    "insensitive), title, prompt template "
+                                    "({date}/{time}/{staff_name}), new_session"),
+                },
+                "ask_timeout_s": {
+                    "type": "integer", "title": "ask_user timeout (seconds)",
+                    "description": "Auto-skip a parked question after this",
+                },
+                "tool_policy": {
+                    "type": "string", "enum": ["readonly", "confirm_highrisk", "all"],
+                    "title": "Tool policy",
+                    "description": ("readonly=read-only tools only / "
+                                    "confirm_highrisk=ask before dangerous "
+                                    "tools / all=no restriction (not advised)"),
+                },
+            },
+        }
+
+    def install_steps(self) -> list[dict]:
+        return [
+            {
+                "key": "intro",
+                "title": "What is this",
+                "body": ("Ginno can be reached from your DingTalk: you chat "
+                         "with the same agent, files preview inside DingTalk, "
+                         "and your desktop Ginno keeps running the turns."),
+            },
+            {
+                "key": "create_app",
+                "title": "Create an internal app on the DingTalk open platform",
+                "body": ("Log in to open.dingtalk.com with your organization "
+                         "account → 开发配置 → 应用开发 → 企业内部应用 → 创建应用, "
+                         "then add the 机器人 capability."),
+                "copy": "https://open.dingtalk.com",
+            },
+            {
+                "key": "stream",
+                "title": "Subscribe to bot messages in Stream mode",
+                "body": ("In the app's 事件订阅 page choose Stream 模式推送 "
+                         "(no public IP needed). Copy the AppKey and AppSecret "
+                         "from 凭证与基础信息."),
+            },
+            {
+                "key": "fill",
+                "title": "Paste the credentials here and enable",
+                "body": ("Fill AppKey/AppSecret above, optionally restrict "
+                         "allowed staffIds, then toggle Enabled. The connector "
+                         "card should show Connected within seconds."),
+            },
+        ]
+
+    async def apply_config(self, cfg: dict) -> None:
+        """F1 lifecycle: (re)start or stop the channel adapter on config change."""
+        from ..channels.dingtalk.adapter import DingTalkChannelAdapter
+
+        global _dingtalk_adapter
+        if not cfg.get("enabled") or not (cfg.get("app_key") and cfg.get("app_secret")):
+            if _dingtalk_adapter is not None:
+                await _dingtalk_adapter.stop()
+                _dingtalk_adapter = None
+            return
+        if _dingtalk_adapter is not None:
+            await _dingtalk_adapter.stop()
+        _dingtalk_adapter = DingTalkChannelAdapter()
+        await _dingtalk_adapter.start(cfg)
+
+
+_dingtalk_adapter = None  # singleton owned by DingTalkConnector.apply_config
 
 
 __all__ = [
     "ChromeExtensionConnector",
     "BrowserProfileConnector",
+    "DingTalkConnector",
     "ensure_builtin_connectors",
     "STATUS_CONNECTED",
     "STATUS_DISCONNECTED",
