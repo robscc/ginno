@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
-import { Activity, Puzzle, RefreshCw, Save, ShieldCheck } from "lucide-react";
+import { Activity, Puzzle, RefreshCw, Save, ShieldCheck, Store } from "lucide-react";
+import { ModStoreDrawer } from "./ModStoreDrawer";
 
 // Claude Code Mods 设置页(claude-code-mods-design.md §7.5):mod 列表
 // (名称/版本/状态/来源)、启停、配置 JSON 编辑、验证报告、运行时状态。
@@ -105,6 +106,9 @@ export function ModsSettings() {
   const [report, setReport] = useState<{ name: string; text: string } | null>(null);
   // 兼容度展开的 mod 名(一次一个)
   const [compatOpen, setCompatOpen] = useState<string | null>(null);
+  // 商店抽屉(安装成功 → 高亮 + 重拉已装列表)
+  const [storeOpen, setStoreOpen] = useState(false);
+  const [justInstalled, setJustInstalled] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -205,9 +209,17 @@ export function ModsSettings() {
       <div className="flex items-center gap-2">
         <Puzzle className="h-5 w-5 text-violet" />
         <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+        {/* 商店入口（mod-marketplace-design.md §6.3，2026-10-21 定稿：页签内
+            抽屉，不新增导航）。 */}
+        <button
+          onClick={() => setStoreOpen(true)}
+          className="ml-auto flex items-center gap-1 rounded-md border border-violet/40 bg-violet/10 px-2 py-1 text-xs text-violet transition-colors hover:bg-violet/20"
+        >
+          <Store className="h-3.5 w-3.5" /> {t("store.browse")}
+        </button>
         <button
           onClick={() => void refresh()}
-          className="ml-auto rounded p-1 text-faint hover:text-txt"
+          className="rounded p-1 text-faint hover:text-txt"
           title={t("refresh")}
           aria-label={t("refresh")}
         >
@@ -251,7 +263,12 @@ export function ModsSettings() {
               const status = m.status ?? "unknown";
               const enabled = m.enabled ?? status !== "disabled";
               return (
-                <div key={m.name} className="rounded-lg border border-line px-3 py-2">
+                <div
+                  key={m.name}
+                  className={`rounded-lg border px-3 py-2 ${
+                    justInstalled === m.name ? "border-violet/50 bg-violet/[0.06]" : "border-line"
+                  }`}
+                >
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-sm text-txt">{m.name}</span>
                     {m.version && <span className="text-xs text-faint">v{m.version}</span>}
@@ -373,6 +390,16 @@ export function ModsSettings() {
       )}
 
       {msg && <div className="text-xs text-red">{msg}</div>}
+
+      {storeOpen && (
+        <ModStoreDrawer
+          onClose={() => setStoreOpen(false)}
+          onInstalled={(name) => {
+            setJustInstalled(name);
+            void refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

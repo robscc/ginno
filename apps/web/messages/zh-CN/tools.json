@@ -894,7 +894,29 @@
       "compatUnimplemented": "未实现的 $ 调用",
       "compatFired": "触发 {n} 次",
       "compatFailed": "失败 {n} 次",
-      "compatCalled": "调用 {n} 次 · 成功 {ok}"
+      "compatCalled": "调用 {n} 次 · 成功 {ok}",
+      "store": {
+        "browse": "浏览 Mods",
+        "title": "Mods 商店",
+        "close": "关闭",
+        "refresh": "刷新市场",
+        "search": "搜索 mod…",
+        "empty": "没有匹配的 mod",
+        "back": "返回列表",
+        "noDescription": "（无描述）",
+        "noReadme": "（无 README）",
+        "jsMod": "JS mod · {n} 个模块",
+        "classicMod": "classic hooks",
+        "install": "安装",
+        "update": "更新",
+        "installed": "已安装 {name}",
+        "updated": "已更新 {name}",
+        "installFailed": "安装失败",
+        "loadFailed": "加载市场清单失败",
+        "staleCache": "市场刷新失败，展示缓存清单：{error}",
+        "installedTag": "已装",
+        "hasUpdate": "可更新 → v{v}"
+      }
     }
   }
 }

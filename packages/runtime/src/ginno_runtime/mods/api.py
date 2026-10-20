@@ -209,3 +209,71 @@ async def validate_mod(req: ModValidateRequest) -> dict:
     except Exception as e:  # noqa: BLE001 — surface as payload, per house style
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {"ok": True, "report": report, "id": uuid.uuid4().hex}
+
+
+# ---- marketplace (mod-marketplace-design.md §6.2) -------------------------------
+
+
+@router.get("/api/mods/marketplace")
+async def marketplace_list(refresh: bool = False) -> dict:
+    """All sources with catalogs (cache-first; ``refresh=1`` forces a fetch).
+    Offline → stale cache + ``error`` reason per source, never a 500."""
+    from . import marketplace as mkt
+
+    try:
+        sources = await mkt.list_marketplace(refresh=refresh)
+    except Exception as e:  # noqa: BLE001 — surfacing beats a 500
+        return {"ok": False, "error": f"{type(e).__name__}: {e}", "sources": []}
+    installed = {name: (item.get("origin") or None)
+                 for name, item in bridge_utils.load_mods_settings().get("items", {}).items()}
+    return {"ok": True, "sources": sources, "installedOrigins": installed}
+
+
+@router.get("/api/mods/marketplace/item")
+async def marketplace_get_item(src: str, path: str) -> dict:
+    """One plugin's manifest + README + hook modules (detail view input)."""
+    from . import marketplace as mkt
+
+    return await mkt.marketplace_item(src, path)
+
+
+class MarketInstallRequest(BaseModel):
+    src: str
+    path: str
+    overwrite: bool = False
+
+
+@router.post("/api/mods/marketplace/install")
+async def marketplace_install(req: MarketInstallRequest) -> dict:
+    from . import marketplace as mkt
+
+    return await mkt.install_from_market(req.src, req.path, overwrite=req.overwrite)
+
+
+@router.post("/api/mods/marketplace/update")
+async def marketplace_update(name: str) -> dict:
+    from . import marketplace as mkt
+
+    return await mkt.update_from_market(name)
+
+
+class MarketSourcesRequest(BaseModel):
+    sources: list[dict]
+
+
+@router.put("/api/mods/marketplace/sources")
+async def marketplace_put_sources(req: MarketSourcesRequest) -> dict:
+    from . import marketplace as mkt
+
+    saved = mkt.save_sources(req.sources or [])
+    return {"ok": True, "sources": saved}
+
+
+@router.post("/api/mods/prompt-read")
+async def mods_prompt_read(data: dict) -> dict:
+    """Frontend answers ``mod.prompt.read`` ($.prompt.read op): ships the
+    composer draft for the session. Best-effort — no waiter = no-op."""
+    from . import ops as _ops
+
+    ok = _ops.resolve_prompt_read(str(data.get("session_id") or ""), str(data.get("text") or ""))
+    return {"ok": ok}

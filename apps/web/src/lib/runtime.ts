@@ -1128,6 +1128,90 @@ export async function validateMod(name: string) {
     body: JSON.stringify({ name }),
   });
 }
+
+// ---- marketplace（mod-marketplace-design.md §6.2）---------------------------
+
+export interface MarketPlugin {
+  name: string;
+  source: string;
+  description: string;
+  version: string;
+  tags: string[];
+}
+
+export interface MarketSource {
+  name: string;
+  repo: string;
+  enabled: boolean;
+  skipped?: boolean;
+  commit?: string;
+  fetched_at?: number;
+  error?: string;
+  plugins: MarketPlugin[];
+}
+
+export interface MarketOrigin {
+  marketplace: string;
+  repo: string;
+  path: string;
+  commit: string;
+  version: string;
+  installed_at: number;
+}
+
+export interface MarketplaceStatus {
+  ok?: boolean;
+  error?: string;
+  sources: MarketSource[];
+  /** 已装 mod name → 市场来源(origin);本地安装的 mod 无键 */
+  installedOrigins: Record<string, MarketOrigin | null>;
+}
+
+export interface MarketItemDetail {
+  ok: boolean;
+  error?: string;
+  path?: string;
+  manifest?: { name?: string; version?: string; description?: string };
+  readme?: string;
+  hookModules?: string[];
+  entry?: MarketPlugin;
+  source?: { name?: string; repo?: string };
+  commit?: string;
+}
+
+export async function listMarketplace(refresh = false) {
+  return json<MarketplaceStatus>(
+    `${BASE}/mods/marketplace${refresh ? "?refresh=1" : ""}`,
+  );
+}
+
+export async function getMarketplaceItem(src: string, path: string) {
+  return json<MarketItemDetail>(
+    `${BASE}/mods/marketplace/item?src=${encodeURIComponent(src)}&path=${encodeURIComponent(path)}`,
+  );
+}
+
+export async function installFromMarket(src: string, path: string, overwrite = false) {
+  return json<{ ok: boolean; error?: string; mod?: { name: string; origin?: MarketOrigin } }>(
+    `${BASE}/mods/marketplace/install`,
+    { method: "POST", headers: H, body: JSON.stringify({ src, path, overwrite }) },
+  );
+}
+
+export async function updateFromMarket(name: string) {
+  return json<{ ok: boolean; error?: string; mod?: { name: string; origin?: MarketOrigin } }>(
+    `${BASE}/mods/marketplace/update`,
+    { method: "POST", headers: H, body: JSON.stringify({ name }) },
+  );
+}
+
+export async function putMarketplaceSources(sources: MarketSource[]) {
+  return json<{ ok: boolean; sources: MarketSource[] }>(
+    `${BASE}/mods/marketplace/sources`,
+    { method: "PUT", headers: H, body: JSON.stringify({ sources }) },
+  );
+}
+
 export async function getSettings() {
   return json<Record<string, unknown>>(`${BASE}/settings`);
 }

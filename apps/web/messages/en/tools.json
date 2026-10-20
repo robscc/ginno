@@ -894,7 +894,29 @@
       "compatUnimplemented": "Unimplemented $ calls",
       "compatFired": "{n} fired",
       "compatFailed": "{n} failed",
-      "compatCalled": "{n} called · {ok} ok"
+      "compatCalled": "{n} called · {ok} ok",
+      "store": {
+        "browse": "Browse Mods",
+        "title": "Mod Store",
+        "close": "Close",
+        "refresh": "Refresh market",
+        "search": "Search mods…",
+        "empty": "No matching mods",
+        "back": "Back to list",
+        "noDescription": "(no description)",
+        "noReadme": "(no README)",
+        "jsMod": "JS mod · {n} module(s)",
+        "classicMod": "classic hooks",
+        "install": "Install",
+        "update": "Update",
+        "installed": "Installed {name}",
+        "updated": "Updated {name}",
+        "installFailed": "Install failed",
+        "loadFailed": "Failed to load the market catalog",
+        "staleCache": "Market refresh failed — serving the cached catalog: {error}",
+        "installedTag": "Installed",
+        "hasUpdate": "Updatable → v{v}"
+      }
     }
   }
 }
