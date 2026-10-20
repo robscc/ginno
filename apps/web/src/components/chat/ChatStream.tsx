@@ -49,6 +49,7 @@ import {
   type SendPayload,
   type VersionPropose,
 } from "./streamCore";
+import { CHAT_COL } from "./columnWidth";
 import { ProposeCard, SubagentTopBar } from "./streamCards";
 import { PlanBoard } from "./PlanBoard";
 import { SubagentBoard } from "./SubagentBoard";
@@ -1300,7 +1301,7 @@ export function ChatStream({
       {session.type !== "subagent" && <PlanBoard sessionId={session.id} />}
       {session.type !== "subagent" && <SubagentBoard sessionId={session.id} />}
       {!hideDel && goal && goalStalled && !resumeDismissed && (
-        <div className="mx-auto mb-2 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
+        <div className={`${CHAT_COL} mb-2 flex items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs`}>
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />
           <span className="flex-1 text-muted">
             {tc("goal.stalledLabel", { status: goal.status })}:
@@ -1329,7 +1330,7 @@ export function ChatStream({
         }}
         className="flex-1 overflow-y-auto px-6 py-6"
       >
-        <div className="mx-auto flex max-w-3xl flex-col gap-5">
+        <div className={`${CHAT_COL} flex flex-col gap-5`}>
           {messages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
               {tc("empty.start")}
@@ -1390,7 +1391,7 @@ export function ChatStream({
       {propose && <ProposeCard propose={propose} onDecide={respondPropose} />}
 
       {proposeResult && (
-        <div className="mx-auto w-full max-w-3xl px-6">
+        <div className={`${CHAT_COL} px-6`}>
           <div
             className={`anim-slide-in mb-2 flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs ${
               proposeResult.decision === "allow"
@@ -1426,7 +1427,7 @@ export function ChatStream({
 
       {/* composer */}
       <div className="px-6 pb-5 pt-2">
-        <div className="mx-auto max-w-3xl">
+        <div className={CHAT_COL}>
           {switchTarget && (
             <div className="mb-2 flex items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
               <span

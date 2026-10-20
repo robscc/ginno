@@ -17,6 +17,7 @@ import * as api from "@/lib/runtime";
 import type { ScheduleRun, SessionMeta } from "@/lib/types";
 import { ContextBlocks, UserBlocks, type Block } from "@/components/chat/blocks";
 import { AssistantBubble } from "@/components/chat/streamCards";
+import { CHAT_COL } from "@/components/chat/columnWidth";
 import { SubagentOpenOverride } from "@/components/chat/blocks/subagentCards";
 import {
   SUBAGENT_STATUS_META,
@@ -185,7 +186,7 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
           transcript。 */}
       <div className="border-b border-line bg-panel/60 px-6 py-2 text-xs">
         {liveFocus ? (
-          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
+          <div className={`${CHAT_COL} flex flex-wrap items-center gap-2`}>
             <span className="shrink-0">🤖</span>
             <span
               className="min-w-0 max-w-[40%] truncate font-medium text-txt"
@@ -234,7 +235,8 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
             </button>
           </div>
         ) : (
-        <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
+        <div className={`${CHAT_COL} flex flex-wrap items-center gap-2`}>
+
           <span className="shrink-0">⏰</span>
           <span className="min-w-0 max-w-[40%] truncate font-medium text-txt" title={run.task_name}>
             {run.task_name}
@@ -296,12 +298,12 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
         </div>
         )}
         {!liveFocus && run.error && (
-          <div className="mx-auto mt-1 max-w-3xl truncate text-[11px] text-red" title={run.error}>
+          <div className={`${CHAT_COL} mt-1 truncate text-[11px] text-red`} title={run.error}>
             {run.error}
           </div>
         )}
         {!liveFocus && forkError && (
-          <div className="mx-auto mt-1 max-w-3xl truncate text-[11px] text-red" title={forkError}>
+          <div className={`${CHAT_COL} mt-1 truncate text-[11px] text-red`} title={forkError}>
             {forkError}
           </div>
         )}
@@ -312,7 +314,7 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
           活跃会话。 */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <SubagentOpenOverride.Provider value={{ open: openSubReplay }}>
-        <div className="mx-auto flex max-w-3xl flex-col gap-5">
+        <div className={`${CHAT_COL} flex flex-col gap-5`}>
           {messages === null ? (
             <div className="flex h-40 items-center justify-center text-faint">
               <Loader2 className="h-4 w-4 animate-spin" />
