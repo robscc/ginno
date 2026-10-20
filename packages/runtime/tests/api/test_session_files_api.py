@@ -176,3 +176,28 @@ def test_reveal_monkeypatched(client, sid, monkeypatch):
     ).json()
     assert r["ok"] is True
     assert calls and calls[0][0] == "open" and calls[0][1] == "-R"
+
+
+def test_cleanup_orphans_removes_only_orphan_dirs(client, sid):
+    """一键清理:孤儿目录整目录删除,活跃会话目录不受影响。"""
+    from ginno_runtime import server_shared
+
+    _upload(client, sid)  # live session keeps its files
+
+    # 手造一个孤儿目录(会话不在索引里)——绕过 delete_session 使其可控
+    orphan_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    orphan_dir = paths.session_files_dir("default", orphan_id)
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+    (orphan_dir / "leftover.txt").write_text("x" * 100)
+
+    r = client.post("/api/session-files/cleanup-orphans").json()
+    assert r["ok"] is True
+    assert [x["session_id"] for x in r["removed"]] == [orphan_id]
+    assert r["freed_bytes"] >= 100
+    assert not orphan_dir.exists()
+    # 活跃会话的目录原封不动
+    assert paths.session_files_dir("default", sid).is_dir()
+
+    # 再跑一次:没有孤儿 → 空清理
+    r2 = client.post("/api/session-files/cleanup-orphans").json()
+    assert r2["ok"] is True and r2["removed"] == [] and r2["freed_bytes"] == 0

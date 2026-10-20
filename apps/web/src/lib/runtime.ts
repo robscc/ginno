@@ -1047,6 +1047,15 @@ export async function revealSessionFile(project_slug: string, session_id: string
     body: JSON.stringify({ project_slug, session_id, path }),
   });
 }
+/** 一键清理:删除所有「会话已删但文件残留」的目录(活跃会话不受影响)。 */
+export async function cleanupOrphanSessionDirs() {
+  return json<{
+    ok: boolean;
+    removed: { project_slug: string; session_id: string; bytes: number }[];
+    failed: { project_slug: string; session_id: string; error: string }[];
+    freed_bytes: number;
+  }>(`${BASE}/session-files/cleanup-orphans`, { method: "POST", headers: H });
+}
 
 // ---- settings / mcp / skills / kb ----
 export async function stopDelegation(id: string) {

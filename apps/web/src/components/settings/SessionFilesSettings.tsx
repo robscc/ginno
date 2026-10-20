@@ -24,7 +24,6 @@ function fmtBytes(n: number): string {
   }
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${u[i]}`;
 }
-
 function fmtTime(ts: number): string {
   if (!ts) return "—";
   const d = new Date(ts * 1000);
@@ -34,7 +33,8 @@ function fmtTime(ts: number): string {
 
 type ConfirmTarget =
   | { kind: "file"; slug: string; sid: string; path: string; label: string; parentKey: string }
-  | { kind: "dir"; slug: string; sid: string; path: string; label: string };
+  | { kind: "dir"; slug: string; sid: string; path: string; label: string }
+  | { kind: "orphans" };
 
 export function SessionFilesSettings() {
   const t = useTranslations("settings.sessionFiles");
@@ -45,6 +45,10 @@ export function SessionFilesSettings() {
   const [msg, setMsg] = useState("");
 
   const key = (slug: string, sid: string, sub: string) => `${slug}/${sid}|${sub}`;
+
+  // 孤儿目录(会话已删、文件残留):一键清理按钮的显示条件与确认文案数据。
+  const orphans = dirs.filter((d) => d.orphaned);
+  const orphanBytes = orphans.reduce((acc, d) => acc + (d.total_bytes || 0), 0);
 
   const load = useCallback(async () => {
     try {
@@ -96,6 +100,23 @@ export function SessionFilesSettings() {
   // 参数改名 target：避免遮蔽外层的 t（useTranslations）
   async function doDelete(target: ConfirmTarget) {
     setConfirm(null);
+    // 一键清理孤儿目录:后端按目录清理(活跃会话不受影响),结果按条反馈。
+    if (target.kind === "orphans") {
+      try {
+        const r = await api.cleanupOrphanSessionDirs();
+        if (r.removed.length === 0 && r.failed.length === 0) {
+          setMsg(t("cleanupNothing"));
+        } else if (r.failed.length > 0) {
+          setMsg(t("cleanupPartial", { ok: r.removed.length, failed: r.failed.length }));
+        } else {
+          setMsg(t("cleanupDone", { n: r.removed.length, size: fmtBytes(r.freed_bytes) }));
+        }
+        await load();
+      } catch {
+        setMsg(t("deleteFailed"));
+      }
+      return;
+    }
     try {
       if (target.kind === "file") {
         const r = await api.deleteSessionFile(target.slug, target.sid, target.path);
@@ -187,7 +208,21 @@ export function SessionFilesSettings() {
 
   return (
     <div className="px-8 py-7">
-      <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+      <div className="flex items-center gap-3">
+        <h2 className="text-lg font-semibold text-txt">{t("title")}</h2>
+        {/* 一键清理:所有「会话已删但文件残留」的目录(2026-10-21)。有孤儿
+            才显示——干净状态下不出按钮。 */}
+        {orphans.length > 0 && (
+          <button
+            onClick={() => setConfirm({ kind: "orphans" })}
+            className="ml-auto flex items-center gap-1.5 rounded-md border border-amber/40 bg-amber/10 px-2.5 py-1 text-xs text-amber transition-colors hover:bg-amber/20"
+            title={t("cleanupTitle")}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {t("cleanupButton", { n: orphans.length, size: fmtBytes(orphanBytes) })}
+          </button>
+        )}
+      </div>
       <p className="mt-1 text-sm text-muted">{t("description")}</p>
 
       {dirs.length === 0 ? (
@@ -268,11 +303,19 @@ export function SessionFilesSettings() {
 
       {confirm && (
         <ConfirmModal
-          title={confirm.kind === "file" ? t("confirmTitleFile") : t("confirmTitleDir")}
+          title={
+            confirm.kind === "orphans"
+              ? t("confirmTitleOrphans")
+              : confirm.kind === "file"
+                ? t("confirmTitleFile")
+                : t("confirmTitleDir")
+          }
           message={
-            confirm.kind === "file"
-              ? t("confirmFile", { name: confirm.label })
-              : t("confirmDir", { name: confirm.label })
+            confirm.kind === "orphans"
+              ? t("confirmOrphans", { n: orphans.length, size: fmtBytes(orphanBytes) })
+              : confirm.kind === "file"
+                ? t("confirmFile", { name: confirm.label })
+                : t("confirmDir", { name: confirm.label })
           }
           confirmLabel={t("deleteLabel")}
           onConfirm={() => doDelete(confirm)}

@@ -534,7 +534,14 @@
       "confirmTitleDir": "Delete session directory",
       "confirmFile": "Delete the file “{name}”? It will be removed from disk and cannot be recovered.",
       "confirmDir": "Delete the whole file directory of “{name}”? All files inside will be removed and cannot be recovered. Conversation history is unaffected.",
-      "deleteLabel": "Delete"
+      "deleteLabel": "Delete",
+      "cleanupButton": "Clean deleted sessions ({n} · {size})",
+      "cleanupTitle": "Delete every file directory left by deleted sessions; active sessions are untouched",
+      "confirmTitleOrphans": "Clean deleted-session files",
+      "confirmOrphans": "This deletes {n} file directories left by deleted sessions ({size} total). This cannot be undone. Active sessions are untouched.",
+      "cleanupDone": "Cleaned {n} directories, freed {size}",
+      "cleanupPartial": "Cleaned {ok} directories; {failed} failed (see the runtime log)",
+      "cleanupNothing": "Nothing to clean — no deleted-session files"
     },
     "knowledge": {
       "title": "Knowledge Base",

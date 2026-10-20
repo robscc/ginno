@@ -771,3 +771,59 @@ async def delete_session_dir_endpoint(req: dict) -> dict:
     except OSError as e:
         return {"ok": False, "error": f"Failed to delete: {e}"}
     return {"ok": True, "files_removed": removed}
+
+
+@router.post("/api/session-files/cleanup-orphans")
+async def cleanup_orphan_session_dirs_endpoint() -> dict:
+    """One-click cleanup (2026-10-21): remove EVERY orphaned session files dir
+    across all projects — sessions deleted but whose preserved files linger.
+    Same semantics as ``/dir`` per session (registry + artifact purge first);
+    an active session's dir is never touched. Per-dir failures are reported
+    and skipped, not fatal — the rest still cleans."""
+    import shutil
+
+    removed: list[dict] = []
+    failed: list[dict] = []
+    freed_bytes = 0
+    projects_root = paths.home() / "projects"
+    if not projects_root.is_dir():
+        return {"ok": True, "removed": [], "failed": [], "freed_bytes": 0}
+    for proj in sorted(projects_root.iterdir()):
+        if not proj.is_dir():
+            continue
+        slug = proj.name
+        sessions_root = paths.project_sessions_dir(slug)
+        if not sessions_root.is_dir():
+            continue
+        for d in sorted(sessions_root.iterdir()):
+            if not d.is_dir():  # _index.json / checkpoints
+                continue
+            sid = d.name
+            if not _is_orphaned_session(slug, sid):
+                continue
+            _n, size, _mt = _dir_stats(d)
+            reg = files_mod.get_registry(slug)
+            purged = 0
+            prefix = str(d.resolve())
+            for e in reg.list_all():
+                p = e.get("path") or ""
+                if p == prefix or p.startswith(prefix + "/") or p.startswith(prefix + "\\"):
+                    art_id = e.get("artifact_id")
+                    reg.unregister(e["id"])
+                    if art_id:
+                        art_store.delete_artifact(slug, art_id)
+                    purged += 1
+            try:
+                shutil.rmtree(d)
+                freed_bytes += size
+                removed.append({"project_slug": slug, "session_id": sid, "bytes": size})
+            except OSError as e:
+                failed.append(
+                    {"project_slug": slug, "session_id": sid, "error": f"{type(e).__name__}: {e}"[:200]}
+                )
+    return {
+        "ok": len(failed) == 0,
+        "removed": removed,
+        "failed": failed,
+        "freed_bytes": freed_bytes,
+    }

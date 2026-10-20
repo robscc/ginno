@@ -534,7 +534,14 @@
       "confirmTitleDir": "删除会话目录",
       "confirmFile": "删除文件「{name}」？将从磁盘移除，无法恢复。",
       "confirmDir": "删除「{name}」的全部文件目录？其中所有文件都会移除且无法恢复；对话历史不受影响。",
-      "deleteLabel": "删除"
+      "deleteLabel": "删除",
+      "cleanupButton": "清理已删会话文件（{n} 个 · {size}）",
+      "cleanupTitle": "删除所有已删除会话残留的文件目录；活跃会话不受影响",
+      "confirmTitleOrphans": "一键清理已删会话文件",
+      "confirmOrphans": "将删除 {n} 个已删会话残留的文件目录（共 {size}），此操作不可撤销。活跃会话的文件不受影响。",
+      "cleanupDone": "已清理 {n} 个目录，释放 {size}",
+      "cleanupPartial": "清理了 {ok} 个目录，{failed} 个失败（详见运行时日志）",
+      "cleanupNothing": "没有可清理的已删会话文件"
     },
     "knowledge": {
       "title": "知识库",
