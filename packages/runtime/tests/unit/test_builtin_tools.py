@@ -555,3 +555,30 @@ def test_bash_timeout_keeps_partial_output(tools, ws):
     out = tools["bash"].invoke({"command": "echo early; sleep 30", "timeout": 2})
     assert "timeout after 2s" in out
     assert "early" in out
+
+
+# ---- bash：rg 输入类报错在管道下被 exit 0 掩盖 → 追加 [hint] ------------------
+# 复刻 2026-10-19 会话 7a9bbb08：backreference 正则 + `| head` → [exit 0] +
+# stderr 报错，模型当轮无法察觉。工具须在输出尾部追加显式 [hint]。
+def test_rg_usage_hint_classifies_known_errors():
+    from ginno_runtime.tools.builtin import _rg_usage_hint
+
+    assert _rg_usage_hint("rg: regex parse error:\n    (?:(a)\\1)\nbackreferences are not supported")
+    assert _rg_usage_hint("PCRE2: error matching: match limit exceeded")
+    assert _rg_usage_hint("PCRE2 is not available in this build of ripgrep")
+    # 非输入类报错不提示
+    assert _rg_usage_hint("") is None
+    assert _rg_usage_hint("grep: a.txt: No such file or directory") is None
+
+
+def test_bash_pipeline_masks_rg_error_gets_hint(tools, ws):
+    import shutil as _shutil
+
+    rg = _shutil.which("rg")
+    if not rg:
+        pytest.skip("rg not on PATH")
+    tools["write_file"].invoke({"path": "a.txt", "content": "aa bb aa\n"})
+    out = tools["bash"].invoke({"command": f"'{rg}' '(a)\\1' a.txt | head -1"})
+    assert out.startswith("[exit 0]")  # head 的退出码，掩盖了 rg 的失败
+    assert "[hint]" in out
+    assert "--pcre2" in out

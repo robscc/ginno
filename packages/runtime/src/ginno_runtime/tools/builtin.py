@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import weakref
 from collections import deque
 import queue
@@ -90,6 +91,48 @@ READ_MAX_LINES = 2000
 READ_MAX_CHARS = 200_000
 # Even an explicit limit= stays bounded by this (context protection).
 READ_HARD_MAX_LINES = 5000
+
+# ─── bash 工具的 rg 输入类报错提示 ──────────────────────────────────────────
+# 管道场景（``rg … | head``）里 rg 的解析失败只落 stderr，退出码被尾命令吃成
+# 0，模型当轮极难察觉（2026-10-19 会话 7a9bbb08：backreference 正则报错但
+# [exit 0]，靠下一轮自愈）。Claude Code 对同一问题按 stderr 文本分类成
+# RipgrepUsageError 整次拒绝；bash 场景无法拒绝整次调用，改为在输出尾部追加
+# 显式 [hint]，让失败第一眼可见、且给出自愈方向。只提示，不改写退出码。
+_RG_USAGE_ERROR_RE = re.compile(
+    r"rg: (?:regex parse error|error parsing glob|unrecognized file type"
+    r"|error parsing flag|compiled regex exceeds size limit)"
+)
+_RG_PCRE2_LIMIT_RE = re.compile(r"PCRE2: error matching: match limit exceeded")
+_RG_NO_PCRE2_RE = re.compile(r"PCRE2 is not available in this build")
+
+
+def _rg_usage_hint(stderr_text: str) -> str | None:
+    """Classify captured stderr; return an actionable hint when it contains a
+    known rg input-class failure, else None."""
+    if _RG_USAGE_ERROR_RE.search(stderr_text):
+        return t(
+            "[hint] rg rejected the pattern (see stderr above). A pipeline's exit "
+            "code is the LAST command's, so this failure was masked by exit 0. rg's "
+            "default engine (Rust regex) has no backreferences or look-around — "
+            "re-run with --pcre2, or rewrite the pattern.",
+            "[hint] rg 拒绝了该输入（见上方 stderr）。管道退出码只取最后一个命令，"
+            "这次失败被 exit 0 掩盖了。rg 默认引擎（Rust regex）不支持反向引用/"
+            "环视——加 --pcre2 重试，或改写正则。",
+        )
+    if _RG_PCRE2_LIMIT_RE.search(stderr_text):
+        return t(
+            "[hint] PCRE2 match limit exceeded — the pattern backtracks "
+            "catastrophically; simplify it (fewer nested/ambiguous quantifiers).",
+            "[hint] 触发 PCRE2 回溯上限——正则存在灾难性回溯，请简化"
+            "（减少嵌套/歧义量词）。",
+        )
+    if _RG_NO_PCRE2_RE.search(stderr_text):
+        return t(
+            "[hint] this rg build has no PCRE2 — rewrite the pattern without "
+            "backreferences/look-around.",
+            "[hint] 本机 rg 未编入 PCRE2——请改写正则，避免反向引用/环视。",
+        )
+    return None
 
 
 def _fs_root_guard(search_root) -> str | None:
@@ -981,7 +1024,16 @@ def build_builtin_tools(
     def bash(command: str, timeout: int = 30) -> str:
         """Run a shell command with the session working directory (the primary
         context folder when one is set) as cwd. Returns stdout+stderr, capped
-        head+tail（超预算中间段省略计数；超时保留已产出内容）. Never raises."""
+        head+tail（超预算中间段省略计数；超时保留已产出内容）. Never raises.
+
+        Shell gotchas worth knowing: a pipeline's exit code is the LAST
+        command's — an rg failure behind ``| head`` shows up only in the
+        stderr section (known rg input errors get a trailing [hint]);
+        rg's default engine (Rust regex) has no backreferences or
+        look-around, add ``--pcre2`` when a pattern needs them; run ad-hoc
+        node scripts from inside the repo (ESM resolves imports from the
+        script's own directory, so /tmp scripts cannot see the repo's
+        node_modules)."""
         # Weak hard-deny guard (master-plan §2.3 decision-6 interim): scan the
         # command's path-like tokens through the same _path_denied check
         # (which exempts the workspace + mounted dirs). Not a sandbox —
@@ -1057,6 +1109,11 @@ def build_builtin_tools(
             f"[exit {rc}]\n{_compose_capped(so, 'stdout')}"
             f"\n--- stderr ---\n{_compose_capped(se, 'stderr')}"
         )
+        # stderr head+tail 重组后过 rg 输入类报错分类（见 _RG_USAGE_ERROR_RE
+        # 注释）：管道把失败掩成 exit 0 时，靠这段 [hint] 显式暴露。
+        hint = _rg_usage_hint("".join(se["head"]) + "".join(se["tail"]))
+        if hint:
+            out += f"\n{hint}"
         if timed_out:
             out = f"[timeout after {timeout}s — partial output kept]\n{out}"
         if cwd:
