@@ -1,5 +1,6 @@
 {
   "sched": {
+    "listSep": ", ",
     "status": {
       "ok": "OK",
       "running": "Running",

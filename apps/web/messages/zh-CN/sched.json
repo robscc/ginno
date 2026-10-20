@@ -1,5 +1,6 @@
 {
   "sched": {
+    "listSep": "、",
     "status": {
       "ok": "成功",
       "running": "运行中",

@@ -930,7 +930,7 @@ export function ChatStream({
               if (!working.length) return null;
               return (
                 <div className="mb-2 rounded-md border border-line bg-card/60 px-2.5 py-1.5 text-[11px] leading-relaxed text-faint">
-                  {tc("team.steerHint", { names: working.map((r) => r.display_name).join("、") })}
+                  {tc("team.steerHint", { names: working.map((r) => r.display_name).join(t(", ", "、")) })}
                 </div>
               );
             })()}

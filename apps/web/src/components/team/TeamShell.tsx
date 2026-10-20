@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ArchiveRestore, Loader2, PenLine, Plus, Trash2, Users } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { t } from "@/i18n/provider";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { SessionMeta, Team, TeamMemberRow } from "@/lib/types";
@@ -136,7 +137,7 @@ export function TeamShell() {
         const r = await api.deleteTeam(id, force);
         if (!r.ok && r.live?.length && !force) {
           // 防呆回执：点名正在运行的成员——先处理再删，不静默吞。
-          alert(tc("team.disbandBlocked", { names: r.live.join("、") }));
+          alert(tc("team.disbandBlocked", { names: r.live.join(t(", ", "、")) }));
           return;
         }
       } catch {

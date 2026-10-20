@@ -34,7 +34,7 @@ export function planDescription(p: SchedulePlan): string {
       const days = weeklyDays(p).slice().sort((a, b) => a - b);
       if (days.length === 1) return schedText("plan.weekly", { day: weekdayName(days[0]), at: p.at });
       if (days.length === 7) return schedText("plan.daily", { at: p.at });
-      return schedText("plan.weeklyMulti", { days: days.map(weekdayName).join("、"), at: p.at });
+      return schedText("plan.weeklyMulti", { days: days.map(weekdayName).join(schedText("listSep")), at: p.at });
     }
     case "once": {
       const d = new Date(p.at);
