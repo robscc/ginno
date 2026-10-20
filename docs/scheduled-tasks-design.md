@@ -293,6 +293,19 @@ Ginno 是单机个人 Agent，用户即机主。核心场景：
 - **时区**：全部本地时区；`next_run_at` 持久化（epoch 秒），DST 边界按本地日历语义
   重算（每日 09:30 在 DST 切换日仍为本地 09:30）。
 
+### 3.8 跨进程调度租约与 standby 防呆（2026-10-20 增补）
+
+多实例（dev uvicorn、打包应用、游离进程）共享 `~/.ginno` 存储时，只有持有
+`~/.ginno/scheduler.lock` flock 的实例 tick/对账；holder 退出锁由 OS 释放，
+其余实例每 tick（30s）尝试接管。
+
+- 持锁方 acquire 时把 pid 写进锁文件——standby 方与人工排障能直接看到持锁者。
+- `GET /api/schedule` 附带 `scheduler.lease_status()`（lease/standby_since/
+  holder_pid）。UI 在 standby 持续超过 5 分钟时于定时任务页挂红色横幅：
+  高概率是残留进程持锁（实例：dev sidecar 孤儿持锁 6 天饿死正式应用调度器，
+  2026-10-20），点名 holder_pid 提示结束该进程；接管在持锁方退出后自动发生。
+- 短时 standby（另一合法实例在跑）不告警。
+
 ---
 
 ## 4. 数据设计

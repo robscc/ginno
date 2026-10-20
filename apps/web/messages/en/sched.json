@@ -49,6 +49,8 @@
       "inDay": "in {n}d",
       "refresh": "Refresh",
       "keepAwakeNudge": "Consider enabling Keep Awake, otherwise tasks will be missed while the machine sleeps",
+      "standbyBanner": "Scheduler on standby: another process ({pid}) holds the scheduler lease and this app will not run any scheduled tasks. If it is a leftover dev sidecar, quit it — this page takes over automatically once it exits.",
+      "standbyUnknownHolder": "unknown holder",
       "enable": "Enable",
       "dismiss": "Dismiss hint",
       "loading": "Loading scheduled tasks…",

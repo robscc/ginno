@@ -674,3 +674,55 @@ async def test_resume_cancelled_records_interrupted(isolated_home, monkeypatch):
     assert scheduler._RUNNING.get("st-t1") is None
     rows = {r["run_id"]: r for r in store.dedupe_runs(store.load_day(store._today()))}
     assert rows["sr-c"]["status"] == "error" and rows["sr-c"]["error"] == "interrupted"
+
+
+# ---- 调度租约（scheduler-standby 防呆，2026-10-20 排障产出）-------------------
+def _release_lease() -> None:
+    """归还全局租约状态——用例自行清理，避免 flock 泄漏影响后续用例。"""
+    import os
+
+    if scheduler._LEASE_FD is not None:
+        os.close(scheduler._LEASE_FD)
+        scheduler._LEASE_FD = None
+    scheduler._clear_standby()
+
+
+def test_lease_acquire_writes_pid_and_status_active(isolated_home):
+    import os
+
+    from ginno_runtime import paths
+
+    try:
+        assert scheduler._try_acquire_lease() is True
+        # 锁文件写 pid：standby 方与人工排障据此看到持锁者。
+        assert (paths.home() / "scheduler.lock").read_text().strip() == str(os.getpid())
+        st = scheduler.lease_status()
+        assert st == {"lease": "active", "standby_since": None, "holder_pid": os.getpid()}
+    finally:
+        _release_lease()
+
+
+def test_lease_standby_reports_holder_pid(isolated_home):
+    import os
+
+    try:
+        assert scheduler._try_acquire_lease() is True
+        held_fd = scheduler._LEASE_FD
+        # fd 仍持 flock 但全局句柄抹掉 = 模拟「锁被别的进程持有」。
+        scheduler._LEASE_FD = None
+        assert scheduler._try_acquire_lease() is False
+        scheduler._mark_standby()
+        st = scheduler.lease_status()
+        assert st["lease"] == "standby"
+        assert st["holder_pid"] == os.getpid()  # 读自锁文件
+        assert st["standby_since"] is not None
+        # 幂等：重复 mark 不推移起点。
+        since = st["standby_since"]
+        scheduler._mark_standby()
+        assert scheduler._STANDBY_SINCE == since
+    finally:
+        # held_fd 不在 scheduler._LEASE_FD 上（已抹掉模拟外部持有），手动关。
+        import os
+
+        os.close(held_fd)
+        scheduler._clear_standby()

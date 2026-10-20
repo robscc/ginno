@@ -65,6 +65,37 @@ _LOOP_TASK: asyncio.Task | None = None
 # 持有租约的实例 tick/对账;holder 退出锁由 OS 自动释放,其余实例在
 # 下一个 tick 尝试接管。
 _LEASE_FD: int | None = None
+# standby 起点（lease_status → /api/schedule → UI 防呆横幅的数据源）。
+_STANDBY_SINCE: float | None = None
+
+
+def _mark_standby() -> None:
+    global _STANDBY_SINCE
+    if _STANDBY_SINCE is None:
+        _STANDBY_SINCE = time.time()
+
+
+def _clear_standby() -> None:
+    global _STANDBY_SINCE
+    _STANDBY_SINCE = None
+
+
+def lease_status() -> dict:
+    """调度租约状态。standby = 本实例抢不到锁：正常是另一实例在跑；异常是
+    残留进程（如 2026-10-20 的 dev sidecar 孤儿）持锁不走 tick——本应用定时
+    任务全部静默不执行，UI 据此挂防呆横幅。holder_pid 读锁文件（持锁方
+    acquire 时写入的 pid），锁文件为空（老版本持锁）则为 None。"""
+    if _LEASE_FD is not None:
+        return {"lease": "active", "standby_since": None, "holder_pid": os.getpid()}
+    holder: int | None = None
+    try:
+        from . import paths
+
+        raw = (paths.home() / "scheduler.lock").read_text().strip()
+        holder = int(raw) if raw else None
+    except (OSError, ValueError):
+        pass
+    return {"lease": "standby", "standby_since": _STANDBY_SINCE, "holder_pid": holder}
 
 
 def _try_acquire_lease() -> bool:
@@ -87,6 +118,13 @@ def _try_acquire_lease() -> bool:
             os.close(fd)
         return False
     _LEASE_FD = fd
+    # 把 pid 写进锁文件：standby 方（UI 防呆横幅）与人工排障能直接看到
+    # 持锁者是谁。写失败不影响持锁。
+    try:
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, str(os.getpid()).encode(), 0)
+    except OSError:
+        pass
     _log.info("scheduler_lease_acquired")
     return True
 
@@ -936,13 +974,17 @@ async def scheduler_loop() -> None:
     _log.info("scheduler_loop_started tick=%ss grace=%ss", TICK_S, GRACE_S)
     have_lease = _try_acquire_lease()
     if not have_lease:
+        _mark_standby()
         _log.info("scheduler_lease_held_elsewhere; standby(持有者退出后接管)")
     try:
         while True:
             try:
                 if have_lease or _try_acquire_lease():
                     have_lease = True
+                    _clear_standby()
                     await _tick()
+                else:
+                    _mark_standby()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 — 单 tick 崩溃不终止循环
@@ -981,6 +1023,19 @@ async def stop() -> None:
         except (TimeoutError, asyncio.CancelledError):
             pass
     _LOOP_TASK = None
+    # 归还调度租约：fd 关闭 + standby 清零。生产上进程退出 OS 也会回收，
+    # 但 lifespan 停机而进程仍活（dev reload、测试同进程复用 app）时必须
+    # 显式还——否则锁被本进程的僵尸 fd 永久占住，下一个实例永远 standby
+    # （2026-10-20：test_fork_run_endpoint_guards 泄漏租约击穿同进程后续
+    # 用例，正是这一缺口的可见症状）。
+    global _LEASE_FD
+    if _LEASE_FD is not None:
+        try:
+            os.close(_LEASE_FD)
+        except OSError:
+            pass
+        _LEASE_FD = None
+    _clear_standby()
     pending = [t for t in list(_RUN_TASKS.values()) if not t.done()]
     for t in pending:
         t.cancel()

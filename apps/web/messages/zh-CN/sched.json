@@ -49,6 +49,8 @@
       "inDay": "{n} 天后",
       "refresh": "刷新",
       "keepAwakeNudge": "建议开启保持唤醒，否则机器休眠期间任务会被错过",
+      "standbyBanner": "调度器待命：定时任务由另一个进程接管（{pid}），本应用不会执行任何定时任务。若那是残留的 dev sidecar，请结束该进程——本页会在其退出后自动接管恢复。",
+      "standbyUnknownHolder": "持有者未知",
       "enable": "开启",
       "dismiss": "关闭提示",
       "loading": "正在加载定时任务…",

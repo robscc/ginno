@@ -122,6 +122,22 @@ export function ScheduledPage() {
       })()
     : null;
 
+  // 调度租约防呆（scheduler-standby）：本实例抢不到 flock 时定时任务全部
+  // 静默不执行。正常场景（dev + 应用并开）由另一实例跑，短时 standby 不扰
+  // 民；超过 5 分钟仍 standby → 高概率是残留进程持锁（2026-10-20 实例：dev
+  // sidecar 孤儿持锁 6 天），挂横幅点名 holder_pid。nowSec 只为跨过 5 分钟
+  // 阈值时重渲染。
+  const standby = cfg?.scheduler?.lease === "standby" ? cfg.scheduler : null;
+  const [nowSec, setNowSec] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!standby) return;
+    const t = setInterval(() => setNowSec(Date.now() / 1000), 30000);
+    return () => clearInterval(t);
+  }, [standby]);
+  const standbyStale =
+    !!standby &&
+    (standby.standby_since == null || nowSec - standby.standby_since > 300);
+
   const showKeepAwakeHint =
     !!cfg?.enabled && !cfg?.keep_awake && !hintDismissed && (cfg?.tasks.length ?? 0) > 0;
 
@@ -184,6 +200,15 @@ export function ScheduledPage() {
           </button>
         </div>
       </header>
+
+      {/* 调度租约防呆横幅：standby 超 5 分钟（scheduler-standby）。 */}
+      {standbyStale && (
+        <div className="mb-3 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs leading-relaxed text-red">
+          {tr("page.standbyBanner", {
+            pid: standby?.holder_pid != null ? `PID ${standby.holder_pid}` : tr("page.standbyUnknownHolder"),
+          })}
+        </div>
+      )}
 
       {/* 保持唤醒能力边界的小字（§3.3 文案诚实） */}
       <div className="mb-3 text-[11px] leading-relaxed text-faint">

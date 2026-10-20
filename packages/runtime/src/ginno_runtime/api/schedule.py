@@ -34,6 +34,9 @@ def _schedule_payload() -> dict:
         # 未读执行结果统计（schedule-unseen）：侧栏红点与执行记录页签角标
         # 的数据源，与任务列表同端点返回，AppShell 一次冷轮询全拿。
         "unseen": store.unseen_summary(),
+        # 调度租约状态（scheduler-standby 防呆）：UI 据此提示「定时任务由
+        # 另一进程接管」。旧 runtime 不返回该字段，前端按 undefined 降级。
+        "scheduler": scheduler.lease_status(),
     }
 
 

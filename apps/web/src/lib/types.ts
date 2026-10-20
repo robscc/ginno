@@ -779,6 +779,15 @@ export interface ScheduleConfig {
   tasks: ScheduleTask[];
   /** 后端未见该字段时按 0 处理（旧 runtime 降级） */
   unseen?: ScheduleUnseen;
+  /** 调度租约状态（scheduler-standby 防呆）：standby = 本实例抢不到
+   *  flock，正常是另一实例在跑；异常是残留进程持锁不走 tick，本应用
+   *  定时任务全部静默不执行。holder_pid 是锁文件里持锁方写的 pid；旧
+   *  runtime 无整个字段（undefined 降级不显示横幅）。 */
+  scheduler?: {
+    lease: "active" | "standby";
+    standby_since: number | null;
+    holder_pid: number | null;
+  };
 }
 
 /** 执行记录行（§4.2 jsonl，同 run_id 末行胜出；API 已去重）。 */
