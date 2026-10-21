@@ -512,6 +512,12 @@ class ModChannel:
             )
             reply = {"v": PROTOCOL_VERSION, "id": frame_id, "kind": "result", "ok": True, "value": value}
         except ops.OpError as e:
+            # op 失败必须留痕(2026-10-21 next-steps fork 失败排障:ok=False 在
+            # compat 计数里可见,但 code/message 全蒸发,只能靠复现猜)。
+            log.warning(
+                "mods op failed mod=%s op=%s.%s code=%s msg=%s",
+                mod or "?", ns, method, e.code, str(e)[:200],
+            )
             reply = {"v": PROTOCOL_VERSION, "id": frame_id, "kind": "result", "ok": False, "code": e.code, "message": str(e)}
         except Exception as e:  # noqa: BLE001 — report, never crash the reader
             log.exception("mods op %s.%s failed", ns, method)
@@ -557,7 +563,20 @@ class ModChannel:
             args = {**args, "mod": mod_name}
         ws_event = _NOTIFY_TO_WS.get(method)
         if ws_event is None:
-            log.debug("mods notify with unknown method=%s dropped", method)
+            # ui.log / ui.status / ui.notice 走 "mod.ui"(broker 侧聚合方法,
+            # 前端暂无对应宿主):至少 INFO 落日志——mod 的自救文案(如
+            # next-steps 的 "fork failed: …")是排障的第一手信息,不能
+            # debug 级蒸发(2026-10-21 实例)。
+            if method == "mod.ui":
+                log.info(
+                    "mod.ui kind=%s mod=%s session=%s text=%s",
+                    args.get("kind") if isinstance(args, dict) else "?",
+                    args.get("mod") if isinstance(args, dict) else frame.get("mod_name") or "?",
+                    session or "-",
+                    str(args.get("text") if isinstance(args, dict) else "")[:300],
+                )
+            else:
+                log.debug("mods notify with unknown method=%s dropped", method)
             return
         if ws_event in _SESSION_SCOPED_WS:
             # The broker may carry the session at the frame level (§6.1 notify

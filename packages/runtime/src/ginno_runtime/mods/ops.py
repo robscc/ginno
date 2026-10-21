@@ -88,10 +88,17 @@ def _text_of(message: Any) -> str:
     content = getattr(message, "content", "")
     if isinstance(content, str):
         return content
-    if isinstance(content, list):  # multimodal blocks → the text ones only
-        return "\n".join(
-            b.get("text") or "" for b in content if isinstance(b, dict) and b.get("type") == "text"
-        )
+    if isinstance(content, list):
+        # glm 等 provider 的 anthropic 兼容端点回「裸字符串 + dict 块」混合
+        # 列表(['', {thinking…}, 'pong'])——字符串条目就是正文,只取 dict
+        # text 块会把答案整个丢成空串(2026-10-21 next-steps fork 空文本根因)。
+        parts: list[str] = []
+        for b in content:
+            if isinstance(b, str):
+                parts.append(b)
+            elif isinstance(b, dict) and b.get("type") == "text":
+                parts.append(b.get("text") or "")
+        return "\n".join(p for p in parts if p)
     return str(content)
 
 
