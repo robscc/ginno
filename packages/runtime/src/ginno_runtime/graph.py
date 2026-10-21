@@ -1638,6 +1638,27 @@ def build_all_tools(
 TOOL_HEARTBEAT_S = 30.0
 
 
+def _tool_error_reply(exc: Exception) -> str:
+    """ToolNode 错误回喂文案(handle_tool_errors handler)。
+
+    默认文案(langgraph 版本各异)是裸异常串——`Error: ToolInvocationError(
+    "…path: Field required…") Please fix the error and try again.`——在定时
+    任务回放里像出了大事(2026-10-21 用户报告:glm 两次把 read_file 参数发成
+    空 {},回放满屏这个)。统一成内置工具的 `[error]` 风格:剥离包装、点名
+    缺什么,模型照旧自愈,人看也不吓人。"""
+    msg = str(exc)
+    # ToolInvocationError 的 message 已含 "Error invoking tool 'x' with kwargs
+    # … with error:\n <真因>"——取真因尾段。
+    if "\n" in msg and "with error:" in msg:
+        msg = msg.split("with error:", 1)[1].strip()
+    first = msg.splitlines()[0].strip() if msg else type(exc).__name__
+    return t(
+        f"[error] tool call failed: {first} — check the arguments and retry "
+        "with the required fields filled in.",
+        f"[error] 工具调用失败:{first}——请检查参数,补齐必填字段后重试。",
+    )
+
+
 def _tools_node_factory(all_tools):
     """Wrap the prebuilt ToolNode with output truncation (plan E2).
 
@@ -1653,7 +1674,7 @@ def _tools_node_factory(all_tools):
     error ToolMessage the agent can read and recover from. Builtin tools
     already never raise; this is the safety net for MCP/third-party tools.
     """
-    node = ToolNode(all_tools, handle_tool_errors=True)
+    node = ToolNode(all_tools, handle_tool_errors=_tool_error_reply)
 
     async def tools_node(state: AgentState, config=None) -> dict:
         # 工具心跳（2026-10-13 stall 误杀修复·方案 A）：工具执行期间图流完全
