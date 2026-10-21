@@ -33,6 +33,8 @@ import {
   AlertTriangle,
   ChevronRight,
   Columns2,
+  Eye,
+  FileCode2,
   FolderTree,
   Info,
   RotateCcw,
@@ -44,6 +46,7 @@ import {
   CodeApiError,
   CodeConflictError,
   codeDelete,
+  codeFileUrl,
   codeMkdir,
   codeMove,
   codeRename,
@@ -65,6 +68,8 @@ import { FileTree } from "./FileTree";
 import { EditorTabs, codeTabKey, type EditorTab } from "./EditorTabs";
 import { MonacoEditor } from "./MonacoEditor";
 import { ImagePreview } from "./ImagePreview";
+import { HtmlPreview } from "./HtmlPreview";
+import { isRenderableHtml } from "./language";
 import { ConflictDiff } from "./ConflictDiff";
 import { QuickOpen } from "./QuickOpen";
 import { SearchView, type CodeSearchFn } from "./SearchView";
@@ -124,6 +129,11 @@ interface TabMeta {
   rev: number;
   /** Bumped to tell Monaco "the buffer is the new clean baseline". */
   savedNonce: number;
+  /** View mode for renderable pages (html/htm). Absent = automatic, i.e.
+   *  preview for `isRenderableHtml` paths and source for everything else;
+   *  the toggle writes an explicit value. Only the auto case is ever "true by
+   *  default", so non-HTML files never grow state. */
+  preview?: boolean;
 }
 
 const EMPTY_TAB_META: TabMeta = { dirty: false, conflict: null, rev: 0, savedNonce: 0 };
@@ -301,6 +311,14 @@ export function CodePanel() {
   );
   const activeRead = activeKey ? reads[activeKey] : undefined;
   const activeMeta = activeKey ? tabMeta[activeKey] : undefined;
+  // HTML 预览模式：meta.preview 未设置 = 自动（html/htm 直接出渲染页,其余源码），
+  // 切换按钮写入显式值。渲染页读盘上字节,脏缓冲不参与（切回源码编辑,存盘后
+  // version 变化会自动刷新 iframe）。
+  const htmlPreview =
+    !!activeTab && isRenderableHtml(activeTab.path) && (activeMeta?.preview ?? true);
+  const toggleHtmlPreview = useCallback(() => {
+    if (activeKey) patchMeta(activeKey, (m) => ({ preview: !(m.preview ?? true) }));
+  }, [activeKey, patchMeta]);
 
 
 
@@ -1078,6 +1096,30 @@ export function CodePanel() {
         {/* While browsing there is nothing to toggle: the tree IS the panel. */}
         {browsing ? null : (
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            {/* HTML 页面的 预览/源码 切换（2026-10-21）：渲染页走沙箱 iframe
+                (HtmlPreview)，源码走 Monaco。只在当前 tab 是 html/htm 时出现。 */}
+            {activeTab && isRenderableHtml(activeTab.path) ? (
+              <>
+                <ToolButton
+                  title={t("preview.viewRendered")}
+                  active={htmlPreview}
+                  onClick={() => {
+                    if (!htmlPreview) toggleHtmlPreview();
+                  }}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                </ToolButton>
+                <ToolButton
+                  title={t("preview.viewSource")}
+                  active={!htmlPreview}
+                  onClick={() => {
+                    if (htmlPreview) toggleHtmlPreview();
+                  }}
+                >
+                  <FileCode2 className="h-3.5 w-3.5" />
+                </ToolButton>
+              </>
+            ) : null}
             {/* 手动刷新当前文件（2026-10-13）：bash/脚本改文件不产生
                 code.changed（只有文件工具有结果标记），S3 自动跟随收不到
                 信号——显式重载兜底。脏 tab 的未保存修改不会被覆盖：刷新
@@ -1192,6 +1234,22 @@ export function CodePanel() {
                 <ImagePreview
                   path={activeTab.path}
                   url={codeRawUrl(
+                    PROJECT_SLUG,
+                    sessionId ?? "",
+                    activeTab.rootId,
+                    activeTab.path,
+                    activeRead.data.version,
+                  )}
+                  className="h-full"
+                />
+              ) : htmlPreview ? (
+                /* Rendered page for html/htm (HtmlPreview for the sandboxing
+                   story). Reads the bytes ON DISK — an unsaved buffer is not
+                   shown until saved; the version rides in the URL, so a save
+                   (or an agent rewrite followed by a reload) refreshes it. */
+                <HtmlPreview
+                  path={activeTab.path}
+                  url={codeFileUrl(
                     PROJECT_SLUG,
                     sessionId ?? "",
                     activeTab.rootId,

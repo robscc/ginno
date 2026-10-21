@@ -128,6 +128,14 @@
       "failedHint": "文件可能过大（上限 32 MB）、已损坏，或为无法预览的格式",
       "readonly": "只读预览"
     },
+    "preview": {
+      "viewRendered": "显示渲染后的页面",
+      "viewSource": "查看源码",
+      "failed": "无法渲染此页面",
+      "failedHint": "文件可能过大（上限 32 MB）或已不存在",
+      "sandboxed": "沙箱预览",
+      "reload": "重新加载预览"
+    },
     "errors": {
       "fallback": "加载失败",
       "unknown-root": "未知的工作区根",

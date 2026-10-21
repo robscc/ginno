@@ -1672,6 +1672,30 @@ export function codeRawUrl(
   return `${BASE}/code/raw?${codeQuery(projectSlug, sessionId, extra)}`;
 }
 
+/** URL of a workspace file shaped as PATH SEGMENTS instead of a query string —
+ *  the HTML preview iframe loads the page from here, and its RELATIVE
+ *  sub-resources (`./style.css`, `js/app.js`) resolve against the document
+ *  URL's path (the query is dropped), which is exactly why this cannot be a
+ *  `?path=` query like `codeRawUrl`. Same fence as `readCodeFile`; the sandbox
+ *  headers live server-side (code.py `_CSP_TMPL`). `version` cache-busts the
+ *  ENTRY document only — sub-resources revalidate via no-cache. */
+export function codeFileUrl(
+  projectSlug: string,
+  sessionId: string,
+  root: string,
+  path: string,
+  version?: string,
+): string {
+  const seg = encodeURIComponent;
+  const rel = path
+    .split("/")
+    .filter(Boolean)
+    .map(seg)
+    .join("/");
+  const v = version ? `?v=${seg(version)}` : "";
+  return `${BASE}/code/file/${seg(projectSlug)}/${seg(sessionId)}/${seg(root)}/${rel}${v}`;
+}
+
 /** A save was refused because the file changed on disk underneath it (409).
  *
  *  Carries the version currently ON DISK, so the caller can diff against it or

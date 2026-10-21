@@ -64,7 +64,7 @@ dsh 把这做成了一个一等子系统，不是某个面板的附属功能。�
 | 树不隐藏任何东西（`node_modules` 也照列） | 大仓库里树直接不可用 | **折中**：默认折叠为**占位行**（`node_modules · 已隐藏 12,483 项`，可点开）。既不骗人也不用滚 1 万行。见 §3.4 |
 | 树无虚拟化、无搜索，2000 项/层截断 | 单层 2000 行 DOM 有真实成本 | 渲染行上限 300 + 增量加载（§4.1） |
 | 自动刷新开关**被刻意隐藏**（state 和逻辑活着但 UI 是 `<span hidden>`） | 交付了能力却没有入口 | 刷新策略明确暴露（§3.4） |
-| HTML 在 `sandbox="allow-scripts"` iframe 里跑，保留网络访问 | 有被接受的攻击面；我们不需要这个能力 | **不做** HTML 沙箱渲染 |
+| HTML 在 `sandbox="allow-scripts"` iframe 里跑，保留网络访问 | 有被接受的攻击面；我们不需要这个能力 | ~~**不做**~~ → **2026-10-21 反转**（用户要求 html 可直接预览渲染页）：html/htm 在代码面板出「预览/源码」切换。攻击面用双沙箱压住——iframe `sandbox="allow-scripts"`（无 `allow-same-origin`）**加** 响应头 CSP `sandbox allow-scripts; connect-src 'none'`（后半不可省：CORS 是 `allow_origins=["*"]`，没有它沙箱页能 fetch 本 API 读响应）；子资源靠**路径形**端点 `/api/code/file/{slug}/{sid}/{root}/{path}`（相对解析不走 query），与 read/raw 同一 §4.6 围栏 + 32MB 上限 + web mime 白名单 |
 | 它的 diff 是独立 surface（`changes-review` tab），不在文档查看器里 | 合理 | 我们也在代码面板内做 diff，但用 Monaco DiffEditor（§4.5） |
 
 ---

@@ -173,3 +173,14 @@ export function isExternalOnlyFile(path: string): boolean {
   const ext = lower.slice(dot + 1);
   return !LANGUAGE_BY_EXT[ext] && !IMAGE_EXTS.has(ext);
 }
+
+/**
+ * Files whose rendered form is a standalone web PAGE: the code panel offers a
+ * Preview (sandboxed iframe) mode for them in addition to source view. Deliberately
+ * html/htm only — vue/svelte map to the html *language* for highlighting but are
+ * not renderable documents, and svg stays an inert ImagePreview case.
+ */
+export function isRenderableHtml(path: string): boolean {
+  const name = (path.split("/").pop() ?? path).toLowerCase();
+  return name.endsWith(".html") || name.endsWith(".htm");
+}
