@@ -183,9 +183,14 @@ export class HookRuntime {
     const dot = op.indexOf('.')
     const ns = dot === -1 ? op : op.slice(0, dot)
     const method = dot === -1 ? '' : op.slice(dot + 1)
-    const session =
-      (invocation !== undefined ? this.invocations.get(invocation)?.session : undefined) ??
-      this.ambientSession
+    const context = invocation !== undefined ? this.invocations.get(invocation) : undefined
+    // A settled hook's `$` (detached async the mod started before returning —
+    // next-steps' post-turn fork is the canonical shape) keeps the session:
+    // runtime-backed ops refuse a sessionless call. The stale invocation id
+    // must NOT ride the frame though — the broker's chain hub keys on it and
+    // the hook it named is gone, so the call goes out as a fresh top-level one.
+    const settled = context !== undefined && context.settled
+    const session = context?.session ?? this.ambientSession
     return this.options.connection.request({
       kind: 'call',
       ns,
@@ -193,7 +198,7 @@ export class HookRuntime {
       args: input,
       mod: this.options.loaded.name,
       ...(session === undefined ? {} : { session }),
-      ...(invocation === undefined ? {} : { invocation }),
+      ...(invocation !== undefined && !settled ? { invocation } : {}),
     }).then(result => {
       if (result.ok) return result.value
       const failure = new Error(result.message ?? `${op} failed`)
@@ -566,8 +571,22 @@ export class HookRuntime {
     this.clearDeadline(context)
     context.settled = true
     this.clearCatchGrace(context)
-    this.invocations.delete(context.invocation)
+    // Keep the settled context for a grace window: a mod's detached async
+    // (started before the hook returned) still resolves its captured `$`'s
+    // session through it (see invokeOp). No invocation frame ever names it
+    // again; after the grace the entry is dropped so the map stays bounded.
+    this.scheduleSettledCleanup(context)
     this.options.connection.respond(context.frameId, true, { value })
+  }
+
+  /** How long a settled invocation stays resolvable for detached `$` calls. */
+  private static readonly SETTLED_GRACE_MS = 10 * 60 * 1000
+
+  private scheduleSettledCleanup(context: InvocationContext): void {
+    setTimeout(() => {
+      const cur = this.invocations.get(context.invocation)
+      if (cur === context) this.invocations.delete(context.invocation)
+    }, HookRuntime.SETTLED_GRACE_MS).unref?.()
   }
 
   private clearDeadline(context: InvocationContext): void {

@@ -258,3 +258,25 @@ describe('broker timers', () => {
     await broker.close()
   })
 })
+
+describe('detached `$` after settle (next-steps shape, 2026-10-21)', () => {
+  test("a hook's captured `$` keeps the session after the hook settled — no stale invocation", async () => {
+    const broker = new MockBroker(fileURLToPath(new URL('./fixtures/detached-mod', import.meta.url)))
+    broker.start()
+    await broker.take(frame => frame.kind === 'call' && frame['method'] === 'hooks-registered')
+    const event = eventFrame('turn.complete', 'i-det', { answer: 'x'.repeat(100), reason: 'answer' })
+    broker.write(event)
+    const answer = await takeAnswer(broker, event)
+    expect(answer.ok).toBe(true)
+    // The detached session.id call goes out AFTER settle: it must still carry
+    // the session (runtime ops refuse sessionless calls) and must NOT name the
+    // settled invocation (the broker's chain hub keys on it).
+    const call = await broker.take(
+      frame => frame.kind === 'call' && frame['ns'] === 'session' && frame['method'] === 'id',
+      2_000,
+    )
+    expect(call['session']).toBe('s-1')
+    expect('invocation' in call).toBe(false)
+    await broker.close()
+  })
+})
