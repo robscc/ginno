@@ -98,6 +98,10 @@ importers:
         version: 5.9.3
 
   packages/mod-runner:
+    dependencies:
+      sucrase:
+        specifier: ^3.35.1
+        version: 3.35.1
     devDependencies:
       '@types/node':
         specifier: ^22.10.0

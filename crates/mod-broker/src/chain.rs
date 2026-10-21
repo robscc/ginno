@@ -238,6 +238,7 @@ fn result_undefined(frame_id: u64) -> Frame {
         id: frame_id,
         ok: true,
         value: None,
+        mod_name: None,
         code: None,
         message: None,
     }
@@ -419,6 +420,7 @@ async fn run_hook(ctx: &Arc<ChainCtx>, hooks: &[HookDesc], index: usize, input: 
         payload: run.input.clone(),
         deadline_ms: Some(budget.limit_ms()),
         hook: Some(hook.index_in_mod),
+        mod_name: None,
     });
     budget.start();
 
@@ -520,6 +522,7 @@ async fn finish_failure(
         payload: input.clone(),
         failure: HookFailure { kind: failure.kind.clone(), message: failure.message.clone() },
         deadline_ms: Some(catch_budget.limit_ms()),
+        mod_name: None,
     });
     catch_budget.start();
 

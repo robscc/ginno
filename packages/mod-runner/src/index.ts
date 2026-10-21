@@ -7,6 +7,8 @@
  */
 
 import { pathToFileURL } from 'node:url'
+import { isMainThread, parentPort, workerData } from 'node:worker_threads'
+import { runHost } from './host.ts'
 import { FrameConnection } from './frames.ts'
 import type { Frame } from './frames.ts'
 import { importHooksModule, readManifest } from './loader.ts'
@@ -220,5 +222,52 @@ async function main(): Promise<void> {
   })
 }
 
-// Run only when executed directly, not when the test suite imports this module.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) main()
+/** A worker_threads entry (host mode spawns this same file as workers): run
+ * one mod over the parent port. The adapter keeps FrameConnection's line
+ * semantics — each port message IS one line. Exit is natural: the pinger is
+ * unref'd and the port closes, so nothing holds the worker's loop open. */
+async function runWorkerBootstrap(): Promise<void> {
+  const port = parentPort
+  if (port === null || typeof (workerData as { modDir?: unknown } | undefined)?.modDir !== 'string') {
+    console.error('mod-runner worker: no workerData.modDir')
+    return
+  }
+  const modDir = (workerData as { modDir: string }).modDir
+  const { PassThrough, Writable } = await import('node:stream')
+  const input = new PassThrough()
+  port.on('message', (line: unknown) => {
+    if (typeof line === 'string') input.write(line)
+  })
+  const output = new Writable({
+    write(chunk: unknown, _enc: BufferEncoding, cb: (err?: Error | null) => void): void {
+      port.postMessage(String(chunk))
+      cb()
+    },
+  })
+  process.on('unhandledRejection', reason => {
+    console.error('mod-runner: an unhandled rejection was dropped:', messageOf(reason))
+  })
+  try {
+    await runRunner(modDir, input, output, {
+      onExit: error => {
+        if (error !== undefined) console.error('mod-runner:', error.message)
+        port.close()
+      },
+    })
+  } catch (error: unknown) {
+    console.error(`mod-runner: mod not loaded: ${messageOf(error)}`)
+    port.close()
+  }
+}
+
+// Entry, in precedence order: a worker bootstrap (the host spawns this file
+// as workers), the host itself (--host), or the classic one-mod CLI (--mod)
+// the per-process design runs. Run only when executed directly, not when the
+// test suite imports this module.
+if (!isMainThread) {
+  void runWorkerBootstrap()
+} else if (process.argv.includes('--host')) {
+  void runHost()
+} else if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main()
+}

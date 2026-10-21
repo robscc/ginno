@@ -101,6 +101,10 @@ pub enum Frame {
         code: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
+        /// Host mode: which mod's worker the reply routes to (the classic
+        /// per-process design leaves it None — the wire IS the mod).
+        #[serde(rename = "mod", default, skip_serializing_if = "Option::is_none")]
+        mod_name: Option<String>,
     },
     /// An event: Python→broker raises an engine event; broker→runner dispatches
     /// one hook. `payload` is the event input; `deadlineMs` is the per-hook
@@ -120,6 +124,9 @@ pub enum Frame {
         /// hooks on one event can tell them apart. Runners may ignore it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hook: Option<u64>,
+        /// Host mode: target mod's worker (stamped by the sending virtual conn).
+        #[serde(rename = "mod", default, skip_serializing_if = "Option::is_none")]
+        mod_name: Option<String>,
     },
     /// Runner→broker: the hook passed its (possibly rewritten) input beneath.
     /// `phase:"catch"` marks a call from inside a `.catch` handler.
@@ -131,6 +138,9 @@ pub enum Frame {
         e: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         phase: Option<String>,
+        /// Host mode: owning mod (the JS host stamps it for routing).
+        #[serde(rename = "mod", default, skip_serializing_if = "Option::is_none")]
+        mod_name: Option<String>,
     },
     /// Broker→runner: run the failed hook's `.catch` handler for `invocation`.
     CatchCall {
@@ -143,6 +153,9 @@ pub enum Frame {
         failure: HookFailure,
         #[serde(rename = "deadlineMs", default, skip_serializing_if = "Option::is_none")]
         deadline_ms: Option<u64>,
+        /// Host mode: target mod's worker (stamped by the sending virtual conn).
+        #[serde(rename = "mod", default, skip_serializing_if = "Option::is_none")]
+        mod_name: Option<String>,
     },
     /// One-way notification: `bands.update`, `ui.toast`, `mod.status`,
     /// `report` (diagnostics), `ping` (heartbeat).
@@ -168,6 +181,20 @@ pub enum Frame {
         #[serde(default)]
         config: Value,
     },
+    /// Broker→host: run the named mod in a fresh worker (host mode, 2026-10-21
+    /// 方案 B — one Node process for all mods, per-mod worker isolates).
+    LoadMod {
+        v: u64,
+        name: String,
+        dir: String,
+        #[serde(default)]
+        grants: Value,
+        #[serde(default)]
+        config: Value,
+    },
+    /// Broker→host: stop the named mod's worker. The host's exit path is the
+    /// `mod.exited` notify (silent for deliberate unloads).
+    UnloadMod { v: u64, name: String },
 }
 
 /// How a hook failed: `throw` (any non-timeout failure) or `timeout`.
@@ -222,7 +249,9 @@ impl Frame {
             | Frame::Next { v, .. }
             | Frame::CatchCall { v, .. }
             | Frame::Notify { v, .. }
-            | Frame::Hello { v, .. } => *v,
+            | Frame::Hello { v, .. }
+            | Frame::LoadMod { v, .. }
+            | Frame::UnloadMod { v, .. } => *v,
         }
     }
 
@@ -235,7 +264,7 @@ impl Frame {
             | Frame::Next { id, .. }
             | Frame::CatchCall { id, .. } => Some(*id),
             Frame::Hello { id, .. } => *id,
-            Frame::Notify { .. } => None,
+            Frame::Notify { .. } | Frame::LoadMod { .. } | Frame::UnloadMod { .. } => None,
         }
     }
 
@@ -280,7 +309,7 @@ fn truncate(s: &str, n: usize) -> &str {
 
 /// Build a successful `result` frame.
 pub fn result_ok(id: u64, value: Value) -> Frame {
-    Frame::Result { v: PROTOCOL_VERSION, id, ok: true, value: Some(value), code: None, message: None }
+    Frame::Result { v: PROTOCOL_VERSION, id, ok: true, value: Some(value), code: None, message: None, mod_name: None }
 }
 
 /// Build a failed `result` frame.
@@ -292,6 +321,7 @@ pub fn result_err(id: u64, code: &str, message: impl Into<String>) -> Frame {
         value: None,
         code: Some(code.to_string()),
         message: Some(message.into()),
+        mod_name: None,
     }
 }
 
@@ -355,7 +385,7 @@ mod tests {
         ];
         for expected in frames {
             let mut line = String::new();
-            Frame::Event { v: 1, id: 0, event: String::new(), session: None, invocation: String::new(), payload: Value::Null, deadline_ms: None, hook: None }.encode_into(&mut line); // warm path check only
+            Frame::Event { v: 1, id: 0, event: String::new(), session: None, invocation: String::new(), payload: Value::Null, deadline_ms: None, hook: None, mod_name: None }.encode_into(&mut line); // warm path check only
             let text = serde_json::to_string(&expected).unwrap();
             let frame = decode_line(&text).unwrap_or_else(|e| panic!("{e}"));
             let mut out = String::new();

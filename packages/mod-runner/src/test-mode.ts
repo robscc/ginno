@@ -62,7 +62,10 @@ const SYNTHETIC_PAYLOADS: Record<string, Record<string, unknown>> = {
   'session.start': { cwd: process.cwd(), surface: null, isInteractive: false },
   'session.end': { reason: 'other' },
   'turn.start': { turnId: 'test-turn' },
-  'turn.complete': { turnId: 'test-turn', answer: '', durationMs: 0, isAborted: false, reason: 'answer', usage: null },
+  // answer is long on purpose: suggestion mods (next-steps) only offer after
+  // a substantial answer — an empty one correctly stays hidden, and then the
+  // ui.render check below has no tree to validate.
+  'turn.complete': { turnId: 'test-turn', answer: 'The change is in and the suite is green: 48 passed, 0 failed, and the flaky retry test was stabilized too.', durationMs: 0, isAborted: false, reason: 'answer', usage: null },
   'prompt.submit': { text: 'hello from mod-runner --test', origin: { kind: 'composer' } },
   'tool.call': { tool: 'Bash', args: {} },
   'tool.check': { tool: 'Bash', args: {} },
@@ -194,8 +197,19 @@ class TestBroker {
     }
     if (frame.kind === 'next') {
       // The chain beneath passes the event through untouched — the most
-      // neutral stand-in for "the engine answered".
-      this.write({ kind: 'result', id, ok: true, value: frame.e === undefined ? null : frame.e })
+      // neutral stand-in for "the engine answered". EXCEPT ui.render, whose
+      // answer is the below render TREE that hooks nest as a child: echoing
+      // the event object back would plant a non-element node in the tree and
+      // fail validation (next-steps, 2026-10-21). No other hook rendered, so
+      // the engine's below-tree is undefined.
+      const e = frame.e as Record<string, unknown> | null | undefined
+      const isRenderEvent = !!e && typeof e === 'object' && 'component' in e && 'props' in e
+      this.write({
+        kind: 'result',
+        id,
+        ok: true,
+        value: isRenderEvent ? undefined : frame.e === undefined ? null : frame.e,
+      })
       return
     }
     // A `$` op: count it and answer a benign value. `clock.*` timers must name
@@ -207,6 +221,14 @@ class TestBroker {
     let value: unknown = {}
     if (op === 'clock.after' || op === 'clock.every') value = { timer: `t${++this.timerSeq}` }
     else if (op === 'state.get') value = { value: null }
+    // Suggestion mods parse the fork's reply as a JSON array of prompts;
+    // a bare {} reads as "not answered" and they (correctly) render nothing,
+    // leaving the ui.render check below with no tree to validate.
+    else if (op === 'model.fork')
+      value = { isAnswered: true, text: '[{"label":"run the tests","prompt":"run the tests"}]' }
+    // The op table's unified envelope — command.list unwraps `{commands}` and
+    // falls back to the raw value, so a bare {} reaches mods as {} (no .map).
+    else if (op === 'command.list') value = { commands: [] }
     this.write({ kind: 'result', id, ok: true, value })
   }
 

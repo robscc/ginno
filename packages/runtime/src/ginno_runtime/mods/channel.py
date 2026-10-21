@@ -553,6 +553,17 @@ class ModChannel:
             if name:
                 entry = self.mods_state.setdefault(name, {"name": name})
                 entry.update({k: v for k, v in args.items() if k != "name"})
+                # 三振出局（broker disable_mod）必须落盘 enabled=false——只在
+                # 内存里卸掉的话，下一次 push_config（任意设置改动 / 新安装 /
+                # 重启）会把这个起不来的 mod 再拉起，重复 1s/5s/30s 重启风暴
+                # （2026-10-21 next-steps：.tsx 钩子模块 runner 秒拒）。
+                if args.get("status") == "disabled":
+                    try:
+                        from .bridge_utils import update_mod_item
+
+                        update_mod_item(name, {"enabled": False})
+                    except Exception:  # noqa: BLE001 — 落盘失败不阻断状态广播
+                        log.exception("persist mod disabled state failed: %s", name)
             await self._broadcast(None, "mod.state.changed", args)
             return
         # The Notify frame spells the owning mod "mod_name" (Call frames use
@@ -764,6 +775,9 @@ class ModChannel:
         return {
             "enabled": bool(cfg.get("enabled", True)),
             "allowOverrideDenyRules": bool(cfg.get("allowOverrideDenyRules", False)),
+            # 方案 B（2026-10-21）：单 Node 宿主进程 + 每 mod 一个 worker 隔离。
+            # 默认关，settings mods.hostMode=true 灰度开启。
+            "hostMode": bool(cfg.get("hostMode", False)),
             # Resolved binaries (settings nodePath already rode resolve_node).
             "nodePath": node_path,
             "runnerPath": runner_path,

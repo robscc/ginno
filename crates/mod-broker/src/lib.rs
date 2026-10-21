@@ -85,7 +85,7 @@ pub struct Config {
     pub process_max_timeout_ms: u64,
     pub band_columns: u32,
     pub band_rows: u32,
-    /// Enabled mods in load order (config map order).
+    pub host_mode: bool,
     pub mods: Vec<ModSpec>,
 }
 
@@ -162,6 +162,7 @@ pub fn parse_config(value: &Value) -> Result<Config, String> {
         process_max_timeout_ms: get_u64(&budgets, "processMaxTimeoutMs", 600_000),
         band_columns: get_u64(&band, "columns", 80) as u32,
         band_rows: get_u64(&band, "rows", 8) as u32,
+        host_mode: value.get("hostMode").and_then(Value::as_bool).unwrap_or(false),
         mods,
     })
 }
@@ -186,6 +187,8 @@ pub struct Broker {
     pub config: std::sync::RwLock<Config>,
     pub registry: std::sync::RwLock<Registry>,
     pub runners: tokio::sync::RwLock<HashMap<String, Arc<runner::RunnerConn>>>,
+    /// Host mode (方案 B): the shared runner process, when configured.
+    pub host: tokio::sync::Mutex<Option<Arc<runner::HostProc>>>,
     pub runtime: std::sync::RwLock<Option<Arc<RuntimeConn>>>,
     pub hub: Hub,
     pub aliases: ToolNameAliases,
@@ -217,6 +220,7 @@ impl Broker {
             config: std::sync::RwLock::new(empty_config()),
             registry: std::sync::RwLock::new(Registry::default()),
             runners: tokio::sync::RwLock::new(HashMap::new()),
+            host: tokio::sync::Mutex::new(None),
             runtime: std::sync::RwLock::new(None),
             hub: Hub::default(),
             aliases: ToolNameAliases::new(),
@@ -700,6 +704,7 @@ fn empty_config() -> Config {
         process_max_timeout_ms: 600_000,
         band_columns: 80,
         band_rows: 8,
+        host_mode: false,
         mods: Vec::new(),
     }
 }

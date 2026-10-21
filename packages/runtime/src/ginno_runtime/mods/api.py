@@ -82,6 +82,10 @@ def _merged_mod_list() -> list[dict]:
     for row in rows.values():
         row.setdefault("enabled", True)
         row.setdefault("status", None)
+        # 停用的 mod 永不 spawn → 没有 broker 状态 → status 留 None 时前端
+        # 兜底显示「未知」（2026-10-21 重启后反馈）。停用是确定状态，给值。
+        if not row["enabled"] and not row["status"]:
+            row["status"] = "disabled"
     # Compatibility counters (design §7.5 持续项): events × fired, the
     # Python-backed op slice × ok, and unimplemented `$` mentions the runner
     # reported. Empty until the channel's first hello — the settings page

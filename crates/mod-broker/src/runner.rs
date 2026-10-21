@@ -34,6 +34,10 @@ pub struct RunnerConn {
     /// Connection generation; supervision tasks from older generations exit
     /// instead of acting.
     pub gen: u64,
+    /// Host mode (2026-10-21 方案 B): this conn is one mod's worker inside the
+    /// shared host process — `tx` is the host's shared writer, `child` is
+    /// None, and outbound frames carry the mod name for the host to route by.
+    pub hosted: bool,
     pub tx: FrameWriter,
     child: Mutex<Option<process::Child>>,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcError>>>>,
@@ -44,17 +48,51 @@ pub struct RunnerConn {
     handshake_notify: Mutex<Arc<Notify>>,
 }
 
+/// Host mode routing: stamp a frame with the owning mod so the JS host can
+/// deliver it to this mod's worker. Event/CatchCall/Result leave their
+/// factories as None; a Call may already carry one from the chain.
+fn stamp_mod(frame: &mut Frame, name: &str) {
+    match frame {
+        Frame::Call { mod_name, .. }
+        | Frame::Result { mod_name, .. }
+        | Frame::Event { mod_name, .. }
+        | Frame::Next { mod_name, .. }
+        | Frame::CatchCall { mod_name, .. } => {
+            if mod_name.is_none() {
+                *mod_name = Some(name.to_string());
+            }
+        }
+        _ => {}
+    }
+}
+
 impl RunnerConn {
     pub fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
     pub fn send(&self, frame: &Frame) {
-        self.tx.send(frame);
+        if self.hosted {
+            let mut stamped = frame.clone();
+            stamp_mod(&mut stamped, &self.name);
+            self.tx.send(&stamped);
+        } else {
+            self.tx.send(frame);
+        }
     }
 
     pub fn send_result(&self, id: u64, res: &Result<Value, RpcError>) {
-        self.tx.send_result(id, res);
+        if self.hosted {
+            let mut frame = crate::protocol::result_ok(0, Value::Null);
+            match res {
+                Ok(value) => frame = crate::protocol::result_ok(id, value.clone()),
+                Err(e) => frame = crate::protocol::result_err(id, &e.code, e.message.clone()),
+            }
+            stamp_mod(&mut frame, &self.name);
+            self.tx.send(&frame);
+        } else {
+            self.tx.send_result(id, res);
+        }
     }
 
     fn register_pending(&self, id: u64) -> oneshot::Receiver<Result<Value, RpcError>> {
@@ -137,6 +175,12 @@ impl RunnerConn {
 
     /// Kill the child process (and thereby this connection's streams).
     pub async fn kill(&self) {
+        if self.hosted {
+            // The worker dies on the host's terminate(); the exit notify then
+            // drives the restart path exactly like a process exit.
+            self.send(&Frame::UnloadMod { v: PROTOCOL_VERSION, name: self.name.clone() });
+            return;
+        }
         if let Some(child) = self.child.lock().unwrap().as_mut() {
             let _ = child.start_kill();
         }
@@ -145,6 +189,31 @@ impl RunnerConn {
 
 /// Spawn the runner for one mod, wire its read loop and heartbeat monitor,
 /// and wait for the handshake. Returns the connection on success.
+/// Last few lines of a runner's stderr log, " — …" formatted — appended to
+/// handshake-timeout errors so the real cause (a hooks module the loader
+/// rejects, a missing manifest, …) travels with the message instead of dying
+/// in `logs/mod-<name>.log`.
+fn tail_runner_log(logs_dir: &std::path::Path, name: &str) -> String {
+    let path = logs_dir.join(format!("mod-{name}.log"));
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return String::new();
+    };
+    let tail: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .take(3)
+        .rev()
+        .collect();
+    if tail.is_empty() {
+        String::new()
+    } else {
+        format!(" — {}", tail.join(" | "))
+    }
+}
+
 pub async fn spawn(broker: &Arc<Broker>, name: &str, dir: &str, gen: u64) -> Result<Arc<RunnerConn>, String> {
     let config = broker.config.read().unwrap().clone();
     // An empty binary path spawns `node ""`, which idles silently and burns
@@ -187,6 +256,7 @@ pub async fn spawn(broker: &Arc<Broker>, name: &str, dir: &str, gen: u64) -> Res
     let conn = Arc::new(RunnerConn {
         name: name.to_string(),
         gen,
+        hosted: false,
         tx: FrameWriter::new(stdin),
         child: Mutex::new(Some(child)),
         pending: Mutex::new(HashMap::new()),
@@ -411,7 +481,7 @@ pub fn load(
     let name = name.to_string();
     Box::pin(async move {
     let spec = broker.mod_spec(&name).ok_or_else(|| format!("{name}: no longer configured"))?;
-    let conn = match spawn(&broker, &name, &spec.dir, gen).await {
+    let conn = match load_conn(&broker, &name, &spec, gen).await {
         Ok(conn) => conn,
         Err(e) => {
             broker.notify_mod_status(&name, "error");
@@ -419,7 +489,7 @@ pub fn load(
         }
     };
     let outcome = conn.wait_handshake().await;
-    if outcome.is_err() {
+    if let Err(e) = &outcome {
         // Clean up so a later config apply can try again.
         let current = broker.runners.read().await.get(&name).map(|c| c.gen);
         if current == Some(gen) {
@@ -427,7 +497,219 @@ pub fn load(
         }
         conn.kill().await;
         broker.notify_mod_status(&name, "error");
+        // The bare timeout wording hides the actual cause; the runner's stderr
+        // log holds it (e.g. 2026-10-21 next-steps: ".tsx hooks module" the
+        // loader rejects). Carry the last lines into the surfaced error.
+        let logs_dir = broker.config.read().unwrap().logs_dir.clone();
+        let detailed = format!("{e}{}", tail_runner_log(&logs_dir, &name));
+        return Err(detailed);
     }
     outcome
     })
+}
+
+/// How a mod's runner starts: the classic one process per mod, or (config
+/// `hostMode`, 2026-10-21 方案 B) one worker inside the shared host process.
+async fn load_conn(
+    broker: &Arc<Broker>,
+    name: &str,
+    spec: &crate::ModSpec,
+    gen: u64,
+) -> Result<Arc<RunnerConn>, String> {
+    if broker.config.read().unwrap().host_mode {
+        load_hosted(broker, name, spec, gen).await
+    } else {
+        spawn(broker, name, &spec.dir, gen).await
+    }
+}
+
+/// The shared host process: the node child plus its one writer, which every
+/// virtual conn clones. The read loop (in [`ensure_host`]) outlives mods.
+pub struct HostProc {
+    pub child: Mutex<Option<process::Child>>,
+    pub tx: FrameWriter,
+}
+
+/// Spawn the host once (`node <runner> --host`), wire its read loop, and
+/// remember it on the broker. Idempotent: later mods clone the handle.
+async fn ensure_host(broker: &Arc<Broker>) -> Result<Arc<HostProc>, String> {
+    if let Some(host) = broker.host.lock().await.clone() {
+        return Ok(host);
+    }
+    let config = broker.config.read().unwrap().clone();
+    // Same fail-fast contracts as spawn(): an empty path would idle silently
+    // through every handshake timeout.
+    if config.node_path.trim().is_empty() {
+        return Err(format!(
+            "host: node path is not configured (runtime pushed an empty nodePath; resolve Node ≥22.18 and restart the runtime)"
+        ));
+    }
+    if config.runner_path.trim().is_empty() {
+        return Err(format!(
+            "host: runner bundle path is not configured (build packages/mod-runner (pnpm build) or install dist/mod-runner.mjs to ~/.ginno/bin)"
+        ));
+    }
+    let log_path = config.logs_dir.join("mod-host.log");
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)
+        .map_err(|e| format!("cannot open {}: {e}", log_path.display()))?;
+    let mut command = process::Command::new(&config.node_path);
+    command
+        .arg("--max-old-space-size=384")
+        .arg(&config.runner_path)
+        .arg("--host")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(log)
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("cannot spawn host node: {e}"))?;
+    let stdin = child.stdin.take().expect("host stdin piped");
+    let stdout = child.stdout.take().expect("host stdout piped");
+
+    let host = Arc::new(HostProc { child: Mutex::new(Some(child)), tx: FrameWriter::new(stdin) });
+    let read_broker = broker.clone();
+    let read_host = host.clone();
+    tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let frame = match decode_line(&line) {
+                        Ok(frame) => frame,
+                        Err(e) => {
+                            read_broker.report(&format!("host: bad frame: {e}"));
+                            continue;
+                        }
+                    };
+                    host_frame(&read_broker, &read_host, frame).await;
+                }
+                _ => break,
+            }
+        }
+        // The host died: every virtual conn takes the exit path so the
+        // per-mod restart (which respawns the host via ensure_host) re-arms.
+        *read_host.child.lock().unwrap() = None;
+        let names: Vec<String> = read_broker.runners.read().await.keys().cloned().collect();
+        for name in names {
+            let conn = read_broker.runners.read().await.get(&name).cloned();
+            if let Some(conn) = conn {
+                if conn.hosted {
+                    on_runner_exit(&read_broker, &conn).await;
+                }
+            }
+        }
+    });
+    *broker.host.lock().await = Some(host.clone());
+    Ok(host)
+}
+
+/// Route one frame from the host: `mod.exited` drives the restart path;
+/// everything else resolves the virtual conn its `mod` field names and takes
+/// the same handling a per-process frame would.
+async fn host_frame(broker: &Arc<Broker>, _host: &Arc<HostProc>, frame: Frame) {
+    if let Frame::Notify { method, args, mod_name, .. } = &frame {
+        if method == "mod.exited" {
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .or(mod_name.as_deref())
+                .unwrap_or_default()
+                .to_string();
+            let conn = broker.runners.read().await.get(&name).cloned();
+            if let Some(conn) = conn {
+                if conn.hosted {
+                    on_runner_exit(broker, &conn).await;
+                }
+            }
+            return;
+        }
+    }
+    let name = match &frame {
+        Frame::Call { mod_name, .. }
+        | Frame::Result { mod_name, .. }
+        | Frame::Event { mod_name, .. }
+        | Frame::Next { mod_name, .. }
+        | Frame::CatchCall { mod_name, .. }
+        | Frame::Notify { mod_name, .. } => mod_name.clone(),
+        Frame::Hello { .. } | Frame::LoadMod { .. } | Frame::UnloadMod { .. } => None,
+    };
+    let name = match name {
+        Some(name) => name,
+        None => {
+            broker.report("host: a frame without a mod arrived; dropped");
+            return;
+        }
+    };
+    let conn = broker.runners.read().await.get(&name).cloned();
+    if let Some(conn) = conn {
+        if conn.hosted {
+            handle_runner_frame(broker, &conn, frame).await;
+        }
+    } else {
+        // A frame for a mod that just exited (unload/exit race): drop it.
+        broker.report(&format!("host: frame for unknown mod {name} dropped"));
+    }
+}
+
+/// A mod's virtual conn inside the shared host: send `load-mod`, install the
+/// per-mod heartbeat, and register in the runners table (the handshake finds
+/// its conn by the `loaded` call's mod stamp).
+async fn load_hosted(
+    broker: &Arc<Broker>,
+    name: &str,
+    spec: &crate::ModSpec,
+    gen: u64,
+) -> Result<Arc<RunnerConn>, String> {
+    let host = ensure_host(broker).await?;
+    let conn = Arc::new(RunnerConn {
+        name: name.to_string(),
+        gen,
+        hosted: true,
+        tx: host.tx.clone(),
+        child: Mutex::new(None),
+        pending: Mutex::new(HashMap::new()),
+        next_id: AtomicU64::new(1_000_000),
+        last_seen: Mutex::new(Instant::now()),
+        handshake_seen: AtomicBool::new(false),
+        handshake_notify: Mutex::new(Arc::new(Notify::new())),
+    });
+    host.tx.send(&Frame::LoadMod {
+        v: PROTOCOL_VERSION,
+        name: name.to_string(),
+        dir: spec.dir.clone(),
+        grants: spec.grants.clone(),
+        config: spec.config.clone(),
+    });
+    let beat_conn = conn.clone();
+    let beat_broker = broker.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(HEARTBEAT_CHECK).await;
+            // A stale heartbeat (the worker died and a newer gen took the
+            // name) must not unload the NEW worker.
+            let current = beat_broker.runners.read().await.get(&beat_conn.name).map(|c| c.gen);
+            if current != Some(beat_conn.gen) {
+                return;
+            }
+            let silent_for = beat_conn.last_seen.lock().unwrap().elapsed();
+            if silent_for > HEARTBEAT_TIMEOUT {
+                beat_broker.report(&format!(
+                    "{}: worker silent for {} ms; unloading",
+                    beat_conn.name,
+                    silent_for.as_millis()
+                ));
+                beat_conn.kill().await;
+                return;
+            }
+        }
+    });
+    broker.runners.write().await.insert(name.to_string(), conn.clone());
+    Ok(conn)
 }

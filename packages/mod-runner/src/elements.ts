@@ -103,7 +103,10 @@ function scalarProps(props: Readonly<Record<string, unknown>>): Record<string, s
 const elementBrand = Symbol('claude-code-mods.element')
 
 type AnyElementProps = BoxProps | TextProps | ButtonProps | InputProps | SelectProps | MarkdownProps | CodeProps
-function element(type: UiElement['type'], props: AnyElementProps): UiElement {
+/** Build one branded element. Exported for the JSX `h` adapter (loader.ts):
+ * a mod's pragma global must produce the same branded shape the vocabulary
+ * constructors do, or the render tree fails validation. */
+export function element(type: UiElement['type'], props: AnyElementProps): UiElement {
   return Object.freeze({ type, props: Object.freeze({ ...props }), [elementBrand]: true })
 }
 
