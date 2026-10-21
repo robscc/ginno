@@ -80,6 +80,14 @@ app: check guard-app-not-running
 ## app-impl: app 的并行构建段（mod-broker / mod-runner / sidecar 三链并发）
 app-impl: mod-broker mod-runner sidecar
 
+## pnpm-deps: 单次串行的 workspace 安装。mod-runner 与 web 两条链在 -j 下
+## 并行，各自 `pnpm install` 会同时改根 node_modules 的 .pnpm hoist——
+## 2026-10-21 打包失败即此竞态（两个 headless install 抢 unlink
+## .pnpm/node_modules/autoprefixer → ENOENT → Error 254，间歇复现）。
+## 两目标改为依赖本目标：安装只跑一次、且先于并行段开始。
+pnpm-deps:
+	cd $(ROOT) && pnpm install --prefer-offline
+
 ## app-force: `app` without the running-app guard (FORCE=1) — convenience alias
 # Exists because typing FORCE=1 in front of `make app` is easy to forget. It is
 # a THIN alias: the guard's own warning and its reasoning are unchanged, and the
@@ -162,13 +170,13 @@ mod-broker:
 # Packaged form: sidecar stages it as a Tauri resource; dev/web form: the
 # runtime's resolve_runner() finds it at packages/mod-runner/dist/.
 # 内容戳：源未变且 dist 在 → 跳过。
-mod-runner:
+mod-runner: pnpm-deps
 	@mkdir -p $(CACHE); \
 	h=$$( (find $(ROOT)/packages/mod-runner/src $(ROOT)/packages/mod-runner/package.json -type f 2>/dev/null | sort | xargs cat 2>/dev/null) | shasum | cut -d' ' -f1); \
 	if [ -f $(CACHE)/mod-runner.stamp ] && [ "$$(cat $(CACHE)/mod-runner.stamp)" = "$$h" ] && [ -f $(ROOT)/packages/mod-runner/dist/mod-runner.mjs ]; then \
 	  echo "⏭️  mod-runner 未变，跳过"; \
 	else \
-	  cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/mod-runner build && echo "$$h" > $(CACHE)/mod-runner.stamp; \
+	  cd $(ROOT) && pnpm --filter @ginno/mod-runner build && echo "$$h" > $(CACHE)/mod-runner.stamp; \
 	fi
 	@echo "✅ Runner bundle → $(ROOT)/packages/mod-runner/dist/mod-runner.mjs"
 
@@ -186,7 +194,7 @@ runtime: web
 	if [ "$(FORCE_RUNTIME)" != "1" ] && [ -f $(CACHE)/runtime.stamp ] && [ "$$(cat $(CACHE)/runtime.stamp)" = "$$h" ] && [ -x $(RUNTIME)/dist/ginno-runtime/ginno-runtime ]; then \
 	  echo "⏭️  runtime 输入未变，跳过 PyInstaller"; \
 	else \
-	  cd $(RUNTIME) && uv run --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
+	  cd $(RUNTIME) && uv run --locked --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
 	  --collect-all langchain_openai --collect-all langchain_anthropic \
 	  --collect-all langgraph --collect-all mcp --collect-all pydantic \
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
@@ -205,14 +213,14 @@ runtime: web
 # pnpm install first: a fresh pull may add deps (lockfile-synced, ~1s no-op
 # when up to date) — without it `next build` fails on missing modules.
 # 内容戳：src/messages/配置/lockfile 未变且 out/ 在 → 跳过。
-web:
+web: pnpm-deps
 	@mkdir -p $(CACHE); \
 	h=$$( (find $(ROOT)/apps/web/src $(ROOT)/apps/web/messages -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
 	       cat $(ROOT)/apps/web/package.json $(ROOT)/apps/web/next.config.* $(ROOT)/apps/web/tailwind.config.* $(ROOT)/pnpm-lock.yaml 2>/dev/null) | shasum | cut -d' ' -f1); \
 	if [ -f $(CACHE)/web.stamp ] && [ "$$(cat $(CACHE)/web.stamp)" = "$$h" ] && [ -d $(WEB_OUT) ]; then \
 	  echo "⏭️  web 未变，跳过 next build"; \
 	else \
-	  cd $(ROOT) && pnpm install --prefer-offline && pnpm --filter @ginno/web build && echo "$$h" > $(CACHE)/web.stamp; \
+	  cd $(ROOT) && pnpm --filter @ginno/web build && echo "$$h" > $(CACHE)/web.stamp; \
 	fi; \
 	# 防呆（2026-10-14 icon 事故）：next build 曾静默漏拷整个 public/ 到 out/
 	# （app 内 /icon.png 被 sidecar catch-all 兜底成 index.html → icon 消失，
@@ -238,7 +246,7 @@ check:
 # docs extras (pandas/openpyxl/…), silently breaking the files-preview unit
 # tests afterward.
 e2e-ui:
-	cd $(RUNTIME) && uv sync --group test --extra docs && uv run --group test --extra docs pytest tests/e2e/test_packaged_ui_playwright.py -q
+	cd $(RUNTIME) && uv sync --locked --group test --extra docs && uv run --locked --group test --extra docs pytest tests/e2e/test_packaged_ui_playwright.py -q
 
 ## clean: remove build artifacts (web export, PyInstaller output, staged bundle)
 clean:
