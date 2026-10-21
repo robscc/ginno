@@ -46,7 +46,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { ChevronDown, ChevronRight, FileText, Folder, FolderLock } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, FileText, Folder, FolderLock } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import { CodeApiError, listCodeDir } from "@/lib/runtime";
@@ -72,6 +72,7 @@ import {
   type TreeItem,
   type TreeRow,
 } from "./treeUtils";
+import { isExternalOnlyFile } from "./language";
 import { ContextMenu, buildFileMenuItems, type CodeContextAction } from "./ContextMenu";
 
 /** Mirrors `code.py`'s `HIDDEN_COUNT_CAP`: a heavy dir's count arrives capped,
@@ -861,7 +862,7 @@ export function FileTree({
                   }}
                   style={indent(row.depth)}
                   className={cn(
-                    "relative flex cursor-pointer items-center gap-1.5 rounded-md py-1 pr-2 text-muted hover:bg-line2/40",
+                    "group relative flex cursor-pointer items-center gap-1.5 rounded-md py-1 pr-2 text-muted hover:bg-line2/40",
                     isActive && "bg-line2/60 text-txt",
                     isFocused && "ring-1 ring-inset ring-indigo/70",
                     isDropTarget && "bg-indigo/15 ring-1 ring-inset ring-indigo/70",
@@ -942,9 +943,37 @@ export function FileTree({
                       ) : (
                         row.type === "file" &&
                         row.size != null && (
-                          <span className="shrink-0 text-[10px] text-faint">{fmtBytes(row.size)}</span>
+                          /* 尺寸标签 hover 时淡出，把右缘让给外开按钮的覆盖层
+                             （见下）——零布局位移，两者不叠字。 */
+                          <span className="shrink-0 text-[10px] text-faint transition-opacity group-hover:opacity-0">
+                            {fmtBytes(row.size)}
+                          </span>
                         )
                       )}
+                      {/* 非代码/非图片文件（pdf/docx/xlsx/zip/…）：点击无像样预览，
+                          hover 浮出一个「默认应用打开」按钮——与右键菜单同一动作
+                          （onOpenExternal），免去右键翻找。绝对定位盖在行右缘
+                          之上，不占布局位（尺寸标签同时淡出避让）。
+                          stopPropagation 两层：pointerDown 不触发行的拖拽判定，
+                          click 不落进 activateRow 的 Monaco 打开路径。 */}
+                      {onOpenExternal &&
+                        !row.hidden &&
+                        row.type === "file" &&
+                        isExternalOnlyFile(row.name) && (
+                          <button
+                            type="button"
+                            title={t("menu.openExternal")}
+                            aria-label={t("menu.openExternal")}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenExternal(row.path);
+                            }}
+                            className="absolute right-1 top-1/2 z-10 -translate-y-1/2 rounded p-0.5 text-faint opacity-0 transition-opacity hover:text-txt focus-visible:opacity-100 group-hover:opacity-100"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                          </button>
+                        )}
                     </>
                   )}
                 </div>

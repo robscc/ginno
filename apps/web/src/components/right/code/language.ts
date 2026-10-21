@@ -146,3 +146,30 @@ export function languageForPath(path: string): string {
   const ext = lower.slice(dot + 1);
   return LANGUAGE_BY_EXT[ext] ?? PLAINTEXT;
 }
+
+/** Client-side image set. Mirrors the runtime's `files.extractors.IMAGE_EXTS`
+ * (svg deliberately absent here too: language.ts maps it to xml, so it is a
+ * text preview, not an ImagePreview case) plus formats the runtime doesn't
+ * classify but Preview/Photos handle (heic/tiff/avif/ico). */
+const IMAGE_EXTS = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "bmp",
+  "heic", "tiff", "tif", "avif", "ico",
+]);
+
+/**
+ * True when a file has NO in-panel preview worth a click: the extension is
+ * neither in the Monaco language tables (code/text → editor) nor an image
+ * (→ ImagePreview). pdf/docx/xlsx/pptx/zip/dmg/mp4/… land here — the tree
+ * shows them a hover button to open with the OS default app instead (the
+ * right-click menu item exists, but hover avoids the dig). Files without an
+ * extension (Makefile, LICENSE) and dotfiles stay text previews → false.
+ */
+export function isExternalOnlyFile(path: string): boolean {
+  const name = path.split("/").pop() ?? path;
+  const lower = name.toLowerCase();
+  if (LANGUAGE_BY_NAME[lower]) return false;
+  const dot = lower.lastIndexOf(".");
+  if (dot <= 0) return false;
+  const ext = lower.slice(dot + 1);
+  return !LANGUAGE_BY_EXT[ext] && !IMAGE_EXTS.has(ext);
+}
