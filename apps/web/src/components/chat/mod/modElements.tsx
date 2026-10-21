@@ -151,15 +151,26 @@ function ModNodeView({
           ? props.label
           : children.filter((c) => typeof c === "string").join("");
       const hotkey = typeof props.hotkey === "string" ? props.hotkey : "";
-      // 禁用样式但保留点击:press 帧回发,后端/broker 未就绪时由调用方静默。
-      // 真正的可用性由视觉传达(半透明),不靠 pointer-events 拦截。
+      // 醒目可按样式(2026-10-21 用户反馈:opacity-60 的 muted 版本看着像
+      // 禁用)。禁用态(disabled prop)才降不透明度;press 帧回发失败由调用
+      // 方静默,视觉上始终表达「可点」。
+      const disabled = props.disabled === true;
       return (
         <button
           onClick={() => node.actionId && onPress(node.actionId)}
-          className="flex items-center gap-1.5 rounded-md border border-line bg-card2/60 px-2 py-0.5 text-xs text-muted opacity-60 transition-colors hover:opacity-80"
+          disabled={disabled}
+          className={`flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs transition-colors ${
+            disabled
+              ? "cursor-not-allowed border-line bg-card2/40 text-faint opacity-50"
+              : "cursor-pointer border-violet/30 bg-violet/10 text-txt hover:border-violet/60 hover:bg-violet/20"
+          }`}
         >
-          <span>{truncate(label)}</span>
-          {hotkey && <kbd className="rounded border border-line px-1 font-mono text-[10px] text-faint">{hotkey}</kbd>}
+          <span className="max-w-[220px] truncate">{truncate(label)}</span>
+          {hotkey && (
+            <kbd className="rounded border border-violet/30 bg-base/60 px-1 font-mono text-[10px] text-violet">
+              {hotkey}
+            </kbd>
+          )}
         </button>
       );
     }
