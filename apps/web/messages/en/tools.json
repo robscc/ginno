@@ -922,7 +922,21 @@
         "loadFailed": "Failed to load the market catalog",
         "staleCache": "Market refresh failed — serving the cached catalog: {error}",
         "installedTag": "Installed",
-        "hasUpdate": "Updatable → v{v}"
+        "hasUpdate": "Updatable → v{v}",
+        "manage": "Manage market sources",
+        "manageTitle": "Market sources",
+        "repoPlaceholder": "GitHub repo URL (https://…/repo or git@…)",
+        "namePlaceholder": "Name (optional)",
+        "add": "Add",
+        "addFailed": "Invalid URL or duplicate repo",
+        "saveFailed": "Failed to save sources",
+        "remove": "Remove",
+        "enabled": "Enabled",
+        "enable": "Enable",
+        "disabledTag": "Disabled",
+        "emptySources": "No market sources",
+        "emptyReset": "An empty list falls back to the default sources",
+        "pulling": "Fetching the market… (first open clones the source repos)"
       }
     }
   }

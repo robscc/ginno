@@ -1194,16 +1194,16 @@ export async function listMarketplace(refresh = false) {
   );
 }
 
-export async function getMarketplaceItem(src: string, path: string) {
+export async function getMarketplaceItem(src: string, plugin: string) {
   return json<MarketItemDetail>(
-    `${BASE}/mods/marketplace/item?src=${encodeURIComponent(src)}&path=${encodeURIComponent(path)}`,
+    `${BASE}/mods/marketplace/item?src=${encodeURIComponent(src)}&path=${encodeURIComponent(plugin)}`,
   );
 }
 
-export async function installFromMarket(src: string, path: string, overwrite = false) {
+export async function installFromMarket(src: string, plugin: string, overwrite = false) {
   return json<{ ok: boolean; error?: string; mod?: { name: string; origin?: MarketOrigin } }>(
     `${BASE}/mods/marketplace/install`,
-    { method: "POST", headers: H, body: JSON.stringify({ src, path, overwrite }) },
+    { method: "POST", headers: H, body: JSON.stringify({ src, path: plugin, overwrite }) },
   );
 }
 
@@ -1214,7 +1214,9 @@ export async function updateFromMarket(name: string) {
   );
 }
 
-export async function putMarketplaceSources(sources: MarketSource[]) {
+export async function putMarketplaceSources(
+  sources: Array<Pick<MarketSource, "name" | "repo" | "enabled">>,
+) {
   return json<{ ok: boolean; sources: MarketSource[] }>(
     `${BASE}/mods/marketplace/sources`,
     { method: "PUT", headers: H, body: JSON.stringify({ sources }) },

@@ -922,7 +922,21 @@
         "loadFailed": "加载市场清单失败",
         "staleCache": "市场刷新失败，展示缓存清单：{error}",
         "installedTag": "已装",
-        "hasUpdate": "可更新 → v{v}"
+        "hasUpdate": "可更新 → v{v}",
+        "manage": "管理市场源",
+        "manageTitle": "市场源",
+        "repoPlaceholder": "GitHub 仓库地址（https://…/repo 或 git@…）",
+        "namePlaceholder": "名称（可选）",
+        "add": "添加",
+        "addFailed": "地址无效或仓库已存在",
+        "saveFailed": "保存市场源失败",
+        "remove": "移除",
+        "enabled": "已启用",
+        "enable": "启用",
+        "disabledTag": "已停用",
+        "emptySources": "暂无市场源",
+        "emptyReset": "列表为空时将恢复默认源",
+        "pulling": "正在拉取市场…（首次需 clone 源仓库，可能要等一会）"
       }
     }
   }
