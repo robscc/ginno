@@ -621,10 +621,79 @@ def resolve_prompt_read(session_id: str, text: str) -> bool:
     return True
 
 
+# prompt.compose/section 的段落模型(2026-10-23):server 持每会话的
+# {section_id: {text, settled}}——set 改未冻结段并整串重推 composer(fill
+# 通道,settle 冻结后 set 被拒。join 顺序 = 首次出现序,sep 缺省 \n\n。
+_PROMPT_SECTIONS: dict[str, dict[str, dict]] = {}
+
+
+def _joined_sections(session_id: str, sep: str) -> str:
+    parts = [e["text"] for e in _PROMPT_SECTIONS.get(session_id, {}).values() if e.get("text")]
+    return sep.join(parts)
+
+
+async def _op_prompt_compose(args: dict, session_id: str) -> dict:
+    """``$.prompt.compose {sections: [{id, text}], sep?}`` → 整体重置该会话
+    的段落模型并立即把合成文本推进 composer(fill 通道,替换语义)。
+    返回 ``{text}``(合成结果)。空 sections = 清空段落与草稿。"""
+    sections = args.get("sections")
+    if sections is not None and not isinstance(sections, list):
+        raise OpError("invalid-argument", "prompt.compose sections must be a list")
+    sep = str(args.get("sep") or "\n\n")
+    _PROMPT_SECTIONS[session_id] = {}
+    for sec in sections or []:
+        if not isinstance(sec, dict) or not str(sec.get("id") or "").strip():
+            continue
+        sid_ = str(sec["id"])
+        _PROMPT_SECTIONS[session_id][sid_] = {
+            "text": str(sec.get("text") or ""),
+            "settled": bool(sec.get("settled")),
+        }
+    text = _joined_sections(session_id, sep)
+    from ..server_shared import _push_session_event
+
+    await _push_session_event(session_id, "mod.prompt.fill", {"text": text})
+    return {"text": text}
+
+
+async def _op_prompt_section(args: dict, session_id: str) -> dict:
+    """``$.prompt.section {op: get|set|settle, id, text?}`` → 单段读写/冻结。
+
+    - get → ``{text, settled}``(未知段 text 为空串);
+    - set → 未冻结段更新 + 合成文本重推 composer;已冻结段拒绝(``settled``
+      错误码,mod 可感知竞争);
+    - settle → 冻结该段,返回 ``{text, settled: true}``。
+    """
+    op = str(args.get("op") or "")
+    sec_id = str(args.get("id") or "").strip()
+    if op not in ("get", "set", "settle") or not sec_id:
+        raise OpError("invalid-argument", "prompt.section requires op(get|set|settle) and id")
+    store = _PROMPT_SECTIONS.setdefault(session_id, {})
+    entry = store.get(sec_id) or {"text": "", "settled": False}
+    if op == "get":
+        return {"text": entry["text"], "settled": entry["settled"]}
+    if op == "set":
+        if entry["settled"]:
+            raise OpError("settled", f"section {sec_id!r} is settled; set is refused")
+        entry = {"text": str(args.get("text") or ""), "settled": False}
+        store[sec_id] = entry
+        text = _joined_sections(session_id, "\n\n")
+        from ..server_shared import _push_session_event
+
+        await _push_session_event(session_id, "mod.prompt.fill", {"text": text})
+        return {"text": entry["text"], "composed": text}
+    # settle
+    entry = {"text": str(args.get("text") or entry.get("text") or ""), "settled": True}
+    store[sec_id] = entry
+    return {"text": entry["text"], "settled": True}
+
+
 _PROMPT_OPS = {
     "fill": _op_prompt_fill,
     "suggest": _op_prompt_suggest,
     "read": _op_prompt_read,
+    "compose": _op_prompt_compose,
+    "section": _op_prompt_section,
 }
 
 _MODEL_OPS = {

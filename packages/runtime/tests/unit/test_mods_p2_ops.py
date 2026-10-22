@@ -660,3 +660,43 @@ def test_prompt_read_roundtrip(monkeypatch):
     monkeypatch.setattr(server_shared, "_push_session_event", fake_push)
     res = asyncio.run(ops.handle("prompt", "read", {}, "s1"))
     assert res == {"text": "draft text"}
+
+
+# ---- prompt.compose / prompt.section(2026-10-23)-------------------------------
+
+def test_prompt_compose_and_section_lifecycle(monkeypatch):
+    import asyncio
+
+    pushed: list[tuple[str, str]] = []
+    from ginno_runtime import server_shared
+
+    async def fake_push(session_id, event, data, turn_id=None):
+        if event == "mod.prompt.fill":
+            pushed.append((session_id, data.get("text") or ""))
+
+    monkeypatch.setattr(server_shared, "_push_session_event", fake_push)
+    ops._PROMPT_SECTIONS.pop("s-cs", None)
+
+    # compose:整体重置 + 合成文本推进 composer
+    r = asyncio.run(ops.handle("prompt", "compose", {
+        "sections": [{"id": "head", "text": "TITLE"}, {"id": "body", "text": "DETAIL"}],
+    }, "s-cs"))
+    assert r == {"text": "TITLE\n\nDETAIL"}
+    assert pushed[-1] == ("s-cs", "TITLE\n\nDETAIL")
+
+    # get / set / settle
+    r = asyncio.run(ops.handle("prompt", "section", {"op": "get", "id": "head"}, "s-cs"))
+    assert r == {"text": "TITLE", "settled": False}
+    r = asyncio.run(ops.handle("prompt", "section", {"op": "set", "id": "body", "text": "V2"}, "s-cs"))
+    assert r["composed"] == "TITLE\n\nV2"
+    assert pushed[-1] == ("s-cs", "TITLE\n\nV2")
+    r = asyncio.run(ops.handle("prompt", "section", {"op": "settle", "id": "head"}, "s-cs"))
+    assert r == {"text": "TITLE", "settled": True}
+    # 已冻结段:set 拒绝(settled 错误码)
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("prompt", "section", {"op": "set", "id": "head", "text": "X"}, "s-cs"))
+    assert ei.value.code == "settled"
+    # 非法参数
+    with pytest.raises(OpError) as ei:
+        asyncio.run(ops.handle("prompt", "section", {"op": "bogus", "id": "x"}, "s-cs"))
+    assert ei.value.code == "invalid-argument"

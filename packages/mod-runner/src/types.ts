@@ -459,6 +459,12 @@ export interface ModsApi {
     /** composer 空闲时的幽灵建议（Tab 采纳）；Ginno v1 前端无 ghost-text，
      *  落字与否由前端按 suggest 语义决定。 */
     suggest(input: { text: string }): Promise<{ ok: boolean }>
+    /** 读 composer 当前草稿（无活跃前端时 3s 超时降级空串）。 */
+    read(): Promise<{ text: string }>
+    /** 段落组装：整体重置会话段落模型并把合成文本推进 composer。 */
+    compose(input: { sections: readonly { id: string; text: string; settled?: boolean }[]; sep?: string }): Promise<{ text: string }>
+    /** 单段 get/set/settle：set 只改未冻结段并重推合成文本，settle 冻结。 */
+    section(input: { op: 'get' | 'set' | 'settle'; id: string; text?: string }): Promise<{ text: string; settled?: boolean; composed?: string }>
   }
   readonly model: {
     /** 以会话 checkpoint 历史为上下文的单发 fork 调用（共享上下文摊薄

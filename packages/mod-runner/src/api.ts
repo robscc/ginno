@@ -143,6 +143,17 @@ export function createModsApi(binding: ApiBinding): ModsApi {
       suggest(input: { text: string }): Promise<{ ok: boolean }> {
         return call('prompt.suggest', { text: input.text })
       },
+      read(): Promise<{ text: string }> {
+        return call('prompt.read', {})
+      },
+      /** 段落整体重置 + 合成文本立即进 composer(替换语义)。 */
+      compose(input: { sections: readonly { id: string; text: string; settled?: boolean }[]; sep?: string }): Promise<{ text: string }> {
+        return call('prompt.compose', input)
+      },
+      /** 单段读写/冻结:get | set(未冻结段) | settle。 */
+      section(input: { op: 'get' | 'set' | 'settle'; id: string; text?: string }): Promise<{ text: string; settled?: boolean; composed?: string }> {
+        return call('prompt.section', input)
+      },
     }),
     model: Object.freeze({
       fork(input: { prompt: string; model?: string; maxTokens?: number }): Promise<{
