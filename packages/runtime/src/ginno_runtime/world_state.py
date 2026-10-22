@@ -115,6 +115,14 @@ _CONTEXT_DEFAULTS = {
     # fresh runs. Content-addressed fingerprints make it safe by construction;
     # per-run ``no_cache`` and this flag are the opt-outs.
     "workflow_result_cache": True,
+    # Run 级 LLM 调用预算默认(odw-comparison P1-③):0 = 不设限。agent/llm
+    # 每次尝试(含 retry、并行 item)各计一次,超限硬失败;per-run 参数与
+    # DSL budget.maxAgentCalls 覆盖此默认。
+    "workflow_max_agent_calls": 0,
+    # 跨 run 全局并发上限(odw-comparison P1-③):调度触发的无人值守 run
+    # 并行时全局限流;0 = 不限。排队等待中的 run 照常创建,只是引擎驱动
+    # 按信号量依次放行。
+    "workflow_max_concurrent_runs": 4,
     # External coding-agent delegation (external-agents-design.md): spends
     # money at external providers and can edit files, and the permission
     # node's "ask" is dormant while bypass_permissions is on — so opt-in.
