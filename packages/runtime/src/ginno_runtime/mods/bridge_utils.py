@@ -171,6 +171,21 @@ def update_mod_item(name: str, patch: dict) -> dict:
     return item
 
 
+def remove_mod_item(name: str) -> bool:
+    """Drop one mod's settings item entirely (uninstall). False when absent —
+    a drop-in dir that was never toggled has no item, and uninstalling it is
+    not an error."""
+    if not MOD_NAME_RE.match(name):
+        raise ValueError(f"invalid mod name: {name!r}")
+    cfg = load_mods_settings()
+    items = dict(cfg.get("items") or {})
+    if name not in items:
+        return False
+    del items[name]
+    update_mods_settings({"items": items})
+    return True
+
+
 # ---- binary discovery ----------------------------------------------------------
 
 

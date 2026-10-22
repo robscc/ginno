@@ -136,6 +136,21 @@ class HookDispatcher:
                     count += 1
         return count
 
+    def unregister_plugin(self, name: str) -> int:
+        """Drop every hook entry of one plugin (uninstall). register_plugin
+        only REPLACES same-name entries, so a plugin that vanishes from disk
+        keeps haunting the dispatcher without this. Returns the removed
+        count."""
+        removed = 0
+        for evt in list(self._plugin_hooks):
+            kept = [h for h in self._plugin_hooks[evt] if h.get("plugin") != name]
+            removed += len(self._plugin_hooks[evt]) - len(kept)
+            if kept:
+                self._plugin_hooks[evt] = kept
+            else:
+                del self._plugin_hooks[evt]
+        return removed
+
     def plugin_hook_count(self) -> int:
         return sum(len(v) for v in self._plugin_hooks.values())
 

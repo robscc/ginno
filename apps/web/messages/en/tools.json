@@ -882,6 +882,12 @@
       "validateReport": "Validation report — {name}",
       "validateFailed": "Validation failed (runtime unreachable?)",
       "actionFailed": "Operation failed",
+      "uninstall": "Uninstall",
+      "uninstallHint": "Delete from disk?",
+      "uninstallConfirm": "Delete",
+      "uninstallCancel": "Cancel",
+      "uninstalled": "Uninstalled {name}",
+      "uninstallFailed": "Uninstall failed",
       "compat": "Compatibility",
       "compatEmpty": "No activity recorded yet this session",
       "status": {

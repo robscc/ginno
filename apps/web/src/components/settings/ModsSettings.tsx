@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
-import { Activity, Puzzle, RefreshCw, Save, ShieldCheck, Store } from "lucide-react";
+import { Activity, Puzzle, RefreshCw, Save, ShieldCheck, Store, Trash2 } from "lucide-react";
 import { ModStoreDrawer } from "./ModStoreDrawer";
 
 // Claude Code Mods 设置页(claude-code-mods-design.md §7.5):mod 列表
@@ -109,6 +109,8 @@ export function ModsSettings() {
   // 商店抽屉(安装成功 → 高亮 + 重拉已装列表)
   const [storeOpen, setStoreOpen] = useState(false);
   const [justInstalled, setJustInstalled] = useState<string | null>(null);
+  // 卸载两步确认:第一次点变「确认删除」,再点才执行(免弹窗,和页内轻交互一致)
+  const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -191,6 +193,30 @@ export function ModsSettings() {
       setReport({ name, text: JSON.stringify(r, null, 2) });
     } catch {
       setMsg(t("validateFailed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // 卸载:后端删目录 + settings 条目并重推 config(broker diff 卸 runner)。
+  // 成功后收掉指向该 mod 的展开态(配置编辑/兼容度/验证报告)。
+  const uninstall = async (name: string) => {
+    setBusy(name);
+    setMsg("");
+    try {
+      const r = await api.uninstallMod(name);
+      if (!r.ok) {
+        setMsg(r.error || t("uninstallFailed"));
+        return;
+      }
+      setConfirmUninstall(null);
+      if (editName === name) setEditName(null);
+      if (compatOpen === name) setCompatOpen(null);
+      if (report?.name === name) setReport(null);
+      setMsg(t("uninstalled", { name }));
+      await refresh();
+    } catch {
+      setMsg(t("uninstallFailed"));
     } finally {
       setBusy(null);
     }
@@ -344,6 +370,36 @@ export function ModsSettings() {
                       <Activity className="h-3 w-3" />
                       {tr("compat")}
                     </button>
+                    {/* 卸载靠右,和常规操作隔开——破坏性动作不混排在阅读动线里 */}
+                    <div className="ml-auto">
+                      {confirmUninstall === m.name ? (
+                        <span className="flex items-center gap-2">
+                          <span className="text-[10px] text-faint">{t("uninstallHint")}</span>
+                          <button
+                            onClick={() => void uninstall(m.name)}
+                            disabled={busy === m.name}
+                            className="text-xs text-red hover:opacity-80 disabled:opacity-50"
+                          >
+                            {t("uninstallConfirm")}
+                          </button>
+                          <button
+                            onClick={() => setConfirmUninstall(null)}
+                            className="text-xs text-muted hover:text-txt"
+                          >
+                            {t("uninstallCancel")}
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmUninstall(m.name)}
+                          disabled={busy === m.name}
+                          className="flex items-center gap-1 text-xs text-muted hover:text-red disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          {t("uninstall")}
+                        </button>
+                      )}
+                    </div>
                   </div>
                   {compatOpen === m.name && m.compat && (
                     <div className="mt-2 rounded-md border border-line2 bg-base/40 p-2.5">

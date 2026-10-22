@@ -4,6 +4,8 @@
 - PUT  /api/mods/{name}     — enabled / config / grants (writes settings,
                               re-pushes config to the broker)
 - POST /api/mods/install    — copy a local mod dir into ~/.ginno/mods/
+- DELETE /api/mods/{name}   — uninstall: remove the install dir + settings
+                              item, tear down registrations, re-push config
 - POST /api/mods/validate   — broker validate report (unsupported events /
                               unimplemented $ methods, §3.7)
 """
@@ -180,6 +182,57 @@ async def install_mod(req: ModInstallRequest) -> dict:
     except Exception:  # noqa: BLE001 — install already succeeded
         log.exception("classic hooks re-registration failed after install")
     return {"ok": True, "mod": {"name": name, "version": version, **item}}
+
+
+@router.delete("/api/mods/{name}")
+async def uninstall_mod(name: str) -> dict:
+    """Uninstall: delete the dir that took effect (scan's scope rule —
+    project copy wins; a same-name copy in the other scope survives and is
+    NOT touched), drop the settings item, tear down every in-process
+    registration, then re-push config so the broker's apply_config diff
+    unloads the runner (per-process kill / host-mode worker)."""
+    if not bridge_utils.MOD_NAME_RE.match(name):
+        return {"ok": False, "error": f"invalid mod name: {name!r}"}
+    channel = get_channel()
+    row = next((r for r in bridge_utils.scan_installed_mods() if r["name"] == name), None)
+    has_item = name in (bridge_utils.load_mods_settings().get("items") or {})
+    if row is None and not has_item:
+        # 无处可清(名字打错 / 早已卸干净):显式报错,不假装成功。
+        return {"ok": False, "error": f"mod not installed: {name}"}
+    removed = {"name": name, "path": "", "scope": ""}
+    if row is not None:
+        target = Path(row["path"])
+        try:
+            shutil.rmtree(target)
+        except OSError as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        removed = {"name": name, "path": str(target), "scope": row.get("scope") or "global"}
+    bridge_utils.remove_mod_item(name)
+    # Classic-shape hooks entries (register_plugin only replaces — a plugin
+    # that vanishes from disk needs the explicit unregister) plus the mod's
+    # slice of the connection-scoped registries (commands/tools/agents): a
+    # lingering entry would keep serving a mod that no longer exists.
+    try:
+        from ..server_shared import _hooks
+
+        if _hooks is not None:
+            _hooks.unregister_plugin(name)
+    except Exception:  # noqa: BLE001 — uninstall must complete
+        log.exception("classic hooks unregister failed after uninstall: %s", name)
+    from ..agents import mod_registry
+    from ..commands import mod_commands
+    from ..tools import mod_tools
+
+    mod_registry.unregister_mod(name)
+    mod_commands.unregister_mod(name)
+    mod_tools.unregister_mod(name)
+    # Ghost row guard: the broker state lingers until the next hello; without
+    # this the merged list renders the uninstalled mod as a "not installed" row.
+    channel.mods_state.pop(name, None)
+    # Fire-and-forget, same as PUT: the HTTP answer must not wait on IPC.
+    if channel.is_connected:
+        spawn_bg(_push_config_safe(channel))
+    return {"ok": True, "removed": removed}
 
 
 @router.post("/api/mods/validate")

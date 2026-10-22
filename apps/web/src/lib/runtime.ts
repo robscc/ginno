@@ -1130,6 +1130,14 @@ export async function updateMod(
   );
 }
 
+export async function uninstallMod(name: string) {
+  return json<{
+    ok: boolean;
+    error?: string;
+    removed?: { name: string; path: string; scope: string };
+  }>(`${BASE}/mods/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
 export async function validateMod(name: string) {
   return json<Record<string, unknown>>(`${BASE}/mods/validate`, {
     method: "POST",
