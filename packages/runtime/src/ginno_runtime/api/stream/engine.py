@@ -1536,8 +1536,9 @@ async def _stream_graph(
                                 _PENDING_RESUME.add(session_id)
                                 _PENDING_KIND[session_id] = "user_question"
                                 _log.info(
-                                    "turn_interrupt session=%s turn=%s kind=%s",
+                                    "turn_interrupt session=%s turn=%s kind=%s set_id=%d",
                                     session_id, turn_id, value.get("kind"),
+                                    id(_PENDING_RESUME),
                                 )
                                 await safe_send(
                                     emit("user.question", {

@@ -424,6 +424,11 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // hook owns that queue mutation).
       ctx.steerQ.handleEvent(ev, sid);
       break;
+    case "steer.answered":
+      // 服务端把这条 steer 当作 parked 问题的答案直接恢复了 turn:不入队、
+      // 不会有注入带,条目收走即可(卡片回执由 tool.end 折叠)。
+      ctx.steerQ.handleEvent(ev, sid);
+      break;
     case "steer.absorbed": {
       // The steered message was DRAINED into state (the server acks at drain
       // time, not at superstep commit — see docs/steering-design.md): move it

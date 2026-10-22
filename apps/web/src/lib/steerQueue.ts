@@ -170,6 +170,17 @@ export function useSteerQueue() {
           setFor(sid, items.filter((i) => i.steerId !== absorbedId));
           return true;
         }
+        case "steer.answered": {
+          // 服务端把这条 steer 直接当作 parked 问题的自由文本答案恢复了 turn
+          // (不入队,所以永远不会有 absorbed band):收走条目即可。问题卡
+          // 本体随 ask_user 的 tool.end 折叠成回执,无需这里补渲染。
+          const answeredId = ev.steer_id as string | undefined;
+          if (!answeredId) return true;
+          const answered = queueRef.current[sid] ?? [];
+          if (!answered.some((i) => i.steerId === answeredId)) return true;
+          setFor(sid, answered.filter((i) => i.steerId !== answeredId));
+          return true;
+        }
         default:
           return false;
       }

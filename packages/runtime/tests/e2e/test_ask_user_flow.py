@@ -115,6 +115,63 @@ def test_ask_user_bypasses_the_permission_policy(create_session, ws_conv):
 
 
 # --------------------------------------------------------------------------- #
+# steer 落在 parked 问题上 → 直接当作自由文本答案
+# (2026-10-22 卡死修复:旧行为入队等 resume,resume 又只能由回答触发,
+#  两边互相等,session 永久卡死)
+# --------------------------------------------------------------------------- #
+def test_steer_at_a_parked_question_answers_it(create_session, ws_conv):
+    """纯文本 steer 命中 parked ask_user:当答案恢复 turn,不入 steer 队列。
+
+    客户端收到 steer.answered(据此收走队列条目,不渲染注入带);模型按
+    free_text 来源收到答案,与卡片自由文本回答同一条 ask_user 回执通道。
+    """
+    model = [script(tool_calls=[_ask_call()]), script(text="明白，按独立 Harness 走。")]
+    sid = create_session(model)
+    with ws_conv(sid) as conv:
+        conv.invoke("讨论 SOP 载体")
+        conv.recv_until("user.question", "message.end", "error")
+
+        conv.send({"type": "steer", "steer_id": "m-ans", "message": "独立 Harness"})
+        acked = conv.recv_until("steer.answered", "error")
+        assert "steer.answered" in event_names(acked), acked
+        assert events_of(acked, "steer.answered")[0]["steer_id"] == "m-ans"
+
+        rest = conv.recv_until("message.end", "error")
+        assert not events_of(rest, "error"), rest
+        # 不入队:全程不允许出现 steer.accepted / steer.absorbed
+        assert "steer.accepted" not in event_names(acked) + event_names(rest)
+        assert "steer.absorbed" not in event_names(rest)
+    out = _result_of(rest)
+    assert out["source"] == "free_text" and out["answer"] == "独立 Harness"
+
+
+def test_steer_as_answer_resend_is_idempotent(create_session, ws_conv):
+    """断线重发的同 steer_id 只补发 ack:绝不二次吞答案、不落入 steer 队列。"""
+    model = [script(tool_calls=[_ask_call()]), script(text="ok")]
+    sid = create_session(model)
+    with ws_conv(sid) as conv:
+        conv.invoke("导入 skill")
+        conv.recv_until("user.question", "message.end", "error")
+
+        conv.send({"type": "steer", "steer_id": "m-dup", "message": "装到仓库"})
+        first = conv.recv_until("steer.answered", "error")
+        assert "steer.answered" in event_names(first)
+
+        # 立刻重发(resume 任务此刻多半在跑):必须走去重 ack,而不是
+        # steer.accepted 入队,也不是第二次 resume。
+        conv.send({"type": "steer", "steer_id": "m-dup", "message": "装到仓库"})
+        rest = conv.recv_until("message.end", "error")
+        names = event_names(rest)
+        assert "steer.accepted" not in names, names
+        assert "error" not in names
+    # ask_user 只结算一次
+    ends = events_of(rest, "tool.end")
+    assert len(ends) == 1
+    out = json.loads(ends[-1]["content"])
+    assert out["source"] == "free_text" and out["answer"] == "装到仓库"
+
+
+# --------------------------------------------------------------------------- #
 # the question survives the client
 # --------------------------------------------------------------------------- #
 def _question_blocks(client, sid: str) -> list[dict]:

@@ -73,9 +73,23 @@ def resume_pending_interrupt(
     - external channel adapters (``ginno_runtime.channels``) pass ``None``.
     """
     if session_id not in _PENDING_RESUME:
+        # 静默拒绝曾让 parked 会话的卡死无法排障(2026-10-22 f5af1e9 实录),
+        # 拒绝必须留痕。id() 用于定位「同名不同对象」的身份分裂。
+        _log.warning(
+            "resume_rejected session=%s reason=no_pending_resume set_id=%d size=%d",
+            session_id,
+            id(_PENDING_RESUME),
+            len(_PENDING_RESUME),
+        )
         return False
     pending_kind = _PENDING_KIND.get(session_id)
     if not _payload_matches(pending_kind, resume_value):
+        _log.warning(
+            "resume_rejected session=%s reason=kind_mismatch pending_kind=%r value_kind=%r",
+            session_id,
+            pending_kind,
+            (resume_value or {}).get("kind"),
+        )
         return False
     # Accept: clear the park BEFORE spawning so a second answer is rejected.
     _PENDING_RESUME.discard(session_id)
