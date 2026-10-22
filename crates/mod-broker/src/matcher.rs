@@ -90,6 +90,9 @@ pub enum MatcherValue {
     Array(Vec<MatcherValue>),
     /// Rust-side regex test against a string (or number rendered as text).
     Regex(Regex),
+    /// A JS-only regex shape Rust cannot compile (lookaround/backreference):
+    /// kept (with the source, for validate reporting) but never selects.
+    NeverMatches { source: String },
 }
 
 impl MatcherValue {
@@ -116,6 +119,14 @@ impl MatcherValue {
 
     /// Build a Rust regex from a JS source and flags. JS flags with no Rust
     /// equivalent (`g`, `y`, `u`, `d`) are dropped; `s` maps to `(?s)`.
+    ///
+    /// Dialect gap (design §15.8/风险表): Rust regex has no lookaround or
+    /// backreferences — a JS-legal `(?<=…)`, `(?=…)`, `\1` fails `Regex::new`.
+    /// Returning None made the WHOLE mod fail to register (one lookbehind
+    /// killed every hook); instead we return a never-matching matcher so the
+    /// mod loads, the hook simply never selects, and validate reports the
+    /// gap. That matches JS-host behavior in effect (the mod runs; the gated
+    /// branch never fires) far better than refusing the whole plugin.
     fn regex(source: &str, flags: &str) -> Option<MatcherValue> {
         let mut rust_flags = String::new();
         for flag in flags.chars() {
@@ -128,7 +139,12 @@ impl MatcherValue {
             }
         }
         let pattern = if rust_flags.is_empty() { source.to_string() } else { format!("(?{rust_flags}){source}") };
-        Regex::new(&pattern).ok().map(MatcherValue::Regex)
+        match Regex::new(&pattern) {
+            Ok(re) => Some(MatcherValue::Regex(re)),
+            Err(_) => Some(MatcherValue::NeverMatches {
+                source: source.to_string(),
+            }),
+        }
     }
 
     fn matches(&self, actual: Option<&Value>) -> bool {
@@ -145,6 +161,8 @@ impl MatcherValue {
                 Some(Value::Number(number)) => regex.is_match(&number.to_string()),
                 _ => false,
             },
+            // A JS-only shape: never selects (see `regex` for the rationale).
+            MatcherValue::NeverMatches { .. } => false,
         }
     }
 }
@@ -245,5 +263,19 @@ mod tests {
             describe_matcher(Some(&json!({"tool": ["Edit", "Write"], "id": {"regexp": "^T-", "flags": ""}}))),
             "{tool=Edit|Write,id=/^T-/}"
         );
+    }
+
+    #[test]
+    fn js_only_regex_shapes_load_and_never_match() {
+        // 方言守卫(2026-10-23):lookbehind/反向引用在 Rust regex 不可编译,
+        // 旧行为 parse_matcher→None→整个 mod 注册失败;现在 hook 保留、
+        // 永不选中。describe 仍要能报出形状(validate 报告可见)。
+        let parse = |v: &Value| parse_matcher(v).unwrap();
+        let m = parse(&json!({"tool": {"regexp": "(?<=prefix)Bash"}}));
+        assert!(!m.is_empty(), "lookbehind matcher must parse, not kill the mod");
+        assert!(!matcher_matches(&m, &json!({"tool": "prefixBash"})));
+        assert!(!matcher_matches(&m, &json!({"tool": "Bash"})));
+        let backref = parse(&json!({"id": {"regexp": "(a)\\1"}}));
+        assert!(!matcher_matches(&backref, &json!({"id": "aa"})));
     }
 }

@@ -200,7 +200,7 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         // ---- files, root-limited to the workspace ----
         "fs.read" => {
             let path = need_string(&input, "path", "$.fs.read path")?;
-            let target = broker.workspace_path(path)?;
+            let target = broker.workspace_path_for(path, ctx.session.as_deref())?;
             let metadata = std::fs::metadata(&target)
                 .map_err(|e| RpcError::new(CODE_ERROR, format!("$.fs.read: {path}: {e}")))?;
             if metadata.len() > FS_MAX_BYTES as u64 {
@@ -216,14 +216,14 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
             if text.len() > FS_MAX_BYTES {
                 return Err(RpcError::new(CODE_ERROR, format!("$.fs.write: content is larger than {FS_MAX_BYTES} bytes")));
             }
-            let target = broker.workspace_path(path)?;
+            let target = broker.workspace_path_for(path, ctx.session.as_deref())?;
             std::fs::write(&target, text)
                 .map_err(|e| RpcError::new(CODE_ERROR, format!("$.fs.write: {path}: {e}")))?;
             Ok(Value::Null)
         }
         "fs.list" => {
             let path = input.get("path").and_then(Value::as_str).unwrap_or(".");
-            let target = broker.workspace_path(path)?;
+            let target = broker.workspace_path_for(path, ctx.session.as_deref())?;
             let entries = std::fs::read_dir(&target)
                 .map_err(|e| RpcError::new(CODE_ERROR, format!("$.fs.list: {path}: {e}")))?;
             let mut out = Vec::new();
@@ -247,14 +247,14 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         }
         "fs.exists" => {
             let path = need_string(&input, "path", "$.fs.exists path")?;
-            match broker.workspace_path(path) {
+            match broker.workspace_path_for(path, ctx.session.as_deref()) {
                 Ok(target) => Ok(json!(target.exists())),
                 Err(_) => Ok(json!(false)),
             }
         }
         "fs.stat" => {
             let path = need_string(&input, "path", "$.fs.stat path")?;
-            let target = broker.workspace_path(path)?;
+            let target = broker.workspace_path_for(path, ctx.session.as_deref())?;
             let link = std::fs::symlink_metadata(&target)
                 .map_err(|e| RpcError::new(CODE_ERROR, format!("$.fs.stat: {path} does not exist ({e})")))?;
             // A link reports what it points at (`resolve: true`); a dangling

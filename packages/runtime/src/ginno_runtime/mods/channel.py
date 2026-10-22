@@ -128,6 +128,22 @@ async def _open_socket(sock_path: str) -> tuple[Any, Any]:
     return await asyncio.open_unix_connection(sock_path)
 
 
+def _live_session_roots() -> dict[str, str]:
+    """session→workspace 快照(fs.* 的 per-session 根数据源)。只收带
+    workspace 的活跃条目;查不到/异常返回空 dict(broker 回落全局根)。"""
+    try:
+        from ..server_shared import _SESSIONS
+
+        out: dict[str, str] = {}
+        for sid, entry in list(_SESSIONS.items()):
+            ws = (entry or {}).get("workspace")
+            if isinstance(ws, str) and ws:
+                out[str(sid)] = ws
+        return out
+    except Exception:  # noqa: BLE001 — 推送面尽力而为
+        return {}
+
+
 class ModChannel:
     """See module docstring. One instance per process (module singleton)."""
 
@@ -778,6 +794,10 @@ class ModChannel:
             # 方案 B（2026-10-21）：单 Node 宿主进程 + 每 mod 一个 worker 隔离。
             # 默认关，settings mods.hostMode=true 灰度开启。
             "hostMode": bool(cfg.get("hostMode", False)),
+            # Per-session fs 根(implementation-notes 收尾 2026-10-23):活跃
+            # 会话的 workspace 映射,fs.* 按调用帧 session 取根,缺省回落
+            # 全局 workspace。静态快照 + session.start 后 push_config 重推。
+            "sessionRoots": _live_session_roots(),
             # Resolved binaries (settings nodePath already rode resolve_node).
             "nodePath": node_path,
             "runnerPath": runner_path,

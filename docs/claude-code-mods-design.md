@@ -420,7 +420,7 @@ bridge_utils.py# node/broker 二进制发现(_resolve_cli 移植复用)、dev �
 | 8 | 双实现漂移(matcher 两侧、语义两侧) | 原则:runner 零策略(§4.2);matcher 只在 broker 评 |
 | 9 | 渲染性能(band 全组重绘) | broker 限流 10/s;P2 tree diff |
 | 10 | 开放:常驻服务型 mod(独立于会话生命周期)的 API 形态 | 本架构已支持进程常驻;API 扩展另行设计 |
-| 11 | 开放:`dispatcher.py` 是否 converge 进 mods 后删除 | P2 后另行决策 |
+| 11 | ~~开放~~ **已决(2026-10-23):维持双轨,不 converge** | 两条链已在同一引擎挂载点合流(events.py:classic 先、JS mods 后,都先于 policy.decide);真 converge 需 broker 承载 shell hook(broker 只跑 JS runner)、两套 grants 合一、stdout 契约翻译——收益是「Mods 设置页可见性」,代价是一整层重写。维持现状 + classic mod 在 Mods 页已有启停/grants(classic 键)。重启条件:classic hooks 出现需要 chain 语义(改写/settle)的真实需求 |
 
 ---
 

@@ -76,6 +76,17 @@ async def dispatch_session_start(session_id: str, meta: dict) -> None:
         "isInteractive": False,
     }
     await maybe_dispatch(session_id, "session.start", payload)
+    # Per-session fs 根(2026-10-23):新会话的 workspace 进 config——
+    # sessionRoots 是 build_config 的静态快照,这里补一次重推让 broker
+    # 认识刚建的会话。尽力而为:断连/异常静默(下次 hello 兜底)。
+    try:
+        from .channel import get_channel
+
+        ch = get_channel()
+        if ch.is_connected:
+            await ch.push_config()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def dispatch_session_end(session_id: str) -> None:

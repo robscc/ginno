@@ -265,7 +265,7 @@ describe('detached `$` after settle (next-steps shape, 2026-10-21)', () => {
     broker.start()
     await broker.take(frame => frame.kind === 'call' && frame['method'] === 'hooks-registered')
     const event = eventFrame('turn.complete', 'i-det', { answer: 'x'.repeat(100), reason: 'answer' })
-    broker.write(event)
+    broker.send(event)
     const answer = await takeAnswer(broker, event)
     expect(answer.ok).toBe(true)
     // The detached session.id call goes out AFTER settle: it must still carry

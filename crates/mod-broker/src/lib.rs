@@ -71,6 +71,10 @@ pub struct Config {
     pub node_path: String,
     pub runner_path: String,
     pub workspace: PathBuf,
+    /// Per-session fs roots (implementation-notes「per-session 的 fs 根」,
+    /// 2026-10-23):session→workspace;fs.* 按调用帧的 session 取根,缺省
+    /// 回落全局 workspace。Python 在 hello/apply-config 时推送。
+    pub session_roots: std::collections::HashMap<String, PathBuf>,
     pub logs_dir: PathBuf,
     pub store_path: Option<PathBuf>,
     /// A hook's own running-time limit (10 s).
@@ -163,6 +167,15 @@ pub fn parse_config(value: &Value) -> Result<Config, String> {
         band_columns: get_u64(&band, "columns", 80) as u32,
         band_rows: get_u64(&band, "rows", 8) as u32,
         host_mode: value.get("hostMode").and_then(Value::as_bool).unwrap_or(false),
+        session_roots: value
+            .get("sessionRoots")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(sid, ws)| ws.as_str().map(|w| (sid.clone(), PathBuf::from(w))))
+                    .collect()
+            })
+            .unwrap_or_default(),
         mods,
     })
 }
@@ -477,7 +490,21 @@ impl Broker {
     /// Resolve a `$.fs` path inside the workspace root; symlinks are followed
     /// by canonicalization, so a link pointing outside is caught.
     pub fn workspace_path(&self, path: &str) -> Result<PathBuf, RpcError> {
-        let root = self.config.read().unwrap().workspace.clone();
+        self.workspace_path_for(path, None)
+    }
+
+    /// `workspace_path` with the calling frame's session: a session with a
+    /// known root resolves relative paths (and constrains absolute ones)
+    /// against ITS workspace, not the global one.
+    pub fn workspace_path_for(&self, path: &str, session: Option<&str>) -> Result<PathBuf, RpcError> {
+        let guard = self.config.read().unwrap();
+        let root = match session
+            .and_then(|sid| guard.session_roots.get(sid))
+        {
+            Some(per_session) => per_session.clone(),
+            None => guard.workspace.clone(),
+        };
+        drop(guard);
         let root_canonical = root
             .canonicalize()
             .map_err(|e| RpcError::new(CODE_ERROR, format!("workspace root is not accessible: {e}")))?;
@@ -694,6 +721,7 @@ fn empty_config() -> Config {
         node_path: String::new(),
         runner_path: String::new(),
         workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        session_roots: std::collections::HashMap::new(),
         logs_dir: default_logs_dir(),
         store_path: None,
         hook_ms: 10_000,
