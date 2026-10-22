@@ -452,6 +452,11 @@ class AgentNode(BaseNode):
             run_ctx["events"].append(ev)
 
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "step"})
+        # 预算计数(odw P1-③):每次尝试(含 retry/并行 item)在执行前 spend,
+        # 超限 BudgetExceeded 由 retry 边界直通(重试只会再花,不重试)。
+        budget = run_ctx.get("agent_budget")
+        if budget is not None:
+            budget.spend(node_id)
         result_text, usage, agent_warning = await _run_agent_turn(
             node, cctx, state, render_ctx, emit
         )
@@ -541,6 +546,10 @@ class LLMNode(BaseNode):
             run_ctx["events"].append(ev)
 
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter", "node_type": "llm"})
+        # 预算计数(odw P1-③):同 AgentNode。
+        budget = run_ctx.get("agent_budget")
+        if budget is not None:
+            budget.spend(node_id)
         resp = await llm_invoke_with_timeout(model.ainvoke([HumanMessage(content=prompt)]))
         text = text_of_content(resp.content)
         usage = ah.record_model_usage(resp, run_ctx.get("usage_attr")) or _usage_from_msg(resp)

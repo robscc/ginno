@@ -420,6 +420,7 @@ def create_run(
     supervisor_override: dict[str, Any] | None = None,
     origin: str | None = None,
     cache_disabled: bool = False,
+    max_agent_calls: int | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     d, ver = _wf_dsl_and_version(wf)
@@ -483,11 +484,53 @@ def create_run(
     # set — absent field = cache eligible (legacy runs included).
     if cache_disabled:
         run["cache_disabled"] = True
+    # LLM 调用预算钉死(odw P1-③):run 参数持久化,resume/retry 沿用同一
+    # 预算——重跑不能绕过当初的成本闸。None = 未指定(DSL/全局默认合成)。
+    if max_agent_calls is not None:
+        run["max_agent_calls"] = max(0, int(max_agent_calls))
     # 触发来源标记（scheduled-tasks-design.md §3.6）：定时调度器创建的 run 打
     # "schedule"，Workflows 页运行列表据此显示「⏰ 定时」徽标；普通路径不落此字段。
     if origin:
         run["origin"] = origin
     _write_json(_run_path(run["id"]), run)
+    return run
+
+
+def _redact_record_value(text: str) -> str:
+    """一段 step output / error 文本落盘前的脱敏(odw-comparison P1-②)。
+
+    JSON 字符串走键级脱敏(重新 dump),纯文本走值级兜底。这些是纯记录
+    面(inspector/回放),不会被执行路径回读;**context_override /
+    supervisor_override 刻意不脱**——它们是 retry/resume 的功能数据,不可
+    逆替换会让重跑带着 [REDACTED] 进模型。"""
+    from .secret_redact import redact, redact_text
+
+    t = (text or "").strip()
+    if t[:1] in ("{", "["):
+        try:
+            import json as _json
+
+            parsed = _json.loads(text)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            from .secret_redact import redact as _r
+
+            return _json.dumps(_r(parsed), ensure_ascii=False)
+    return redact_text(text)
+
+
+def _redact_run_record(run: dict) -> dict:
+    """run 行落盘前就地脱敏(仅纯记录字段;见 _redact_record_value 注释)。"""
+    for s in run.get("steps") or []:
+        if s.get("output"):
+            s["output"] = _redact_record_value(s["output"])
+    for k in ("error",):
+        if run.get(k):
+            run[k] = _redact_record_value(run[k])
+    ed = run.get("error_detail")
+    if isinstance(ed, dict) and ed.get("traceback"):
+        ed["traceback"] = _redact_record_value(str(ed["traceback"]))
     return run
 
 
@@ -520,6 +563,9 @@ def update_step(
         if done and not run.get("finished"):
             run["finished"] = time.time()
     run["updated"] = time.time()
+    # 记录面脱敏(P1-②):新写入的 output/error 经此落盘;已落盘的历史值
+    # 保持 [REDACTED](幂等——redact 对已脱敏文本不再变化)。
+    run = _redact_run_record(run)
     _write_json(_run_path(run_id), run)
     return run
 

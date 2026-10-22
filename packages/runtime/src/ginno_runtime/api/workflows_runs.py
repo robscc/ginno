@@ -14,11 +14,43 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from . import workflows as _base
 
 from ..lang import t
+
+
+# ---- 跨 run 全局并发闸(odw-comparison P1-③)------------------------------------
+# 信号量按当前设置值惰性(重)建:设置改了下一批 run 用新值,在途 run 不受
+# 影响。0 = 不限(nullcontext 直通)。
+_RUN_SEMAPHORE: asyncio.Semaphore | None = None
+_RUN_SEMAPHORE_N: int = 0
+
+
+def _max_concurrent_runs() -> int:
+    from .. import world_state
+
+    try:
+        return max(0, int(world_state.context_settings().get("workflow_max_concurrent_runs") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+@asynccontextmanager
+async def _global_run_slot(run_id: str):
+    global _RUN_SEMAPHORE, _RUN_SEMAPHORE_N
+    n = _max_concurrent_runs()
+    if n <= 0:
+        yield
+        return
+    if _RUN_SEMAPHORE is None or _RUN_SEMAPHORE_N != n:
+        _RUN_SEMAPHORE = asyncio.Semaphore(n)
+        _RUN_SEMAPHORE_N = n
+    _base._log.info("workflow_run_slot_wait run=%s limit=%s", run_id, n)
+    async with _RUN_SEMAPHORE:
+        yield
 
 
 def _wf_mcp_tools() -> list:
@@ -409,6 +441,18 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
     from ..workflows import engine as wf_engine
 
     fork_id = None
+    # 跨 run 全局并发闸(odw P1-③):调度触发的无人值守 run 并行时全局限流
+    # (``workflow_max_concurrent_runs``,0 = 不限)。闸门包住引擎驱动段——
+    # run 创建/事件推送在闸外,排队只阻塞执行本身;排队期间取消照常生效
+    # (await 信号量时可被 cancel)。
+    async with _global_run_slot(run_id):
+        await _run_workflow_bg_inner(run_id, workflow_id, context_override, present_in)
+
+
+async def _run_workflow_bg_inner(run_id: str, workflow_id: str, context_override: dict | None, present_in: str | None = None) -> None:
+    from ..workflows import engine as wf_engine
+
+    fork_id = None
     try:
         run0 = _base.wf_store.get_run(run_id) or {}
         wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=run0.get("dsl_version"))
@@ -440,6 +484,9 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
             usage_attr={**(usage_attr or {}), "session_id": present_in},
             transcript_session=transcript_sid,
             result_cache=rc,
+            # 预算钉死(odw P1-③):run 行持久化的 max_agent_calls(None=未指定,
+            # 由 DSL/全局设置合成)。
+            max_agent_calls=run0.get("max_agent_calls"),
         )
         await _drive_run_events(run_id, present_in, wf, agen)
         _base.sync_ledger.set_status(run_id, "ok")

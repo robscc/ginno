@@ -346,6 +346,7 @@ class BaseNode:
 
         from .. import engine as wf_engine
         from .. import supervisor as wf_sup
+        from ..budget import BudgetExceeded
 
         run_ctx = cctx["run_ctx"]
         nid = node["id"]
@@ -390,7 +391,11 @@ class BaseNode:
                 GraphInterrupt,
                 GraphRecursionError,
                 wf_sup.SupervisorAbort,
+                BudgetExceeded,
             ):
+                # BudgetExceeded(odw P1-③)走控制流直通:预算耗尽时重试只会
+                # 再花一次被拒的计数,on_error=continue 的软失败语义由外层
+                # (engine 错误分支)决定,不在 retry 边界稀释。
                 raise
             except Exception as exc:  # noqa: BLE001 — deliberate retry boundary
                 if isinstance(exc, asyncio.TimeoutError):

@@ -455,6 +455,36 @@ def normalize_dsl(dsl: dict) -> dict:
         ctx.setdefault("schema", {"type": "object", "properties": {}})
         ctx.setdefault("initial", {})
         d["context"] = ctx
+    # Run 级预算(odw P1-③):budget.maxAgentCalls,0/缺省 = 不设限;run 参数
+    # 与全局设置在 engine.resolve_limit 合成。非 int 值丢弃(缺省语义),
+    # 负数留给 validate_dsl 报。
+    bud = d.get("budget")
+    if isinstance(bud, dict):
+        b = dict(bud)
+        if not isinstance(b.get("maxAgentCalls"), int):
+            b.pop("maxAgentCalls", None)
+        d["budget"] = b
+    # 执行预设(odw P2-⑦):profile 决定执行策略缺省——fast = 不重试不设
+    # 超时(便宜快跑,失败人工再跑);deep = 每节点 2 次重试 + 600s 墙钟。
+    # 只补**未显式设置**的节点字段(节点自己的 retry/timeout_s 永远赢);
+    # 只影响 agent/llm/step 类型。模型档位(fast/deep 换模型)刻意不做——
+    # 模型选择在 session/provider 层,与执行策略正交。
+    _PROFILE_DEFAULTS: dict[str, dict] = {
+        "fast": {},
+        "deep": {"retry": {"max_attempts": 2, "backoff": "fixed", "backoff_ms": 2000}, "timeout_s": 600},
+    }
+    profile = str(d.get("profile") or "").strip().lower()
+    if profile in _PROFILE_DEFAULTS:
+        defaults = _PROFILE_DEFAULTS[profile]
+        for n in nodes:
+            if n.get("type") not in ("step", "llm", "agent"):
+                continue
+            for k, v in defaults.items():
+                if n.get(k) in (None, "", {}):
+                    n[k] = dict(v) if isinstance(v, dict) else v
+        d["profile"] = profile
+    else:
+        d.pop("profile", None)
     d.setdefault("supervisor", {"enabled": False, "mode": "human"})
     return d
 

@@ -38,7 +38,14 @@ def _next_seq(run_id: str) -> int:
 
 
 def append_event(run_id: str, kind: str, **data: Any) -> dict[str, Any]:
-    """Append one event line and return the event dict that was written."""
+    """Append one event line and return the event dict that was written.
+
+    落盘前值级脱敏(odw-comparison P1-②):tool_call.args / tool_result.content
+    / node_exit.output / error.traceback 是 secret 主要暴露面(工具输出原样
+    进 events.jsonl)。返回值是**脱敏后**的 dict——事件是纯记录面,调用方
+    (引擎内存态)不回读它,消费方(inspector/回放)看到的即脱敏形。"""
+    from .secret_redact import redact
+
     ev: dict[str, Any] = {
         "ts": time.time(),
         "run_id": run_id,
@@ -46,6 +53,7 @@ def append_event(run_id: str, kind: str, **data: Any) -> dict[str, Any]:
         "seq": _next_seq(run_id),
         **{k: v for k, v in data.items() if v is not None},
     }
+    ev = redact(ev)
     p = _events_path(run_id)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as fh:

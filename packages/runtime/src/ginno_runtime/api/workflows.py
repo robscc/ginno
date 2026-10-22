@@ -480,10 +480,19 @@ async def create_workflow_run_endpoint(data: dict) -> dict:
     sup_override = data.get("supervisor_override")
     if sup_override is not None and not isinstance(sup_override, dict):
         raise HTTPException(status_code=400, detail="supervisor_override must be an object")
+    # 预算参数(odw P1-③):max_agent_calls 覆盖 DSL 与全局默认(0=不限);
+    # 负数是配置错误,400。
+    max_calls = data.get("max_agent_calls")
+    if max_calls is not None:
+        try:
+            max_calls = max(0, int(max_calls))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="max_agent_calls must be a non-negative integer")
     run = wf_store.create_run(
         wf, session_id=session_id, present_in_session_id=present_in, context_override=override,
         supervisor_override=sup_override,
         cache_disabled=bool(data.get("no_cache")),
+        max_agent_calls=max_calls,
     )
     _spawn_run_task(run["id"], _run_workflow_bg(run["id"], workflow_id, override, present_in))
     return {"ok": True, "run": run}

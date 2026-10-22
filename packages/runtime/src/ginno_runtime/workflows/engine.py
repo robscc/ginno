@@ -23,6 +23,17 @@ from langgraph.types import Command, interrupt
 from ..checkpointer import FileCheckpointer
 from . import compiler as wf_compiler
 from . import dsl as wf_dsl
+from .budget import AgentCallBudget, resolve_limit
+
+
+def workflow_max_agent_calls_setting() -> int:
+    """全局默认预算(0 = 不设限;world_state ``workflow_max_agent_calls``)。"""
+    from .. import world_state
+
+    try:
+        return max(0, int(world_state.context_settings().get("workflow_max_agent_calls") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _trimmed_traceback(exc: BaseException, max_chars: int = 4000) -> str:
@@ -184,6 +195,7 @@ async def run_workflow(
     usage_attr: dict | None = None,
     transcript_session: str | None = None,
     result_cache: Any = None,
+    max_agent_calls: int | None = None,
 ) -> AsyncIterator[dict]:
     d = wf_dsl.normalize_dsl(dsl)
     initial = dict((d.get("context") or {}).get("initial") or {})
@@ -203,6 +215,16 @@ async def run_workflow(
         # Cross-run result cache (result_cache.py): None = disabled (resume /
         # retry_from_checkpoint never set it — the checkpoint is authoritative).
         "result_cache": result_cache,
+        # LLM 调用预算(odw-comparison P1-③):agent/llm 每次尝试 spend 一次,
+        # 超限 BudgetExceeded 硬失败(不被 retry 吃掉)。limit=0 不设限。
+        # 合成优先级:run 参数 > DSL budget.maxAgentCalls > 全局设置。
+        "agent_budget": AgentCallBudget(
+            resolve_limit(
+                run_override=max_agent_calls,
+                dsl=d,
+                setting=workflow_max_agent_calls_setting(),
+            )
+        ),
     }
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):

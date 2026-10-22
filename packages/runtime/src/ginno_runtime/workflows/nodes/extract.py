@@ -158,6 +158,10 @@ async def extract_from_text(
     base_prompt = t(prompt_en, prompt_zh)
     prompt = base_prompt
     last_err = ""
+    # 自纠错三件套(odw-comparison P2-⑥):耗尽时各次尝试的原始回复/解析
+    # 结果/校验错误落 events(inspector 可过滤 kind=extract_failed 直接
+    # 看);经 append_event 的脱敏层,secret 不落盘。
+    attempts: list[dict] = []
     for attempt in range(2):
         if attempt > 0:
             prompt = base_prompt + t(
@@ -181,11 +185,22 @@ async def extract_from_text(
             parsed = _extract_json_from_text(raw)
         except Exception as e:
             last_err = t(f"JSON parse failed: {e}", f"JSON 解析失败：{e}")
+            attempts.append({"raw": raw, "parsed": None, "error": last_err})
             continue
         validated, errs = _validate_writes(parsed, writes_schema)
         if not errs:
             return validated, ""
         last_err = "; ".join(errs)
+        attempts.append({"raw": raw, "parsed": parsed, "error": last_err})
+    run_ctx["events"].append(
+        {
+            "ts": time.time(),
+            "run_id": run_ctx.get("run_id"),
+            "kind": "extract_failed",
+            "attempts": attempts,
+            "source_chars": len(source_text or ""),
+        }
+    )
     return None, last_err or "extraction failed"
 
 

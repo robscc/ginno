@@ -241,6 +241,12 @@ web: pnpm-deps
 check:
 	python3 $(ROOT)/scripts/check_i18n.py
 
+.PHONY: smoke
+## smoke: 全流程确定性冒烟（odw-comparison P2-④）——fake LLM 下 server 装配
+## → 会话一轮对话 → workflow run 走完。CI/发版前的最短「整机能转」证据链。
+smoke:
+	cd $(ROOT)/packages/runtime && uv run --group test --locked pytest tests/e2e/test_smoke_fake_llm.py -q
+
 ## e2e-ui: packaged-UI Playwright e2e — 真浏览器验证列表/添加session（缺 chromium 自动安装）
 # Sync with --extra docs too: a bare `--group test` sync would UNINSTALL the
 # docs extras (pandas/openpyxl/…), silently breaking the files-preview unit

@@ -49,7 +49,7 @@ from .. import paths
 from .. import world_state
 
 # Bump when the fingerprint anchor set changes — invalidates every entry.
-FP_VERSION = 1
+FP_VERSION = 2  # v2: persona digest joins the fingerprint (odw follow-up 2026-10-23)
 
 # Only these node types participate in node-level caching. ``step`` is the
 # authoring alias of ``agent`` (registry canonical() maps it); the DSL dict
@@ -103,10 +103,33 @@ def fingerprint(node: dict, render_ctx: dict, cctx: dict, item: Any = None) -> s
         "extract_model": node.get("extract_model") or "",
         "timeout_s": node.get("timeout_s"),
         "on_error": node.get("on_error") or "stop",
+        # 指纹收紧(odw follow-up):persona 决定 agent step 的系统提示——
+        # 同 prompt 不同 persona 结果不同,不进指纹会拿旧 persona 的缓存
+        # 结果冒充新答案。取 persona 正文的 sha 前 16 位(不落全文)。
+        "persona": _persona_hash(cctx, node),
     }
     if item is not None:
         fp["item"] = _canonical(item)
     return _sha(_canonical(fp))
+
+
+def _persona_hash(cctx: dict, node: dict) -> str:
+    """The executing persona's content digest (16 hex), or "" for default.
+
+    persona 解析复用 agent_node 的选取逻辑太重(会 import 整条 agent 线),
+    这里按 name 从 agents registry 直查;查不到(默认 persona/循环无 agent)
+    返回空串——指纹语义保持「无 persona 变更」。"""
+    name = node.get("agent") or ""
+    if not name:
+        return ""
+    try:
+        from ..agents import registry as agents_reg
+
+        p = agents_reg.get(name)
+        body = (p or {}).get("body") or (p or {}).get("prompt") or ""
+        return _sha(body)[:16] if body else ""
+    except Exception:  # noqa: BLE001 — registry 缺失/循环:不阻断缓存
+        return ""
 
 
 def _in_gather_mode(node: dict, cctx: dict, state: dict) -> bool:
@@ -331,10 +354,15 @@ def synth_cached_update(node: dict, cctx: dict, state: dict, hit: dict) -> dict:
 
     zero = {"input_tokens": 0, "output_tokens": 0}
     text = str(hit.get("text") or "")
+    # 溯源(odw follow-up):命中来自哪次 run(UI badge 的 title 与 inspector
+    # 直接可见);cached 键保持 bool(前端/更新链按 truthy 消费),来源走
+    # 并行的 from_run 键。
+    from_run = str(hit.get("run_id") or "") or None
 
     if node.get("type") == "llm":
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter",
-              "node_type": "llm", "cached": True})
+              "node_type": "llm", "cached": True,
+              **({"from_run": from_run} if from_run else {})})
         out = {"text": text}
         update: dict[str, Any] = {"events": events, "__output__": out}
         key = node.get("output")
@@ -343,18 +371,21 @@ def synth_cached_update(node: dict, cctx: dict, state: dict, hit: dict) -> dict:
             emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write",
                   "keys": [key], "method": "cache"})
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit",
-              "status": "done", "usage": zero, "cached": True, "output": text})
+              "status": "done", "usage": zero, "cached": True, "output": text,
+              **({"from_run": from_run} if from_run else {})})
         return update
 
     # agent / step
     emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_enter",
-          "node_type": "step", "cached": True})
+          "node_type": "step", "cached": True,
+          **({"from_run": from_run} if from_run else {})})
     writes = dict(hit.get("writes") or {})
     meta = dict(state.get("context_meta") or {})
     for k in writes:
         meta[k] = f"step:{node_id}"
     emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "node_exit",
-          "status": "done", "usage": zero, "cached": True, "output": text})
+          "status": "done", "usage": zero, "cached": True, "output": text,
+              **({"from_run": from_run} if from_run else {})})
     if writes:
         emit({"run_id": run_ctx["run_id"], "node_id": node_id, "kind": "context_write",
               "keys": list(writes.keys()), "method": "cache"})
