@@ -22,7 +22,6 @@ import type {
   GoalStatus,
   ModelConfig,
   ModelConfigReference,
-  ModelConfigRefs,
   Providers,
   SessionMeta,
   SessionUsage,
@@ -350,7 +349,6 @@ export async function putModelConfigs(configs: ModelConfig[], default_config: st
   return json<{
     ok: boolean;
     error?: string;
-    refs?: ModelConfigRefs;
     references?: Record<string, ModelConfigReference>;
     default_config?: string;
   }>(`${BASE}/model_configs`, {
@@ -368,7 +366,7 @@ export async function putModelConfigs(configs: ModelConfig[], default_config: st
 export async function verifyModelConfig(draft: Partial<ModelConfig>) {
   return json<
     | { ok: true; config: ModelConfig; latency_ms: number }
-    | { ok: false; error: string; refs?: ModelConfigRefs }
+    | { ok: false; error: string }
   >(`${BASE}/model_configs/verify`, {
     method: "POST",
     headers: H,

@@ -5,16 +5,10 @@ import { useTranslations } from "next-intl";
 import { Plus } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
-import type { ModelConfig, ModelConfigRefs } from "@/lib/types";
+import type { ModelConfig } from "@/lib/types";
 import { ModelConfigCard } from "./ModelConfigCard";
 import { ModelConfigForm } from "./ModelConfigForm";
-import {
-  blankConfig,
-  describeBlockedConfigs,
-  describeRefParts,
-  formatRefParts,
-  normalizeConfig,
-} from "./modelConfigShared";
+import { blankConfig, describeBlockedConfigs, normalizeConfig } from "./modelConfigShared";
 
 const COLLAPSE_AT = 8; // Q9: no hard cap; fold beyond N cards（卡片化后单卡变矮，6→8）
 
@@ -29,7 +23,7 @@ export function ModelApiSettings() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<"new" | string | null>(null);
-  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string; refs?: ModelConfigRefs } | null>(null);
+  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -110,7 +104,6 @@ export function ModelApiSettings() {
       setNotice({
         kind: "error",
         text: blocked.length ? blocked.map(reason).join(" ") : r.error || t("saveFailed"),
-        refs: r.refs,
       });
     } catch {
       setNotice({ kind: "error", text: t("saveFailedConn") });
@@ -191,23 +184,14 @@ export function ModelApiSettings() {
       </div>
 
       {notice && (
-        // Single yellow bar for refusals (Q8): error text + reference summary.
-        // Success notices use the same slot in green and self-dismiss.
+        // Yellow bar for refusals (reason text is built in applyPut from the
+        // guard's `references`). Success notices share the slot and self-dismiss.
         <div
           className={`mt-4 rounded-md border px-3 py-2 text-xs ${
             notice.kind === "ok" ? "border-green/40 bg-green/10 text-green" : "border-yellow/40 bg-yellow/10 text-yellow"
           }`}
         >
           {notice.text}
-          {notice.kind === "error" && describeRefParts(notice.refs).length > 0 && (
-            <div className="mt-1">
-              {t("stillReferenced", {
-                refs: formatRefParts(describeRefParts(notice.refs), (key, n) =>
-                  t(`ref.${key}`, { count: n }),
-                ),
-              })}
-            </div>
-          )}
         </div>
       )}
 

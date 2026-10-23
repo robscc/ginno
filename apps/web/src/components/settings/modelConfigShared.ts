@@ -1,10 +1,5 @@
 // Shared helpers for the model-config list page (multi-provider-model-config.md §2).
-import type {
-  ModelConfig,
-  ModelConfigReference,
-  ModelConfigRefs,
-  ModelProtocol,
-} from "@/lib/types";
+import type { ModelConfig, ModelConfigReference, ModelProtocol } from "@/lib/types";
 
 export const PROTOCOLS: ModelProtocol[] = ["anthropic", "openai-compatible", "openai-responses"];
 
@@ -54,8 +49,6 @@ export function domainRecommendations(base_url: string) {
   return DOMAIN_RECOMMEND.filter((r) => host === r.host || host.endsWith(`.${r.host}`) || host.endsWith(r.host));
 }
 
-export type RefPart = { key: string; n: number };
-
 /** 把守卫的 `references` 摊成黄条要的结构化片段(每个被挡下的配置一条)。
  * 后端只在该字段里给;前端原来读的扁平 `refs` 后端从未发过。 */
 export function describeBlockedConfigs(
@@ -81,42 +74,6 @@ export function describeBlockedConfigs(
   }));
 }
 
-// Defensive ref-summary for the Q8 yellow bar. The backend may send counts or
-// id lists; unknown keys pass through as-is. 返回结构化片段，由组件用
-// settings.model.ref.* 翻译（本模块非组件，拿不到 useTranslations）。
-export function describeRefParts(refs?: ModelConfigRefs): RefPart[] {
-  if (!refs) return [];
-  const KEY: Record<string, string> = { agents: "agents", sessions: "sessions", workflows: "workflows" };
-  const parts: RefPart[] = [];
-  for (const [key, value] of Object.entries(refs)) {
-    const n = Array.isArray(value) ? value.length : typeof value === "number" ? value : 0;
-    if (!n) continue;
-    parts.push({ key: KEY[key] ?? key, n });
-  }
-  return parts;
-}
-
-/** 渲染引用片段：已知 key 走 resolve（翻译 settings.model.ref.*），未知 key
- * 原样回显。resolve 用 switch 收窄字面量，绕开 next-intl 的 key 类型检查。 */
-export function formatRefParts(
-  parts: RefPart[],
-  resolve: (key: "agents" | "sessions" | "workflows", n: number) => string,
-): string {
-  return parts
-    .map((p) => {
-      switch (p.key) {
-        case "agents":
-          return resolve("agents", p.n);
-        case "sessions":
-          return resolve("sessions", p.n);
-        case "workflows":
-          return resolve("workflows", p.n);
-        default:
-          return `${p.n} ${p.key}`;
-      }
-    })
-    .join(", ");
-}
 
 export function blankConfig(): ModelConfig {
   return {
@@ -145,7 +102,7 @@ export type RelTimePart =
   | { key: "justNow"; count?: undefined }
   | { key: "minAgo" | "hoursAgo" | "daysAgo"; count: number };
 
-// 相对时间返回结构化片段，由组件经 settings.model.<key> 翻译（同 describeRefParts）。
+// 相对时间返回结构化片段，由组件经 settings.model.<key> 翻译。
 export function relTimeParts(ts: number): RelTimePart {
   const d = Math.max(0, Date.now() / 1000 - ts);
   if (d < 90) return { key: "justNow" };

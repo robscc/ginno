@@ -4,12 +4,10 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import * as api from "@/lib/runtime";
-import type { ModelConfig, ModelConfigRefs, ModelProtocol } from "@/lib/types";
+import type { ModelConfig, ModelProtocol } from "@/lib/types";
 import {
   blankConfig,
-  describeRefParts,
   domainRecommendations,
-  formatRefParts,
   mergeModelIds,
   parseModelsText,
   PROTOCOLS,
@@ -46,14 +44,13 @@ export function ModelConfigForm({
   onSaved: (cfg: ModelConfig, latencyMs: number) => void;
 }) {
   const t = useTranslations("settings.model.form");
-  // 引用计数等与 form 平级的 key 走父命名空间（settings.model.ref.*）
+  // 与 form 平级的 key（推荐理由文案）走父命名空间 settings.model.*
   const tp = useTranslations("settings.model");
   const [draft, setDraft] = useState<ModelConfig>(initial.protocol ? initial : blankConfig());
   const [modelsText, setModelsText] = useState(initial.models?.join("\n") ?? "");
   const [showKey, setShowKey] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refs, setRefs] = useState<ModelConfigRefs | undefined>(undefined);
 
   // 「从 API 拉取」 panel: fetched catalogue + ticked ids + search filter.
   const [fetching, setFetching] = useState(false);
@@ -147,7 +144,6 @@ export function ModelConfigForm({
   // already persisted server-side and the response carries the saved record.
   const submit = async () => {
     setError(null);
-    setRefs(undefined);
     const invalid = validate();
     if (invalid) {
       setError(invalid);
@@ -162,7 +158,6 @@ export function ModelConfigForm({
         return;
       }
       setError(r.error || t("verifyUnknownError"));
-      setRefs(r.refs);
     } catch {
       setError(t("connError"));
     } finally {
@@ -525,19 +520,10 @@ export function ModelConfigForm({
         </div>
       </div>
 
-      {(error || refs) && (
-        // Yellow bar for verify refusal / validation problems (Q8 refs list).
+      {error && (
+        // Yellow bar for verify failures / validation problems.
         <div className="mt-4 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
           {error}
-          {describeRefParts(refs).length > 0 && (
-            <div className="mt-1">
-              {t("stillReferenced", {
-                refs: formatRefParts(describeRefParts(refs), (key, n) =>
-                  tp(`ref.${key}`, { count: n }),
-                ),
-              })}
-            </div>
-          )}
         </div>
       )}
 

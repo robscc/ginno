@@ -156,13 +156,6 @@ export interface ModelConfig {
 // Refusal detail returned by PUT/verify when the target config is the global
 // default or still referenced (Q8). Values are counts or id lists depending
 // on the backend — render defensively (see describeRefs).
-export interface ModelConfigRefs {
-  agents?: number | string[];
-  sessions?: number | string[];
-  workflows?: number | string[];
-  [k: string]: unknown;
-}
-
 /** 删除守卫的拒绝结构:PUT /api/model_configs 被拦(400)时的 `references`,
  * 按配置 id 分组的引用清单(agent 带 id 和 name)+ 是否为当前默认。
  * 与 DELETE /api/model_configs/{id} 的 references 同形。
