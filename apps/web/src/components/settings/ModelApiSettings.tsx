@@ -8,7 +8,13 @@ import * as api from "@/lib/runtime";
 import type { ModelConfig, ModelConfigRefs } from "@/lib/types";
 import { ModelConfigCard } from "./ModelConfigCard";
 import { ModelConfigForm } from "./ModelConfigForm";
-import { blankConfig, describeRefParts, formatRefParts, normalizeConfig } from "./modelConfigShared";
+import {
+  blankConfig,
+  describeBlockedConfigs,
+  describeRefParts,
+  formatRefParts,
+  normalizeConfig,
+} from "./modelConfigShared";
 
 const COLLAPSE_AT = 8; // Q9: no hard cap; fold beyond N cards（卡片化后单卡变矮，6→8）
 
@@ -80,7 +86,32 @@ export function ModelApiSettings() {
         if (okText) setNotice({ kind: "ok", text: okText });
         return true;
       }
-      setNotice({ kind: "error", text: r.error || t("saveFailed"), refs: r.refs });
+      // 删不掉的原因要说清(设计 §2.5「列出示数」):守卫在 400 body 的
+      // `references` 里给了被挡下的配置 + 引用它的 agent 名,摊成人话再上黄条
+      // ——原来这里读的是后端从不发送的扁平 `refs`,所以原因一直没显示。
+      const blocked = describeBlockedConfigs(
+        r.references,
+        (id) => configs.find((c) => c.id === id)?.name || id,
+      );
+      const reason = (b: (typeof blocked)[number]): string => {
+        // 子代理级引用要点名类型:它在 agent 的 provider 下拉里看不见
+        // (Agents 页的 Sub-agent models 区块才是改绑的地方)。
+        const agents = b.agents
+          .map((a) =>
+            a.subagents.length
+              ? t("agentWithSubagents", { agent: a.name, subagents: a.subagents.join(", ") })
+              : a.name,
+          )
+          .join(", ");
+        if (b.agents.length && b.isDefault) return t("blockedBoth", { config: b.name, agents });
+        if (b.agents.length) return t("blockedByAgents", { config: b.name, agents });
+        return t("blockedByDefault", { config: b.name });
+      };
+      setNotice({
+        kind: "error",
+        text: blocked.length ? blocked.map(reason).join(" ") : r.error || t("saveFailed"),
+        refs: r.refs,
+      });
     } catch {
       setNotice({ kind: "error", text: t("saveFailedConn") });
     } finally {

@@ -163,6 +163,16 @@ export interface ModelConfigRefs {
   [k: string]: unknown;
 }
 
+/** 删除守卫的拒绝结构:PUT /api/model_configs 被拦(400)时的 `references`,
+ * 按配置 id 分组的引用清单(agent 带 id 和 name)+ 是否为当前默认。
+ * 与 DELETE /api/model_configs/{id} 的 references 同形。
+ * `subagents` 只在「agent 的 provider 不指向它、但某个子代理类型绑定了它」
+ * 时出现——那种引用在 agent 的 provider 下拉里看不见,必须点名。 */
+export interface ModelConfigReference {
+  agents?: { id: string; name?: string; subagents?: string[] }[];
+  is_default?: boolean;
+}
+
 export interface SessionMeta {
   id: string;
   title: string;

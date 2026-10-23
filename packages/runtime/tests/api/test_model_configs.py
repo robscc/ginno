@@ -405,6 +405,51 @@ def test_delete_default_config_blocked_unless_default_moves(client):
     assert r.status_code == 200
 
 
+def test_delete_config_referenced_by_subagent_model_blocked(client):
+    """子代理级绑定也算引用(2026-10-23):守卫原来只看 agent.provider,
+    ``subagent_models[type].provider`` 指向的配置能被悄悄删掉,留下悬空
+    绑定——现在同样阻断,并在 references 里点名是哪个 agent、哪几个类型。"""
+    from ginno_runtime.subagent_types import ensure_seeded, load_subagent_types
+
+    ensure_seeded()
+    type_name = next(iter(load_subagent_types(force=True)), None)
+    assert type_name, "no sub-agent type registered to bind to"
+
+    cur = client.get("/api/model_configs").json()["configs"]
+    client.put(
+        "/api/model_configs",
+        json={"configs": cur + [_relay("relay-s"), _relay("relay-y")], "default_config": "relay-y"},
+    )
+    # provider 不指向 relay-s,只有子代理绑定指向它
+    r = client.post(
+        "/api/agents",
+        json={
+            "id": "host",
+            "name": "H",
+            "subagent_models": {type_name: {"provider": "relay-s", "model": "m1"}},
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["agent"]["subagent_models"][type_name]["provider"] == "relay-s"
+
+    # removal via PUT → blocked, and the reference names the agent + type
+    r = client.put(
+        "/api/model_configs",
+        json={"configs": cur + [_relay("relay-y")], "default_config": "relay-y"},
+    )
+    assert r.status_code == 400
+    ref = r.json()["references"]["relay-s"]
+    assert ref["agents"][0]["id"] == "host"
+    assert ref["agents"][0]["subagents"] == [type_name]
+    # via DELETE too
+    assert client.delete("/api/model_configs/relay-s").status_code == 400
+
+    # once the binding is gone, deletion goes through
+    assert client.delete("/api/agents/host").json()["ok"] is True
+    r = client.delete("/api/model_configs/relay-s")
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+
 # ------------------------ agent binding (decision Q3) ---------------------- #
 
 

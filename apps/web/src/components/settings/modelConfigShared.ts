@@ -1,5 +1,10 @@
 // Shared helpers for the model-config list page (multi-provider-model-config.md §2).
-import type { ModelConfig, ModelConfigRefs, ModelProtocol } from "@/lib/types";
+import type {
+  ModelConfig,
+  ModelConfigReference,
+  ModelConfigRefs,
+  ModelProtocol,
+} from "@/lib/types";
 
 export const PROTOCOLS: ModelProtocol[] = ["anthropic", "openai-compatible", "openai-responses"];
 
@@ -50,6 +55,31 @@ export function domainRecommendations(base_url: string) {
 }
 
 export type RefPart = { key: string; n: number };
+
+/** 把守卫的 `references` 摊成黄条要的结构化片段(每个被挡下的配置一条)。
+ * 后端只在该字段里给;前端原来读的扁平 `refs` 后端从未发过。 */
+export function describeBlockedConfigs(
+  references: Record<string, ModelConfigReference> | undefined,
+  nameOf: (id: string) => string,
+): {
+  id: string;
+  name: string;
+  agents: { name: string; subagents: string[] }[];
+  isDefault: boolean;
+}[] {
+  if (!references || typeof references !== "object") return [];
+  return Object.entries(references).map(([id, r]) => ({
+    id,
+    name: nameOf(id) || id,
+    agents: (r?.agents ?? [])
+      .map((a) => ({
+        name: (a?.name || a?.id || "").trim(),
+        subagents: (a?.subagents ?? []).map((s) => String(s ?? "").trim()).filter(Boolean),
+      }))
+      .filter((a) => a.name),
+    isDefault: Boolean(r?.is_default),
+  }));
+}
 
 // Defensive ref-summary for the Q8 yellow bar. The backend may send counts or
 // id lists; unknown keys pass through as-is. 返回结构化片段，由组件用

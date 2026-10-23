@@ -21,6 +21,7 @@ import type {
   Goal,
   GoalStatus,
   ModelConfig,
+  ModelConfigReference,
   ModelConfigRefs,
   Providers,
   SessionMeta,
@@ -342,12 +343,21 @@ export async function listModelConfigs() {
 
 // Full-replacement write. Deletion is a PUT with the entry removed
 // client-side (no DELETE endpoint). Refusals (still default / still
-// referenced) come back HTTP 200 with ok:false + refs (Q8).
+// referenced) come back HTTP 400 with `references` keyed by config id
+// ({agents:[{id,name}], is_default}) — same shape as DELETE; the UI turns
+// that into the "why can't I delete this" yellow bar.
 export async function putModelConfigs(configs: ModelConfig[], default_config: string) {
-  return json<{ ok: boolean; error?: string; refs?: ModelConfigRefs; default_config?: string }>(
-    `${BASE}/model_configs`,
-    { method: "PUT", headers: H, body: JSON.stringify({ configs, default_config }) },
-  );
+  return json<{
+    ok: boolean;
+    error?: string;
+    refs?: ModelConfigRefs;
+    references?: Record<string, ModelConfigReference>;
+    default_config?: string;
+  }>(`${BASE}/model_configs`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify({ configs, default_config }),
+  });
 }
 
 // Q4: a passing probe is persisted server-side immediately — the returned

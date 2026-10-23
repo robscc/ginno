@@ -255,14 +255,29 @@ class PutModelConfigsRequest(BaseModel):
 
 
 def _config_references(config_id: str) -> dict:
-    """Who still points at a config: agents (by provider id) + default flag."""
+    """Who still points at a config: agents (by provider id OR by a per-type
+    sub-agent model binding) + default flag.
+
+    子代理绑定也要算(2026-10-23):只探 ``agent.provider`` 会漏掉
+    ``subagent_models[type].provider``,配置被删后那些绑定变成悬空引用,
+    spawn 子代理时才炸。命中子代理绑定时点名是哪几个类型——否则用户翻
+    agent 的 provider 下拉找不到这个配置,等于没说清原因。
+    """
     settings = _read_settings_file()
     current_default = settings.get("default_config") or settings.get("default_provider")
-    agent_refs = [
-        {"id": a.id, "name": a.name}
-        for a in agents_reg.list_agents()
-        if a.provider == config_id
-    ]
+    agent_refs: list[dict] = []
+    for a in agents_reg.list_agents():
+        subs = [
+            type_name
+            for type_name, binding in (getattr(a, "subagent_models", None) or {}).items()
+            if (binding or {}).get("provider") == config_id
+        ]
+        if a.provider != config_id and not subs:
+            continue
+        ref = {"id": a.id, "name": a.name}
+        if subs:
+            ref["subagents"] = subs
+        agent_refs.append(ref)
     return {
         "agents": agent_refs,
         "is_default": current_default == config_id,
