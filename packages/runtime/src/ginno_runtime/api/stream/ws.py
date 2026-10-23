@@ -19,6 +19,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from ... import commands as _commands
 from ... import files as files_mod
 from ... import server_shared as shared
+from ... import vibe_island as _vibe_island
 from ...checkpointer import ABANDONED_TURNS
 from ...goals import store as goal_store
 from ...server_shared import (
@@ -260,6 +261,11 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             _PENDING_KIND[session_id] = kind
             _RUNNING_TURNS.setdefault(session_id, "")
             await ws.send_text(_ev(event, payload))
+            # Vibe Island 重新武装:parked 的 ask_user/审批提醒随旧进程没了
+            # (VI 不跨重启恢复 custom 卡片),重连补发同一 Notification 让
+            # 刘海重新显示「Needs approval」。同一 approval 重复提醒只是
+            # 幂等的状态重设,无副作用。
+            _vibe_island.on_turn_event(session_id, event, payload)
     except Exception:
         # introspecting resume state must never stop the socket from opening
         pass
