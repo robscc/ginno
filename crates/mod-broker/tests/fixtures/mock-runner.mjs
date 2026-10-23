@@ -338,21 +338,39 @@ function handleCall(frame) {
   replyError(id, 'no-implementation', `mock runner does not implement ${ns}.${method}`)
 }
 
-// Register with the broker and heartbeat until it tears us down. The
-// handshake ack resolves through `pending` like any other round-trip.
-const handshakeId = nextId++
-pending.set(handshakeId, {
-  resolve: () => {},
-  reject: () => {},
+// Register with the broker and heartbeat until it tears us down. A scenario
+// that declares userConfig/configSchema first reports them through
+// `runner.loaded` (the real runner's handshake), then registers; the
+// hooks-registered ack resolves through `pending` like any other round-trip.
+async function handshake() {
+  if (scenario.userConfig !== undefined || scenario.configSchema !== undefined) {
+    const info = {
+      name: modName,
+      version: scenario.version ?? '0.0.0',
+      userConfig: scenario.userConfig ?? {},
+    }
+    if (scenario.configSchema !== undefined) info.configSchema = scenario.configSchema
+    await call('runner', 'loaded', info)
+  }
+  const handshakeId = nextId++
+  pending.set(handshakeId, {
+    resolve: () => {},
+    reject: () => {},
+  })
+  send({
+    v: 1,
+    kind: 'call',
+    id: handshakeId,
+    ns: 'runner',
+    method: 'hooks-registered',
+    args: { hooks: (scenario.hooks ?? []).map((hook) => ({ event: hook.event, ...(hook.matcher ? { matcher: hook.matcher } : {}) })) },
+  })
+  setInterval(() => {
+    send({ v: 1, kind: 'notify', method: 'ping' })
+  }, 1000)
+}
+
+handshake().catch((error) => {
+  console.error('mock-runner handshake failed:', error)
+  process.exit(1)
 })
-send({
-  v: 1,
-  kind: 'call',
-  id: handshakeId,
-  ns: 'runner',
-  method: 'hooks-registered',
-  args: { hooks: (scenario.hooks ?? []).map((hook) => ({ event: hook.event, ...(hook.matcher ? { matcher: hook.matcher } : {}) })) },
-})
-setInterval(() => {
-  send({ v: 1, kind: 'notify', method: 'ping' })
-}, 1000)

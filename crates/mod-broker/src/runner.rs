@@ -375,7 +375,9 @@ async fn handle_runner_call(
         // The deployment config for this mod — `settings.json`'s
         // `mods.items.<name>.config` as the runtime pushed it. The runner
         // asks before registering and merges it over the mod's own
-        // `userConfig` defaults (which ride the args back for the report).
+        // `userConfig` defaults (which ride the args back for the report),
+        // alongside the optional `configSchema` descriptor.
+        broker.set_mod_runtime_info(&conn.name, &args);
         let config = broker
             .config
             .read()
@@ -481,6 +483,9 @@ pub fn load(
     let name = name.to_string();
     Box::pin(async move {
     let spec = broker.mod_spec(&name).ok_or_else(|| format!("{name}: no longer configured"))?;
+    // A restart/reload re-reports these during the handshake; until then the
+    // previous generation's values must not be reported as current.
+    broker.clear_mod_runtime_info(&name);
     let conn = match load_conn(&broker, &name, &spec, gen).await {
         Ok(conn) => conn,
         Err(e) => {

@@ -421,6 +421,41 @@ async fn handshake_reports_loaded_mods_and_hooks() {
     assert_eq!(first["status"], "loaded");
     assert!(first["hooks"].as_str().unwrap().contains("tool.call"));
     assert!(first["hooks"].as_str().unwrap().contains("turn.complete{tool=Write}"));
+    // A runner that reports no defaults still yields an object, and no schema.
+    assert_eq!(first["userConfig"], json!({}));
+    assert!(first.get("configSchema").is_none());
+}
+
+// `runner.loaded` carries the mod's defaults + optional configSchema; both
+// must reach the ready payload and `broker.status` (the settings/detail API).
+#[tokio::test(flavor = "multi_thread")]
+async fn ready_and_status_carry_user_config_and_schema() {
+    needs_node!();
+    let env = Env::new("config-schema").await;
+    env.scenario(
+        "a",
+        json!({
+            "userConfig": { "units": "metric", "limit": 3 },
+            "configSchema": {
+                "type": "object",
+                "properties": {
+                    "units": { "type": "string", "enum": ["metric", "imperial"], "default": "metric" },
+                    "apiKey": { "type": "string", "default": "", "x-ginno-secret": true },
+                },
+            },
+            "hooks": [{ "event": "tool.call" }],
+        }),
+    );
+    let ready = env.hello_with(json!({ "a": env.spec("a", json!({})) }), default_budgets()).await;
+    let first = &ready["mods"][0];
+    assert_eq!(first["userConfig"], json!({ "units": "metric", "limit": 3 }));
+    assert_eq!(first["configSchema"]["properties"]["units"]["enum"], json!(["metric", "imperial"]));
+    assert_eq!(first["configSchema"]["properties"]["apiKey"]["x-ginno-secret"], true);
+
+    let status = env.broker.status_payload().await;
+    let entry = &status["mods"][0];
+    assert_eq!(entry["userConfig"], json!({ "units": "metric", "limit": 3 }));
+    assert_eq!(entry["configSchema"]["type"], "object");
 }
 
 // DSH chain.spec: "runs hooks outermost first and the core last, with
@@ -1037,20 +1072,78 @@ async fn config_reload_unloads_disabled_mods() {
         .hello_with(json!({ "a": env.spec("a", json!({})), "b": env.spec("b", json!({})) }), default_budgets())
         .await;
 
-    // b goes away: its hooks stop, a's keep working.
-    let ready = env
+    // b goes away: its hooks stop, a's keep working. The apply is awaitable:
+    // the ack reports the post-reload status of every desired mod.
+    let ack = env
         .runtime
         .apply_config(&env.config(json!({ "a": env.spec("a", json!({})) }), default_budgets()))
         .await;
-    assert_eq!(ready["mods"].as_array().unwrap().len(), 1);
-    assert_eq!(ready["mods"][0]["name"], "a");
-    assert_eq!(ready["mods"][0]["status"], "loaded");
+    assert_eq!(ack["ok"], true, "ack: {ack}");
+    assert_eq!(ack["reloaded"], true, "ack: {ack}");
+    assert_eq!(ack["mods"].as_array().unwrap().len(), 1);
+    assert_eq!(ack["mods"][0]["name"], "a");
+    assert_eq!(ack["mods"][0]["status"], "loaded");
     let settled = env.runtime.raise("tool.call", Some("s1"), json!({})).await;
     assert_eq!(settled, json!({ "from": "a" }));
     let status = env.broker.status_payload().await;
     let mods = status["mods"].as_array().unwrap();
     assert_eq!(mods.len(), 1, "b should be gone: {status}");
     assert_eq!(mods[0]["name"], "a");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_config_ack_reports_failures_and_noop_reloads() {
+    needs_node!();
+    let env = Env::new("apply-ack").await;
+    env.scenario("a", json!({ "hooks": [{ "event": "tool.call" }] }));
+    let config = env.config(json!({ "a": env.spec("a", json!({})) }), default_budgets());
+    let _ready = env.hello_with(json!({ "a": env.spec("a", json!({})) }), default_budgets()).await;
+
+    // An identical push reloads nothing but still reports the loaded status.
+    let ack = env.runtime.apply_config(&config).await;
+    assert_eq!(ack["ok"], true, "ack: {ack}");
+    assert_eq!(ack["reloaded"], false, "ack: {ack}");
+    assert_eq!(ack["mods"][0]["status"], "loaded");
+
+    // Python's push_config wraps the config as {role, config}; the same ack
+    // must come back from the envelope shape.
+    let id = env
+        .runtime
+        .call_broker("apply-config", json!({ "role": "runtime", "config": config }));
+    let envelope_ack = env
+        .runtime
+        .wait_result(id, "envelope apply-config", Duration::from_secs(120))
+        .await
+        .expect("envelope apply-config reply");
+    assert_eq!(envelope_ack["ok"], true, "ack: {envelope_ack}");
+    assert_eq!(envelope_ack["reloaded"], false, "ack: {envelope_ack}");
+
+    // A new mod that cannot be spawned fails fast: ok=false with its error.
+    // (`a` is untouched — nodePath is not part of its ModSpec — so it stays up.)
+    let broken = env.dir.join("mods").join("broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    let mut config = env.config(
+        json!({
+            "a": env.spec("a", json!({})),
+            "broken": { "enabled": true, "dir": broken, "grants": {}, "config": {} },
+        }),
+        default_budgets(),
+    );
+    config["nodePath"] = json!("/definitely/not/a/node");
+    let ack = env.runtime.apply_config(&config).await;
+    assert_eq!(ack["ok"], false, "ack: {ack}");
+    assert_eq!(ack["reloaded"], true, "ack: {ack}");
+    let broken_entry = ack["mods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "broken")
+        .expect("broken mod in ack");
+    assert_eq!(broken_entry["status"], "error");
+    assert!(
+        broken_entry["error"].as_str().is_some_and(|e| e.contains("cannot spawn node")),
+        "ack: {ack}"
+    );
 }
 
 // ---------------------------------------------------------------------------

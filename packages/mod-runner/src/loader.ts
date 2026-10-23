@@ -13,6 +13,7 @@ import * as nodeModule from 'node:module'
 import { transform as sucraseTransform } from 'sucrase'
 import { record } from './values.ts'
 import { element as makeUiElement } from './elements.ts'
+import type { ConfigSchema } from './define-mod.ts'
 
 /** What the manifests name: the plugin identity and the hooks module to import. */
 export interface LoadedManifest {
@@ -29,6 +30,8 @@ export interface LoadedManifest {
 export interface ImportedHooksModule {
   readonly register: unknown
   readonly userConfig: Record<string, unknown>
+  /** The mod's optional config descriptor (`defineMod({ configSchema })`). */
+  readonly configSchema: ConfigSchema | undefined
 }
 
 function readJson(path: string, what: string): Record<string, unknown> {
@@ -192,7 +195,11 @@ export async function importHooksModule(manifest: LoadedManifest): Promise<Impor
   if (typeof register !== 'function') {
     throw new Error(`mod not loaded: the hooks module exports no register(on, options) function`)
   }
-  return { register, userConfig: extractUserConfig(imported) }
+  return {
+    register,
+    userConfig: extractUserConfig(imported),
+    configSchema: extractConfigSchema(imported),
+  }
 }
 
 /**
@@ -207,4 +214,18 @@ export function extractUserConfig(imported: Record<string, unknown>): Record<str
   if (Object.keys(record(spec['userConfig'])).length > 0) return { ...record(spec['userConfig']) }
   const definition = record(spec['definition'])
   return { ...record(definition['options']) }
+}
+
+/**
+ * The optional `configSchema` a hooks module declares on its default export
+ * (`defineMod({ configSchema })`). A non-object (or absent) value reads as
+ * "no schema"; an empty object is kept — `{type:"object"}` is still a
+ * meaningful descriptor.
+ * @param imported - the module namespace.
+ * @returns the schema, or undefined.
+ */
+export function extractConfigSchema(imported: Record<string, unknown>): ConfigSchema | undefined {
+  const schema = record(imported['default'])['configSchema']
+  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return undefined
+  return schema as ConfigSchema
 }

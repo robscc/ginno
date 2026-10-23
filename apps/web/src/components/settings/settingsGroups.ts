@@ -22,7 +22,6 @@ export type SettingsGroupId =
 export type SettingsTabKey =
   | "modelApi"
   | "mcp"
-  | "mods"
   | "webSearch"
   | "externalAgents"
   | "agents"
@@ -54,7 +53,6 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     tabs: [
       { id: "model-api", label: "modelApi" },
       { id: "mcp", label: "mcp" },
-      { id: "mods", label: "mods" },
       { id: "web", label: "webSearch" },
       { id: "external-agents", label: "externalAgents" },
     ],
@@ -130,7 +128,8 @@ export const LEGACY_REDIRECT: Record<string, string> = {
   mcp: "/settings/connections/mcp",
   web: "/settings/connections/web",
   "external-agents": "/settings/connections/external-agents",
-  mods: "/settings/connections/mods",
+  // Mods 设置页签已并入独立连接器页（mods-connector-migration-design.md §8-7）。
+  mods: "/connectors",
   skills: "/settings/agents/skills",
   workflows: "/settings/agents/workflows",
   folders: "/settings/knowledge/folders",
@@ -142,4 +141,11 @@ export const LEGACY_REDIRECT: Record<string, string> = {
   notifications: "/settings/general#notifications",
   floating: "/settings/general#floating",
   "tool-labels": "/settings/general#tool-labels",
+};
+
+// 已删除的 tabs 但 URL 仍可能被旧链接/书签命中：静态导出必须显式枚举
+// 这些 group/sub 组合，否则生产构建直接 404（见 [sub]/page.tsx）。
+export const LEGACY_SUB_REDIRECT: Record<string, string> = {
+  // 原 Settings → Connections → Mods；现在统一到连接器页。
+  "connections/mods": "/connectors",
 };

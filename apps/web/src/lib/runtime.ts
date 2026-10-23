@@ -1255,6 +1255,8 @@ export async function putSettings(data: Record<string, unknown>) {
 // getMcp().tools 的名字列表）。
 export type McpToolDetail = {
   name: string;
+  /** graph 面向全名（运行时 ASCII slug）；有它就不要本地拼。 */
+  fullName?: string | null;
   description?: string | null;
   /** 服务端 annotations.readOnlyHint */
   readOnly?: boolean;
@@ -1263,6 +1265,9 @@ export type McpToolDetail = {
 };
 export type McpServerStatus = {
   name: string;
+  /** 图面前缀（ASCII slug，运行时 naming.py 下发）。中文服务器名必须用它，
+   *  不能拿 name 自己拼 `mcp_<name>_`。 */
+  toolPrefix?: string;
   connected: boolean;
   tools: number;
   error?: string | null;
@@ -1949,21 +1954,93 @@ export type ConnectorStatus =
   | "connected"
   | "disconnected"
   | "error"
-  | "disabled";
+  | "disabled"
+  /** mod broker 正在重启（设计 §3.3：不伪装成 installing） */
+  | "restarting";
+
+export type ConnectorKind = "builtin" | "mod";
+
+/** 详情视图声明（mods-connector-migration-design.md §3.5）：每个连接器
+ *  自己声明有哪些 tab/action；前端只共享渲染器，不共享外观。 */
+export interface ConnectorDetailTab {
+  id: string;
+  /** overview | settings | install | activity | permissions | 自定义 */
+  kind: string;
+  title: string;
+}
+
+export interface ConnectorDetailAction {
+  id: string;
+  title: string;
+}
+
+export interface ConnectorDetailView {
+  tabs?: ConnectorDetailTab[];
+  actions?: ConnectorDetailAction[];
+}
+
+/** 卡片副行摘要：「N settings · M changed」。 */
+export interface ConnectorConfigSummary {
+  count: number;
+  modified: number;
+}
+
+/** GET /api/connectors 的 runtime 段（Claude Mods 就绪度）。 */
+export interface ConnectorRuntimeStatus {
+  nodePath?: string | null;
+  brokerOk?: boolean;
+  modsEnabled?: boolean;
+  loadedCount?: number;
+  /** 通道状态机：disabled|connecting|connected|reconnecting|unavailable。
+   *  前端据此区分「正在连」和「真的不可用」——握手期不是故障。 */
+  status?: string | null;
+  detail?: string;
+}
+
+/** configSchema 是 JSON Schema 子集 + x-ginno-* 扩展（设计 §3.2）。 */
+export interface ConnectorSchemaProperty {
+  type?: string;
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: Array<string | number | boolean>;
+  items?: { type?: string } | Record<string, unknown>;
+  "x-ginno-group"?: string;
+  "x-ginno-order"?: number;
+  "x-ginno-secret"?: boolean;
+  "x-ginno-placeholder"?: string;
+  "x-ginno-min"?: number;
+  "x-ginno-max"?: number;
+  [key: string]: unknown;
+}
+
+export interface ConnectorConfigSchema {
+  type?: string;
+  properties?: Record<string, ConnectorSchemaProperty>;
+  [key: string]: unknown;
+}
 
 export interface ConnectorInfo {
   id: string;
   name: string;
   icon: string;
   description: string;
+  /** builtin | mod；旧后端可能缺省，前端按 builtin 兜底。 */
+  kind?: ConnectorKind;
   status: ConnectorStatus;
   statusDetail: string;
   version: string | null;
   capabilities: string[];
   enabled: boolean;
   extra?: Record<string, unknown>;
+  detailView?: ConnectorDetailView;
+  configSummary?: ConnectorConfigSummary;
   config?: Record<string, unknown>;
-  configSchema?: Record<string, unknown>;
+  defaults?: Record<string, unknown>;
+  effective?: Record<string, unknown>;
+  configSchema?: ConnectorConfigSchema;
+  /** mod 的 classic hooks grant（allow | deny | ask）。 */
+  classicGrant?: string;
   installSteps?: InstallStep[];
 }
 
@@ -1983,6 +2060,7 @@ export interface InstallStep {
 export interface ConnectorsPayload {
   connectors: ConnectorInfo[];
   aggregateDot: string; // "" | "warn" | "error"
+  runtime?: ConnectorRuntimeStatus;
 }
 
 export async function listConnectors(): Promise<ConnectorsPayload> {
@@ -1993,11 +2071,30 @@ export async function getConnector(id: string): Promise<ConnectorInfo> {
   return json<ConnectorInfo>(`${BASE}/connectors/${encodeURIComponent(id)}`);
 }
 
+/** 详情接口：列表条目 + config/defaults/effective/configSchema/classicGrant。 */
+export async function getConnectorDetail(id: string): Promise<ConnectorInfo> {
+  return json<ConnectorInfo>(`${BASE}/connectors/${encodeURIComponent(id)}`);
+}
+
+export interface ConnectorApplyResult {
+  ok: boolean;
+  reloaded?: boolean;
+  error?: string | null;
+}
+
+export interface ConnectorPatchResult {
+  ok: boolean;
+  config?: Record<string, unknown>;
+  /** apply_config 的可等待结果（设计 §3.4）——没有它「已应用」是假的。 */
+  applied?: ConnectorApplyResult;
+  error?: string;
+}
+
 export async function patchConnectorConfig(
   id: string,
   config: Record<string, unknown>,
-): Promise<{ ok: boolean; config?: Record<string, unknown>; error?: string }> {
-  return json(`${BASE}/connectors/${encodeURIComponent(id)}/config`, {
+): Promise<ConnectorPatchResult> {
+  return json<ConnectorPatchResult>(`${BASE}/connectors/${encodeURIComponent(id)}/config`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config),

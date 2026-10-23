@@ -9,12 +9,16 @@
 
 from __future__ import annotations
 
+import logging
+
 from .registry import (
     STATUS_CONNECTED,
     STATUS_DISCONNECTED,
     STATUS_NOT_INSTALLED,
     Connector,
 )
+
+log = logging.getLogger("ginno.connectors")
 
 # 向导步骤契约(i18n-design.md §3):title/body 是英文兜底;i18n_key 指向 web
 # catalog 的 conn.wizard.step.* 键(前端按 <key>.title / <key>.body 翻译)。
@@ -211,6 +215,14 @@ def ensure_builtin_connectors() -> None:
         vibe_island.report_status(force=True)
     except Exception:  # noqa: BLE001 — 状态探测失败不挡连接器注册
         pass
+    # 已安装的 Claude Mods 也以动态连接器实例出现(L1+L2,存储仍是
+    # settings.mods)。幂等:安装/卸载集合变化时增删实例。
+    try:
+        from .mod_adapter import sync_mod_connectors
+
+        sync_mod_connectors(reg)
+    except Exception:  # noqa: BLE001 — mods 同步失败不挡内置连接器
+        log.exception("mod connector sync failed (continuing)")
 
 
 class VibeIslandConnector(Connector):

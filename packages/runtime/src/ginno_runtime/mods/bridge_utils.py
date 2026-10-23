@@ -154,7 +154,12 @@ def update_mods_settings(patch: dict) -> dict:
 
 
 def update_mod_item(name: str, patch: dict) -> dict:
-    """Merge one mod's item (enabled/config/grants/source); creates it."""
+    """Merge one mod's item (enabled/config/grants/source); creates it.
+
+    ``grants`` 做一层嵌套合并:连接器详情页只发 ``{"classic": "allow"}``,
+    浅替换会把同 mod 的 fs.write / http.fetch 等 JS 授权一起抹掉
+    (mods-connector-migration-design §9 的已知 bug)。
+    """
     if not MOD_NAME_RE.match(name):
         raise ValueError(f"invalid mod name: {name!r}")
     cfg = load_mods_settings()
@@ -163,7 +168,11 @@ def update_mod_item(name: str, patch: dict) -> dict:
     for key, value in patch.items():
         if value is None:
             continue
-        item[key] = value
+        if key == "grants" and isinstance(value, dict):
+            base = item.get("grants")
+            item[key] = {**(base if isinstance(base, dict) else {}), **value}
+        else:
+            item[key] = value
     item.setdefault("enabled", True)
     item.setdefault("source", "global")
     items[name] = item
@@ -184,6 +193,77 @@ def remove_mod_item(name: str) -> bool:
     del items[name]
     update_mods_settings({"items": items})
     return True
+
+
+def merged_mod_list(channel: Any = None) -> list[dict]:
+    """Installed dirs ∪ settings items ∪ broker-reported states, one row per
+    mod. 既是 GET /api/mods 的数据源,也是连接器同步(mod 适配器)的数据源。
+
+    ``channel`` 可注入(API 层沿用自己模块里的 get_channel,测试可 stub);
+    缺省时惰性取真正的 singleton。broker 上报的 ``userConfig`` /
+    ``configSchema`` 走 channel 的内存缓存,单独挂到行上,不污染
+    ``mods_state`` 原始结构。
+    """
+    if channel is None:
+        from .channel import get_channel
+
+        channel = get_channel()
+    settings = load_mods_settings()
+    items: dict = settings.get("items") or {}
+    rows: dict[str, dict] = {}
+    for scanned in scan_installed_mods():
+        rows[scanned["name"]] = {
+            "name": scanned["name"],
+            "version": scanned["version"],
+            "installed": True,
+            "hasManifest": scanned["hasManifest"],
+            # "global" | "project" — which dir took effect for this name
+            # (project overrides global on a name clash, design §9/§11).
+            "scope": scanned.get("scope") or "global",
+        }
+    for name, item in items.items():
+        rows.setdefault(name, {
+            "name": name,
+            "version": "",
+            "installed": False,
+            "hasManifest": False,
+            "scope": "global",
+        })
+        rows[name].update({k: v for k, v in item.items() if k != "name"})
+    for name, state in (getattr(channel, "mods_state", None) or {}).items():
+        rows.setdefault(name, {"name": name, "version": "", "installed": False, "hasManifest": False})
+        state = dict(state)
+        status = state.pop("status", None)
+        if status:
+            rows[name]["status"] = status
+        rows[name].update({k: v for k, v in state.items() if k != "name"})
+    for row in rows.values():
+        row.setdefault("enabled", True)
+        row.setdefault("status", None)
+        # 停用的 mod 永不 spawn → 没有 broker 状态 → status 留 None 时前端
+        # 兜底显示「未知」（2026-10-21 重启后反馈）。停用是确定状态，给值。
+        if not row["enabled"] and not row["status"]:
+            row["status"] = "disabled"
+        # userConfig / configSchema 让设置编辑器能展示默认值与类型。
+        meta_fn = getattr(channel, "mod_config_meta", None)
+        if callable(meta_fn):
+            try:
+                meta = meta_fn(str(row["name"])) or {}
+            except Exception:  # noqa: BLE001 — 元数据缺失不挡列表
+                meta = {}
+            if isinstance(meta.get("userConfig"), dict):
+                row["userConfig"] = meta["userConfig"]
+            if isinstance(meta.get("configSchema"), dict):
+                row["configSchema"] = meta["configSchema"]
+    # Compatibility counters (design §7.5 持续项): events × fired, the
+    # Python-backed op slice × ok, and unimplemented `$` mentions the runner
+    # reported. Empty until the channel's first hello — the settings page
+    # re-fetches on mod.state.changed.
+    compat_fn = getattr(channel, "compat_summary", None)
+    compat = compat_fn() if callable(compat_fn) else {}
+    for row in rows.values():
+        row["compat"] = compat.get(str(row["name"]), {})
+    return sorted(rows.values(), key=lambda r: r["name"])
 
 
 # ---- binary discovery ----------------------------------------------------------

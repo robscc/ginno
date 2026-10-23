@@ -269,8 +269,11 @@ async def test_call_result_correlation(connected):
 
 async def test_config_push_carries_broker_schema(connected):
     ch, broker = connected
-    await ch.push_config()
-    cfg_frames = [f for f in broker.received if f.get("method") == "config"]
+    # push_config 必须把 broker 的应答交回调用方:新 broker 的 apply-config
+    # 返回 {ok, reloaded, mods} ack,连接器层据此报「真的应用了没有」。
+    ack = await ch.push_config()
+    assert ack == {"echo": "apply-config"}
+    cfg_frames = [f for f in broker.received if f.get("method") == "apply-config"]
     assert cfg_frames, "config re-push never hit the wire"
     cfg = cfg_frames[-1]["args"]["config"]
     # The broker's parse_config contract (crates/mod-broker/src/lib.rs):
@@ -285,6 +288,37 @@ async def test_config_push_carries_broker_schema(connected):
         "catchMs": 1000,
         "sessionEndMs": 1500,
     }
+
+
+async def test_refresh_mod_state_absorbs_broker_snapshot(connected):
+    """推送后用 broker.status 校正:loaded 覆盖 restarting,快照之外的 mod
+    (已停用/卸载)从内存态消失,配置元数据随之更新,但不重置 compat。"""
+    ch, _broker = connected
+
+    async def fake_call(ns, method, args, **kw):
+        assert (ns, method) == ("broker", "status")
+        return {"mods": [
+            {"name": "a", "status": "loaded", "hooks": [{"event": "turn.start"}],
+             "userConfig": {"units": "metric"},
+             "configSchema": {"type": "object"}},
+            {"name": "b", "status": "disabled"},
+        ]}
+
+    ch.call = fake_call
+    ch.mods_state["a"] = {"name": "a", "status": "restarting"}
+    ch.mods_state["b"] = {"name": "b", "status": "restarting"}
+    ch.mods_state["ghost"] = {"name": "ghost", "status": "loaded"}
+    ch.compat["keep"] = {"events": {}}
+
+    await ch.refresh_mod_state()
+
+    assert ch.mods_state["a"]["status"] == "loaded"
+    assert ch.mods_state["a"]["hooks"]
+    assert ch.mod_config_meta("a")["userConfig"] == {"units": "metric"}
+    # 快照只会说 disabled(不知道正在重启):restarting 必须保留
+    assert ch.mods_state["b"]["status"] == "restarting"
+    assert "ghost" not in ch.mods_state
+    assert "keep" in ch.compat  # compat 计数器不受校正影响
 
 
 async def test_zero_mod_gate_never_starts(monkeypatch, tmp_path):

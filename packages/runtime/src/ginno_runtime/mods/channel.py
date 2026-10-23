@@ -68,6 +68,13 @@ _NOTIFY_TO_WS = {
 # only); everything else in _NOTIFY_TO_WS fans out globally.
 _SESSION_SCOPED_WS = {"mod.bands", "mod.ask", "mod.pane.open", "mod.pane.update", "mod.pane.close"}
 
+# runner.loaded / mod.status 里可能携带的配置元数据字段(设计 §3.2)。旧 broker
+# 不带这些键 → 取不到就回落 {} + 类型推断。
+_CONFIG_META_ALIASES = {
+    "userConfig": ("userConfig", "user_config"),
+    "configSchema": ("configSchema", "userConfigSchema", "schema"),
+}
+
 
 class ChannelNotConnected(RuntimeError):
     """A Python→broker call was attempted with no live connection."""
@@ -190,6 +197,11 @@ class ModChannel:
         #               "ops": {op: {"called", "ok"}},
         #               "unimplemented": {op: count}}}
         self.compat: dict[str, dict] = {}
+
+        # Per-mod config metadata reported by the broker (设计 §3.2):
+        # {name: {"userConfig": {...}, "configSchema": {...}}}. In-memory and
+        # connection-scoped (a reconnect re-learns it in the hello ready).
+        self.mod_configs: dict[str, dict] = {}
 
         # Per-session serial dispatch (design §6.1): one queue + one drain
         # task per session; sessions run in parallel.
@@ -378,6 +390,7 @@ class ModChannel:
         self._writer = None
         self._registered = None
         self.mods_state.clear()
+        self.mod_configs.clear()
         # Compat counters describe the live connection's behavior; a stale
         # mod's numbers must not survive into the next session (断连清零).
         self.compat = {}
@@ -397,10 +410,28 @@ class ModChannel:
                 fut.set_exception(ChannelNotConnected("connection lost"))
         self._pending.clear()
 
+    def _capture_config_meta(self, name: str, src: dict) -> None:
+        """收集 broker/runner 报送的 userConfig + configSchema(可选)。"""
+        if not name or not isinstance(src, dict):
+            return
+        slot = self.mod_configs.setdefault(name, {})
+        for target, aliases in _CONFIG_META_ALIASES.items():
+            for alias in aliases:
+                value = src.get(alias)
+                if isinstance(value, dict):
+                    slot[target] = value
+                    break
+        if not slot:
+            self.mod_configs.pop(name, None)
+
+    # 配置元数据里只该进缓存的键;mods_state 保持原来的生命周期字段形状。
+    _META_KEYS = frozenset(k for aliases in _CONFIG_META_ALIASES.values() for k in aliases)
+
     def _absorb_ready(self, ready: Any) -> None:
         """Parse the hello result: mod lifecycle cache + registered events."""
         self.mods_state = {}
         self.compat = {}
+        self.mod_configs = {}
         events: set[str] = set()
         known = False
         if isinstance(ready, dict):
@@ -414,11 +445,13 @@ class ModChannel:
                     raw_hooks = m.get("hooks")
                     mod_events = _hook_event_names(raw_hooks)
                     if name:
+                        self._capture_config_meta(name, m)
                         self.mods_state[name] = {
                             "name": name,
                             "status": m.get("status") or "loaded",
                             "hooks": mod_events,
-                            **{k: v for k, v in m.items() if k not in ("name", "status", "hooks")},
+                            **{k: v for k, v in m.items()
+                               if k not in ("name", "status", "hooks") and k not in self._META_KEYS},
                         }
                         self.compat[name] = {
                             "events": {e: {"registered": True, "fired": 0, "failed": 0} for e in mod_events},
@@ -484,6 +517,34 @@ class ModChannel:
         import copy
 
         return copy.deepcopy(self.compat)
+
+    # ---- per-mod config metadata (设计 §3.2) ------------------------------------
+
+    def mod_config_meta(self, name: str) -> dict:
+        """A JSON-safe copy of one mod's reported config metadata.
+
+        Shape: ``{"userConfig": dict, "configSchema": dict | None}``. Both are
+        absent for an old broker (or before the first hello), so callers fall
+        back to ``{}`` and schema inference.
+        """
+        import copy
+
+        meta = self.mod_configs.get(str(name)) or {}
+        user_config = meta.get("userConfig")
+        schema = meta.get("configSchema")
+        return {
+            "userConfig": copy.deepcopy(user_config) if isinstance(user_config, dict) else {},
+            "configSchema": copy.deepcopy(schema) if isinstance(schema, dict) else None,
+        }
+
+    def mod_defaults(self, name: str) -> dict:
+        return self.mod_config_meta(name)["userConfig"]
+
+    def mod_schema(self, name: str) -> dict | None:
+        return self.mod_config_meta(name)["configSchema"]
+
+    def mod_config_meta_all(self) -> dict[str, dict]:
+        return {name: self.mod_config_meta(name) for name in list(self.mod_configs)}
 
     # ---- reader loop ----------------------------------------------------------
 
@@ -567,8 +628,11 @@ class ModChannel:
             # the API reads, then broadcast to every open settings page.
             name = str(args.get("name") or "")
             if name:
+                # status 帧可能捎带 userConfig/configSchema(重载后默认值可能变)。
+                self._capture_config_meta(name, args)
                 entry = self.mods_state.setdefault(name, {"name": name})
-                entry.update({k: v for k, v in args.items() if k != "name"})
+                entry.update({k: v for k, v in args.items()
+                              if k != "name" and k not in self._META_KEYS})
                 # 三振出局（broker disable_mod）必须落盘 enabled=false——只在
                 # 内存里卸掉的话，下一次 push_config（任意设置改动 / 新安装 /
                 # 重启）会把这个起不来的 mod 再拉起，重复 1s/5s/30s 重启风暴
@@ -812,15 +876,64 @@ class ModChannel:
             },
         }
 
-    async def push_config(self) -> None:
+    async def refresh_mod_state(self) -> None:
+        """用 broker 的权威快照校正内存态（配置推送后调用）。
+
+        ``mod.status`` 通知只发给 broker 认定的那一条 runtime 连接；重连、
+        临时连接或通知丢失时，列表会一直停在「未知」。``broker.status`` 是
+        权威快照：更新状态 / hooks / 配置元数据，不重置 compat 计数器，
+        也不让一次快照覆盖更精确的 restarting/error。
+        """
+        if not self.is_connected:
+            return
+        try:
+            payload = await self.call("broker", "status", {})
+        except Exception:  # noqa: BLE001 — 校正失败保持原状态
+            return
+        mods = payload.get("mods") if isinstance(payload, dict) else None
+        if not isinstance(mods, list):
+            return
+        live: set[str] = set()
+        for m in mods:
+            if not isinstance(m, dict):
+                continue
+            name = str(m.get("name") or "")
+            if not name:
+                continue
+            live.add(name)
+            self._capture_config_meta(name, m)
+            prev = self.mods_state.get(name) or {}
+            entry = {k: v for k, v in m.items()
+                     if k != "name" and k not in self._META_KEYS}
+            entry["name"] = name
+            entry.setdefault("status", "loaded")
+            # 快照只知道 loaded/disabled；restarting/error 来自通知，更精确。
+            if prev.get("status") in ("restarting", "error") and entry["status"] != "loaded":
+                entry["status"] = prev["status"]
+            self.mods_state[name] = {**prev, **entry}
+        # 不在 specs 里的 mod = 已停用/已卸载，内存态随之消失。
+        for name in [n for n in self.mods_state if n not in live]:
+            self.mods_state.pop(name, None)
+
+    async def push_config(self) -> dict | None:
         """Re-push config after a settings change (broker diffs → per-mod
         reload). No-op when not connected; the next hello carries it anyway.
         Method name must match the broker's dispatch ("apply-config" — a
         plain "config" gets no-implementation and the re-push silently
-        no-ops, leaving runners stale until the next reconnect)."""
+        no-ops, leaving runners stale until the next reconnect).
+
+        Returns the broker's awaitable ack (``{ok, reloaded, mods}`` since the
+        S1 broker change) so the connector layer can report a real "applied"
+        result; old brokers answer with the ready shape and the caller treats
+        it as a successful reload. ``None`` when offline."""
         if not self.is_connected:
-            return
-        await self.call("broker", "apply-config", {"role": "runtime", "config": self.build_config()})
+            return None
+        ack = await self.call(
+            "broker", "apply-config", {"role": "runtime", "config": self.build_config()}
+        )
+        # 推送后的状态以 broker 快照为准（通知可能丢，见 refresh_mod_state）。
+        await self.refresh_mod_state()
+        return ack
 
     def availability(self) -> dict:
         """Two-level probe for the settings page (external-agents 同款):

@@ -86,24 +86,81 @@ async def pushed_page() -> dict:
     return {"page": connector_events().latest_page}
 
 
+def _mods_runtime_block() -> dict:
+    """页面顶部健康条的数据(设计 §6):Node / broker / mods 加载数。
+
+    全部字段独立 best-effort:取不到给 null,绝不因为 mods 环境缺失让列表 500。
+    """
+    runtime: dict = {
+        "nodePath": None,
+        "brokerOk": None,
+        "modsEnabled": None,
+        "loadedCount": None,
+        # 通道状态机(disabled|connecting|connected|reconnecting|unavailable)
+        # ——前端据此区分「正在连」和「真的不可用」,别把握手期报成故障。
+        "status": None,
+        "detail": "",
+    }
+    try:
+        from ..mods.bridge_utils import load_mods_settings, resolve_node
+
+        runtime["nodePath"] = resolve_node()
+        runtime["modsEnabled"] = bool(load_mods_settings().get("enabled", True))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from ..mods.channel import get_channel
+
+        channel = get_channel()
+        runtime["brokerOk"] = bool(getattr(channel, "is_connected", False))
+        avail = channel.availability()
+        runtime["status"] = avail.get("status")
+        runtime["detail"] = avail.get("detail") or ""
+        runtime["loadedCount"] = sum(
+            1 for state in (getattr(channel, "mods_state", None) or {}).values()
+            if str((state or {}).get("status") or "") == "loaded"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return runtime
+
+
 @router.get("/api/connectors")
 async def list_connectors() -> dict:
+    # ensure_builtin_connectors 内部同步 mod 动态实例(设计 S1),因此列表里
+    # 始终同时包含内置连接器与已安装 mod。
     ensure_builtin_connectors()
     reg = conn_registry()
-    return reg.list_payload()
+    payload = reg.list_payload()
+    payload["runtime"] = _mods_runtime_block()
+    return payload
 
 
 @router.get("/api/connectors/{cid}")
 async def connector_detail(cid: str) -> Any:
-    ensure_builtin_connectors()
+    ensure_builtin_connectors()  # 幂等:先同步 mod 集合,再解析 id
     reg = conn_registry()
     conn = reg.get(cid)
     if conn is None:
         return JSONResponse({"error": f"unknown connector: {cid}"}, status_code=404)
     payload = reg.status_of(cid)
-    payload["config"] = reg.read_config(cid)
+    defaults = conn.default_config()
+    try:
+        stored = conn.read_stored_config()
+    except Exception:  # noqa: BLE001 — 详情页降级为空覆盖
+        stored = {}
+    # 设计 §3.2:config = 用户覆盖;effective = defaults ∪ stored。
+    payload["config"] = stored
+    payload["overrides"] = stored  # 兼容别名
+    payload["defaults"] = defaults
+    payload["effective"] = reg.read_config(cid)
     payload["configSchema"] = conn.config_schema()
     payload["installSteps"] = conn.install_steps()
+    payload["detailView"] = conn.detail_view()
+    if conn.kind == "mod":
+        # S3 只读暴露现有 classic grant;写回仍走 PUT /api/mods。
+        grant_fn = getattr(conn, "classic_grant", None)
+        payload["classicGrant"] = grant_fn() if callable(grant_fn) else "ask"
     return payload
 
 
@@ -118,17 +175,41 @@ async def update_connector_config(cid: str, body: dict) -> Any:
         return JSONResponse({"error": "body must be a non-empty object"}, status_code=400)
     schema = conn.config_schema()
     props = (schema or {}).get("properties") or {}
-    clean = {k: v for k, v in body.items() if k in props}
-    unknown = [k for k in body if k not in props and k != "confirmed_domains"]
+    # enabled 是底座级开关(卡片/抽屉的启停按钮走这条 PATCH),对所有 kind
+    # 合法;mod 适配器会把它写回 settings.mods.items.<name>.enabled。
+    allowed = set(props) | {"enabled"}
+    # mod 的动态键:默认值 / 已存覆盖里的键同样合法(设计 §8-2);真正未知的
+    # 键仍拒绝,避免拼写错误静默落盘。
+    if getattr(conn, "kind", "builtin") == "mod":
+        try:
+            allowed |= set(conn.default_config() or {})
+            allowed |= set(conn.read_stored_config() or {})
+        except Exception:  # noqa: BLE001 — 读失败时退回 schema 白名单
+            pass
+    unknown = [k for k in body if k not in allowed and k != "confirmed_domains"]
     if unknown:
         return JSONResponse(
             {"error": f"unknown config keys: {', '.join(unknown)}"}, status_code=400)
+    clean = {k: v for k, v in body.items() if k in allowed}
     reg.write_config(cid, clean)
+    applied: Any = None
     try:
-        await conn.apply_config(reg.read_config(cid))
-    except Exception:  # noqa: BLE001 — apply hooks are best-effort
-        pass
-    return {"ok": True, "config": reg.read_config(cid)}
+        result = await conn.apply_config(reg.read_config(cid))
+        applied = result if isinstance(result, dict) else {
+            "ok": True, "reloaded": True, "error": None,
+        }
+    except Exception as e:  # noqa: BLE001 — apply hooks are best-effort
+        applied = {"ok": False, "reloaded": False,
+                   "error": f"{type(e).__name__}: {e}"}
+    if getattr(conn, "kind", "builtin") == "mod":
+        # 配置(以及随之重载的 runner 状态)变化后刷新动态实例。
+        try:
+            from ..connectors.mod_adapter import sync_mod_connectors
+
+            sync_mod_connectors(reg)
+        except Exception:  # noqa: BLE001 — 同步失败不影响保存结果
+            pass
+    return {"ok": True, "config": conn.read_stored_config(), "applied": applied}
 
 
 @router.post("/api/connectors/{cid}/action")

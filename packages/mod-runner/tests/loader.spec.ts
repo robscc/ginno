@@ -2,9 +2,11 @@
 
 import { describe, expect, test } from 'vitest'
 import { fileURLToPath } from 'node:url'
-import { extractUserConfig, importHooksModule, readManifest } from '../src/loader.ts'
+import { extractConfigSchema, extractUserConfig, importHooksModule, readManifest } from '../src/loader.ts'
+import { defineMod } from '../src/define-mod.ts'
 
 const SAMPLE = fileURLToPath(new URL('./fixtures/sample-mod', import.meta.url))
+const SCHEMA_MOD = fileURLToPath(new URL('./fixtures/schema-mod', import.meta.url))
 
 describe('readManifest', () => {
   test('reads the plugin and hooks manifests, resolving the first module', () => {
@@ -42,3 +44,54 @@ describe('extractUserConfig', () => {
     expect(extractUserConfig({})).toEqual({})
   })
 })
+
+describe('configSchema', () => {
+  const schema = {
+    type: 'object' as const,
+    properties: {
+      units: {
+        type: 'string' as const,
+        enum: ['metric', 'imperial'],
+        default: 'metric',
+        'x-ginno-group': 'Display',
+      },
+    },
+  }
+
+  test('defineMod stores configSchema on the spec', () => {
+    const defined = defineMod({ name: 'schema-mod', configSchema: schema, register: () => {} })
+    expect(defined.configSchema).toEqual(schema)
+  })
+
+  test('the loader exposes it, and importHooksModule reports it', async () => {
+    expect(extractConfigSchema({ default: { configSchema: schema } })).toEqual(schema)
+    const imported = await importHooksModule(readManifest(SCHEMA_MOD))
+    expect(imported.configSchema).toEqual(schemaWithDefaults())
+    expect(imported.userConfig).toEqual({ units: 'metric', limit: 3 })
+  })
+
+  test('a plain module (or a non-object value) yields none', () => {
+    expect(extractConfigSchema({})).toBeUndefined()
+    expect(extractConfigSchema({ default: { configSchema: 'nope' } })).toBeUndefined()
+  })
+})
+
+/** The fixture's full schema, with the fields the compact test schema omits. */
+function schemaWithDefaults(): unknown {
+  return {
+    type: 'object',
+    properties: {
+      units: {
+        type: 'string',
+        enum: ['metric', 'imperial'],
+        title: 'Units',
+        description: 'Display units',
+        default: 'metric',
+        'x-ginno-group': 'Display',
+        'x-ginno-order': 10,
+      },
+      apiKey: { type: 'string', default: '', 'x-ginno-secret': true },
+      tags: { type: 'array', items: { type: 'string' }, default: [] },
+    },
+  }
+}

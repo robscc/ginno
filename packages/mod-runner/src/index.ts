@@ -73,19 +73,28 @@ export async function runRunner(
   connection.start()
 
   // The deployment config arrives as the `loaded` call's result (the mod's
-  // userConfig defaults ride the args); a broker that predates the call leaves
-  // the defaults alone once the wait times out.
+  // userConfig defaults and optional configSchema ride the args); a broker
+  // that predates the fields ignores them, and one that predates the call
+  // leaves the defaults alone once the wait times out.
+  const defaults = { ...imported.userConfig }
   const loaded = await Promise.race([
     connection.request({
       kind: 'call',
       ns: 'runner',
       method: 'loaded',
-      args: { name: manifest.name, version: manifest.version, userConfig: imported.userConfig },
+      args: {
+        name: manifest.name,
+        version: manifest.version,
+        // Always a plain JSON object (never undefined): hosts report it as the
+        // connector's `defaults` without a second normalisation pass.
+        userConfig: defaults,
+        ...(imported.configSchema === undefined ? {} : { configSchema: imported.configSchema }),
+      },
     }),
     new Promise<undefined>(resolve => { setTimeout(() => resolve(undefined), LOADED_TIMEOUT_MS).unref() }),
   ])
   const pushed = recordOf(loaded?.ok === true ? loaded.value : undefined, 'config')
-  const merged = { ...imported.userConfig, ...pushed }
+  const merged = { ...defaults, ...pushed }
 
   const { mod, hooks } = await registerMod(
     {

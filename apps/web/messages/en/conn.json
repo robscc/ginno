@@ -1,7 +1,9 @@
 {
   "conn": {
     "title": "Connectors",
+    "subtitle": "External capabilities and extensions",
     "refresh": "Refresh",
+    "browseMods": "Browse Claude Mods",
     "loading": "Loading connector status…",
     "empty": "No registered connectors yet.",
     "status": {
@@ -10,7 +12,39 @@
       "not_installed": "Not installed",
       "installing": "Installing",
       "error": "Error",
-      "disabled": "Disabled"
+      "disabled": "Disabled",
+      "restarting": "Restarting"
+    },
+    "kind": {
+      "builtin": "Built-in",
+      "mod": "Claude Mod"
+    },
+    "source": {
+      "global": "Global",
+      "project": "Project"
+    },
+    "section": {
+      "integrations": "Integrations",
+      "integrationsSub": "Built into Ginno — each one declares its own tabs and actions.",
+      "builtinEmpty": "No built-in connectors registered.",
+      "mods": "Claude Mods",
+      "modsSub": "Claude Code-compatible mods from the store or a local folder — they appear here as connectors.",
+      "modsEmpty": "No Claude Mods installed yet — browse the store to add one.",
+      "count": "{count, plural, one {# connector} other {# connectors}}"
+    },
+    "card": {
+      "settingsSummary": "{count, plural, one {# setting} other {# settings}} · {changed} changed",
+      "noSettings": "No settings",
+      "settingsAvailable": "Settings available",
+      "settings": "Settings",
+      "enable": "Enable"
+    },
+    "runtime": {
+      "warning": "Claude Mods runtime is not ready — Node: {nodePath}. Mods will not load until this is fixed.",
+      "nodeMissing": "not found",
+      "connecting": "Connecting to the Claude Mods runtime…",
+      "off": "Claude Mods is turned off.",
+      "browseHint": "or drop a mod folder into ~/.ginno/mods/"
     },
     "pushedPage": {
       "from": "Page from browser",
@@ -32,11 +66,103 @@
     },
     "disabledHint": "This connector is disabled — enable it to let Ginno use it again.",
     "config": {
-      "empty": "This connector has no configurable options.",
+      "empty": "This connector has no settings.",
       "onePerLine": "One per line",
       "save": "Save",
       "saving": "Saving…",
-      "saved": "Saved"
+      "saved": "Saved",
+      "groupGeneral": "General",
+      "modified": "Modified",
+      "reset": "Reset",
+      "default": "Default",
+      "emptyDefault": "(empty)",
+      "secret": "Sensitive",
+      "show": "Show",
+      "hide": "Hide",
+      "advanced": "Advanced: edit config JSON",
+      "advancedHint": "Debug only",
+      "unknownNote": "Keys that are not in this connector schema are preserved; they can only be edited as JSON:",
+      "validate": "Validate",
+      "validJson": "Valid JSON",
+      "invalidJson": "Invalid JSON: {error}",
+      "invalidJsonObject": "The config JSON must be an object.",
+      "invalidJsonArray": "The value must be a JSON array.",
+      "syncFromForm": "Sync from form",
+      "changed": "{n} changed",
+      "clean": "No unsaved changes",
+      "applying": "Applying…",
+      "applied": "Applied",
+      "applyFailed": "Failed to apply the config.",
+      "discard": "Discard",
+      "range": "Range {min}–{max}",
+      "invalidNumber": "Enter a number between {min} and {max}",
+      "unsavedConfirm": "You have unsaved changes. Discard them?"
+    },
+    "detail": {
+      "close": "Close",
+      "enable": "Enable",
+      "disable": "Disable",
+      "browseMods": "Browse Mods",
+      "uninstall": "Uninstall",
+      "uninstallHint": "Delete from disk?",
+      "uninstallConfirm": "Delete",
+      "uninstallCancel": "Cancel",
+      "uninstalled": "Uninstalled {name}",
+      "uninstallFailed": "Uninstall failed",
+      "actionFailed": "Action failed",
+      "loading": "Loading connector details…",
+      "loadFailed": "Failed to load connector details.",
+      "unsupportedTab": "This tab type is not supported by this build.",
+      "tabs": {
+        "overview": "Overview",
+        "settings": "Settings",
+        "install": "Install guide",
+        "activity": "Activity",
+        "permissions": "Permissions"
+      },
+      "overview": {
+        "capabilities": "Capabilities",
+        "noCapabilities": "No capabilities reported.",
+        "registration": "Registration",
+        "source": "Source",
+        "settings": "Settings",
+        "openSettings": "Open settings →"
+      },
+      "install": {
+        "hint": "Follow these steps to connect this connector.",
+        "empty": "This connector has no install steps.",
+        "open": "Open install guide"
+      },
+      "activity": {
+        "title": "Status",
+        "id": "ID",
+        "kind": "Kind",
+        "version": "Version",
+        "status": "Status",
+        "statusDetail": "Detail",
+        "source": "Source",
+        "origin": "Origin",
+        "compat": "Compatibility",
+        "compatEmpty": "No activity recorded yet this session.",
+        "compatEvents": "Events (registered × fired)",
+        "compatOps": "$ ops served by the host",
+        "compatUnimplemented": "Unimplemented $ calls",
+        "compatFired": "{n} fired",
+        "compatFailed": "{n} failed",
+        "compatCalled": "{n} called · {ok} ok",
+        "logHint": "Full logs: ~/.ginno/logs/{file}.log"
+      },
+      "permissions": {
+        "warning": "Grants govern capability calls made through the mod broker ($ calls). They are not a process sandbox — code inside a mod can still import Node APIs directly.",
+        "grantTitle": "Classic hooks",
+        "grantHint": "Controls dangerous classic hook categories (package installs, host settings writes).",
+        "ask": "Block + notify",
+        "deny": "Block",
+        "allow": "Allow",
+        "builtinNote": "This built-in connector has no classic hook grant.",
+        "saved": "Grant updated",
+        "saveFailed": "Failed to update the grant"
+      }
     },
     "wizard": {
       "title": "Install the Ginno browser extension",

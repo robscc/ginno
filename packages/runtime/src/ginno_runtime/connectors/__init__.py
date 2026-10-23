@@ -8,6 +8,7 @@ from .registry import (
     STATUS_ERROR,
     STATUS_INSTALLING,
     STATUS_NOT_INSTALLED,
+    STATUS_RESTARTING,
     Connector,
     ConnectorRegistry,
     registry,
@@ -24,4 +25,5 @@ __all__ = [
     "STATUS_INSTALLING",
     "STATUS_ERROR",
     "STATUS_DISABLED",
+    "STATUS_RESTARTING",
 ]

@@ -197,6 +197,18 @@ async fn handle_connection(broker: Arc<Broker>, stream: UnixStream, token: &str)
     Ok(())
 }
 
+/// The config an `apply-config` call carries, under either push shape: the
+/// bare payload (`hello`-style, `nodePath` at the top) or Python's
+/// `{role:"runtime", config}` envelope.
+fn config_payload(args: &Value) -> &Value {
+    if args.get("nodePath").is_none() {
+        if let Some(inner) = args.get("config").filter(|value| value.is_object()) {
+            return inner;
+        }
+    }
+    args
+}
+
 async fn handle_runtime_frame(broker: &Arc<Broker>, conn: &Arc<RuntimeConn>, frame: Frame) {
     match frame {
         Frame::Event { id, event, session, invocation, payload, deadline_ms, .. } => {
@@ -245,7 +257,10 @@ async fn handle_runtime_frame(broker: &Arc<Broker>, conn: &Arc<RuntimeConn>, fra
         Frame::Call { id, ns, method, args, .. } => {
             let result = match (ns.as_str(), method.as_str()) {
                 ("broker", "status") => Ok(broker.status_payload().await),
-                ("broker", "apply-config") => Ok(broker.apply_config(&args).await),
+                // Awaitable: the reply carries the post-reload status of every
+                // desired mod. Python's `push_config` wraps the config as
+                // `{role, config}`; hello-style callers send it bare.
+                ("broker", "apply-config") => Ok(broker.apply_config_ack(config_payload(&args)).await),
                 // `$.ui.ask`'s answer (§7.3): { id, value } resolves the ask
                 // the mod's op parked with the broker.
                 ("broker", "answer") => {

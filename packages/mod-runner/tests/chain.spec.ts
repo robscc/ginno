@@ -11,6 +11,7 @@ import type { ResultFrame } from '../src/frames.ts'
 
 const SAMPLE_MOD = fileURLToPath(new URL('./fixtures/sample-mod', import.meta.url))
 const MINIMAL_MOD = fileURLToPath(new URL('./fixtures/minimal-mod', import.meta.url))
+const SCHEMA_MOD = fileURLToPath(new URL('./fixtures/schema-mod', import.meta.url))
 
 let nextEventId = 100
 
@@ -42,6 +43,31 @@ describe('load and handshake', () => {
         { event: 'turn.complete' },
         { event: 'telemetry.mark' },
       ],
+    })
+    await broker.close()
+  })
+
+  test('loaded carries configSchema and the userConfig defaults when declared', async () => {
+    const broker = new MockBroker(SCHEMA_MOD)
+    broker.start()
+    const loaded = await broker.take(frame => frame.kind === 'call' && frame['ns'] === 'runner' && frame['method'] === 'loaded')
+    const args = loaded['args'] as Record<string, unknown>
+    expect(args['userConfig']).toEqual({ units: 'metric', limit: 3 })
+    expect(args['configSchema']).toEqual({
+      type: 'object',
+      properties: {
+        units: {
+          type: 'string',
+          enum: ['metric', 'imperial'],
+          title: 'Units',
+          description: 'Display units',
+          default: 'metric',
+          'x-ginno-group': 'Display',
+          'x-ginno-order': 10,
+        },
+        apiKey: { type: 'string', default: '', 'x-ginno-secret': true },
+        tags: { type: 'array', items: { type: 'string' }, default: [] },
+      },
     })
     await broker.close()
   })

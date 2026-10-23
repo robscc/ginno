@@ -9,6 +9,43 @@
 
 import type { ModRegister, PluginOptions } from './types.ts'
 
+/**
+ * One property of a mod's `configSchema`: the JSON-Schema subset the settings
+ * editor renders, plus the `x-ginno-*` extensions it reads for grouping,
+ * ordering, and secret masking.
+ */
+export interface ConfigSchemaProperty {
+  readonly type?: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
+  readonly title?: string
+  readonly description?: string
+  /** The value the editor offers as "reset to default"; mirrors `userConfig`. */
+  readonly default?: unknown
+  readonly enum?: readonly unknown[]
+  /** Array items (one level is enough for the editor's tags/number-list controls). */
+  readonly items?: ConfigSchemaProperty
+  /** Nested object fields. */
+  readonly properties?: Readonly<Record<string, ConfigSchemaProperty>>
+  readonly required?: readonly string[]
+  readonly 'x-ginno-group'?: string
+  readonly 'x-ginno-order'?: number
+  readonly 'x-ginno-secret'?: boolean
+  readonly [extension: `x-ginno-${string}`]: unknown
+}
+
+/**
+ * A mod's optional config descriptor: the JSON-Schema subset `defineMod` may
+ * declare so the host can render a form without reverse-engineering defaults.
+ * Unknown keys pass through untouched (hosts ignore what they do not know).
+ */
+export interface ConfigSchema {
+  readonly type?: 'object'
+  readonly title?: string
+  readonly description?: string
+  readonly properties?: Readonly<Record<string, ConfigSchemaProperty>>
+  readonly required?: readonly string[]
+  readonly [extension: `x-ginno-${string}`]: unknown
+}
+
 /** What a mod's hooks module declares: the plugin identity and the `register`. */
 export interface ModSpec {
   /** Plugin name, as `.claude-plugin/plugin.json` names it: letters, digits, `_` and `-`. */
@@ -18,6 +55,8 @@ export interface ModSpec {
   readonly root?: string
   /** `userConfig` defaults: the `options` `register` receives before the deployment overlays its config. */
   readonly userConfig?: PluginOptions
+  /** Optional config descriptor the host reports alongside the defaults. */
+  readonly configSchema?: ConfigSchema
   readonly register: ModRegister
 }
 
@@ -27,12 +66,13 @@ export interface DefinedMod {
   readonly version: string | undefined
   readonly root: string | undefined
   readonly userConfig: PluginOptions
+  readonly configSchema: ConfigSchema | undefined
   readonly register: ModRegister
 }
 
 /**
  * Wrap one mod's spec as the loader expects it.
- * @param spec - the mod's identity, `userConfig` defaults, and `register`.
+ * @param spec - the mod's identity, `userConfig` defaults, optional config schema, and `register`.
  * @returns the frozen default-export object.
  */
 export function defineMod(spec: ModSpec): DefinedMod {
@@ -41,6 +81,7 @@ export function defineMod(spec: ModSpec): DefinedMod {
     version: spec.version,
     root: spec.root,
     userConfig: Object.freeze({ ...spec.userConfig }),
+    configSchema: spec.configSchema,
     register: spec.register,
   })
 }

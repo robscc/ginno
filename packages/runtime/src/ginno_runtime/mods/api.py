@@ -50,52 +50,23 @@ class ModValidateRequest(BaseModel):
 
 def _merged_mod_list() -> list[dict]:
     """Installed dirs ∪ settings items ∪ broker-reported states, one row per
-    mod (settings 页列表的数据源)."""
-    channel = get_channel()
-    settings = bridge_utils.load_mods_settings()
-    items: dict = settings.get("items") or {}
-    rows: dict[str, dict] = {}
-    for scanned in bridge_utils.scan_installed_mods():
-        rows[scanned["name"]] = {
-            "name": scanned["name"],
-            "version": scanned["version"],
-            "installed": True,
-            "hasManifest": scanned["hasManifest"],
-            # "global" | "project" — which dir took effect for this name
-            # (project overrides global on a name clash, design §9/§11).
-            "scope": scanned.get("scope") or "global",
-        }
-    for name, item in items.items():
-        rows.setdefault(name, {
-            "name": name,
-            "version": "",
-            "installed": False,
-            "hasManifest": False,
-            "scope": "global",
-        })
-        rows[name].update({k: v for k, v in item.items() if k != "name"})
-    for name, state in channel.mods_state.items():
-        rows.setdefault(name, {"name": name, "version": "", "installed": False, "hasManifest": False})
-        state = dict(state)
-        status = state.pop("status", None)
-        if status:
-            rows[name]["status"] = status
-        rows[name].update({k: v for k, v in state.items() if k != "name"})
-    for row in rows.values():
-        row.setdefault("enabled", True)
-        row.setdefault("status", None)
-        # 停用的 mod 永不 spawn → 没有 broker 状态 → status 留 None 时前端
-        # 兜底显示「未知」（2026-10-21 重启后反馈）。停用是确定状态，给值。
-        if not row["enabled"] and not row["status"]:
-            row["status"] = "disabled"
-    # Compatibility counters (design §7.5 持续项): events × fired, the
-    # Python-backed op slice × ok, and unimplemented `$` mentions the runner
-    # reported. Empty until the channel's first hello — the settings page
-    # re-fetches on mod.state.changed.
-    compat = channel.compat_summary()
-    for row in rows.values():
-        row["compat"] = compat.get(str(row["name"]), {})
-    return sorted(rows.values(), key=lambda r: r["name"])
+    mod (settings 页列表的数据源)。
+
+    逻辑落在 ``bridge_utils.merged_mod_list``(连接器同步共用);这里保留
+    模块级 ``get_channel`` 以便既有测试继续 monkeypatch 本模块的绑定。
+    """
+    return bridge_utils.merged_mod_list(get_channel())
+
+
+def _sync_connectors() -> None:
+    """mod 安装/卸载/启用/配置变更后,把动态连接器实例同步到注册表。
+    连接器同步是尽力而为:失败绝不能影响 mods 主流程的返回。"""
+    try:
+        from ..connectors.mod_adapter import sync_mod_connectors
+
+        sync_mod_connectors()
+    except Exception:  # noqa: BLE001 — sync is additive
+        log.exception("connector sync after mods mutation failed")
 
 
 @router.get("/api/mods")
@@ -130,6 +101,7 @@ async def update_mod(name: str, req: ModUpdateRequest) -> dict:
     ch = get_channel()
     if ch.is_connected:
         spawn_bg(_push_config_safe(ch))
+    _sync_connectors()
     return {"ok": True, "mod": {"name": name, **item}}
 
 
@@ -181,6 +153,7 @@ async def install_mod(req: ModInstallRequest) -> dict:
         bridge_utils.register_classic_plugin_hooks(_hooks)
     except Exception:  # noqa: BLE001 — install already succeeded
         log.exception("classic hooks re-registration failed after install")
+    _sync_connectors()
     return {"ok": True, "mod": {"name": name, "version": version, **item}}
 
 
@@ -232,6 +205,7 @@ async def uninstall_mod(name: str) -> dict:
     # Fire-and-forget, same as PUT: the HTTP answer must not wait on IPC.
     if channel.is_connected:
         spawn_bg(_push_config_safe(channel))
+    _sync_connectors()
     return {"ok": True, "removed": removed}
 
 
@@ -304,14 +278,18 @@ class MarketInstallRequest(BaseModel):
 async def marketplace_install(req: MarketInstallRequest) -> dict:
     from . import marketplace as mkt
 
-    return await mkt.install_from_market(req.src, req.path, overwrite=req.overwrite)
+    result = await mkt.install_from_market(req.src, req.path, overwrite=req.overwrite)
+    _sync_connectors()
+    return result
 
 
 @router.post("/api/mods/marketplace/update")
 async def marketplace_update(name: str) -> dict:
     from . import marketplace as mkt
 
-    return await mkt.update_from_market(name)
+    result = await mkt.update_from_market(name)
+    _sync_connectors()
+    return result
 
 
 class MarketSourcesRequest(BaseModel):

@@ -64,6 +64,33 @@ pub struct ModSpec {
     pub config: Value,
 }
 
+/// What a runner reported in its `runner.loaded` call: the mod's `userConfig`
+/// defaults (always a JSON object) and its optional `configSchema` descriptor.
+/// Kept beside [`ModSpec`] rather than inside it so a config diff never treats
+/// a runtime report as a config change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModRuntimeInfo {
+    /// The `userConfig` defaults the runner declared (`{}` when none).
+    pub user_config: Value,
+    /// The optional JSON-Schema subset the mod declared.
+    pub config_schema: Option<Value>,
+}
+
+impl Default for ModRuntimeInfo {
+    fn default() -> Self {
+        Self { user_config: Value::Object(serde_json::Map::new()), config_schema: None }
+    }
+}
+
+/// How one desired mod ended up after an `apply-config` (post-reload).
+#[derive(Debug, Clone)]
+pub struct ModApplyOutcome {
+    pub name: String,
+    /// `loaded` / `error` / `disabled` (a desired mod with no runner).
+    pub status: String,
+    pub error: Option<String>,
+}
+
 /// Everything the broker needs that Python pushed (design §9: settings.json
 /// stays Python's; this is a projection).
 #[derive(Debug, Clone)]
@@ -218,6 +245,8 @@ pub struct Broker {
 
     /// Desired mods from the last applied config.
     specs: Mutex<HashMap<String, ModSpec>>,
+    /// Per-mod `runner.loaded` reports (userConfig defaults + configSchema).
+    runtime_info: Mutex<HashMap<String, ModRuntimeInfo>>,
     grants: Mutex<HashMap<String, grants::Grants>>,
     /// Mods being torn down (their runner exits are not restarts).
     unloading: Mutex<HashSet<String>>,
@@ -243,6 +272,7 @@ impl Broker {
             budgets: Mutex::new(HashMap::new()),
             bands: Mutex::new(HashMap::new()),
             specs: Mutex::new(HashMap::new()),
+            runtime_info: Mutex::new(HashMap::new()),
             grants: Mutex::new(HashMap::new()),
             unloading: Mutex::new(HashSet::new()),
             restarts: Mutex::new(HashMap::new()),
@@ -256,12 +286,47 @@ impl Broker {
 
     /// Apply a pushed config: diff against the previous one, unload removed
     /// or changed mods, load new ones, and report per-mod results (idempotent
-    /// on identical configs — design §5.2).
+    /// on identical configs — design §5.2). This is the hello/`ready` shape;
+    /// callers that need an acknowledgement use [`Self::apply_config_ack`].
     pub async fn apply_config(self: &Arc<Self>, value: &Value) -> Value {
-        let config = match parse_config(value) {
-            Ok(config) => config,
-            Err(e) => return json!({ "error": e }),
-        };
+        match self.apply_config_inner(value).await {
+            Ok((ready, _, _)) => ready,
+            Err(e) => json!({ "error": e }),
+        }
+    }
+
+    /// Awaitable config push (design §3.4): same unload/load cycle as
+    /// [`Self::apply_config`], but the reply carries the post-reload status of
+    /// every desired mod — `{ok, reloaded, mods:[{name,status,error?}]}`.
+    /// `ok` is false when any desired mod did not end up loaded.
+    pub async fn apply_config_ack(self: &Arc<Self>, value: &Value) -> Value {
+        match self.apply_config_inner(value).await {
+            Ok((_ready, outcomes, reloaded)) => {
+                let ok = outcomes.iter().all(|outcome| outcome.status == "loaded");
+                let mods: Vec<Value> = outcomes
+                    .iter()
+                    .map(|outcome| {
+                        let mut entry = json!({ "name": outcome.name, "status": outcome.status });
+                        if let Some(error) = &outcome.error {
+                            entry["error"] = json!(error);
+                        }
+                        entry
+                    })
+                    .collect();
+                json!({ "ok": ok, "reloaded": reloaded, "mods": mods })
+            }
+            // A malformed config never touched the runners.
+            Err(e) => json!({ "ok": false, "reloaded": false, "mods": [], "error": e }),
+        }
+    }
+
+    /// The shared apply path: returns the ready payload, the per-mod outcomes
+    /// the ack reports, and whether any runner was unloaded or (re)loaded.
+    async fn apply_config_inner(
+        self: &Arc<Self>,
+        value: &Value,
+    ) -> Result<(Value, Vec<ModApplyOutcome>, bool), String> {
+        let config = parse_config(value)?;
         let old_specs: HashMap<String, ModSpec> = std::mem::take(&mut *self.specs.lock().unwrap());
         let new_specs: HashMap<String, ModSpec> =
             config.mods.iter().map(|spec| (spec.name.clone(), spec.clone())).collect();
@@ -291,6 +356,7 @@ impl Broker {
             }
         }
         *self.specs.lock().unwrap() = new_specs;
+        let reloaded = !to_unload.is_empty() || !to_load.is_empty();
 
         for name in &to_unload {
             self.unload_mod(name).await;
@@ -314,17 +380,27 @@ impl Broker {
             load_results.insert(name, result);
         }
 
-        // The ready payload: every desired mod with its status.
+        // The ready payload: every desired mod with its status, its runner's
+        // userConfig defaults, and its optional configSchema.
         let registry = self.registry.read().unwrap();
+        let mut outcomes: Vec<ModApplyOutcome> = Vec::with_capacity(config.mods.len());
         let mods: Vec<Value> = config
             .mods
             .iter()
             .map(|spec| {
                 let loaded = registry.order_of(&spec.name).is_some();
+                let load_error = load_results
+                    .get(&spec.name)
+                    .and_then(|result| result.as_ref().err().cloned());
+                let info = self.mod_runtime_info(&spec.name);
                 let mut entry = json!({
                     "name": spec.name,
                     "status": if loaded { "loaded" } else { "error" },
+                    "userConfig": info.user_config,
                 });
+                if let Some(schema) = info.config_schema {
+                    entry["configSchema"] = schema;
+                }
                 if loaded {
                     entry["hooks"] = json!(registry.describe(&spec.name));
                     let unserved = registry.unserved(&spec.name);
@@ -332,13 +408,57 @@ impl Broker {
                         entry["unserved"] = json!(unserved);
                     }
                 }
-                if let Some(Err(e)) = load_results.get(&spec.name) {
+                if let Some(e) = &load_error {
                     entry["error"] = json!(e);
                 }
+                // The ack reports the real post-reload status: a mod that
+                // never got a runner (e.g. disabled after three crashes and
+                // untouched by this push) is `disabled`, not a fresh error.
+                let status = if loaded {
+                    "loaded"
+                } else if load_error.is_some() {
+                    "error"
+                } else {
+                    "disabled"
+                };
+                outcomes.push(ModApplyOutcome {
+                    name: spec.name.clone(),
+                    status: status.to_string(),
+                    error: load_error,
+                });
                 entry
             })
             .collect();
-        json!({ "mods": mods })
+        drop(registry);
+        Ok((json!({ "mods": mods }), outcomes, reloaded))
+    }
+
+    /// Record what a runner reported in `runner.loaded`: its `userConfig`
+    /// defaults (normalised to a JSON object) and optional `configSchema`.
+    pub fn set_mod_runtime_info(&self, name: &str, args: &Value) {
+        let user_config = args
+            .get("userConfig")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        let config_schema = args
+            .get("configSchema")
+            .filter(|value| value.is_object())
+            .cloned();
+        self.runtime_info
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), ModRuntimeInfo { user_config, config_schema });
+    }
+
+    /// One mod's last `runner.loaded` report; unknown mods read as defaults.
+    pub fn mod_runtime_info(&self, name: &str) -> ModRuntimeInfo {
+        self.runtime_info.lock().unwrap().get(name).cloned().unwrap_or_default()
+    }
+
+    /// Forget a runner report (unload/reload): the next handshake re-populates it.
+    pub fn clear_mod_runtime_info(&self, name: &str) {
+        self.runtime_info.lock().unwrap().remove(name);
     }
 
     pub fn mod_spec(&self, name: &str) -> Option<ModSpec> {
@@ -372,6 +492,7 @@ impl Broker {
     pub async fn unload_mod(&self, name: &str) {
         self.unloading.lock().unwrap().insert(name.to_string());
         self.registry.write().unwrap().remove(name);
+        self.clear_mod_runtime_info(name);
         if let Some(conn) = self.runners.write().await.remove(name) {
             conn.kill().await;
         }
@@ -438,11 +559,17 @@ impl Broker {
             .keys()
             .map(|name| {
                 let loaded = registry.order_of(name).is_some();
-                json!({
+                let info = self.mod_runtime_info(name);
+                let mut entry = json!({
                     "name": name,
                     "status": if loaded { "loaded" } else { "disabled" },
                     "hooks": registry.describe(name),
-                })
+                    "userConfig": info.user_config,
+                });
+                if let Some(schema) = info.config_schema {
+                    entry["configSchema"] = schema;
+                }
+                entry
             })
             .collect();
         json!({ "mods": mods })

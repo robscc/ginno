@@ -6,17 +6,17 @@ import { ArrowLeft, Download, Loader2, Plus, RefreshCw, Search, Settings2, Store
 import * as api from "@/lib/runtime";
 import type { MarketItemDetail, MarketPlugin, MarketSource } from "@/lib/runtime";
 
-// Mods 商店抽屉（mod-marketplace-design.md §4/§6.3，2026-10-21 入口定稿：
-// 设置 → 连接 → Mods 页签内「浏览 Mods」）。三态视图：列表 / 详情 / （安装
-// 经确认模态）。安装前展示 README + hooks 模块预览；danger 级 classic 命令
-// 预览在装后首次 grants 确认流程里（M2 简化：安装确认页明示来源与版本）。
+// Mods 商店抽屉（mod-marketplace-design.md §4/§6.3；2026-10-23 起入口在
+// 连接器页「Browse Claude Mods」）。三态视图：列表 / 详情 / （安装经确认
+// 模态）。安装前展示 README + hooks 模块预览；danger 级 classic 命令预览在
+// 装后首次 grants 确认流程里（M2 简化：安装确认页明示来源与版本）。
 
 export function ModStoreDrawer({
   onClose,
   onInstalled,
 }: {
   onClose: () => void;
-  /** 安装/更新成功后回调（Mods 页签重拉已装列表并高亮新条目）。 */
+  /** 安装/更新成功后回调（连接器页重拉列表）。 */
   onInstalled: (name: string) => void;
 }) {
   const t = useTranslations("settings.mods.store");

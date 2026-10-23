@@ -26,10 +26,15 @@ STATUS_CONNECTED = "connected"
 STATUS_DISCONNECTED = "disconnected"
 STATUS_ERROR = "error"
 STATUS_DISABLED = "disabled"
+# mod 的 runner 正在重启(设计 §3.3:不装扮成 installing,单独一个状态)。
+STATUS_RESTARTING = "restarting"
 
-_AGGREGATE_ORDER = [STATUS_ERROR, STATUS_DISCONNECTED, STATUS_INSTALLING,
-                    STATUS_NOT_INSTALLED, STATUS_CONNECTED, STATUS_DISABLED]
+# 聚合状态点的优先级:越靠前越“响”。restarting 归入 warn。
+_AGGREGATE_ORDER = [STATUS_ERROR, STATUS_DISCONNECTED, STATUS_RESTARTING,
+                    STATUS_INSTALLING, STATUS_NOT_INSTALLED, STATUS_CONNECTED,
+                    STATUS_DISABLED]
 _DEBOUNCE_S = 3.0  # 断连 3s 内重连不闪黄(设计 §4)
+_MISSING = object()  # configSummary:区分「存了默认值」和「没存」
 
 
 @dataclass
@@ -56,6 +61,11 @@ class Connector:
     description: str = ""
     icon: str = "plug"           # frontend lucide icon name
     order: int = 100
+    # 连接器类型(设计 §3.1):内置模块 / 由 mod 安装动态实例化。
+    kind: str = "builtin"
+    # 动态实例:随安装/卸载 register/unregister(mod 适配器)。动态 id 不能
+    # 在未注册时回落到 enabled=True(设计 §8-1 的已知坑)。
+    dynamic: bool = False
     # Tools whose names start with this prefix are provided by this connector
     # (设计 §8 per-agent 开关的判定依据)。双轨连接器声明同一前缀:浏览器能力
     # 只有在所有提供方都被该 agent 拒绝时才算关掉。None = 不提供工具。
@@ -69,11 +79,66 @@ class Connector:
             "enabled": {"type": "boolean", "title": "Enabled"}},
         }
 
+    # ---- 存储层(默认 settings.connectors.<id>)---------------------------------
+    # 子类(mod 适配器)覆盖这两个方法即可把存储改到别处——上层 registry 只
+    # 关心「取覆盖值 / 写覆盖值」,不关心落在哪个 settings 块。
+
+    def read_stored_config(self) -> dict:
+        """用户覆盖值(不含默认值),来自 settings.connectors.<id>。"""
+        try:
+            settings = json.loads(paths.settings_path().read_text() or "{}")
+        except (OSError, json.JSONDecodeError):
+            return {}
+        stored = (settings.get("connectors") or {}).get(self.id) or {}
+        return dict(stored) if isinstance(stored, dict) else {}
+
+    def write_stored_config(self, cfg: dict) -> None:
+        """合并写入。与旧 write_config 语义一致:默认值 ∪ 已存 ∪ 本次非 None。
+
+        这样 settings 里的 ``connectors.<id>`` 始终是「完整生效值」,和改造前
+        完全一样(内置连接器行为不变)。
+        """
+        stored = self.read_stored_config()
+        base = dict(self.default_config())
+        base.update(stored)
+        base.update({k: v for k, v in (cfg or {}).items() if v is not None})
+        settings_path = paths.settings_path()
+        try:
+            settings = json.loads(settings_path.read_text() or "{}")
+        except (OSError, json.JSONDecodeError):
+            settings = {}
+        conns = settings.get("connectors") or {}
+        conns[self.id] = base
+        settings["connectors"] = conns
+        settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2))
+
+    def enabled_from_config(self, config: dict) -> bool:
+        """列表里的 enabled。默认看合并后配置;mod 适配器改看 settings item。"""
+        return bool(config.get("enabled", True))
+
     def install_steps(self) -> list[dict]:
         """Steps the module's install wizard renders (设计 §2.3)."""
         return []
 
-    async def apply_config(self, cfg: dict) -> None:
+    def detail_view(self) -> dict:
+        """详情抽屉的声明式外观(设计 §3.5)。
+
+        默认内置连接器:概览 / 设置(存在 ``enabled`` 之外的可配置项时)/
+        活动。纯开关连接器不需要一个空设置页。
+        """
+        props = (self.config_schema() or {}).get("properties") or {}
+        has_settings = any(k != "enabled" for k in props)
+        tabs = [{"id": "overview", "kind": "overview", "title": "Overview"}]
+        # 有安装步骤的连接器保留向导页签(否则声明了 detailView 后,前端不会
+        # 再走 installSteps 兜底,安装入口会消失)。
+        if self.install_steps():
+            tabs.append({"id": "install", "kind": "install", "title": "Install"})
+        if has_settings:
+            tabs.append({"id": "settings", "kind": "settings", "title": "Settings"})
+        tabs.append({"id": "activity", "kind": "activity", "title": "Activity"})
+        return {"tabs": tabs, "actions": []}
+
+    async def apply_config(self, cfg: dict) -> dict | None:
         """React to a config change (subclasses override as needed)."""
 
 
@@ -90,8 +155,22 @@ class ConnectorRegistry:
         with self._lock:
             self._connectors[conn.id] = conn
             self._states.setdefault(conn.id, ConnectorState())
-            if not self.read_config(conn.id):
+            # 动态实例(mod)不落默认值:它们的“启用”在 settings.mods.items,
+            # 自动写 settings.connectors 会制造一份永远过期的影子配置。
+            if not conn.dynamic and not self.read_config(conn.id):
                 self.write_config(conn.id, conn.default_config())
+
+    def unregister(self, cid: str) -> bool:
+        """Remove a dynamically registered connector (mod uninstall).
+
+        Also drops its state so a later re-register starts clean. Stored
+        config is owned by the caller: a mod's config lives in settings.mods
+        and is removed by the uninstall path, never here.
+        """
+        with self._lock:
+            existed = self._connectors.pop(cid, None) is not None
+            self._states.pop(cid, None)
+            return existed
 
     def get(self, cid: str) -> Connector | None:
         return self._connectors.get(cid)
@@ -168,7 +247,8 @@ class ConnectorRegistry:
             ]
         if STATUS_ERROR in active:
             return "error"
-        if STATUS_DISCONNECTED in active or STATUS_INSTALLING in active:
+        if (STATUS_DISCONNECTED in active or STATUS_INSTALLING in active
+                or STATUS_RESTARTING in active):
             return "warn"
         return ""
 
@@ -188,54 +268,78 @@ class ConnectorRegistry:
         denied = set(denied_ids or [])
         return all(pid in denied for pid in providers)
 
-    # ---- config (settings.json → connectors.<id>) ------------------------------
+    # ---- config (defaults ∪ connector storage) ---------------------------------
 
     def read_config(self, cid: str) -> dict:
-        try:
-            settings = json.loads(paths.settings_path().read_text() or "{}")
-        except (OSError, json.JSONDecodeError):
-            return {}
-        stored = (settings.get("connectors") or {}).get(cid) or {}
-        cfg = self._connectors.get(cid)
-        defaults = cfg.default_config() if cfg else {"enabled": True}
+        """defaults ∪ 连接器自己管理的存储(内置 = settings.connectors.<id>)。
+
+        注册闸门(设计 §8-1):未注册 id 绝不能回落 enabled=True —— 动态实例
+        (mod)卸载后残留的旧配置不能把已不存在的 mod 显示成“启用”。
+        """
+        conn = self._connectors.get(cid)
+        if conn is None:
+            return {"enabled": False}
+        defaults = conn.default_config()
+        stored = conn.read_stored_config()
         merged = dict(defaults)
         merged.update(stored)
         return merged
 
     def write_config(self, cid: str, cfg: dict) -> None:
-        settings_path = paths.settings_path()
-        try:
-            settings = json.loads(settings_path.read_text() or "{}")
-        except (OSError, json.JSONDecodeError):
-            settings = {}
-        conns = settings.get("connectors") or {}
-        base = self.read_config(cid)
-        base.update({k: v for k, v in cfg.items() if v is not None})
-        conns[cid] = base
-        settings["connectors"] = conns
-        settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2))
+        conn = self._connectors.get(cid)
+        if conn is None:
+            # 未注册 id 没有存储归属:忽略(动态实例已注销)。
+            return
+        conn.write_stored_config(cfg)
 
     # ---- events -----------------------------------------------------------------
 
     def subscribe(self, fn: Callable[[str, dict], None]) -> None:
         self._listeners.append(fn)
 
+    def _config_summary(self, conn: Connector) -> dict:
+        defaults = conn.default_config() or {}
+        try:
+            stored = conn.read_stored_config() or {}
+        except Exception:  # noqa: BLE001 — 摘要永远不能拖垮列表
+            log.exception("connector stored config read failed: %s", conn.id)
+            stored = {}
+        # 只有存储里真实存在的键才算「已修改」;缺席 = 用默认值,不算改过。
+        modified_keys = sorted(
+            k for k, v in stored.items() if defaults.get(k, _MISSING) != v
+        )
+        return {
+            "count": len(defaults),
+            "modified": len(modified_keys),
+            "modifiedKeys": modified_keys,
+        }
+
     def _snapshot_locked(self, cid: str) -> dict:
         conn = self._connectors.get(cid)
         st = self._states.get(cid) or ConnectorState()
+        merged = self.read_config(cid)
+        try:
+            detail_view = conn.detail_view() if conn else {"tabs": [], "actions": []}
+        except Exception:  # noqa: BLE001 — 视图声明失败不影响状态读取
+            log.exception("connector detail_view failed: %s", cid)
+            detail_view = {"tabs": [], "actions": []}
         return {
             "id": cid,
             "name": conn.name if conn else cid,
             "icon": conn.icon if conn else "plug",
             "description": conn.description if conn else "",
+            "kind": conn.kind if conn else "builtin",
             "status": st.status,
             "statusDetail": st.status_detail,
             "version": st.version,
             "capabilities": st.capabilities,
-            "enabled": self.read_config(cid).get("enabled", True),
+            "enabled": (conn.enabled_from_config(merged) if conn else False),
             "extra": st.extra,
             # 列表页据此渲染「安装指引」入口(设计 §2.3);详情接口会再覆盖一次
             "installSteps": conn.install_steps() if conn else [],
+            "detailView": detail_view,
+            "configSummary": (self._config_summary(conn) if conn
+                              else {"count": 0, "modified": 0, "modifiedKeys": []}),
         }
 
     def _notify(self, snapshot: dict) -> None:

@@ -1,82 +1,60 @@
 "use client";
 
-/* Connectors page (connector-module-design.md §2.2): one card per connector —
- * status badge, version line, actions (install wizard / config / enable).
- * Reachable from the sidebar entry ABOVE Knowledge Base. */
+/* Connectors page（mods-connector-migration-design.md §3/§7 S3）：
+ * 一个页面同时承载内置连接器（Integrations）与 Claude Mods；每个连接器
+ * 点开后是同一个详情抽屉，tab/action 由各自 detailView 声明。
+ * 浏览器接管/推送页/工具进度横幅保持原行为。 */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { t as llmT } from "@/i18n/provider";
 import * as api from "@/lib/runtime";
-import type { ConnectorInfo } from "@/lib/runtime";
-import { InstallWizard } from "@/components/connectors/InstallWizard";
-import { ConfigFold } from "@/components/connectors/ConfigFold";
+import type {
+  ConnectorEvent,
+  ConnectorInfo,
+  ConnectorRuntimeStatus,
+  PushedPage,
+} from "@/lib/runtime";
+import { ConnectorDetail } from "@/components/connectors/ConnectorDetail";
+import { connectorIcon, connectorKind, metaLine, sourceOf, statusMeta } from "@/components/connectors/meta";
+import { ModStoreDrawer } from "@/components/settings/ModStoreDrawer";
 import {
   Cable,
-  CheckCircle2,
-  CircleDashed,
-  CircleOff,
   ExternalLink,
-  Globe,
   Loader2,
-  Monitor,
   RefreshCw,
   Send,
+  Store,
   TriangleAlert,
-  XCircle,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import type { ConnectorEvent, PushedPage } from "@/lib/runtime";
 
-const POLL_MS = 5000; // M1 polling fallback (设计 §5);事件通道接好后可替换
+const POLL_MS = 5000; // 轮询兜底；状态变化另有 WS 即时推送
 
-// 状态徽标：文案迁 conn 域 catalog（status.<statusKey>），这里只留样式/图标；
-// statusKey 收成字面量联合，模板串 `status.${statusKey}` 才能通过 next-intl 的
-// key 类型检查。未知状态回退到 not_installed 的展示。
-type ConnStatusKey =
-  | "connected"
-  | "disconnected"
-  | "not_installed"
-  | "installing"
-  | "error"
-  | "disabled";
-
-const STATUS_META: Record<
-  string,
-  { statusKey: ConnStatusKey; cls: string; Icon: typeof CheckCircle2 }
-> = {
-  connected: { statusKey: "connected", cls: "text-green-600 dark:text-green-400", Icon: CheckCircle2 },
-  disconnected: { statusKey: "disconnected", cls: "text-yellow-600 dark:text-yellow-400", Icon: TriangleAlert },
-  not_installed: { statusKey: "not_installed", cls: "text-faint", Icon: CircleDashed },
-  installing: { statusKey: "installing", cls: "text-blue-600 dark:text-blue-400", Icon: Loader2 },
-  error: { statusKey: "error", cls: "text-red-600 dark:text-red-400", Icon: XCircle },
-  disabled: { statusKey: "disabled", cls: "text-faint", Icon: CircleOff },
-};
-
-function iconFor(c: ConnectorInfo) {
-  if (c.icon === "globe") return Globe;
-  if (c.icon === "monitor") return Monitor;
-  return Cable;
+function hasSettingsTab(c: ConnectorInfo): boolean {
+  // detailView 是权威（后端在「除 enabled 外无配置项」时不会声明 settings）。
+  const declared = c.detailView?.tabs;
+  if (declared) return declared.some((x) => x.kind === "settings");
+  const props = c.configSchema?.properties;
+  if (props) return Object.keys(props).some((k) => k !== "enabled");
+  return (c.configSummary?.count ?? 0) > 0;
 }
 
-function metaLine(c: ConnectorInfo): string {
-  const bits: string[] = [];
-  if (c.version) bits.push(`v${c.version}`);
-  const extra = c.extra || {};
-  if (typeof extra.browserType === "string") bits.push(String(extra.browserType));
-  // 停用时不拼 statusDetail——"已停用"徽标下再显示 "Connected · Chrome" 会误导
-  // (底层 relay 可能仍连着,但用户视角此连接器已不可用)。
-  if (c.enabled && c.status === "connected" && c.statusDetail) bits.push(c.statusDetail);
-  return bits.join(" · ");
+function hasInstallTab(c: ConnectorInfo): boolean {
+  if (c.detailView?.tabs?.some((x) => x.kind === "install")) return true;
+  return !!c.installSteps?.length;
 }
 
 export default function ConnectorsPage() {
-  // conn 域 catalog（messages/{en,zh-CN}/conn.json）。
   const tConn = useTranslations("conn");
   const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
-  const [wizardFor, setWizardFor] = useState<string | null>(null);
-  const [configFor, setConfigFor] = useState<string | null>(null);
+  const [runtime, setRuntime] = useState<ConnectorRuntimeStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [storeOpen, setStoreOpen] = useState(false);
+  const [selected, setSelected] = useState<{
+    connector: ConnectorInfo;
+    initialTab?: string;
+  } | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [handoff, setHandoff] = useState<{ tabId: string }[]>([]);
@@ -92,6 +70,7 @@ export default function ConnectorsPage() {
     try {
       const r = await api.listConnectors();
       setConnectors(r.connectors || []);
+      setRuntime(r.runtime ?? null);
     } catch {
       /* sidecar not up yet — keep last state */
     } finally {
@@ -100,18 +79,20 @@ export default function ConnectorsPage() {
     try {
       const h = await api.getHandoffStatus();
       setHandoff(h.active || []);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   useEffect(() => {
-    refresh();
+    void refresh();
     timer.current = setInterval(refresh, POLL_MS);
     return () => {
       if (timer.current) clearInterval(timer.current);
     };
   }, [refresh]);
 
-  // 事件通道(connector §5 推送):状态变化/进度/推送页即时到达,轮询只做兜底。
+  // 事件通道（connector §5 推送）：状态变化/进度/推送页即时到达，轮询兜底。
   useEffect(() => {
     let ws: WebSocket | null = null;
     try {
@@ -130,7 +111,7 @@ export default function ConnectorsPage() {
           setConnectors(snap.connectors?.connectors || []);
           setPushedPage(snap.latestPage || null);
         } else if (msg.type === "connector_status_changed") {
-          refresh();
+          void refresh();
         } else if (msg.type === "tool_progress") {
           setProgress({
             tool: String(msg.tool || ""),
@@ -141,36 +122,206 @@ export default function ConnectorsPage() {
             setTimeout(() => setProgress(null), 1500);
           }
         } else if (msg.type === "handoff_changed") {
-          refresh();
+          void refresh();
         } else if (msg.type === "page_pushed") {
           setPushedPage(msg as unknown as PushedPage);
         }
-      } catch { /* 非 JSON 帧 */ }
+      } catch {
+        /* 非 JSON 帧 */
+      }
     };
     return () => {
-      try { ws?.close(); } catch { /* noop */ }
+      try {
+        ws?.close();
+      } catch {
+        /* noop */
+      }
     };
   }, [refresh]);
 
-  // 向导打开时轮询加密,让 Step 5 的"等待连接"尽快打勾
-  useEffect(() => {
-    if (wizardFor && timer.current) {
-      clearInterval(timer.current);
-      timer.current = setInterval(refresh, 1000);
-    } else if (!wizardFor) {
-      if (timer.current) clearInterval(timer.current);
-      timer.current = setInterval(refresh, POLL_MS);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wizardFor]);
+  const builtin = useMemo(
+    () => connectors.filter((c) => connectorKind(c) === "builtin"),
+    [connectors],
+  );
+  const mods = useMemo(
+    () => connectors.filter((c) => connectorKind(c) === "mod"),
+    [connectors],
+  );
+
+  // 运行时就绪度：握手期（connecting/reconnecting）是正常过程，只在真正
+  // 不可用（Node 缺失 / 通道 unavailable / 全局关闭）时才报黄条，避免把
+  // 启动瞬间的连接中状态渲染成「故障，修复前不会加载」。
+  const rtStatus = runtime?.status || "";
+  const runtimeUnavailable = !!runtime && (!runtime.nodePath || rtStatus === "unavailable");
+  const runtimeOff = !!runtime && rtStatus === "disabled" && runtime.modsEnabled === false;
+  const runtimeBusy =
+    !!runtime &&
+    !runtimeUnavailable &&
+    !runtimeOff &&
+    (rtStatus === "connecting" ||
+      rtStatus === "reconnecting" ||
+      (!rtStatus && runtime.brokerOk === false));
+
+  const openDetail = (c: ConnectorInfo, initialTab?: string) => {
+    setSelected({ connector: c, initialTab });
+  };
+
+  const renderCard = (c: ConnectorInfo) => {
+    const meta = statusMeta(c);
+    const Icon = connectorIcon(c);
+    const kind = connectorKind(c);
+    const src = sourceOf(c);
+    const summary = c.configSummary;
+    const version = c.version ? `v${c.version}` : "";
+    const sourceLabel =
+      src === "global"
+        ? tConn("source.global")
+        : src === "project"
+          ? tConn("source.project")
+          : src;
+    return (
+      <div
+        key={c.id}
+        role="button"
+        tabIndex={0}
+        onClick={() => openDetail(c)}
+        onKeyDown={(e) => {
+          // 内层按钮的键盘事件不触发整卡打开
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openDetail(c);
+          }
+        }}
+        className={`cursor-pointer rounded-xl border border-line bg-card p-4 transition-colors hover:border-line2 ${
+          !c.enabled ? "opacity-70" : ""
+        }`}
+      >
+        <div className="flex items-start gap-3">
+          <Icon
+            className={`mt-0.5 h-5 w-5 shrink-0 ${kind === "mod" ? "text-violet" : "text-faint"}`}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="truncate text-sm font-medium text-txt">{c.name}</span>
+              <span className={`inline-flex items-center gap-1 text-[11px] ${meta.cls}`}>
+                <meta.Icon
+                  className={`h-3 w-3 ${
+                    c.status === "installing" || c.status === "restarting" ? "animate-spin" : ""
+                  }`}
+                />
+                {tConn(`status.${meta.statusKey}`)}
+              </span>
+              <span className="rounded-full border border-line2 px-1.5 py-px text-[10px] text-faint">
+                {tConn(`kind.${kind}`)}
+              </span>
+              {sourceLabel && (
+                <span className="rounded-full border border-line2 bg-card2 px-1.5 py-px text-[10px] text-faint">
+                  {sourceLabel}
+                </span>
+              )}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint">
+              {version && <span>{version}</span>}
+              {metaLine(c) && <span className="truncate">{metaLine(c)}</span>}
+              <span>
+                {hasSettingsTab(c)
+                  ? summary
+                    ? tConn("card.settingsSummary", {
+                        count: summary.count,
+                        changed: summary.modified,
+                      })
+                    : tConn("card.settingsAvailable")
+                  : tConn("card.noSettings")}
+              </span>
+            </div>
+            <p className="mt-1.5 text-xs leading-relaxed text-faint">{c.description}</p>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {!c.enabled ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void api
+                  .patchConnectorConfig(c.id, { enabled: true })
+                  .then(() => refresh())
+                  .catch(() => {});
+              }}
+              className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
+            >
+              {tConn("card.enable")}
+            </button>
+          ) : (
+            <>
+              {c.id === "browser-profile" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void api
+                      .connectorAction(
+                        c.id,
+                        c.status === "connected" ? "profile_stop" : "profile_start",
+                      )
+                      .then(() => refresh())
+                      .catch(() => {});
+                  }}
+                  className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
+                >
+                  {c.status === "connected"
+                    ? tConn("actions.stopInstance")
+                    : tConn("actions.startInstance")}
+                </button>
+              )}
+              {hasInstallTab(c) &&
+                (c.status === "not_installed" ||
+                  c.status === "disconnected" ||
+                  c.status === "error") && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openDetail(c, "install");
+                    }}
+                    className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
+                  >
+                    {tConn("actions.installGuide")}
+                  </button>
+                )}
+              {hasSettingsTab(c) && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openDetail(c, "settings");
+                  }}
+                  className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
+                >
+                  {tConn("card.settings")}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
-      <header className="mb-6 flex items-center gap-2">
+    // 壳的页面槽（AppShell 非工作区路由）是 flex 容器、不含滚动：页面必须
+    // 自带竖向滚动，否则内容超过一屏就被裁掉（2026-10-23：看不到 Claude Mods）。
+    <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-4xl px-6 py-8">
+      <header className="mb-5 flex flex-wrap items-center gap-2">
         <Cable className="h-5 w-5 text-faint" />
         <h1 className="text-lg font-semibold text-txt">{tConn("title")}</h1>
+        <span className="text-xs text-faint">{tConn("subtitle")}</span>
         <button
-          onClick={refresh}
+          type="button"
+          onClick={() => void refresh()}
           title={tConn("refresh")}
           className="ml-auto rounded-md p-1.5 text-faint hover:bg-card hover:text-txt"
         >
@@ -178,7 +329,34 @@ export default function ConnectorsPage() {
         </button>
       </header>
 
-      {/* 浏览器工具进度(browser §5.1):慢操作永远有反馈 */}
+      {/* 运行时状态条：连接中走中性提示；只有真不可用才告警 */}
+      {runtimeUnavailable && (
+        <div className="mb-4 flex items-start gap-2 rounded-xl border border-yellow/30 bg-yellow/10 px-4 py-2.5 text-xs leading-relaxed text-yellow-800 dark:text-yellow-200">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            {tConn("runtime.warning", {
+              nodePath: runtime?.nodePath || tConn("runtime.nodeMissing"),
+            })}
+          </span>
+        </div>
+      )}
+      {runtimeOff && (
+        <div className="mb-4 flex items-start gap-2 rounded-xl border border-yellow/30 bg-yellow/10 px-4 py-2.5 text-xs leading-relaxed text-yellow-800 dark:text-yellow-200">
+          <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{tConn("runtime.off")}</span>
+        </div>
+      )}
+      {runtimeBusy && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-line bg-card px-4 py-2.5 text-xs text-faint">
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-500" />
+          <span>
+            {tConn("runtime.connecting")}
+            {runtime?.detail ? ` · ${runtime.detail}` : ""}
+          </span>
+        </div>
+      )}
+
+      {/* 浏览器工具进度（browser §5.1）：慢操作永远有反馈 */}
       {progress && (
         <div className="mb-4 flex items-center gap-2 rounded-xl border border-line bg-card px-4 py-2.5 text-xs text-faint">
           <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />
@@ -190,7 +368,7 @@ export default function ConnectorsPage() {
         </div>
       )}
 
-      {/* 浏览器推送页(popup「发送此页面」→ 连接器页 → 预填进聊天) */}
+      {/* 浏览器推送页（popup「发送此页面」→ 连接器页 → 预填进聊天） */}
       {pushedPage?.url && (
         <div className="mb-4 flex items-center gap-3 rounded-xl border border-line bg-card p-4">
           <ExternalLink className="h-4 w-4 shrink-0 text-faint" />
@@ -203,13 +381,14 @@ export default function ConnectorsPage() {
             <div className="mt-0.5 truncate text-xs text-faint">{pushedPage.url}</div>
           </div>
           <button
+            type="button"
             onClick={() => {
-              // 预填进聊天(既有 ginno:prefill-input 机制)并跳回工作区
+              // 预填进聊天（既有 ginno:prefill-input 机制）并跳回工作区
               window.dispatchEvent(
                 new CustomEvent("ginno:prefill-input", {
                   detail: {
-                    // 预填文案是发给模型的组合模板（会进对话），按 i18n 设计走
-                    // provider 的 t(en, zh) 选边，而非纯 UI 的 useTranslations。
+                    // 预填文案是发给模型的组合模板（会进对话），走 provider 的
+                    // t(en, zh) 选边，而非纯 UI 的 useTranslations。
                     text: llmT(
                       `Please help me work with this browser page: ${pushedPage.title || pushedPage.url}\n${pushedPage.url}`,
                       `请帮我处理这个浏览器页面：${pushedPage.title || pushedPage.url}\n${pushedPage.url}`,
@@ -227,7 +406,7 @@ export default function ConnectorsPage() {
         </div>
       )}
 
-      {/* 接管横幅(设计 M3):browser_handoff 工具阻塞等待时在此释放 */}
+      {/* 接管横幅（设计 M3）：browser_handoff 工具阻塞等待时在此释放 */}
       {handoff.length > 0 && (
         <div className="mb-4 flex items-center gap-3 rounded-xl border border-violet-500/40 bg-violet-500/10 p-4">
           <div className="min-w-0 flex-1 text-sm text-txt">
@@ -240,15 +419,14 @@ export default function ConnectorsPage() {
             </div>
           </div>
           <button
+            type="button"
             onClick={async () => {
               for (const h of handoff) {
-                await api.connectorAction(
-                  "chrome-extension",
-                  "browser_handoff_release",
-                  { tabId: h.tabId },
-                );
+                await api.connectorAction("chrome-extension", "browser_handoff_release", {
+                  tabId: h.tabId,
+                });
               }
-              refresh();
+              void refresh();
             }}
             className="shrink-0 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
           >
@@ -264,122 +442,75 @@ export default function ConnectorsPage() {
       ) : connectors.length === 0 ? (
         <div className="py-10 text-sm text-faint">{tConn("empty")}</div>
       ) : (
-        <div className="space-y-3">
-          {connectors.map((c) => {
-            // 徽标优先反映 enabled 开关:后端从不把 status 置为 disabled
-            // (STATUS_DISABLED 无人上报,停用只落在 settings.json 的
-            // connectors.<id>.enabled)——按 c.enabled 派生展示态才能一目了然。
-            const meta = !c.enabled
-              ? STATUS_META.disabled
-              : (STATUS_META[c.status] || STATUS_META.not_installed);
-            const Icon = iconFor(c);
-            return (
-              <div
-                key={c.id}
-                className={`rounded-xl border border-line bg-card p-4 ${!c.enabled ? "opacity-70" : ""}`}
-              >
-                <div className="flex items-start gap-3">
-                  <Icon className="mt-0.5 h-5 w-5 shrink-0 text-faint" />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium text-txt">{c.name}</span>
-                      <span className={`inline-flex items-center gap-1 text-xs ${meta.cls}`}>
-                        <meta.Icon
-                          className={`h-3.5 w-3.5 ${c.status === "installing" ? "animate-spin" : ""}`}
-                        />
-                        {tConn(`status.${meta.statusKey}`)}
-                      </span>
-                    </div>
-                    {metaLine(c) && (
-                      <div className="mt-0.5 truncate text-xs text-faint">{metaLine(c)}</div>
-                    )}
-                    <p className="mt-1.5 text-xs leading-relaxed text-faint">{c.description}</p>
-                    {!c.enabled && (
-                      <p className="mt-1 text-xs text-faint">{tConn("disabledHint")}</p>
-                    )}
-                  </div>
-                </div>
+        <div className="space-y-8">
+          <section>
+            <div className="mb-1 flex items-baseline gap-2">
+              <h2 className="text-[12px] font-semibold uppercase tracking-wide text-muted">
+                {tConn("section.integrations")}
+              </h2>
+              <span className="text-[11px] text-faint">
+                {tConn("section.count", { count: builtin.length })}
+              </span>
+            </div>
+            <p className="mb-3 text-[11.5px] text-faint">{tConn("section.integrationsSub")}</p>
+            {builtin.length ? (
+              <div className="space-y-2.5">{builtin.map(renderCard)}</div>
+            ) : (
+              <p className="text-xs text-faint">{tConn("section.builtinEmpty")}</p>
+            )}
+          </section>
 
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  {!c.enabled ? (
-                    <>
-                      {/* 停用态只留恢复路径:一键启用(主色,一目了然)+ 配置。
-                          安装向导 / 实例启停在停用态无意义,不展示——原实现把整个
-                          操作区渲染成 null,导致停用后没有任何地方能再启用。 */}
-                      <button
-                        onClick={async () => {
-                          await api.patchConnectorConfig(c.id, { enabled: true });
-                          refresh();
-                        }}
-                        className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
-                      >
-                        {tConn("actions.enable")}
-                      </button>
-                      <button
-                        onClick={() => setConfigFor(configFor === c.id ? null : c.id)}
-                        className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
-                      >
-                        {tConn("actions.configure")}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {(c.status === "not_installed" || c.status === "disconnected" || c.status === "error") &&
-                        (c.installSteps?.length ? (
-                          <button
-                            onClick={() => setWizardFor(c.id)}
-                            className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500"
-                          >
-                            {tConn("actions.installGuide")}
-                          </button>
-                        ) : null)}
-                      {c.id === "browser-profile" && (
-                        <button
-                          onClick={async () => {
-                            await api.connectorAction(c.id, c.status === "connected" ? "profile_stop" : "profile_start");
-                            refresh();
-                          }}
-                          className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
-                        >
-                          {c.status === "connected"
-                            ? tConn("actions.stopInstance")
-                            : tConn("actions.startInstance")}
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setConfigFor(configFor === c.id ? null : c.id)}
-                        className="rounded-lg border border-line px-3 py-1.5 text-xs text-txt hover:bg-hover"
-                      >
-                        {tConn("actions.configure")}
-                      </button>
-                      <button
-                        onClick={async () => {
-                          await api.patchConnectorConfig(c.id, { enabled: false });
-                          refresh();
-                        }}
-                        className="rounded-lg border border-line px-3 py-1.5 text-xs text-faint hover:bg-hover"
-                      >
-                        {tConn("actions.disable")}
-                      </button>
-                    </>
-                  )}
-                </div>
+          <section>
+            <div className="mb-1 flex items-baseline gap-2">
+              <h2 className="text-[12px] font-semibold uppercase tracking-wide text-muted">
+                {tConn("section.mods")}
+              </h2>
+              <span className="text-[11px] text-faint">
+                {tConn("section.count", { count: mods.length })}
+              </span>
+            </div>
+            <p className="mb-3 text-[11.5px] text-faint">{tConn("section.modsSub")}</p>
+            {mods.length ? (
+              <div className="space-y-2.5">{mods.map(renderCard)}</div>
+            ) : (
+              <p className="text-xs text-faint">{tConn("section.modsEmpty")}</p>
+            )}
+          </section>
 
-                {configFor === c.id && (
-                  <ConfigFold connector={c} onSaved={refresh} />
-                )}
-              </div>
-            );
-          })}
+          {/* 商店入口放在页面底部（2026-10-23 用户定稿）：浏览是低频终点动作，
+             不占顶部主视线；空列表时也不再多出一个重复按钮。 */}
+          <div className="mt-7 flex flex-wrap items-center justify-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => setStoreOpen(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-violet/40 bg-violet/10 px-3 py-1.5 text-xs text-violet transition-colors hover:bg-violet/20"
+            >
+              <Store className="h-3.5 w-3.5" /> {tConn("browseMods")}
+            </button>
+            <span className="text-[11px] text-faint">{tConn("runtime.browseHint")}</span>
+          </div>
         </div>
       )}
 
-      {wizardFor && (
-        <InstallWizard
-          connectorId={wizardFor}
-          onClose={() => setWizardFor(null)}
+      {selected && (
+        <ConnectorDetail
+          key={selected.connector.id}
+          connector={selected.connector}
+          initialTab={selected.initialTab}
+          onClose={() => setSelected(null)}
+          onRefresh={() => void refresh()}
+          onBrowseMods={() => setStoreOpen(true)}
+          storeOpen={storeOpen}
         />
       )}
+
+      {storeOpen && (
+        <ModStoreDrawer
+          onClose={() => setStoreOpen(false)}
+          onInstalled={() => void refresh()}
+        />
+      )}
+      </div>
     </div>
   );
 }

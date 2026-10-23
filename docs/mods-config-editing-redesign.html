@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ginno · 连接器统一基座 + 差异化外观（原型）</title>
+<style>
+  :root{
+    --base:#0a0a0f; --panel:#0e0e15; --card:#15151d; --card2:#1b1b25;
+    --line:#262632; --line2:#34343f; --txt:#e9e9f0; --muted:#9a9aa6; --faint:#62626e;
+    --violet:#8b5cf6; --violet2:#a78bfa; --green:#34d399; --yellow:#f59e0b; --red:#f43f5e; --cyan:#22d3ee;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--base);color:var(--txt);
+    font:13px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  input,select,textarea{font:inherit;color:var(--txt)}
+  .wrap{max-width:1060px;margin:0 auto;padding:28px 24px 72px}
+
+  .proto-head{display:flex;align-items:flex-start;gap:16px;padding-bottom:16px;border-bottom:1px solid var(--line)}
+  .proto-head h1{margin:0;font-size:17px;font-weight:600}
+  .proto-head p{margin:4px 0 0;font-size:12px;color:var(--muted);max-width:730px}
+  .caption{margin:14px 0 18px;font-size:12px;color:var(--faint);line-height:1.75}
+  .caption b{color:var(--muted);font-weight:500}
+
+  .page-head{display:flex;align-items:center;gap:10px;margin:22px 0 6px}
+  .page-head h2{margin:0;font-size:16px;font-weight:600}
+  .page-head .sub{font-size:12px;color:var(--faint)}
+  .page-head .sp{flex:1}
+  .runtime{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--faint);
+    border:1px solid var(--line);background:var(--panel);border-radius:9px;padding:7px 10px;margin:10px 0 22px}
+  .runtime .ok{color:var(--green)}
+  .section{margin:26px 0 0}
+  .section>.h{display:flex;align-items:baseline;gap:8px;margin-bottom:3px}
+  .section>.h h3{margin:0;font-size:12px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted)}
+  .section>.h .n{font-size:11px;color:var(--faint)}
+  .section>.sub{margin:0 0 10px;font-size:11.5px;color:var(--faint)}
+
+  .card{border:1px solid var(--line);border-radius:13px;background:var(--card);padding:14px 15px;margin-bottom:10px;cursor:pointer;transition:border-color .12s}
+  .card:hover{border-color:var(--line2)}
+  .card .top{display:flex;align-items:center;gap:11px}
+  .ico{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:14px;flex:0 0 auto;
+    background:rgba(139,92,246,.12);color:var(--violet2);border:1px solid rgba(139,92,246,.25)}
+  .ico.cyan{background:rgba(34,211,238,.12);color:var(--cyan);border-color:rgba(34,211,238,.25)}
+  .ico.green{background:rgba(52,211,153,.1);color:var(--green);border-color:rgba(52,211,153,.22)}
+  .ico.red{background:rgba(244,63,94,.1);color:var(--red);border-color:rgba(244,63,94,.22)}
+  .id{min-width:0;flex:1}
+  .id .n{font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .id .m{font-size:11px;color:var(--faint);margin-top:2px}
+  .desc{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.55}
+  .acts{display:flex;gap:7px;margin-top:11px;flex-wrap:wrap;align-items:center}
+
+  .badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:1px 7px;font-size:10.5px;font-weight:500;white-space:nowrap}
+  .b-ok{background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.25)}
+  .b-warn{background:rgba(245,158,11,.12);color:var(--yellow);border:1px solid rgba(245,158,11,.25)}
+  .b-err{background:rgba(244,63,94,.12);color:var(--red);border:1px solid rgba(244,63,94,.25)}
+  .b-mute{background:var(--card2);color:var(--faint);border:1px solid var(--line)}
+  .b-violet{background:rgba(139,92,246,.14);color:var(--violet2);border:1px solid rgba(139,92,246,.3)}
+  .b-kind{background:transparent;color:var(--faint);border:1px solid var(--line2)}
+  .dot{width:6px;height:6px;border-radius:50%;display:inline-block;background:var(--yellow)}
+
+  .btn{padding:6px 12px;border-radius:8px;font-size:12px;border:1px solid var(--line2);color:var(--txt);background:var(--card)}
+  .btn:hover{background:var(--card2)}
+  .btn.primary{background:var(--violet);border-color:var(--violet);color:#fff;font-weight:500}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.ghost{border-color:transparent;background:transparent;color:var(--faint)}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .switch{width:34px;height:19px;border-radius:999px;background:var(--line2);position:relative;transition:background .15s;flex:0 0 auto;cursor:pointer}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:left .15s}
+  .switch.on{background:var(--violet)}
+  .switch.on::after{left:17px}
+
+  /* 抽屉 */
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;z-index:40}
+  .scrim.on{display:block}
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:min(640px,94vw);background:var(--base);
+    border-left:1px solid var(--line2);z-index:41;transform:translateX(102%);transition:transform .18s ease;
+    display:flex;flex-direction:column}
+  .drawer.on{transform:none}
+  .drawer .dh{display:flex;align-items:center;gap:10px;padding:16px 20px 12px;border-bottom:1px solid var(--line)}
+  .drawer .dh .sp{flex:1}
+  .drawer .tabs{display:flex;gap:2px;padding:0 20px;border-bottom:1px solid var(--line);overflow-x:auto}
+  .drawer .tabs button{padding:9px 11px;font-size:12px;color:var(--faint);border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
+  .drawer .tabs button.on{color:var(--txt);border-bottom-color:var(--violet)}
+  .drawer .db{padding:16px 20px 96px;overflow:auto;flex:1}
+  .drawer .savebar{position:sticky;bottom:0;background:var(--base);padding:10px 20px;margin:0 -20px;border-top:1px solid var(--line)}
+
+  .banner{display:flex;gap:8px;align-items:flex-start;border:1px solid rgba(34,211,238,.22);
+    background:rgba(34,211,238,.07);color:#bfeef6;border-radius:9px;padding:8px 10px;font-size:11.5px;margin:0 0 16px}
+  .banner.warn{border-color:rgba(245,158,11,.25);background:rgba(245,158,11,.07);color:#f6e0b3}
+  .banner.err{border-color:rgba(244,63,94,.28);background:rgba(244,63,94,.08);color:#ffc9d3}
+  .group{margin-bottom:18px}
+  .group>h4{margin:0 0 2px;font-size:11.5px;font-weight:600;letter-spacing:.3px;color:var(--muted);text-transform:uppercase}
+  .group>.sub{margin:0 0 8px;font-size:11px;color:var(--faint)}
+  .field{display:grid;grid-template-columns:1fr 250px;gap:18px;align-items:start;padding:11px 0;border-top:1px solid var(--line)}
+  .field:first-of-type{border-top:0}
+  .f-label{font-size:12.5px;color:var(--txt);display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .f-desc{font-size:11.5px;color:var(--faint);margin-top:3px;line-height:1.5}
+  .f-meta{font-size:10.5px;color:var(--faint);margin-top:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .f-meta code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--muted);
+    background:var(--card2);padding:1px 4px;border-radius:4px}
+  .reset{font-size:10.5px;color:var(--violet2);opacity:0;transition:opacity .12s}
+  .field:hover .reset,.field.modified .reset{opacity:1}
+  .ctl{display:flex;flex-direction:column;gap:5px}
+  .ctl input[type=text],.ctl input[type=password],.ctl input[type=number],.ctl select{
+    width:100%;background:var(--card2);border:1px solid var(--line2);border-radius:8px;padding:6px 9px;font-size:12px;outline:none}
+  .ctl input:focus,.ctl select:focus{border-color:var(--violet)}
+  .ctl .hint{font-size:10.5px;color:var(--faint)}
+  .ctl .hint.warn{color:var(--yellow)}
+  .secret{position:relative}
+  .secret button{position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:10.5px;color:var(--faint);padding:2px 5px;border-radius:5px}
+  .secret button:hover{background:var(--line);color:var(--txt)}
+  .adv{margin-top:4px;border:1px solid var(--line);border-radius:9px;background:var(--panel);overflow:hidden}
+  .adv summary{cursor:pointer;list-style:none;padding:8px 11px;font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:7px}
+  .adv summary::-webkit-details-marker{display:none}
+  .adv[open] summary{border-bottom:1px solid var(--line)}
+  .adv .body{padding:9px 11px}
+  .adv textarea{width:100%;min-height:110px;resize:vertical;background:#0e0e14;border:1px solid var(--line2);
+    border-radius:8px;padding:9px;font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c9c9d6;outline:none}
+  .savebar{display:flex;align-items:center;gap:10px;padding:12px 0 2px}
+  .savebar .cnt{font-size:11.5px;color:var(--yellow)}
+  .savebar .sp{flex:1}
+  .perm{border:1px solid var(--line);border-radius:9px;padding:10px 11px;margin-bottom:8px;background:var(--panel)}
+  .perm .h{display:flex;align-items:center;gap:8px}
+  .perm .h .name{font-size:12px;font-family:ui-monospace,Menlo,monospace}
+  .perm .h .sp{flex:1}
+  .perm .d{font-size:11px;color:var(--faint);margin-top:4px;line-height:1.55}
+  .seg{display:flex;background:var(--card2);border:1px solid var(--line2);border-radius:7px;padding:2px}
+  .seg button{padding:3px 9px;font-size:10.5px;border-radius:5px;color:var(--faint);white-space:nowrap}
+  .seg button.on{background:var(--line);color:var(--txt)}
+  .seg button.on.allow{color:var(--green)}
+  .seg button.on.deny{color:var(--red)}
+  .seg button.on.ask{color:var(--yellow)}
+  .chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-family:ui-monospace,Menlo,monospace;
+    background:var(--card2);border:1px solid var(--line2);color:var(--muted);border-radius:6px;padding:2px 6px}
+  .chip button{color:var(--faint);font-size:11px;line-height:1}
+  .chip button:hover{color:var(--red)}
+  .act{font:11px/1.7 ui-monospace,Menlo,monospace;color:var(--muted);background:var(--panel);
+    border:1px solid var(--line);border-radius:9px;padding:11px 12px;white-space:pre-wrap}
+  .act .t{color:var(--faint)}
+  .act .ok{color:var(--green)} .act .wa{color:var(--yellow)} .act .er{color:var(--red)}
+  .steps{counter-reset:s;margin:0;padding:0;list-style:none}
+  .steps li{position:relative;padding:0 0 14px 30px;font-size:12px;color:var(--muted)}
+  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:0;width:19px;height:19px;
+    border-radius:50%;background:var(--card2);border:1px solid var(--line2);color:var(--faint);font-size:10px;
+    display:grid;place-items:center}
+  .steps li b{display:block;color:var(--txt);font-weight:500;font-size:12.5px;margin-bottom:2px}
+  .hidden{display:none !important}
+  .note{margin:26px 0 0;padding:12px 14px;border-left:2px solid var(--violet);background:rgba(139,92,246,.06);
+    border-radius:0 8px 8px 0;font-size:12px;color:var(--muted);line-height:1.7}
+  .note b{color:var(--txt);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="proto-head">
+    <div>
+      <h1>连接器统一基座 · 差异化外观（原型）</h1>
+      <p>原则：<b>统一的是基座，不是样式。</b>状态机、配置下发、授权、install steps、apply_config 共用一套；每个连接器（内置或 Claude Mod）自己声明有哪些 tab、哪些区块、哪种布局。</p>
+    </div>
+  </header>
+
+  <div class="caption">
+    <b>看差异：</b>Chrome 有「安装向导 / 连接状态」；钉钉有「会话策略」；Vibe Island 很轻，只有设置和活动；
+    Claude Mod 有「概览 / 设置 / 权限 / 活动」。点任意卡片打开侧滑详情——同一套抽屉外壳，内容按连接器声明生成。
+  </div>
+
+  <div class="page-head">
+    <h2>连接器</h2><span class="sub">外部能力与扩展</span><span class="sp"></span>
+    <button class="btn">浏览 Claude Mods</button><button class="btn ghost">刷新</button>
+  </div>
+  <div class="runtime">
+    <span class="dot" style="background:var(--green)"></span>
+    Claude Mods 运行时：Node 22.18 · broker 运行中 · <span class="ok">3 个 Claude Mod 已加载</span>
+    <span style="margin-left:auto">装 mod：浏览商店，或把目录放进 ~/.ginno/mods/</span>
+  </div>
+
+  <div class="section">
+    <div class="h"><h3>集成连接</h3><span class="n">4 个</span></div>
+    <p class="sub">Ginno 自带的外部能力——各自的 tab 和动作不一样。</p>
+
+    <div class="card" onclick="openDrawer('chrome')">
+      <div class="top">
+        <div class="ico cyan">◐</div>
+        <div class="id"><div class="n">Chrome Browser Extension <span class="badge b-ok">已连接</span><span class="badge b-kind">内置</span></div>
+          <div class="m">v2.1 · Chrome · 扩展已连接</div></div>
+        <div class="switch on"></div>
+      </div>
+      <div class="desc">在你自己的 Chrome 里工作：共享登录态、操作可见、随时可停。</div>
+      <div class="acts"><button class="btn">打开</button><button class="btn ghost">安装向导</button></div>
+    </div>
+
+    <div class="card" onclick="openDrawer('dingtalk')">
+      <div class="top">
+        <div class="ico">💬</div>
+        <div class="id"><div class="n">DingTalk Bot <span class="badge b-mute">未配置</span><span class="badge b-kind">内置</span></div>
+          <div class="m">入站渠道 · 未连接</div></div>
+        <div class="switch"></div>
+      </div>
+      <div class="desc">在钉钉里和同一个 agent 对话：流式卡片、按钮答题、文件预览。</div>
+      <div class="acts"><button class="btn primary">配置</button></div>
+    </div>
+
+    <div class="card" onclick="openDrawer('vibe')">
+      <div class="top">
+        <div class="ico">⚡</div>
+        <div class="id"><div class="n">Vibe Island <span class="badge b-ok">已连接</span><span class="badge b-kind">内置</span></div>
+          <div class="m">刘海状态 · 直装版</div></div>
+        <div class="switch on"></div>
+      </div>
+      <div class="desc">把 Ginno 会话状态显示在 Mac 刘海。</div>
+      <div class="acts"><button class="btn">设置</button></div>
+    </div>
+
+    <div class="card" onclick="openDrawer('profile')">
+      <div class="top">
+        <div class="ico">◻</div>
+        <div class="id"><div class="n">Ginno Browser Profile <span class="badge b-mute">按需启动</span><span class="badge b-kind">内置</span></div>
+          <div class="m">B 轨 · 未运行</div></div>
+        <div class="switch on"></div>
+      </div>
+      <div class="desc">Ginno 自管的 Chrome 实例（独立 profile），扩展轨的兜底。</div>
+      <div class="acts"><button class="btn">设置</button><button class="btn ghost">启动实例</button></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="h"><h3>Claude Mods</h3><span class="n">3 个已安装</span></div>
+    <p class="sub">来自商店或本地目录的 Claude Code 兼容 mod，跑在独立 Node runner 里——但在这张页面上就是连接器。</p>
+
+    <div class="card" onclick="openDrawer('weather')">
+      <div class="top">
+        <div class="ico green">☀</div>
+        <div class="id"><div class="n">token-weather <span class="badge b-ok">运行中</span><span class="badge b-kind">Claude Mod</span><span class="badge b-violet">兼容 ✅</span></div>
+          <div class="m">v0.2.1 · 全局 · 6 项设置 · <span style="color:var(--yellow)">2 项已改</span></div></div>
+        <span class="dot"></span><div class="switch on"></div>
+      </div>
+      <div class="desc">在输入框上方显示 token 用量与上下文占用。</div>
+      <div class="acts"><button class="btn primary">设置</button><button class="btn">权限</button><button class="btn ghost">活动</button></div>
+    </div>
+
+    <div class="card" onclick="openDrawer('next')">
+      <div class="top">
+        <div class="ico">→</div>
+        <div class="id"><div class="n">next-steps <span class="badge b-ok">运行中</span><span class="badge b-kind">Claude Mod</span></div>
+          <div class="m">v0.1.0 · 全局 · 无可配置项</div></div>
+        <div class="switch on"></div>
+      </div>
+      <div class="desc">每次回复后，用模型给出下一步建议。</div>
+      <div class="acts"><button class="btn">权限</button><button class="btn ghost">活动</button></div>
+    </div>
+
+    <div class="card" onclick="openDrawer('music')">
+      <div class="top">
+        <div class="ico red">♪</div>
+        <div class="id"><div class="n">claude-music <span class="badge b-warn">1 条危险命令被拒绝</span><span class="badge b-kind">Claude Mod · classic hooks</span></div>
+          <div class="m">v0.3.0 · 全局 · 任意 shell</div></div>
+        <div class="switch on"></div>
+      </div>
+      <div class="desc">SessionStart 时启动音乐控制面板（shell 脚本）。</div>
+      <div class="acts"><button class="btn primary">检查权限</button><button class="btn">查看日志</button></div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>迁移契约（这张原型想固定的）：</b>连接器不再是一个统一模板，而是一个 <b>声明式的详情视图</b>：
+    <code>{ tabs: [{id, title, kind}], actions: [...] }</code>，<code>kind</code> 取 <code>overview / settings / install / permissions / activity / 自定义区块</code>。
+    内置连接器和 Claude Mod 共用渲染器与数据契约（status / config / defaults / schema / permissions / installSteps），
+    差异只体现在「声明了哪些 tab」和「区块内容」——不是各写一套页面。
+  </div>
+</div>
+
+<div class="scrim" id="scrim" onclick="closeDrawer()"></div>
+<aside class="drawer" id="drawer">
+  <div class="dh">
+    <div class="ico" id="d-ico">⚡</div>
+    <div class="id"><div class="n" id="d-name"></div><div class="m" id="d-meta"></div></div>
+    <span class="sp"></span><span class="badge b-kind" id="d-kind"></span>
+    <button class="btn ghost" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="tabs" id="d-tabs"></div>
+  <div class="db" id="d-body"></div>
+  <div class="savebar hidden" id="d-savebar">
+    <span class="cnt"></span><span class="sp"></span>
+    <button class="btn ghost" onclick="resetAll()">放弃更改</button>
+    <button class="btn primary" onclick="saveAll()">保存</button>
+  </div>
+</aside>
+
+<script>
+/* ============ 每个连接器声明自己的 tab（统一基座、差异化外观） ============ */
+const CONNECTORS = {
+  chrome: {
+    name:'Chrome Browser Extension', meta:'v2.1 · Chrome · 扩展已连接', kind:'内置', ico:'◐', icoCls:'cyan',
+    tabs:[['overview','概览'],['install','安装向导'],['settings','设置'],['activity','连接状态']],
+  },
+  dingtalk: {
+    name:'DingTalk Bot', meta:'入站渠道 · 未连接', kind:'内置', ico:'💬', icoCls:'',
+    tabs:[['settings','配置'],['policy','会话策略'],['activity','活动']],
+  },
+  vibe: {
+    name:'Vibe Island', meta:'直装版 · 已连接', kind:'内置', ico:'⚡', icoCls:'',
+    tabs:[['settings','设置'],['activity','活动']],
+  },
+  profile: {
+    name:'Ginno Browser Profile', meta:'B 轨 · 按需启动', kind:'内置', ico:'◻', icoCls:'',
+    tabs:[['settings','设置'],['activity','实例状态']],
+  },
+  weather: {
+    name:'token-weather', meta:'v0.2.1 · 运行中 · 来源：ginno-mods 精选', kind:'Claude Mod', ico:'☀', icoCls:'green',
+    tabs:[['overview','概览'],['settings','设置'],['perms','权限'],['activity','活动']],
+  },
+  next: {
+    name:'next-steps', meta:'v0.1.0 · 运行中 · 无可配置项', kind:'Claude Mod', ico:'→', icoCls:'',
+    tabs:[['overview','概览'],['perms','权限'],['activity','活动']],
+  },
+  music: {
+    name:'claude-music', meta:'v0.3.0 · 任意 shell · 1 条危险命令被拒绝', kind:'Claude Mod · classic hooks', ico:'♪', icoCls:'red',
+    tabs:[['overview','概览'],['perms','权限'],['activity','活动']],
+  },
+};
+let CUR = 'weather', CUR_TAB = 'settings';
+
+/* ============ 通用区块 ============ */
+function fieldHTML(o){
+  const isSwitch = o.type === 'switch';
+  const ctl = isSwitch
+    ? `<div class="switch ${o.value?'on':''}" onclick="toggleSwitch(this,${o.def?'true':'false'})"></div>`
+    : o.type === 'select'
+      ? `<select onchange="markField(this,'${esc(o.def)}')">${o.options.map(v=>`<option ${v.value===o.value?'selected':''} value="${v.value}">${v.label}</option>`).join('')}</select>`
+      : o.type === 'secret'
+        ? `<div class="secret"><input class="secret-input" type="password" value="${esc(o.value)}" oninput="markField(this,'${esc(o.def)}')" /><button onclick="toggleSecret(this)">显示</button></div>`
+        : o.type === 'tags'
+          ? `<div class="chips">${o.value.map(v=>`<span class="chip">${v}<button>×</button></span>`).join('')}<button class="btn" style="padding:2px 9px;font-size:11px">+ 添加</button></div>`
+          : o.type === 'number'
+            ? `<input type="number" value="${esc(o.value)}" oninput="markField(this,'${esc(o.def)}')" />${o.hint?`<div class="hint">${o.hint}</div>`:''}`
+            : `<input type="text" value="${esc(o.value||'')}" placeholder="${o.placeholder||''}" oninput="markField(this,'${esc(o.def)}')" />${o.hint?`<div class="hint ${o.warn?'warn':''}">${o.hint}</div>`:''}`;
+  const modified = String(o.value) !== String(o.def) || (isSwitch && !!o.value !== !!o.def);
+  return `<div class="field ${modified?'modified':''}" data-default="${esc(o.def)}">
+    <div>
+      <div class="f-label"><span>${o.label}</span>${o.badge?`<span class="badge b-mute">${o.badge}</span>`:''}${modified?'<span class="badge b-mute">已修改</span>':''}</div>
+      ${o.desc?`<div class="f-desc">${o.desc}</div>`:''}
+      <div class="f-meta">默认 <code>${o.defaultLabel ?? esc(o.def ?? '')}</code>${isSwitch?'':`<button class="reset" onclick="resetField(this)">恢复默认</button>`}</div>
+    </div>
+    <div class="ctl">${ctl}</div>
+  </div>`;
+}
+function groupHTML(title, sub, fields){
+  return `<div class="group"><h4>${title}</h4>${sub?`<p class="sub">${sub}</p>`:''}${fields.map(fieldHTML).join('')}</div>`;
+}
+function permHTML(name, badge, desc, segs, chips){
+  return `<div class="perm">
+    <div class="h"><span class="name">${name}</span>${badge||''}<span class="sp"></span>
+      <div class="seg">${segs.map(s=>`<button class="${s.on?'on '+s.cls:''}">${s.label}</button>`).join('')}</div></div>
+    ${desc?`<div class="d">${desc}</div>`:''}
+    ${chips?`<div class="chips">${chips.map(c=>`<span class="chip">${c}<button>×</button></span>`).join('')}<button class="btn" style="padding:2px 9px;font-size:11px">+ 添加</button></div>`:''}
+  </div>`;
+}
+function actHTML(lines){ return `<div class="act">${lines.join('\n')}</div>`; }
+function banner(txt, cls){ return `<div class="banner ${cls||''}">${txt}</div>`; }
+
+/* ============ 每个 tab 的内容 ============ */
+function pane(c, tab){
+  if (tab === 'overview') return `
+    ${banner('这个扩展在 Ginno 里的注册信息，来自运行时上报。')}
+    <div class="group"><h4>它接入了什么</h4>
+      <div class="field" style="grid-template-columns:1fr 1fr">
+        <div><div class="f-label">监听/提供</div><div class="f-desc">${c.name==='claude-music'?'SessionStart（classic shell）':'turn.complete · ui.render'}</div></div>
+        <div><div class="f-label">调用能力</div><div class="f-desc">${c.name==='claude-music'?'shell 命令（受 grants 管控）':'session.usage · $.state'}</div></div>
+      </div></div>
+    <div class="group"><h4>设置摘要</h4>
+      <p class="sub">${CUR==='next'?'这个 mod 没有声明任何可配置项。':'3 组 6 项，2 项改过默认值。'}</p>
+      ${CUR==='next'?'':`<button class="btn" onclick="switchTab('settings')">打开设置 →</button>`}
+    </div>`;
+
+  if (tab === 'install') return `
+    ${banner('内置连接器的安装引导，和 Claude Mod 的安装来源共用同一个 installSteps 契约。')}
+    <ol class="steps">
+      <li><b>装扩展文件</b>Ginno 已把扩展放到 ~/.ginno/browser-extension。</li>
+      <li><b>打开 Chrome 扩展页</b>地址栏输入 chrome://extensions 并回车。</li>
+      <li><b>开启开发者模式</b>右上角开关。</li>
+      <li><b>加载已解压的扩展</b>选择刚才的文件夹。</li>
+      <li><b>等待回连</b>看到 Ginno 出现在列表即成功。</li>
+    </ol>
+    <div class="field" style="grid-template-columns:1fr auto;margin-top:8px">
+      <div><div class="f-label">扩展目录</div><div class="f-desc"><code>~/.ginno/browser-extension</code></div></div>
+      <button class="btn">在 Finder 中显示</button>
+    </div>`;
+
+  if (tab === 'settings') {
+    if (CUR === 'chrome') return `
+      ${banner('保存后即时下发给扩展，不用重连。')}
+      ${groupHTML('行为', '浏览器轨的默认行为。', [
+        {label:'启用', type:'switch', value:true, def:true},
+        {label:'Tab 可见范围', type:'select', value:'group', def:'group', desc:'围栏模式只看 Ginno 组里的 tab。',
+          options:[{value:'group',label:'仅 Ginno 组（推荐）'},{value:'all',label:'全部 tab'}]},
+        {label:'新开 tab 时把 Chrome 带到前台', type:'switch', value:true, def:true},
+      ])}
+      ${groupHTML('保护', '这些域名上的操作需要你确认。', [
+        {label:'受保护域名', type:'tags', value:['mail.google.com','*.bank.com'], def:[], defaultLabel:'（空）'},
+      ])}`;
+    if (CUR === 'dingtalk') return `
+      ${banner('填好凭证并启用后，连接器会在几秒内连上 Stream。')}
+      ${groupHTML('凭证', '', [
+        {label:'AppKey', type:'text', value:'', def:''},
+        {label:'AppSecret', type:'secret', value:'', def:'', badge:'敏感'},
+        {label:'robotCode', type:'text', value:'', def:'', desc:'媒体上传需要；留空沿用 AppKey。'},
+      ])}
+      ${groupHTML('接入', '', [
+        {label:'启用', type:'switch', value:false, def:false},
+        {label:'允许的 staffId', type:'tags', value:[], def:[], defaultLabel:'（所有人）', desc:'空 = 应用可见范围内的所有人都能驱动 agent。'},
+      ])}`;
+    if (CUR === 'vibe') return `
+      ${banner('需要安装 Vibe Island 直装版（≥1.0.53）。')}
+      ${groupHTML('显示', '', [{label:'启用', type:'switch', value:true, def:false}])}`;
+    if (CUR === 'profile') return `
+      ${banner('这是一个独立的 Chrome profile，和你的日常浏览器登录态隔离。')}
+      ${groupHTML('实例', '', [
+        {label:'启用', type:'switch', value:true, def:true},
+        {label:'无头模式', type:'switch', value:false, def:false, desc:'不显示浏览器窗口（操作也不可见，不推荐）。'},
+      ])}`;
+    if (CUR === 'next') return `${banner('这个 mod 没有声明可配置项——这里不应该放一个空的 JSON 编辑框。', 'warn')}`;
+    if (CUR === 'music') return `
+      ${banner('classic hooks 插件：跑的是真 shell 命令，没有 broker 的能力边界。危险类别默认「询问」= 拒绝并提示；具体命令去「权限」页审。', 'warn')}
+      ${groupHTML('生命周期', '', [{label:'启用', type:'switch', value:true, def:true}])}`;
+    // token-weather
+    return `
+      ${banner('保存后会<b style="color:#fff">重新加载这个 mod</b>以应用设置。')}
+      ${groupHTML('显示', '输入框上方 band 的呈现方式。', [
+        {label:'单位', type:'select', value:'imperial', def:'metric', options:[{value:'metric',label:'公制（°C）'},{value:'imperial',label:'英制（°F）'}]},
+        {label:'显示上下文进度条', type:'switch', value:true, def:true},
+      ])}
+      ${groupHTML('刷新', '仅在会话运行中生效。', [
+        {label:'刷新间隔（秒）', type:'number', value:60, def:30, desc:'两次读取用量之间的最小间隔。', hint:'范围 5–300；超出 mod 会拒绝加载。'},
+        {label:'空闲时暂停', type:'switch', value:false, def:false},
+      ])}
+      ${groupHTML('网络', '这里的域名会建议加入「权限」页的 http.fetch 白名单。', [
+        {label:'API 主机', type:'text', value:'', def:'', placeholder:'api.weather.example', defaultLabel:'（空）', hint:'保存时会提示需要在权限页放行该域名。', warn:true},
+        {label:'API Key', type:'secret', value:'sk-live-9f2a…', def:'', badge:'敏感', desc:'只保存在本机 settings.json。', defaultLabel:'（未设置）'},
+      ])}
+      <details class="adv"><summary>高级：直接编辑 config JSON <span class="badge b-mute" style="margin-left:auto">仅调试用</span></summary>
+        <div class="body"><textarea spellcheck="false">${JSON.stringify({units:'imperial',showContextBar:true,refreshSeconds:60,pauseWhenIdle:false,apiHost:'',apiKey:''},null,2)}</textarea></div>
+      </details>`;
+  }
+
+  if (tab === 'policy') return `
+    ${banner('钉钉侧的行为策略，和「配置」分开——这类连接器需要自己的页签。')}
+    ${groupHTML('会话', '', [
+      {label:'会话策略', type:'select', value:'per_user', def:'per_user', desc:'每个 staffId 一个会话，或每个群一个共享会话。',
+        options:[{value:'per_user',label:'每人独立会话'},{value:'per_conversation',label:'每个群共享会话'}]},
+      {label:'ask_user 超时（秒）', type:'number', value:600, def:600, desc:'超时自动跳过挂起的问题。'},
+    ])}
+    ${groupHTML('工具', '', [
+      {label:'工具策略', type:'select', value:'confirm_highrisk', def:'confirm_highrisk',
+        options:[{value:'readonly',label:'只读工具'},{value:'confirm_highrisk',label:'危险工具需确认'},{value:'all',label:'不限制'}]},
+    ])}`;
+
+  if (tab === 'perms') return `
+    ${banner('权限按<b style="color:#fff">能力</b>授予，在调用发生前由 broker 强制。注意：它管的是 $ 调用，不是进程沙箱。', 'warn')}
+    ${permHTML('fs.write','<span class="badge b-mute">工作区写</span>','写入 workspace 内的文件；只读不受限。',
+      [{label:'拒绝',on:true,cls:'deny'},{label:'允许'}])}
+    ${permHTML('http.fetch','','允许访问的域名。',
+      [{label:'允许 2 个域名',on:true,cls:'allow'},{label:'拒绝全部'}],['api.weather.example','*.open-meteo.com'])}
+    ${permHTML('process.run','<span class="badge b-mute">未授权</span>','启动子进程（argv 白名单）。',
+      [{label:'拒绝',on:true,cls:'deny'},{label:'允许'}])}
+    ${permHTML('env.get','','可读的环境变量名；默认只能读 PATH / HOME / GINNO_*。',
+      [{label:'默认白名单',on:true,cls:'allow'},{label:'自定义'}])}
+    ${CUR==='music' ? `<div class="group" style="margin-top:16px"><h4>classic hooks</h4>
+      <p class="sub">危险类别默认「询问」= 拒绝并 toast 提示。</p>
+      ${permHTML('SessionStart','<span class="badge b-warn">install · settings-write</span>',
+        '扫描到 brew install mpv 与 ~/.claude/settings.json 写入。',
+        [{label:'询问',on:true,cls:'ask'},{label:'允许'},{label:'拒绝'}])}</div>` : ''}`;
+
+  if (tab === 'activity') return `
+    <div class="group"><h4>最近活动</h4>
+      <p class="sub">加载、重载、被拒绝的调用都留痕；完整日志在 <code>~/.ginno/logs/${CUR==='chrome'?'connector-chrome-extension':(CUR==='dingtalk'?'connector-dingtalk':'mod-'+CUR)}.log</code>。</p>
+      ${actHTML([
+        '<span class="t">14:02:11</span> <span class="ok">connected</span>  ' + (CUR==='chrome'?'Chrome · extension v2.1':'mods broker ready'),
+        '<span class="t">14:23:40</span> <span class="ok">state.set</span>  session=3f7a',
+        '<span class="t">14:24:02</span> <span class="wa">reloaded</span>  config changed (refreshSeconds 30→60)',
+        '<span class="t">14:40:19</span> <span class="er">denied</span>  http.fetch api.other.example (not granted)',
+      ])}
+    </div>
+    <div class="group"><h4>兼容度</h4>
+      <div class="field" style="grid-template-columns:1fr 1fr">
+        <div><div class="f-label">注册事件</div><div class="f-desc">2 / 2 已支持</div></div>
+        <div><div class="f-label">$ 调用</div><div class="f-desc">3 / 3 已实现</div></div>
+      </div>
+    </div>`;
+  return '';
+}
+
+/* ============ 抽屉壳 ============ */
+function openDrawer(id, tab){
+  CUR = id; CUR_TAB = tab || (CONNECTORS[id].tabs[0][0]);
+  const c = CONNECTORS[id];
+  document.getElementById('d-name').textContent = c.name;
+  document.getElementById('d-meta').textContent = c.meta;
+  document.getElementById('d-kind').textContent = c.kind;
+  const ico = document.getElementById('d-ico');
+  ico.className = 'ico ' + (c.icoCls||''); ico.textContent = c.ico;
+  document.getElementById('scrim').classList.add('on');
+  document.getElementById('drawer').classList.add('on');
+  renderTabs();
+}
+function renderTabs(){
+  const c = CONNECTORS[CUR];
+  const tabs = document.getElementById('d-tabs');
+  tabs.innerHTML = c.tabs.map(([k,label])=>`<button class="${k===CUR_TAB?'on':''}" onclick="switchTab('${k}')">${label}</button>`).join('');
+  document.getElementById('d-body').innerHTML = pane(c, CUR_TAB);
+  const settingsLike = CUR_TAB === 'settings' || CUR_TAB === 'policy';
+  const sb = document.getElementById('d-savebar');
+  sb.classList.toggle('hidden', !settingsLike);
+  if (settingsLike) countModified();
+}
+function switchTab(k){ CUR_TAB = k; renderTabs(); }
+function closeDrawer(){
+  document.getElementById('scrim').classList.remove('on');
+  document.getElementById('drawer').classList.remove('on');
+}
+
+/* ============ 字段交互 ============ */
+function esc(v){ return String(v ?? '').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function markField(el, def){
+  const f = el.closest('.field');
+  const v = String(el.value ?? '').trim();
+  const mod = v !== String(def);
+  f.classList.toggle('modified', mod);
+  const label = f.querySelector('.f-label');
+  let pill = Array.from(label.querySelectorAll('.badge')).find(b=>b.textContent==='已修改');
+  if (mod && !pill){ pill=document.createElement('span'); pill.className='badge b-mute'; pill.textContent='已修改'; label.appendChild(pill); }
+  else if (!mod && pill){ pill.remove(); }
+  countModified();
+}
+function toggleSwitch(el, def){
+  el.classList.toggle('on');
+  const f = el.closest('.field');
+  f.classList.toggle('modified', String(el.classList.contains('on')) !== String(def));
+  countModified();
+}
+function resetField(btn){
+  const f = btn.closest('.field'); const def = f.dataset.default;
+  const sel=f.querySelector('select'), inp=f.querySelector('input'), sw=f.querySelector('.switch');
+  if (sel) sel.value = def;
+  if (inp) inp.value = def;
+  if (sw) sw.classList.toggle('on', def === 'true');
+  f.classList.remove('modified');
+  const pill = Array.from(f.querySelectorAll('.badge')).find(b=>b.textContent==='已修改'); if (pill) pill.remove();
+  countModified();
+}
+function resetAll(){ document.querySelectorAll('#d-body .field.modified .reset').forEach(r=>resetField(r)); }
+function countModified(){
+  const n = document.querySelectorAll('#d-body .field.modified').length;
+  const sb = document.getElementById('d-savebar');
+  sb.querySelector('.cnt').textContent = n ? (n+' 项已修改') : '没有未保存的更改';
+  sb.querySelector('.cnt').style.color = n ? 'var(--yellow)' : 'var(--faint)';
+  sb.querySelector('.btn.primary').disabled = !n;
+}
+function saveAll(){
+  const sb = document.getElementById('d-savebar');
+  sb.querySelector('.cnt').textContent = '已保存 · 正在应用…';
+  sb.querySelector('.cnt').style.color = 'var(--cyan)';
+  sb.querySelector('.btn.primary').disabled = true;
+  setTimeout(()=>{
+    sb.querySelector('.cnt').textContent = CUR==='weather' ? '已应用（mod 已重载）' : '已应用';
+    sb.querySelector('.cnt').style.color = 'var(--green)';
+    setTimeout(countModified, 1200);
+  }, 1100);
+}
+function toggleSecret(btn){
+  const input = btn.parentElement.querySelector('.secret-input');
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.textContent = show ? '隐藏' : '显示';
+}
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
+</script>
+</body>
+</html>
