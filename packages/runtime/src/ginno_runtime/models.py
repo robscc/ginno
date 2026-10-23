@@ -97,13 +97,105 @@ def _reasoning_chat_openai() -> type:
         def _get_request_payload(
             self, input_, *, stop: list[str] | None = None, **kwargs: Any
         ) -> dict:
-            payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            messages = _with_interrupted_tool_results(
+                self._convert_input(input_).to_messages()
+            )
+            payload = super()._get_request_payload(messages, stop=stop, **kwargs)
             if self.reasoning_passthrough:
-                _replay_reasoning_content(self._convert_input(input_).to_messages(), payload)
+                _replay_reasoning_content(messages, payload)
             return payload
 
     _REASONING_CLS = ReasoningChatOpenAI
     return _REASONING_CLS
+
+
+def _with_interrupted_tool_results(messages: list[Any]) -> list[Any]:
+    """Make every assistant ``tool_calls`` batch answerable for the provider.
+
+    Two shapes break the OpenAI/Anthropic contract, and both have been seen in
+    live sessions:
+
+    * a ``tool_calls`` message with no answers at all — a turn killed between
+      its assistant step committing and the tools node running (app quit /
+      sidecar rebuild), or a hook block that appended a synthetic assistant
+      message instead of a tool result;
+    * a tool result that does NOT immediately follow its assistant because two
+      assistant tool-call messages were committed back to back
+      (``[AI(X), AI(Y), Tool(X)]``, 2026-10-23 session 4e5b9f89). The real
+      response then lands after the wrong assistant and the provider reports
+      the call as unanswered.
+
+    Repair, on the payload copy only (persisted history is untouched):
+
+    * answers are re-attached directly after their assistant, in call order —
+      a healthy history is a no-op;
+    * missing answers get the same ``(interrupted)`` placeholders the stop
+      heal uses;
+    * a ``ToolMessage`` whose call no longer exists anywhere in its turn is
+      dropped — a provider rejects it as "not a response to a tool call".
+
+    Segments are split on user/system messages; tool results never cross one,
+    so the repair can never move an answer into a different turn.
+    """
+    from langchain_core.messages import (
+        AIMessage,
+        HumanMessage,
+        SystemMessage,
+        ToolMessage,
+    )
+
+    out: list[Any] = []
+
+    def _call_ids(m: Any) -> list[tuple[str, str]]:
+        ids: list[tuple[str, str]] = []
+        for attr in ("tool_calls", "invalid_tool_calls"):
+            for tc in getattr(m, attr, None) or []:
+                if isinstance(tc, dict) and tc.get("id"):
+                    ids.append((str(tc["id"]), str(tc.get("name") or "")))
+        return ids
+
+    def _flush_segment(segment: list[Any]) -> None:
+        by_id: dict[str, Any] = {}
+        for m in segment:
+            if isinstance(m, ToolMessage):
+                tid = str(getattr(m, "tool_call_id", None) or "")
+                if tid and tid not in by_id:
+                    by_id[tid] = m
+        claimed: set[str] = set()
+        for m in segment:
+            if isinstance(m, ToolMessage):
+                continue  # re-emitted next to its call, or dropped as orphan
+            out.append(m)
+            if not isinstance(m, AIMessage):
+                continue
+            for tid, name in _call_ids(m):
+                if tid in claimed:
+                    continue
+                claimed.add(tid)
+                answer = by_id.get(tid)
+                if answer is not None:
+                    out.append(answer)
+                else:
+                    out.append(
+                        ToolMessage(
+                            content="(interrupted)",
+                            tool_call_id=tid,
+                            name=name or None,
+                        )
+                    )
+
+    segment: list[Any] = []
+    for m in messages:
+        if isinstance(m, (HumanMessage, SystemMessage)):
+            if segment:
+                _flush_segment(segment)
+                segment = []
+            out.append(m)
+        else:
+            segment.append(m)
+    if segment:
+        _flush_segment(segment)
+    return out
 
 
 def _reasoning_text(message: Any) -> str | None:
@@ -149,11 +241,14 @@ def _replay_reasoning_content(messages: list[Any], payload: dict) -> None:
     langchain-openai's ``_convert_message_to_dict`` sends only the official
     OpenAI message shape, so reasoning never round-trips and DeepSeek's
     thinking mode answers 400 ("The `reasoning_content` in the thinking mode
-    must be passed back to the API"). Its rule, verified against the live API:
-    **every** assistant message that carries ``tool_calls`` must replay
-    ``reasoning_content`` — older turns included, and content-only turns may
-    omit it. A turn with no reasoning at all (session switched over from a
-    non-thinking provider) is satisfied by an empty string.
+    must be passed back to the API"). Verified against the live API
+    (2026-10-23): **every** assistant message that carries ``tool_calls`` must
+    replay it, and so must the final assistant message of the request even
+    when it has no tool calls (a synthetic tail — a hook-blocked result, an
+    injected notice — otherwise 400s). Mid-history content-only turns were
+    tolerated, but the documented contract asks for all of them, and an empty
+    string is accepted; filling every assistant message keeps the rule simple
+    and covers both shapes.
 
     The wire list is 1:1 with ``messages`` on the chat-completions path; any
     other shape (Responses API, pre-converted input) is left untouched.
@@ -165,10 +260,12 @@ def _replay_reasoning_content(messages: list[Any], payload: dict) -> None:
         if not isinstance(msg_dict, dict) or msg_dict.get("role") != "assistant":
             continue
         rc = _reasoning_text(message)
-        if rc is None and msg_dict.get("tool_calls"):
+        if rc is None:
+            # Nothing to replay (a turn from a non-thinking provider, or a
+            # synthetic assistant message). The field must still be present;
+            # DeepSeek accepts an empty string.
             rc = ""
-        if rc is not None:
-            msg_dict["reasoning_content"] = rc
+        msg_dict["reasoning_content"] = rc
 
 
 # Lazily-built Responses-API class shared by every build (same pattern as
@@ -225,6 +322,14 @@ def _responses_chat_openai() -> type:
     from langchain_openai import ChatOpenAI
 
     class ResponsesReasoningChatOpenAI(ChatOpenAI):
+        def _get_request_payload(
+            self, input_, *, stop: list[str] | None = None, **kwargs: Any
+        ) -> dict:
+            messages = _with_interrupted_tool_results(
+                self._convert_input(input_).to_messages()
+            )
+            return super()._get_request_payload(messages, stop=stop, **kwargs)
+
         def _stream_responses(self, messages, stop=None, run_manager=None, **kwargs):
             for gen in super()._stream_responses(
                 messages, stop=stop, run_manager=run_manager, **kwargs
@@ -239,6 +344,31 @@ def _responses_chat_openai() -> type:
 
     _RESPONSES_CLS = ResponsesReasoningChatOpenAI
     return _RESPONSES_CLS
+
+# Lazily-built Anthropic class (same pattern as ReasoningChatOpenAI): the
+# provider needs the same dangling-tool_call repair as the OpenAI path.
+_ANTHROPIC_CLS: type | None = None
+
+
+def _healing_chat_anthropic() -> type:
+    global _ANTHROPIC_CLS
+    if _ANTHROPIC_CLS is not None:
+        return _ANTHROPIC_CLS
+
+    from langchain_anthropic import ChatAnthropic
+
+    class HealingChatAnthropic(ChatAnthropic):
+        def _get_request_payload(
+            self, input_, *, stop: list[str] | None = None, **kwargs: Any
+        ) -> dict:
+            messages = _with_interrupted_tool_results(
+                self._convert_input(input_).to_messages()
+            )
+            return super()._get_request_payload(messages, stop=stop, **kwargs)
+
+    _ANTHROPIC_CLS = HealingChatAnthropic
+    return _ANTHROPIC_CLS
+
 
 def _sampling(cfg: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     """Sampling params for the chat constructors.
@@ -372,8 +502,6 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         key = cfg.get("api_key")
         if not key:
             raise ValueError("Anthropic API key is empty — fill it in Settings → Model API")
-        from langchain_anthropic import ChatAnthropic
-
         chat_kwargs: dict[str, Any] = dict(
             model=model or "claude-3-7-sonnet-20250219",
             api_key=key,
@@ -389,7 +517,7 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         # Anthropic API uses x-api-key, so this is opt-in via `bearer_auth`.
         if cfg.get("bearer_auth"):
             chat_kwargs["default_headers"] = {"Authorization": f"Bearer {key}"}
-        m = ChatAnthropic(**chat_kwargs)
+        m = _healing_chat_anthropic()(**chat_kwargs)
         if server_web_search_on(cfg):
             m = _anthropic_with_server_search(m, cfg)
         return m

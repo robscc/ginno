@@ -246,6 +246,7 @@ def test_build_model_dispatch_three_protocols(monkeypatch):
     # reset the cached lazily-built classes so the fakes are picked up
     monkeypatch.setattr(M, "_REASONING_CLS", None)
     monkeypatch.setattr(M, "_RESPONSES_CLS", None)
+    monkeypatch.setattr(M, "_ANTHROPIC_CLS", None)
     monkeypatch.setattr("langchain_anthropic.ChatAnthropic", _FakeModel)
     monkeypatch.setattr("langchain_openai.ChatOpenAI", _FakeModel)
 

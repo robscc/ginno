@@ -222,11 +222,13 @@ def test_payload_fills_empty_reasoning_for_tool_call_turns(monkeypatch):
     assert out["messages"][1]["reasoning_content"] == ""
 
 
-def test_payload_leaves_content_only_turns_alone(monkeypatch):
+def test_payload_fills_reasoning_for_content_only_turns(monkeypatch):
+    # DeepSeek 400s when the request's assistant messages omit the field —
+    # including a synthetic content-only tail (hook-blocked result, notice).
     from langchain_core.messages import HumanMessage
 
     out = _payload(monkeypatch, [HumanMessage("hi"), _ai(content="just text")])
-    assert "reasoning_content" not in out["messages"][1]
+    assert out["messages"][1]["reasoning_content"] == ""
 
 
 def test_official_openai_keeps_field_off(monkeypatch):
