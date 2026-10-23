@@ -972,7 +972,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </div>
             ) : null,
           )}
-          {g.sessions.length === 0 && (
+          {/* 首屏骨架：ready 之前 sessions 还是空数组，直接渲染空态会在每次冷启动/
+              刷新时闪一下「还没有会话」（SSR 也含这句文案）。 */}
+          {!g.ready && (
+            <div className="space-y-2 px-2.5 py-3" aria-hidden>
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="h-3.5 w-3.5 shrink-0 animate-pulse rounded bg-line2/70" />
+                  <span className="h-3 flex-1 animate-pulse rounded bg-line2/50" />
+                </div>
+              ))}
+            </div>
+          )}
+          {g.ready && g.sessions.length === 0 && (
             <div className="px-2.5 py-2 text-xs leading-relaxed text-faint">
               {t("empty.noSessions")}
               <br />
@@ -980,7 +992,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           )}
           {/* C+ 方案③：有会话但当前筛选下为空——独立兜底文案，避免误以为没有会话 */}
-          {g.sessions.length > 0 && sortedSessions.length === 0 && (
+          {g.ready && g.sessions.length > 0 && sortedSessions.length === 0 && (
             <div className="px-2.5 py-2 text-xs leading-relaxed text-faint">
               {t("empty.filtered")}
               <br />

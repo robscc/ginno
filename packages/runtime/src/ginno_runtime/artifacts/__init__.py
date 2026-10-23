@@ -5,6 +5,7 @@ from .store import (
     delete_artifact,
     get_artifact,
     list_artifacts,
+    prune_artifacts,
     set_ref,
     update_artifact,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "delete_artifact",
     "get_artifact",
     "list_artifacts",
+    "prune_artifacts",
     "set_ref",
     "update_artifact",
 ]

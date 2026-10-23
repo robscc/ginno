@@ -194,13 +194,17 @@ async def rollback_workflow_endpoint(wf_id: str, data: dict) -> dict:
 
 @router.get("/api/workflows/{wf_id}/doctor")
 async def doctor_workflow_endpoint(wf_id: str) -> dict:
-    """Static dataflow lint (master-plan §4.2): no LLM, millisecond-fast."""
+    """Static dataflow lint + recent-run evidence (master-plan §4.2 / WF-02)."""
     wf = wf_store.get_def(wf_id)
     if not wf:
         raise HTTPException(status_code=404, detail="workflow not found")
     from ..workflows import doctor as wf_doctor
 
-    result = wf_doctor.run_doctor(wf.get("dsl") or {})
+    # Newest first; the doctor only needs a small window, scoped to this version.
+    runs = wf_store.list_runs(wf_id)[:5]
+    result = wf_doctor.run_doctor(
+        wf.get("dsl") or {}, runs=runs, version=wf.get("version")
+    )
     return {"ok": True, **result}
 
 

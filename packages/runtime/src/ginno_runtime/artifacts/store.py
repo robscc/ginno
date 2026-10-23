@@ -9,6 +9,7 @@ also register explicitly via the artifact_register tool.
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from typing import Any
@@ -82,6 +83,34 @@ def delete_artifact(slug: str, artifact_id: str) -> bool:
         return False
     _write(slug, kept)
     return True
+
+
+def prune_artifacts(slug: str, valid_session_ids: set[str]) -> int:
+    """Drop entries that can only fail when clicked (startup hygiene, DATA-01).
+
+    Two shapes: ``kind == "file"`` whose ``ref`` no longer exists, and entries
+    whose owning session was deleted (its per-session upload dirs went with it).
+    Panel entries only — no files are touched. Returns how many were dropped.
+    """
+    items = _read(slug)
+    if not items:
+        return 0
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for it in items:
+        sid = it.get("session_id")
+        if sid and str(sid) not in valid_session_ids:
+            dropped += 1
+            continue
+        if it.get("kind") == "file":
+            ref = str(it.get("ref") or "")
+            if ref and not os.path.exists(ref):
+                dropped += 1
+                continue
+        kept.append(it)
+    if dropped:
+        _write(slug, kept)
+    return dropped
 
 
 def get_artifact(slug: str, artifact_id: str) -> dict[str, Any] | None:

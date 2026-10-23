@@ -35,6 +35,15 @@ async def lifespan(app: FastAPI):
     # _shutdown_run_tasks resolve at call time from the module-level (facade)
     # imports below — the app cannot start before this module fully imports.
     paths.ensure_layout()
+    # 数据卫生（app-iter-harness 04_ginno_ux 工单批，maintenance.py）：孤儿
+    # artifact、失效 workspace、无 agent 的历史会话、陈旧 last_error、重复标题。
+    # 幂等 + best-effort —— 任何一步失败都不阻止启动。
+    try:
+        from .maintenance import run_startup_maintenance
+
+        run_startup_maintenance()
+    except Exception:  # noqa: BLE001 — 启动绝不因清理失败而中断
+        _log.exception("startup_maintenance_failed (continuing)")
     # 委托子会话启动对账：上个进程的后台委托随重启消亡，running 态存量
     # 一律改判 error，避免侧栏出现永远转圈的委托行（2026-10-05）。
     try:
@@ -91,6 +100,15 @@ async def lifespan(app: FastAPI):
     from . import server_shared as _shared
 
     _shared.set_main_loop(asyncio.get_running_loop())
+    # UX-03：标题生成是后台任务，进程重启会丢掉失败的 job——启动时把
+    # 「待生成且超过 24h」的会话重新入队（assistant 文本从 checkpoint 回填）。
+    # 放在 set_main_loop 之后：生成任务经 spawn_bg 调度。
+    try:
+        from .maintenance import requeue_pending_titles
+
+        await requeue_pending_titles()
+    except Exception:  # noqa: BLE001
+        _log.exception("title requeue failed (continuing)")
     # Apply the user's system-proxy switch (Settings → 模型 API) before any
     # LLM client exists: verify / sessions / probes all ride httpx, whose
     # clients freeze their proxy map at init. Default honours OS proxies.

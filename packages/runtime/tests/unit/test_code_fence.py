@@ -354,11 +354,19 @@ def test_missing_root_dir_is_root_missing(tmp_path, tmp_path_factory):
 
 
 async def test_ghost_session_endpoint_returns_unknown_root():
-    """A session id that resolves nowhere yields the wire code, HTTP 200, so the
-    panel can render copy instead of an error page (`{ok, ...}` house style)."""
+    """A session id that resolves nowhere is a 404 JSON error (ticket API-03).
+
+    It used to be HTTP 200 ``{ok:false}`` so the panel could render copy, but
+    that made a dead session indistinguishable from a readable empty file for
+    every ``res.json()`` consumer."""
+    import json
+
     out = await code_panel.code_roots("default", "no-such-session")
-    assert out["ok"] is False
-    assert out["code"] == "unknown-root"
+    assert out.status_code == 404
+    body = json.loads(out.body)
+    assert body["ok"] is False
+    assert body["code"] == "unknown-root"
 
     listing = await code_panel.code_list("default", "no-such-session", "session", "")
-    assert listing["ok"] is False and listing["code"] == "unknown-root"
+    assert listing.status_code == 404
+    assert json.loads(listing.body)["code"] == "unknown-root"

@@ -559,6 +559,18 @@ async def list_agents_endpoint() -> list[dict]:
     return [a.to_dict() for a in agents_reg.list_agents()]
 
 
+@router.get("/api/agents/{agent_id}")
+async def get_agent_endpoint(agent_id: str) -> dict:
+    """Read one agent. Unknown id → 404 JSON (the GET used to fall through to
+    the SPA catch-all and answer 200 HTML)."""
+    agent = agents_reg.get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "unknown agent"}
+        )
+    return agent.to_dict()
+
+
 @router.get("/api/subagent_types")
 async def list_subagent_types_endpoint() -> list[dict]:
     """Agents 页 Sub-agent models 区块的数据源（model-assignment-design.md

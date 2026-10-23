@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from .. import agents as agents_reg
@@ -743,10 +743,15 @@ async def list_sessions(project_slug: str | None = None) -> list[dict]:
 
 
 @router.get("/api/sessions/{session_id}")
-async def get_session(session_id: str) -> dict | None:
+async def get_session(session_id: str) -> dict:
     m = _resolve_session_meta(session_id)
     if m is None:
-        return None
+        # A literal JSON `null` with 200 made `res.json()` consumers blow up on
+        # field access; an unknown session is a 404 (contract: API errors are
+        # JSON with a real status code).
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "unknown session"}
+        )
     return {k: v for k, v in m.items() if k != "graph"} | {"unread": _session_is_unread(m)}
 
 
@@ -1214,6 +1219,35 @@ def apply_session_context(
     }
 
 
+@router.get("/api/sessions/{session_id}/context")
+async def get_session_context(session_id: str) -> dict:
+    """Read the session's mount set (read companion of the PUT above).
+
+    Without this route the GET fell through to the SPA catch-all and answered
+    200 HTML — clients reading it got a parse error instead of a 404.
+    """
+    s = _SESSIONS.get(session_id)
+    found = None if s else _find_meta(session_id)
+    if s is None and found is None:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "unknown session"}
+        )
+    meta = s or found[0]
+    folder_ids = list(meta.get("context_folders") or [])
+    primary_id = meta.get("primary_folder") or None
+    dirs, primary_path = cf.resolve_session_dirs(folder_ids, primary_id)
+    return {
+        "ok": True,
+        "session": {
+            "id": session_id,
+            "context_folders": folder_ids,
+            "primary_folder": primary_id,
+        },
+        "context_dirs": dirs,
+        "primary_path": primary_path,
+    }
+
+
 @router.put("/api/sessions/{session_id}/context")
 async def put_session_context(session_id: str, req: PutSessionContextRequest) -> dict:
     """Replace the session's mount set (idempotent full replacement)."""
@@ -1228,7 +1262,9 @@ async def get_session_history(session_id: str) -> dict:
     """Return the persisted chat history for a session, in the UI block format."""
     slug = _session_slug(session_id)
     if not slug:
-        return {"ok": True, "messages": []}
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "unknown session"}
+        )
     cfg = {"configurable": {"thread_id": session_id}}
     tup = await FileCheckpointer(slug).aget_tuple(cfg)
     if not tup or not tup.checkpoint:

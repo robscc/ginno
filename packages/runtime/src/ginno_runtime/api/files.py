@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 
 from .. import artifacts as art_store
 from .. import files as files_mod
@@ -50,6 +51,20 @@ async def list_artifacts_endpoint(
     for a in items:
         a["session_title"] = titles.get(a.get("session_id") or "", "")
     return items
+
+
+@router.get("/api/artifacts/{artifact_id}")
+async def get_artifact_endpoint(
+    artifact_id: str, project_slug: str = "default"
+) -> dict:
+    """Read one artifact entry. Unknown id → 404 JSON (without this route the
+    GET fell through to the SPA catch-all and returned 200 HTML)."""
+    art = art_store.get_artifact(project_slug, artifact_id)
+    if art is None:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "unknown artifact"}
+        )
+    return art
 
 
 @router.delete("/api/artifacts/{artifact_id}")
@@ -377,7 +392,13 @@ async def file_preview_endpoint(
 
     entry = files_mod.get_by_id(file_id)
     if entry is None:
-        return {"ok": False, "error": f"file not found: {file_id}"}
+        # Same contract as /download: missing file is a 404, and the body is
+        # JSON either way (the old 200 + ok:false made preview and download
+        # disagree on the status code for the identical failure).
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": f"file not found: {file_id}"},
+        )
     if not Path(entry["path"]).is_file() and entry.get("artifact_id"):
         # File may have been moved into the knowledge vault — heal the
         # registry entry (via its artifact) and retry from the new path.
@@ -392,7 +413,10 @@ async def file_preview_endpoint(
     except (files_ex.UnsupportedFormat, files_ex.ExtractorUnavailable) as e:
         return {"ok": False, "error": str(e)}
     except FileNotFoundError:
-        return {"ok": False, "error": "File has been moved or deleted"}
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "File has been moved or deleted"},
+        )
     except Exception as e:  # parse failure → actionable error, not 500
         return {"ok": False, "error": f"Preview failed: {type(e).__name__}: {e}"}
     # a fresh preview counts as "seen": clear the stale badge + sync mtime
@@ -441,10 +465,16 @@ async def file_download_endpoint(
 
     entry = files_mod.get_by_id(file_id)
     if entry is None:
-        raise HTTPException(status_code=404, detail=f"file not found: {file_id}")
+        raise HTTPException(
+            status_code=404,
+            detail={"ok": False, "error": f"file not found: {file_id}"},
+        )
     p = Path(entry["path"])
     if not p.is_file():
-        raise HTTPException(status_code=404, detail="File has been moved or deleted")
+        raise HTTPException(
+            status_code=404,
+            detail={"ok": False, "error": "File has been moved or deleted"},
+        )
     if fmt == "raw":
         from starlette.responses import FileResponse
 

@@ -464,6 +464,17 @@ def _err(code: str, message: str) -> dict:
     return {"ok": False, "code": code, "message": message}
 
 
+def _unknown_session(session_id: str) -> JSONResponse:
+    """400 (no session given) / 404 (session unknown) in the JSON error shape.
+
+    These endpoints used to answer 200 ``{"ok": false, "code": "unknown-root"}``,
+    so clients could not tell a dead session from a readable empty file."""
+    return JSONResponse(
+        status_code=400 if not (session_id or "").strip() else 404,
+        content=_err("unknown-root", f"Session not found or deleted: {session_id}"),
+    )
+
+
 # ---- endpoints ------------------------------------------------------------
 
 
@@ -472,7 +483,7 @@ async def code_roots(project_slug: str = "default", session_id: str = "") -> dic
     """Every root the panel can browse: mounts (primary first) + session."""
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"Session not found or deleted: {session_id}")
+        return _unknown_session(session_id)
     return {"ok": True, "roots": _list_roots(ctx)}
 
 
@@ -486,7 +497,7 @@ async def code_list(
     """One directory level. Heavy dirs are flagged ``hidden``, not omitted."""
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"Session not found or deleted: {session_id}")
+        return _unknown_session(session_id)
     try:
         target, root_info = resolve_code_target(ctx, root, path, write=False)
     except CodeAccessError as e:
@@ -519,7 +530,7 @@ async def code_read(
     files and returns ``text: null`` for binary ones."""
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"Session not found or deleted: {session_id}")
+        return _unknown_session(session_id)
     try:
         target, root_info = resolve_code_target(ctx, root, path, write=False)
     except CodeAccessError as e:
@@ -839,7 +850,7 @@ async def code_write(req: dict) -> Response:
 
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"Session not found or deleted: {session_id}")
+        return _unknown_session(session_id)
     try:
         # The `ro` tier and the `.git` rule live in here — same fence as `read`,
         # deliberately not a second copy of it (design §4.6).
@@ -1178,7 +1189,7 @@ async def code_git(
     """
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"Session not found or deleted: {session_id}")
+        return _unknown_session(session_id)
     try:
         # Same fence as every other endpoint: an unreachable root gets the same
         # error here as it would from `list`/`read`.
@@ -1444,7 +1455,7 @@ async def code_search(
     """
     ctx = _session_ctx(project_slug, session_id)
     if ctx is None:
-        return _err("unknown-root", f"Session not found or deleted: {session_id}")
+        return _unknown_session(session_id)
     try:
         # Same fence as `list`/`read`: an unreachable root gets the same error
         # code here, and the walk stays inside the resolved root.

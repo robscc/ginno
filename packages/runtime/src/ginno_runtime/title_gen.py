@@ -16,6 +16,7 @@ auxiliary calls.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -23,6 +24,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from .models import build_model
 from .server_shared import _log, _push_session_event, spawn_bg
 from .session_meta import _find_meta, _session_meta_patch
+
+# A pending title older than this that still cannot be produced (dead provider
+# key, no assistant text, model refusals) stops retrying: the truncated
+# placeholder stays and the flag is cleared, instead of the session sitting
+# "pending" forever (UX-03: 3 sessions waited 3–22 days).
+PENDING_TITLE_GIVE_UP_HOURS = 24
 
 _TITLE_SYSTEM = (
     "You are a conversation titler. Read the first exchange of a conversation "
@@ -93,10 +100,40 @@ async def _run_title_gen(session_id: str, turn_id: str) -> None:
         await maybe_llm_title(session_id, turn_id)
     except Exception:
         # The truncated placeholder stays; pending remains armed so the next
-        # cleanly-completed turn retries.
+        # cleanly-completed turn retries (fresh sessions only — see below).
         _log.exception("title_llm_failed session=%s", session_id)
     finally:
         _TITLE_INFLIGHT.discard(session_id)
+        try:
+            _give_up_if_stuck(session_id)
+        except Exception:  # noqa: BLE001 — bookkeeping must not kill the task
+            _log.exception("title_llm_giveup_failed session=%s", session_id)
+
+
+def _give_up_if_stuck(session_id: str) -> None:
+    """Stop retrying a pending title that has been stuck past the cutoff.
+
+    Without this a session whose provider key is dead (observed: Bailian 401)
+    keeps ``title_llm_pending`` forever — the startup re-queue (maintenance)
+    would spawn a doomed call on every launch and the sidebar keeps the
+    truncated placeholder flagged as "still generating".
+    """
+    found = _find_meta(session_id)
+    if not found:
+        return
+    meta, slug = found
+    if not meta.get("title_llm_pending"):
+        return
+    created = float(meta.get("created") or 0)
+    if time.time() - created < PENDING_TITLE_GIVE_UP_HOURS * 3600:
+        return
+    _session_meta_patch(
+        slug,
+        session_id,
+        {"title_llm_pending": False, "title_seed": "", "title_assistant": ""},
+        touch=False,
+    )
+    _log.info("title_llm gave_up session=%s", session_id)
 
 
 async def maybe_llm_title(session_id: str, turn_id: str) -> None:

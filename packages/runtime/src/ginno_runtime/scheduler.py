@@ -584,7 +584,9 @@ async def _run_prompt_target(task: dict, row: dict) -> dict:
         project_slug=slug,
         workspace="",  # create_session 以每会话目录为准（忽略该字段）
         agent_id=target.get("agent_id"),
-        title=f"⏰ {task.get('name') or _('schedule.default_task_title')}",
+        # 同一定时任务每天都建会话：标题带日期，侧栏才分得清「今天」和
+        # 「上周三」的那一次（UX-02；历史存量由 maintenance 迁移补日期）。
+        title=f"⏰ {task.get('name') or _('schedule.default_task_title')} · {time.strftime('%m-%d')}",
         type="scheduled",
         provider=(model or {}).get("provider") or None,
         model=(model or {}).get("model") or None,

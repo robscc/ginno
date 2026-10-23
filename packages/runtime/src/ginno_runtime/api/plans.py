@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from ..plans import store, watcher
-from ..server_shared import _log
+from ..server_shared import _SESSIONS, _log
 from ..session_meta import _find_meta
 
 router = APIRouter()
@@ -20,8 +20,18 @@ def _slug_of(session_id: str) -> str:
     return (meta or {}).get("project_slug") or "default"
 
 
+def _require_session(session_id: str) -> None:
+    """An unknown session is a 404, not an empty plan list — the frontend must
+    be able to tell "deleted" from "no plans yet"."""
+    if not _find_meta(session_id) and session_id not in _SESSIONS:
+        raise HTTPException(
+            status_code=404, detail={"ok": False, "error": "unknown session"}
+        )
+
+
 @router.get("/api/sessions/{session_id}/plans")
 async def list_plans_endpoint(session_id: str) -> list[dict]:
+    _require_session(session_id)
     return store.list_plans(_slug_of(session_id), session_id)
 
 

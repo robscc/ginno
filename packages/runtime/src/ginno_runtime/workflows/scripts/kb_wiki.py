@@ -86,10 +86,18 @@ def _cfg_vault():
 
 
 def kb_wiki_inventory(args: dict) -> dict:
-    """Diff Raw/ against the ledger → ``{files: [...], raw_total}``."""
+    """Diff Raw/ against the ledger → ``{plan: {files, raw_total, ...}}``.
+
+    The ``wiki-compile`` DSL declares ``writes: {"plan": {type: object}}`` and
+    iterates ``{{plan.files}}``, so the node contract is the nested ``plan``
+    object. The flat keys are kept for older callers/tests; returning only the
+    flat shape made every run die at the first node
+    (2026-10-10 run cbfa7e2b23: "key 'plan' missing or null").
+    """
     cfg, vault = _cfg_vault()
     if not cfg.usable or not vault.is_dir():
-        return {"files": [], "raw_total": 0, "error": "knowledge not configured"}
+        empty = {"files": [], "raw_total": 0}
+        return {**empty, "plan": dict(empty), "error": "knowledge not configured"}
     ledger = _load_ledger()
     files: list[dict] = []
     total = 0
@@ -115,21 +123,28 @@ def kb_wiki_inventory(args: dict) -> dict:
                     "reason": "new" if not e else "changed",
                 }
             )
-    return {
+    plan = {
         "files": files,
         "raw_total": total,
         "wiki_dir": cfg.wiki_dir,
         "raw_dir": cfg.raw_dir,
         "vault": str(vault),
     }
+    return {**plan, "plan": plan}
 
 
 def kb_wiki_finalize(args: dict) -> dict:
     """Absorb the compile step's ``compiled`` (doc/page pairs): mark the
-    ledger, regenerate INDEX.md, lint broken links → ``report``."""
+    ledger, regenerate INDEX.md, lint broken links → ``{report: {...}}``.
+
+    ``fin`` declares ``writes: {"report": {type: object}}`` and the ``fix``
+    agent reads ``report.broken`` from the workflow context, so the report is
+    nested; flat keys stay for compatibility.
+    """
     cfg, vault = _cfg_vault()
     if not cfg.usable:
-        return {"marked": [], "indexed": 0, "broken": [], "error": "knowledge not configured"}
+        report = {"marked": [], "indexed": 0, "broken": []}
+        return {**report, "report": report, "error": "knowledge not configured"}
     ledger = _load_ledger()
     marked: list[str] = []
     for c in args.get("compiled") or []:
@@ -154,11 +169,12 @@ def kb_wiki_finalize(args: dict) -> dict:
     _save_ledger(ledger)
     index_text = maintenance.update_index(vault, cfg.wiki_dir)
     broken = maintenance.lint_links(vault, cfg.wiki_dir)
-    return {
+    report = {
         "marked": marked,
         "indexed": index_text.count("- [["),
         "broken": broken,
     }
+    return {**report, "report": report}
 
 
 def kb_wiki_lint(args: dict) -> dict:

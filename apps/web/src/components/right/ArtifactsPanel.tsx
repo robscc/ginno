@@ -550,7 +550,9 @@ export function ArtifactsPanel() {
       <div className="flex items-center px-4 pb-2 pt-4">
         <Boxes className="mr-2 h-4 w-4 text-muted" />
         <span className="text-sm font-semibold text-txt">{t("title")}</span>
-        <span className="ml-2 rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">{items.length}</span>
+        <span className="ml-2 rounded-full bg-card2 px-2 py-0.5 text-[11px] text-muted">
+          {g.ready ? items.length : "–"}
+        </span>
       </div>
       <div
         className="flex-1 space-y-1 overflow-y-auto px-3"
@@ -559,7 +561,15 @@ export function ArtifactsPanel() {
           if (!inspectorEditing) setHover(null);
         }}
       >
-        {items.length === 0 && (
+        {/* ready 之前列表还是空的：渲染骨架行，避免「0 + 空态」在冷启动时闪一下。 */}
+        {!g.ready &&
+          [0, 1, 2].map((i) => (
+            <div key={i} className="flex items-center gap-2 px-1 py-2" aria-hidden>
+              <span className="h-3.5 w-3.5 shrink-0 animate-pulse rounded bg-line2/70" />
+              <span className="h-3 flex-1 animate-pulse rounded bg-line2/50" />
+            </div>
+          ))}
+        {g.ready && items.length === 0 && (
           <div className="px-1 py-6 text-center text-xs text-faint">{t("empty")}</div>
         )}
         {items.map((a) => {

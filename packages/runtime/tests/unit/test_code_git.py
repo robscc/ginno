@@ -310,7 +310,7 @@ def test_git_reports_an_unknown_root_and_session(panel):
         "/api/code/git",
         params={"project_slug": SLUG, "session_id": "ghost", "root": "session"},
     )
-    assert r.status_code == 200
+    assert r.status_code == 404
     assert r.json()["ok"] is False and r.json()["code"] == "unknown-root"
 
 

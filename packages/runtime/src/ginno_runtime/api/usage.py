@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from .. import usage_store
 from ..server_shared import _SESSIONS, _USAGE_BY_SESSION
@@ -29,6 +29,17 @@ async def get_session_usage(session_id: str) -> dict:
     # 索引的 parent 链；单趟集合聚合（session_totals_many），不为每个
     # 子会话各扫一遍日期段。
     found = _find_meta(session_id)
+    if not found and session_id not in _SESSIONS:
+        # Unknown session → 404, EXCEPT when the persistent usage log still has
+        # rows for it: deleted sessions keep their billing-style usage data
+        # (design §3.3), and that read is the one that must keep working.
+        tree = usage_store.session_totals(session_id)
+        if not tree:
+            raise HTTPException(
+                status_code=404, detail={"ok": False, "error": "unknown session"}
+            )
+        tree["descendant_sessions"] = 0
+        return {"ok": True, "usage": tree}
     desc: list[dict] = []
     if found:
         _meta, _slug = found

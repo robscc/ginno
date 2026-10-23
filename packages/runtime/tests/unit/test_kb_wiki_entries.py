@@ -120,3 +120,20 @@ def test_slug_matches_page_naming():
     assert _slug("53%") == "53"
     assert _slug("   ") == "untitled"
     assert len(_slug("x" * 200)) <= 80
+
+
+def test_inventory_and_finalize_emit_the_dsl_writes_keys(tmp_path, monkeypatch):
+    """The wiki-compile DSL declares `writes: {plan|report: object}` and reads
+    `{{plan.files}}` / `report.broken`; the entries must return those nested
+    keys or every run dies at the node ("key 'plan' missing or null", run
+    cbfa7e2b23). The flat keys stay for older callers."""
+    monkeypatch.setenv("GINNO_HOME", str(tmp_path))
+    _vault(tmp_path)
+
+    inv = kb_wiki_inventory({})
+    assert inv["plan"]["files"] == inv["files"]
+    assert inv["plan"]["raw_total"] == inv["raw_total"]
+
+    rep = kb_wiki_finalize({"compiled": [{"doc": "Ginno/Raw/r.md", "page": "Test 报告"}]})
+    assert rep["report"]["marked"] == rep["marked"]
+    assert rep["report"]["broken"] == rep["broken"]
