@@ -20,6 +20,7 @@ from ... import artifacts as art_store
 from ... import files as files_mod
 from ... import projects as projects_mod
 from ... import server_shared as shared
+from ... import vibe_island as _vibe_island
 from ... import workflows as wf_store
 from ...classifier.middlewares import build_middlewares
 from ...graph import build_all_tools, build_graph, build_turn_context
@@ -419,6 +420,10 @@ async def _run_stream(
         await _push_session_event(session_id, "message.end", {}, turn_id)
         return
 
+    # Vibe Island notch:UserPromptSubmit(卡片进入 working,摘要=用户输入)。
+    # 用 mods 重写后的文本——与实际进 graph 的一致。开关关闭时 no-op,绝不抛。
+    _vibe_island.user_prompt(session_id, user_text)
+
     # Lazy MCP healing + graph refresh: a server that connects AFTER session
     # creation (late startup connect, recovered DNS, mid-session reload) must
     # still reach THIS turn's tool bindings. Retry is fire-and-forget with a
@@ -639,4 +644,9 @@ async def _run_stream(
 
 async def _run_resume(ws: WebSocket | None, graph, config: dict, resume_value: dict) -> None:
     """Resume the graph from a pending interrupt (e.g. permission ask)."""
+    # Vibe Island notch:用户已回答/批准,立刻清掉「待批准」提醒(后续 tool
+    # 事件/Stop 也会清,这里只是清得更早)。开关关闭时 no-op,绝不抛。
+    _sid = ((config or {}).get("configurable") or {}).get("thread_id", "")
+    if _sid:
+        _vibe_island.permission_result(_sid)
     await _stream_graph(graph, config, command=Command(resume=resume_value))

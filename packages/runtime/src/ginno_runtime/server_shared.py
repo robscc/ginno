@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from . import paths
+from . import vibe_island as _vibe_island
 
 _log = logging.getLogger("ginno.turn")
 _log.setLevel(logging.INFO)
@@ -449,6 +450,9 @@ async def _push_session_event(
     reconnects mid-stream."""
     if not session_id:
         return
+    # Vibe Island notch 状态收口之一(另一处是 engine 的 emit()):连接器
+    # 开关关闭时 no-op,映射在 vibe_island.on_turn_event,绝不抛。
+    _vibe_island.on_turn_event(session_id, event, data)
     socks = _SESSION_WS.get(session_id) or []
     alive: list[Any] = []
     for w in socks:

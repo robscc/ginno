@@ -484,6 +484,33 @@ pub fn run() {
                     }
                 }
             }
+            // Vibe Island 卡片点击 → macOS 按 manifest 的 jumpRule 打开
+            // ginno://session/<id>(scheme 注册在 Info.plist,tauri-bundler
+            // 自动合并)。RunEvent::Opened 只在 macOS/iOS/Android 上存在。
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                for url in urls {
+                    // 只认 ginno://session/<sid>;其余 URL 静默忽略。
+                    if url.scheme() != "ginno" || url.host_str() != Some("session") {
+                        shell_log(app_handle, &format!("deep_link ignored url={url}"));
+                        continue;
+                    }
+                    // sid 只允许 [A-Za-z0-9_-](会话 id 是 uuid hex;截断任何
+                    // 多余字符,防 query/fragment 混入 JS eval)。
+                    let sid: String = url
+                        .path()
+                        .trim_start_matches('/')
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                        .collect();
+                    if sid.is_empty() {
+                        shell_log(app_handle, &format!("deep_link empty sid url={url}"));
+                        continue;
+                    }
+                    shell_log(app_handle, &format!("deep_link session={sid}"));
+                    crate::notify::deep_link_open_session(app_handle, &sid);
+                }
+            }
             // Terminate the runtime when the app quits so it doesn't linger and
             // hold the port (kill_stale_sidecar would reclaim it on the next
             // start, but a clean exit is cleaner).

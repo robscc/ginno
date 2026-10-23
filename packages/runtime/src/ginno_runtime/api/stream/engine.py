@@ -25,6 +25,7 @@ from ... import artifacts as art_store
 from ... import files as files_mod
 from ... import paths, usage_store
 from ... import server_shared as shared
+from ... import vibe_island as _vibe_island
 from ... import workflows as wf_store
 from ...checkpointer import ABANDONED_TURNS
 from ...graph import BLOCK_PREFIX
@@ -908,6 +909,9 @@ async def _stream_graph(
         config["configurable"] = _cfg_conf
 
         def emit(event: str, data: dict) -> str:
+            # Vibe Island notch 状态收口(engine 的 safe_send 不走
+            # _push_session_event,所以这里单独埋):开关关闭时 no-op,绝不抛。
+            _vibe_island.on_turn_event(session_id, event, data)
             # frame_session is stamped on every turn frame: the client drops any
             # frame whose frame_session isn't the socket's own session, making a
             # cross-session render leak structurally impossible (2026-10-01).

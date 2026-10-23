@@ -716,6 +716,14 @@ async def create_session(req: CreateSessionRequest) -> dict:
         await dispatch_session_start(session_id, meta)
     except Exception:
         _log.exception("mods_session_start_failed session=%s", session_id)
+    # Vibe Island notch:SessionStart(卡片出现)。子会话在模块内被过滤;
+    # 开关关闭时 no-op,绝不抛。
+    try:
+        from ..vibe_island import session_started
+
+        session_started(session_id)
+    except Exception:
+        _log.exception("vibe_island_session_start_failed session=%s", session_id)
     # return the meta shape (with `id`) so the frontend SessionMeta matches
     return {**meta, "ok": True}
 
@@ -972,6 +980,13 @@ async def delete_session(session_id: str, cascade: bool = False) -> dict:
         await dispatch_session_end(session_id)
     except Exception:
         _log.exception("mods_session_end_failed session=%s", session_id)
+    # Vibe Island notch:SessionEnd(卡片移除)。对从未入卡的 id 发也无害。
+    try:
+        from ..vibe_island import session_ended
+
+        session_ended(session_id)
+    except Exception:
+        _log.exception("vibe_island_session_end_failed session=%s", session_id)
     return {"ok": True, "removed": removed, "files_dir": files_dir}
 
 

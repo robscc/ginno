@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 与 tauri.conf.json 同目录,tauri-bundler 自动探测并合并进 bundle 的
+     Info.plist(bundle.macOS.infoPlist 的默认行为)。
+
+     ginno:// URL scheme:Vibe Island 卡片点击的 deep-link 落点
+     (vibe_island.py manifest 的 jumpRule,模板 ginno://session/{raw_session_id})。
+     Rust 侧在 lib.rs 的 RunEvent::Opened 接收,notify.rs 的
+     deep_link_open_session 恢复窗口并导航到会话。 -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.ginno.desktop.session</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ginno</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

@@ -190,6 +190,7 @@ def ensure_builtin_connectors() -> None:
     reg.register(ChromeExtensionConnector())
     reg.register(BrowserProfileConnector())
     reg.register(DingTalkConnector())
+    reg.register(VibeIslandConnector())
     # 初始状态:扩展未安装;profile 轨道按需启动,先标 disconnected(未运行)
     if reg.status_of("chrome-extension")["status"] == STATUS_NOT_INSTALLED:
         pass  # stays not_installed until relay says otherwise
@@ -201,6 +202,93 @@ def ensure_builtin_connectors() -> None:
     if reg.status_of("dingtalk-bot")["status"] == STATUS_NOT_INSTALLED:
         reg.report("dingtalk-bot", STATUS_DISCONNECTED, "Not configured",
                    extra={"idle": True})
+    # Vibe Island:按 bridge 存在性 + 开关 + 应用是否在跑报初始状态
+    # (vibe_island.report_status 内部读 registry config,自带 60s 冷却,
+    # 这里 force 一次保证启动即准确)。
+    try:
+        from .. import vibe_island
+
+        vibe_island.report_status(force=True)
+    except Exception:  # noqa: BLE001 — 状态探测失败不挡连接器注册
+        pass
+
+
+class VibeIslandConnector(Connector):
+    """Vibe Island 刘海状态连接器(vibeisland.app/docs/custom-agents.md)。
+
+    纯出站状态上报:会话生命周期事件经 ~/.vibe-island/bin/vibe-island-bridge
+    送给本机 Vibe Island 应用(每事件一次子进程、2s 超时、单向 best-effort,
+    映射与队列在 ``vibe_island.py``)。不向 agent 提供 tools,也不读回任何
+    数据——notch 目前只展示状态,点击卡片回到 Ginno。
+    """
+
+    id = "vibe-island"
+    name = "Vibe Island"
+    description = ("Show Ginno sessions in the Vibe Island notch: working/idle "
+                   "status, the running tool, completion notices and approval "
+                   "reminders — one card per session.")
+    icon = "island"
+    order = 40
+    # 出站状态通道,不向 agent 提供 tools
+    tool_prefix = None
+
+    def default_config(self) -> dict:
+        # 默认关:需要用户装了 Vibe Island(直下载版 ≥1.0.53)才有意义。
+        return {"enabled": False}
+
+    def config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean", "title": "Enabled",
+                    "description": ("Requires the Vibe Island app (direct "
+                                    "download edition, 1.0.53 or newer)"),
+                },
+            },
+        }
+
+    def install_steps(self) -> list[dict]:
+        return [
+            {
+                "key": "intro",
+                "title": "What is this",
+                "body": ("Vibe Island shows what your AI agents are doing in "
+                         "the Mac notch. With this connector, each Ginno "
+                         "session gets a card there: working or idle, the "
+                         "tool it is running, a completion notice when the "
+                         "turn ends, and a reminder when it needs your answer "
+                         "or approval."),
+            },
+            {
+                "key": "install_app",
+                "title": "Install Vibe Island",
+                "body": ("Download the direct-download edition (1.0.53 or "
+                         "newer) from vibeisland.app and open it once. The "
+                         "Mac App Store edition does not support custom "
+                         "agents yet."),
+                "copy": "https://vibeisland.app",
+            },
+            {
+                "key": "enable",
+                "title": "Enable the connector",
+                "body": ("Toggle Enabled above. New Ginno sessions then show "
+                         "up in the notch — move the pointer to the notch to "
+                         "open the panel, and click a card to jump back to "
+                         "Ginno."),
+            },
+        ]
+
+    async def apply_config(self, cfg: dict) -> None:
+        """开关即时生效:vibe_island 模块的发送闸门 + 状态卡片刷新。启用时
+        顺带写 manifest(displayName/bundleIdentifier,指南 Step 5)。"""
+        from .. import vibe_island
+
+        enabled = bool(cfg.get("enabled"))
+        vibe_island.set_enabled(enabled)
+        if enabled:
+            vibe_island.ensure_manifest()
+        vibe_island.report_status(force=True)
 
 
 class DingTalkConnector(Connector):
@@ -347,6 +435,7 @@ __all__ = [
     "ChromeExtensionConnector",
     "BrowserProfileConnector",
     "DingTalkConnector",
+    "VibeIslandConnector",
     "ensure_builtin_connectors",
     "STATUS_CONNECTED",
     "STATUS_DISCONNECTED",
