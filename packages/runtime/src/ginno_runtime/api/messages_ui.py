@@ -421,11 +421,30 @@ def _ai_content_blocks(content: Any, glm_blocks: dict[str, dict] | None = None) 
     Z.ai/GLM gateway server-side searches (see server_tools.py): the request
     block becomes a normal web_search tool bubble, its tool_result payload and
     the gateway's raw-JSON narration text are machine metadata — dropped.
+
+    Narration is stripped *per segment* (``server_tools.split_narration``), not
+    per block: the gateway consolidates a step's prose and all its narration
+    into one text block (2026-10-23), and a block-level drop would take the
+    model's answer with the JSON.
     """
     blocks: list[dict] = []
+
+    def _text(t: str) -> None:
+        # Ordered parts: prose and the recovered cards interleave exactly where
+        # the gateway narrated them, so a search bubble sits under the sentence
+        # that announced it instead of collecting at the bubble's end.
+        for kind, payload in server_tools.split_narration_parts(t):
+            if kind == "text":
+                if payload.strip():
+                    _text_with_citations(payload, blocks)
+                continue
+            tb = (glm_blocks or {}).get(payload["tool_id"])
+            if tb:
+                blocks.append(dict(tb))
+
     if isinstance(content, str):
         if content:
-            _text_with_citations(content, blocks)
+            _text(content)
     elif isinstance(content, list):
         for b in content:
             if isinstance(b, dict):
@@ -436,8 +455,8 @@ def _ai_content_blocks(content: Any, glm_blocks: dict[str, dict] | None = None) 
                         blocks.append({"kind": "thinking", "text": t})
                 elif bt == "text":
                     t = b.get("text") or ""
-                    if t and not server_tools.is_server_tool_narration(t):
-                        _text_with_citations(t, blocks)
+                    if t:
+                        _text(t)
                 elif bt == "server_tool_use":
                     tb = (glm_blocks or {}).get(str(b.get("id") or ""))
                     if tb:
@@ -449,39 +468,133 @@ def _ai_content_blocks(content: Any, glm_blocks: dict[str, dict] | None = None) 
                     if url:
                         blocks.append({"kind": "image", "url": url})
             elif isinstance(b, str) and b:
-                _text_with_citations(b, blocks)
+                _text(b)
     return blocks
 
 
+def _search_tool_block(grp: dict, counter: list[int]) -> dict:
+    """One synthesized ``web_search`` tool block for a gateway search group.
+    ``counter`` is a one-element list so the sN numbering runs across ALL
+    groups (structured and narration-recovered alike) in render order."""
+    id_by_url: dict[str, str] = {}
+    pairs: list[tuple[str, dict]] = []
+    for h in grp["hits"]:
+        sid = f"s{counter[0]}"
+        counter[0] += 1
+        id_by_url[h["url"]] = sid
+        pairs.append((sid, h))
+    content = server_tools.format_hits_block(grp["name"], grp["query"], pairs)
+    return {
+        "kind": "tool",
+        "id": grp["tool_id"],
+        "name": server_tools.DISPLAY_TOOL_NAME,
+        "content": content,
+        "pending": False,
+        "argsPreview": _tool_args_preview(
+            server_tools.DISPLAY_TOOL_NAME, {"query": grp["query"]}
+        ),
+    }
+
+
+def _gateway_args_preview(args: dict) -> str:
+    """A one-line label for a recovered built-in call: the arg a reader
+    actually recognizes the action by (the file path, the widget title…)."""
+    for key in ("path", "summary", "query", "search_query", "title"):
+        v = args.get(key)
+        if isinstance(v, str) and v.strip():
+            return " ".join(v.split())[:120]
+    data = args.get("data")
+    if isinstance(data, dict):
+        t = data.get("title")
+        if isinstance(t, str) and t.strip():
+            return " ".join(t.split())[:120]
+    return ""
+
+
+def _gateway_args_summary(args: dict) -> str:
+    """Readable stand-in for a recovered call's output: one ``key: value`` line
+    per argument, long values elided. These calls ran gateway-side, so there
+    is no tool result to show — only the args the model passed, and the raw
+    JSON of a write_file carries a whole document."""
+    lines: list[str] = []
+    for key, val in args.items():
+        if isinstance(val, str):
+            flat = " ".join(val.split())
+            if len(flat) > 200:
+                flat = f"{flat[:200]}… ({len(val)} chars)"
+            lines.append(f"{key}: {flat}")
+        else:
+            raw = json.dumps(val, ensure_ascii=False)
+            lines.append(f"{key}: {raw[:200]}{'…' if len(raw) > 200 else ''}")
+    return "\n".join(lines)
+
+
+def _gateway_block(grp: dict, counter: list[int]) -> dict:
+    """UI block for one gateway built-in call recovered from narration.
+
+    Searches become the standard ``web_search`` hit card; a ``render_widget``
+    round-trips through the real widget payload so the replay shows the card
+    the gateway drew; anything else (``write_file`` …) becomes an ordinary
+    tool bubble — same shape the local tools produce, instead of a page of raw
+    JSON in the middle of the prose.
+    """
+    if grp["name"] in server_tools.SERVER_SEARCH_TOOL_NAMES:
+        return _search_tool_block(grp, counter)
+    args = grp.get("args") or {}
+    if grp["name"] == "render_widget" and args.get("kind"):
+        ev = widget_event(args, grp["tool_id"])
+        return {
+            "kind": "widget",
+            "widgetKind": ev["kind"],
+            "data": ev["data"],
+            "renderId": ev["render_id"],
+        }
+    return {
+        "kind": "tool",
+        "id": grp["tool_id"],
+        "name": grp["name"],
+        "content": _gateway_args_summary(args),
+        "pending": False,
+        "argsPreview": _gateway_args_preview(args),
+    }
+
+
 def _glm_tool_blocks(messages: list[Any]) -> dict[str, dict]:
-    """tool_id -> synthesized web_search tool block for every Z.ai/GLM
-    server-side search in the transcript. Numbering is assigned sequentially
-    across ALL groups so the `[sN]` ids inside the rendered content are the
-    same ones `_web_ref_map`'s callers merge into the citation ref map."""
+    """tool_id -> synthesized UI block for every Z.ai/GLM gateway built-in in
+    the transcript (structured ``server_tool_use`` pairs *and* calls recovered
+    from the model's narration). Numbering is assigned sequentially across ALL
+    groups in content order, so the `[sN]` ids inside the rendered content are
+    the same ones `_web_ref_map`'s callers merge into the citation ref map."""
     out: dict[str, dict] = {}
-    counter = 1
+    counter = [1]
     for m in messages:
         if not isinstance(m, AIMessage):
             continue
-        for grp in server_tools.glm_server_search_groups(getattr(m, "content", None)):
-            id_by_url: dict[str, str] = {}
-            pairs: list[tuple[str, dict]] = []
-            for h in grp["hits"]:
-                sid = f"s{counter}"
-                counter += 1
-                id_by_url[h["url"]] = sid
-                pairs.append((sid, h))
-            content = server_tools.format_hits_block(grp["name"], grp["query"], pairs)
-            out[grp["tool_id"]] = {
-                "kind": "tool",
-                "id": grp["tool_id"],
-                "name": server_tools.DISPLAY_TOOL_NAME,
-                "content": content,
-                "pending": False,
-                "argsPreview": _tool_args_preview(
-                    server_tools.DISPLAY_TOOL_NAME, {"query": grp["query"]}
-                ),
-            }
+        content = getattr(m, "content", None)
+        if isinstance(content, str):
+            _prose, groups = server_tools.split_narration(content)
+            for grp in groups:
+                out[grp["tool_id"]] = _gateway_block(grp, counter)
+            continue
+        if not isinstance(content, list):
+            continue
+        structured = {
+            g["tool_id"]: g for g in server_tools.glm_server_search_groups(content)
+        }
+        # Walk blocks in order so sN numbering matches the render order of
+        # _ai_content_blocks (which interleaves structured and narration cards).
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            bt = b.get("type")
+            if bt == "server_tool_use":
+                grp = structured.get(str(b.get("id") or ""))
+                if grp:
+                    out[grp["tool_id"]] = _gateway_block(grp, counter)
+            elif bt == "text":
+                _prose, groups = server_tools.split_narration(b.get("text") or "")
+                for grp in groups:
+                    out[grp["tool_id"]] = _gateway_block(grp, counter)
     return out
 
 
@@ -795,11 +908,14 @@ def _messages_to_ui(
                     "ginno_team_reply"
                 )
             step = list(_ai_content_blocks(getattr(m, "content", ""), glm_blocks))
-            # The gateway replays a turn's server_tool_use blocks on every
-            # continuation request — show each synthesized search bubble once.
+            # The gateway replays a turn's server_tool_use blocks — and the
+            # narration that names the same calls — on every continuation
+            # request: show each synthesized bubble/card once. Widget blocks
+            # carry their gateway id as ``renderId``.
             for blk in step:
-                if blk.get("kind") == "tool" and blk.get("id") in glm_blocks:
-                    glm_blocks.pop(blk["id"])
+                gid = blk.get("id") if blk.get("kind") == "tool" else blk.get("renderId")
+                if gid in glm_blocks:
+                    glm_blocks.pop(gid)
             # Resolve `web|sN` citation ids to URLs (from web_search outputs)
             # so the 来源 card is clickable on history replay.
             for blk in step:

@@ -218,6 +218,150 @@ def test_normalize_web_ref_drops_reddit_locale_param():
     )
 
 
+# ------------- consolidated narration (prose + calls in ONE block) --------
+#
+# 2026-10-23 (session bd4a93f2): the gateway packed a whole step into a single
+# text block — prose, every call's narration, every dump, then prose again.
+# The block-level gate could only leak 12 KB of JSON or eat the answer, so the
+# renderer splits it at segment level.
+
+
+def _zh_call(query: str) -> str:
+    return (
+        "**🌐 Z.ai 内置工具: web_search_prime**\n\n**输入:**\n```json\n"
+        f'{{"location": "us", "search_query": "{query}"}}\n```\n'
+        "*正在服务器上执行...* \n"
+    )
+
+
+def _zh_dump(*hits: dict) -> str:
+    payload = json.dumps([{"text": list(hits)}], ensure_ascii=False)
+    return f"**Output:**\n**web_search_prime_result_summary:** {payload}\n"
+
+
+def test_chinese_narration_detected():
+    assert server_tools.is_server_tool_narration(_zh_call("q")) is True
+    assert server_tools.is_server_tool_narration(_zh_dump(_hit("t", "https://a.example"))) is True
+
+
+def test_split_narration_keeps_prose_on_both_sides():
+    text = (
+        "先搜一下。" + _zh_call("开源 IM") + _zh_dump(_hit("野火IM", "https://wildfirechat.cn"))
+        + "\n以下是结论：野火IM 可用。"
+    )
+    prose, groups = server_tools.split_narration(text)
+    assert "先搜一下。" in prose
+    assert "以下是结论：野火IM 可用。" in prose, prose
+    assert "内置工具" not in prose and "result_summary" not in prose
+    assert len(groups) == 1
+    assert groups[0]["query"] == "开源 IM"
+    assert [h["url"] for h in groups[0]["hits"]] == ["https://wildfirechat.cn"]
+
+
+def test_split_narration_pairs_calls_before_dumps_without_colliding():
+    """All calls are announced before any dump arrives — the ids must not
+    collide (an emit-time ordinal gave them all ``-0`` and they collapsed
+    into one card)."""
+    text = (
+        _zh_call("q1") + _zh_call("q2")
+        + _zh_dump(_hit("a", "https://a.example")) + _zh_dump(_hit("b", "https://b.example"))
+        + "收尾。"
+    )
+    prose, groups = server_tools.split_narration(text)
+    assert [g["query"] for g in groups] == ["q1", "q2"]
+    assert len({g["tool_id"] for g in groups}) == 2
+    assert prose.strip() == "收尾。"
+
+
+def test_split_narration_consumes_failed_search_without_drift():
+    """An "MCP error -400" dump carries no hits but still belongs to its call."""
+    text = (
+        _zh_call("bad") + _zh_call("good")
+        + '**Output:**\n**web_search_prime_result_summary:** [{"text": "MCP error -400"}]\n'
+        + _zh_dump(_hit("good", "https://good.example"))
+    )
+    _prose, groups = server_tools.split_narration(text)
+    assert [g["query"] for g in groups] == ["good"]
+
+
+def test_split_narration_scrapes_truncated_payload():
+    """The narrated payload is display-truncated (``…`` + raw newlines) and is
+    NOT valid JSON — the hits still have to come out."""
+    truncated = (
+        '**Output:**\n**web_search_prime_result_summary:** [{"text": ['
+        '{"title": "一", "link": "https://a.example", "content": "摘要一"}, '
+        '{"title": "二", "link": "https://b.example", "content": "摘要二'
+        "...\n                                        "
+    )
+    _prose, groups = server_tools.split_narration(_zh_call("q") + truncated + "正文")
+    assert len(groups) == 1
+    # The trailing hit's content string is cut mid-value — its URL survives.
+    assert [h["url"] for h in groups[0]["hits"]] == [
+        "https://a.example",
+        "https://b.example",
+    ]
+
+
+def test_split_narration_recovers_non_search_builtins():
+    text = (
+        "**✍️ write_file** \n**Input:**\n```json\n"
+        '{"path": "/tmp/a.md", "content": "x"}\n```\n*Executing on server...* '
+        "\n写入完成。"
+    )
+    prose, groups = server_tools.split_narration(text)
+    assert prose.strip() == "写入完成。"
+    assert [(g["name"], g["args"]["path"]) for g in groups] == [("write_file", "/tmp/a.md")]
+
+
+def test_bare_dump_block_stripped():
+    """A block that is only the summary label + payload (no ``**Output:**``)."""
+    text = '**web_search_prime_result_summary:** [{"text": [{"title": "x", "link": "https://x.example"}]}]'
+    prose, groups = server_tools.split_narration(text)
+    assert prose == ""
+    assert groups == []
+
+
+def test_parse_hit_payload_text_envelope():
+    payload = [{"text": [{"title": "t", "link": "https://a.example", "content": "c"}]}]
+    hits = server_tools._parse_hit_payload(payload)
+    assert [h["url"] for h in hits] == ["https://a.example"]
+
+
+def test_ai_content_blocks_renders_narration_search_in_place():
+    """History replay: prose, then the search card where the call was, then
+    the prose after it — and no raw JSON anywhere."""
+    content = [
+        {
+            "type": "text",
+            "text": (
+                "先搜。" + _zh_call("开源 IM")
+                + _zh_dump(_hit("野火IM", "https://wildfirechat.cn"))
+                + "\n结论如下。"
+            ),
+        },
+    ]
+    blocks = _ai_content_blocks(content, _glm_tool_blocks_for(content))
+    assert [b["kind"] for b in blocks] == ["text", "tool", "text"]
+    assert blocks[0]["text"].startswith("先搜。")
+    assert blocks[2]["text"].startswith("结论如下。")
+    assert "[s1] 野火IM — wildfirechat.cn" in blocks[1]["content"]
+    assert blocks[1]["name"] == "web_search"
+
+
+def test_ai_content_blocks_render_widget_from_narration():
+    args = {"kind": "stat_list", "data": {"title": "今日要闻", "items": []}}
+    text = (
+        "**📊 render_widget**\n\n**Input:**\n```json\n"
+        + json.dumps(args, ensure_ascii=False)
+        + "\n```\n*Executing on server...* \n看看卡片。"
+    )
+    content = [{"type": "text", "text": text}]
+    blocks = _ai_content_blocks(content, _glm_tool_blocks_for(content))
+    assert [b["kind"] for b in blocks] == ["widget", "text"]
+    assert blocks[0]["widgetKind"] == "stat_list"
+    assert blocks[0]["data"]["title"] == "今日要闻"
+
+
 def test_end_to_end_citation_validation():
     """The whole turn pipeline: gateway hits registered → model's URL+note
     citations validate as verified."""

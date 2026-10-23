@@ -1057,6 +1057,12 @@ async def _stream_graph(
         # narration (their later stream fragments stay muted), and the
         # server_tool_use ids whose tool.start already went out.
         _ZAI_NARRATION_IDX: set = set()
+        # Muted fragments, per block index. A consolidated block carries the
+        # model's prose AFTER its dumps, and muting the block drops that prose
+        # from the live bubble (history replay restores it) — but the memory
+        # pool reads turn_text, so the prose is recovered once the stream ends
+        # instead of being lost with the JSON.
+        _ZAI_MUTED: dict[Any, list[str]] = {}
         _glm_started: set[str] = set()
         # Track tool names by id so we can emit ``tool.args`` from the chunks
         # stream (the first chunk carries the name, subsequent ones don't).
@@ -1188,11 +1194,25 @@ async def _stream_graph(
                             # as narration stays muted for its later fragments.
                             bid = b.get("index") if isinstance(b, dict) else None
                             if bid is not None and bid in _ZAI_NARRATION_IDX:
+                                if txt:
+                                    _ZAI_MUTED.setdefault(bid, []).append(txt)
                                 continue
                             if server_tools.is_server_tool_narration(txt):
                                 if bid is not None:
                                     _ZAI_NARRATION_IDX.add(bid)
+                                if txt:
+                                    _ZAI_MUTED.setdefault(bid, []).append(txt)
                                 continue
+                            if server_tools.narration_tainted(txt):
+                                # A fragment that MIXES prose and narration (the
+                                # gateway consolidates a step into one block):
+                                # forward the prose prefix only, then mute the
+                                # block — the rest is JSON dumps, and the tail
+                                # prose comes back on history replay.
+                                _ZAI_MUTED.setdefault(bid, []).append(txt)
+                                txt = server_tools.split_narration(txt)[0]
+                                if bid is not None:
+                                    _ZAI_NARRATION_IDX.add(bid)
                             if txt:
                                 turn_text.append(txt)
                                 seg_text.append(txt)
@@ -1225,9 +1245,15 @@ async def _stream_graph(
                                 _server_search_hits(b, _SERVER_SEARCH_BLOCK_TYPES)
                             )
                 elif isinstance(content, str) and content:
-                    turn_text.append(content)
-                    seg_text.append(content)
-                    await safe_send(emit("token.delta", {"content": content}))
+                    # Same narration gate for a plain-string AI chunk (models
+                    # that don't stream blocks); recovered cards are a replay
+                    # concern — live only needs the prose.
+                    if server_tools.narration_tainted(content):
+                        content = server_tools.split_narration(content)[0]
+                    if content:
+                        turn_text.append(content)
+                        seg_text.append(content)
+                        await safe_send(emit("token.delta", {"content": content}))
                 rk = (getattr(chunk, "additional_kwargs", None) or {}).get("reasoning_content")
                 if rk:
                     await safe_send(emit("thinking.delta", {"content": rk}))
@@ -1661,6 +1687,13 @@ async def _stream_graph(
         # turn's skills index must reflect it without a manual refresh.
         await safe_send(emit("skills.changed", {}))
         if not saw_interrupt:
+            # Prose stranded behind muted narration (see _ZAI_MUTED) is only
+            # for the memory pool — the live bubble already showed everything
+            # before the first dump.
+            for _frags in _ZAI_MUTED.values():
+                _prose = server_tools.split_narration("".join(_frags))[0]
+                if _prose.strip():
+                    turn_text.append(_prose)
             _final_text = "".join(turn_text)
             # Citation framework: parse/validate the trailing block against the
             # turn's registered sources, record the usage ledger. Runs before
