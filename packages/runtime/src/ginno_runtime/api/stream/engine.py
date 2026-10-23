@@ -54,7 +54,11 @@ from ...session_unread import note_turn_finished
 from ...todos import store as todo_store
 from ...tools.artifact_tools import ARTIFACT_TOOL_NAMES
 from ...tools.ask_tools import begin_ask_budget
-from ...tools.render_tools import RENDER_TOOL_NAMES, widget_event
+from ...tools.render_tools import (
+    RENDER_TOOL_NAMES,
+    AttachTagStreamFilter,
+    widget_event,
+)
 from ...tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ...usage import add_usage, cache_hit_ratio, empty_usage, extract_usage
 from ...workflows import store as wf_storemod
@@ -1064,6 +1068,36 @@ async def _stream_graph(
         # instead of being lost with the JSON.
         _ZAI_MUTED: dict[Any, list[str]] = {}
         _glm_started: set[str] = set()
+        # Models that answer with XML-ish ``<attach_ref .../>`` tags instead of
+        # calling the tool: the filter holds back a tag split across chunks,
+        # and each completed tag becomes a ref chip (live) while the raw tag is
+        # kept out of the bubble and the memory buffer. History replay parses
+        # the persisted text again (messages_ui._ai_content_blocks).
+        _attach_filter = AttachTagStreamFilter()
+        _attach_sent: set[tuple[str, str, str]] = set()
+
+        async def _emit_attach_tags(refs: list[dict]) -> None:
+            for r in refs:
+                kind = r.get("kind") or "file"
+                ref_id = r.get("ref_id") or ""
+                name = r.get("name") or ""
+                if kind == "file":
+                    # Same normalization the real tool call gets: a relative
+                    # path resolves against the session workspace.
+                    ref_id = _normalize_file_ref(slug, session_id, ref_id)
+                key = (kind, name, ref_id)
+                if key in _attach_sent:
+                    continue
+                _attach_sent.add(key)
+                await safe_send(
+                    emit("ref.emit", {"kind": kind, "name": name, "ref_id": ref_id})
+                )
+                if kind in ("file", "doc", "workflow", "link"):
+                    art = art_store.add_artifact(
+                        slug, kind, name, ref_id, session_id
+                    )
+                    if kind == "file":
+                        _register_artifact_file(slug, session_id, art, ref_id)
         # Track tool names by id so we can emit ``tool.args`` from the chunks
         # stream (the first chunk carries the name, subsequent ones don't).
         _tool_name_by_id: dict[str, str] = {}
@@ -1214,6 +1248,9 @@ async def _stream_graph(
                                 if bid is not None:
                                     _ZAI_NARRATION_IDX.add(bid)
                             if txt:
+                                txt, _refs = _attach_filter.feed(txt)
+                                await _emit_attach_tags(_refs)
+                            if txt:
                                 turn_text.append(txt)
                                 seg_text.append(txt)
                                 await safe_send(emit("token.delta", {"content": txt}))
@@ -1250,6 +1287,9 @@ async def _stream_graph(
                     # concern — live only needs the prose.
                     if server_tools.narration_tainted(content):
                         content = server_tools.split_narration(content)[0]
+                    if content:
+                        content, _refs = _attach_filter.feed(content)
+                        await _emit_attach_tags(_refs)
                     if content:
                         turn_text.append(content)
                         seg_text.append(content)
@@ -1485,27 +1525,15 @@ async def _stream_graph(
                                         emit("widget.emit", widget_event(args, tc_id))
                                     )
                                 elif nm == "attach_ref":
-                                    kind = args.get("kind", "file")
-                                    ref_id = args.get("ref_id", "")
-                                    if kind == "file":
-                                        # Models echo write_file's relative path;
-                                        # pin it to the session workspace so
-                                        # exists/preview/injection resolve later.
-                                        ref_id = _normalize_file_ref(slug, session_id, ref_id)
-                                    await safe_send(
-                                        emit("ref.emit", {
-                                            "kind": kind,
-                                            "name": args.get("name", ""),
-                                            "ref_id": ref_id,
-                                        })
+                                    await _emit_attach_tags(
+                                        [
+                                            {
+                                                "kind": args.get("kind", "file"),
+                                                "name": args.get("name", ""),
+                                                "ref_id": args.get("ref_id", ""),
+                                            }
+                                        ]
                                     )
-                                    if kind in ("file", "doc", "workflow", "link"):
-                                        art = art_store.add_artifact(
-                                            slug, kind, args.get("name", ""), ref_id,
-                                            session_id,
-                                        )
-                                        if kind == "file":
-                                            _register_artifact_file(slug, session_id, art, ref_id)
                                 elif nm == "artifact_register":
                                     kind = args.get("kind", "file")
                                     ref = args.get("ref", "")
@@ -1667,6 +1695,15 @@ async def _stream_graph(
                                             "content": _truncate_for_ws(_tool_content_str(getattr(m, "content", ""))),
                                         })
                                     )
+        # Release whatever the attach-tag filter held back: a completed tag
+        # becomes its chip, and an unterminated "<attach_ref ..." fragment is
+        # plain prose that must still reach the bubble.
+        _tail, _tail_refs = _attach_filter.flush()
+        await _emit_attach_tags(_tail_refs)
+        if _tail:
+            turn_text.append(_tail)
+            seg_text.append(_tail)
+            await safe_send(emit("token.delta", {"content": _tail}))
         # Auto-associate this session with every TODO the turn created or
         # touched — the TODO panel surfaces these sessions as jump targets.
         # Gated on an actual todo_* tool call so unrelated edits don't count.

@@ -20,7 +20,7 @@ from ..api import server_tools
 from ..goals.templates import context_row_text as goal_context_row
 from ..knowledge.citations import parse_citation_block, strip_citation_block
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES
-from ..tools.render_tools import RENDER_TOOL_NAMES, widget_event
+from ..tools.render_tools import RENDER_TOOL_NAMES, split_attach_tags, widget_event
 from ..tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
 from ..world_state import (
     ALL_CONTEXT_PREFIXES,
@@ -435,8 +435,22 @@ def _ai_content_blocks(content: Any, glm_blocks: dict[str, dict] | None = None) 
         # that announced it instead of collecting at the bubble's end.
         for kind, payload in server_tools.split_narration_parts(t):
             if kind == "text":
-                if payload.strip():
-                    _text_with_citations(payload, blocks)
+                # Models that answer with XML-ish ``<attach_ref .../>`` tags
+                # instead of calling the tool (deepseek-flash, 2026-10-23):
+                # turn them into the same ref chips a real call produces and
+                # keep the raw tags out of the bubble.
+                clean, refs = split_attach_tags(payload)
+                if clean.strip():
+                    _text_with_citations(clean, blocks)
+                for r in refs:
+                    blocks.append(
+                        {
+                            "kind": "ref",
+                            "refKind": r["kind"],
+                            "name": r["name"],
+                            "refId": r["ref_id"],
+                        }
+                    )
                 continue
             tb = (glm_blocks or {}).get(payload["tool_id"])
             if tb:
@@ -787,6 +801,19 @@ def _messages_to_ui(
     def flush_assistant() -> None:
         nonlocal acc, acc_id, acc_agent, acc_imgs, acc_img_blocks, acc_team_reply
         if acc:
+            # A turn can produce the same ref twice — a real attach_ref call
+            # plus the XML tag models sometimes write into the answer — and
+            # the steps of one turn merge into one bubble, so dedupe here.
+            _seen_refs: set[tuple] = set()
+            _deduped: list[dict] = []
+            for b in acc:
+                if b.get("kind") == "ref":
+                    key = (b.get("refKind"), b.get("name"), b.get("refId"))
+                    if key in _seen_refs:
+                        continue
+                    _seen_refs.add(key)
+                _deduped.append(b)
+            acc = _deduped
             if acc_img_blocks:
                 acc.extend(acc_img_blocks)
             bubble = {"id": acc_id, "role": "assistant", "agentId": acc_agent or agent_id, "blocks": acc}
