@@ -148,3 +148,107 @@ def test_empty_choices_chunk_does_not_crash(monkeypatch):
     m = build_model("custom")
     gc = _convert(m, {"id": "c1", "choices": [], "usage": None})
     assert gc is not None
+
+
+def test_empty_reasoning_delta_survives(monkeypatch):
+    # DeepSeek returns ``reasoning_content: ""`` on some tool-call turns and
+    # demands the field back next request; a truthiness check would drop it.
+    monkeypatch.setattr(prov_mod, "load_providers", lambda: {"custom": _cfg()})
+    m = build_model("custom")
+    gc = _convert(m, _raw_chunk(reasoning=""))
+    assert gc.message.additional_kwargs.get("reasoning_content") == ""
+
+
+# ---- layer 3: history → request body (reasoning_content round-trip) ----
+
+
+def _payload(monkeypatch, messages, **cfg_over):
+    monkeypatch.setattr(
+        prov_mod, "load_providers", lambda: {"custom": _cfg(**cfg_over)}
+    )
+    return build_model("custom")._get_request_payload(messages)
+
+
+def _ai(reasoning=None, tool_calls=None, content=""):
+    from langchain_core.messages import AIMessage
+
+    extra = {} if reasoning is None else {"reasoning_content": reasoning}
+    return AIMessage(
+        content=content,
+        additional_kwargs=extra,
+        tool_calls=tool_calls or [],
+    )
+
+
+_TC = [{"name": "echo", "args": {"x": "1"}, "id": "call_1", "type": "tool_call"}]
+
+
+def test_payload_replays_reasoning_from_additional_kwargs(monkeypatch):
+    from langchain_core.messages import HumanMessage
+
+    out = _payload(
+        monkeypatch, [HumanMessage("hi"), _ai(reasoning="let me think", tool_calls=_TC)]
+    )
+    assert out["messages"][1]["reasoning_content"] == "let me think"
+
+
+def test_payload_replays_anthropic_thinking_blocks(monkeypatch):
+    """A session that started on an Anthropic-protocol thinking provider and
+    was switched to DeepSeek mid-flight keeps its CoT as content blocks."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    out = _payload(
+        monkeypatch,
+        [
+            HumanMessage("hi"),
+            AIMessage(
+                content=[
+                    {"type": "thinking", "thinking": "step 1"},
+                    {"type": "text", "text": "answer"},
+                ],
+                tool_calls=_TC,
+            ),
+        ],
+    )
+    assert out["messages"][1]["reasoning_content"] == "step 1"
+
+
+def test_payload_fills_empty_reasoning_for_tool_call_turns(monkeypatch):
+    # Session switched over from a non-thinking provider: nothing to replay,
+    # but DeepSeek 400s unless the field is present (empty string is accepted).
+    from langchain_core.messages import HumanMessage
+
+    out = _payload(monkeypatch, [HumanMessage("hi"), _ai(tool_calls=_TC)])
+    assert out["messages"][1]["reasoning_content"] == ""
+
+
+def test_payload_leaves_content_only_turns_alone(monkeypatch):
+    from langchain_core.messages import HumanMessage
+
+    out = _payload(monkeypatch, [HumanMessage("hi"), _ai(content="just text")])
+    assert "reasoning_content" not in out["messages"][1]
+
+
+def test_official_openai_keeps_field_off(monkeypatch):
+    # Not every endpoint accepts the non-standard field — the official OpenAI
+    # protocol defaults to no injection even when history carries reasoning.
+    from langchain_core.messages import HumanMessage
+
+    out = _payload(
+        monkeypatch,
+        [HumanMessage("hi"), _ai(reasoning="x", tool_calls=_TC)],
+        protocol="openai",
+        base_url="",
+    )
+    assert "reasoning_content" not in out["messages"][1]
+
+
+def test_config_override_disables_passthrough(monkeypatch):
+    from langchain_core.messages import HumanMessage
+
+    out = _payload(
+        monkeypatch,
+        [HumanMessage("hi"), _ai(tool_calls=_TC)],
+        reasoning_passthrough=False,
+    )
+    assert "reasoning_content" not in out["messages"][1]

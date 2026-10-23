@@ -64,6 +64,13 @@ def _reasoning_chat_openai() -> type:
     from langchain_openai import ChatOpenAI
 
     class ReasoningChatOpenAI(ChatOpenAI):
+        # Emit ``reasoning_content`` on the way back out (see
+        # _replay_reasoning_content). Default on for openai-compatible
+        # gateways, off for the official OpenAI endpoint — build_model decides
+        # from the protocol; ``reasoning_passthrough`` in the provider config
+        # overrides either way.
+        reasoning_passthrough: bool = True
+
         def _convert_chunk_to_generation_chunk(
             self, chunk, default_chunk_class, base_generation_info
         ):
@@ -78,14 +85,90 @@ def _reasoning_chat_openai() -> type:
             except (AttributeError, IndexError, TypeError):
                 delta = {}
             rc = delta.get("reasoning_content")
-            if rc:
+            # Membership, not truthiness: DeepSeek returns
+            # ``reasoning_content: ""`` on some tool-call turns and then
+            # requires that exact field back on the next request.
+            if rc is not None:
                 ak = getattr(gen_chunk.message, "additional_kwargs", None)
                 if ak is not None:
                     ak["reasoning_content"] = rc
             return gen_chunk
 
+        def _get_request_payload(
+            self, input_, *, stop: list[str] | None = None, **kwargs: Any
+        ) -> dict:
+            payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            if self.reasoning_passthrough:
+                _replay_reasoning_content(self._convert_input(input_).to_messages(), payload)
+            return payload
+
     _REASONING_CLS = ReasoningChatOpenAI
     return _REASONING_CLS
+
+
+def _reasoning_text(message: Any) -> str | None:
+    """Best-effort ``reasoning_content`` for one assistant message.
+
+    Two shapes reach us:
+
+    * third-party gateways (DeepSeek / Qwen / vLLM) stream it as a delta field,
+      which ReasoningChatOpenAI parks in ``additional_kwargs``;
+    * Anthropic-protocol thinking arrives as ``{"type": "thinking", ...}``
+      content blocks. A session started on a thinking provider and switched to
+      DeepSeek mid-flight still holds those blocks — they must be replayed as
+      ``reasoning_content`` on the chat-completions wire.
+    """
+    ak = getattr(message, "additional_kwargs", None) or {}
+    if "reasoning_content" in ak:
+        rc = ak.get("reasoning_content")
+        if isinstance(rc, str):
+            return rc
+        if isinstance(rc, list):
+            parts = [
+                str(b.get("text") or "")
+                for b in rc
+                if isinstance(b, dict)
+            ]
+            if parts:
+                return "".join(parts)
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        parts = [
+            str(b.get("thinking") or b.get("text") or "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") in ("thinking", "reasoning")
+        ]
+        if parts:
+            return "".join(parts)
+    return None
+
+
+def _replay_reasoning_content(messages: list[Any], payload: dict) -> None:
+    """Put ``reasoning_content`` back on the assistant messages of a request.
+
+    langchain-openai's ``_convert_message_to_dict`` sends only the official
+    OpenAI message shape, so reasoning never round-trips and DeepSeek's
+    thinking mode answers 400 ("The `reasoning_content` in the thinking mode
+    must be passed back to the API"). Its rule, verified against the live API:
+    **every** assistant message that carries ``tool_calls`` must replay
+    ``reasoning_content`` — older turns included, and content-only turns may
+    omit it. A turn with no reasoning at all (session switched over from a
+    non-thinking provider) is satisfied by an empty string.
+
+    The wire list is 1:1 with ``messages`` on the chat-completions path; any
+    other shape (Responses API, pre-converted input) is left untouched.
+    """
+    wire = payload.get("messages")
+    if not isinstance(wire, list) or len(wire) != len(messages):
+        return
+    for message, msg_dict in zip(messages, wire):
+        if not isinstance(msg_dict, dict) or msg_dict.get("role") != "assistant":
+            continue
+        rc = _reasoning_text(message)
+        if rc is None and msg_dict.get("tool_calls"):
+            rc = ""
+        if rc is not None:
+            msg_dict["reasoning_content"] = rc
 
 
 # Lazily-built Responses-API class shared by every build (same pattern as
@@ -361,6 +444,15 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         extra_body["enable_thinking"] = True
     if extra_body:
         chat_kw["extra_body"] = extra_body
+    # Reasoning round-trip (see _replay_reasoning_content): on for
+    # openai-compatible gateways (DeepSeek thinking mode requires it, Qwen
+    # ignores it), off for the official OpenAI endpoint. An explicit
+    # ``reasoning_passthrough`` in the config wins — the escape hatch for a
+    # gateway that rejects the non-standard field.
+    passthrough = cfg.get("reasoning_passthrough")
+    chat_kw["reasoning_passthrough"] = (
+        proto == "openai-compatible" if passthrough is None else bool(passthrough)
+    )
     return _reasoning_chat_openai()(**chat_kw)
 
 
