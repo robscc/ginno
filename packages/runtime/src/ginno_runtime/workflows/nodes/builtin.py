@@ -86,7 +86,10 @@ async def _run_agent_turn(node, cctx, state, render_ctx, emit) -> tuple[str, dic
 
         _prov = todo_providers.get_todo_provider(prov_id)
         if _prov and _prov.get("mcp"):
-            mcp_prefix = f"mcp_{_prov['mcp']}_"
+            # 前缀必须走 naming.py：服务器名可能是中文，图面向工具名是 ASCII slug。
+            from ...mcp.naming import server_prefix
+
+            mcp_prefix = server_prefix(_prov["mcp"])
     skill_names = [
         wf_expr.render(s, render_ctx)
         for s in (node.get("skills") or [])

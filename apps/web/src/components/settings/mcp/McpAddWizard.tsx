@@ -148,8 +148,12 @@ export function McpAddWizard({
   };
 
   const overwrite = !!cfg.mcpServers && name.trim() in cfg.mcpServers;
-  // 模拟预览的图名（P0 占位；P1 换 POST /api/mcp/test 的真实 toolDetails）
-  const simTools = ["search", "get_detail", "create_item"].map((s) => `mcp_${name.trim() || "server"}_${s}`);
+  // 模拟预览的图名（P0 占位；P1 换 POST /api/mcp/test 的真实 toolDetails）。
+  // 预览也遵守 provider 的 ASCII 约束（真实名由 runtime naming.py 生成，
+  // 中文服务器名会带稳定短哈希；这里只做可读近似）。
+  const previewSlug =
+    name.trim().replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "server";
+  const simTools = ["search", "get_detail", "create_item"].map((s) => `mcp_${previewSlug}_${s}`);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-5">

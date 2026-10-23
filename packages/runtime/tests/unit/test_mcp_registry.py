@@ -168,9 +168,13 @@ def test_wrapped_names_match_langchain_wrapper():
     list_tools() names never equal the wrapped session list (2026-08-10)."""
     from ginno_runtime.mcp.registry import _full_tool_name
 
-    assert _full_tool_name("钉钉文档", "get_document_content") == (
-        "mcp_钉钉文档_get_document_content"
-    )
+    # 2026-10-23: provider 要求 ^[a-zA-Z0-9_-]+$，中文服务器名必须 ASCII 化
+    # （naming.py：非法段替 _、原名短哈希防碰撞）。ASCII 名字零迁移。
+    cn = _full_tool_name("钉钉文档", "get_document_content")
+    assert all(c.isalnum() or c in "_-" for c in cn), cn
+    assert cn == _full_tool_name("钉钉文档", "get_document_content")  # 稳定
+    assert cn.startswith("mcp_") and cn.endswith("_get_document_content")
+    assert _full_tool_name("s1", "tool_a") == "mcp_s1_tool_a"
     live = reg_mod._LiveServer(MCPServerConfig(name="s1", transport="http", url="http://x"))
     live.tools = [_FakeTool("tool_a"), _FakeTool("tool_b")]
     wrapped = [t.name for t in live.to_langchain_tools()]

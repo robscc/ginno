@@ -153,7 +153,9 @@ export function McpDetailView({
     };
   }, []);
 
-  const prefix = `mcp_${name}_`;
+  // 前缀以运行时下发的 toolPrefix 为准（中文服务器名会被 ASCII slug 化）；
+// 旧后端没有该字段时才回退到本地拼接。
+  const prefix = detail?.toolPrefix || status?.toolPrefix || `mcp_${name}_`;
   const editPerm = (which: keyof PermsState, nextMatching: string[]) => {
     if (!perms) return;
     const next = { ...perms, [which]: nextMatching };
@@ -383,7 +385,7 @@ export function McpDetailView({
                 </thead>
                 <tbody>
                   {filteredTools.map((r) => {
-                    const full = fullToolName(name, r.name);
+                    const full = r.fullName || fullToolName(name, r.name);
                     const on = !disabledSet.has(r.name);
                     return (
                       <tr key={r.name} className="border-b border-line last:border-0 hover:bg-card2">

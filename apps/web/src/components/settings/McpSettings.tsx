@@ -113,18 +113,26 @@ export function McpSettings() {
 
   // graph 全名按「最长前缀」归属到 server（§6.1 前缀歧义：a 与 a_b 并存时
   // mcp_a_b_tool 应归 a_b），供详情页 Tools tab 的降级名单使用。
+  // 前缀以运行时下发的 toolPrefix 为准：中文服务器名会被 ASCII slug 化，
+  // 本地用原始名拼接会永远匹配不上（2026-10-23）。
+  const prefixByServer = useMemo(
+    () =>
+      new Map(
+        status.map((s) => [s.name, s.toolPrefix || `mcp_${s.name}_`] as const),
+      ),
+    [status],
+  );
   const toolsOwnedBy = useMemo(() => {
     const map = new Map<string, string[]>();
+    const prefixes = serverNames
+      .map((n) => [n, prefixByServer.get(n) ?? `mcp_${n}_`] as const)
+      .sort((a, b) => b[1].length - a[1].length); // 最长前缀优先
     for (const full of graphTools) {
-      let owner: string | null = null;
-      for (const n of serverNames) {
-        const p = `mcp_${n}_`;
-        if (full.startsWith(p) && (owner == null || n.length > owner.length)) owner = n;
-      }
-      if (owner) map.set(owner, [...(map.get(owner) ?? []), full]);
+      const hit = prefixes.find(([, p]) => full.startsWith(p));
+      if (hit) map.set(hit[0], [...(map.get(hit[0]) ?? []), full]);
     }
     return map;
-  }, [graphTools, serverNames]);
+  }, [graphTools, serverNames, prefixByServer]);
 
   // ---- 统计条（§5.2）：disabled 的服务器不计入 connected / failed / tools ----
   const connectedCount = status.filter((s) => s.connected && enabledOf(s.name)).length;

@@ -53,6 +53,7 @@ from pydantic import BaseModel, Field, create_model
 from .. import paths
 from .. import server_shared
 from ..lang import t
+from . import naming as mcp_naming
 
 log = logging.getLogger(__name__)
 
@@ -61,8 +62,11 @@ def _full_tool_name(server_name: str, tool_name: str) -> str:
     """Graph-facing name of one MCP tool. Single source of truth — used by
     the langchain wrapper AND by cheap name-only comparisons, so the two can
     never drift (2026-08-10: comparing raw vs wrapped names would have made
-    the per-turn graph-refresh fingerprint mismatch on EVERY turn)."""
-    return f"mcp_{server_name}_{tool_name}"
+    the per-turn graph-refresh fingerprint mismatch on EVERY turn).
+
+    ASCII 化规则在 ``mcp/naming.py``（2026-10-23：中文服务器名拼进工具名会让
+    provider 以 400 拒绝整个 turn）。"""
+    return mcp_naming.full_tool_name(server_name, tool_name)
 
 
 def _compact_connect_error(e: BaseException) -> str:
@@ -330,16 +334,20 @@ class _LiveServer:
         )
 
 
-def _tool_detail(mcp_tool: Any) -> dict[str, Any]:
+def _tool_detail(mcp_tool: Any, server_name: str = "") -> dict[str, Any]:
     """单个工具的设置页详情（GET /api/mcp status[].toolDetails 元素）。
 
     annotations 的 readOnlyHint/destructiveHint 是 MCP 的可选 hint：旧版 SDK
     或未声明 annotations 的工具按「未知 → False」处理（不凭空宣称只读/危险），
     前端只做展示，不依赖它做权限决策。
+
+    ``fullName`` 是 graph 面向名（ASCII slug，见 naming.py）——前端不要自己
+    拼，否则中文服务器名会拼出与运行时不一致的名字。
     """
     ann = getattr(mcp_tool, "annotations", None)
     return {
         "name": mcp_tool.name,
+        "fullName": _full_tool_name(server_name, mcp_tool.name) if server_name else None,
         "description": getattr(mcp_tool, "description", None),
         "readOnly": bool(getattr(ann, "readOnlyHint", False)) if ann is not None else False,
         "destructive": bool(getattr(ann, "destructiveHint", False)) if ann is not None else False,
@@ -592,6 +600,9 @@ class MCPRegistry:
             connected_at = getattr(live, "connected_at", None) if live else None
             item: dict[str, Any] = {
                 "name": name,
+                # graph 面向前缀（ASCII slug）——前端按它分组/过滤工具，
+                # 不要再拿原始服务器名拼（中文名会拼出非法且不一致的名字）。
+                "toolPrefix": mcp_naming.server_prefix(name),
                 "connected": live is not None,
                 "tools": len(live.tools) if live else 0,
                 "error": self._last_error.get(name),
@@ -601,7 +612,7 @@ class MCPRegistry:
             if include_tools:
                 item["disabledTools"] = list(cfg.disabled_tools)
                 item["toolDetails"] = [
-                    _tool_detail(t) for t in (live.tools if live else [])
+                    _tool_detail(t, name) for t in (live.tools if live else [])
                 ]
             out.append(item)
         return out
@@ -619,11 +630,18 @@ class MCPRegistry:
         服务器名互为前缀时取最长匹配以还原工具名。
         """
         self.ensure_loaded()
-        configured = sorted(self.servers.keys(), key=len, reverse=True)
+        # 前缀按 ASCII slug 比较（naming.py）；长度排序也按前缀本身，而不是
+        # 原始服务器名——中文名与 slug 的长度没有对应关系。
+        configured = sorted(
+            self.servers.keys(),
+            key=lambda s: len(mcp_naming.server_prefix(s)),
+            reverse=True,
+        )
+        prefixes = {s: mcp_naming.server_prefix(s) for s in configured}
 
         def _owner(n: str) -> str | None:
             for s in configured:
-                if n.startswith(f"mcp_{s}_"):
+                if n.startswith(prefixes[s]):
                     return s
             return None
 
@@ -634,7 +652,8 @@ class MCPRegistry:
                 out.add(n)  # 服务器已删
                 continue
             cfg = self.servers[owner]
-            if not cfg.enabled or n[len(f"mcp_{owner}_"):] in cfg.disabled_tools:
+            disabled = {mcp_naming.tool_slug(d) for d in cfg.disabled_tools}
+            if not cfg.enabled or n[len(prefixes[owner]):] in disabled:
                 out.add(n)  # 服务器或工具被禁用
         return out
 
