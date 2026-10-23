@@ -329,14 +329,26 @@ def _map_event(session_id: str, event: str, data: dict) -> list[dict]:
     if event == "user.question":
         # ask_user parked:等用户回答 = 指南语义里的「需要批准」提醒
         # (点击回到 Ginno;回答后 _run_resume 的 PermissionResult 清掉)。
+        # 刘海端无法代答:bridge 单向,「answer questions from the notch」在
+        # 指南里仍是 Planned——所以把选项列表也拼进 message,用户能在刘海
+        # 先读到选项,点卡片回 Ginno 再选。
         p = _base(session_id, "Notification")
         p["notification_type"] = "permission_prompt"
         p["tool_name"] = "ask_user"
         msg = " ".join(
             str(data.get(k) or "") for k in ("header", "question")
         ).strip()
+        opts: list[str] = []
+        for o in data.get("options") or []:
+            if isinstance(o, dict):  # 防御:规范化后应为纯 label 列表
+                o = o.get("label") or o.get("text") or ""
+            o = str(o).strip()
+            if o:
+                opts.append(o[:24])
+        if opts:
+            msg = (msg + "  " if msg else "") + " / ".join(opts[:5])
         if msg:
-            p["message"] = msg[:160]
+            p["message"] = msg[:200]
         return [p]
     if event == "version.propose":
         p = _base(session_id, "Notification")

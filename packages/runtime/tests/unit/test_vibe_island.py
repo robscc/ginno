@@ -97,13 +97,31 @@ def test_user_question_maps_to_ask_user_reminder(_clean_state):
     vi.on_turn_event(
         SID, "user.question",
         {"id": "call_1", "question": "装到哪?", "header": "选择位置",
-         "options": ["a"], "allow_free_text": True},
+         "options": ["a", "b"], "allow_free_text": True},
     )
     (ev,) = _clean_state
     assert ev["hook_event_name"] == "Notification"
     assert ev["notification_type"] == "permission_prompt"
     assert ev["tool_name"] == "ask_user"
     assert "选择位置" in ev["message"] and "装到哪?" in ev["message"]
+    # 刘海端无法代答(bridge 单向,答题还是 Planned),选项拼进 message
+    # 至少让用户在 notch 上读得到再点回来选。
+    assert "a / b" in ev["message"]
+
+
+def test_user_question_options_are_listed_and_bounded(_clean_state):
+    _register({"workspace": "/tmp/ws"})
+    vi.set_enabled(True)
+    vi.on_turn_event(
+        SID, "user.question",
+        {"question": "q", "header": "", "options": [
+            {"label": "x" * 40}, "o2", "o3", "o4", "o5", "o6"]},
+    )
+    (ev,) = _clean_state
+    msg = ev["message"]
+    assert "x" * 24 in msg and "x" * 25 not in msg  # 单选项截到 24 字符
+    assert "o5" in msg and "o6" not in msg          # 最多列 5 个选项
+    assert len(msg) <= 200                          # 总长兜底
 
 
 def test_message_end_maps_to_stop_with_reply(_clean_state):
