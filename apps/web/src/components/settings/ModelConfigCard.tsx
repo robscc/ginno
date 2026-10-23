@@ -45,7 +45,7 @@ function VerifyDot({ cfg }: { cfg: ModelConfig }) {
   const t = useTranslations("settings.model");
   if (cfg.last_error) {
     return (
-      <span className="flex items-center gap-1.5 text-faint" title={cfg.last_error}>
+      <span className="flex items-center gap-1.5 text-[11px] text-faint" title={cfg.last_error}>
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red" />
         {t("verifyFailed")}
       </span>
@@ -57,7 +57,7 @@ function VerifyDot({ cfg }: { cfg: ModelConfig }) {
     const when = p.key === "justNow" ? t("justNow") : t(p.key, { count: p.count });
     return (
       <span
-        className={`flex items-center gap-1.5 ${stale ? "text-yellow" : "text-faint"}`}
+        className={`flex items-center gap-1.5 text-[11px] ${stale ? "text-yellow" : "text-faint"}`}
         title={stale ? t("lastVerified", { time: when }) : undefined}
       >
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${stale ? "bg-yellow" : "bg-green"}`} />
@@ -66,7 +66,7 @@ function VerifyDot({ cfg }: { cfg: ModelConfig }) {
     );
   }
   return (
-    <span className="flex items-center gap-1.5 text-faint">
+    <span className="flex items-center gap-1.5 text-[11px] text-faint">
       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#71717a" }} />
       {t("notVerified")}
     </span>
