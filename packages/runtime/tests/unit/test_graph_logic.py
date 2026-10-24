@@ -347,3 +347,72 @@ async def test_raising_tool_is_contained_not_fatal(isolated_home):
     tool_msgs = [m for m in msgs if isinstance(m, ToolMessage)]
     assert tool_msgs and tool_msgs[0].status == "error"
     assert "Invalid argument" in tool_msgs[0].content
+
+
+# ---- P5-3 retry policy ----------------------------------------------------- #
+
+
+class _Err(Exception):
+    def __init__(self, msg, status=None):
+        super().__init__(msg)
+        self.status_code = status
+
+
+@pytest.mark.parametrize(
+    "exc,retryable",
+    [
+        (_Err("Error code: 400 - invalid_request_error", 400), False),
+        (_Err("Error code: 401 - AuthenticationError", 401), False),
+        (_Err("Error code: 403 - forbidden", 403), False),
+        (_Err("Error code: 404 - not found", 404), False),
+        (_Err("Error code: 422 - unprocessable", 422), False),
+        (_Err("Error code: 429 - rate limit", 429), True),
+        (_Err("Error code: 503 - service unavailable", 503), True),
+        (_Err("Error code: 408 - timeout", 408), True),
+    ],
+)
+def test_retry_policy_uses_status_code(exc, retryable):
+    from ginno_runtime.graph import is_retryable_error
+
+    assert is_retryable_error(exc) is retryable
+
+
+def test_invalid_request_is_never_retried_even_if_text_mentions_rate_limit():
+    from ginno_runtime.graph import _is_rate_limit_error, is_retryable_error
+
+    wrapped = _Err("BadRequest: invalid_request_error while checking rate limit config")
+    assert is_retryable_error(wrapped) is False
+    assert _is_rate_limit_error(wrapped) is False
+
+
+async def test_rate_limited_invoke_does_not_retry_a_400(monkeypatch):
+    """P5-3 acceptance: a deterministic 400 surfaces after exactly one call."""
+    from ginno_runtime import graph
+
+    calls = []
+
+    class _Bound:
+        async def ainvoke(self, msgs):
+            calls.append(1)
+            raise _Err("Error code: 400 - invalid_request_error", 400)
+
+    with pytest.raises(_Err):
+        await graph._ainvoke_rate_limited(_Bound(), [])
+    assert len(calls) == 1
+
+
+async def test_rate_limited_invoke_retries_a_429(monkeypatch):
+    from ginno_runtime import graph
+
+    monkeypatch.setattr(graph, "_RATE_LIMIT_WAIT_S", 0.0)
+    calls = []
+
+    class _Bound:
+        async def ainvoke(self, msgs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise _Err("Error code: 429 - rate limit", 429)
+            return "ok"
+
+    assert await graph._ainvoke_rate_limited(_Bound(), []) == "ok"
+    assert len(calls) == 2

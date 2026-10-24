@@ -568,7 +568,42 @@ _RATE_LIMIT_MAX_WAITS = 5
 _RATE_LIMIT_WAIT_S = 30.0  # 30/60/120/240/480s,共 ~15 分钟
 
 
+def is_retryable_error(exc: Exception) -> bool:
+    """P5-3 retry policy: only transient failures are worth another attempt.
+
+    Status code wins over message text. A deterministic 4xx (400/401/403/404/
+    422) is NEVER retried — retrying it burns latency and quota without ever
+    succeeding (the 2026-10-23 400 storms). 408/409/429 and 5xx are transient.
+    Text matching is the fallback for wrapped errors without ``status_code``.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        if status in (408, 409, 429) or status >= 500:
+            return True
+        if 400 <= status < 500:
+            return False
+    text = f"{type(exc).__name__} {exc}".lower()
+    # Non-retryable shapes first: an error that says "invalid request" is
+    # deterministic even if its prose happens to mention a rate limit.
+    if any(
+        m in text
+        for m in ("invalid_request", "badrequest", "authentication", "permission", "not found")
+    ):
+        return False
+    return any(
+        m in text
+        for m in ("429", "rate limit", "too many requests", "timeout", "timed out",
+                  "connection", "connecterror", "service unavailable", "overloaded")
+    )
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
+    """Backoff trigger for the in-turn retry: 429 only (see is_retryable_error)."""
+    if not is_retryable_error(exc):
+        return False
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status == 429
     text = f"{type(exc).__name__} {exc}".lower()
     return "429" in text or "rate limit" in text or "too many requests" in text
 
