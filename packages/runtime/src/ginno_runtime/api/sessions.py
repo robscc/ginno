@@ -742,6 +742,38 @@ async def list_sessions(project_slug: str | None = None) -> list[dict]:
     ]
 
 
+@router.get("/api/sessions/page")
+async def page_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    project_slug: str | None = None,
+    include_archived: bool = False,
+) -> dict:
+    """Paged session list (V2 P3-1).
+
+    The full list stays available for the sidebar (it needs every row for
+    grouping + archive counts); this endpoint is for callers that only want a
+    window — and it reports the total, which the array endpoint cannot.
+    """
+    slug = project_slug or "default"
+    rows = [
+        {**m, "unread": _session_is_unread(m)} for m in _session_meta_list(slug)
+    ]
+    if not include_archived:
+        rows = [r for r in rows if not r.get("archived")]
+    rows.sort(key=lambda r: r.get("updated") or 0, reverse=True)
+    total = len(rows)
+    limit = max(1, min(int(limit or 50), 200))
+    offset = max(0, int(offset or 0))
+    return {
+        "ok": True,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "sessions": rows[offset : offset + limit],
+    }
+
+
 @router.get("/api/sessions/search")
 async def search_sessions(
     q: str = "",
@@ -1373,6 +1405,14 @@ async def put_session_context(session_id: str, req: PutSessionContextRequest) ->
 
 
 # ---- session history (rebuild the chat UI's block layout from checkpoints) ----
+
+
+@router.get("/api/sessions/{session_id}/suggestions")
+async def session_suggestions(session_id: str) -> dict:
+    """V2 P2-1: actionable, execution-derived tips (never for automation)."""
+    from ..suggestions import suggestions_for
+
+    return suggestions_for(session_id)
 
 
 @router.get("/api/sessions/{session_id}/history")

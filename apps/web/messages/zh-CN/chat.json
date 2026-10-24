@@ -98,6 +98,19 @@
       "setGoal": "设定一个长期目标",
       "hintLine": "拖入 Excel / Word / PPT / PDF · / 命令 · @ 提及 工件 / 代理 / 工作流 / 记忆"
     },
+    "firstRun": {
+      "heading": "快速开始",
+      "dismiss": "隐藏新手引导",
+      "mountTitle": "挂一个项目目录，让我读代码",
+      "mountDetail": "选一个本地目录，新会话里我就能读写它。",
+      "askTitle": "直接问我一个问题",
+      "askDetail": "跳到输入框，直接开始对话。",
+      "workflowTitle": "跑一个示例工作流",
+      "workflowDetail": "看看多步骤自动化如何端到端运行。",
+      "pickFailed": "无法打开目录选择器",
+      "mountFailed": "挂载该目录失败",
+      "browserHint": "用输入框旁的目录 chip 挂载一个目录。"
+    },
     "goal": {
       "stalledLabel": "目标{status, select, paused {已暂停} blocked {被阻塞} other {额度用尽}}",
       "resume": "继续",
@@ -107,6 +120,17 @@
     },
     "empty": {
       "start": "开始对话——Agent 会调用工具完成任务，并可能在权限上询问你。"
+    },
+    "suggest": {
+      "heading": "建议",
+      "dismiss": "忽略这条建议",
+      "busyHint": "等当前这一轮结束后再压缩。",
+      "actions": {
+        "openSettings": "模型设置",
+        "compact": "立即压缩",
+        "switchModel": "切换模型",
+        "distill": "沉淀为 skill"
+      }
     },
     "sendFailed": {
       "connNotReady": "连接未就绪",
@@ -151,6 +175,20 @@
       "range": "范围",
       "all": "全部",
       "lastN": "最近 {n} 条"
+    },
+    "distill": {
+      "button": "沉淀为…",
+      "title": "把这个会话沉淀为可复用的 skill、知识卡或工作流",
+      "skill": "Skill",
+      "skillHint": "按本会话的工具步骤生成 SKILL.md 草稿",
+      "kb": "知识卡",
+      "kbHint": "写入知识库 Raw 目录",
+      "workflow": "Workflow",
+      "workflowHint": "把本会话总结成一个工作流",
+      "busy": "沉淀中……",
+      "skillDone": "已生成 skill 草稿：{path}",
+      "kbDone": "已生成知识卡：{path}",
+      "failed": "沉淀失败"
     },
     "confirmDeleteRun": {
       "title": "删除运行记录",
@@ -361,6 +399,33 @@
       "empty": "还没有 AgentTeam",
       "emptyHint": "建一个团队，把多个 Agent 实体化为常驻成员，在主会话里 @ 他们协作",
       "newTeam": "新建团队",
+      "promptCreate": "+ 用一句话创建小队",
+      "promptTitle": "用一句话创建小队",
+      "promptHint": "描述你想要的小队，模型会先给出可编辑的草案；确认之前不会创建任何东西。",
+      "promptPlaceholder": "例：帮我建一个每日美股情报小队：宏观、个股、期权各一人，开盘前汇总到主会话",
+      "promptGenerate": "生成预览",
+      "promptGenerating": "生成中…",
+      "promptFailed": "生成预览失败",
+      "promptPreviewTitle": "可编辑预览",
+      "promptRegenerate": "返回描述",
+      "charterLabel": "小队章程（TEAM.md）",
+      "charterPlaceholder": "目标、分工、输出节奏…",
+      "membersLabel": "成员（{count}/{max}）",
+      "instructionsLabel": "职责说明",
+      "instructionsPlaceholder": "这位成员负责什么、如何回报",
+      "firstTaskLabel": "首个任务（可选）",
+      "firstTaskPlaceholder": "例：把今天的盘前异动整理后汇总到主会话",
+      "removeMember": "移除成员",
+      "agentNeeded": "没有可用 Agent，请先创建一个",
+      "capReached": "最多 {max} 位成员",
+      "nameRequired": "请填写小队名称",
+      "membersRequired": "至少添加一位成员",
+      "leaderRequired": "必须且只能有一位领队",
+      "confirmCreate": "确认创建",
+      "promptCreatedNotice": "小队「{name}」已创建。",
+      "promptMemberErrors": "部分成员创建失败：{errors}",
+      "promptFirstTaskDelivered": "首个任务已投递到主会话。",
+      "promptFirstTaskNotDelivered": "首个任务未投递成功，可在主会话重新发送。",
       "memberCount": "{count} 成员",
       "backToMain": "返回主会话",
       "mainSessionMissing": "主会话不可用",

@@ -5,6 +5,9 @@ import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Square, Check, RotateCcw 
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
 import { loadToolLabels } from "@/lib/toolLabels";
+import * as api from "@/lib/runtime";
+import { pushNotice } from "@/lib/notice";
+import { isDesktop } from "@/lib/desktop";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import { agentHex } from "@/lib/theme";
@@ -70,6 +73,14 @@ import { DelegationStatusBar } from "./stream/DelegationStatusBar";
 import { PermissionPromptCard } from "./stream/PermissionPromptCard";
 import { SummarizeMenu } from "./stream/SummarizeMenu";
 import { TranscriptList } from "./stream/TranscriptList";
+import { SessionSuggestions } from "./SessionSuggestions";
+import { FirstRunCards } from "./FirstRunCards";
+import { DistillMenu, type DistillKind } from "./DistillMenu";
+
+// V2 P2-1: dismissals are per (session_id, suggestion id), persisted locally.
+const SUGGEST_DISMISS_LS_KEY = "ginno-dismissed-suggestions";
+// V2 P2-3: the first-run starter is shown until the user acts on / dismisses it.
+const FIRST_RUN_LS_KEY = "ginno-first-run-done";
 
 export function ChatStream({
   session,
@@ -148,6 +159,25 @@ export function ChatStream({
   const [modBands, setModBands] = useState<Record<string, ModBandGroup[]>>({});
   // $.ui.ask(§7.3):按 sid 存的待答问题,浮层渲染(见文件尾部 ModAskCard)。
   const [modAsks, setModAsks] = useState<Record<string, ModAskState | null>>({});
+
+  // ── V2 P2-1 execution-time suggestions ──────────────────────────────────
+  // Fetched when a session opens and again whenever a turn settles
+  // (running → false); see the effects below. Automation sessions are filtered
+  // server-side (`excluded: "automation"`).
+  const [suggestions, setSuggestions] = useState<api.SessionSuggestion[]>([]);
+  // Suggestion id whose action is currently running (button spinner).
+  const [suggestBusy, setSuggestBusy] = useState<string | null>(null);
+  // Dismissed suggestion keys `${sessionId}:${suggestionId}` (localStorage
+  // mirror; read once on mount, written on every dismiss).
+  const [suggDismissed, setSuggDismissed] = useState<Record<string, true>>({});
+  // ── V2 P2-3 first-run starter (home view only) ─────────────────────────
+  const [firstRunDone, setFirstRunDone] = useState(false);
+  // localStorage may only be read after mount (SSR pre-render has no window);
+  // gate the cards on this so a dismissed starter never flashes back.
+  const [firstRunChecked, setFirstRunChecked] = useState(false);
+  const [firstRunBusy, setFirstRunBusy] = useState(false);
+  // 「沉淀为…」 request in flight.
+  const [distillBusy, setDistillBusy] = useState(false);
 
   // 文件/图片挂载管线（useComposerFiles）与 engine 互相依赖：engine 的 deps
   // 要 uploadOneDoc/attachOne，而它们要读 engine 的共享 ref。经 holder 打破环
@@ -246,6 +276,79 @@ export function ChatStream({
   useEffect(() => {
     onRunningChange?.(running);
   }, [running, onRunningChange]);
+
+  // ── V2 P2-1 / P2-3 localStorage hydration (client-only) ─────────────────
+  // try/catch every read/write: localStorage throws in private windows and can
+  // be blocked entirely, and none of this is load-bearing for the chat itself.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SUGGEST_DISMISS_LS_KEY);
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          setSuggDismissed(parsed as Record<string, true>);
+        }
+      }
+    } catch {
+      /* localStorage unavailable — dismissals stay in memory for this mount */
+    }
+    try {
+      setFirstRunDone(localStorage.getItem(FIRST_RUN_LS_KEY) === "1");
+    } catch {
+      /* see above */
+    }
+    setFirstRunChecked(true);
+  }, []);
+
+  // Suggestions, load 1/2: once when a session becomes the active one.
+  // `cancelled` (not curSessionIdRef) guards late responses — on the very first
+  // mount the engine's session effect runs before these, but a rapid switch can
+  // still resolve out of order.
+  const suggestSid = session?.id ?? null;
+  useEffect(() => {
+    setSuggestions([]);
+    if (!suggestSid) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await api.getSuggestions(suggestSid);
+        if (cancelled) return;
+        setSuggestions(
+          r.excluded === "automation" || !Array.isArray(r.suggestions) ? [] : r.suggestions,
+        );
+      } catch {
+        /* runtime unreachable — no cards; the next turn end retries */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [suggestSid]);
+
+  // Suggestions, load 2/2: after each turn settles. The cards are actionable
+  // only once the turn is over (compact/switch would race a live turn), so this
+  // is also where they reappear after being hidden while `running`.
+  const wasRunningRef = useRef(false);
+  useEffect(() => {
+    const settled = wasRunningRef.current && !running;
+    wasRunningRef.current = running;
+    if (!settled || !suggestSid) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await api.getSuggestions(suggestSid);
+        if (cancelled) return;
+        setSuggestions(
+          r.excluded === "automation" || !Array.isArray(r.suggestions) ? [] : r.suggestions,
+        );
+      } catch {
+        /* keep whatever is on screen */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [running, suggestSid]);
 
   // A pending ask_user card parks the turn on an interrupt exactly like a
   // permission prompt: while parked, a stray Escape must not cancel it and
@@ -692,6 +795,183 @@ export function ChatStream({
   }
 
 
+  // ── V2 P2-1 suggestions: actions + dismissal ───────────────────────────
+  /** Dismiss one card for THIS session only; the key includes the session id so
+   *  the same suggestion can still appear in another session. */
+  function dismissSuggestion(id: string) {
+    const sid = session?.id;
+    if (!sid) return;
+    setSuggDismissed((prev) => {
+      const next = { ...prev, [`${sid}:${id}`]: true as const };
+      try {
+        localStorage.setItem(SUGGEST_DISMISS_LS_KEY, JSON.stringify(next));
+      } catch {
+        /* in-memory dismissal still applies for this mount */
+      }
+      return next;
+    });
+  }
+
+  /** Shared success/error surfacing for both distill entry points. The API
+   *  returns `{detail:{error}}` on 4xx/5xx (FastAPI HTTPException body). */
+  function reportDistill(
+    r: { ok?: boolean; path?: string; detail?: { error?: string } },
+    kind: "skill" | "kb",
+  ) {
+    if (r?.ok && r.path) {
+      pushNotice(
+        "success",
+        tc(kind === "kb" ? "distill.kbDone" : "distill.skillDone", { path: r.path }),
+        { source: "general", duration: 8000 },
+      );
+      return;
+    }
+    pushNotice("error", r?.detail?.error || tc("distill.failed"), { source: "general" });
+  }
+
+  /** Skill / KB distillation (P1-2). Skill is deterministic server-side; KB
+   *  fails cleanly when no knowledge vault is configured. */
+  async function distillSessionTo(kind: "skill" | "kb") {
+    const sid = session?.id;
+    if (!sid || distillBusy) return;
+    setDistillBusy(true);
+    try {
+      reportDistill(await api.distillSession(sid, kind), kind);
+    } catch {
+      pushNotice("error", tc("distill.failed"), { source: "general" });
+    } finally {
+      setDistillBusy(false);
+    }
+  }
+
+  /** 「沉淀为…」 picker: workflow reuses the existing summarize-from-session
+   *  flow (draft modal + create/run), not a separate implementation. */
+  function pickDistill(kind: DistillKind) {
+    if (kind === "workflow") {
+      if (session) void openSummarize(session.id);
+      return;
+    }
+    void distillSessionTo(kind);
+  }
+
+  /** Execute a suggestion's single action. Types mirror suggestions.py. */
+  async function runSuggestionAction(s: api.SessionSuggestion) {
+    const sid = session?.id;
+    if (!sid) return;
+    const type = s.action?.type;
+    if (type === "open_settings") {
+      router.push("/settings/model-api");
+      return;
+    }
+    if (type === "compact") {
+      // Reuse the built-in /compact command: async_handler summarizes older
+      // messages and rewrites thread state server-side (no graph turn). The
+      // server busy-gates it too, but the UI already hides cards while running.
+      if (running) {
+        showComposerHint(tc("suggest.busyHint"));
+        return;
+      }
+      attemptSend(sid, {
+        text: "/compact",
+        images: [],
+        files: [],
+        mentions: [],
+        agentId: target ?? session?.agent_id ?? g.agents[0]?.id ?? null,
+      });
+      return;
+    }
+    if (type === "switch_model") {
+      // The composer's model chip IS the app's model switcher (rendered by this
+      // component); opening its menu is the existing flow. The delegation replay
+      // view has no composer, so it goes to the settings page instead.
+      if (session?.type === "delegation") {
+        router.push("/settings/model-api");
+        return;
+      }
+      setModelOpen(true);
+      return;
+    }
+    if (type === "distill") {
+      setSuggestBusy(s.id);
+      try {
+        reportDistill(await api.distillSession(sid, "skill"), "skill");
+      } catch {
+        pushNotice("error", tc("distill.failed"), { source: "general" });
+      } finally {
+        setSuggestBusy(null);
+      }
+    }
+  }
+
+  // ── V2 P2-3 first-run starter ──────────────────────────────────────────
+  function dismissFirstRun() {
+    setFirstRunDone(true);
+    try {
+      localStorage.setItem(FIRST_RUN_LS_KEY, "1");
+    } catch {
+      /* dismissal still applies for this mount */
+    }
+  }
+
+  /** Card 2: hand the user the composer — the starter has done its job. */
+  function firstRunAsk() {
+    dismissFirstRun();
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }
+
+  /** Card 3: example workflows live in the workflow library. */
+  function firstRunWorkflow() {
+    dismissFirstRun();
+    router.push("/workflows");
+  }
+
+  /** Card 1: pick a directory with the same native dialog + createFolder +
+   *  pending-mount pipeline the home mount chip uses, then open a session with
+   *  the folder mounted from birth (`newSession`'s context_folders contract).
+   *  Plain-browser dev has no native bridge; point at the mount chip instead of
+   *  failing silently. */
+  async function firstRunMountFolder() {
+    if (firstRunBusy) return;
+    if (!isDesktop()) {
+      pushNotice("info", tc("firstRun.browserHint"), { source: "general" });
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return;
+    }
+    setFirstRunBusy(true);
+    try {
+      let picked: string | null = null;
+      try {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const p = await open({ directory: true, multiple: false });
+        if (typeof p === "string") picked = p;
+      } catch {
+        pushNotice("error", tc("firstRun.pickFailed"), { source: "general" });
+        return;
+      }
+      if (!picked) return; // user cancelled — keep the starter on screen
+      const c = await api.createFolder({ path: picked, access: "rw", load_rules: true });
+      if (!c.ok || !c.folder) {
+        pushNotice("error", c.error || tc("firstRun.mountFailed"), { source: "general" });
+        return;
+      }
+      const ids = [c.folder.id];
+      // Same pending state the chip edits; also the fallback if creation fails.
+      setPendingMounts({ ids, primary: c.folder.id });
+      const s = await g.newSession(g.agents[0]?.id ?? null, {
+        ...(homeModel ?? {}),
+        context_folders: ids,
+        primary_folder: c.folder.id,
+      });
+      if (!s) return; // store banner (sessionError) carries the reason
+      dismissFirstRun();
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    } catch {
+      pushNotice("error", tc("firstRun.mountFailed"), { source: "general" });
+    } finally {
+      setFirstRunBusy(false);
+    }
+  }
+
   // Drag the composer's top handle to resize the input area. Auto-grow (capped)
   // still applies while composerH is undefined; dragging switches to a fixed,
   // scrollable height. The flex layout (message list = flex-1) keeps the overall
@@ -720,6 +1000,14 @@ export function ChatStream({
   const agentById = (id?: string | null) => g.agents.find((a) => a.id === id) ?? null;
 
   const isHome = !session;
+
+  // V2 P2-1: suggestions still visible for this session after local dismissal.
+  const visibleSuggestions = session
+    ? suggestions.filter((s) => !suggDismissed[`${session.id}:${s.id}`])
+    : [];
+  // V2 P2-3: starter shows only on the home view, with no sessions at all.
+  const showFirstRun =
+    firstRunChecked && g.ready && !session && g.sessions.length === 0 && !firstRunDone;
 
   // Home autofocus: the composer remounts on the home slot (keyed), so focus
   // must be re-armed after the transition.
@@ -1279,6 +1567,17 @@ export function ChatStream({
           <div className="mt-2 text-center text-[13px] text-faint">
             {tc("home.tagline")}
           </div>
+          {showFirstRun && (
+            <div className="mt-6 w-full max-w-[760px]">
+              <FirstRunCards
+                busy={firstRunBusy}
+                onMountFolder={() => void firstRunMountFolder()}
+                onAsk={firstRunAsk}
+                onWorkflow={firstRunWorkflow}
+                onDismiss={dismissFirstRun}
+              />
+            </div>
+          )}
           <div key="composer-home" className="mt-8 w-full max-w-[760px]">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               {agentChipsEl}
@@ -1325,6 +1624,13 @@ export function ChatStream({
       {session.type === "subagent" && <SubagentTopBar session={session} />}
       {session.type !== "subagent" && <PlanBoard sessionId={session.id} />}
       {session.type !== "subagent" && <SubagentBoard sessionId={session.id} />}
+      {/* V2 P1-2 「沉淀为…」: turn this session into a reusable skill / KB card
+          / workflow. Kept out of the subagent and delegation (read-only) views. */}
+      {session.type !== "subagent" && session.type !== "delegation" && (
+        <div className={`${CHAT_COL} mb-1 flex justify-end`}>
+          <DistillMenu busy={distillBusy} onPick={pickDistill} />
+        </div>
+      )}
       {!hideDel && goal && goalStalled && !resumeDismissed && (
         <div className={`${CHAT_COL} mb-2 flex items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs`}>
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />
@@ -1453,6 +1759,16 @@ export function ChatStream({
       {/* composer */}
       <div className="px-6 pb-5 pt-2">
         <div className={CHAT_COL}>
+          {/* V2 P2-1: execution-time suggestions sit directly above the
+              composer; hidden while a turn runs (their actions would race it). */}
+          {session && !running && visibleSuggestions.length > 0 && (
+            <SessionSuggestions
+              suggestions={visibleSuggestions}
+              busyId={suggestBusy}
+              onAction={(s) => void runSuggestionAction(s)}
+              onDismiss={dismissSuggestion}
+            />
+          )}
           {switchTarget && (
             <div className="mb-2 flex items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs">
               <span

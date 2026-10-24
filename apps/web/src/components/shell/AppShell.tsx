@@ -35,6 +35,12 @@ import { ConfirmModal } from "@/components/ConfirmModal";
 import { applyTheme } from "@/components/settings/GeneralSettings";
 import { TopBar } from "@/components/shell/TopBar";
 import { SessionSearchModal } from "@/components/shell/SessionSearchModal";
+import {
+  MessageHitRow,
+  SessionHitRow,
+  rememberMessageTarget,
+} from "@/components/shell/searchShared";
+import type { SearchMessageHit } from "@/lib/runtime";
 import { ChatStream } from "@/components/chat/ChatStream";
 import {
   SUBAGENT_BUCKET_ORDER,
@@ -209,6 +215,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 水合不一致，挂载后再读 storage；写入跳过首轮，免得默认值覆盖已存偏好。
   const [groupView, setGroupView] = useState<"time" | "project">("time");
   const [archivedOpen, setArchivedOpen] = useState(false);
+  // P0-2 归档检索：已归档区展开时的本地搜索框，200ms 防抖后走
+  // /api/search?scope=archived（标题命中 + 消息片段命中）。
+  const [archivedQuery, setArchivedQuery] = useState("");
+  const [archivedSearch, setArchivedSearch] = useState<{
+    sessions: SessionMeta[];
+    messages: SearchMessageHit[];
+    indexing: boolean;
+    indexed: number;
+  } | null>(null);
+  const [archivedSearchLoading, setArchivedSearchLoading] = useState(false);
   const sidebarPrefsLoaded = useRef(false);
   useEffect(() => {
     if (!sidebarPrefsLoaded.current) {
@@ -259,6 +275,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [archiveAllConfirm, setArchiveAllConfirm] = useState(false);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  // 已归档选中项的「删除所选」确认（只作用于归档子集，不动普通选中行）。
+  const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(false);
   const toggleSelect = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -578,6 +596,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     s.archived === true && nowSec - (s.updated ?? 0) > SIDEBAR_ACTIVE_WINDOW;
   const activeUnpinned = unpinnedSessions.filter((s) => !isArchived(s));
   const archivedSessions = unpinnedSessions.filter(isArchived);
+  // 归档区多选：普通行同样可勾选，但「恢复所选/删除所选」只针对归档子集。
+  const selectedArchivedIds = [...selected].filter((id) => {
+    const s = g.sessions.find((x) => x.id === id);
+    return s ? isArchived(s) : false;
+  });
+  // 归档列表按 YYYY-MM 分组（updated 的本地月份），最新月份在前。
+  const archivedMonthGroups: Array<[string, SessionMeta[]]> = (() => {
+    const by = new Map<string, SessionMeta[]>();
+    for (const s of archivedSessions) {
+      const d = new Date((s.updated ?? s.created ?? 0) * 1000);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const list = by.get(key) ?? [];
+      list.push(s);
+      by.set(key, list);
+    }
+    return [...by.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  })();
+  const archivedNeedle = archivedQuery.trim();
   const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const todayMs = dayStart(new Date());
   const groupOf = (s: SessionMeta): TimeGroup => {
@@ -628,10 +664,58 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (s) => s.archived !== true && nowSec - (s.updated ?? 0) > ARCHIVE_ALL_AFTER,
   );
 
+  // 归档检索（P0-2）：200ms 防抖 → /api/search?scope=archived。清空关键词
+  // 立即回到按月份分组的普通归档列表。
+  useEffect(() => {
+    if (!archivedOpen || !archivedNeedle) {
+      setArchivedSearch(null);
+      setArchivedSearchLoading(false);
+      return;
+    }
+    let alive = true;
+    setArchivedSearch(null);
+    setArchivedSearchLoading(true);
+    const timer = setTimeout(() => {
+      api
+        .searchAll(archivedNeedle, { scope: "archived", limit: 30 })
+        .then((r) => {
+          if (!alive) return;
+          setArchivedSearch({
+            sessions: r.sessions ?? [],
+            messages: r.messages ?? [],
+            indexing: !!r.index?.indexing,
+            indexed: r.index?.indexed ?? 0,
+          });
+        })
+        .catch(() => {
+          if (alive) {
+            setArchivedSearch({ sessions: [], messages: [], indexing: false, indexed: 0 });
+          }
+        })
+        .finally(() => {
+          if (alive) setArchivedSearchLoading(false);
+        });
+    }, 200);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+    // hiddenIds 每次渲染都是新 Set，不能进依赖（会让防抖永不稳定）；过滤放在
+    // 渲染期做（见 archivedTitleHits / archivedMessageHits）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [archivedOpen, archivedNeedle]);
+
+  const archivedTitleHits = (archivedSearch?.sessions ?? []).filter(
+    (s) => !hiddenIds.has(s.id),
+  );
+  const archivedMessageHits = (archivedSearch?.messages ?? []).filter(
+    (m) => !hiddenIds.has(m.session_id),
+  );
+
   // P1-4 批量动作：归档/取消归档/删除共用。删除被引用时后端会跳过并回报
   // skipped —— 这里把标题和引用落成侧栏提示，其余情况清空旧提示。
-  const runBulk = async (action: "archive" | "unarchive" | "delete") => {
-    const ids = [...selected];
+  const runBulk = async (action: "archive" | "unarchive" | "delete", idsOverride?: string[]) => {
+    const ids = idsOverride ?? [...selected];
     if (!ids.length || bulkBusy) return;
     // 删除后 store 会把行移除，先快照标题供 skipped 提示使用。
     const titles = new Map(g.sessions.map((s) => [s.id, s.title || t("session.untitled")]));
@@ -1064,6 +1148,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   };
 
+  // 归档检索结果的打开语义：标题命中 = 普通打开；消息命中 = 记下锚点再打开
+  // （目标就是当前会话时直接广播滚动事件，TranscriptList 自己定位）。
+  const openFromSearch = (sid: string, messageId?: string) => {
+    if (messageId) {
+      if (sid === g.activeSessionId) {
+        window.dispatchEvent(new CustomEvent("ginno:scroll-to-message", { detail: messageId }));
+      } else {
+        rememberMessageTarget(messageId);
+      }
+    }
+    g.setActiveSession(sid);
+    if (!onWorkspace) router.push("/");
+  };
+
   // Toggle the right panel with ⌘\ / Ctrl+\ (right-panel-redesign.md §3.3).
   // Workspace-only: on settings/kb/workflows routes there is no panel.
   // Stable refs destructured out of `g` so the listener isn't re-armed on
@@ -1262,7 +1360,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               ))}
 
           {/* 已归档（P1-1）：默认收起，标题带计数；行压暗但仍可点开/恢复。
-              两种视图下都固定挂在最底部。 */}
+              两种视图下都固定挂在最底部。P0-2：展开后带本地检索框（标题 +
+              消息片段），有搜索时用结果替代普通列表；无搜索时按 YYYY-MM
+              分月、最新在前。 */}
           {archivedSessions.length > 0 && (
             <div className="mb-1">
               <button
@@ -1279,8 +1379,95 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </button>
               {archivedOpen && (
                 <div className="space-y-0.5">
-                  {archivedSessions.map((s) =>
-                    renderSessionRow(s, 0, childrenOf.get(s.id) ?? [], true),
+                  <div className="px-1.5 pb-1">
+                    <div className="flex items-center gap-1 rounded-md border border-line bg-base/40 px-1.5">
+                      <Search className="h-3 w-3 shrink-0 text-faint" />
+                      <input
+                        value={archivedQuery}
+                        onChange={(e) => setArchivedQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setArchivedQuery("");
+                          }
+                        }}
+                        placeholder={t("archive.searchPlaceholder")}
+                        aria-label={t("archive.searchLabel")}
+                        className="w-full bg-transparent py-1 text-[11px] text-txt outline-none placeholder:text-faint"
+                      />
+                      {archivedQuery && (
+                        <button
+                          onClick={() => setArchivedQuery("")}
+                          aria-label={t("archive.clearSearch")}
+                          title={t("archive.clearSearch")}
+                          className="shrink-0 text-faint hover:text-txt"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {archivedNeedle ? (
+                    <>
+                      {archivedSearchLoading && !archivedSearch && (
+                        <div className="px-2.5 py-1 text-[10px] text-faint">
+                          {t("search.loading")}
+                        </div>
+                      )}
+                      {archivedTitleHits.length > 0 && (
+                        <div className="px-2.5 pb-0.5 pt-0.5 text-[10px] font-medium text-faint">
+                          {t("search.sections.sessions")}
+                        </div>
+                      )}
+                      {archivedTitleHits.map((s) => (
+                        <SessionHitRow
+                          key={s.id}
+                          session={s}
+                          dense
+                          onOpen={() => openFromSearch(s.id)}
+                        />
+                      ))}
+                      {archivedMessageHits.length > 0 && (
+                        <div className="px-2.5 pb-0.5 pt-1.5 text-[10px] font-medium text-faint">
+                          {t("search.sections.messages")}
+                        </div>
+                      )}
+                      {archivedMessageHits.map((hit, i) => (
+                        <MessageHitRow
+                          key={`${hit.session_id}:${hit.message_id}:${i}`}
+                          hit={hit}
+                          needle={archivedNeedle}
+                          dense
+                          onOpen={() => openFromSearch(hit.session_id, hit.message_id)}
+                        />
+                      ))}
+                      {archivedSearch &&
+                        archivedSearch.indexing &&
+                        archivedMessageHits.length === 0 && (
+                          <div className="px-2.5 py-1 text-[10px] text-faint">
+                            {t("search.indexing")}
+                          </div>
+                        )}
+                      {!archivedSearchLoading &&
+                        archivedSearch &&
+                        archivedTitleHits.length === 0 &&
+                        archivedMessageHits.length === 0 && (
+                          <div className="px-2.5 py-1 text-[10px] text-faint">
+                            {t("archive.noResults")}
+                          </div>
+                        )}
+                    </>
+                  ) : (
+                    archivedMonthGroups.map(([month, rows]) => (
+                      <div key={month}>
+                        <div className="sticky top-0 z-10 bg-panel/95 px-2.5 pb-0.5 pt-1.5 text-[10px] font-medium text-faint backdrop-blur">
+                          {month}
+                        </div>
+                        {rows.map((s) =>
+                          renderSessionRow(s, 0, childrenOf.get(s.id) ?? [], true),
+                        )}
+                      </div>
+                    ))
                   )}
                 </div>
               )}
@@ -1378,6 +1565,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {t("bulk.cancel")}
               </button>
             </div>
+            {/* P0-2：选中项里有已归档会话时，提供只作用于归档子集的快捷动作。 */}
+            {selectedArchivedIds.length > 0 && (
+              <div className="mb-1.5 flex items-center gap-1">
+                <button
+                  onClick={() => {
+                    const ids = selectedArchivedIds;
+                    setArchivedQuery("");
+                    void runBulk("unarchive", ids);
+                  }}
+                  disabled={bulkBusy}
+                  className="flex-1 rounded-md border border-violet/40 px-2 py-1 text-[11px] text-violet transition-colors hover:bg-violet/10 disabled:cursor-default disabled:opacity-40"
+                >
+                  {t("bulk.restoreSelected", { count: selectedArchivedIds.length })}
+                </button>
+                <button
+                  onClick={() => setArchivedDeleteConfirm(true)}
+                  disabled={bulkBusy}
+                  className="flex-1 rounded-md border border-red/40 px-2 py-1 text-[11px] text-red transition-colors hover:bg-red/10 disabled:cursor-default disabled:opacity-40"
+                >
+                  {t("bulk.deleteSelected", { count: selectedArchivedIds.length })}
+                </button>
+              </div>
+            )}
             <div className="flex items-center gap-1">
               <button
                 onClick={() => void runBulk("archive")}
@@ -1567,6 +1777,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             void runBulk("delete");
           }}
           onCancel={() => setBulkDeleteConfirm(false)}
+        />
+      )}
+
+      {/* P0-2 归档区「删除所选」：只删选中的已归档子集，确认后清空检索。 */}
+      {archivedDeleteConfirm && (
+        <ConfirmModal
+          title={t("bulk.confirmDeleteTitle")}
+          message={t("bulk.confirmDeleteMessage", { count: selectedArchivedIds.length })}
+          confirmLabel={t("bulk.confirmDeleteConfirm")}
+          onConfirm={() => {
+            const ids = selectedArchivedIds;
+            setArchivedDeleteConfirm(false);
+            setArchivedQuery("");
+            void runBulk("delete", ids);
+          }}
+          onCancel={() => setArchivedDeleteConfirm(false)}
         />
       )}
 

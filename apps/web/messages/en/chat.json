@@ -98,6 +98,19 @@
       "setGoal": "Set a long-running goal",
       "hintLine": "Drop in Excel / Word / PPT / PDF · / commands · @ mention Artifacts / Agents / Workflows / Memory"
     },
+    "firstRun": {
+      "heading": "Get started",
+      "dismiss": "Dismiss starter suggestions",
+      "mountTitle": "Mount a project folder so I can read the code",
+      "mountDetail": "Pick a local directory — the agent gets read/write access in a new session.",
+      "askTitle": "Just ask me a question",
+      "askDetail": "Jump straight into the input and start the conversation.",
+      "workflowTitle": "Run an example workflow",
+      "workflowDetail": "See a multi-step automation run end to end.",
+      "pickFailed": "Could not open the folder picker",
+      "mountFailed": "Could not mount that folder",
+      "browserHint": "Use the folder chip next to the input to mount a directory."
+    },
     "goal": {
       "stalledLabel": "Goal is {status, select, paused {paused} blocked {blocked} other {out of usage}}",
       "resume": "Resume",
@@ -107,6 +120,17 @@
     },
     "empty": {
       "start": "Start the conversation — the Agent will use tools to complete the task and may ask you about permissions."
+    },
+    "suggest": {
+      "heading": "Suggestions",
+      "dismiss": "Dismiss suggestion",
+      "busyHint": "Finish the current turn before compacting.",
+      "actions": {
+        "openSettings": "Model settings",
+        "compact": "Compact now",
+        "switchModel": "Switch model",
+        "distill": "Save as skill"
+      }
     },
     "sendFailed": {
       "connNotReady": "Connection not ready",
@@ -151,6 +175,20 @@
       "range": "Range",
       "all": "All",
       "lastN": "Last {n} messages"
+    },
+    "distill": {
+      "button": "Distill to…",
+      "title": "Turn this session into a reusable skill, knowledge card or workflow",
+      "skill": "Skill",
+      "skillHint": "Draft a SKILL.md from this session's tool steps",
+      "kb": "Knowledge card",
+      "kbHint": "Write the session into the knowledge vault's Raw folder",
+      "workflow": "Workflow",
+      "workflowHint": "Summarize this session into a workflow",
+      "busy": "Distilling…",
+      "skillDone": "Skill draft created: {path}",
+      "kbDone": "Knowledge card created: {path}",
+      "failed": "Distillation failed"
     },
     "confirmDeleteRun": {
       "title": "Delete run record",
@@ -361,6 +399,33 @@
       "empty": "No AgentTeam yet",
       "emptyHint": "Create a team to materialize multiple agents as standing members, then @ them in the main session",
       "newTeam": "New team",
+      "promptCreate": "+ Team from one sentence",
+      "promptTitle": "Create a team from one sentence",
+      "promptHint": "Describe the team you want; the model drafts an editable spec. Nothing is created until you confirm.",
+      "promptPlaceholder": "e.g. Build a daily US-stock intel team: macro, single names, options — one person each; summarize to the main session before the open.",
+      "promptGenerate": "Generate preview",
+      "promptGenerating": "Generating…",
+      "promptFailed": "Could not generate a preview",
+      "promptPreviewTitle": "Editable preview",
+      "promptRegenerate": "Back to description",
+      "charterLabel": "Team charter (TEAM.md)",
+      "charterPlaceholder": "Goal, division of labour, output cadence…",
+      "membersLabel": "Members ({count}/{max})",
+      "instructionsLabel": "Instructions",
+      "instructionsPlaceholder": "What this member owns and how it reports back",
+      "firstTaskLabel": "First task (optional)",
+      "firstTaskPlaceholder": "e.g. Summarize today's pre-market moves into the main session",
+      "removeMember": "Remove member",
+      "agentNeeded": "No agents available — create one first",
+      "capReached": "Up to {max} members",
+      "nameRequired": "Team name is required",
+      "membersRequired": "Add at least one member",
+      "leaderRequired": "Exactly one leader is required",
+      "confirmCreate": "Create team",
+      "promptCreatedNotice": "Team \"{name}\" is ready.",
+      "promptMemberErrors": "Some members failed: {errors}",
+      "promptFirstTaskDelivered": "The first task was delivered to the main session.",
+      "promptFirstTaskNotDelivered": "The first task was not delivered — send it again from the main session.",
       "memberCount": "{count} members",
       "backToMain": "Back to main session",
       "mainSessionMissing": "Main session unavailable",

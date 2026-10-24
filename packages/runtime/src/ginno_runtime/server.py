@@ -47,6 +47,17 @@ async def lifespan(app: FastAPI):
         run_startup_maintenance()
     except Exception:  # noqa: BLE001 — 启动绝不因清理失败而中断
         _log.exception("startup_maintenance_failed (continuing)")
+    # P0-1 消息索引：后台增量构建，搜索在它完成前只匹配标题。
+    try:
+        import threading as _threading
+
+        from . import search_index as _search_index
+
+        _threading.Thread(
+            target=_search_index.build_index, name="search-index", daemon=True
+        ).start()
+    except Exception:  # noqa: BLE001
+        _log.exception("search index start failed (continuing)")
     # P4-2 启动自检：轻量（不读 checkpoint、不发 HTTP），结果经 /api/health 暴露。
     try:
         from . import diagnostics
@@ -440,6 +451,9 @@ if WEB_OUT is not None and (WEB_OUT / "_next").exists():
 # Included before the catch-all web route at the bottom of this module.
 from .api import code as _code_api  # noqa: E402
 from .api import diagnostics as _diagnostics_api  # noqa: E402
+from .api import distill as _distill_api  # noqa: E402
+from .api import export as _export_api  # noqa: E402
+from .api import search as _search_api  # noqa: E402
 from .api import badge as _badge_api  # noqa: E402
 from .api import code_fsops as _code_fsops_api  # noqa: E402
 from .api import config as _config_api  # noqa: E402
@@ -452,6 +466,7 @@ from .api import memory as _memory_api  # noqa: E402
 from .api import schedule as _schedule_api  # noqa: E402
 from .api import sessions as _sessions_api  # noqa: E402
 from .api import stream as _stream_api  # noqa: E402
+from .api import team_generate as _team_gen_api  # noqa: E402
 from .api import teams as _teams_api  # noqa: E402
 from .api import todos as _todos_api  # noqa: E402
 from .api import usage as _usage_api  # noqa: E402
@@ -460,6 +475,9 @@ from .mods import api as _mods_api  # noqa: E402
 
 app.include_router(_code_api.router)
 app.include_router(_diagnostics_api.router)
+app.include_router(_search_api.router)
+app.include_router(_export_api.router)
+app.include_router(_distill_api.router)
 app.include_router(_badge_api.router)
 app.include_router(_connectors_api.router)
 app.include_router(_code_fsops_api.router)
@@ -474,6 +492,7 @@ app.include_router(_schedule_api.router)
 app.include_router(_sessions_api.router)
 app.include_router(_stream_api.router)
 app.include_router(_teams_api.router)
+app.include_router(_team_gen_api.router)
 app.include_router(_todos_api.router)
 app.include_router(_usage_api.router)
 app.include_router(_workflows_api.router)

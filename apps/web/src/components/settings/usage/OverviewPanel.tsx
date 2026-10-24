@@ -9,9 +9,44 @@ import { useTranslations } from "next-intl";
 import { sourceFg } from "@/lib/sourceColor";
 import { RefreshCw } from "lucide-react";
 import * as api from "@/lib/runtime";
-import type { UsageOverview } from "@/lib/types";
+import type { UsageOverview, UsageSessionRow } from "@/lib/types";
 import { fmt, pct, providerColor, SERIES, TipRow, useTip } from "./charts";
 import { GridPanel } from "./GridPanel";
+
+/* ---- V2 P1-1: money views ------------------------------------------------
+ * The runtime adds `est_cost` / `cache_saving` to every aggregate row and
+ * `pricing_configured` at the top level, but lib/types.ts is frozen for this
+ * change, so read those fields through these narrow helpers instead of
+ * widening the shared contract here. Absent/NaN reads collapse to 0, which is
+ * the same value the backend returns when no pricing table is configured. */
+type CostFields = { est_cost?: number; cache_saving?: number };
+
+function costOf(row: unknown): number {
+  const v = (row as CostFields | null | undefined)?.est_cost;
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function savingOf(row: unknown): number {
+  const v = (row as CostFields | null | undefined)?.cache_saving;
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function pricingConfigured(ov: UsageOverview): boolean {
+  return Boolean((ov as UsageOverview & { pricing_configured?: boolean }).pricing_configured);
+}
+
+/** CNY with enough precision to keep sub-fen estimates from reading as zero
+ *  (a single short turn can cost less than ¥0.01). */
+function fmtCny(n: number): string {
+  const v = Math.max(0, n || 0);
+  const digits = v === 0 ? 2 : v < 0.01 ? 4 : v < 1 ? 3 : 2;
+  return `¥${v.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
+
+/** Shown inline when `pricing_configured` is false. Deliberately not i18n —
+ *  it is the literal JSON shape the runtime parses. */
+const PRICING_EXAMPLE =
+  '{"pricing": {"<provider>/<model>": {"input": 2, "output": 8, "cache_read": 0.2}}}';
 
 function Delta({ v, suffix = "", goodUp = true }: { v: number; suffix?: string; goodUp?: boolean }) {
   const up = v >= 0;
@@ -38,6 +73,7 @@ export function OverviewPanel() {
   const t = useTranslations("settings.usage.overview");
   const [range, setRange] = useState(30);
   const [ov, setOv] = useState<UsageOverview | null>(null);
+  const [topSessions, setTopSessions] = useState<UsageSessionRow[]>([]);
   const [err, setErr] = useState("");
   const alive = useRef(true);
 
@@ -47,6 +83,18 @@ export function OverviewPanel() {
       if (!alive.current) return;
       setOv(o);
       setErr("");
+      // Top-session card shares the overview window so the two cards agree.
+      try {
+        const s = await api.getUsageSessions({
+          from: o.window.from,
+          to: o.window.to,
+          sort: "total",
+          limit: 10,
+        });
+        if (alive.current) setTopSessions(s.sessions || []);
+      } catch {
+        if (alive.current) setTopSessions([]);
+      }
     } catch {
       if (alive.current) setErr(t("loadFailed"));
     }
@@ -102,14 +150,18 @@ export function OverviewPanel() {
         </button>
       </div>
 
+      {/* V2 P1-1: money card sits above the token KPIs — it is the answer the
+          user opens this page for once prices are configured. */}
+      <CostCard ov={ov} days={ov.window.days} />
+
       {empty ? (
-        <div className="rounded-xl border border-line bg-card px-6 py-14 text-center text-sm text-faint">
+        <div className="mt-3 rounded-xl border border-line bg-card px-6 py-14 text-center text-sm text-faint">
           {t("empty")}
         </div>
       ) : (
         <>
           {/* KPI */}
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <div className="mt-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
             <Kpi
               label={t("kpiTokensToday")}
               value={fmt(today.input_tokens + today.output_tokens)}
@@ -139,6 +191,12 @@ export function OverviewPanel() {
             <SourceDist ov={ov} />
             <ProviderDist ov={ov} />
             <ModelRank ov={ov} />
+          </div>
+
+          {/* V2 P1-1：钱花在哪个模型 / 哪个会话上 */}
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <ModelCost ov={ov} />
+            <TopSessions rows={topSessions} />
           </div>
         </>
       )}
@@ -278,6 +336,149 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
         );
       })}
       {tipEl}
+    </div>
+  );
+}
+
+/** Window-level cost card. With a pricing table configured it leads with the
+ *  estimated spend; without one it shows the token total and the exact JSON
+ *  shape needed to enable money (never a fabricated ¥0 headline). */
+function CostCard({ ov, days }: { ov: UsageOverview; days: number }) {
+  const t = useTranslations("settings.usage.overview");
+  const priced = pricingConfigured(ov);
+  const tokens = ov.totals.input_tokens + ov.totals.output_tokens;
+  return (
+    <div className="rounded-xl border border-line bg-card px-4 py-3.5">
+      <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
+        <div>
+          <div className="text-xs text-muted">
+            {priced ? t("costWindow", { days }) : t("tokensWindow", { days })}
+          </div>
+          <div className="mt-1.5 text-2xl font-semibold tracking-tight tabular-nums">
+            {priced ? fmtCny(costOf(ov.totals)) : fmt(tokens)}
+          </div>
+          <div className="mt-1 text-[11.5px] text-faint">{t("costCalls", { calls: ov.totals.calls })}</div>
+        </div>
+        {priced && (
+          <div>
+            <div className="text-xs text-muted">{t("costSaving")}</div>
+            <div className="mt-1.5 text-lg font-semibold tracking-tight tabular-nums" style={{ color: "#4ade80" }}>
+              {fmtCny(savingOf(ov.totals))}
+            </div>
+          </div>
+        )}
+      </div>
+      {!priced && (
+        <div className="mt-3 border-t border-line pt-2.5">
+          <div className="text-[11.5px] text-muted">{t("pricingHint")}</div>
+          <code className="mt-1 block overflow-x-auto whitespace-pre rounded-lg bg-card2 px-2.5 py-1.5 font-mono text-[11px] text-txt">
+            {PRICING_EXAMPLE}
+          </code>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Spend by model, `est_cost` desc. When every row prices to 0 (no table yet)
+ *  the ordering falls back to tokens so the card still ranks usefully. */
+function ModelCost({ ov }: { ov: UsageOverview }) {
+  const t = useTranslations("settings.usage.overview");
+  const priced = pricingConfigured(ov) && ov.models.some((m) => costOf(m) > 0);
+  const rows = [...ov.models].sort((a, b) =>
+    priced
+      ? costOf(b) - costOf(a)
+      : b.input_tokens + b.output_tokens - (a.input_tokens + a.output_tokens),
+  );
+  const heads = ["labelModel", "labelProvider", "labelCalls", "labelTokens", "labelCost"] as const;
+  return (
+    <div className="min-w-0 overflow-hidden rounded-xl border border-line bg-card px-4 pb-1 pt-3.5">
+      <div className="mb-1.5 flex items-baseline gap-3">
+        <h3 className="text-[13px] font-semibold">{t("costByModel")}</h3>
+        <span className="text-[11px] text-faint">{priced ? t("costByModelHint") : t("costByModelHintTokens")}</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[420px] border-collapse">
+          <thead>
+            <tr>
+              {heads.map((h, i) => (
+                <th
+                  key={h}
+                  className={`whitespace-nowrap border-b border-line px-2 py-1.5 text-[11px] font-semibold tracking-wide text-faint ${i >= 2 ? "text-right" : "text-left"}`}
+                >
+                  {t(h)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={heads.length} className="py-6 text-center text-xs text-faint">{t("noData")}</td>
+              </tr>
+            )}
+            {rows.map((m) => (
+              <tr key={`${m.provider}/${m.model}`} className="border-b border-white/5 last:border-b-0">
+                <td className="max-w-[14rem] py-1.5 pl-2 pr-2 text-[12.5px] text-txt">
+                  <span className="flex items-start gap-1.5">
+                    <i className="mt-1.5 h-2 w-2 flex-none rounded-[2.5px]" style={{ background: providerColor(m.provider) }} />
+                    <span className="break-words">{m.model}</span>
+                  </span>
+                </td>
+                <td className="px-2 py-1.5 text-[12px] text-muted">{m.provider}</td>
+                <td className="px-2 py-1.5 text-right text-[12px] tabular-nums text-muted">{m.calls}</td>
+                <td className="px-2 py-1.5 text-right text-[12px] tabular-nums text-muted">
+                  {fmt(m.input_tokens + m.output_tokens)}
+                </td>
+                <td className="px-2 py-1.5 pr-0 text-right text-[12.5px] tabular-nums text-txt">{fmtCny(costOf(m))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** Top 10 sessions in the overview window, tokens desc. The runtime's session
+ *  aggregate does not carry a context-window ratio today, so the >70% warning
+ *  stays dormant until a payload supplies `context_ratio` — never guessed. */
+function TopSessions({ rows }: { rows: UsageSessionRow[] }) {
+  const t = useTranslations("settings.usage.overview");
+  const top = [...rows]
+    .sort((a, b) => b.input_tokens + b.output_tokens - (a.input_tokens + a.output_tokens))
+    .slice(0, 10);
+  return (
+    <div className="min-w-0 overflow-hidden rounded-xl border border-line bg-card px-4 pb-2 pt-3.5">
+      <div className="mb-1.5 flex items-baseline gap-3">
+        <h3 className="text-[13px] font-semibold">{t("topSessions")}</h3>
+        <span className="text-[11px] text-faint">{t("topSessionsHint")}</span>
+      </div>
+      {top.length === 0 && <div className="py-6 text-center text-xs text-faint">{t("noData")}</div>}
+      {top.map((r) => {
+        const ratio = (r as UsageSessionRow & { context_ratio?: number }).context_ratio;
+        const near = typeof ratio === "number" && ratio > 0.7;
+        return (
+          <div
+            key={r.session_id || "(bg)"}
+            className="flex items-center gap-2 border-b border-white/5 py-2 text-[12.5px] last:border-b-0"
+          >
+            <span className="min-w-0 flex-1 truncate text-txt" title={r.title || t("untitledSession")}>
+              {r.title || t("untitledSession")}
+            </span>
+            <span className="shrink-0 font-mono text-[10px] text-faint">
+              {r.session_id ? `#${r.session_id.slice(0, 8)}` : t("backgroundSession")}
+            </span>
+            <span
+              className="w-16 flex-none text-right tabular-nums text-muted"
+              style={near ? { color: "#fbbf24" } : undefined}
+              title={near ? t("nearContextLimit") : undefined}
+            >
+              {fmt(r.input_tokens + r.output_tokens)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

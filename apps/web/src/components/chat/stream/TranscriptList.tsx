@@ -5,7 +5,7 @@
 // 错误卡与 assistant 气泡的整段 map。委派卡折叠、handoff 分隔与「最后一条
 // 可重试」判定也随渲染段搬到这里（同一 render 期计算，行为不变）。
 
-import { Fragment } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
@@ -26,6 +26,11 @@ import {
 } from "../streamCards";
 import { type ChatMsg } from "../streamCore";
 import type { SessionMeta } from "@/lib/types";
+import {
+  consumeMessageTarget,
+  flashMessageAnchor,
+  scrollToMessageAnchor,
+} from "@/components/shell/searchShared";
 
 export function TranscriptList({
   messages,
@@ -96,6 +101,80 @@ export function TranscriptList({
     });
   }
 
+  // ── V2 P0-1 message anchoring ────────────────────────────────────────────
+  // data-msg-id mapping: user rows carry their own HumanMessage id; assistant
+  // rows carry the merged bubble's id, which the backend (_messages_to_ui)
+  // takes from the turn's FIRST AIMessage. A search hit on a later AI step or
+  // on a ToolMessage therefore has no row and is a graceful no-op.
+  //
+  // The ⌘K modal stores the target id in sessionStorage before switching
+  // sessions (history may still be loading there). Consume it here and keep
+  // re-centering across frames: ChatStream's session-switch effect pins the
+  // transcript to the bottom for its first ~12 frames, which would otherwise
+  // override a single scrollIntoView.
+  const anchorRef = useRef<{ id: string; until: number } | null>(null);
+  useEffect(() => {
+    if (!messages.length) return;
+    if (!anchorRef.current) {
+      const id = consumeMessageTarget();
+      // 3s：会话切换后历史可能异步拉取；期间 ChatStream 还会把转录钉到底部
+      // ~12 帧，所以这里持续把目标行重新居中直到窗口结束。
+      if (id) anchorRef.current = { id, until: Date.now() + 3000 };
+    }
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    let raf = 0;
+    let flashed = false;
+    const tick = () => {
+      try {
+        const el = scrollToMessageAnchor(anchor.id);
+        if (el && !flashed) {
+          flashed = true;
+          flashMessageAnchor(el);
+        }
+      } catch {
+        /* selector/storage failure — no-op */
+      }
+      if (Date.now() < anchor.until) {
+        raf = requestAnimationFrame(tick);
+      } else if (anchorRef.current === anchor) {
+        anchorRef.current = null;
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [messages, session?.id]);
+
+  // Same-session message hit: the modal broadcasts this instead of a storage
+  // hand-off (the session-switch effect does not re-run, so no messages change
+  // would ever consume it). Retries a few frames in case the row just mounted.
+  useEffect(() => {
+    let raf = 0;
+    const onScrollToMessage = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (!id) return;
+      let frames = 0;
+      const tick = () => {
+        try {
+          const el = scrollToMessageAnchor(id);
+          if (el) {
+            flashMessageAnchor(el);
+            return;
+          }
+        } catch {
+          return;
+        }
+        if (++frames < 60) raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    };
+    window.addEventListener("ginno:scroll-to-message", onScrollToMessage);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("ginno:scroll-to-message", onScrollToMessage);
+    };
+  }, []);
+
   return (
     <>
       {messages.map((m, idx) =>
@@ -158,7 +237,7 @@ export function TranscriptList({
               ))}
           </div>
         ) : m.role === "user" ? (
-          <div key={m.id} className="flex flex-col items-end gap-1">
+          <div key={m.id} data-msg-id={m.id} className="flex flex-col items-end gap-1">
             <TurnIdChip turnId={m.turnId} />
             {/* w-full (not max-w-full): the row width must be definite so the
                 bubble's max-w-[78%] resolves against the column, not against
@@ -220,20 +299,22 @@ export function TranscriptList({
             )}
           </div>
         ) : m.error ? (
-          <ErrorCard
-            key={m.id}
-            message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
-            turnId={m.turnId}
-            canRetry={!!m.sendPayload && m.id === lastRetryableId}
-            busy={running}
-            onRetry={() => retryError(m.id)}
-            onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
-          />
+          <div key={m.id} data-msg-id={m.id} className="min-w-0 rounded-xl">
+            <ErrorCard
+              message={m.blocks[0]?.kind === "text" ? m.blocks[0].text : ""}
+              turnId={m.turnId}
+              canRetry={!!m.sendPayload && m.id === lastRetryableId}
+              busy={running}
+              onRetry={() => retryError(m.id)}
+              onRetryFromCheckpoint={() => retryFromCheckpoint(m.id)}
+            />
+          </div>
         ) : (
           <Fragment key={m.id}>
             {handoffBefore[idx] && (
               <HandoffDivider agent={agentById(m.agentId)} agentName={m.agentName} />
             )}
+            <div data-msg-id={m.id} className="min-w-0 rounded-xl">
             {m.teamReply ? (
               // AgentTeam 成员回帖（§5.2 要点 2）：渲染成回帖卡而非普通气泡。
               <TeamReplyCard meta={m.teamReply} agentId={m.agentId} blocks={m.blocks} />
@@ -266,6 +347,7 @@ export function TranscriptList({
               questionLive={liveId !== null || serverRunning}
             />
             )}
+            </div>
           </Fragment>
         ),
       )}

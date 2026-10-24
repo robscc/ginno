@@ -127,16 +127,41 @@
       "confirmDeleteTitle": "Delete selected sessions",
       "confirmDeleteMessage": "Delete the {count} selected sessions? Their conversation history will be deleted and cannot be recovered. Sessions still referenced by teams or scheduled runs are skipped.",
       "confirmDeleteConfirm": "Delete",
-      "skipped": "{count} session(s) were not deleted because they are still referenced:"
+      "skipped": "{count} session(s) were not deleted because they are still referenced:",
+      "restoreSelected": "Restore selected ({count})",
+      "deleteSelected": "Delete selected ({count})"
+    },
+    "archive": {
+      "searchPlaceholder": "Search archived sessions…",
+      "searchLabel": "Search archived sessions",
+      "clearSearch": "Clear search",
+      "noResults": "No matching archived sessions"
     },
     "search": {
       "dialogLabel": "Search sessions",
-      "placeholder": "Search session titles, or type an Agent name…",
+      "placeholder": "Search session titles and messages, or type an Agent name…",
       "empty": "No matching sessions",
       "loading": "Searching…",
       "total": "{total} results",
+      "results": "{sessions} sessions · {messages} messages",
       "fallback": "Local match",
-      "footer": "↑↓ select · Enter open · Esc close"
+      "footer": "↑↓ select · Enter open · Esc close",
+      "sections": {
+        "sessions": "Sessions",
+        "messages": "Message snippets"
+      },
+      "noSessionHits": "No matching session titles",
+      "noMessageHits": "No matching messages",
+      "indexing": "Building the message index…",
+      "moreMessages": "See more ({count} more) · {indexed} sessions indexed",
+      "collapseMessages": "Collapse",
+      "indexedSessions": "{indexed} sessions indexed",
+      "archivedChip": "Archived",
+      "role": {
+        "user": "User",
+        "assistant": "Assistant",
+        "tool": "tool"
+      }
     },
     "topbar": {
       "newSession": "New Session",
@@ -147,7 +172,15 @@
       "renamePrompt": "Session title",
       "copyId": "Copy session ID",
       "copied": "copied",
-      "idChipTitle": "session {id} (click to copy, for log lookup)"
+      "idChipTitle": "session {id} (click to copy, for log lookup)",
+      "exportMenu": "Export",
+      "exportSession": "Export this session (Markdown)",
+      "exportNoSession": "Open a session first",
+      "exportProject": "Export project (zip)",
+      "exporting": "Exporting…",
+      "exportProjectHint": "A copy is also kept in ~/.ginno/index/exports/",
+      "exportProjectDone": "Project export downloaded (also kept in ~/.ginno/index/exports/)",
+      "exportFailed": "Export failed — check that the runtime is connected"
     }
   }
 }

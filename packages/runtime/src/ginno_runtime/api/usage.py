@@ -103,7 +103,14 @@ async def usage_overview(days: int = 30) -> dict:
     """KPI + daily series + provider/model breakdown for the trailing window
     (design §5). Window is clamped to [1, retention]."""
     days = max(1, min(int(days), usage_store.RETENTION_DAYS))
-    return {"ok": True, **usage_store.aggregate_overview(days)}
+    from .. import pricing
+
+    return {
+        "ok": True,
+        **usage_store.aggregate_overview(days),
+        "pricing_configured": pricing.configured(),
+        "currency": "CNY",
+    }
 
 
 @router.get("/api/usage/grid")

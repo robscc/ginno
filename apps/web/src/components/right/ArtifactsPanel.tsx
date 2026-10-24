@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   AlertTriangle,
@@ -85,6 +85,146 @@ function matchByRef(files: FileEntry[], ref: string): FileEntry | undefined {
   return (
     files.find((f) => f.path === ref) ??
     files.find((f) => f.path.endsWith("/" + ref.split("/").slice(-2).join("/")))
+  );
+}
+
+// ---- P3-2: 图片折叠 ----
+// 连续的 image 产物（同一 session）折成一行画廊。折叠只吃「相邻」的图片，
+// 因此非图片产物之间的相对顺序与可见性完全不变；一次 269 张截图的会话只
+// 占一行（展开后才逐行还原 hover / 删除 / 打开行为）。
+type ArtifactRow =
+  | { kind: "item"; item: Artifact }
+  | { kind: "images"; key: string; items: Artifact[] };
+
+function foldImageRuns(items: Artifact[]): ArtifactRow[] {
+  const rows: ArtifactRow[] = [];
+  let run: Artifact[] = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    if (run.length === 1) rows.push({ kind: "item", item: run[0] });
+    else
+      rows.push({
+        kind: "images",
+        key: `images:${run[0].session_id ?? ""}:${run[0].id}`,
+        items: run,
+      });
+    run = [];
+  };
+  for (const a of items) {
+    if (a.kind !== "image") {
+      flush();
+      rows.push({ kind: "item", item: a });
+      continue;
+    }
+    if (run.length > 0 && run[0].session_id !== a.session_id) flush();
+    run.push(a);
+  }
+  flush();
+  return rows;
+}
+
+/** 一行图片折叠条：最多 4 张缩略图 + 「+N」，点击原地展开成普通行。 */
+function ImageGroupRow({
+  items,
+  expanded,
+  onToggle,
+  renderRow,
+  label,
+  moreLabel,
+  hint,
+}: {
+  items: Artifact[];
+  expanded: boolean;
+  onToggle: () => void;
+  renderRow: (a: Artifact) => React.ReactNode;
+  label: string;
+  moreLabel: string;
+  hint: string;
+}) {
+  const shown = items.slice(0, 4);
+  // 产物只带路径（ref），缩略图需要 registry 的 file id；按 ref 解析一次，
+  // 解析不到就退回占位图标（不阻塞折叠本体的渲染）。
+  const refsKey = shown.map((a) => a.ref).join("|");
+  const [fileIdByRef, setFileIdByRef] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let alive = true;
+    if (!refsKey) {
+      setFileIdByRef({});
+      return;
+    }
+    void api
+      .listFiles()
+      .then((files) => {
+        if (!alive) return;
+        const next: Record<string, string> = {};
+        for (const a of shown) {
+          const entry = matchByRef(files, a.ref);
+          if (entry) next[a.ref] = entry.id;
+        }
+        setFileIdByRef(next);
+      })
+      .catch(() => {
+        /* sidecar 抖动——保持占位图标 */
+      });
+    return () => {
+      alive = false;
+    };
+    // refsKey 已经完整表达 shown 的内容；不要因每次 render 的新数组重发请求。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refsKey]);
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-line/70 bg-card/20">
+      <button
+        onClick={onToggle}
+        aria-expanded={expanded}
+        title={hint}
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-card/50"
+      >
+        <ImageIcon className="h-4 w-4 shrink-0 text-violet" />
+        <span className="shrink-0 text-xs text-txt">{label}</span>
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          {shown.map((a) => {
+            const fileId = fileIdByRef[a.ref];
+            return fileId ? (
+              <img
+                key={a.id}
+                src={`${api.fileDownloadUrl(fileId)}?t=${a.created ?? 0}`}
+                alt={a.name}
+                title={a.name}
+                className="h-7 w-9 rounded border border-line/60 object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.visibility = "hidden";
+                }}
+              />
+            ) : (
+              <span
+                key={a.id}
+                title={a.name}
+                className="flex h-7 w-9 items-center justify-center rounded border border-line/60 bg-card2/60"
+              >
+                <ImageIcon className="h-3 w-3 text-faint" />
+              </span>
+            );
+          })}
+          {items.length > 4 && (
+            <span className="rounded-full bg-card2 px-1.5 py-0.5 text-[10px] text-faint">
+              {moreLabel}
+            </span>
+          )}
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 text-faint" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-faint" />
+          )}
+        </span>
+      </button>
+      {expanded && (
+        <div className="space-y-0.5 border-t border-line/60 px-1 py-1">
+          {items.map((a) => renderRow(a))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -528,17 +668,35 @@ export function ArtifactsPanel() {
 
   // 当前会话：store 的 artifacts 已按 active session 取回，这里再按 session_id
   // 过滤一次，保证视图语义与需求一致（顺序沿用 newest-first）。
-  const currentItems = g.artifacts.filter((a) => a.session_id === g.activeSessionId);
+  const currentItems = useMemo(
+    () => g.artifacts.filter((a) => a.session_id === g.activeSessionId),
+    [g.artifacts, g.activeSessionId],
+  );
   // 全部：g.projectArtifacts 是项目级全量（@ 菜单同源），合并 store 的 scoped
   // 记录以拿到编辑后的最新名称，并补上项目列表尚未刷新的新条目；按 created
   // 重新排序保证 newest-first 与分组顺序一致。
-  const scopedById = new Map(g.artifacts.map((a) => [a.id, a]));
-  const allSource = g.projectArtifacts.length > 0 ? g.projectArtifacts : g.artifacts;
-  const knownIds = new Set(allSource.map((a) => a.id));
-  const allItems = [...allSource, ...g.artifacts.filter((a) => !knownIds.has(a.id))]
-    .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))
-    .map((a) => scopedById.get(a.id) ?? a);
+  const allItems = useMemo(() => {
+    const scopedById = new Map(g.artifacts.map((a) => [a.id, a]));
+    const allSource = g.projectArtifacts.length > 0 ? g.projectArtifacts : g.artifacts;
+    const knownIds = new Set(allSource.map((a) => a.id));
+    return [...allSource, ...g.artifacts.filter((a) => !knownIds.has(a.id))]
+      .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))
+      .map((a) => scopedById.get(a.id) ?? a);
+  }, [g.projectArtifacts, g.artifacts]);
   const displayed = scope === "current" ? currentItems : allItems;
+
+  // P3-2：展开的图片折叠条（按折叠键记忆，只在组件内，不持久化）。
+  const [expandedImageGroups, setExpandedImageGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleImageGroup = (key: string) => {
+    setExpandedImageGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // Newest session first: allItems is newest-first, so first-seen order of a
   // session id already puts the most recent session on top. 未归属 goes last.
@@ -740,6 +898,24 @@ export function ArtifactsPanel() {
     );
   };
 
+  // P3-2：折叠行渲染——普通行原样委托给 renderRow；图片段渲染成画廊条。
+  const renderFoldedRow = (row: ArtifactRow) => {
+    if (row.kind === "item") return renderRow(row.item);
+    const expanded = expandedImageGroups.has(row.key);
+    return (
+      <ImageGroupRow
+        key={row.key}
+        items={row.items}
+        expanded={expanded}
+        onToggle={() => toggleImageGroup(row.key)}
+        renderRow={renderRow}
+        label={t("imageGroup", { n: row.items.length })}
+        moreLabel={t("imageGroupMore", { n: row.items.length - 4 })}
+        hint={t("imageGroupHint")}
+      />
+    );
+  };
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center px-4 pb-2 pt-4">
@@ -798,7 +974,7 @@ export function ArtifactsPanel() {
             {scope === "current" ? t("emptyCurrent") : t("empty")}
           </div>
         )}
-        {g.ready && scope === "current" && currentItems.map(renderRow)}
+        {g.ready && scope === "current" && foldImageRuns(currentItems).map(renderFoldedRow)}
         {g.ready &&
           scope === "all" &&
           groups.map((grp) => {
@@ -822,7 +998,9 @@ export function ArtifactsPanel() {
                     {t("itemsCount", { n: grp.items.length })}
                   </span>
                 </button>
-                {!isCollapsed && <div className="space-y-0.5">{grp.items.map(renderRow)}</div>}
+                {!isCollapsed && (
+                  <div className="space-y-0.5">{foldImageRuns(grp.items).map(renderFoldedRow)}</div>
+                )}
               </div>
             );
           })}

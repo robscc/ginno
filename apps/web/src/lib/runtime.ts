@@ -113,6 +113,103 @@ export async function bulkSessions(action: "archive" | "unarchive" | "delete", i
   );
 }
 
+export interface SearchMessageHit {
+  session_id: string;
+  message_id: string;
+  role: string;
+  snippet: string;
+  session_title: string;
+  archived: boolean;
+}
+
+/** V2 P0-1/P0-2 unified search: title hits + message-content hits.
+ *  ``scope`` = all | sessions | messages | archived. */
+export async function searchAll(q: string, opts?: { scope?: "all" | "sessions" | "messages" | "archived"; limit?: number; project_slug?: string }) {
+  const p = new URLSearchParams();
+  p.set("q", q);
+  if (opts?.scope) p.set("scope", opts.scope);
+  if (opts?.limit != null) p.set("limit", String(opts.limit));
+  if (opts?.project_slug) p.set("project_slug", opts.project_slug);
+  return json<{
+    ok: boolean;
+    q: string;
+    scope: string;
+    index: { indexing: boolean; last_build: number | null; indexed: number };
+    sessions: SessionMeta[];
+    messages: SearchMessageHit[];
+  }>(`${BASE}/search?${p.toString()}`);
+}
+
+/** V2 P1-3: direct download URLs (the browser follows them). */
+export function exportSessionUrl(id: string) {
+  return `${BASE}/export/session/${encodeURIComponent(id)}?format=md`;
+}
+export async function exportProject(project_slug = "default") {
+  return json<{ ok?: boolean; error?: string }>(`${BASE}/export/project`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_slug }),
+  });
+}
+
+export interface SessionSuggestion {
+  id: string;
+  severity: "high" | "medium" | "low";
+  title: string;
+  detail: string;
+  action: { type: string; [k: string]: unknown };
+}
+
+/** V2 P2-1: execution-derived, actionable tips (never for automation). */
+export async function getSuggestions(session_id: string) {
+  return json<{ ok: boolean; excluded?: string; suggestions: SessionSuggestion[] }>(
+    `${BASE}/sessions/${encodeURIComponent(session_id)}/suggestions`,
+  );
+}
+
+/** V2 P1-2: distil a session into a skill or a KB card. */
+export async function distillSession(session_id: string, kind: "skill" | "kb" | "workflow") {
+  return json<{ ok: boolean; kind?: string; name?: string; path?: string; hint?: string; detail?: { error?: string } }>(
+    `${BASE}/sessions/${encodeURIComponent(session_id)}/distill`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind }),
+    },
+  );
+}
+
+export interface TeamSpec {
+  name: string;
+  charter_md: string;
+  members: Array<{ agent_id: string; display_name: string; role: "leader" | "member"; instructions: string }>;
+  first_task: string;
+}
+
+/** V2 P2-2: prompt → editable TeamSpec (no side effects). */
+export async function generateTeam(prompt: string, project_slug = "default") {
+  return json<{ ok: boolean; spec?: TeamSpec; detail?: { error?: string; raw?: string } }>(
+    `${BASE}/teams/generate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, project_slug }),
+    },
+  );
+}
+
+/** V2 P2-2: create team + members + charter from a (edited) spec. */
+export async function createTeamFromSpec(spec: TeamSpec & { project_slug?: string; workspace?: string }) {
+  return json<{ ok: boolean; team?: unknown; member_errors?: string[]; first_task_delivered?: boolean; detail?: { error?: string } }>(
+    `${BASE}/teams/from_spec`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(spec),
+    },
+  );
+}
+
 export interface DiagnosticsIssue {
   id: string;
   severity: "high" | "medium" | "low" | "info";

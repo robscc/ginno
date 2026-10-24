@@ -16,7 +16,7 @@
 // 状态一律来自 runtime teams.status（§5.9 唯一权威来源），本页不自己判态。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ArchiveRestore, Loader2, PenLine, Plus, Trash2, Users } from "lucide-react";
+import { ArrowLeft, ArchiveRestore, Loader2, PenLine, Plus, Sparkles, Trash2, Users } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { t } from "@/i18n/provider";
 import { useGinno } from "@/lib/store";
@@ -26,6 +26,7 @@ import { ChatStream } from "@/components/chat/ChatStream";
 import { MemberPanel, MemberPanelSkeleton } from "./MemberPanel";
 import { AddMemberModal } from "./AddMemberModal";
 import { NewTeamModal } from "./NewTeamModal";
+import { TeamFromPromptModal, type TeamCreateMeta } from "./TeamFromPromptModal";
 import { TeamMemoryModal } from "./TeamMemoryModal";
 
 function fmtAway(s: number): string {
@@ -59,6 +60,9 @@ export function TeamShell() {
   const [view, setView] = useState<View>({ kind: "main" });
   const [addOpen, setAddOpen] = useState(false);
   const [newTeamOpen, setNewTeamOpen] = useState(false);
+  // P2-2：一句话建队（先预览后创建）与创建回执（成员失败 / 首个任务投递）。
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [createNotice, setCreateNotice] = useState<TeamCreateMeta | null>(null);
   // 团队管理：rename（输入态）与 disband（两步确认）都在行内完成，不引大弹窗。
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
@@ -122,7 +126,7 @@ export function TeamShell() {
   };
 
   // ---- 拉团队列表 ----
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<Team[]> => {
     try {
       const r = await api.listTeams();
       const list = r.teams ?? [];
@@ -131,8 +135,10 @@ export function TeamShell() {
       setTeamId((cur) =>
         cur && list.some((t) => t.id === cur) ? cur : list.find((t) => !t.archived)?.id ?? list[0]?.id ?? null,
       );
+      return list;
     } catch {
       /* sidecar 未起——保留上次数据 */
+      return [];
     } finally {
       setLoaded(true);
     }
@@ -146,6 +152,21 @@ export function TeamShell() {
   const afterMutate = useCallback(async () => {
     await Promise.all([refresh(), g.reloadSessions()]);
   }, [refresh, g]);
+
+  // P2-2：一句话建队成功后——关弹窗、刷新列表、选中新团队、留下回执。
+  // 后端通常直接回 team；若旧 runtime 没带，就按名称从刷新后的列表里找。
+  const handlePromptCreated = useCallback(
+    async (created: Team | null, meta: TeamCreateMeta) => {
+      setPromptOpen(false);
+      const list = await refresh();
+      void g.reloadSessions();
+      const picked = created ?? list.find((t) => !t.archived && t.name === meta.name) ?? null;
+      if (picked) setTeamId(picked.id);
+      setView({ kind: "main" });
+      setCreateNotice(meta);
+    },
+    [refresh, g],
+  );
 
   // ---- 团队管理动作 ----
   const patchTeamLocal = useCallback(
@@ -396,13 +417,22 @@ export function TeamShell() {
           <br />
           <span className="text-xs">{tc("team.emptyHint")}</span>
         </div>
-        <button
-          onClick={() => setNewTeamOpen(true)}
-          className="flex items-center gap-1.5 rounded-md border border-line2 px-3 py-1.5 text-xs text-txt transition-colors hover:border-violet/50 hover:text-violet"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          {tc("team.newTeam")}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setNewTeamOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-line2 px-3 py-1.5 text-xs text-txt transition-colors hover:border-violet/50 hover:text-violet"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {tc("team.newTeam")}
+          </button>
+          <button
+            onClick={() => setPromptOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-line2 px-3 py-1.5 text-xs text-txt transition-colors hover:border-violet/50 hover:text-violet"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {tc("team.promptCreate")}
+          </button>
+        </div>
         {newTeamOpen && (
           <NewTeamModal
             onClose={() => setNewTeamOpen(false)}
@@ -411,6 +441,12 @@ export function TeamShell() {
               await afterMutate();
               setTeamId(t.id);
             }}
+          />
+        )}
+        {promptOpen && (
+          <TeamFromPromptModal
+            onClose={() => setPromptOpen(false)}
+            onCreated={handlePromptCreated}
           />
         )}
       </div>
@@ -525,6 +561,15 @@ export function TeamShell() {
             </button>
           )}
 
+          <button
+            onClick={() => setPromptOpen(true)}
+            className="flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+            title={tc("team.promptTitle")}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {tc("team.promptCreate")}
+          </button>
+
           <div className="ml-auto flex items-center gap-2">
             {team.rollup?.needs_action && (
               <span className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[11px] text-yellow-500">
@@ -544,6 +589,38 @@ export function TeamShell() {
             <div className="mt-0.5 text-[11px] text-red/80">
               {tc("team.mainMissingHint")}
             </div>
+          </div>
+        )}
+
+        {/* P2-2 创建回执：成员失败与首个任务是否投递都是可行动信息，不静默
+            吞掉；可手动关闭。 */}
+        {createNotice && (
+          <div className="mx-4 mt-2 flex items-start gap-2 rounded-lg border border-green/30 bg-green/5 px-3 py-2 text-xs">
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="font-medium text-green">
+                {tc("team.promptCreatedNotice", { name: createNotice.name })}
+              </div>
+              {createNotice.memberErrors.length > 0 && (
+                <div className="text-yellow">
+                  {tc("team.promptMemberErrors", { errors: createNotice.memberErrors.join("; ") })}
+                </div>
+              )}
+              {createNotice.firstTaskRequested && (
+                <div className={createNotice.firstTaskDelivered ? "text-muted" : "text-yellow"}>
+                  {tc(
+                    createNotice.firstTaskDelivered
+                      ? "team.promptFirstTaskDelivered"
+                      : "team.promptFirstTaskNotDelivered",
+                  )}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => setCreateNotice(null)}
+              className="shrink-0 text-[11px] text-faint transition-colors hover:text-muted"
+            >
+              {tc("team.guideDismiss")}
+            </button>
           </div>
         )}
 
@@ -716,6 +793,12 @@ export function TeamShell() {
             await afterMutate();
             setTeamId(t.id);
           }}
+        />
+      )}
+      {promptOpen && (
+        <TeamFromPromptModal
+          onClose={() => setPromptOpen(false)}
+          onCreated={handlePromptCreated}
         />
       )}
       {mdEditorFor && (

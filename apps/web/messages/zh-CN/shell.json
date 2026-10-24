@@ -127,16 +127,41 @@
       "confirmDeleteTitle": "删除选中的会话",
       "confirmDeleteMessage": "删除选中的 {count} 个会话？对话历史将一并删除且无法恢复。仍被团队/定时任务引用的会话会被跳过。",
       "confirmDeleteConfirm": "删除",
-      "skipped": "有 {count} 个会话仍被引用，未删除："
+      "skipped": "有 {count} 个会话仍被引用，未删除：",
+      "restoreSelected": "恢复所选 ({count})",
+      "deleteSelected": "删除所选 ({count})"
+    },
+    "archive": {
+      "searchPlaceholder": "搜索已归档会话…",
+      "searchLabel": "搜索已归档会话",
+      "clearSearch": "清除搜索",
+      "noResults": "没有匹配的已归档会话"
     },
     "search": {
       "dialogLabel": "搜索会话",
-      "placeholder": "搜索会话标题，或输入 Agent 名称…",
+      "placeholder": "搜索会话标题与消息内容，或输入 Agent 名称…",
       "empty": "没有匹配的会话",
       "loading": "搜索中…",
       "total": "共 {total} 条",
+      "results": "{sessions} 个会话 · {messages} 条消息",
       "fallback": "本地匹配",
-      "footer": "↑↓ 选择 · Enter 打开 · Esc 关闭"
+      "footer": "↑↓ 选择 · Enter 打开 · Esc 关闭",
+      "sections": {
+        "sessions": "会话",
+        "messages": "消息片段"
+      },
+      "noSessionHits": "没有匹配的会话标题",
+      "noMessageHits": "没有匹配的消息",
+      "indexing": "正在建立消息索引…",
+      "moreMessages": "查看更多（还有 {count} 条）· 已索引 {indexed} 个会话",
+      "collapseMessages": "收起",
+      "indexedSessions": "已索引 {indexed} 个会话",
+      "archivedChip": "已归档",
+      "role": {
+        "user": "用户",
+        "assistant": "助手",
+        "tool": "tool"
+      }
     },
     "topbar": {
       "newSession": "新会话",
@@ -147,7 +172,15 @@
       "renamePrompt": "会话标题",
       "copyId": "复制会话 ID",
       "copied": "已复制",
-      "idChipTitle": "会话 {id}（点击复制，用于查日志）"
+      "idChipTitle": "会话 {id}（点击复制，用于查日志）",
+      "exportMenu": "导出",
+      "exportSession": "导出当前会话（Markdown）",
+      "exportNoSession": "请先打开一个会话",
+      "exportProject": "导出整个项目（zip）",
+      "exporting": "导出中…",
+      "exportProjectHint": "同时会在 ~/.ginno/index/exports/ 保留一份",
+      "exportProjectDone": "项目导出已开始下载（同时保存在 ~/.ginno/index/exports/）",
+      "exportFailed": "导出失败 — 请检查 runtime 是否已连接"
     }
   }
 }

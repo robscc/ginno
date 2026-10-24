@@ -219,6 +219,9 @@ def _acc() -> dict[str, int]:
         "cache_read_tokens": 0,
         "cache_creation_tokens": 0,
         "calls": 0,
+        # V2 P1-1: money, when a pricing table is configured (0 otherwise).
+        "est_cost": 0.0,
+        "cache_saving": 0.0,
     }
 
 
@@ -228,6 +231,14 @@ def _add(acc: dict[str, int], e: dict) -> None:
     acc["cache_read_tokens"] += int(e.get("cache_read_tokens") or 0)
     acc["cache_creation_tokens"] += int(e.get("cache_creation_tokens") or 0)
     acc["calls"] += 1
+    try:
+        from . import pricing
+
+        cost, saving = pricing.cost_of(e)
+        acc["est_cost"] = round(float(acc.get("est_cost") or 0.0) + cost, 6)
+        acc["cache_saving"] = round(float(acc.get("cache_saving") or 0.0) + saving, 6)
+    except Exception:  # noqa: BLE001 — cost is display-only
+        pass
 
 
 def _with_ratio(acc: dict[str, int]) -> dict:
