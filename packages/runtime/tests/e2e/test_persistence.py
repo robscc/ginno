@@ -54,5 +54,7 @@ def test_checkpoint_file_written_per_session(create_session, ws_conv, isolated_h
     with ws_conv(sid) as conv:
         conv.invoke("hello")
         conv.recv_until("message.end", "error")
-    session_file = isolated_home / "projects" / "default" / "sessions" / f"{sid}.json"
+    # append-only JSONL log (v2 format; legacy sessions used <sid>.json)
+    session_file = isolated_home / "projects" / "default" / "sessions" / f"{sid}.jsonl"
     assert session_file.is_file()
+    assert session_file.read_text().splitlines()[0].startswith('{"op":"header"')

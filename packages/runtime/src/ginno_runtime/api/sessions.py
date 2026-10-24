@@ -1047,16 +1047,13 @@ async def delete_session(
         except Exception:
             _log.exception("subagent_cascade_delete_failed session=%s", session_id)
         shared.subagent_unlink_any(session_id)
-    # drop the checkpoint file (the full conversation history)
+    # drop the checkpoint file (the full conversation history; log + legacy)
     files_dir = None
     if slug:
-        cp = paths.project_sessions_dir(slug) / f"{session_id}.json"
-        if cp.exists():
-            try:
-                cp.unlink()
-                removed = True
-            except OSError:
-                pass
+        from ..checkpointer import remove_checkpoint_files
+
+        if remove_checkpoint_files(slug, session_id):
+            removed = True
         # preserved files dir (may not exist for legacy sessions)
         fd = paths.session_files_dir(slug, session_id)
         if fd.is_dir():

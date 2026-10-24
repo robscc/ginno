@@ -49,7 +49,7 @@
 
 | 环节 | 现状 | 对自更新的意义 |
 |---|---|---|
-| 会话持久化 | `~/.ginno/projects/<slug>/sessions/`:`_index.json`(meta,原子写)+ `<sid>.json`(checkpoint,full/delta,tmp+rename 原子,RLock 串行) | **进程被杀不丢数据**;这正是"杀了也能恢复"的底座 |
+| 会话持久化 | `~/.ginno/projects/<slug>/sessions/`:`_index.json`(meta,原子写)+ `<sid>.jsonl`(checkpoint 追加日志,full/delta,O_APPEND 单行,RLock 串行) | **进程被杀不丢数据**;这正是"杀了也能恢复"的底座 |
 | 重启后继续会话 | `_ensure_session`(sessions.py:1201-1286)WS 连接时按 meta 重建 graph,历史由 checkpointer 按 thread_id 恢复;无启动预载 | 新 sidecar 起来后,老会话自动可用,零改动 |
 | 中断 turn 的 heal | `_heal_interrupted_turn`(engine.py:669)补 `(interrupted)` ToolMessage、落半截回答;僵尸 checkpoint 判定在 `/compact` 路径(commands/registry.py:482-515)惰性触发 | 杀进程会制造僵尸;heal 已有但触发点太靠后(用户 /compact 才修),P1 提前到 WS 连接/启动对账 |
 | interrupt 持久化 | `get_pending_interrupt`(checkpointer.py:346)直接读文件,重启后 WS 重连即重发并可 resume | **停在 interrupt 的 turn 是唯一真正跨重启存活的"进行中"状态**——更新前把 turn 停在 interrupt 是理想的 quiesce 形态 |

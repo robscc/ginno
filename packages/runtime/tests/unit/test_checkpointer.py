@@ -6,7 +6,7 @@ import pytest
 from langgraph.checkpoint.base import empty_checkpoint
 
 from ginno_runtime import jsonx as json
-from ginno_runtime.checkpointer import FileCheckpointer
+from ginno_runtime.checkpointer import FileCheckpointer, load_entries
 
 pytestmark = pytest.mark.unit
 
@@ -57,7 +57,7 @@ def test_atomic_write_leaves_no_tmp(isolated_home):
     cp.put(_cfg(), empty_checkpoint(), {"source": "input", "step": 0, "writes": {}}, {})
     sessions_dir = isolated_home / "projects" / "p" / "sessions"
     assert list(sessions_dir.glob("*.tmp")) == []
-    assert (sessions_dir / "s1.json").is_file()
+    assert (sessions_dir / "s1.jsonl").is_file()
 
 
 def test_sessions_are_isolated_per_thread(isolated_home):
@@ -130,10 +130,8 @@ def test_delta_mode_stores_append_and_reconstructs(isolated_home):
     assert [m.id for m in tup2.checkpoint["channel_values"]["messages"]] == ["m1", "m2"]
 
     # and the file actually stores deltas, not three full copies
-    raw = json.loads(
-        (isolated_home / "projects" / "p" / "sessions" / "s1.json").read_text()
-    )
-    modes = [c.get("mode") for c in raw["checkpoints"]]
+    raw = load_entries(isolated_home / "projects" / "p" / "sessions" / "s1.jsonl")
+    modes = [c.get("mode") for c in raw]
     assert modes == ["full", "delta", "delta"]
 
 
@@ -152,10 +150,8 @@ def test_delta_falls_back_to_full_on_rewrite(isolated_home):
     c2 = _checkpoint_with_messages(r1, [rewritten])
     cp.put(_cfg(), c2, {"source": "loop", "step": 1, "writes": {}}, {})
 
-    raw = json.loads(
-        (isolated_home / "projects" / "p" / "sessions" / "s1.json").read_text()
-    )
-    assert [c.get("mode") for c in raw["checkpoints"]] == ["full", "full"]
+    raw = load_entries(isolated_home / "projects" / "p" / "sessions" / "s1.jsonl")
+    assert [c.get("mode") for c in raw] == ["full", "full"]
     msgs = cp.get_tuple(_cfg()).checkpoint["channel_values"]["messages"]
     assert [m.id for m in msgs] == ["s-new"]
 
@@ -178,7 +174,7 @@ def test_delta_file_smaller_than_full(isolated_home):
             parent = cp.put(
                 _cfg("big"), c, {"source": "loop", "step": i, "writes": {}}, {}
             )
-        f = isolated_home / "projects" / slug / "sessions" / "big.json"
+        f = isolated_home / "projects" / slug / "sessions" / "big.jsonl"
         return f.stat().st_size
 
     full_size = run("full")
@@ -196,10 +192,8 @@ def test_full_mode_setting(isolated_home):
     r1 = cp.put(_cfg(), c1, {"source": "input", "step": 0, "writes": {}}, {})
     c2 = _checkpoint_with_messages(r1, [m1, HumanMessage(content="two", id="m2")])
     cp.put(_cfg(), c2, {"source": "loop", "step": 1, "writes": {}}, {})
-    raw = json.loads(
-        (isolated_home / "projects" / "p" / "sessions" / "s1.json").read_text()
-    )
-    assert all(c.get("mode") == "full" for c in raw["checkpoints"])
+    raw = load_entries(isolated_home / "projects" / "p" / "sessions" / "s1.jsonl")
+    assert all(c.get("mode") == "full" for c in raw)
     msgs = cp.get_tuple(_cfg()).checkpoint["channel_values"]["messages"]
     assert [m.id for m in msgs] == ["m1", "m2"]
 
@@ -225,10 +219,8 @@ async def test_delta_engages_in_real_graph_flow(isolated_home):
     for i in range(4):
         await graph.ainvoke({"messages": [HumanMessage(content=f"q{i}")], "project_slug": "p"}, cfg)
 
-    raw = json.loads(
-        (isolated_home / "projects" / "p" / "sessions" / "real.json").read_text()
-    )
-    modes = [c.get("mode") for c in raw["checkpoints"]]
+    raw = load_entries(isolated_home / "projects" / "p" / "sessions" / "real.jsonl")
+    modes = [c.get("mode") for c in raw]
     # First checkpoint is full; subsequent supersteps must be deltas now that
     # the parent falls back to the last stored checkpoint.
     assert modes[0] == "full"
@@ -264,10 +256,8 @@ def test_delta_branch_degrades_to_full_not_corrupt(isolated_home):
     c3 = _checkpoint_with_messages(None, [m1, m3])
     cp.put(_cfg(), c3, {"source": "loop", "step": 2, "writes": {}}, {})
 
-    raw = json.loads(
-        (isolated_home / "projects" / "p" / "sessions" / "s1.json").read_text()
-    )
-    assert [c.get("mode") for c in raw["checkpoints"]] == ["full", "delta", "full"]
+    raw = load_entries(isolated_home / "projects" / "p" / "sessions" / "s1.jsonl")
+    assert [c.get("mode") for c in raw] == ["full", "delta", "full"]
     # Latest reconstructs to the branch, not the abandoned linear path.
     msgs = cp.get_tuple(_cfg()).checkpoint["channel_values"]["messages"]
     assert [m.id for m in msgs] == ["m1", "m3"]
@@ -277,10 +267,144 @@ def test_put_writes_stored_without_exposing(isolated_home):
     cp = FileCheckpointer(project_slug="p")
     cp.put(_cfg(), empty_checkpoint(), {"source": "input", "step": 0, "writes": {}}, {})
     cp.put_writes(_cfg(), [("messages", HumanMessage(content="w", id="w1"))], "task-1")
-    raw = json.loads(
-        (isolated_home / "projects" / "p" / "sessions" / "s1.json").read_text()
-    )
-    assert raw["checkpoints"][0].get("pending_writes"), "writes should be persisted"
+    raw = load_entries(isolated_home / "projects" / "p" / "sessions" / "s1.jsonl")
+    assert raw[0].get("pending_writes"), "writes should be persisted"
     # behavior parity: get_tuple still exposes no pending writes
     tup = cp.get_tuple(_cfg())
     assert not getattr(tup, "pending_writes", None)
+
+
+# --------------------------------------------------------------------------- #
+# v2 — append-only JSONL log (file IO is O_APPEND, never a full rewrite)
+# --------------------------------------------------------------------------- #
+from ginno_runtime.checkpointer import clone_checkpoint  # noqa: E402
+
+
+def _log(isolated_home, slug="p", sid="s1"):
+    return isolated_home / "projects" / slug / "sessions" / f"{sid}.jsonl"
+
+
+def _msg(text, mid):
+    return HumanMessage(content=text, id=mid)
+
+
+def test_commits_append_and_never_rewrite(isolated_home):
+    """A put must leave every existing byte untouched (append-mode IO)."""
+    cp = FileCheckpointer(project_slug="p")
+    for i in range(2):
+        cp.put(
+            _cfg(),
+            _checkpoint_with_messages(None, [_msg(f"m{i}", f"m{i}")]),
+            {"source": "loop", "step": i, "writes": {}},
+            {},
+        )
+    before = _log(isolated_home).read_bytes()
+    cp.put(
+        _cfg(),
+        _checkpoint_with_messages(None, [_msg("m2", "m2")]),
+        {"source": "loop", "step": 2, "writes": {}},
+        {},
+    )
+    after = _log(isolated_home).read_bytes()
+    assert after.startswith(before), "commit rewrote the log instead of appending"
+    assert after.count(b"\n") == before.count(b"\n") + 1
+
+
+def test_legacy_document_is_migrated_on_first_write(isolated_home):
+    """v1 sessions stay readable; the first commit folds them into the log."""
+    sessions = isolated_home / "projects" / "p" / "sessions"
+    cp = FileCheckpointer(project_slug="p")
+    cp.put(_cfg(), empty_checkpoint(), {"source": "input", "step": 0, "writes": {}}, {})
+    entries = load_entries(_log(isolated_home))
+    _log(isolated_home).unlink()
+    (sessions / "s1.json").write_text(
+        json.dumps({"session_id": "s1", "checkpoints": entries})
+    )
+
+    # reads still serve the legacy document
+    assert cp.get_tuple(_cfg()) is not None
+
+    cp.put(_cfg(), empty_checkpoint(), {"source": "loop", "step": 1, "writes": {}}, {})
+    assert _log(isolated_home).exists() and not (sessions / "s1.json").exists()
+    assert len(load_entries(_log(isolated_home))) == 2
+    assert cp.get_tuple(_cfg()) is not None
+
+
+def test_truncate_appends_and_rewinds_head(isolated_home):
+    cp = FileCheckpointer(project_slug="p", surface_pending_writes=True)
+    ids: list[str] = []
+    parent = None
+    for i in range(3):
+        parent = cp.put(
+            _cfg(),
+            _checkpoint_with_messages(parent, [_msg(f"m{i}", f"m{i}")]),
+            {"source": "loop", "step": i, "writes": {}},
+            {},
+        )
+        ids.append(parent["configurable"]["checkpoint_id"])
+    cp.put_writes(
+        {"configurable": {"thread_id": "s1", "checkpoint_id": ids[1]}},
+        [("messages", _msg("w", "w1"))],
+        "task-1",
+    )
+
+    before = _log(isolated_home).read_bytes()
+    assert cp.truncate_to("s1", ids[1]) is True
+    after = _log(isolated_home).read_bytes()
+    assert after.startswith(before), "truncate rewrote the log instead of appending"
+
+    entries = load_entries(_log(isolated_home))
+    assert [c["checkpoint_id"] for c in entries] == ids[:2]
+    assert not entries[1].get("pending_writes"), "head must be re-armed for re-execution"
+    # head-is-target is a no-op (parity with the old rewrite)
+    assert cp.truncate_to("s1", ids[1]) is False
+
+
+def test_clone_checkpoint_retags_and_copies(isolated_home):
+    cp = FileCheckpointer(project_slug="p")
+    cp.put(
+        _cfg(),
+        _checkpoint_with_messages(None, [_msg("m1", "m1")]),
+        {"source": "input", "step": 0, "writes": {}},
+        {},
+    )
+    dst = clone_checkpoint("p", "s1", "fork1")
+    assert dst is not None and dst.name == "fork1.jsonl"
+    assert [c["checkpoint_id"] for c in load_entries(dst)] == [
+        c["checkpoint_id"] for c in load_entries(_log(isolated_home))
+    ]
+    header = json.loads(dst.read_text().splitlines()[0])
+    assert header["op"] == "header" and header["session_id"] == "fork1"
+    assert clone_checkpoint("p", "missing", "fork2") is None
+
+
+def test_torn_tail_is_ignored_and_repaired(isolated_home):
+    """A crash between write() and the trailing newline must not corrupt reads,
+    and the next commit must not turn the torn line into interior corruption."""
+    cp = FileCheckpointer(project_slug="p")
+    cp.put(_cfg(), empty_checkpoint(), {"source": "input", "step": 0, "writes": {}}, {})
+    log = _log(isolated_home)
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write('{"op":"cp","checkpoint_id":"torn')  # no newline, incomplete
+
+    assert len(load_entries(log)) == 1  # trailing garbage ignored
+    cp.put(_cfg(), empty_checkpoint(), {"source": "loop", "step": 1, "writes": {}}, {})
+    assert len(load_entries(log)) == 2  # tail trimmed, not left mid-file
+    assert cp.get_tuple(_cfg()) is not None
+
+
+def test_self_referential_delta_is_rejected_not_hung(isolated_home):
+    """A delta whose base is its own id must raise, never spin forever.
+
+    (Crafting it directly: a re-put checkpoint dict reuses its parent's id.)"""
+    cp = FileCheckpointer(project_slug="p")
+    log = _log(isolated_home)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    events = [
+        {"op": "header", "v": 2, "session_id": "s1"},
+        {"op": "cp", "checkpoint_id": "a", "parent_id": None, "mode": "delta",
+         "base": "a", "static": {"type": "json", "data": "{}"}, "channels": {}},
+    ]
+    log.write_text("".join(json.dumps(e) + "\n" for e in events))
+    with pytest.raises(ValueError, match="cycle"):
+        cp.get_tuple(_cfg())

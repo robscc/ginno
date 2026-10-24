@@ -84,11 +84,12 @@ async def _prepare_steer_payload(
     summaries ``files`` / ``images``.
 
     The summaries carry METADATA ONLY — deliberately no image payload. The bytes
-    are already in the injected HumanMessage's ``image_url`` block, and the
-    checkpointer rewrites the whole session file per step, so a second copy in
-    ``additional_kwargs`` would double every steered message for good (the same
-    reason the frontend downsizes images before sending them). A replay that
-    wants a thumbnail takes it from the content block.
+    are already in the injected HumanMessage's ``image_url`` block, and every
+    message the checkpointer stores is carried forward through the session's
+    delta chain, so a second copy in ``additional_kwargs`` would double every
+    steered message for good (the same reason the frontend downsizes images
+    before sending them). A replay that wants a thumbnail takes it from the
+    content block.
     """
     imgs = [i for i in (images or []) if isinstance(i, dict) and i.get("data")]
     wanted = [f for f in (files or []) if isinstance(f, dict)]

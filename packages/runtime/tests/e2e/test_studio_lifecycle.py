@@ -267,7 +267,7 @@ def test_16_delete_run_removes_all_artifacts(client, monkeypatch):
     home = paths.home()
     run_json = home / "workflow_runs" / f"{run_id}.json"
     events_jsonl = home / "workflow_runs" / f"{run_id}.events.jsonl"
-    checkpoint = paths.project_sessions_dir("default") / f"{run_id}.json"
+    checkpoint = paths.project_sessions_dir("default") / f"{run_id}.jsonl"
     assert run_json.exists() and events_jsonl.exists(), (run_json, events_jsonl)
 
     r = client.delete(f"/api/workflow_runs/{run_id}")

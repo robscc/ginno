@@ -154,7 +154,8 @@ ginno/
 ## 5. 会话模型与运行时内存结构
 
 - **磁盘真相源**：每 project slug 一个 `sessions/_index.json`（session meta 数组）+ 每会话一个
-  `<sid>.json`（FileCheckpointer）+ `<sid>.world.json`（WorldState baseline）+ `<sid>/`（文件目录）。
+  `<sid>.jsonl`（FileCheckpointer，旧版 `<sid>.json` 兼容）+ `<sid>.world.json`（WorldState baseline）
+  + `<sid>/`（文件目录）。
 - **内存注册表**（`server_shared.py`）：
   - `_SESSIONS`：session_id → 已编译 graph + model + meta；**重启后由 `_ensure_session` 惰性重建**。
   - `_SESSION_WS`：session_id → 该会话**所有**活跃 socket（广播式投递，§7.3）。
@@ -286,7 +287,9 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
 
 ### 6.6 FileCheckpointer（`checkpointer.py`）
 
-- 位置 `projects/<slug>/sessions/<sid>.json`，顶层 `{"session_id", "checkpoints":[…]}` append-only。
+- 位置 `projects/<slug>/sessions/<sid>.jsonl`，**追加式 JSONL 事件日志**（`header` / `cp` / `writes` /
+  `truncate`，一行一个事件，写入是 `O_APPEND` 单行追加，不再整文件重写）；读取时按行 fold 成
+  `{"session_id", "checkpoints":[…]}`。旧版 `<sid>.json`（单文档）仍可读，首次写入时自动迁移。
 - serde 用 LangGraph `JsonPlusSerializer`（typed 值 `{type, data:base64}`）。
 - **full / delta 双模式**（`settings.context.checkpoint_mode` 默认 `"delta"`）：
   - delta 仅当新历史是父历史按消息 id 的**纯前缀追加**；`messages` 通道 `{mode:"append"}`，其余通道 full。

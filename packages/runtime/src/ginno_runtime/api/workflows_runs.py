@@ -661,14 +661,24 @@ def _run_checkpoint_path(run_id: str) -> Path:
     ``FileCheckpointer("default")`` + ``thread_id=run_id`` (server never
     overrides the slug), so all run checkpoints land in the default project's
     sessions dir under the run id. Exact-name only — never glob (per-session
-    dirs share prefixes; same rule as delete_session)."""
-    return _base.paths.project_sessions_dir("default") / f"{run_id}.json"
+    dirs share prefixes; same rule as delete_session).
+
+    Resolves to the append log (``.jsonl``), or to a pre-log ``.json`` run
+    from an older build; when neither exists yet it returns the path a fresh
+    run will create."""
+    from ..checkpointer import checkpoint_path, existing_checkpoint_path
+
+    return existing_checkpoint_path("default", run_id) or checkpoint_path(
+        "default", run_id
+    )
 
 
 def _remove_run_artifacts(run_id: str) -> None:
     """Delete a run's persisted files: run JSON + events JSONL + checkpoint."""
+    from ..checkpointer import remove_checkpoint_files
+
     _base.wf_store.delete_run(run_id)
-    _run_checkpoint_path(run_id).unlink(missing_ok=True)
+    remove_checkpoint_files("default", run_id)
 
 
 async def _continue_run_bg(run_id: str, workflow_id: str, present_in: str | None = None) -> None:
@@ -708,27 +718,18 @@ async def _continue_run_bg(run_id: str, workflow_id: str, present_in: str | None
 
 def _truncate_checkpoint_to(run_id: str, checkpoint_id: str) -> None:
     """Trim the run's checkpoint record so its HEAD is ``checkpoint_id``
-    (rerun_from). Entries are append-only with parent links *within* the file,
-    so a prefix cut stays self-consistent for delta reconstruction — anything
-    after the cut (later supersteps, newer interrupts) simply ceases to exist
-    for this fork."""
-    p = _run_checkpoint_path(run_id)
+    (rerun_from). The log is append-only, so this appends a ``truncate``
+    event instead of rewriting the file: readers drop everything after the
+    cut (later supersteps, newer interrupts) — for this fork they simply
+    cease to exist — and the cut entry's ``pending_writes`` are cleared so
+    the node we were asked to re-run is genuinely re-executed rather than
+    skipped as "already finished"."""
+    from ..checkpointer import FileCheckpointer
+
     try:
-        rec = json.loads(p.read_text() or "{}")
+        FileCheckpointer("default").truncate_to(run_id, checkpoint_id)
     except Exception:
-        return
-    cps = rec.get("checkpoints") or []
-    idx = next((i for i, c in enumerate(cps) if c.get("checkpoint_id") == checkpoint_id), None)
-    if idx is None or idx == len(cps) - 1:
-        return
-    rec["checkpoints"] = cps[: idx + 1]
-    # Strip the head entry's pending_writes: they are the ORIGINAL superstep's
-    # completed-task outputs (put_writes land on the checkpoint that scheduled
-    # the node). surface_pending_writes would then tell langgraph "this task
-    # already finished" and SKIP the very node we were asked to re-run — the
-    # opposite of rerun_from. Dropping them forces re-execution from scratch.
-    rec["checkpoints"][-1].pop("pending_writes", None)
-    p.write_text(json.dumps(rec, ensure_ascii=False, default=str))
+        _base._log.exception("workflow_rerun_truncate_failed run=%s", run_id)
 
 
 async def _rerun_from_bg(

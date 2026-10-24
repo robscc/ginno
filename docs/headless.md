@@ -102,8 +102,8 @@ benchmark 的 diff 捕获不会把 home 当改动。显式 `--home DIR`（或
 `GINNO_EXEC_HOME`）时全部状态落在该目录：
 
 - `settings.json` — 合成 settings（唯一 exec provider）
-- `projects/<slug>/sessions/<session_id>.json` — session meta 索引 + LangGraph
-  checkpointer
+- `projects/<slug>/sessions/<session_id>.jsonl` — LangGraph checkpointer（追加式日志；
+  旧版 `.json` 仍可读）
 - `usage/requests-YYYY-MM-DD.jsonl` — token 账本
 
 同一 `--home` 二次 exec 后，上一会话仍可按 `session_id` 从 meta 索引找回

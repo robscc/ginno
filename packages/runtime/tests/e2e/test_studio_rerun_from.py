@@ -31,7 +31,7 @@ def _run_json(run_id: str):
 
 
 def _ckpt(run_id: str):
-    return paths.project_sessions_dir("default") / f"{run_id}.json"
+    return paths.project_sessions_dir("default") / f"{run_id}.jsonl"
 
 
 def _edit_run_json(run_id: str, mutate) -> None:

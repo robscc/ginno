@@ -67,7 +67,7 @@
 ```
 Agent（角色模板，现有）        agents 目录下 <id>.json
   └─ AgentInstance（实体化）    实例：一个 agent 的一份运行态 + 一条 session
-       └─ Session（上下文载体）  sessions/<session_id>.json（checkpoint）
+       └─ Session（上下文载体）  sessions/<session_id>.jsonl（checkpoint）
 Team（协作层）                  teams 目录下 <team_id>.json
   └─ 主会话 session（addressable 的协作空间）
 ```

@@ -1,9 +1,25 @@
 """File-based LangGraph checkpointer (plan E5: incremental snapshots).
 
-Stores checkpoints as JSON under
-`~/.ginno/projects/<slug>/sessions/<session_id>.json`.
+Stores checkpoints as an **append-only JSONL log** under
+`~/.ginno/projects/<slug>/sessions/<session_id>.jsonl` — one JSON event per
+line, so committing a checkpoint is a single ``O_APPEND`` line write instead
+of re-serializing and rewriting the whole session document (a 25 MB session
+was rewritten in full on every superstep).
 
-Two entry modes coexist in one file:
+Event kinds (v2 log)::
+
+    {"op":"header","v":2,"session_id":"..."}       # first line, informational
+    {"op":"cp", <same fields a v1 entry carried>}  # one checkpoint entry
+    {"op":"writes","checkpoint_id":"...","items":[{"task_id","channel","value"}]}
+    {"op":"truncate","to":"<checkpoint_id>"}       # rerun_from rewind
+
+Reads fold the log in file order into the same ``{"checkpoints": [...]}``
+record shape the rest of the class works with, so v1 semantics are preserved:
+``writes`` attach to their checkpoint (or the head when no id was passed) and
+``truncate`` cuts the folded tail and re-arms the head for re-execution.
+The file itself is never rewritten — not even for rerun_from.
+
+Two entry modes coexist inside an entry:
 
 * ``full``   — the whole checkpoint serialized (legacy behavior; also the
   fallback whenever the message history does not extend the parent's, e.g.
@@ -19,6 +35,10 @@ Two entry modes coexist in one file:
 entry (crash forensics + groundwork for mid-step resume); get_tuple keeps
 returning ``pending_writes=None`` to preserve today's exact resume semantics.
 
+Legacy v1 files (`<session_id>.json`, one JSON document with a
+``checkpoints`` list) stay readable and are migrated to the log on the first
+write. Readers always prefer the log when both exist.
+
 ``settings.context.checkpoint_mode`` = "delta" (default) | "full".
 Reads always handle both modes regardless of the setting.
 """
@@ -27,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 import tempfile
 import threading
@@ -48,7 +69,11 @@ from ginno_runtime import jsonx as json
 
 from . import paths
 
+_log = logging.getLogger(__name__)
+
 _MESSAGES_CHANNEL = "messages"
+
+_LOG_VERSION = 2
 
 # App-level channels persisted via put_writes for node-internal bookkeeping
 # (per-item progress of the parallel gather adapter, stability follow-up
@@ -77,8 +102,161 @@ def _load_typed(stored: dict) -> tuple[str, bytes]:
     return (stored["type"], raw)
 
 
-def _session_path(project_slug: str, session_id: str) -> Path:
+def checkpoint_path(project_slug: str, session_id: str) -> Path:
+    """Canonical append-log path for a session's checkpoints."""
+    return paths.project_sessions_dir(project_slug) / f"{session_id}.jsonl"
+
+
+def legacy_checkpoint_path(project_slug: str, session_id: str) -> Path:
+    """Pre-log single-document checkpoint file (read-only; migrated on write)."""
     return paths.project_sessions_dir(project_slug) / f"{session_id}.json"
+
+
+def existing_checkpoint_path(project_slug: str, session_id: str) -> Path | None:
+    """The file readers must use: the log when present, else the legacy doc."""
+    log = checkpoint_path(project_slug, session_id)
+    if log.exists():
+        return log
+    legacy = legacy_checkpoint_path(project_slug, session_id)
+    return legacy if legacy.exists() else None
+
+
+def remove_checkpoint_files(project_slug: str, session_id: str) -> bool:
+    """Delete every on-disk form of a session's checkpoints. True if any went."""
+    removed = False
+    for p in (
+        checkpoint_path(project_slug, session_id),
+        legacy_checkpoint_path(project_slug, session_id),
+    ):
+        if not p.exists():
+            continue
+        try:
+            p.unlink()
+            removed = True
+        except OSError:
+            _log.warning("checkpoint_unlink_failed path=%s", p)
+    return removed
+
+
+def _header_event(session_id: str) -> dict:
+    return {"op": "header", "v": _LOG_VERSION, "session_id": session_id}
+
+
+def _event_line(event: dict) -> str:
+    """One JSONL line (jsonx/orjson escapes newlines inside payload strings)."""
+    return json.dumps(event, default=str, ensure_ascii=False) + "\n"
+
+
+def _write_events_atomic(path: Path, events: list[dict]) -> None:
+    """Whole-log write — migration and clone only; commits append (see _append)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.writelines(_event_line(e) for e in events)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _read_legacy(path: Path) -> list[dict]:
+    doc = json.loads(path.read_text(encoding="utf-8") or "{}")
+    if not isinstance(doc, dict):
+        return []
+    cps = doc.get("checkpoints")
+    return [c for c in cps if isinstance(c, dict)] if isinstance(cps, list) else []
+
+
+def _read_log(path: Path) -> list[dict]:
+    """Fold the event log into the entry list (see module docstring)."""
+    entries: list[dict] = []
+    by_id: dict[str, dict] = {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    last = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
+    for i, raw in enumerate(lines):
+        if not raw.strip():
+            continue
+        try:
+            event = json.loads(raw)
+        except Exception as exc:
+            if i == last:
+                # Torn tail: the process died between write() and the trailing
+                # newline (or mid-line). Nothing follows it, so no committed
+                # event is lost by dropping it.
+                _log.warning("checkpoint_log_torn_tail path=%s line=%d", path, i + 1)
+                break
+            raise ValueError(
+                f"corrupt checkpoint log {path}: unparsable line {i + 1}"
+            ) from exc
+        if not isinstance(event, dict):
+            continue
+        op = event.get("op")
+        if op == "cp":
+            entry = {k: v for k, v in event.items() if k != "op"}
+            cid = entry.get("checkpoint_id")
+            if not cid:
+                continue
+            entries.append(entry)
+            by_id[str(cid)] = entry
+        elif op == "writes":
+            # put_writes: attach to its checkpoint, else to the head (v1 did
+            # the same when the config carried no checkpoint_id).
+            entry = by_id.get(str(event.get("checkpoint_id") or "")) or (
+                entries[-1] if entries else None
+            )
+            if entry is not None:
+                entry.setdefault("pending_writes", []).extend(
+                    event.get("items") or []
+                )
+        elif op == "truncate":
+            # rerun_from: the log stays append-only; the folded view drops
+            # everything after the cut and re-arms the head for re-execution.
+            cid = str(event.get("to") or "")
+            idx = next(
+                (
+                    j
+                    for j, c in enumerate(entries)
+                    if str(c.get("checkpoint_id")) == cid
+                ),
+                None,
+            )
+            if idx is None:
+                continue
+            del entries[idx + 1 :]
+            entries[idx].pop("pending_writes", None)
+            by_id = {str(c["checkpoint_id"]): c for c in entries}
+        # "header" and unknown ops carry nothing to fold
+    return entries
+
+
+def load_entries(path: Path) -> list[dict]:
+    """Checkpoint entries stored in ``path`` (v2 JSONL log or v1 document)."""
+    return _read_log(path) if path.suffix == ".jsonl" else _read_legacy(path)
+
+
+def clone_checkpoint(
+    project_slug: str, source_session_id: str, target_session_id: str
+) -> Path | None:
+    """Copy a session's checkpoint history onto another thread id (retry and
+    rerun forks), retagging the embedded session id. Always writes the
+    canonical log, so cloning a v1 source migrates it for the fork too.
+    Returns the new path, or None when the source has no checkpoint file."""
+    src = existing_checkpoint_path(project_slug, source_session_id)
+    if src is None:
+        return None
+    dst = checkpoint_path(project_slug, target_session_id)
+    _write_events_atomic(
+        dst,
+        [_header_event(target_session_id)]
+        + [{**e, "op": "cp"} for e in load_entries(src)],
+    )
+    try:
+        legacy_checkpoint_path(project_slug, target_session_id).unlink()
+    except OSError:
+        pass
+    return dst
 
 
 # Turn ids abandoned by the stall watchdog (server.py). A detached graph run
@@ -103,7 +281,7 @@ def _msg_id(m: Any) -> Any:
 
 
 class FileCheckpointer(BaseCheckpointSaver):
-    """One JSON file per session, append-only list of (full|delta) checkpoints."""
+    """One append-only JSONL log per session (see module docstring)."""
 
     serde = JsonPlusSerializer()
 
@@ -126,24 +304,68 @@ class FileCheckpointer(BaseCheckpointSaver):
         paths.project_sessions_dir(project_slug).mkdir(parents=True, exist_ok=True)
 
     def _read(self, session_id: str) -> dict[str, Any]:
-        f = _session_path(self.project_slug, session_id)
-        if not f.exists():
+        path = existing_checkpoint_path(self.project_slug, session_id)
+        if path is None:
             return {"session_id": session_id, "checkpoints": []}
-        return json.loads(f.read_text() or "{}")
+        return {"session_id": session_id, "checkpoints": load_entries(path)}
 
-    def _write(self, data: dict[str, Any]) -> None:
-        f = _session_path(self.project_slug, data["session_id"])
-        f.parent.mkdir(parents=True, exist_ok=True)
-        # atomic: write temp + rename
-        fd, tmp = tempfile.mkstemp(dir=f.parent, suffix=".tmp")
+    def _migrate_legacy(self, session_id: str) -> None:
+        """Fold a v1 single-document file into the append log (one-time)."""
+        log = checkpoint_path(self.project_slug, session_id)
+        legacy = legacy_checkpoint_path(self.project_slug, session_id)
+        if log.exists() or not legacy.exists():
+            return
+        _write_events_atomic(
+            log,
+            [_header_event(session_id)]
+            + [{**e, "op": "cp"} for e in _read_legacy(legacy)],
+        )
         try:
-            with os.fdopen(fd, "w") as fh:
-                json.dump(data, fh, default=str, ensure_ascii=False)
-            os.replace(tmp, f)
-        except Exception:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+            legacy.unlink()
+        except OSError:
+            _log.warning("checkpoint_legacy_unlink_failed path=%s", legacy)
+
+    def _repair_tail(self, log: Path) -> None:
+        """Drop a torn last line left by a crash mid-append.
+
+        Readers already ignore an unparsable LAST line, but a later append
+        would turn that line into interior corruption — which they refuse to
+        skip. Trimming the incomplete tail before every commit keeps the log
+        parseable after a crash (only the uncommitted event is lost)."""
+        try:
+            with open(log, "rb+") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                if size == 0:
+                    return
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) == b"\n":
+                    return
+                pos = size - 1
+                while pos > 0:
+                    step = min(4096, pos)
+                    pos -= step
+                    fh.seek(pos)
+                    if (nl := fh.read(step).rfind(b"\n")) != -1:
+                        os.truncate(log, pos + nl + 1)
+                        return
+                os.truncate(log, 0)
+        except OSError:
+            _log.warning("checkpoint_tail_repair_failed path=%s", log)
+
+    def _append(self, session_id: str, events: list[dict]) -> None:
+        """Commit events as one O_APPEND write — never a full-file rewrite."""
+        with self._write_lock:
+            self._migrate_legacy(session_id)
+            log = checkpoint_path(self.project_slug, session_id)
+            payload = "".join(_event_line(e) for e in events)
+            if log.exists():
+                self._repair_tail(log)
+            else:
+                payload = _event_line(_header_event(session_id)) + payload
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(payload)
 
     # ---- reconstruction helpers ------------------------------------------- #
     def _entries_by_id(self, record: dict) -> dict[str, dict]:
@@ -156,6 +378,7 @@ class FileCheckpointer(BaseCheckpointSaver):
 
         # delta: walk the parent chain down to a full anchor, then fold forward.
         chain: list[dict] = [entry]
+        seen: set[int] = {id(entry)}
         cur = entry
         by_id = self._entries_by_id(record)
         while cur.get("mode") == "delta" and "checkpoint" not in cur:
@@ -165,6 +388,15 @@ class FileCheckpointer(BaseCheckpointSaver):
                     f"checkpoint chain broken: missing base {cur.get('base')} "
                     f"for {cur.get('checkpoint_id')}"
                 )
+            if id(base) in seen:
+                # A re-put checkpoint dict reusing its parent's id links an
+                # entry to itself; without this guard the walk would spin
+                # forever and every read of the session would hang.
+                raise ValueError(
+                    f"checkpoint chain cycle at {cur.get('checkpoint_id')} "
+                    f"(base {cur.get('base')})"
+                )
+            seen.add(id(base))
             chain.append(base)
             cur = base
         checkpoint = self.serde.loads_typed(_load_typed(chain[-1]["checkpoint"]))
@@ -287,15 +519,17 @@ class FileCheckpointer(BaseCheckpointSaver):
                 "ts": time.time(),
             }
             delta = None
-            if _checkpoint_mode() == "delta" and parent_id:
+            # ``parent_id == cid`` means the same checkpoint dict is being put
+            # twice (langgraph never does this; a manual re-put might). A delta
+            # onto itself would make the chain cyclic and permanently unreadable.
+            if _checkpoint_mode() == "delta" and parent_id and parent_id != cid:
                 delta = self._try_messages_delta(record, parent_id, checkpoint)
             if delta is not None:
                 entry.update(delta)
             else:
                 entry["mode"] = "full"
                 entry["checkpoint"] = _dump_typed(self.serde.dumps_typed(checkpoint))
-            record["checkpoints"].append(entry)
-            self._write(record)
+            self._append(session_id, [{**entry, "op": "cp"}])
         return {"configurable": {"thread_id": session_id, "checkpoint_id": cid}}
 
     def _tuple_from(self, record: dict, session_id: str, entry: dict) -> Any:
@@ -409,7 +643,7 @@ class FileCheckpointer(BaseCheckpointSaver):
         return None
 
     def put_writes(self, config: dict, writes: list, task_id: str) -> None:
-        """Persist a superstep's writes under the owning checkpoint entry.
+        """Persist a superstep's writes as log events owned by their checkpoint.
 
         Stored for crash forensics and future mid-step resume; get_tuple does
         not expose them yet (behavior parity). Serialization failures are
@@ -418,30 +652,50 @@ class FileCheckpointer(BaseCheckpointSaver):
         try:
             session_id = config["configurable"]["thread_id"]
             cid = (config.get("configurable") or {}).get("checkpoint_id")
-            with self._write_lock:
-                record = self._read(session_id)
-                cps = record.get("checkpoints", [])
-                entry = next(
-                    (c for c in reversed(cps) if c["checkpoint_id"] == cid),
-                    cps[-1] if cps else None,  # no checkpoint_id given → latest
+            items: list[dict] = []
+            for channel, value in writes or []:
+                try:
+                    items.append(
+                        {
+                            "task_id": task_id,
+                            "channel": channel,
+                            "value": _dump_typed(self.serde.dumps_typed(value)),
+                        }
+                    )
+                except Exception:
+                    continue
+            if items:
+                self._append(
+                    session_id,
+                    [{"op": "writes", "checkpoint_id": cid, "items": items}],
                 )
-                if entry is None:
-                    return
-                stored = entry.setdefault("pending_writes", [])
-                for channel, value in writes or []:
-                    try:
-                        stored.append(
-                            {
-                                "task_id": task_id,
-                                "channel": channel,
-                                "value": _dump_typed(self.serde.dumps_typed(value)),
-                            }
-                        )
-                    except Exception:
-                        continue
-                self._write(record)
         except Exception:
             pass
+
+    def truncate_to(self, session_id: str, checkpoint_id: str) -> bool:
+        """Make ``checkpoint_id`` the HEAD of the session's history (rerun-from).
+
+        Appends a ``truncate`` event instead of rewriting the file: the folded
+        view drops everything after the cut (later supersteps, newer
+        interrupts) and clears the head's pending writes so langgraph
+        re-executes the node instead of treating it as already finished.
+        Returns False when the id is unknown or already the head (parity with
+        the previous in-place rewrite, which left the head untouched).
+        """
+        with self._write_lock:
+            cps = self._read(session_id).get("checkpoints") or []
+            idx = next(
+                (
+                    i
+                    for i, c in enumerate(cps)
+                    if str(c.get("checkpoint_id")) == str(checkpoint_id)
+                ),
+                None,
+            )
+            if idx is None or idx == len(cps) - 1:
+                return False
+            self._append(session_id, [{"op": "truncate", "to": checkpoint_id}])
+            return True
 
     # ---- LangGraph BaseCheckpointSaver API (async) ----
     async def aget_tuple(self, config: dict) -> Any:

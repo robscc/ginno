@@ -13,11 +13,10 @@ NOTE (verified actual behavior, see report):
 * ``pending_interrupt`` is stamped with ``node_id`` (not ``node`` — the
   frontend type/RunBlocks read ``.node``, so the answer card never resolves a
   node title from the stamped payload).
-* The copied checkpoint record still declares the SOURCE run id as its
-  ``session_id`` and FileCheckpointer._write keys on that field, so the
-  continuation's new checkpoints land back in the SOURCE run's file — the
-  continuation EXECUTES the suffix but terminates as "paused" instead of
-  "done" (its terminal check reads the frozen checkpoint copy).
+* The cloned checkpoint log is retagged to the fork's run id (see
+  ``checkpointer.clone_checkpoint``); appends are keyed by the graph's
+  thread_id, so the continuation's new checkpoints always land in its own
+  file.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from ginno_runtime import jsonx as json
 from ginno_runtime import server
-from ginno_runtime.checkpointer import FileCheckpointer
+from ginno_runtime.checkpointer import FileCheckpointer, load_entries
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 from ginno_runtime.workflows import store
 
@@ -213,7 +212,7 @@ def test_retry_from_checkpoint_continues_after_failed_node(client, monkeypatch):
     assert (run.get("error_detail") or {}).get("node_id") == "n2"
     ckpt = server._run_checkpoint_path(run_id)
     assert ckpt.exists(), "failed run must leave a checkpoint behind"
-    ckpt_count_after_failure = len(json.loads(ckpt.read_text())["checkpoints"])
+    ckpt_count_after_failure = len(load_entries(ckpt))
 
     # --- retry_from_checkpoint ---------------------------------------------- #
     r = client.post(f"/api/workflow_runs/{run_id}/retry_from_checkpoint")
@@ -243,11 +242,10 @@ def test_retry_from_checkpoint_continues_after_failed_node(client, monkeypatch):
     # retagged to the NEW run id before the continuation starts, so resumed
     # checkpoints append to the new run's file and the run reaches "done".
     assert aw2["run"]["status"] == "done", aw2
-    old_rec = json.loads(ckpt.read_text())
-    new_rec = json.loads(new_ckpt.read_text())
-    assert new_rec["session_id"] == new["id"]  # retagged on clone
-    assert len(old_rec["checkpoints"]) == ckpt_count_after_failure  # source untouched
-    assert len(new_rec["checkpoints"]) > ckpt_count_after_failure
+    new_header = json.loads(new_ckpt.read_text().splitlines()[0])
+    assert new_header["session_id"] == new["id"]  # retagged on clone
+    assert len(load_entries(ckpt)) == ckpt_count_after_failure  # source untouched
+    assert len(load_entries(new_ckpt)) > ckpt_count_after_failure
 
 
 def test_retry_from_checkpoint_409_without_node_attribution(client, monkeypatch):

@@ -10,7 +10,7 @@ Ginno 是本地 AI Agent 桌面应用：Tauri(Rust) 壳 + Next.js 前端 + Pytho
 | 内容 | 位置 |
 |---|---|
 | **运行时日志（排障首选）** | `~/.ginno/logs/sidecar.log` |
-| 会话/checkpoint 数据 | `~/.ginno/projects/<slug>/sessions/<session_id>.json` |
+| 会话/checkpoint 数据 | `~/.ginno/projects/<slug>/sessions/<session_id>.jsonl`（追加式日志；旧版 `.json` 仍可读并自动迁移） |
 | 设置 | `~/.ginno/settings.json`、`~/.ginno/config.json` |
 | token 用量 | `~/.ginno/usage/requests-YYYY-MM-DD.jsonl` |
 | 项目规则 / 记忆 | `~/.ginno/projects/<slug>/GINNO.md`、`~/.ginno/MEMORY.md` |

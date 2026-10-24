@@ -13,7 +13,6 @@ keep working unchanged."""
 from __future__ import annotations
 
 import asyncio  # noqa: F401  (kept: module-surface parity; _base consumers)
-import shutil
 import time
 from pathlib import Path  # noqa: F401  (kept: module-surface parity)
 
@@ -750,21 +749,15 @@ async def retry_from_checkpoint_endpoint(run_id: str) -> dict:
         retried_from=run_id,
         supervisor_override=run.get("supervisor_override"),
     )
-    # The engine keys checkpoints by thread_id == run_id: clone the file so the
-    # new run continues from the failed node instead of the entry. The record's
-    # embedded session_id routes FileCheckpointer._write — it MUST be rewritten
-    # to the new run id, otherwise resumed checkpoints land back in the source
-    # run's file and the new run's copy stays frozen at the failure (the run
-    # would then report "paused" forever).
-    new_ckpt = _run_checkpoint_path(new["id"])
-    shutil.copyfile(ckpt, new_ckpt)
-    try:
-        rec = json.loads(new_ckpt.read_text() or "{}")
-        if isinstance(rec, dict):
-            rec["session_id"] = new["id"]
-            new_ckpt.write_text(json.dumps(rec, ensure_ascii=False, default=str))
-    except Exception:
-        _log.exception("checkpoint_clone_retag_failed run=%s new=%s", run_id, new["id"])
+    # The engine keys checkpoints by thread_id == run_id: clone the log onto
+    # the new run so it continues from the failed node instead of the entry.
+    # clone_checkpoint retags the embedded session id and always writes the
+    # canonical JSONL log — resumed checkpoints then append to the new run's
+    # file, never back into the source run's.
+    from ..checkpointer import clone_checkpoint
+
+    if clone_checkpoint("default", run_id, new["id"]) is None:
+        _log.error("checkpoint_clone_failed run=%s new=%s", run_id, new["id"])
     run["retry_run_id"] = new["id"]
     run["updated"] = time.time()
     wf_storemod._write_json(wf_storemod._run_path(run_id), run)
@@ -829,15 +822,10 @@ async def rerun_from_endpoint(run_id: str, data: dict) -> dict:
             st = src_status.get(s["id"])
             if st in ("done", "skipped", "failed"):
                 wf_store.update_step(new["id"], s["id"], st)
-    ckpt, new_ckpt = _run_checkpoint_path(run_id), _run_checkpoint_path(new["id"])
-    shutil.copyfile(ckpt, new_ckpt)
-    try:
-        rec = json.loads(new_ckpt.read_text() or "{}")
-        if isinstance(rec, dict):
-            rec["session_id"] = new["id"]
-            new_ckpt.write_text(json.dumps(rec, ensure_ascii=False, default=str))
-    except Exception:
-        _log.exception("checkpoint_clone_retag_failed run=%s new=%s", run_id, new["id"])
+    from ..checkpointer import clone_checkpoint
+
+    if clone_checkpoint("default", run_id, new["id"]) is None:
+        _log.error("checkpoint_clone_failed run=%s new=%s", run_id, new["id"])
     run["retry_run_id"] = new["id"]
     run["updated"] = time.time()
     wf_storemod._write_json(wf_storemod._run_path(run_id), run)

@@ -339,10 +339,9 @@ def _prune_delegation_sessions(slug: str) -> None:
             if not sid:
                 continue
             _session_meta_remove(slug, sid)
-            try:
-                os.unlink(paths.project_sessions_dir(slug) / f"{sid}.json")
-            except OSError:
-                pass
+            from .checkpointer import remove_checkpoint_files
+
+            remove_checkpoint_files(slug, sid)
             try:
                 shutil.rmtree(paths.session_files_dir(slug, sid), ignore_errors=True)
             except Exception:  # noqa: BLE001

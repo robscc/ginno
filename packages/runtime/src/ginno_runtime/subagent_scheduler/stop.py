@@ -229,11 +229,8 @@ async def delete_subagent_tree(slug: str, session_id: str) -> list[str]:
 
         subagent_unlink_any(cid)
         _NS._session_meta_remove(slug, cid)
-        cp = _NS.paths.project_sessions_dir(slug) / f"{cid}.json"
-        if cp.exists():
-            try:
-                cp.unlink()
-            except OSError:
-                _NS._log.warning("subagent_cascade_unlink_failed session=%s", cid)
+        from ..checkpointer import remove_checkpoint_files
+
+        remove_checkpoint_files(slug, cid)
         _NS._log.info("subagent_cascade_deleted parent=%s child=%s", session_id, cid)
     return ids

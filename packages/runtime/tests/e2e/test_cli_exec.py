@@ -293,7 +293,7 @@ def test_exec_home_persistence(tmp_path, monkeypatch):
     assert (home / "settings.json").is_file()
     sessions_dir = home / "projects" / "default" / "sessions"
     assert sessions_dir.is_dir(), sorted(p.name for p in home.rglob("*") if p.is_dir())
-    assert (sessions_dir / f"{sid1}.json").is_file()  # checkpointer
+    assert (sessions_dir / f"{sid1}.jsonl").is_file()  # checkpointer (append log)
     assert list((home / "usage").glob("requests-*.jsonl")), "usage ledger not in --home"
 
     # 二次 exec（同一 home）：上一会话仍可按 session_id 找回。

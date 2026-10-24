@@ -319,10 +319,17 @@ def _remove_session_files(slug: str, session_id: str) -> None:
     uploaded files before dying — those uploads must not vanish)."""
     import shutil
 
+    from .checkpointer import legacy_checkpoint_path, checkpoint_path
+
     base = paths.project_sessions_dir(slug)
-    for suffix in (".json", ".world.json", ".projects.json"):
+    for p in (
+        checkpoint_path(slug, session_id),
+        legacy_checkpoint_path(slug, session_id),
+        base / f"{session_id}.world.json",
+        base / f"{session_id}.projects.json",
+    ):
         try:
-            (base / f"{session_id}{suffix}").unlink()
+            p.unlink()
         except OSError:
             pass
     sess_dir = base / session_id

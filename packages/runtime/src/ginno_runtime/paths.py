@@ -471,8 +471,10 @@ def session_files_dir(slug: str, session_id: str) -> Path:
     Created when a session is created; deliberately PRESERVED when the session
     is deleted (only the conversation checkpoint + index row are removed).
     Note: this is a *directory* `sessions/<session_id>/` and coexists with the
-    checkpoint *file* `sessions/<session_id>.json` — the names differ, so never
-    glob `sessions/<session_id>*` in cleanup code; target the exact `.json`.
+    checkpoint *file* `sessions/<session_id>.jsonl` (legacy `.json` from older
+    builds) — the names differ, so never glob `sessions/<session_id>*` in
+    cleanup code; target the exact checkpoint path from
+    ``checkpointer.checkpoint_path`` / ``checkpointer.remove_checkpoint_files``.
     """
     return project_sessions_dir(slug) / session_id
 
