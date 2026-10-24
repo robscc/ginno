@@ -96,6 +96,16 @@ def create_team(
         return None
     team_id = f"t_{uuid.uuid4().hex[:8]}"
     now = time.time()
+    # P2-3: a team without a shared workspace silently falls back to each
+    # member's own dir, which is not collaboration. Default to a per-team
+    # directory under the project (created up front so file tools work).
+    if not (workspace or "").strip():
+        ws_dir = paths.home() / "projects" / (project_slug or "default") / "teams" / team_id
+        try:
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            workspace = str(ws_dir)
+        except OSError:
+            workspace = ""
     data = {
         "id": team_id,
         "name": name,

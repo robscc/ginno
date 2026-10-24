@@ -22,10 +22,12 @@
         "knowledge": "Knowledge & Context",
         "security": "Permissions & Hooks",
         "data": "Usage & Data",
-        "general": "General"
+        "general": "General",
+        "diagnostics": "Diagnostics"
       },
       "groupSecurity": "Security",
       "groupSystem": "System",
+      "diagnosticsBadge": "Diagnostics: {n} warnings",
       "items": {
         "modelApi": "Model API",
         "skills": "Skills",

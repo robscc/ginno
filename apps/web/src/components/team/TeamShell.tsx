@@ -36,6 +36,14 @@ function fmtAway(s: number): string {
   return `${Math.floor(m / 60)}h${m % 60}m`;
 }
 
+/** P2-1：GET /teams 的附加引用完整性字段（runtime 侧后加，旧 runtime 无）。 */
+type TeamPayload = Team & { mainSessionMissing?: boolean };
+const mainSessionMissing = (t: Team | null | undefined): boolean =>
+  t ? (t as TeamPayload).mainSessionMissing === true : false;
+
+/** P2-4 新建团队引导卡的「已读」标记（按团队 id 持久化）。 */
+const GUIDE_DISMISS_KEY = (teamId: string) => `ginno-team-guide-dismissed:${teamId}`;
+
 type View =
   | { kind: "main" }
   | { kind: "overview" }
@@ -65,11 +73,37 @@ export function TeamShell() {
   // 总览过滤（设计稿视图 2：全部 / 仅活跃 / 需要我）+ 未读横幅收起
   const [ovFilter, setOvFilter] = useState<"all" | "active" | "needs">("all");
   const [digestOpen, setDigestOpen] = useState(true);
+  // P2-4：新建团队引导卡按团队 id 记录「已读」（localStorage，跨启动保留）
+  const [guideDismissed, setGuideDismissed] = useState<Record<string, boolean>>({});
 
   const team = useMemo(
     () => teams.find((t) => t.id === teamId) ?? null,
     [teams, teamId],
   );
+
+  // 切换团队时从 localStorage 恢复该团队的引导卡「已读」状态（私密窗口
+  // 可能抛错 → 当作未读，功能不依赖存储）。
+  useEffect(() => {
+    if (!teamId) return;
+    let dismissed = false;
+    try {
+      dismissed = localStorage.getItem(GUIDE_DISMISS_KEY(teamId)) === "1";
+    } catch {
+      /* 存储不可用 */
+    }
+    setGuideDismissed((prev) =>
+      prev[teamId] === dismissed ? prev : { ...prev, [teamId]: dismissed },
+    );
+  }, [teamId]);
+
+  const dismissGuide = useCallback((id: string) => {
+    setGuideDismissed((prev) => ({ ...prev, [id]: true }));
+    try {
+      localStorage.setItem(GUIDE_DISMISS_KEY(id), "1");
+    } catch {
+      /* 存储不可用——本次会话内仍然生效 */
+    }
+  }, []);
 
   const copyTeamId = async (id: string) => {
     try {
@@ -221,6 +255,9 @@ export function TeamShell() {
   const mainSession = sessionById(team?.main_session_id);
   const memberSession =
     view.kind === "member" ? sessionById(view.sessionId) : null;
+  // P2-1/P2-3：主会话引用完整性 + 共享工作区（都在 header/横幅里展示）。
+  const mainMissing = mainSessionMissing(team);
+  const wsPath = (team?.shared_workspace?.workspace ?? "").trim();
 
   // ---- 团队列表行（左栏）----
   const renderTeamRow = (t: Team) => {
@@ -450,6 +487,23 @@ export function TeamShell() {
           <span className="text-xs text-faint">
             {tc("team.memberCount", { count: team.member_rows?.length ?? 0 })}
           </span>
+          {/* P2-3：共享工作区必须可见——空配置时成员会各写各的目录，
+              团队协作语义不成立，这里给出可补救的提示。 */}
+          {wsPath ? (
+            <span
+              className="hidden max-w-[280px] truncate rounded border border-line px-1.5 py-0.5 text-[10px] text-faint lg:inline-block"
+              title={tc("team.workspacePathTitle", { path: wsPath })}
+            >
+              📁 {wsPath}
+            </span>
+          ) : (
+            <span
+              className="hidden rounded border border-dashed border-line px-1.5 py-0.5 text-[10px] text-faint lg:inline-block"
+              title={tc("team.workspaceUnsetHint")}
+            >
+              {tc("team.workspaceUnset")}
+            </span>
+          )}
           {/* 团队共享记忆非空 → 显示已注入 chip（点击进编辑） */}
           {team.has_team_md && (
             <button
@@ -481,6 +535,17 @@ export function TeamShell() {
             )}
           </div>
         </div>
+
+        {/* P2-1：主会话被删 → 团队协作不可用。横幅常驻在顶栏下方，三个视图
+            都能看到；不静默打开一个空会话。 */}
+        {mainMissing && (
+          <div className="mx-4 mt-2 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs leading-relaxed text-red">
+            <div className="font-medium">{tc("team.mainMissingBanner")}</div>
+            <div className="mt-0.5 text-[11px] text-red/80">
+              {tc("team.mainMissingHint")}
+            </div>
+          </div>
+        )}
 
         {/* 主体：左对话（主会话 or 成员工作台）+ 右成员面板 */}
         <div className="flex min-h-0 flex-1">
@@ -546,6 +611,23 @@ export function TeamShell() {
                     </div>
                   );
                 })()}
+                {/* P2-4：新建团队引导——空会话里用户不知道下一步做什么。
+                    成员为空或团队创建不足 1 天时出现，可按团队 id 关掉。 */}
+                {!guideDismissed[team.id] &&
+                  ((team.member_rows?.length ?? team.members?.length ?? 0) === 0 ||
+                    (!!team.created && Date.now() / 1000 - team.created < 86400)) && (
+                    <div className="mx-4 mt-2 flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/5 px-3 py-2 text-xs">
+                      <span className="min-w-0 flex-1 leading-relaxed text-muted">
+                        {tc("team.guideCard", { name: team.name })}
+                      </span>
+                      <button
+                        onClick={() => dismissGuide(team.id)}
+                        className="shrink-0 text-[11px] text-faint transition-colors hover:text-muted"
+                      >
+                        {tc("team.guideDismiss")}
+                      </button>
+                    </div>
+                  )}
                 {mainSession ? (
                   <ChatStream session={mainSession} />
                 ) : (

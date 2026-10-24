@@ -101,7 +101,9 @@ export function DayTimeline({
     const out: ScheduleRun[][] = Array.from({ length: CELLS }, () => []);
     const dayStart = new Date(date + "T00:00:00").getTime() / 1000;
     for (const r of tl?.runs ?? []) {
-      if (r.status === "missed") continue; // missed 单独画(无时长)
+      // missed 单独画(无时长)；caught_up 是同一次错过的「正在补跑」记账，
+      // 同样没有真实执行区间，落在 missed 的虚框格上而不是画 60s 假条。
+      if (r.status === "missed" || r.status === "caught_up") continue;
       const start = r.started_at ?? r.scheduled_at;
       if (start == null) continue;
       const end = r.finished_at ?? (r.status === "running" && isToday ? Date.now() / 1000 : start + 60);
@@ -116,7 +118,8 @@ export function DayTimeline({
     const dayStart = new Date(date + "T00:00:00").getTime() / 1000;
     const m = new Map<number, ScheduleRun[]>();
     for (const r of tl?.runs ?? []) {
-      if (r.status !== "missed" || r.scheduled_at == null) continue;
+      if (r.status !== "missed" && r.status !== "caught_up") continue;
+      if (r.scheduled_at == null) continue;
       const c = Math.floor((r.scheduled_at - dayStart) / 900);
       if (c >= 0 && c < CELLS) m.set(c, [...(m.get(c) ?? []), r]);
     }
@@ -134,7 +137,12 @@ export function DayTimeline({
   }, [tl, date]);
 
   const hoverRun = (r: ScheduleRun) => (ev: React.MouseEvent) => {
-    const meta = statusMeta(r.status);
+    // caught_up 不在 statusMeta 的固定表里（shared.ts 只有执行终态），这里
+    // 就地给「补跑中」黄标，避免出现原始协议值。
+    const meta =
+      r.status === "caught_up"
+        ? { label: tr("status.caughtUp"), color: "var(--st-missed)", glyph: "◷" }
+        : statusMeta(r.status);
     const dur =
       r.started_at && (r.finished_at || r.status === "running")
         ? fmtDuration((r.finished_at ?? Date.now() / 1000) - r.started_at)
@@ -150,7 +158,7 @@ export function DayTimeline({
           {r.status === "missed" ? tr("day.missedSuffix") : ""}
         </div>
         <div className="mt-0.5">
-          {r.status === "missed"
+          {r.status === "missed" || r.status === "caught_up"
             ? tr("day.tipDue", { clock: fmtClock(r.scheduled_at) })
             : `${tr("day.tipStart", { clock: fmtClock(r.started_at) })}${
                 r.finished_at ? tr("day.tipEnd", { clock: fmtClock(r.finished_at) }) : ""

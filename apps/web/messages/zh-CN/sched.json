@@ -6,7 +6,8 @@
       "running": "运行中",
       "error": "失败",
       "skipped": "跳过（重叠）",
-      "missed": "错过"
+      "missed": "错过",
+      "caughtUp": "补跑中"
     },
     "dayPrefix": {
       "today": "今天",
@@ -100,6 +101,7 @@
       "colSummary": "摘要",
       "rowClick": "点击查看该次执行",
       "rowMissed": "错过（机器休眠或应用未运行）",
+      "sessionDeleted": "会话已删除",
       "open": "打开 ↗",
       "prev": "上一页",
       "next": "下一页",
@@ -128,6 +130,9 @@
       "workflow": "工作流：{name}",
       "workflowDeleted": "已删除",
       "last": "上次：{value}",
+      "lastFailed": "上次失败",
+      "lastSuccess": "上次成功：{value}",
+      "neverSucceeded": "从未成功",
       "neverRun": "从未执行",
       "stateOnceDone": "已暂停 · 单次任务已完成",
       "stateWfMissing": "已暂停 · 配方已删除，编辑后重新选择",

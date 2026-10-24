@@ -87,6 +87,64 @@ export async function listSessions(project_slug = "default") {
   return json<SessionMeta[]>(`${BASE}/sessions?project_slug=${project_slug}`);
 }
 
+/** P1-3 server-side search: title/id substring + pagination. Archived
+ *  sessions stay searchable on purpose. */
+export async function searchSessions(q: string, opts?: { limit?: number; offset?: number; project_slug?: string }) {
+  const p = new URLSearchParams();
+  p.set("q", q);
+  if (opts?.limit != null) p.set("limit", String(opts.limit));
+  if (opts?.offset != null) p.set("offset", String(opts.offset));
+  if (opts?.project_slug) p.set("project_slug", opts.project_slug);
+  return json<{ ok: boolean; total: number; limit: number; offset: number; sessions: SessionMeta[] }>(
+    `${BASE}/sessions/search?${p.toString()}`,
+  );
+}
+
+/** P1-4 batch archive / unarchive / delete. Delete skips referenced sessions
+ *  and reports them in ``skipped`` instead of breaking teams/runs. */
+export async function bulkSessions(action: "archive" | "unarchive" | "delete", ids: string[]) {
+  return json<{ ok: boolean; done: string[]; skipped: Array<{ id: string; reason: string; references?: string[] }> }>(
+    `${BASE}/sessions/bulk`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ids }),
+    },
+  );
+}
+
+export interface DiagnosticsIssue {
+  id: string;
+  severity: "high" | "medium" | "low" | "info";
+  count?: number;
+  detail?: string;
+}
+
+export interface DiagnosticsReport {
+  ok: boolean;
+  generated_at: number;
+  warnings: number;
+  issues: DiagnosticsIssue[];
+  sections: {
+    data: { issues: DiagnosticsIssue[] };
+    tasks: {
+      total: number; ok: number; failed: number; caught_up: number;
+      latest_failure: { run_id: string; task: string; error: string; hint?: string; kind?: string } | null;
+      issues: DiagnosticsIssue[];
+    };
+    runtime: {
+      frozen: boolean; runtime_stale: boolean; uptime_s: number; loaded_sessions: number;
+      issues: DiagnosticsIssue[];
+    };
+    contracts: { missing_routes: string[]; issues: DiagnosticsIssue[] };
+  };
+}
+
+/** P4-1 built-in self-check (read-only). */
+export async function getDiagnostics() {
+  return json<DiagnosticsReport>(`${BASE}/diagnostics`);
+}
+
 /** 会话已读上报（服务端收件箱语义，session_unread）：前端「正在看」成立时
  * 调用——turn 在眼前跑完/点开会话/窗口回到前台。fire-and-forget，幂等。 */
 export async function markSessionSeen(session_id: string) {

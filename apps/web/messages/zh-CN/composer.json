@@ -45,6 +45,7 @@
       "downloadStarted": "已开始下载",
       "downloadFailed": "下载失败",
       "previewFailed": "预览失败",
+      "fileDeleted": "文件已删除",
       "runtimeUnreachable": "无法连接 runtime",
       "rowsRange": "第 {from}–{to} 行 / 共 {total} 行",
       "emptySheet": "空表格",

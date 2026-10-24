@@ -45,6 +45,7 @@
       "downloadStarted": "Download started",
       "downloadFailed": "Download failed",
       "previewFailed": "Preview failed",
+      "fileDeleted": "File deleted",
       "runtimeUnreachable": "Cannot connect to the runtime",
       "rowsRange": "rows {from}–{to} / {total}",
       "emptySheet": "Empty sheet",

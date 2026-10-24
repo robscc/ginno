@@ -188,7 +188,9 @@ export function TasksPanel({
                       })}
                     </span>
                   ) : null}
-                  <span>
+                  {/* P0-1：上次执行失败整行标红并追加「上次失败」小标；成功
+                      与否分开记账——last_success 不被失败覆盖（后端 last_success）。 */}
+                  <span className={last?.status === "error" ? "text-red" : undefined}>
                     {tr("tasks.last", {
                       value: last
                         ? `${fmtDayPrefix(last.started)} ${fmtClock(last.started)} ${
@@ -196,7 +198,22 @@ export function TasksPanel({
                           }${last.finished ? ` · ${fmtDuration(last.finished - (last.started ?? 0))}` : ""}`
                         : tr("tasks.neverRun"),
                     })}
+                    {last?.status === "error" && (
+                      <span className="ml-1 rounded-full border border-red/40 bg-red/10 px-1.5 text-[10px] leading-4">
+                        {tr("tasks.lastFailed")}
+                      </span>
+                    )}
                   </span>
+                  {/* 上次成功单独一行：失败时它才是「昨天到底跑没跑」的答案。 */}
+                  {t.last_success ? (
+                    <span className={last?.status === "error" ? "text-green" : undefined}>
+                      {tr("tasks.lastSuccess", {
+                        value: `${fmtDayPrefix(t.last_success.finished)} ${fmtClock(t.last_success.finished)}`,
+                      })}
+                    </span>
+                  ) : last ? (
+                    <span>{tr("tasks.neverSucceeded")}</span>
+                  ) : null}
                   <span>
                     {onceDone
                       ? tr("tasks.stateOnceDone")

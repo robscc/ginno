@@ -31,6 +31,14 @@ from .session_meta import (
 # Ticket threshold (ux_fix_tickets.md DATA-04).
 STALE_ERROR_DAYS = 7
 
+# P1-1 archive rule: an inactive one-shot Q&A leaves the sidebar for the
+# collapsed "Archived" bucket. A session with real traffic stays visible.
+ARCHIVE_AFTER_DAYS = 14
+ARCHIVE_MAX_MESSAGES = 2
+# Bump when the judging rule changes: auto-written flags from an older rule
+# are discarded and re-judged; manual archive choices are never touched.
+ARCHIVE_RULE_VERSION = 3
+
 
 def _project_slugs() -> list[str]:
     root = paths.home() / "projects"
@@ -220,6 +228,38 @@ async def requeue_pending_titles() -> int:
     return count
 
 
+def _backfill_last_success() -> None:
+    """P0-1: seed ``last_success`` from the run history.
+
+    The field only starts being written on the next successful run; without a
+    backfill every task would read "从未成功" until it happens to run again,
+    which is the opposite of what the card is for. Idempotent — tasks that
+    already carry the field are left alone.
+    """
+    try:
+        from . import schedule_store
+
+        rows = schedule_store.query_runs(page=1, page_size=500).get("rows") or []
+        best: dict[str, tuple[float, str]] = {}
+        for r in rows:
+            if r.get("status") != "ok":
+                continue
+            tid = str(r.get("task_id") or "")
+            ts = float(r.get("finished_at") or r.get("started_at") or 0)
+            if tid and ts > best.get(tid, (0.0, ""))[0]:
+                best[tid] = (ts, str(r.get("run_id") or ""))
+        for task in schedule_store.list_tasks():
+            tid = str(task.get("id") or "")
+            if not tid or task.get("last_success") or tid not in best:
+                continue
+            ts, rid = best[tid]
+            schedule_store.patch_task(
+                tid, {"last_success": {"run_id": rid, "finished": ts}}
+            )
+    except Exception:  # noqa: BLE001 — display-only backfill
+        _log.exception("maintenance_last_success_backfill_failed")
+
+
 # ---- one-time purge of stale empty sessions ------------------------------ #
 
 # DATA-05 was a product decision (2026-10-23): the 15 sidebar entries that had
@@ -298,26 +338,28 @@ def _remove_session_files(slug: str, session_id: str) -> None:
         _log.exception("maintenance_empty_session_dir_failed sid=%s", session_id)
 
 
-def _referenced_session_ids() -> set[str]:
-    """Sessions some other record points at — teams and scheduled run logs.
+def session_reference_map() -> dict[str, list[str]]:
+    """session_id → human-readable list of records that point at it.
 
-    The empty-session purge must never delete one of these: the reference is
-    left dangling and every consumer (team chat, “view session” in run
-    history) breaks silently (DATA-06).
+    Used by the purge (skip), the delete guard (refuse) and diagnostics
+    (report). Teams and scheduled run logs are the only across-store refs.
     """
-    refs: set[str] = set()
+    refs: dict[str, list[str]] = {}
+
+    def _add(sid: str, label: str) -> None:
+        if sid:
+            refs.setdefault(str(sid), []).append(label)
+
     try:
         from .teams import store as team_store
 
         for t in team_store.list_teams():
-            if t.get("main_session_id"):
-                refs.add(str(t["main_session_id"]))
+            name = str(t.get("name") or t.get("id") or "?")
+            _add(str(t.get("main_session_id") or ""), f"team {name} (main)")
             for m in t.get("members") or []:
+                _add(str(m.get("session_id") or ""), f"team {name} ({m.get('display_name') or 'member'})")
                 for sid in m.get("session_ids") or []:
-                    if sid:
-                        refs.add(str(sid))
-                if m.get("session_id"):
-                    refs.add(str(m["session_id"]))
+                    _add(str(sid or ""), f"team {name} ({m.get('display_name') or 'member'})")
     except Exception:  # noqa: BLE001 — a broken teams store must not skip hygiene
         _log.exception("maintenance_team_refs_failed")
     try:
@@ -333,12 +375,120 @@ def _referenced_session_ids() -> set[str]:
                     e = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                for key in ("session_id", "forked_session_id"):
-                    if isinstance(e, dict) and e.get(key):
-                        refs.add(str(e[key]))
+                if not isinstance(e, dict):
+                    continue
+                rid = str(e.get("run_id") or "?")
+                _add(str(e.get("session_id") or ""), f"schedule run {rid}")
+                _add(str(e.get("forked_session_id") or ""), f"schedule run {rid} (fork)")
     except Exception:  # noqa: BLE001
         _log.exception("maintenance_schedule_refs_failed")
     return refs
+
+
+def _referenced_session_ids() -> set[str]:
+    """Sessions some other record points at — teams and scheduled run logs.
+
+    The empty-session purge must never delete one of these: the reference is
+    left dangling and every consumer (team chat, “view session” in run
+    history) breaks silently (DATA-06).
+    """
+    return set(session_reference_map())
+
+
+def _message_count(slug: str, session_id: str) -> int | None:
+    """How many USER turns the session has (None = checkpoint unreadable).
+
+    Counting raw messages was wrong for the archive rule: one question with a
+    few tool calls is already 10+ raw messages, so almost nothing looked like
+    a one-shot. The backlog's "1–2 条消息" means conversational turns — count
+    human messages, skipping the injected context/summary/re-injection rows.
+    """
+    try:
+        from .checkpointer import FileCheckpointer
+        from .world_state import (
+            REINJECT_MSG_PREFIX,
+            SUMMARY_MSG_PREFIX,
+            TURN_CONTEXT_PREFIX,
+        )
+
+        tup = FileCheckpointer(slug).get_tuple(
+            {"configurable": {"thread_id": session_id}}
+        )
+    except Exception:  # noqa: BLE001 — unreadable: leave the flag untouched
+        return None
+    if not tup or not tup.checkpoint:
+        return 0
+    messages = (tup.checkpoint.get("channel_values") or {}).get("messages") or []
+    injected = (TURN_CONTEXT_PREFIX, SUMMARY_MSG_PREFIX, REINJECT_MSG_PREFIX)
+    turns = 0
+    for m in messages:
+        if getattr(m, "type", None) != "human":
+            continue
+        text = m.content if isinstance(m.content, str) else ""
+        if text and text.startswith(injected):
+            continue
+        turns += 1
+    return turns
+
+
+def _mark_archived_sessions() -> None:
+    """P1-1: older, near-empty sessions move to the collapsed archive bucket.
+
+    Runs at most once a day (startup can happen many times). Only sessions
+    without an explicit ``archived`` value are judged, so a manual
+    archive/unarchive always wins; sessions referenced by a team or a
+    scheduled run are skipped — hiding them would make those references look
+    broken to the user.
+    """
+    state = _read_state()
+    now = time.time()
+    if state.get("archived_rule_version") != ARCHIVE_RULE_VERSION:
+        # Re-judge flags written by an older rule (they are auto flags: the
+        # bulk/manual path never sets ``archived_auto``).
+        for slug in _project_slugs():
+            rows = _session_meta_list(slug)
+            dirty = False
+            for m in rows:
+                # v1/v2 wrote ``archived: false`` without ``archived_auto``;
+                # both are auto decisions and must be re-judged under the new
+                # rule. ``archived: true`` (a real archive) is left alone.
+                if m.get("archived_auto") or m.get("archived") is False:
+                    m.pop("archived", None)
+                    m.pop("archived_auto", None)
+                    dirty = True
+            if dirty:
+                _session_meta_rewrite_all(slug, rows)
+        state["archived_rule_version"] = ARCHIVE_RULE_VERSION
+        state["archived_checked_at"] = 0
+        _write_state(state)
+    if now - float(state.get("archived_checked_at") or 0) < 86400:
+        return
+    referenced = set(session_reference_map())
+    changed_projects = 0
+    for slug in _project_slugs():
+        rows = _session_meta_list(slug)
+        changed = False
+        for m in rows:
+            if "archived" in m or m.get("pinned"):
+                continue
+            sid = str(m.get("id") or "")
+            if not sid or sid in referenced:
+                continue
+            if now - float(m.get("updated") or 0) < ARCHIVE_AFTER_DAYS * 86400:
+                continue
+            count = _message_count(slug, sid)
+            if count is None:
+                continue
+            m["archived"] = count <= ARCHIVE_MAX_MESSAGES
+            m["archived_auto"] = True
+            changed = True
+        if changed:
+            _session_meta_rewrite_all(slug, rows)
+            changed_projects += 1
+    state["archived_checked_at"] = now
+    _write_state(state)
+    if changed_projects:
+        _log.info("maintenance_archived_sessions projects=%d", changed_projects)
 
 
 def _purge_stale_empty_sessions_once() -> None:
@@ -408,6 +558,24 @@ def _heal_dangling_refs(valid_sessions: set[str]) -> None:
             tid = str(t.get("id") or "")
             if not tid:
                 continue
+            # P2-3: legacy teams were created with an empty shared workspace;
+            # give them the same per-team dir new teams get.
+            sw = dict(t.get("shared_workspace") or {})
+            if not str(sw.get("workspace") or "").strip():
+                ws_dir = (
+                    paths.home()
+                    / "projects"
+                    / str(t.get("project_slug") or "default")
+                    / "teams"
+                    / tid
+                )
+                try:
+                    ws_dir.mkdir(parents=True, exist_ok=True)
+                    sw["workspace"] = str(ws_dir)
+                    team_store.update_team(tid, {"shared_workspace": sw})
+                    _log.info("maintenance_team_workspace_set team=%s", tid)
+                except OSError:
+                    pass
             main = str(t.get("main_session_id") or "")
             members = t.get("members") or []
             missing_main = bool(main) and main not in valid_sessions
@@ -462,6 +630,14 @@ def run_startup_maintenance() -> None:
         _heal_dangling_refs(valid_sessions)
     except Exception:  # noqa: BLE001
         _log.exception("maintenance_ref_heal_failed")
+    try:
+        _backfill_last_success()
+    except Exception:  # noqa: BLE001
+        _log.exception("maintenance_last_success_failed")
+    try:
+        _mark_archived_sessions()
+    except Exception:  # noqa: BLE001 — archiving is cosmetic; never block start
+        _log.exception("maintenance_archive_failed")
     for slug in slugs:
         try:
             _heal_session_metas(slug)

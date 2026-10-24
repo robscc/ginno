@@ -176,6 +176,16 @@
     },
     "artifacts": {
       "title": "Artifacts",
+      "scope": {
+        "label": "Artifact scope",
+        "current": "This session",
+        "all": "All",
+        "noSession": "Open a session first"
+      },
+      "emptyCurrent": "No artifacts in this session yet.",
+      "ungrouped": "Unassigned",
+      "itemsCount": "{n} items",
+      "invalid": "Missing",
       "empty": "No artifacts yet. Files / docs / workflows you produce or attach show up here.",
       "clickPreview": "Click to preview · hover for metadata",
       "hoverMeta": "Hover for metadata",

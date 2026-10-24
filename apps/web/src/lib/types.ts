@@ -184,6 +184,9 @@ export interface SessionMeta {
   workflow_id?: string | null;
   // 侧栏置顶（sidebar pin）：显式置顶的会话排在天分组之上。
   pinned?: boolean;
+  /** P1-1 自动归档：长期无活动且几乎没消息的一次性问答，收进折叠的归档区。
+   *  任何新 turn 都会把它置回 false。 */
+  archived?: boolean;
   // "quick" = created by the floating quick-chat window
   // (docs/floating-window-design.md §1.1); regular sessions omit the field.
   // "subagent" = a spawned child session (subagent-design.md §4.1); the parent
@@ -765,6 +768,8 @@ export interface ScheduleTask {
   /** 调度器回写（epoch 秒）；UI 冷启动即有值。null/缺省 = 暂停或单次已完成。 */
   next_run_at?: number | null;
   last_run?: ScheduleLastRun | null;
+  /** P0-1：最近一次成功（失败不会覆盖它），任务卡展示「上次成功」。 */
+  last_success?: { run_id: string; finished: number } | null;
 }
 
 /** 未读执行结果统计（schedule-unseen）：侧栏红点 + 执行记录页签角标。 */
@@ -799,8 +804,15 @@ export interface ScheduleRun {
   task_id: string;
   task_name: string;
   target_type: ScheduleTargetType;
-  trigger: "schedule" | "manual" | string;
-  status: "running" | "ok" | "error" | "skipped_overlap" | "missed" | string;
+  trigger: "schedule" | "manual" | "catch_up" | string;
+  status:
+    | "running"
+    | "ok"
+    | "error"
+    | "skipped_overlap"
+    | "missed"
+    | "caught_up"
+    | string;
   scheduled_at: number | null;
   started_at: number | null;
   finished_at: number | null;
@@ -811,6 +823,12 @@ export interface ScheduleRun {
   workflow_run_id: string | null;
   summary: string | null;
   error: string | null;
+  /** P0-1 失败归类（runtime_stale/auth/rate_limit/content_policy/stall/
+   *  interrupted/network/unknown）+ 人话提示，UI 直接展示。 */
+  error_kind?: string | null;
+  error_hint?: string | null;
+  /** 会话被删除后引用被清空（DATA-06）：记录保留，但不能再跳转。 */
+  session_missing?: boolean;
   input_tokens: number | null;
   output_tokens: number | null;
   /** 已读标记（GET /api/schedule/runs 每行附带；缺省视为已读，不画红点） */

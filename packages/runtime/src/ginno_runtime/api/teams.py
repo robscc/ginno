@@ -58,7 +58,20 @@ class DeliverRequest(BaseModel):
 
 
 def _payload(team: dict, client: str = "main") -> dict:
-    return team_status.team_payload(team, client)
+    payload = team_status.team_payload(team, client)
+    # P2-1: a team whose main session was deleted must say so in the payload —
+    # otherwise the UI opens an empty chat with no explanation.
+    missing = bool(team.get("main_session_missing"))
+    main_sid = str(team.get("main_session_id") or "")
+    if main_sid:
+        try:
+            from ..session_meta import _find_meta as _fm
+
+            missing = missing or _fm(main_sid) is None
+        except Exception:  # noqa: BLE001 — display-only flag
+            pass
+    payload["mainSessionMissing"] = bool(missing)
+    return payload
 
 
 async def _broadcast(team_id: str, client: str = "main") -> None:
@@ -105,7 +118,7 @@ async def appoint_leader(team: dict, agent_id: str, display_name: str = "") -> d
     if member is None:
         from .sessions import delete_session
         try:
-            await delete_session(str(resp["id"]))
+            await delete_session(str(resp["id"]), force=True)
         except Exception:  # noqa: BLE001
             pass
         return None
@@ -165,7 +178,7 @@ async def recover_teams() -> None:
         for s in _session_meta_list(slug):
             if s.get("type") in ("team", "team-member") and s.get("id") not in referenced:
                 try:
-                    await delete_session(str(s["id"]))
+                    await delete_session(str(s["id"]), force=True)
                     _log.info("team_orphan_session_removed type=%s session=%s",
                               s.get("type"), s.get("id"))
                 except Exception:  # noqa: BLE001
@@ -306,7 +319,7 @@ async def delete_team_endpoint(team_id: str, force: int = 0) -> dict:
     # 防呆 2：级联删主会话 = 成员会话（含多会话）全删；roster 最后删。
     try:
         if main_sid:
-            await delete_session(main_sid, cascade=True)
+            await delete_session(main_sid, cascade=True, force=True)
     except Exception:  # noqa: BLE001 — 主会话删不掉也不留孤儿 roster
         _log.exception("team_main_delete_failed team=%s main=%s", team_id, main_sid)
     team_deliver.clear_queue(team_id)
@@ -376,7 +389,7 @@ async def add_member_endpoint(team_id: str, req: AddMemberRequest) -> dict:
         # 编制写不进去就把刚建的 session 收掉，别留孤儿。
         try:
             from .sessions import delete_session
-            await delete_session(str(resp["id"]))
+            await delete_session(str(resp["id"]), force=True)
         except Exception:  # noqa: BLE001
             pass
         return {"ok": False, "error": t(
@@ -434,7 +447,7 @@ async def remove_member_endpoint(team_id: str, instance_id: str) -> dict:
     for sid in {*(member.get("session_ids") or []), member.get("session_id") or ""}:
         if sid:
             try:
-                await delete_session(sid)   # 内部含 stop 级联
+                await delete_session(sid, force=True)   # 内部含 stop 级联
             except Exception:  # noqa: BLE001
                 _log.exception("team_member_session_delete_failed session=%s", sid)
     ok = team_store.remove_member(team_id, instance_id)
@@ -478,7 +491,7 @@ async def add_member_session_endpoint(team_id: str, instance_id: str) -> dict:
     if updated is None:
         try:
             from .sessions import delete_session
-            await delete_session(str(resp["id"]))
+            await delete_session(str(resp["id"]), force=True)
         except Exception:  # noqa: BLE001
             pass
         return {"ok": False, "error": t("Failed to write the roster", "编制写入失败")}
@@ -499,7 +512,7 @@ async def delete_member_session_endpoint(team_id: str, instance_id: str, session
     if session_id not in {*(member.get("session_ids") or []), member.get("session_id") or ""}:
         return {"ok": False, "error": t("The session does not belong to this member", "session 不属于该成员")}
     try:
-        await delete_session(session_id)   # 内部含 stop 级联
+        await delete_session(session_id, force=True)   # 内部含 stop 级联
     except Exception:  # noqa: BLE001
         _log.exception("team_member_session_delete_failed team=%s instance=%s session=%s", team_id, instance_id, session_id)
     updated = team_store.member_remove_session(team_id, instance_id, session_id)

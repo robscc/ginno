@@ -6,8 +6,10 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   AlarmClock,
+  Archive,
   BookOpen,
   Cable,
+  Check,
   ChevronDown,
   Settings as SettingsIcon,
   Plus,
@@ -51,7 +53,19 @@ import { ModToastHost } from "@/components/chat/mod/ModToastHost";
 import { NoticeHost } from "@/components/notice/NoticeHost";
 import { RightPanel } from "@/components/right/RightPanel";
 import { RightDock } from "@/components/right/RightDock";
-import type { ScheduleRun, SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
+import type { FolderEntry, ScheduleRun, SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
+
+// P1-1 自动归档：归档标记只有在该会话「新鲜度」过窗后才真正生效——7 天内有
+// 新活动（updated 被 turn 顶上去了）的会话即使服务端 archived 还是 true，也
+// 照常出现在正常分组里，等服务端回写 false。
+const SIDEBAR_ACTIVE_WINDOW = 7 * 86400;
+// 「一键归档」只碰超过 14 天没动静、且还没归档的非置顶会话。
+const ARCHIVE_ALL_AFTER = 14 * 86400;
+// 侧栏偏好（均 localStorage 持久化；读写都吞异常，隐私模式/无 storage 时退回默认）。
+const ARCHIVED_OPEN_KEY = "ginno-sidebar-archived-open";
+const GROUP_VIEW_KEY = "ginno-sidebar-group-view";
+
+type TimeGroup = "Today" | "Yesterday" | "Last7" | "Earlier";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const g = useGinno();
@@ -116,6 +130,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Usage counters are per session: pull the session's accumulated stats on
   // switch so the TopBar counter is correct immediately (live `usage` WS
   // events keep updating it during turns).
+
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      try {
+        const h = await api.health();
+        if (alive) setRuntimeStale(!!(h as { runtime_stale?: boolean }).runtime_stale);
+      } catch {
+        /* sidecar down — the reconnect banner covers this case */
+      }
+    };
+    void check();
+    const id = setInterval(check, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
   useEffect(() => {
     let alive = true;
     setUsage(null);
@@ -168,6 +201,75 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // "New session" = go home; the session itself is created on first send.
   const [searchOpen, setSearchOpen] = useState(false);
+  // P0-2 运行时更新提示：bundle 在进程启动后被替换 → 提示重启。
+  const [runtimeStale, setRuntimeStale] = useState(false);
+
+  // ── 侧栏组织方式（P1-1/P1-2/P1-4）────────────────────────────────────────
+  // 分组视图（时间/项目）与「已归档」折叠态都持久化。首帧用默认值避免 SSR/
+  // 水合不一致，挂载后再读 storage；写入跳过首轮，免得默认值覆盖已存偏好。
+  const [groupView, setGroupView] = useState<"time" | "project">("time");
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const sidebarPrefsLoaded = useRef(false);
+  useEffect(() => {
+    if (!sidebarPrefsLoaded.current) {
+      sidebarPrefsLoaded.current = true;
+      try {
+        if (localStorage.getItem(ARCHIVED_OPEN_KEY) === "1") setArchivedOpen(true);
+        if (localStorage.getItem(GROUP_VIEW_KEY) === "project") setGroupView("project");
+      } catch {
+        /* storage unavailable */
+      }
+      return;
+    }
+    try {
+      localStorage.setItem(ARCHIVED_OPEN_KEY, archivedOpen ? "1" : "0");
+      localStorage.setItem(GROUP_VIEW_KEY, groupView);
+    } catch {
+      /* storage unavailable */
+    }
+  }, [archivedOpen, groupView]);
+
+  // 项目视图的 id → 名称映射：切到项目视图时按需拉一次文件夹库并缓存
+  // （listFolders 失败就当作全部未分组，不阻塞侧栏）。
+  const [folders, setFolders] = useState<FolderEntry[] | null>(null);
+  useEffect(() => {
+    if (groupView !== "project" || folders !== null) return;
+    let alive = true;
+    api
+      .listFolders()
+      .then((r) => {
+        if (alive) setFolders(r.folders ?? []);
+      })
+      .catch(() => {
+        if (alive) setFolders([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [groupView, folders]);
+
+  // 多选清理（P1-4）：selectMode 下点行 = 勾选，不再打开会话。
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // 删除被引用拒绝的会话（后端 skipped）：批量动作结束后仍留在侧栏提示。
+  const [bulkNotice, setBulkNotice] = useState<
+    Array<{ id: string; title: string; references?: string[] }>
+  >([]);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [archiveAllConfirm, setArchiveAllConfirm] = useState(false);
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  const toggleSelect = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const exitSelect = () => {
+    setSelectMode(false);
+    setSelected(new Set());
+  };
   const setActiveSessionForNav = g.setActiveSession;
   const goHome = () => {
     setActiveSessionForNav(null);
@@ -469,24 +571,118 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 显式置顶的会话独立成组，排在天分组之上，不受活动日分组影响。
   const pinnedSessions = sortedSessions.filter((s) => s.pinned);
   const unpinnedSessions = sortedSessions.filter((s) => !s.pinned);
+  // P1-1 自动归档：archived=true 且超过 7 天没活动才算归档；新 turn 会把
+  // updated 顶上来，于是它立刻回到正常分组（不必等服务端翻标记）。
+  const nowSec = Math.floor(Date.now() / 1000);
+  const isArchived = (s: SessionMeta) =>
+    s.archived === true && nowSec - (s.updated ?? 0) > SIDEBAR_ACTIVE_WINDOW;
+  const activeUnpinned = unpinnedSessions.filter((s) => !isArchived(s));
+  const archivedSessions = unpinnedSessions.filter(isArchived);
   const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const todayMs = dayStart(new Date());
-  const groupOf = (s: SessionMeta): "Today" | "Yesterday" | "Earlier" => {
+  const groupOf = (s: SessionMeta): TimeGroup => {
     const day = dayStart(new Date((s.updated ?? s.created) * 1000));
     if (day >= todayMs) return "Today";
     if (day >= todayMs - 86400000) return "Yesterday";
+    // 2–7 天：仍算「最近」，8 天以上落到 Earlier（再交给归档判断）。
+    if (day >= todayMs - SIDEBAR_ACTIVE_WINDOW * 1000) return "Last7";
     return "Earlier";
   };
-  const sessionGroups: Array<["Today" | "Yesterday" | "Earlier", SessionMeta[]]> = [
-    ["Today", unpinnedSessions.filter((s) => groupOf(s) === "Today")],
-    ["Yesterday", unpinnedSessions.filter((s) => groupOf(s) === "Yesterday")],
-    ["Earlier", unpinnedSessions.filter((s) => groupOf(s) === "Earlier")],
+  const sessionGroups: Array<[TimeGroup, SessionMeta[]]> = [
+    ["Today", activeUnpinned.filter((s) => groupOf(s) === "Today")],
+    ["Yesterday", activeUnpinned.filter((s) => groupOf(s) === "Yesterday")],
+    ["Last7", activeUnpinned.filter((s) => groupOf(s) === "Last7")],
+    ["Earlier", activeUnpinned.filter((s) => groupOf(s) === "Earlier")],
   ];
   // 天分组标题的本地化展示名（内部 key 保持英文，分组/比较逻辑不受影响）。
-  const groupLabel: Record<"Today" | "Yesterday" | "Earlier", string> = {
+  const groupLabel: Record<TimeGroup, string> = {
     Today: t("groups.today"),
     Yesterday: t("groups.yesterday"),
+    Last7: t("groups.last7"),
     Earlier: t("groups.earlier"),
+  };
+
+  // P1-2 项目视图：按 primary_folder 对应的文件夹名分组（名字来自 listFolders
+  // 缓存）；没挂载或库里已不存在的 id 归「未分组」。activeUnpinned 已按活动
+  // 倒序，Map 的插入顺序因此就是「最近有活动的项目在前」，未分组永远垫底。
+  const ungroupedLabel = t("groups.ungrouped");
+  const folderNames = new Map((folders ?? []).map((f) => [f.id, f.name || f.path || f.id]));
+  const projectGroups: Array<[string, SessionMeta[]]> = (() => {
+    if (groupView !== "project") return [];
+    const byName = new Map<string, SessionMeta[]>();
+    for (const s of activeUnpinned) {
+      const name = s.primary_folder ? folderNames.get(s.primary_folder) : undefined;
+      const key = name || ungroupedLabel;
+      const list = byName.get(key) ?? [];
+      list.push(s);
+      byName.set(key, list);
+    }
+    const entries = [...byName.entries()];
+    const ungroupedAt = entries.findIndex(([name]) => name === ungroupedLabel);
+    if (ungroupedAt >= 0) entries.push(...entries.splice(ungroupedAt, 1));
+    return entries;
+  })();
+
+  // P1-1 一键归档的候选：Earlier 里超过 14 天无活动、还没归档的非置顶会话。
+  const archiveCandidates = activeUnpinned.filter(
+    (s) => s.archived !== true && nowSec - (s.updated ?? 0) > ARCHIVE_ALL_AFTER,
+  );
+
+  // P1-4 批量动作：归档/取消归档/删除共用。删除被引用时后端会跳过并回报
+  // skipped —— 这里把标题和引用落成侧栏提示，其余情况清空旧提示。
+  const runBulk = async (action: "archive" | "unarchive" | "delete") => {
+    const ids = [...selected];
+    if (!ids.length || bulkBusy) return;
+    // 删除后 store 会把行移除，先快照标题供 skipped 提示使用。
+    const titles = new Map(g.sessions.map((s) => [s.id, s.title || t("session.untitled")]));
+    // 正在看的会话**真的被删掉**时，reload 不会自动清 activeSessionId（单条
+    // 删除走 removeSession 才清）——这里主动回首页，避免停在已不存在的会话上。
+    // 被引用跳过（skipped）的会话不算。
+    const currentId = g.activeSessionId;
+    setBulkBusy(true);
+    setBulkError(null);
+    try {
+      const r = await api.bulkSessions(action, ids);
+      const deletedActive =
+        action === "delete" && !!currentId && (r.done ?? []).includes(currentId);
+      if (action === "delete" && r.skipped?.length) {
+        setBulkNotice(
+          r.skipped.map((k) => ({
+            id: k.id,
+            title: titles.get(k.id) ?? k.id,
+            references: k.references,
+          })),
+        );
+      } else {
+        setBulkNotice([]);
+      }
+      exitSelect();
+      await g.reloadSessions();
+      if (deletedActive) {
+        g.setActiveSession(null);
+        if (pathname !== "/") router.push("/");
+      }
+    } catch {
+      setBulkError(t("bulk.failed"));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+  const archiveAll = async () => {
+    const ids = archiveCandidates.map((s) => s.id);
+    setArchiveAllConfirm(false);
+    if (!ids.length || bulkBusy) return;
+    setBulkBusy(true);
+    setBulkError(null);
+    try {
+      await api.bulkSessions("archive", ids);
+      setBulkNotice([]);
+      await g.reloadSessions();
+    } catch {
+      setBulkError(t("bulk.failed"));
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   // workflow 运行行（侧栏运行伪条目）：glyph/标签来自 RUN_STATUS_META，标题
@@ -571,8 +767,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   };
 
-  const renderSessionRow = (s: SessionMeta, depth = 0, childRows: SessionMeta[] = []) => {
+  // dimmed：归档区的行整体压暗（仍可点击打开/恢复）。只在归档区顶层行传，
+  // 子会话行沿用各自的状态压暗规则。
+  const renderSessionRow = (
+    s: SessionMeta,
+    depth = 0,
+    childRows: SessionMeta[] = [],
+    dimmed = false,
+  ) => {
     const sel = onWorkspace && s.id === g.activeSessionId;
+    const checked = selectMode && selected.has(s.id);
     const rowAgent = g.agents.find((a) => a.id === s.agent_id) ?? null;
     const hex = agentHex(rowAgent?.color);
     const editing = editingId === s.id;
@@ -592,6 +796,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // 折叠只在用户点过 chevron 后生效（覆盖持久化在 store）。
     const expanded = g.treeCollapsed[s.id] === undefined ? hasKids : !g.treeCollapsed[s.id];
     const openChild = () => {
+      // 多选模式下行点击 = 勾选；打开会话要退出多选后再点。
+      if (selectMode) {
+        toggleSelect(s.id);
+        return;
+      }
       g.setActiveSession(s.id);
       if (!onWorkspace) router.push("/");
     };
@@ -600,7 +809,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div
           className={`nav-item group ${sel ? "text-txt" : ""} ${
             isSub && !subActive && !sel ? "opacity-60" : ""
-          }`}
+          } ${dimmed ? "opacity-60" : ""}`}
           style={{
             ...(sel ? { background: "rgba(99,102,241,0.14)" } : undefined),
             ...(depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined),
@@ -639,12 +848,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <button
                 onClick={openChild}
                 onDoubleClick={(e) => {
+                  if (selectMode) return; // 多选模式下双击不进入重命名
                   e.stopPropagation();
                   setEditTitle(s.title || "");
                   setEditingId(s.id);
                 }}
                 className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
               >
+                {/* 多选勾选框（P1-4）：纯指示器，点击事件由整行承接。 */}
+                {selectMode && (
+                  <span
+                    aria-hidden
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                      checked ? "border-violet bg-violet text-white" : "border-line2 text-transparent"
+                    }`}
+                  >
+                    <Check className="h-3 w-3" />
+                  </span>
+                )}
                 {/* 会话行归属：行首图标即 agent 图标（按 agent 色着色），取代原先的
                     agent 名文字标签 —— 归属一眼可见、不占标题宽度。子会话行例外：
                     persona 是继承父会话的（永远是 Dev Agent），标它没有信息量——
@@ -707,7 +928,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   {activeKids}
                 </span>
               )}
-              <span className="flex shrink-0 items-center gap-0.5">
+              {/* 行内动作（展开/置顶/改名/删除）在多选模式下整体隐去，避免
+                  误触单条删除；子会话的停止/清除同理。 */}
+              <span className={`flex shrink-0 items-center gap-0.5 ${selectMode ? "hidden" : ""}`}>
                 {hasKids && (
                   <button
                     onClick={(e) => {
@@ -909,9 +1132,63 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* left nav */}
       <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel">
         {/* brand */}
-        <div className="flex items-center gap-2.5 px-4 py-4">
+        <div className="flex items-center gap-2.5 px-4 pb-2 pt-4">
           <img src="/icon.png" alt="" className="h-7 w-7" />
           <span className="text-[15px] font-semibold tracking-tight">GinnoWork</span>
+        </div>
+
+        {/* 侧栏工具条（P1-1/P1-2/P1-4）：时间/项目视图切换、一键归档、多选入口 */}
+        <div className="flex items-center gap-1 px-3 pb-2">
+          <div className="flex items-center gap-0.5 rounded-md border border-line p-0.5">
+            {(["time", "project"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setGroupView(v)}
+                className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${
+                  groupView === v
+                    ? "bg-card2 text-txt"
+                    : "text-faint hover:text-txt"
+                }`}
+              >
+                {v === "time" ? t("view.time") : t("view.project")}
+              </button>
+            ))}
+          </div>
+          <span className="ml-auto flex items-center gap-1">
+            <button
+              onClick={() => setArchiveAllConfirm(true)}
+              disabled={!archiveCandidates.length || bulkBusy}
+              aria-label={t("bulk.archiveAll")}
+              title={
+                archiveCandidates.length
+                  ? t("bulk.archiveAllHint", { count: archiveCandidates.length })
+                  : t("bulk.archiveAllEmpty")
+              }
+              className="rounded p-1 text-muted transition-colors hover:bg-card2 hover:text-txt disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              <Archive className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => {
+                if (selectMode) {
+                  exitSelect();
+                } else {
+                  setEditingId(null);
+                  setBulkNotice([]);
+                  setBulkError(null);
+                  setSelectMode(true);
+                }
+              }}
+              title={selectMode ? t("bulk.cancel") : t("bulk.selectHint")}
+              className={`rounded px-1.5 py-0.5 text-[11px] transition-colors ${
+                selectMode
+                  ? "bg-card2 text-violet"
+                  : "text-muted hover:bg-card2 hover:text-txt"
+              }`}
+            >
+              {selectMode ? t("bulk.cancel") : t("bulk.select")}
+            </button>
+          </span>
         </div>
 
         <div className="flex-1 overflow-y-auto px-2.5 pb-2">
@@ -962,15 +1239,52 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
           )}
-          {sessionGroups.map(([label, rows]) =>
-            rows.length ? (
-              <div key={label} className="mb-1">
-                <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-faint">{groupLabel[label]}</div>
-                <div className="space-y-0.5">
-                  {rows.map((s) => renderSessionRow(s, 0, childrenOf.get(s.id) ?? []))}
+          {groupView === "time"
+            ? sessionGroups.map(([label, rows]) =>
+                rows.length ? (
+                  <div key={label} className="mb-1">
+                    <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-faint">
+                      {groupLabel[label]}
+                    </div>
+                    <div className="space-y-0.5">
+                      {rows.map((s) => renderSessionRow(s, 0, childrenOf.get(s.id) ?? []))}
+                    </div>
+                  </div>
+                ) : null,
+              )
+            : projectGroups.map(([name, rows]) => (
+                <div key={name} className="mb-1">
+                  <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-faint">{name}</div>
+                  <div className="space-y-0.5">
+                    {rows.map((s) => renderSessionRow(s, 0, childrenOf.get(s.id) ?? []))}
+                  </div>
                 </div>
-              </div>
-            ) : null,
+              ))}
+
+          {/* 已归档（P1-1）：默认收起，标题带计数；行压暗但仍可点开/恢复。
+              两种视图下都固定挂在最底部。 */}
+          {archivedSessions.length > 0 && (
+            <div className="mb-1">
+              <button
+                onClick={() => setArchivedOpen((v) => !v)}
+                title={t("groups.archivedHint")}
+                className="flex w-full items-center gap-1 px-2.5 pb-1 pt-3 text-left text-[11px] font-medium text-faint transition-colors hover:text-muted"
+              >
+                <ChevronDown
+                  className={`h-3 w-3 shrink-0 transition-transform ${
+                    archivedOpen ? "" : "-rotate-90"
+                  }`}
+                />
+                {t("groups.archived", { count: archivedSessions.length })}
+              </button>
+              {archivedOpen && (
+                <div className="space-y-0.5">
+                  {archivedSessions.map((s) =>
+                    renderSessionRow(s, 0, childrenOf.get(s.id) ?? [], true),
+                  )}
+                </div>
+              )}
+            </div>
           )}
           {/* 首屏骨架：ready 之前 sessions 还是空数组，直接渲染空态会在每次冷启动/
               刷新时闪一下「还没有会话」（SSR 也含这句文案）。 */}
@@ -1010,6 +1324,85 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </button>
           )}
         </div>
+
+        {/* 批量删除被引用拒绝的会话（P1-4）：后端按引用跳过，这里列出标题 +
+            前 2 个引用来源，便于用户先去解除引用。 */}
+        {bulkNotice.length > 0 && (
+          <div className="mx-2 mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-2 py-1.5 text-[11px] leading-snug text-yellow">
+            <div className="flex items-start gap-1">
+              <span className="flex-1">{t("bulk.skipped", { count: bulkNotice.length })}</span>
+              <button
+                onClick={() => setBulkNotice([])}
+                aria-label={t("bulk.dismiss")}
+                title={t("bulk.dismiss")}
+                className="shrink-0 text-yellow/70 hover:text-yellow"
+              >
+                ✕
+              </button>
+            </div>
+            <ul className="mt-1 space-y-0.5">
+              {bulkNotice.map((it) => (
+                <li
+                  key={it.id}
+                  className="truncate"
+                  title={`${it.id}${it.references?.length ? ` · ${it.references.join(", ")}` : ""}`}
+                >
+                  {it.title}
+                  {it.references?.length
+                    ? ` · ${it.references.slice(0, 2).join(", ")}`
+                    : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {bulkError && (
+          <div className="mx-2 mb-2 flex items-start gap-1 rounded-md border border-red/40 bg-red/10 px-2 py-1.5 text-[11px] text-red">
+            <span className="flex-1">{bulkError}</span>
+            <button
+              onClick={() => setBulkError(null)}
+              aria-label={t("bulk.dismiss")}
+              className="shrink-0 text-red/70 hover:text-red"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* 多选操作条（P1-4）：贴侧栏底部，计数 + 归档/取消归档/删除/取消 */}
+        {selectMode && (
+          <div className="border-t border-line bg-panel px-2.5 py-2">
+            <div className="mb-1.5 flex items-center justify-between text-[11px]">
+              <span className="text-muted">{t("bulk.selected", { count: selected.size })}</span>
+              <button onClick={exitSelect} className="text-faint hover:text-txt">
+                {t("bulk.cancel")}
+              </button>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => void runBulk("archive")}
+                disabled={!selected.size || bulkBusy}
+                className="flex-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted transition-colors hover:text-txt disabled:cursor-default disabled:opacity-40"
+              >
+                {t("bulk.archive")}
+              </button>
+              <button
+                onClick={() => void runBulk("unarchive")}
+                disabled={!selected.size || bulkBusy}
+                className="flex-1 rounded-md border border-line2 px-2 py-1 text-[11px] text-muted transition-colors hover:text-txt disabled:cursor-default disabled:opacity-40"
+              >
+                {t("bulk.unarchive")}
+              </button>
+              <button
+                onClick={() => setBulkDeleteConfirm(true)}
+                disabled={!selected.size || bulkBusy}
+                className="flex-1 rounded-md border border-red/40 px-2 py-1 text-[11px] text-red transition-colors hover:bg-red/10 disabled:cursor-default disabled:opacity-40"
+              >
+                {t("bulk.delete")}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* footer nav */}
         <div className="border-t border-line px-2.5 py-3">
@@ -1066,6 +1459,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             在回看运行期间保持存活。 */}
         <div className={`flex min-w-0 flex-1 ${onWorkspace ? "" : "hidden"}`}>
           <div className={`flex min-w-0 flex-1 flex-col ${g.activeRunId || g.activeScheduleRunId ? "hidden" : ""}`}>
+            {runtimeStale && (
+              <div className="flex items-center gap-2 border-b border-red/40 bg-red/[0.04] px-4 py-2 text-xs">
+                <span className="font-medium text-red">{t("runtimeStale.title")}</span>
+                <span className="text-muted">{t("runtimeStale.hint")}</span>
+                <button
+                  onClick={() => setRuntimeStale(false)}
+                  className="ml-auto shrink-0 rounded border border-line px-2 py-0.5 text-faint hover:text-txt"
+                >
+                  {t("runtimeStale.dismiss")}
+                </button>
+              </div>
+            )}
             {session && (
               <TopBar session={session} agent={agent} running={running} usage={usage} />
             )}
@@ -1137,6 +1542,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             if (pathname !== "/") router.push("/");
             window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: sid }));
           }}
+        />
+      )}
+
+      {/* P1-1 一键归档确认：候选 = Earlier 里 >14 天无活动且未归档的非置顶会话 */}
+      {archiveAllConfirm && (
+        <ConfirmModal
+          title={t("bulk.confirmArchiveTitle")}
+          message={t("bulk.confirmArchiveMessage", { count: archiveCandidates.length })}
+          confirmLabel={t("bulk.confirmArchiveConfirm")}
+          onConfirm={() => void archiveAll()}
+          onCancel={() => setArchiveAllConfirm(false)}
+        />
+      )}
+
+      {/* P1-4 批量删除确认：后端会跳过仍被引用的会话并在侧栏提示 */}
+      {bulkDeleteConfirm && (
+        <ConfirmModal
+          title={t("bulk.confirmDeleteTitle")}
+          message={t("bulk.confirmDeleteMessage", { count: selected.size })}
+          confirmLabel={t("bulk.confirmDeleteConfirm")}
+          onConfirm={() => {
+            setBulkDeleteConfirm(false);
+            void runBulk("delete");
+          }}
+          onCancel={() => setBulkDeleteConfirm(false)}
         />
       )}
 

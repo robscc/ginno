@@ -22,10 +22,12 @@
         "knowledge": "知识与上下文",
         "security": "权限与钩子",
         "data": "用量与数据",
-        "general": "通用"
+        "general": "通用",
+        "diagnostics": "诊断"
       },
       "groupSecurity": "安全",
       "groupSystem": "系统",
+      "diagnosticsBadge": "诊断: {n} 项提醒",
       "items": {
         "modelApi": "模型 API",
         "skills": "技能",

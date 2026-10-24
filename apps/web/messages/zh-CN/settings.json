@@ -29,6 +29,63 @@
       "saveFailed": "保存失败",
       "workingDirLabel": "工作目录",
       "workingDirValue": "~/workspace/‹project›（agent 元数据在 ~/.ginno/projects/）"
+    },
+    "diagnostics": {
+      "title": "诊断",
+      "description": "只读自检：数据完整性、定时任务、运行时与接口契约。不会修改任何数据。",
+      "run": "开始体检",
+      "running": "体检中…",
+      "refresh": "重新体检",
+      "generatedAt": "生成于 {time}",
+      "failedConnect": "体检失败：无法连接运行时",
+      "warnings": "共 {n} 项提醒",
+      "emptySection": "无异常",
+      "sections": {
+        "data": "数据完整性",
+        "tasks": "定时任务",
+        "runtime": "运行时",
+        "contracts": "接口契约"
+      },
+      "taskStats": {
+        "total": "执行 {n}",
+        "ok": "成功 {n}",
+        "failed": "失败 {n}",
+        "caughtUp": "补跑 {n}"
+      },
+      "latestFailure": "最近失败：{task} — {error}",
+      "latestFailureHint": "建议：{hint}",
+      "runtimeStats": {
+        "frozen": "打包运行",
+        "dev": "开发运行",
+        "stale": "运行时已过期",
+        "uptime": "已运行 {s}",
+        "sessions": "已加载会话 {n}"
+      },
+      "missingRoutes": "缺少接口：{routes}",
+      "severity": {
+        "high": "高",
+        "medium": "中",
+        "low": "低",
+        "info": "提示"
+      },
+      "issues": {
+        "data": {
+          "dangling_session_refs": "断链的会话引用",
+          "orphan_assets": "孤儿或失效资产",
+          "stale_errors": "陈旧错误状态",
+          "duplicate_titles": "重复的会话标题",
+          "archived_sessions": "已归档会话"
+        },
+        "tasks": {
+          "failure_rate": "定时任务失败率偏高"
+        },
+        "runtime": {
+          "stale_bundle": "运行时二进制在启动后被替换"
+        },
+        "contract": {
+          "missing_routes": "缺少关键接口"
+        }
+      }
     }
   }
 }

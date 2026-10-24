@@ -22,6 +22,7 @@ import { SessionFilesSettings } from "./SessionFilesSettings";
 import { UsageSettings } from "./UsageSettings";
 import { ToolLabelsSettings } from "./ToolLabelsSettings";
 import { SynthesisQualitySettings } from "./SynthesisQualitySettings";
+import { DiagnosticsSettings } from "./DiagnosticsSettings";
 
 // 按 (group, sub) 渲染对应面板；sub 缺省取分组默认 tab，非法 sub 走 unknownTab 兜底。
 function TabPanel({ tab }: { tab: string }) {
@@ -81,6 +82,11 @@ export function SettingsView({ group, sub }: { group: string; sub?: string }) {
             <div id="tool-labels" className="border-t border-line">
               <ToolLabelsSettings />
             </div>
+          </div>
+        ) : g.id === "diagnostics" ? (
+          // P4-1 内置体检：单页分组；id 供侧栏角标滚动定位（P4-2）。
+          <div id="diagnostics" className="scroll-mt-4">
+            <DiagnosticsSettings />
           </div>
         ) : !isValidSub(g, sub ?? defaultTab(g)) ? (
           <div className="px-8 py-10 text-sm text-faint">{t("unknownTab", { tab: sub ?? group })}</div>

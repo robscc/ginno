@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import { ChevronLeft, ChevronRight, Download, FileDown, Loader2, RefreshCw, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, FileDown, FileX2, Loader2, RefreshCw, X } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { isDesktop } from "@/lib/desktop";
@@ -10,6 +10,30 @@ import type { FilePreview } from "@/lib/types";
 import { Markdown } from "./Markdown";
 
 const PAGE = 100;
+
+/** P3-2: fired when a preview/download discovers the file is gone. The
+ *  Artifacts panel listens and marks that row 「已失效」 without a red error. */
+export const FILE_MISSING_EVENT = "ginno:file-missing";
+
+function notifyFileMissing(fileId: string) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(FILE_MISSING_EVENT, { detail: { fileId } }));
+}
+
+/** Backend 404 bodies for a missing file: `file not found: <id>` (registry
+ *  entry gone) or `File has been moved or deleted` (path gone). Anything else
+ *  is a real preview failure and keeps the red error. */
+function isMissingPreviewError(msg?: string | null): boolean {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return (
+    m.includes("file not found") ||
+    m.includes("moved or deleted") ||
+    m.includes("no such file") ||
+    m.includes("文件不存在") ||
+    m.includes("找不到该文件")
+  );
+}
 
 /**
  * Full-width modal preview for attached/produced files (docs §7.2).
@@ -27,6 +51,8 @@ export function SheetViewer() {
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // P3-2: file vanished on disk → neutral placeholder instead of a red error.
+  const [missing, setMissing] = useState(false);
   const [busy, setBusy] = useState<"raw" | "csv" | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const noteTimer = useRef<number | null>(null);
@@ -69,14 +95,25 @@ export function SheetViewer() {
     if (file.kind === "image") {
       setErr(null);
       setPv(null);
+      setMissing(false);
       return;
     }
     setLoading(true);
     setErr(null);
     try {
       const r = await api.getFilePreview(file.id, { sheet, offset, limit: PAGE });
-      if (!r.ok) setErr(r.error || t("sheet.previewFailed"));
-      else setPv(r);
+      if (!r.ok) {
+        if (isMissingPreviewError(r.error)) {
+          setPv(null);
+          setMissing(true);
+          notifyFileMissing(file.id);
+        } else {
+          setErr(r.error || t("sheet.previewFailed"));
+        }
+      } else {
+        setPv(r);
+        setMissing(false);
+      }
     } catch {
       setErr(t("sheet.runtimeUnreachable"));
     } finally {
@@ -95,6 +132,7 @@ export function SheetViewer() {
   useEffect(() => {
     setOffset(0);
     setNote(null);
+    setMissing(false);
   }, [file?.id, sheet]);
 
   if (!file) return null;
@@ -215,17 +253,28 @@ export function SheetViewer() {
 
         {/* body */}
         <div className="min-h-0 flex-1 overflow-auto">
-          {err && <div className="px-4 py-6 text-center text-sm text-red-400">{err}</div>}
-          {!err && !pv && !isImage && (
+          {missing && (
+            <div className="flex min-h-full flex-col items-center justify-center gap-2 px-5 py-10 text-center">
+              <FileX2 className="h-9 w-9 text-faint" />
+              <div className="text-sm text-muted">{t("sheet.fileDeleted")}</div>
+              <div className="max-w-full truncate text-xs text-faint">{file.name}</div>
+            </div>
+          )}
+          {!missing && err && <div className="px-4 py-6 text-center text-sm text-red-400">{err}</div>}
+          {!missing && !err && !pv && !isImage && (
             <div className="px-4 py-6 text-center text-sm text-faint">{t("sheet.loading")}</div>
           )}
-          {isImage && (
+          {isImage && !missing && (
             <div className="flex min-h-full items-center justify-center px-5 py-4">
               {/* mtime busts the cache when a same-named image is regenerated */}
               <img
                 src={`${api.fileDownloadUrl(file.id)}?t=${file.mtime ?? 0}`}
                 alt={file.name}
                 className="max-h-[75vh] max-w-full rounded-lg object-contain"
+                onError={() => {
+                  setMissing(true);
+                  notifyFileMissing(file.id);
+                }}
               />
             </div>
           )}

@@ -242,3 +242,74 @@ def test_dangling_team_and_run_refs_are_healed(isolated_home, monkeypatch):
 
     row = schedule_store.load_day(day)[0]
     assert row["session_id"] is None and row["session_missing"] is True
+
+
+def test_archive_marks_old_near_empty_sessions(isolated_home, monkeypatch):
+    """P1-1: inactivity + almost no messages → archived; a real conversation,
+    a pinned session or a referenced one stays visible."""
+    import json as _json
+
+    from ginno_runtime import paths as paths_mod
+
+    old = time.time() - 20 * DAY
+    _write_index(
+        "default",
+        [
+            _row("qa_old", created=old, updated=old),
+            _row("qa_archived", created=old, updated=old),
+            _row("chat_old", created=old, updated=old),
+            _row("pinned_old", created=old, updated=old, pinned=True),
+            _row("recent", created=time.time()),
+        ],
+    )
+    # a scheduled run references qa_old → must NOT be archived
+    runs_dir = paths_mod.schedule_runs_dir()
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "runs-2026-10-01.jsonl").write_text(
+        _json.dumps({"run_id": "sr-1", "session_id": "qa_old"}) + "\n", encoding="utf-8"
+    )
+    counts = {"qa_old": 1, "qa_archived": 1, "chat_old": 9, "pinned_old": 1, "recent": 1}
+    monkeypatch.setattr(maintenance, "_message_count", lambda slug, sid: counts.get(sid, 0))
+    monkeypatch.setattr(maintenance, "_has_messages", lambda slug, sid: True)
+
+    maintenance.run_startup_maintenance()
+    rows = {m["id"]: m for m in _session_meta_list("default")}
+    assert rows["qa_old"].get("archived") is not True   # referenced by a run
+    assert rows["qa_archived"].get("archived") is True  # one-shot Q&A, long idle
+    assert rows["qa_archived"].get("archived_auto") is True
+    assert rows["chat_old"].get("archived") is False    # real conversation
+    assert rows["pinned_old"].get("archived") is None   # pinned: untouched
+    assert rows["recent"].get("archived") is None       # too fresh to judge
+
+
+def test_last_success_backfill(isolated_home, monkeypatch):
+    """P0-1: existing history seeds ``last_success`` so the card doesn't claim
+    "never succeeded" for a task that actually ran fine yesterday."""
+    from ginno_runtime import schedule_store
+
+    schedule_store.save_config(
+        {
+            "enabled": True,
+            "tasks": [
+                {"id": "t1", "name": "A", "target": {"type": "prompt"}, "schedule": {}},
+                {"id": "t2", "name": "B", "target": {"type": "prompt"}, "schedule": {}},
+            ],
+        }
+    )
+    day = time.strftime("%Y-%m-%d")
+    rows = [
+        {"run_id": "r-old", "task_id": "t1", "status": "ok", "started_at": 100, "finished_at": 200},
+        {"run_id": "r-new", "task_id": "t1", "status": "ok", "started_at": 300, "finished_at": 400},
+        {"run_id": "r-bad", "task_id": "t2", "status": "error", "started_at": 500, "finished_at": 600},
+    ]
+    d = paths.schedule_runs_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"runs-{day}.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+    )
+    schedule_store.reset_cache()
+
+    maintenance._backfill_last_success()
+    tasks = {t["id"]: t for t in schedule_store.list_tasks()}
+    assert tasks["t1"]["last_success"] == {"run_id": "r-new", "finished": 400}
+    assert "last_success" not in tasks["t2"]  # only failures: still unseeded

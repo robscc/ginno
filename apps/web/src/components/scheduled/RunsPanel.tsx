@@ -24,6 +24,15 @@ const PAGE_SIZE = 50;
 // 范围过滤在客户端做（API 的 date 是单日），最多向后取 6 页兜底。
 const MAX_PAGES = 6;
 
+/** 会话引用已失效（DATA-06）：record 保留（含摘要），但回放会落空 404。 */
+function sessionDead(r: ScheduleRun): boolean {
+  return (
+    r.target_type === "prompt" &&
+    (r.session_missing === true || !r.session_id) &&
+    !!r.summary
+  );
+}
+
 export function RunsPanel({
   cfg,
   refreshKey,
@@ -119,6 +128,10 @@ export function RunsPanel({
   };
 
   const openRun = (r: ScheduleRun) => {
+    if (sessionDead(r)) {
+      markOne(r); // 会话已删除：只消红点，不进死回放
+      return;
+    }
     if (!runClickable(r)) {
       markOne(r); // missed/skipped：无回放，点击只消红点
       return;
@@ -131,6 +144,19 @@ export function RunsPanel({
       // 影子会话回放（ScheduleRunView）在 main 顶层挂载，不离开当前路由。
       g.openScheduleRun(r);
     }
+  };
+
+  // P0-1：状态 chip 的颜色分级——红色=需要用户动手（运行时陈旧/密钥/网络），
+  // 黄色=供应商侧或正在补跑（内容审核、限流、caught_up），不误报「你搞坏了」。
+  const chipMeta = (r: ScheduleRun) => {
+    if (r.status === "caught_up") {
+      return { label: tr("status.caughtUp"), color: "var(--st-missed)", glyph: "◷", hollow: false };
+    }
+    const meta = statusMeta(r.status);
+    if (r.status === "error" && (r.error_kind === "content_policy" || r.error_kind === "rate_limit")) {
+      return { ...meta, color: "var(--st-missed)" };
+    }
+    return meta;
   };
 
   return (
@@ -235,7 +261,7 @@ export function RunsPanel({
                 <th className="w-[108px] px-3 py-2 font-medium">{tr("runs.colTime")}</th>
                 <th className="w-[112px] px-3 py-2 font-medium">{tr("runs.colTask")}</th>
                 <th className="w-10 px-3 py-2 font-medium">{tr("runs.colTarget")}</th>
-                <th className="w-12 px-3 py-2 font-medium">{tr("runs.colTrigger")}</th>
+                <th className="w-[88px] px-3 py-2 font-medium">{tr("runs.colTrigger")}</th>
                 <th className="w-[128px] px-3 py-2 font-medium">{tr("runs.colStatus")}</th>
                 <th className="w-16 px-3 py-2 font-medium">{tr("runs.colDuration")}</th>
                 <th className="px-3 py-2 font-medium">{tr("runs.colSummary")}</th>
@@ -243,8 +269,9 @@ export function RunsPanel({
             </thead>
             <tbody>
               {pageRows.map((r) => {
-                const meta = statusMeta(r.status);
-                const clickable = runClickable(r);
+                const meta = chipMeta(r);
+                const dead = sessionDead(r);
+                const clickable = runClickable(r) && !dead;
                 const dur =
                   r.started_at && r.finished_at ? fmtDuration(r.finished_at - r.started_at) : r.started_at ? "…" : "—";
                 return (
@@ -254,7 +281,15 @@ export function RunsPanel({
                     className={`group border-b border-line/60 last:border-0 ${
                       clickable ? "cursor-pointer transition-colors hover:bg-card2/60" : ""
                     }`}
-                    title={clickable ? tr("runs.rowClick") : r.status === "missed" ? tr("runs.rowMissed") : undefined}
+                    title={
+                      clickable
+                        ? tr("runs.rowClick")
+                        : dead
+                          ? tr("runs.sessionDeleted")
+                          : r.status === "missed"
+                            ? tr("runs.rowMissed")
+                            : undefined
+                    }
                   >
                     <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-muted tabular-nums">
                       {/* 未读点（schedule-unseen）：颜色跟状态走——红=错误、
@@ -272,7 +307,19 @@ export function RunsPanel({
                       <div className="truncate">{r.task_name}</div>
                     </td>
                     <td className="px-3 py-2">{r.target_type === "workflow" ? "⚡" : "💬"}</td>
-                    <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-faint">{r.trigger === "manual" ? tr("trigger.manual") : r.trigger === "catch_up" ? tr("trigger.catchUp") : tr("trigger.scheduled")}</td>
+                    <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-faint">
+                      {r.trigger === "manual" ? (
+                        tr("trigger.manual")
+                      ) : r.trigger === "catch_up" ? (
+                        // 补跑是「定时」点的补救：保留原触发语义 + 后缀标注。
+                        <span title={tr("trigger.catchUp")}>
+                          {tr("trigger.scheduled")}
+                          <span className="text-yellow"> · {tr("trigger.catchUp")}</span>
+                        </span>
+                      ) : (
+                        tr("trigger.scheduled")
+                      )}
+                    </td>
                     <td className="overflow-hidden whitespace-nowrap px-3 py-2">
                       <span
                         className="inline-flex items-center gap-1 rounded-full border px-1.5 py-px"
@@ -281,7 +328,11 @@ export function RunsPanel({
                           color: meta.color,
                           ...(meta.hollow ? { borderStyle: "dashed" as const } : {}),
                         }}
-                        title={r.status === "missed" ? tr("runs.rowMissed") : r.error || undefined}
+                        title={
+                          r.status === "missed"
+                            ? tr("runs.rowMissed")
+                            : r.error_hint || r.error || undefined
+                        }
                       >
                         {meta.glyph} {meta.label}
                       </span>
@@ -289,12 +340,30 @@ export function RunsPanel({
                     <td className="whitespace-nowrap px-3 py-2 text-faint tabular-nums">{dur}</td>
                     <td className="overflow-hidden px-3 py-2 text-muted">
                       <div className="flex items-center gap-1.5">
-                        <div className="min-w-0 flex-1 truncate" title={r.summary ?? undefined}>
-                          {r.summary ?? (r.error ? <span className="text-red">{r.error}</span> : "—")}
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate" title={r.summary ?? undefined}>
+                            {r.summary ?? (r.error ? <span className="text-red">{r.error}</span> : "—")}
+                          </div>
+                          {/* P0-1：error_hint 是人话原因（后端按 locale 出文案），
+                              缩一级放在错误摘要下方，原始 error 仍留在 chip 的 title。 */}
+                          {r.error_hint && (
+                            <div className="truncate text-[10px] text-faint" title={r.error_hint}>
+                              {r.error_hint}
+                            </div>
+                          )}
                         </div>
                         {/* 显式回放入口：hover 才出现，让「整行可点」可被发现 */}
                         {clickable && (
                           <span className="shrink-0 rounded-md border border-violet/40 px-1.5 py-px text-[10px] text-violet opacity-0 transition-opacity group-hover:opacity-100">
+                            {tr("runs.open")}
+                          </span>
+                        )}
+                        {/* 会话已删除：入口保留但禁用，悬停说明原因，不打开死会话 */}
+                        {dead && (
+                          <span
+                            className="shrink-0 cursor-not-allowed rounded-md border border-line px-1.5 py-px text-[10px] text-faint"
+                            title={tr("runs.sessionDeleted")}
+                          >
                             {tr("runs.open")}
                           </span>
                         )}

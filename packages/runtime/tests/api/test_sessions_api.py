@@ -380,3 +380,65 @@ def test_make_session_model_getter_follows_and_memos(isolated_home):
     assert get() is m2  # 跟随原地热切
     _SESSIONS.pop("s1", None)
     assert get() is m2  # 清表窗口回落 memo，绝不返回 None
+
+
+# ---- P1-3 search / P1-4 bulk / P2-1 delete guard -------------------------- #
+
+
+def test_search_sessions_filters_and_paginates(client, patch_build_model):
+    patch_build_model(script(text="ok"))
+    for title in ("Trending report", "trending notes", "Unrelated"):
+        _post_session(client, title=title)
+
+    r = client.get("/api/sessions/search", params={"q": "trending"})
+    data = r.json()
+    assert r.status_code == 200 and data["ok"]
+    assert data["total"] == 2
+    assert all("trending" in s["title"].lower() for s in data["sessions"])
+
+    page = client.get("/api/sessions/search", params={"q": "trending", "limit": 1, "offset": 1}).json()
+    assert page["total"] == 2 and len(page["sessions"]) == 1
+
+
+def test_bulk_archive_and_unarchive(client, patch_build_model):
+    patch_build_model(script(text="ok"))
+    a = _post_session(client).json()["id"]
+    b = _post_session(client).json()["id"]
+
+    r = client.post("/api/sessions/bulk", json={"action": "archive", "ids": [a, b]}).json()
+    assert set(r["done"]) == {a, b} and r["skipped"] == []
+    index = {m["id"]: m for m in json.loads(paths.session_index_path("default").read_text())}
+    assert index[a]["archived"] is True and index[b]["archived"] is True
+
+    r = client.post("/api/sessions/bulk", json={"action": "unarchive", "ids": [a]}).json()
+    assert r["done"] == [a]
+    index = {m["id"]: m for m in json.loads(paths.session_index_path("default").read_text())}
+    assert index[a]["archived"] is False
+
+
+def test_bulk_delete_skips_referenced_sessions(client, patch_build_model):
+    patch_build_model(script(text="ok"))
+    from ginno_runtime.teams import store as team_store
+
+    referenced = _post_session(client).json()["id"]
+    free = _post_session(client).json()["id"]
+    team_store.create_team("default", "T", referenced)
+
+    r = client.post("/api/sessions/bulk", json={"action": "delete", "ids": [referenced, free]}).json()
+    assert r["done"] == [free]
+    assert r["skipped"][0]["id"] == referenced
+    assert r["skipped"][0]["reason"] == "referenced"
+    assert r["skipped"][0]["references"]
+
+    # The single-delete endpoint refuses too (409) unless forced.
+    d = client.delete(f"/api/sessions/{referenced}")
+    assert d.status_code == 409
+    assert d.json()["references"]
+    assert client.delete(f"/api/sessions/{referenced}?force=1").json()["ok"] is True
+
+
+def test_diagnostics_reports_sections(client):
+    data = client.get("/api/diagnostics").json()
+    assert data["ok"] is True
+    assert set(data["sections"]) == {"data", "tasks", "runtime", "contracts"}
+    assert data["sections"]["contracts"]["missing_routes"] == []

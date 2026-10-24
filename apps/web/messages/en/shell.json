@@ -1,5 +1,10 @@
 {
   "shell": {
+    "runtimeStale": {
+      "title": "Runtime updated",
+      "hint": "A newer runtime build was installed. Quit and reopen Ginno to load it.",
+      "dismiss": "Later"
+    },
     "nav": {
       "newSession": "New session",
       "newSessionHint": "Back to the landing home; the session is created on first send",
@@ -17,11 +22,19 @@
       "scheduleError": "You have unseen scheduled-task results",
       "scheduleOff": "Scheduled tasks globally disabled"
     },
+    "view": {
+      "time": "Time",
+      "project": "Projects"
+    },
     "groups": {
       "today": "Today",
       "yesterday": "Yesterday",
+      "last7": "Last 7 days",
       "earlier": "Earlier",
-      "pinned": "Pinned"
+      "pinned": "Pinned",
+      "archived": "Archived ({count})",
+      "archivedHint": "Expand/collapse archived sessions",
+      "ungrouped": "Ungrouped"
     },
     "filter": {
       "clear": "Clear filter",
@@ -95,10 +108,34 @@
       "browseTitle": "Browse for a folder…",
       "errBrowse": "Could not open the system folder picker"
     },
+    "bulk": {
+      "select": "Select",
+      "selectHint": "Select multiple sessions for batch actions",
+      "selected": "{count} selected",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "delete": "Delete",
+      "cancel": "Cancel",
+      "dismiss": "Dismiss",
+      "failed": "Batch action failed. Please try again.",
+      "archiveAll": "Archive older sessions",
+      "archiveAllHint": "Archive {count} unpinned sessions idle for over 14 days",
+      "archiveAllEmpty": "Nothing to archive",
+      "confirmArchiveTitle": "Archive older sessions",
+      "confirmArchiveMessage": "Archive {count} unpinned sessions with no activity for over 14 days? They move to the folded \"Archived\" section and can be restored any time.",
+      "confirmArchiveConfirm": "Archive",
+      "confirmDeleteTitle": "Delete selected sessions",
+      "confirmDeleteMessage": "Delete the {count} selected sessions? Their conversation history will be deleted and cannot be recovered. Sessions still referenced by teams or scheduled runs are skipped.",
+      "confirmDeleteConfirm": "Delete",
+      "skipped": "{count} session(s) were not deleted because they are still referenced:"
+    },
     "search": {
       "dialogLabel": "Search sessions",
       "placeholder": "Search session titles, or type an Agent name…",
       "empty": "No matching sessions",
+      "loading": "Searching…",
+      "total": "{total} results",
+      "fallback": "Local match",
       "footer": "↑↓ select · Enter open · Esc close"
     },
     "topbar": {

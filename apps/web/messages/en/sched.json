@@ -6,7 +6,8 @@
       "running": "Running",
       "error": "Error",
       "skipped": "Skipped (overlap)",
-      "missed": "Missed"
+      "missed": "Missed",
+      "caughtUp": "Catching up"
     },
     "dayPrefix": {
       "today": "Today",
@@ -100,6 +101,7 @@
       "colSummary": "Summary",
       "rowClick": "Click to view the run",
       "rowMissed": "Missed (machine asleep or app not running)",
+      "sessionDeleted": "Session deleted",
       "open": "Open ↗",
       "prev": "Prev",
       "next": "Next",
@@ -128,6 +130,9 @@
       "workflow": "workflow: {name}",
       "workflowDeleted": "deleted",
       "last": "Last: {value}",
+      "lastFailed": "Last failed",
+      "lastSuccess": "Last success: {value}",
+      "neverSucceeded": "Never succeeded",
       "neverRun": "never run",
       "stateOnceDone": "Paused · one-shot task finished",
       "stateWfMissing": "Paused · recipe deleted, edit to re-pick",

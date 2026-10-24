@@ -1118,7 +1118,7 @@ async def _stream_graph(
         if command is None:
             # A new attempt supersedes any persisted last_error (empty dict =
             # cleared; _session_meta_patch skips None values).
-            _session_meta_patch(slug, session_id, {"last_error": {}})
+            _session_meta_patch(slug, session_id, {"last_error": {}, "archived": False})
             _aid = (config.get("configurable") or {}).get("agent_id")
             _ag = agents_reg.get_agent(_aid) if _aid else None
             _log.info(

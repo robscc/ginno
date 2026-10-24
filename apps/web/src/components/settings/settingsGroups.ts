@@ -1,4 +1,5 @@
 import {
+  Activity,
   BarChart3,
   BookOpen,
   Cpu,
@@ -17,7 +18,8 @@ export type SettingsGroupId =
   | "knowledge"
   | "security"
   | "data"
-  | "general";
+  | "general"
+  | "diagnostics";
 
 export type SettingsTabKey =
   | "modelApi"
@@ -104,6 +106,14 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     labelKey: "general",
     icon: SlidersHorizontal,
     color: "#9ca3af",
+    tabs: [],
+  },
+  {
+    // P4-1 内置体检：单页分组，报告在页面内按需生成。
+    id: "diagnostics",
+    labelKey: "diagnostics",
+    icon: Activity,
+    color: "#fbbf24",
     tabs: [],
   },
 ];

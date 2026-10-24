@@ -61,7 +61,7 @@ def _default_config() -> dict:
         # SCHED-01 (2026-10-24): a missed point inside this window is run once
         # on the next tick instead of only being recorded.
         "catch_up_enabled": True,
-        "catch_up_window_minutes": 360,
+        "catch_up_window_minutes": 720,
     }
 
 
@@ -79,9 +79,9 @@ def load_config() -> dict:
     cfg["keep_awake"] = bool(data.get("keep_awake", False))
     cfg["catch_up_enabled"] = bool(data.get("catch_up_enabled", True))
     try:
-        cfg["catch_up_window_minutes"] = max(1, int(data.get("catch_up_window_minutes") or 360))
+        cfg["catch_up_window_minutes"] = max(1, int(data.get("catch_up_window_minutes") or 720))
     except (TypeError, ValueError):
-        cfg["catch_up_window_minutes"] = 360
+        cfg["catch_up_window_minutes"] = 720
     tasks = data.get("tasks")
     cfg["tasks"] = [t for t in tasks if isinstance(t, dict)] if isinstance(tasks, list) else []
     return cfg

@@ -8,7 +8,7 @@
   持久化回 schedules.json。
 * 触发：``now >= next_run_at`` 且延迟 ≤ GRACE(60s) 则触发；超过 GRACE 的每个
   错过计划点记一条 missed 后跳到未来；最近一个错过点若在补跑窗口内
-  （catch_up_window_minutes，默认 6h）则真正补跑一次（§10 决议 1，2026-10-24 修订）。
+  （catch_up_window_minutes，默认 12h）则真正补跑一次（§10 决议 1，2026-10-24 修订）。
 * 双目标分流：prompt → 影子会话 + headless ``_run_stream``（协议抄
   ``_run_goal_turn``）；workflow → ``wf_store.create_run(origin="schedule")`` +
   ``_spawn_run_task(_run_workflow_bg(...))``（即 POST /api/workflow_runs 的
@@ -41,6 +41,7 @@ from . import usage as usage_mod
 from . import usage_store
 from . import workflows as wf_store
 from .i18n import _
+from .lang import t
 from .lang import t
 from .schedule_store import MIN_INTERVAL_MIN
 
@@ -389,6 +390,8 @@ def _run_row(task: dict, run_id: str, trigger: str, scheduled_at: float, started
         "workflow_run_id": None,
         "summary": None,
         "error": None,
+        "error_kind": None,
+        "error_hint": None,
         "input_tokens": None,
         "output_tokens": None,
     }
@@ -478,13 +481,25 @@ def _consume_missed(task: dict, point: float) -> tuple[float | None, float | Non
         cfg = {}
     if points and cfg.get("catch_up_enabled", True):
         try:
-            window = float(cfg.get("catch_up_window_minutes") or 360) * 60
+            window = float(cfg.get("catch_up_window_minutes") or 720) * 60
         except (TypeError, ValueError):
-            window = 6 * 3600
+            window = 12 * 3600
         if now - points[-1] <= window:
             catch = points.pop()
     for p in points:
         _record_missed(task, p)
+    if catch is not None:
+        # Visible in the run history instead of silently vanishing: the point
+        # was missed, but it is being executed right now.
+        _record_missed(
+            task,
+            catch,
+            status="caught_up",
+            summary=t(
+                "Missed while the app was off — catching up now",
+                "错过（应用未运行）— 正在自动补跑",
+            ),
+        )
     return future, catch
 
 
@@ -522,10 +537,13 @@ async def _finish_run(task: dict, row: dict, final: dict) -> None:
         if ok
         else _("schedule.run_failed", error=final.get("error") or "unknown error")
     )
+    err_kind, err_hint = (None, None) if ok else classify_run_error(final.get("error") or "")
     row2 = {
         **row,
         "status": "ok" if ok else "error",
         "error": None if ok else (final.get("error") or "failed"),
+        "error_kind": err_kind,
+        "error_hint": err_hint,
         "finished_at": now,
         # 摘要永远不缺席：先落纯截断兜底，LLM 摘要成功后以同 run_id 末行替位（§10 决议 6）
         "summary": (text[:SUMMARY_MAX_CHARS] if text else status_text)[:SUMMARY_MAX_CHARS],
@@ -533,12 +551,17 @@ async def _finish_run(task: dict, row: dict, final: dict) -> None:
         "output_tokens": final.get("output_tokens"),
     }
     store.record_run(row2)
-    store.patch_task(task["id"], {
+    patch: dict[str, Any] = {
         "last_run": {
             "run_id": run_id, "status": row2["status"],
             "started": row["started_at"], "finished": now,
         },
-    })
+    }
+    if ok:
+        # P0-1: "上次成功" is what the user cares about — last_run flips to a
+        # failure and hides the last good day otherwise.
+        patch["last_success"] = {"run_id": run_id, "finished": now}
+    store.patch_task(task["id"], patch)
     schedule_events().emit("run_finished", {"run": row2})
     schedule_events().emit("task_updated", {"task": store.get_task(task["id"])})
 
@@ -951,13 +974,73 @@ async def _llm_summary(task: dict, row: dict, text: str) -> None:
 # --------------------------------------------------------------------------- #
 # 调度循环
 # --------------------------------------------------------------------------- #
-def _record_missed(task: dict, point: float) -> None:
+def _record_missed(
+    task: dict, point: float, *, status: str = "missed", summary: str | None = None
+) -> None:
     row = _run_row(task, store.new_run_id(), "schedule", point, point)
-    row["status"] = "missed"
+    row["status"] = status
     row["finished_at"] = point
-    row["summary"] = _("schedule.missed")
+    row["summary"] = summary or _("schedule.missed")
     store.record_run(row)
-    schedule_events().emit("missed", {"run": row, "task_id": task.get("id")})
+    schedule_events().emit("missed" if status == "missed" else "run_finished", {"run": row, "task_id": task.get("id")})
+
+
+# Human-readable failure classes shown on the run row (P0-1). The raw
+# ``error`` string stays for debugging; ``error_kind``/``error_hint`` let the
+# UI explain "why did yesterday not run" without parsing provider tracebacks.
+_ERROR_KINDS: list[tuple[str, tuple[str, ...], str, str]] = [
+    (
+        "runtime_stale",
+        ("decompress", "zlib", "incorrect header check", "unknown compression method"),
+        "Runtime was replaced while running",
+        "运行时在运行中被替换（重建 App 后未重启），重启 Ginno 即可恢复",
+    ),
+    (
+        "auth",
+        ("401", "AuthenticationError", "Invalid API-key", "Unauthorized", "invalid_api_key"),
+        "Provider rejected the API key",
+        "模型密钥无效或被拒：检查 设置 → 模型 API",
+    ),
+    (
+        "rate_limit",
+        ("429", "rate limit", "RateLimit"),
+        "Provider rate limit",
+        "供应商限流，稍后会自动重试下一次计划",
+    ),
+    (
+        "content_policy",
+        ("data_inspection_failed", "inappropriate content", "内容审核"),
+        "Blocked by provider content policy",
+        "供应商内容审核拦截：可换模型或调整任务提示词",
+    ),
+    (
+        "stall",
+        ("stall", "no chunk"),
+        "Model stopped responding",
+        "模型长时间无响应（流式超时）",
+    ),
+    (
+        "interrupted",
+        ("interrupted",),
+        "Run was interrupted",
+        "运行被中断（手动停止或应用退出）",
+    ),
+    (
+        "network",
+        ("ConnectError", "Connection", "timed out", "Timeout", "getaddrinfo"),
+        "Network error",
+        "网络异常：检查代理/网络后手动重跑",
+    ),
+]
+
+
+def classify_run_error(message: str) -> tuple[str, str]:
+    """``error`` string → ``(kind, human-readable hint)``."""
+    text = str(message or "")
+    for kind, needles, en_hint, zh_hint in _ERROR_KINDS:
+        if any(n.lower() in text.lower() for n in needles):
+            return kind, t(en_hint, zh_hint)
+    return "unknown", t("Run failed: check the log for details", "运行失败：详见日志")
 
 
 async def _tick() -> None:

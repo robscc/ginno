@@ -47,6 +47,13 @@ async def lifespan(app: FastAPI):
         run_startup_maintenance()
     except Exception:  # noqa: BLE001 — 启动绝不因清理失败而中断
         _log.exception("startup_maintenance_failed (continuing)")
+    # P4-2 启动自检：轻量（不读 checkpoint、不发 HTTP），结果经 /api/health 暴露。
+    try:
+        from . import diagnostics
+
+        diagnostics.startup_check()
+    except Exception:  # noqa: BLE001
+        _log.exception("startup_check_failed (continuing)")
     # 委托子会话启动对账：上个进程的后台委托随重启消亡，running 态存量
     # 一律改判 error，避免侧栏出现永远转圈的委托行（2026-10-05）。
     try:
@@ -432,6 +439,7 @@ if WEB_OUT is not None and (WEB_OUT / "_next").exists():
 # ---- API routers (per-domain modules under ginno_runtime/api/) ------------
 # Included before the catch-all web route at the bottom of this module.
 from .api import code as _code_api  # noqa: E402
+from .api import diagnostics as _diagnostics_api  # noqa: E402
 from .api import badge as _badge_api  # noqa: E402
 from .api import code_fsops as _code_fsops_api  # noqa: E402
 from .api import config as _config_api  # noqa: E402
@@ -451,6 +459,7 @@ from .api import workflows as _workflows_api  # noqa: E402
 from .mods import api as _mods_api  # noqa: E402
 
 app.include_router(_code_api.router)
+app.include_router(_diagnostics_api.router)
 app.include_router(_badge_api.router)
 app.include_router(_connectors_api.router)
 app.include_router(_code_fsops_api.router)
@@ -472,7 +481,14 @@ app.include_router(_workflows_api.router)
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"ok": True, "version": "0.1.0"}
+    from . import diagnostics, runtime_watch
+
+    return {
+        "ok": True,
+        "version": "0.1.0",
+        **runtime_watch.status(),
+        **diagnostics.startup_summary(),
+    }
 
 
 @app.post("/api/web/test-search")

@@ -742,6 +742,45 @@ async def list_sessions(project_slug: str | None = None) -> list[dict]:
     ]
 
 
+@router.get("/api/sessions/search")
+async def search_sessions(
+    q: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    project_slug: str | None = None,
+) -> dict:
+    """Server-side session search (P1-3).
+
+    The client used to filter all 179+ rows in memory; with pagination the
+    sidebar can stay responsive as history grows. Matches title (case
+    insensitive) and exact/partial id. Archived sessions are searchable —
+    the whole point of archiving is that they remain findable.
+    """
+    slug = project_slug or "default"
+    rows = [
+        {**m, "unread": _session_is_unread(m)} for m in _session_meta_list(slug)
+    ]
+    needle = (q or "").strip().lower()
+    if needle:
+        rows = [
+            r
+            for r in rows
+            if needle in str(r.get("title") or "").lower()
+            or needle in str(r.get("id") or "").lower()
+        ]
+    rows.sort(key=lambda r: r.get("updated") or 0, reverse=True)
+    total = len(rows)
+    limit = max(1, min(int(limit or 20), 100))
+    offset = max(0, int(offset or 0))
+    return {
+        "ok": True,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "sessions": rows[offset : offset + limit],
+    }
+
+
 @router.get("/api/sessions/{session_id}")
 async def get_session(session_id: str) -> dict:
     m = _resolve_session_meta(session_id)
@@ -909,7 +948,9 @@ async def stop_delegation(delegation_id: str) -> dict:
 
 
 @router.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str, cascade: bool = False) -> dict:
+async def delete_session(
+    session_id: str, cascade: bool = False, force: bool = False
+) -> dict:
     """Delete a session: its index entry, on-disk checkpoint history, and any
     in-memory graph cache. Returns ok=True even if the id was already gone.
 
@@ -924,6 +965,25 @@ async def delete_session(session_id: str, cascade: bool = False) -> dict:
     is the *file* `sessions/<session_id>.json`; the preserved dir is
     `sessions/<session_id>/` — never glob `<session_id>*` here.
     """
+    # P2-1 reference guard: deleting a session a team or a scheduled run
+    # points at silently breaks those features. Refuse unless the caller
+    # explicitly forces it (bulk delete reports the skipped ids instead).
+    if not force:
+        try:
+            from ..maintenance import session_reference_map
+
+            refs = session_reference_map().get(session_id) or []
+        except Exception:  # noqa: BLE001 — a broken store must not block deletion
+            refs = []
+        if refs:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "ok": False,
+                    "error": "session is referenced by other records",
+                    "references": refs[:8],
+                },
+            )
     s = _SESSIONS.pop(session_id, None)
     slug = s["project_slug"] if s else None
     # Settle a live subagent BEFORE its meta disappears (major-5): once the
@@ -993,6 +1053,64 @@ async def delete_session(session_id: str, cascade: bool = False) -> dict:
     except Exception:
         _log.exception("vibe_island_session_end_failed session=%s", session_id)
     return {"ok": True, "removed": removed, "files_dir": files_dir}
+
+
+class BulkSessionsRequest(BaseModel):
+    action: str  # "archive" | "unarchive" | "delete"
+    ids: list[str]
+
+
+@router.post("/api/sessions/bulk")
+async def bulk_sessions(req: BulkSessionsRequest) -> dict:
+    """Batch archive/unarchive/delete from the sidebar multi-select (P1-4).
+
+    Delete skips (and reports) any session another record points at — the
+    same guard as the single delete, so bulk cleanup can never create the
+    dangling references DATA-06 just healed.
+    """
+    action = (req.action or "").strip()
+    if action not in ("archive", "unarchive", "delete"):
+        raise HTTPException(
+            status_code=400, detail={"ok": False, "error": f"unknown action: {action}"}
+        )
+    ids = [str(s) for s in (req.ids or []) if str(s or "").strip()]
+    refs_map: dict[str, list[str]] = {}
+    if action == "delete":
+        try:
+            from ..maintenance import session_reference_map
+
+            refs_map = session_reference_map()
+        except Exception:  # noqa: BLE001
+            refs_map = {}
+    done: list[str] = []
+    skipped: list[dict] = []
+    for sid in ids:
+        slug = _session_slug(sid)
+        if not slug:
+            skipped.append({"id": sid, "reason": "unknown"})
+            continue
+        if action == "delete":
+            refs = refs_map.get(sid) or []
+            if refs:
+                skipped.append(
+                    {"id": sid, "reason": "referenced", "references": refs[:5]}
+                )
+                continue
+            try:
+                await delete_session(sid)
+            except Exception as e:  # noqa: BLE001 — report, keep going
+                skipped.append({"id": sid, "reason": f"{type(e).__name__}: {e}"})
+                continue
+            done.append(sid)
+            continue
+        _session_meta_patch(
+            slug, sid, {"archived": action == "archive"}, touch=False
+        )
+        done.append(sid)
+    _log.info(
+        "sessions_bulk action=%s done=%d skipped=%d", action, len(done), len(skipped)
+    )
+    return {"ok": True, "done": done, "skipped": skipped}
 
 
 # ---- session stop (P2 contract 4) ------------------------------------------

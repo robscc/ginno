@@ -29,6 +29,63 @@
       "saveFailed": "Failed to save",
       "workingDirLabel": "Working directory",
       "workingDirValue": "~/workspace/‹project› (agent metadata in ~/.ginno/projects/)"
+    },
+    "diagnostics": {
+      "title": "Diagnostics",
+      "description": "Read-only self-check of data integrity, scheduled tasks, the runtime, and API contracts. Nothing is modified.",
+      "run": "Run check",
+      "running": "Running…",
+      "refresh": "Run again",
+      "generatedAt": "Generated {time}",
+      "failedConnect": "Check failed: runtime unreachable",
+      "warnings": "Warnings: {n}",
+      "emptySection": "No issues",
+      "sections": {
+        "data": "Data integrity",
+        "tasks": "Scheduled tasks",
+        "runtime": "Runtime",
+        "contracts": "API contracts"
+      },
+      "taskStats": {
+        "total": "Total {n}",
+        "ok": "OK {n}",
+        "failed": "Failed {n}",
+        "caughtUp": "Caught up {n}"
+      },
+      "latestFailure": "Latest failure: {task} — {error}",
+      "latestFailureHint": "Hint: {hint}",
+      "runtimeStats": {
+        "frozen": "Packaged runtime",
+        "dev": "Dev runtime",
+        "stale": "Runtime binary changed",
+        "uptime": "Up {s}",
+        "sessions": "{n} sessions loaded"
+      },
+      "missingRoutes": "Missing routes: {routes}",
+      "severity": {
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low",
+        "info": "Info"
+      },
+      "issues": {
+        "data": {
+          "dangling_session_refs": "Dangling session references",
+          "orphan_assets": "Orphaned / missing assets",
+          "stale_errors": "Stale error states",
+          "duplicate_titles": "Duplicate session titles",
+          "archived_sessions": "Archived sessions"
+        },
+        "tasks": {
+          "failure_rate": "High scheduled-task failure rate"
+        },
+        "runtime": {
+          "stale_bundle": "Runtime binary was replaced after startup"
+        },
+        "contract": {
+          "missing_routes": "Missing critical API routes"
+        }
+      }
     }
   }
 }

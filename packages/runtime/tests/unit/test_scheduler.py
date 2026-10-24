@@ -187,9 +187,11 @@ async def test_tick_records_missed_and_catches_up_the_newest(isolated_home, monk
         for r in store.load_day(p.name[len("runs-"):-len(".jsonl")])
     ]
     missed = [r for r in day_rows if r["status"] == "missed"]
-    # 1 小时前的 30 分钟网格：-60min 记 missed，-30min（窗口内）补跑
+    caught = [r for r in day_rows if r["status"] == "caught_up"]
+    # 1 小时前的 30 分钟网格：-60min 记 missed，-30min（窗口内）记 caught_up 并补跑
     assert len(missed) == 1
-    assert missed[0]["trigger"] == "schedule"
+    assert len(caught) == 1
+    assert caught[0]["trigger"] == "schedule"
     assert len(fired) == 1 and fired[0][0] == "st-t1"
     assert fired[0][1]["trigger"] == "catch_up"
     task = store.get_task("st-t1")
@@ -755,3 +757,21 @@ def test_lease_standby_reports_holder_pid(isolated_home):
 
         os.close(held_fd)
         scheduler._clear_standby()
+
+
+def test_run_error_classification():
+    """P0-1: failures carry a kind + human hint so the UI can explain them."""
+    cases = {
+        "Error -3 while decompressing data: incorrect header check": "runtime_stale",
+        "AuthenticationError: Error code: 401 - Invalid API-key": "auth",
+        "Error code: 429 rate limit": "rate_limit",
+        'BadRequestError: data_inspection_failed': "content_policy",
+        "RuntimeError: model/stream stall: no chunk for 180s": "stall",
+        "interrupted": "interrupted",
+        "ConnectError: [Errno 61] Connection refused": "network",
+        "something else": "unknown",
+    }
+    for msg, kind in cases.items():
+        got, hint = scheduler.classify_run_error(msg)
+        assert got == kind, (msg, got)
+        assert hint
