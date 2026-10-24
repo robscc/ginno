@@ -137,8 +137,14 @@ def _done_detail(member: dict) -> str:
 
 
 def _idle_detail(member: dict) -> str:
-    detail = str(member.get("status_detail") or "").strip()
-    return detail or t("Idle", "空闲")
+    """Idle text — deliberately ignores the stored ``status_detail``.
+
+    The stored value belongs to the PREVIOUS state ("正在运行", "正在处理投递"…)
+    and is not cleared when the member goes quiet, so reusing it made an idle
+    member claim it was still working (probe 2026-10-24: DDD/开发甲). Working
+    and done keep their own stored detail; idle always reads 空闲.
+    """
+    return t("Idle", "空闲")
 
 
 def mark_seen(team_id: str, instance_id: str, client: str = "main") -> dict | None:

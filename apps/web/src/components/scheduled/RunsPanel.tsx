@@ -272,7 +272,7 @@ export function RunsPanel({
                       <div className="truncate">{r.task_name}</div>
                     </td>
                     <td className="px-3 py-2">{r.target_type === "workflow" ? "⚡" : "💬"}</td>
-                    <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-faint">{r.trigger === "manual" ? tr("trigger.manual") : tr("trigger.scheduled")}</td>
+                    <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-faint">{r.trigger === "manual" ? tr("trigger.manual") : r.trigger === "catch_up" ? tr("trigger.catchUp") : tr("trigger.scheduled")}</td>
                     <td className="overflow-hidden whitespace-nowrap px-3 py-2">
                       <span
                         className="inline-flex items-center gap-1 rounded-full border px-1.5 py-px"

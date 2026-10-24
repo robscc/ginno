@@ -254,6 +254,7 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
           <span className="shrink-0 text-faint">
             {tr("view.due", { day: fmtDayPrefix(run.scheduled_at), clock: fmtClock(run.scheduled_at) })}
             {run.trigger === "manual" && tr("view.manualSuffix")}
+            {run.trigger === "catch_up" && tr("trigger.catchUp") ? ` · ${tr("trigger.catchUp")}` : ""}
           </span>
           <span className="shrink-0 text-faint">
             {tr("view.start", { clock: fmtClock(run.started_at) })}

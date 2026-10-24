@@ -30,6 +30,7 @@ for the many existing callers.
 from __future__ import annotations
 
 import json
+import re
 import time
 from copy import deepcopy
 from typing import Any
@@ -679,3 +680,84 @@ def search_probe(provider_id: str) -> dict[str, Any]:
         return {"ok": True, "latency_ms": _latency(), "text": str(text).strip()[:400]}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "latency_ms": _latency()}
+
+
+# ---- secret masking (SEC-01) --------------------------------------------- #
+# GET endpoints must not hand back provider keys in plaintext: anything that
+# can reach 127.0.0.1:8787 (or run script in the WebView) would otherwise be
+# able to exfiltrate them. The mask keeps the last 4 characters for
+# recognisability; PUT handlers restore the stored value whenever they see a
+# masked one, so a load-modify-save round-trip (e.g. the proxy toggle, which
+# PUTs the whole settings document) can never overwrite a real key.
+
+MASK_PREFIX = "••••"
+_SECRET_NAME = re.compile(r"(API_?KEY|TOKEN|SECRET|PASSWORD)", re.IGNORECASE)
+
+
+def mask_secret(value: Any) -> Any:
+    s = str(value or "")
+    if not s:
+        return value
+    return MASK_PREFIX + s[-4:] if len(s) > 4 else MASK_PREFIX
+
+
+def is_masked(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(MASK_PREFIX)
+
+
+def _mask_config_list(items: Any) -> None:
+    for c in items or []:
+        if isinstance(c, dict) and c.get("api_key"):
+            c["api_key"] = mask_secret(c["api_key"])
+
+
+def mask_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Copy of a settings document with provider/env secrets masked."""
+    out = deepcopy(settings or {})
+    env = out.get("env")
+    if isinstance(env, dict):
+        for k, v in list(env.items()):
+            if isinstance(v, str) and v and _SECRET_NAME.search(str(k)):
+                env[k] = mask_secret(v)
+    _mask_config_list(out.get("model_configs"))
+    provs = out.get("providers")
+    if isinstance(provs, dict):
+        _mask_config_list(provs.values())
+    return out
+
+
+def _restore_masked(new: Any, old: Any) -> Any:
+    """Replace masked leaves in ``new`` with the corresponding ``old`` values."""
+    if isinstance(new, dict) and isinstance(old, dict):
+        for k, v in list(new.items()):
+            if is_masked(v) and old.get(k) is not None:
+                new[k] = old[k]
+            elif isinstance(v, (dict, list)):
+                new[k] = _restore_masked(v, old.get(k))
+        return new
+    if isinstance(new, list) and isinstance(old, list):
+        old_by_id = {
+            o.get("id"): o for o in old if isinstance(o, dict) and o.get("id")
+        }
+        return [
+            _restore_masked(n, old_by_id.get(n.get("id")) if isinstance(n, dict) else None)
+            for n in new
+        ]
+    return new
+
+
+def unmask_settings(data: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    """Inverse of :func:`mask_settings` for a PUT body."""
+    return _restore_masked(deepcopy(data or {}), previous or {})
+
+
+def unmask_config_draft(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Restore a masked ``api_key`` on a verify/list-models draft from storage."""
+    out = dict(cfg or {})
+    if not is_masked(out.get("api_key")):
+        return out
+    stored = {c.get("id"): c for c in load_configs()}
+    prev = stored.get(out.get("id")) or {}
+    if prev.get("api_key"):
+        out["api_key"] = prev["api_key"]
+    return out

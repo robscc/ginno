@@ -18,7 +18,10 @@ from contextlib import asynccontextmanager
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import agents as agents_reg
 from . import lang, paths, usage_store
@@ -286,12 +289,69 @@ async def _connect_mcp_background() -> None:
 
 app = FastAPI(title="Ginno Runtime", version="0.1.0", lifespan=lifespan)
 
+
+@app.exception_handler(StarletteHTTPException)
+async def _unwrap_structured_http_error(request, exc: StarletteHTTPException):
+    """Return a structured ``detail`` dict as the response body itself.
+
+    Handlers raise ``HTTPException(404, detail={"ok": False, "error": ...})`` so
+    the wire shape matches the ``{ok:false, ...}`` house style instead of
+    FastAPI's ``{"detail": {...}}`` wrapper (API-05). String details keep the
+    default ``{"detail": "..."}`` shape — existing clients read it.
+    """
+    if isinstance(exc.detail, dict):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.detail,
+            headers=getattr(exc, "headers", None),
+        )
+    return await http_exception_handler(request, exc)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class SecurityHeadersMiddleware:
+    """Baseline hardening headers for every response (SEC-02).
+
+    The app is local-only, but the WebView is a browser: nosniff keeps a
+    renamed upload from being interpreted as script, no-referrer stops file
+    paths leaking to external links, and SAMEORIGIN blocks framing. CSP is
+    deliberately NOT added here — the app's inline bootstrap needs its own
+    policy (``/api/code/file`` already ships one for generated HTML).
+    """
+
+    HEADERS = (
+        (b"x-content-type-options", b"nosniff"),
+        (b"referrer-policy", b"no-referrer"),
+        (b"x-frame-options", b"SAMEORIGIN"),
+    )
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def _send(message):
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                present = {k.lower() for k, _ in headers}
+                headers.extend((k, v) for k, v in self.HEADERS if k not in present)
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, _send)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 class RequestLocaleMiddleware:

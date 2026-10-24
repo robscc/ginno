@@ -64,7 +64,13 @@ def test_bad_file_tolerated_as_empty_config(isolated_home):
     paths.schedules_path().parent.mkdir(parents=True, exist_ok=True)
     paths.schedules_path().write_text("{not json")
     cfg = store.load_config()
-    assert cfg == {"enabled": True, "keep_awake": False, "tasks": []}
+    assert cfg == {
+        "enabled": True,
+        "keep_awake": False,
+        "tasks": [],
+        "catch_up_enabled": True,
+        "catch_up_window_minutes": 360,
+    }
     # a subsequent save heals the file
     store.save_config({"enabled": False, "keep_awake": False, "tasks": []})
     assert store.load_config()["enabled"] is False

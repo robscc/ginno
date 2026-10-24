@@ -719,3 +719,68 @@ def test_list_models_endpoint_error_is_200(client, monkeypatch):
     assert r.status_code == 200
     assert r.json()["ok"] is False
     assert "401" in r.json()["error"]
+
+
+# --------------------------- secret masking (SEC-01) --------------------------- #
+
+
+def _write_v2_settings() -> None:
+    paths.settings_path().write_text(
+        json.dumps(
+            {
+                "env": {"OPENAI_API_KEY": "sk-plain-secret-1234", "FOO": "bar"},
+                "model_configs": [
+                    {
+                        "id": "p1",
+                        "enabled": True,
+                        "protocol": "openai-compatible",
+                        "base_url": "https://example.com/v1",
+                        "api_key": "sk-abcdefgh-5678",
+                        "models": ["m1"],
+                        "default_model": "m1",
+                    }
+                ],
+            }
+        )
+    )
+
+
+def test_settings_get_masks_keys_and_put_restores_them(client):
+    _write_v2_settings()
+    got = client.get("/api/settings").json()
+    assert got["env"]["OPENAI_API_KEY"] == "••••1234"
+    assert got["env"]["FOO"] == "bar"  # not secret-shaped
+    assert got["model_configs"][0]["api_key"] == "••••5678"
+
+    # Round-trip (what the proxy toggle does): masked values must resolve back
+    got["use_system_proxy"] = True
+    assert client.put("/api/settings", json=got).json()["ok"] is True
+    stored = _read_settings()
+    assert stored["env"]["OPENAI_API_KEY"] == "sk-plain-secret-1234"
+    assert stored["model_configs"][0]["api_key"] == "sk-abcdefgh-5678"
+
+
+def test_model_configs_get_masks_and_put_restores(client):
+    _write_v2_settings()
+    got = client.get("/api/model_configs").json()
+    assert got["configs"][0]["api_key"] == "••••5678"
+
+    body = {"configs": got["configs"], "default_config": "p1"}
+    r = client.put("/api/model_configs", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["configs"][0]["api_key"] == "••••5678"  # masked on the way out
+    assert _read_settings()["model_configs"][0]["api_key"] == "sk-abcdefgh-5678"
+
+
+def test_http_error_detail_dict_is_unwrapped(client):
+    """API-05: structured errors keep the {ok:false,...} house shape."""
+    r = client.get("/api/sessions/__nope__")
+    assert r.status_code == 404
+    assert r.json() == {"ok": False, "error": "unknown session"}
+
+
+def test_security_headers_present(client):
+    r = client.get("/api/health")
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["referrer-policy"] == "no-referrer"
+    assert r.headers["x-frame-options"] == "SAMEORIGIN"

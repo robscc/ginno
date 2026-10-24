@@ -31,7 +31,8 @@
     },
     "trigger": {
       "manual": "手动",
-      "scheduled": "定时"
+      "scheduled": "定时",
+      "catchUp": "补跑"
     },
     "page": {
       "title": "定时任务",

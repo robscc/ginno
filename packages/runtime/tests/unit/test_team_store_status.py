@@ -394,3 +394,16 @@ def test_route_targets(isolated_home):
     # 领队实例被移除 → 回退群聊广播（其余全部成员，按加入序）
     ts.remove_member(t["id"], lead["instance_id"])
     assert route_targets(ts.get_team(t["id"])) == [m0["instance_id"], m2["instance_id"]]
+
+
+def test_idle_does_not_reuse_stale_working_detail(team, monkeypatch):
+    """回归（2026-10-24 探针 DDD/开发甲）：成员从 working 转 idle 后，
+    status_detail 里还留着「正在运行」——idle 行必须显示空闲，不能自称在工作。"""
+    m = _member(team, "dev")
+    team_store.patch_member(
+        team["id"], m["instance_id"], {"status_detail": "正在运行"}
+    )
+    m = _member(team, "dev")
+    status, detail = team_status.member_status("default", "sess-dev", m, client="main")
+    assert status == "idle"
+    assert detail != "正在运行"

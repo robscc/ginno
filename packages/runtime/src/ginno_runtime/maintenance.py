@@ -298,11 +298,56 @@ def _remove_session_files(slug: str, session_id: str) -> None:
         _log.exception("maintenance_empty_session_dir_failed sid=%s", session_id)
 
 
+def _referenced_session_ids() -> set[str]:
+    """Sessions some other record points at — teams and scheduled run logs.
+
+    The empty-session purge must never delete one of these: the reference is
+    left dangling and every consumer (team chat, “view session” in run
+    history) breaks silently (DATA-06).
+    """
+    refs: set[str] = set()
+    try:
+        from .teams import store as team_store
+
+        for t in team_store.list_teams():
+            if t.get("main_session_id"):
+                refs.add(str(t["main_session_id"]))
+            for m in t.get("members") or []:
+                for sid in m.get("session_ids") or []:
+                    if sid:
+                        refs.add(str(sid))
+                if m.get("session_id"):
+                    refs.add(str(m["session_id"]))
+    except Exception:  # noqa: BLE001 — a broken teams store must not skip hygiene
+        _log.exception("maintenance_team_refs_failed")
+    try:
+        import json
+
+        for p in paths.schedule_runs_dir().glob("runs-*.jsonl"):
+            try:
+                lines = p.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for raw in lines:
+                try:
+                    e = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                for key in ("session_id", "forked_session_id"):
+                    if isinstance(e, dict) and e.get(key):
+                        refs.add(str(e[key]))
+    except Exception:  # noqa: BLE001
+        _log.exception("maintenance_schedule_refs_failed")
+    return refs
+
+
 def _purge_stale_empty_sessions_once() -> None:
     state = _read_state()
     if state.get(_EMPTY_PURGE_FLAG):
         return
+    referenced = _referenced_session_ids()
     removed = 0
+    purged: list[str] = []
     for slug in _project_slugs():
         rows = _session_meta_list(slug)
         keep: list[dict] = []
@@ -311,7 +356,11 @@ def _purge_stale_empty_sessions_once() -> None:
             sid = str(m.get("id") or "")
             # 24h grace: a session created while the user is still typing has
             # no messages yet and must survive.
-            if sid and time.time() - float(m.get("created") or 0) > 86400:
+            if (
+                sid
+                and sid not in referenced
+                and time.time() - float(m.get("created") or 0) > 86400
+            ):
                 if not _has_messages(slug, sid):
                     victim_ids.append(sid)
                     continue
@@ -322,13 +371,77 @@ def _purge_stale_empty_sessions_once() -> None:
         for sid in victim_ids:
             _remove_session_files(slug, sid)
         removed += len(victim_ids)
+        purged.extend(victim_ids)
         _log.info(
             "maintenance_empty_sessions_purged slug=%s count=%d", slug, len(victim_ids)
         )
     state[_EMPTY_PURGE_FLAG] = True
+    if purged:
+        # Audit trail: which sessions vanished (DATA-06 ask). Keeps the ids
+        # recoverable from memory/maintenance.json even though the files are
+        # gone.
+        state["empty_sessions_purged_ids"] = purged
     _write_state(state)
     if removed:
-        _log.info("maintenance_empty_sessions_purged_total=%d", removed)
+        _log.info(
+            "maintenance_empty_sessions_purged_total=%d ids=%s",
+            removed,
+            ",".join(i[:8] for i in purged[:20]),
+        )
+
+
+def _heal_dangling_refs(valid_sessions: set[str]) -> None:
+    """Clear references to sessions that no longer exist (DATA-06).
+
+    * a team whose main session AND every member session are gone is deleted
+      (nothing is left to run);
+    * otherwise dead members are removed from the roster and a dead
+      ``main_session_id`` is cleared with ``main_session_missing`` set, so the
+      UI can say "session deleted" instead of opening a blank page;
+    * scheduled run rows keep their record but lose the dead ``session_id`` /
+      ``forked_session_id``.
+    """
+    try:
+        from .teams import store as team_store
+
+        for t in team_store.list_teams():
+            tid = str(t.get("id") or "")
+            if not tid:
+                continue
+            main = str(t.get("main_session_id") or "")
+            members = t.get("members") or []
+            missing_main = bool(main) and main not in valid_sessions
+            dead: list[str] = []
+            for m in members:
+                iid = str(m.get("instance_id") or "")
+                sids = [str(s) for s in (m.get("session_ids") or []) if s]
+                if not sids and m.get("session_id"):
+                    sids = [str(m["session_id"])]
+                if sids and all(s not in valid_sessions for s in sids) and iid:
+                    dead.append(iid)
+            if missing_main and len(dead) == len(members):
+                team_store.delete_team(tid)
+                _log.info("maintenance_team_removed team=%s reason=all_sessions_gone", tid)
+                continue
+            for iid in dead:
+                team_store.remove_member(tid, iid)
+                _log.info("maintenance_team_member_removed team=%s member=%s", tid, iid)
+            if missing_main:
+                team_store.update_team(
+                    tid, {"main_session_id": "", "main_session_missing": True}
+                )
+                _log.info("maintenance_team_main_cleared team=%s", tid)
+    except Exception:  # noqa: BLE001 — one bad team must not stop the sweep
+        _log.exception("maintenance_team_heal_failed")
+
+    try:
+        from . import schedule_store
+
+        fixed = schedule_store.heal_dead_session_refs(valid_sessions)
+        if fixed:
+            _log.info("maintenance_schedule_refs_healed refs=%d", fixed)
+    except Exception:  # noqa: BLE001
+        _log.exception("maintenance_schedule_heal_failed")
 
 
 # ---- entry point ---------------------------------------------------------- #
@@ -345,6 +458,10 @@ def run_startup_maintenance() -> None:
         valid_sessions = _valid_session_ids()  # artifacts may now be orphaned
     except Exception:  # noqa: BLE001 — purge is optional; never block startup
         _log.exception("maintenance_empty_sessions_failed")
+    try:
+        _heal_dangling_refs(valid_sessions)
+    except Exception:  # noqa: BLE001
+        _log.exception("maintenance_ref_heal_failed")
     for slug in slugs:
         try:
             _heal_session_metas(slug)

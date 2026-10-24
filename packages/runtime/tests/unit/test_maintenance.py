@@ -183,3 +183,62 @@ def test_requeue_gives_up_when_no_assistant_text(isolated_home, monkeypatch):
     assert asyncio.run(maintenance.requeue_pending_titles()) == 0
     meta = {m["id"]: m for m in _session_meta_list("default")}
     assert meta["toolonly"]["title_llm_pending"] is False
+
+
+def test_image_and_doc_artifacts_with_missing_files_are_pruned(isolated_home, tmp_path, monkeypatch):
+    """DATA-07: the sweep must cover image/doc refs, not just kind=file."""
+    _write_index("default", [_row("s1")])
+    monkeypatch.setattr(maintenance, "_has_messages", lambda slug, sid: True)
+    gone = tmp_path / "missing.png"
+    ok = tmp_path / "ok.png"
+    ok.write_text("x", encoding="utf-8")
+    art_store.add_artifact("default", "image", "gone.png", str(gone), "s1")
+    art_store.add_artifact("default", "image", "ok.png", str(ok), "s1")
+    # URLs and workflow ids must survive
+    art_store.add_artifact("default", "doc", "remote", "https://example.com/doc", "s1")
+    art_store.add_artifact("default", "workflow", "run", "wf-run-id", "s1")
+
+    maintenance.run_startup_maintenance()
+    names = {a["name"] for a in art_store.list_artifacts("default")}
+    assert names == {"ok.png", "remote", "run"}
+
+
+def test_dangling_team_and_run_refs_are_healed(isolated_home, monkeypatch):
+    """DATA-06: references to deleted sessions get cleared (team) / dropped
+    (schedule run) instead of silently pointing at nothing."""
+    import json as _json
+
+    from ginno_runtime import paths as paths_mod
+    from ginno_runtime import schedule_store
+    from ginno_runtime.teams import store as team_store
+
+    _write_index("default", [_row("alive")])
+    monkeypatch.setattr(maintenance, "_has_messages", lambda slug, sid: True)
+
+    t = team_store.create_team(
+        project_slug="default", name="Dead", main_session_id="gone-main"
+    )
+    team_store.add_member(t["id"], "dev", "gone-member", display_name="甲")
+    t2 = team_store.create_team(
+        project_slug="default", name="Mixed", main_session_id="alive"
+    )
+    team_store.add_member(t2["id"], "dev", "gone-member-2", display_name="乙")
+
+    day = _t_str = __import__("time").strftime("%Y-%m-%d")
+    runs_dir = paths_mod.schedule_runs_dir()
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / f"runs-{day}.jsonl").write_text(
+        _json.dumps({"run_id": "sr-1", "session_id": "gone-main"}) + "\n",
+        encoding="utf-8",
+    )
+
+    maintenance.run_startup_maintenance()
+
+    assert team_store.get_team(t["id"]) is None          # all sessions gone
+    mixed = team_store.get_team(t2["id"])
+    assert mixed["main_session_id"] == "alive"
+    members = mixed.get("members") or []
+    assert [m.get("session_ids") for m in members] == []  # dead member dropped
+
+    row = schedule_store.load_day(day)[0]
+    assert row["session_id"] is None and row["session_missing"] is True

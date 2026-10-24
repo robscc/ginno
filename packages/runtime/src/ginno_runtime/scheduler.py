@@ -7,7 +7,8 @@
   （本地日历语义：每日 09:30 在 DST 切换日仍是本地 09:30）；``next_run_at``
   持久化回 schedules.json。
 * 触发：``now >= next_run_at`` 且延迟 ≤ GRACE(60s) 则触发；超过 GRACE 的每个
-  错过计划点记一条 missed（只记账不补跑，§10 决议 1）后跳到未来。
+  错过计划点记一条 missed 后跳到未来；最近一个错过点若在补跑窗口内
+  （catch_up_window_minutes，默认 6h）则真正补跑一次（§10 决议 1，2026-10-24 修订）。
 * 双目标分流：prompt → 影子会话 + headless ``_run_stream``（协议抄
   ``_run_goal_turn``）；workflow → ``wf_store.create_run(origin="schedule")`` +
   ``_spawn_run_task(_run_workflow_bg(...))``（即 POST /api/workflow_runs 的
@@ -454,6 +455,37 @@ def _skip_missed(task: dict, point: float) -> float | None:
         _record_missed(task, future)
         future = _step_point(task, now, future)
     return future
+
+
+def _consume_missed(task: dict, point: float) -> tuple[float | None, float | None]:
+    """对账错过链，并把「值得补跑」的一个计划点交回调用方（SCHED-01）。
+
+    missed 的语义在 2026-10-24 修订：**最近的**错过点若仍在补跑窗口内
+    （``catch_up_window_minutes``，默认 6h，可配 ``catch_up_enabled:false``
+    关闭），就真正补跑一次而不是只记账；更早的错过点照旧各记一条 missed。
+    返回 ``(future, catch_up_point)``。
+    """
+    now = time.time()
+    points: list[float] = []
+    future: float | None = point
+    while future is not None and now - future > GRACE_S:
+        points.append(future)
+        future = _step_point(task, now, future)
+    catch: float | None = None
+    try:
+        cfg = store.load_config()
+    except Exception:  # noqa: BLE001 — 配置坏掉按默认补跑
+        cfg = {}
+    if points and cfg.get("catch_up_enabled", True):
+        try:
+            window = float(cfg.get("catch_up_window_minutes") or 360) * 60
+        except (TypeError, ValueError):
+            window = 6 * 3600
+        if now - points[-1] <= window:
+            catch = points.pop()
+    for p in points:
+        _record_missed(task, p)
+    return future, catch
 
 
 def _advance_next(task: dict, from_point: float) -> None:
@@ -963,12 +995,18 @@ async def _tick() -> None:
         if delta < 0:
             continue  # 还没到点
         if delta > GRACE_S:
-            # 错过链：每个错过的计划点记一条 missed，跳到第一个未错过点（§10 决议 1）
-            future = _skip_missed(task, nxt)
+            # 错过链：更早的每个点记 missed；最近一个（窗口内）改为补跑一次
+            future, catch = _consume_missed(task, nxt)
             patch: dict[str, Any] = {"next_run_at": future}
             if sch_kind(task) == "once":
                 patch["enabled"] = False  # once 错过即完成生命周期
             store.patch_task(tid, patch)
+            if catch is not None:
+                _log.info(
+                    "schedule_catch_up task=%s missed_at=%s delay=%.0fs",
+                    tid, int(catch), now - catch,
+                )
+                trigger_task(task, trigger="catch_up", scheduled_at=catch)
             schedule_events().emit("task_updated", {"task": store.get_task(tid)})
             continue
         # 到点（延迟 ≤ GRACE）：触发；调度器协程内串行触发即可，执行本身并行

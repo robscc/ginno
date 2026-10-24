@@ -205,14 +205,24 @@ async def get_settings() -> dict:
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text() or "{}")
+        raw = json.loads(p.read_text() or "{}")
     except json.JSONDecodeError:
         return {}
+    # SEC-01: never hand provider keys back in plaintext. PUT restores them.
+    return prov_mod.mask_settings(raw)
 
 
 @router.put("/api/settings")
 async def put_settings(data: dict) -> dict:
     prev_use_proxy = prov_mod.use_system_proxy()  # reads the still-on-disk value
+    # Undo the GET masking before writing: callers round-trip the whole
+    # document (e.g. the proxy toggle), so a masked key must resolve back to
+    # the stored secret instead of being persisted as "••••1234".
+    try:
+        previous = json.loads(paths.settings_path().read_text() or "{}")
+    except (OSError, json.JSONDecodeError):
+        previous = {}
+    data = prov_mod.unmask_settings(data, previous)
     paths.settings_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
     new_use_proxy = prov_mod.use_system_proxy(data)
     if new_use_proxy != prev_use_proxy:
@@ -243,8 +253,13 @@ def _read_settings_file() -> dict:
 @router.get("/api/model_configs")
 async def get_model_configs() -> dict:
     settings = _read_settings_file()
+    configs = prov_mod.load_configs(settings)
+    # SEC-01: masked on read; PUT/verify/list_models unmask before using them.
+    for c in configs:
+        if c.get("api_key"):
+            c["api_key"] = prov_mod.mask_secret(c["api_key"])
     return {
-        "configs": prov_mod.load_configs(settings),
+        "configs": configs,
         "default_config": prov_mod.get_default_config(settings),
     }
 
@@ -311,8 +326,18 @@ def _guard_config_removal(stored_ids: set[str], new_ids: set[str], new_default: 
 
 @router.put("/api/model_configs")
 async def put_model_configs(req: PutModelConfigsRequest):
+    stored = {c["id"]: c for c in prov_mod.load_configs()}
+    # SEC-01: the UI edits a masked config; restore masked api_keys from the
+    # stored copy before validation/save.
+    raw_cfgs = []
+    for c in req.configs:
+        if isinstance(c, dict) and prov_mod.is_masked(c.get("api_key")):
+            c = dict(c)
+            prev = stored.get(c.get("id")) or {}
+            c["api_key"] = prev.get("api_key") or ""
+        raw_cfgs.append(c)
     try:
-        normalized = prov_mod.validate_configs(req.configs)
+        normalized = prov_mod.validate_configs(raw_cfgs)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
     new_ids = {c["id"] for c in normalized}
@@ -334,7 +359,9 @@ async def put_model_configs(req: PutModelConfigsRequest):
     _refresh_session_metas()
     return {
         "ok": True,
-        "configs": saved,
+        "configs": [
+            {**c, "api_key": prov_mod.mask_secret(c.get("api_key"))} for c in saved
+        ],
         "default_config": prov_mod.get_default_config(),
     }
 
@@ -345,7 +372,7 @@ async def verify_model_config_endpoint(cfg: dict) -> dict:
     immediately (upsert by id, ``verified_at`` stamped) and returned. On
     failure nothing is written and ``{ok: false, error}`` comes back with 200
     so the UI can show the yellow banner."""
-    result = prov_mod.verify_config_draft(cfg)
+    result = prov_mod.verify_config_draft(prov_mod.unmask_config_draft(cfg))
     if not result.get("ok"):
         return {
             "ok": False,
@@ -362,7 +389,7 @@ async def verify_model_config_endpoint(cfg: dict) -> dict:
     prov_mod.save_configs(list(merged.values()))
     return {
         "ok": True,
-        "config": saved_cfg,
+        "config": {**saved_cfg, "api_key": prov_mod.mask_secret(saved_cfg.get("api_key"))},
         "latency_ms": result.get("latency_ms"),
     }
 
@@ -373,7 +400,7 @@ def list_model_config_models(cfg: dict) -> dict:
     模型」). Nothing is saved — id not required. Sync so the network round-trip
     runs in the threadpool; HTTP 200 always, ok:false carries the error, same
     convention as the verify endpoint."""
-    return prov_mod.list_models_draft(cfg)
+    return prov_mod.list_models_draft(prov_mod.unmask_config_draft(cfg))
 
 
 @router.delete("/api/model_configs/{config_id}")

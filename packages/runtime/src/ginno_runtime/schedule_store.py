@@ -54,7 +54,15 @@ def reset_cache() -> None:
 # schedules.json（§4.1）
 # --------------------------------------------------------------------------- #
 def _default_config() -> dict:
-    return {"enabled": True, "keep_awake": False, "tasks": []}
+    return {
+        "enabled": True,
+        "keep_awake": False,
+        "tasks": [],
+        # SCHED-01 (2026-10-24): a missed point inside this window is run once
+        # on the next tick instead of only being recorded.
+        "catch_up_enabled": True,
+        "catch_up_window_minutes": 360,
+    }
 
 
 def load_config() -> dict:
@@ -69,6 +77,11 @@ def load_config() -> dict:
     cfg = _default_config()
     cfg["enabled"] = bool(data.get("enabled", True))
     cfg["keep_awake"] = bool(data.get("keep_awake", False))
+    cfg["catch_up_enabled"] = bool(data.get("catch_up_enabled", True))
+    try:
+        cfg["catch_up_window_minutes"] = max(1, int(data.get("catch_up_window_minutes") or 360))
+    except (TypeError, ValueError):
+        cfg["catch_up_window_minutes"] = 360
     tasks = data.get("tasks")
     cfg["tasks"] = [t for t in tasks if isinstance(t, dict)] if isinstance(tasks, list) else []
     return cfg
@@ -557,3 +570,51 @@ def _unseen_key() -> tuple:
         for p in sorted(d.glob(f"{_FILE_PREFIX}*.jsonl")):
             parts.append((p.name, p.stat().st_mtime_ns))
     return tuple(parts)
+
+
+def heal_dead_session_refs(valid_session_ids: set[str]) -> int:
+    """Clear run→session references whose session was deleted (DATA-06).
+
+    Run records outlive their shadow session (90-day retention), so a deleted
+    session leaves `session_id`/`forked_session_id` pointing at nothing and the
+    UI's “view session” opens a 404. Keep the record, drop the dangling ref and
+    mark it. Rewrites only the day files that actually changed.
+    """
+    fixed = 0
+    d = paths.schedule_runs_dir()
+    if not d.is_dir():
+        return 0
+    for p in sorted(d.glob(f"{_FILE_PREFIX}*.jsonl")):
+        try:
+            raw_lines = p.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        out: list[str] = []
+        changed = False
+        for raw in raw_lines:
+            if not raw.strip():
+                continue
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                out.append(raw)  # 坏行原样保留，与读侧“坏行跳过”一致
+                continue
+            if not isinstance(entry, dict):
+                out.append(raw)
+                continue
+            for key in ("session_id", "forked_session_id"):
+                sid = entry.get(key)
+                if sid and str(sid) not in valid_session_ids:
+                    entry[key] = None
+                    entry["session_missing"] = True
+                    fixed += 1
+                    changed = True
+            out.append(json.dumps(entry, ensure_ascii=False))
+        if changed:
+            try:
+                tmp = p.with_name(p.name + ".tmp")
+                tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+                os.replace(tmp, p)
+            except OSError:
+                _log.warning("schedule run ref heal failed: %s", p, exc_info=True)
+    return fixed

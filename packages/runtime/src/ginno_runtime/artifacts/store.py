@@ -85,12 +85,19 @@ def delete_artifact(slug: str, artifact_id: str) -> bool:
     return True
 
 
-def prune_artifacts(slug: str, valid_session_ids: set[str]) -> int:
-    """Drop entries that can only fail when clicked (startup hygiene, DATA-01).
+def _is_local_path(ref: str) -> bool:
+    """True for a filesystem ref (not a URL / workflow id / data: payload)."""
+    return ref.startswith("/") or ref.startswith("~") or ref.startswith("./")
 
-    Two shapes: ``kind == "file"`` whose ``ref`` no longer exists, and entries
-    whose owning session was deleted (its per-session upload dirs went with it).
-    Panel entries only — no files are touched. Returns how many were dropped.
+
+def prune_artifacts(slug: str, valid_session_ids: set[str]) -> int:
+    """Drop entries that can only fail when clicked (startup hygiene, DATA-01/07).
+
+    Two shapes: a local-path ref (kinds file/image/doc) whose target no longer
+    exists, and entries whose owning session was deleted (its per-session
+    upload dirs went with it). URLs, data: payloads and bare ids (workflow
+    runs) are never checked. Panel entries only — no files are touched.
+    Returns how many were dropped.
     """
     items = _read(slug)
     if not items:
@@ -102,9 +109,9 @@ def prune_artifacts(slug: str, valid_session_ids: set[str]) -> int:
         if sid and str(sid) not in valid_session_ids:
             dropped += 1
             continue
-        if it.get("kind") == "file":
+        if it.get("kind") in ("file", "image", "doc"):
             ref = str(it.get("ref") or "")
-            if ref and not os.path.exists(ref):
+            if ref and _is_local_path(ref) and not os.path.exists(os.path.expanduser(ref)):
                 dropped += 1
                 continue
         kept.append(it)

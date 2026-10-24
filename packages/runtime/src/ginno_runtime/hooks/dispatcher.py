@@ -5,13 +5,17 @@ Settings format (Claude-Code-inspired):
     ~/.ginno/settings.json
     {
       "hooks": {
-        "PreToolUse":     [{"matcher": "Bash", "command": "python ~/.ginno/hooks/pre_bash.py"}],
-        "PostToolUse":    [{"matcher": "Write", "command": "..."}],
+        "PreToolUse":     [{"matcher": "bash", "command": "python ~/.ginno/hooks/pre_bash.py"}],
+        "PostToolUse":    [{"matcher": "write_file", "command": "..."}],
         "UserPromptSubmit":[{"command": "..."}],
         "Stop":           [{"command": "..."}],
         "SessionStart":   [{"command": "..."}]
       }
     }
+
+Tool names are the lowercase runtime names (`bash`, `write_file`, `read_file`,
+`render_widget` …); matching is case-insensitive so a legacy `"Bash"` still
+fires.
 
 Dispatcher pipes a JSON context to the hook process stdin and reads a JSON
 response on stdout. Response fields:
@@ -79,17 +83,22 @@ class HookDispatcher:
 
     def _hooks_for(self, event: HookEventName, matcher: str | None) -> list[dict[str, Any]]:
         hooks = self.settings.get("hooks", {}).get(event, [])
+
+        def _matches(entry: dict[str, Any]) -> bool:
+            # Case-insensitive: the docs historically said "Bash" while the
+            # tool is `bash`, so a copied matcher silently never fired
+            # (HOOK-01). An empty matcher matches every tool.
+            want = str(entry.get("matcher") or "").strip().lower()
+            if not want:
+                return True
+            return matcher is not None and want == str(matcher).strip().lower()
+
+        plugin = self._plugin_hooks.get(event, [])
         if matcher is None:
-            matched = [h for h in hooks if not h.get("matcher")]
-            matched += [h for h in self._plugin_hooks.get(event, []) if not h.get("matcher")]
-            return matched
-        matched = [h for h in hooks if not h.get("matcher") or h.get("matcher") == matcher]
-        matched += [
-            h
-            for h in self._plugin_hooks.get(event, [])
-            if not h.get("matcher") or h.get("matcher") == matcher
-        ]
-        return matched
+            return [h for h in hooks if not h.get("matcher")] + [
+                h for h in plugin if not h.get("matcher")
+            ]
+        return [h for h in hooks if _matches(h)] + [h for h in plugin if _matches(h)]
 
     def register_plugin(self, name: str, hooks_doc: dict[str, Any], plugin_root: str) -> int:
         """Register one mod's classic-shape hooks.json::

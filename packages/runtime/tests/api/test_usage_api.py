@@ -144,7 +144,7 @@ def test_session_usage_prefers_log(client):
     # as a session with no usage; the frontend distinguishes them)
     r = client.get("/api/sessions/never-seen/usage")
     assert r.status_code == 404
-    assert r.json()["detail"]["ok"] is False
+    assert r.json()["ok"] is False  # structured detail is unwrapped (API-05)
 
 
 def test_turn_is_recorded_end_to_end(create_session, ws_conv, client):

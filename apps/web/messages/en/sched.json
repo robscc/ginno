@@ -31,7 +31,8 @@
     },
     "trigger": {
       "manual": "manual",
-      "scheduled": "schedule"
+      "scheduled": "schedule",
+      "catchUp": "catch-up"
     },
     "page": {
       "title": "Scheduled Tasks",

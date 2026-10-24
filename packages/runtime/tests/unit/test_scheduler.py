@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from ginno_runtime import paths
 from ginno_runtime import schedule_store as store
 from ginno_runtime import scheduler
 
@@ -166,23 +167,51 @@ def test_step_point_daily_steps_from_point(isolated_home):
     assert (d2.year, d2.month, d2.day, d2.hour, d2.minute) == (2026, 10, 9, 18, 0)
 
 
-async def test_tick_records_missed_and_skips_to_future(isolated_home, monkeypatch):
+async def test_tick_records_missed_and_catches_up_the_newest(isolated_home, monkeypatch):
+    """2026-10-24 修订（SCHED-01）：错过链里更早的点各记一条 missed，最近的
+    一个（补跑窗口内）真正补跑一次；``catch_up_enabled:false`` 恢复旧语义。"""
     fired = []
-    monkeypatch.setattr(scheduler, "trigger_task", lambda task, **k: fired.append(task["id"]))
+    monkeypatch.setattr(
+        scheduler, "trigger_task", lambda task, **k: fired.append((task["id"], k))
+    )
     now = time.time()
     store.save_config({"enabled": True, "keep_awake": False, "tasks": [
         _task(schedule={"kind": "interval", "minutes": 30}, next_run_at=now - 3600),
     ]})
     await scheduler._tick()
-    day_rows = store.load_day(time.strftime("%Y-%m-%d", time.localtime(now)))
+    # Rows are filed under the day of their own timestamp — near midnight the
+    # oldest missed point lands in yesterday's file, so scan them all.
+    day_rows = [
+        r
+        for p in paths.schedule_runs_dir().glob("runs-*.jsonl")
+        for r in store.load_day(p.name[len("runs-"):-len(".jsonl")])
+    ]
     missed = [r for r in day_rows if r["status"] == "missed"]
-    # 1 小时前的 30 分钟网格：错过 2 个计划点（-60min、-30min）各记一条；
-    # 当前时点（now，延迟 0s ≤ GRACE）保留为下一个触发点
-    assert len(missed) == 2
-    assert all(r["trigger"] == "schedule" for r in missed)
-    assert fired == []  # 只记账不补跑（决议 1）
+    # 1 小时前的 30 分钟网格：-60min 记 missed，-30min（窗口内）补跑
+    assert len(missed) == 1
+    assert missed[0]["trigger"] == "schedule"
+    assert len(fired) == 1 and fired[0][0] == "st-t1"
+    assert fired[0][1]["trigger"] == "catch_up"
     task = store.get_task("st-t1")
     assert abs(task["next_run_at"] - now) < 2
+
+
+async def test_tick_catch_up_can_be_disabled(isolated_home, monkeypatch):
+    fired = []
+    monkeypatch.setattr(scheduler, "trigger_task", lambda task, **k: fired.append(task["id"]))
+    now = time.time()
+    store.save_config({"enabled": True, "keep_awake": False, "catch_up_enabled": False,
+                       "tasks": [
+        _task(schedule={"kind": "interval", "minutes": 30}, next_run_at=now - 3600),
+    ]})
+    await scheduler._tick()
+    day_rows = [
+        r
+        for p in paths.schedule_runs_dir().glob("runs-*.jsonl")
+        for r in store.load_day(p.name[len("runs-"):-len(".jsonl")])
+    ]
+    assert len([r for r in day_rows if r["status"] == "missed"]) == 2
+    assert fired == []
 
 
 async def test_tick_triggers_within_grace(isolated_home, monkeypatch):

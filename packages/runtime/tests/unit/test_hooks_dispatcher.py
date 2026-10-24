@@ -87,3 +87,21 @@ async def test_dispatch_no_hooks_configured(isolated_home):
     d = _dispatcher({})
     results = await d.dispatch(HookEvent(name="PreToolUse", context={"tool": "Bash", "args": {}}))
     assert results == []
+
+
+def test_matcher_is_case_insensitive(isolated_home):
+    """HOOK-01: docs said "Bash" while the tool is `bash`; a copied matcher
+    must still fire instead of silently disabling the hook."""
+    d = _dispatcher(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "command": "echo x"},
+                    {"matcher": "WRITE_FILE", "command": "echo y"},
+                ]
+            }
+        }
+    )
+    assert len(d._hooks_for("PreToolUse", "bash")) == 1
+    assert len(d._hooks_for("PreToolUse", "write_file")) == 1
+    assert len(d._hooks_for("PreToolUse", "read_file")) == 0
