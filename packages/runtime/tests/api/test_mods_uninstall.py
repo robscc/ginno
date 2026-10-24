@@ -5,11 +5,10 @@ no broker, no node."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 import ginno_runtime.server_shared as server_shared
+from ginno_runtime import jsonx as json
 from ginno_runtime.agents import mod_registry
 from ginno_runtime.commands import mod_commands
 from ginno_runtime.mods import api as mods_api

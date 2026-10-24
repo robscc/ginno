@@ -14,8 +14,11 @@ from langchain_core.messages import HumanMessage, RemoveMessage
 
 from ginno_runtime import agents as agents_reg
 from ginno_runtime import artifacts as art_store
-from ginno_runtime import paths
+from ginno_runtime import compaction as compaction_mod
+from ginno_runtime import microcompact as microcompact_mod
+from ginno_runtime import paths, server_shared
 from ginno_runtime import workflows as wf_store
+from ginno_runtime.api import stream as api_stream
 from ginno_runtime.commands.registry import BUILTINS
 from ginno_runtime.commands.resolver import (
     parse_mention_tokens,
@@ -24,10 +27,6 @@ from ginno_runtime.commands.resolver import (
     resolve_turn,
     substitute_skill,
 )
-from ginno_runtime import server_shared
-from ginno_runtime.api import stream as api_stream
-from ginno_runtime import compaction as compaction_mod
-from ginno_runtime import microcompact as microcompact_mod
 
 pytestmark = pytest.mark.unit
 

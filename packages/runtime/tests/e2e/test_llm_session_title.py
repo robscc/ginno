@@ -8,12 +8,12 @@ a second ``session_title`` event.
 
 from __future__ import annotations
 
-import json
 import time
 
 import pytest
 from conftest import event_names, events_of
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 

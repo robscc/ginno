@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.knowledge import citations as cit
 from ginno_runtime.knowledge import usage
 from ginno_runtime.knowledge.injection import (
@@ -38,10 +37,16 @@ def test_contract_appended_and_injection_counted(kb_vault):
         "wiki|<relative path>" in ctx or "wiki|<相对路径>" in ctx
     )
     from ginno_runtime.knowledge.injection import (
-        CITATIONS_CONTRACT_EN as _CT_EN,
         CITATIONS_CONTRACT as _CT,
-        CITATIONS_CONTRACT_WIKI_ONLY_EN as _CTW_EN,
+    )
+    from ginno_runtime.knowledge.injection import (
+        CITATIONS_CONTRACT_EN as _CT_EN,
+    )
+    from ginno_runtime.knowledge.injection import (
         CITATIONS_CONTRACT_WIKI_ONLY as _CTW,
+    )
+    from ginno_runtime.knowledge.injection import (
+        CITATIONS_CONTRACT_WIKI_ONLY_EN as _CTW_EN,
     )
     from ginno_runtime.lang import current_locale
 

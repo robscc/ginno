@@ -11,13 +11,13 @@ Skips gracefully when the Playwright MCP / a browser is unavailable in the env.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
 

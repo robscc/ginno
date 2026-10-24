@@ -31,9 +31,10 @@ of a parallel UI (brief §0): the pushed version is compared with the buffer's
 
 from __future__ import annotations
 
-import json
 import os
 import re
+
+from ginno_runtime import jsonx as json
 
 #: Marker wrapper. Non-greedy so the first ``]-->`` closes it, and DOTALL so a
 #: pretty-printed payload (newlines inside the JSON) still parses.

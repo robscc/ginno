@@ -38,7 +38,6 @@ mcp.json format:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -50,8 +49,9 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
-from .. import paths
-from .. import server_shared
+from ginno_runtime import jsonx as json
+
+from .. import paths, server_shared
 from ..lang import t
 from . import naming as mcp_naming
 

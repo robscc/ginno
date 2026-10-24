@@ -13,11 +13,12 @@ worse than no team at all.
 
 from __future__ import annotations
 
-import json
 import re
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from ginno_runtime import jsonx as json
 
 from .. import agents as agents_reg
 from .. import providers as prov_mod

@@ -31,12 +31,13 @@ VibeIslandConnector);关闭(默认)或 bridge 不存在时,本模块所有入口
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import subprocess
 from pathlib import Path
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 _log = logging.getLogger(__name__)
 

@@ -18,7 +18,6 @@ from fastapi.responses import JSONResponse
 from .. import paths
 from ..connectors import ensure_builtin_connectors
 from ..connectors import registry as conn_registry
-
 from ..lang import t
 
 router = APIRouter()
@@ -237,7 +236,7 @@ async def connector_action(cid: str, body: dict) -> Any:
             return JSONResponse({"error": "domain required"}, status_code=400)
         reg.write_config("chrome-extension", {})  # ensure section exists
         settings_path = paths.settings_path()
-        import json as _json
+        from ginno_runtime import jsonx as _json
 
         settings = _json.loads(settings_path.read_text() or "{}")
         conns = settings.setdefault("connectors", {})

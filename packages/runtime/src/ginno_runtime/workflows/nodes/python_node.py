@@ -28,9 +28,10 @@ its deterministic fast path (no LLM call).
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
+
+from ginno_runtime import jsonx as json
 
 from .. import expr as wf_expr
 from ..scripts import ENTRY_REGISTRY

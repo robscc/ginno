@@ -16,13 +16,13 @@ pin the contract from both ends:
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
 import pytest
 
 from ginno_runtime import i18n, lang
+from ginno_runtime import jsonx as json
 from ginno_runtime.api.stream.ws import _ev
 from ginno_runtime.server_shared import _ev as _ev_shared
 

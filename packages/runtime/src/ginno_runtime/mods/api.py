@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import uuid
@@ -20,6 +19,8 @@ from pathlib import Path
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
+
+from ginno_runtime import jsonx as json
 
 from ..server_shared import spawn_bg
 from . import bridge_utils

@@ -3,7 +3,6 @@ MCP server config, and skills management."""
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
@@ -11,6 +10,8 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from ginno_runtime import jsonx as json
 
 from .. import agents as agents_reg
 from .. import paths

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.world_state import (
     UPDATE_MSG_PREFIX,

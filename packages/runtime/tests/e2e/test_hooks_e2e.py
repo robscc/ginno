@@ -8,13 +8,13 @@ immediately on an empty home).
 
 from __future__ import annotations
 
-import json
 import sys
 
 import pytest
+from conftest import WSConversation, event_names, events_of
 from fastapi.testclient import TestClient
 
-from conftest import WSConversation, event_names, events_of
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
 

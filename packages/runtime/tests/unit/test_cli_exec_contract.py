@@ -3,11 +3,10 @@
 覆盖 crash-safe 终帧与 GINNO_EXEC_NO_ATTACH 的「绝不探活 127.0.0.1:8787」保证。
 """
 
-import json
-
 import pytest
 
 from ginno_runtime import cli
+from ginno_runtime import jsonx as json
 
 pytestmark = pytest.mark.e2e
 

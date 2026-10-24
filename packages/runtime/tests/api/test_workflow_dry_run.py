@@ -3,12 +3,12 @@ doctor_warnings pass-through on summarize-from-session."""
 
 from __future__ import annotations
 
-import json
 import uuid
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.checkpointer import FileCheckpointer
 from ginno_runtime.session_meta import _session_meta_upsert as _upsert
 

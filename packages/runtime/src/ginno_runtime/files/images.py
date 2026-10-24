@@ -21,10 +21,11 @@ display-only.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from .extractors import IMAGE_EXTS
 

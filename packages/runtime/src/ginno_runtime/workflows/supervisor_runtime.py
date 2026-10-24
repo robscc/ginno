@@ -16,7 +16,7 @@ through the module attribute, never via ``from ... import adjudicate``.
 
 from __future__ import annotations
 
-import json
+from ginno_runtime import jsonx as json
 
 from ..lang import t
 

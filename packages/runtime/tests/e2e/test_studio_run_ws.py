@@ -16,12 +16,11 @@ WS discipline: TestClient receives have NO timeout, so every drain goes through
 
 from __future__ import annotations
 
-import json
-
 import pytest
-from ginno_runtime.testing.fake_model import script_raise
-
 import studio_lib as L
+
+from ginno_runtime import jsonx as json
+from ginno_runtime.testing.fake_model import script_raise
 
 pytestmark = pytest.mark.e2e
 

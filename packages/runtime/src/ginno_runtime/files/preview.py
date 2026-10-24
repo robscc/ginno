@@ -11,7 +11,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..lang import t
-
 from . import extractors as ex
 
 MAX_LIMIT = 500

@@ -20,10 +20,11 @@ touches the item; artifact linkage is explicit (todo_link tool / UI).
 
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

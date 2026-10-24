@@ -8,10 +8,9 @@ see a `steps` view after the refactor.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.workflows import dsl, events, store
 

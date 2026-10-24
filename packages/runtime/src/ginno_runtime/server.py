@@ -79,7 +79,8 @@ async def lifespan(app: FastAPI):
     # plan_resume_on_restart=False（§6 开关）时改为取消恢复的 active 清单
     # ——不无人值守地续跑。
     try:
-        from .plans import store as _plan_store, watcher as _plan_watcher
+        from .plans import store as _plan_store
+        from .plans import watcher as _plan_watcher
         from .world_state import plan_resume_on_restart
 
         _resume = plan_resume_on_restart()
@@ -449,21 +450,21 @@ if WEB_OUT is not None and (WEB_OUT / "_next").exists():
 
 # ---- API routers (per-domain modules under ginno_runtime/api/) ------------
 # Included before the catch-all web route at the bottom of this module.
+from .api import badge as _badge_api  # noqa: E402
 from .api import code as _code_api  # noqa: E402
+from .api import code_fsops as _code_fsops_api  # noqa: E402
+from .api import config as _config_api  # noqa: E402
+from .api import connectors as _connectors_api  # noqa: E402
 from .api import diagnostics as _diagnostics_api  # noqa: E402
 from .api import distill as _distill_api  # noqa: E402
 from .api import export as _export_api  # noqa: E402
-from .api import search as _search_api  # noqa: E402
-from .api import badge as _badge_api  # noqa: E402
-from .api import code_fsops as _code_fsops_api  # noqa: E402
-from .api import config as _config_api  # noqa: E402
-from .api import plans as _plans_api  # noqa: E402
 from .api import files as _files_api  # noqa: E402
 from .api import folders as _folders_api  # noqa: E402
-from .api import connectors as _connectors_api  # noqa: E402
 from .api import knowledge as _knowledge_api  # noqa: E402
 from .api import memory as _memory_api  # noqa: E402
+from .api import plans as _plans_api  # noqa: E402
 from .api import schedule as _schedule_api  # noqa: E402
+from .api import search as _search_api  # noqa: E402
 from .api import sessions as _sessions_api  # noqa: E402
 from .api import stream as _stream_api  # noqa: E402
 from .api import team_generate as _team_gen_api  # noqa: E402
@@ -514,7 +515,8 @@ async def health() -> dict:
 async def web_test_search(body: dict) -> dict:
     """Probe a search engine with a neutral query (Settings → Web 搜索)."""
     from .web.config import load_web_config
-    from .web.engines import EngineError, search as engine_search
+    from .web.engines import EngineError
+    from .web.engines import search as engine_search
 
     cfg = load_web_config()
     engine = ((body or {}).get("engine") or cfg.default_engine or "").strip()

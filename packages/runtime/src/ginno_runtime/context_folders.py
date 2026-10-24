@@ -19,11 +19,12 @@ Security stance (design §3.5, M0 decisions):
 
 from __future__ import annotations
 
-import json
 import os
 import secrets
 import time
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 from .lang import t

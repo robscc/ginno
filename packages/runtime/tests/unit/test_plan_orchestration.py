@@ -383,8 +383,7 @@ async def test_split_confirm_creates_persistent_plan(isolated_home, monkeypatch)
 async def test_agent_plan_confirm_setting_gates(isolated_home, tmp_path):
     """D2 开关：context.plan_confirm_agent_plans=True 时 agent 建单一律
     pending_confirm，压过工具的 needs_confirm=False。"""
-    import json as _json
-
+    from ginno_runtime import jsonx as _json
     from ginno_runtime.tools.plan_tools import build_plan_tools
 
     (tmp_path / "settings.json").write_text(

@@ -16,7 +16,8 @@ from ..knowledge import citations as cit
 from ..knowledge import web_usage
 from ..lang import t
 from ..web.config import load_web_config
-from ..web.engines import EngineError, search as engine_search
+from ..web.engines import EngineError
+from ..web.engines import search as engine_search
 from ..web.fetch import FetchError, fetch_page
 
 WEB_TOOL_NAMES = ("web_search", "web_fetch")

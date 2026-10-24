@@ -5,8 +5,7 @@ input_tokens 是**整段提示词**（缓存段并入 input，字段分别落 ca
 cache_creation），reasoning 若有则是 output 子集不叠加。CLI 升级导致字段
 改名/口径漂移时，在这里显式失败——而不是静默把 0 记进用量账本。
 """
-import json
-
+from ginno_runtime import jsonx as json
 from ginno_runtime.tools.external_agents import (
     ClaudeCodeBackend,
     CodexBackend,

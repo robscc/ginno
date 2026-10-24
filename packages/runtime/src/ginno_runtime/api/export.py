@@ -11,7 +11,6 @@ user cannot back it up or move it. Two shapes, deliberately simple:
 
 from __future__ import annotations
 
-import json
 import time
 import zipfile
 from pathlib import Path
@@ -19,6 +18,8 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, PlainTextResponse
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from ..session_meta import _find_meta

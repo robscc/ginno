@@ -25,11 +25,12 @@ skills (A6), memory (change awareness; budget deferred), mcp (A7).
 from __future__ import annotations
 
 import hashlib
-import json
 import platform
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 from .agents.memory import read_agent_memory

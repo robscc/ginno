@@ -10,10 +10,11 @@ the native host protocol (port file + chunk reassembly).
 from __future__ import annotations
 
 import asyncio
-import json
 import struct
 
 import pytest
+
+from ginno_runtime import jsonx as json
 
 # ---- helpers -------------------------------------------------------------
 

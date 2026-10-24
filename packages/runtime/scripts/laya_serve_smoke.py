@@ -18,12 +18,13 @@ multilingual）。依次验证：
 classifier_events.jsonl。
 """
 import asyncio
-import json
 import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 BASE_URL = (sys.argv[1] if len(sys.argv) > 1 else "") or ""  # "" → SF 网关默认
 API_KEY = os.environ.get("LAYA_API_KEY") or (sys.argv[2] if len(sys.argv) > 2 else "")

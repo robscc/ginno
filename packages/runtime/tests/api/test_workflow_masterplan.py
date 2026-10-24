@@ -15,11 +15,11 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import re
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 from ginno_runtime.workflows import doctor as wf_doctor
 from ginno_runtime.workflows import dsl as wf_dsl
@@ -508,9 +508,10 @@ def test_synthesis_case_lifecycle():
 def test_synthesis_records_on_summarize(client, monkeypatch):
     """The live endpoint returns immediately with synthesis_id (no dsl); the
     background task records the case and `_await` observes the terminal state."""
+    from langchain_core.messages import HumanMessage
+
     from ginno_runtime import server as srv
     from ginno_runtime.checkpointer import FileCheckpointer
-    from langchain_core.messages import HumanMessage
 
     sid = "sess-synth-rec"
     srv._session_meta_upsert("default", {"id": sid, "title": "t", "agent_id": "dev"})
@@ -540,9 +541,10 @@ def test_synthesis_records_on_summarize(client, monkeypatch):
 
 
 def _seed_case(client, monkeypatch, sid="sess-api-case"):
+    from langchain_core.messages import HumanMessage
+
     from ginno_runtime import server as srv
     from ginno_runtime.checkpointer import FileCheckpointer
-    from langchain_core.messages import HumanMessage
 
     srv._session_meta_upsert("default", {"id": sid, "title": "t", "agent_id": "dev"})
     cp = FileCheckpointer("default")
@@ -615,9 +617,10 @@ def test_synthesis_uuid_suffix_unique():
 
 def test_synthesis_bg_failure_records_case(client, monkeypatch):
     """A fully failed background synthesis still records a terminal case."""
+    from langchain_core.messages import HumanMessage
+
     from ginno_runtime import server as srv
     from ginno_runtime.checkpointer import FileCheckpointer
-    from langchain_core.messages import HumanMessage
 
     sid = "sess-synth-fail"
     srv._session_meta_upsert("default", {"id": sid, "title": "t", "agent_id": "dev"})
@@ -668,8 +671,9 @@ def test_synthesis_await_unknown_404(client):
 
 def test_synthesis_ws_events(create_session, client, monkeypatch, ws_conv):
     """The background driver streams synthesis.event started/attempt/finished."""
-    from ginno_runtime.checkpointer import FileCheckpointer
     from langchain_core.messages import HumanMessage
+
+    from ginno_runtime.checkpointer import FileCheckpointer
 
     # create_session puts the session in _SESSIONS so the WS endpoint accepts it
     sid = create_session([script(text="unused")], agent_id="dev")

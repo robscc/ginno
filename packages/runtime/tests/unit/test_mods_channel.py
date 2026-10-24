@@ -10,11 +10,11 @@ and the event payload/deny shapes of events.py.
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.mods import channel as mods_channel
 from ginno_runtime.mods import events as mods_events
 from ginno_runtime.mods.channel import (
@@ -39,7 +39,7 @@ def test_frame_codec_rejects_non_object():
 
     with _pytest.raises(mods_channel.FrameError):
         decode_frame(b"[1,2,3]\n")
-    import json as _json
+    from ginno_runtime import jsonx as _json
 
     with _pytest.raises(_json.JSONDecodeError):
         decode_frame(b"not json\n")

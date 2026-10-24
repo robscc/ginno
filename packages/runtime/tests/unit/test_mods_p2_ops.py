@@ -5,7 +5,6 @@ mods dir override/scope rules. Fully offline."""
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.messages import HumanMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.agents import mod_registry
 from ginno_runtime.compaction import maybe_compact_history
 from ginno_runtime.mods import bridge_utils, ops
@@ -411,9 +411,10 @@ def _seed_session_history(session_id: str, *, slug: str = "default") -> None:
     """给 _rebuild_history 造可读的磁盘 checkpoint（FileCheckpointer full 模式）。"""
     import asyncio
 
+    from langchain_core.messages import AIMessage, HumanMessage
+
     from ginno_runtime.checkpointer import FileCheckpointer
     from ginno_runtime.server_shared import _SESSIONS
-    from langchain_core.messages import AIMessage, HumanMessage
 
     _SESSIONS[session_id] = {
         "id": session_id,

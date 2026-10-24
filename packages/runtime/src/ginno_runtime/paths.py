@@ -270,7 +270,7 @@ def _migrate_mods(settings: dict) -> bool:
 
 def ensure_layout() -> None:
     """Create the standard ~/.ginno directory tree with seed defaults."""
-    import json
+    from ginno_runtime import jsonx as json
 
     root = home()
     for sub in (

@@ -15,11 +15,10 @@ client-side ref), so the two properties that matter most are:
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from conftest import event_names, events_of, script, script_tool_call
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server_shared
 
 pytestmark = pytest.mark.e2e

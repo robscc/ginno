@@ -6,11 +6,10 @@ degradation paths leave graph behaviour byte-identical to OFF."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from langchain_core.messages import HumanMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.classifier.base import ClassifierModelBase, ClassifierUnavailable
 from ginno_runtime.classifier.middlewares import (

@@ -262,7 +262,8 @@ def build_wiki_context(query: str, cfg: KnowledgeConfig | None = None) -> str:
         )
         parts.append(contract)
         try:
-            from . import citations as _cit, usage as _usage
+            from . import citations as _cit
+            from . import usage as _usage
 
             _cit.register_wiki_sources(results)
             _usage.record_injected(

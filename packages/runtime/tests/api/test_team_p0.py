@@ -10,11 +10,11 @@
 
 from __future__ import annotations
 
-import json
 import time as _time
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server_shared
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 
@@ -167,8 +167,9 @@ def test_deliver_runs_member_and_posts_reply(client, patch_build_model):
 
     # 回帖是结构化消息对象：带 agentId + teamReply 标记（§5.2 要点 2）。
     # 内部 kwarg 是 ginno_team_reply，序列化到 bubble 上叫 teamReply。
-    assert "teamReply" in reply_text
-    assert '"agentId": "dev"' in reply_text
+    bubbles = [b for b in json.loads(reply_text)["messages"] if b.get("teamReply")]
+    assert bubbles, "回帖缺少 teamReply 标记"
+    assert bubbles[0]["agentId"] == "dev"
     assert m["instance_id"] in reply_text
 
 

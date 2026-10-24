@@ -8,13 +8,12 @@ toggle / date rollover / mcp drift, plus D2 usage events.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from conftest import events_of
 from langchain_core.messages import AIMessage
 
 from ginno_runtime import agents as agents_reg
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.world_state import UPDATE_MSG_PREFIX, world_state_path
 

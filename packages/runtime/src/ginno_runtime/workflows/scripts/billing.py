@@ -13,12 +13,13 @@ Normalized record (canonical shape, see :mod:`compare`)::
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
 import subprocess
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 _CLI_TIMEOUT_S = 120
 

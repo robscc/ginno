@@ -24,6 +24,7 @@ from ..goals import events as goal_events
 from ..goals import store as goal_store
 from ..goals import templates as goal_templates
 from ..graph import build_all_tools, build_graph
+from ..lang import t
 from ..models import build_model
 from ..server_shared import (
     _GOAL_DRIVERS,
@@ -60,8 +61,6 @@ from ..tools.ask_tools import reset_interactive as _reset_interactive_turn
 from ..tools.ask_tools import set_interactive as _set_interactive_turn
 from .config import _agent_lookup
 from .messages_ui import _messages_to_ui
-
-from ..lang import t
 
 router = APIRouter()
 

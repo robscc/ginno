@@ -14,8 +14,9 @@ provider's skill), so adding a platform needs no adapter code.
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from ..skills.loader import SkillLoader

@@ -7,8 +7,8 @@ LLM, asserting the exact event protocol the Next.js UI consumes.
 from __future__ import annotations
 
 import pytest
-
 from conftest import event_names, events_of
+
 from ginno_runtime.testing.fake_model import script
 
 pytestmark = pytest.mark.e2e

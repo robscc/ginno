@@ -3,11 +3,10 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from conftest import events_of, script, script_tool_call
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.truncation import TRUNCATION_MARKER_EN
 from ginno_runtime.world_state import REINJECT_MSG_PREFIX, SUMMARY_MSG_PREFIX

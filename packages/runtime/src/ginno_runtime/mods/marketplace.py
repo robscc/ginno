@@ -13,12 +13,13 @@ is separate; this module only discovers, fetches, and copies.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import shutil
 import subprocess
 import time
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from . import bridge_utils

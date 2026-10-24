@@ -27,16 +27,16 @@ response on stdout. Response fields:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from ginno_runtime import jsonx as json
+
 from .. import paths
-from .grants import SETTINGS_HOOK_MOD
-from .grants import classic_grant_for, classify_hook_command
+from .grants import SETTINGS_HOOK_MOD, classic_grant_for, classify_hook_command
 
 log = logging.getLogger("ginno.hooks")
 

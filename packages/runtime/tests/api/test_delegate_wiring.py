@@ -5,12 +5,12 @@ fake Popen 提供罐装 claude stream-json；CLI 桩注入 base._CLI_CACHE。
 异步语义：工具立即返回回执（delegation=<id> started），后台跑完经
 subagent 注入通道回流（前端 🧭 卡同款）。
 """
-import json
 import subprocess
 import time as _time
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.testing.fake_model import script, script_tool_call
 from ginno_runtime.tools.external_agents import base as _xa_base
 

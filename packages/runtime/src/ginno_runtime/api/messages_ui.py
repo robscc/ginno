@@ -8,12 +8,13 @@ streaming layer for live rendering helpers.
 from __future__ import annotations
 
 import html
-import json
 import re
 from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from ginno_runtime import jsonx as json
 
 from .. import workflows as wf_store
 from ..api import server_tools

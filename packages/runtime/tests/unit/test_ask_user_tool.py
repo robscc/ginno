@@ -5,10 +5,9 @@ tests/e2e/test_ask_user_flow.py."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.tools import ask_tools as at
 
 pytestmark = pytest.mark.unit

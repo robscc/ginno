@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import uuid
 from typing import Any
@@ -29,6 +28,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server_shared
 from ginno_runtime import subagent_plan as plan_mod
 from ginno_runtime import subagent_scheduler as sched

@@ -8,15 +8,15 @@ Uses the kb_vault fixture + a scripted capturing model whose answer carries a
 from __future__ import annotations
 
 import glob
-import json
 
 import pytest
+from conftest import event_names
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import PrivateAttr
 
-from conftest import event_names
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 
 pytestmark = pytest.mark.e2e

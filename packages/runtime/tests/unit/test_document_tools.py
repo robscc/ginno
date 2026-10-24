@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.tools.document_tools import parse_document
 
 pytestmark = pytest.mark.unit

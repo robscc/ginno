@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import json
 import logging
 import urllib.request
 from collections.abc import Callable
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from ..lang import t
 

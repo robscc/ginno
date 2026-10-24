@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.knowledge.config import load_knowledge_config, save_knowledge_config
 from ginno_runtime.knowledge.injection import (

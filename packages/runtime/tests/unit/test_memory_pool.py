@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.memory.pool import (
     append_to_pool,
     clear_pool,

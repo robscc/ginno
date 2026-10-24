@@ -16,11 +16,11 @@ fresh tmp dir, and ``tmp_path_factory`` provides directories OUTSIDE that home.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.api import code as code_panel
 from ginno_runtime.api.code import CodeAccessError, resolve_code_target
@@ -359,7 +359,7 @@ async def test_ghost_session_endpoint_returns_unknown_root():
     It used to be HTTP 200 ``{ok:false}`` so the panel could render copy, but
     that made a dead session indistinguishable from a readable empty file for
     every ``res.json()`` consumer."""
-    import json
+    from ginno_runtime import jsonx as json
 
     out = await code_panel.code_roots("default", "no-such-session")
     assert out.status_code == 404

@@ -29,7 +29,6 @@ What the result proves (the diagnosis):
 from __future__ import annotations
 
 import asyncio
-import json
 import queue
 import threading
 import time
@@ -40,6 +39,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server
 from ginno_runtime import server as server_mod
 

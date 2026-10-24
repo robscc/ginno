@@ -24,7 +24,6 @@ mirrors its shape deliberately.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -32,6 +31,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.api import code as code_panel
 from ginno_runtime.api import stream as stream_api

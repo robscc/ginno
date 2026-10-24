@@ -9,9 +9,9 @@ tools_allow merge for installs seeded before P1d.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.agents import ensure_workflow_dev_tools, get_agent
 from ginno_runtime.tools.workflow_tools import workflow_dry_run

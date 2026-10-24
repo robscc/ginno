@@ -43,7 +43,7 @@ def test_midturn_reconnect_keeps_receiving_stream(
 ):
     # privileged mode: bash is "ask" in the seeded policy, which would park the
     # turn at a permission prompt instead of running the slow tool
-    import json as _json
+    from ginno_runtime import jsonx as _json
 
     sp = isolated_home / "settings.json"
     s = _json.loads(sp.read_text())

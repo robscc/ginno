@@ -8,12 +8,13 @@ the UI. Config lives in ``settings.json`` under ``connectors.<id>``.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

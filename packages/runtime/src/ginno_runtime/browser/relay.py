@@ -18,12 +18,13 @@ with per-command wait timeout (QUEUE_FULL / QUEUE_TIMEOUT, 设计 §3).
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from collections.abc import Callable
 
 from fastapi import WebSocket, WebSocketDisconnect
+
+from ginno_runtime import jsonx as json
 
 from ..connectors import registry as conn_registry
 from ..connectors.registry import (

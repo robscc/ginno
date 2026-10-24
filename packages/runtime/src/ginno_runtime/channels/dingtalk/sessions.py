@@ -20,11 +20,12 @@ F2 步骤 4：收到渠道消息后按 ``staffId``（P0 会话策略 ``per_user`
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from datetime import datetime
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 
 def _now() -> str:

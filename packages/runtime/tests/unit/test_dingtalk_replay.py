@@ -11,13 +11,13 @@ F2 路由 → headless turn（fake 引擎按剧本推帧）→ tap 翻译 → F4
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import types
 
 import httpx
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server_shared as shared
 from ginno_runtime.channels import base as channels_base
 from ginno_runtime.channels.dingtalk import menus as menus_mod

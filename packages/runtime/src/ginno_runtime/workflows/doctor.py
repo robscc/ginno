@@ -12,8 +12,9 @@ that no upstream step ever declares) *before* the run starts.
 
 from __future__ import annotations
 
-import json
 import re
+
+from ginno_runtime import jsonx as json
 
 from .. import agents as agents_reg
 from ..lang import t

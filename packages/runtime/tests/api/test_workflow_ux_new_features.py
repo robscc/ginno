@@ -22,12 +22,12 @@ NOTE (verified actual behavior, see report):
 
 from __future__ import annotations
 
-import json
 import uuid
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server
 from ginno_runtime.checkpointer import FileCheckpointer
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script

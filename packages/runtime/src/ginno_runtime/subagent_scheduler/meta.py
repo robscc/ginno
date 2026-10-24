@@ -23,7 +23,7 @@ def max_concurrent() -> int:
     try:
         p = _NS.paths.settings_path()
         if p.exists():
-            import json as _json
+            from ginno_runtime import jsonx as _json
 
             settings = _json.loads(p.read_text() or "{}")
             val = ((settings.get("subagent") or {}) if isinstance(settings, dict) else {}).get(

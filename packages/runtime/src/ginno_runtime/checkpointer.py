@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import os
 import tempfile
 import threading
@@ -44,6 +43,8 @@ from langgraph.checkpoint.base import (
     CheckpointTuple,
 )
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 

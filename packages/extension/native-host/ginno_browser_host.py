@@ -12,7 +12,10 @@ for the extension to show a helpful error instead of failing silently.
 
 from __future__ import annotations
 
-import json
+try:  # shebang points at the sidecar interpreter; bare python keeps the shim alive
+    from ginno_runtime import jsonx as json
+except ImportError:
+    import json
 import struct
 import sys
 

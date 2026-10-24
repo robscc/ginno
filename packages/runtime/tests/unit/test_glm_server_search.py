@@ -9,10 +9,9 @@ the model narrating the call in plain ``text`` blocks.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.api import server_tools
 from ginno_runtime.api.messages_ui import (
     _WEB_RESULT_RE,

@@ -25,7 +25,7 @@ def _wiki_indexer(vault_path: str | Path, wiki_dir: str) -> WikiIndexer:
 
 def update_index(vault_path: str | Path, wiki_dir: str = "Ginno/Wiki") -> str:
     """Regenerate ``<wiki_dir>/INDEX.md`` grouped by directory; returns text."""
-    import json
+    from ginno_runtime import jsonx as json
 
     vault = Path(vault_path).expanduser().resolve()
     wdir = vault / wiki_dir

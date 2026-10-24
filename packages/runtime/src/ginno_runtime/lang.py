@@ -28,11 +28,12 @@ stay English — never route them through ``t()``/``_()``.
 from __future__ import annotations
 
 import contextvars
-import json
 import locale as _locale_mod
 import logging
 import os
 import warnings
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 

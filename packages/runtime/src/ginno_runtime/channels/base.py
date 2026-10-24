@@ -14,9 +14,10 @@ to Ginno sessions (docs/dingtalk-connector-design.md §3).
 from __future__ import annotations
 
 import abc
-import json
 import uuid
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import server_shared as shared
 

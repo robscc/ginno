@@ -9,10 +9,9 @@ maintenance helpers behind the workflow's python entries.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.knowledge.association import reset_engines
 from ginno_runtime.knowledge.indexer import reset_indexers
 

@@ -19,9 +19,9 @@ merged param surface has no conflicts.
 
 from __future__ import annotations
 
-import json
-
 from langchain_core.tools import tool
+
+from ginno_runtime import jsonx as json
 
 from ..lang import t
 

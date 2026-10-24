@@ -27,10 +27,10 @@ import subprocess
 import time
 from typing import Any
 
+from ..lang import t
 from . import scripts
 from .cdp import CDPConnection, CDPError, TabSession
 from .config import BrowserConfig, load_browser_config, profile_dir
-from ..lang import t
 
 log = logging.getLogger("ginno.browser")
 

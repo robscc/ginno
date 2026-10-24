@@ -4,10 +4,9 @@ without a live graph/WS). The interrupt->event->WS path is covered by the e2e te
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import workflows as wf_store
 from ginno_runtime.tools import workflow_tools as wt
 

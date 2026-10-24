@@ -317,7 +317,7 @@ async def _profile_run(b, name: str, a: dict) -> Any:
             return "undefined"
         if isinstance(val, str):
             return val
-        import json as _json
+        from ginno_runtime import jsonx as _json
         return _json.dumps(val, ensure_ascii=False, indent=2)
     if name == "browser_console":
         rows = await b.console_messages(tid, a.get("pattern"),

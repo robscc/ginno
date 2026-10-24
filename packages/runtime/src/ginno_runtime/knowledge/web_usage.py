@@ -8,13 +8,14 @@ metric (shown in Settings); the domain table feeds KB Discover's
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import threading
 import time
 import urllib.parse
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

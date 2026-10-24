@@ -7,13 +7,13 @@ suffixing, orphan-artifact pruning, and title-job re-queue.
 
 from __future__ import annotations
 
-import json
 import os
 import time
 
 import pytest
 
 from ginno_runtime import artifacts as art_store
+from ginno_runtime import jsonx as json
 from ginno_runtime import maintenance, paths
 from ginno_runtime.session_meta import _session_meta_list, _session_meta_rewrite_all
 
@@ -206,8 +206,7 @@ def test_image_and_doc_artifacts_with_missing_files_are_pruned(isolated_home, tm
 def test_dangling_team_and_run_refs_are_healed(isolated_home, monkeypatch):
     """DATA-06: references to deleted sessions get cleared (team) / dropped
     (schedule run) instead of silently pointing at nothing."""
-    import json as _json
-
+    from ginno_runtime import jsonx as _json
     from ginno_runtime import paths as paths_mod
     from ginno_runtime import schedule_store
     from ginno_runtime.teams import store as team_store
@@ -247,8 +246,7 @@ def test_dangling_team_and_run_refs_are_healed(isolated_home, monkeypatch):
 def test_archive_marks_old_near_empty_sessions(isolated_home, monkeypatch):
     """P1-1: inactivity + almost no messages → archived; a real conversation,
     a pinned session or a referenced one stays visible."""
-    import json as _json
-
+    from ginno_runtime import jsonx as _json
     from ginno_runtime import paths as paths_mod
 
     old = time.time() - 20 * DAY

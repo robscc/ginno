@@ -29,14 +29,14 @@ attribute here keeps reaching the internal call sites, and the mutable state
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
 import uuid
 from typing import Any
 
-from .. import paths
-from .. import server_shared
+from ginno_runtime import jsonx as json
+
+from .. import paths, server_shared
 from ..lang import t
 from ..server_shared import (
     _MANAGED_TURNS,
@@ -60,8 +60,14 @@ from ..session_meta import (
     _session_slug,
     subagent_depth_of,
 )
-
 from ._state import (
+    _INJECTION_FLUSH_TASKS,
+    _INJECTION_WAKING,
+    _PENDING_INJECTIONS,
+    _RECURSION_WRAP_TEXT,
+    _RECURSION_WRAP_TEXT_EN,
+    _SPAWN_LOCK,
+    _WARNED_CONCURRENCY,
     INJECTION_COALESCE_S,
     LIVE_STATUSES,
     SUBAGENT_MAX_CONCURRENT,
@@ -72,13 +78,6 @@ from ._state import (
     SUMMARY_MAX_CHARS,
     TERMINAL_STATUSES,
     WARN_RUNNING_RATIO,
-    _INJECTION_FLUSH_TASKS,
-    _INJECTION_WAKING,
-    _PENDING_INJECTIONS,
-    _RECURSION_WRAP_TEXT,
-    _RECURSION_WRAP_TEXT_EN,
-    _SPAWN_LOCK,
-    _WARNED_CONCURRENCY,
 )
 from .brief import (
     _OUTPUT_DISCIPLINE,
@@ -91,45 +90,12 @@ from .brief import (
     format_subagent_failure,
     format_subagent_result,
 )
-from .meta import (
-    _clamp_concurrent,
-    _concurrency_warn_floor,
-    _is_subagent,
-    _live_descendants,
-    _push_both,
-    _running_subagent_metas,
-    _subagent_status,
-    _touch_in_memory,
-    _tree_ids,
-    _wait_rows,
-    _warn_once,
-    collect_subagent_rows,
-    max_concurrent,
-    _maybe_warn_concurrency,
-)
-from .reconcile import (
-    _is_subagent_injection,
-    reconcile_orphan_subagents,
-    reconcile_stash_injections,
-)
 from .fork import (
     _fork_copy,
     _fork_id,
     _fork_start_text,
     _heal_fork_tail,
     _seed_fork_history,
-)
-from .spawn import _agent_type_model_override, create_subagent
-from .runner import (
-    _flush_injections,
-    _injection_flush_timer,
-    _inject_result,
-    _queue_injection,
-    _reevaluate_waiting_parent,
-    _run_managed_turn,
-    _run_managed_turn_locked,
-    _turn_lock_of,
-    _wake_parent_turn,
 )
 from .gate import (
     _FINALIZING,
@@ -146,6 +112,39 @@ from .gate import (
     on_turn_stopped,
     revive_failed_for_retry,
 )
+from .meta import (
+    _clamp_concurrent,
+    _concurrency_warn_floor,
+    _is_subagent,
+    _live_descendants,
+    _maybe_warn_concurrency,
+    _push_both,
+    _running_subagent_metas,
+    _subagent_status,
+    _touch_in_memory,
+    _tree_ids,
+    _wait_rows,
+    _warn_once,
+    collect_subagent_rows,
+    max_concurrent,
+)
+from .reconcile import (
+    _is_subagent_injection,
+    reconcile_orphan_subagents,
+    reconcile_stash_injections,
+)
+from .runner import (
+    _flush_injections,
+    _inject_result,
+    _injection_flush_timer,
+    _queue_injection,
+    _reevaluate_waiting_parent,
+    _run_managed_turn,
+    _run_managed_turn_locked,
+    _turn_lock_of,
+    _wake_parent_turn,
+)
+from .spawn import _agent_type_model_override, create_subagent
 from .stop import (
     _stop_parked_descendant,
     delete_subagent_tree,

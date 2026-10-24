@@ -12,8 +12,9 @@ a little earlier, which is the safe direction).
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 _BYTES_PER_TOKEN = 4
 _CJK_TOKENS_PER_CHAR = 1.5

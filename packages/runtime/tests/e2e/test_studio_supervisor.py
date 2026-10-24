@@ -15,10 +15,10 @@ run/resume, so script lists only need one entry per model call per invocation.
 from __future__ import annotations
 
 import pytest
+import studio_lib as L
 from fastapi.testclient import TestClient
 from pydantic import PrivateAttr
 
-import studio_lib as L
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 
 pytestmark = pytest.mark.e2e

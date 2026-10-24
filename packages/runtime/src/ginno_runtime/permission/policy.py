@@ -18,10 +18,11 @@ deny → ask → allow. Default is "ask".
 from __future__ import annotations
 
 import fnmatch
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

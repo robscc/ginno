@@ -1,30 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Paperclip, Keyboard, ArrowUp, X, AlertCircle, Square, Check, RotateCcw } from "lucide-react";
+import { X, Check } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
 import { loadToolLabels } from "@/lib/toolLabels";
 import * as api from "@/lib/runtime";
 import { pushNotice } from "@/lib/notice";
-import { isDesktop } from "@/lib/desktop";
 import { useTranslations } from "next-intl";
-import { t } from "@/i18n/provider";
 import { agentHex } from "@/lib/theme";
-import { greeting } from "@/lib/utils";
-import { Icon } from "@/components/icons";
-import { ContextFoldersChip } from "@/components/shell/ContextFoldersChip";
-import { hasPendingTool, type Block, type QuestionBlock } from "@/components/chat/blocks";
+import { hasPendingTool, type Block } from "@/components/chat/blocks";
 import { LiveRunBlock } from "./RunBlocks";
 import { SummarizeModal } from "./SummarizeModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
-import { ComposerMenu } from "@/components/chat/ComposerMenu";
 import {
   applySelection,
   buildMenuItems,
-  dedupeMentions,
   detectTrigger,
-  pruneMentions,
   type MenuItem,
   type ResolvedMention,
   type Trigger,
@@ -32,19 +24,8 @@ import {
 import type { WorkflowRun } from "@/lib/types";
 import type { SessionMeta, SessionUsage } from "@/lib/types";
 import {
-  appendEntry,
-  caretOnFirstLine,
-  caretOnLastLine,
-  initHistory,
-  navDown,
-  navUp,
-  seedEntries,
-  type HistoryState,
-} from "./inputHistory";
-import {
   mid,
   newTurnId,
-  recommendAgentId,
   type Attachment,
   type ChatMsg,
   type FileAttachment,
@@ -60,27 +41,23 @@ import { useChatStreamEngine, HOME_SLOT } from "./useChatStreamEngine";
 import { useComposerFiles } from "./useComposerFiles";
 import { useRunActions } from "./useRunActions";
 import { useModelPick } from "./useModelPick";
-import { useRouter } from "next/navigation";
 import { useSummarizeFlow } from "./useSummarizeFlow";
-import { ModBand } from "./mod/ModBand";
 import { ModAskCard, type ModAskState } from "./mod/ModAskCard";
 import type { ModBandGroup } from "./mod/ModBand";
-import { QueueBar } from "./stream/QueueBar";
-import { ModelChipMenu } from "./stream/ModelChipMenu";
-import { ConnStatusChip } from "./stream/ConnStatusChip";
-import { ComposerAttachmentRows, ImagesReadingRow } from "./stream/ComposerAttachmentRows";
 import { DelegationStatusBar } from "./stream/DelegationStatusBar";
 import { PermissionPromptCard } from "./stream/PermissionPromptCard";
 import { SummarizeMenu } from "./stream/SummarizeMenu";
 import { TranscriptList } from "./stream/TranscriptList";
+import { Composer } from "./stream/Composer";
+import { AgentChips } from "./stream/AgentChips";
+import { HomeView } from "./stream/HomeView";
+import { useComposerResize } from "./stream/useComposerResize";
+import { useComposerSend } from "./stream/useComposerSend";
+import { useSuggestions } from "./stream/useSuggestions";
+import { useFirstRun } from "./stream/useFirstRun";
+import { useChatEventBridge } from "./stream/useChatEventBridge";
 import { SessionSuggestions } from "./SessionSuggestions";
-import { FirstRunCards } from "./FirstRunCards";
 import { DistillMenu, type DistillKind } from "./DistillMenu";
-
-// V2 P2-1: dismissals are per (session_id, suggestion id), persisted locally.
-const SUGGEST_DISMISS_LS_KEY = "ginno-dismissed-suggestions";
-// V2 P2-3: the first-run starter is shown until the user acts on / dismisses it.
-const FIRST_RUN_LS_KEY = "ginno-first-run-done";
 
 export function ChatStream({
   session,
@@ -97,7 +74,6 @@ export function ChatStream({
   // chat 域翻译；tr 为动态 key（failReason 稳定 key、状态枚举等）收敛后的
   // string 签名版本，存在性用 has 前置校验（理由见 blocks.tsx useChatT）。
   const tc = useTranslations("chat");
-  const router = useRouter();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [liveId, setLiveId] = useState<string | null>(null);
   const [streamAgent, setStreamAgent] = useState<string | null>(null);
@@ -117,8 +93,6 @@ export function ChatStream({
   // 瞬态显示层状态,真源在 engine 的 compactingBySessionRef。
   const [compacting, setCompacting] = useState(false);
   const [wsStatus, setWsStatus] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
-  // Composer height: undefined = auto-grow (capped); a number = user-dragged size.
-  const [composerH, setComposerH] = useState<number | undefined>(undefined);
   // Command/mention autocomplete: open menu (items + active index + trigger).
   const [menu, setMenu] = useState<{ items: MenuItem[]; active: number; trigger: Trigger } | null>(null);
   // Mid-turn steering queue (docs/steering-design.md). Shared with the floating
@@ -135,11 +109,6 @@ export function ChatStream({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  // Composer ↑/↓ input history, per session (shell-style recall; the seed
-  // comes from the session's already-loaded user messages, so a reload or
-  // device switch still recalls the full history). See inputHistory.ts.
-  const inputHistoryRef = useRef<Record<string, HistoryState>>({});
-  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
   // connectRef: the reconnect button always calls this; updated on each session switch
   const connectRef = useRef<() => void>(() => {});
   // Set when a notification click asked to land on a session's latest message;
@@ -159,25 +128,11 @@ export function ChatStream({
   const [modBands, setModBands] = useState<Record<string, ModBandGroup[]>>({});
   // $.ui.ask(§7.3):按 sid 存的待答问题,浮层渲染(见文件尾部 ModAskCard)。
   const [modAsks, setModAsks] = useState<Record<string, ModAskState | null>>({});
-
-  // ── V2 P2-1 execution-time suggestions ──────────────────────────────────
-  // Fetched when a session opens and again whenever a turn settles
-  // (running → false); see the effects below. Automation sessions are filtered
-  // server-side (`excluded: "automation"`).
-  const [suggestions, setSuggestions] = useState<api.SessionSuggestion[]>([]);
-  // Suggestion id whose action is currently running (button spinner).
-  const [suggestBusy, setSuggestBusy] = useState<string | null>(null);
-  // Dismissed suggestion keys `${sessionId}:${suggestionId}` (localStorage
-  // mirror; read once on mount, written on every dismiss).
-  const [suggDismissed, setSuggDismissed] = useState<Record<string, true>>({});
-  // ── V2 P2-3 first-run starter (home view only) ─────────────────────────
-  const [firstRunDone, setFirstRunDone] = useState(false);
-  // localStorage may only be read after mount (SSR pre-render has no window);
-  // gate the cards on this so a dismissed starter never flashes back.
-  const [firstRunChecked, setFirstRunChecked] = useState(false);
-  const [firstRunBusy, setFirstRunBusy] = useState(false);
   // 「沉淀为…」 request in flight.
   const [distillBusy, setDistillBusy] = useState(false);
+
+  // Composer 高度：undefined = 自适应（有上限）；数字 = 用户拖拽后的固定高度。
+  const { composerH, setComposerH, onResizeStart } = useComposerResize({ composerBoxRef });
 
   // 文件/图片挂载管线（useComposerFiles）与 engine 互相依赖：engine 的 deps
   // 要 uploadOneDoc/attachOne，而它们要读 engine 的共享 ref。经 holder 打破环
@@ -241,11 +196,18 @@ export function ChatStream({
   } = useRunActions({ g, curSessionIdRef, runsBySessionRef, syncDisplay });
 
   // 模型 chip：home 待生效模型/挂载目录 + 服务端热切。
+  const modelPick = useModelPick({ g, session, target });
   const {
     homeModel, homeCreatingRef, pendingMounts, setPendingMounts, resetPendingMounts,
     modelOpen, setModelOpen, pickModel, enabledProviders,
     targetAgent, homeEffective, homeModelSource, modelChipLabel,
-  } = useModelPick({ g, session, target });
+  } = modelPick;
+
+  // V2 P2-3 首启引导（仅首页、且还没有任何会话）。
+  const {
+    showFirstRun, firstRunBusy, dismissFirstRun, firstRunAsk,
+    firstRunWorkflow, firstRunMountFolder,
+  } = useFirstRun({ g, session, textareaRef, homeModel, setPendingMounts });
 
   // 页面刷新后的 run 卡片水合（run view 方案）：runsBySessionRef 只由
   // run.bind 推送填充，刷新后历史绑定会丢。store 的 workflowRuns 是全量
@@ -277,78 +239,11 @@ export function ChatStream({
     onRunningChange?.(running);
   }, [running, onRunningChange]);
 
-  // ── V2 P2-1 / P2-3 localStorage hydration (client-only) ─────────────────
-  // try/catch every read/write: localStorage throws in private windows and can
-  // be blocked entirely, and none of this is load-bearing for the chat itself.
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SUGGEST_DISMISS_LS_KEY);
-      if (raw) {
-        const parsed: unknown = JSON.parse(raw);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          setSuggDismissed(parsed as Record<string, true>);
-        }
-      }
-    } catch {
-      /* localStorage unavailable — dismissals stay in memory for this mount */
-    }
-    try {
-      setFirstRunDone(localStorage.getItem(FIRST_RUN_LS_KEY) === "1");
-    } catch {
-      /* see above */
-    }
-    setFirstRunChecked(true);
-  }, []);
-
-  // Suggestions, load 1/2: once when a session becomes the active one.
-  // `cancelled` (not curSessionIdRef) guards late responses — on the very first
-  // mount the engine's session effect runs before these, but a rapid switch can
-  // still resolve out of order.
-  const suggestSid = session?.id ?? null;
-  useEffect(() => {
-    setSuggestions([]);
-    if (!suggestSid) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const r = await api.getSuggestions(suggestSid);
-        if (cancelled) return;
-        setSuggestions(
-          r.excluded === "automation" || !Array.isArray(r.suggestions) ? [] : r.suggestions,
-        );
-      } catch {
-        /* runtime unreachable — no cards; the next turn end retries */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [suggestSid]);
-
-  // Suggestions, load 2/2: after each turn settles. The cards are actionable
-  // only once the turn is over (compact/switch would race a live turn), so this
-  // is also where they reappear after being hidden while `running`.
-  const wasRunningRef = useRef(false);
-  useEffect(() => {
-    const settled = wasRunningRef.current && !running;
-    wasRunningRef.current = running;
-    if (!settled || !suggestSid) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const r = await api.getSuggestions(suggestSid);
-        if (cancelled) return;
-        setSuggestions(
-          r.excluded === "automation" || !Array.isArray(r.suggestions) ? [] : r.suggestions,
-        );
-      } catch {
-        /* keep whatever is on screen */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [running, suggestSid]);
+  // V2 P2-1 execution-time suggestions（状态/加载/动作在 useSuggestions 内）。
+  const { suggestBusy, visibleSuggestions, dismissSuggestion, runSuggestionAction } =
+    useSuggestions({
+      g, session, running, target, attemptSend, showComposerHint, setModelOpen, reportDistill,
+    });
 
   // A pending ask_user card parks the turn on an interrupt exactly like a
   // permission prompt: while parked, a stray Escape must not cancel it and
@@ -361,6 +256,17 @@ export function ChatStream({
   // The displayed session's queued steer entries, read live from the shared hook
   // (it re-renders this component whenever the queue changes).
   const steerItems = session ? steerQ.itemsFor(session.id) : [];
+
+  // Composer 发送管线（输入历史 / parked 分派 / steering 排队 / 首页懒建）。
+  const { send, historyFor, inputHistoryRef } = useComposerSend({
+    g, session, input, setInput, attachments, setAttachments,
+    fileAttachments, setFileAttachments, target, setTarget, setMenu,
+    parked, permission, propose, imagesReading, showComposerHint, attemptSend,
+    storeRef, busyBySessionRef, mentionsRef, enqueueSteer, respond, respondPropose,
+    answerQuestion, homeCreatingRef, homeModel, pendingMounts, resetPendingMounts,
+    curSessionIdRef, connectSession, pendingDocsRef, pendingPathsRef,
+    uploadOneDoc, attachOne, waitForSocketOpen,
+  });
 
   // Session goal (goal-design.md) — drives the stop=pause button and the
   // paused/blocked resume banner.
@@ -395,14 +301,16 @@ export function ChatStream({
   // the 12-frame pin window has long passed, so a shorter window left the
   // latest message a few px (measured: 17) or a page above the fold with
   // stickRef still true. Re-pin on resize while stuck (2026-09-25).
-  useEffect(() => {
-    const onResize = () => {
-      if (stickRef.current) pinToBottom();
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  //
+  // window 监听、通知跳转、草稿预填、mods 填充、子代理升级、首页聚焦与
+  // composerInsert 消费都在 useChatEventBridge 内（效果/依赖逐字保留）。
+  useChatEventBridge({
+    focusLatestRef, stickRef, curSessionIdRef, draftCacheRef, mentionsRef,
+    busyBySessionRef, textareaRef, session, input, setInput, pinToBottom,
+    enqueueSteer, attemptSend,
+    composerInsert: g.composerInsert, clearComposerInsert: g.clearComposerInsert,
+    recomputeMenu,
+  });
 
   function pinToBottom(frames = 12) {
     let left = frames;
@@ -413,237 +321,6 @@ export function ChatStream({
       if (--left > 0) requestAnimationFrame(attempt);
     };
     requestAnimationFrame(attempt);
-  }
-
-  // Notification-click jump target (dispatched by AppShell's __ginnoOpenSession
-  // and by the HTML5-notification browser fallback in the message.end handler).
-  // Arm stick-to-bottom; if the session is already displayed scroll now,
-  // otherwise the session-switch effect handles it once it lands.
-  useEffect(() => {
-    const onFocusLatest = (e: Event) => {
-      const sid = (e as CustomEvent<string>).detail;
-      if (!sid) return;
-      focusLatestRef.current = sid;
-      stickRef.current = true;
-      if (curSessionIdRef.current === sid) pinToBottom();
-    };
-    window.addEventListener("ginno:focus-latest", onFocusLatest);
-    return () => window.removeEventListener("ginno:focus-latest", onFocusLatest);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // 子代理结果卡「去子会话纠偏」的输入框预填（P2 任务 3）。目标会话正在展示
-  // 就直接进 composer；不在展示（刚点跳转、切换 effect 还没跑）就停进该会话
-  // 的草稿槽——切换 effect 恢复草稿时自然带出来，文本永不丢。
-  useEffect(() => {
-    const onPrefill = (e: Event) => {
-      const d = (e as CustomEvent<{ sessionId?: string; text?: string }>).detail;
-      if (!d?.sessionId || !d.text) return;
-      if (curSessionIdRef.current === d.sessionId) {
-        setInput((cur) => (cur ? `${cur}\n${d.text}` : d.text!));
-        requestAnimationFrame(() => textareaRef.current?.focus());
-      } else {
-        const prev = draftCacheRef.current[d.sessionId];
-        draftCacheRef.current[d.sessionId] = {
-          input: prev?.input ? `${prev.input}\n${d.text}` : d.text!,
-          attachments: prev?.attachments ?? [],
-          files: prev?.files ?? [],
-          mentions: prev?.mentions ?? [],
-        };
-      }
-    };
-    window.addEventListener("ginno:prefill-input", onPrefill);
-    return () => window.removeEventListener("ginno:prefill-input", onPrefill);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // mods 的 $.prompt.fill（fill 语义 = 接管草稿：替换而非追加）与
-  // $.prompt.suggest（建议语义：composer 为空才落字，非空丢弃）。两者都
-  // 只作用于正在展示的会话——后台会话没有可接管的草稿，帧自然丢弃。
-  useEffect(() => {
-    const onModFill = (e: Event) => {
-      const d = (e as CustomEvent<{ sessionId?: string; text?: string }>).detail;
-      if (!d?.sessionId || !d.text || curSessionIdRef.current !== d.sessionId) return;
-      setInput(d.text);
-      requestAnimationFrame(() => textareaRef.current?.focus());
-    };
-    const onModSuggest = (e: Event) => {
-      const d = (e as CustomEvent<{ sessionId?: string; text?: string }>).detail;
-      if (!d?.sessionId || !d.text || curSessionIdRef.current !== d.sessionId) return;
-      // 建议语义:v1 无 ghost-text,composer 为空时替用户打好草稿,非空不打扰。
-      setInput((cur) => (cur.trim() === "" ? d.text! : cur));
-    };
-    window.addEventListener("ginno:mod-fill-input", onModFill);
-    window.addEventListener("ginno:suggest-input", onModSuggest);
-    return () => {
-      window.removeEventListener("ginno:mod-fill-input", onModFill);
-      window.removeEventListener("ginno:suggest-input", onModSuggest);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // 子代理结果卡「让主对话处理」：在当前（主）会话以一条引用该结果的消息开工。
-  // 忙时走 steer 队列（既有注入管线），闲时 invoke 开新 turn——与用户手打的
-  // 消息完全同一条路径。agentId 置 null = 会话默认 agent。
-  useEffect(() => {
-    const onEscalate = (e: Event) => {
-      const d = (e as CustomEvent<{ sessionId?: string; goal?: string; summary?: string }>).detail;
-      const sid = curSessionIdRef.current;
-      if (!sid || !d?.sessionId) return;
-      const goal = d.goal || t("subtask", "子任务");
-      const brief = (d.summary || "").trim().slice(0, 300);
-      const text = t(
-        `A subagent task "${goal}" (session ${d.sessionId}) produced results that failed human review. Verify the subagent's conclusions and decide the next step (re-split, follow up in its session, or take over yourself). Result summary: ${brief}${brief.length >= 300 ? "…" : ""}`,
-        `子代理任务「${goal}」（session ${d.sessionId}）的结果经人工检查有问题。请核对该子代理的结论并决定下一步（重新拆分、在原会话追问，或自己接手）。其结果摘要：${brief}${brief.length >= 300 ? "…" : ""}`,
-      );
-      if (busyBySessionRef.current[sid]) {
-        enqueueSteer(sid, text, null);
-      } else {
-        attemptSend(sid, { text, images: [], files: [], mentions: [], agentId: null });
-      }
-    };
-    window.addEventListener("ginno:subagent-escalate", onEscalate);
-    return () => window.removeEventListener("ginno:subagent-escalate", onEscalate);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /** The pending ask_user card of the displayed session, if any. */
-  function pendingQuestionBlock(): QuestionBlock | null {
-    for (const m of storeRef.current[curSessionIdRef.current ?? ""] ?? []) {
-      for (const b of m.blocks) {
-        if (b.kind === "question" && b.status === "pending") return b;
-      }
-    }
-    return null;
-  }
-
-  /** Typing at a parked card means "answer" or "change of mind" (design §3.4):
-   *  the turn is waiting on the user, not working, so this never queues. */
-  function handleParkedSend(sid: string, text: string, agentId: string | null) {
-    if (permission) {
-      // Change of mind: don't run this tool, do what I just said instead. The
-      // steer is stashed FIRST (one socket is FIFO), so the resumed segment
-      // absorbs it — the deny routes straight back to `agent` (graph.py), which
-      // is why the parked case needs no second injection mechanism.
-      enqueueSteer(sid, text, agentId);
-      respond("deny");
-      return;
-    }
-    if (propose) {
-      enqueueSteer(sid, text, agentId);
-      respondPropose("deny");
-      return;
-    }
-    const q = pendingQuestionBlock();
-    if (!q) return;
-    if (q.allowFreeText) {
-      // Answer: the typed text IS the answer. Never ALSO steer it — the model
-      // would see it twice.
-      answerQuestion(q.id ?? "", text, null, false);
-      return;
-    }
-    // Fixed choices only: skip the question and steer the text instead, as the
-    // instruction the user would rather give.
-    enqueueSteer(sid, text, agentId);
-    answerQuestion(q.id ?? "", "", null, true);
-  }
-
-  // ---- composer ↑/↓ input history (inputHistory.ts) ----------------------
-  /** 懒构建该会话的输入历史(首次按 ↑/↓ 或首次发送时调用一次):种子 =
-   *  store 已重建的 user 消息文本。payloadFromBlocks 对 subagent 注入/纯附件
-   *  消息产出的 text 为空,seedEntries 滤空即天然排除,无需块类型黑名单。 */
-  function historyFor(sid: string): HistoryState {
-    const st = inputHistoryRef.current[sid];
-    if (st) return st;
-    const seeded = initHistory(
-      seedEntries(
-        (storeRef.current[sid] ?? [])
-          .filter((m) => m.role === "user")
-          .map((m) => m.sendPayload?.text ?? ""),
-      ),
-    );
-    inputHistoryRef.current[sid] = seeded;
-    return seeded;
-  }
-
-  function send() {
-    const text = input.trim();
-    const readyFiles = fileAttachments.filter((f) => !f.uploading);
-    // In-flight gate, image half (pre-existing bug, both plain sends and
-    // steers): readImage is async, so `attachments` lags a just-dropped image.
-    // Sending now would silently drop it. Visible hint instead of a no-op.
-    if (imagesReading > 0) {
-      showComposerHint(tc("composer.hintImagesProcessing"));
-      return;
-    }
-    if (!session) {
-      // Home: dropped-file chips are intentionally deferred until the session
-      // exists (pendingDocsRef / pendingPathsRef) — they must NOT count as
-      // "upload in flight", or send dead-locks on the very uploads it triggers
-      // (2026-08-19: 新建会话拖入图片永远发不出去). createAndSend flushes them.
-      if (!text && attachments.length === 0 && fileAttachments.length === 0) return;
-      void createAndSend({ text, images: attachments, files: readyFiles });
-      return;
-    }
-    const sid = session.id;
-    // Parked at a card: the user is answering or changing their mind, not
-    // queueing (design §3.4). Checked BEFORE the busy gate because a parked
-    // turn is still busy but must never receive a queue entry. (Answering is
-    // deliberately not gated on attachments — it carries text only.)
-    if (parked) {
-      if (!text) return;
-      inputHistoryRef.current[sid] = appendEntry(historyFor(sid), text);
-      handleParkedSend(sid, text, target ?? session.agent_id ?? g.agents[0]?.id ?? null);
-      setInput("");
-      setMenu(null);
-      return;
-    }
-    // In-flight gate, document half: a chip still uploading is not in
-    // `readyFiles`, so this used to return SILENTLY — send appeared dead. Show
-    // why instead (brief §3).
-    if (readyFiles.length !== fileAttachments.length) {
-      showComposerHint(tc("composer.hintFileUploading"));
-      return;
-    }
-    if (busyBySessionRef.current[sid]) {
-      // A turn is running → this is steering, not a new turn: queue it for the
-      // next superstep of the turn that is already going (design §3.1). Text
-      // AND attachments ride the steer (steer-attachments v2) — with nothing to
-      // send, do nothing.
-      if (!text && attachments.length === 0 && readyFiles.length === 0) return;
-      inputHistoryRef.current[sid] = appendEntry(historyFor(sid), text);
-      enqueueSteer(
-        sid,
-        text,
-        target ?? session.agent_id ?? g.agents[0]?.id ?? null,
-        attachments,
-        readyFiles,
-      );
-      setInput("");
-      setAttachments([]);
-      setFileAttachments([]);
-      setTarget(null);
-      setMenu(null);
-      return;
-    }
-    if (!text && attachments.length === 0 && readyFiles.length === 0) return;
-    const agentId = target ?? session.agent_id ?? g.agents[0]?.id ?? null;
-    if (agentId && agentId !== session.agent_id) g.setSessionAgent(session.id, agentId);
-    // Final prune against the raw (untrimmed) input, deduped — only mentions
-    // whose @kind:label token is still present are sent. The server treats this
-    // structured list as authoritative (text tokens are its raw-client fallback).
-    const mentions = dedupeMentions(pruneMentions(mentionsRef.current[sid] ?? [], input));
-    inputHistoryRef.current[sid] = appendEntry(historyFor(sid), text);
-    // Not connected? No silent no-op — the bubble is still created and lands
-    // in the failed state (red ❗) so the send attempt always has a visible
-    // outcome and can be retried.
-    attemptSend(sid, { text, images: attachments, files: readyFiles, mentions, agentId });
-    setInput("");
-    setAttachments([]);
-    setFileAttachments([]);
-    setTarget(null);
-    setMenu(null);
-    mentionsRef.current[sid] = [];
   }
 
   /**
@@ -795,23 +472,6 @@ export function ChatStream({
   }
 
 
-  // ── V2 P2-1 suggestions: actions + dismissal ───────────────────────────
-  /** Dismiss one card for THIS session only; the key includes the session id so
-   *  the same suggestion can still appear in another session. */
-  function dismissSuggestion(id: string) {
-    const sid = session?.id;
-    if (!sid) return;
-    setSuggDismissed((prev) => {
-      const next = { ...prev, [`${sid}:${id}`]: true as const };
-      try {
-        localStorage.setItem(SUGGEST_DISMISS_LS_KEY, JSON.stringify(next));
-      } catch {
-        /* in-memory dismissal still applies for this mount */
-      }
-      return next;
-    });
-  }
-
   /** Shared success/error surfacing for both distill entry points. The API
    *  returns `{detail:{error}}` on 4xx/5xx (FastAPI HTTPException body). */
   function reportDistill(
@@ -854,199 +514,9 @@ export function ChatStream({
     void distillSessionTo(kind);
   }
 
-  /** Execute a suggestion's single action. Types mirror suggestions.py. */
-  async function runSuggestionAction(s: api.SessionSuggestion) {
-    const sid = session?.id;
-    if (!sid) return;
-    const type = s.action?.type;
-    if (type === "open_settings") {
-      router.push("/settings/model-api");
-      return;
-    }
-    if (type === "compact") {
-      // Reuse the built-in /compact command: async_handler summarizes older
-      // messages and rewrites thread state server-side (no graph turn). The
-      // server busy-gates it too, but the UI already hides cards while running.
-      if (running) {
-        showComposerHint(tc("suggest.busyHint"));
-        return;
-      }
-      attemptSend(sid, {
-        text: "/compact",
-        images: [],
-        files: [],
-        mentions: [],
-        agentId: target ?? session?.agent_id ?? g.agents[0]?.id ?? null,
-      });
-      return;
-    }
-    if (type === "switch_model") {
-      // The composer's model chip IS the app's model switcher (rendered by this
-      // component); opening its menu is the existing flow. The delegation replay
-      // view has no composer, so it goes to the settings page instead.
-      if (session?.type === "delegation") {
-        router.push("/settings/model-api");
-        return;
-      }
-      setModelOpen(true);
-      return;
-    }
-    if (type === "distill") {
-      setSuggestBusy(s.id);
-      try {
-        reportDistill(await api.distillSession(sid, "skill"), "skill");
-      } catch {
-        pushNotice("error", tc("distill.failed"), { source: "general" });
-      } finally {
-        setSuggestBusy(null);
-      }
-    }
-  }
-
-  // ── V2 P2-3 first-run starter ──────────────────────────────────────────
-  function dismissFirstRun() {
-    setFirstRunDone(true);
-    try {
-      localStorage.setItem(FIRST_RUN_LS_KEY, "1");
-    } catch {
-      /* dismissal still applies for this mount */
-    }
-  }
-
-  /** Card 2: hand the user the composer — the starter has done its job. */
-  function firstRunAsk() {
-    dismissFirstRun();
-    requestAnimationFrame(() => textareaRef.current?.focus());
-  }
-
-  /** Card 3: example workflows live in the workflow library. */
-  function firstRunWorkflow() {
-    dismissFirstRun();
-    router.push("/workflows");
-  }
-
-  /** Card 1: pick a directory with the same native dialog + createFolder +
-   *  pending-mount pipeline the home mount chip uses, then open a session with
-   *  the folder mounted from birth (`newSession`'s context_folders contract).
-   *  Plain-browser dev has no native bridge; point at the mount chip instead of
-   *  failing silently. */
-  async function firstRunMountFolder() {
-    if (firstRunBusy) return;
-    if (!isDesktop()) {
-      pushNotice("info", tc("firstRun.browserHint"), { source: "general" });
-      requestAnimationFrame(() => textareaRef.current?.focus());
-      return;
-    }
-    setFirstRunBusy(true);
-    try {
-      let picked: string | null = null;
-      try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const p = await open({ directory: true, multiple: false });
-        if (typeof p === "string") picked = p;
-      } catch {
-        pushNotice("error", tc("firstRun.pickFailed"), { source: "general" });
-        return;
-      }
-      if (!picked) return; // user cancelled — keep the starter on screen
-      const c = await api.createFolder({ path: picked, access: "rw", load_rules: true });
-      if (!c.ok || !c.folder) {
-        pushNotice("error", c.error || tc("firstRun.mountFailed"), { source: "general" });
-        return;
-      }
-      const ids = [c.folder.id];
-      // Same pending state the chip edits; also the fallback if creation fails.
-      setPendingMounts({ ids, primary: c.folder.id });
-      const s = await g.newSession(g.agents[0]?.id ?? null, {
-        ...(homeModel ?? {}),
-        context_folders: ids,
-        primary_folder: c.folder.id,
-      });
-      if (!s) return; // store banner (sessionError) carries the reason
-      dismissFirstRun();
-      requestAnimationFrame(() => textareaRef.current?.focus());
-    } catch {
-      pushNotice("error", tc("firstRun.mountFailed"), { source: "general" });
-    } finally {
-      setFirstRunBusy(false);
-    }
-  }
-
-  // Drag the composer's top handle to resize the input area. Auto-grow (capped)
-  // still applies while composerH is undefined; dragging switches to a fixed,
-  // scrollable height. The flex layout (message list = flex-1) keeps the overall
-  // experience intact — the list simply takes the remaining space.
-  function onResizeStart(e: React.PointerEvent) {
-    const box = composerBoxRef.current;
-    if (!box) return;
-    dragRef.current = { startY: e.clientY, startH: box.offsetHeight };
-    const minH = 96;
-    const maxH = Math.max(160, Math.floor(window.innerHeight * 0.7));
-    const move = (ev: PointerEvent) => {
-      const d = dragRef.current;
-      if (!d) return;
-      const h = Math.min(maxH, Math.max(minH, d.startH + (d.startY - ev.clientY)));
-      setComposerH(h);
-    };
-    const up = () => {
-      dragRef.current = null;
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
   const agentById = (id?: string | null) => g.agents.find((a) => a.id === id) ?? null;
 
   const isHome = !session;
-
-  // V2 P2-1: suggestions still visible for this session after local dismissal.
-  const visibleSuggestions = session
-    ? suggestions.filter((s) => !suggDismissed[`${session.id}:${s.id}`])
-    : [];
-  // V2 P2-3: starter shows only on the home view, with no sessions at all.
-  const showFirstRun =
-    firstRunChecked && g.ready && !session && g.sessions.length === 0 && !firstRunDone;
-
-  // Home autofocus: the composer remounts on the home slot (keyed), so focus
-  // must be re-armed after the transition.
-  useEffect(() => {
-    if (!session) textareaRef.current?.focus();
-  }, [session]);
-
-  // 拖文件进输入框（code 工作区树 → composer）：消费 store 的一次性插入请求，
-  // 在光标（textarea 未聚焦时 selectionStart 仍保留上次位置）处插入路径文本，
-  // 前面非空白时补一个分隔空格，然后把焦点和光标落到插入文本之后。
-  const composerInsert = g.composerInsert;
-  useEffect(() => {
-    if (!composerInsert) return;
-    g.clearComposerInsert();
-    const el = textareaRef.current;
-    const caret = el?.selectionStart ?? input.length;
-    const before = input.slice(0, caret);
-    const sep = before && !/\s$/.test(before) ? " " : "";
-    const text = `${before}${sep}${composerInsert.text}${input.slice(caret)}`;
-    const newCaret = caret + sep.length + composerInsert.text.length;
-    setInput(text);
-    // 与 onChange 同步逻辑对齐：插入可能打断已解析的 mention token（拖到
-    // 半个 `@agent:xx` 中间），prune 掉不再出现的条目。
-    if (session) {
-      mentionsRef.current[session.id] = pruneMentions(
-        mentionsRef.current[session.id] ?? [],
-        text,
-      );
-    }
-    requestAnimationFrame(() => {
-      const el2 = textareaRef.current;
-      if (el2) {
-        el2.focus();
-        el2.setSelectionRange(newCaret, newCaret);
-      }
-      recomputeMenu(text);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [composerInsert]);
 
   // ─── Command / mention autocomplete ────────────────────────────────────────
   // Re-evaluate whether the composer's current text+caret opens a menu. Called
@@ -1112,513 +582,93 @@ export function ChatStream({
     });
   }
 
-  /** Lazy creation: home composer send creates the session, flushes buffered
-   *  attachments, awaits the socket, then posts the turn. */
-  async function createAndSend(payload: {
-    text: string;
-    images: Attachment[];
-    files: FileAttachment[];
-  }) {
-    if (homeCreatingRef.current) return;
-    homeCreatingRef.current = true;
-    // Fire 即清空 composer——必须赶在 g.newSession 之前(同步)。engine 的会话
-    // 切换 effect([session?.id])在 home→会话时把「当次渲染的 input/附件」存进
-    // HOME_SLOT 草稿槽；newSession 内部 setActiveSessionId 触发它时若 composer
-    // 还没清(原实现清在 await 链末尾，effect 闭包里是旧值)，已发送的文本就被
-    // 存成首页草稿——回到新建对话，发过的内容重新出现(用户报告 2026-10-15)。
-    // 先清则 effect 存进槽的是空值；未发送文本的 ⌘N 往返保留草稿是特性，不受
-    // 影响。创建失败/异常按原样恢复(保持「banner 报错、composer 留字」契约)。
-    const prevInput = input;
-    const prevImages = attachments;
-    const prevFiles = fileAttachments;
-    const restoreComposer = () => {
-      setInput(prevInput);
-      setAttachments(prevImages);
-      setFileAttachments(prevFiles);
-    };
-    setInput("");
-    setAttachments([]);
-    setFileAttachments([]);
-    try {
-      const agentId = target ?? g.agents[0]?.id ?? null;
-      const s = await g.newSession(agentId, {
-        ...(homeModel ?? {}),
-        // 出生即挂载：pending 目录随建会话请求提交(后端 create_session 原生支持)
-        context_folders: pendingMounts.ids.length ? pendingMounts.ids : undefined,
-        primary_folder: pendingMounts.primary ?? undefined,
-      });
-      if (!s) {
-        restoreComposer(); // sessionError banner carries the reason
-        return;
-      }
-      curSessionIdRef.current = s.id;
-      connectSession(s.id);
-      const docs = pendingDocsRef.current;
-      pendingDocsRef.current = [];
-      const natives = pendingPathsRef.current;
-      pendingPathsRef.current = [];
-      // Collect the resolved entries so they ride in the turn payload — the
-      // fileAttachments state update above hasn't rendered yet in this closure.
-      const flushed: FileAttachment[] = [];
-      for (const d of docs) {
-        const e = await uploadOneDoc(s.id, d.file, d.tmpId);
-        if (e) flushed.push(e);
-      }
-      for (const n of natives) {
-        const e = await attachOne(s.id, n.path, n.tmpId);
-        if (e) flushed.push(e);
-      }
-      // The socket race fix: await open instead of failing fast. Timeout
-      // degrades to attemptSend's retryable failed bubble.
-      await waitForSocketOpen(s.id);
-      attemptSend(s.id, {
-        ...payload,
-        files: [...payload.files, ...flushed],
-        mentions: [],
-        agentId,
-      });
-      setTarget(null);
-      setMenu(null);
-      // 下一个新会话按库里的 auto_mount 条目重新预填(手动改动不跨会话残留)。
-      void resetPendingMounts();
-    } catch (e) {
-      // 兜底：发送链上的任何异常都不吞用户文本——原实现清空在末尾，异常时
-      // 文本天然保留；清空前移后在这里补齐同等保证。
-      restoreComposer();
-      throw e;
-    } finally {
-      homeCreatingRef.current = false;
-    }
-  }
-
   // Composer box extracted so the landing home can center it. Same single
   // instance; the two keyed slots force a clean remount on home↔session
   // transitions (all composer state lives on ChatStream — only DOM focus is
   // lost, and home autofocuses above).
   const hideDel = session?.type === "delegation"; // 回放会话隐藏 goal 条等会话级控件
-        const composerBoxEl = (
-          <div
-            ref={composerBoxRef}
-            /* 树拖拽（pointer events）用 elementFromPoint 识别这里为放置目标 */
-            data-composer="1"
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOver(false);
-              void addFiles(e.dataTransfer.files);
-            }}
-            className={`relative rounded-2xl border bg-card p-2.5 transition-colors focus-within:border-line2 ${
-              dragOver || g.composerDragOver ? "border-violet/70 ring-2 ring-violet/30" : "border-line"
-            }`}
-          >
-            <div
-              onPointerDown={onResizeStart}
-              title={tc("composer.resizeTitle")}
-              onDoubleClick={() => setComposerH(undefined)}
-              className="absolute -top-1 left-1/2 z-10 flex h-2 w-12 -translate-x-1/2 cursor-ns-resize items-center justify-center rounded-full hover:bg-line2/60"
-              aria-label={tc("composer.resizeAria")}
-            >
-              <span className="h-0.5 w-6 rounded-full bg-line2" />
-            </div>
-            {menu && (
-              <ComposerMenu
-                items={menu.items}
-                active={menu.active}
-                onPick={pickItem}
-                onHover={(i) => setMenu((m) => (m ? { ...m, active: i } : m))}
-              />
-            )}
-            {/* @ 投递 steering 提示（设计稿视图 1）：收件人 working 时，
-                投递会在下个工具边界以 steering 注入，不打断当前 turn。 */}
-            {(() => {
-              if (session?.type !== "team") return null;
-              const team = g.teams.find((t) => t.main_session_id === session.id);
-              const working = (team?.member_rows ?? []).filter(
-                (r) => r.status === "working" && input.includes(`@agent:${r.agent_id}`),
-              );
-              if (!working.length) return null;
-              return (
-                <div className="mb-2 rounded-md border border-line bg-card/60 px-2.5 py-1.5 text-[11px] leading-relaxed text-faint">
-                  {tc("team.steerHint", { names: working.map((r) => r.display_name).join(t(", ", "、")) })}
-                </div>
-              );
-            })()}
-            {session && (modBands[session.id]?.some((g) => g.tree.length > 0) ?? false) && (
-              // Claude Code Mods band 插槽(claude-code-mods-design.md §7.1):
-              // composerHint 之上、与 hint/steer 条同级;每 mod 一段。空树零渲染。
-              <div className="mb-2">
-                <ModBand
-                  groups={modBands[session.id]!}
-                  onPress={(actionId, generation) => sendModUiPress(session.id, generation, actionId)}
-                />
-              </div>
-            )}
-            {composerHint && (
-              // Blocked send, made visible. A silent return here read as a
-              // dead send button (the original bug report).
-              <div className="mb-2 flex items-center gap-1.5 rounded-lg border border-yellow/40 bg-yellow/10 px-2.5 py-1.5 text-xs text-yellow">
-                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                <span>{composerHint}</span>
-              </div>
-            )}
-            {imagesReading > 0 && <ImagesReadingRow />}
-            <ComposerAttachmentRows
-              attachments={attachments}
-              fileAttachments={fileAttachments}
-              uploadingLabel={session ? tc("composer.uploading") : tc("composer.uploadsOnSend")}
-              onRemoveImage={(i) => setAttachments((l) => l.filter((_, j) => j !== i))}
-              onRemoveFile={(i) => setFileAttachments((l) => l.filter((_, j) => j !== i))}
-            />
-            {session?.type === "subagent" && running && (
-              // 子任务视图的输入语义（subagent-design.md §6.2）：running 时的输入
-              // 走既有 steering 通道（useSteerQueue，同主对话），这里只把语义标出来。
-              <div className="mb-1 flex items-center gap-1.5 px-0.5 text-[10px] text-faint">
-                <RotateCcw className="h-3 w-3 shrink-0 animate-pulse" aria-hidden />
-                <span>{tc("composer.subtaskSteerHint")}</span>
-              </div>
-            )}
-            {session && steerItems.length > 0 && (
-              <QueueBar items={steerItems} sessionId={session.id} onDrop={dropSteer} />
-            )}
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => {
-                const v = e.target.value;
-                setInput(v);
-                recomputeMenu(v);
-                // Keep the resolved mentions in sync with the visible tokens.
-                if (session) {
-                  mentionsRef.current[session.id] = pruneMentions(
-                    mentionsRef.current[session.id] ?? [],
-                    v,
-                  );
-                }
-              }}
-              onPaste={(e) => {
-                if (e.clipboardData?.files?.length) {
-                  e.preventDefault();
-                  void addFiles(e.clipboardData.files);
-                }
-              }}
-              onKeyDown={(e) => {
-                // Guard IME composition: without this, pressing Enter to commit a
-                // CJK candidate (e.g. Chinese) fires send() mid-composition and
-                // posts partial/garbled text. isComposing + keyCode 229 cover it.
-                const composing = e.nativeEvent.isComposing || e.keyCode === 229;
-                // While the autocomplete menu is open, navigate/confirm it
-                // instead of sending. (IME guard first — same as send.)
-                if (menu && !composing) {
-                  if (e.key === "ArrowDown") {
-                    e.preventDefault();
-                    setMenu((m) => m && { ...m, active: (m.active + 1) % m.items.length });
-                    return;
-                  }
-                  if (e.key === "ArrowUp") {
-                    e.preventDefault();
-                    setMenu((m) => m && { ...m, active: (m.active - 1 + m.items.length) % m.items.length });
-                    return;
-                  }
-                  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-                    e.preventDefault();
-                    pickItem(menu.items[menu.active]);
-                    return;
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setMenu(null);
-                    return;
-                  }
-                }
-                // Esc while a turn runs = stop it (same as the ⏹ button);
-                // only when the composer is focused and nothing is parked —
-                // a parked prompt's own card (Deny / 跳过) is the deliberate
-                // exit, a stray Escape must not cancel the whole turn.
-                // ↑ on an EMPTY composer takes the queued steer entries back for editing —
-                // one per line, in order (Claude Code's "take back what you
-                // queued"). Guarded on empty input so it never steals the caret
-                // when there is text to navigate.
-                if (e.key === "ArrowUp" && !composing && !input && session && steerItems.length > 0) {
-                  e.preventDefault();
-                  recallSteers(session.id);
-                  return;
-                }
-                // ↑/↓ input history recall (shell-style): only when the caret
-                // sits on the first (↑) / last (↓) line — multi-line editing
-                // keeps native caret moves. Priority: IME > command menu >
-                // steer recall (above) > this. Nothing to navigate → fall
-                // through to native behavior (no preventDefault).
-                if (!composing && session && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-                  const el = textareaRef.current;
-                  const caret = el?.selectionStart ?? input.length;
-                  const base = historyFor(session.id);
-                  const r =
-                    e.key === "ArrowUp"
-                      ? caretOnFirstLine(input, caret)
-                        ? navUp(base, input)
-                        : null
-                      : caretOnLastLine(input, caret)
-                        ? navDown(base, input)
-                        : null;
-                  if (r) {
-                    e.preventDefault();
-                    inputHistoryRef.current[session.id] = r.state;
-                    setInput(r.text);
-                    setMenu(null); // 程序化回填后菜单必须关(与 pickItem 一致)
-                    requestAnimationFrame(() => {
-                      const el2 = textareaRef.current;
-                      if (el2) {
-                        el2.focus();
-                        el2.setSelectionRange(r.text.length, r.text.length);
-                      }
-                    });
-                    return;
-                  }
-                }
-                if (e.key === "Escape" && !composing && running && !parked) {
-                  e.preventDefault();
-                  stopTurn();
-                  return;
-                }
-                if (e.key === "Enter" && !e.shiftKey && !composing) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              rows={2}
-              placeholder={tc("composer.placeholder")}
-              style={
-                composerH != null
-                  ? { height: composerH - 56, minHeight: 44, overflowY: "auto" }
-                  : { maxHeight: 240 }
-              }
-              className="w-full resize-none bg-transparent px-1.5 py-1 text-sm text-txt outline-none placeholder:text-faint"
-            />
-            <div className="flex flex-wrap items-center justify-between gap-1 px-1 pt-1">
-              <div className="flex min-w-0 items-center gap-1 text-faint">
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*,.xlsx,.xls,.xlsm,.csv,.tsv,.docx,.pptx,.pdf,.json,.xml,.txt,.md"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => {
-                    void addFiles(e.target.files);
-                    e.target.value = "";
-                  }}
-                />
-                <button
-                  onClick={() => fileRef.current?.click()}
-                  className="rounded-md p-1.5 transition-colors hover:bg-card2 hover:text-muted"
-                  title={tc("composer.addAttachmentsTitle")}
-                >
-                  <Paperclip className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={() => {
-                    // Start a slash command — only valid as the FIRST token, so
-                    // this only makes sense on an empty composer. With existing
-                    // text we just focus the textarea instead of mangling it.
-                    if (!input.trim()) {
-                      setInput("/");
-                      requestAnimationFrame(() => {
-                        const el = textareaRef.current;
-                        if (el) {
-                          el.focus();
-                          el.setSelectionRange(1, 1);
-                        }
-                        recomputeMenu("/");
-                      });
-                    } else {
-                      textareaRef.current?.focus();
-                    }
-                  }}
-                  className="rounded-md p-1.5 hover:bg-card2 hover:text-muted"
-                  title={tc("composer.slashTitle")}
-                  aria-label={tc("composer.slashAria")}
-                >
-                  <Keyboard className="h-4 w-4" />
-                </button>
-                {!isHome && (
-                  <ConnStatusChip
-                    wsStatus={wsStatus}
-                    onReconnect={() => connectRef.current()}
-                  />
-                )}
-              </div>
-              <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              {/* 首页挂载 chip(home-mount-picker-design.md §2.1)：操作的是「首条
-                  消息将生效」的 pending 列表；会话内由 TopBar 的 live chip 负责。 */}
-              {!session && (
-                <ContextFoldersChip
-                  ids={pendingMounts.ids}
-                  primary={pendingMounts.primary}
-                  onChange={(ids, primary) => setPendingMounts({ ids, primary })}
-                />
-              )}
-              {running && goalActive && session?.type !== "delegation" && (
-                <button
-                  onClick={() => void g.setGoalStatus(session!.id, "paused")}
-                  title={tc("goal.pauseTitle")}
-                  aria-label={tc("goal.pauseAria")}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-line2 text-muted hover:text-txt"
-                >
-                  <Square className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {/* model chip: per-session provider/model switch (home: pick for
-                  the session that first send will create). Enabled while a
-                  turn runs — the switch is in-place server-side and takes
-                  effect at the next LLM call (model-assignment-design.md
-                  §3.2). */}
-              <ModelChipMenu
-                session={session}
-                label={modelChipLabel}
-                homeModelSource={homeModelSource}
-                targetAgent={targetAgent}
-                homeEffective={homeEffective}
-                enabledProviders={enabledProviders}
-                open={modelOpen}
-                onToggle={() => setModelOpen((v) => !v)}
-                onClose={() => setModelOpen(false)}
-                onPick={(pid, m) => void pickModel(pid, m)}
-              />
-              {running && session && !parked ? (
-                <button
-                  onClick={stopTurn}
-                  title={tc("composer.stopTitle")}
-                  aria-label={tc("composer.stopAria")}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg bg-red text-white transition-opacity hover:opacity-90"
-                >
-                  <Square className="h-3.5 w-3.5" fill="currentColor" />
-                </button>
-              ) : (
-              <button
-                onClick={send}
-                disabled={
-                  parked ||
-                  running ||
-                  // In-session uploads run immediately and gate the send; on
-                  // home they're deferred until lazy creation, so they must
-                  // not disable the button (same deadlock as send()'s guard).
-                  (!!session && fileAttachments.some((f) => f.uploading)) ||
-                  (!input.trim() && attachments.length === 0 && fileAttachments.length === 0)
-                }
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-              >
-                <ArrowUp className="h-4 w-4" />
-              </button>
-              )}
-              </div>
-            </div>
-          </div>
+  const composerBoxEl = (
+    <Composer
+      g={g}
+      session={session}
+      isHome={isHome}
+      running={running}
+      parked={parked}
+      wsStatus={wsStatus}
+      onReconnect={() => connectRef.current()}
+      composerHint={composerHint}
+      imagesReading={imagesReading}
+      steerItems={steerItems}
+      dropSteer={dropSteer}
+      recallSteers={recallSteers}
+      composerBoxRef={composerBoxRef}
+      textareaRef={textareaRef}
+      fileRef={fileRef}
+      composerH={composerH}
+      setComposerH={setComposerH}
+      onResizeStart={onResizeStart}
+      dragOver={dragOver}
+      setDragOver={setDragOver}
+      addFiles={addFiles}
+      input={input}
+      setInput={setInput}
+      attachments={attachments}
+      setAttachments={setAttachments}
+      fileAttachments={fileAttachments}
+      setFileAttachments={setFileAttachments}
+      menu={menu}
+      setMenu={setMenu}
+      pickItem={pickItem}
+      recomputeMenu={recomputeMenu}
+      mentionsRef={mentionsRef}
+      historyFor={historyFor}
+      inputHistoryRef={inputHistoryRef}
+      send={send}
+      stopTurn={stopTurn}
+      goalActive={goalActive}
+      modBands={session ? modBands[session.id] : undefined}
+      onModUiPress={sendModUiPress}
+      model={modelPick}
+    />
   );
 
   // C+ 方案①/④：chip「推荐」标签由草稿关键词派生（render 期，同 sel 模式）；
   // 切换预告条在 target 指向另一个 agent 时出现——发送后 target 自动清零，
   // 无需额外清理。agentChipsEl 抽成变量：composerBoxEl 是单实例双 key 槽，
   // chip 行不能挪进去（会把 session-only 按钮拖进 home），两槽各渲染一份。
-  const recAgentId = recommendAgentId(input, new Set(g.agents.map((a) => a.id)));
   const switchTarget =
     target && session && target !== session.agent_id ? agentById(target) : null;
 
   const agentChipsEl = (
-    <>
-      {g.agents.map((a) => {
-        const sel = (target ?? session?.agent_id) === a.id;
-        const hex = agentHex(a.color);
-        const rec = recAgentId === a.id && !sel;
-        return (
-          <button
-            key={a.id}
-            onClick={() => setTarget(sel ? null : a.id)}
-            className={
-              sel
-                ? "flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors"
-                : "flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted transition-colors hover:border-line2 hover:text-txt"
-            }
-            style={sel ? { borderColor: hex, background: hex + "1a", color: hex } : undefined}
-          >
-            <Icon name={a.icon} className="h-3.5 w-3.5" />
-            {tc("agentChips.ask", { name: a.name })}
-            {rec && (
-              <span className="rounded-full border border-yellow/40 bg-yellow/10 px-1.5 text-[10px] leading-4 text-yellow">
-                {tc("agentChips.recommended")}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </>
+    <AgentChips
+      g={g}
+      session={session}
+      target={target}
+      input={input}
+      onSelect={setTarget}
+    />
   );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {isHome ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-6 pb-10 pt-6">
-          <Icon name="star" className="h-48 w-48" style={{ color: "rgba(233,233,240,0.05)" }} />
-          <div className="mt-2 text-center text-[26px] font-semibold tracking-tight text-txt">
-            {greeting()}
-          </div>
-          <div className="mt-2 text-center text-[13px] text-faint">
-            {tc("home.tagline")}
-          </div>
-          {showFirstRun && (
-            <div className="mt-6 w-full max-w-[760px]">
-              <FirstRunCards
-                busy={firstRunBusy}
-                onMountFolder={() => void firstRunMountFolder()}
-                onAsk={firstRunAsk}
-                onWorkflow={firstRunWorkflow}
-                onDismiss={dismissFirstRun}
-              />
-            </div>
-          )}
-          <div key="composer-home" className="mt-8 w-full max-w-[760px]">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              {agentChipsEl}
-              {!target && (
-                <span className="ml-auto self-center text-[11px] text-faint">
-                  {tc("home.defaultAgentHint", { name: g.agents[0]?.name ?? tc("stream.fallbackAgent") })}
-                </span>
-              )}
-            </div>
-            {composerBoxEl}
-          </div>
-          <div className="mt-6 flex max-w-[820px] flex-wrap justify-center gap-2.5">
-            {[
-              { icon: "📊", label: tc("home.chipExcelLabel"), fill: tc("home.chipExcelFill") },
-              { icon: "🔁", label: tc("home.chipWorkflowLabel"), fill: tc("home.chipWorkflowFill") },
-              { icon: "🧠", label: tc("home.chipMemoryLabel"), fill: tc("home.chipMemoryFill") },
-            ].map((c) => (
-              <button
-                key={c.label}
-                onClick={() => {
-                  setInput(c.fill);
-                  requestAnimationFrame(() => textareaRef.current?.focus());
-                }}
-                className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
-              >
-                <span>{c.icon}</span>
-                {c.label}
-              </button>
-            ))}
-            <button
-              onClick={() => onOpenGoal?.()}
-              className="inline-flex items-center gap-2 rounded-full border border-line px-4 py-2 text-[12.5px] text-muted transition-colors hover:border-line2 hover:bg-card hover:text-txt"
-            >
-              <span>🎯</span>
-              {tc("home.setGoal")}
-            </button>
-          </div>
-          <div className="mt-6 text-[11px] text-faint">
-            {tc("home.hintLine")}
-          </div>
-        </div>
+        <HomeView
+          agents={g.agents}
+          target={target}
+          agentChips={agentChipsEl}
+          composer={composerBoxEl}
+          showFirstRun={showFirstRun}
+          firstRunBusy={firstRunBusy}
+          onMountFolder={() => void firstRunMountFolder()}
+          onAsk={firstRunAsk}
+          onWorkflow={firstRunWorkflow}
+          onDismiss={dismissFirstRun}
+          onChipFill={(fill) => {
+            setInput(fill);
+            requestAnimationFrame(() => textareaRef.current?.focus());
+          }}
+          onOpenGoal={onOpenGoal}
+        />
       ) : (
         <>
       {session.type === "subagent" && <SubagentTopBar session={session} />}

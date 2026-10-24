@@ -18,7 +18,6 @@ carry it in the hello handshake.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -27,6 +26,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 log = logging.getLogger("ginno.mods")
 

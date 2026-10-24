@@ -20,7 +20,10 @@ _locales（2026-10-04 起 native_host 物化同样生成 _locales + 改写 manif
 
 from __future__ import annotations
 
-import json
+try:  # orjson-backed when the runtime env is active; bare `python3` keeps stdlib
+    from ginno_runtime import jsonx as json
+except ImportError:
+    import json
 import shutil
 import sys
 from pathlib import Path

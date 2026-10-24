@@ -1,5 +1,5 @@
 """Permission subpackage."""
 
-from .policy import PermissionPolicy, PermissionDecision
+from .policy import PermissionDecision, PermissionPolicy
 
 __all__ = ["PermissionPolicy", "PermissionDecision"]

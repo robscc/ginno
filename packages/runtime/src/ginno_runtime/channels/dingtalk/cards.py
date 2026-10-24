@@ -19,9 +19,10 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import dataclass
+
+from ginno_runtime import jsonx as json
 
 from .media import MSG_MARKDOWN, DingTalkApiError, DingTalkClient
 

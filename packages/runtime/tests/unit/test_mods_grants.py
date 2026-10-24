@@ -10,11 +10,11 @@ content lives in the referenced script file, not the command line).
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.hooks.dispatcher import HookDispatcher, HookEvent
 from ginno_runtime.hooks.grants import (
     DANGER_INSTALL,

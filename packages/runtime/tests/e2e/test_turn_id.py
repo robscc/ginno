@@ -5,8 +5,8 @@ bubble greps the sidecar logs)."""
 from __future__ import annotations
 
 import pytest
-
 from conftest import events_of
+
 from ginno_runtime.testing.fake_model import script
 
 pytestmark = pytest.mark.e2e

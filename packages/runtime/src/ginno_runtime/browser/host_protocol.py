@@ -15,11 +15,12 @@ messaging size cap, reassembled on the other side).
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import struct
 import sys
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 CHUNK = 256 * 1024
 

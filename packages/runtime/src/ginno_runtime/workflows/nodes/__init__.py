@@ -17,7 +17,16 @@ Add a new node type without touching core::
             ...  # return a state-update dict; set "__output__" for downstream edges
 """
 
-from . import base, registry, transforms
+# Importing builtin triggers @register_node for the shipped node types.
+from . import (
+    base,
+    builtin,  # noqa: F401,E402
+    extract,  # noqa: F401,E402  (compiler-internal extract node)
+    python_node,  # noqa: F401,E402  (deterministic whitelisted entries)
+    registry,
+    supervisor_gate,  # noqa: F401,E402  (compiler-injected __sup gate, design B)
+    transforms,
+)
 from .base import BaseNode
 from .registry import (
     get_node,
@@ -27,12 +36,6 @@ from .registry import (
     load_plugins,
     register_node,
 )
-
-# Importing builtin triggers @register_node for the shipped node types.
-from . import builtin  # noqa: F401,E402
-from . import extract  # noqa: F401,E402  (compiler-internal extract node)
-from . import python_node  # noqa: F401,E402  (deterministic whitelisted entries)
-from . import supervisor_gate  # noqa: F401,E402  (compiler-injected __sup gate, design B)
 
 __all__ = [
     "BaseNode",

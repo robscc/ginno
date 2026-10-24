@@ -32,9 +32,10 @@ from its own timestamp, so a day that spans the window is priced correctly.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 

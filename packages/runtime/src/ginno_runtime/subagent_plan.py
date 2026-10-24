@@ -21,9 +21,10 @@ model factory and the scheduler's spawn path are imported lazily.
 
 from __future__ import annotations
 
-import json
 import time
 import uuid
+
+from ginno_runtime import jsonx as json
 
 from .lang import t
 from .server_shared import _log, _push_session_event

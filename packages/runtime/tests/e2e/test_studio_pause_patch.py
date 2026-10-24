@@ -19,10 +19,10 @@ import asyncio
 import threading
 
 import pytest
+import studio_lib as L
 from langchain_core.tools import tool
 from pydantic import PrivateAttr
 
-import studio_lib as L
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
 from ginno_runtime.workflows import engine
 

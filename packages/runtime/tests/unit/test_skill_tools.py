@@ -7,11 +7,11 @@ additionally pinned by tests/api/test_skills_import.py).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, projects
 from ginno_runtime.skills.installer import import_skills_from_dir, uninstall_skill
 from ginno_runtime.tools.skill_tools import SKILL_TOOL_NAMES, build_skill_tools

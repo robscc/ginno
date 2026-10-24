@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-import json
 import time
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server_shared
 from ginno_runtime.teams import status as team_status
 from ginno_runtime.teams import store as team_store

@@ -222,13 +222,13 @@ async def _launch_delegation(
 ) -> str | None:
     """条目走委托后端（D1）。返回 delegation 会话 id；"" = 启动失败（已
     标记）；None = 帽满。委托的并发帽复用 _active_delegations_cap。"""
+    from ..delegation_sessions import create_delegation
     from ..tools.external_agent import (
         _BACKENDS,
         _TIMEOUT_DEFAULT_S,
         _active_delegations_cap,
         _delegation_bg,
     )
-    from ..delegation_sessions import create_delegation
 
     be = _BACKENDS.get(backend)
     if be is None or not be.available():

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.knowledge import usage
 
 pytestmark = pytest.mark.unit

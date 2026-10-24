@@ -58,8 +58,9 @@ def test_empty_names_degrade_safely() -> None:
 
 def test_real_mcp_config_prefixes_are_valid() -> None:
     """用户真实配置里的每个服务器名都要产出合法前缀。"""
-    import json
     import os
+
+    from ginno_runtime import jsonx as json
 
     path = os.path.expanduser("~/.ginno/mcp/mcp.json")
     try:

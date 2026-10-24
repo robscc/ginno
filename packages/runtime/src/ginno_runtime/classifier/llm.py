@@ -8,13 +8,14 @@ build_model_by_name 只做构造（读 settings + 实例化），无网络 IO，
 路径，不是错误处理。
 """
 import asyncio
-import json
 import logging
 import re
 import time
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
+
+from ginno_runtime import jsonx as json
 
 from .. import usage as usage_mod
 from .. import usage_store

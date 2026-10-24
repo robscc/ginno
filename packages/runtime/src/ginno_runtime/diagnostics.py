@@ -15,15 +15,15 @@ never an exception.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 from collections import Counter
 
+from ginno_runtime import jsonx as json
+
 from . import artifacts as art_store
-from . import paths
-from . import schedule_store
+from . import paths, schedule_store
 from . import server_shared as shared
 from .session_meta import _find_meta, _session_meta_list
 

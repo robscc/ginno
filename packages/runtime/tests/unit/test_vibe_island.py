@@ -9,11 +9,11 @@ from __future__ import annotations
 import pytest
 
 from ginno_runtime import vibe_island as vi
+from ginno_runtime.server_shared import _SESSIONS
 
 # 绑定原始函数对象:autouse fixture 会把模块属性 vi._send 换成捕获器,
 # 而这里拿到的是补丁前的真身(测 _send 自己的前置闸门用)。
 from ginno_runtime.vibe_island import _send as _real_send
-from ginno_runtime.server_shared import _SESSIONS
 
 pytestmark = pytest.mark.unit
 

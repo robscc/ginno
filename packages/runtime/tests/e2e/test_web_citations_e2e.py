@@ -7,15 +7,14 @@ model issues one web_search tool call, then answers with a citation block
 
 from __future__ import annotations
 
-import json
-
 import pytest
+from conftest import event_names
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import PrivateAttr
 
-from conftest import event_names
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.knowledge import web_usage
 from ginno_runtime.web import engines

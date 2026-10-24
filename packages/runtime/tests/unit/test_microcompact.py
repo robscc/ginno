@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.microcompact import (
     CLEARED_TOOL_OUTPUT,
     _clearable_positions,

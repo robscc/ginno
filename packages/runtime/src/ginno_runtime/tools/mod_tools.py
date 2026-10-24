@@ -133,9 +133,9 @@ def build_mod_tools(session_id: str | None) -> list:
 
 
 def _wrap(entry: dict, session_id: str):
-    import json
-
     from pydantic import BaseModel, create_model
+
+    from ginno_runtime import jsonx as json
 
     schema = entry.get("inputSchema") or {}
     props = schema.get("properties") if isinstance(schema, dict) else None

@@ -13,12 +13,13 @@ keep working unchanged."""
 from __future__ import annotations
 
 import asyncio  # noqa: F401  (kept: module-surface parity; _base consumers)
-import json
 import shutil
 import time
 from pathlib import Path  # noqa: F401  (kept: module-surface parity)
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+
+from ginno_runtime import jsonx as json
 
 from .. import agents as agents_reg  # noqa: F401  (kept: _base consumers)
 from .. import paths  # noqa: F401  (kept: _base consumers)
@@ -26,8 +27,10 @@ from .. import providers as prov_mod
 from .. import server_shared as shared  # noqa: F401  (kept: _base consumers)
 from .. import workflows as wf_store
 from ..checkpointer import FileCheckpointer
-from ..graph import build_all_tools  # noqa: F401  (kept: monkeypatch surface)
-from ..graph import text_of_content
+from ..graph import (
+    build_all_tools,  # noqa: F401  (kept: monkeypatch surface)
+    text_of_content,
+)
 from ..models import build_model
 from ..server_shared import (
     _RUN_WS,
@@ -905,19 +908,6 @@ async def cleanup_workflow_runs_endpoint(data: dict) -> dict:
 # stream/engine.py and scheduler.py import them from here, and the tests
 # monkeypatch ``ginno_runtime.api.workflows.build_model`` / ``build_all_tools``
 # expecting the drivers to see the patch.
-from .workflows_synthesis import (  # noqa: E402
-    SYNTH_PROMPT_VERSION,
-    _SYNTH_TASKS,
-    _extract_json_obj,
-    _resolve_trace_window,
-    _run_synthesis,
-    _run_synthesis_bg,
-    _shutdown_synth_tasks,
-    _spawn_synth_task,
-    _synth_error_text,
-    _synthesize_prompt,
-    _trace_text,
-)
 from .workflows_runs import (  # noqa: E402
     _apply_supervisor_override,
     _backfill_first_run,
@@ -939,4 +929,17 @@ from .workflows_runs import (  # noqa: E402
     _touch_run,
     _wf_build_deps,
     _wf_mcp_tools,
+)
+from .workflows_synthesis import (  # noqa: E402
+    _SYNTH_TASKS,
+    SYNTH_PROMPT_VERSION,
+    _extract_json_obj,
+    _resolve_trace_window,
+    _run_synthesis,
+    _run_synthesis_bg,
+    _shutdown_synth_tasks,
+    _spawn_synth_task,
+    _synth_error_text,
+    _synthesize_prompt,
+    _trace_text,
 )

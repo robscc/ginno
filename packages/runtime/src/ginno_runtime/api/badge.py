@@ -15,8 +15,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from .. import schedule_store
-from .. import session_unread
+from .. import schedule_store, session_unread
 from ..teams import status as team_status
 from ..teams import store as team_store
 

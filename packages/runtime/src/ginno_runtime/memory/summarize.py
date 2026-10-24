@@ -15,12 +15,13 @@ from __future__ import annotations
 import asyncio
 import difflib
 import hashlib
-import json
 import os
 import time
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from ..graph import text_of_content

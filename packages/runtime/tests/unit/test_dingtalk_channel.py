@@ -8,11 +8,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.channels.dingtalk.tap import DingTalkTap, _widget_to_markdown
 
 # ---------------------------------------------------------------- Connector

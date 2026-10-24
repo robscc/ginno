@@ -12,9 +12,10 @@ call sites and test references valid.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 from . import vibe_island as _vibe_island

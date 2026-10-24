@@ -9,8 +9,6 @@ they are not failures, and a "what to do next" tip would mislead.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from langgraph.errors import (
     EmptyChannelError,
@@ -23,6 +21,7 @@ from langgraph.errors import (
     ParentCommand,
 )
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.api.stream.engine import format_turn_error, turn_error_fields
 

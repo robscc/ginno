@@ -19,10 +19,11 @@ from a real turn (2026-10-17, session 3e09b51e), and gateways drift.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import urllib.parse
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 # The narration prefix Z.ai emits for its built-in tools. Distinct enough that
 # a bare startswith gate won't catch the model's own prose. The gateway flips

@@ -215,7 +215,7 @@ def pipeline_dsl() -> dict:
 
 
 def _wjson(payload: dict) -> str:
-    import json
+    from ginno_runtime import jsonx as json
 
     return f"\nWRITE_JSON {json.dumps(payload, ensure_ascii=False)}"
 

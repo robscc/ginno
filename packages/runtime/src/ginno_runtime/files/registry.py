@@ -65,7 +65,7 @@ def _ensure_loaded() -> None:
     if root.is_dir():
         for idx in root.glob("*/files.json"):
             try:
-                import json
+                from ginno_runtime import jsonx as json
 
                 for e in json.loads(idx.read_text() or "[]"):
                     _BY_ID[e["id"]] = e
@@ -79,7 +79,7 @@ def _persist(slug: str) -> None:
     entries = [e for e in _BY_ID.values() if e.get("project_slug") == slug]
     p = paths.files_index_path(slug)
     p.parent.mkdir(parents=True, exist_ok=True)
-    import json
+    from ginno_runtime import jsonx as json
 
     p.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
 

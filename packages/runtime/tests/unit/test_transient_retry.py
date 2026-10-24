@@ -12,7 +12,6 @@ import ssl
 
 from ginno_runtime.api.stream import _is_transient_model_error
 
-
 # The classifier matches by exact CLASS NAME (no hard imports of openai/
 # anthropic/httpx), so the stand-in must literally be named APIConnectionError.
 APIConnectionError = type("APIConnectionError", (Exception,), {})

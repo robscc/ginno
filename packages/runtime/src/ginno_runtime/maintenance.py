@@ -276,7 +276,7 @@ def _state_path():
 
 def _read_state() -> dict:
     try:
-        import json
+        from ginno_runtime import jsonx as json
 
         data = json.loads(_state_path().read_text() or "{}")
         return data if isinstance(data, dict) else {}
@@ -285,7 +285,7 @@ def _read_state() -> dict:
 
 
 def _write_state(state: dict) -> None:
-    import json
+    from ginno_runtime import jsonx as json
 
     p = _state_path()
     try:
@@ -363,7 +363,7 @@ def session_reference_map() -> dict[str, list[str]]:
     except Exception:  # noqa: BLE001 — a broken teams store must not skip hygiene
         _log.exception("maintenance_team_refs_failed")
     try:
-        import json
+        from ginno_runtime import jsonx as json
 
         for p in paths.schedule_runs_dir().glob("runs-*.jsonl"):
             try:

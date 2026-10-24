@@ -19,12 +19,13 @@ Runs stay global (``~/.ginno/workflow_runs/<run_id>.json``) and now pin the
 
 from __future__ import annotations
 
-import json
 import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from . import dsl as wf_dsl
@@ -508,7 +509,7 @@ def _redact_record_value(text: str) -> str:
     t = (text or "").strip()
     if t[:1] in ("{", "["):
         try:
-            import json as _json
+            from ginno_runtime import jsonx as _json
 
             parsed = _json.loads(text)
         except ValueError:

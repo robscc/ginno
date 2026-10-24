@@ -10,12 +10,12 @@ stable WorldState layer (<environment> etc.) and nothing query-dependent.
 from __future__ import annotations
 
 import pytest
+from conftest import event_names
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import PrivateAttr
 
-from conftest import event_names
 from ginno_runtime.world_state import TURN_CONTEXT_PREFIX
 
 pytestmark = pytest.mark.e2e

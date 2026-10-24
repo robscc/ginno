@@ -18,7 +18,6 @@ Cases (each maps to one missing piece of that failure):
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,7 @@ from conftest import events_of, script, script_tool_call
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import PrivateAttr
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.testing.fake_model import ScriptedChatModel
 

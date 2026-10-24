@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.workflows.scripts import ENTRY_REGISTRY
 from ginno_runtime.workflows.scripts.kb_wiki import (
+    _slug,
     kb_wiki_finalize,
     kb_wiki_inventory,
     kb_wiki_lint,
-    _slug,
 )
 
 pytestmark = pytest.mark.unit

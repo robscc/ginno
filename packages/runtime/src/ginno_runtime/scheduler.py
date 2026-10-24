@@ -42,7 +42,6 @@ from . import usage_store
 from . import workflows as wf_store
 from .i18n import _
 from .lang import t
-from .lang import t
 from .schedule_store import MIN_INTERVAL_MIN
 
 _log = logging.getLogger("ginno.schedule")
@@ -760,9 +759,8 @@ async def _resume_prompt_target(task: dict, row: dict) -> dict:
     「续跑指令 + 原 prompt」headless 补一轮。会话历史里已有中断前的部分进度，
     续跑指令明确要求接着做而不是重做；若中断发生在首 checkpoint 之前（历史为
     空），指令自带完整原 prompt，等价于重跑。"""
-    from .api.sessions import _ensure_session
-    from .api.sessions import _turn_last_error
     from .api import stream as _stream_api
+    from .api.sessions import _ensure_session, _turn_last_error
     from .tools.ask_tools import reset_interactive as _reset_interactive_turn
     from .tools.ask_tools import set_interactive as _set_interactive_turn
 

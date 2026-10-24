@@ -13,8 +13,9 @@ blocked``），这是它能被脚本和**其他 agent** 驱动的基础。Ginno 
 from __future__ import annotations
 
 import asyncio
-import json
 import time
+
+from ginno_runtime import jsonx as json
 
 from ..lang import t
 from ..server_shared import _TURN_STOP

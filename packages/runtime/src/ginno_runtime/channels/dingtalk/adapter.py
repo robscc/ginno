@@ -11,9 +11,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from ... import paths
 from ... import server_shared as shared

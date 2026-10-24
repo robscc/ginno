@@ -3,12 +3,12 @@ plugin hooks bridging (hooks/dispatcher.py register_plugin + §10 wiring)."""
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.hooks.dispatcher import HookDispatcher, HookEvent
 from ginno_runtime.mods import bridge_utils
 from ginno_runtime.mods import ops as mods_ops
@@ -51,7 +51,7 @@ async def test_session_read_family(isolated_home):
 
 async def test_session_usage_window_from_model_config(isolated_home):
     """窗口取自 runtime 的模型配置(context_window),不再是写死的 mods 常量。"""
-    from ginno_runtime import providers, paths
+    from ginno_runtime import paths, providers
     from ginno_runtime.server_shared import _SESSIONS
 
     # 会话绑定到 provider="custom"、model="my-model"

@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import json
 import logging
 import os
 import re
 from contextlib import AsyncExitStack
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 log = logging.getLogger("ginno.mods")
 
@@ -814,7 +815,13 @@ class ModChannel:
         Schema = the broker's ``parse_config`` (crates/mod-broker/src/lib.rs):
         nodePath/runnerPath are required and must be *resolved* paths, and
         mods live under ``mods.items.<name>`` with a ``dir`` each."""
-        from .bridge_utils import load_mods_settings, mods_dir, resolve_node, resolve_runner, scan_installed_mods
+        from .bridge_utils import (
+            load_mods_settings,
+            mods_dir,
+            resolve_node,
+            resolve_runner,
+            scan_installed_mods,
+        )
 
         cfg = load_mods_settings()
         # Base items from the installed directories (drop-in convention), so a

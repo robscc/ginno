@@ -41,11 +41,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 import time
 import uuid
+
+from ginno_runtime import jsonx as json
 
 # stream-json 输出里作为 result 文本预览的长度（完整文本在 result.text）。
 _PREVIEW_CHARS = 200

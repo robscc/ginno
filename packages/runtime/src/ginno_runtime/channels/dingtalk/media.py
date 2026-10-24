@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
@@ -26,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+from ginno_runtime import jsonx as json
 
 API_BASE = "https://api.dingtalk.com"
 """新版 OpenAPI 域名（REST，鉴权走 x-acs-dingtalk-access-token header）。"""

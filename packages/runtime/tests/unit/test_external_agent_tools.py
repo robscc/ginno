@@ -10,7 +10,6 @@ the opt-in settings gate, login-shell CLI resolution, and the cwd fallback.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import signal
@@ -19,15 +18,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server_shared, usage_store
 from ginno_runtime.tools import external_agent
-from ginno_runtime.tools.external_agents import base as _xa_base  # adapter 拆分后 _resolve_cli 的真实宿主
-from ginno_runtime.tools.external_agent import run_delegation
 from ginno_runtime.tools.external_agent import (
     ClaudeCodeBackend,
     CodexBackend,
     build_external_agent_tools,
     clear_cli_cache,
+    run_delegation,
+)
+from ginno_runtime.tools.external_agents import (
+    base as _xa_base,  # adapter 拆分后 _resolve_cli 的真实宿主
 )
 
 pytestmark = pytest.mark.unit

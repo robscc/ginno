@@ -6,13 +6,14 @@ finish=stop——图视为正常 END,turn 静默结束。修复:有界注入提�
 期望 nudge 后取到 script[1] 的文本。
 """
 
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from ginno_runtime import jsonx as json
 
 pytestmark = pytest.mark.e2e
 

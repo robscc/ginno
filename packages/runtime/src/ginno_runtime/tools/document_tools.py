@@ -11,9 +11,9 @@ once ``bash`` could do the same job. See docs/file-parsing-research.md.
 
 from __future__ import annotations
 
-import json
-
 from langchain_core.tools import tool
+
+from ginno_runtime import jsonx as json
 
 from ..files import extractors as ex
 from ..lang import t

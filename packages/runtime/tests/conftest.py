@@ -18,17 +18,17 @@ Two client styles
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server, server_shared
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
-from langchain_core.messages import AIMessage
 
 
 def as_fake_model(model_or_scripts: Any) -> ScriptedChatModel:

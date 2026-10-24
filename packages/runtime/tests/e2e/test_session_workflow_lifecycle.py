@@ -9,10 +9,9 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server
 from ginno_runtime.api import sessions as _sessions_api
 from ginno_runtime.api import workflows as _wf_api

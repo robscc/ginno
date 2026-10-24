@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
-import json
+try:  # orjson-backed when the runtime env is active; bare `python3` keeps stdlib
+    from ginno_runtime import jsonx as json
+except ImportError:
+    import json
 import re
 import sys
 from pathlib import Path

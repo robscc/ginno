@@ -7,11 +7,12 @@ merges with existing MEMORY.md via LLM, writes back, then clears the pool.
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from pathlib import Path
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from ..knowledge.injection import _INJECTION_PATTERNS as _CANONICAL_PATTERNS

@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-import json
 import time
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime import schedule_store as store
 
@@ -280,8 +280,9 @@ def test_query_runs_seen_filter_and_row_flag(isolated_home):
 def test_get_run_cross_day_last_wins(isolated_home):
     """fork 端点的取数底座：跨日扫描 + 同 run_id 末行胜出（与 query_runs
     同语义）；缺录返回 None。"""
-    from ginno_runtime import schedule_store as store
     from datetime import date, timedelta
+
+    from ginno_runtime import schedule_store as store
 
     rid = store.new_run_id()
     yest = (date.today() - timedelta(days=1)).isoformat()

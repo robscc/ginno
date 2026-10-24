@@ -8,10 +8,9 @@ statuses flipped via ``server._set_run_status``."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server
 from ginno_runtime.workflows import store
 

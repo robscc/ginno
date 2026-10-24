@@ -6,12 +6,12 @@ dir) — the model never passes a workspace argument.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-
 from conftest import event_names
+
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.testing.fake_model import script, script_tool_call
 

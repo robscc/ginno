@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import pytest
 
 from ginno_runtime.testing.fake_model import script, script_tool_call

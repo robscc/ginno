@@ -8,8 +8,8 @@ thread_id. Clearing server._SESSIONS simulates the process going away.
 from __future__ import annotations
 
 import pytest
-
 from conftest import events_of
+
 from ginno_runtime import server
 from ginno_runtime.checkpointer import FileCheckpointer
 from ginno_runtime.testing.fake_model import script

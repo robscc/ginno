@@ -10,9 +10,9 @@ import re
 from .base import (
     DelegationResult,
     _claude_usage,
-    _resolve_cli,
     _iter_jsonl,
     _parse_json_lenient,
+    _resolve_cli,
     _tail,
     _tool_result_text,
 )

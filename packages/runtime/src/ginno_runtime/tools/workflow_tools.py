@@ -11,11 +11,12 @@ turn (runs themselves persist on disk).
 from __future__ import annotations
 
 import difflib
-import json
 import time
 
 from langchain_core.tools import tool
 from langgraph.types import interrupt
+
+from ginno_runtime import jsonx as json
 
 from .. import workflows as wf_store
 from ..workflows import dsl as wf_dsl

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from langgraph.checkpoint.base import empty_checkpoint
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.checkpointer import FileCheckpointer
 
 pytestmark = pytest.mark.unit

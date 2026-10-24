@@ -12,8 +12,14 @@ along its coupling seams, with **zero behavior change**:
 - :mod:`.turn` — turn preparation: steer payload / attached files / MCP graph
   refresh / ``_run_stream`` / ``_run_resume``.
 - :mod:`.engine` — the streaming engine: ``_stream_graph``, the chunked
-  stream + stall watchdog, stop/heal machinery, transient-failure auto-retry,
-  per-turn citations and auto-distill.
+  stream + stall watchdog.
+- :mod:`.errors` — turn-failure classification, error-card payload, the
+  recursion/turn budget and transient-failure auto-retry predicates.
+- :mod:`.narration` — provider-side search block normalization and the
+  steering narration helpers.
+- :mod:`.effects` — per-turn side effects: file previews / ``code.changed``,
+  citations, auto-distill.
+- :mod:`.heal` — stop / interrupted-turn checkpoint repair.
 
 Two structural contracts keep the outside world unchanged:
 
@@ -33,36 +39,16 @@ Two structural contracts keep the outside world unchanged:
    behave exactly as they did against the monolith.
 """
 
-from .engine import (  # noqa: F401  (re-export of the historical namespace)
-    AUTO_RETRY_BACKOFF_S,
-    AUTO_RETRY_MAX,
-    CHUNK_TIMEOUT_S,
+import sys
+from types import ModuleType
+
+from .effects import (  # noqa: F401  (re-export of the historical namespace)
     _AUTO_DISTILL_FAIL_AT,
     _AUTO_DISTILL_THROTTLE_S,
-    _TRANSIENT_EXC_NAMES,
     _emit_code_changes,
-    _heal_interrupted_turn,
-    _is_transient_model_error,
     _maybe_auto_distill,
     _process_turn_citations,
-    _stop_parked_turn,
-    _stream_graph,
     _tool_file_effects,
-    TurnStopped,
-)
-from .turn import (  # noqa: F401  (re-export of the historical namespace)
-    _attach_only_text,
-    _bound_workflow_view,
-    _maybe_refresh_session_graph,
-    _prepare_steer_payload,
-    _resolve_attached_files,
-    _run_resume,
-    _run_stream,
-)
-from .ws import (  # noqa: F401  (re-export of the historical namespace)
-    _touch_session_title,
-    router,
-    session_ws,
 )
 
 # --- Names the old module had in its namespace via imports -------------------
@@ -70,9 +56,11 @@ from .ws import (  # noqa: F401  (re-export of the historical namespace)
 # patch ``build_graph``, ``_push_session_event``, ``_session_meta_patch`` ...)
 # still exist on the package, and any external reader of these attributes
 # keeps seeing them.
-from .engine import (  # noqa: F401  (re-export of the historical namespace)
+from .engine import (  # noqa: F401  (re-export of the historical namespace)  # noqa: F401  (re-export of the historical namespace)
+    CHUNK_TIMEOUT_S,
     _find_meta,
     _session_meta_patch,
+    _stream_graph,
     add_usage,
     agents_reg,
     art_store,
@@ -87,7 +75,41 @@ from .engine import (  # noqa: F401  (re-export of the historical namespace)
     wf_storemod,
     widget_event,
 )
-from .turn import (  # noqa: F401  (re-export of the historical namespace)
+from .errors import (  # noqa: F401  (re-export of the historical namespace)
+    _CONTENT_FILTER_MARKERS,
+    _TRANSIENT_EXC_NAMES,
+    AUTO_RETRY_BACKOFF_S,
+    AUTO_RETRY_MAX,
+    TURN_RECURSION_LIMIT_DEFAULT,
+    TurnStopped,
+    _is_content_filter_error,
+    _is_transient_model_error,
+    _langgraph_error_hint,
+    format_turn_error,
+    recursion_warn_threshold,
+    turn_error_fields,
+    turn_recursion_limit,
+)
+from .heal import (  # noqa: F401  (re-export of the historical namespace)
+    _heal_interrupted_turn,
+    _stop_parked_turn,
+)
+from .narration import (  # noqa: F401  (re-export of the historical namespace)
+    _SERVER_SEARCH_BLOCK_TYPES,
+    STEER_CONT_MAX,
+    STEER_ID_SYSTEM_PREFIX,
+    _emit_glm_server_search,
+    _is_user_steer,
+    _server_search_hits,
+)
+from .turn import (  # noqa: F401  (re-export of the historical namespace)  # noqa: F401  (re-export of the historical namespace)
+    _attach_only_text,
+    _bound_workflow_view,
+    _maybe_refresh_session_graph,
+    _prepare_steer_payload,
+    _resolve_attached_files,
+    _run_resume,
+    _run_stream,
     build_all_tools,
     build_graph,
     build_turn_context,
@@ -95,14 +117,14 @@ from .turn import (  # noqa: F401  (re-export of the historical namespace)
     projects_mod,
     shared,
 )
-from .ws import (  # noqa: F401  (re-export of the historical namespace)
-    ABANDONED_TURNS,
+from .ws import (  # noqa: F401  (re-export of the historical namespace)  # noqa: F401  (re-export of the historical namespace)
     _PENDING_KIND,
     _PENDING_RESUME,
     _RUNNING_TURNS,
     _SESSION_WS,
     _TURN_STOP,
     _TURN_TASKS,
+    ABANDONED_TURNS,
     _commands,
     _emit_goal_event,
     _ensure_session,
@@ -111,16 +133,24 @@ from .ws import (  # noqa: F401  (re-export of the historical namespace)
     _log,
     _push_session_event,
     _start_goal_driver,
+    _touch_session_title,
     _turn_lock,
     files_mod,
     goal_store,
+    router,
+    session_ws,
     spawn_bg,
 )
 
-import sys
-from types import ModuleType
-
-_MIRROR_TARGETS = (sys.modules[__name__ + ".engine"], sys.modules[__name__ + ".turn"], sys.modules[__name__ + ".ws"])
+_MIRROR_TARGETS = (
+    sys.modules[__name__ + ".engine"],
+    sys.modules[__name__ + ".turn"],
+    sys.modules[__name__ + ".ws"],
+    sys.modules[__name__ + ".errors"],
+    sys.modules[__name__ + ".narration"],
+    sys.modules[__name__ + ".effects"],
+    sys.modules[__name__ + ".heal"],
+)
 
 
 class _PatchMirrorModule(ModuleType):

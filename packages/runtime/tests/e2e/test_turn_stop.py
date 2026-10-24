@@ -17,11 +17,12 @@ event before exiting the client context.
 
 from __future__ import annotations
 
-import json
 import time
 
 import pytest
 from conftest import events_of, script, script_tool_call
+
+from ginno_runtime import jsonx as json
 
 pytestmark = pytest.mark.e2e
 

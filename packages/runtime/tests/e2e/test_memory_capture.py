@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import time
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.testing.fake_model import script
 

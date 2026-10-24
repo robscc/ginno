@@ -11,8 +11,8 @@ from __future__ import annotations
 import base64
 
 import pytest
-
 from conftest import events_of
+
 from ginno_runtime.testing.fake_model import script, script_tool_call
 
 pytestmark = pytest.mark.e2e

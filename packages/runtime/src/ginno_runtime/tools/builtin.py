@@ -27,25 +27,26 @@ glob and killed the whole turn).
 from __future__ import annotations
 
 import contextlib
-import json
 import os
-import re
-import weakref
-from collections import deque
 import queue
+import re
 import shutil
 import subprocess
 import threading
 import time
+import weakref
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
 from langchain_core.tools import tool
 
+from ginno_runtime import jsonx as json
+
 from .. import paths
-from ..lang import t
 from ..files.code_changes import encode_code_marker
 from ..files.images import diff_images, encode_images_marker, snapshot_images
+from ..lang import t
 
 # A runaway glob (e.g. ``**`` under a huge tree) used to stream the entire
 # filesystem listing into the context; cap it like grep_files does.

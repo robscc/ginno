@@ -18,11 +18,11 @@ Conventions every suite relies on:
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable
 
 from fastapi.testclient import TestClient
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 
 API = "/api"

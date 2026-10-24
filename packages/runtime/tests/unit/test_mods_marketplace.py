@@ -4,12 +4,13 @@ manufactured directly."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
-from ginno_runtime.mods import bridge_utils, marketplace as mkt
+from ginno_runtime import jsonx as json
+from ginno_runtime.mods import bridge_utils
+from ginno_runtime.mods import marketplace as mkt
 
 pytestmark = pytest.mark.unit
 

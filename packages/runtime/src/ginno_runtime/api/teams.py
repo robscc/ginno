@@ -23,10 +23,10 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from .. import server_shared as shared
-from ..server_shared import _log
 from ..lang import t
-from ..teams import status as team_status
+from ..server_shared import _log
 from ..teams import deliver as team_deliver
+from ..teams import status as team_status
 from ..teams import store as team_store
 
 router = APIRouter()
@@ -138,8 +138,8 @@ async def recover_teams() -> None:
        的会话（旧解散只删 roster 漏删会话时期的遗留）——侧栏过滤 + /team
        无 roster 都够不着它们，纯属泄漏，删除并留痕。
     """
-    from .sessions import CreateSessionRequest, create_session, delete_session
     from ..session_meta import _find_meta, _session_meta_list
+    from .sessions import CreateSessionRequest, create_session, delete_session
 
     for team in team_store.list_teams():
         has_leader = team.get("leader_instance_id") or any(
@@ -295,8 +295,8 @@ async def delete_team_endpoint(team_id: str, force: int = 0) -> dict:
        主会话即覆盖全部成员会话（多会话成员也含在内）。
     3. 归档≠删除：只想收起用 PATCH archived=true（数据全保留）。
     """
-    from .sessions import delete_session  # lazy: cycle
     from ..teams import status as team_status
+    from .sessions import delete_session  # lazy: cycle
 
     team = team_store.get_team(team_id)
     if team is None:

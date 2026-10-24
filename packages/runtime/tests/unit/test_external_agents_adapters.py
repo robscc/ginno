@@ -3,8 +3,7 @@
 fixture 锁定各 CLI 事件 schema 的关键字段（pi JSONL v3 / claude
 stream-json / codex --json），字段漂移在这里显式失败。
 """
-import json
-
+from ginno_runtime import jsonx as json
 from ginno_runtime.tools.external_agents import (
     ClaudeCodeBackend,
     CodexBackend,
@@ -197,8 +196,9 @@ def test_unicode_and_multiline_survive():
 
 
 def test_orphan_and_multi_tool_calls_pairing():
-    from ginno_runtime.delegation_sessions import _ir_to_messages
     from langchain_core.messages import AIMessage, ToolMessage
+
+    from ginno_runtime.delegation_sessions import _ir_to_messages
 
     ir = [
         {"role": "assistant", "text": "two calls", "tool_calls": [

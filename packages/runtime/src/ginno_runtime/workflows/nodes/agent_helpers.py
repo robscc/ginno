@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import re
+
+from ginno_runtime import jsonx as json
 
 from ...graph import build_agent_system_prompt
 from ...lang import t

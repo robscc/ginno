@@ -37,16 +37,16 @@ domain as run JSON / events.jsonl.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import time
 from typing import Any
 
+from ginno_runtime import jsonx as json
+
+from .. import paths, world_state
 from . import dsl as wf_dsl
 from . import expr as wf_expr
-from .. import paths
-from .. import world_state
 
 # Bump when the fingerprint anchor set changes — invalidates every entry.
 FP_VERSION = 2  # v2: persona digest joins the fingerprint (odw follow-up 2026-10-23)

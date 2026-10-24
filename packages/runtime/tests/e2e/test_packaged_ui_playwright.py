@@ -12,7 +12,6 @@ port is taken.
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 import subprocess
@@ -20,6 +19,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from ginno_runtime import jsonx as json
 
 pytestmark = pytest.mark.e2e
 

@@ -18,11 +18,12 @@ The server emits a ``user.question`` event and resumes with
 from __future__ import annotations
 
 import contextvars
-import json
 from typing import Annotated
 
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import interrupt
+
+from ginno_runtime import jsonx as json
 
 from ..lang import t
 

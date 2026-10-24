@@ -12,10 +12,9 @@ Covers (design: docs/design/multi-provider-model-config.md + P1 decisions):
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime import providers as prov_mod
 

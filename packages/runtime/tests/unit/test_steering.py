@@ -23,12 +23,11 @@ prompt the model finally received — an entry in the stash proves nothing.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from conftest import events_of, script_tool_call
 from langchain_core.messages import AIMessage, HumanMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server_shared
 from ginno_runtime.api.messages_ui import _messages_to_ui
 from ginno_runtime.api.stream import _heal_interrupted_turn, _prepare_steer_payload

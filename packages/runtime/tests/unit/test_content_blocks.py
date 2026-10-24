@@ -13,7 +13,6 @@ import base64
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ginno_runtime.graph import _latest_human_text, text_of_content
-from ginno_runtime.world_state import TURN_CONTEXT_PREFIX
 from ginno_runtime.server import (
     TOOL_OUTPUT_WS_LIMIT,
     _ai_content_blocks,
@@ -24,6 +23,7 @@ from ginno_runtime.server import (
     _tool_content_str,
     _truncate_for_ws,
 )
+from ginno_runtime.world_state import TURN_CONTEXT_PREFIX
 
 B64 = base64.b64encode(b"fake-image-bytes").decode()
 

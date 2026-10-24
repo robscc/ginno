@@ -11,12 +11,12 @@ pin the normalization so no spelling silently fails.
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.mcp import registry as reg_mod
-from ginno_runtime.mcp.registry import MCPServerConfig, MCPRegistry
+from ginno_runtime.mcp.registry import MCPRegistry, MCPServerConfig
 
 pytestmark = pytest.mark.unit
 
@@ -506,9 +506,9 @@ def test_sync_configs_empty_dict_clears_all(tmp_path, fake_live):
 async def test_put_mcp_endpoint_hot_syncs_registry(tmp_path, fake_live, monkeypatch, isolated_home):
     """端到端：PUT /api/mcp → 内存 configs 同步 → status 立即翻缺（不再被
     轮询翻回）。这是「设置页启停开关无响应」的端到端回归。"""
+    from ginno_runtime import paths as paths_mod
     from ginno_runtime import server_shared
     from ginno_runtime.api.config import put_mcp_endpoint
-    from ginno_runtime import paths as paths_mod
 
     cfg_path = paths_mod.mcp_config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)

@@ -14,11 +14,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
 import uuid
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

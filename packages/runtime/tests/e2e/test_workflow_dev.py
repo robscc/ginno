@@ -7,13 +7,13 @@ is independent of the permission system."""
 
 from __future__ import annotations
 
-import json
 import queue
 import threading
 
 import pytest
-
 from conftest import events_of
+
+from ginno_runtime import jsonx as json
 from ginno_runtime import workflows as wf_store
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
 

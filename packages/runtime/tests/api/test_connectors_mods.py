@@ -8,10 +8,10 @@ connected) — no broker, no node, no network.
 from __future__ import annotations
 
 import importlib
-import json
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.mods import bridge_utils
 from ginno_runtime.mods import channel as mods_channel
 

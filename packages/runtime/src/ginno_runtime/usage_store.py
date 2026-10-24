@@ -19,12 +19,13 @@ Design invariants:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 from .usage import cache_hit_ratio
@@ -410,6 +411,26 @@ def session_totals(session_id: str, from_date: str | None = None, to_date: str |
             _add(acc, e)
             found = True
     return _with_ratio(acc) if found else None
+
+
+def latest_record(session_id: str, from_date: str | None = None, to_date: str | None = None) -> dict | None:
+    """Newest record logged for one session; None when nothing was logged.
+
+    Its ``input_tokens`` is the whole prompt of the most recent LLM call —
+    the only per-session number that tracks *current* context occupancy.
+    """
+    frm = _parse_date(from_date, _date_str(time.time() - 86400 * RETENTION_DAYS))
+    to = _parse_date(to_date, _today())
+    latest: dict | None = None
+    latest_ts = float("-inf")
+    for e in iter_range(frm, to):
+        if e.get("session_id") != session_id:
+            continue
+        ts = float(e.get("ts") or 0.0)
+        if ts >= latest_ts:
+            latest, latest_ts = e, ts
+    return latest
+
 
 
 def session_totals_many(

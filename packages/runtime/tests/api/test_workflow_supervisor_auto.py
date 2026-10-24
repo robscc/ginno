@@ -12,11 +12,10 @@ drives the REAL adjudicator through the run's ScriptedChatModel.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from pydantic import PrivateAttr
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 from ginno_runtime.workflows import store
 

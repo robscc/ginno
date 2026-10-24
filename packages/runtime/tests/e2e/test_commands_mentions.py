@@ -9,7 +9,6 @@ overrides routing; raw @kind:label tokens resolve without a structured list.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -20,6 +19,7 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from pydantic import PrivateAttr
 
 from ginno_runtime import artifacts as art_store
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime import workflows as wf_store
 from ginno_runtime.files import reset_registries

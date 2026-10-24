@@ -18,11 +18,12 @@
 shadow 记录）收在私有基类里即可。
 """
 import hashlib
-import json
 import logging
 import os
 import time
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from ..tools.artifact_tools import ARTIFACT_TOOL_NAMES

@@ -92,7 +92,7 @@ def dump_frontmatter(meta: dict) -> str:
     keys keep insertion order; ``sources`` renders as a list, ``tags`` as an
     inline array, strings JSON-quoted (CJK-safe), everything else via json.
     (Ex WikiCompiler._dump_frontmatter — kept for the memory-promote drafts.)"""
-    import json
+    from ginno_runtime import jsonx as json
 
     def _q(s: str) -> str:
         return json.dumps(s, ensure_ascii=False)

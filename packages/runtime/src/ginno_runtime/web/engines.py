@@ -10,12 +10,13 @@ the tool layer converts it to the builtin "[error] …" contract.
 from __future__ import annotations
 
 import html as _html
-import json
 import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable
+
+from ginno_runtime import jsonx as json
 
 from ..lang import t
 

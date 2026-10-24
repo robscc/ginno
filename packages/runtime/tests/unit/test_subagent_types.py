@@ -9,11 +9,11 @@ the model resolution rule (provider/model wins only for a KNOWN config id).
 
 from __future__ import annotations
 
-import json
 import logging
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import subagent_types as st
 
 pytestmark = pytest.mark.unit

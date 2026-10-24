@@ -7,7 +7,6 @@ and the Settings → 会话文件 browser (dirs/list/reveal/delete).
 
 from __future__ import annotations
 
-import json
 import re
 import uuid
 from pathlib import Path
@@ -15,6 +14,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+
+from ginno_runtime import jsonx as json
 
 from .. import artifacts as art_store
 from .. import files as files_mod

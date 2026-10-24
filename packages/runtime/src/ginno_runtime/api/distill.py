@@ -15,13 +15,14 @@ The session meta records ``distilled_to`` so the UI can stop offering it.
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from ..session_meta import _find_meta, _session_meta_patch

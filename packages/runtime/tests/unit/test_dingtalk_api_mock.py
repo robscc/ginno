@@ -11,13 +11,13 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 import httpx
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.channels.dingtalk.cards import CardClient, StreamCard
 from ginno_runtime.channels.dingtalk.media import DingTalkApiError, DingTalkClient
 

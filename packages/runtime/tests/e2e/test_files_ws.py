@@ -29,7 +29,7 @@ def _bypass_on(client, isolated_home):
     """These tests exercise file wiring, not the permission flow — let tools run.
 
     Depends on ``client`` so the lifespan has seeded settings.json first."""
-    import json
+    from ginno_runtime import jsonx as json
 
     sp = isolated_home / "settings.json"
     s = json.loads(sp.read_text())
@@ -231,7 +231,7 @@ def test_bash_generated_image_surfaces_inline(client, create_session, ws_conv, w
                     ],
                 )
             # record the second call's transcript to assert marker stripping
-            import json as _json
+            from ginno_runtime import jsonx as _json
 
             seen_second_call.append(
                 _json.dumps([getattr(m, "content", "") for m in messages], default=str)

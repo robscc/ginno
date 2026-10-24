@@ -14,13 +14,14 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 from .lang import t

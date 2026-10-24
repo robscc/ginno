@@ -26,7 +26,6 @@ Design notes (empirically validated against langchain-core 1.4.x + langgraph 1.2
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
 import uuid
@@ -36,6 +35,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import PrivateAttr
+
+from ginno_runtime import jsonx as json
 
 
 def script_tool_call(name: str, args: dict[str, Any] | None = None, call_id: str | None = None) -> dict:

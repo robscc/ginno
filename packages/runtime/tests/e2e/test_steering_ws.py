@@ -23,11 +23,10 @@ emitted event alone would not prove the text reached a model request.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from conftest import events_of, script, script_tool_call
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import server_shared
 from ginno_runtime.testing.fake_model import ScriptedChatModel
 

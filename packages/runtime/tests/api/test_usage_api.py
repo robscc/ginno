@@ -6,11 +6,10 @@ import time
 from datetime import datetime, timedelta
 
 import pytest
+from conftest import events_of
 
 from ginno_runtime import usage_store
 from ginno_runtime.testing.fake_model import script
-
-from conftest import events_of
 
 pytestmark = pytest.mark.api
 

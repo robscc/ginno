@@ -14,11 +14,12 @@ type, but it is marked ``_internal`` so tooling/UI can treat it as synthetic.
 
 from __future__ import annotations
 
-import json
 import re
 import time
 
 from langchain_core.messages import HumanMessage
+
+from ginno_runtime import jsonx as json
 
 from ...graph import text_of_content
 from ...lang import t

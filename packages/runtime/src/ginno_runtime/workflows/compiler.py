@@ -24,7 +24,9 @@ from . import dsl as wf_dsl
 from . import nodes as wf_nodes
 
 # Back-compat re-exports (previously lived here).
-from .nodes.agent_helpers import WRITE_OPEN, extract_write_json as _extract_write_json, parse_writes as _parse_writes  # noqa: F401
+from .nodes.agent_helpers import WRITE_OPEN  # noqa: F401
+from .nodes.agent_helpers import extract_write_json as _extract_write_json
+from .nodes.agent_helpers import parse_writes as _parse_writes
 
 
 class WorkflowState(TypedDict):

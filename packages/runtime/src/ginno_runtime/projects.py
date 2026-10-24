@@ -22,10 +22,11 @@ the user asks, but Ginno never executes or indexes what is in there.
 
 from __future__ import annotations
 
-import json
 import os
 import secrets
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 

@@ -6,10 +6,11 @@ vault (knowledge-and-wiki-design.md).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi import APIRouter
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from .. import server_shared as shared
@@ -24,7 +25,6 @@ from ..knowledge.semantic import (
 from ..knowledge.semantic import (
     reset_semantic as _reset_kb_semantic,
 )
-
 from ..lang import t
 
 router = APIRouter()

@@ -7,7 +7,6 @@ CLI 路径解析（GUI PATH 兜底）、宽松 JSON 解析。
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -15,6 +14,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ginno_runtime import jsonx as json
 
 DELEGATE_TOOL_NAME = "delegate_agent"
 

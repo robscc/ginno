@@ -11,10 +11,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server_shared
 from ginno_runtime.teams import deliver as team_deliver
 from ginno_runtime.teams import memory as team_memory
@@ -103,7 +103,10 @@ async def test_wait_blocks_on_working_then_times_out(team, live_turns):
     out = await team_wait.wait_for_members(
         "main-sess", team["id"], ids=[_iid(team, "dev")], timeout_s=1
     )
-    assert "(partial)" in out and '"status": "working"' in out
+    assert "(partial)" in out
+    # Parse the payload rather than matching separators: jsonx/orjson emits the
+    # compact form, stdlib json the spaced one.
+    assert json.loads(out[out.index("{") :])["members"][0]["status"] == "working"
 
 
 async def test_wait_until_specific_status(team, live_turns):

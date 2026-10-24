@@ -15,14 +15,15 @@ from pathlib import Path
 
 import pytest
 
+# The FakeBroker + ``connected`` fixture (channel ↔ fake broker on a real unix
+# socket) live in the channel spec; the echo variant below re-uses the broker.
+from test_mods_channel import FakeBroker
+
 from ginno_runtime.mods.channel import (
     ModChannel,
     _covers_event,
     _hook_event_names,
 )
-# The FakeBroker + ``connected`` fixture (channel ↔ fake broker on a real unix
-# socket) live in the channel spec; the echo variant below re-uses the broker.
-from test_mods_channel import FakeBroker
 
 pytestmark = pytest.mark.unit
 

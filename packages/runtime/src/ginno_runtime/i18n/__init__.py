@@ -19,11 +19,12 @@ Logs stay English — this module is for user-facing output only.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import sys
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from ..lang import current_locale
 

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.knowledge import citations as cit
 from ginno_runtime.knowledge import web_usage
 from ginno_runtime.web import engines, fetch
@@ -242,8 +241,7 @@ def test_record_cited_does_not_bump_fetched(isolated_home):
 
 
 def test_ensure_web_permissions_migration(isolated_home):
-    import json as _json
-
+    from ginno_runtime import jsonx as _json
     from ginno_runtime.permission.policy import ensure_web_permissions
 
     sp = isolated_home / "settings.json"

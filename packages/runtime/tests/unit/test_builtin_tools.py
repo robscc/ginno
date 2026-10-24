@@ -396,7 +396,7 @@ def _write_rg_stub(tmp_path: Path, body: str) -> Path:
 
 def test_grep_delegates_to_rg_when_available(tools, ws, monkeypatch, tmp_path):
     """rg on PATH → its JSONL matches are parsed into file:line:text."""
-    import json as _json
+    from ginno_runtime import jsonx as _json
 
     w = Path(ws)
     (w / "src").mkdir()
@@ -418,7 +418,7 @@ def test_grep_delegates_to_rg_when_available(tools, ws, monkeypatch, tmp_path):
 
 
 def test_grep_rg_hits_are_capped_at_max_hits(tools, ws, monkeypatch, tmp_path):
-    import json as _json
+    from ginno_runtime import jsonx as _json
 
     records = "\n".join(
         _json.dumps(

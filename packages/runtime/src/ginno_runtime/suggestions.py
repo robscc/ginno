@@ -61,17 +61,24 @@ def _failure_suggestion(meta: dict) -> dict | None:
 
 
 def _context_suggestion(meta: dict) -> dict | None:
+    """Warn only when the *current* context nears the model window.
+
+    Session totals are cumulative across every call in the session: fifty
+    turns sum to dozens of windows while each individual prompt stays small
+    (2026-10-24: a session reported 46401k tokens ≈ 9063% of a 512k window —
+    it compared lifetime usage against one window). Context occupancy is the
+    whole prompt of the newest LLM call; ``input_tokens`` is normalized to
+    include cache reads/writes (see usage.py), so it is exactly that number.
+    """
     sid = str(meta.get("id") or "")
-    totals = usage_store.session_totals(sid) or {}
-    used = int(totals.get("input_tokens") or 0) + int(totals.get("output_tokens") or 0)
+    latest = usage_store.latest_record(sid) or {}
+    used = int(latest.get("input_tokens") or 0)
     if used <= 0:
         return None
     window = 0
     try:
-        for cfg in prov_mod.load_configs():
-            if cfg.get("id") == meta.get("provider"):
-                window = int(cfg.get("context_window") or 0)
-                break
+        cfg = prov_mod.get_config(str(meta.get("provider") or ""))
+        window = prov_mod.context_window_for(cfg, str(meta.get("model") or ""))
     except Exception:  # noqa: BLE001 — display-only
         window = 0
     if window <= 0:
@@ -83,44 +90,11 @@ def _context_suggestion(meta: dict) -> dict | None:
         "id": "context.pressure",
         "severity": "medium",
         "title": "上下文接近上限",
-        "detail": f"本会话累计 {used / 1000:.0f}k tokens，约占模型窗口的 {ratio * 100:.0f}%。",
+        "detail": (
+            f"当前上下文约 {used / 1000:.0f}k tokens，"
+            f"占模型窗口（{window / 1000:.0f}k）的 {ratio * 100:.0f}%。"
+        ),
         "action": {"type": "compact"},
-    }
-
-
-def _repetition_suggestion(slug: str, sid: str) -> dict | None:
-    """Same tool used ≥3 times recently → offer to distil it into a skill."""
-    try:
-        from .checkpointer import FileCheckpointer
-
-        tup = FileCheckpointer(slug).get_tuple(
-            {"configurable": {"thread_id": sid}}
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    if not tup or not tup.checkpoint:
-        return None
-    messages = (tup.checkpoint.get("channel_values") or {}).get("messages") or []
-    names: list[str] = []
-    for m in messages:
-        for tc in getattr(m, "tool_calls", None) or []:
-            name = str(tc.get("name") or "")
-            if name and not name.startswith("render_"):
-                names.append(name)
-    tail = names[-12:]
-    counts: dict[str, int] = {}
-    for n in tail:
-        counts[n] = counts.get(n, 0) + 1
-    repeat = next(((n, c) for n, c in counts.items() if c >= 3), None)
-    if not repeat:
-        return None
-    name, count = repeat
-    return {
-        "id": "repetition.tool",
-        "severity": "low",
-        "title": "重复的手工步骤",
-        "detail": f"最近使用 `{name}` {count} 次：可以把这套流程沉淀为 skill。",
-        "action": {"type": "distill", "kind": "skill"},
     }
 
 
@@ -128,7 +102,7 @@ def suggestions_for(session_id: str) -> dict:
     found = _find_meta(session_id)
     if not found:
         return {"ok": False, "error": "unknown session", "suggestions": []}
-    meta, slug = found
+    meta, _slug = found
     if _is_automation(meta):
         # Explicit contract: automation sessions never get suggestions.
         return {"ok": True, "excluded": "automation", "suggestions": []}
@@ -137,7 +111,6 @@ def suggestions_for(session_id: str) -> dict:
         for s in (
             _failure_suggestion(meta),
             _context_suggestion(meta),
-            _repetition_suggestion(slug, session_id),
         )
         if s
     ]

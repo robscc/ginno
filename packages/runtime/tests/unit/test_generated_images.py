@@ -14,12 +14,12 @@ Covers the whole display-only pipeline:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.files import images as im
 from ginno_runtime.files.registry import reset_registries
 

@@ -491,6 +491,6 @@ def normalize_dsl(dsl: dict) -> dict:
 
 def canonical_dsl(dsl: dict) -> str:
     """Stable pretty JSON for diffing/versioning (sorted keys, no trailing noise)."""
-    import json
+    from ginno_runtime import jsonx as json
 
     return json.dumps(normalize_dsl(dsl), indent=2, ensure_ascii=False, sort_keys=True)

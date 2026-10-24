@@ -18,13 +18,14 @@ Retention is bounded lazily by :func:`prune_cases`.
 
 from __future__ import annotations
 
-import json
 import shutil
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

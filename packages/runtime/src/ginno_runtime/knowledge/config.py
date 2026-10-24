@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import fields
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from .types import KnowledgeConfig

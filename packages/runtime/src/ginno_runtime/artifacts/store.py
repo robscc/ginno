@@ -8,11 +8,12 @@ also register explicitly via the artifact_register tool.
 
 from __future__ import annotations
 
-import json
 import os
 import time
 import uuid
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

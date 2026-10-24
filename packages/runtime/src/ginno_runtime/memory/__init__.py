@@ -1,6 +1,6 @@
 """Automatic memory refinery: capture → pool → LLM draft → human review → MEMORY.md."""
 
-from .pool import append_to_pool, read_pool, clear_pool, sanitize_for_memory, pool_count
+from .pool import append_to_pool, clear_pool, pool_count, read_pool, sanitize_for_memory
 from .summarize import (
     apply_draft,
     create_draft,

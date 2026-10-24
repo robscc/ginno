@@ -11,11 +11,11 @@ turn whose entry HumanMessage carries the ``ginno_subagent_result`` tag, with
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import subagent_scheduler as sched
 from ginno_runtime.testing.fake_model import (
     ScriptedChatModel,

@@ -12,12 +12,13 @@
 打印延迟、答案与 classifier_events.jsonl。
 """
 import asyncio
-import json
 import os
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 KEY = os.environ.get("OPENROUTER_API_KEY") or (sys.argv[1] if len(sys.argv) > 1 else "")
 if not KEY:

@@ -13,9 +13,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from ginno_runtime import paths
+from ginno_runtime import paths, scheduler
 from ginno_runtime import schedule_store as store
-from ginno_runtime import scheduler
 
 pytestmark = pytest.mark.unit
 

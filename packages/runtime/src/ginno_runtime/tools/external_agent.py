@@ -26,38 +26,38 @@ Builtin contract: never raise — failures degrade to ``[error] …`` results.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import signal
-import threading
-import time
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 
 from langchain_core.tools import tool
+
+from ginno_runtime import jsonx as json
 
 from .. import usage_store
 from ..lang import t
 from ..usage import add_usage, empty_usage
 from ..world_state import external_agents_enabled
 from .external_agents import (  # noqa: F401 — 兼容既有导入面（含旧测试）
+    _TIMEOUT_DEFAULT_S,
+    _TIMEOUT_MAX_S,
+    _TIMEOUT_MIN_S,
     ClaudeCodeBackend,
     CodexBackend,
     DelegationResult,
     ExternalBackend,
     PiBackend,
-    _TIMEOUT_DEFAULT_S,
-    _TIMEOUT_MAX_S,
-    _TIMEOUT_MIN_S,
     _parse_json_lenient,
     _resolve_cli,
     _tail,
-    cli_version_warning,
     clear_cli_cache,
+    cli_version_warning,
     invalidate_cli,
 )
-
 
 _BACKENDS: dict[str, ExternalBackend] = {
     ClaudeCodeBackend.name: ClaudeCodeBackend(),
@@ -454,12 +454,12 @@ async def _delegation_bg(
     """后台跑委托（spawn_bg 调度）：阻塞子进程放线程池；完成后回填子会话、
     记用量、并把结果经 subagent 注入通道回流父会话（前端 🧭 卡同款）。
     绝不抛异常。"""
-    from ..server_shared import _log
     # _on_line 的节流回填引用 finalize_delegation——必须在 _on_line 定义【前】
     # 绑定:若只靠完成点的 from-import(下方 403/492 处),闭包 cell 在整个
     # 运行期都是空的,回填每次 NameError(free variable 无值)再被静默吞掉
     # ——2026-10-05 真机排查实锤,回放页因此从不增长。
     from ..delegation_sessions import finalize_delegation
+    from ..server_shared import _log
 
     _log.info(
         "delegation_bg_start id=%s backend=%s parent=%s",

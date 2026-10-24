@@ -10,7 +10,6 @@ from __future__ import annotations
 import time
 
 import pytest
-
 import studio_lib as L
 
 pytestmark = pytest.mark.e2e
@@ -73,6 +72,7 @@ def test_hung_tool_fails_node_and_run_recovers(client, monkeypatch):
     import time as _t
 
     import langgraph.prebuilt as _prebuilt
+
     from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
     from ginno_runtime.workflows.nodes import base as wf_base
 

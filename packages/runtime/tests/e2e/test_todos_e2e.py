@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-
 from conftest import event_names, events_of
+
 from ginno_runtime.testing.fake_model import script, script_tool_call
 
 pytestmark = pytest.mark.e2e

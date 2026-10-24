@@ -7,10 +7,11 @@ module (which would create an import cycle).
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 from .server_shared import _SESSIONS

@@ -16,9 +16,10 @@ web_messages/，见 native_host._ext_messages_candidates）。
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 # web catalog 目录名 → Chrome locale 目录名（Chrome 用下划线：zh_CN）
 LOCALES = {"en": "en", "zh-CN": "zh_CN"}

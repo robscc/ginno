@@ -20,11 +20,12 @@ session's project scope; the model never sees a project_slug parameter.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Literal
 
 from langchain_core.tools import tool
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from .. import projects as projects_mod

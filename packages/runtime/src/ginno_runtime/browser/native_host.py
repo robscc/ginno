@@ -70,8 +70,9 @@ def install_host(force: bool = False) -> bool:
       ``--native-host`` (the binary's sys.executable IS the app — a python
       shebang would be wrong there)
     """
-    import json
     import platform
+
+    from ginno_runtime import jsonx as json
 
     script = host_script_target()
     if not script.exists():
@@ -162,7 +163,7 @@ def _bundled_version() -> str | None:
         mf = d / "manifest.json"
         if mf.exists():
             try:
-                import json
+                from ginno_runtime import jsonx as json
 
                 return json.loads(mf.read_text()).get("version")
             except (OSError, ValueError):
@@ -184,7 +185,7 @@ def materialize_extension() -> Path | None:
     # Chrome 的文件监听重载)。
     if marker.exists() and (out / "background.js").exists():
         try:
-            import json as _json
+            from ginno_runtime import jsonx as _json
 
             current = (_json.loads(marker.read_text()) or {}).get("version")
         except (OSError, ValueError):
@@ -249,7 +250,7 @@ def materialize_extension() -> Path | None:
                       / "ginno_browser_host.py")
             if nh.exists():
                 shutil.copy2(nh, out / "ginno_browser_host.py")
-            import json
+            from ginno_runtime import jsonx as json
             version = json.loads((src_dir / "manifest.json").read_text())["version"]
             (out / "VERSION.json").write_text(json.dumps(
                 {"version": version, "extensionId": EXTENSION_ID}, indent=2))

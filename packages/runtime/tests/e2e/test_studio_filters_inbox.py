@@ -17,16 +17,15 @@ Every test builds its own state in an isolated home (the autouse
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 
 import pytest
+import studio_lib as L
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_raise
-
-import studio_lib as L
 
 pytestmark = pytest.mark.e2e
 

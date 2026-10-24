@@ -131,7 +131,7 @@ def test_append_event_seq_survives_restart_sim(client):
     e3 = wf_events.append_event("seqrun", "node_exit", node_id="b")
     assert e3["seq"] > e2["seq"]
     # read back synthesizes seq for legacy lines without one
-    import json
+    from ginno_runtime import jsonx as json
     from ginno_runtime import paths
 
     p = paths.home() / "workflow_runs" / "legacy.events.jsonl"

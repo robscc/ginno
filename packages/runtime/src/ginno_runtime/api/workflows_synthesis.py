@@ -12,11 +12,12 @@ is resolved through ``_base`` AT CALL TIME, so monkeypatching an attribute on
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from pathlib import Path
 
 from fastapi import HTTPException
+
+from ginno_runtime import jsonx as json
 
 from . import workflows as _base
 

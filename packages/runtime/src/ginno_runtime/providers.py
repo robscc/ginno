@@ -29,11 +29,12 @@ for the many existing callers.
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from copy import deepcopy
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from . import paths
 from .lang import t

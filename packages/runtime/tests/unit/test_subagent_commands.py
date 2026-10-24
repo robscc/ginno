@@ -20,13 +20,13 @@ Coverage per the P2 shared contract:
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server_shared
 from ginno_runtime import subagent_plan as plan_mod
 from ginno_runtime import subagent_scheduler as sched

@@ -9,12 +9,13 @@ historical namespace and mirrors patch writes into the submodules, so
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from ginno_runtime import jsonx as json
 
 from ... import commands as _commands
 from ... import files as files_mod

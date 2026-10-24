@@ -30,8 +30,9 @@ Default OFF — the whole layer is inert unless the user opts in. Shape:
 ``GINNO_WF_PARALLEL``). Read per decision, so settings edits apply without a
 session rebuild.
 """
-import json
 import os
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

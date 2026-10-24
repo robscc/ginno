@@ -12,6 +12,7 @@ dependencies = [
     "langchain-anthropic>=0.2",
     "langchain-openai>=0.2",
     "mcp>=1.0",
+    "orjson>=3.10",
     "pydantic>=2.7",
     "websockets>=12",
     "anyio>=4",

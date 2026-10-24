@@ -12,15 +12,14 @@ through ``_base`` AT CALL TIME, so monkeypatching an attribute on
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from . import workflows as _base
+from ginno_runtime import jsonx as json
 
 from ..lang import t
-
+from . import workflows as _base
 
 # ---- 跨 run 全局并发闸(odw-comparison P1-③)------------------------------------
 # 信号量按当前设置值惰性(重)建:设置改了下一批 run 用新值,在途 run 不受

@@ -23,11 +23,12 @@ persona, model binding, tool allowlist, and (via memory.py) memory scope.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 from .. import providers as prov_mod

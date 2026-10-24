@@ -7,9 +7,10 @@ status and offer retry without polluting the todo schema.
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

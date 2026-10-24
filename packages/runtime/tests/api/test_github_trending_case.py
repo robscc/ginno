@@ -8,10 +8,9 @@ Strict three-step loop, all through real endpoints:
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
+from ginno_runtime import jsonx as json
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script
 
 pytestmark = pytest.mark.api

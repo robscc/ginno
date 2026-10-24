@@ -11,13 +11,14 @@ LLM,验证三件事:
 远端(attach)模式在 test_cli_exec_remote.py 单独覆盖。
 """
 
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from ginno_runtime import jsonx as json
 
 pytestmark = pytest.mark.e2e
 

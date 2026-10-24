@@ -10,13 +10,14 @@ Only counters and ids are stored — never answer content or notes.
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

@@ -20,11 +20,12 @@ edit. Deterministic, no LLM (python-node contract).
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import time
 from pathlib import Path
+
+from ginno_runtime import jsonx as json
 
 from ... import paths
 from ...knowledge import frontmatter as fm

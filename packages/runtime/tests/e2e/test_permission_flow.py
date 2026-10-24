@@ -11,8 +11,8 @@ dir) — the model never passes a workspace argument.
 from __future__ import annotations
 
 import pytest
-
 from conftest import event_names, events_of
+
 from ginno_runtime import paths
 from ginno_runtime.testing.fake_model import script, script_tool_call
 

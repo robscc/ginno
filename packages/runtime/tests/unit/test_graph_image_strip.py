@@ -7,11 +7,10 @@ model — the persisted checkpoint must keep every image (UI history intact).
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from ginno_runtime import jsonx as json
 from ginno_runtime import paths
 from ginno_runtime.graph import strip_old_images
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script

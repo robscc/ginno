@@ -8,10 +8,11 @@ concurrent appends from a single run are safe enough for v1 (one writer per run)
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from typing import Any
+
+from ginno_runtime import jsonx as json
 
 from .. import paths
 

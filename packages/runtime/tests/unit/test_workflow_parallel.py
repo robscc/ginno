@@ -7,8 +7,8 @@ from pydantic import PrivateAttr
 
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_raise
 from ginno_runtime.workflows import compiler as wf_compiler
-from ginno_runtime.workflows import dsl as wf_dsl
 from ginno_runtime.workflows import doctor as wf_doctor
+from ginno_runtime.workflows import dsl as wf_dsl
 from ginno_runtime.workflows import engine
 
 
