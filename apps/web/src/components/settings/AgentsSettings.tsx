@@ -144,11 +144,13 @@ export function AgentsSettings() {
     setOverId(id);
   };
 
-  const clearDragVisual = () => {
-    const d = dragRef.current;
+  // 显式传入拖拽记录：调用方常常先把 dragRef.current 置空再清理，
+  // 若此处再读 ref 就会拿到 null，ghost 留在 body 上变成"遗留标签"。
+  const clearDragVisual = (d = dragRef.current) => {
     if (d) {
       d.el.classList.remove("opacity-40");
       d.ghost?.remove();
+      d.ghost = null;
     }
     document.body.classList.remove("ginno-card-dragging");
   };
@@ -203,7 +205,7 @@ export function AgentsSettings() {
       if (!d.moved) return; // 纯点击：交给 click 展开
       const src = d.id;
       const dst = overIdRef.current;
-      clearDragVisual();
+      clearDragVisual(d); // 必须带 d：ref 已置空，不能再从 ref 取
       suppressClick.current = true;
       setDragId(null);
       setOver(null);
@@ -211,20 +213,36 @@ export function AgentsSettings() {
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && dragRef.current?.moved) {
-        clearDragVisual();
+        const d = dragRef.current;
+        clearDragVisual(d);
         dragRef.current = null;
         suppressClick.current = true;
         setDragId(null);
         setOver(null);
       }
     };
+    // 松手发生在窗口外时 mouseup 不会送达页面，ghost 会永久滞留：
+    // 失焦即视为取消。
+    const onBlur = () => {
+      const d = dragRef.current;
+      if (!d?.moved) return;
+      clearDragVisual(d);
+      dragRef.current = null;
+      setDragId(null);
+      setOver(null);
+    };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("blur", onBlur);
     return () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("blur", onBlur);
+      // 卸载时若还在拖拽，ghost 是挂在 body 上的游离节点，必须手动清掉
+      clearDragVisual();
+      dragRef.current = null;
     };
   }, []); // 挂 document，一次安装；状态走 ref，无重挂
 

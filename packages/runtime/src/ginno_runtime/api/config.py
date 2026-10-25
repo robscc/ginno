@@ -18,6 +18,7 @@ from .. import paths
 from .. import providers as prov_mod
 from .. import server_shared as shared
 from ..agents.registry import AgentModelBindingError
+from ..lang import t
 from ..mcp.registry import MCPRegistry
 from ..server_shared import _SESSIONS, _push_global_event
 from ..session_meta import _session_meta_list
@@ -373,14 +374,31 @@ async def verify_model_config_endpoint(cfg: dict) -> dict:
     immediately (upsert by id, ``verified_at`` stamped) and returned. On
     failure nothing is written and ``{ok: false, error}`` comes back with 200
     so the UI can show the yellow banner."""
-    result = prov_mod.verify_config_draft(prov_mod.unmask_config_draft(cfg))
+    # SEC-01: the draft arrives with a masked key ("••••1234") when the user
+    # edits an existing config. Resolve it ONCE and use the resolved draft for
+    # both the probe and the save — the probe used to get the resolved copy
+    # while the save wrote the raw one, so every Settings save of an existing
+    # config persisted the mask over the real key (2026-10-24: 智谱 key became
+    # "••••OrgQ"; the next request died inside httpx header encoding with a bare
+    # UnicodeEncodeError). A mask that cannot be resolved (new/corrupted entry)
+    # must be refused, never stored.
+    draft = prov_mod.unmask_config_draft(cfg)
+    if prov_mod.is_masked(draft.get("api_key")):
+        return {
+            "ok": False,
+            "error": t(
+                "The API key is still a mask placeholder — re-enter the real key",
+                "API Key 仍是掩码占位值，请重新填写真实 Key",
+            ),
+        }
+    result = prov_mod.verify_config_draft(draft)
     if not result.get("ok"):
         return {
             "ok": False,
             "error": result.get("error"),
             "latency_ms": result.get("latency_ms"),
         }
-    saved_cfg = prov_mod.normalize_config(cfg)
+    saved_cfg = prov_mod.normalize_config(draft)
     saved_cfg["verified_at"] = int(time.time())
     saved_cfg["last_error"] = None
     if not saved_cfg.get("id"):
@@ -453,9 +471,15 @@ def _config_to_legacy(cfg: dict) -> dict:
 async def get_providers() -> dict:
     settings = _read_settings_file()
     configs = prov_mod.load_configs(settings)
+    legacy = {cfg["id"]: _config_to_legacy(cfg) for cfg in configs}
+    # SEC-01: same rule as GET /api/settings — keys never leave the process in
+    # plaintext. PUT /api/providers restores masked ones from storage.
+    for c in legacy.values():
+        if c.get("api_key"):
+            c["api_key"] = prov_mod.mask_secret(c["api_key"])
     return {
         "default_provider": prov_mod.get_default_config(settings),
-        "providers": {cfg["id"]: _config_to_legacy(cfg) for cfg in configs},
+        "providers": legacy,
     }
 
 
@@ -543,7 +567,17 @@ async def put_providers(req: PutProvidersRequest) -> dict:
     # Forward to the v2 store: the dict payload is converted to configs and
     # merged by id (configs not expressible in the legacy dict form survive);
     # the default is written to the NEW key only (default_config).
-    saved = prov_mod.save_providers(req.providers)
+    # SEC-01: the payload round-trips what GET /api/providers handed out, i.e.
+    # masked keys — resolve them against storage before saving, exactly like
+    # PUT /api/model_configs does.
+    stored = {c["id"]: c for c in prov_mod.load_configs()}
+    providers: dict = {}
+    for pid, cfg in (req.providers or {}).items():
+        cfg = dict(cfg or {})
+        if prov_mod.is_masked(cfg.get("api_key")):
+            cfg["api_key"] = (stored.get(pid) or {}).get("api_key") or ""
+        providers[pid] = cfg
+    saved = prov_mod.save_providers(providers)
     default = req.default_provider
     if default:
         settings = _read_settings_file()
@@ -561,7 +595,10 @@ async def put_providers(req: PutProvidersRequest) -> dict:
     # rebuilt graphs read them, so re-resolve them against the just-saved
     # config.
     _refresh_session_metas()
-    return {"ok": True, "providers": saved, "default_provider": default}
+    # Same SEC-01 outbound rule as GET: the echo carries no plaintext keys.
+    echo = {pid: {**cfg, "api_key": prov_mod.mask_secret(cfg.get("api_key"))}
+            for pid, cfg in saved.items()}
+    return {"ok": True, "providers": echo, "default_provider": default}
 
 
 @router.post("/api/providers/{provider_id}/verify")

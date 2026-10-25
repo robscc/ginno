@@ -200,6 +200,48 @@ def test_verify_draft_failure_not_saved(client, monkeypatch):
     assert "model_configs" not in disk
 
 
+def test_verify_masked_draft_keeps_the_stored_key(client, monkeypatch):
+    """Regression (2026-10-24): saving an existing config in Settings sends the
+    masked key back. The probe got the restored key but the save wrote the mask
+    itself, so the real key was lost — the next request died inside httpx
+    header encoding with a bare ``UnicodeEncodeError: 'ascii' codec``."""
+    stored_cfg = _relay("p1", api_key="sk-real-key-9999")
+    paths.settings_path().write_text(json.dumps({"model_configs": [stored_cfg]}))
+    probed: dict = {}
+
+    def _probe(cfg):
+        probed.update(cfg)
+        return {"ok": True, "latency_ms": 7}
+
+    monkeypatch.setattr(prov_mod, "verify_config_draft", _probe)
+    r = client.post(
+        "/api/model_configs/verify",
+        json={**stored_cfg, "api_key": "••••9999", "name": "改名"},
+    )
+    assert r.json()["ok"] is True
+    assert probed["api_key"] == "sk-real-key-9999"  # probe got the real key
+    saved = {c["id"]: c for c in _read_settings()["model_configs"]}
+    assert saved["p1"]["api_key"] == "sk-real-key-9999"  # and so did the save
+    assert saved["p1"]["name"] == "改名"
+
+
+def test_verify_unresolvable_mask_is_refused(client, monkeypatch):
+    """A mask with no stored counterpart (new or already-corrupted entry) must
+    never be probed or persisted as if it were a key."""
+    probed: list = []
+    monkeypatch.setattr(
+        prov_mod,
+        "verify_config_draft",
+        lambda cfg: probed.append(cfg) or {"ok": True},
+    )
+    r = client.post("/api/model_configs/verify", json={**_DRAFT, "api_key": "••••wxyz"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False and "key" in body["error"].lower()
+    assert probed == []  # never sent to the provider
+    assert "model_configs" not in _read_settings()
+
+
 # ---------------------------- build_model dispatch ------------------------- #
 
 
@@ -265,6 +307,27 @@ def test_build_model_dispatch_three_protocols(monkeypatch):
     assert resp.kw["use_responses_api"] is True
     assert resp.kw["base_url"] == "https://api.openai.com/v1"
     assert resp.kw["openai_organization"] == "org-1"
+
+
+@pytest.mark.parametrize("bad_key", ["••••OrgQ", "密钥-abc"])
+def test_build_model_rejects_masked_or_non_ascii_key(monkeypatch, bad_key):
+    """Both fail inside httpx header encoding otherwise, as a bare
+    ``UnicodeEncodeError`` far from the config that caused it."""
+    M = _patch_providers(
+        monkeypatch,
+        {
+            "zhipu": {
+                "enabled": True,
+                "protocol": "anthropic",
+                "api_key": bad_key,
+                "base_url": "https://open.bigmodel.cn/api/anthropic",
+                "bearer_auth": True,
+                "default_model": "glm-5.3",
+            }
+        },
+    )
+    with pytest.raises(ValueError, match="API key"):
+        M.build_model("zhipu")
 
 
 def test_bridge_responses_reasoning():
@@ -768,6 +831,22 @@ def test_model_configs_get_masks_and_put_restores(client):
     r = client.put("/api/model_configs", json=body)
     assert r.status_code == 200, r.text
     assert r.json()["configs"][0]["api_key"] == "••••5678"  # masked on the way out
+    assert _read_settings()["model_configs"][0]["api_key"] == "sk-abcdefgh-5678"
+
+
+def test_legacy_providers_get_masks_and_put_restores(client):
+    """The legacy dict view obeys SEC-01 too — it used to hand out plaintext,
+    and its PUT (what GeneralSettings' 「设为默认」 sends) persisted whatever it
+    received."""
+    _write_v2_settings()
+    got = client.get("/api/providers").json()["providers"]["p1"]
+    assert got["api_key"] == "••••5678"
+
+    r = client.put(
+        "/api/providers", json={"providers": {"p1": got}, "default_provider": "p1"}
+    ).json()
+    assert r["ok"] is True
+    assert r["providers"]["p1"]["api_key"] == "••••5678"  # echo stays masked
     assert _read_settings()["model_configs"][0]["api_key"] == "sk-abcdefgh-5678"
 
 

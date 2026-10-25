@@ -486,6 +486,17 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         raise ValueError(f"unknown provider: {provider_id}")
     if not cfg.get("enabled"):
         raise ValueError(f"provider {provider_id} is disabled (enable it in Settings)")
+    # A mask ("••••1234") or any non-ASCII character can only reach this far if
+    # a settings write path persisted a display value instead of the secret.
+    # Every protocol sends the key in a header, and httpx rejects non-ASCII
+    # header values with a bare `UnicodeEncodeError: 'ascii' codec ...` raised
+    # deep in its internals — fail here with something the user can act on.
+    _key = str(cfg.get("api_key") or "")
+    if prov_mod.is_masked(_key) or not _key.isascii():
+        raise ValueError(
+            f"API key for {provider_id} is a mask placeholder or contains "
+            "non-ASCII characters — re-enter the real key in Settings → Model API"
+        )
 
     proto = cfg.get("protocol")
     # unified name resolution: explicit override → default_model/model field →
