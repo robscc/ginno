@@ -83,11 +83,12 @@ impl RunnerConn {
 
     pub fn send_result(&self, id: u64, res: &Result<Value, RpcError>) {
         if self.hosted {
-            let mut frame = crate::protocol::result_ok(0, Value::Null);
-            match res {
-                Ok(value) => frame = crate::protocol::result_ok(id, value.clone()),
-                Err(e) => frame = crate::protocol::result_err(id, &e.code, e.message.clone()),
-            }
+            // The frame is built by the match — the previous placeholder value
+            // was never read (unused_assignments).
+            let mut frame = match res {
+                Ok(value) => crate::protocol::result_ok(id, value.clone()),
+                Err(e) => crate::protocol::result_err(id, &e.code, e.message.clone()),
+            };
             stamp_mod(&mut frame, &self.name);
             self.tx.send(&frame);
         } else {

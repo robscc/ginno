@@ -119,17 +119,17 @@ export function SubagentSpawnCard({
         </button>
       </div>
       {(sub?.goal || block.goal) && (
-        <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
+        <div className="selectable mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
           {tc("subagent.goalLabel")}{sub?.goal || block.goal}
         </div>
       )}
       {(sub?.constraints || block.constraints) && (
-        <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
+        <div className="selectable mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
           {tc("subagent.constraintsLabel")}{sub?.constraints || block.constraints}
         </div>
       )}
       {(sub?.acceptance || block.acceptance) && (
-        <div className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
+        <div className="selectable mt-1 whitespace-pre-wrap break-words leading-relaxed text-faint">
           {tc("subagent.acceptanceLabel")}{sub?.acceptance || block.acceptance}
         </div>
       )}
@@ -171,7 +171,7 @@ export function PlanUpdateCard({
           </span>
         )}
       </div>
-      <div className="mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
+      <div className="selectable mt-1.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
         {block.text}
       </div>
     </div>
@@ -304,7 +304,7 @@ export function SubagentResultCard({
       {/* delegation 正文：机器头与 delegation= 溯源行剥掉（信息已进徽标行与
           卡片跳转，ToolBlock 同款过滤）。 */}
       {summaryText && (
-        <div className="mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-muted">
+        <div className="selectable mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-muted">
           {isDelegation && del
             ? summaryText
                 .split("\n")

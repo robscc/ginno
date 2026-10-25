@@ -553,6 +553,7 @@ export interface WikiPage {
 
 // ---- memory refinery (draft → review → apply) ----
 export interface MemoryDraft {
+  id?: string;
   draft: string | null;
   previous?: string;
   diff?: string;
@@ -560,9 +561,125 @@ export interface MemoryDraft {
   pool_cutoff?: number | null;
   created_at?: number;
   trigger?: string;
+  provider?: string;
+  model?: string;
+  status?: MemoryDraftStatus;
   budget?: number;
   chars?: number;
   over_budget?: boolean;
+}
+
+export type MemoryDraftStatus = "pending" | "applied" | "discarded" | "expired";
+
+/** Queue row (no body/diff) — Settings → 智能体 → 记忆 › 草稿队列. */
+export interface MemoryDraftSummary {
+  id: string;
+  created_at: number | null;
+  resolved_at: number | null;
+  trigger: string;
+  provider: string;
+  model: string;
+  pool_entries: number;
+  budget: number;
+  chars: number;
+  over_budget: boolean;
+  status: MemoryDraftStatus;
+  expired_reason?: string | null;
+}
+
+export interface MemorySection {
+  heading: string;
+  title: string;
+  chars: number;
+  lines: number;
+  text: string;
+}
+
+export interface MemoryAgentRow {
+  id: string;
+  name: string;
+  chars: number;
+  entries: number;
+  selected: boolean;
+  has_index: boolean;
+}
+
+/** What memory is in effect this turn (file view + prompt view). */
+export interface MemoryStatus {
+  path: string;
+  exists: boolean;
+  updated_at: number | null;
+  chars: number;
+  budget: number;
+  sections: MemorySection[];
+  section_count: number;
+  line_count: number;
+  agent_id: string;
+  agent_chars: number;
+  agent_entries: number;
+  agents: MemoryAgentRow[];
+  injected_chars: number;
+  injected_preview: string;
+  truncated: boolean;
+}
+
+export interface MemoryRun {
+  ts: number;
+  run_id?: string;
+  trigger?: string;
+  status?: "success" | "failed" | "skipped" | string;
+  reason?: string | null;
+  provider?: string;
+  model?: string;
+  duration_ms?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  pool_entries?: number;
+  draft_id?: string;
+  chars?: number;
+  error?: string | null;
+}
+
+export interface MemoryPoolEntry {
+  timestamp: number | null;
+  session_id: string | null;
+  agent_id: string | null;
+  cited: boolean;
+  chars: number;
+  excerpt: string;
+}
+
+export interface MemoryPoolPage {
+  total: number;
+  cited: number;
+  first_ts: number | null;
+  last_ts: number | null;
+  entries: MemoryPoolEntry[];
+}
+
+/** Daily watermark snapshot (memory/state.jsonl). */
+export interface MemoryTrendRow {
+  date: string;
+  ts: number;
+  pool: number;
+  memory_chars: number;
+  budget: number;
+  drafts_pending: number;
+}
+
+export interface MemoryThrottle {
+  until: number;
+  active: boolean;
+}
+
+export interface MemoryUsageSummary {
+  days: number;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  failed: number;
 }
 
 export interface PromoteSimilar {

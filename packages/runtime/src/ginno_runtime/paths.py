@@ -493,13 +493,33 @@ def memory_pool_dir() -> Path:
     return home() / "memory" / "pool"
 
 
+def memory_drafts_dir() -> Path:
+    """Draft queue: ``<draft_id>.md`` + ``<draft_id>.json`` per distillation run.
+
+    Replaced the single-slot ``memory/draft.md`` (docs/dream-mode-design.md §5):
+    one stuck draft used to block every later run forever.
+    """
+    return home() / "memory" / "drafts"
+
+
+def memory_runs_path() -> Path:
+    """Append-only run log for distillation (success / failed / skipped)."""
+    return home() / "memory" / "runs.jsonl"
+
+
 def memory_draft_path() -> Path:
-    """Pending distillation draft (single slot, reviewed before apply)."""
+    """Legacy single-slot draft — migrated into :func:`memory_drafts_dir` on
+    startup; kept so old binaries and tests keep resolving."""
     return home() / "memory" / "draft.md"
 
 
 def memory_draft_meta_path() -> Path:
     return home() / "memory" / "draft.json"
+
+
+def agent_memory_index_path(agent_id: str) -> Path:
+    """Per-agent private memory index (``agents/<id>/MEMORY.md``)."""
+    return home() / "agents" / agent_id / "MEMORY.md"
 
 
 def experiences_path() -> Path:

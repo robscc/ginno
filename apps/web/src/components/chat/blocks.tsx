@@ -207,7 +207,7 @@ export function UserBlocks({ blocks }: { blocks: Block[] }) {
       {allTexts.map((t, i) => (
         // break-words: pasted terminal output carries long unbroken paths —
         // without it the transcript overflows the page into horizontal scroll
-        <div key={i} className="min-w-0 whitespace-pre-wrap break-words">
+        <div key={i} className="selectable min-w-0 whitespace-pre-wrap break-words">
           <MentionText text={t} />
         </div>
       ))}
@@ -286,7 +286,7 @@ export function SteerBand({ block }: { block: Extract<Block, { kind: "steer" }> 
         <RotateCw className="h-2.5 w-2.5" aria-hidden />
         {tc("steer.injected")}{clock ? ` · ${clock}` : ""}
       </span>
-      <div className="min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug text-txt">
+      <div className="selectable min-w-0 whitespace-pre-wrap break-words text-[13px] leading-snug text-txt">
         {block.text}
       </div>
       {total > 0 && (

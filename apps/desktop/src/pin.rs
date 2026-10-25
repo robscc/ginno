@@ -298,6 +298,10 @@ fn apply_pin_window_prefs(app: &tauri::AppHandle, w: &WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
+// objc's `sel_impl` expands to `cfg!(cargo-clippy)`. That cfg only exists when
+// clippy drives rustc, so a plain `cargo build` flags it as unexpected
+// (`unexpected_cfgs`); the expansion is upstream's, not ours.
+#[allow(unexpected_cfgs)]
 fn apply_window_collection_behavior(w: &WebviewWindow, prefs: &PinPrefs) {
     use objc::{msg_send, sel, sel_impl};
     // NSWindowCollectionBehavior: CanJoinAllSpaces = 1<<0 (present on every

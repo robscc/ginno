@@ -19,8 +19,38 @@ const CANONICAL_FG: Record<string, string> = {
   probe: "#9a9aa6",
   external: "#f472b6",
   subagent: "#34d399",
+  subagent_plan: "#5eead4",
+  subagent_gate: "#22d3ee",
+  title: "#fb923c",
+  team: "#e879f9",
+  schedule: "#facc15",
+  mods: "#c084fc",
+  classifier: "#94a3b8",
+  channel_resume: "#2dd4bf",
   other: "#9a9aa6",
 };
+
+/** 来源筛选/图例的规范顺序（与 usage overview 的分桶一致）。 */
+export const USAGE_SOURCES = [
+  "chat",
+  "goal",
+  "compaction",
+  "workflow",
+  "memory",
+  "kb",
+  "probe",
+  "external",
+  "subagent",
+  "subagent_plan",
+  "subagent_gate",
+  "title",
+  "team",
+  "schedule",
+  "mods",
+  "classifier",
+  "channel_resume",
+  "other",
+] as const;
 
 /** Ginno 色板（语义色 400 档）：未知来源的取色域。 */
 const PALETTE_400 = ["#818cf8", "#a78bfa", "#60a5fa", "#4ade80", "#facc15", "#fb923c", "#f87171"];

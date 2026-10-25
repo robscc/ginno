@@ -678,6 +678,26 @@ def search_probe(provider_id: str) -> dict[str, Any]:
         text = getattr(res, "content", "") or ""
         if isinstance(text, list):  # multimodal content blocks
             text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+        # Usage telemetry (usage-stats-design §3.6): the search probe is a real
+        # billed completion, so it gets its own bucket instead of vanishing.
+        try:
+            from . import usage as usage_mod
+            from . import usage_store
+
+            u = usage_mod.extract_usage(res) or {}
+            if u:
+                usage_store.record(
+                    input_tokens=u.get("input_tokens") or 0,
+                    output_tokens=u.get("output_tokens") or 0,
+                    cache_read_tokens=u.get("cache_read_tokens") or 0,
+                    cache_creation_tokens=u.get("cache_creation_tokens") or 0,
+                    provider=provider_id,
+                    model=str(getattr(model, "model_name", "") or model_for_config(cfg)),
+                    source="probe",
+                    latency_ms=_latency(),
+                )
+        except Exception:  # noqa: BLE001 — telemetry never breaks the probe
+            pass
         return {"ok": True, "latency_ms": _latency(), "text": str(text).strip()[:400]}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "latency_ms": _latency()}

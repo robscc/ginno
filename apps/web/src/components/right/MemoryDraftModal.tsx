@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Loader2, Pencil, X } from "lucide-react";
 import * as api from "@/lib/runtime";
@@ -13,10 +13,13 @@ import { DiffView } from "@/components/workflow/DiffView";
  * concurrently-changed-memory conditions surface as explicit warnings. */
 export function MemoryDraftModal({
   draft,
+  draftId,
   onResolved,
   onClose,
 }: {
   draft: MemoryDraft;
+  /** Queue id (settings page review). Absent → the legacy single-slot alias. */
+  draftId?: string;
   onResolved: () => void; // apply/discard done — panel reloads badge + content
   onClose: () => void;
 }) {
@@ -29,13 +32,58 @@ export function MemoryDraftModal({
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [armForce, setArmForce] = useState(false);
+  // Over-budget drafts cannot be applied as-is (docs/dream-mode-design.md §4.2):
+  // the second press truncates to the budget on a line boundary.
+  const [armTruncate, setArmTruncate] = useState(false);
+  // Split-by-topic: keep whole sections as a smaller draft — the alternative to
+  // a mid-line truncation (no extra model call).
+  const [splitting, setSplitting] = useState(false);
+  const [keep, setKeep] = useState<Record<number, boolean>>({});
 
-  async function apply() {
+  // Index-keyed: a draft may repeat a heading, and duplicate React keys would
+  // make one checkbox toggle its twins.
+  const headings = useMemo(
+    () =>
+      (draft.draft ?? "")
+        .split("\n")
+        .map((ln, i) => ({ ln, i }))
+        .filter((h) => h.ln.startsWith("## ")),
+    [draft.draft],
+  );
+
+  async function doSplit() {
+    if (!draftId) return;
+    const chosen = headings.filter((h) => keep[h.i]).map((h) => h.ln);
+    if (chosen.length === 0) {
+      setMsg(t("splitEmpty"));
+      return;
+    }
+    setBusy(true);
+    setMsg("");
+    try {
+      const r = await api.splitMemoryDraft(draftId, chosen);
+      if (r.ok) {
+        onResolved();
+        onClose();
+      } else {
+        setMsg(r.error || t("applyFailed"));
+      }
+    } catch {
+      setMsg(t("applyFailedConnect"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function apply(truncate = false) {
     setBusy(true);
     setMsg("");
     try {
       const force = armForce;
-      const r = await api.applyMemoryDraft(editing ? text : undefined, force);
+      const body = { ...(editing ? { content: text } : {}), force, truncate };
+      const r = draftId
+        ? await api.applyMemoryDraftById(draftId, body)
+        : await api.applyMemoryDraft(editing ? text : undefined, force);
       if (r.ok) {
         onResolved();
         onClose();
@@ -44,6 +92,9 @@ export function MemoryDraftModal({
       if (r.error === "memory_changed") {
         setMsg(t("memoryChanged"));
         setArmForce(true);
+      } else if (r.error === "over_budget") {
+        setMsg(t("overBudgetBlocked"));
+        setArmTruncate(true);
       } else {
         setMsg(r.error || t("applyFailed"));
       }
@@ -58,7 +109,8 @@ export function MemoryDraftModal({
     setBusy(true);
     setMsg("");
     try {
-      await api.discardMemoryDraft();
+      if (draftId) await api.discardMemoryDraftById(draftId);
+      else await api.discardMemoryDraft();
       onResolved();
       onClose();
     } catch {
@@ -118,7 +170,33 @@ export function MemoryDraftModal({
               <Pencil className="h-3 w-3" />
               {editing ? t("stopEditing") : t("editDraft")}
             </button>
+            {over && draftId && (
+              <button
+                onClick={() => setSplitting((v) => !v)}
+                className="text-violet hover:opacity-80"
+              >
+                {t("split")}
+              </button>
+            )}
           </div>
+          {splitting && (
+            <div className="mb-3 rounded-lg border border-yellow/40 bg-yellow/10 px-3 py-2 text-[11px] text-yellow">
+              <div className="font-medium">{t("splitTitle")}</div>
+              <div className="mt-0.5 opacity-80">{t("splitHint")}</div>
+              <div className="mt-2 space-y-1">
+                {headings.map((h) => (
+                  <label key={h.i} className="flex items-center gap-2 text-[11.5px] text-txt">
+                    <input
+                      type="checkbox"
+                      checked={!!keep[h.i]}
+                      onChange={(e) => setKeep((m) => ({ ...m, [h.i]: e.target.checked }))}
+                    />
+                    <span className="truncate">{h.ln.replace(/^##\s*/, "")}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           {showDiff && !editing && (
             <div className="mb-3">
               <DiffView diff={draft.diff ?? ""} />
@@ -150,13 +228,31 @@ export function MemoryDraftModal({
               {t("discard")}
             </button>
             <button
-              onClick={apply}
+              onClick={() => apply()}
               disabled={busy}
               className="flex items-center gap-1 rounded-lg bg-violet px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               {busy && <Loader2 className="h-3 w-3 animate-spin" />}
               {armForce ? t("forceApply") : t("apply")}
             </button>
+            {armTruncate && (
+              <button
+                onClick={() => apply(true)}
+                disabled={busy}
+                className="rounded-lg border border-yellow/40 bg-yellow/10 px-3 py-1.5 text-xs text-yellow hover:bg-yellow/20 disabled:opacity-50"
+              >
+                {t("applyTruncated")}
+              </button>
+            )}
+            {splitting && (
+              <button
+                onClick={doSplit}
+                disabled={busy}
+                className="rounded-lg border border-violet/40 bg-violet/10 px-3 py-1.5 text-xs text-violet hover:bg-violet/20 disabled:opacity-50"
+              >
+                {t("splitConfirm")}
+              </button>
+            )}
           </div>
         </div>
       </div>

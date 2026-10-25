@@ -348,7 +348,7 @@ export function ModelConfigForm({
               )}
             </div>
             {fetchError && (
-              <div className="mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
+              <div className="selectable mb-2 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
                 {t("fetchFailed", { error: fetchError })}
               </div>
             )}
@@ -522,7 +522,7 @@ export function ModelConfigForm({
 
       {error && (
         // Yellow bar for verify failures / validation problems.
-        <div className="mt-4 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
+        <div className="selectable mt-4 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
           {error}
         </div>
       )}

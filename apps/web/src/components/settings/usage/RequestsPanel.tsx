@@ -9,7 +9,7 @@ import { X } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { UsageRequests } from "@/lib/types";
 import { fmt } from "./charts";
-import { sourceBg, sourceFg } from "@/lib/sourceColor";
+import { USAGE_SOURCES, sourceBg, sourceFg } from "@/lib/sourceColor";
 
 function SrcChip({ src }: { src: string }) {
   // 来源名是协议值（chat/goal/…），保持原样不翻译；配色统一走
@@ -29,6 +29,7 @@ function fmtClock(ts: number): string {
 
 export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter?: string; onClearSession?: () => void }) {
   const t = useTranslations("settings.usage.requests");
+  const tOverview = useTranslations("settings.usage.overview");
   const [date, setDate] = useState(""); // empty = today (server default)
   const [provider, setProvider] = useState("");
   const [source, setSource] = useState("");
@@ -87,8 +88,8 @@ export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter
           {t("sourceLabel")}
           <select value={source} onChange={(e) => setSource(e.target.value)} className={sel}>
             <option value="">{t("all")}</option>
-            {["chat", "goal", "compaction", "workflow", "memory", "kb", "probe"].map((s) => (
-              <option key={s} value={s}>{s}</option>
+            {USAGE_SOURCES.map((s) => (
+              <option key={s} value={s}>{tOverview(`source.${s}`)}</option>
             ))}
           </select>
         </label>

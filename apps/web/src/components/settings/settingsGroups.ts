@@ -28,6 +28,7 @@ export type SettingsTabKey =
   | "externalAgents"
   | "agents"
   | "workflows"
+  | "memory"
   | "skills"
   | "knowledge"
   | "folders"
@@ -68,6 +69,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
       { id: "agents", label: "agents" },
       { id: "workflows", label: "workflows" },
       { id: "skills", label: "skills" },
+      { id: "memory", label: "memory" },
     ],
   },
   {

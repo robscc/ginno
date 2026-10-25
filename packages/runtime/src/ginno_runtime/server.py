@@ -149,6 +149,18 @@ async def lifespan(app: FastAPI):
         usage_store.cleanup()
     except Exception:
         _log.exception("usage cleanup failed (continuing)")
+    # Memory pipeline hygiene (docs/dream-mode-design.md §4.5): fold the legacy
+    # single-slot draft into the queue, expire drafts nobody reviewed, and trim
+    # the run log. A stalled draft used to block every later distillation
+    # forever (2026-10-01 → 10-25); the TTL makes that impossible.
+    try:
+        from .memory import expire_stale_drafts, migrate_legacy_draft, trim_runs
+
+        migrate_legacy_draft()
+        expire_stale_drafts()
+        trim_runs()
+    except Exception:
+        _log.exception("memory sweep failed (continuing)")
     # Best-effort, idempotent move of legacy session files into their per-session
     # dirs. Runs before `yield`, so nothing (uploads/previews/watchers) can race
     # it. Must never block startup on failure.

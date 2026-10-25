@@ -523,6 +523,69 @@ html.pin-window body {
   }
 }
 
+/* ---- 可选中策略（2026-10-25 统一，v2）----------------------------------
+   原则：**只有文本叶子可选中，布局容器一律不参与**。
+   v1 把所有内容都设为可选中，结果在 WKWebView 里拖选会把 flex/grid 容器
+   整块刷成色块（Settings 页出现大片紫色）。v2 反过来：容器 none，文本叶子
+   text —— 选区只画到文字行，不会连带整块盒子。
+   · 语义文本元素（p/li/td/pre/code/h1-6…）自动可选中
+   · 直接以 div 承载的正文（聊天卡片、提示、错误横幅）挂 .selectable
+   · 输入类永远可选中；控件外壳（button/label/th/.pill）永远不可选
+   -webkit- 前缀是 WKWebView(Tauri) 的兜底。 */
+@layer base {
+  html,
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+@layer components {
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="switch"],
+  [role="menuitem"],
+  [role="option"],
+  summary,
+  label,
+  th,
+  .pill,
+  .nav-item {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* 文本叶子：选区只覆盖文字本身 */
+  p,
+  li,
+  td,
+  blockquote,
+  dd,
+  dt,
+  figcaption,
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  pre,
+  code,
+  kbd,
+  samp,
+  input,
+  textarea,
+  select,
+  [contenteditable="true"],
+  [data-selectable],
+  .selectable,
+  .selectable * {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
+
 /* ---- 设置页 Agent 卡片 Kanban 拖拽（Tauri DnD 实践，2026-10-14）----
  * document mousemove 方案；body 级 grabbing 光标由 ginno-card-dragging 挂载，
  * ghost 是独立 fixed 元素（见 AgentsSettings 的运行时创建）。 */

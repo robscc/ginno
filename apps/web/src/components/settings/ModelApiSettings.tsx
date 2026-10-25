@@ -198,7 +198,7 @@ export function ModelApiSettings() {
       {loading ? (
         <div className="mt-6 text-sm text-faint">{t("loading")}</div>
       ) : loadError ? (
-        <div className="mt-6 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
+        <div className="selectable mt-6 rounded-md border border-yellow/40 bg-yellow/10 px-3 py-2 text-xs text-yellow">
           {loadError}
         </div>
       ) : (

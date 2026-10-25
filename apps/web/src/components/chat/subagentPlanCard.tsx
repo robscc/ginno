@@ -68,7 +68,7 @@ export function SubagentPlanCard({
       </div>
       {block.task && (
         <div
-          className="mt-1.5 line-clamp-2 whitespace-pre-wrap break-words leading-relaxed text-muted"
+          className="selectable mt-1.5 line-clamp-2 whitespace-pre-wrap break-words leading-relaxed text-muted"
           title={block.task}
         >
           {t("subagentPlan.task", { task: block.task })}

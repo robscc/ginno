@@ -48,6 +48,10 @@ _log = logging.getLogger("ginno.schedule")
 
 TICK_S = 30.0
 GRACE_S = 60.0  # 延迟 ≤60s 仍触发；超过即记 missed（§3.7）
+# Nightly memory distillation: checked at most every 10 minutes (the tick runs
+# every 30s; re-reading settings.json on every tick would be wasteful).
+_DREAM_CHECK_EVERY_S = 600.0
+_DREAM_CHECKED_AT = 0.0
 POLL_RUN_S = 5.0  # workflow run 终态轮询步进
 SUMMARY_MAX_CHARS = 160
 
@@ -1041,7 +1045,71 @@ def classify_run_error(message: str) -> tuple[str, str]:
     return "unknown", t("Run failed: check the log for details", "运行失败：详见日志")
 
 
+async def _maybe_nightly_dream() -> None:
+    """Run the nightly memory distillation once per day (design §4.4).
+
+    Built-in rather than a user schedule: driven by the knowledge config, never
+    written to schedules.json, and single-flight via the scheduler loop's lease
+    (only the tick that holds the lease calls this). Never raises — a broken
+    config or memory dir must not stop scheduled tasks.
+    """
+    global _DREAM_CHECKED_AT
+    now = time.time()
+    if now - _DREAM_CHECKED_AT < _DREAM_CHECK_EVERY_S:
+        return
+    _DREAM_CHECKED_AT = now
+    try:
+        from ginno_runtime import jsonx as json
+
+        from . import paths
+        from .knowledge.config import load_knowledge_config
+
+        cfg = load_knowledge_config()
+        if not (cfg.dream_nightly and cfg.auto_summarize):
+            return
+        try:
+            hh, mm = (int(x) for x in (cfg.dream_at or "03:00").split(":")[:2])
+        except (TypeError, ValueError):
+            hh, mm = 3, 0
+        lt = time.localtime(now)
+        if (lt.tm_hour, lt.tm_min) < (hh, mm):
+            return  # window has not opened yet today
+        today = time.strftime("%Y-%m-%d", lt)
+        state_path = paths.home() / "memory" / "dream-state.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8") or "{}")
+        except (OSError, ValueError):
+            state = {}
+        if isinstance(state, dict) and state.get("last_run") == today:
+            return
+
+        from .memory import create_draft, has_draft, pool_count
+
+        if has_draft():
+            return  # a review is pending; leave the rest of the day open
+        if pool_count() < int(cfg.pool_flush_threshold or 30):
+            return
+        result = await create_draft(trigger="schedule")
+        if result.get("ok") and not result.get("draft_exists"):
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps({"last_run": today, "draft_id": result.get("id")}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            if result.get("draft"):
+                await shared._push_global_event("memory.changed", {"draft": True})
+            _log.info("nightly_dream_done draft=%s pool=%s", result.get("id"), result.get("pool_entries"))
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — never break the scheduler loop
+        _log.exception("nightly_dream_failed")
+
+
 async def _tick() -> None:
+    # Built-in nightly memory distillation (docs/dream-mode-design.md §4.4).
+    # Deliberately not a user schedule: it never appears in schedules.json and
+    # keeps working when scheduled tasks as a whole are switched off.
+    await _maybe_nightly_dream()
     cfg = store.load_config()
     if not cfg.get("enabled", True):
         return

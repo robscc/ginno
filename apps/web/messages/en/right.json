@@ -86,7 +86,15 @@
       "memoryChanged": "MEMORY.md has changed since the draft was generated. Force apply only if it looks correct (it will overwrite the current memory).",
       "applyFailed": "Failed to apply",
       "applyFailedConnect": "Failed to apply: cannot connect to the runtime",
-      "discardFailedConnect": "Failed to discard: cannot connect to the runtime"
+      "discardFailedConnect": "Failed to discard: cannot connect to the runtime",
+      "applyTruncated": "Truncate to budget and apply",
+      "overBudgetBlocked": "The draft is over the memory budget — truncate it or edit it first.",
+      "split": "Split by topic",
+      "splitTitle": "Choose the topics to keep (the original draft is discarded)",
+      "splitHint": "No model call; the selected topics become a smaller new draft.",
+      "splitConfirm": "Create draft",
+      "splitEmpty": "Select at least one section",
+      "splitCancel": "Cancel"
     },
     "promote": {
       "title": "Promote to Knowledge Base",

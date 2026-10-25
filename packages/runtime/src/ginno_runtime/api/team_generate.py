@@ -142,6 +142,15 @@ async def generate_team(req: GenerateRequest) -> dict:
         ]
     )
     content = getattr(resp, "content", "")
+    # Usage telemetry (docs/dream-mode-design.md §8.1 #5): team generation is a
+    # real completion and used to vanish from 用量统计.
+    from .. import usage as usage_mod
+
+    usage_mod.record_message(
+        resp,
+        source="team",
+        model=str(getattr(model, "model_name", "") or getattr(model, "model", "")),
+    )
     text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
     try:
         spec = json.loads(_strip_fences(text))

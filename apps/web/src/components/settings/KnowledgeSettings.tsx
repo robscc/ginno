@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
-import { BookOpen, Search, Download, Save } from "lucide-react";
+import { ArrowRight, BookOpen, Search, Download, Save } from "lucide-react";
 
 interface KBForm {
   enabled: boolean;
@@ -232,52 +233,14 @@ export function KnowledgeSettings() {
         )}
 
         <div className="rounded-lg border border-line bg-base/30 p-3">
-          <div className="mb-2 text-sm text-txt">{t("refineryTitle")}</div>
-          <label className="flex items-center gap-2 text-sm text-txt">
-            <input
-              type="checkbox"
-              checked={form.capture}
-              onChange={(e) => set("capture", e.target.checked)}
-            />
-            {t("captureLabel")}
-          </label>
-          <label className="mt-2 flex items-center gap-2 text-sm text-txt">
-            <input
-              type="checkbox"
-              checked={form.auto_summarize}
-              onChange={(e) => set("auto_summarize", e.target.checked)}
-            />
-            {t("autoSummarizeLabel")}
-          </label>
-          <div className="mt-3 grid grid-cols-2 gap-3">
-            <Field label={t("flushThreshold")}>
-              <input
-                type="number"
-                className="field"
-                value={form.pool_flush_threshold}
-                onChange={(e) => set("pool_flush_threshold", Number(e.target.value) || 0)}
-              />
-            </Field>
-            <Field label={t("memoryBudget")}>
-              <input
-                type="number"
-                className="field"
-                value={form.memory_budget_chars}
-                onChange={(e) => set("memory_budget_chars", Number(e.target.value) || 0)}
-              />
-            </Field>
-          </div>
-          <div className="mt-3">
-            <Field label={t("distillModel")}>
-              <input
-                className="field font-mono text-xs"
-                placeholder={t("distillPlaceholder")}
-                value={form.summarize_model}
-                onChange={(e) => set("summarize_model", e.target.value)}
-              />
-            </Field>
-          </div>
-          <p className="mt-2 text-xs text-faint">{t("distillNote")}</p>
+          <div className="mb-1 text-sm text-txt">{t("memoryMoved")}</div>
+          <p className="text-xs text-faint">{t("memoryMovedHint")}</p>
+          <Link
+            href="/settings/agents/memory"
+            className="mt-2 inline-flex items-center gap-1 text-xs text-violet hover:opacity-80"
+          >
+            {t("memoryMovedLink")} <ArrowRight className="h-3 w-3" />
+          </Link>
         </div>
 
         <div className="flex items-center gap-2 pt-1">

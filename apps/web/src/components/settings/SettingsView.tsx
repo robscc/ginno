@@ -8,6 +8,7 @@ import { ModelApiSettings } from "./ModelApiSettings";
 import { SkillsSettings } from "./SkillsSettings";
 import { McpSettings } from "./McpSettings";
 import { AgentsSettings } from "./AgentsSettings";
+import { MemorySettings } from "./MemorySettings";
 import { WorkflowsSettings } from "./WorkflowsSettings";
 import { GeneralSettings } from "./GeneralSettings";
 import { NotificationsSettings } from "./NotificationsSettings";
@@ -39,6 +40,8 @@ function TabPanel({ tab }: { tab: string }) {
       return <AgentsSettings />;
     case "workflows":
       return <WorkflowsSettings />;
+    case "memory":
+      return <MemorySettings />;
     case "skills":
       return <SkillsSettings />;
     case "knowledge":

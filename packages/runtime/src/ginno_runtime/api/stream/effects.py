@@ -203,12 +203,26 @@ async def _emit_code_changes(safe_send, emit, slug: str, session_id: str, conten
 # burn tokens on every turn.
 _AUTO_DISTILL_FAIL_AT: float = 0.0
 _AUTO_DISTILL_THROTTLE_S = 600.0
+# Draft expiry sweep (docs/dream-mode-design.md §4.5): checked at most every
+# 10 minutes, so a stale draft stops blocking the pipeline without a per-turn
+# stat/list on the drafts directory.
+_DRAFT_SWEEP_AT: float = 0.0
+_DRAFT_SWEEP_EVERY_S = 600.0
 
 
 def _maybe_auto_distill(cfg) -> None:
-    global _AUTO_DISTILL_FAIL_AT
+    global _AUTO_DISTILL_FAIL_AT, _DRAFT_SWEEP_AT
     if not cfg.auto_summarize:
         return
+    now = time.time()
+    if now >= _DRAFT_SWEEP_AT:
+        _DRAFT_SWEEP_AT = now + _DRAFT_SWEEP_EVERY_S
+        try:
+            from ...memory import expire_stale_drafts
+
+            expire_stale_drafts()
+        except Exception:  # noqa: BLE001 — hygiene must never break a turn
+            pass
     if time.time() < _AUTO_DISTILL_FAIL_AT:
         return
     try:

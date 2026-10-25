@@ -172,6 +172,16 @@ async def decompose_task(session: dict, task: str) -> list[dict]:
         ]
     )
     raw = text_of_content(getattr(resp, "content", ""))
+    # Usage telemetry (docs/dream-mode-design.md §8.1 #3).
+    from . import usage as usage_mod
+
+    usage_mod.record_message(
+        resp,
+        source="subagent_plan",
+        provider=str(session.get("model_provider") or ""),
+        model=str(session.get("model_name") or ""),
+        session_id=session.get("session_id"),
+    )
     data = _extract_json_array(raw)
     if data is None:
         _log.info("subagent_decompose_invalid session=%s raw=%r", session.get("session_id"), raw[:200])

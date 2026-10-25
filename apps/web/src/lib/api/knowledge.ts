@@ -95,9 +95,128 @@ export async function kbWikiPutConfig(data: object) {
 }
 
 // ---- memory refinery (draft → review → apply; KB-aware promotion) ----
-export async function getMemory() {
-  return json<{ ok: boolean; content: string; pool_count: number; draft_pending: boolean; kb_usable: boolean }>(
-    `${BASE}/memory`,
+export async function getMemory(agentId?: string) {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return json<{
+    ok: boolean;
+    content: string;
+    pool_count: number;
+    draft_pending: boolean;
+    drafts_pending: import("../types").MemoryDraftSummary[];
+    kb_usable: boolean;
+    status: import("../types").MemoryStatus;
+    throttle?: import("../types").MemoryThrottle;
+  }>(`${BASE}/memory${q}`);
+}
+export async function getMemoryStatus(agentId?: string) {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return json<{ ok: boolean } & import("../types").MemoryStatus>(`${BASE}/memory/status${q}`);
+}
+export async function putMemory(content: string, agentId?: string) {
+  return json<{ ok: boolean; status: import("../types").MemoryStatus }>(`${BASE}/memory`, {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify({ content, ...(agentId ? { agent_id: agentId } : {}) }),
+  });
+}
+export async function removeMemorySection(lines: string[], agentId?: string) {
+  return json<{ ok: boolean; removed: number; status: import("../types").MemoryStatus }>(
+    `${BASE}/memory/sections/remove`,
+    {
+      method: "POST",
+      headers: H,
+      body: JSON.stringify({ lines, ...(agentId ? { agent_id: agentId } : {}) }),
+    },
+  );
+}
+export async function listMemoryDrafts(status?: string, limit = 50) {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (status) q.set("status", status);
+  return json<{ ok: boolean; drafts: import("../types").MemoryDraftSummary[] }>(
+    `${BASE}/memory/drafts?${q.toString()}`,
+  );
+}
+export async function getMemoryDraftById(id: string) {
+  return json<{ ok: boolean } & import("../types").MemoryDraft>(
+    `${BASE}/memory/drafts/${encodeURIComponent(id)}`,
+  );
+}
+export async function applyMemoryDraftById(
+  id: string,
+  opts: { content?: string; force?: boolean; truncate?: boolean } = {},
+) {
+  return json<{
+    ok: boolean;
+    error?: string;
+    chars?: number;
+    budget?: number;
+    summarized_chars?: number;
+    pool_remaining?: number;
+  }>(`${BASE}/memory/drafts/${encodeURIComponent(id)}/apply`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({
+      ...(opts.content !== undefined ? { content: opts.content } : {}),
+      ...(opts.force ? { force: true } : {}),
+      ...(opts.truncate ? { truncate: true } : {}),
+    }),
+  });
+}
+export async function discardMemoryDraftById(id: string) {
+  return json<{ ok: boolean; had_draft?: boolean }>(
+    `${BASE}/memory/drafts/${encodeURIComponent(id)}/discard`,
+    { method: "POST" },
+  );
+}
+export async function deleteExpiredMemoryDrafts() {
+  return json<{ ok: boolean; removed: string[] }>(`${BASE}/memory/drafts/expired`, {
+    method: "DELETE",
+  });
+}
+export async function getMemoryPool(limit = 20, offset = 0) {
+  return json<{ ok: boolean } & import("../types").MemoryPoolPage>(
+    `${BASE}/memory/pool?limit=${limit}&offset=${offset}`,
+  );
+}
+export async function clearMemoryPool() {
+  return json<{ ok: boolean; removed?: number; error?: string }>(`${BASE}/memory/pool`, {
+    method: "DELETE",
+    headers: H,
+    body: JSON.stringify({ confirm: true }),
+  });
+}
+export async function getMemoryRuns(limit = 50) {
+  return json<{ ok: boolean; runs: import("../types").MemoryRun[] }>(
+    `${BASE}/memory/runs?limit=${limit}`,
+  );
+}
+export async function retryMemoryRun(runId: string) {
+  return json<{
+    ok: boolean;
+    retried_from?: string;
+    draft_exists?: boolean;
+    error?: string;
+    message?: string;
+    skipped?: string;
+  }>(
+    `${BASE}/memory/runs/${encodeURIComponent(runId)}/retry`,
+    { method: "POST" },
+  );
+}
+export async function getMemoryTrend(days = 30) {
+  return json<{ ok: boolean; days: number; trend: import("../types").MemoryTrendRow[] }>(
+    `${BASE}/memory/trend?days=${days}`,
+  );
+}
+export async function splitMemoryDraft(id: string, keep: string[]) {
+  return json<{ ok: boolean; error?: string } & import("../types").MemoryDraft>(
+    `${BASE}/memory/drafts/${encodeURIComponent(id)}/split`,
+    { method: "POST", headers: H, body: JSON.stringify({ keep }) },
+  );
+}
+export async function getMemoryUsage(days = 7) {
+  return json<{ ok: boolean } & import("../types").MemoryUsageSummary>(
+    `${BASE}/memory/usage?days=${days}`,
   );
 }
 export async function summarizeMemory(provider?: string) {

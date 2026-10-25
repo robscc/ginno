@@ -1,10 +1,17 @@
 """Memory distillation: pool excerpts → LLM draft → human review → MEMORY.md.
 
 Quality gate (design doc G3 spirit, "agent drafts, human approves"): the LLM
-no longer overwrites MEMORY.md silently. ``create_draft`` produces a pending
-draft (``~/.ginno/memory/draft.md`` + ``draft.json``); ``apply_draft`` writes
-MEMORY.md and clears the pool only after the user reviewed the diff. Entries
-captured while a draft is pending survive via the cutoff timestamp.
+never overwrites MEMORY.md silently. ``create_draft`` produces a pending draft
+under ``~/.ginno/memory/drafts/``; ``apply_draft`` writes MEMORY.md and clears
+the pool only after the user reviewed the diff. Entries captured while a draft
+is pending survive via the cutoff timestamp.
+
+Draft queue (docs/dream-mode-design.md §5): the old single-slot
+``memory/draft.md`` blocked every later distillation while it waited for
+review — the 2026-10-01 draft sat unreviewed for 24 days and the pool grew to
+290 entries. Drafts now live one file pair per run, expire after
+``draft_ttl_days``, and every run (success / failed / skipped) appends a line to
+``memory/runs.jsonl`` so a stalled pipeline is visible instead of silent.
 
 The distillation prompt is KB-aware: the recent wiki usage ledger is fed in so
 facts already covered by knowledge pages are not duplicated into memory.
@@ -16,6 +23,7 @@ import asyncio
 import difflib
 import hashlib
 import os
+import secrets
 import time
 from typing import Any
 
@@ -112,55 +120,187 @@ the old entry
 
 
 # ---------------------------------------------------------------------------
-# Draft slot (single pending draft — one distillation reviewed at a time)
+# Draft queue (one file pair per run, single pending at a time)
 # ---------------------------------------------------------------------------
 
+PENDING = "pending"
+APPLIED = "applied"
+DISCARDED = "discarded"
+EXPIRED = "expired"
+
+
 def _atomic_write(path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 
-def has_draft() -> bool:
-    return paths.memory_draft_path().exists()
+def _drafts_dir():
+    d = paths.memory_drafts_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
-def _read_meta() -> dict[str, Any]:
-    p = paths.memory_draft_meta_path()
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8") or "{}")
-    except json.JSONDecodeError:
-        return {}
+def _draft_paths(draft_id: str):
+    d = _drafts_dir()
+    return d / f"{draft_id}.md", d / f"{draft_id}.json"
 
 
-def read_draft() -> dict[str, Any] | None:
-    """Return ``{draft, previous, diff, meta}`` or None when no draft pending."""
-    if not has_draft():
+def _save_meta(draft_id: str, meta: dict[str, Any]) -> None:
+    _md, meta_path = _draft_paths(draft_id)
+    _atomic_write(meta_path, json.dumps(meta, ensure_ascii=False))
+
+
+def _load_meta(draft_id: str) -> dict[str, Any] | None:
+    _md, meta_path = _draft_paths(draft_id)
+    if not meta_path.exists():
         return None
     try:
-        draft = paths.memory_draft_path().read_text(encoding="utf-8")
+        meta = json.loads(meta_path.read_text(encoding="utf-8") or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(meta, dict):
+        return None
+    meta.setdefault("id", draft_id)
+    return meta
+
+
+def _draft_ids() -> list[str]:
+    """Draft ids, newest first (file names start with the creation timestamp)."""
+    d = paths.memory_drafts_dir()
+    if not d.exists():
+        return []
+    ids = [p.stem for p in d.glob("*.json") if p.is_file()]
+    return sorted(ids, reverse=True)
+
+
+# ---- legacy single-slot migration ------------------------------------------
+
+_MIGRATED = False
+
+
+def migrate_legacy_draft() -> str | None:
+    """Move ``memory/draft.md`` + ``draft.json`` into the queue (once).
+
+    Old builds (and any binary still in a user's app bundle) wrote the single
+    slot; folding it in keeps a pending review across the upgrade instead of
+    silently losing it or leaving the old path to confuse ``has_draft``.
+    """
+    md = paths.memory_draft_path()
+    if not md.exists():
+        # A stale meta without the body is meaningless — drop it.
+        paths.memory_draft_meta_path().unlink(missing_ok=True)
+        return None
+    try:
+        text = md.read_text(encoding="utf-8")
+        try:
+            old = json.loads(paths.memory_draft_meta_path().read_text() or "{}")
+        except (OSError, json.JSONDecodeError):
+            old = {}
+        created = float(old.get("created_at") or md.stat().st_mtime)
+        draft_id = f"{int(created)}-legacy"
+        meta = {
+            **old,
+            "id": draft_id,
+            "created_at": created,
+            "status": PENDING,
+            "chars": len(text),
+            "trigger": old.get("trigger") or "manual",
+        }
+        _atomic_write(_draft_paths(draft_id)[0], text)
+        _save_meta(draft_id, meta)
+        md.unlink(missing_ok=True)
+        paths.memory_draft_meta_path().unlink(missing_ok=True)
+        return draft_id
     except OSError:
         return None
-    meta = _read_meta()
-    previous = meta.get("previous", "")
-    diff = "\n".join(difflib.unified_diff(
-        previous.splitlines(), draft.splitlines(),
-        fromfile="MEMORY.md（当前）", tofile="MEMORY.md（草稿）", lineterm="",
-    ))
-    return {"draft": draft, "previous": previous, "diff": diff, "meta": meta}
 
 
-def draft_payload() -> dict[str, Any]:
-    """Draft review payload shared by GET /api/memory/draft and create/reuse."""
-    d = read_draft()
+def _ensure_layout() -> None:
+    global _MIGRATED
+    if _MIGRATED:
+        return
+    _MIGRATED = True
+    try:
+        migrate_legacy_draft()
+    except Exception:  # noqa: BLE001 — a broken legacy slot must never break memory
+        pass
+
+
+# ---- reads -----------------------------------------------------------------
+
+
+def list_drafts(status: str | None = None, limit: int = 0) -> list[dict[str, Any]]:
+    """Draft metadata rows, newest first. ``status`` filters by lifecycle."""
+    _ensure_layout()
+    rows: list[dict[str, Any]] = []
+    for did in _draft_ids():
+        meta = _load_meta(did)
+        if not meta:
+            continue
+        if status and meta.get("status") != status:
+            continue
+        rows.append(meta)
+        if limit and len(rows) >= limit:
+            break
+    return rows
+
+
+def pending_drafts() -> list[dict[str, Any]]:
+    return list_drafts(status=PENDING)
+
+
+def has_draft() -> bool:
+    return bool(pending_drafts())
+
+
+def _latest_pending_id() -> str | None:
+    rows = pending_drafts()
+    return rows[0]["id"] if rows else None
+
+
+def _read_draft_text(draft_id: str) -> str | None:
+    md, _meta = _draft_paths(draft_id)
+    try:
+        return md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def read_draft(draft_id: str | None = None) -> dict[str, Any] | None:
+    """Return ``{id, draft, previous, diff, meta}`` or None when nothing pending."""
+    _ensure_layout()
+    did = draft_id or _latest_pending_id()
+    if not did:
+        return None
+    meta = _load_meta(did)
+    draft = _read_draft_text(did)
+    if not meta or draft is None:
+        return None
+    previous = str(meta.get("previous") or "")
+    diff = "\n".join(
+        difflib.unified_diff(
+            previous.splitlines(),
+            draft.splitlines(),
+            fromfile="MEMORY.md（当前）",
+            tofile="MEMORY.md（草稿）",
+            lineterm="",
+        )
+    )
+    return {"id": did, "draft": draft, "previous": previous, "diff": diff, "meta": meta}
+
+
+def draft_payload(draft_id: str | None = None) -> dict[str, Any]:
+    """Draft review payload shared by the list/detail endpoints and create/reuse."""
+    d = read_draft(draft_id)
     if not d:
         return {"draft": None}
     meta = d["meta"]
     budget = int(meta.get("budget") or 3000)
     chars = len(d["draft"])
     return {
+        "id": d["id"],
         "draft": d["draft"],
         "previous": d["previous"],
         "diff": d["diff"],
@@ -168,20 +308,192 @@ def draft_payload() -> dict[str, Any]:
         "pool_cutoff": meta.get("pool_cutoff"),
         "created_at": meta.get("created_at"),
         "trigger": meta.get("trigger", "manual"),
+        "model": meta.get("model") or "",
+        "provider": meta.get("provider") or "",
+        "status": meta.get("status", PENDING),
         "budget": budget,
         "chars": chars,
         "over_budget": chars > budget,
     }
 
 
-def _delete_draft() -> None:
-    for p in (paths.memory_draft_path(), paths.memory_draft_meta_path()):
+def draft_summary(meta: dict[str, Any]) -> dict[str, Any]:
+    """List-row projection (no draft body / diff)."""
+    budget = int(meta.get("budget") or 3000)
+    chars = int(meta.get("chars") or 0)
+    return {
+        "id": meta.get("id"),
+        "created_at": meta.get("created_at"),
+        "resolved_at": meta.get("resolved_at"),
+        "trigger": meta.get("trigger", "manual"),
+        "provider": meta.get("provider") or "",
+        "model": meta.get("model") or "",
+        "pool_entries": meta.get("pool_entries", 0),
+        "budget": budget,
+        "chars": chars,
+        "over_budget": chars > budget,
+        "status": meta.get("status", PENDING),
+        "expired_reason": meta.get("expired_reason"),
+    }
+
+
+# ---- run log ---------------------------------------------------------------
+
+
+def record_run(**fields: Any) -> None:
+    """Append one distillation-run line. Never raises (telemetry)."""
+    try:
+        entry = {"ts": time.time(), **fields}
+        p = paths.memory_runs_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def run_history(limit: int = 50) -> list[dict[str, Any]]:
+    """Newest-first run rows (bounded read: only the tail is parsed)."""
+    p = paths.memory_runs_path()
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()[-max(limit, 1) * 2 :]
+    except OSError:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in reversed(lines):
+        if not line.strip():
+            continue
         try:
-            p.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    # Appends are chronological in production, but a hand-edited/imported log
+    # must not make "上次蒸馏" show an older row — order by timestamp.
+    rows.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
+    return rows[:limit] if limit > 0 else rows
+
+
+def trim_runs(days: int = 90) -> int:
+    """Drop run rows older than ``days`` (called at startup). Returns removed."""
+    p = paths.memory_runs_path()
+    if not p.exists():
+        return 0
+    cutoff = time.time() - days * 86400
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    kept, removed = [], 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            ts = float(json.loads(line).get("ts") or 0)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if ts >= cutoff:
+            kept.append(line)
+        else:
+            removed += 1
+    if removed:
+        _atomic_write(p, "\n".join(kept) + ("\n" if kept else ""))
+    return removed
+
+
+# ---- lifecycle ---------------------------------------------------------------
+
+
+def _resolve(draft_id: str, status: str, reason: str | None = None) -> bool:
+    meta = _load_meta(draft_id)
+    if not meta or meta.get("status") != PENDING:
+        return False
+    meta["status"] = status
+    meta["resolved_at"] = time.time()
+    if reason:
+        meta["expired_reason"] = reason
+    _save_meta(draft_id, meta)
+    return True
+
+
+def expire_stale_drafts(ttl_days: int | None = None, max_pending: int | None = None) -> list[str]:
+    """Expire pending drafts past their TTL (and beyond the pending cap).
+
+    This is the guard that makes the 2026-10-01 stall impossible: a draft
+    nobody reviews stops blocking the pipeline instead of freezing it forever.
+    Returns the expired ids.
+
+    ``ttl_days = 0`` disables the TTL; ``max_pending = 0`` disables the cap.
+    """
+    _ensure_layout()
+    from ..knowledge.config import load_knowledge_config
+
+    cfg = load_knowledge_config()
+    ttl = int(cfg.draft_ttl_days if ttl_days is None else ttl_days)
+    cap = int(cfg.draft_max_pending if max_pending is None else max_pending)
+    now = time.time()
+    expired: list[str] = []
+
+    def _expire(meta: dict[str, Any], reason: str) -> None:
+        did = meta["id"]
+        if _resolve(did, EXPIRED, reason):
+            expired.append(did)
+            record_run(
+                run_id=f"r-{int(now)}",
+                trigger=meta.get("trigger") or "auto",
+                status="skipped",
+                reason=reason,
+                draft_id=did,
+                pool_entries=meta.get("pool_entries", 0),
+                chars=meta.get("chars", 0),
+            )
+
+    for meta in pending_drafts():
+        created = float(meta.get("created_at") or 0)
+        if ttl > 0 and created and now - created > ttl * 86400:
+            _expire(meta, "expired_ttl")
+
+    remaining = pending_drafts()  # newest first
+    if cap > 0 and len(remaining) > cap:
+        for meta in remaining[cap:]:
+            _expire(meta, "evicted_capacity")
+
+    _trim_draft_files()
+    try:
+        from .status import record_snapshot
+
+        record_snapshot()
+    except Exception:  # noqa: BLE001 — a snapshot is cosmetic
+        pass
+    return expired
+
+
+def _trim_draft_files() -> None:
+    """Keep only the newest ``draft_keep`` drafts on disk (resolved ones go first)."""
+    from ..knowledge.config import load_knowledge_config
+
+    keep = int(load_knowledge_config().draft_keep or 0)
+    if keep <= 0:
+        return
+    rows = list_drafts()  # newest first, includes resolved
+    if len(rows) <= keep:
+        return
+    for meta in rows[keep:]:
+        if meta.get("status") == PENDING:  # never drop an unreviewed draft here
+            continue
+        for p in _draft_paths(str(meta["id"])):
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# MEMORY.md read/write
+# ---------------------------------------------------------------------------
 
 
 def _read_existing_memory() -> str:
@@ -246,12 +558,31 @@ def _kb_digest() -> str:
         return ""
 
 
+def _model_name(model: Any, cfg: dict[str, Any] | None = None) -> str:
+    """Best-effort model label for telemetry (never raises)."""
+    for attr in ("model_name", "model", "model_id"):
+        v = getattr(model, attr, None)
+        if isinstance(v, str) and v:
+            return v
+    try:
+        from .. import providers as prov_mod
+
+        if cfg:
+            return prov_mod.model_for_config(cfg)
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 async def create_draft(trigger: str = "manual", provider: str | None = None) -> dict:
     """Distill the pool into a pending draft (never touches MEMORY.md/pool).
 
     Returns the draft review payload, ``draft_exists`` when a draft is already
     pending (reused, no second LLM call), or ``{message: "pool empty"}``.
     """
+    _ensure_layout()
+    expire_stale_drafts()
+
     if has_draft():
         return {"ok": True, "draft_exists": True, **draft_payload()}
 
@@ -272,15 +603,34 @@ async def create_draft(trigger: str = "manual", provider: str | None = None) -> 
         if not pool:
             return {"ok": True, "pool_entries": 0, "message": "pool empty"}
 
+        from .. import providers as prov_mod
         from ..knowledge.config import load_knowledge_config
 
         cfg = load_knowledge_config()
         budget = int(cfg.memory_budget_chars or 3000)
         chosen = provider or (cfg.summarize_model or None) or _get_default_provider()
+        run_id = f"r-{int(time.time())}"
+        started = time.time()
+        prov_cfg: dict[str, Any] = {}
+        try:
+            prov_cfg = prov_mod.load_providers().get(chosen) or {}
+        except Exception:  # noqa: BLE001
+            prov_cfg = {}
+        model_label = ""
         try:
             model = build_model(chosen)
         except Exception as e:
+            record_run(
+                run_id=run_id,
+                trigger=trigger,
+                status="failed",
+                reason="model_build_failed",
+                error=str(e)[:300],
+                provider=chosen,
+                pool_entries=len(pool),
+            )
             return {"ok": False, "error": f"model build failed: {e}", "pool_entries": len(pool)}
+        model_label = _model_name(model, prov_cfg)
 
         existing = _read_existing_memory()
         excerpt_lines = []
@@ -296,6 +646,7 @@ async def create_draft(trigger: str = "manual", provider: str | None = None) -> 
         digest = _kb_digest()
         digest_block = f"\n\n{digest}" if digest else ""
 
+        usage: dict[str, Any] = {}
         try:
             response = await model.ainvoke([
                 SystemMessage(
@@ -308,34 +659,180 @@ async def create_draft(trigger: str = "manual", provider: str | None = None) -> 
                     "Please produce an updated memory summary."
                 )),
             ])
+            from .. import usage as usage_mod
+
+            usage = usage_mod.extract_usage(response) or {}
         except Exception as e:
+            record_run(
+                run_id=run_id,
+                trigger=trigger,
+                status="failed",
+                reason="summarization_failed",
+                error=str(e)[:300],
+                provider=chosen,
+                model=model_label,
+                duration_ms=int((time.time() - started) * 1000),
+                pool_entries=len(pool),
+            )
             return {"ok": False, "error": f"summarization failed: {e}", "pool_entries": len(pool)}
+
+        # Usage telemetry: distillation has its own bucket (source="memory") so
+        # its cost is visible next to chat in Settings → 用量统计.
+        try:
+            from .. import usage_store
+
+            if usage:
+                usage_store.record(
+                    input_tokens=usage.get("input_tokens") or 0,
+                    output_tokens=usage.get("output_tokens") or 0,
+                    cache_read_tokens=usage.get("cache_read_tokens") or 0,
+                    cache_creation_tokens=usage.get("cache_creation_tokens") or 0,
+                    provider=chosen or "",
+                    model=model_label,
+                    source="memory",
+                    turn_id=run_id,
+                    latency_ms=int((time.time() - started) * 1000),
+                )
+        except Exception:  # noqa: BLE001 — telemetry never breaks distillation
+            pass
 
         new_memory = sanitize_for_memory(text_of_content(response.content))
         if not new_memory.strip():
+            record_run(
+                run_id=run_id,
+                trigger=trigger,
+                status="failed",
+                reason="empty_draft",
+                provider=chosen,
+                model=model_label,
+                duration_ms=int((time.time() - started) * 1000),
+                pool_entries=len(pool),
+                input_tokens=usage.get("input_tokens") or 0,
+                output_tokens=usage.get("output_tokens") or 0,
+            )
             return {"ok": False, "error": "summarization returned empty", "pool_entries": len(pool)}
 
         cutoff = max(float(e.get("timestamp") or 0) for e in pool)
+        draft_id = f"{int(time.time())}-{secrets.token_hex(2)}"
         meta = {
+            "id": draft_id,
             "created_at": time.time(),
             "trigger": trigger,
             "provider": chosen,
+            "model": model_label,
             "pool_entries": len(pool),
             "pool_cutoff": cutoff,
             "budget": budget,
+            "chars": len(new_memory),
             "previous": existing,
             "previous_sha1": hashlib.sha1(existing.encode("utf-8")).hexdigest(),
+            "status": PENDING,
         }
-        _atomic_write(paths.memory_draft_path(), new_memory)
-        _atomic_write(paths.memory_draft_meta_path(), json.dumps(meta, ensure_ascii=False))
-        return {"ok": True, **draft_payload()}
+        _atomic_write(_draft_paths(draft_id)[0], new_memory)
+        _save_meta(draft_id, meta)
+        record_run(
+            run_id=run_id,
+            trigger=trigger,
+            status="success",
+            provider=chosen,
+            model=model_label,
+            duration_ms=int((time.time() - started) * 1000),
+            input_tokens=usage.get("input_tokens") or 0,
+            output_tokens=usage.get("output_tokens") or 0,
+            cache_read_tokens=usage.get("cache_read_tokens") or 0,
+            pool_entries=len(pool),
+            draft_id=draft_id,
+            chars=len(new_memory),
+        )
+        return {"ok": True, **draft_payload(draft_id)}
 
 
-def apply_draft(content: str | None = None, force: bool = False) -> dict:
+def split_draft(draft_id: str, keep_headings: list[str]) -> dict:
+    """Turn a subset of the draft's sections into a NEW pending draft.
+
+    The over-budget escape hatch that beats mid-line truncation: the user keeps
+    whole ``##`` sections, a smaller draft is queued (no extra LLM call), and
+    the original is marked discarded. Returns the new draft payload.
+    """
+    d = read_draft(draft_id)
+    if not d:
+        return {"ok": False, "error": "no_draft"}
+    meta = d["meta"]
+    if meta.get("status") != PENDING:
+        return {"ok": False, "error": "not_pending"}
+
+    want = {h.strip() for h in (keep_headings or []) if h and h.strip()}
+    if not want:
+        return {"ok": False, "error": "empty_selection"}
+    # Accept headings with or without the leading "## ".
+    want = {h if h.startswith("## ") else f"## {h.lstrip('# ')}" for h in want}
+
+    preamble: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    cur: tuple[str, list[str]] | None = None
+    for line in d["draft"].splitlines():
+        if line.startswith("## "):
+            cur = (line, [])
+            sections.append(cur)
+        elif cur is None:
+            preamble.append(line)
+        else:
+            cur[1].append(line)
+
+    parts: list[str] = []
+    if any(ln.strip() for ln in preamble):
+        parts.append("\n".join(preamble).strip("\n"))
+    for heading, body in sections:
+        if heading in want:
+            parts.append("\n".join([heading, *body]).strip("\n"))
+    new_text = "\n\n".join(parts).strip()
+    if not new_text:
+        return {"ok": False, "error": "empty_selection"}
+
+    new_id = f"{int(time.time())}-{secrets.token_hex(2)}"
+    new_meta = {
+        **meta,
+        "id": new_id,
+        "created_at": time.time(),
+        "trigger": "split",
+        "chars": len(new_text),
+        "split_from": draft_id,
+        "status": PENDING,
+        "resolved_at": None,
+        "expired_reason": None,
+    }
+    _atomic_write(_draft_paths(new_id)[0], new_text)
+    _save_meta(new_id, new_meta)
+    _resolve(draft_id, DISCARDED)
+    return {"ok": True, **draft_payload(new_id)}
+
+
+def truncate_to_budget(text: str, budget: int) -> str:
+    """Cut ``text`` to ``budget`` characters on a line boundary (never mid-line)."""
+    if budget <= 0 or len(text) <= budget:
+        return text
+    out, used = [], 0
+    for line in text.splitlines():
+        if used + len(line) + 1 > budget:
+            break
+        out.append(line)
+        used += len(line) + 1
+    if not out:  # single huge line — hard cut is the only option
+        return text[:budget]
+    return "\n".join(out)
+
+
+def apply_draft(
+    content: str | None = None,
+    force: bool = False,
+    draft_id: str | None = None,
+    truncate: bool = False,
+) -> dict:
     """Write the (optionally edited) draft into MEMORY.md and clear the pool
     up to the draft's cutoff. Refuses when MEMORY.md changed since the draft
-    was created, unless ``force``."""
-    d = read_draft()
+    was created, unless ``force``; refuses an over-budget draft unless
+    ``truncate`` or ``force``."""
+    d = read_draft(draft_id)
     if not d:
         return {"ok": False, "error": "no_draft"}
     meta = d["meta"]
@@ -346,25 +843,40 @@ def apply_draft(content: str | None = None, force: bool = False) -> dict:
         return {"ok": False, "error": "memory_changed"}
 
     text = content if content is not None else d["draft"]
+    budget = int(meta.get("budget") or 0)
+    if budget > 0 and len(text) > budget and not force:
+        if not truncate:
+            return {
+                "ok": False,
+                "error": "over_budget",
+                "chars": len(text),
+                "budget": budget,
+            }
+        text = truncate_to_budget(text, budget)
+
     _write_memory(text)
     cutoff = meta.get("pool_cutoff")
     clear_pool(before_ts=float(cutoff) if cutoff else None)
     remaining = len(read_pool())
-    _delete_draft()
+    _resolve(str(meta["id"]), APPLIED)
     written = sanitize_for_memory(text)
     return {
         "ok": True,
+        "draft_id": meta["id"],
         "summarized_chars": len(written),
         "pool_entries": meta.get("pool_entries", 0),
         "pool_remaining": remaining,
     }
 
 
-def discard_draft() -> dict:
+def discard_draft(draft_id: str | None = None) -> dict:
     """Drop the pending draft; the pool is kept and can be re-distilled."""
-    existed = has_draft()
-    _delete_draft()
-    return {"ok": True, "had_draft": existed}
+    _ensure_layout()
+    did = draft_id or _latest_pending_id()
+    if not did:
+        return {"ok": True, "had_draft": False}
+    had = _resolve(did, DISCARDED)
+    return {"ok": True, "had_draft": had, "draft_id": did}
 
 
 def remove_memory_lines(lines: list[str]) -> int:

@@ -590,6 +590,24 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
   kb/（**手写力导向图谱**于 SVG；PageViewer 三态 read/edit/create）、settings/（逐 tab 接 API；
   含 WebSearchSettings：引擎配置 + 测试搜索 + 引擎被引率遥测）。
 
+### 12.1 文本可选中策略（2026-10-25，v2）
+
+桌面端（WKWebView）里"能不能选中文字"必须是一条规则，而不是零散的 `select-none`。
+**v1 试过"默认全可选"，结果在 WKWebView 里拖选会把 flex/grid 容器整块刷成大片色块**
+（设置页整屏紫色）——所以 v2 反过来：**容器一律不可选，只有文本叶子可选中**。
+
+| 层 | 规则 | 实现 |
+|---|---|---|
+| 布局容器 | 默认不参与选中（`html/body` 与所有 div/section 等容器） | `globals.css` `@layer base` 的 `html, body { user-select: none }` |
+| 文本叶子 | 可选中：`p` / `li` / `td` / `blockquote` / `dd` / `dt` / `figcaption` / `h1`–`h6` / `pre` / `code` / `kbd` / `samp` / `input` / `textarea` / `select` / `[contenteditable]` / `[data-selectable]` / `.selectable` | 同文件 `@layer components` 反声明 `text` |
+| 控件外壳 | 永远不可选：button / tab / switch / menuitem / option / summary / label / `th` / `.pill` / `.nav-item` | 同上 |
+| 以 div 承载的正文 | 聊天卡片/工具输出/提示/错误横幅等直接以 `div` 放文字的地方挂 `.selectable` | 组件类名 |
+| 拖拽 | 拖拽开始后 `body` 挂 `select-none` / `ginno-card-dragging`；卡片内 `[data-selectable]` 区域只做文本选择、不起拖拽；拖选残留的选区不再触发 click | FileTree / PanelResizer / GeneralSettings / AgentsSettings |
+
+新增组件时：**文字放进语义元素（p/li/pre/…）或给它挂 `.selectable`**；
+其余容器保持默认（不可选）。不要为了方便给整个页面/卡片加 `select-none` 之外的"全选"设置——
+WebKit 会把容器盒子一起画进选区。
+
 ---
 
 ## 13. Desktop 壳（`apps/desktop`）

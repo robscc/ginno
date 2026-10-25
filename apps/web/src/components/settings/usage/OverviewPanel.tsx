@@ -210,7 +210,9 @@ export function OverviewPanel() {
  * 取色——runtime 侧来源不再白名单校验，前端配色随来源自然扩展）。
  * labelKey 存 catalog key（settings.usage.overview.source.*，字面量联合）。 */
 type SourceKey =
-  | "chat" | "goal" | "compaction" | "workflow" | "memory" | "kb" | "probe" | "external" | "subagent" | "other";
+  | "chat" | "goal" | "compaction" | "workflow" | "memory" | "kb" | "probe" | "external"
+  | "subagent" | "subagent_plan" | "subagent_gate" | "title" | "team"
+  | "schedule" | "mods" | "classifier" | "channel_resume" | "other";
 const SOURCE_META: Record<string, { labelKey: SourceKey }> = {
   chat: { labelKey: "chat" },
   goal: { labelKey: "goal" },
@@ -224,6 +226,15 @@ const SOURCE_META: Record<string, { labelKey: SourceKey }> = {
   // 2026-10-13 之前不在 usage_store 来源白名单，写入时被强转 "other"
   // ——「来源分布」里凭空多出的『其他』即此。
   subagent: { labelKey: "subagent" },
+  // 2026-10-25: 记账补全后端新发射的来源（此前长期显示英文原名 + hash 配色）。
+  subagent_plan: { labelKey: "subagent_plan" },
+  subagent_gate: { labelKey: "subagent_gate" },
+  title: { labelKey: "title" },
+  team: { labelKey: "team" },
+  schedule: { labelKey: "schedule" },
+  mods: { labelKey: "mods" },
+  classifier: { labelKey: "classifier" },
+  channel_resume: { labelKey: "channel_resume" },
   other: { labelKey: "other" },
 };
 

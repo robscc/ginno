@@ -54,7 +54,7 @@ function NoticeCard({ n }: { n: Notice }) {
         <Icon className={`h-3 w-3 ${meta.fg}`} />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="break-words whitespace-pre-wrap">{n.text}</div>
+        <div className="selectable break-words whitespace-pre-wrap">{n.text}</div>
         {n.action && (
           <button
             onClick={() => {

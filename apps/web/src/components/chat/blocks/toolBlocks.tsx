@@ -194,7 +194,7 @@ export function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
           onScroll={onScroll}
           className="max-h-60 overflow-y-auto border-t border-violet/15 px-3 py-2"
         >
-          <div className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">{text}</div>
+          <div className="selectable whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">{text}</div>
         </div>
       )}
     </div>

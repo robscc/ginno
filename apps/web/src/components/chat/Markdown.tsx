@@ -100,7 +100,7 @@ export const Markdown = memo(function Markdown({
        against a 735px column -> transcript scrollWidth 1066 vs 783).
        The CodeBlock <pre> re-asserts overflow-wrap:normal so fenced code
        keeps scrolling horizontally instead of wrapping mid-token. */
-    <div className="break-words">
+    <div className="selectable break-words">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}

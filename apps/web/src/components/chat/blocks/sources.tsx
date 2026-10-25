@@ -120,7 +120,7 @@ export function ContextBlocks({ blocks }: { blocks: Extract<Block, { kind: "cont
       {blocks.map((b, i) => (
         <div
           key={i}
-          className="max-w-[85%] whitespace-pre-wrap rounded-lg border border-line/60 bg-card/40 px-3 py-1.5 text-center text-xs leading-relaxed text-muted"
+          className="selectable max-w-[85%] whitespace-pre-wrap rounded-lg border border-line/60 bg-card/40 px-3 py-1.5 text-center text-xs leading-relaxed text-muted"
         >
           {/* 事件契约：i18n_key 命中即翻译，否则原样直显 text（历史会话兼容） */}
           {evText(b, b.text)}

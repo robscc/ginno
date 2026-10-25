@@ -157,6 +157,10 @@ export function AgentsSettings() {
 
   const onCardMouseDown = (e: React.MouseEvent, a: AgentConfig) => {
     if (openIds[a.id] || e.button !== 0) return; // 展开态不拖；只认左键
+    // 内容可选（2026-10-25 统一策略）：人设正文等标了 data-selectable 的区域
+    // 只做文本选择，不起拖拽——否则一拖就变排序，正文永远选不中。
+    const tgt = e.target as HTMLElement;
+    if (tgt.closest("[data-selectable], input, textarea, a, button, [contenteditable='true']")) return;
     dragRef.current = {
       id: a.id,
       startX: e.clientX,
@@ -435,6 +439,7 @@ export function AgentsSettings() {
     const to = ids.indexOf(dst);
     if (from < 0 || to < 0) return;
     ids.splice(to, 0, ids.splice(from, 1)[0]);
+    window.getSelection()?.removeAllRanges();
     if (ids.join() !== g.agents.map((x) => x.id).join()) void persistOrder(ids);
   }
   finishDragRef.current = finishDrag;
@@ -532,6 +537,10 @@ export function AgentsSettings() {
                   suppressClick.current = false;
                   return;
                 }
+                // 拖选文本不算点击：mouseup 后浏览器仍会派发 click，若此时还有
+                // 非折叠选区，说明用户是在选正文，不要顺手把卡片展开。
+                const sel = window.getSelection();
+                if (sel && !sel.isCollapsed && sel.toString().trim()) return;
                 if (!open) setOpenIds((m) => ({ ...m, [a.id]: true }));
               }}
               className={`rounded-xl border bg-card p-3 transition-[border-color,opacity,transform] ${
@@ -576,7 +585,11 @@ export function AgentsSettings() {
               </div>
               {!open && (
               <>
-                <div className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-muted" title={get(a.id, "system_prompt", a.system_prompt)}>
+                <div
+                  data-selectable
+                  className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-muted"
+                  title={get(a.id, "system_prompt", a.system_prompt)}
+                >
                   {get(a.id, "system_prompt", a.system_prompt) || t("noPersona")}
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-faint">

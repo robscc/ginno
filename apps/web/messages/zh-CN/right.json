@@ -86,7 +86,15 @@
       "memoryChanged": "草稿生成后 MEMORY.md 又发生了变化。确认内容无误再强制应用（会覆盖当前记忆）。",
       "applyFailed": "应用失败",
       "applyFailedConnect": "应用失败：无法连接运行时",
-      "discardFailedConnect": "丢弃失败：无法连接运行时"
+      "discardFailedConnect": "丢弃失败：无法连接运行时",
+      "applyTruncated": "按预算截断后应用",
+      "overBudgetBlocked": "草稿超出记忆预算，不能直接应用；可用「按预算截断」或先编辑。",
+      "split": "按主题拆分",
+      "splitTitle": "选择要保留的主题（原草稿将被丢弃）",
+      "splitHint": "不再调用模型；勾选的主题会生成一份更小的新草稿。",
+      "splitConfirm": "生成新草稿",
+      "splitEmpty": "至少选择一段",
+      "splitCancel": "取消"
     },
     "promote": {
       "title": "晋升为知识库页面",

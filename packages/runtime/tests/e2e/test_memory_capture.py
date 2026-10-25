@@ -65,13 +65,18 @@ def test_auto_distill_at_threshold_produces_draft(client, create_session, ws_con
     # the turn completed with a capture
     assert client.get("/api/memory").json()["pool_count"] >= 1
 
-    # the background auto-distill lands the draft (poll — spawn_bg task)
+    # the background auto-distill lands the draft in the queue (poll — spawn_bg
+    # task). Drafts moved from the single-slot memory/draft.md into
+    # memory/drafts/ (docs/dream-mode-design.md §5).
+    from ginno_runtime.memory import has_draft, list_drafts
+
     deadline = time.time() + 10
     while time.time() < deadline:
-        if paths.memory_draft_path().exists():
+        if has_draft():
             break
         time.sleep(0.1)
-    assert paths.memory_draft_path().exists(), "auto-draft never appeared"
+    assert has_draft(), "auto-draft never appeared"
+    assert list_drafts()[0]["trigger"] == "auto"
 
     # gate held: MEMORY.md untouched, pool kept until review
     mem = client.get("/api/memory").json()

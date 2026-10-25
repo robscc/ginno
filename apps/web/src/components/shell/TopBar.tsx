@@ -140,7 +140,7 @@ export function TopBar({
   }
 
   return (
-    <header className="flex min-h-14 min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-5 py-1.5">
+    <header className="flex min-h-14 min-w-0 shrink-0 select-none flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-5 py-1.5">
       <div className="flex min-w-[min(100%,12rem)] flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
         <h1 className="min-w-[5rem] max-w-full truncate text-[15px] font-semibold tracking-tight text-txt" title={session?.title || tr("topbar.newSession")}>
           {session?.title || tr("topbar.newSession")}

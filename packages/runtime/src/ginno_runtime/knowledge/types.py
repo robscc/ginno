@@ -84,6 +84,14 @@ class KnowledgeConfig:
     pool_flush_threshold: int = 30
     summarize_model: str = ""
     memory_budget_chars: int = 3000
+    # draft queue hygiene (docs/dream-mode-design.md §4.5): a pending draft that
+    # nobody reviews used to block every later run — expire it instead.
+    draft_ttl_days: int = 7
+    draft_max_pending: int = 3
+    draft_keep: int = 20
+    # nightly "dream" window (same design §4.4); off by default.
+    dream_nightly: bool = False
+    dream_at: str = "03:00"
     # citation framework (docs/citations-design.md): master switch for the
     # citation contract + usage telemetry; the retrieval usage bonus and its
     # small-sample floor (bonus wiring lands in P2, fields reserved now).

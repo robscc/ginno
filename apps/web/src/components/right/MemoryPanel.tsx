@@ -165,6 +165,7 @@ export function MemoryPanel() {
       {draftOpen && draft && (
         <MemoryDraftModal
           draft={draft}
+          draftId={draft.id}
           onResolved={load}
           onClose={() => setDraftOpen(false)}
         />

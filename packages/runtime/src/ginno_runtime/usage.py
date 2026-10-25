@@ -128,3 +128,45 @@ def cache_hit_ratio(acc: dict[str, int]) -> float:
     if inp <= 0:
         return 0.0
     return round(acc.get("cache_read_tokens", 0) / inp, 4)
+
+
+def record_message(
+    message: Any,
+    *,
+    source: str,
+    provider: str = "",
+    model: str = "",
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    turn_id: str | None = None,
+    latency_ms: int | None = None,
+) -> dict[str, int] | None:
+    """Extract + persist usage for one auxiliary LLM call (never raises).
+
+    Every background call site (title generation, sub-agent planning/gating,
+    team generation, …) funnels through here so a new source only needs the
+    ``source`` tag — see docs/dream-mode-design.md §8. Returns the extracted
+    usage dict, or None when the provider reported none.
+    """
+    try:
+        from . import usage_store
+
+        u = extract_usage(message)
+        if not u:
+            return None
+        usage_store.record(
+            input_tokens=u.get("input_tokens") or 0,
+            output_tokens=u.get("output_tokens") or 0,
+            cache_read_tokens=u.get("cache_read_tokens") or 0,
+            cache_creation_tokens=u.get("cache_creation_tokens") or 0,
+            provider=provider or "",
+            model=model or "",
+            source=source,
+            session_id=session_id,
+            agent_id=agent_id,
+            turn_id=turn_id,
+            latency_ms=latency_ms,
+        )
+        return u
+    except Exception:  # noqa: BLE001 — telemetry never breaks the call path
+        return None

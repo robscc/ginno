@@ -340,6 +340,16 @@ async def _maybe_compress_summary(report: str, meta: dict) -> str:
         )
         from ..graph import text_of_content
 
+        # Usage telemetry (docs/dream-mode-design.md §8.1 #4).
+        from .. import usage as _usage_mod
+
+        _usage_mod.record_message(
+            resp,
+            source="subagent_gate",
+            provider=str(meta.get("provider") or ""),
+            model=str(meta.get("model") or ""),
+            session_id=meta.get("id"),
+        )
         text = text_of_content(getattr(resp, "content", "")).strip()
         if text:
             return text
@@ -419,6 +429,16 @@ async def _gen_subagent_title(child_id: str, report: str) -> None:
             ]
         )
         title = _sanitize_title(_content_text(resp))[: _NS.SUBAGENT_TITLE_MAX_CHARS].strip()
+        # Usage telemetry (docs/dream-mode-design.md §8.1 #4).
+        from .. import usage as _usage_mod
+
+        _usage_mod.record_message(
+            resp,
+            source="subagent_gate",
+            provider=str(meta.get("provider") or ""),
+            model=str(meta.get("model") or ""),
+            session_id=child_id,
+        )
         if not title:
             _NS._log.info("subagent_title_skipped session=%s reason=empty", child_id)
             return

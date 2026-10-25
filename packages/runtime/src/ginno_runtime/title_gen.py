@@ -165,6 +165,17 @@ async def maybe_llm_title(session_id: str, turn_id: str) -> None:
             HumanMessage(content=f"User: {seed}\nAssistant: {assistant[:2000]}"),
         ]
     )
+    # Usage telemetry (docs/dream-mode-design.md §8.1 #2): a title is a real
+    # completion — it used to be invisible in 用量统计.
+    from . import usage as usage_mod
+
+    usage_mod.record_message(
+        resp,
+        source="title",
+        provider=str(meta.get("provider") or ""),
+        model=str(meta.get("model") or ""),
+        session_id=session_id,
+    )
     title = _sanitize_title(_content_text(resp))
     if not title:
         _log.info("title_llm session=%s status=skipped reason=empty", session_id)
