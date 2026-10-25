@@ -16,4 +16,5 @@ from .base import (  # noqa: F401 — 装配层与测试的稳定导入面
 )
 from .claude_code import ClaudeCodeBackend
 from .codex import CodexBackend
+from .dsh import DshBackend
 from .pi import PiBackend

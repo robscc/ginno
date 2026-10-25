@@ -1,6 +1,6 @@
 """External-agent delegation base: interface + IR + shared helpers.
 
-一个 CLI 一个 adapter（claude_code.py / codex.py / pi.py，connector-module
+一个 CLI 一个 adapter（claude_code.py / codex.py / pi.py / dsh.py，connector-module
 同款模式），全部实现这里的 ExternalBackend 接口。本文件只放接口与共用
 设施：结果类型（DelegationResult，含转录 IR）、JSONL 迭代与 usage 映射、
 CLI 路径解析（GUI PATH 兜底）、宽松 JSON 解析。
@@ -30,6 +30,7 @@ _TIMEOUT_DEFAULT_S = 1800  # 2026-10-05：600→1800（用户要求）；0=永�
 _MIN_CLI_VERSIONS: dict[str, tuple[int, int, int]] = {
     "claude": (2, 0, 0),
     "codex": (0, 100, 0),
+    "dsh": (0, 2, 0),
 }
 
 _DIAGNOSTIC_CAP = 2000
@@ -74,9 +75,26 @@ class ExternalBackend(Protocol):
         return True
 
     def build_argv(
-        self, prompt: str, mode: str, cwd: str, out_file: str | None
+        self,
+        prompt: str,
+        mode: str,
+        cwd: str,
+        out_file: str | None,
+        session_id: str | None = None,
     ) -> list[str]:
+        """``session_id`` = 续跑之前某次委托的外部会话 id（可选；只有
+        supports_resume=True 的后端认它，其余忽略）。"""
         ...
+
+    # 可选钩子（不强制实现）：adapter 专属的子进程环境变量，如 dsh 的
+    # DSH_PERMISSION_MODE（dsh 的权限只认环境变量，不进 argv）。run_delegation
+    # 用 getattr 探测并合并 os.environ；未实现的 backend 继承父进程环境，
+    # 行为与引入该钩子前完全一致。
+    # def build_env(self, mode: str, cwd: str) -> dict[str, str]: ...
+
+    # 可选类属性：是否支持带 session_id 续跑之前的委托（目前仅 dsh=True）。
+    # 工具层/机器头用 getattr(be, "supports_resume", False) 探测。
+    # supports_resume: bool = False
 
     def parse_result(
         self, stdout: str, stderr: str, rc: int, out_file: str | None
@@ -285,4 +303,22 @@ def _pi_usage(raw: dict) -> dict:
         "output_tokens": _num0(raw.get("output")),
         "cache_read_tokens": _num0(raw.get("cacheRead")),
         "cache_creation_tokens": _num0(raw.get("cacheWrite")),
+    }
+
+
+def _dsh_usage(raw: dict) -> dict:
+    """dsh ``step_end`` 的 usage → ginno 四元组（一次调用可能多段，调用方累加）。
+
+    dsh 字段：inputTokens / outputTokens / cacheReadTokens / cacheWriteTokens
+    / totalTokens（totalTokens ≈ input+cache+output，不是独立账目，忽略）。
+    inputTokens 与 Anthropic 口径一致，不含缓存段——ginno 归一化后
+    input_tokens 是整段提示词（缓存段并入）。
+    """
+    cache_read = _num0(raw.get("cacheReadTokens"))
+    cache_write = _num0(raw.get("cacheWriteTokens"))
+    return {
+        "input_tokens": _num0(raw.get("inputTokens")) + cache_read + cache_write,
+        "output_tokens": _num0(raw.get("outputTokens")),
+        "cache_read_tokens": cache_read,
+        "cache_creation_tokens": cache_write,
     }

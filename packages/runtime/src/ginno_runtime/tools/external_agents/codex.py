@@ -31,7 +31,12 @@ class CodexBackend:
         return _resolve_cli("codex")
 
     def build_argv(
-        self, prompt: str, mode: str, cwd: str, out_file: str | None
+        self,
+        prompt: str,
+        mode: str,
+        cwd: str,
+        out_file: str | None,
+        session_id: str | None = None,
     ) -> list[str]:
         argv = [
             self.available() or "codex",

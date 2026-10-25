@@ -220,3 +220,41 @@ def test_register_delegation_persists_pid():
     )
     # 无对应 delegation meta 时静默不抛（簿记绝不影响运行）
     _register_delegation_proc("", "parent-1", SimpleNamespace(pid=778))
+
+
+# ---- dsh（2026-10-25）：CLI 映射 + Electron 进程名身份提示 ----
+
+def test_backend_cli_map_has_dsh():
+    from ginno_runtime.delegation_sessions import _BACKEND_CLI
+
+    assert _BACKEND_CLI["dsh"] == "dsh"
+
+
+def test_reap_orphan_cli_dsh_electron_comm_hint(monkeypatch):
+    """dsh 从 Electron 版 DeepSeek Harness 起跑时 comm 是应用名——提示命中
+    才击杀；无关进程（pid 复用）仍绝不碰，提示只对 dsh 生效。"""
+    from ginno_runtime import delegation_sessions as ds
+
+    killed = []
+    monkeypatch.setattr(ds.os, "killpg", lambda pgid, sig: killed.append(pgid))
+
+    monkeypatch.setattr(
+        ds, "_pid_comm",
+        lambda pid: "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness",
+    )
+    note = ds._reap_orphan_cli(4242, "dsh")
+    assert "terminated" in note and killed == [4242]
+
+    # pid 复用（无关进程）→ 只注明，不杀
+    killed.clear()
+    monkeypatch.setattr(
+        ds, "_pid_comm",
+        lambda pid: "/Applications/Discord.app/Contents/MacOS/Discord",
+    )
+    note = ds._reap_orphan_cli(4242, "dsh")
+    assert "left untouched" in note and killed == []
+
+    # 提示只对 dsh：claude-code 遇到同名 comm 仍视为不可识别
+    monkeypatch.setattr(ds, "_pid_comm", lambda pid: "DeepSeek Harness")
+    note = ds._reap_orphan_cli(4242, "claude-code")
+    assert "left untouched" in note and killed == []

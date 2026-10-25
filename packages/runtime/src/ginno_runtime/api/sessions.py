@@ -949,11 +949,15 @@ async def list_external_agents() -> list[dict]:
             _path = _be.available()
         except Exception:  # noqa: BLE001 — 检测绝不 500
             _path = None
-        # 已安装但未完成首次初始化(pi 需要终端跑一次)→ 前端给引导提示
+        # 已安装但未完成首次初始化 → 前端给引导提示（pi 需要终端跑一次 =
+        # needsInit；dsh 需要配 DEEPSEEK_API_KEY = needsAuth）。
         _hint = ""
         if _path:
             try:
-                _hint = "" if _be.configured() else "needsInit"
+                _hint = (
+                    "" if _be.configured()
+                    else getattr(_be, "setup_hint_code", "needsInit")
+                )
             except Exception:  # noqa: BLE001
                 _hint = ""
         out.append({"name": _name, "installed": bool(_path), "path": _path or "",

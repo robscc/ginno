@@ -54,7 +54,12 @@ class ClaudeCodeBackend:
         return _resolve_cli("claude")
 
     def build_argv(
-        self, prompt: str, mode: str, cwd: str, out_file: str | None
+        self,
+        prompt: str,
+        mode: str,
+        cwd: str,
+        out_file: str | None,
+        session_id: str | None = None,
     ) -> list[str]:
         # 2026-10-04 真机矩阵（V1-V10）：--allowedTools / --strict-mcp-config /
         # --disallowedTools 都会炸掉 claude CLI 2.1.x headless 的延迟工具系统

@@ -27,7 +27,10 @@ CLAUDE_STREAM = "\n".join([
 @pytest.fixture(autouse=True)
 def _ext_and_cli_stubs(monkeypatch):
     monkeypatch.setenv("GINNO_EXTERNAL_AGENTS", "1")
-    for n in ("claude", "codex", "pi"):
+    # dsh 检测读 $DSH_HOME/.env 或 ~/.dsh → 指到不存在的路径，测试绝不碰真 home。
+    monkeypatch.setenv("DSH_HOME", "/nonexistent/ginno-test-dsh-home")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    for n in ("claude", "codex", "pi", "dsh"):
         _xa_base._CLI_CACHE[n] = "/opt/claude"
     yield
 
@@ -133,7 +136,7 @@ def test_delegate_async_end_to_end(client, create_session, ws_conv, monkeypatch)
     req = client.get(f"/api/usage/requests?session_id={sid}").json()
     assert any(r.get("source") == "external" for r in req["rows"])
     ag = client.get("/api/external-agents").json()
-    assert {a["name"] for a in ag} == {"claude-code", "codex", "pi"}
+    assert {a["name"] for a in ag} == {"claude-code", "codex", "pi", "dsh"}
 
     # 级联删除
     assert client.delete(f"/api/sessions/{sid}").json()["ok"] is True
@@ -172,3 +175,29 @@ def test_delegation_error_run_still_archives(client, create_session, ws_conv, mo
     assert child and child["stop_reason"] == "error"
     dhist = json.dumps(client.get(f"/api/sessions/{child['id']}/history").json(), ensure_ascii=False)
     assert "rc=1" in dhist
+
+
+def test_external_agents_setup_hint_codes(client, monkeypatch):
+    """/api/external-agents 的 setupHint：默认 needsInit（pi），dsh 用
+    setup_hint_code=needsAuth；已配置/缺字段都不得 500。"""
+    from ginno_runtime.tools import external_agent
+
+    class _Be:
+        def __init__(self, configured, code=""):
+            self._configured = configured
+            if code:
+                self.setup_hint_code = code
+
+        def available(self):
+            return "/opt/fake"
+
+        def configured(self):
+            return self._configured
+
+    monkeypatch.setitem(external_agent._BACKENDS, "pi", _Be(False))
+    monkeypatch.setitem(external_agent._BACKENDS, "dsh", _Be(False, "needsAuth"))
+    monkeypatch.setitem(external_agent._BACKENDS, "codex", _Be(True))
+    rows = {r["name"]: r for r in client.get("/api/external-agents").json()}
+    assert rows["pi"]["setupHint"] == "needsInit"  # 无 setup_hint_code → 默认
+    assert rows["dsh"]["setupHint"] == "needsAuth"
+    assert rows["codex"]["setupHint"] == ""

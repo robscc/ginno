@@ -17,11 +17,20 @@ interface BackendRow {
   name: string;
   installed: boolean;
   path: string;
+  /** Runtime setup-hint code, translated as settings.externalAgents.<code>:
+   *  "needsInit" = finish first-run setup in a terminal,
+   *  "needsAuth" = installed but headless mode has no usable credentials. */
   setupHint?: string;
 }
 
 export function ExternalAgentsSettings() {
   const t = useTranslations("settings.externalAgents");
+  // setupHint.<code> 是运行时动态 key(needsInit / needsAuth …),宽化后经
+  // has() 门控,未命中不渲染——与 CodePanel 的 notice.err.<code> 同一防御姿态。
+  const tr = t as unknown as {
+    (key: string, values?: Record<string, string>): string;
+    has(key: string): boolean;
+  };
   const [form, setForm] = useState<ExtForm>({
     enabled: false,
     maxActive: 8,
@@ -151,9 +160,9 @@ export function ExternalAgentsSettings() {
               <span className="truncate text-xs text-faint" title={b.path}>
                 {b.installed ? b.path : t("notInstalled")}
               </span>
-              {b.installed && b.setupHint === "needsInit" && (
+              {b.installed && b.setupHint && tr.has(b.setupHint) && (
                 <span className="ml-auto shrink-0 text-xs text-yellow">
-                  {t("needsInit", { name: b.name })}
+                  {tr(b.setupHint, { name: b.name })}
                 </span>
               )}
             </div>

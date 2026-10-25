@@ -117,14 +117,20 @@ def _pid_comm(pid: int) -> str:
         return ""
 
 
-_BACKEND_CLI = {"claude-code": "claude", "codex": "codex", "pi": "pi"}
+_BACKEND_CLI = {"claude-code": "claude", "codex": "codex", "pi": "pi", "dsh": "dsh"}
+
+# 身份复核的额外进程名提示（lowercase 子串匹配）。dsh 从 Electron 版
+# DeepSeek Harness 启动时 comm 是 "DeepSeek Harness" 而不是 dsh——只对
+# 对应 backend 生效，仍属「身份相符」才击杀，pid 复用（别的进程名）绝不碰。
+_BACKEND_COMM_HINTS = {"dsh": ("deepseek harness",)}
 
 
 def _reap_orphan_cli(pid, backend: str) -> str:
     """识别并处置重启后仍存活的孤儿 CLI 进程。返回追加到中断注记的说明。
 
-    身份复核通过（comm 含 CLI 名）才杀——孤儿是 start_new_session 的独立
-    进程组，killpg 收整树；身份不符（pid 复用）绝不碰，只注明。"""
+    身份复核通过（comm 含 CLI 名 / 后端专属进程名提示）才杀——孤儿是
+    start_new_session 的独立进程组，killpg 收整树；身份不符（pid 复用）
+    绝不碰，只注明。"""
     if not isinstance(pid, int) or pid <= 0:
         return ""
     comm = _pid_comm(pid)
@@ -132,7 +138,13 @@ def _reap_orphan_cli(pid, backend: str) -> str:
         return ""
     cli = _BACKEND_CLI.get(backend or "", "")
     low = comm.lower()
-    identified = bool(cli) and (cli in low or low.endswith("/" + cli) or "node" in low)
+    hints = _BACKEND_COMM_HINTS.get(backend or "", ())
+    identified = bool(cli) and (
+        cli in low
+        or low.endswith("/" + cli)
+        or "node" in low
+        or any(h in low for h in hints)
+    )
     if not identified:
         return (
             f"; stale pid {pid} ({comm}) is alive but not identifiable as "

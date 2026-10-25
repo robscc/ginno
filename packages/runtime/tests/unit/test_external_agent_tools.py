@@ -24,6 +24,10 @@ from ginno_runtime.tools import external_agent
 from ginno_runtime.tools.external_agent import (
     ClaudeCodeBackend,
     CodexBackend,
+    DelegationResult,
+    DshBackend,
+    _activity_from_line,
+    _delegation_header,
     build_external_agent_tools,
     clear_cli_cache,
     run_delegation,
@@ -54,6 +58,27 @@ CLAUDE_OK = json.dumps(
 )
 
 
+# dsh headless NDJSON：session → 一轮 → final（含可续跑 sessionId）。
+DSH_OK = "\n".join([
+    '{"type":"session","sessionId":"session-dsh-test","cwd":"/ws"}',
+    '{"type":"status","phase":"turn_start","turn":1}',
+    '{"type":"status","phase":"step_start","turn":1,"step":1}',
+    '{"type":"text","text":"all done"}',
+    '{"type":"status","phase":"step_end","turn":1,"step":1,"usage":{"inputTokens":100,"outputTokens":10,"cacheReadTokens":20}}',
+    '{"type":"status","phase":"turn_end","turn":1,"reason":{"kind":"completed"}}',
+    '{"type":"final","text":"all done"}',
+])
+
+# 续跑流：同 sessionId、turn 从 2 起。
+DSH_RESUMED = "\n".join([
+    '{"type":"session","sessionId":"session-dsh-test","cwd":"/ws"}',
+    '{"type":"status","phase":"turn_start","turn":2}',
+    '{"type":"status","phase":"step_start","turn":2,"step":1}',
+    '{"type":"status","phase":"turn_end","turn":2,"reason":{"kind":"completed"}}',
+    '{"type":"final","text":"42"}',
+])
+
+
 # --------------------------------------------------------------------------- #
 # Fixtures / fakes
 # --------------------------------------------------------------------------- #
@@ -73,7 +98,7 @@ def _stub_cli(monkeypatch, path):
     版本缓存一并预填（版本=各后端最小版本门）——cli_version 否则会真起
     ``--version`` 子进程，被本文件 monkeypatch 的 Popen 截胡后污染
     fake_popen 的 created[0]（2026-10-18 A2 引入探针后实测）。"""
-    for _name in ("claude", "codex", "pi"):
+    for _name in ("claude", "codex", "pi", "dsh"):
         _xa_base._CLI_CACHE[_name] = path
         _xa_base._CLI_VERSION_CACHE[_name] = (
             path,
@@ -653,3 +678,135 @@ def test_wall_timeout_still_applies_when_nonzero(monkeypatch):
     hang.set()
     assert res.stop_reason == "timeout"
     assert res.meta["terminal_reason"] == "wall_timeout"
+
+
+# --------------------------------------------------------------------------- #
+# dsh：注册 / build_env 合并 / 续跑 session_id 透传（2026-10-25）
+# --------------------------------------------------------------------------- #
+def test_backend_registry_includes_dsh():
+    assert set(external_agent._BACKENDS) == {"claude-code", "codex", "pi", "dsh"}
+    assert external_agent._BACKENDS["dsh"].supports_resume is True
+    # 其余后端不宣称支持续跑
+    assert not getattr(external_agent._BACKENDS["claude-code"], "supports_resume", False)
+
+
+def test_dsh_build_env_merged_into_popen(delegate, monkeypatch):
+    """dsh 的权限模式走 DSH_PERMISSION_MODE：run_delegation 把它合并进
+    os.environ 后交给 Popen（父进程环境保留）。"""
+    _stub_cli(monkeypatch, "/opt/dsh")
+    created = fake_popen(monkeypatch, stdout=DSH_OK)
+    out = delegate.invoke(
+        {"backend": "dsh", "prompt": "do x", "session_id": "session-abc"}
+    )
+    p = created[0]
+    assert p.argv[0] == "/opt/dsh"
+    assert p.argv[:4] == ["/opt/dsh", "--profile", "headless", "--json"]
+    # 续跑 id 在 prompt 之前
+    assert p.argv.index("--session-id") + 1 < p.argv.index("do x")
+    assert p.argv[p.argv.index("--session-id") + 1] == "session-abc"
+    assert p.kw["env"]["DSH_PERMISSION_MODE"] == "read-only"
+    assert p.kw["env"]["PATH"] == os.environ["PATH"]  # 继承父进程环境
+    # 机器头暴露可续跑 id + 本次调用轮数（turn 数是本次=1，不是会话级）
+    assert "stop=success session=session-dsh-test turns=1" in out
+    assert "all done" in out
+
+    # edit → workspace-write（argv 不变，只有 env 变）
+    created = fake_popen(monkeypatch, stdout=DSH_RESUMED)
+    out2 = delegate.invoke({"backend": "dsh", "prompt": "next", "mode": "edit"})
+    assert created[0].kw["env"]["DSH_PERMISSION_MODE"] == "workspace-write"
+    assert "--session-id" not in created[0].argv
+    # 续跑流 turn=2，但本工具头只反映本次调用轮数 → turns=1
+    assert "session=session-dsh-test" in out2 and "turns=1" in out2
+
+
+def test_backend_without_build_env_gets_no_env_kw(delegate, monkeypatch):
+    """没有 build_env 的后端行为必须不变：Popen 不传 env（继承环境）。"""
+    _stub_cli(monkeypatch, "/opt/claude")
+    created = fake_popen(monkeypatch, stdout=CLAUDE_OK)
+    delegate.invoke({"backend": "claude-code", "prompt": "x"})
+    assert "env" not in created[0].kw
+
+
+def test_run_delegation_tolerates_legacy_build_argv(monkeypatch):
+    """session_id 透传对旧式（4 参 build_argv）fake 后端仍向后兼容。"""
+
+    class _Legacy:
+        name = "legacy"
+        cli_name = ""
+
+        def build_argv(self, prompt, mode, cwd, out_file):
+            return ["legacy-cli", prompt]
+
+        def parse_result(self, stdout, stderr, rc, out_file):
+            return DelegationResult(output="legacy ok")
+
+    created = fake_popen(monkeypatch, stdout="")
+    res = run_delegation(
+        _Legacy(), "p", "read-only", "/ws", 30, session_id="session-abc"
+    )
+    assert res.output == "legacy ok" and res.stop_reason == "success"
+    assert created[0].argv == ["legacy-cli", "p"]
+
+
+async def test_delegation_bg_passes_resume_session_id(monkeypatch):
+    """后台路径同样把续跑 id 传给 run_delegation（不只是同步路径）。"""
+    calls = {}
+
+    def _fake_run(backend, prompt, mode, cwd, timeout, on_line=None,
+                  proc_cb=None, session_id=None):
+        calls["session_id"] = session_id
+        return DelegationResult(output="ok")
+
+    monkeypatch.setattr(external_agent, "run_delegation", _fake_run)
+    # delegation_id="" + session_id="" → 不落库、不注入、不记账，只测透传
+    await external_agent._delegation_bg(
+        "", "", "default", DshBackend(), "dsh", "p", "read-only", "/ws", 30,
+        resume_session_id="session-abc",
+    )
+    assert calls["session_id"] == "session-abc"
+
+
+def test_session_id_rejected_for_backends_without_resume(delegate, monkeypatch):
+    _stub_cli(monkeypatch, "/opt/claude")
+    created = fake_popen(monkeypatch, stdout=CLAUDE_OK)
+    out = delegate.invoke(
+        {"backend": "claude-code", "prompt": "x", "session_id": "session-abc"}
+    )
+    assert out == "[error] backend claude-code does not support session continuation"
+    assert created == []  # 绝不启动进程
+
+
+def test_delegation_header_session_only_for_resumable_backends():
+    """机器头：可续跑后端且解析到 session_id 才加 session=，位置在 stop= 后、
+    turns= 前；不支持续跑的后端/无 session 时不出现。"""
+    from ginno_runtime.tools.external_agents.base import DelegationResult
+
+    h = _delegation_header(
+        "dsh", "read-only", 60,
+        DelegationResult(meta={"session_id": "session-abc", "num_turns": 1}),
+    )
+    assert h == "[delegate backend=dsh mode=read-only stop=success session=session-abc turns=1]"
+    h2 = _delegation_header(
+        "dsh", "read-only", 60, DelegationResult(meta={"num_turns": 1})
+    )
+    assert "session=" not in h2
+    h3 = _delegation_header(
+        "claude-code", "read-only", 60,
+        DelegationResult(meta={"session_id": "sess-abc", "num_turns": 1}),
+    )
+    assert "session=" not in h3
+    # session id 里的空白压成单个空格（机器头是单行 kv）
+    h4 = _delegation_header(
+        "dsh", "read-only", 60, DelegationResult(meta={"session_id": " a  b "})
+    )
+    assert " session=a b" in h4
+
+
+def test_activity_from_line_dsh_events():
+    assert _activity_from_line('{"type":"tool_call","tool":"bash"}') == "⚙ bash"
+    assert _activity_from_line('{"type":"text","text":"hello"}') == "hello"
+    # thinking/status 不产生活动文案；非 JSON 行静默
+    assert _activity_from_line('{"type":"thinking","text":"x"}') == ""
+    assert _activity_from_line('{"type":"status","phase":"step_start"}') == ""
+    assert _activity_from_line("noise line") == ""
+    assert _activity_from_line('{"type":"text","text":""}') == ""

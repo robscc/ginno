@@ -2,8 +2,8 @@
 
 Ginno calls OUT (active delegation only — Ginno is never the callee here):
 the ``delegate_agent`` tool runs an external coding-agent CLI (claude-code /
-codex / pi) as a one-shot subprocess and returns the agent's answer as the
-tool result.
+codex / pi / dsh) as a one-shot subprocess and returns the agent's answer as
+the tool result.
 
 装配层（adapter 模式，connector-module 同款）：本文件只保留注册表
 （_BACKENDS）、进程监督（run_delegation/_kill_tree）、用量记账与
@@ -49,6 +49,7 @@ from .external_agents import (  # noqa: F401 — 兼容既有导入面（含旧�
     ClaudeCodeBackend,
     CodexBackend,
     DelegationResult,
+    DshBackend,
     ExternalBackend,
     PiBackend,
     _parse_json_lenient,
@@ -63,6 +64,7 @@ _BACKENDS: dict[str, ExternalBackend] = {
     ClaudeCodeBackend.name: ClaudeCodeBackend(),
     CodexBackend.name: CodexBackend(),
     PiBackend.name: PiBackend(),
+    DshBackend.name: DshBackend(),
 }
 
 # timeout=0（永不超时）的空闲看门狗：连续这么久无 stdout 即判挂死杀整树
@@ -115,6 +117,50 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
+def _delegation_env(
+    backend: ExternalBackend, mode: str, cwd: str
+) -> dict[str, str] | None:
+    """可选 ``build_env`` 钩子 → 子进程环境（adapter 专属变量，如 dsh 的
+    ``DSH_PERMISSION_MODE``）。没有该钩子的后端返回 None——Popen 不传 env、
+    继承当前进程环境，行为与引入钩子前完全一致（fake/旧后端不受影响）。
+    绝不抛异常：钩子失败就退回继承环境。"""
+    build_env = getattr(backend, "build_env", None)
+    if not callable(build_env):
+        return None
+    try:
+        extra = build_env(mode, cwd) or {}
+    except Exception:  # noqa: BLE001 — 环境钩子绝不拖垮委托
+        return None
+    if not isinstance(extra, dict) or not extra:
+        return None
+    try:
+        env = dict(os.environ)
+        env.update({str(k): str(v) for k, v in extra.items()})
+        return env
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _build_backend_argv(
+    backend: ExternalBackend,
+    prompt: str,
+    mode: str,
+    cwd: str,
+    out_file: str | None,
+    session_id: str | None,
+) -> list[str]:
+    """拼 argv，并兼容不带 ``session_id`` 参数的旧式 fake/第三方后端。
+
+    有续跑 id 时先按新签名（5 参）调用；TypeError 说明该后端还是旧签名，
+    退回 4 参调用（= 引入续跑前的行为）。"""
+    if session_id:
+        try:
+            return backend.build_argv(prompt, mode, cwd, out_file, session_id)
+        except TypeError:
+            return backend.build_argv(prompt, mode, cwd, out_file)
+    return backend.build_argv(prompt, mode, cwd, out_file)
+
+
 def run_delegation(
     backend: ExternalBackend,
     prompt: str,
@@ -123,6 +169,7 @@ def run_delegation(
     timeout: int,
     on_line=None,
     proc_cb=None,
+    session_id: str | None = None,
 ) -> DelegationResult:
     """Run one delegation. NEVER raises — every failure becomes a result.
 
@@ -130,6 +177,9 @@ def run_delegation(
     负责）。监督统一走流式读取——凡有真实 stdout 的子进程都在墙钟/空闲双
     看门狗之下（timeout=0 只豁免墙钟，空闲看门狗仍生效）；仅测试 fakes
     （无 stdout 属性）落回 communicate 路径。
+
+    ``session_id``：续跑之前某次委托的外部会话 id（只有 supports_resume
+    的后端认它，其余 adapter 的 build_argv 忽略）。
     """
     import threading
     out_file: str | None = None
@@ -137,21 +187,28 @@ def run_delegation(
         fd, out_file = tempfile.mkstemp(prefix="ginno-codex-", suffix=".txt")
         os.close(fd)
     try:
-        argv = backend.build_argv(prompt, mode, cwd, out_file)
+        argv = _build_backend_argv(
+            backend, prompt, mode, cwd, out_file, session_id
+        )
         proc = None
         for attempt in (0, 1):
+            # 可选 build_env（dsh 的权限模式靠环境变量）——每次 Popen 尝试前
+            # 现取，重试重建 argv 时环境同样一致。无钩子的后端不传 env kw。
+            popen_kw: dict = {
+                "cwd": cwd,
+                # pi --mode json 会先读 stdin 等 EOF：不断开就会挂到超时
+                #（2026-10-04 真机发现；claude/codex headless 不读，DEVNULL 无害）。
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True,
+                "start_new_session": (os.name == "posix"),
+            }
+            extra_env = _delegation_env(backend, mode, cwd)
+            if extra_env is not None:
+                popen_kw["env"] = extra_env
             try:
-                proc = subprocess.Popen(
-                    argv,
-                    cwd=cwd,
-                    # pi --mode json 会先读 stdin 等 EOF：不断开就会挂到超时
-                    #（2026-10-04 真机发现；claude/codex headless 不读，DEVNULL 无害）。
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    start_new_session=(os.name == "posix"),
-                )
+                proc = subprocess.Popen(argv, **popen_kw)
                 break
             except (OSError, ValueError) as e:
                 # ENOENT 自愈（A2）：解析到的 CLI 路径消失（nvm 原地升级、
@@ -164,7 +221,9 @@ def run_delegation(
                 ):
                     invalidate_cli(backend.cli_name)
                     try:
-                        argv = backend.build_argv(prompt, mode, cwd, out_file)
+                        argv = _build_backend_argv(
+                            backend, prompt, mode, cwd, out_file, session_id
+                        )
                         continue
                     except Exception:  # noqa: BLE001
                         pass
@@ -327,6 +386,12 @@ def _activity_from_line(line: str) -> str:
         for blk in msg.get("content") or []:
             if isinstance(blk, dict) and blk.get("type") == "toolCall":
                 return f"⚙ {blk.get('name')}"
+    # dsh 事件流：工具调用是独立事件；text 按消息提交点整段发出。
+    # thinking/status 不产生活动文案（返回 ""）。
+    if t == "tool_call":
+        return f"⚙ {ev.get('tool') or 'tool'}"
+    if t == "text":
+        return str(ev.get("text") or "")[:80]
     return ""
 
 
@@ -409,6 +474,11 @@ def _delegation_header(name: str, m: str, timeout_s: int, result) -> str:
             header += f" idle {_IDLE_WATCHDOG_S}s"
         elif timeout_s:
             header += f" after {timeout_s}s"
+    # 可续跑后端把外部会话 id 暴露进机器头——模型下次可带 session_id 续跑
+    # （前端 parseDelegation 是宽松 kv 解析，未知键不影响现有徽标）。
+    sid = (result.meta or {}).get("session_id")
+    if sid and getattr(_BACKENDS.get(name), "supports_resume", False):
+        header += f" session={' '.join(str(sid).split())}"
     if turns is not None:
         header += f" turns={turns}"
     if duration is not None:
@@ -450,6 +520,7 @@ async def _delegation_bg(
     m: str,
     cwd: str,
     timeout_s: int,
+    resume_session_id: str = "",
 ) -> None:
     """后台跑委托（spawn_bg 调度）：阻塞子进程放线程池；完成后回填子会话、
     记用量、并把结果经 subagent 注入通道回流父会话（前端 🧭 卡同款）。
@@ -525,6 +596,7 @@ async def _delegation_bg(
             proc_cb=lambda p: _register_delegation_proc(
                 delegation_id, session_id, p, project_slug
             ),
+            session_id=resume_session_id or None,
         )
         _log.info(
             "delegation_bg_done id=%s stop=%s", delegation_id, result.stop_reason
@@ -693,6 +765,9 @@ def build_external_agent_tools(
 
     base_dir = workspace if workspace and os.path.isdir(workspace) else None
     detected = available_backends()
+    # 工具参数 session_id = 「续跑的外部会话 id」；父会话 id 另起别名——
+    # 同名参数会遮蔽闭包变量（2026-10-25 接入续跑时踩过：父会话被误当续跑 id）。
+    parent_session_id = session_id
 
     @tool
     def delegate_agent(
@@ -700,9 +775,10 @@ def build_external_agent_tools(
         prompt: str,
         mode: str = "read-only",
         timeout: int = _TIMEOUT_DEFAULT_S,
+        session_id: str = "",
     ) -> str:
         """Delegate a self-contained coding task to an external coding agent
-        (Claude Code, Codex, or pi) that runs in the workspace directory.
+        (Claude Code, Codex, pi, or DSH) that runs in the workspace directory.
         ASYNC (chat sessions): returns immediately with a receipt; the run
         executes in the background and its result is injected into this
         conversation automatically (same channel as spawn_subagent) —
@@ -718,12 +794,16 @@ def build_external_agent_tools(
         verify, summarize, or act on with your own judgment.
 
         Args:
-            backend: "claude-code", "codex", or "pi".
+            backend: "claude-code", "codex", "pi", or "dsh".
             prompt: Complete task brief (context, goal, constraints, how to
                 report back). Written for an agent that sees nothing else.
             mode: "read-only" (default — analysis only, no file changes) or
                 "edit" (may modify files in the workspace; no shell access).
             timeout: Seconds to wait, 10-1800; 0 = never time out (default 1800).
+            session_id: Continue a previous delegation's external session:
+                pass the "session=<id>" value from that delegation's
+                "[delegate …]" result header. Currently only the "dsh"
+                backend supports this; omit it to start a fresh session.
         """
         name = (backend or "").strip().lower()
         if name not in _BACKENDS:
@@ -751,6 +831,13 @@ def build_external_agent_tools(
                 f"[error] unknown mode {mode!r}; valid: read-only, edit"
             )
         cwd = base_dir if base_dir and os.path.isdir(base_dir) else os.getcwd()
+        # 续跑（目前仅 dsh）：session id 来自上次结果机器头的 session=<id>。
+        # 不支持的后端显式回拒，别把 id 静默吞掉。
+        resume_sid = (session_id or "").strip()
+        if resume_sid and not getattr(be, "supports_resume", False):
+            return (
+                f"[error] backend {name} does not support session continuation"
+            )
         try:
             _t_req = int(timeout)
         except (TypeError, ValueError):
@@ -775,16 +862,16 @@ def build_external_agent_tools(
                     "or work sequentially instead of spawning more."
                 )
             _slot = uuid.uuid4().hex
-            _ACTIVE_DELEGATIONS[_slot] = {"session_id": session_id, "proc": None}
+            _ACTIVE_DELEGATIONS[_slot] = {"session_id": parent_session_id, "proc": None}
         # 委托开始即建骨架子会话（running 态）——侧栏立刻可见，完成后再
         # 回填转录；簿记绝不变成工具错误。
         delegation_id = ""
-        if session_id:
+        if parent_session_id:
             try:
                 from ..delegation_sessions import create_delegation
 
                 delegation_id = create_delegation(
-                    parent_session_id=session_id,
+                    parent_session_id=parent_session_id,
                     project_slug=project_slug,
                     backend=name,
                     mode=m,
@@ -799,10 +886,13 @@ def build_external_agent_tools(
                 # 骨架落库失败:不跑委托(与旧行为一致),释放预占槽
                 _unregister_delegation_proc(_slot)
 
-        if not session_id:
+        if not parent_session_id:
             # 无会话上下文（workflow/脚本）：保持同步一次性语义。
             try:
-                result = run_delegation(be, prompt, m, cwd, timeout_s)
+                result = run_delegation(
+                    be, prompt, m, cwd, timeout_s,
+                    session_id=resume_sid or None,
+                )
                 text = _delegation_result_text(
                     name, m, timeout_s, result, delegation_id
                 )
@@ -818,8 +908,9 @@ def build_external_agent_tools(
 
                 spawn_bg(
                     _delegation_bg(
-                        delegation_id, session_id, project_slug, be, name,
+                        delegation_id, parent_session_id, project_slug, be, name,
                         prompt, m, cwd, timeout_s,
+                        resume_session_id=resume_sid,
                     )
                 )
             except Exception:  # noqa: BLE001 — spawn 失败也给出可用回执

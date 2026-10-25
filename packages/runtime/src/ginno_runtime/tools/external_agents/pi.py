@@ -77,7 +77,12 @@ class PiBackend:
         return Path.home().joinpath(".pi").exists()
 
     def build_argv(
-        self, prompt: str, mode: str, cwd: str, out_file: str | None
+        self,
+        prompt: str,
+        mode: str,
+        cwd: str,
+        out_file: str | None,
+        session_id: str | None = None,
     ) -> list[str]:
         # cwd 由 run_delegation 的 Popen(cwd=...) 绑定（pi 无 -C 标志）。
         argv = [

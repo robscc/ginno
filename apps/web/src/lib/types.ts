@@ -243,7 +243,7 @@ export interface SubagentSpawnEvent {
   agent_type?: string;
   /** 会话类型透传:"delegation" = 委托子会话(store 按 delegation 行渲染,不加发起卡) */
   type?: string;
-  /** delegation 专用:外部后端名(claude/pi/codex) */
+  /** delegation 专用:外部后端名(claude/pi/codex/dsh) */
   backend?: string;
   /** 占位行图标(delegation 传 terminal;缺省 boxes) */
   icon?: string;
@@ -994,7 +994,7 @@ export interface PlanItem {
   constraints?: string;
   acceptance?: string;
   agent_type?: string;
-  /** "ginno"（默认内部子代理）或委托后端名（claude-code/codex/pi） */
+  /** "ginno"（默认内部子代理）或委托后端名（claude-code/codex/pi/dsh） */
   backend?: string;
   /** delegation 专用："read-only"（默认）| "edit" */
   mode?: string;
