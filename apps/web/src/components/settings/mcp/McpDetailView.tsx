@@ -222,7 +222,7 @@ export function McpDetailView({
         {meta ? (meta.kind === "up" ? ` · ${t("upFor", { duration: meta.value })}` : ` · ${t("failedAt", { time: meta.value })}`) : ""}
       </div>
       {!status?.connected && enabled && status?.error && (
-        <div className="mt-3 max-w-[640px] rounded-lg border border-red/30 bg-red/[0.08] px-3 py-2 text-[12.5px] text-red">
+        <div className="selectable mt-3 max-w-[640px] rounded-lg border border-red/30 bg-red/[0.08] px-3 py-2 text-[12.5px] text-red">
           {status.error}
         </div>
       )}
@@ -383,7 +383,7 @@ export function McpDetailView({
                     <th className="w-24 px-3.5 py-2.5 font-semibold">{t("thHints")}</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="selectable">
                   {filteredTools.map((r) => {
                     const full = r.fullName || fullToolName(name, r.name);
                     const on = !disabledSet.has(r.name);
@@ -508,7 +508,7 @@ export function McpDetailView({
       {tab === "activity" && (
         <div className="max-w-[680px] pt-4">
           {!status?.connected && enabled && status?.error && (
-            <div className="mb-3 rounded-lg border border-red/30 bg-red/[0.07] px-3.5 py-2.5 text-[12.5px]">
+            <div className="selectable mb-3 rounded-lg border border-red/30 bg-red/[0.07] px-3.5 py-2.5 text-[12.5px]">
               <b className="text-red">{status.error}</b>
               {typeof status.lastErrorAt === "number" && (
                 <span className="ml-2 text-[11px] text-faint">{t("failedAt", { time: fmtClock(status.lastErrorAt) })}</span>
@@ -533,7 +533,7 @@ export function McpDetailView({
             )}
             <TimelineRow time="—" dot="bg-faint" text={t("activityPresent")} />
           </ul>
-          <div className="mt-3.5 max-w-[760px] rounded-lg border border-line bg-[rgb(var(--code-bg))] px-3.5 py-3 font-mono text-xs leading-[1.8] text-muted">
+          <div className="selectable mt-3.5 max-w-[760px] rounded-lg border border-line bg-[rgb(var(--code-bg))] px-3.5 py-3 font-mono text-xs leading-[1.8] text-muted">
             {status?.connected && (
               <div>
                 <span className="text-faint">{typeof status.connectedAt === "number" ? fmtClock(status.connectedAt * 1000) : "--:--"}</span>

@@ -107,7 +107,7 @@ export function WorkflowsSettings() {
           <div key={w.id} className="rounded-xl border border-line bg-card p-3">
             <div className="flex items-center gap-2">
               <span className="font-medium text-txt">{w.name}</span>
-              <span className="text-xs text-faint">[{w.id}]</span>
+              <span className="selectable text-xs text-faint">[{w.id}]</span>
               {w.version != null && (
                 <span className="rounded border border-line2 px-1.5 py-0.5 text-[10px] text-faint">
                   v{w.version}
@@ -125,7 +125,7 @@ export function WorkflowsSettings() {
                 </button>
               </div>
             </div>
-            {w.description && <div className="mt-1 text-xs text-muted">{w.description}</div>}
+            {w.description && <div className="selectable mt-1 text-xs text-muted">{w.description}</div>}
             <ol className="mt-1 list-decimal pl-5 text-xs text-faint">
               {w.steps.map((s) => (
                 <li key={s.id}>{s.title}</li>
@@ -148,7 +148,7 @@ export function WorkflowsSettings() {
           value={dslText}
           onChange={(e) => setDslText(e.target.value)}
         />
-        <div className={`mb-2 text-[11px] ${dslHint.ok ? "text-faint" : "text-red"}`}>{dslHint.msg}</div>
+        <div className={`selectable mb-2 text-[11px] ${dslHint.ok ? "text-faint" : "text-red"}`}>{dslHint.msg}</div>
         <div className="flex items-center gap-3">
           <button
             onClick={create}
@@ -157,7 +157,7 @@ export function WorkflowsSettings() {
           >
             {t("createButton")}
           </button>
-          {msg && <span className="text-xs text-muted">{msg}</span>}
+          {msg && <span className="selectable text-xs text-muted">{msg}</span>}
         </div>
       </div>
     </div>

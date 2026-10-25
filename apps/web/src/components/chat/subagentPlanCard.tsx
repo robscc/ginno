@@ -100,7 +100,7 @@ export function SubagentPlanCard({
               className="mt-1 w-full resize-y rounded border border-line bg-base/40 px-1.5 py-1 text-[11px] leading-relaxed text-muted outline-none focus:border-violet disabled:opacity-70"
             />
             {(s.acceptance || s.reason) && (
-              <div className="mt-1 space-y-0.5 text-[11px] leading-relaxed text-faint">
+              <div className="selectable mt-1 space-y-0.5 text-[11px] leading-relaxed text-faint">
                 {s.acceptance && <div>{t("subagentPlan.acceptance", { text: s.acceptance })}</div>}
                 {/* 委派理由（附录 A.7）：确认环节的主要审阅物。 */}
                 {s.reason && (

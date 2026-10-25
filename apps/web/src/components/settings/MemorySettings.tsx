@@ -737,7 +737,7 @@ export function MemorySettings() {
                     )}
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="selectable">
                   {runs.length === 0 && (
                     <tr>
                       <td colSpan={9} className="px-3 py-8 text-center text-xs text-faint">

@@ -455,7 +455,7 @@ export function TaskEditor({
           )}
         </div>
 
-        {error && <div className="mt-3 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">{error}</div>}
+        {error && <div className="selectable mt-3 rounded-lg border border-red/40 bg-red/10 px-3 py-2 text-xs text-red">{error}</div>}
 
         <div className="mt-4 flex justify-end gap-2">
           <button

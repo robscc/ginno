@@ -16,6 +16,11 @@
   --scroll: 44 44 56;
   --code-bg: 14 14 20;
   --inline-code: 233 170 200;
+  /* 文本选区底色（主题化，见文件底部 ::selection）：
+     --sel 是 RGB 三元组，--sel-a 是透明度。暗色主题用品牌紫但压到 0.3，
+     比原来的 0.35 更沉，不刺眼。 */
+  --sel: 139 92 246;
+  --sel-a: 0.3;
   /* 定时任务状态语义色(SVG fill/stroke 与内联 style 共用) */
   --st-ok: #8b5cf6;
   --st-running: #22d3ee;
@@ -46,6 +51,10 @@ html.light {
   --scroll: 212 212 220;
   --code-bg: 245 245 249;
   --inline-code: 170 60 105;
+  /* 亮色主题选区：换成低饱和靛蓝 + 0.18 透明度，白底上是很淡的一层
+     「蓝紫雾」，不再是原来 0.35 紫罗兰的大块色斑。 */
+  --sel: 79 70 229;
+  --sel-a: 0.18;
   /* 同一套状态语义色的亮色档(深一档保证白底可读) */
   --st-ok: #7c3aed;
   --st-running: #0891b2;
@@ -85,8 +94,11 @@ body {
   background: transparent;
 }
 
+/* 选区配色主题化：不再是一刀切的紫罗兰色块。
+   亮色主题是很淡的靛蓝雾（0.18），暗色主题是压暗的品牌紫（0.3），
+   两套主题里只换底色、不换文字色，所以对比度不受影响。 */
 ::selection {
-  background: rgba(139, 92, 246, 0.35);
+  background: rgb(var(--sel) / var(--sel-a));
 }
 
 @layer components {
@@ -523,14 +535,22 @@ html.pin-window body {
   }
 }
 
-/* ---- 可选中策略（2026-10-25 统一，v2）----------------------------------
-   原则：**只有文本叶子可选中，布局容器一律不参与**。
-   v1 把所有内容都设为可选中，结果在 WKWebView 里拖选会把 flex/grid 容器
-   整块刷成色块（Settings 页出现大片紫色）。v2 反过来：容器 none，文本叶子
-   text —— 选区只画到文字行，不会连带整块盒子。
-   · 语义文本元素（p/li/td/pre/code/h1-6…）自动可选中
-   · 直接以 div 承载的正文（聊天卡片、提示、错误横幅）挂 .selectable
-   · 输入类永远可选中；控件外壳（button/label/th/.pill）永远不可选
+/* ---- 可选中策略（2026-10-25 统一，v3：内容可选 / 界面不可选）-------------
+   演进过程：
+   · v1 全站可选 → WKWebView 拖选会把 flex/grid 容器整块刷成色块。
+   · v2 只放行语义文本叶子（p/li/td/h1-6…）→ 设置页的说明段落本身就是叶子，
+     整行行盒照样被刷成大片紫色色条；输入框的值也整条高亮。用户反馈「色块
+     选择比较丑」，所以 v3 改成白名单。
+   v3 白名单（默认全站不可选，只放行三类）：
+   · 输入类 input/textarea/select/contenteditable —— 字段值永远可复制
+   · 代码 pre/code/kbd/samp —— 命令、代码片段永远可复制
+   · 显式内容容器 .selectable / [data-selectable]（含后代）—— 聊天正文、
+     工具输出、日志、数据、错误横幅这类「用户真要复制的内容」由组件显式挂载
+   界面文案（标题/说明/字段标签/导航/按钮/badge）不再可选，拖选不会再出现
+   大片色块。正文类组件如果发现选不中，给它最内层的文字容器补一个
+   .selectable 即可：只包文字，不包按钮外壳。
+   控件外壳（button/label/th/.pill）在下面第二条规则里强制 none，优先级压过
+   内容容器，避免给整块内容区挂 .selectable 时把按钮文字也变成可选。
    -webkit- 前缀是 WKWebView(Tauri) 的兜底。 */
 @layer base {
   html,
@@ -541,48 +561,43 @@ html.pin-window body {
 }
 
 @layer components {
-  button,
-  [role="button"],
-  [role="tab"],
-  [role="switch"],
-  [role="menuitem"],
-  [role="option"],
-  summary,
-  label,
-  th,
-  .pill,
-  .nav-item {
-    -webkit-user-select: none;
-    user-select: none;
-  }
-
-  /* 文本叶子：选区只覆盖文字本身 */
-  p,
-  li,
-  td,
-  blockquote,
-  dd,
-  dt,
-  figcaption,
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6,
+  /* 内容白名单 */
+  input,
+  textarea,
+  select,
   pre,
   code,
   kbd,
   samp,
-  input,
-  textarea,
-  select,
   [contenteditable="true"],
   [data-selectable],
+  [data-selectable] *,
   .selectable,
   .selectable * {
     -webkit-user-select: text;
     user-select: text;
+  }
+
+  /* 控件外壳永远不可选。
+     用 :is() 而非元素选择器列表：:is() 的权重 = 参数里最高项（这里 0,1,0），
+     与 .selectable * / [data-selectable] * 相同且写在后面，所以即使外壳被
+     内容容器包住也不会被放行（元素选择器 button/… 只有 0,0,1，压不过）。 */
+  :is(
+      button,
+      [role="button"],
+      [role="tab"],
+      [role="switch"],
+      [role="menuitem"],
+      [role="option"],
+      summary,
+      label,
+      th,
+      .pill,
+      .nav-item,
+      .field-label
+    ) {
+    -webkit-user-select: none;
+    user-select: none;
   }
 }
 

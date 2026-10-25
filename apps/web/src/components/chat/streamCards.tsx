@@ -151,7 +151,7 @@ return (
         </span>
       </div>
       {propose.rationale && (
-        <div className="mb-2 text-xs text-muted">{tc("propose.rationale", { rationale: propose.rationale })}</div>
+        <div className="selectable mb-2 text-xs text-muted">{tc("propose.rationale", { rationale: propose.rationale })}</div>
       )}
       <button
         onClick={() => setDiffOpen((v) => !v)}

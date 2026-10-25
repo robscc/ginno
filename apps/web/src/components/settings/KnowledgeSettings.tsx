@@ -146,7 +146,7 @@ export function KnowledgeSettings() {
               <Search className="h-3.5 w-3.5" /> {t("detect")}
             </button>
           </div>
-          {probe && <div className="mt-1 text-xs text-violet">{probe}</div>}
+          {probe && <div className="selectable mt-1 text-xs text-violet">{probe}</div>}
         </Field>
 
         <div className="grid grid-cols-2 gap-3">

@@ -335,7 +335,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
           )}
         </button>
       </div>
-      {errMsg && <div className="rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red">{errMsg}</div>}
+      {errMsg && <div className="selectable rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red">{errMsg}</div>}
 
       {/* §4.2 doctor panel: expanded findings with a one-click dev-session fix. */}
       {doctorOpen && doctor && (doctor.errors.length > 0 || doctor.warnings.length > 0) && (
@@ -350,13 +350,13 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
           {doctor.errors.map((e, i) => (
             <div key={`e${i}`} className="flex items-start gap-1.5 text-[11px]">
               <X className="mt-0.5 h-3 w-3 shrink-0 text-red" />
-              <span className="text-red">{e.message}</span>
+              <span className="selectable text-red">{e.message}</span>
             </div>
           ))}
           {doctor.warnings.map((w, i) => (
             <div key={`w${i}`} className="flex items-start gap-1.5 text-[11px]">
               <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-yellow" />
-              <span className="text-yellow">{w.message}</span>
+              <span className="selectable text-yellow">{w.message}</span>
             </div>
           ))}
           {doctor.errors.length > 0 && (
@@ -387,7 +387,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
               </button>
             </div>
             {dryRun.result.warnings.length > 0 && (
-              <div className="pl-5 text-yellow">
+              <div className="selectable pl-5 text-yellow">
                 {t("warningsLine", {
                   count: dryRun.result.warnings.length,
                   list: dryRun.result.warnings.map((w) => w.message).join("; "),
@@ -395,7 +395,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
               </div>
             )}
             {dryRun.result.unreachable.length > 0 && (
-              <div className="pl-5 text-yellow">
+              <div className="selectable pl-5 text-yellow">
                 {tCommon("unreachable", { list: dryRun.result.unreachable.join(", ") })}
               </div>
             )}
@@ -413,10 +413,10 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
               </button>
             </div>
             {dryRun.result.errors.map((e, i) => (
-              <div key={`e${i}`} className="pl-5">· {e}</div>
+              <div key={`e${i}`} className="selectable pl-5">· {e}</div>
             ))}
             {dryRun.result.doctor_errors.map((e, i) => (
-              <div key={`d${i}`} className="pl-5">· {e.message}</div>
+              <div key={`d${i}`} className="selectable pl-5">· {e.message}</div>
             ))}
           </div>
         )
@@ -430,7 +430,7 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
       />
 
       {run && (
-        <div className="text-[11px] text-faint">
+        <div className="selectable text-[11px] text-faint">
           {t("runPrefix")} <span className="font-mono text-muted">{run.id.slice(0, 8)}</span> · v
           {run.dsl_version ?? "?"} ·{" "}
           <span style={{ color: STEP_COLOR[run.status] || "rgb(var(--muted))" }}>
@@ -545,12 +545,12 @@ export function WorkflowInspector({ wf, runs }: { wf: WorkflowDef; runs: Workflo
                       {e.node_id && <span className="font-mono text-faint">· {e.node_id}</span>}
                     </div>
                     {errs.length > 0 && (
-                      <div className="mt-0.5 text-faint">
+                      <div className="selectable mt-0.5 text-faint">
                         {tCommon("validationErrors", { list: errs.map(String).join("; ") })}
                       </div>
                     )}
                     {typeof e.reason === "string" && e.reason && (
-                      <div className="mt-0.5 text-muted">{e.reason}</div>
+                      <div className="selectable mt-0.5 text-muted">{e.reason}</div>
                     )}
                   </div>
                 );

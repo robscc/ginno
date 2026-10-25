@@ -210,7 +210,7 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
               <span className="h-1.5 w-1.5 rounded-full" style={{ background: sc.dot }} />
               {tr("panel.header", { label })}
             </div>
-            <div className="mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-muted">
+            <div className="selectable mt-2 max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-muted">
               {goal.objective}
             </div>
             <div className="mt-2 text-[11px] text-faint">

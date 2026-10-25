@@ -83,8 +83,8 @@ export function WorkflowPane({
             </span>
           )}
         </div>
-        <div className="mt-0.5 font-mono text-[10px] text-faint">{wf.id}</div>
-        {wf.description && <p className="mt-1.5 text-[11.5px] text-muted">{wf.description}</p>}
+        <div className="selectable mt-0.5 font-mono text-[10px] text-faint">{wf.id}</div>
+        {wf.description && <p className="selectable mt-1.5 text-[11.5px] text-muted">{wf.description}</p>}
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
@@ -120,7 +120,7 @@ export function WorkflowPane({
       </div>
 
       {doctorOpen && doctor && issues > 0 && (
-        <div className="space-y-1 rounded-lg border border-line bg-base/30 p-2.5">
+        <div className="selectable space-y-1 rounded-lg border border-line bg-base/30 p-2.5">
           {doctor.errors.map((e, i) => (
             <div key={`e${i}`} className="flex items-start gap-1.5 text-[11px]">
               <X className="mt-0.5 h-3 w-3 shrink-0 text-red" />
@@ -179,7 +179,7 @@ export function WorkflowPane({
               {[...dry.result.errors, ...dry.result.doctor_errors.map((d) => d.message)]
                 .slice(0, 5)
                 .map((m, i) => (
-                  <div key={i} className="pl-5">
+                  <div key={i} className="selectable pl-5">
                     · {m}
                   </div>
                 ))}
@@ -191,7 +191,7 @@ export function WorkflowPane({
       {unfilled.length > 0 && (
         <div className="flex items-start gap-1.5 rounded-md border border-yellow/40 bg-yellow/[0.06] px-2 py-1.5 text-[11px] text-yellow">
           <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-          <span>
+          <span className="selectable">
             {t("fillFirst", { list: unfilled.join(", ") })}
           </span>
         </div>

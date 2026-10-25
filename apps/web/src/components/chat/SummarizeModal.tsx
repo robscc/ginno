@@ -352,7 +352,7 @@ export function SummarizeModal({
         {/* dry-run receipt (P1d): vouches for the exact draft on screen */}
         {dry.result && !createdName && (
           dry.result.ok ? (
-            <div className="mx-4 mb-2 space-y-0.5 rounded-md border border-green/30 bg-green/[0.06] px-2 py-1.5 text-xs text-green">
+            <div className="selectable mx-4 mb-2 space-y-0.5 rounded-md border border-green/30 bg-green/[0.06] px-2 py-1.5 text-xs text-green">
               <div className="flex items-center gap-1.5">
                 <Check className="h-3.5 w-3.5 shrink-0" />
                 {t("summarize.modal.dryRunPassed", { count: dry.result.node_count ?? 0 })}
@@ -370,7 +370,7 @@ export function SummarizeModal({
               )}
             </div>
           ) : (
-            <div className="mx-4 mb-2 max-h-28 space-y-0.5 overflow-y-auto rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
+            <div className="selectable mx-4 mb-2 max-h-28 space-y-0.5 overflow-y-auto rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
               <div>{t("summarize.modal.dryRunFailed")}</div>
               {dry.result.errors.map((e, i) => (
                 <div key={`e${i}`} className="pl-3 text-[11px]">· {e}</div>
@@ -382,7 +382,7 @@ export function SummarizeModal({
           )
         )}
         {dry.err && !createdName && (
-          <div className="mx-4 mb-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
+          <div className="selectable mx-4 mb-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
             {dry.err}
           </div>
         )}

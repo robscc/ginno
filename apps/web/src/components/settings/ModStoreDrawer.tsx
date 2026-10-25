@@ -237,7 +237,7 @@ export function ModStoreDrawer({
 
         {msg && (
           <div
-            className={`border-b px-4 py-2 text-xs ${
+            className={`selectable border-b px-4 py-2 text-xs ${
               msg.kind === "error"
                 ? "border-red/30 bg-red/10 text-red"
                 : "border-green/30 bg-green/10 text-green"
@@ -254,7 +254,7 @@ export function ModStoreDrawer({
               {detail.data.source?.repo}
               {detail.data.commit ? ` @ ${detail.data.commit}` : ""}
             </div>
-            <p className="mt-2 leading-relaxed text-muted">
+            <p className="selectable mt-2 leading-relaxed text-muted">
               {detail.plugin.description || detail.data.manifest?.description || t("noDescription")}
             </p>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-faint">
@@ -272,7 +272,7 @@ export function ModStoreDrawer({
                 </span>
               )}
             </div>
-            <div className="mt-3 whitespace-pre-wrap break-words rounded-md border border-line bg-base/60 px-3 py-2 text-xs leading-relaxed text-muted">
+            <div className="selectable mt-3 whitespace-pre-wrap break-words rounded-md border border-line bg-base/60 px-3 py-2 text-xs leading-relaxed text-muted">
               {detail.data.readme || t("noReadme")}
             </div>
             <button
@@ -393,7 +393,7 @@ export function ModStoreDrawer({
               </div>
             </div>
             {active?.error && (
-              <div className="border-b border-yellow/30 bg-yellow/10 px-4 py-1.5 text-[11px] text-yellow">
+              <div className="selectable border-b border-yellow/30 bg-yellow/10 px-4 py-1.5 text-[11px] text-yellow">
                 {t("staleCache", { error: active.error })}
               </div>
             )}

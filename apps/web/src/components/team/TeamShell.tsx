@@ -914,7 +914,10 @@ function TeamOverview({
                   {fmtAway(r.elapsed_s)}
                 </span>
               </div>
-              {/* 最近活动摘要（权威 status_detail，不前端二次判态） */}
+              {/* 最近活动摘要（权威 status_detail，不前端二次判态）
+                 注意：整张卡是 <button>，WebKit 里 button 内的文字不可选中，
+                 data-selectable 在这里是无效声明，故不加；要可复制需把卡片
+                 改成 div + 键盘语义，超出本次改造范围。 */}
               <div
                 className={`mt-1.5 line-clamp-3 text-[11px] leading-relaxed ${
                   r.status === "blocked" ? "text-yellow-500/90" : "text-muted"

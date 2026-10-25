@@ -467,7 +467,7 @@ export function McpSettings() {
 
           {/* ---- 损坏锁写横幅 ---- */}
           {cfgError && (
-            <div className="mt-4 max-w-[640px] rounded-lg border border-red/40 bg-red/[0.08] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-red">
+            <div className="selectable mt-4 max-w-[640px] rounded-lg border border-red/40 bg-red/[0.08] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-red">
               <b>{t("cfgCorruptTitle")}</b>
               <div className="mt-0.5 font-mono text-[11.5px] text-red/80">{cfgError}</div>
               <div className="mt-1 text-muted">{t("cfgCorruptBody")}</div>
@@ -565,7 +565,7 @@ export function McpSettings() {
               value={advText ?? advSnapshot ?? ""}
               onChange={(e) => setAdvText(e.target.value)}
             />
-            {advError && <p className="mt-1.5 text-xs text-red">{advError}</p>}
+            {advError && <p className="selectable mt-1.5 text-xs text-red">{advError}</p>}
             <div className="mt-2 flex flex-wrap items-center gap-2.5">
               <button
                 type="button"

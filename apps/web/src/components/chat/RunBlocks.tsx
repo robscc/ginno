@@ -372,7 +372,7 @@ export function LiveRunBlock({
               <Trash2 className="h-3 w-3" /> {tc("run.delete")}
             </button>
           )}
-          {retryErr && <span className="text-[11px] text-red">{retryErr}</span>}
+          {retryErr && <span className="selectable text-[11px] text-red">{retryErr}</span>}
         </div>
       )}
     </div>

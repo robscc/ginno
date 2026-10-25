@@ -1037,7 +1037,7 @@ export function PinStream({
                   <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                   {t("replyFailed")}
                 </div>
-                <div className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">
+                <div className="selectable whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">
                   {"text" in (text ?? {}) ? String((text as { text?: string })?.text ?? "") : ""}
                 </div>
                 {m.retryText && (

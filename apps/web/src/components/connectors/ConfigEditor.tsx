@@ -486,13 +486,13 @@ export function ConfigEditor({
                 </span>
               )}
               {advancedError && (
-                <span className="text-[11px] text-red-600 dark:text-red-400">{advancedError}</span>
+                <span className="selectable text-[11px] text-red-600 dark:text-red-400">{advancedError}</span>
               )}
             </div>
             {unknownKeys.length > 0 && (
               <p className="mt-2 rounded-md border border-yellow/30 bg-yellow/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-yellow-700 dark:text-yellow-200">
                 {t("config.unknownNote")}
-                <span className="ml-1 font-mono text-[10px] text-yellow-800 dark:text-yellow-300">
+                <span className="selectable ml-1 font-mono text-[10px] text-yellow-800 dark:text-yellow-300">
                   {unknownKeys.join(", ")}
                 </span>
               </p>
@@ -514,12 +514,12 @@ export function ConfigEditor({
           </span>
         )}
         {notice && (
-          <span className="min-w-0 break-words text-[11.5px] text-yellow-600 dark:text-yellow-400">
+          <span className="selectable min-w-0 break-words text-[11.5px] text-yellow-600 dark:text-yellow-400">
             {notice}
           </span>
         )}
         {error && (
-          <span className="min-w-0 break-words text-[11.5px] text-red-600 dark:text-red-400">
+          <span className="selectable min-w-0 break-words text-[11.5px] text-red-600 dark:text-red-400">
             {error}
           </span>
         )}
@@ -649,7 +649,7 @@ function FieldControl({
           </div>
         )}
         {error && (
-          <div className="mt-1 text-[10.5px] text-red-600 dark:text-red-400">{error}</div>
+          <div className="selectable mt-1 text-[10.5px] text-red-600 dark:text-red-400">{error}</div>
         )}
       </div>
     );

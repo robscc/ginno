@@ -100,7 +100,7 @@ export function SkillsSettings() {
                 </button>
               )}
             </div>
-            <div className="mt-1 text-xs text-muted">{s.description}</div>
+            <div className="selectable mt-1 text-xs text-muted">{s.description}</div>
             {s.tools.length > 0 && (
               <div className="mt-1 text-[11px] text-faint">{t("toolsLabel", { tools: s.tools.join(", ") })}</div>
             )}

@@ -28,7 +28,7 @@ function StatList({ data }: { data: { title?: string; items?: Array<{ label: str
   // on the live event and again on every history replay.
   const items = Array.isArray(data?.items) ? data.items : [];
   return (
-    <div className="my-2 rounded-lg border border-line bg-base/50 p-3">
+    <div className="selectable my-2 rounded-lg border border-line bg-base/50 p-3">
       {data?.title && (
         <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-txt">
           <Flag className="h-3.5 w-3.5 text-violet" />

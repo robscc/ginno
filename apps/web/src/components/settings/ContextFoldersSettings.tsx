@@ -120,7 +120,7 @@ export function ContextFoldersSettings() {
         </div>
 
         {probe && (
-          <div className="mt-3 rounded-lg border border-line2 bg-card2 px-3 py-2 text-xs">
+          <div className="selectable mt-3 rounded-lg border border-line2 bg-card2 px-3 py-2 text-xs">
             {probe.ok ? (
               <div className="space-y-1 text-muted">
                 <div>

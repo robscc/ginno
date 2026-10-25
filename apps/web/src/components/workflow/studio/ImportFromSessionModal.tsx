@@ -306,7 +306,7 @@ export function ImportFromSessionModal({
                 )}
               </div>
               {traceLoading && <div className="flex items-center gap-1.5 p-3 text-xs text-faint"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {tCommon("loading")}</div>}
-              {traceErr && <div className="rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{traceErr}</div>}
+              {traceErr && <div className="selectable rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{traceErr}</div>}
               {!traceLoading && !traceErr && !rows && (
                 <div className="flex flex-1 items-center justify-center text-xs text-faint">{t("pickSession")}</div>
               )}
@@ -343,7 +343,7 @@ export function ImportFromSessionModal({
                 </div>
               )}
               {synthErr && (
-                <div className="mt-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{synthErr}</div>
+                <div className="selectable mt-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{synthErr}</div>
               )}
               <div className="mt-2 flex items-center gap-2">
                 {selId && (
@@ -383,7 +383,7 @@ export function ImportFromSessionModal({
                         <span className="font-medium text-txt">{n.title || n.goal || n.id}</span>
                         <span className="ml-auto shrink-0 text-[10px] uppercase text-faint">{n.type || t("nodeStep")}</span>
                       </div>
-                      {n.goal && n.title && <div className="mt-1 text-[11px] text-muted">{n.goal}</div>}
+                      {n.goal && n.title && <div className="selectable mt-1 text-[11px] text-muted">{n.goal}</div>}
                     </div>
                   ))}
                   {!nodes.length && <div className="py-4 text-center text-xs text-faint">{t("noNodes")}</div>}
@@ -422,7 +422,7 @@ export function ImportFromSessionModal({
                         )}
                       </div>
                     ) : (
-                      <div className="mt-1.5 max-h-28 space-y-0.5 overflow-y-auto rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
+                      <div className="selectable mt-1.5 max-h-28 space-y-0.5 overflow-y-auto rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">
                         <div>{tCommon("dryFailed")}</div>
                         {dry.result.errors.map((e, i) => (
                           <div key={`e${i}`} className="pl-3 text-[11px]">· {e}</div>
@@ -433,13 +433,13 @@ export function ImportFromSessionModal({
                       </div>
                     ))}
                   {dry.err && (
-                    <div className="mt-1.5 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{dry.err}</div>
+                    <div className="selectable mt-1.5 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{dry.err}</div>
                   )}
                 </div>
 
                 {/* node-list delta for the merge path (draft vs current recipe) */}
                 {delta && (
-                  <div className="mt-3 rounded-md border border-line bg-base px-2 py-1.5 text-[11px] text-muted">
+                  <div className="selectable mt-3 rounded-md border border-line bg-base px-2 py-1.5 text-[11px] text-muted">
                     <span className="font-medium text-txt">
                       {t("mergedInto", { name: wf.name, version: wf.version ?? 1 })}
                     </span>
@@ -456,10 +456,10 @@ export function ImportFromSessionModal({
                 )}
 
                 {synthErr && (
-                  <div className="mt-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{synthErr}</div>
+                  <div className="selectable mt-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{synthErr}</div>
                 )}
                 {confirmErr && (
-                  <div className="mt-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{confirmErr}</div>
+                  <div className="selectable mt-2 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-xs text-red">{confirmErr}</div>
                 )}
               </>
             )}

@@ -119,7 +119,7 @@ export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="selectable">
             {!loaded && (
               <tr><td colSpan={9} className="px-3 py-10 text-center text-xs text-faint">{t("loading")}</td></tr>
             )}

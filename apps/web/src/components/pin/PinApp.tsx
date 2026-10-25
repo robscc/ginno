@@ -430,7 +430,7 @@ export function PinApp() {
             </>
           ) : sessionError ? (
             <>
-              <p className="text-xs leading-relaxed text-red">{sessionError}</p>
+              <p className="selectable text-xs leading-relaxed text-red">{sessionError}</p>
               <button
                 type="button"
                 onClick={() => void createQuickSession()}

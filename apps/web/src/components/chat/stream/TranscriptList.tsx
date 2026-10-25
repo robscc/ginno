@@ -292,7 +292,7 @@ export function TranscriptList({
               </div>
             </div>
             {m.status === "failed" && (
-              <div className="text-[10px] text-red/80">
+              <div className="selectable text-[10px] text-red/80">
                 {tc("sendFailed.label")}{m.failReason ? `: ${failText(m.failReason)}` : ""}
                 {m.id === lastRetryableId && tc("sendFailed.retryHint")}
               </div>

@@ -684,7 +684,7 @@ export function ChatStream({
       {!hideDel && goal && goalStalled && !resumeDismissed && (
         <div className={`${CHAT_COL} mb-2 flex items-center gap-2 rounded-lg border border-line2 bg-card px-3 py-2 text-xs`}>
           <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: "#f97316" }} />
-          <span className="flex-1 text-muted">
+          <span className="selectable flex-1 text-muted">
             {tc("goal.stalledLabel", { status: goal.status })}:
             <span className="text-txt">{goal.objective}</span>
           </span>

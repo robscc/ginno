@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Search } from "lucide-react";
 import * as api from "@/lib/runtime";
+import { clickedWhileSelecting } from "@/lib/utils";
 import type { UsageSessionRow } from "@/lib/types";
 import { fmt, pct } from "./charts";
 
@@ -100,7 +101,7 @@ export function SessionsPanel({ onOpenRequests }: { onOpenRequests: (sessionId: 
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="selectable">
             {!loaded && (
               <tr><td colSpan={8} className="px-3 py-10 text-center text-xs text-faint">{t("loading")}</td></tr>
             )}
@@ -111,7 +112,11 @@ export function SessionsPanel({ onOpenRequests }: { onOpenRequests: (sessionId: 
               <tr
                 key={r.session_id || "(bg)"}
                 className="cursor-pointer border-b border-white/5 transition-colors last:border-b-0 hover:bg-white/5"
-                onClick={() => r.session_id && onOpenRequests(r.session_id)}
+                onClick={(e) => {
+                  // 拖选行内文字时不要顺带跳去请求日志（表格已挂 .selectable）
+                  if (clickedWhileSelecting(e)) return;
+                  if (r.session_id) onOpenRequests(r.session_id);
+                }}
                 title={t("rowTitle")}
               >
                 <td className="px-3 py-2 text-[12.5px]">

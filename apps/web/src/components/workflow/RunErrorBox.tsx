@@ -131,7 +131,7 @@ export function RunErrorBox({
       style={{ borderColor: run.status === "interrupted" ? "rgba(249,115,22,.35)" : undefined }}
     >
       <div className="flex items-start gap-2 px-2 py-1.5">
-        <div className="min-w-0 flex-1 break-words font-mono text-[11px] leading-relaxed" style={{ color }}>
+        <div className="selectable min-w-0 flex-1 break-words font-mono text-[11px] leading-relaxed" style={{ color }}>
           {run.error || fallbackError(run)}
           {step && (
             <span
@@ -187,7 +187,7 @@ export function RunErrorBox({
           </button>
         </div>
       </div>
-      {resumeErr && <div className="px-2 pb-1.5 text-[10px] text-red">{resumeErr}</div>}
+      {resumeErr && <div className="selectable px-2 pb-1.5 text-[10px] text-red">{resumeErr}</div>}
 
       {open && (
         <div className="space-y-2 border-t border-red/20 px-2 py-2">

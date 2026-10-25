@@ -103,9 +103,9 @@ function IssueList({
             {typeof i.count === "number" && i.count > 0 && <StatChip>{i.count}</StatChip>}
           </div>
           {i.detail && (
-            <div className="mt-1 break-words text-[11px] leading-snug text-faint">{i.detail}</div>
+            <div className="selectable mt-1 break-words text-[11px] leading-snug text-faint">{i.detail}</div>
           )}
-          <div className="mt-0.5 font-mono text-[10px] text-faint/70">{i.id}</div>
+          <div className="selectable mt-0.5 font-mono text-[10px] text-faint/70">{i.id}</div>
         </div>
       ))}
     </div>
@@ -184,7 +184,7 @@ export function DiagnosticsSettings() {
       )}
 
       {error && (
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-red/30 bg-red/10 px-3 py-2 text-xs text-red">
+        <div className="selectable mt-4 flex items-center gap-2 rounded-lg border border-red/30 bg-red/10 px-3 py-2 text-xs text-red">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           {error}
         </div>
@@ -230,7 +230,7 @@ export function DiagnosticsSettings() {
               </div>
               <IssueList issues={report.sections.tasks.issues} label={label} empty={t("emptySection")} />
               {report.sections.tasks.latest_failure && (
-                <div className="mt-2 rounded-lg border border-yellow/30 bg-yellow/10 px-2.5 py-1.5 text-[11px] leading-snug text-yellow">
+                <div className="selectable mt-2 rounded-lg border border-yellow/30 bg-yellow/10 px-2.5 py-1.5 text-[11px] leading-snug text-yellow">
                   <div>
                     {t("latestFailure", {
                       task: report.sections.tasks.latest_failure.task || "—",
@@ -263,7 +263,7 @@ export function DiagnosticsSettings() {
             <SectionCard icon={Plug} title={t("sections.contracts")}>
               <IssueList issues={report.sections.contracts.issues} label={label} empty={t("emptySection")} />
               {report.sections.contracts.missing_routes.length > 0 && (
-                <div className="mt-2 break-words rounded-lg border border-red/30 bg-red/10 px-2.5 py-1.5 font-mono text-[11px] text-red">
+                <div className="selectable mt-2 break-words rounded-lg border border-red/30 bg-red/10 px-2.5 py-1.5 font-mono text-[11px] text-red">
                   {t("missingRoutes", { routes: report.sections.contracts.missing_routes.join(", ") })}
                 </div>
               )}

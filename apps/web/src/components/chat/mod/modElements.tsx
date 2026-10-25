@@ -109,7 +109,7 @@ function ModNodeView({
   /** value 仅 Input 提交 / Select 选中时携带(broker 侧转交 runner 的回调)。 */
   onPress: (actionId: string, value?: string) => void;
 }) {
-  if (typeof node === "string") return <span className="whitespace-pre-wrap">{truncate(node)}</span>;
+  if (typeof node === "string") return <span className="selectable whitespace-pre-wrap">{truncate(node)}</span>;
   const props = (node.props ?? {}) as Record<string, unknown>;
   const children = node.children ?? [];
 
@@ -125,7 +125,7 @@ function ModNodeView({
     case "Text": {
       const color = terminalColor(props.color);
       const cls = [
-        "whitespace-pre-wrap",
+        "selectable whitespace-pre-wrap",
         bool(props.bold) ? "font-semibold" : "",
         bool(props.italic) ? "italic" : "",
         bool(props.underline) ? "underline" : "",

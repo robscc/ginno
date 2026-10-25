@@ -11,6 +11,7 @@ import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
+import { clickedWhileSelecting } from "@/lib/utils";
 import type { ScheduleConfig, ScheduleRun } from "@/lib/types";
 import {
   fmtClock,
@@ -277,7 +278,13 @@ export function RunsPanel({
                 return (
                   <tr
                     key={r.run_id}
-                    onClick={() => openRun(r)}
+                    data-selectable
+                    onClick={(e) => {
+                      // 拖选正文不算点击：mouseup 后浏览器仍会派发 click，
+                      // 若选区落在本行内，说明用户是在选摘要，不要顺手打开回放。
+                      if (clickedWhileSelecting(e)) return;
+                      openRun(r);
+                    }}
                     className={`group border-b border-line/60 last:border-0 ${
                       clickable ? "cursor-pointer transition-colors hover:bg-card2/60" : ""
                     }`}

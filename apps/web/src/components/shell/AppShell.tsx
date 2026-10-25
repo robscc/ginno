@@ -833,8 +833,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className={`flex min-w-0 flex-1 flex-col ${g.activeRunId || g.activeScheduleRunId ? "hidden" : ""}`}>
             {runtimeStale && (
               <div className="flex items-center gap-2 border-b border-red/40 bg-red/[0.04] px-4 py-2 text-xs">
-                <span className="font-medium text-red">{t("runtimeStale.title")}</span>
-                <span className="text-muted">{t("runtimeStale.hint")}</span>
+                <span className="selectable font-medium text-red">{t("runtimeStale.title")}</span>
+                <span className="selectable text-muted">{t("runtimeStale.hint")}</span>
                 <button
                   onClick={() => setRuntimeStale(false)}
                   className="ml-auto shrink-0 rounded border border-line px-2 py-0.5 text-faint hover:text-txt"

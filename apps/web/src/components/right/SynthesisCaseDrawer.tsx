@@ -138,7 +138,7 @@ export function SynthesisCaseDrawer({
                         </span>
                         <span className="ml-2 text-faint">{a.latency_ms}ms</span>
                         {a.validate_errors.length > 0 && (
-                          <div className="mt-0.5 text-[10px] text-red">{a.validate_errors.join("; ")}</div>
+                          <div className="selectable mt-0.5 text-[10px] text-red">{a.validate_errors.join("; ")}</div>
                         )}
                       </div>
                     ))}

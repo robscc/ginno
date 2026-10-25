@@ -146,7 +146,7 @@ export function PromoteModal({
               )}
             </>
           )}
-          {msg && <div className="mt-2 text-xs text-red">{msg}</div>}
+          {msg && <div className="selectable mt-2 text-xs text-red">{msg}</div>}
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-line px-4 py-3">

@@ -28,3 +28,19 @@ export function greeting(): string {
           : uiText("greeting.evening");
   return uiText("greeting.prompt", { part });
 }
+
+/**
+ * 本次 click 是不是「拖选正文后松开鼠标」的尾巴？
+ * mouseup 之后浏览器照样会给可点击的行/卡片派发 click，如果此刻的选区就落在
+ * 该元素内，说明用户是在选文本而不是点开它——可点击的内容行（执行记录、
+ * 用量表、工作流日志）先用它挡一下，避免一拖选就顺带跳转/展开。
+ * 只看 anchor：选区从别处拖过来、落在本行之外时仍然放行点击。
+ */
+export function clickedWhileSelecting(ev: { currentTarget: EventTarget & HTMLElement }): boolean {
+  if (typeof window === "undefined") return false;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.anchorNode) return false;
+  const anchorEl =
+    sel.anchorNode.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : (sel.anchorNode as Element | null);
+  return !!anchorEl && ev.currentTarget.contains(anchorEl);
+}

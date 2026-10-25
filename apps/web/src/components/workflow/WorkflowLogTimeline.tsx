@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { WorkflowRunEvent } from "@/lib/types";
+import { clickedWhileSelecting } from "@/lib/utils";
 
 const KIND_STYLE: Record<string, string> = {
   node_enter: "text-blue",
@@ -177,7 +178,7 @@ export function WorkflowLogTimeline({
           ))}
         </div>
       )}
-      <div className="max-h-64 overflow-auto p-2 font-mono text-[11px]">
+      <div className="selectable max-h-64 overflow-auto p-2 font-mono text-[11px]">
         {rows.length === 0 && (
           <div className="py-2 text-center text-[11px] text-faint">{t("noEventsForFilter")}</div>
         )}
@@ -191,7 +192,9 @@ export function WorkflowLogTimeline({
             <div key={i} className="my-1">
               <div
                 className="cursor-pointer rounded border border-orange/30 bg-orange/[0.05] p-2"
-                onClick={() => {
+                onClick={(e) => {
+                  // 日志行已可拖选，选完松手不要顺带折叠/展开
+                  if (clickedWhileSelecting(e)) return;
                   touched.current = true;
                   setOpenIdx((cur) => (cur === i ? null : i));
                 }}
@@ -233,7 +236,8 @@ export function WorkflowLogTimeline({
               className={`flex gap-2 py-0.5 ${expandable ? "cursor-pointer hover:bg-card2/40" : ""}`}
               onClick={
                 expandable
-                  ? () => {
+                  ? (e) => {
+                      if (clickedWhileSelecting(e)) return;
                       touched.current = true;
                       setOpenIdx((cur) => (cur === i ? null : i));
                     }

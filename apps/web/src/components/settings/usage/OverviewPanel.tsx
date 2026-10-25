@@ -422,7 +422,7 @@ function ModelCost({ ov }: { ov: UsageOverview }) {
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="selectable">
             {rows.length === 0 && (
               <tr>
                 <td colSpan={heads.length} className="py-6 text-center text-xs text-faint">{t("noData")}</td>
@@ -472,7 +472,7 @@ function TopSessions({ rows }: { rows: UsageSessionRow[] }) {
         return (
           <div
             key={r.session_id || "(bg)"}
-            className="flex items-center gap-2 border-b border-white/5 py-2 text-[12.5px] last:border-b-0"
+            className="selectable flex items-center gap-2 border-b border-white/5 py-2 text-[12.5px] last:border-b-0"
           >
             <span className="min-w-0 flex-1 truncate text-txt" title={r.title || t("untitledSession")}>
               {r.title || t("untitledSession")}
@@ -512,7 +512,7 @@ function ModelRank({ ov }: { ov: UsageOverview }) {
         const v = m.input_tokens + m.output_tokens;
         const hit = m.cache_read_tokens > 0 || m.cache_hit_ratio > 0 ? pct(m.cache_hit_ratio) : "—";
         return (
-          <div key={`${m.provider}/${m.model}`} className="flex items-start gap-2 border-b border-white/5 py-2 text-[12.5px] last:border-b-0">
+          <div key={`${m.provider}/${m.model}`} className="selectable flex items-start gap-2 border-b border-white/5 py-2 text-[12.5px] last:border-b-0">
             <i className="mt-1.5 h-2 w-2 flex-none rounded-[2.5px]" style={{ background: providerColor(m.provider) }} />
             <span className="min-w-0 flex-1 break-words text-txt">
               {m.model} <span className="text-[11.5px] text-faint">· {m.provider}</span>

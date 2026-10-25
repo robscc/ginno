@@ -230,7 +230,7 @@ export function RunObserver({
       </div>
 
       {err && (
-        <div className="rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red">{err}</div>
+        <div className="selectable rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red">{err}</div>
       )}
 
       {miniDag}

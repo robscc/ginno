@@ -706,7 +706,7 @@ function DrawerStream({
                   <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                   {t("replyFailed")}
                 </div>
-                <div className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">
+                <div className="selectable whitespace-pre-wrap break-words text-xs leading-relaxed text-muted">
                   {"text" in (text ?? {}) ? String((text as { text?: string })?.text ?? "") : ""}
                 </div>
               </div>
@@ -838,7 +838,7 @@ function DrawerProposeCard({
         </span>
       </div>
       {propose.rationale && (
-        <div className="mb-2 text-xs text-muted">{t("rationale", { reason: propose.rationale })}</div>
+        <div className="selectable mb-2 text-xs text-muted">{t("rationale", { reason: propose.rationale })}</div>
       )}
       <button
         onClick={() => setDiffOpen((v) => !v)}

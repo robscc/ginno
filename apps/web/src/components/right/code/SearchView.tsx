@@ -213,7 +213,7 @@ export function SearchView({
     if (!result) return null;
     if (result.error) {
       return (
-        <div className="shrink-0 border-b border-line bg-card px-3 py-1 text-[11px] text-red">
+        <div className="selectable shrink-0 border-b border-line bg-card px-3 py-1 text-[11px] text-red">
           {codeErrorMessage(result.error.code)}
           {result.error.message ? `: ${result.error.message}` : ""}
         </div>

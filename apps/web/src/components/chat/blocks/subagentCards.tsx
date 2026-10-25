@@ -315,14 +315,14 @@ export function SubagentResultCard({
         </div>
       )}
       {block.error && (
-        <div className="mt-1.5 whitespace-pre-wrap break-words text-red/90">{tc("subagent.errorPrefix")}{block.error}</div>
+        <div className="selectable mt-1.5 whitespace-pre-wrap break-words text-red/90">{tc("subagent.errorPrefix")}{block.error}</div>
       )}
       {/* 验收区（P2 共享契约 5）：acceptance 非空时展示原文；逐条判定由主 agent
           在汇报里给出（runtime 注入消息已引导），卡片不重复解析。 */}
       {sub?.acceptance && (
         <div className="mt-2 rounded-md border border-violet/25 bg-violet/[0.05] px-2 py-1.5">
           <div className="text-[10px] font-medium text-violet">{tc("subagent.acceptanceCriteria")}</div>
-          <div className="mt-0.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
+          <div className="selectable mt-0.5 whitespace-pre-wrap break-words leading-relaxed text-muted">
             {sub.acceptance}
           </div>
           <div className="mt-1 text-[10px] text-faint">
@@ -475,7 +475,7 @@ export function SubagentBriefCard({
         value ? (
           <div key={label} className="mt-1.5">
             <span className="text-[10px] font-medium text-muted">{label}</span>
-            <div className={`whitespace-pre-wrap break-words leading-relaxed ${cls}`}>
+            <div className={`selectable whitespace-pre-wrap break-words leading-relaxed ${cls}`}>
               {value}
             </div>
           </div>
@@ -490,7 +490,7 @@ export function SubagentBriefCard({
             {notesOpen ? "▾" : "▸"} {tc("subagent.notesToggle")}
           </button>
           {notesOpen && (
-            <div className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-faint">
+            <div className="selectable mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-faint">
               {block.persona && (
                 <>
                   <div className="mb-1 text-[10px] text-violet">{tc("subagent.personaLabel")}</div>

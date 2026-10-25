@@ -321,7 +321,7 @@ export function NodeInspector({
       </div>
 
       {err && (
-        <div className="flex items-start gap-1.5 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red">
+        <div className="selectable flex items-start gap-1.5 rounded-md border border-red/30 bg-red/[0.06] px-2 py-1.5 text-[11px] text-red">
           <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
           <span>{err}</span>
         </div>

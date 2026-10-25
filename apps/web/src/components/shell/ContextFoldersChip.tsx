@@ -166,7 +166,7 @@ export function ContextFoldersChip({
                       </button>
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-xs text-txt">{folder.name}</div>
-                        <div className="truncate font-mono text-[10px] text-faint" title={folder.path}>
+                        <div className="selectable truncate font-mono text-[10px] text-faint" title={folder.path}>
                           {folder.path}
                         </div>
                       </div>
@@ -214,7 +214,7 @@ export function ContextFoldersChip({
                     <div key={f.id} className="group flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-card2">
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-xs text-muted">{f.name}</div>
-                        <div className="truncate font-mono text-[10px] text-faint" title={f.path}>
+                        <div className="selectable truncate font-mono text-[10px] text-faint" title={f.path}>
                           {f.path}
                         </div>
                       </div>
@@ -274,7 +274,7 @@ export function ContextFoldersChip({
                   <Plus className="h-3 w-3" /> {tr("folders.mount")}
                 </button>
               </div>
-              {err && <div className="mt-1 text-[11px] text-red-400">{err}</div>}
+              {err && <div className="selectable mt-1 text-[11px] text-red-400">{err}</div>}
               <button
                 onClick={() => {
                   setOpen(false);

@@ -68,7 +68,7 @@ export function RunRightPane({
           <div className="text-[11.5px] font-semibold text-txt">{t("contextWrites", { count: writes.length })}</div>
           <div className="mt-1 space-y-0.5">
             {writes.slice(-8).map((w, i) => (
-              <div key={i} className="flex items-baseline gap-2 font-mono text-[10.5px]">
+              <div key={i} className="selectable flex items-baseline gap-2 font-mono text-[10.5px]">
                 <span className="text-faint">{fmtTs(w.ts)}</span>
                 <span className="truncate text-muted">
                   {(w.keys || []).join(", ")}
@@ -151,7 +151,7 @@ export function RunRightPane({
                     {e.node_id && <span className="font-mono text-faint">· {e.node_id}</span>}
                   </div>
                   {typeof e.reason === "string" && e.reason && (
-                    <div className="mt-0.5 text-muted">{e.reason}</div>
+                    <div className="selectable mt-0.5 text-muted">{e.reason}</div>
                   )}
                 </div>
               );

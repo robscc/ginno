@@ -209,7 +209,7 @@ export function SupervisorConsole({
               </div>
             )}
             {cfg.policy && (
-              <div className="mt-1 border-t border-line pt-1.5 text-muted">{cfg.policy}</div>
+              <div className="selectable mt-1 border-t border-line pt-1.5 text-muted">{cfg.policy}</div>
             )}
           </div>
           <div className="mt-2 border-t border-line pt-1.5 text-[10.5px] text-faint">
@@ -254,7 +254,7 @@ export function SupervisorConsole({
               : t("disabled")}
           </div>
         ) : (
-          <div className="space-y-1">
+          <div className="selectable space-y-1">
             {rows.map((e, i) => {
               const kind = e.kind;
               const isDecision = kind === "sup_decision" || kind === "supervisor_decision";

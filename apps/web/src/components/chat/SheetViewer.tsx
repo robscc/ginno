@@ -260,7 +260,7 @@ export function SheetViewer() {
               <div className="max-w-full truncate text-xs text-faint">{file.name}</div>
             </div>
           )}
-          {!missing && err && <div className="px-4 py-6 text-center text-sm text-red-400">{err}</div>}
+          {!missing && err && <div className="selectable px-4 py-6 text-center text-sm text-red-400">{err}</div>}
           {!missing && !err && !pv && !isImage && (
             <div className="px-4 py-6 text-center text-sm text-faint">{t("sheet.loading")}</div>
           )}
@@ -279,7 +279,7 @@ export function SheetViewer() {
             </div>
           )}
           {pv && isTable && (
-            <table className="w-full border-collapse text-xs">
+            <table className="selectable w-full border-collapse text-xs">
               <thead className="sticky top-0 z-10 bg-card2">
                 <tr>
                   <th className="border-b border-line px-2 py-1.5 text-left text-faint">#</th>

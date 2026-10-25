@@ -85,7 +85,7 @@ export function SidebarBulkBar({
       )}
       {bulkError && (
         <div className="mx-2 mb-2 flex items-start gap-1 rounded-md border border-red/40 bg-red/10 px-2 py-1.5 text-[11px] text-red">
-          <span className="flex-1">{bulkError}</span>
+          <span className="selectable flex-1">{bulkError}</span>
           <button
             onClick={onDismissError}
             aria-label={t("bulk.dismiss")}

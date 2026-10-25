@@ -187,7 +187,7 @@ export function ModelApiSettings() {
         // Yellow bar for refusals (reason text is built in applyPut from the
         // guard's `references`). Success notices share the slot and self-dismiss.
         <div
-          className={`mt-4 rounded-md border px-3 py-2 text-xs ${
+          className={`selectable mt-4 rounded-md border px-3 py-2 text-xs ${
             notice.kind === "ok" ? "border-green/40 bg-green/10 text-green" : "border-yellow/40 bg-yellow/10 text-yellow"
           }`}
         >

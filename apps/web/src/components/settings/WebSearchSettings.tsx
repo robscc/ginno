@@ -218,7 +218,7 @@ export function WebSearchSettings() {
             <FlaskConical className="h-4 w-4" /> {testing ? t("testing") : t("testSearch")}
           </button>
         </div>
-        {msg && <p className="text-xs text-muted">{msg}</p>}
+        {msg && <p className="selectable text-xs text-muted">{msg}</p>}
 
         {usage && (usage.total_searches > 0 || usage.total_cited > 0) && (
           <div className="mt-4 rounded-lg border border-line/60 p-4 text-xs">
@@ -235,7 +235,7 @@ export function WebSearchSettings() {
                     <th className="py-1 font-normal">{t("thRate")}</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="selectable">
                   {usage.engines.map((e) => (
                     <tr key={e.engine} className="border-t border-line/40">
                       <td className="py-1">{e.engine}</td>

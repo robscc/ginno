@@ -356,7 +356,7 @@ export function StudioShell() {
         </div>
 
         {triggerErr && (
-          <div className="border-b border-red/30 bg-red/[0.06] px-3 py-1.5 text-[11px] text-red">
+          <div className="selectable border-b border-red/30 bg-red/[0.06] px-3 py-1.5 text-[11px] text-red">
             {triggerErr}
           </div>
         )}

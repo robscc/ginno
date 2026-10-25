@@ -299,12 +299,12 @@ export function ScheduleRunView({ run: snapshot }: { run: ScheduleRun }) {
         </div>
         )}
         {!liveFocus && run.error && (
-          <div className={`${CHAT_COL} mt-1 truncate text-[11px] text-red`} title={run.error}>
+          <div className={`${CHAT_COL} selectable mt-1 truncate text-[11px] text-red`} title={run.error}>
             {run.error}
           </div>
         )}
         {!liveFocus && forkError && (
-          <div className={`${CHAT_COL} mt-1 truncate text-[11px] text-red`} title={forkError}>
+          <div className={`${CHAT_COL} selectable mt-1 truncate text-[11px] text-red`} title={forkError}>
             {forkError}
           </div>
         )}

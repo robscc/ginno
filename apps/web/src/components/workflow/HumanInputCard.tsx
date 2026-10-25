@@ -69,7 +69,7 @@ export function HumanInputCard({
         {nodeTitle ? <span className="font-normal text-faint">· {nodeTitle}</span> : null}
       </div>
       {question && (
-        <div className="mb-2 text-xs leading-relaxed text-txt [&_p]:my-1">
+        <div className="selectable mb-2 text-xs leading-relaxed text-txt [&_p]:my-1">
           <Markdown text={question} />
         </div>
       )}

@@ -590,23 +590,26 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
   kb/（**手写力导向图谱**于 SVG；PageViewer 三态 read/edit/create）、settings/（逐 tab 接 API；
   含 WebSearchSettings：引擎配置 + 测试搜索 + 引擎被引率遥测）。
 
-### 12.1 文本可选中策略（2026-10-25，v2）
+### 12.1 文本可选中策略（2026-10-25，v3）
 
 桌面端（WKWebView）里"能不能选中文字"必须是一条规则，而不是零散的 `select-none`。
-**v1 试过"默认全可选"，结果在 WKWebView 里拖选会把 flex/grid 容器整块刷成大片色块**
-（设置页整屏紫色）——所以 v2 反过来：**容器一律不可选，只有文本叶子可选中**。
+演进：**v1 "默认全可选" → 拖选把 flex/grid 容器整块刷成大片色块（设置页整屏紫色）；
+v2 "只放行语义文本叶子" → 设置页的说明段落本身就是 `<p>`，整行行盒依旧被刷成大片
+紫色色条；v3 改为白名单：默认全站不可选，只放行「内容层」**。用户反馈点名的
+KnowledgeSettings 顶部说明段落因此不再产生色块。
 
 | 层 | 规则 | 实现 |
 |---|---|---|
-| 布局容器 | 默认不参与选中（`html/body` 与所有 div/section 等容器） | `globals.css` `@layer base` 的 `html, body { user-select: none }` |
-| 文本叶子 | 可选中：`p` / `li` / `td` / `blockquote` / `dd` / `dt` / `figcaption` / `h1`–`h6` / `pre` / `code` / `kbd` / `samp` / `input` / `textarea` / `select` / `[contenteditable]` / `[data-selectable]` / `.selectable` | 同文件 `@layer components` 反声明 `text` |
-| 控件外壳 | 永远不可选：button / tab / switch / menuitem / option / summary / label / `th` / `.pill` / `.nav-item` | 同上 |
-| 以 div 承载的正文 | 聊天卡片/工具输出/提示/错误横幅等直接以 `div` 放文字的地方挂 `.selectable` | 组件类名 |
+| 布局容器与界面文案 | 默认不参与选中（`html/body` 及所有 div/section/标题/说明段落） | `globals.css` `@layer base` 的 `html, body { user-select: none }` |
+| 内容白名单 | 可选中：`input` / `textarea` / `select` / `[contenteditable]` / `pre` / `code` / `kbd` / `samp` / `[data-selectable]`（含后代）/ `.selectable`（含后代） | 同文件 `@layer components` 第一段反声明 `text` |
+| 控件外壳 | 永远不可选（优先级压过内容容器）：button / tab / switch / menuitem / option / summary / label / `th` / `.pill` / `.nav-item` / `.field-label` | 同文件 `@layer components` 第二段 |
+| 以 div 承载的正文 | 聊天正文/工具输出/日志/数据/错误横幅等直接以 `div` 放文字的地方挂 `.selectable`；只包文字，不包按钮外壳 | 组件类名 |
+| 选区配色 | 主题化 token：`--sel` + `--sel-a`（暗色 紫 139,92,246 / 0.3；亮色 靛蓝 79,70,229 / 0.18），`::selection` 只换底色不换文字色 | `globals.css` `:root` / `html.light` |
 | 拖拽 | 拖拽开始后 `body` 挂 `select-none` / `ginno-card-dragging`；卡片内 `[data-selectable]` 区域只做文本选择、不起拖拽；拖选残留的选区不再触发 click | FileTree / PanelResizer / GeneralSettings / AgentsSettings |
 
-新增组件时：**文字放进语义元素（p/li/pre/…）或给它挂 `.selectable`**；
-其余容器保持默认（不可选）。不要为了方便给整个页面/卡片加 `select-none` 之外的"全选"设置——
-WebKit 会把容器盒子一起画进选区。
+新增组件时：**内容文字（正文、输出、日志、数据、错误）挂 `.selectable`；界面文案
+（标题、说明段落、字段标签、按钮）保持默认不可选**。不要为了方便给整个页面/卡片加
+"全选"设置——WebKit 会把容器盒子一起画进选区。
 
 ---
 

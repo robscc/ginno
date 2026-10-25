@@ -95,7 +95,7 @@ export function SupervisorDecisionCard({
         </button>
       </div>
       {(fallbackReason || autoSuggestion) && (
-        <div className="mb-2 space-y-0.5 rounded border border-yellow/30 bg-yellow/[0.08] px-2 py-1.5">
+        <div className="selectable mb-2 space-y-0.5 rounded border border-yellow/30 bg-yellow/[0.08] px-2 py-1.5">
           {fallbackReason && (
             <div className="text-[11px] text-yellow">
               {t("escalated", { reason: fallbackLabel(fallbackReason) })}
@@ -116,7 +116,7 @@ export function SupervisorDecisionCard({
         </div>
       )}
       {question && (
-        <div className="mb-2 text-xs leading-relaxed text-txt">{question}</div>
+        <div className="selectable mb-2 text-xs leading-relaxed text-txt">{question}</div>
       )}
       {patchOpen && (
         <div className="mb-2 space-y-1.5">
@@ -130,7 +130,7 @@ export function SupervisorDecisionCard({
           <div className="text-[10px] text-faint">{t("patchHint")}</div>
         </div>
       )}
-      {err && <div className="mb-2 text-[11px] text-red">{err}</div>}
+      {err && <div className="selectable mb-2 text-[11px] text-red">{err}</div>}
       <div className="grid grid-cols-2 gap-1.5">
         {patchOpen ? (
           <button

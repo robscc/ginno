@@ -43,7 +43,7 @@ export function ModAskCard({
               {ask.mod}
             </span>
           )}
-          <span className="break-words whitespace-pre-wrap">{ask.message}</span>
+          <span className="selectable break-words whitespace-pre-wrap">{ask.message}</span>
         </div>
       </div>
       {ask.choices.length > 0 && (

@@ -581,7 +581,7 @@ function DetailPane({
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted">
               {t("detail.overview.registration")}
             </h3>
-            <dl className="space-y-1 text-[11.5px]">
+            <dl className="selectable space-y-1 text-[11.5px]">
               {src && (
                 <div className="flex gap-2">
                   <dt className="w-24 shrink-0 text-faint">{t("detail.overview.source")}</dt>
@@ -734,7 +734,7 @@ function DetailPane({
               <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
             </button>
           </div>
-          <dl className="space-y-1 text-[11.5px]">
+          <dl className="selectable space-y-1 text-[11.5px]">
             {rows.map(([k, v]) => (
               <div key={k} className="flex gap-2">
                 <dt className="w-28 shrink-0 text-faint">{k}</dt>

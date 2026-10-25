@@ -358,7 +358,7 @@ export function McpAddWizard({
           {/* ---- Step 3: 模拟测试 ---- */}
           {step === 3 && (
             <div>
-              <div className="mb-3.5 min-h-[90px] rounded-lg border border-line bg-[rgb(var(--code-bg))] px-3.5 py-3 font-mono text-xs leading-[1.9] text-muted">
+              <div className="selectable mb-3.5 min-h-[90px] rounded-lg border border-line bg-[rgb(var(--code-bg))] px-3.5 py-3 font-mono text-xs leading-[1.9] text-muted">
                 {lines.map((l, i) => (
                   <div key={i}>
                     <span className="mr-1.5 text-green">✓</span>

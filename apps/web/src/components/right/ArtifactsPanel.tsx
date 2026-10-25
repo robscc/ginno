@@ -437,7 +437,7 @@ export function ArtifactMetaCard({
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto px-3.5 py-3">
-        {loadError && <div className="text-xs text-red">{t("meta.loadFailed", { e: loadError })}</div>}
+        {loadError && <div className="selectable text-xs text-red">{t("meta.loadFailed", { e: loadError })}</div>}
         {!meta && !loadError && (
           <div className="space-y-2 py-1">
             <div className="h-3 w-2/3 animate-pulse rounded bg-card2" />
@@ -567,7 +567,7 @@ export function ArtifactMetaCard({
       {/* edit footer */}
       {editing && (
         <div className="flex items-center gap-2 border-t border-line px-3.5 py-2">
-          {saveError && <span className="min-w-0 flex-1 truncate text-[11px] text-red">{saveError}</span>}
+          {saveError && <span className="selectable min-w-0 flex-1 truncate text-[11px] text-red">{saveError}</span>}
           <div className="ml-auto flex gap-2">
             <button
               onClick={() => setEditing(false)}
