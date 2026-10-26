@@ -13,6 +13,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useTranslations } from "next-intl";
 import { openLinkExternal } from "@/lib/runtime";
+import { MermaidBlock } from "./MermaidBlock";
 
 // Obsidian-style [[target]] / [[target|alias]] / [[target#heading]]. Turned into
 // in-page fragment links (#wl:<encoded>) so any URL transform keeps them; the
@@ -79,9 +80,13 @@ function CodeBlock({ lang, children }: { lang?: string; children: ReactNode }) {
 export const Markdown = memo(function Markdown({
   text,
   onWikilink,
+  streaming,
 }: {
   text: string;
   onWikilink?: (target: string) => void;
+  /** 本轮回答仍在生成。只为 mermaid 服务：图形必须等文本落定后再渲染
+   *  （半截 mermaid 语法必然解析失败，见 MermaidBlock 文件头第 1 条）。 */
+  streaming?: boolean;
 }) {
   const t = useTranslations("composer");
   const src = onWikilink
@@ -103,7 +108,9 @@ export const Markdown = memo(function Markdown({
     <div className="selectable break-words">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        // plainText: mermaid 源码不是代码高亮对象——交给 MermaidBlock 出图。
+        // 不声明的话 lowlight 每块都会走一次 "Unknown language" 异常分支。
+        rehypePlugins={[[rehypeHighlight, { plainText: ["mermaid"] }]]}
         components={{
           pre({ children }) {
             // Fenced code: consume the inner <code> element, keep its highlighted
@@ -112,6 +119,12 @@ export const Markdown = memo(function Markdown({
               | ReactElement<{ className?: string; children?: ReactNode }>
               | undefined;
             const lang = /language-([\w+-]+)/.exec(el?.props?.className || "")?.[1];
+            if (lang === "mermaid") {
+              // 源码从渲染树还原（nodeText 已在复制按钮里用同一套逻辑）。
+              // streaming 透传下去：生成中只显示骨架，落定后渲染一次。
+              const source = nodeText(el?.props?.children).replace(/\n$/, "");
+              return <MermaidBlock source={source} streaming={streaming} />;
+            }
             return <CodeBlock lang={lang}>{el?.props?.children}</CodeBlock>;
           },
           code({ children }) {

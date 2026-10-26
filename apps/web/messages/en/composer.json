@@ -29,7 +29,23 @@
       "codeLabel": "code",
       "copy": "Copy",
       "copied": "Copied ✓",
-      "openLink": "Open {target}"
+      "openLink": "Open {target}",
+      "mermaid": {
+        "generating": "rendering diagram…",
+        "renderFailed": "Diagram render failed",
+        "empty": "(empty diagram)",
+        "showSource": "Show source",
+        "hideSource": "Hide source",
+        "copySource": "Copy source",
+        "copyPng": "Copy as image",
+        "downloadSvg": "Download SVG",
+        "expand": "Open full size",
+        "diagramAlt": "Mermaid diagram (click to enlarge)",
+        "zoomIn": "Zoom in",
+        "zoomOut": "Zoom out",
+        "resetZoom": "Reset zoom",
+        "closeDialog": "Close"
+      }
     },
     "askUser": {
       "chosen": "Chosen: {answer}",

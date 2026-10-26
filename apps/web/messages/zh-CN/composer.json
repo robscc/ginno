@@ -29,7 +29,23 @@
       "codeLabel": "code",
       "copy": "复制",
       "copied": "已复制 ✓",
-      "openLink": "打开 {target}"
+      "openLink": "打开 {target}",
+      "mermaid": {
+        "generating": "图形生成中…",
+        "renderFailed": "图形渲染失败",
+        "empty": "（图形内容为空）",
+        "showSource": "查看源码",
+        "hideSource": "收起源码",
+        "copySource": "复制源码",
+        "copyPng": "复制为图片",
+        "downloadSvg": "下载 SVG",
+        "expand": "放大查看",
+        "diagramAlt": "Mermaid 图形（点击放大）",
+        "zoomIn": "放大",
+        "zoomOut": "缩小",
+        "resetZoom": "重置缩放",
+        "closeDialog": "关闭"
+      }
     },
     "askUser": {
       "chosen": "已选择：{answer}",

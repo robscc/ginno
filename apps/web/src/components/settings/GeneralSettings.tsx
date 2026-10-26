@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import * as api from "@/lib/runtime";
 import { useLocaleCtx, setLocale } from "@/i18n/provider";
 import type { LanguageSetting } from "@/i18n/config";
+import { readMermaidPref, writeMermaidPref } from "@/lib/mermaidPrefs";
 
 export function applyTheme(t: string) {
   if (typeof document === "undefined") return;
@@ -262,6 +263,9 @@ export function GeneralSettings() {
   const [theme, setTheme] = useState<string>("dark");
   const [msg, setMsg] = useState("");
   const [bypass, setBypass] = useState(true);
+  // Mermaid 图形渲染（纯前端偏好，localStorage；见 lib/mermaidPrefs.ts）。
+  // 渲染与否跟 runtime 无关，所以不进 settings.json。
+  const [mermaid, setMermaid] = useState(true);
   // subagent 并发上限（P3 共享契约 3）：settings 键 subagent.max_concurrent，
   // 默认 5、范围 1-16；runtime 调度器动态读取，保存后即生效。
   const [subMax, setSubMax] = useState("5");
@@ -281,6 +285,7 @@ export function GeneralSettings() {
     }
     setTheme(t);
     applyTheme(t);
+    setMermaid(readMermaidPref());
     api
       .getSettings()
       .then((s) => {
@@ -374,6 +379,21 @@ export function GeneralSettings() {
               </button>
             ))}
           </div>
+        </div>
+        <div>
+          <label className="flex items-center gap-2 text-sm text-txt">
+            <input
+              type="checkbox"
+              checked={mermaid}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setMermaid(v);
+                writeMermaidPref(v);
+              }}
+            />
+            {tSettings("general.mermaidLabel")}
+          </label>
+          <p className="mt-1 text-xs text-faint">{tSettings("general.mermaidHelp")}</p>
         </div>
         <div>
           <label className="field-label">{tSettings("language.label")}</label>

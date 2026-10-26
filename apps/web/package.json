@@ -17,6 +17,7 @@
     "clsx": "^2.1.0",
     "d3": "^7.9.0",
     "lucide-react": "^0.460.0",
+    "mermaid": "^11",
     "monaco-editor": "^0.55.0",
     "next": "^14.2.0",
     "next-intl": "^4.14.9",

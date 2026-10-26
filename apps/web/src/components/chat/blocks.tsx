@@ -139,7 +139,7 @@ export function InnerBlocks({
       if (streaming && last && !cited.length) text = maskPartialSources(text);
       out.push(
         <div key={key++}>
-          <Markdown text={cleanAgentText(text)} />
+          <Markdown text={cleanAgentText(text)} streaming={!!(streaming && last)} />
           {streaming && last && (
             <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse bg-violet" />
           )}

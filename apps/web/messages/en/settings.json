@@ -16,6 +16,8 @@
       "providerHelp": "New sessions and agents without their own provider use this provider; bind a different provider to an agent in Settings → Agents to override it.",
       "providerToast": "default provider → {name}",
       "themeLabel": "Theme",
+      "mermaidLabel": "Render Mermaid diagrams in chat",
+      "mermaidHelp": "When on, mermaid code fences (flowchart / sequence / state / ER …) in answers render as diagrams you can copy as an image, download as SVG or open full size. When off, the source is always shown. Rendering is display-only — the session always stores the original source.",
       "privileged": "Privileged Mode (skip all permission confirmations, allow any command)",
       "privilegedHelp": "When on, the Agent can call any tool without asking and the permission policy cannot block it (including Bash/Write and other dangerous operations). On by default; when off, asks / blocks per the permission policy. Note: your PreToolUse hooks still run (hooks are custom rules and always apply).",
       "privilegedOn": "Privileged Mode on: all tools run directly without asking",
