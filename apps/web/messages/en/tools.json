@@ -105,7 +105,7 @@
     "mcp": {
       "title": "MCP Servers",
       "description": "{count} servers — tools are injected into every turn; disable unused ones to save tokens.",
-      "saveReload": "Save & Reload",
+      "saveReload": "Save",
       "saved": "Saved — registry rebuilt · {servers}",
       "savedCfg": "Saved & reloaded — {name} re-registered",
       "invalidJson": "invalid JSON: {error}",
@@ -219,7 +219,7 @@
       "wzToolsWarn": "Tools are injected into every turn — disable unused ones in the Tools tab to save tokens.",
       "wzTestFailTitle": "Connect failed",
       "wzTestFailHint": "Tip: check the URL and key; a single-line root cause is shown in the server list.",
-      "wzSaved": "{name} saved — registry reloaded, tools available on the next turn",
+      "wzSaved": "{name} saved — connecting in the background; the status row will update in a few seconds",
       "wzOverwrite": "“{name}” already exists — saving replaces it.",
       "impTitle": "Import MCP config",
       "impPasteLabel": "Paste configuration",
@@ -255,7 +255,8 @@
       "cfgCorruptBlocked": "mcp.json is corrupted; writes are locked — repair it under Advanced first",
       "rollbackFailed": "Enable failed and rollback failed too: config stays enabled — retry or disable manually",
       "reconnectFailedNet": "Reconnect request failed — check that the runtime is running",
-      "disabledLabel": "Disabled"
+      "disabledLabel": "Disabled",
+      "wzTestOptional": "Test is optional and simulated (P0) — the real connection starts right after you save; watch the status row in the list."
     },
     "skills": {
       "title": "Skills",

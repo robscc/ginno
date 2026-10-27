@@ -599,6 +599,31 @@ async def _stream_graph(
                 # 工具心跳（graph.TOOL_HEARTBEAT_S）：chunked_stream 收到任何
                 # chunk 都会重置 stall 看门狗——custom 帧到这一步使命已完成，
                 # 不下发前端（前端对工具运行态已有 tool.start/end 表达）。
+                # 例外：模型退避透传（graph._ainvoke_rate_limited）——provider
+                # 的原始错误全文必须到前端（2026-10-27 e48be8a3：静默退避
+                # 把「套餐无权限」伪装成卡死），用户看着它决定 ⏹ 与否。
+                if isinstance(payload, dict) and payload.get("ginno_model_error"):
+                    me = payload["ginno_model_error"]
+                    await safe_send(
+                        emit(
+                            "notice",
+                            {
+                                "message": (
+                                    f"Model API error — retrying in "
+                                    f"{me.get('wait_s', 0):.0f}s "
+                                    f"({me.get('attempt')}/{me.get('max')}): "
+                                    f"{me.get('error', '')}"
+                                ),
+                                "i18n_key": "stream.model_error_backoff",
+                                "params": {
+                                    "error": str(me.get("error", "")),
+                                    "seconds": f"{me.get('wait_s', 0):.0f}",
+                                    "attempt": int(me.get("attempt") or 0),
+                                    "max": int(me.get("max") or 0),
+                                },
+                            },
+                        )
+                    )
                 continue
             elif mode == "updates":
                 # payload is {node_name: state_delta} OR {"__interrupt__": (Interrupt, ...)}
@@ -1160,14 +1185,16 @@ async def _stream_graph(
                         {
                             # Event contract (i18n-design.md §3): English
                             # fallback text + i18n_key + params for the UI.
+                            # error 参数带 provider 原始信息（e48be8a3 决策：
+                            # 接口错误永远亮给前端，用户自己决定中断与否）。
                             "message": (
-                                f"Model connection error ({type(e).__name__}); "
-                                f"auto-retrying in {_backoff:.0f}s "
-                                f"({_attempt + 1}/{AUTO_RETRY_MAX})…"
+                                f"Model connection error, auto-retrying in "
+                                f"{_backoff:.0f}s ({_attempt + 1}/{AUTO_RETRY_MAX}): "
+                                f"{str(e)[:300]}"
                             ),
                             "i18n_key": "stream.auto_retry",
                             "params": {
-                                "error": type(e).__name__,
+                                "error": f"{type(e).__name__}: {str(e)[:300]}",
                                 "seconds": f"{_backoff:.0f}",
                                 "attempt": _attempt + 1,
                                 "max": AUTO_RETRY_MAX,

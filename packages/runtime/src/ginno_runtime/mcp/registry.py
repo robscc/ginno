@@ -113,6 +113,10 @@ class MCPServerConfig:
     args: list[str] | None = None
     env: dict[str, str] | None = None
     url: str | None = None
+    # HTTP 类 transport 的自定义请求头（鉴权 token 等）。2026-10-27 前只
+    # 解析不发送——zhishui 的 Knowledge-Token 配了但从未上线，服务端报
+    # missing JWT（session 450c6d15）。值为非字符串时 str() 归一。
+    headers: dict[str, str] | None = None
     connect_timeout: float = 15.0
     # 服务器级开关：False 时不建立连接、不注册任何工具（status 里仍可见）。
     enabled: bool = True
@@ -140,6 +144,12 @@ class MCPServerConfig:
         # str 防御数字型工具名；enabled 只认显式 false 为关闭（缺省即开启）。
         raw_disabled = cfg.get("disabled_tools")
         disabled_tools = [str(x) for x in raw_disabled] if isinstance(raw_disabled, list) else []
+        raw_headers = cfg.get("headers")
+        headers = (
+            {str(k): str(v) for k, v in raw_headers.items() if str(v).strip()}
+            if isinstance(raw_headers, dict)
+            else None
+        )
         return cls(
             name=name,
             transport=transport,
@@ -147,6 +157,7 @@ class MCPServerConfig:
             args=cfg.get("args", []),
             env=cfg.get("env"),
             url=cfg.get("url"),
+            headers=headers,
             connect_timeout=float(cfg.get("connect_timeout", 15.0)),
             enabled=bool(cfg.get("enabled", True)),
             disabled_tools=disabled_tools,
@@ -217,13 +228,17 @@ class _LiveServer:
             elif self.config.transport == "sse":
                 if not sse_client:
                     raise RuntimeError("mcp SSE client not installed")
-                ctx_res = await stack.enter_async_context(sse_client(self.config.url))
+                # headers 必须显式传（鉴权 token 在这里上车）；
+                # streamable-http 分支同理——两个客户端都原生支持。
+                ctx_res = await stack.enter_async_context(
+                    sse_client(self.config.url, headers=self.config.headers)
+                )
                 read, write = _unpack_rw(ctx_res)
             elif self.config.transport in ("streamable-http", "streamablehttp", "http"):
                 if not streamablehttp_client:
                     raise RuntimeError("mcp streamable_http client not installed")
                 ctx_res = await stack.enter_async_context(
-                    streamablehttp_client(self.config.url)
+                    streamablehttp_client(self.config.url, headers=self.config.headers)
                 )
                 read, write = _unpack_rw(ctx_res)
             else:

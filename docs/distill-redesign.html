@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ginno · 「沉淀为」重设计（原型）</title>
+<style>
+  :root{
+    --base:#0a0a0f; --panel:#0e0e15; --card:#15151d; --card2:#1b1b25;
+    --line:#262632; --line2:#34343f; --txt:#e9e9f0; --muted:#9a9aa6; --faint:#62626e;
+    --violet:#8b5cf6; --violet2:#a78bfa; --green:#34d399; --yellow:#f59e0b; --red:#f43f5e; --cyan:#22d3ee; --orange:#fb923c;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--base);color:var(--txt);
+    font:13px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  input,select,textarea{font:inherit;color:var(--txt)}
+  .wrap{max-width:1080px;margin:0 auto;padding:26px 22px 80px}
+
+  .proto-head{display:flex;align-items:flex-start;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+  .proto-head h1{margin:0;font-size:17px;font-weight:600}
+  .proto-head p{margin:4px 0 0;font-size:12px;color:var(--muted);max-width:720px}
+  .caption{margin:12px 0 16px;font-size:12px;color:var(--faint);line-height:1.7}
+  .caption b{color:var(--muted);font-weight:500}
+
+  /* 场景导航 */
+  .scenes{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 18px}
+  .scenes button{padding:6px 12px;border-radius:9px;font-size:12px;color:var(--muted);border:1px solid var(--line);background:var(--panel)}
+  .scenes button.on{color:#fff;border-color:var(--violet);background:rgba(139,92,246,.14)}
+  .scene{display:none}
+  .scene.on{display:block}
+
+  /* 聊天骨架 */
+  .chat{border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden}
+  .chat-head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+  .chat-head .t{font-size:13.5px;font-weight:600}
+  .chat-head .sp{flex:1}
+  .transcript{padding:14px 16px 18px;min-height:340px}
+  .msg{margin-bottom:14px;max-width:78%}
+  .msg.user{margin-left:auto}
+  .bubble{border-radius:12px;padding:10px 12px;font-size:12.5px;line-height:1.7}
+  .msg.user .bubble{background:rgba(139,92,246,.14);border:1px solid rgba(139,92,246,.3)}
+  .msg.ai .bubble{background:var(--card);border:1px solid var(--line)}
+  .turnfoot{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:10.5px;color:var(--faint)}
+  .turnfoot .sp{flex:1}
+  .iconbtn{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);border-radius:7px;
+    padding:3px 8px;font-size:10.5px;color:var(--muted)}
+  .iconbtn:hover{color:var(--txt);border-color:var(--violet)}
+  .iconbtn.primary{border-color:var(--violet);color:var(--violet2)}
+  .sel{position:relative;display:inline;background:rgba(34,211,238,.22);border-bottom:2px solid var(--cyan);cursor:text}
+  .selpop{position:absolute;left:30%;top:calc(100% + 6px);z-index:30;display:flex;gap:6px;
+    background:var(--card2);border:1px solid var(--line2);border-radius:9px;padding:5px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+
+  /* 菜单（重做后） */
+  .menu{position:relative}
+  .dropdown{position:absolute;right:0;top:calc(100% + 6px);width:300px;z-index:40;
+    background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:6px;box-shadow:0 12px 32px rgba(0,0,0,.45)}
+  .dd-head{padding:7px 9px 5px;font-size:10.5px;color:var(--faint)}
+  .row{display:flex;gap:9px;padding:8px 9px;border-radius:9px;cursor:pointer;align-items:flex-start}
+  .row:hover{background:var(--card2)}
+  .row .ic{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:12px;flex:0 0 auto}
+  .row .tx{min-width:0;flex:1}
+  .row .n{font-size:12px;color:var(--txt);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .row .d{font-size:10.5px;color:var(--faint);line-height:1.5;margin-top:1px}
+  .row .done{font-size:10.5px;color:var(--green)}
+  .badge{border-radius:999px;padding:0 6px;font-size:9.5px;border:1px solid}
+  .b-rec{color:var(--violet2);border-color:rgba(139,92,246,.45);background:rgba(139,92,246,.12)}
+  .b-dim{color:var(--faint);border-color:var(--line2)}
+  .divider{height:1px;background:var(--line);margin:5px 4px}
+
+  /* 建议条 */
+  .sugg{display:flex;align-items:center;gap:10px;margin:10px 16px 14px;border:1px solid rgba(34,211,238,.25);
+    background:rgba(34,211,238,.07);border-radius:11px;padding:9px 12px;font-size:11.5px;color:#bfeef6}
+  .sugg .sp{flex:1}
+
+  /* 选材+形式 */
+  .panel{border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:18px}
+  .panel h3{margin:0 0 4px;font-size:14px;font-weight:600}
+  .panel .sub{margin:0 0 16px;font-size:11.5px;color:var(--faint)}
+  .lbl{font-size:11px;font-weight:600;letter-spacing:.3px;color:var(--muted);text-transform:uppercase;margin:14px 0 8px}
+  .scopes{display:flex;gap:7px;flex-wrap:wrap}
+  .scopes button{padding:6px 11px;border-radius:9px;border:1px solid var(--line);background:var(--card);font-size:11.5px;color:var(--muted)}
+  .scopes button.on{border-color:var(--violet);color:#fff;background:rgba(139,92,246,.16)}
+  .forms{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+  .form{border:1px solid var(--line);border-radius:12px;background:var(--card);padding:13px;cursor:pointer;position:relative}
+  .form:hover{border-color:var(--line2)}
+  .form.on{border-color:var(--violet);background:rgba(139,92,246,.08)}
+  .form .h{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
+  .form .ic{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:12px}
+  .form .q{font-size:11px;color:var(--muted);margin-top:7px;line-height:1.6}
+  .form .ex{font-size:10.5px;color:var(--faint);margin-top:6px}
+  .form .rec{position:absolute;top:10px;right:10px}
+  .panel .cta{display:flex;gap:8px;margin-top:18px;align-items:center}
+  .sp{flex:1}
+
+  /* DistillModal */
+  .modal{border:1px solid var(--line2);border-radius:14px;background:var(--panel);overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.5)}
+  .mh{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .mh .t{font-size:14px;font-weight:600}
+  .mh .kinds{display:flex;gap:4px;margin-left:12px}
+  .mh .kinds button{padding:4px 10px;border-radius:8px;font-size:11px;color:var(--faint);border:1px solid transparent}
+  .mh .kinds button.on{color:var(--txt);border-color:var(--line2);background:var(--card)}
+  .mb{padding:16px 18px;max-height:520px;overflow:auto}
+  .mf{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--line);background:var(--base)}
+  .banner{display:flex;gap:8px;border-radius:9px;padding:8px 11px;font-size:11.5px;margin-bottom:14px}
+  .bn-info{border:1px solid rgba(34,211,238,.22);background:rgba(34,211,238,.07);color:#bfeef6}
+  .bn-warn{border:1px solid rgba(245,158,11,.25);background:rgba(245,158,11,.08);color:#f6e0b3}
+  .bn-ok{border:1px solid rgba(52,211,153,.25);background:rgba(52,211,153,.08);color:#b9f3dd}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .fitem label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+  .fitem input,.fitem select{width:100%;background:var(--card2);border:1px solid var(--line2);border-radius:8px;padding:6px 9px;font-size:12px;outline:none}
+  .fitem input:focus,.fitem select:focus{border-color:var(--violet)}
+  .fitem .note{font-size:10px;color:var(--faint);margin-top:3px}
+  .fitem .note.ok{color:var(--green)} .fitem .note.bad{color:var(--red)}
+  .chiprow{display:flex;gap:5px;flex-wrap:wrap}
+  .chip{font-size:10px;font-family:ui-monospace,Menlo,monospace;background:var(--card2);border:1px solid var(--line2);
+    color:var(--muted);border-radius:6px;padding:2px 6px}
+  .editor{width:100%;min-height:210px;background:#0e0e14;border:1px solid var(--line2);border-radius:9px;padding:11px;
+    font:11px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c9c9d6;outline:none;resize:vertical}
+  .srcbox{border:1px dashed var(--line2);border-radius:10px;padding:10px 12px;font-size:11px;color:var(--muted);
+    max-height:130px;overflow:auto;line-height:1.65;background:rgba(255,255,255,.015)}
+  .srcbox .h{font-size:10px;color:var(--faint);margin-bottom:5px;letter-spacing:.3px}
+
+  .btn{padding:7px 13px;border-radius:9px;font-size:12px;border:1px solid var(--line2);color:var(--txt);background:var(--card)}
+  .btn:hover{background:var(--card2)}
+  .btn.primary{background:var(--violet);border-color:var(--violet);color:#fff;font-weight:500}
+  .btn.ghost{border-color:transparent;background:transparent;color:var(--faint)}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+
+  /* toast */
+  .toasts{display:flex;flex-direction:column;gap:8px}
+  .toast{display:flex;align-items:center;gap:10px;border:1px solid rgba(52,211,153,.3);background:rgba(52,211,153,.08);
+    border-radius:11px;padding:11px 13px;font-size:12px;color:#c8f5e5}
+  .toast .sub{display:block;font-size:10.5px;color:var(--faint);margin-top:2px}
+  .note{margin:22px 0 0;padding:12px 14px;border-left:2px solid var(--violet);background:rgba(139,92,246,.06);
+    border-radius:0 8px 8px 0;font-size:12px;color:var(--muted);line-height:1.75}
+  .note b{color:var(--txt);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="proto-head">
+    <div>
+      <h1>「沉淀为」重设计 · 原型</h1>
+      <p>假数据。核心主张：三条腿一个生命周期——<b>选材 → LLM 草稿 → 预览/编辑 → 落盘 → 复用反馈</b>。现状里 skill/知识卡的「一键哑写」全部废除。</p>
+    </div>
+  </header>
+
+  <div class="scenes" id="scenes">
+    <button class="on" onclick="go(0,this)">1 · 聊天里的入口</button>
+    <button onclick="go(1,this)">2 · 选材 + 形式</button>
+    <button onclick="go(2,this)">3 · Skill 草稿</button>
+    <button onclick="go(3,this)">4 · 知识卡草稿</button>
+    <button onclick="go(4,this)">5 · 工作流（复用现有）</button>
+    <button onclick="go(5,this)">6 · 落盘反馈</button>
+  </div>
+
+  <!-- ===== 场景 1：入口 ===== -->
+  <section class="scene on">
+    <div class="chat">
+      <div class="chat-head">
+        <span class="t">部署检查 · dev agent</span><span class="sp"></span>
+        <div class="menu">
+          <button class="iconbtn primary" onclick="toggleMenu()">✦ 沉淀为… ▾</button>
+          <div class="dropdown" id="dd" style="display:none">
+            <div class="dd-head">把这次工作变成可复用的资产</div>
+            <div class="row" onclick="go(1, scenesBtn(1))">
+              <div class="ic" style="background:rgba(139,92,246,.12);color:var(--violet2)">✦</div>
+              <div class="tx">
+                <div class="n">沉淀为 Skill <span class="badge b-dim">已沉淀 ✓ /deploy-check</span></div>
+                <div class="d">可重复的操作流程，<code>/名字</code> 随时再跑</div>
+                <div class="done" style="margin-top:3px">查看 · 再沉淀一次</div>
+              </div>
+            </div>
+            <div class="row" onclick="go(1, scenesBtn(1))">
+              <div class="ic" style="background:rgba(52,211,153,.1);color:var(--green)">▤</div>
+              <div class="tx">
+                <div class="n">沉淀为知识卡</div>
+                <div class="d">将生成 <b style="color:var(--muted)">3 条结论</b>（问题/结论/适用条件）——可被检索注入</div>
+              </div>
+            </div>
+            <div class="row" onclick="go(1, scenesBtn(1))">
+              <div class="ic" style="background:rgba(251,146,60,.12);color:var(--orange)">⬡</div>
+              <div class="tx">
+                <div class="n">沉淀为工作流 <span class="badge b-rec">推荐</span></div>
+                <div class="d">将生成 <b style="color:var(--muted)">6 节点</b>参数化流程（本次 14 次工具调用规律明显）</div>
+              </div>
+            </div>
+            <div class="divider"></div>
+            <div class="row" onclick="go(1, scenesBtn(1))">
+              <div class="ic" style="background:var(--card2);color:var(--muted)">✧</div>
+              <div class="tx"><div class="n">让 Ginno 决定</div>
+              <div class="d">按会话特征自动选形式（当前判断：工作流）</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="transcript">
+        <div class="msg user"><div class="bubble">帮我把这个服务部署到预发环境，跑一遍完整检查</div></div>
+        <div class="msg ai">
+          <div class="bubble">已完成部署并通过全部检查：镜像构建 ✅ · 配置校验 ✅ · 健康探针 ✅ · 冒烟用例 12/12 ✅。
+            过程中发现 <span class="sel" id="selrange">预发的 DATABASE_POOL_SIZE 与生产不一致，已按生产值对齐并验证连接数稳定</span><span class="selpop" id="selpop">
+              <button class="iconbtn primary" onclick="go(1, scenesBtn(1))">✦ 沉淀选中</button>
+              <button class="iconbtn">复制</button>
+            </span></div>
+          <div class="turnfoot">
+            <span>dev · 14 tools · 2m18s</span><span class="sp"></span>
+            <button class="iconbtn" onclick="go(1, scenesBtn(1))">✦ 沉淀本回合</button>
+          </div>
+        </div>
+      </div>
+      <div class="sugg">
+        <span>这次部署流程跑了 14 次工具调用，看起来可复用</span><span class="sp"></span>
+        <button class="btn primary" onclick="go(1, scenesBtn(1))">沉淀为工作流</button>
+        <button class="btn ghost">忽略</button>
+      </div>
+    </div>
+    <div class="note"><b>入口三层：</b>① 头部菜单重做——每项先告诉你「将生成什么」，已沉淀的形式打 ✓（读 distilled_to），
+      按特征给推荐徽标，并把原「总结成流程」并入（消除双入口）；② 完成 turn 的 hover「沉淀本回合」；
+      ③ 划选浮层「沉淀选中」。建议条由后端在多轮+多工具+未沉淀时触发（客户端 action 已就绪）。</div>
+  </section>
+
+  <!-- ===== 场景 2：选材+形式 ===== -->
+  <section class="scene">
+    <div class="panel" style="max-width:760px">
+      <h3>沉淀为…</h3>
+      <p class="sub">先定「用什么、存成什么」。草稿由模型在会话外生成，不会打扰当前对话。</p>
+      <div class="lbl">来源</div>
+      <div class="scopes" id="scopes">
+        <button class="on" onclick="pickScope(this)">整个会话</button>
+        <button onclick="pickScope(this)">最近 5 轮</button>
+        <button onclick="pickScope(this)">最近 10 轮</button>
+        <button onclick="pickScope(this)">第 3–9 条消息</button>
+        <button onclick="pickScope(this)">划选文本 🔒</button>
+      </div>
+      <div class="lbl">形式</div>
+      <div class="forms">
+        <div class="form" onclick="pickForm(this,'skill')">
+          <span class="rec badge b-dim" style="position:static;margin-left:auto">怎么做</span>
+          <div class="h"><span class="ic" style="background:rgba(139,92,246,.12);color:var(--violet2)">✦</span>Skill</div>
+          <div class="q">想以后一句话重跑的<b>操作流程</b></div>
+          <div class="ex">例：/deploy-check 一键走完部署检查</div>
+        </div>
+        <div class="form" onclick="pickForm(this,'kb')">
+          <span class="rec badge b-dim" style="position:static;margin-left:auto">知道了什么</span>
+          <div class="h"><span class="ic" style="background:rgba(52,211,153,.1);color:var(--green)">▤</span>知识卡</div>
+          <div class="q">想被自动<b>检索注入</b>的事实与结论</div>
+          <div class="ex">例：预发/生产配置差异与决策</div>
+        </div>
+        <div class="form on" onclick="pickForm(this,'workflow')">
+          <span class="rec badge b-rec" style="position:static;margin-left:auto">推荐</span>
+          <div class="h"><span class="ic" style="background:rgba(251,146,60,.12);color:var(--orange)">⬡</span>工作流</div>
+          <div class="q">想<b>参数化自动执行</b>的节点图</div>
+          <div class="ex">例：每次发版前跑一遍检查流</div>
+        </div>
+        <div class="form" onclick="pickForm(this,'auto')">
+          <div class="h"><span class="ic" style="background:var(--card2);color:var(--muted)">✧</span>让 Ginno 决定</div>
+          <div class="q">按特征自动选形式（不发 LLM，纯启发式）</div>
+          <div class="ex">当前判断：工作流</div>
+        </div>
+      </div>
+      <div class="cta">
+        <span class="sp"></span>
+        <button class="btn" onclick="go(0, scenesBtn(0))">取消</button>
+        <button class="btn primary" id="genbtn" onclick="go(4, scenesBtn(4))">生成草稿 →</button>
+      </div>
+    </div>
+    <div class="note"><b>选材首次暴露 msg_range</b>（后端 summarize-trace 已有）；划选入口进来时锁定为划选文本。
+      「让 Ginno 决定」用启发式分类（工具密集→工作流 / 稳定流程→skill / 事实结论→知识卡），不额外发 LLM。</div>
+  </section>
+
+  <!-- ===== 场景 3：skill 草稿 ===== -->
+  <section class="scene">
+    <div class="modal" style="max-width:820px">
+      <div class="mh">
+        <span class="t">沉淀为 Skill</span>
+        <div class="kinds">
+          <button class="on">Skill</button><button onclick="go(3, scenesBtn(3))">知识卡</button><button onclick="go(4, scenesBtn(4))">工作流</button>
+        </div>
+        <span class="sp"></span><span style="font-size:10.5px;color:var(--faint)">草稿由模型生成 · 未保存</span>
+      </div>
+      <div class="mb">
+        <div class="banner bn-info">草稿来自本回合的 14 次工具调用；正文语言跟随提示词语言设置。保存前必须通过「验证」。</div>
+        <div class="grid2">
+          <div class="fitem">
+            <label>名称（ASCII，/ 调用）</label>
+            <input value="deploy-check" oninput="validateName(this.value)" />
+            <div class="note ok" id="nameNote">✓ 可用 · 新会话输入 /deploy-check 试用</div>
+          </div>
+          <div class="fitem">
+            <label>触发方式</label>
+            <select><option>both（/ 调用 + 模型自动选用）</option><option>user-invocable（仅 / 调用）</option><option>model-invocable（仅模型）</option></select>
+            <div class="note">绑定工具后，激活期间仅放开这些工具</div>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <div class="fitem">
+            <label>绑定工具（懒加载）</label>
+            <div class="chiprow"><span class="chip">bash</span><span class="chip">read_file</span><span class="chip">edit_file</span><span class="chip">+ 添加</span></div>
+          </div>
+          <div class="fitem">
+            <label>占位符</label>
+            <div class="chiprow"><span class="chip">$ARGUMENTS → 目标环境</span></div>
+            <div class="note">调用时由用户输入替换</div>
+          </div>
+        </div>
+        <div class="lbl" style="margin-top:14px">正文（SKILL.md）</div>
+        <textarea class="editor" spellcheck="false">---
+name: deploy-check
+description: Deploy the service to a target environment and run the full check suite (image build, config check, probes, smoke).
+trigger: both
+tools: [bash, read_file, edit_file]
+---
+
+# 部署检查
+
+按目标环境 `$ARGUMENTS` 完成一次部署并全部验证通过。
+
+## 步骤
+
+1. 确认目标环境配置与生产对齐（DATABASE_POOL_SIZE 等关键项）
+2. 构建镜像并等待 registry 就绪
+3. 应用配置 → 校验通过再继续（失败即停，回报差异）
+4. 部署 → 等待健康探针全绿（超时 5 分钟）
+5. 跑冒烟用例；失败时收集最近 100 行日志再报告
+
+## 完成标准
+
+全部检查绿；任何一步失败都要带着「差异/日志/下一步建议」回报，不要静默重试。</textarea>
+        <div class="lbl">来源（可回看，编辑不影响）</div>
+        <div class="srcbox"><div class="h">本回合 · 14 次工具调用 · 9 条消息</div>
+          build_image(...) → validate_config(...) → kubectl apply(...) → wait_probe(...) → smoke_run(12 cases) …</div>
+      </div>
+      <div class="mf">
+        <button class="btn" onclick="toast('已通过解析校验：SKILL.md 可加载 ✓')">验证</button>
+        <button class="btn ghost">重新生成</button>
+        <span class="sp"></span>
+        <button class="btn ghost" onclick="go(0, scenesBtn(0))">取消</button>
+        <button class="btn primary" onclick="go(5, scenesBtn(5))">保存 Skill</button>
+      </div>
+    </div>
+    <div class="note"><b>与现状的差别：</b>确定性模板（tool—args 堆栈）废除，正文由 LLM 旁路生成（fork 语义：会话上下文单发、不进对话）；
+      名称统一走 installer 的 ASCII 规则并做重名/影子检测；保存前强制过 <code>_parse_skill_file</code> 验证——现在坏 frontmatter 是静默不可加载的。</div>
+  </section>
+
+  <!-- ===== 场景 4：知识卡草稿 ===== -->
+  <section class="scene">
+    <div class="modal" style="max-width:820px">
+      <div class="mh">
+        <span class="t">沉淀为知识卡</span>
+        <div class="kinds">
+          <button onclick="go(2, scenesBtn(2))">Skill</button><button class="on">知识卡</button><button onclick="go(4, scenesBtn(4))">工作流</button>
+        </div>
+        <span class="sp"></span><span style="font-size:10.5px;color:var(--faint)">草稿由模型生成 · 未保存</span>
+      </div>
+      <div class="mb">
+        <div class="banner bn-warn">发现 1 条相近知识卡：<b>《预发环境配置基线》</b>（相似度 72%）——建议合并进它，或确认差异后另建。</div>
+        <div class="grid2">
+          <div class="fitem">
+            <label>标题</label>
+            <input value="预发与生产的连接池配置差异及决策" />
+            <div class="note">落盘后进入检索索引</div>
+          </div>
+          <div class="fitem">
+            <label>落位</label>
+            <select onchange="landingNote(this.value)">
+              <option value="r" selected>Ginno/Raw/（默认 · 原料区）</option>
+              <option value="m">Ginno/Memory/（可检索注入）</option>
+            </select>
+            <div class="note bad" id="landNote">⚠ Raw/ 不参与检索；保存后可一键「编译为 Wiki」进入检索</div>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <div class="fitem">
+            <label>标签</label>
+            <div class="chiprow"><span class="chip">infra</span><span class="chip">staging</span><span class="chip">decision</span><span class="chip">+ 添加</span></div>
+          </div>
+          <div class="fitem">
+            <label>关联</label>
+            <div class="chiprow"><span class="chip">[[预发环境配置基线]]</span></div>
+          </div>
+        </div>
+        <div class="lbl" style="margin-top:14px">正文（Markdown + frontmatter）</div>
+        <textarea class="editor" spellcheck="false">---
+title: 预发与生产的连接池配置差异及决策
+tags: [infra, staging, decision]
+type: knowledge
+confidence: high
+sources: [ginno://session/1c68148d]
+---
+
+## 问题
+
+预发 DATABASE_POOL_SIZE 与生产不一致，压测时连接数抖动。
+
+## 结论
+
+按生产值对齐（pool=64），对齐后连接数稳定；预发应与生产共享配置基线，
+仅环境地址类键允许差异。
+
+## 适用条件
+
+仅适用于同构预发/生产；若有独立容量规划则另议。关联：[[预发环境配置基线]]</textarea>
+        <div class="lbl">来源</div>
+        <div class="srcbox"><div class="h">划选文本 · 1 段</div>
+          预发的 DATABASE_POOL_SIZE 与生产不一致，已按生产值对齐并验证连接数稳定…</div>
+      </div>
+      <div class="mf">
+        <button class="btn" onclick="toast('已并入检索索引预检 ✓')">合并到相近卡片</button>
+        <button class="btn ghost">重新生成</button>
+        <span class="sp"></span>
+        <button class="btn ghost" onclick="go(0, scenesBtn(0))">取消</button>
+        <button class="btn" onclick="go(5, scenesBtn(5))">保存并编译为 Wiki</button>
+        <button class="btn primary" onclick="go(5, scenesBtn(5))">保存知识卡</button>
+      </div>
+    </div>
+    <div class="note"><b>落位维持 Raw/（决议）：</b>沉淀物是原料，检索化交给 Wiki 编译管线——表单显式标注不可检索，
+      保存反馈给一键「编译为 Wiki」（跑 wiki-compile 定向该卡）；Memory/ 为可选落位（即存即检索）。
+      去重门复用 PromoteModal 的 WikiRetriever（≥0.5 建议合并）。未配置知识库时表单引导去设置而非 400。</div>
+  </section>
+
+  <!-- ===== 场景 5：工作流 ===== -->
+  <section class="scene">
+    <div class="modal" style="max-width:820px">
+      <div class="mh">
+        <span class="t">沉淀为工作流</span>
+        <div class="kinds">
+          <button onclick="go(2, scenesBtn(2))">Skill</button><button onclick="go(3, scenesBtn(3))">知识卡</button><button class="on">工作流</button>
+        </div>
+        <span class="sp"></span><span style="font-size:10.5px;color:var(--faint)">复用现有「总结成流程」引擎</span>
+      </div>
+      <div class="mb">
+        <div class="banner bn-ok">工作流腿已有完整的 LLM 草稿（≤3 次自纠）+ 预览/编辑/dry-run——本设计只统一入口，内核不动。</div>
+        <div class="grid2">
+          <div class="fitem"><label>名称</label><input value="release-check" /></div>
+          <div class="fitem"><label>来源</label><select><option>整个会话（14 次工具调用）</option><option>最近 5 轮</option></select></div>
+        </div>
+        <div class="lbl" style="margin-top:14px">节点图（可编辑 · dry-run 预检）</div>
+        <div class="srcbox" style="min-height:150px;display:grid;place-items:center">
+          <div style="display:flex;gap:8px;align-items:center;font-size:11px;color:var(--muted)">
+            <span class="chip" style="font-size:11px;padding:6px 10px">构建镜像</span>→
+            <span class="chip" style="font-size:11px;padding:6px 10px">配置对齐检查</span>→
+            <span class="chip" style="font-size:11px;padding:6px 10px">部署</span>→
+            <span class="chip" style="font-size:11px;padding:6px 10px">健康探针</span>→
+            <span class="chip" style="font-size:11px;padding:6px 10px">冒烟 ⭥ 人工确认</span>→
+            <span class="chip" style="font-size:11px;padding:6px 10px">报告</span>
+          </div>
+        </div>
+      </div>
+      <div class="mf">
+        <button class="btn">dry-run 预检</button><button class="btn ghost">进入开发会话精炼</button>
+        <span class="sp"></span>
+        <button class="btn ghost" onclick="go(0, scenesBtn(0))">取消</button>
+        <button class="btn primary" onclick="go(5, scenesBtn(5))">创建并运行</button>
+      </div>
+    </div>
+    <div class="note"><b>入口收敛：</b>DistillMenu 的工作流行直连现有 SummarizeModal（含 last-N、草稿恢复、
+      创建即运行/进 dev 会话）；原「总结」chip 并入后移除，消除双入口。</div>
+  </section>
+
+  <!-- ===== 场景 6：反馈 ===== -->
+  <section class="scene">
+    <div class="toasts" style="max-width:560px">
+      <div class="toast">✦<div>已创建 skill <b>/deploy-check</b><span class="sub">新会话输入 /deploy-check 试用 · 查看 Skills 设置</span></div></div>
+      <div class="toast">▤<div>知识卡已存入 <b>Ginno/Raw/预发与生产的连接池配置差异</b><span class="sub">原料区暂不参与检索 · [编译为 Wiki] 进入检索 · [查看知识卡]</span></div></div>
+      <div class="toast">⬡<div>工作流 <b>release-check</b> 已创建并开始运行<span class="sub">在对话里用 @release-check 引用 · 打开运行面板</span></div></div>
+    </div>
+    <div class="note"><b>反馈必须回答「然后怎么用」：</b>skill 给 / 调用入口、知识卡说明会被自动注入、
+      工作流给运行与 @ 引用。菜单同时打上 ✓（读 distilled_to），建议条不再重复推。</div>
+  </section>
+
+<script>
+  const scenesBtn = (i)=>document.querySelectorAll('#scenes button')[i];
+  function go(i, btn){
+    document.querySelectorAll('.scene').forEach((s,k)=>s.classList.toggle('on', k===i));
+    document.querySelectorAll('#scenes button').forEach(b=>b.classList.remove('on'));
+    (btn||scenesBtn(i)).classList.add('on');
+    document.getElementById('dd').style.display='none';
+    window.scrollTo({top:0,behavior:'smooth'});
+  }
+  function toggleMenu(){
+    const dd=document.getElementById('dd');
+    dd.style.display = dd.style.display==='none' ? 'block' : 'none';
+  }
+  function pickScope(el){
+    el.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+    el.classList.add('on');
+  }
+  function pickForm(el, kind){
+    el.parentElement.querySelectorAll('.form').forEach(f=>f.classList.remove('on'));
+    el.classList.add('on');
+    const btn=document.getElementById('genbtn');
+    btn.textContent = (kind==='workflow'?'生成草稿（进入工作流编辑器） →':'生成草稿 →');
+  }
+  function validateName(v){
+    const n=document.getElementById('nameNote');
+    if(/^[a-z0-9][a-z0-9-]*$/.test(v)){ n.textContent='✓ 可用 · 新会话输入 /'+v+' 试用'; n.className='note ok'; }
+    else { n.textContent='✗ 仅允许小写字母/数字/连字符（ASCII）'; n.className='note bad'; }
+  }
+  function landingNote(v){
+    const n=document.getElementById('landNote');
+    if(v==='m'){ n.textContent='✓ Memory/ 已在索引内，相关问题会自动注入'; n.className='note ok'; }
+    else { n.textContent='⚠ Raw/ 不参与检索；保存后可一键「编译为 Wiki」进入检索'; n.className='note bad'; }
+  }
+  function toast(msg){ alert(msg); }
+</script>
+</div>
+</body>
+</html>

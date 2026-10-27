@@ -25,6 +25,7 @@ import {
   TurnIdChip,
 } from "../streamCards";
 import { type ChatMsg } from "../streamCore";
+import { CopyBubbleButton } from "./CopyBubbleButton";
 import type { SessionMeta } from "@/lib/types";
 import {
   consumeMessageTarget,
@@ -281,6 +282,12 @@ export function TranscriptList({
               {m.status === "sending" && (
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin text-faint" aria-label={tc("composer.sendingAria")} />
               )}
+              {/* 用户气泡的复制按钮：与失败重发动作同一 hover 透明度语言，
+                  无可复制文本（纯附件）时不渲染 */}
+              <CopyBubbleButton
+                blocks={m.blocks}
+                className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+              />
               <div
                 className={`max-w-[78%] rounded-2xl rounded-tr-md border px-4 py-2.5 text-sm leading-relaxed ${
                   m.status === "failed"

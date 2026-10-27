@@ -368,6 +368,9 @@ export function McpAddWizard({
                     )}
                   </div>
                 ))}
+                {!lines.length && !testing && (
+                  <div className="text-faint">{t("wzTestOptional")}</div>
+                )}
               </div>
               {passed && (
                 <div>
@@ -411,7 +414,7 @@ export function McpAddWizard({
                 </button>
                 <button
                   type="button"
-                  disabled={!passed}
+                  disabled={testing || !name.trim() || (!isStdio && !url.trim())}
                   onClick={async () => {
                     await onSave(name.trim(), buildEntry());
                   }}

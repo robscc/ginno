@@ -105,7 +105,7 @@
     "mcp": {
       "title": "MCP 服务器",
       "description": "{count} 个服务器 — 工具会在每一轮注入上下文；关掉不用的可省 token。",
-      "saveReload": "保存并重载",
+      "saveReload": "保存",
       "saved": "已保存 · registry 已重建 · {servers}",
       "savedCfg": "已保存并重载 — {name} 已重新注册",
       "invalidJson": "JSON 无效：{error}",
@@ -219,7 +219,7 @@
       "wzToolsWarn": "工具会在每一轮注入上下文 — 在工具页关掉不用的可省 token。",
       "wzTestFailTitle": "连接失败",
       "wzTestFailHint": "提示：检查 URL 与 key；服务器列表会显示单行根因。",
-      "wzSaved": "{name} 已保存 — registry 已重载，工具将在下一轮生效",
+      "wzSaved": "{name} 已保存 — 正在后台连接，几秒后状态行会更新",
       "wzOverwrite": "「{name}」已存在 — 保存将覆盖它。",
       "impTitle": "导入 MCP 配置",
       "impPasteLabel": "粘贴配置",
@@ -255,7 +255,8 @@
       "cfgCorruptBlocked": "mcp.json 已损坏，写入被锁定 — 请先在「高级」中修复",
       "rollbackFailed": "开启失败，且回滚失败：配置仍为启用状态，请重试或手动停用",
       "reconnectFailedNet": "重连请求失败 — 请检查 runtime 是否在运行",
-      "disabledLabel": "已禁用"
+      "disabledLabel": "已禁用",
+      "wzTestOptional": "测试为可选的模拟（P0）——真实连接在保存后立即开始，结果看列表里的状态行。"
     },
     "skills": {
       "title": "技能",

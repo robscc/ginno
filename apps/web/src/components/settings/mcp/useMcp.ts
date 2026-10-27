@@ -82,6 +82,10 @@ export function useMcp() {
 
   // 读改写：fn 在「配置文件原文的 mcpServers」上做单点修改，返回 false 表示放弃写入。
   // opts.reload = true 时追加 reloadMcp 全量重建（仅连接参数变更 / Advanced / 新增向导）。
+  // opts.reload = "background"：写盘成功即返回，reload 发出后不等待——
+  // 全量重建要 close_all + 逐台重连（每台 connect_timeout 15s），同步等它
+  // 会把保存按钮卡住几十秒，用户只能反复重试（2026-10-27 实录：3 连
+  // PUT + reload 风暴）。连接结果由 5s 轮询的 status 行收敛显示。
   // 两个行为契约：
   // - 损坏锁写：cfgError 非空（mcp.json 解析失败）时直接拒绝——此时后端返回
   //   空 mcpServers，任何 PUT 都是全文覆盖，会把用户原配置毁掉。修复通道
@@ -90,7 +94,7 @@ export function useMcp() {
   const mutate = useCallback(
     (
       fn: (servers: Record<string, unknown>) => boolean | void,
-      opts?: { reload?: boolean; ignoreCfgError?: boolean },
+      opts?: { reload?: boolean | "background"; ignoreCfgError?: boolean },
     ): Promise<boolean> => {
       const run = async (): Promise<boolean> => {
         if (cfgErrorRef.current && !opts?.ignoreCfgError) return false;
@@ -99,7 +103,12 @@ export function useMcp() {
           const changed = fn(next.mcpServers);
           if (changed === false) return false;
           await api.putMcp(next);
-          if (opts?.reload) await api.reloadMcp();
+          if (opts?.reload === "background") {
+            // 发出即走：连接在后台收敛，失败走 registry 的失败追踪与重试
+            void api.reloadMcp().catch(() => undefined);
+          } else if (opts?.reload) {
+            await api.reloadMcp();
+          }
           setCfg(next); // 乐观同步，随后的 load() 校正
           await load();
           return true;

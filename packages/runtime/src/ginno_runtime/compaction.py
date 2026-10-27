@@ -22,6 +22,7 @@ disturb a turn paused at a permission prompt.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -188,6 +189,7 @@ async def maybe_compact_history(
     ctx_factory=None,
     force: bool = False,
     on_summary_start=None,
+    abort_event=None,
 ) -> dict | None:
     """Check threshold and compact. Returns stats dict or None.
 
@@ -205,6 +207,15 @@ async def maybe_compact_history(
     cheap early-return check. Callers use it to push a "compacting…"
     status event; the summary call is the only slow step, so the UI hint
     brackets exactly the wait the user would otherwise stare at.
+
+    ``abort_event`` (asyncio.Event, turn path only): the cooperative stop
+    signal. The summarizer call can run for minutes on a huge history —
+    a user pressing ⏹ mid-compaction must not wait for it (2026-10-27,
+    session 150bcced: stop at 10:35 took effect 10:37:09, seg_len=0).
+    The LLM call races the event; on abort the call is cancelled, nothing
+    is written, and None is returned so the turn proceeds to its (already
+    pre-armed) TurnStopped close-out. force=True callers pass no event —
+    an explicit /compact is intent to finish regardless.
     """
     from .world_state import context_settings
 
@@ -249,22 +260,39 @@ async def maybe_compact_history(
         return None
 
     transcript = "\n".join(_msg_line(m) for m in old)
+    # 停止信号已置位就直接放弃：压缩是优化，绝不拖着一个已被叫停的回合。
+    if abort_event is not None and abort_event.is_set():
+        log.info("compaction aborted before summary session=%s", session_id)
+        return None
     if on_summary_start is not None:
         try:
             await on_summary_start()
         except Exception:
             log.warning("compaction_status_callback_failed session=%s", session_id)
-    summary_resp = await model.ainvoke(
-        [
-            _summary_system_message(),
-            HumanMessage(
-                content=t(
-                    f"Summarize the following conversation:\n\n{transcript}",
-                    f"请总结以下对话记录:\n\n{transcript}",
-                )
-            ),
-        ]
+    summary_task = asyncio.ensure_future(
+        model.ainvoke(
+            [
+                _summary_system_message(),
+                HumanMessage(
+                    content=t(
+                        f"Summarize the following conversation:\n\n{transcript}",
+                        f"请总结以下对话记录:\n\n{transcript}",
+                    )
+                ),
+            ]
+        )
     )
+    if abort_event is not None:
+        stop_task = asyncio.ensure_future(abort_event.wait())
+        done, _pending = await asyncio.wait(
+            {summary_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if stop_task in done and not summary_task.done():
+            summary_task.cancel()
+            log.info("compaction aborted by stop session=%s", session_id)
+            return None
+        stop_task.cancel()
+    summary_resp = await summary_task
     # 压缩摘要也是真金白银的模型调用：记入用量流水（source="compaction"，
     # 会话归属）。此前完全没记账——记账点挂在 _stream_graph 的消息流上，
     # 这里直连 model.ainvoke 绕过了它（2026-10-12 用户指出「压缩的也要

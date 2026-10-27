@@ -10,6 +10,8 @@ import { useGinno } from "@/lib/store";
 import { agentHex } from "@/lib/theme";
 import { useTranslations } from "next-intl";
 import { InnerBlocks, RefBlocks, subagentStatusMeta, SubagentKindBadges, useStatusLabel, type Block } from "@/components/chat/blocks";
+import { copyText } from "./copyText";
+import { CopyBubbleButton } from "./stream/CopyBubbleButton";
 import { DiffView } from "@/components/workflow/DiffView";
 import type { AgentConfig, SessionMeta } from "@/lib/types";
 import type { VersionPropose } from "./streamCore";
@@ -24,27 +26,8 @@ function useChatT() {
   return { tc, tr };
 }
 
-async function copyText(t: string) {
-try {
-  await navigator.clipboard.writeText(t);
-  return true;
-} catch {
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = t;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
-}
-}
-
+// 剪贴板助手抽到共享模块（copyText.ts）：TurnIdChip 与气泡「复制内容」
+// 按钮（CopyBubbleButton）共用，含非安全上下文的 execCommand 回退。
 /** Click-to-copy per-turn trace UUID. The full id is what you grep the sidecar
  *  logs for (`turn=...`); we show a short prefix to keep the bubble tidy. */
 export function TurnIdChip({ turnId }: { turnId?: string }) {
@@ -328,7 +311,9 @@ return (
         {displayName}
       </span>
       <span className="text-xs text-faint">{streaming ? statusText : tc("stream.justNow")}</span>
-      <span className="ml-auto">
+      <span className="ml-auto flex items-center gap-1.5">
+        {/* 每个气泡一个复制按钮（2026-10-26）：与 turnId chip 同层，常驻但低调 */}
+        <CopyBubbleButton blocks={blocks} />
         <TurnIdChip turnId={turnId} />
       </span>
     </div>

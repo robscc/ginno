@@ -103,7 +103,8 @@ export function ChatStream({
   // compression / document upload). Both paths used to return silently — the
   // user pressed send and NOTHING happened. Auto-clears after a few seconds.
   const [composerHint, setComposerHint] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  // 滚动容器内的阅读列：内容高度变化时用它重新贴底（见下方 ResizeObserver）
+  const innerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickRef = useRef(true); // auto-scroll only while the user is near the bottom
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -322,6 +323,24 @@ export function ChatStream({
     };
     requestAnimationFrame(attempt);
   }
+
+  // 内容高度缩水时把 scrollTop 拉回新的最大值。
+  // 流式回合里内容既会长也会缩（思考块在回合末收起、microcompact 清掉较早的工具
+  // 输出）；缩的瞬间 scrollTop 停在旧的最大值上——Blink 会立刻回收可滚动区域，
+  // WKWebView（桌面壳）不会，视觉上就是最后一条消息下面拖着一大片空白，要再滚
+  // 一下才消失（2026-10-26 用户反馈）。这里在缩水时主动夹紧。
+  useEffect(() => {
+    const el = scrollRef.current;
+    const inner = innerRef.current;
+    if (!el || !inner || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (!stickRef.current) return; // 用户主动上翻时不打扰
+      const max = el.scrollHeight - el.clientHeight;
+      if (max >= 0 && el.scrollTop > max) el.scrollTop = max;
+    });
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, []);
 
   /**
    * Post one user turn. The user bubble is created up-front and carries the
@@ -709,9 +728,9 @@ export function ChatStream({
           const el = e.currentTarget;
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
-        className="flex-1 overflow-y-auto px-6 py-6"
+        className="flex-1 overflow-y-auto overscroll-contain px-6 py-6"
       >
-        <div className={`${CHAT_COL} flex flex-col gap-5`}>
+        <div ref={innerRef} className={`${CHAT_COL} flex flex-col gap-5`}>
           {messages.length === 0 && (
             <div className="py-16 text-center text-sm text-faint">
               {tc("empty.start")}
@@ -747,7 +766,6 @@ export function ChatStream({
             />
           ))}
 
-          <div ref={bottomRef} />
         </div>
       </div>
 

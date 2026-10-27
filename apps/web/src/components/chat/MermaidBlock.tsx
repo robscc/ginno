@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import { salvageMermaid, type SalvageFix } from "@/lib/mermaidSalvage";
 import {
   AlertTriangle,
   Check,
@@ -249,6 +250,9 @@ async function renderSvg(source: string, theme: "dark" | "light"): Promise<strin
   });
 }
 
+/** mermaid 兼容层（lib/mermaidSalvage.ts）：失败集与修复规则都在那里
+ *  以真 mermaid 11.17.2 实测钉死，这里只按候选顺序重试。 */
+
 // ---------------------------------------------------------------- 主题订阅
 // 一份 observer 服务所有已挂载的图（每个图自带 observer 会在长会话里堆几十个）。
 
@@ -364,6 +368,11 @@ type Status = "idle" | "loading" | "done" | "error";
 type MermaidKey =
   | "generating"
   | "renderFailed"
+  | "salvaged"
+  | "fixArrows"
+  | "fixQuoted"
+  | "fixEnd"
+  | "fixFlowchart"
   | "empty"
   | "showSource"
   | "hideSource"
@@ -376,6 +385,14 @@ type MermaidKey =
   | "zoomOut"
   | "resetZoom"
   | "closeDialog";
+
+/** 兼容层修复种类 → 徽标 tooltip 文案键（lib/mermaidSalvage.ts 的 SalvageFix）。 */
+const FIX_LABEL: Record<SalvageFix, MermaidKey> = {
+  arrows: "fixArrows",
+  quoted: "fixQuoted",
+  end: "fixEnd",
+  flowchart: "fixFlowchart",
+};
 
 /** 源码代码块：开关关闭 / 渲染失败 / 用户展开源码时共用。 */
 function SourceBox({ code, dense }: { code: string; dense?: boolean }) {
@@ -400,6 +417,9 @@ export function MermaidBlock({ source, streaming }: { source: string; streaming?
   const [status, setStatus] = useState<Status>("idle");
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 兼容层命中的修复种类（虚线降级/文本加引号/end 改名/迁移流程图），
+  // 成功后以琥珀徽标逐条标注。
+  const [fixes, setFixes] = useState<SalvageFix[] | null>(null);
   const [showSource, setShowSource] = useState(false);
   const [zoomOpen, setZoomOpen] = useState(false);
   const [flash, setFlash] = useState<"src" | "png" | null>(null);
@@ -447,7 +467,37 @@ export function MermaidBlock({ source, streaming }: { source: string; streaming?
     let alive = true;
     setStatus("loading");
     setError(null);
-    renderSvg(code, isDarkTheme() ? "dark" : "light")
+    setFixes(null);
+    const theme = isDarkTheme() ? "dark" : "light";
+    const fail = (err: unknown) => {
+      // 失败不保留旧图：深色主题上贴一张浅色 svg 比直接露出源码更糟
+      setSvg(null);
+      setError(firstLine(err));
+      setStatus("error");
+    };
+    // 兼容层按序重试（L1 定向修补 → L2 状态图迁移流程图），全部失败才报错；
+    // 报错始终用「原始源码」的 parse 错误（候选修复的错误对用户没有意义）
+    const tryCandidate = (
+      list: ReturnType<typeof salvageMermaid>,
+      i: number,
+      err: unknown,
+    ) => {
+      if (i >= list.length) {
+        fail(err);
+        return;
+      }
+      renderSvg(list[i].code, theme)
+        .then((out) => {
+          if (!alive) return;
+          setSvg(out);
+          setFixes(list[i].fixes);
+          setStatus("done");
+        })
+        .catch(() => {
+          if (alive) tryCandidate(list, i + 1, err);
+        });
+    };
+    renderSvg(code, theme)
       .then((out) => {
         if (!alive) return;
         setSvg(out);
@@ -455,10 +505,7 @@ export function MermaidBlock({ source, streaming }: { source: string; streaming?
       })
       .catch((err) => {
         if (!alive) return;
-        // 失败不保留旧图：深色主题上贴一张浅色 svg 比直接露出源码更糟
-        setSvg(null);
-        setError(firstLine(err));
-        setStatus("error");
+        tryCandidate(salvageMermaid(code), 0, err);
       });
     return () => {
       alive = false;
@@ -541,6 +588,14 @@ export function MermaidBlock({ source, streaming }: { source: string; streaming?
           {failed && (
             <span className="normal-case tracking-normal text-[rgb(var(--st-error))]">
               {tm("renderFailed")}
+            </span>
+          )}
+          {!busy && fixes && (
+            <span
+              className="normal-case tracking-normal text-[rgb(var(--st-missed))]"
+              title={fixes.map((f) => tm(FIX_LABEL[f])).join("；")}
+            >
+              {tm("salvaged")}
             </span>
           )}
         </span>

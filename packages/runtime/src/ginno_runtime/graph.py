@@ -155,6 +155,26 @@ async def _ainvoke_rate_limited(bound, msgs):
                 "rate_limited_backoff wait=%.0fs attempt=%d/%d err=%.200s",
                 delay, waited, _RATE_LIMIT_MAX_WAITS, exc,
             )
+            # 每轮等待把 provider 原始错误全文透传前端（同心跳的 custom 通道，
+            # e48be8a3 实录：静默退避让「套餐无权限」看起来像卡死）。用户
+            # 看着原始错误决定要不要 ⏹ 中断换模型。writer 不可用时退化静默。
+            try:
+                from langgraph.config import get_stream_writer
+
+                writer = get_stream_writer()
+                if writer is not None:
+                    writer(
+                        {
+                            "ginno_model_error": {
+                                "error": f"{type(exc).__name__}: {exc}"[:500],
+                                "wait_s": delay,
+                                "attempt": waited,
+                                "max": _RATE_LIMIT_MAX_WAITS,
+                            }
+                        }
+                    )
+            except Exception:  # noqa: BLE001 — 透传失败不影响退避本身
+                pass
             await asyncio.sleep(delay)
 _EMPTY_REPLY_NUDGE = (
     "[system] Your last reply was degenerate — it carried reasoning but no "

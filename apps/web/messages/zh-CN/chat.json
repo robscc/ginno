@@ -209,6 +209,10 @@
       "title": "turn {id}（点击复制，用于定位日志）",
       "copied": "已复制"
     },
+    "copyContent": {
+      "title": "复制内容",
+      "copied": "已复制"
+    },
     "handoff": {
       "takesOver": "{name} 接手"
     },

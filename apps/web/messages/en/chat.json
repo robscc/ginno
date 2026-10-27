@@ -209,6 +209,10 @@
       "title": "turn {id} (click to copy, for locating logs)",
       "copied": "copied"
     },
+    "copyContent": {
+      "title": "Copy message",
+      "copied": "Copied"
+    },
     "handoff": {
       "takesOver": "{name} takes over"
     },

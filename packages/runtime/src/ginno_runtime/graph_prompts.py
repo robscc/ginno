@@ -156,6 +156,19 @@ def build_stable_system(
         "composition -> chart. After the chart state the one-line takeaway (e.g. the peak "
         "and the trend) — do not repeat the raw numbers."
     )
+    # mermaid 兼容约束（mermaid-compat-plan.md P1，治新增；前端兼容层治存量）：
+    # 三条全部是 mermaid 11.x 实测 parse 失败的写法。稳定层内容，随前缀缓存。
+    parts.append(
+        t(
+            "Diagrams (mermaid syntax pitfalls): stateDiagram supports NO dotted arrows — "
+            "use --> only (dotted -.-> is flowchart-only). In flowchart, wrap node labels "
+            "containing ( ) or | in double quotes, e.g. A[\"release (canary)\"]; never name "
+            "a node \"end\" (reserved keyword — use done).",
+            "图表（mermaid 语法坑）：stateDiagram 不支持虚线箭头——只能用 -->（虚线 -.-> 是 "
+            "flowchart 专属）。flowchart 里节点文本含 ( ) 或 | 时要放进双引号，如 "
+            "A[\"发布(灰度)\"]；节点不要叫 end（保留字，改用 done）。",
+        )
+    )
     if "attach_ref" in allowed:
         parts.append(
             "Artifact registration: files you create through bash or any tool "

@@ -360,9 +360,11 @@ export function McpSettings() {
     }
   };
 
-  // 向导收尾：putMcp 增量合并 + reload 全量重建（§4.3 表）
+  // 向导收尾：putMcp 增量合并；reload 走后台（不阻塞保存——全量重建等
+  // 每台 connect_timeout，同步等会让「保存」按钮转几十秒，2026-10-27
+  // 实测用户被迫连点三次保存）。连接状态由 5s 轮询收敛显示。
   const saveWizard = async (name: string, entry: McpServerEntry) => {
-    const ok = await saveEntry(name, entry);
+    const ok = await mutate((s) => void (s[name] = entry), { reload: "background" });
     setWizardOpen(false);
     if (ok) showToast(t("wzSaved", { name }));
     else saveFailToast();

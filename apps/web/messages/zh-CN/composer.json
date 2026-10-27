@@ -33,6 +33,11 @@
       "mermaid": {
         "generating": "图形生成中…",
         "renderFailed": "图形渲染失败",
+        "salvaged": "虚线箭头已按实线渲染",
+        "fixArrows": "虚线箭头已按实线渲染（mermaid 状态图不支持虚线）",
+        "fixQuoted": "含括号/竖线的节点文本已加引号",
+        "fixEnd": "保留字节点 end 已重命名",
+        "fixFlowchart": "已按流程图重新渲染（虚线保留）",
         "empty": "（图形内容为空）",
         "showSource": "查看源码",
         "hideSource": "收起源码",

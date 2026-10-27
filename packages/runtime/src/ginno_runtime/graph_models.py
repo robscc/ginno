@@ -47,7 +47,12 @@ def is_retryable_error(exc: Exception) -> bool:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Backoff trigger for the in-turn retry: 429 only (see is_retryable_error)."""
+    """Backoff trigger for the in-turn retry: 429 only (see is_retryable_error).
+
+    2026-10-27 起 backoff 不再静默：每轮等待都经 get_stream_writer 把
+    provider 的**原始错误全文**透传到前端（e48be8a3 实录——429/1311
+    「套餐无模型权限」在后台白等 30/60/120s，用户只见「卡死」）。是否
+    继续等由用户看着原始错误决定（⏹ 即停）。"""
     if not is_retryable_error(exc):
         return False
     status = getattr(exc, "status_code", None)

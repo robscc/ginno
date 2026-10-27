@@ -25,6 +25,7 @@ import { FileChips, SkillChips, TABLE_KINDS } from "./blocks/chips";
 import { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 import { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
 import { imageUrl, ImageGallery } from "./blocks/media";
+import { ContextBlocks } from "./blocks/sources";
 
 // ---- 原有导出整体保留：各内聚主题拆到 blocks/ 子模块，这里统一 re-export，
 // 保证所有现有 import 路径（@/components/chat/blocks）不变。 ----
@@ -179,6 +180,12 @@ export function InnerBlocks({
       out.push(<PlanUpdateCard key={`plan-upd-${b.planId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_brief") {
       out.push(<SubagentBriefCard key={`sa-brief-${key++}`} block={b} />);
+    } else if (b.kind === "context") {
+      // context 事件（如 microcompact 清理提示）live 时挂在**当前 assistant
+      // 消息**上；这里不渲染就会让 hasInner 为真但卡片体为空——一条只有
+      // context 的消息于是显示成一张空白卡片（2026-10-26 联同底部空白一起
+      // 排查）。历史重放会把它折成 system 行，两条路径现在都看得见。
+      out.push(<ContextBlocks key={`ctx-${key++}`} blocks={[b]} />);
     }
     // refs rendered outside
     i++;

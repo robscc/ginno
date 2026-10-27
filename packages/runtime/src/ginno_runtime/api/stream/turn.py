@@ -505,12 +505,20 @@ async def _run_stream(
     compaction_stats = None
     try:
         from ...compaction import maybe_compact_history
+        from ...server_shared import _TURN_STOP
 
         async def _announce_compacting() -> None:
             await _push_session_event(session_id, "context.compacting", {}, turn_id)
 
+        # setdefault 拿到与 WS stop 处理器同一个事件对象（用户在压缩期间按
+        # ⏹ 时它已在那里被创建并置位）：summarizer 与 stop 赛跑，避免
+        # 「stop 等压缩跑完才生效」（2026-10-27 session 150bcced）。
         compaction_stats = await maybe_compact_history(
-            session, config, ctx_factory=_world_ctx, on_summary_start=_announce_compacting
+            session,
+            config,
+            ctx_factory=_world_ctx,
+            on_summary_start=_announce_compacting,
+            abort_event=_TURN_STOP.setdefault(session_id, asyncio.Event()),
         )
     except Exception:
         _log.exception("compaction_failed session=%s", session_id)

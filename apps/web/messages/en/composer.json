@@ -33,6 +33,11 @@
       "mermaid": {
         "generating": "rendering diagram…",
         "renderFailed": "Diagram render failed",
+        "salvaged": "dotted arrows shown as solid",
+        "fixArrows": "Dotted arrows rendered as solid (mermaid state diagrams don't support dotted arrows)",
+        "fixQuoted": "Quoted node labels containing brackets/pipes",
+        "fixEnd": "Renamed the reserved node id \"end\"",
+        "fixFlowchart": "Re-rendered as a flowchart (dotted arrows preserved)",
         "empty": "(empty diagram)",
         "showSource": "Show source",
         "hideSource": "Hide source",

@@ -286,6 +286,84 @@ async def test_on_summary_start_brackets_the_summarizer_call(isolated_home):
     assert stats2 is None or stats2["summary_chars"] >= 0  # no exception escaped
 
 
+async def test_stop_event_aborts_the_summarizer_call(isolated_home, monkeypatch):
+    """⏹ during the summarizer LLM call aborts compaction promptly: the call
+    is cancelled, nothing is rewritten, None returns (2026-10-27 session
+    150bcced — stop waited out a minutes-long summary before taking effect)."""
+    import asyncio
+
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    settings = {"context": {"compact_threshold_tokens": 10, "compact_keep_turns": 1}}
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+    model = ScriptedChatModel(scripts=[script(text="r0"), script(text="r1"), script(text="s")])
+    graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
+    config = {"configurable": {"thread_id": "comp-abort", "project_slug": "default"}}
+    for q in ("q1", "q2"):
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
+        )
+    session = {"graph": graph, "model": model, "project_slug": "default", "session_id": "comp-abort"}
+
+    # Summarizer "hangs" until the test fires the stop event.
+    hang = asyncio.Event()
+    real_agenerate = model._agenerate
+
+    async def slow_agenerate(*a, **kw):
+        idx = model._i  # capture which call this is
+        if idx >= 2:  # r0=0, r1=1, the summarizer is the 3rd call
+            await hang.wait()
+        return await real_agenerate(*a, **kw)
+
+    monkeypatch.setattr(model, "_agenerate", slow_agenerate)
+
+    stop = asyncio.Event()
+
+    async def fire_stop_later():
+        await asyncio.sleep(0.05)
+        stop.set()
+
+    asyncio.get_running_loop().create_task(fire_stop_later())
+
+    t0 = asyncio.get_event_loop().time()
+    stats = await maybe_compact_history(session, config, abort_event=stop)
+    elapsed = asyncio.get_event_loop().time() - t0
+    hang.set()  # release anything still waiting (should be nothing)
+
+    assert stats is None  # aborted → no compaction, no rewrite
+    assert elapsed < 3, "abort must not wait for the summarizer to finish"
+    # History untouched: still 4 messages (2 turns × human+ai).
+    state = await graph.aget_state(config)
+    assert len(state.values["messages"]) == 4
+
+
+async def test_stop_event_set_before_summary_skips_compaction(isolated_home):
+    import asyncio
+
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    settings = {"context": {"compact_threshold_tokens": 10, "compact_keep_turns": 1}}
+    (isolated_home / "settings.json").write_text(json.dumps(settings))
+    model = ScriptedChatModel(scripts=[script(text="r0"), script(text="r1")])
+    graph = build_graph(model=model, project_slug="default", workspace="/tmp/ws")
+    config = {"configurable": {"thread_id": "comp-abort2", "project_slug": "default"}}
+    for q in ("q1", "q2"):
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=q)], "project_slug": "default"}, config
+        )
+    session = {"graph": graph, "model": model, "project_slug": "default", "session_id": "comp-abort2"}
+
+    stop = asyncio.Event()
+    stop.set()
+    # force=True + pre-set event: even the manual path respects an armed stop
+    # (defensive; turn path never passes force with an event).
+    assert await maybe_compact_history(session, config, force=True, abort_event=stop) is None
+    state = await graph.aget_state(config)
+    assert len(state.values["messages"]) == 4
+
+
 async def test_compaction_reinjects_world_state(isolated_home):
     from ginno_runtime.graph import build_graph
     from ginno_runtime.testing.fake_model import ScriptedChatModel, script
