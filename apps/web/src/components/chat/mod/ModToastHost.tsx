@@ -51,6 +51,9 @@ export function ModToastHost() {
   const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   useEffect(() => {
+    // 局部持有 Set 本身（ref 自初始化后从不整体替换，只就地增删），
+    // cleanup 用局部变量，避免「cleanup 里 ref.current 可能已变」的告警。
+    const timers = timersRef.current;
     const dismiss = (id: number) => {
       setToasts((prev) => prev.filter((x) => x.id !== id));
     };
@@ -58,16 +61,16 @@ export function ModToastHost() {
       // 超出堆叠上限挤掉最旧的一条。
       setToasts((prev) => [...prev.slice(-(MAX_TOASTS - 1)), t]);
       const timer = setTimeout(() => {
-        timersRef.current.delete(timer);
+        timers.delete(timer);
         dismiss(t.id);
       }, AUTO_DISMISS_MS);
-      timersRef.current.add(timer);
+      timers.add(timer);
     };
     listeners.push(listener);
     return () => {
       listeners = listeners.filter((l) => l !== listener);
-      for (const timer of timersRef.current) clearTimeout(timer);
-      timersRef.current.clear();
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
     };
   }, []);
 

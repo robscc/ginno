@@ -159,6 +159,10 @@ export function useChatStreamEngine(deps: EngineDeps) {
     pinToBottom, uploadOneDoc, attachOne, attemptSend, recomputeMenu, finishSynthesisWait,
   } = deps;
 
+  // steerQ 本身每 render 新建（useSteerQueue 返回一个字面量对象），但其方法都是
+  // useCallback 稳定引用；取出 clear 才能安全地进 effect 依赖。
+  const { clear: clearSteerQueue } = steerQ;
+
   // ---- i18n（chat 域 + 事件契约）----
   // 本 hook 处理 runtime 事件文本的落地：error / notice 等事件可带 i18n_key+params
   // （i18n-design.md §3 契约），落地时翻译，未命中回退原文。socket 回调闭包的
@@ -367,7 +371,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
         delete liveBySessionRef.current[id]; delete statusRef.current[id];
         delete permsRef.current[id];      delete proposeRef.current[id];
         delete busyBySessionRef.current[id]; delete streamAgentRef.current[id];
-        steerQ.clear(id);
+        clearSteerQueue(id);
         delete serverRunningRef.current[id];
         delete compactingBySessionRef.current[id];
         delete draftCacheRef.current[id]; delete pingTimerRef.current[id];
@@ -376,17 +380,24 @@ export function useChatStreamEngine(deps: EngineDeps) {
         delete probeSeqRef.current[id];   delete sendSeqRef.current[id];
       }
     }
-  }, [g.sessions]);
+  }, [g.sessions, clearSteerQueue]);
 
   // Close all persistent sockets on component unmount.
+  // 这些映射对象自 useRef 初始化后从不整体替换、只就地增删条目；effect 内把
+  // .current 拷到局部变量后，cleanup 里用的就是同一对象（告警提示的推荐写法）。
   useEffect(() => {
+    const sockets = socketsRef.current;
+    const reconnTimers = reconnTimerRef.current;
+    const pingTimers = pingTimerRef.current;
+    const watchTimers = watchTimerRef.current;
+    const reconcileTimers = reconcileTimerRef.current;
     return () => {
-      for (const sid of Object.keys(socketsRef.current)) {
-        if (reconnTimerRef.current[sid]) clearTimeout(reconnTimerRef.current[sid]!);
-        if (pingTimerRef.current[sid])   clearInterval(pingTimerRef.current[sid]!);
-        if (watchTimerRef.current[sid])  clearInterval(watchTimerRef.current[sid]!);
-        if (reconcileTimerRef.current[sid]) clearTimeout(reconcileTimerRef.current[sid]!);
-        try { socketsRef.current[sid].close(); } catch { /* ignore */ }
+      for (const sid of Object.keys(sockets)) {
+        if (reconnTimers[sid]) clearTimeout(reconnTimers[sid]!);
+        if (pingTimers[sid])   clearInterval(pingTimers[sid]!);
+        if (watchTimers[sid])  clearInterval(watchTimers[sid]!);
+        if (reconcileTimers[sid]) clearTimeout(reconcileTimers[sid]!);
+        try { sockets[sid].close(); } catch { /* ignore */ }
       }
     };
   }, []);
@@ -689,9 +700,14 @@ export function useChatStreamEngine(deps: EngineDeps) {
 
   // Pane 的 press 回发沿本 hook 的 session socket(§7.4):注册进 paneBus,
   // 右栏 ModPaneHost 不需要自己的连接。挂载一次即可——sender 是稳定闭包,
-  // 经 socketsRef 间接取当前 socket。
+  // 经 socketsRef 间接取当前 socket。实现每 render 重建（函数声明），故经
+  // ref 存最新值：直接补依赖会让 effect 每次 render 重注册；而实现只读
+  // socketsRef，新旧闭包行为一致。
+  const sendModUiPressRef = useRef(sendModUiPress);
+  sendModUiPressRef.current = sendModUiPress;
   useEffect(() => {
-    registerModPanePressSender((sid, generation, actionId, value) => sendModUiPress(sid, generation, actionId, value));
+    registerModPanePressSender((sid, generation, actionId, value) =>
+      sendModUiPressRef.current(sid, generation, actionId, value));
   }, []);
 
   // ─── 子模块包装（engine/*）：名字与签名保持拆分前原样，实现见各子模块 ──────

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 
@@ -21,7 +21,7 @@ export function HooksSettings() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const load = () => {
+  const load = useCallback(() => {
     setMsg("");
     api
       .getSettings()
@@ -32,8 +32,8 @@ export function HooksSettings() {
         setHooks(out);
       })
       .catch(() => setMsg(t("loadFailed")));
-  };
-  useEffect(load, []);
+  }, [t]);
+  useEffect(load, [load]);
 
   const update = (e: Ev, next: Hook[]) => setHooks((h) => ({ ...h, [e]: next }));
 

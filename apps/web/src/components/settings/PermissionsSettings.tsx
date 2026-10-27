@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 
@@ -77,7 +77,7 @@ export function PermissionsSettings() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const load = () => {
+  const load = useCallback(() => {
     setMsg("");
     api
       .getSettings()
@@ -90,8 +90,8 @@ export function PermissionsSettings() {
         });
       })
       .catch(() => setMsg(t("loadFailed")));
-  };
-  useEffect(load, []);
+  }, [t]);
+  useEffect(load, [load]);
 
   const set = (which: keyof Perms) => (next: string[]) => setPerms((p) => ({ ...p, [which]: next }));
 

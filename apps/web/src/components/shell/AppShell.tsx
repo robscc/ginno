@@ -137,11 +137,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // PIN window or another client bumps only the server copy — this window's
   // list would sit in its old day-group until restart. Cheap re-fetch on
   // focus (the list is one JSON read).
+  const reloadSessions = g.reloadSessions;
   useEffect(() => {
-    const onFocus = () => void g.reloadSessions();
+    const onFocus = () => void reloadSessions();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [g.reloadSessions]);
+  }, [reloadSessions]);
 
   useEffect(() => {
     if (didInit.current) return;

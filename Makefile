@@ -60,6 +60,10 @@ app: check guard-app-not-running
 	@# stable designated requirement across rebuilds, so macOS TCC grants
 	@# (Desktop/Documents access prompts) persist instead of resetting.
 	@security unlock-keychain -p ginno $(HOME)/Library/Keychains/ginno-codesign.keychain-db 2>/dev/null || true
+	@# 注意：Tauri 打包阶段会打印一行
+	@#   "Warn skipping app notarization, no APPLE_ID & …"
+	@# 这是本机自签（"Ginno Local Code Signing"）构建的**预期**输出，不是
+	@# 配置错误——没有 Apple 公证凭据就不公证，.app 仍正常可用。
 	cd $(ROOT)/apps/desktop && node node_modules/@tauri-apps/cli/tauri.js build
 	@# Regression guard: an only-linker-signed .app makes WKWebView's
 	@# Networking helper reject every request -> the webview white-screens
@@ -85,8 +89,11 @@ app-impl: mod-broker mod-runner sidecar
 ## 2026-10-21 打包失败即此竞态（两个 headless install 抢 unlink
 ## .pnpm/node_modules/autoprefixer → ENOENT → Error 254，间歇复现）。
 ## 两目标改为依赖本目标：安装只跑一次、且先于并行段开始。
+## --config.confirm-modules-purge=false：node_modules 布局变化时 pnpm 会
+## 交互式问「是否整目录重装」；make 构建（含 CI/脚本）不能卡在 stdin 上，
+## 这里直接放行重建（内容由 lockfile 决定，结果不变）。
 pnpm-deps:
-	cd $(ROOT) && pnpm install --prefer-offline
+	cd $(ROOT) && pnpm install --prefer-offline --config.confirm-modules-purge=false
 
 ## app-force: `app` without the running-app guard (FORCE=1) — convenience alias
 # Exists because typing FORCE=1 in front of `make app` is easy to forget. It is
@@ -186,6 +193,17 @@ mod-runner: pnpm-deps
 # regardless, so no eager import at startup is needed (see _frozen_imports.py).
 # 内容戳：runtime 源/web_out/extension 未变且 bundle 在 → 跳过（改一行 web
 # 不再重跑几分钟的 PyInstaller）。FORCE_RUNTIME=1 强制重打。
+#
+# PyInstaller 的 5 条已知良性 WARNING 在这里过滤掉（否则每次 make app 都刷
+# 一屏警告）：
+#   · langchain_openai/.middleware、langchain_anthropic/.middleware —— 可选
+#     集成子包，只在装了 `langchain`（非本项目依赖）时可 import；
+#   · pandas.plotting._matplotlib —— 可选绘图后端，没装 matplotlib；
+#   · Library user32/msvcrt required via ctypes not found —— 只在 Windows
+#     存在的系统 DLL，macOS 侧是误报。
+# 只按精确文案过滤这 5 类；其他任何新 WARNING 仍然照常输出（不要改成
+# --log-level ERROR，会连真问题一起吞掉）。`set -o pipefail` 保证
+# PyInstaller 失败时管道不把非零退出码吞掉（macOS /bin/sh = bash 3.2 支持）。
 runtime: web
 	@mkdir -p $(CACHE); \
 	h=$$( (find $(RUNTIME)/src $(RUNTIME)/bin $(ROOT)/packages/extension/src $(ROOT)/packages/extension/native-host -type f 2>/dev/null | sort | xargs cat 2>/dev/null; \
@@ -194,7 +212,7 @@ runtime: web
 	if [ "$(FORCE_RUNTIME)" != "1" ] && [ -f $(CACHE)/runtime.stamp ] && [ "$$(cat $(CACHE)/runtime.stamp)" = "$$h" ] && [ -x $(RUNTIME)/dist/ginno-runtime/ginno-runtime ]; then \
 	  echo "⏭️  runtime 输入未变，跳过 PyInstaller"; \
 	else \
-	  cd $(RUNTIME) && uv run --locked --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
+	  cd $(RUNTIME) && set -o pipefail && uv run --locked --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
 	  --collect-all langchain_openai --collect-all langchain_anthropic \
 	  --collect-all langgraph --collect-all mcp --collect-all pydantic \
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
@@ -205,7 +223,9 @@ runtime: web
 	  --add-data "$(RUNTIME)/src/ginno_runtime/i18n:ginno_runtime/i18n" \
 	  --add-data "$(RUNTIME)/src/ginno_runtime/skills/builtin:ginno_runtime/skills/builtin" \
 	  --add-data "$(ROOT)/apps/web/messages:web_messages" \
-	  bin/ginno-runtime.py && echo "$$h" > $(CACHE)/runtime.stamp; \
+	  bin/ginno-runtime.py 2>&1 \
+	    | grep -vE "WARNING: (Failed to collect submodules for .(langchain_openai|langchain_anthropic)\.middleware.|Failed to collect submodules for .pandas\.plotting\._matplotlib.|Library (user32|msvcrt) required via ctypes not found)" \
+	  && echo "$$h" > $(CACHE)/runtime.stamp; \
 	fi
 	@echo "✅ Runtime → $(RUNTIME)/dist/ginno-runtime/"
 

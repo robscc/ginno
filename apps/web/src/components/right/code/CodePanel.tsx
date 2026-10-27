@@ -162,12 +162,17 @@ export function CodePanel() {
     (key: string, values?: Record<string, string | number>): string;
     has(key: string): boolean;
   };
-  const codeCmdNotice = (p: { code: string; detail: string }): string => {
-    const key = `notice.err.${p.code}`;
-    return tr.has(key)
-      ? tr(key, { detail: p.detail })
-      : tr("notice.err.unknown", { detail: p.detail || p.code });
-  };
+  // 稳定引用：多个 useCallback（删除/揭示/外部打开）都会用到，单独成 memo
+  // 以便把它们按依赖补全；tr 每次 render 都是新函数时这里随之更新，行为不变。
+  const codeCmdNotice = useCallback(
+    (p: { code: string; detail: string }): string => {
+      const key = `notice.err.${p.code}`;
+      return tr.has(key)
+        ? tr(key, { detail: p.detail })
+        : tr("notice.err.unknown", { detail: p.detail || p.code });
+    },
+    [tr],
+  );
   const sessionId = g.activeSessionId;
   const panelWidth = g.rightPanelWidth;
   const wide = panelWidth >= WIDE_PX;
@@ -181,6 +186,9 @@ export function CodePanel() {
     setCodeTreeOpen,
     codeOpenRequest,
     clearCodeOpenRequest,
+    // 单独解构：作为 useCallback 依赖时 member 表达式会触发 exhaustive-deps
+    // 的「missing dependency: 'g'」（整个 store 对象不宜入依赖）。
+    applySessionPatch,
   } = g;
 
   const [roots, setRoots] = useState<CodeRoot[]>([]);
@@ -853,7 +861,7 @@ export function CodePanel() {
       setRefreshNonce((n) => n + 1);
       return null;
     },
-    [sessionId, effectiveRootId, activeRoot, absInActiveRoot, t],
+    [sessionId, effectiveRootId, activeRoot, absInActiveRoot, t, codeCmdNotice],
   );
 
   const onCopyPath = useCallback(
@@ -891,7 +899,7 @@ export function CodePanel() {
         );
       });
     },
-    [activeRoot, absInActiveRoot, t],
+    [activeRoot, absInActiveRoot, t, codeCmdNotice],
   );
 
   const onTreeOpenExternal = useCallback(
@@ -910,7 +918,7 @@ export function CodePanel() {
         );
       });
     },
-    [activeRoot, absInActiveRoot, t],
+    [activeRoot, absInActiveRoot, t, codeCmdNotice],
   );
 
   // ---- search injection (⌘P / ⇧⌘F) ------------------------------------------
@@ -955,7 +963,7 @@ export function CodePanel() {
         });
         if (!r.ok) return r.error || t("fs.mountFailed");
         // Keep the store's session in step so the chip and a later add see it.
-        g.applySessionPatch(sessionId, {
+        applySessionPatch(sessionId, {
           context_folders: nextIds,
           primary_folder: primary,
         });
@@ -965,7 +973,7 @@ export function CodePanel() {
         return fsError(err, t("fs.mountFailed"));
       }
     },
-    [sessionId, g.sessions, g.applySessionPatch, t],
+    [sessionId, g.sessions, applySessionPatch, t],
   );
 
   const onMakeRootWritable = useCallback(async (rootId: string): Promise<string | null> => {

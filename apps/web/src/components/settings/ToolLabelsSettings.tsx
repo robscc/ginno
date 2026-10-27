@@ -23,7 +23,7 @@ export function ToolLabelsSettings() {
         setLabels({ ...DEFAULT_TOOL_LABELS, ...user });
       })
       .catch(() => setMsg(t("loadFailed")));
-  }, []);
+  }, [t]);
 
   // IME（拼音等）合成期间每次按键都触发 onChange；若直接落盘会并发保存
   // 互相覆盖，且可能把拼音中间态写进配置。输入只改本地 state，去抖后落盘。

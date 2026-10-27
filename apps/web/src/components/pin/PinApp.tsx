@@ -54,11 +54,16 @@ export function PinApp() {
 
   const [winMode, setWinMode] = useState<WinMode>("mini");
   const [sessMode, setSessMode] = useState<SessMode>(() => {
+    // SSR/prerender guard: Node ≥22 提供全局 localStorage（webstorage），
+    // 在静态导出预渲染时读它会触发
+    // "`--localstorage-file` was provided without a valid path" 的 Node 警告。
+    // pin.html 是预渲染产物，必须只在浏览器里读。
+    if (typeof window === "undefined") return "quick";
     try {
-      const v = localStorage.getItem(SESS_MODE_KEY);
+      const v = window.localStorage.getItem(SESS_MODE_KEY);
       if (v === "quick" || v === "follow") return v;
     } catch {
-      /* SSR / storage blocked */
+      /* storage blocked */
     }
     return "quick";
   });
