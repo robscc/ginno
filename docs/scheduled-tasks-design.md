@@ -206,7 +206,10 @@ Ginno 是单机个人 Agent，用户即机主。核心场景：
   §3.7；missed 显示「错过（机器睡眠或应用未运行）」）。
 - **点击**（仅 ok/error/running 的执行段）：按目标类型分流——prompt 执行打开影子会话
   回放（§3.6），workflow 执行用现有 `g.openRunView(workflow_run_id)` 打开 run 视图。
-  计划刻度与 missed 刻度不可点。
+  计划刻度与 missed 刻度不可点。**回放目标必须仍存在**：prompt 要有影子会话 id、
+  workflow 要有 run id；失败在创建会话之前（如模型/凭据不可用）的运行没有回放目标，
+  整段不可点、也不显示「打开」入口（2026-10-28 修复：之前被误判成「会话已删除」，
+  悬停入口常驻且点不开）。
 
 ### 3.5 执行记录
 
@@ -228,8 +231,16 @@ Ginno 是单机个人 Agent，用户即机主。核心场景：
 - **排序**：时间升/降序切换（默认降序）——即需求 5 的「简单按时间排序」，不做多列排序。
 - **过滤**：任务、目标类型（💬/⚡）、状态（ok/error/missed/skipped/running）、日期范
   围（近 1/7/30 天）。时间条点击某天 → 此页签带日期过滤跳入。
-- **行点击** → 按目标分流进回放（同 §3.4 点击）。missed 行不可点（无会话/无 run）。
+- **行点击** → 按目标分流进回放（同 §3.4 点击）。不可点的行（missed / skipped /
+  失败在创建会话前 / 影子会话已被删除）不显示「打开」入口；会话被删除的旧记录在
+  hover 时给一个禁用入口并说明「会话已删除」，失败在创建会话之前的记录**完全**不
+  渲染入口（摘要列只留错误摘要 + `error_hint`）。判断统一走 `shared.runReplayable()`
+  （`runClickable()` + 排除 `session_missing`），时间条与执行记录共用。
 - **分页** 50 行/页，与请求日志一致。
+- **错误详情 hover**（2026-10-28）：摘要列悬停出富 tooltip（宽 520，`useTip({maxWidth})`）：
+  状态/任务/时间 + `error_hint`（人话原因）+ 完整 `error`（等宽、自动换行）+ run_id /
+  触发方式 / 回放可用性；时间条的 run hover tips 同步展示 `error_hint` + 完整 `error`。
+  有错误详情时该行不再挂原生 `title`，避免系统 tooltip 与自定义 tooltip 叠加。
 - 数据只显示元数据与摘要；对话内容进回放视图才拉取。
 
 ### 3.6 对话回放（两种目标，两条路径）
@@ -456,7 +467,9 @@ source）。workflow 目标：维持既有 `source:"workflow"`（运行节点/�
 | 同任务上次未跑完又到点 | 记 `skipped_overlap`，不排队 |
 | workflow 配方被删除后到点 | 记 `error("workflow_missing")`，任务列表标「配方已删除」 |
 | workflow 配方删除但历史 run 仍在 | 执行记录保留；回放走 run 视图（RunSubSessionView 已用 stub 配方名渲染） |
-| 用户手动删影子会话文件 | 执行记录保留；回放显示「会话已删除」 |
+| 用户手动删影子会话文件 | 执行记录保留；引用被清空并标 `session_missing`，回放入口 hover 时显示禁用态「会话已删除」 |
+| 影子会话加载 Claude Mods | **不加载**（2026-10-28）：headless 定时任务跳过 mods 的 plugin hooks / 总线事件 / `mcp__<mod>__*` 工具，只保留 settings.json 的经典 hooks；否则 claude-music 的 SessionStart 危险命令会在每次执行时触发「Mods 授权拦截」toast |
+| 失败在创建会话之前（模型/凭据/网络等） | 记录保留错误摘要；无影子会话 → 不可回放，也不显示「打开」入口（`runs.noReplay` 作为行 tooltip） |
 | 删除任务 | 记录与会话保留；时间条历史照常渲染（task_name 冗余） |
 | 合盖/手动睡眠 | keep_awake 无能为力——UI 文案与 missed 提示明确归因 |
 | 单次任务执行完 | 自动 `enabled=false`，列表显示「已完成」 |

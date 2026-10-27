@@ -122,9 +122,20 @@ async def call_mod_tool(full: str, args: dict, session_id: str) -> str:
 def build_mod_tools(session_id: str | None) -> list:
     """One StructuredTool per registered mod tool (graph.py build_all_tools
     consumer). ``[]`` without a session — same convention as the skill/goal
-    tools: no socket to answer over."""
+    tools: no socket to answer over.
+
+    定时任务的 headless 影子会话不加载 Claude Mods（2026-10-28）：模型工具表
+    里也不出现 mcp__<mod>__* ——连调用入口都不给，避免 mods 的授权/提示面
+    混进无人值守的任务执行。"""
     if not session_id or not _REGISTRY:
         return []
+    try:
+        from ..session_meta import session_is_scheduled
+
+        if session_is_scheduled(session_id):
+            return []
+    except Exception:  # noqa: BLE001 — 判定失败按普通会话处理
+        pass
 
     out: list = []
     for entry in list_tools():

@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useTip } from "@/components/settings/usage/charts";
 import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import { clickedWhileSelecting } from "@/lib/utils";
@@ -17,7 +18,7 @@ import {
   fmtClock,
   fmtDayPrefix,
   fmtDuration,
-  runClickable,
+  runReplayable,
   statusMeta,
 } from "./shared";
 
@@ -25,13 +26,11 @@ const PAGE_SIZE = 50;
 // 范围过滤在客户端做（API 的 date 是单日），最多向后取 6 页兜底。
 const MAX_PAGES = 6;
 
-/** 会话引用已失效（DATA-06）：record 保留（含摘要），但回放会落空 404。 */
-function sessionDead(r: ScheduleRun): boolean {
-  return (
-    r.target_type === "prompt" &&
-    (r.session_missing === true || !r.session_id) &&
-    !!r.summary
-  );
+/** 影子会话被删（DATA-06）：记录保留（含摘要），回放目标已不存在。
+ *  注意只认显式 `session_missing`——失败在创建会话之前的运行 session_id
+ *  本来就是空的，不能当作「已删除」而常驻一个禁用的「打开」入口。 */
+function sessionDeleted(r: ScheduleRun): boolean {
+  return r.target_type === "prompt" && r.session_missing === true;
 }
 
 export function RunsPanel({
@@ -51,6 +50,61 @@ export function RunsPanel({
 }) {
   const g = useGinno();
   const tr = useTranslations("sched");
+  // 执行失败的详情 tooltip（2026-10-28）：摘要列被 truncate，错误原因/原始
+  // 错误/error_kind 都要能悬停看全。宽 520 而不是通用 320——模型报错常带
+  // provider/URL 长串，窄 tooltip 折行太碎。
+  const { show, hide, move, tipEl } = useTip({ maxWidth: 520 });
+
+  /** 该行有没有可展开的错误详情（决定 tooltip 与原生 title 是否二选一）。 */
+  const hasErrorDetail = (r: ScheduleRun): boolean =>
+    !!(r.error || r.error_hint || (r.status === "error" && r.summary));
+
+  /** 错误详情 tooltip 内容：人话原因 → 原始错误 → 运行 id + 回放可用性。 */
+  const errorTipNode = (r: ScheduleRun) => {
+    const replayable = runReplayable(r);
+    const deleted = r.target_type === "prompt" && r.session_missing === true;
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5 font-medium">
+          <span className="shrink-0 text-red">✕ {statusMeta(r.status).label}</span>
+          <span className="min-w-0 truncate text-txt">{r.task_name}</span>
+          <span className="ml-auto shrink-0 text-[10.5px] text-faint tabular-nums">
+            {fmtDayPrefix(r.scheduled_at ?? r.started_at)} {fmtClock(r.started_at ?? r.scheduled_at)}
+          </span>
+        </div>
+        {r.error_hint && (
+          <div className="flex gap-2">
+            <span className="shrink-0 text-faint">{tr("runs.errorHint")}</span>
+            <span className="whitespace-pre-wrap break-words text-yellow/90">{r.error_hint}</span>
+          </div>
+        )}
+        {r.error && (
+          <div>
+            <div className="text-faint">{tr("runs.errorDetail")}</div>
+            <div className="mt-0.5 max-h-52 overflow-hidden whitespace-pre-wrap break-words rounded border border-line/60 bg-base/60 px-2 py-1 font-mono text-[11px] text-red/90">
+              {r.error}
+            </div>
+          </div>
+        )}
+        {!r.error && r.summary && (
+          <div>
+            <div className="text-faint">{tr("runs.colSummary")}</div>
+            <div className="mt-0.5 max-h-52 overflow-hidden whitespace-pre-wrap break-words text-muted">
+              {r.summary}
+            </div>
+          </div>
+        )}
+        <div className="flex items-center gap-1.5 border-t border-line/60 pt-1.5 text-[10.5px] text-faint">
+          <span className="font-mono">{r.run_id}</span>
+          <span>·</span>
+          <span>{r.trigger === "manual" ? tr("trigger.manual") : tr("trigger.scheduled")}</span>
+          <span className="ml-auto text-violet">
+            {replayable ? tr("runs.rowClick") : deleted ? tr("runs.sessionDeleted") : tr("runs.noReplay")}
+          </span>
+        </div>
+      </div>
+    );
+  };
   // 范围选项（catalog 驱动；原模块级英文常量迁入 sched.runs.range*）。
   const rangeOptions: Array<[string, string]> = [
     ["1", tr("runs.range1d")],
@@ -129,12 +183,8 @@ export function RunsPanel({
   };
 
   const openRun = (r: ScheduleRun) => {
-    if (sessionDead(r)) {
-      markOne(r); // 会话已删除：只消红点，不进死回放
-      return;
-    }
-    if (!runClickable(r)) {
-      markOne(r); // missed/skipped：无回放，点击只消红点
+    if (!runReplayable(r)) {
+      markOne(r); // 被删会话 / 失败在创建会话前 / missed / skipped：只消红点
       return;
     }
     markOne(r);
@@ -271,8 +321,14 @@ export function RunsPanel({
             <tbody>
               {pageRows.map((r) => {
                 const meta = chipMeta(r);
-                const dead = sessionDead(r);
-                const clickable = runClickable(r) && !dead;
+                const deleted = sessionDeleted(r);
+                const replayable = runReplayable(r);
+                // 不可回放且不是「会话被删」：失败在创建会话之前 / missed /
+                // skipped——不存在可打开的目标，也不该留任何「打开」入口。
+                const noReplay = !replayable && !deleted;
+                // 有错误详情的行：摘要列 hover 出富 tooltip；原生 title 让位，
+                // 免得系统 tooltip 和自定义 tooltip 同时冒出来。
+                const detail = hasErrorDetail(r);
                 const dur =
                   r.started_at && r.finished_at ? fmtDuration(r.finished_at - r.started_at) : r.started_at ? "…" : "—";
                 return (
@@ -286,16 +342,20 @@ export function RunsPanel({
                       openRun(r);
                     }}
                     className={`group border-b border-line/60 last:border-0 ${
-                      clickable ? "cursor-pointer transition-colors hover:bg-card2/60" : ""
+                      replayable ? "cursor-pointer transition-colors hover:bg-card2/60" : ""
                     }`}
                     title={
-                      clickable
-                        ? tr("runs.rowClick")
-                        : dead
-                          ? tr("runs.sessionDeleted")
-                          : r.status === "missed"
+                      detail
+                        ? undefined
+                        : replayable
+                          ? tr("runs.rowClick")
+                          : deleted
+                            ? tr("runs.sessionDeleted")
+                            : r.status === "missed"
                             ? tr("runs.rowMissed")
-                            : undefined
+                            : noReplay
+                              ? tr("runs.noReplay")
+                              : undefined
                     }
                   >
                     <td className="overflow-hidden whitespace-nowrap px-3 py-2 text-muted tabular-nums">
@@ -338,37 +398,46 @@ export function RunsPanel({
                         title={
                           r.status === "missed"
                             ? tr("runs.rowMissed")
-                            : r.error_hint || r.error || undefined
+                            : detail
+                              ? undefined
+                              : r.error_hint || r.error || undefined
                         }
                       >
                         {meta.glyph} {meta.label}
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 text-faint tabular-nums">{dur}</td>
-                    <td className="overflow-hidden px-3 py-2 text-muted">
+                    <td
+                      className="overflow-hidden px-3 py-2 text-muted"
+                      onMouseEnter={detail ? (e) => show(errorTipNode(r), e) : undefined}
+                      onMouseMove={detail ? move : undefined}
+                      onMouseLeave={detail ? hide : undefined}
+                    >
                       <div className="flex items-center gap-1.5">
                         <div className="min-w-0 flex-1">
-                          <div className="truncate" title={r.summary ?? undefined}>
+                          <div className="truncate" title={detail ? undefined : (r.summary ?? undefined)}>
                             {r.summary ?? (r.error ? <span className="text-red">{r.error}</span> : "—")}
                           </div>
                           {/* P0-1：error_hint 是人话原因（后端按 locale 出文案），
                               缩一级放在错误摘要下方，原始 error 仍留在 chip 的 title。 */}
                           {r.error_hint && (
-                            <div className="truncate text-[10px] text-faint" title={r.error_hint}>
+                            <div className="truncate text-[10px] text-faint" title={detail ? undefined : r.error_hint}>
                               {r.error_hint}
                             </div>
                           )}
                         </div>
                         {/* 显式回放入口：hover 才出现，让「整行可点」可被发现 */}
-                        {clickable && (
+                        {replayable && (
                           <span className="shrink-0 rounded-md border border-violet/40 px-1.5 py-px text-[10px] text-violet opacity-0 transition-opacity group-hover:opacity-100">
                             {tr("runs.open")}
                           </span>
                         )}
-                        {/* 会话已删除：入口保留但禁用，悬停说明原因，不打开死会话 */}
-                        {dead && (
+                        {/* 会话被删：仍保留一个 hover 才出现的禁用入口（可解释
+                            「为什么打不开」），不再常驻——失败在创建会话之前的
+                            运行则完全不渲染入口（见 noReplay）。 */}
+                        {deleted && (
                           <span
-                            className="shrink-0 cursor-not-allowed rounded-md border border-line px-1.5 py-px text-[10px] text-faint"
+                            className="shrink-0 cursor-not-allowed rounded-md border border-line px-1.5 py-px text-[10px] text-faint opacity-0 transition-opacity group-hover:opacity-100"
                             title={tr("runs.sessionDeleted")}
                           >
                             {tr("runs.open")}
@@ -406,6 +475,8 @@ export function RunsPanel({
           </button>
         </div>
       )}
+      {/* 错误详情 hover tooltip（摘要列触发；fixed 定位，不受表格裁剪） */}
+      {tipEl}
     </div>
   );
 }

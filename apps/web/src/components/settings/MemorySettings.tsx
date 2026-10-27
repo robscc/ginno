@@ -36,7 +36,12 @@ type KbForm = {
   auto_summarize: boolean;
   pool_flush_threshold: number;
   memory_budget_chars: number;
+  // 注入预算住在 settings.context.memory_max_chars(world_state 注入截断线),
+  // 不归 knowledge 块管——保存时单独拆出来走整份 settings 读改写。
+  injection_max_chars: number;
   summarize_model: string;
+  // 具体模型 id;空 = 供应商默认模型(build_model 的 model_name 覆盖)
+  summarize_model_id: string;
   draft_ttl_days: number;
   draft_max_pending: number;
   draft_keep: number;
@@ -49,7 +54,9 @@ const FORM_DEFAULTS: KbForm = {
   auto_summarize: true,
   pool_flush_threshold: 30,
   memory_budget_chars: 3000,
+  injection_max_chars: 8000,
   summarize_model: "",
+  summarize_model_id: "",
   draft_ttl_days: 7,
   draft_max_pending: 3,
   draft_keep: 20,
@@ -238,8 +245,15 @@ export function MemorySettings() {
       setPool(poolPage);
       setTrend(trendRows.trend || []);
       setThrottle(mem.throttle ?? null);
-      const k = ((settings as Record<string, unknown>).knowledge || {}) as Partial<KbForm>;
-      setForm({ ...FORM_DEFAULTS, ...k });
+      const s = settings as Record<string, unknown>;
+      const k = (s.knowledge || {}) as Partial<KbForm>;
+      const c = (s.context || {}) as Record<string, unknown>;
+      setForm({
+        ...FORM_DEFAULTS,
+        ...k,
+        injection_max_chars:
+          typeof c.memory_max_chars === "number" ? c.memory_max_chars : 8000,
+      });
       setMsg("");
     } catch {
       setMsg(t("connError"));
@@ -382,9 +396,28 @@ export function MemorySettings() {
   async function saveSettings() {
     setBusy(true);
     try {
-      const r = await api.kbWikiPutConfig(form);
-      setMsg(r.ok ? t("saved") : t("connError"));
-      if (r.ok) await load();
+      const { injection_max_chars, ...kb } = form;
+      const r = await api.kbWikiPutConfig(kb);
+      if (!r.ok) {
+        setMsg(t("connError"));
+        return;
+      }
+      // PUT /settings 是整文件替换:先读当前值再合并,读失败绝不写
+      // (同 ExternalAgentsSettings 的防误清空守卫)。
+      const cur = (await api.getSettings()) as Record<string, unknown>;
+      if (!cur || typeof cur !== "object" || Object.keys(cur).length === 0) {
+        setMsg(t("connError"));
+        return;
+      }
+      const n = Math.round(Number(injection_max_chars));
+      cur.context = {
+        ...(cur.context || {}),
+        // 0 = 不截断(world_state render 的 budget>0 判断);非法输入回落默认
+        memory_max_chars: Number.isFinite(n) ? Math.max(0, Math.min(100000, n)) : 8000,
+      };
+      await api.putSettings(cur);
+      setMsg(t("saved"));
+      await load();
     } catch {
       setMsg(t("connError"));
     } finally {
@@ -394,6 +427,19 @@ export function MemorySettings() {
 
   const set = <K extends keyof KbForm>(key: K, value: KbForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+
+  // 蒸馏实际生效的 provider:显式选择 > 默认 provider(模型覆盖对两者都有效)
+  const distillProvider =
+    form.summarize_model && g.providers[form.summarize_model]
+      ? form.summarize_model
+      : g.defaultProvider;
+  // 供应商的可选模型:models[] 优先;老配置只有单值 default_model/model 时退化为单元素
+  const provModels = (pid: string): string[] => {
+    const p = g.providers[pid];
+    if (!p) return [];
+    if (p.models?.length) return p.models;
+    return [p.default_model || p.model || ""].filter(Boolean);
+  };
 
   if (!loaded) {
     return (
@@ -932,6 +978,7 @@ export function MemorySettings() {
                   ["dream_at", "nightlyAt", "nightlyAtDesc", "time"],
                   ["pool_flush_threshold", "threshold", "thresholdDesc", "number"],
                   ["memory_budget_chars", "budget", "budgetDesc", "number"],
+                  ["injection_max_chars", "injectionCap", "injectionCapDesc", "number"],
                   ["draft_ttl_days", "ttl", "ttlDesc", "number"],
                   ["draft_keep", "keep", "keepDesc", "number"],
                 ] as const
@@ -957,16 +1004,68 @@ export function MemorySettings() {
                 </div>
               ))}
               <div className="mt-2">
+                <label className="field-label" htmlFor="memory-distill-provider">
+                  {t("distillProvider")}
+                </label>
+                <select
+                  id="memory-distill-provider"
+                  className="field text-xs"
+                  value={form.summarize_model}
+                  onChange={(e) => {
+                    const pid = e.target.value;
+                    // 换供应商后原模型 id 大概率不在新供应商的 models 里,回落默认
+                    if (
+                      form.summarize_model_id &&
+                      !provModels(pid).includes(form.summarize_model_id)
+                    ) {
+                      setForm((f) => ({
+                        ...f,
+                        summarize_model: pid,
+                        summarize_model_id: "",
+                      }));
+                    } else {
+                      set("summarize_model", pid);
+                    }
+                  }}
+                >
+                  <option value="">{t("modelDefault")}</option>
+                  {Object.keys(g.providers).map((p) => (
+                    <option key={p} value={p} disabled={!g.providers[p].enabled}>
+                      {p}
+                      {g.providers[p].enabled ? "" : t("modelDisabled")}
+                    </option>
+                  ))}
+                  {form.summarize_model && !g.providers[form.summarize_model] && (
+                    // 已删除/改名的历史 provider:保留原值选项,避免下拉悄悄改存量配置
+                    <option value={form.summarize_model}>{form.summarize_model}</option>
+                  )}
+                </select>
+              </div>
+              <div className="mt-2">
                 <label className="field-label" htmlFor="memory-distill-model">
                   {t("model")}
                 </label>
-                <input
+                <select
                   id="memory-distill-model"
-                  className="field font-mono text-xs"
-                  placeholder={t("modelDesc")}
-                  value={form.summarize_model}
-                  onChange={(e) => set("summarize_model", e.target.value)}
-                />
+                  className="field text-xs"
+                  value={form.summarize_model_id}
+                  onChange={(e) => set("summarize_model_id", e.target.value)}
+                >
+                  <option value="">{t("modelAuto")}</option>
+                  {provModels(distillProvider).map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                  {form.summarize_model_id &&
+                    !provModels(distillProvider).includes(form.summarize_model_id) && (
+                      // 手改 settings / 供应商删了该模型:保留原值,不悄悄丢
+                      <option value={form.summarize_model_id}>
+                        {form.summarize_model_id}
+                      </option>
+                    )}
+                </select>
+                <p className="mt-1 text-[11px] text-faint">{t("modelDesc")}</p>
               </div>
               <div className="mt-3 flex items-center gap-2">
                 <button

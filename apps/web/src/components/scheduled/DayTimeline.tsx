@@ -14,7 +14,7 @@ import { useGinno } from "@/lib/store";
 import * as api from "@/lib/runtime";
 import type { ScheduleRun, ScheduleTimeline } from "@/lib/types";
 import { useTip } from "@/components/settings/usage/charts";
-import { dateStr, fmtClock, fmtDuration, runClickable, statusMeta } from "./shared";
+import { dateStr, fmtClock, fmtDuration, runReplayable, statusMeta } from "./shared";
 
 // SVG 几何:96 格 × 15 分钟,viewBox 宽 1000。TOP 留给现在线时间标签。
 const W = 1000;
@@ -56,7 +56,7 @@ export function DayTimeline({
   const router = useRouter();
   const [tl, setTl] = useState<ScheduleTimeline | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const { show, hide, tipEl } = useTip();
+  const { show, hide, tipEl } = useTip({ maxWidth: 480 });
 
   const load = useCallback(async () => {
     try {
@@ -165,7 +165,17 @@ export function DayTimeline({
               }${dur ? ` (${dur})` : ""}`}
         </div>
         {r.summary && <div className="mt-1 line-clamp-2 text-txt/80">{r.summary.slice(0, 160)}</div>}
-        {runClickable(r) && <div className="mt-1 text-faint">{tr("day.tipClick")}</div>}
+        {/* 失败详情（2026-10-28）：时间条 hover 也能看到人话原因 + 原始错误，
+            与执行记录的摘要列 tooltip 一致；不再只看得到截断摘要。 */}
+        {r.error_hint && (
+          <div className="mt-1 whitespace-pre-wrap break-words text-yellow/90">{r.error_hint}</div>
+        )}
+        {r.error && (
+          <div className="mt-1 max-h-40 overflow-hidden whitespace-pre-wrap break-words rounded border border-line/60 bg-base/60 px-1.5 py-1 font-mono text-[10.5px] text-red/90">
+            {r.error}
+          </div>
+        )}
+        {runReplayable(r) && <div className="mt-1 text-faint">{tr("day.tipClick")}</div>}
       </div>,
       ev,
     );
@@ -173,7 +183,7 @@ export function DayTimeline({
 
   const clickRun = (r: ScheduleRun) => {
     hide();
-    if (!runClickable(r)) return;
+    if (!runReplayable(r)) return;
     if (r.target_type === "workflow" && r.workflow_run_id) {
       g.openRunView(r.workflow_run_id);
       router.push("/");
@@ -312,7 +322,7 @@ export function DayTimeline({
               {shown.map((r, i) => {
                 const a = stripAttrs(r, r.task_id);
                 const y = TOP + i * (layerH + 1.5);
-                const clickable = runClickable(r);
+                const clickable = runReplayable(r);
                 return (
                   <rect
                     key={`${r.run_id}-${i}`}

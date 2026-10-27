@@ -28,18 +28,47 @@ COMPACT_DEADLINE_MS = 2_000
 AGENT_SPAWN_DEADLINE_MS = 5_000
 
 
-async def _classic_dispatch(event_name: str, context: dict, matcher: str | None = None) -> list:
+def _scheduled(session_id: str) -> bool:
+    """定时任务的 headless 影子会话不加载 Claude Mods（插件 hooks + 总线）。
+
+    2026-10-28：定时任务每次执行都会触发 claude-music 的 SessionStart hook，
+    其 grants 默认 ask → 每次「立即执行」都弹「Mods 授权拦截」toast 并拒绝
+    brew install。定时任务是一次性、无人看着的会话，不该消费面向交互用户的
+    mods 面。用户 settings.json 自己的经典 hooks 仍然照常执行。"""
+    try:
+        from ..session_meta import session_is_scheduled
+
+        return session_is_scheduled(session_id)
+    except Exception:  # noqa: BLE001 — 判定失败按普通会话处理
+        return False
+
+
+async def _classic_dispatch(
+    event_name: str,
+    context: dict,
+    matcher: str | None = None,
+    *,
+    session_id: str | None = None,
+) -> list:
     """Run the classic hooks (hooks/dispatcher.py: settings.json hooks plus
     plugin ``hooks.json`` entries) — ALWAYS before the mods broker (design
     §10 ordering: settings hooks first, mods after). No hooks configured →
-    an empty list and no subprocess; never raises."""
+    an empty list and no subprocess; never raises.
+
+    ``session_id`` 给了且是定时任务会话时只跑 settings hooks，跳过 mods 的
+    plugin hooks（见 :func:`_scheduled`）。"""
     try:
         from ..hooks.dispatcher import HookEvent
         from ..server_shared import _hooks
 
         if _hooks is None:
             return []
-        return await _hooks.dispatch(HookEvent(name=event_name, context=context), matcher=matcher)
+        plugin_hooks = not (session_id and _scheduled(session_id))
+        return await _hooks.dispatch(
+            HookEvent(name=event_name, context=context),
+            matcher=matcher,
+            plugin_hooks=plugin_hooks,
+        )
     except Exception:  # noqa: BLE001 — classic hooks must never break the engine
         log.exception("classic hook dispatch failed event=%s", event_name)
         return []
@@ -47,7 +76,12 @@ async def _classic_dispatch(event_name: str, context: dict, matcher: str | None 
 
 async def maybe_dispatch(session_id: str, event: str, payload: dict, deadline_ms: int = DEFAULT_DEADLINE_MS) -> dict:
     """The one funnel every mount site calls. Returns the (possibly rewritten,
-    P1) event input; observe-only in P0. Never raises."""
+    P1) event input; observe-only in P0. Never raises.
+
+    定时任务会话直接短路：不连接/不启动 broker，也不向 mods 派发任何事件
+    （避免 mods 的 band/授权/提示面混进 headless 执行）。"""
+    if _scheduled(session_id):
+        return payload
     try:
         from .channel import get_channel
 
@@ -65,10 +99,16 @@ async def maybe_dispatch(session_id: str, event: str, payload: dict, deadline_ms
 
 
 async def dispatch_session_start(session_id: str, meta: dict) -> None:
-    # Classic SessionStart hooks first (observe), then the mods bus.
+    # Classic SessionStart hooks first (observe), then the mods bus. 定时任务
+    # 会话只跑 settings hooks（插件 hooks 由 _classic_dispatch 过滤掉），且完全
+    # 不碰 mods 总线/broker（见 maybe_dispatch）。
     await _classic_dispatch(
-        "SessionStart", {"session_id": session_id, "cwd": meta.get("workspace") or ""}
+        "SessionStart",
+        {"session_id": session_id, "cwd": meta.get("workspace") or ""},
+        session_id=session_id,
     )
+    if _scheduled(session_id):
+        return
     payload = {
         "sessionId": session_id,
         "cwd": meta.get("workspace") or "",
@@ -91,7 +131,9 @@ async def dispatch_session_start(session_id: str, meta: dict) -> None:
 
 async def dispatch_session_end(session_id: str) -> None:
     # Classic SessionEnd hooks first (observe), then the mods bus.
-    await _classic_dispatch("SessionEnd", {"session_id": session_id})
+    await _classic_dispatch(
+        "SessionEnd", {"session_id": session_id}, session_id=session_id
+    )
     payload = {"sessionId": session_id, "reason": "other"}
     await maybe_dispatch(session_id, "session.end", payload, deadline_ms=SESSION_END_DEADLINE_MS)
 
@@ -114,6 +156,8 @@ def spawn_turn_complete(
 
     ``reason`` ∈ answer | aborted | error; the three engine close-out branches
     (completed / TurnStopped / error) all funnel here."""
+    if _scheduled(session_id):
+        return  # 定时任务不加载 mods：连 spawn_bg 都不必起
     from ..server_shared import spawn_bg
 
     usage: dict[str, Any] | None = None
@@ -182,7 +226,9 @@ async def dispatch_prompt_submit(session_id: str, text: str) -> PromptSubmitResu
     Results are liberal per §15.6: a non-string ``text`` keeps the original,
     ``context`` keeps only its string lines."""
     text = text or ""
-    for r in await _classic_dispatch("UserPromptSubmit", {"prompt": text}):
+    for r in await _classic_dispatch(
+        "UserPromptSubmit", {"prompt": text}, session_id=session_id
+    ):
         if r.block:
             return PromptSubmitResult(text=text, blocked=True, source="classic")
         if r.rewrite:

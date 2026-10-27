@@ -105,3 +105,33 @@ def test_matcher_is_case_insensitive(isolated_home):
     assert len(d._hooks_for("PreToolUse", "bash")) == 1
     assert len(d._hooks_for("PreToolUse", "write_file")) == 1
     assert len(d._hooks_for("PreToolUse", "read_file")) == 0
+
+
+async def test_plugin_hooks_can_be_disabled_per_dispatch(isolated_home, tmp_path):
+    """定时任务会话（headless shadow session）不加载 Claude Mods 的 plugin
+    hooks，但用户 settings.json 里的经典 hooks 必须继续执行（2026-10-28）。"""
+    settings_hook = tmp_path / "settings_hook.py"
+    settings_hook.write_text(
+        "import sys, json\nsys.stdin.read()\nprint(json.dumps({'inject': 'settings'}))\n"
+    )
+    plugin_hook = tmp_path / "plugin_hook.py"
+    plugin_hook.write_text(
+        "import sys, json\nsys.stdin.read()\nprint(json.dumps({'inject': 'plugin'}))\n"
+    )
+    d = _dispatcher({"hooks": {"SessionStart": [{"command": f"{sys.executable} {settings_hook}"}]}})
+    assert d.register_plugin(
+        "claude-music",
+        {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": f"{sys.executable} {plugin_hook}"}]}
+                ]
+            }
+        },
+        str(tmp_path),
+    ) == 1
+    event = HookEvent(name="SessionStart", context={})
+    both = await d.dispatch(event)
+    assert {r.inject for r in both} == {"settings", "plugin"}
+    only_settings = await d.dispatch(event, plugin_hooks=False)
+    assert [r.inject for r in only_settings] == ["settings"]

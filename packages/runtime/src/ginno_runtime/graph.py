@@ -371,6 +371,17 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
         )
         _ai_changed = False
         _extra_msgs: list = []  # takeover ToolMessages + mod-injected context
+        # 本 turn 的 session id（thread_id == 会话 id）；定时任务会话不加载
+        # Claude Mods 的 plugin hooks（mods/events.py 同口径，2026-10-28）。
+        _thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "")
+        _plugin_hooks_ok = True
+        if _thread_id:
+            try:
+                from .session_meta import session_is_scheduled
+
+                _plugin_hooks_ok = not session_is_scheduled(_thread_id)
+            except Exception:  # noqa: BLE001 — 判定失败按普通会话处理
+                _plugin_hooks_ok = True
         for tc in list(pending):
             name = tc.get("name", "")
             args = tc.get("args", {})
@@ -435,11 +446,12 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
             ):
                 continue
 
-            # 1) PreToolUse hooks
+            # 1) PreToolUse hooks（定时任务会话跳过 plugin hooks，settings hooks 照跑）
             if hook_dispatcher:
                 results = await hook_dispatcher.dispatch(
                     HookEvent(name="PreToolUse", context={"tool": name, "args": args}),
                     matcher=name,
+                    plugin_hooks=_plugin_hooks_ok,
                 )
                 for r in results:
                     if r.block:
@@ -470,7 +482,6 @@ def permission_node_factory(policy: PermissionPolicy, hook_dispatcher, all_tools
             #                      message stream on the steer channel.
             # Priority deny > result > args; inject may coexist. Zero-cost
             # (short-circuit inside) when no mod is connected.
-            _thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "")
             _mod_action: dict | None = None
             try:
                 from .mods.events import dispatch_tool_call

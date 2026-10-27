@@ -114,6 +114,19 @@ export function runClickable(r: ScheduleRun): boolean {
   return r.target_type === "prompt" ? !!r.session_id : !!r.workflow_run_id;
 }
 
+/**
+ * 回放目标是否**仍然存在**（§3.5 DATA-06）：在 runClickable 之上再排除
+ * 「影子会话已被删除」的记录——这类记录 session_id 已被清空并打
+ * ``session_missing``，摘要还在，点开会 404。两种「打不开」要区分：
+ *   · session_missing=true      → 会话曾经存在、后来被删（可解释为「会话已删除」）
+ *   · session_id 为空且未标记   → 失败在创建会话之前（如模型构建失败），从未有回放
+ * 两者都不可打开，但 UI 只有前者该保留禁用入口。
+ */
+export function runReplayable(r: ScheduleRun): boolean {
+  if (!runClickable(r)) return false;
+  return !(r.target_type === "prompt" && r.session_missing === true);
+}
+
 /** YYYY-MM-DD（本地时区）——timeline/runs 接口的 date 参数。 */
 export function dateStr(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;

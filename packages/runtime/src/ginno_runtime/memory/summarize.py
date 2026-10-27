@@ -291,13 +291,27 @@ def read_draft(draft_id: str | None = None) -> dict[str, Any] | None:
     return {"id": did, "draft": draft, "previous": previous, "diff": diff, "meta": meta}
 
 
+def _live_budget() -> int:
+    """Current configured draft budget. Pending drafts are judged by THIS, not
+    the budget frozen into their meta at creation — a config change must
+    re-label the queue immediately (and apply_draft's interception line moves
+    with it), instead of every pending row staying stale until the next run."""
+    try:
+        from ..knowledge.config import load_knowledge_config
+
+        return int(load_knowledge_config().memory_budget_chars or 3000)
+    except Exception:  # noqa: BLE001
+        return 3000
+
+
 def draft_payload(draft_id: str | None = None) -> dict[str, Any]:
     """Draft review payload shared by the list/detail endpoints and create/reuse."""
     d = read_draft(draft_id)
     if not d:
         return {"draft": None}
     meta = d["meta"]
-    budget = int(meta.get("budget") or 3000)
+    pending = meta.get("status", PENDING) == PENDING
+    budget = _live_budget() if pending else int(meta.get("budget") or 3000)
     chars = len(d["draft"])
     return {
         "id": d["id"],
@@ -319,7 +333,10 @@ def draft_payload(draft_id: str | None = None) -> dict[str, Any]:
 
 def draft_summary(meta: dict[str, Any]) -> dict[str, Any]:
     """List-row projection (no draft body / diff)."""
-    budget = int(meta.get("budget") or 3000)
+    # Pending rows follow the live config budget; resolved rows keep the budget
+    # frozen at creation — it is the historical fact of what they were judged by.
+    pending = meta.get("status", PENDING) == PENDING
+    budget = _live_budget() if pending else int(meta.get("budget") or 3000)
     chars = int(meta.get("chars") or 0)
     return {
         "id": meta.get("id"),
@@ -609,6 +626,8 @@ async def create_draft(trigger: str = "manual", provider: str | None = None) -> 
         cfg = load_knowledge_config()
         budget = int(cfg.memory_budget_chars or 3000)
         chosen = provider or (cfg.summarize_model or None) or _get_default_provider()
+        # summarize_model 选供应商,summarize_model_id 才是具体模型;空 = 供应商默认
+        model_override = (cfg.summarize_model_id or "").strip() or None
         run_id = f"r-{int(time.time())}"
         started = time.time()
         prov_cfg: dict[str, Any] = {}
@@ -618,7 +637,7 @@ async def create_draft(trigger: str = "manual", provider: str | None = None) -> 
             prov_cfg = {}
         model_label = ""
         try:
-            model = build_model(chosen)
+            model = build_model(chosen, model_override)
         except Exception as e:
             record_run(
                 run_id=run_id,
@@ -843,7 +862,7 @@ def apply_draft(
         return {"ok": False, "error": "memory_changed"}
 
     text = content if content is not None else d["draft"]
-    budget = int(meta.get("budget") or 0)
+    budget = _live_budget()  # 拦截线跟当前配置走,不用创建时冻结的 meta 值
     if budget > 0 and len(text) > budget and not force:
         if not truncate:
             return {

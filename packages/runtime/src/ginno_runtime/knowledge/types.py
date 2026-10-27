@@ -83,6 +83,8 @@ class KnowledgeConfig:
     auto_summarize: bool = True
     pool_flush_threshold: int = 30
     summarize_model: str = ""
+    # 具体模型 id(build_model 的 model_name 覆盖);空 = 供应商默认模型
+    summarize_model_id: str = ""
     memory_budget_chars: int = 3000
     # draft queue hygiene (docs/dream-mode-design.md §4.5): a pending draft that
     # nobody reviews used to block every later run — expire it instead.

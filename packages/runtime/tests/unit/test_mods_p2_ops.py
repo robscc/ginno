@@ -595,6 +595,26 @@ def test_mod_tools_model_side_wrapper():
         mod_tools._REGISTRY.clear()
 
 
+def test_mod_tools_skipped_for_scheduled_sessions(isolated_home):
+    """定时任务影子会话（type=scheduled）不向模型暴露 mcp__<mod>__* 工具
+    （2026-10-28：headless 任务不加载 Claude Mods）。"""
+    from ginno_runtime.tools import mod_tools
+
+    mod_tools._REGISTRY.clear()
+    try:
+        mod_tools.register_tool("some-mod", "probe", "desc")
+        _SESSIONS["sched-mod-tools"] = {"type": "scheduled"}
+        _SESSIONS["normal-mod-tools"] = {"type": None}
+        assert mod_tools.build_mod_tools("sched-mod-tools") == []
+        assert [t.name for t in mod_tools.build_mod_tools("normal-mod-tools")] == [
+            "mcp__some-mod__probe"
+        ]
+    finally:
+        mod_tools._REGISTRY.clear()
+        _SESSIONS.pop("sched-mod-tools", None)
+        _SESSIONS.pop("normal-mod-tools", None)
+
+
 def test_turn_abort(monkeypatch):
     import asyncio
 

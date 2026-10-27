@@ -81,7 +81,9 @@ class HookDispatcher:
             return cls(settings={})
         return cls(settings=json.loads(p.read_text() or "{}"))
 
-    def _hooks_for(self, event: HookEventName, matcher: str | None) -> list[dict[str, Any]]:
+    def _hooks_for(
+        self, event: HookEventName, matcher: str | None, *, include_plugin: bool = True
+    ) -> list[dict[str, Any]]:
         hooks = self.settings.get("hooks", {}).get(event, [])
 
         def _matches(entry: dict[str, Any]) -> bool:
@@ -93,7 +95,11 @@ class HookDispatcher:
                 return True
             return matcher is not None and want == str(matcher).strip().lower()
 
-        plugin = self._plugin_hooks.get(event, [])
+        # include_plugin=False：headless 定时任务会话（type=scheduled）不加载
+        # Claude Mods 的 plugin hooks——它们的 grants 默认 ask，危险命令会在
+        # 每次任务执行时触发「Mods 授权拦截」toast（2026-10-28）。用户自己
+        # settings.json 里的经典 hooks 不受影响。
+        plugin = self._plugin_hooks.get(event, []) if include_plugin else []
         if matcher is None:
             return [h for h in hooks if not h.get("matcher")] + [
                 h for h in plugin if not h.get("matcher")
@@ -199,9 +205,11 @@ class HookDispatcher:
         except Exception:  # noqa: BLE001 — notification is best-effort
             pass
 
-    async def dispatch(self, event: HookEvent, matcher: str | None = None) -> list[HookResult]:
+    async def dispatch(
+        self, event: HookEvent, matcher: str | None = None, *, plugin_hooks: bool = True
+    ) -> list[HookResult]:
         results: list[HookResult] = []
-        for h in self._hooks_for(event.name, matcher):
+        for h in self._hooks_for(event.name, matcher, include_plugin=plugin_hooks):
             cmd = h.get("command")
             if not cmd:
                 continue

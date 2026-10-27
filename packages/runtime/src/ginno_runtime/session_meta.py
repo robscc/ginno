@@ -144,3 +144,21 @@ def _session_slug(session_id: str) -> str | None:
         return s["project_slug"]
     found = _find_meta(session_id)
     return found[1] if found else None
+
+
+def session_is_scheduled(session_id: str) -> bool:
+    """该会话是否来自定时任务执行（影子会话 ``type="scheduled"``）。
+
+    定时任务是 headless 的一次性会话：不加载 Claude Mods（插件 hooks /
+    mods 总线）——它们面向交互用户，且 plugin hooks 的 grants 默认 ask，
+    危险命令会在每次任务执行时弹「Mods 授权拦截」toast（2026-10-28）。
+    内存表优先（运行中的会话必然在），落盘 meta 兜底；任何异常都按
+    「不是定时会话」处理，绝不影响主流程。"""
+    try:
+        s = _SESSIONS.get(session_id)
+        if s is not None:
+            return s.get("type") == "scheduled"
+        m = _resolve_session_meta(session_id)
+        return bool(m) and m.get("type") == "scheduled"
+    except Exception:  # noqa: BLE001 — 判定失败按普通会话处理
+        return False

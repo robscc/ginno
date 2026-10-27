@@ -157,12 +157,37 @@ async def test_apply_refuses_over_budget_then_truncates(isolated_home):
             "previous_sha1": "",
         },
     )
+    # 拦截线跟当前配置走(非创建时冻结的 meta 值):meta 里写 20 但配置是默认
+    # 3000 时草稿不超线;把配置预算调小,同一份草稿立即按新线拦截。
+    assert S.apply_draft(draft_id=did)["ok"] is True
 
-    refused = S.apply_draft(draft_id=did)
+    did2 = f"{int(time.time())}-budget2"
+    S._atomic_write(S._draft_paths(did2)[0], body)
+    S._save_meta(
+        did2,
+        {
+            "id": did2,
+            "created_at": time.time(),
+            "status": S.PENDING,
+            "chars": len(body),
+            "budget": 20,
+            "pool_entries": 1,
+            "pool_cutoff": time.time(),
+            "previous": "",
+            "previous_sha1": "",
+        },
+    )
+    settings = (
+        json.loads(paths.settings_path().read_text()) if paths.settings_path().exists() else {}
+    )
+    settings["knowledge"] = {**(settings.get("knowledge") or {}), "memory_budget_chars": 20}
+    paths.settings_path().write_text(json.dumps(settings))
+
+    refused = S.apply_draft(draft_id=did2)
     assert refused["ok"] is False and refused["error"] == "over_budget"
     assert S.has_draft()
 
-    ok = S.apply_draft(draft_id=did, truncate=True)
+    ok = S.apply_draft(draft_id=did2, truncate=True)
     assert ok["ok"] is True
     written = paths.memory_index_path().read_text(encoding="utf-8")
     assert len(written) <= 20

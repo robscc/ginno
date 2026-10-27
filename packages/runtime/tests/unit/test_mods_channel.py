@@ -422,7 +422,7 @@ async def test_classic_hooks_run_before_mods(stub_channel, monkeypatch):
     order: list[str] = []
 
     class StubHooks:
-        async def dispatch(self, event, matcher=None):
+        async def dispatch(self, event, matcher=None, *, plugin_hooks=True):
             order.append(f"classic:{event.name}")
             return []
 
@@ -454,7 +454,7 @@ async def test_classic_prompt_rewrite_and_block(stub_channel, monkeypatch):
         def __init__(self, results):
             self._results = results
 
-        async def dispatch(self, event, matcher=None):
+        async def dispatch(self, event, matcher=None, *, plugin_hooks=True):
             return self._results
 
     from ginno_runtime.hooks.dispatcher import HookResult

@@ -362,6 +362,16 @@ bridge_utils.py# node/broker 二进制发现(_resolve_cli 移植复用)、dev �
 | 既有系统 | 关系 |
 |---|---|
 | `hooks/dispatcher.py`(settings hooks,仅 PreToolUse 生效) | **保留不动**;P1 把其事件以 `classic.<Event>` 暴露(顺序:settings hooks 先,mods 后,两者都先于 policy.decide)。长期 converge 到 mods,另行决策 |
+
+**headless 定时任务会话不加载 mods(2026-10-28)**:定时任务每次触发新建的是
+`type="scheduled"` 的一次性影子会话,没有交互用户。它**跳过** mods 的 plugin
+hooks(`hooks/dispatcher.py` 的 `plugin_hooks=False`)与整条 mods 总线
+(`mods/events.py::maybe_dispatch` 短路、`mod_tools.build_mod_tools` 返回空表),
+只保留用户 `settings.json` 自己的经典 hooks。触发原因是 claude-music 的
+`SessionStart` hook 危险命令(brew install / 写 settings)在 grants 默认 ask 下
+被拒,每次「立即执行」都弹「Mods 授权拦截」toast(见 grants.py §8 同一机制的
+安全目的不变:被拒的 hook 依旧不会执行)。判定统一走
+`session_meta.session_is_scheduled()`(内存 `_SESSIONS` 优先,落盘 meta 兜底)。
 | connectors registry | 借鉴生命周期模式(状态机、事件广播、设置页形态);mods **不注册为 connector**,独立 `mods/` 模块 |
 | delegate_agent | 借鉴 `_resolve_cli`(node/broker 发现)、进程监督、kill tree |
 | MCP | `$.mcp.call` 复用;runner spawn 借鉴 `_LiveServer` 专属 task 模式 |

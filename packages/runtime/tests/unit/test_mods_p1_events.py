@@ -87,7 +87,7 @@ async def test_prompt_submit_classic_block_source(settle_channel, monkeypatch):
 
     import ginno_runtime.mods.events as ev
 
-    async def fake_classic(name, context, matcher=None):
+    async def fake_classic(name, context, matcher=None, **kwargs):
         return [R()]
 
     monkeypatch.setattr(ev, "_classic_dispatch", fake_classic)
@@ -313,3 +313,58 @@ def test_resolver_builtin_shadows_mod_command(monkeypatch, tmp_path):
         assert plan.mod_command is None  # builtin kept priority (P1 不拦截)
     finally:
         mod_commands.clear()
+
+
+# ---- 定时任务会话不加载 Claude Mods（2026-10-28）--------------------------------
+
+
+async def test_scheduled_session_skips_mods_bus(settle_channel):
+    """type=scheduled 的 headless 影子会话不再向 mods 总线派发任何事件：
+    不启动 broker、不消费 prompt.submit 改写、不产生 turn.complete。"""
+    from ginno_runtime.server_shared import _SESSIONS
+
+    _SESSIONS["sched-1"] = {"type": "scheduled"}
+    try:
+        ch = settle_channel({"prompt.submit": {"text": "rewritten"}, "turn.complete": {}})
+        r = await mods_events.dispatch_prompt_submit("sched-1", "original")
+        assert r.text == "original" and not r.blocked and r.context is None
+        await mods_events.dispatch_session_start("sched-1", {"workspace": "/tmp"})
+        mods_events.spawn_turn_complete(
+            "sched-1", "t1", answer="a", duration_ms=1, is_aborted=False, reason="answer"
+        )
+        assert ch.events == []
+    finally:
+        _SESSIONS.pop("sched-1", None)
+
+
+async def test_scheduled_session_keeps_classic_settings_hooks_only(
+    isolated_home, settle_channel
+):
+    """定时任务会话：经典 settings hooks 照跑（plugin_hooks=False），普通会话不受影响。"""
+    from ginno_runtime import server_shared
+    from ginno_runtime.server_shared import _SESSIONS
+
+    settle_channel()
+
+    class SpyHooks:
+        def __init__(self):
+            self.calls = []
+
+        async def dispatch(self, event, matcher=None, *, plugin_hooks=True):
+            self.calls.append((event.name, plugin_hooks))
+            return []
+
+    spy = SpyHooks()
+    server_shared._hooks = spy
+    try:
+        _SESSIONS["sched-2"] = {"type": "scheduled"}
+        _SESSIONS["normal-2"] = {"type": None}
+        await mods_events.dispatch_session_start("sched-2", {"workspace": "/tmp"})
+        await mods_events.dispatch_session_start("normal-2", {"workspace": "/tmp"})
+        assert spy.calls == [
+            ("SessionStart", False),
+            ("SessionStart", True),
+        ]
+    finally:
+        _SESSIONS.pop("sched-2", None)
+        _SESSIONS.pop("normal-2", None)

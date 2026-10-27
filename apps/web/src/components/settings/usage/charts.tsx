@@ -51,7 +51,8 @@ export function pct(x: number): string {
 }
 
 /* ---- tooltip ---- */
-export function useTip() {
+export function useTip(opts: { maxWidth?: number } = {}) {
+  const maxWidth = opts.maxWidth ?? 320;
   const [content, setContent] = useState<ReactNode>(null);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -81,8 +82,8 @@ export function useTip() {
     <div
       ref={ref}
       role="tooltip"
-      className="pointer-events-none fixed z-50 max-w-[320px] rounded-lg border border-line2 bg-card/95 px-3 py-2 text-[11.5px] leading-relaxed text-txt shadow-xl"
-      style={{ display: content ? "block" : "none" }}
+      className="pointer-events-none fixed z-50 rounded-lg border border-line2 bg-card/95 px-3 py-2 text-[11.5px] leading-relaxed text-txt shadow-xl"
+      style={{ display: content ? "block" : "none", maxWidth }}
     >
       {content}
     </div>

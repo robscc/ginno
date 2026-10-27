@@ -146,6 +146,7 @@ _DEFAULT_SETTINGS = {
         "auto_summarize": True,
         "pool_flush_threshold": 30,
         "summarize_model": "",
+        "summarize_model_id": "",
         "memory_budget_chars": 3000,
     },
     # Claude Code Mods 兼容层 (claude-code-mods-design.md §9)。结构完整定义
