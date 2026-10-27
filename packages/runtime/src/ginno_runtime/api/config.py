@@ -166,6 +166,25 @@ async def put_mcp_endpoint(data: dict) -> dict:
     return {"ok": True}
 
 
+@router.post("/api/mcp/test")
+async def test_mcp_endpoint(body: dict) -> dict:
+    """向导「测试连接」的真试连（P1，mcp-server-ui-design §4.4）：对未保存
+    的 draft entry 建立一次性连接（initialize + tools/list 即拆），不落盘、
+    不碰 registry。HTTP 200 恒定，ok:false 带 provider 原始错误全文——
+    接口错误永远亮给前端（2026-10-27 决策）。"""
+    from ..mcp.registry import probe_mcp_entry
+
+    entry = (body or {}).get("entry")
+    if not isinstance(entry, dict) or not entry:
+        return {"ok": False, "error": "body must carry {entry: {...}}"}
+    to = body.get("timeout")
+    try:
+        result = await probe_mcp_entry(entry, float(to) if to else None)
+    except Exception as e:  # noqa: BLE001 — probe 内部已兜，这里防签名外事故
+        result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return result
+
+
 @router.post("/api/mcp/reload")
 async def reload_mcp_endpoint() -> dict:
     if shared._mcp:

@@ -256,7 +256,9 @@
       "rollbackFailed": "开启失败，且回滚失败：配置仍为启用状态，请重试或手动停用",
       "reconnectFailedNet": "重连请求失败 — 请检查 runtime 是否在运行",
       "disabledLabel": "已禁用",
-      "wzTestOptional": "测试为可选的模拟（P0）——真实连接在保存后立即开始，结果看列表里的状态行。"
+      "wzTestOptional": "测试为真实试连（保存前 initialize + tools/list 一次性验证）——可选，跳过也可保存。",
+      "cfgUrlRequired": "URL 不能为空",
+      "wzTestRetry": "重新测试"
     },
     "skills": {
       "title": "技能",

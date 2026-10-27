@@ -256,7 +256,9 @@
       "rollbackFailed": "Enable failed and rollback failed too: config stays enabled — retry or disable manually",
       "reconnectFailedNet": "Reconnect request failed — check that the runtime is running",
       "disabledLabel": "Disabled",
-      "wzTestOptional": "Test is optional and simulated (P0) — the real connection starts right after you save; watch the status row in the list."
+      "wzTestOptional": "Test is a real one-shot connection (initialize + tools/list) before saving — optional, you can save anyway.",
+      "cfgUrlRequired": "URL is required",
+      "wzTestRetry": "Retry test"
     },
     "skills": {
       "title": "Skills",

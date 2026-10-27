@@ -1,19 +1,22 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
 import { Check, ChevronLeft, Loader2, X } from "lucide-react";
 import { MCP_TEMPLATES, parseMcpServersJson, type McpServerEntry } from "./mcpShared";
+import { testMcp } from "@/lib/api/workspace";
 
 // "sse" 不单独出选项卡（远程卡注明 SSE also supported），但粘贴 sse 配置时会进入此态
 // 并按 sse 保存（registry 对 sse/streamable-http 走不同 client，不能混淆）。
 type TransportPick = "http" | "stdio" | "sse";
 
 // Add Server 三步向导（原型 v2 / 设计文档 §5.3）：1 选 transport（模板 chips +
-// 粘贴 JSON 解析）→ 2 填配置 → 3 Test Connection → Save & Reload。
-// Test Connection 在 P0 是纯前端模拟动画（逐行握手 + 模拟工具发现），不落盘、
-// 不调后端——真正的试连端点 POST /api/mcp/test 是 P1（设计文档 §4.4），
-// 到时候只需替换 runTest 的实现。Save & Reload 才真正 putMcp 合并 + reloadMcp。
+// 粘贴 JSON 解析）→ 2 填配置 → 3 Test Connection → Save。
+// 测试是「真试连」（2026-10-27 起，POST /api/mcp/test）：一次性 initialize +
+// tools/list 即拆，不落盘不碰 registry；失败带 provider 原始错误全文展示，
+// 且不阻塞保存（测试可选）。此前 P0 的模拟动画有个致命洞：面板渲染在
+// step===3 而全组件没有一处 setStep(3)，测试永远「没提示没成功没失败」
+// （zhishui 会话实录）。
 export function McpAddWizard({
   cfg,
   onClose,
@@ -36,6 +39,8 @@ export function McpAddWizard({
   const [url, setUrl] = useState("");
   const [hKey, setHKey] = useState("");
   const [hVal, setHVal] = useState("");
+  // 粘贴解析带来的额外 headers（表单只有一个键值位）：保存时原样带回。
+  const [extraHeaders, setExtraHeaders] = useState<Record<string, string>>({});
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
   const [envKey, setEnvKey] = useState("");
@@ -45,7 +50,10 @@ export function McpAddWizard({
   const [lines, setLines] = useState<string[]>([]);
   const [testing, setTesting] = useState(false);
   const [passed, setPassed] = useState(false);
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // 真试连结果：ok 带 count/tools；失败带 provider 原始错误全文
+  const [testResult, setTestResult] = useState<
+    { ok: true; count: number; tools: string[] } | { ok: false; error: string } | null
+  >(null);
 
   const isStdio = transport === "stdio";
 
@@ -86,6 +94,16 @@ export function McpAddWizard({
       } else {
         setUrl(String(e.url ?? ""));
       }
+      // headers 与 env 同样处理：首对进表单（单键编辑位），其余原样保留、
+      // 保存时原样带回——此前解析直接丢 headers（2026-10-27 zhishui 的
+      // Knowledge-Token 贴进来就没了，叠加 registry 不发 header 双重丢失）。
+      const h = (e.headers ?? {}) as Record<string, unknown>;
+      const hk = Object.keys(h)[0] ?? "";
+      setHKey(hk);
+      setHVal(hk ? String(h[hk] ?? "") : "");
+      const rest = { ...h };
+      if (hk) delete rest[hk];
+      setExtraHeaders(rest as Record<string, string>);
       setStep(2);
       onToast(t("wzParseOk", { count: parsed.length, name: first.name }), "ok");
     } catch {
@@ -108,7 +126,12 @@ export function McpAddWizard({
             transport: transport === "sse" ? "sse" : "streamable-http",
             url: url.trim(),
           };
-    if (!isStdio && hKey.trim()) entry.headers = { [hKey.trim()]: hVal };
+    // headers：表单键值位 + 粘贴解析保留的额外 headers 一起带上
+    if (!isStdio) {
+      const headers: Record<string, string> = { ...extraHeaders };
+      if (hKey.trim()) headers[hKey.trim()] = hVal;
+      if (Object.keys(headers).length) entry.headers = headers;
+    }
     if (isStdio && envKey.trim()) entry.env = { [envKey.trim()]: envVal };
     const to = Number(timeout);
     if (Number.isFinite(to) && to > 0) entry.connect_timeout = to;
@@ -117,43 +140,44 @@ export function McpAddWizard({
 
   // P0 模拟握手动画：逐行 ✓（~450ms 间隔，对应原型 runTest 的节奏），全部走完
   // 即视为通过并展示模拟的工具发现预览（真实发现数要等保存后从 /api/mcp 读取）。
-  const runTest = () => {
+  // 真试连（POST /api/mcp/test）：进入 Step 3 再跑——此前动画面板渲染在
+  // step===3 却没有一处 setStep(3)，测试按钮点了等于没点。失败不拦保存。
+  const runTest = async () => {
     if (!name.trim()) {
       onToast(t("cfgNameRequired"), "err");
       return;
     }
     if (!isStdio && !url.trim()) {
-      onToast(t("cfgNameRequired"), "err");
+      onToast(t("cfgUrlRequired"), "err");
       return;
     }
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
+    setStep(3);
     setTesting(true);
     setPassed(false);
-    setLines([]);
-    const seq = isStdio
-      ? [t("wzTestSpawn", { cmd: command.trim() || "npx" }), t("wzTestList"), t("wzTestValidate")]
-      : [t("wzTestHandshake", { url: url.trim() || "…" }), t("wzTestList"), t("wzTestValidate")];
-    seq.forEach((l, i) => {
-      timers.current.push(
-        setTimeout(() => {
-          setLines((prev) => [...prev, l]);
-          if (i === seq.length - 1) {
-            setTesting(false);
-            setPassed(true);
-          }
-        }, 450 * (i + 1)),
-      );
-    });
+    setTestResult(null);
+    setLines(
+      isStdio
+        ? [t("wzTestSpawn", { cmd: command.trim() || "npx" })]
+        : [t("wzTestHandshake", { url: url.trim() || "…" })],
+    );
+    try {
+      const r = await testMcp(buildEntry());
+      setLines((prev) => [...prev, t("wzTestList")]);
+      if (r.ok) {
+        setLines((prev) => [...prev, t("wzTestValidate")]);
+        setPassed(true);
+        setTestResult({ ok: true, count: r.count ?? 0, tools: r.tools ?? [] });
+      } else {
+        setTestResult({ ok: false, error: r.error || "unknown error" });
+      }
+    } catch (e) {
+      setTestResult({ ok: false, error: String(e) });
+    } finally {
+      setTesting(false);
+    }
   };
 
   const overwrite = !!cfg.mcpServers && name.trim() in cfg.mcpServers;
-  // 模拟预览的图名（P0 占位；P1 换 POST /api/mcp/test 的真实 toolDetails）。
-  // 预览也遵守 provider 的 ASCII 约束（真实名由 runtime naming.py 生成，
-  // 中文服务器名会带稳定短哈希；这里只做可读近似）。
-  const previewSlug =
-    name.trim().replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "server";
-  const simTools = ["search", "get_detail", "create_item"].map((s) => `mcp_${previewSlug}_${s}`);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-5">
@@ -355,13 +379,21 @@ export function McpAddWizard({
             </div>
           )}
 
-          {/* ---- Step 3: 模拟测试 ---- */}
+          {/* ---- Step 3: 真试连 ---- */}
           {step === 3 && (
             <div>
               <div className="selectable mb-3.5 min-h-[90px] rounded-lg border border-line bg-[rgb(var(--code-bg))] px-3.5 py-3 font-mono text-xs leading-[1.9] text-muted">
                 {lines.map((l, i) => (
                   <div key={i}>
-                    <span className="mr-1.5 text-green">✓</span>
+                    <span
+                      className={`mr-1.5 ${
+                        testResult && !testResult.ok && i === lines.length - 1
+                          ? "text-[rgb(var(--st-error))]"
+                          : "text-green"
+                      }`}
+                    >
+                      {testResult && !testResult.ok && i === lines.length - 1 ? "✗" : "✓"}
+                    </span>
                     {l}
                     {testing && i === lines.length - 1 && (
                       <Loader2 className="ml-1.5 inline h-3 w-3 animate-spin" />
@@ -372,16 +404,34 @@ export function McpAddWizard({
                   <div className="text-faint">{t("wzTestOptional")}</div>
                 )}
               </div>
-              {passed && (
+              {testResult && !testResult.ok && (
+                <div className="mb-3 flex items-start gap-2.5 rounded-lg border border-[rgb(var(--st-error))]/30 bg-[rgb(var(--st-error))]/[0.06] px-3.5 py-3">
+                  <X className="mt-0.5 h-4 w-4 shrink-0 text-[rgb(var(--st-error))]" />
+                  <div className="min-w-0">
+                    <b className="block text-[13.5px] text-txt">{t("wzTestFailTitle")}</b>
+                    <p className="mt-1 break-all font-mono text-[11px] leading-relaxed text-muted">
+                      {testResult.error}
+                    </p>
+                    <p className="mt-1 text-xs text-faint">{t("wzTestFailHint")}</p>
+                  </div>
+                </div>
+              )}
+              {passed && testResult?.ok && (
                 <div>
                   <div className="mb-3 flex items-start gap-2.5 rounded-lg border border-green/30 bg-green/[0.07] px-3.5 py-3">
                     <Check className="mt-0.5 h-4 w-4 shrink-0 text-green" />
                     <div>
                       <b className="block text-[13.5px] text-txt">
-                        {t("wzTestOkTitle", { name: name.trim() || "server", count: 21 })}
+                        {t("wzTestOkTitle", {
+                          name: name.trim() || "server",
+                          count: testResult.count,
+                        })}
                       </b>
                       <span className="text-xs text-muted">
-                        {t("wzTestOkSub", { transport: isStdio ? "stdio" : "streamable-http", timeout })}
+                        {t("wzTestOkSub", {
+                          transport: isStdio ? "stdio" : "streamable-http",
+                          timeout,
+                        })}
                       </span>
                     </div>
                   </div>
@@ -389,7 +439,7 @@ export function McpAddWizard({
                     {t("wzToolsDiscovered")}
                   </div>
                   <div className="mb-2 flex flex-wrap gap-1.5">
-                    {simTools.map((n) => (
+                    {testResult.tools.slice(0, 12).map((n) => (
                       <span
                         key={n}
                         className="rounded-md border border-line2 px-2 py-0.5 font-mono text-[11px] text-muted"
@@ -397,9 +447,11 @@ export function McpAddWizard({
                         {n}
                       </span>
                     ))}
-                    <span className="rounded-md border border-line2 px-2 py-0.5 font-mono text-[11px] text-muted">
-                      {t("wzToolsMore", { count: 18 })}
-                    </span>
+                    {testResult.count > 12 && (
+                      <span className="rounded-md border border-line2 px-2 py-0.5 font-mono text-[11px] text-muted">
+                        {t("wzToolsMore", { count: testResult.count - 12 })}
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-yellow">⚠ {t("wzToolsWarn")}</p>
                 </div>
@@ -411,6 +463,15 @@ export function McpAddWizard({
                   className="inline-flex items-center gap-1.5 rounded-lg border border-line2 px-3 py-1.5 text-[13px] font-medium text-txt transition-colors hover:bg-card2"
                 >
                   <ChevronLeft className="h-3.5 w-3.5" /> {t("wzBack")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runTest()}
+                  disabled={testing}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-line2 px-3 py-1.5 text-[13px] font-medium text-txt transition-colors hover:bg-card2 disabled:opacity-45"
+                >
+                  {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {t("wzTestRetry")}
                 </button>
                 <button
                   type="button"

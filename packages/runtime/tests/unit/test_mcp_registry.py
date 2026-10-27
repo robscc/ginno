@@ -612,3 +612,58 @@ async def test_connect_completing_after_disable_is_not_registered(tmp_path, monk
     assert "s1" not in reg._live
     st = reg.status()[0]
     assert st["enabled"] is False and st["connected"] is False
+
+
+# --------------------------------------------------------------------------- #
+# 真连路径回归（2026-10-27 事故）：_run_inner 曾把 _connect_session 返回的
+# (read, write) 流对直接当 session 用——'tuple' object has no attribute
+# 'initialize'，全量 MCP 连接报废。此前的测试全用 FakeLiveServer 顶替
+# _LiveServer，恰好绕开真 _run_inner；这里打穿到内部，盯住「流对必须
+# 经 ClientSession 包装」这一步。
+# --------------------------------------------------------------------------- #
+
+
+async def test_run_inner_wraps_stream_pair_in_client_session(monkeypatch, isolated_home):
+    import asyncio
+
+    import ginno_runtime.mcp.registry as reg_mod
+    import mcp
+
+    class _FakeClientSession:
+        def __init__(self, read, write):
+            self.read, self.write = read, write
+            self.initialized = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def initialize(self):
+            self.initialized = True
+
+        async def list_tools(self):
+            class _R:
+                tools = [_FakeTool("t1"), _FakeTool("t2")]
+
+            return _R()
+
+    async def fake_connect(stack, cfg):
+        return ("READ", "WRITE")
+
+    monkeypatch.setattr(reg_mod, "_connect_session", fake_connect)
+    monkeypatch.setattr(mcp, "ClientSession", _FakeClientSession)
+
+    cfg = MCPServerConfig(name="s", transport="streamable-http", url="http://x/mcp")
+    live = reg_mod._LiveServer(cfg)
+    task = asyncio.create_task(live._run())
+    await asyncio.wait_for(live._ready.wait(), 5)
+    assert live._connect_error is None
+    # 流对经 ClientSession 包装：session 持有原始流，initialize 真的跑过
+    assert isinstance(live.session, _FakeClientSession)
+    assert live.session.read == "READ" and live.session.write == "WRITE"
+    assert live.session.initialized is True
+    assert [t.name for t in live.tools] == ["t1", "t2"]
+    await live.close()
+    await asyncio.wait_for(task, 5)

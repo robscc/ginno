@@ -420,6 +420,19 @@ export async function reconnectMcp(server?: string) {
     { method: "POST" },
   );
 }
+// 向导「测试连接」：对未保存 draft 的一次性真试连（initialize + tools/list
+// 即拆，不落盘不碰 registry）。HTTP 200 恒定，ok:false 带 provider 原始
+// 错误全文——接口错误永远亮给前端（2026-10-27）。
+export async function testMcp(entry: unknown, timeout?: number) {
+  return json<{ ok: boolean; tools?: string[]; count?: number; error?: string }>(
+    `${BASE}/mcp/test`,
+    {
+      method: "POST",
+      headers: H,
+      body: JSON.stringify({ entry, timeout }),
+    },
+  );
+}
 export async function createSkill(data: { name: string; body: string }) {
   return json<{ ok: boolean; error?: string }>(`${BASE}/skills`, {
     method: "POST",

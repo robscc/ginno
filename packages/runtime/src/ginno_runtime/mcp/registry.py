@@ -164,6 +164,73 @@ class MCPServerConfig:
         )
 
 
+async def _connect_session(stack: AsyncExitStack, cfg: "MCPServerConfig") -> tuple[Any, Any]:
+    """按 transport 建立底层连接并在 stack 上注册清理。返回 **(read, write)
+    流对**（不是 ClientSession——调用方负责 `ClientSession(read, write)`
+    包装与 initialize）。_LiveServer._run_inner（常驻连接）与
+    probe_mcp_entry（一次性试连，2026-10-27 向导真测试）共用——headers
+    等鉴权行为只此一处，不会再出现「常驻带 token、试连不带」的分叉。"""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    try:
+        from mcp.client.sse import sse_client
+    except ImportError:
+        sse_client = None
+    try:
+        from mcp.client.streamable_http import streamablehttp_client
+    except ImportError:
+        streamablehttp_client = None
+
+    if cfg.transport == "stdio":
+        if not cfg.command:
+            raise ValueError(f"mcp server {cfg.name}: stdio requires command")
+        # Inherit parent env (esp. PATH) so bundled binaries can find node/npx.
+        env = dict(os.environ)
+        if cfg.env:
+            env.update(cfg.env)
+        params = StdioServerParameters(command=cfg.command, args=cfg.args or [], env=env)
+        ctx_res = await stack.enter_async_context(stdio_client(params))
+        read, write = _unpack_rw(ctx_res)
+    elif cfg.transport == "sse":
+        if not sse_client:
+            raise RuntimeError("mcp SSE client not installed")
+        ctx_res = await stack.enter_async_context(
+            sse_client(cfg.url, headers=cfg.headers)
+        )
+        read, write = _unpack_rw(ctx_res)
+    elif cfg.transport in ("streamable-http", "streamablehttp", "http"):
+        if not streamablehttp_client:
+            raise RuntimeError("mcp streamable_http client not installed")
+        ctx_res = await stack.enter_async_context(
+            streamablehttp_client(cfg.url, headers=cfg.headers)
+        )
+        read, write = _unpack_rw(ctx_res)
+    else:
+        raise ValueError(f"unknown transport: {cfg.transport}")
+    return read, write
+
+
+async def probe_mcp_entry(entry: dict[str, Any], timeout: float | None = None) -> dict:
+    """一次性真试连（向导「测试连接」P1）：不落盘、不碰 registry 状态，
+    连上即 initialize + tools/list 然后立即拆除。返回
+    ``{ok, tools, count, error?}``——error 带 provider/网络原始错误全文
+    （2026-10-27 决策：接口错误永远亮给前端）。超时兜底 timeout+2s。"""
+    cfg = MCPServerConfig.from_dict("probe", entry or {})
+    budget = timeout if timeout is not None else cfg.connect_timeout
+    try:
+        async with AsyncExitStack() as stack:
+            read, write = await asyncio.wait_for(_connect_session(stack, cfg), timeout=budget)
+            from mcp import ClientSession as _CS
+
+            session = await stack.enter_async_context(_CS(read, write))
+            await asyncio.wait_for(session.initialize(), timeout=budget)
+            tools_result = await asyncio.wait_for(session.list_tools(), timeout=budget)
+            names = [str(t.name) for t in tools_result.tools]
+            return {"ok": True, "tools": names, "count": len(names)}
+    except Exception as e:  # noqa: BLE001 — 试连的任何失败都是结果而非事故
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 class _LiveServer:
     """A connected MCP server: session + the tools it exposes.
 
@@ -199,51 +266,14 @@ class _LiveServer:
             raise
 
     async def _run_inner(self) -> None:
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-        try:
-            from mcp.client.sse import sse_client
-        except ImportError:
-            sse_client = None
-        try:
-            from mcp.client.streamable_http import streamablehttp_client
-        except ImportError:
-            streamablehttp_client = None
+        from mcp import ClientSession
 
         async with AsyncExitStack() as stack:
-            if self.config.transport == "stdio":
-                if not self.config.command:
-                    raise ValueError(f"mcp server {self.config.name}: stdio requires command")
-                # Inherit parent env (esp. PATH) so bundled binaries can find node/npx.
-                env = dict(os.environ)
-                if self.config.env:
-                    env.update(self.config.env)
-                params = StdioServerParameters(
-                    command=self.config.command,
-                    args=self.config.args or [],
-                    env=env,
-                )
-                ctx_res = await stack.enter_async_context(stdio_client(params))
-                read, write = _unpack_rw(ctx_res)
-            elif self.config.transport == "sse":
-                if not sse_client:
-                    raise RuntimeError("mcp SSE client not installed")
-                # headers 必须显式传（鉴权 token 在这里上车）；
-                # streamable-http 分支同理——两个客户端都原生支持。
-                ctx_res = await stack.enter_async_context(
-                    sse_client(self.config.url, headers=self.config.headers)
-                )
-                read, write = _unpack_rw(ctx_res)
-            elif self.config.transport in ("streamable-http", "streamablehttp", "http"):
-                if not streamablehttp_client:
-                    raise RuntimeError("mcp streamable_http client not installed")
-                ctx_res = await stack.enter_async_context(
-                    streamablehttp_client(self.config.url, headers=self.config.headers)
-                )
-                read, write = _unpack_rw(ctx_res)
-            else:
-                raise ValueError(f"unknown transport: {self.config.transport}")
-
+            # _connect_session 返回 (read, write) 流对——2026-10-27 重构事故：
+            # 这里曾把流对当 session 直接 .initialize()，全量 MCP 连接炸
+            # 'tuple' object has no attribute 'initialize'（测试用 FakeLiveServer
+            # 顶替真连接，没拦住）。包装 ClientSession 的一步绝不能省。
+            read, write = await _connect_session(stack, self.config)
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
             tools_result = await session.list_tools()
