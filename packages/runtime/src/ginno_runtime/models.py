@@ -12,6 +12,7 @@ import os
 from typing import Any
 
 from . import providers as prov_mod
+from ._version import __version__ as _GINNO_VERSION
 
 # Per-request timeout (seconds) for chat calls. Without this the SDK falls back
 # to its ~600s default and a stalled gateway makes a turn hang for minutes (the
@@ -513,6 +514,16 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         key = cfg.get("api_key")
         if not key:
             raise ValueError("Anthropic API key is empty — fill it in Settings → Model API")
+        # Identify Ginno to gateways: langchain-anthropic stamps every request
+        # with its own ``User-Agent: langchain-anthropic/<ver>`` (its
+        # chat_models._USER_AGENT), so external gateways (magpie, cc-switch
+        # usage views) attribute Ginno's traffic to "langchain-anthropic".
+        # User-supplied default_headers are merged OVER these by
+        # langchain-anthropic, so ours win here. bearer_auth's Authorization
+        # rides on the same dict instead of replacing the UA.
+        default_headers: dict[str, str] = {"User-Agent": f"ginno/{_GINNO_VERSION}"}
+        if cfg.get("bearer_auth"):
+            default_headers["Authorization"] = f"Bearer {key}"
         chat_kwargs: dict[str, Any] = dict(
             model=model or "claude-3-7-sonnet-20250219",
             api_key=key,
@@ -522,12 +533,8 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
             streaming=True,
             timeout=_chat_timeout(cfg),
             max_retries=6,
+            default_headers=default_headers,
         )
-        # Some Anthropic-compatible gateways (corporate model hubs / proxies) expect
-        # the token in `Authorization: Bearer ...` instead of `x-api-key`. The official
-        # Anthropic API uses x-api-key, so this is opt-in via `bearer_auth`.
-        if cfg.get("bearer_auth"):
-            chat_kwargs["default_headers"] = {"Authorization": f"Bearer {key}"}
         m = _healing_chat_anthropic()(**chat_kwargs)
         if server_web_search_on(cfg):
             m = _anthropic_with_server_search(m, cfg)

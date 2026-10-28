@@ -36,3 +36,45 @@ def test_seam_off_by_default_uses_real_path(isolated_home, monkeypatch):
     paths.ensure_layout()
     with pytest.raises(ValueError):
         models.build_model("custom")
+
+
+# ---- anthropic User-Agent identity -----------------------------------------
+# langchain-anthropic stamps every request with its own
+# ``User-Agent: langchain-anthropic/<ver>``, which makes external gateways
+# (magpie, cc-switch usage views) attribute Ginno's traffic to
+# "langchain-anthropic". build_model must override it with a ginno UA.
+
+
+def _anthropic_cfg(**extra):
+    cfg = {
+        "enabled": True,
+        "protocol": "anthropic",
+        "api_key": "sk-test",
+        "base_url": "http://127.0.0.1:3425",
+        "model": "test-model",
+        "max_tokens": 100,
+        "temperature": 0.5,
+        "timeout_s": 30,
+    }
+    cfg.update(extra)
+    return cfg
+
+
+def test_anthropic_ua_is_ginno(isolated_home, monkeypatch):
+    monkeypatch.delenv("GINNO_FAKE_LLM", raising=False)
+    cfg = _anthropic_cfg()
+    monkeypatch.setattr(models.prov_mod, "load_providers", lambda: {"p": cfg})
+    m = models.build_model("p")
+    assert m.default_headers["User-Agent"].startswith("ginno/")
+
+
+def test_anthropic_bearer_auth_keeps_ginno_ua(isolated_home, monkeypatch):
+    # bearer_auth's Authorization must ride in the same default_headers dict
+    # as the UA — not replace it (that regression would re-label Ginno's
+    # traffic as langchain-anthropic on Bearer-style gateways).
+    monkeypatch.delenv("GINNO_FAKE_LLM", raising=False)
+    cfg = _anthropic_cfg(bearer_auth=True)
+    monkeypatch.setattr(models.prov_mod, "load_providers", lambda: {"p": cfg})
+    m = models.build_model("p")
+    assert m.default_headers["User-Agent"].startswith("ginno/")
+    assert m.default_headers["Authorization"] == "Bearer sk-test"
