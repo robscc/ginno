@@ -4,6 +4,9 @@ import { RotateCw, Link2, FileText, Workflow } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
 import { AskUserCard } from "./AskUserCard";
+import { useGinno } from "@/lib/store";
+import { ensureFileRegistered } from "@/lib/api/workspace";
+import { openLinkExternal } from "@/lib/api/knowledge";
 import { useChatT } from "./blocks/i18n";
 import type { Block, SteerBandFile, SteerBandImage } from "./blocks/types";
 import { MentionText } from "./MentionText";
@@ -24,6 +27,7 @@ import {
 import { FileChips, SkillChips, TABLE_KINDS } from "./blocks/chips";
 import { WidgetBlock, WorkflowBlock } from "./blocks/widgets";
 import { ToolBlock, ThinkingBlock } from "./blocks/toolBlocks";
+import { TaskEventBand } from "./TaskCard";
 import { imageUrl, ImageGallery } from "./blocks/media";
 import { ContextBlocks } from "./blocks/sources";
 
@@ -84,15 +88,48 @@ function cleanAgentText(text: string): string {
   return text.replace(ATTACHED_REF_RE, "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function RefChip({ refKind, name }: { refKind: string; name: string }) {
+/** 附件型 ref（file/doc）：点击时把 ref_id 登记进文件注册表（老会话的历史
+ *  ref 从未注册过；live 转向在 ref.emit 时已注册，这里幂等命中）再走和
+ *  FileChips 一致的预览。link 型 ref 直接交系统浏览器；无 ref_id 的维持纯展示。 */
+function RefChip({ refKind, name, refId }: { refKind: string; name: string; refId?: string }) {
+  const g = useGinno();
   const { tc } = useChatT();
   const Ic = refKind === "workflow" ? Workflow : refKind === "link" ? Link2 : FileText;
+  const isUrl = /^https?:\/\//i.test(refId ?? "");
+  const openable =
+    !!refId && (refKind === "link" ? isUrl : refKind === "file" || refKind === "doc");
+  const onOpen = async () => {
+    if (!refId) return;
+    if (refKind === "link") {
+      openLinkExternal(refId);
+      return;
+    }
+    const sid = g.activeSessionId;
+    if (!sid) return;
+    const r = await ensureFileRegistered(sid, refId, name);
+    if (r.ok && r.file) {
+      g.openPreview({
+        id: r.file.id,
+        name: r.file.name ?? name,
+        path: r.file.path ?? refId,
+        kind: r.file.kind,
+      });
+    }
+  };
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted">
+    <button
+      type="button"
+      disabled={!openable}
+      onClick={() => void onOpen()}
+      title={openable ? `${tc("refChip.clickOpen")}\n${refId}` : undefined}
+      className={`inline-flex items-center gap-1.5 rounded-lg border border-line bg-card px-2.5 py-1 text-xs text-muted ${
+        openable ? "cursor-pointer hover:border-violet/50 hover:text-txt" : "cursor-default"
+      }`}
+    >
       <Ic className="h-3.5 w-3.5 text-violet" />
       {refKind === "workflow" ? tc("refChip.workflowPrefix") : ""}
       {name}
-    </span>
+    </button>
   );
 }
 
@@ -172,6 +209,10 @@ export function InnerBlocks({
       out.push(<FileChips key={key++} files={[b]} />);
     } else if (b.kind === "steer") {
       out.push(<SteerBand key={b.steerId || `st${key++}`} block={b} />);
+    } else if (b.kind === "task_event") {
+      // 后台任务事件注入点（评审决策 4）：极薄标记行，完整状态在 bg_run
+      // 的常驻 TaskCard；此处只为时间线留下「结果何时回来」的锚。
+      out.push(<TaskEventBand key={`tev-${b.taskId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_spawn") {
       out.push(<SubagentSpawnCard key={`sa-spawn-${b.sessionId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_result") {
@@ -229,7 +270,7 @@ export function RefBlocks({ blocks }: { blocks: Block[] }) {
   return (
     <div className="mt-2 flex flex-wrap gap-2">
       {refs.map((r, i) => (
-        <RefChip key={i} refKind={r.refKind} name={r.name} />
+        <RefChip key={i} refKind={r.refKind} name={r.name} refId={r.refId} />
       ))}
     </div>
   );

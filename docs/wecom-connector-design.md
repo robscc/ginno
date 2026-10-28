@@ -76,6 +76,10 @@ turn 在跑且未停车 → `base.steer_channel_turn` 文本进 steer 队列 + �
 finish=true 定格（幂等）；user.question → 问题+编号选项写进流 + 登记
 `_pending_q` + 超时 skip；permission.request → 自动 deny + 提示（P0 策略）；
 image/ref.emit → 分片上传 + file/image 被动回复；turn.stopped → 定格+备注。
+P1 进展区（企微协议无原生 think 块）：thinking.delta/tool.start/tool.end 经
+`base.TurnProgressTracker` 聚合成 markdown 引用块（思考滚动片段 / 任务种类
++工具名 / 结果首行摘要），随流全量重发原地更新，finalize 清场只留正文；
+只渲染归一化工具名，不渲染参数/URL/完整输出。
 
 ### F-媒体
 下行（image/file/mixed）：占位帧 → 下载解密 → `session_files_dir` →

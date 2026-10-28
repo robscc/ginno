@@ -12,6 +12,8 @@
       "team": "AgentTeam",
       "connectors": "连接器",
       "scheduled": "定时任务",
+      "tasks": "后台任务",
+      "tasksRunning": "{n} 个后台任务运行中",
       "kb": "知识库",
       "workflows": "工作流",
       "settings": "设置"

@@ -4,6 +4,7 @@ import { notifyNative } from "../desktop";
 import { notifyPrefs } from "../notifyPrefs";
 import { uiText } from "../../i18n/uiText";
 import { schedText } from "../../i18n/schedText";
+import { tasksText } from "../../i18n/tasksText";
 import type { ScheduleRun } from "../types";
 
 // ---- Notifications for run completion (P3) ----
@@ -150,4 +151,37 @@ export function notifyScheduleRunFinished(
       /* notification blocked/unsupported */
     }
   });
+}
+
+// ---- Notifications for background tasks (background-tasks-design.md §6.3) ----
+// 与 notifyRunTransitions 同一套约束：prefs 总闸 + 仅后台标签页触发（看得见
+// 时徽标已够）。驱动方是 SidebarFooter 的 5s 全局轮询（进程内单实例）。
+const _prevTaskStatus: Record<string, string> = {};
+
+export function notifyTaskTransitions(
+  tasks: Array<{ id: string; title?: string; status: string; exit_code?: number | null; dur?: string }>,
+) {
+  const prefs = notifyPrefs();
+  const hidden = typeof document !== "undefined" && document.visibilityState !== "visible";
+  for (const t of tasks) {
+    const prev = _prevTaskStatus[t.id];
+    _prevTaskStatus[t.id] = t.status;
+    if (prev === undefined || prev === t.status) continue;
+    if (!prefs.enabled) continue;
+    if (!hidden) continue;
+    if (t.status !== "finished" && t.status !== "stopped" && t.status !== "timeout") continue;
+    const name = t.title || t.id;
+    const body =
+      t.status === "finished"
+        ? tasksText("notifyFinished", { name, exit: String(t.exit_code ?? "?"), dur: t.dur || "" })
+        : tasksText("notifyStopped", { name, dur: t.dur || "" });
+    // Desktop: the Tauri shell fires the macOS notification; click → 任务中心。
+    void notifyNative({
+      kind: "bg-task",
+      id: t.id,
+      title: name,
+      body,
+      sound: prefs.sound ? prefs.soundName : undefined,
+    }).catch(() => {});
+  }
 }

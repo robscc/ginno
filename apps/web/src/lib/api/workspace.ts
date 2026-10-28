@@ -160,6 +160,21 @@ export async function attachFilePath(sessionId: string, path: string) {
   );
 }
 
+// Register an existing absolute path (an attach_ref ref_id) in the file
+// registry — no copy, idempotent by path. Live turns register on ref.emit,
+// but refs replayed from old sessions never were; the chip's click calls this
+// to obtain a preview-able file id. Same shape as uploadFile/attachFilePath.
+export async function ensureFileRegistered(sessionId: string, path: string, name?: string) {
+  return json<{ ok: boolean; error?: string; file?: import("../types").FileEntry }>(
+    `${BASE}/files/ensure-registered`,
+    {
+      method: "POST",
+      headers: H,
+      body: JSON.stringify({ session_id: sessionId, path, ...(name ? { name } : {}) }),
+    },
+  );
+}
+
 
 export async function getFilePreview(
   fileId: string,

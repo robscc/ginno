@@ -271,6 +271,14 @@ async def _stream_graph(
                             # 原文随事件回传：渠道侧注入的 steer（channels.steer_channel_turn）
                             # 在桌面端没有本地队列条目，带 text 才能实时渲染注入带。
                             "text": _e.get("text") or "",
+                            # 后台任务注入（tasks/inject）：origin + ginno_task_event
+                            # 让前端把带折进 TaskCard 而非裸文本带（评审决策 4）。
+                            "origin": _e.get("origin") or "",
+                            "task": (
+                                (_e.get("extra_kwargs") or {}).get("ginno_task_event")
+                                if isinstance(_e.get("extra_kwargs"), dict)
+                                else None
+                            ),
                         },
                     )
                 )

@@ -273,6 +273,18 @@ async def lifespan(app: FastAPI):
         scheduler_task = _scheduler.start()
     except Exception:
         _log.exception("scheduler start failed (continuing)")
+    # 后台任务注册表（background-tasks-design.md §7）：重启对账（running →
+    # interrupted / detached 认领）+ 保留策略清理 + reaper 循环。
+    tasks_registry_started = False
+    try:
+        from .tasks import get_registry as _get_tasks_registry
+        from .tasks import store as _task_store
+
+        _task_store.cleanup_expired(_task_store.read_index())
+        _get_tasks_registry().start()
+        tasks_registry_started = True
+    except Exception:
+        _log.exception("tasks registry start failed (continuing)")
     try:
         yield
     finally:
@@ -299,6 +311,15 @@ async def lifespan(app: FastAPI):
             await _shutdown_synth_tasks()
         except Exception:
             _log.exception("synthesis_shutdown_failed")
+        # 后台任务收尾（D4）：子进程随 sidecar 退出——SIGTERM 全体、宽限后
+        # SIGKILL，重启对账负责把它们标成 interrupted。
+        if tasks_registry_started:
+            try:
+                from .tasks import get_registry as _get_tasks_registry
+
+                await _get_tasks_registry().stop_all()
+            except Exception:
+                _log.exception("tasks registry shutdown failed")
         if shared._mcp:
             await shared._mcp.close_all()
         # Mods bus teardown (§5.2): stop the channel and any dev-spawned
@@ -471,6 +492,7 @@ from .api import diagnostics as _diagnostics_api  # noqa: E402
 from .api import distill as _distill_api  # noqa: E402
 from .api import export as _export_api  # noqa: E402
 from .api import files as _files_api  # noqa: E402
+from .api import tasks as _tasks_api  # noqa: E402
 from .api import folders as _folders_api  # noqa: E402
 from .api import knowledge as _knowledge_api  # noqa: E402
 from .api import memory as _memory_api  # noqa: E402
@@ -497,6 +519,7 @@ app.include_router(_code_fsops_api.router)
 app.include_router(_config_api.router)
 app.include_router(_plans_api.router)
 app.include_router(_files_api.router)
+app.include_router(_tasks_api.router)
 app.include_router(_folders_api.router)
 app.include_router(_knowledge_api.router)
 app.include_router(_memory_api.router)

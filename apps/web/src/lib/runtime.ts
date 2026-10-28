@@ -19,4 +19,5 @@ export * from "./api/code";
 export * from "./api/knowledge";
 export * from "./api/connectors";
 export * from "./api/schedule";
+export * from "./api/tasks";
 export * from "./api/misc";

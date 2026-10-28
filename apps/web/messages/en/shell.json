@@ -12,6 +12,8 @@
       "team": "AgentTeam",
       "connectors": "Connectors",
       "scheduled": "Scheduled Tasks",
+      "tasks": "Background Tasks",
+      "tasksRunning": "{n} background task(s) running",
       "kb": "Knowledge Base",
       "workflows": "Workflows",
       "settings": "Settings"

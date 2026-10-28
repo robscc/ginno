@@ -25,11 +25,11 @@ export function isDesktop(): boolean {
 /** Payload for the shell-side native notification (apps/desktop/src/lib.rs). */
 export interface NativeNotification {
   /** Click target kind: focus a chat session, open the Workflow panel, open a
-   *  scheduled-run replay, or "test" (Settings → Notifications test button)
-   *  which only refocuses. */
-  kind: "session" | "workflow-run" | "schedule-run" | "test";
-  /** Session id (kind=session), run id (kind=workflow-run), or scheduled run
-   *  id (kind=schedule-run). */
+   *  scheduled-run replay, open the background-tasks page, or "test" (Settings
+   *  → Notifications test button) which only refocuses. */
+  kind: "session" | "workflow-run" | "schedule-run" | "bg-task" | "test";
+  /** Session id (kind=session), run id (kind=workflow-run), scheduled run id
+   *  (kind=schedule-run), or task id (kind=bg-task). */
   id: string;
   title: string;
   body: string;

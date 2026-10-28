@@ -105,6 +105,11 @@ pub(crate) fn focus_and_open(app: &tauri::AppHandle, kind: &str, id: &str) {
         // runs list when the row cache is gone (webview reloaded).
         let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());
         format!("window.__ginnoOpenScheduleRun && window.__ginnoOpenScheduleRun({id_js});")
+    } else if kind == "bg-task" {
+        // Background-task completion (background-tasks-design.md §6.3):
+        // AppShell registers __ginnoOpenTasks() → navigates to /tasks. The
+        // task id is not navigable on its own (no per-task route).
+        "window.__ginnoOpenTasks && window.__ginnoOpenTasks();".to_string()
     } else {
         let id_js = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string());
         format!("window.__ginnoOpenSession && window.__ginnoOpenSession({id_js});")

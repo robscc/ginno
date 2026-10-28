@@ -39,6 +39,7 @@ import { getSettings, putSettings } from "@/lib/runtime";
 import { setToolLabelsLocale } from "@/lib/toolLabels";
 import { setUiTextLocale } from "./uiText";
 import { setSchedTextLocale } from "./schedText";
+import { setTasksTextLocale } from "./tasksText";
 import {
   LANGUAGE_LS_KEY,
   defaultLocale,
@@ -86,6 +87,8 @@ import schedEn from "../../messages/en/sched.json";
 import schedZh from "../../messages/zh-CN/sched.json";
 import goalEn from "../../messages/en/goal.json";
 import goalZh from "../../messages/zh-CN/goal.json";
+import tasksEn from "../../messages/en/tasks.json";
+import tasksZh from "../../messages/zh-CN/tasks.json";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -127,6 +130,7 @@ const MESSAGES: Record<Locale, Messages> = {
     wfEn,
     schedEn,
     goalEn,
+    tasksEn,
   ) as Messages,
   "zh-CN": deepMerge(
     deepMerge(
@@ -146,6 +150,7 @@ const MESSAGES: Record<Locale, Messages> = {
     wfZh,
     schedZh,
     goalZh,
+    tasksZh,
   ) as Messages,
 };
 
@@ -241,6 +246,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   // ui / sched 域非 hook 读取器的 locale 镜像，同一时机同步
   setUiTextLocale(locale);
   setSchedTextLocale(locale);
+  setTasksTextLocale(locale);
 
   const applyLocale = useCallback(async (v: LanguageSetting) => {
     // 先落本地（UI 即时切换），再走 settings API；API 失败不回滚 UI，

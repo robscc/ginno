@@ -1,0 +1,23 @@
+{
+  "tasks": {
+    "title": "后台任务",
+    "refresh": "刷新",
+    "loading": "加载任务中…",
+    "empty": "暂无后台任务。让 agent 在后台跑一条命令即可（bg_run）。",
+    "runningGroup": "运行中",
+    "recentGroup": "最近完成",
+    "stop": "停止",
+    "remove": "删除",
+    "follow": "跟随",
+    "noOutput": "（无输出）",
+    "running": "运行中",
+    "stopped": "已停止",
+    "timeout": "超时",
+    "interrupted": "已中断",
+    "failedStart": "启动失败",
+    "exit0": "Exit 0",
+    "exitN": "Exit {n}",
+    "notifyFinished": "「{name}」完成 · exit {exit} · 用时 {dur}",
+    "notifyStopped": "「{name}」已停止 · {dur}"
+  }
+}

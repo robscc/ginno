@@ -137,6 +137,26 @@ async def test_tap_streams_and_finalizes_once():
     assert "段落0" in body and "段落2" in body
 
 
+async def test_tap_progress_section_streams_and_clears():
+    """P1 进展区：thinking/tool 帧进引用块随卡片流更新；终稿 finalize 只留
+    正文，不带进展区。"""
+    ad = FakeAdapter()
+    tap = DingTalkTap(ad, "s1", "cid1")
+    tap.session_id = "sess1"
+    await tap.send_text(_frame("turn.start"))
+    await tap.send_text(_frame("tool.start", name="web_search", id="t9"))
+    assert any("> 🔧 查询资料：web_search" in u for u in ad.cards.updates)
+    tap._last_flush = 0.0  # 测试便利：绕过节流窗口看中间帧
+    await tap.send_text(_frame("tool.end", id="t9", content="3 条结果"))
+    assert any("✔ web_search：3 条结果" in u for u in ad.cards.updates)
+    await tap.send_text(_frame("token.delta", content="今天晴"))
+    await tap.send_text(_frame("message.end"))
+    await tap.close()
+    body = ad.cards.finalized[0][1]
+    assert "今天晴" in body
+    assert "🔧" not in body and "🧠" not in body and "✔" not in body
+
+
 async def test_tap_card_failure_degrades_to_markdown():
     ad = FakeAdapter()
 

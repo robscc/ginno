@@ -67,6 +67,7 @@ from .state import AgentState
 from .tools.artifact_tools import ALL_ARTIFACT_TOOLS, ARTIFACT_TOOL_NAMES
 from .tools.ask_tools import ASK_TOOL_NAMES, build_ask_tools
 from .tools.builtin import build_builtin_tools
+from .tools.tasks import build_task_tools
 from .tools.document_tools import ALL_DOCUMENT_TOOLS
 from .tools.goal_tools import GOAL_TOOL_NAMES
 from .tools.render_tools import RENDER_TOOL_NAMES, attach_ref, render_widget
@@ -767,6 +768,14 @@ def build_all_tools(
             context_dirs=context_dirs,
             primary_path=primary_path,
             observe_path=_project_observer(project_slug, session_id),
+        )
+        # bg_* 后台任务工具（background-tasks-design.md §4）：与文件/shell
+        # 工具同 workspace/挂载绑定；session_id 是完成注入的 origin。
+        + build_task_tools(
+            workspace,
+            context_dirs=context_dirs,
+            primary_path=primary_path,
+            session_id=session_id,
         )
         + build_skill_tools(project_slug, session_id, primary_path)
         # [] without a session_id (workflow engine / listing endpoints): no

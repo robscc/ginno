@@ -194,9 +194,10 @@ def steer_keep_channel(session_id: str) -> None:
     """段末清场变体（engine/heal 收尾用）：丢弃非渠道来源的未吸收条目
     （原 ``steer_clear`` 语义），保留渠道来源（``origin="channel"``）——
     turn 已结束、注入无下家，``run_channel_turn`` 尾部会排水交给 adapter
-    补投为后续 turn（channels/base.py）。"""
+    补投为后续 turn（channels/base.py）。后台任务注入（origin="task"）
+    同待遇：tasks/inject 的补投 watcher 会在 turn 收尾后捞回重投。"""
     for _e in steer_drain(session_id):
-        if _e.get("origin") == "channel":
+        if _e.get("origin") in ("channel", "task"):
             steer_enqueue(session_id, _e)
 
 

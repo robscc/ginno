@@ -301,16 +301,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setRightTab("workflow"); // manual open also clears the panel badge
       setRightPanelOpenForBridge(true);
     };
+    // 后台任务完成通知的点击落点（background-tasks-design §6.3）：任务中心
+    // 路由页——任务没有 per-task 路由，id 本身不可定位。
+    const openTasks = () => {
+      if (window.location.pathname !== "/tasks") router.push("/tasks");
+    };
     (window as unknown as { __ginnoOpenSession?: (sid: string) => void }).__ginnoOpenSession =
       openSession;
     (window as unknown as { __ginnoOpenWorkflowRun?: () => void }).__ginnoOpenWorkflowRun =
       openWorkflowRun;
     (window as unknown as { __ginnoOpenScheduleRun?: (runId: string) => void })
       .__ginnoOpenScheduleRun = (runId: string) => openScheduleRunFromNotifyRef.current(runId);
+    (window as unknown as { __ginnoOpenTasks?: () => void }).__ginnoOpenTasks = openTasks;
     return () => {
       delete (window as unknown as { __ginnoOpenSession?: unknown }).__ginnoOpenSession;
       delete (window as unknown as { __ginnoOpenWorkflowRun?: unknown }).__ginnoOpenWorkflowRun;
       delete (window as unknown as { __ginnoOpenScheduleRun?: unknown }).__ginnoOpenScheduleRun;
+      delete (window as unknown as { __ginnoOpenTasks?: unknown }).__ginnoOpenTasks;
     };
   }, [setActiveSession, setRightTab, setRightPanelOpenForBridge, router]);
 
@@ -320,6 +327,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const onWorkflows = pathname.startsWith("/workflows");
   const onConnectors = pathname.startsWith("/connectors");
   const onScheduled = pathname.startsWith("/scheduled");
+  const onTasks = pathname.startsWith("/tasks");
   const onTeam = pathname.startsWith("/team");
 
   // Connector 聚合状态点(connector-module §2.1):有断连→黄,有错误→红,
@@ -815,6 +823,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onTeam={onTeam}
           onConnectors={onConnectors}
           onScheduled={onScheduled}
+          onTasks={onTasks}
           onKb={onKb}
           onWorkflows={onWorkflows}
           onSettings={onSettings}

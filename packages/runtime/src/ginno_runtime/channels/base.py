@@ -28,6 +28,107 @@ from .. import server_shared as shared
 # ask_user），因此不调用 `_set_interactive_turn(False)`。
 
 
+# 工具名 → 任务种类（进展区文案；OpenClaw 同款归类思想：只按归一化名字
+# 派生，绝不渲染参数/URL/完整输出）
+_TOOL_TASK_KINDS: list[tuple[tuple[str, ...], str]] = [
+    (("read", "view", "find", "list", "glob"), "检查文件"),
+    (("write", "edit", "patch", "apply"), "应用修改"),
+    (("web_search", "search", "fetch", "open"), "查询资料"),
+    (("browser",), "验证页面"),
+    (("bash", "exec", "process"), "执行命令"),
+    (("sql", "query", "database"), "查询数据"),
+]
+
+
+def _tool_kind(name: str) -> str:
+    low = name.lower()
+    for keys, kind in _TOOL_TASK_KINDS:
+        if any(k in low for k in keys):
+            return kind
+    return "处理任务"
+
+
+class TurnProgressTracker:
+    """IM 渠道「进展区」（P1 方案）：把 thinking/tool 帧聚合成 markdown 引用
+    块，随现有流式通道原地更新（企微/钉钉都是全量 content 重发），finalize
+    前清掉——终稿只留正文。
+
+    协议现实约束：钉钉同 block 多行只刷尾行 → 每项单行；单 markdown block
+    有 ~3000 字隐性上限 → 行数/行宽截断；思考行只留滚动尾片段。
+
+    dirty 标记：有未落盘的变化（tap 的节流 flush 用它判断「无正文也要更新」），
+    实际发出一帧后由 tap 复位。
+    """
+
+    def __init__(self, *, max_done: int = 4, max_running: int = 3,
+                 width: int = 44) -> None:
+        self._max_done = max_done
+        self._max_running = max_running
+        self._width = width
+        self._think = ""
+        self._order: list[str] = []       # 进行中 tool id（按开始序）
+        self._names: dict[str, str] = {}  # id -> 工具名
+        self._done: list[str] = []        # 完成行（最新 max_done 条）
+        self.dirty = False
+
+    def on_thinking(self, chunk: str) -> None:
+        s = " ".join((chunk or "").split())
+        if not s:
+            return
+        tail = s[-self._width:]
+        if tail != self._think:
+            self._think = tail
+            self.dirty = True
+
+    def on_tool_start(self, name: str, tid: str = "") -> None:
+        # 想清楚了才动手：动作出现即收思考行
+        if self._think:
+            self._think = ""
+            self.dirty = True
+        tid = tid or name
+        if tid in self._names:
+            return
+        self._names[tid] = name or "tool"
+        self._order.append(tid)
+        self.dirty = True
+
+    def on_tool_end(self, tid: str, name: str = "", result: str = "") -> None:
+        tid = tid or name
+        nm = self._names.pop(tid, None) or name or "tool"
+        if tid in self._order:
+            self._order.remove(tid)
+        # 结果只取首行摘要（去空白、截宽）——完整输出是泄密+噪音+长度三杀
+        first = " ".join((result or "").split())[: self._width]
+        line = f"✔ {nm}" + (f"：{first}" if first else "")
+        self._done = [*self._done, line][-self._max_done:]
+        self.dirty = True
+
+    def clear_thinking(self) -> None:
+        """正文开始流（token.delta）即收思考行——思考区只在正文出现前展示。"""
+        if self._think:
+            self._think = ""
+            self.dirty = True
+
+    def clear(self) -> None:
+        """终稿清场：finalize 前调用，最终消息只留正文。"""
+        if self._think or self._order or self._done:
+            self._think = ""
+            self._order = []
+            self._names = {}
+            self._done = []
+            self.dirty = True
+
+    def render(self) -> str:
+        lines: list[str] = []
+        if self._think:
+            lines.append(f"🧠 {self._think}…")
+        for tid in self._order[-self._max_running:]:
+            nm = self._names.get(tid, "tool")
+            lines.append(f"🔧 {_tool_kind(nm)}：{nm}")
+        lines.extend(self._done)
+        return "\n".join(f"> {ln}" for ln in lines) if lines else ""
+
+
 class ChannelTap:
     """假 WS：挂 ``server_shared._SESSION_WS[session_id]`` 收引擎 turn 帧。
 

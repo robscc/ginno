@@ -371,6 +371,31 @@ async def attach_file_by_path_endpoint(req: dict) -> dict:
     return {"ok": True, "file": entry}
 
 
+@router.post("/api/files/ensure-registered")
+async def ensure_registered_endpoint(req: dict) -> dict:
+    """Give a model-attached file ref (attach_ref 的 ref_id) a registry entry.
+
+    attach_ref 的 ref chip 在 UI 里只是展示，除非路径能解析到文件注册表的
+    id；live 转向在 ref.emit 时注册（stream engine），但老会话历史回放出的
+    ref 从未注册过。chip 点击时调用这里：路径按模型 ref 的同一规则归一化
+    （相对路径 → session workspace），文件存在则原地登记（不拷贝，幂等）。
+    """
+    session_id = req.get("session_id") or ""
+    src = req.get("path") or ""
+    meta = _resolve_session_meta(session_id)
+    if meta is None:
+        return {"ok": False, "error": f"session not found: {session_id}"}
+    slug = meta.get("project_slug") or "default"
+    ref = _normalize_file_ref(slug, session_id, src)
+    p = Path(ref).expanduser()
+    if not p.is_file():
+        return {"ok": False, "error": f"File not found: {src}"}
+    entry = files_mod.get_registry(slug).register(
+        req.get("name") or p.name, ref, session_id=session_id
+    )
+    return {"ok": True, "file": entry}
+
+
 @router.post("/api/debug-log")
 async def debug_log_endpoint(data: dict) -> dict:
     """Temporary: frontend drop/upload telemetry for diagnosing WKWebView DnD."""

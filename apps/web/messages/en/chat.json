@@ -270,7 +270,8 @@
       "fallbackName": "Workflow"
     },
     "refChip": {
-      "workflowPrefix": "Workflow: "
+      "workflowPrefix": "Workflow: ",
+      "clickOpen": "Click to open"
     },
     "browserHandoff": {
       "title": "The browser is now in your hands",
@@ -282,6 +283,21 @@
       "injected": "Injected mid-run",
       "moreAttachments": "{count} more attachment(s)",
       "imageAlt": "image"
+    },
+    "taskCard": {
+      "stop": "Stop",
+      "remove": "Remove",
+      "removed": "Background task removed, logs deleted",
+      "truncated": "log truncated",
+      "injected": "result injected ✓",
+      "interruptedNote": "Interrupted by app quit",
+      "outputTail": "output tail",
+      "noOutput": "(no output yet)",
+      "evFinished": "Task finished · exit {exit}",
+      "evStopped": "Task stopped",
+      "evTimeout": "Task timed out",
+      "evHealthy": "Task ready",
+      "evWatch": "Watch matched"
     },
     "subagent": {
       "fallbackTitle": "Subtask",

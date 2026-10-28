@@ -270,7 +270,8 @@
       "fallbackName": "工作流"
     },
     "refChip": {
-      "workflowPrefix": "工作流："
+      "workflowPrefix": "工作流：",
+      "clickOpen": "点击打开"
     },
     "browserHandoff": {
       "title": "浏览器现在交到你手上",
@@ -282,6 +283,21 @@
       "injected": "运行中注入",
       "moreAttachments": "还有 {count} 个附件",
       "imageAlt": "图片"
+    },
+    "taskCard": {
+      "stop": "停止",
+      "remove": "删除",
+      "removed": "后台任务已删除，日志已清理",
+      "truncated": "日志已截断",
+      "injected": "结果已回传 ✓",
+      "interruptedNote": "应用退出时中断",
+      "outputTail": "输出尾部",
+      "noOutput": "（暂无输出）",
+      "evFinished": "任务完成 · exit {exit}",
+      "evStopped": "任务已停止",
+      "evTimeout": "任务超时",
+      "evHealthy": "任务已就绪",
+      "evWatch": "命中监控规则"
     },
     "subagent": {
       "fallbackTitle": "子任务",

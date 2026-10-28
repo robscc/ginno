@@ -475,6 +475,34 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // bubble (design §4.2/§4.3).
       const absorbedId = ev.steer_id as string | undefined;
       if (!absorbedId) break;
+      // 后台任务事件的 steer 注入（tasks/inject，origin="task"）：事件帧带
+      // ginno_task_event 载荷——折成极薄 task_event 标记行，状态由 bg_run
+      // 常驻 TaskCard 轮询呈现，绝不渲染 "[task finished]…" 原文带。
+      if (ev.task && typeof ev.task === "object" && (ev.task as { task?: unknown }).task) {
+        const tp = ev.task as { task: string; kind?: string; title?: string; exit?: number | null; dur?: string };
+        const tevBlock: Block = {
+          kind: "task_event",
+          taskId: String(tp.task),
+          ev: String(tp.kind || ""),
+          title: tp.title ? String(tp.title) : undefined,
+          exit: tp.exit ?? null,
+          dur: tp.dur ? String(tp.dur) : undefined,
+        };
+        const liveMsgId0 = ctx.liveBySessionRef.current[sid];
+        const store0 = ctx.storeRef.current[sid] ?? [];
+        if (liveMsgId0 && store0.some((m) => m.id === liveMsgId0)) {
+          ctx.storeRef.current[sid] = store0.map((m) =>
+            m.id === liveMsgId0 ? { ...m, blocks: [...m.blocks, tevBlock] } : m,
+          );
+        } else {
+          ctx.storeRef.current[sid] = [
+            ...store0,
+            { id: mid(), role: "system" as const, blocks: [tevBlock] },
+          ];
+        }
+        ctx.syncDisplay(sid);
+        break;
+      }
       // Capture the entry BEFORE delegating — the hook drops it from the queue.
       const entry = ctx.steerQ.itemsFor(sid).find((i) => i.steerId === absorbedId);
       // 渠道注入的 steer（IM 侧 steer_channel_turn 入队，本地没有队列条目）：

@@ -17,7 +17,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from ..base import ChannelTap
+from ..base import ChannelTap, TurnProgressTracker
 from . import protocol as p
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -93,6 +93,8 @@ class WeComTap(ChannelTap):
         self._ask_timer: asyncio.TimerHandle | None = None
         self._question_id: str | None = None
         self._options: list = []
+        # P1 进展区：thinking/tool 帧 → markdown 引用块，流中原地更新、终稿清场
+        self._progress = TurnProgressTracker()
 
     # ---- 流式输出 -----------------------------------------------------------
 
@@ -101,7 +103,9 @@ class WeComTap(ChannelTap):
             self.req_id, p.stream_body(self.stream_id, content, finish=finish))
 
     async def _maybe_flush(self, *, force: bool = False) -> None:
-        if not self._buf:
+        # 进展区有变化（无正文 token）也要出帧——否则纯工具轮次全程静默；
+        # 与正文共用同一节流窗口，progress 事件不额外打 API
+        if not self._buf and not self._progress.dirty:
             return
         now = time.monotonic()
         if not (force or now - self._last_flush >= _FLUSH_INTERVAL_S):
@@ -110,6 +114,7 @@ class WeComTap(ChannelTap):
         self._buf.clear()
         self._buf_len = 0
         self._last_flush = now
+        self._progress.dirty = False
         if self._stream_done:
             # 流已按 10 分钟上限收尾：增量改走主动推送缓冲，close 时统一发
             self._tail += chunk
@@ -124,8 +129,11 @@ class WeComTap(ChannelTap):
             except Exception:  # noqa: BLE001 — 定格失败由 close 的推送兜底
                 pass
             return
+        # 流中内容 = 进展区（引用块）+ 正文；终稿（_finalize 用 _full）不带
+        sec = self._progress.render()
+        md = f"{sec}\n\n{self._full}" if sec else self._full
         try:
-            await self._send_stream(self._full)
+            await self._send_stream(md)
         except Exception:  # noqa: BLE001 — 单批失败静默，终态保证可见
             pass
 
@@ -135,6 +143,7 @@ class WeComTap(ChannelTap):
             return
         self._finalized = True
         self._cancel_ask_timer()
+        self._progress.clear()  # 终稿只留正文
         await self._maybe_flush(force=True)
         body = self._full or "（无输出）"
         if note:
@@ -226,9 +235,23 @@ class WeComTap(ChannelTap):
         if event == "token.delta":
             txt = str(data.get("content") or "")
             if txt:
+                self._progress.clear_thinking()  # 正文出现即收思考行
                 self._buf.append(txt)
                 self._buf_len += len(txt)
                 await self._maybe_flush()
+        elif event == "thinking.delta":
+            # P1 进展区：思考滚动片段（随节流出帧，不逐 token 打 API）
+            self._progress.on_thinking(str(data.get("content") or ""))
+            await self._maybe_flush()
+        elif event == "tool.start":
+            self._progress.on_tool_start(
+                str(data.get("name") or ""), str(data.get("id") or ""))
+            await self._maybe_flush()
+        elif event == "tool.end":
+            self._progress.on_tool_end(
+                str(data.get("id") or ""), str(data.get("name") or ""),
+                str(data.get("content") or ""))
+            await self._maybe_flush()
         elif event == "message.end":
             await self._maybe_flush(force=True)
         elif event == "user.question":

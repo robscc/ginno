@@ -850,6 +850,28 @@ def _messages_to_ui(
                     else:
                         pending_bands.append(cards)
                     continue
+            # 后台任务事件注入（background-tasks-design §5/评审决策 4）：合成
+            # 消息是模型侧输入——UI 只出一个极薄的 task_event 标记块，前端按
+            # taskId 折进同 transcript 里 bg_run 的常驻卡片；找不到卡片（很老
+            # 的历史/卡片被清）时兜底渲染一行完成带。先于 steer 分支（steer
+            # 路径注入的消息同时带 ginno_steer 戳）。
+            task_kw = (getattr(m, "additional_kwargs", None) or {}).get(
+                "ginno_task_event"
+            )
+            if isinstance(task_kw, dict) and task_kw.get("task"):
+                blk = {
+                    "kind": "task_event",
+                    "taskId": str(task_kw.get("task") or ""),
+                    "ev": str(task_kw.get("kind") or ""),
+                    "title": str(task_kw.get("title") or ""),
+                    "exit": task_kw.get("exit"),
+                    "dur": str(task_kw.get("dur") or ""),
+                }
+                if acc is not None:
+                    acc.append(blk)
+                else:
+                    pending_bands.append([blk])
+                continue
             if steer_kw:
                 group = _steer_band_blocks(content_raw, steer_kw)
                 if acc is not None:

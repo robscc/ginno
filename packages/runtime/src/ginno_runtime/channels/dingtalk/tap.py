@@ -11,7 +11,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
-from ..base import ChannelTap
+from ..base import ChannelTap, TurnProgressTracker
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .adapter import DingTalkChannelAdapter
@@ -83,6 +83,8 @@ class DingTalkTap(ChannelTap):
         self._finalized = False
         self._ask_timer: asyncio.TimerHandle | None = None
         self._question_id: str | None = None
+        # P1 进展区：thinking/tool 帧 → markdown 引用块，流中原地更新、终稿清场
+        self._progress = TurnProgressTracker()
 
     # ---- F3 流式输出 -------------------------------------------------------
 
@@ -94,11 +96,13 @@ class DingTalkTap(ChannelTap):
             self._card_failed = True  # 降级：普通 markdown 消息
 
     async def _maybe_flush(self, *, force: bool = False) -> None:
-        if not self._buf:
+        # 进展区有变化（无正文 token）也要出帧——否则纯工具轮次全程静默
+        if not self._buf and not self._progress.dirty:
             return
         now = time.monotonic()
         due = force or (now - self._last_flush >= _FLUSH_INTERVAL_S
-                        and self._buf_len > 0) or self._buf_len >= _FLUSH_MIN_CHARS
+                        and (self._buf_len > 0 or self._progress.dirty)) \
+            or self._buf_len >= _FLUSH_MIN_CHARS
         if not due:
             return
         chunk = "".join(self._buf)
@@ -106,10 +110,14 @@ class DingTalkTap(ChannelTap):
         self._buf.clear()
         self._buf_len = 0
         self._last_flush = now
+        self._progress.dirty = False
         if self._card_failed or self._card is None:
             return  # 降级模式不流式，终态一次性发
+        # 流中内容 = 进展区（引用块）+ 正文；终稿（_finalize 用 _full_md）不带
+        sec = self._progress.render()
+        md = f"{sec}\n\n{self._full_md}" if sec else self._full_md
         try:
-            await self.adapter.cards.stream_update(self._card, self._full_md)
+            await self.adapter.cards.stream_update(self._card, md)
         except Exception:
             pass  # 单批失败静默；终态 finalize 兜底全量
 
@@ -118,6 +126,7 @@ class DingTalkTap(ChannelTap):
         if self._finalized:
             return
         self._finalized = True
+        self._progress.clear()  # 终稿只留正文
         await self._maybe_flush(force=True)
         body = self._full_md or "（无输出）"
         if note:
@@ -218,9 +227,23 @@ class DingTalkTap(ChannelTap):
         elif event == "token.delta":
             txt = str(data.get("content") or "")
             if txt:
+                self._progress.clear_thinking()  # 正文出现即收思考行
                 self._buf.append(txt)
                 self._buf_len += len(txt)
                 await self._maybe_flush()
+        elif event == "thinking.delta":
+            # P1 进展区：思考滚动片段（随节流出帧，不逐 token 打 API）
+            self._progress.on_thinking(str(data.get("content") or ""))
+            await self._maybe_flush()
+        elif event == "tool.start":
+            self._progress.on_tool_start(
+                str(data.get("name") or ""), str(data.get("id") or ""))
+            await self._maybe_flush()
+        elif event == "tool.end":
+            self._progress.on_tool_end(
+                str(data.get("id") or ""), str(data.get("name") or ""),
+                str(data.get("content") or ""))
+            await self._maybe_flush()
         elif event == "message.end":
             await self._maybe_flush(force=True)
         elif event == "user.question":

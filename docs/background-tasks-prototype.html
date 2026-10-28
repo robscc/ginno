@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ginno — Background Tasks (prototype)</title>
+<style>
+/* ===== Ginno design tokens (from apps/web/src/app/globals.css) ===== */
+:root {
+  color-scheme: dark;
+  --base: 10 10 15; --panel: 14 14 21; --card: 21 21 29; --card2: 27 27 37;
+  --line: 38 38 50; --line2: 52 52 63;
+  --txt: 233 233 240; --muted: 154 154 166; --faint: 98 98 110;
+  --code-bg: 14 14 20; --inline-code: 233 170 200;
+  --violet: 139 92 246;
+  --st-ok: #8b5cf6; --st-running: #22d3ee; --st-error: #f43f5e;
+  --st-skipped: #8b8b96; --st-missed: #f59e0b;
+  --orange: 245 158 11;
+}
+html.light {
+  color-scheme: light;
+  --base: 248 248 250; --panel: 255 255 255; --card: 255 255 255; --card2: 243 243 247;
+  --line: 226 226 234; --line2: 212 212 222;
+  --txt: 23 23 30; --muted: 90 90 102; --faint: 130 130 142;
+  --code-bg: 245 245 249; --inline-code: 170 60 105;
+  --st-ok: #7c3aed; --st-running: #0891b2; --st-error: #be123c;
+  --st-skipped: #6b7280; --st-missed: #b45309;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+#app { position: relative; }
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: rgb(var(--base)); color: rgb(var(--txt));
+  font-size: 14px; line-height: 1.55; overflow: hidden;
+}
+#app { display: flex; height: 100vh; }
+
+/* ===== Sidebar ===== */
+#sidebar {
+  width: 232px; flex-shrink: 0; background: rgb(var(--panel));
+  border-right: 1px solid rgb(var(--line)); display: flex; flex-direction: column;
+}
+.brand { display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; font-weight: 650; font-size: 14px; }
+.brand .dot { width: 18px; height: 18px; border-radius: 5px; background: rgb(var(--violet));
+  display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 700; }
+.sess-label { padding: 8px 16px 4px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: rgb(var(--faint)); }
+.sess {
+  padding: 6px 12px; margin: 1px 8px; border-radius: 8px; font-size: 12.5px;
+  color: rgb(var(--muted)); cursor: default; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sess.active { background: rgb(var(--card2)); color: rgb(var(--txt)); }
+#tasks-entry {
+  margin-top: auto; border-top: 1px solid rgb(var(--line));
+  padding: 10px 16px; display: flex; align-items: center; gap: 8px; cursor: pointer;
+  font-size: 12.5px; color: rgb(var(--muted)); user-select: none;
+}
+#tasks-entry:hover { color: rgb(var(--txt)); }
+#tasks-entry svg { width: 15px; height: 15px; }
+#tasks-badge {
+  margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--st-running); color: #04121a; font-size: 11px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+#tasks-badge.zero { display: none; }
+
+/* ===== Chat ===== */
+#chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#chat-head {
+  padding: 12px 24px; border-bottom: 1px solid rgb(var(--line));
+  display: flex; align-items: center; gap: 10px; background: rgb(var(--panel));
+}
+#chat-head .title { font-weight: 600; font-size: 13.5px; }
+.chip {
+  font-size: 11px; color: rgb(var(--muted)); border: 1px solid rgb(var(--line));
+  border-radius: 999px; padding: 2px 9px; background: rgb(var(--card));
+}
+#timeline { flex: 1; overflow-y: auto; padding: 20px 24px 32px; }
+#stream { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+.msg-user {
+  align-self: flex-end; max-width: 85%; background: rgb(var(--card2));
+  border: 1px solid rgb(var(--line)); border-radius: 14px 14px 4px 14px;
+  padding: 9px 14px; font-size: 13.5px; white-space: pre-wrap;
+}
+.msg-agent { font-size: 13.5px; white-space: pre-wrap; }
+.msg-agent .who { color: rgb(var(--violet)); font-weight: 650; font-size: 12px; margin-bottom: 3px; }
+
+/* tool chip (mimics blocks.tsx inline chip) */
+.toolchip {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgb(var(--line));
+  background: rgb(var(--card)); border-radius: 9px; padding: 4px 10px;
+  font-size: 12px; color: rgb(var(--muted)); width: fit-content;
+}
+.toolchip code { color: rgb(var(--inline-code)); font-size: 11.5px; }
+.toolchip .toolname { font-weight: 600; color: rgb(var(--txt)); font-size: 11.5px; }
+.toolchip svg { width: 12px; height: 12px; opacity: .75; }
+
+/* ===== Task card (chat, block kind: "task") ===== */
+.taskcard {
+  border: 1px solid rgb(var(--line)); border-radius: 12px; background: rgb(var(--card));
+  overflow: hidden;
+}
+.taskcard.st-running { border-color: color-mix(in srgb, var(--st-running) 35%, rgb(var(--line))); }
+.tc-head { display: flex; align-items: center; gap: 9px; padding: 9px 12px; }
+.tc-ico {
+  width: 24px; height: 24px; border-radius: 7px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgb(var(--card2)); color: rgb(var(--muted));
+}
+.tc-ico svg { width: 13px; height: 13px; }
+.st-running > .tc-head .tc-ico { color: var(--st-running); }
+.st-finished.exit-ok > .tc-head .tc-ico { color: var(--st-ok); }
+.st-finished.exit-bad > .tc-head .tc-ico { color: var(--st-error); }
+.tc-title { font-weight: 600; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-title code { font-weight: 500; color: rgb(var(--txt)); background: none; font-size: 12.5px; }
+.tc-cmd { font-size: 11px; color: rgb(var(--faint)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-badge {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .04em; border-radius: 6px;
+  padding: 2px 7px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px;
+}
+.tc-badge .spin { width: 9px; height: 9px; border: 1.6px solid color-mix(in srgb, var(--st-running) 35%, transparent);
+  border-top-color: var(--st-running); border-radius: 50%; animation: rot 0.8s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+.b-running { color: var(--st-running); background: color-mix(in srgb, var(--st-running) 12%, transparent); }
+.b-ok { color: var(--st-ok); background: color-mix(in srgb, var(--st-ok) 12%, transparent); }
+.b-bad { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 12%, transparent); }
+.b-stop { color: var(--st-skipped); background: rgb(var(--card2)); }
+.b-intr { color: var(--st-missed); background: color-mix(in srgb, var(--st-missed) 12%, transparent); }
+.tc-elapsed { font-size: 11px; color: rgb(var(--faint)); font-variant-numeric: tabular-nums; margin-left: auto; flex-shrink: 0; }
+.tc-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.tbtn {
+  border: 1px solid rgb(var(--line2)); background: transparent; color: rgb(var(--muted));
+  border-radius: 7px; font-size: 11px; padding: 3px 9px; cursor: pointer; font-family: inherit;
+}
+.tbtn:hover { color: rgb(var(--txt)); border-color: rgb(var(--violet)); }
+.tbtn.danger:hover { color: var(--st-error); border-color: var(--st-error); }
+.tc-meta { font-size: 10.5px; color: rgb(var(--faint)); padding: 0 12px 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-tail { border-top: 1px solid rgb(var(--line)); background: rgb(var(--code-bg)); }
+.tc-tail summary {
+  list-style: none; cursor: pointer; padding: 6px 12px; font-size: 11px; color: rgb(var(--faint));
+  display: flex; align-items: center; gap: 6px; user-select: none;
+}
+.tc-tail summary::-webkit-details-marker { display: none; }
+.tc-tail summary:hover { color: rgb(var(--muted)); }
+.tc-tail pre {
+  margin: 0; padding: 4px 12px 10px; font-size: 11px; line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgb(var(--muted)); max-height: 148px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+}
+.tc-tail .ln-ok { color: rgb(var(--muted)); }
+.tc-tail .ln-err { color: var(--st-error); }
+.tc-tail .ln-hi { color: var(--st-ok); }
+
+/* typing dots */
+.typing { display: inline-flex; gap: 4px; padding: 4px 0; }
+.typing i { width: 5px; height: 5px; border-radius: 50%; background: rgb(var(--faint)); animation: blink 1.2s infinite; }
+.typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%, 70%, 100% { opacity: .25; } 35% { opacity: 1; } }
+
+/* composer (mock) */
+#composer {
+  border-top: 1px solid rgb(var(--line)); background: rgb(var(--panel)); padding: 12px 24px 16px;
+}
+#composer .box {
+  max-width: 720px; margin: 0 auto; border: 1px solid rgb(var(--line2)); border-radius: 12px;
+  background: rgb(var(--card)); padding: 10px 14px; color: rgb(var(--faint)); font-size: 13px;
+}
+#composer .box .send { float: right; color: rgb(var(--violet)); }
+
+/* ===== Task drawer (task center, P1) ===== */
+#drawer {
+  width: 392px; flex-shrink: 0; background: rgb(var(--panel)); border-left: 1px solid rgb(var(--line));
+  display: flex; flex-direction: column; transform: translateX(100%); transition: transform .22s ease;
+  position: absolute; right: 0; top: 0; bottom: 0; z-index: 40; box-shadow: -18px 0 40px rgba(0,0,0,.35);
+}
+#drawer.open { transform: translateX(0); }
+#app.with-drawer #drawer { position: relative; }
+.dr-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; }
+.dr-head .t { font-weight: 650; font-size: 14px; }
+.dr-head .x { margin-left: auto; cursor: pointer; color: rgb(var(--faint)); font-size: 16px; padding: 2px 6px; }
+.dr-head .x:hover { color: rgb(var(--txt)); }
+.dr-list { flex: 1; overflow-y: auto; padding: 0 10px 12px; }
+.dr-group { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: rgb(var(--faint)); padding: 10px 8px 5px; }
+.dr-item { border: 1px solid rgb(var(--line)); background: rgb(var(--card)); border-radius: 11px; margin-bottom: 7px; overflow: hidden; }
+.dr-item.sel { border-color: rgb(var(--violet)); }
+.dr-row { display: flex; align-items: center; gap: 8px; padding: 8px 11px; cursor: pointer; }
+.dr-row .nm { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-row .org { font-size: 10.5px; color: rgb(var(--faint)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-row .right { margin-left: auto; text-align: right; flex-shrink: 0; }
+.dr-row .dur { font-size: 10.5px; color: rgb(var(--faint)); font-variant-numeric: tabular-nums; }
+.dr-detail { border-top: 1px solid rgb(var(--line)); }
+.dr-detail .acts { display: flex; gap: 6px; padding: 8px 11px; align-items: center; }
+.dr-log {
+  background: rgb(var(--code-bg)); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px; line-height: 1.55; color: rgb(var(--muted)); padding: 8px 11px;
+  max-height: 210px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+}
+.dr-log .ln-err { color: var(--st-error); } .dr-log .ln-hi { color: var(--st-ok); }
+.follow { font-size: 11px; color: rgb(var(--muted)); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; margin-left: auto; user-select: none; }
+.dr-empty { text-align: center; color: rgb(var(--faint)); font-size: 12px; padding: 40px 20px; }
+
+/* ===== OS notification toast ===== */
+#toasts { position: fixed; top: 14px; right: 14px; z-index: 90; display: flex; flex-direction: column; gap: 8px; }
+.toast {
+  width: 320px; background: rgb(var(--card)); border: 1px solid rgb(var(--line2)); border-radius: 13px;
+  padding: 10px 13px; box-shadow: 0 12px 34px rgba(0,0,0,.45); display: flex; gap: 10px;
+  animation: toast-in .28s cubic-bezier(.2,.9,.3,1.2); cursor: pointer;
+}
+@keyframes toast-in { from { transform: translateX(30px); opacity: 0; } }
+.toast .ic { width: 30px; height: 30px; border-radius: 8px; background: rgb(var(--violet)); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; flex-shrink: 0; }
+.toast .bt { font-size: 12.5px; font-weight: 650; }
+.toast .bb { font-size: 11.5px; color: rgb(var(--muted)); }
+.toast .src { font-size: 10px; color: rgb(var(--faint)); margin-top: 1px; }
+
+/* ===== demo controls (NOT part of product) ===== */
+#demo {
+  position: fixed; left: 12px; bottom: 12px; z-index: 80; background: rgb(var(--panel));
+  border: 1px dashed rgb(var(--violet)); border-radius: 12px; padding: 10px 12px; width: 218px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.4);
+}
+#demo .cap { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: rgb(var(--violet)); font-weight: 700; margin-bottom: 7px; }
+#demo button {
+  display: block; width: 100%; text-align: left; margin-bottom: 5px;
+  background: rgb(var(--card)); border: 1px solid rgb(var(--line)); color: rgb(var(--muted));
+  border-radius: 8px; padding: 5px 9px; font-size: 11.5px; cursor: pointer; font-family: inherit;
+}
+#demo button:hover { color: rgb(var(--txt)); border-color: rgb(var(--violet)); }
+#demo button:disabled { opacity: .35; cursor: default; }
+#demo .hint { font-size: 10px; color: rgb(var(--faint)); margin-top: 4px; }
+#theme-toggle { position: fixed; top: 12px; left: 246px; z-index: 70; }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: rgb(var(--line2)); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="brand"><span class="dot">G</span> Ginno</div>
+    <div class="sess-label">Sessions</div>
+    <div class="sess active">ginno build &amp; settings fix</div>
+    <div class="sess">wecom connector P1</div>
+    <div class="sess">laya classifier tuning</div>
+    <div class="sess">docs distill draft</div>
+    <div id="tasks-entry" onclick="toggleDrawer()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      Background Tasks <span id="tasks-badge">2</span>
+    </div>
+  </aside>
+
+  <!-- Chat -->
+  <main id="chat">
+    <div id="chat-head">
+      <span class="title">ginno build &amp; settings fix</span>
+      <span class="chip">glm-5.3</span>
+      <span class="chip" style="margin-left:auto">prototype</span>
+    </div>
+    <div id="timeline"><div id="stream"></div></div>
+    <div id="composer"><div class="box">Message Ginno… <span class="send">↑</span></div></div>
+  </main>
+
+  <!-- Task center drawer -->
+  <aside id="drawer">
+    <div class="dr-head"><span class="t">Background Tasks</span><span class="x" onclick="toggleDrawer()">✕</span></div>
+    <div class="dr-list" id="dr-list"></div>
+  </aside>
+</div>
+
+<div id="toasts"></div>
+
+<!-- Demo controls (evaluating the prototype, not part of the product) -->
+<div id="demo">
+  <div class="cap">Prototype controls</div>
+  <button id="d-fin1">▸ make app finishes → exit 0</button>
+  <button id="d-fin2">▸ e2e suite finishes → exit 1</button>
+  <button id="d-hl3">▸ pnpm dev turns healthy ✓</button>
+  <button id="d-stop3" disabled>■ Stop pnpm dev</button>
+  <button id="d-log">≡ Append log lines</button>
+  <button onclick="location.reload()">↺ Restart demo</button>
+  <div class="hint">Time runs ×30. Sidebar → Background Tasks opens the task center. e2e belongs to another session — it finishes without injecting here.</div>
+</div>
+<button class="tbtn" id="theme-toggle" onclick="document.documentElement.classList.toggle('light')">◐ theme</button>
+
+<script>
+"use strict";
+/* ================= fake data & state ================= */
+const TIME_SCALE = 30; // 1 real second = 30 simulated seconds
+const now = () => Date.now() / 1000;
+
+const MAKE_LOG = [
+  "→ web export  (next build)", "   ✓ compiled 412 routes in 38.2s",
+  "→ sidecar bundle  (pyinstaller)", "   ✓ collecting 1284 modules",
+  "   ✓ embedding python 3.12.4", "→ tauri build  (cargo)",
+  "   Compiling ginno-desktop v0.9.2", "   ✓ linker-signed: Ginno.app",
+  "Bundling Ginno.app (dmg)", "   ✓ bundle/macos/Ginno.app",
+];
+const E2E_LOG = [
+  "INFO: started conftest collection (42 files)",
+  "test_stream_ws.py ....... 41 passed in 12.4s",
+  "test_checkpointer.py ... 18 passed in 4.1s",
+  "test_wecom_channel.py .. F",
+  "FAILED test_wecom_channel.py::test_tap_resume - assert 'steer_id' in ev",
+  "ERROR: teardown crashed: asyncio runner still pending",
+];
+const EXT_LOG = ["> pnpm build", "✓ built extension in 3.2s", "manifest key jlmheiiglp… verified"];
+const PDEV_LOG = ["[HMR] rebuild settings.ts 42ms", "GET /settings 200 in 18ms", "[HMR] rebuild composer.tsx 31ms", "GET /api/tasks 200 in 4ms"];
+
+const tasks = new Map();
+function mkTask(o) { tasks.set(o.id, { log: [], follow: true, ...o }); return tasks.get(o.id); }
+
+mkTask({ id: "t_9f31a2", title: "make app", cmd: "make app", session: "ginno build & settings fix",
+  status: "running", startedAt: now() - 0.5, fakeOffset: 0, pid: 88231, log: [...MAKE_LOG.slice(0, 2)], bytes: 148230 });
+
+mkTask({ id: "t_pn0d12", title: "pnpm dev", cmd: "pnpm --filter web dev", session: "ginno build & settings fix",
+  status: "running", startedAt: now(), fakeOffset: 0, pid: 88977, healthyAt: null,
+  log: ["$ pnpm --filter web dev", "▲ Next.js 14.2.3", "ready - started server on 0.0.0.0:3000"], bytes: 20480 });
+
+mkTask({ id: "t_44c7b0", title: "e2e suite", cmd: "pytest packages/runtime/tests -x -q", session: "wecom connector P1",
+  status: "running", startedAt: now(), fakeOffset: 250, pid: 88410, log: [...E2E_LOG.slice(0, 2)], bytes: 51224 });
+
+mkTask({ id: "t_71e0cc", title: "build extension", cmd: "python build.py", session: "docs distill draft",
+  status: "finished", exit: 0, startedAt: now() - 86400, endedAt: now() - 86380, dur: "3.4s", log: EXT_LOG, bytes: 8112 });
+
+mkTask({ id: "t_02ad91", title: "pnpm test watch", cmd: "pnpm --filter web test --watch", session: "laya classifier tuning",
+  status: "interrupted", startedAt: now() - 90000, endedAt: null, dur: "—", log: ["$ pnpm --filter web test --watch", "watch mode ready"], bytes: 4096 });
+
+let selTask = null, drawerOpen = false;
+
+/* ================= helpers ================= */
+const $ = (s) => document.querySelector(s);
+const stream = $("#stream");
+const chatCards = new Map(); // taskId -> chat card element
+
+function fmtDur(fakeSecs) {
+  const s = Math.max(0, Math.floor(fakeSecs));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${String(ss).padStart(2, "0")}s` : `${ss}s`;
+}
+function fakeElapsed(t) {
+  if (t.status !== "running" && t.status !== "starting") return t.dur || "";
+  return (now() - t.startedAt) * TIME_SCALE + (t.fakeOffset || 0);
+}
+function statusBadge(t) {
+  if (t.status === "running") return t.healthyAt != null
+    ? `<span class="tc-badge b-ok">● HEALTHY</span>`
+    : `<span class="tc-badge b-running"><span class="spin"></span>RUNNING</span>`;
+  if (t.status === "finished") return t.exit === 0
+    ? `<span class="tc-badge b-ok">✓ EXIT 0</span>` : `<span class="tc-badge b-bad">✗ EXIT ${t.exit}</span>`;
+  if (t.status === "stopped") return `<span class="tc-badge b-stop">■ STOPPED</span>`;
+  if (t.status === "interrupted") return `<span class="tc-badge b-intr">⚡ INTERRUPTED</span>`;
+  return "";
+}
+function statusDot(t) {
+  if (t.status === "running") return t.healthyAt != null ? "var(--st-ok)" : "var(--st-running)";
+  return { finished: t.exit === 0 ? "var(--st-ok)" : "var(--st-error)",
+    stopped: "var(--st-skipped)", interrupted: "var(--st-missed)" }[t.status] || "var(--st-skipped)";
+}
+function logHtml(lines, cls) {
+  return lines.map((l) => {
+    let c = "ln-ok";
+    if (/FAILED|ERROR|Traceback|assert/i.test(l)) c = "ln-err";
+    else if (/✓|passed|Bundling|linker-signed/.test(l)) c = "ln-hi";
+    return `<span class="${c}">${esc(l)}</span>`;
+  }).join("\n");
+}
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function autoScroll() {
+  const tl = $("#timeline");
+  if (tl.scrollHeight - tl.scrollTop - tl.clientHeight < 260) tl.scrollTop = tl.scrollHeight;
+}
+
+/* ================= chat timeline ================= */
+function addUser(text) {
+  const d = document.createElement("div");
+  d.className = "msg-user"; d.textContent = text;
+  stream.appendChild(d); autoScroll();
+}
+function addAgent(html) {
+  const d = document.createElement("div");
+  d.className = "msg-agent";
+  d.innerHTML = `<div class="who">Ginno</div>${html}`;
+  stream.appendChild(d); autoScroll(); return d;
+}
+function addToolChip(tool, arg) {
+  const d = document.createElement("div");
+  d.className = "toolchip";
+  d.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+    <span class="toolname">${tool}</span><code>${esc(arg)}</code>`;
+  stream.appendChild(d); autoScroll();
+}
+/* ================= chat task cards ================= */
+function addChatCard(t) {
+  const d = document.createElement("div");
+  d.className = "taskcard"; d.dataset.task = t.id;
+  stream.appendChild(d); chatCards.set(t.id, d);
+  renderChatCard(t); autoScroll();
+}
+function renderChatCard(t) {
+  const d = chatCards.get(t.id); if (!d) return;
+  d.className = `taskcard st-${t.status}` + (t.status === "finished" ? (t.exit === 0 ? " exit-ok" : " exit-bad") : "");
+  const running = t.status === "running";
+  const actions = running
+    ? `<button class="tbtn danger" onclick="stopTask('${t.id}')">Stop</button>`
+    : `<button class="tbtn danger" onclick="removeTask('${t.id}')">Remove</button>`;
+  d.innerHTML = `
+    <div class="tc-head">
+      <span class="tc-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
+      <div style="min-width:0">
+        <div class="tc-title">${esc(t.title)} ${statusBadge(t)}</div>
+        <div class="tc-cmd">$ ${esc(t.cmd)}</div>
+      </div>
+      <span class="tc-elapsed" data-elapsed>${fmtDur(fakeElapsed(t))}</span>
+      <span class="tc-actions">${actions}</span>
+    </div>
+    <div class="tc-meta">~/.ginno/tasks/${t.id}/output.log · ${running ? (t.pid ? `pid ${t.pid} · ` : "") + (t.healthyAt != null ? `healthy after ${fmtDur(t.healthyAt)} · ` : "") : ""}${(t.bytes/1024).toFixed(0)} KB${!running && t.status !== "interrupted" ? " · result injected ✓" : ""}${t.status === "interrupted" ? " · Interrupted by app quit" : ""}</div>
+    <details class="tc-tail" ${t.status !== "running" ? "open" : ""}>
+      <summary>⌄ output tail <span style="opacity:.6">(${t.log.length} lines)</span></summary>
+      <pre>${logHtml(t.log.slice(-6))}</pre>
+    </details>`;
+}
+
+/* ================= drawer (task center) ================= */
+function renderDrawer() {
+  const list = $("#dr-list");
+  const all = [...tasks.values()];
+  const run = all.filter((t) => t.status === "running");
+  const done = all.filter((t) => t.status !== "running").sort((a, b) => (b.endedAt || b.startedAt) - (a.endedAt || a.startedAt));
+  const runningBadge = $("#tasks-badge");
+  runningBadge.textContent = run.length; runningBadge.classList.toggle("zero", run.length === 0);
+
+  let html = "";
+  if (!all.length) html = `<div class="dr-empty">No background tasks.<br>Ask the agent to run a command in the background.</div>`;
+  if (run.length) html += `<div class="dr-group">Running · ${run.length}</div>` + run.map(drItem).join("");
+  if (done.length) html += `<div class="dr-group">Recent</div>` + done.map(drItem).join("");
+  list.innerHTML = html;
+
+  // refresh expanded detail of selected task
+  if (selTask && tasks.has(selTask)) {
+    const el = list.querySelector(`.dr-item[data-task="${selTask}"]`);
+    if (el) { el.classList.add("sel"); fillDetail(el, tasks.get(selTask)); }
+  }
+}
+function drItem(t) {
+  return `<div class="dr-item" data-task="${t.id}">
+    <div class="dr-row" onclick="selectTask('${t.id}')">
+      <span style="width:8px;height:8px;border-radius:50%;background:${statusDot(t)};flex-shrink:0;${t.status==="running"?"animation:blink 1.2s infinite":""}"></span>
+      <div style="min-width:0">
+        <div class="nm">${esc(t.title)}</div>
+        <div class="org">${esc(t.session || "Manual")} · $ ${esc(t.cmd.length > 34 ? t.cmd.slice(0, 34) + "…" : t.cmd)}</div>
+      </div>
+      <div class="right">
+        <div class="dur" data-elapsed-item="${t.id}">${t.status === "running" ? fmtDur(fakeElapsed(t)) : (t.dur || statusLabel(t))}</div>
+        <div style="font-size:10.5px;color:${statusDot(t)}">${statusLabel(t)}</div>
+      </div>
+    </div>
+    <div class="dr-detail" style="display:none"></div>
+  </div>`;
+}
+function statusLabel(t) {
+  if (t.status === "running") return t.healthyAt != null ? "Healthy" : "Running";
+  return { finished: t.exit === 0 ? "Exit 0" : `Exit ${t.exit}`, stopped: "Stopped", interrupted: "Interrupted" }[t.status] || t.status;
+}
+function selectTask(id) {
+  if (selTask === id) { selTask = null; } else { selTask = id; }
+  renderDrawer();
+}
+function fillDetail(el, t) {
+  const det = el.querySelector(".dr-detail");
+  det.style.display = "block";
+  const running = t.status === "running";
+  det.innerHTML = `
+    <div class="dr-log" id="drlog-${t.id}">${logHtml(t.log)}</div>
+    <div class="acts">
+      <button class="tbtn danger" onclick="${running ? `stopTask('${t.id}')` : `removeTask('${t.id}')`}">${running ? "Stop" : "Remove"}</button>
+      <span class="follow" onclick="toggleFollow('${t.id}')">${t.follow ? "◉ Following" : "○ Follow"}</span>
+      <span style="font-size:10.5px;color:rgb(var(--faint));margin-left:auto">${t.id} · ${(t.bytes/1024).toFixed(0)} KB</span>
+    </div>`;
+  const lg = det.querySelector(".dr-log");
+  if (t.follow) lg.scrollTop = lg.scrollHeight;
+}
+function toggleFollow(id) { const t = tasks.get(id); t.follow = !t.follow; renderDrawer(); }
+function refreshDetailLog(t) {
+  const lg = document.getElementById(`drlog-${t.id}`); if (!lg) return;
+  lg.innerHTML = logHtml(t.log);
+  if (t.follow) lg.scrollTop = lg.scrollHeight;
+}
+function toggleDrawer() { drawerOpen = !drawerOpen; $("#drawer").classList.toggle("open", drawerOpen); }
+function openDrawerAndSelect(id) { drawerOpen = true; $("#drawer").classList.add("open"); selTask = id; renderDrawer(); }
+/* ================= actions ================= */
+function stopTask(id) {
+  const t = tasks.get(id); if (!t || t.status !== "running") return;
+  t.status = "stopped"; t.dur = fmtDur(fakeElapsed(t)); t.log.push("[stopped by user — SIGTERM]");
+  finishCommon(t);
+  if (chatCards.has(id)) {
+    const typing = addAgent(`<span class="typing"><i></i><i></i><i></i></span>`);
+    setTimeout(() => {
+      typing.remove();
+      addAgent(`Stopped <b>“${esc(t.title)}”</b> after ${t.dur}. Log kept at <code>~/.ginno/tasks/${id}/output.log</code>.`);
+      autoScroll();
+    }, 1100);
+  }
+}
+function removeTask(id) {
+  const t = tasks.get(id); if (!t) return;
+  tasks.delete(id);
+  const card = chatCards.get(id);
+  if (card) card.innerHTML = `<div class="tc-head" style="color:rgb(var(--faint));font-size:12px">🗑 “${esc(t.title)}” (${id}) — task removed, logs deleted</div>`;
+  if (selTask === id) selTask = null;
+  renderDrawer();
+}
+function healthyTask(id) {
+  const t = tasks.get(id); if (!t || t.status !== "running" || t.healthyAt != null) return;
+  t.healthyAt = fakeElapsed(t);
+  t.log.push("▲ Ready in 1.2s  — Local: http://localhost:3000");
+  t.bytes += 900;
+  renderChatCard(t); renderDrawer();
+  toast(t.title, `Healthy after ${fmtDur(t.healthyAt)} · Ready in 1.2s`, t.session);
+  $("#d-hl3").disabled = true; $("#d-stop3").disabled = false;
+  const typing = addAgent(`<span class="typing"><i></i><i></i><i></i></span>`);
+  setTimeout(() => {
+    typing.remove();
+    addAgent(`Dev server is healthy — <code>Ready in 1.2s</code> on <code>localhost:3000</code>, about 4s after launch. The draft-save fix is live; I'll leave it running — say the word (or Stop on the card) when you want it down. If it exits on its own, the result gets pushed back to me.`);
+    autoScroll();
+  }, 1300);
+}
+function finishTask(id, exit) {
+  const t = tasks.get(id); if (!t || t.status !== "running") return;
+  t.status = "finished"; t.exit = exit;
+  t.dur = fmtDur(fakeElapsed(t));
+  t.log.push(exit === 0 ? "→ completed successfully" : `→ exited with code ${exit}`);
+  finishCommon(t);
+  if (!chatCards.has(id)) return; // 其他 session 的任务：只走通知 + 任务中心，不注入本会话
+  const typing = addAgent(`<span class="typing"><i></i><i></i><i></i></span>`);
+  setTimeout(() => {
+    typing.remove();
+    addAgent(
+      `Build passed — <code>exit 0</code> in ${t.dur} (${(t.bytes/1048576).toFixed(1)} MB log). Web export, sidecar bundle and the Tauri app all green.<br><br>` +
+      `One reminder: <b>fully quit and relaunch Ginno before verifying</b> — the running sidecar still has the old bundle in memory (known zlib issue).`);
+    autoScroll();
+  }, 1400);
+}
+function finishCommon(t) {
+  renderChatCard(t);   // 评审决策4：注入=卡片状态翻转，不产生第二条消息卡
+  toast(t.title, statusLabel(t) + (t.status === "finished" ? ` · ran ${t.dur}` : ` · ${t.dur}`), t.session || "—");
+  renderDrawer();
+  if (t.id === "t_9f31a2") $("#d-fin1").disabled = true;
+  if (t.id === "t_44c7b0") $("#d-fin2").disabled = true;
+  if (t.id === "t_pn0d12") { $("#d-hl3").disabled = true; $("#d-stop3").disabled = true; }
+}
+
+/* ================= OS notification mock ================= */
+function toast(title, body, src) {
+  const d = document.createElement("div");
+  d.className = "toast";
+  d.innerHTML = `<span class="ic">G</span><div><div class="bt">${esc(title)}</div><div class="bb">${esc(body)}</div><div class="src">${esc(src)}</div></div>`;
+  d.onclick = () => d.remove();
+  $("#toasts").appendChild(d);
+  setTimeout(() => d.remove(), 5200);
+}
+
+/* ================= live timers & log growth ================= */
+setInterval(() => {
+  // elapsed counters (chat cards + drawer rows)
+  for (const t of tasks.values()) {
+    if (t.status !== "running") continue;
+    const card = chatCards.get(t.id);
+    if (card) { const el = card.querySelector("[data-elapsed]"); if (el) el.textContent = fmtDur(fakeElapsed(t)); }
+    const drel = document.querySelector(`[data-elapsed-item="${t.id}"]`);
+    if (drel) drel.textContent = fmtDur(fakeElapsed(t));
+  }
+}, 1000);
+
+let mkIdx = 2, e2eIdx = 2;
+setInterval(() => {
+  for (const t of tasks.values()) {
+    if (t.status !== "running") continue;
+    if (t.id === "t_9f31a2" && mkIdx < MAKE_LOG.length) t.log.push(MAKE_LOG[mkIdx++]);
+    else if (t.id === "t_44c7b0" && e2eIdx < E2E_LOG.length) t.log.push(E2E_LOG[e2eIdx++]);
+    else if (t.id === "t_pn0d12") t.log.push(PDEV_LOG[Math.floor(Math.random() * PDEV_LOG.length)]);
+    else t.log.push(`… ${(Math.random()*8+2).toFixed(1)}s elapsed`);
+    t.bytes += 400 + Math.floor(Math.random() * 2600);
+    const card = chatCards.get(t.id);
+    if (card) { const pre = card.querySelector(".tc-tail pre"); if (pre) pre.innerHTML = logHtml(t.log.slice(-6)); }
+    refreshDetailLog(t);
+  }
+}, 2600);
+
+/* ================= demo wiring ================= */
+$("#d-fin1").onclick = () => finishTask("t_9f31a2", 0);
+$("#d-fin2").onclick = () => finishTask("t_44c7b0", 1);
+$("#d-hl3").onclick = () => healthyTask("t_pn0d12");
+$("#d-stop3").onclick = () => stopTask("t_pn0d12");
+$("#d-log").onclick = () => {
+  for (const t of tasks.values()) if (t.status === "running") {
+    t.log.push("tail -f: " + MAKE_LOG[Math.floor(Math.random() * MAKE_LOG.length)]);
+    t.bytes += 1200; refreshDetailLog(t);
+  }
+};
+
+/* ================= boot: replay a short conversation ================= */
+addUser("Run make app in the background and tell me when it's done.\nMeanwhile, keep fixing the settings draft bug.");
+addAgent(`Sure — kicking the build off in the background so this session stays free.`);
+addToolChip("bg_run", "make app · timeout 2h · notify ✓");
+addChatCard(tasks.get("t_9f31a2"));
+addToolChip("edit_file", "apps/web/src/…/settings.ts");
+addToolChip("bg_run", "pnpm --filter web dev · mode=server · healthy “Ready in”");
+addChatCard(tasks.get("t_pn0d12"));
+addAgent(`Draft-save fix is in (<code>edit_file</code>), and the dev server is coming up in <b>server mode</b> to verify it live — I'll get pinged the moment it's healthy.<br><br>The build keeps running; I'll report back the moment it exits.`);
+renderDrawer();
+</script>
+</body>
+</html>

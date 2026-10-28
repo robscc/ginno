@@ -1,0 +1,23 @@
+{
+  "tasks": {
+    "title": "Background Tasks",
+    "refresh": "Refresh",
+    "loading": "Loading tasks…",
+    "empty": "No background tasks. Ask the agent to run a command in the background (bg_run).",
+    "runningGroup": "Running",
+    "recentGroup": "Recent",
+    "stop": "Stop",
+    "remove": "Remove",
+    "follow": "Follow",
+    "noOutput": "(no output)",
+    "running": "Running",
+    "stopped": "Stopped",
+    "timeout": "Timeout",
+    "interrupted": "Interrupted",
+    "failedStart": "Failed to start",
+    "exit0": "Exit 0",
+    "exitN": "Exit {n}",
+    "notifyFinished": "\"{name}\" finished · exit {exit} · ran {dur}",
+    "notifyStopped": "\"{name}\" stopped after {dur}"
+  }
+}

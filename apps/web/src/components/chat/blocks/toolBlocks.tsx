@@ -6,6 +6,7 @@ import { connectorAction } from "@/lib/runtime";
 import { toolLabelOptions } from "@/lib/toolLabels";
 import { parseDelegation } from "./delegation";
 import { useChatT } from "./i18n";
+import { TaskCard, parseBgTaskId } from "../TaskCard";
 
 // Every tool output is collapsible. Long outputs (over these thresholds)
 // default to a compact header row and expand into a capped, internally
@@ -56,6 +57,14 @@ export function ToolBlock({ name, content, pending, argsPreview }: { name: strin
     // 接管卡(browser-companion §7.2 M3):工具在阻塞等待用户,气泡换成
     // 可操作卡片——点「已接管,继续」释放,tool.end 自然接棒。
     return <BrowserHandoffCard />;
+  }
+  // bg_run 的气泡升级为常驻 TaskCard（background-tasks-design §6.1，评审
+  // 决策 4）：卡片横跨 turn 存活、状态由 /api/tasks 轮询驱动，不随 tool.end
+  // 折叠。pending 期间 bg_run 毫秒级返回，走通用 spinner 即可。
+  if (name === "bg_run") {
+    const taskId = parseBgTaskId(content);
+    if (taskId) return <TaskCard taskId={taskId} />;
+    // 结果里没有机器头（错误回执等）→ 通用工具气泡渲染 [error] 原文。
   }
   if (pending) {
     return (

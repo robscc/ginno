@@ -277,6 +277,31 @@ async def test_tap_streams_and_finalizes_once():
     assert ad.client.pushes == []
 
 
+async def test_tap_progress_section_streams_and_clears():
+    """P1 进展区：thinking/tool 帧进引用块随流更新；正文出现收思考行；
+    终稿（finish 帧）只留正文，不带进展区。"""
+    ad = FakeAdapter()
+    tap = WeComTap(ad, "req1", "u1", "stream1")
+    tap.session_id = "sess1"
+    await tap.send_text(_frame("tool.start", name="read_file", id="t1"))
+    # 首个进展事件立即出帧（_last_flush 初值 -inf）
+    mid = [b for _, b in ad.client.responds if b.get("stream")]
+    assert any("> 🔧 检查文件：read_file" in s["stream"]["content"] for s in mid)
+    tap._last_flush = float("-inf")  # 测试便利：绕过节流窗口看中间帧
+    await tap.send_text(_frame("tool.end", id="t1", content="共 120 行\n第二行"))
+    mid = [b for _, b in ad.client.responds if b.get("stream")]
+    # 结果摘要只取首行
+    assert any("✔ read_file：共 120 行" in s["stream"]["content"]
+               for s in mid if not s["stream"].get("finish"))
+    await tap.send_text(_frame("token.delta", content="结论如下"))
+    await tap.close()
+    streams = [b["stream"] for _, b in ad.client.responds]
+    final = streams[-1]
+    assert final["finish"] is True
+    assert "结论如下" in final["content"]
+    assert "🔧" not in final["content"] and "🧠" not in final["content"]
+
+
 async def test_tap_stream_deadline_falls_back_to_push(monkeypatch):
     """超过 9.5 分钟安全线：强制 finish，残余增量走主动推送。"""
     ad = FakeAdapter()
@@ -344,8 +369,10 @@ def test_widget_to_markdown():
 def test_tap_ignores_noise_frames():
     ad = FakeAdapter()
     tap = WeComTap(ad, "req1", "u1", "stream1")
-    for ev in ("thinking.delta", "tool.start", "tool.end", "keepalive",
-               "artifacts.changed", "run.bind", "preview.invalidate"):
+    # thinking.delta/tool.* 已升级为 P1 进展区事件（见
+    # test_tap_progress_section_streams_and_clears）；这里只覆盖纯噪音帧
+    for ev in ("keepalive", "artifacts.changed", "run.bind",
+               "preview.invalidate"):
         asyncio.run(tap.send_text(_frame(ev, content="x", name="bash")))
     assert ad.client.responds == [] and ad.client.pushes == []
 
