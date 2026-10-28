@@ -211,6 +211,29 @@ async def update_connector_config(cid: str, body: dict) -> Any:
     return {"ok": True, "config": conn.read_stored_config(), "applied": applied}
 
 
+@router.post("/api/connectors/wecom-bot/test")
+async def wecom_test_connection(body: dict) -> dict:
+    """一次性凭证测试（仿 MCP test 的语义）：建连 → 订阅 → 立即断开。
+
+    不碰 registry、不占长连接位；HTTP 恒 200，``ok:false`` 携带原始错误
+    全文（凭证错误 / 网络问题可区分）。
+    """
+    from ..channels.wecom.client import probe_credentials
+
+    ensure_builtin_connectors()
+    reg = conn_registry()
+    stored = reg.read_config("wecom-bot")
+    bot_id = str((body or {}).get("bot_id") or stored.get("bot_id") or "").strip()
+    secret = str((body or {}).get("secret") or stored.get("secret") or "").strip()
+    if not (bot_id and secret):
+        return {"ok": False, "error": "bot_id and secret are required"}
+    try:
+        await probe_credentials(bot_id, secret)
+        return {"ok": True}
+    except Exception as e:  # noqa: BLE001 — 测试端点永远 200，错误走 ok:false
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 @router.post("/api/connectors/{cid}/action")
 async def connector_action(cid: str, body: dict) -> Any:
     ensure_builtin_connectors()

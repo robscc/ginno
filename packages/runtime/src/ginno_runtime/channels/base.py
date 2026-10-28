@@ -79,9 +79,9 @@ class ChannelAdapter(abc.ABC):
 
     def report_status(self, status: str, detail: str = "") -> None:
         """Forward a status transition to the connector registry (debounced)."""
-        from ..connectors.registry import get_registry
+        from ..connectors.registry import registry
 
-        get_registry().report(self.channel_name, status, detail)
+        registry().report(self.channel_name, status, detail)
 
 
 async def run_channel_turn(
@@ -137,12 +137,16 @@ async def run_channel_turn(
 
 
 async def ensure_channel_session(
-    session_id: str | None, *, default_agent_id: str | None = None
+    session_id: str | None,
+    *,
+    default_agent_id: str | None = None,
+    title: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """Return (session, session_id) — rebuild from disk if the runtime restarted.
 
     ``session_id=None`` creates a brand-new session via the public create API
-    (``POST /api/sessions`` 的内部等价路径)。Returns (None, error) on failure.
+    (``POST /api/sessions`` 的内部等价路径)；``title`` 让渠道会话在侧栏可认
+    （如「企业微信 · 张三」），缺省沿用默认标题。Returns (None, error) on failure.
     """
     from ..api.sessions import CreateSessionRequest, _ensure_session, create_session
 
@@ -152,11 +156,15 @@ async def ensure_channel_session(
     # ``workspace`` is superseded by the server (session_files_dir(slug, sid)),
     # so an empty value is fine; the create path mirrors the desktop client's.
     resp = await create_session(
-        CreateSessionRequest(project_slug="default", workspace="", agent_id=default_agent_id)
-    )
-    if not isinstance(resp, dict) or not resp.get("session_id"):
+        CreateSessionRequest(project_slug="default", workspace="",
+                             agent_id=default_agent_id, title=title))
+    if not isinstance(resp, dict):
         return None, str((resp or {}).get("error") or "create_session failed")
-    sid = resp["session_id"]
+    # create_session 返回 meta 形状（主键叫 ``id``）；两个键都认，
+    # 防止 API 形状再变时渠道全灭。
+    sid = str(resp.get("session_id") or resp.get("id") or "")
+    if not sid:
+        return None, str(resp.get("error") or "create_session failed")
     s = _ensure_session(sid)
     return (s, sid if s else None)
 

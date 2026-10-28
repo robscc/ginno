@@ -187,6 +187,169 @@ class BrowserProfileConnector(Connector):
         }
 
 
+class WeComConnector(Connector):
+    """企业微信智能机器人渠道连接器（docs/wecom-connector-design.md）。
+
+    Connector 只负责配置/安装引导/状态；协议对接在
+    ``channels/wecom/adapter.py``（WS 长连接 + 流式回复）。与钉钉不同：
+    - 凭证只有 BotID + Secret 两个（长连接模式，无回调 URL/加解密配置）；
+    - 启动恢复：apply_config 只在 PATCH 时触发，seed 时补一次自动拉起
+      （钉钉 P0 已知缺口，企微实现直接补上）。
+    """
+
+    id = "wecom-bot"
+    name = "WeCom Smart Bot"
+    description = ("Chat with Ginno inside WeCom (企业微信) via a smart bot's "
+                   "long connection: streaming replies, text answers to agent "
+                   "questions, file and image exchange — your desktop Ginno "
+                   "stays the runtime.")
+    icon = "message-circle"
+    order = 35
+    # 入站渠道,不向 agent 提供 tools
+    tool_prefix = None
+
+    def default_config(self) -> dict:
+        return {
+            "enabled": False,
+            "bot_id": "",
+            "secret": "",
+            "allowed_userids": [],
+            "default_agent_id": "",
+            "session_policy": "per_user",
+            "ask_timeout_s": 600,
+            "welcome_text": "你好，我是 Ginno，直接发消息即可开始。",
+        }
+
+    def config_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "title": "Enabled"},
+                "bot_id": {
+                    "type": "string", "title": "BotID",
+                    "description": ("From the WeCom admin console: 智能机器人 → "
+                                    "API 模式 → 长连接"),
+                },
+                "secret": {"type": "string", "title": "Secret",
+                           "format": "password"},
+                "allowed_userids": {
+                    "type": "array", "items": {"type": "string"},
+                    "title": "Allowed userids",
+                    "description": ("Empty = everyone who can reach the bot "
+                                    "can drive the agent"),
+                },
+                "default_agent_id": {
+                    "type": "string", "title": "Default agent for this channel",
+                },
+                "session_policy": {
+                    "type": "string", "enum": ["per_user", "per_conversation"],
+                    "title": "Session policy",
+                    "description": ("per_user: each user gets their own session "
+                                    "per chat; per_conversation: one shared "
+                                    "session per chat (groups)"),
+                },
+                "ask_timeout_s": {
+                    "type": "integer", "title": "ask_user timeout (seconds)",
+                    "description": "Auto-skip a parked question after this",
+                },
+                "welcome_text": {
+                    "type": "string", "title": "Welcome message",
+                    "description": ("Sent when a user enters the chat "
+                                    "(enter_chat event); empty = disabled"),
+                },
+            },
+        }
+
+    def install_steps(self) -> list[dict]:
+        return [
+            {
+                "key": "intro",
+                "title": "What is this",
+                "body": ("Ginno can be reached from your WeCom app: you chat "
+                         "with the same agent, replies stream into the chat, "
+                         "and your desktop Ginno keeps running the turns."),
+            },
+            {
+                "key": "create_bot",
+                "title": "Create a smart bot in API mode",
+                "body": ("Log in to the WeCom admin console (work.weixin.qq.com) "
+                         "→ 应用管理 → 智能机器人 → 创建, choose API 模式 and "
+                         "set the connection method to 使用长连接. No public "
+                         "callback URL is needed."),
+                "copy": "https://work.weixin.qq.com",
+            },
+            {
+                "key": "creds",
+                "title": "Copy the credentials",
+                "body": ("On the bot's API 配置 page, copy BotID and Secret. "
+                         "Add the bot to a chat (单聊 or 群聊) so users can "
+                         "talk to it."),
+            },
+            {
+                "key": "fill",
+                "title": "Paste the credentials here and enable",
+                "body": ("Fill BotID/Secret above, optionally restrict allowed "
+                         "userids, then toggle Enabled. The connector card "
+                         "should show Connected within seconds."),
+            },
+        ]
+
+    async def apply_config(self, cfg: dict) -> None:
+        """生命周期：(re)start 或 stop 渠道适配器（同钉钉 F1）。"""
+        from ..channels.wecom.adapter import WeComChannelAdapter
+
+        global _wecom_adapter
+        if not cfg.get("enabled") or not (cfg.get("bot_id") and cfg.get("secret")):
+            if _wecom_adapter is not None:
+                await _wecom_adapter.stop()
+                _wecom_adapter = None
+            return
+        if _wecom_adapter is not None:
+            await _wecom_adapter.stop()
+        _wecom_adapter = WeComChannelAdapter()
+        await _wecom_adapter.start(cfg)
+
+
+_wecom_adapter = None  # singleton owned by WeComConnector.apply_config
+
+
+def _wecom_maybe_autostart() -> None:
+    """启动恢复：runtime 重启后按已存配置拉起长连接。
+
+    apply_config 只在 PATCH config 时被调（vibe_island 同款坑），因此 seed
+    时读 merged config 补一次；幂等（已拉起则跳过），仅在事件循环内执行。
+    """
+    import asyncio
+
+    global _wecom_adapter
+    if _wecom_adapter is not None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # 无循环的同步上下文（理论不到达）：跳过，等下次 API 调用
+    try:
+        from .registry import registry
+
+        conn = registry().get("wecom-bot")
+        cfg = registry().read_config("wecom-bot")
+    except Exception:  # noqa: BLE001 — 注册表异常不影响 seed
+        return
+    if conn is None or not (cfg.get("enabled") and cfg.get("bot_id") and cfg.get("secret")):
+        return
+
+    async def _start() -> None:
+        global _wecom_adapter
+        from ..channels.wecom.adapter import WeComChannelAdapter
+
+        if _wecom_adapter is not None:
+            return
+        _wecom_adapter = WeComChannelAdapter()
+        await _wecom_adapter.start(cfg)
+
+    loop.create_task(_start())
+
+
 def ensure_builtin_connectors() -> None:
     from .registry import registry
 
@@ -194,6 +357,7 @@ def ensure_builtin_connectors() -> None:
     reg.register(ChromeExtensionConnector())
     reg.register(BrowserProfileConnector())
     reg.register(DingTalkConnector())
+    reg.register(WeComConnector())
     reg.register(VibeIslandConnector())
     # 初始状态:扩展未安装;profile 轨道按需启动,先标 disconnected(未运行)
     if reg.status_of("chrome-extension")["status"] == STATUS_NOT_INSTALLED:
@@ -206,6 +370,11 @@ def ensure_builtin_connectors() -> None:
     if reg.status_of("dingtalk-bot")["status"] == STATUS_NOT_INSTALLED:
         reg.report("dingtalk-bot", STATUS_DISCONNECTED, "Not configured",
                    extra={"idle": True})
+    # 企业微信:未配置时同样标 disconnected;已配置则启动恢复拉起长连接。
+    if reg.status_of("wecom-bot")["status"] == STATUS_NOT_INSTALLED:
+        reg.report("wecom-bot", STATUS_DISCONNECTED, "Not configured",
+                   extra={"idle": True})
+    _wecom_maybe_autostart()
     # Vibe Island:按 bridge 存在性 + 开关 + 应用是否在跑报初始状态
     # (vibe_island.report_status 内部读 registry config,自带 60s 冷却,
     # 这里 force 一次保证启动即准确)。
@@ -447,6 +616,7 @@ __all__ = [
     "ChromeExtensionConnector",
     "BrowserProfileConnector",
     "DingTalkConnector",
+    "WeComConnector",
     "VibeIslandConnector",
     "ensure_builtin_connectors",
     "STATUS_CONNECTED",
