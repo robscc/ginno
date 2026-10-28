@@ -45,6 +45,8 @@ import { useSummarizeFlow } from "./useSummarizeFlow";
 import { ModAskCard, type ModAskState } from "./mod/ModAskCard";
 import type { ModBandGroup } from "./mod/ModBand";
 import { DelegationStatusBar } from "./stream/DelegationStatusBar";
+import { ChannelStatusBar } from "./stream/ChannelStatusBar";
+import { ModelChipMenu } from "./stream/ModelChipMenu";
 import { PermissionPromptCard } from "./stream/PermissionPromptCard";
 import { SummarizeMenu } from "./stream/SummarizeMenu";
 import { TranscriptList } from "./stream/TranscriptList";
@@ -606,6 +608,9 @@ export function ChatStream({
   // transitions (all composer state lives on ChatStream — only DOM focus is
   // lost, and home autofocuses above).
   const hideDel = session?.type === "delegation"; // 回放会话隐藏 goal 条等会话级控件
+  // 渠道会话（钉钉/企微，type="channel"）：对话在 IM 侧，桌面只读；agent/
+  // 模型/挂载 chips 保留（ChannelStatusBar 内嵌模型 chip）。
+  const isChannel = session?.type === "channel";
   const composerBoxEl = (
     <Composer
       g={g}
@@ -656,15 +661,43 @@ export function ChatStream({
   // 无需额外清理。agentChipsEl 抽成变量：composerBoxEl 是单实例双 key 槽，
   // chip 行不能挪进去（会把 session-only 按钮拖进 home），两槽各渲染一份。
   const switchTarget =
-    target && session && target !== session.agent_id ? agentById(target) : null;
+    target && session && !isChannel && target !== session.agent_id
+      ? agentById(target)
+      : null;
 
   const agentChipsEl = (
     <AgentChips
       g={g}
       session={session}
-      target={target}
+      target={isChannel ? null : target}
       input={input}
-      onSelect={setTarget}
+      onSelect={(id) => {
+        // 渠道会话没有「发送」可承载切换：chip 点击立即换绑（PATCH 落库，
+        // 渠道下一条消息 run_channel_turn 现读 session.agent_id 即生效）。
+        // 点当前 agent（onSelect(null)）是取消暂选，不是解绑——忽略。
+        if (isChannel && session) {
+          if (id) g.setSessionAgent(session.id, id);
+          return;
+        }
+        setTarget(id);
+      }}
+    />
+  );
+
+  // 渠道会话的模型 chip：Composer 被只读状态条替换后，chip 移入状态条
+  // （热切语义不变——下一次 LLM 调用生效）。
+  const channelModelChip = (
+    <ModelChipMenu
+      session={session}
+      label={modelChipLabel}
+      homeModelSource={homeModelSource}
+      targetAgent={targetAgent}
+      homeEffective={homeEffective}
+      enabledProviders={enabledProviders}
+      open={modelOpen}
+      onToggle={() => setModelOpen((v) => !v)}
+      onClose={() => setModelOpen(false)}
+      onPick={(pid, m) => void pickModel(pid, m)}
     />
   );
 
@@ -694,8 +727,9 @@ export function ChatStream({
       {session.type !== "subagent" && <PlanBoard sessionId={session.id} />}
       {session.type !== "subagent" && <SubagentBoard sessionId={session.id} />}
       {/* V2 P1-2 「沉淀为…」: turn this session into a reusable skill / KB card
-          / workflow. Kept out of the subagent and delegation (read-only) views. */}
-      {session.type !== "subagent" && session.type !== "delegation" && (
+          / workflow. Kept out of the subagent and delegation (read-only) views
+          ——渠道会话同属只读家族。 */}
+      {session.type !== "subagent" && session.type !== "delegation" && !isChannel && (
         <div className={`${CHAT_COL} mb-1 flex justify-end`}>
           <DistillMenu busy={distillBusy} onPick={pickDistill} />
         </div>
@@ -887,6 +921,8 @@ export function ChatStream({
           <div key="composer-session">
               {session?.type === "delegation" ? (
                 <DelegationStatusBar session={session} />
+              ) : isChannel && session ? (
+                <ChannelStatusBar session={session} modelChip={channelModelChip} />
               ) : (
                 composerBoxEl
               )}

@@ -37,6 +37,22 @@ def test_connector_registered_and_schema():
     assert default["tool_policy"] == "confirm_highrisk"
 
 
+def test_default_agent_field_dropdown(monkeypatch):
+    """default_agent_id 是下拉：enum 动态取自 agent registry，"" = 全局默认
+    （与 WeCom 共用 _default_agent_field，这里只验接入）。"""
+    from types import SimpleNamespace
+
+    from ginno_runtime import agents as agents_reg
+    from ginno_runtime.connectors.builtin import DingTalkConnector
+
+    monkeypatch.setattr(agents_reg, "list_agents", lambda: [
+        SimpleNamespace(id="dev", name="Dev"),
+    ])
+    spec = DingTalkConnector().config_schema()["properties"]["default_agent_id"]
+    assert spec["enum"] == ["", "dev"]
+    assert spec["x-ginno-enum-labels"][""] == "Auto (default agent)"
+
+
 def test_connector_apply_config_disabled_is_noop():
     """enabled=False → apply_config 直接返回（无 adapter 可停也不炸）。"""
     from ginno_runtime.connectors.builtin import DingTalkConnector
@@ -109,12 +125,13 @@ async def test_tap_streams_and_finalizes_once():
     assert ad.cards.created == 1
     for i in range(3):
         await tap.send_text(_frame("token.delta", content=f"段落{i}。"))
-    # 间隔极短 → 未到节流窗口，不应有更新
-    assert ad.cards.updates == []
+    # 首批立即流出（与 WeCom tap 同语义：卡片创建后立刻见首响应），
+    # 其余进节流窗口
+    assert len(ad.cards.updates) == 1 and "段落0" in ad.cards.updates[0]
     await tap.send_text(_frame("message.end"))
     await tap.close()  # 终态 flush + finalize，且幂等
-    assert len(ad.cards.updates) == 1
-    assert "段落2" in ad.cards.updates[0]
+    assert len(ad.cards.updates) == 2
+    assert "段落2" in ad.cards.updates[1]
     assert len(ad.cards.finalized) == 1
     body = ad.cards.finalized[0][1]
     assert "段落0" in body and "段落2" in body

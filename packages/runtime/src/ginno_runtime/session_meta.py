@@ -162,3 +162,23 @@ def session_is_scheduled(session_id: str) -> bool:
         return bool(m) and m.get("type") == "scheduled"
     except Exception:  # noqa: BLE001 — 判定失败按普通会话处理
         return False
+
+
+def mark_channel_meta(meta: dict, channel: str) -> bool:
+    """给渠道会话补 ``type="channel"`` + ``channel`` 标记（幂等）。
+
+    channels.ensure_channel_session（新会话落标 / 旧会话补标）与 adapter
+    启动迁移调用。``meta`` 可以是内存条目（主键 session_id）也可以是磁盘
+    索引条目（主键 id）——统一解析 id 后走 _session_meta_patch 串行落盘
+    （磁盘索引是前端列表的事实来源），内存条目同步补键。touch=False：
+    补标记不得把会话顶到侧栏顶端。返回是否实际补写（重入为 False）。"""
+    sid = str(meta.get("id") or meta.get("session_id") or "")
+    if not sid:
+        return False
+    if meta.get("type") == "channel" and meta.get("channel") == channel:
+        return False
+    slug = meta.get("project_slug") or _session_slug(sid) or "default"
+    _session_meta_patch(slug, sid, {"type": "channel", "channel": channel}, touch=False)
+    meta["type"] = "channel"
+    meta["channel"] = channel
+    return True

@@ -17,7 +17,14 @@ import httpx
 from ... import paths
 from ... import server_shared as shared
 from ...connectors.registry import STATUS_CONNECTED, STATUS_DISCONNECTED, STATUS_ERROR
-from ..base import ChannelAdapter, ensure_channel_session, run_channel_turn
+from ..base import (
+    ChannelAdapter,
+    ensure_channel_session,
+    image_payload_from_bytes,
+    mark_channel_sessions,
+    run_channel_turn,
+    steer_channel_turn,
+)
 from . import protocol as p
 from .client import WecomAuthError, WecomClient
 from .sessions import SessionMapper
@@ -60,6 +67,9 @@ class WeComChannelAdapter(ChannelAdapter):
         data_dir.mkdir(parents=True, exist_ok=True)
         self._mapper = SessionMapper(data_dir / "mappings.json")
         self._mapper.load()
+        # 存量迁移：标记引入前绑定的会话补 type/channel（幂等，见 base.py）
+        mark_channel_sessions(
+            "wecom", [m["ginno_session"] for m in self._mapper.all()])
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=60.0))
         self.client = self._make_client()
         self._stopped = False
@@ -203,7 +213,7 @@ class WeComChannelAdapter(ChannelAdapter):
         ginno_sid = self._mapper.get(user_id=map_user, chat_id=chat_key)
         session, err = await ensure_channel_session(
             ginno_sid, default_agent_id=self.config.get("default_agent_id") or None,
-            title=f"企业微信 · {userid}")
+            title=f"企业微信 · {userid}", channel="wecom")
         if session is None:
             shared._log.error("wecom_session_resolve chat=%s err=%s", chat_key, err)
             return None
@@ -219,13 +229,44 @@ class WeComChannelAdapter(ChannelAdapter):
             await self._finish_stream(req_id, stream_id, "⚠️ 会话创建失败，请稍后重试")
             return
         lock = self._session_locks.setdefault(session["session_id"], asyncio.Lock())
-        if lock.locked():  # 在途/停车中 → 不排队，直接定格提示
+        if lock.locked():  # 在途/停车中 → steer 优先，其余不排队直接定格提示
+            if steer_channel_turn(session, text):
+                await self._finish_stream(
+                    req_id, stream_id, "↩️ 已追加到当前任务，本轮继续时生效。")
+                return
             await self._finish_stream(
                 req_id, stream_id, "⏳ 上一轮仍在进行中（或有问题等你作答），请稍候再发。")
             return
         async with lock:
             tap = WeComTap(self, req_id, chat_key, stream_id)
-            await run_channel_turn(session, text, tap, usage_source="wecom")
+            salvaged = await run_channel_turn(session, text, tap, usage_source="wecom")
+        if salvaged:
+            await self._salvage_redeliver(session, chat_key, salvaged)
+
+    async def _salvage_redeliver(self, session: dict, chat_key: str,
+                                 texts: list[str]) -> None:
+        """turn 收尾时未吸收的追加 → 主动告知 + push_only tap 转新 turn 补投
+        （无回调流可用，结果走 send_markdown）。第二级不再递归，还文本请重发。"""
+        joined = "\n".join(texts)
+        try:
+            await self.client.send_markdown(
+                chat_key,
+                f"↩️ 上一轮恰在收尾，追加未注入，已自动转为新任务：\n\n{joined}")
+        except Exception:  # noqa: BLE001 — 通知失败不拦补投
+            shared._log.warning("wecom_salvage_notice chat=%s failed", chat_key)
+        lock = self._session_locks.setdefault(session["session_id"], asyncio.Lock())
+        async with lock:  # 已释放，重取（期间新消息可能插队，串行即可）
+            tap = WeComTap.push_only(self, chat_key)
+            round2 = await run_channel_turn(session, joined, tap,
+                                            usage_source="wecom_salvage")
+        if round2:  # 补投 turn 又收到追加：不再递归，还文本请重发
+            try:
+                await self.client.send_markdown(
+                    chat_key,
+                    "⚠️ 补投任务也刚收尾，追加未能注入，请重新发送：\n\n"
+                    + "\n".join(round2))
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _dispatch_media(self, req_id: str, chat_key: str, userid: str,
                               body: dict, msgtype: str, *,
@@ -257,6 +298,7 @@ class WeComChannelAdapter(ChannelAdapter):
         ext = {"image": "png", "file": "bin", "mixed": "png"}.get(msgtype, "bin")
         fname = f"wecom_{msgid}.{ext}"
         attached: list[dict] = []
+        images: list[dict] | None = None
         try:
             data, cd_fname = await media_mod.download_media(url, aeskey, self._http)
             if cd_fname:
@@ -266,6 +308,10 @@ class WeComChannelAdapter(ChannelAdapter):
             dest = dest_dir / fname
             dest.write_bytes(data)
             attached = [{"name": fname, "kind": kind, "path": str(dest)}]
+            # 图片同框多模态注入（composer 同款）：模型直接看到像素；文件
+            # 落盘照旧（工具路径不受影响）。不可识别格式/超限 → None 回落。
+            if kind == "image":
+                images = image_payload_from_bytes(data, fname)
         except Exception as e:  # noqa: BLE001 — 下载失败提示但继续（文本仍可驱动）
             shared._log.warning("wecom_media_download chat=%s err=%s", chat_key, e)
 
@@ -276,11 +322,18 @@ class WeComChannelAdapter(ChannelAdapter):
             return
         text = extra_text.strip() or (
             f"我通过企业微信发来了{'图片' if kind == 'image' else '文件'} "
-            f"{fname}，请按需处理。")
+            f"{fname}，请按需处理。"
+            if attached
+            else f"我通过企业微信发来了{'图片' if kind == 'image' else '文件'}，"
+                 "但下载失败（文件不存在，请直接告知用户稍后重试）。")
         async with lock:
             tap = WeComTap(self, req_id, chat_key, stream_id)
-            await run_channel_turn(session, text, tap, attached_files=attached or None,
-                                   usage_source="wecom_file")
+            salvaged = await run_channel_turn(
+                session, text, tap, attached_files=attached or None,
+                images=images, usage_source="wecom_file")
+        if salvaged:
+            # 文件 turn 收尾时未吸收的文本 steer 同样补投（同 _dispatch_text）
+            await self._salvage_redeliver(session, chat_key, salvaged)
 
     # ---- ask_user 登记（tap 调用）---------------------------------------------
 

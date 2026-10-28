@@ -20,7 +20,7 @@ import type {
   SubagentSpawnEvent,
   SubagentStatusEvent,
 } from "@/lib/types";
-import { applyBlock, closePendingBlocks, mid, newTurnId, toolArgsPreview } from "../streamCore";
+import { applyBlock, closePendingBlocks, mid, newTurnId, toolArgsPreview, type ChatMsg } from "../streamCore";
 import type { EngineCtx } from "./ctx";
 import { reconcileTurnFromHistory } from "./connect";
 import { flushSteerQueue, recallSteers } from "./steer";
@@ -210,6 +210,44 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
             ? { ...msg, turnId: srvTurn }
             : msg,
         );
+      }
+      // 渠道轮次回显（engine 端 echo_user 标记，turn.start 带 text/images）：
+      // 桌面端没有 composer 的乐观气泡，IM 侧输入只能靠服务端回传才显示。
+      // id 与 turnId 同用服务端 turnId——与 history 的 user 消息 id==turnId
+      // 不变式（messages_ui.py）一致，后续 history 回灌天然去重；图片块与
+      // history 的 multimodal 序列化同构（{kind:"image", url:dataURL}）。
+      // 本地 composer 轮不带 text，且上面的同步已给乐观气泡打上 turnId，
+      // 不会双插。
+      const echoText = typeof ev.text === "string" ? ev.text : "";
+      const echoImgs = Array.isArray(ev.images)
+        ? ev.images.filter(
+            (i: unknown): i is { data: string; media_type?: string } =>
+              !!i && typeof (i as { data?: unknown }).data === "string",
+          )
+        : [];
+      if (srvTurn && (echoText || echoImgs.length)) {
+        const store = ctx.storeRef.current[sid] ?? [];
+        if (!store.some((m) => m.role === "user" && m.turnId === srvTurn)) {
+          const echo: ChatMsg = {
+            id: srvTurn,
+            role: "user",
+            blocks: [
+              ...(echoText ? [{ kind: "text" as const, text: echoText }] : []),
+              ...echoImgs.map((i) => ({
+                kind: "image" as const,
+                url: `data:${i.media_type || "image/png"};base64,${i.data}`,
+              })),
+            ],
+            turnId: srvTurn,
+          };
+          const at = (() => {
+            const liveIdx = store.findIndex((m) => m.id === id);
+            return liveIdx === -1 ? store.length : liveIdx;
+          })();
+          const next = [...store];
+          next.splice(at, 0, echo);
+          ctx.storeRef.current[sid] = next;
+        }
       }
       break;
     }
@@ -439,12 +477,17 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       if (!absorbedId) break;
       // Capture the entry BEFORE delegating — the hook drops it from the queue.
       const entry = ctx.steerQ.itemsFor(sid).find((i) => i.steerId === absorbedId);
-      if (!entry) break; // already dropped — a history reconcile got there first
+      // 渠道注入的 steer（IM 侧 steer_channel_turn 入队，本地没有队列条目）：
+      // 事件带原文（engine 的 absorbed payload 补了 text）——同样渲染注入带，
+      // 桌面实时可见；无本地条目也无 text（旧服务端/机器注入）维持 no-op。
+      const foreignText = !entry && typeof ev.text === "string" ? ev.text : "";
+      if (!entry && !foreignText)
+        break; // already dropped — a history reconcile got there first
       // Same timing/order as before: remove from the queue first, then render.
-      ctx.steerQ.handleEvent(ev, sid);
+      if (entry) ctx.steerQ.handleEvent(ev, sid);
       // runtime 注入的子代理结果走同一条 steer 通道（契约 3）：折成结果卡片，
       // 而不是把 <ginno_subagent_result> 原始标签渲染成一条注入带。
-      const injectedResult = parseSubagentResult(entry.text);
+      const injectedResult = entry ? parseSubagentResult(entry.text) : null;
       if (injectedResult) {
         const store = ctx.storeRef.current[sid] ?? [];
         const already = store.some((m) =>
@@ -475,16 +518,16 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       }
       const band: Block = {
         kind: "steer",
-        text: entry.text,
-        steerId: entry.steerId,
+        text: entry ? entry.text : foreignText,
+        steerId: absorbedId,
         injectedAt: Number(ev.injected_at) || Math.floor(Date.now() / 1000),
         // Attachments ride the band so the injection point shows what the
         // user actually sent. Images arrive as display URLs (data URL), files
         // as name/path chips — mirroring the replay shape the server emits.
-        ...(entry.images.length
+        ...(entry?.images.length
           ? { images: entry.images.map((a) => ({ name: a.name, url: a.preview })) }
           : {}),
-        ...(entry.files.length
+        ...(entry?.files.length
           ? {
               files: entry.files.map((f) => ({
                 id: f.id,
@@ -507,7 +550,7 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         // reconcile rebuilds the merged bubble from the checkpoint.
         ctx.storeRef.current[sid] = [
           ...store,
-          { id: mid(), role: "user" as const, blocks: [band], turnId: entry.turnId },
+          { id: mid(), role: "user" as const, blocks: [band], turnId: entry?.turnId },
         ];
       }
       ctx.syncDisplay(sid);

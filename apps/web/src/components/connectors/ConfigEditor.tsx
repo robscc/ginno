@@ -606,6 +606,20 @@ function FieldControl({
 
   if (Array.isArray(spec.enum) && spec.enum.length > 0) {
     const opts = spec.enum;
+    // x-ginno-enum-labels：enum 值 → 显示名（如 default_agent_id 的 agent 名）。
+    const rawLabels = spec["x-ginno-enum-labels"];
+    const labels = isPlainObject(rawLabels) ? rawLabels : undefined;
+    const labelOf = (o: string | number | boolean): string => {
+      const l = labels?.[String(o)];
+      return typeof l === "string" && l ? l : String(o);
+    };
+    // 当前值不在 enum 里（如绑定的 agent 已删除）：原样追加一项，受控
+    // select 不空显、保存也不会静默改值。
+    const stale =
+      value !== undefined && value !== null && value !== "" &&
+      !opts.some((o) => String(o) === String(value))
+        ? [value as string | number | boolean]
+        : [];
     return (
       <select
         value={value === undefined ? "" : String(value)}
@@ -616,9 +630,14 @@ function FieldControl({
         className={inputCls}
       >
         {value === undefined && <option value="">—</option>}
+        {stale.map((o) => (
+          <option key={`stale:${String(o)}`} value={String(o)}>
+            {String(o)}
+          </option>
+        ))}
         {opts.map((o) => (
           <option key={String(o)} value={String(o)}>
-            {String(o)}
+            {labelOf(o)}
           </option>
         ))}
       </select>

@@ -66,7 +66,9 @@
       "pin": "置顶会话",
       "unpin": "取消置顶",
       "pinHint": "置顶到侧栏顶部",
-      "unpinHint": "取消置顶"
+      "unpinHint": "取消置顶",
+      "channelBadge": "只读 · 回复走 {channel}",
+      "rowActions": "会话操作（置顶 / 改名 / 删除）"
     },
     "run": {
       "fallbackName": "工作流",

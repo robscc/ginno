@@ -74,6 +74,10 @@ class CreateSessionRequest(BaseModel):
     # Session kind (docs/floating-window-design.md §1.1): "quick" marks sessions
     # created by the floating quick-chat window; None/absent = regular session.
     type: str | None = None
+    # 渠道来源标记（wecom-connector-design.md / dingtalk-connector-design.md）：
+    # 由 channels.ensure_channel_session 写入，值如 "wecom"/"dingtalk"。与
+    # type="channel" 成对出现——前端据此渲染只读视图（对话在 IM 侧进行）。
+    channel: str | None = None
     provider: str | None = None
     model: str | None = None
     # Context folder mounts (context-folders-design.md): library ids; the
@@ -641,6 +645,8 @@ async def create_session(req: CreateSessionRequest) -> dict:
     }
     if req.type:
         meta["type"] = req.type
+    if req.channel:
+        meta["channel"] = req.channel
     if is_team_member:
         # 团队成员：带 parent 链（指向主会话）以复用级联删除与侧栏树，但
         # **不**写 subagent 载荷、不吃 depth（§3.2）。parent 链是磁盘索引上的

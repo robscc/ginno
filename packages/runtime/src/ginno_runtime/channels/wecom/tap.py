@@ -67,6 +67,15 @@ def _widget_to_markdown(data: dict) -> str:
 class WeComTap(ChannelTap):
     """一个 turn 一枚 tap：挂 ``_SESSION_WS`` 收帧，驱动企微流式回复。"""
 
+    @classmethod
+    def push_only(cls, adapter: "WeComChannelAdapter", chat_key: str) -> "WeComTap":
+        """无回调流的 tap（steer 补投等主动场景）：流生而收尾，全部增量
+        走 ``_tail`` → close 时 ``send_markdown`` 主动推送——与 9.5 分钟
+        安全线的降级同一条出口。"""
+        t = cls(adapter, "", chat_key, "")
+        t._stream_done = True
+        return t
+
     def __init__(self, adapter: WeComChannelAdapter, req_id: str,
                  chat_key: str, stream_id: str) -> None:
         self.adapter = adapter

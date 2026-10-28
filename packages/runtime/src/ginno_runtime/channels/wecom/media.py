@@ -24,9 +24,18 @@ from . import protocol as p
 from .client import WecomClient
 
 
+def _b64decode_loose(s: str) -> bytes:
+    """企微下发的 aeskey 是无填充/URL-safe base64（43 字符、`-_` 字母表），
+    裸 ``b64decode`` 抛 ``Incorrect padding``。归一化（换字母表 + 补 ``=``
+    ）后解码；标准带填充 key 原样通过。"""
+    s = s.strip().replace("-", "+").replace("_", "/")
+    s += "=" * (-len(s) % 4)
+    return base64.b64decode(s)
+
+
 def decrypt_media(data: bytes, aes_key_b64: str) -> bytes:
     """AES-256-CBC 解密下载体（key=base64 解码 32B，iv=key 前 16B）。"""
-    key = base64.b64decode(aes_key_b64)
+    key = _b64decode_loose(aes_key_b64)
     if len(key) != 32:
         raise ValueError(f"invalid aeskey length {len(key)} (expected 32)")
     if not data or len(data) % 16 != 0:

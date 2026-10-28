@@ -268,6 +268,9 @@ async def _stream_graph(
                         {
                             "steer_id": _e.get("steer_id"),
                             "injected_at": _e.get("injected_at"),
+                            # 原文随事件回传：渠道侧注入的 steer（channels.steer_channel_turn）
+                            # 在桌面端没有本地队列条目，带 text 才能实时渲染注入带。
+                            "text": _e.get("text") or "",
                         },
                     )
                 )
@@ -375,9 +378,28 @@ async def _stream_graph(
                 session_id, turn_id, _aid,
                 ((config.get("configurable") or {}).get("user_text") or "")[:120],
             )
-            await safe_send(
-                emit("turn.start", {"turn_id": ui_turn_id, "agent_id": _aid or "", "name": _ag.name if _ag else "Agent"})
-            )
+            _ts_payload = {
+                "turn_id": ui_turn_id,
+                "agent_id": _aid or "",
+                "name": _ag.name if _ag else "Agent",
+            }
+            # 渠道轮次（echo_user，channels/base.py）：随 turn.start 回传用户
+            # 原文与入站图片——桌面端 composer 没有乐观气泡可依赖，没有这些
+            # 字段 IM 侧输入在实时流里永不显示（只在重启后由 history 补上）。
+            # 机器发起的 turn（子代理 brief/wake、goal 续跑）不带标记，不回显。
+            if (config.get("configurable") or {}).get("echo_user"):
+                _ts_payload["text"] = (config.get("configurable") or {}).get("user_text") or ""
+                _echo_imgs = (config.get("configurable") or {}).get("echo_images")
+                if _echo_imgs:
+                    _ts_payload["images"] = [
+                        {
+                            "data": str(i.get("data") or ""),
+                            "media_type": str(i.get("media_type") or "image/png"),
+                        }
+                        for i in _echo_imgs
+                        if isinstance(i, dict) and i.get("data")
+                    ]
+            await safe_send(emit("turn.start", _ts_payload))
             # Mods turn.start tap (claude-code-mods-design.md §5.3, same
             # position as the WS event): observe-only, zero-cost with no mod.
             _mods_t0 = time.monotonic()
@@ -1352,7 +1374,10 @@ async def _stream_graph(
                 reconcile_stash_injections(session_id)
             except Exception:
                 _log.exception("subagent_reconcile_failed session=%s", session_id)
-            shared.steer_clear(session_id)
+            # 渠道来源的未吸收 steer 不清场（steer_keep_channel）：turn 已
+            # 收尾、注入无下家，run_channel_turn 尾部排水后由 adapter 补投
+            # 为后续 turn——「已追加」的回执不能是空头支票。
+            shared.steer_keep_channel(session_id)
             # The uncommitted-drain record is either retired by the commit or
             # committed by the heal (both ran above) — never left behind.
             shared.steer_clear_inflight(session_id)

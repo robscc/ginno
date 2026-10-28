@@ -193,7 +193,10 @@ export interface SessionMeta {
   // linkage lives in parent_session_id/depth/subagent below.
   // "scheduled" = 定时任务影子会话（scheduled-tasks-design.md §4.3）；列表与
   // 搜索均整类隐藏（§10 决议 5），只能从 /scheduled 的执行记录/时间条进入回放。
-  type?: "quick" | "subagent" | "scheduled" | "delegation" | "team" | "team-member";
+  type?: "quick" | "subagent" | "scheduled" | "delegation" | "team" | "team-member" | "channel";
+  /** type="channel" 专用：来源渠道（"wecom" | "dingtalk"）。桌面端只读视图——
+   *  对话在 IM 侧进行，agent/模型/挂载目录仍可在桌面改（下一条消息生效）。 */
+  channel?: string;
   /** delegation 专用：running | success | error | timeout（bg 终态/启动对账写入） */
   stop_reason?: string;
   backend?: string;

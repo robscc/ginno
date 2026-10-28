@@ -209,7 +209,9 @@ async def _stop_parked_turn(session: dict, session_id: str, turn_id: str) -> Non
             reconcile_stash_injections(session_id)
         except Exception:
             _log.exception("subagent_reconcile_failed session=%s", session_id)
-        shared.steer_clear(session_id)
+        # 渠道来源的未吸收 steer 保留补投（同 engine 段末清场，见
+        # server_shared.steer_keep_channel）。
+        shared.steer_keep_channel(session_id)
         _log.info("turn_stopped_parked session=%s turn=%s", session_id, turn_id)
     except Exception:
         _log.exception("stop_parked_turn_failed session=%s", session_id)

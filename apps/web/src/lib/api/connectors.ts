@@ -70,6 +70,9 @@ export interface ConnectorSchemaProperty {
   "x-ginno-placeholder"?: string;
   "x-ginno-min"?: number;
   "x-ginno-max"?: number;
+  /** enum 选项显示名（value → label，如 default_agent_id 的 agent 名）；
+   * 缺省回退显示 value 本身。 */
+  "x-ginno-enum-labels"?: Record<string, string>;
   [key: string]: unknown;
 }
 

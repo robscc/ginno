@@ -145,7 +145,9 @@ class DingTalkTap(ChannelTap):
             "allow_free_text": data.get("allow_free_text", True),
         }
         self._question_id = str(q["id"] or "")
-        self.adapter.register_question(self._question_id, self.session_id)
+        # register_question 是协程（内部持 _q_lock）：漏 await 时卡片回调
+        # 查不到登记、静默 no-op——提问永远无法作答（wecom 侧同路径有 await）。
+        await self.adapter.register_question(self._question_id, self.session_id)
         try:
             await self.adapter.cards.send_question_card(self.staff_id, q)
         except Exception:
@@ -165,7 +167,7 @@ class DingTalkTap(ChannelTap):
         from ...api.stream.resume import resume_pending_interrupt
 
         if self._question_id:
-            self.adapter.unregister_question(self._question_id)
+            await self.adapter.unregister_question(self._question_id)
             try:
                 await self.adapter.cards.disable_question_card(self._question_id)
             except Exception:
@@ -180,7 +182,11 @@ class DingTalkTap(ChannelTap):
             self._ask_timer.cancel()
             self._ask_timer = None
         if self._question_id:
-            self.adapter.unregister_question(self._question_id)
+            # 同步上下文里退登记：ensure_future 排进当前 loop（与 wecom
+            # _cancel_ask_timer 同款）；done-callback 吃掉异常避免未观测告警。
+            task = asyncio.ensure_future(
+                self.adapter.unregister_question(self._question_id))
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     # ---- F7 产物上行 -------------------------------------------------------
 

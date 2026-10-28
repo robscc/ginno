@@ -1,7 +1,8 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { Check, ChevronDown, Pencil, Pin, PinOff, Square, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Square, Trash2 } from "lucide-react";
+import { RowFanMenu } from "@/components/shell/RowFanMenu";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
 import { relTime } from "@/lib/utils";
@@ -224,6 +225,18 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                   ⚡
                 </span>
               )}
+              {/* 渠道会话角标（wecom-connector/dingtalk-connector）：桌面只读，
+                  对话在 IM 侧进行——标题已带「企业微信/钉钉 ·」前缀，这里只标渠道名。 */}
+              {s.type === "channel" && (
+                <span
+                  title={t("session.channelBadge", {
+                    channel: s.channel === "wecom" ? "WeCom" : s.channel === "dingtalk" ? "DingTalk" : "",
+                  })}
+                  className="shrink-0 rounded border border-line2 px-1 text-[9px] leading-4 text-faint"
+                >
+                  {s.channel === "wecom" ? "WeCom" : s.channel === "dingtalk" ? "DingTalk" : "IM"}
+                </span>
+              )}
               {/* 子树还有更深的后代：行尾 +N 尾标（设计 §6.1） */}
               {hasKids && descendantCount(s.id) > childRows.length && (
                 <span
@@ -313,41 +326,14 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                 )
               ) : (
                 <>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onPin(s.id, !s.pinned);
-                    }}
-                    aria-label={s.pinned ? t("session.unpin") : t("session.pin")}
-                    title={s.pinned ? t("session.unpinHint") : t("session.pinHint")}
-                    className={`rounded p-1 hover:bg-card2 ${
-                      s.pinned ? "text-violet" : "text-muted hover:text-txt"
-                    }`}
-                  >
-                    {s.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStartRename(s);
-                    }}
-                    aria-label={t("session.rename")}
-                    title={t("session.renameHint")}
-                    className="rounded p-1 text-muted hover:bg-card2 hover:text-txt"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDelete(s);
-                    }}
-                    aria-label={t("session.delete")}
-                    title={t("session.delete")}
-                    className="rounded p-1 text-muted hover:bg-card2 hover:text-red"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  {/* 置顶/改名/删除收进扇形菜单（RowFanMenu）：行尾只留一个
+                      hover 出现的 ⋯，给标题腾宽度；置顶态由「置顶」分组表达。 */}
+                  <RowFanMenu
+                    pinned={!!s.pinned}
+                    onPin={(pinned) => onPin(s.id, pinned)}
+                    onRename={() => onStartRename(s)}
+                    onDelete={() => onDelete(s)}
+                  />
                 </>
               )}
             </span>

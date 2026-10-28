@@ -19,7 +19,14 @@ from ginno_runtime import jsonx as json
 from ... import paths
 from ... import server_shared as shared
 from ...connectors.registry import STATUS_CONNECTED, STATUS_DISCONNECTED, STATUS_ERROR
-from ..base import ChannelAdapter, ensure_channel_session, run_channel_turn
+from ..base import (
+    ChannelAdapter,
+    ensure_channel_session,
+    image_payload_from_bytes,
+    mark_channel_sessions,
+    run_channel_turn,
+    steer_channel_turn,
+)
 from . import menus as menus_mod
 from .sessions import SessionMapper
 from .tap import DingTalkTap
@@ -70,6 +77,9 @@ class DingTalkChannelAdapter(ChannelAdapter):
         data_dir.mkdir(parents=True, exist_ok=True)
         self._mapper = SessionMapper(data_dir / "mappings.json")
         self._mapper.load()
+        # 存量迁移：标记引入前绑定的会话补 type/channel（幂等，见 base.py）
+        mark_channel_sessions(
+            "dingtalk", [m["ginno_session"] for m in self._mapper.all()])
 
         try:
             import dingtalk_stream  # 延迟到启动：未装依赖不至于 import 期炸掉
@@ -206,11 +216,19 @@ class DingTalkChannelAdapter(ChannelAdapter):
             return
         kind = "image" if str(data.get("msgtype")) == "picture" else "file"
         attached = [{"name": fname, "kind": kind, "path": str(dest)}]
+        # 图片同框多模态注入（composer 同款）：模型直接看到像素；文件落盘
+        # 照旧。下载/读取失败或格式不可识别 → None 回落纯附件行为。
+        images: list[dict] | None = None
+        if kind == "image":
+            try:
+                images = image_payload_from_bytes(dest.read_bytes(), fname)
+            except OSError:
+                images = None
         # 附件消息驱动一条「处理该文件」的 turn（正文由 Agent 判断怎么读）
         await self._dispatch_turn(
             staff_id, conversation_id, str(data.get("senderNick") or ""),
             f"我通过钉钉发来了文件 {fname}，请按需处理。", attached, "dingtalk_file",
-            force_new=False)
+            force_new=False, images=images)
 
     async def _resolve_session(self, staff_id: str, conversation_id: str,
                                nick: str, *, force_new: bool) -> dict | None:
@@ -218,7 +236,8 @@ class DingTalkChannelAdapter(ChannelAdapter):
         ginno_sid = None if force_new else self._mapper.get(
             staff_id=staff_id, conversation_id=conversation_id)
         session, err = await ensure_channel_session(
-            ginno_sid, default_agent_id=self.config.get("default_agent_id") or None)
+            ginno_sid, default_agent_id=self.config.get("default_agent_id") or None,
+            channel="dingtalk")
         if session is None:
             shared._log.error("dingtalk_session_resolve staff=%s err=%s", staff_id, err)
             return None
@@ -228,7 +247,8 @@ class DingTalkChannelAdapter(ChannelAdapter):
 
     async def _dispatch_turn(self, staff_id: str, conversation_id: str, nick: str,
                              text: str, attached: list[dict], usage_source: str,
-                             *, force_new: bool) -> None:
+                             *, force_new: bool,
+                             images: list[dict] | None = None) -> None:
         session = await self._resolve_session(staff_id, conversation_id, nick,
                                               force_new=force_new)
         if session is None:
@@ -236,15 +256,38 @@ class DingTalkChannelAdapter(ChannelAdapter):
             return
         sid = session["session_id"]
         lock = self._session_locks.setdefault(sid, asyncio.Lock())
-        if lock.locked():  # F9：在途 turn/停车中 → 不排队，提示（P0 策略）
+        if lock.locked():  # F9：在途 turn/停车中 → steer 优先，其余不排队提示
+            # 附件消息不 steer（桌面 v1 同口径，steering-design.md §3.1）：
+            # 文本会引用附件，只注入文字会误导模型。
+            if not attached and steer_channel_turn(session, text):
+                await self.send_markdown(
+                    staff_id, "Ginno", "↩️ 已追加到当前任务，本轮继续时生效。")
+                return
             await self.send_markdown(
                 staff_id, "Ginno", "⏳ 上一轮仍在进行中（或有问题等你作答），请稍候再发。")
             return
         async with lock:
             tap = DingTalkTap(self, staff_id, conversation_id)
-            await run_channel_turn(
+            salvaged = await run_channel_turn(
                 session, text, tap, attached_files=attached or None,
-                usage_source=usage_source)
+                images=images, usage_source=usage_source)
+        if salvaged:
+            # 上一轮在最终 superstep 后收尾、追加没注入成：主动告知并转新
+            # turn 补投（锁已释放，_dispatch_turn 重取；新 tap 主动建卡）。
+            # 补投 turn 又收到追加则不再递归（usage_source 标记级数），还文
+            # 本请重发。
+            joined = "\n".join(salvaged)
+            if usage_source == "dingtalk_salvage":
+                await self.send_markdown(
+                    staff_id, "Ginno",
+                    f"⚠️ 补投任务也刚收尾，追加未能注入，请重新发送：\n\n{joined}")
+                return
+            await self.send_markdown(
+                staff_id, "Ginno",
+                f"↩️ 上一轮恰在收尾，追加未注入，已自动转为新任务：\n\n{joined}")
+            await self._dispatch_turn(
+                staff_id, conversation_id, nick, joined, [],
+                "dingtalk_salvage", force_new=False)
 
     # ---- F4 卡片回调 -------------------------------------------------------
 

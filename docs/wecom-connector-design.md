@@ -22,7 +22,7 @@
 | `bot_id` | string | 智能机器人 BotID（企微后台 API 配置页） |
 | `secret` | string (password) | 智能机器人 Secret |
 | `allowed_userids` | string[] | 白名单（空=不限；未授权静默忽略） |
-| `default_agent_id` | string | 渠道入口绑定的 agent |
+| `default_agent_id` | enum | 渠道入口绑定的 agent（下拉；选项实时取自 agent registry，`""`=全局默认，agent 删除后旧值仍可保存） |
 | `session_policy` | enum | `per_user`（默认，按 user+chat 映射）/ `per_conversation`（整个会话共用） |
 | `ask_timeout_s` | int | ask_user 停车超时自动 skip |
 | `welcome_text` | string | enter_chat 欢迎语（空=关闭） |
@@ -67,8 +67,9 @@
 ### F-路由 收到消息（adapter.handle_msg）
 白名单 → text?(频道需@/剥@) → **待答短路**（`_pending_q` 命中且 session 在
 `_PENDING_RESUME` → parse_answer → `resume_pending_interrupt`，不开新 turn）
-→ `_begin_stream`（5s 占位帧）→ 会话映射 → 在途锁（locked → 占位帧定格提示）
-→ `run_channel_turn`。
+→ `_begin_stream`（5s 占位帧）→ 会话映射 → 在途锁（locked → **steer 优先**：
+turn 在跑且未停车 → `base.steer_channel_turn` 文本进 steer 队列 + 「已追加」
+定格；停车/无活 turn → 占位帧定格提示）→ `run_channel_turn`。
 
 ### F-流式（tap）
 占位帧（adapter）→ token.delta 攒增量、3s 节流发全量 → message.end flush →
@@ -98,6 +99,16 @@ enabled 则 create_task 拉起。监督循环：断线 → 指数退避(1→60s+
 - 流式超 9.5min 强制定格 + 残余 markdown 主动推送（`aibot_send_msg` 仅支持
   markdown/template_card）。
 - secret 明文存 `settings.json`（与钉钉一致的既有取舍）。
+
+## 6a. 渠道会话标记与桌面只读视图（2026-10-28）
+
+- 会话 meta 带 `type="channel"` + `channel="wecom"`（`ensure_channel_session`
+  创建时写入；adapter 启动扫 `mappings.json` 给存量会话补标，幂等）。
+- 桌面端据此渲染**只读视图**：composer 换成状态条（内嵌模型 chip）、
+  AskUserCard 无答题入口（提问在企微侧文本化作答）。
+- 但 **agent / 模型 / 挂载目录仍可在桌面改**，且对渠道下一条消息生效：
+  `run_channel_turn` 每 turn 现读 `session.agent_id`；模型热切原地换
+  graph 的 model getter；挂载变更走 `apply_session_context` 重建 graph。
 
 ## 7. 验证记录（2026-10-28，真实凭证调试）
 

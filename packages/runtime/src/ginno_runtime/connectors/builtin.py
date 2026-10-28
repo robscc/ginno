@@ -77,6 +77,38 @@ CHROME_INSTALL_STEPS = [
 ]
 
 
+def _default_agent_field() -> dict:
+    """渠道连接器共用的 default_agent_id 字段描述(渲染为下拉)。
+
+    enum 每次详情请求时从 agent registry 现取(新建/改名/排序即时反映),
+    "" = 沿用全局默认 agent;x-ginno-enum-labels 提供显示名(mods-connector
+    -migration-design.md §3.2 的 x-ginno-* 扩展)。registry 读失败时退回
+    纯文本输入,详情页不因 agents 目录故障而挂。PATCH 只做键白名单校验、
+    不校验 enum,所以 agent 事后被删也不影响已存值保存(前端把失配值原样
+    追加为选项)。"""
+    spec: dict = {
+        "type": "string",
+        "title": "Default agent for this channel",
+        "description": ("Which agent answers messages here; "
+                        "empty = Ginno's default agent"),
+    }
+    try:
+        from .. import agents as agents_reg
+
+        found = agents_reg.list_agents()
+        if found:
+            spec["enum"] = ["", *(a.id for a in found)]
+            labels = {"": "Auto (default agent)"}
+            for a in found:
+                name = (getattr(a, "name", "") or "").strip()
+                labels[a.id] = a.id if not name or name == a.id else f"{name} ({a.id})"
+            spec["x-ginno-enum-labels"] = labels
+    except Exception:  # noqa: BLE001 — agents 目录故障时退回文本输入
+        log.warning("default_agent_id dropdown degraded to text input",
+                    exc_info=True)
+    return spec
+
+
 class ChromeExtensionConnector(Connector):
     id = "chrome-extension"
     name = "Chrome Browser Extension"
@@ -238,9 +270,7 @@ class WeComConnector(Connector):
                     "description": ("Empty = everyone who can reach the bot "
                                     "can drive the agent"),
                 },
-                "default_agent_id": {
-                    "type": "string", "title": "Default agent for this channel",
-                },
+                "default_agent_id": _default_agent_field(),
                 "session_policy": {
                     "type": "string", "enum": ["per_user", "per_conversation"],
                     "title": "Session policy",
@@ -530,9 +560,7 @@ class DingTalkConnector(Connector):
                     "description": ("Empty = everyone in the app's visibility "
                                     "scope can drive the agent"),
                 },
-                "default_agent_id": {
-                    "type": "string", "title": "Default agent for this channel",
-                },
+                "default_agent_id": _default_agent_field(),
                 "session_policy": {
                     "type": "string", "enum": ["per_user", "per_conversation"],
                     "title": "Session policy",

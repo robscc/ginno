@@ -41,6 +41,68 @@ def test_connector_registered_and_schema():
     assert default["session_policy"] == "per_user"
 
 
+def test_default_agent_field_dropdown(monkeypatch):
+    """default_agent_id 是下拉：enum 动态取自 agent registry，"" = 全局默认。"""
+    from types import SimpleNamespace
+
+    from ginno_runtime import agents as agents_reg
+    from ginno_runtime.connectors.builtin import WeComConnector
+
+    monkeypatch.setattr(agents_reg, "list_agents", lambda: [
+        SimpleNamespace(id="dev", name="Dev"),
+        SimpleNamespace(id="writer", name="写手"),
+        SimpleNamespace(id="bare", name=""),
+    ])
+    spec = WeComConnector().config_schema()["properties"]["default_agent_id"]
+    assert spec["enum"] == ["", "dev", "writer", "bare"]
+    labels = spec["x-ginno-enum-labels"]
+    assert labels[""] == "Auto (default agent)"
+    assert labels["dev"] == "Dev (dev)"
+    assert labels["writer"] == "写手 (writer)"
+    assert labels["bare"] == "bare"  # 无名 agent 回退显示 id
+
+
+def test_default_agent_field_degrades_to_text(monkeypatch):
+    """agents registry 读炸 → 退回纯文本字段，详情页不受影响。"""
+    from ginno_runtime import agents as agents_reg
+    from ginno_runtime.connectors.builtin import WeComConnector
+
+    def boom():
+        raise RuntimeError("agents dir gone")
+
+    monkeypatch.setattr(agents_reg, "list_agents", boom)
+    spec = WeComConnector().config_schema()["properties"]["default_agent_id"]
+    assert spec["type"] == "string"
+    assert "enum" not in spec
+
+
+def test_channel_mark_backfill():
+    """渠道标记：mark_channel_sessions 存量迁移（幂等、跳过已删会话、
+    不 bump updated），mark_channel_meta 认内存条目的 session_id 主键。"""
+    from ginno_runtime import paths
+    from ginno_runtime.channels.base import mark_channel_sessions
+    from ginno_runtime.session_meta import (
+        _find_meta,
+        _session_meta_upsert,
+        mark_channel_meta,
+    )
+
+    slug = "default"
+    paths.project_sessions_dir(slug).mkdir(parents=True, exist_ok=True)
+    _session_meta_upsert(slug, {"id": "old1", "title": "存量会话"})
+    assert mark_channel_sessions("wecom", ["old1", "nosuch"]) == 1
+    m, found_slug = _find_meta("old1")
+    assert m["type"] == "channel" and m["channel"] == "wecom"
+    assert found_slug == slug
+    assert "updated" not in m  # touch=False：补标记不动侧栏排序
+    # 幂等 + 已删除会话忽略
+    assert mark_channel_sessions("wecom", ["old1", "nosuch"]) == 0
+    # 内存条目（主键 session_id）同样可标
+    mem = {"session_id": "old1"}
+    mark_channel_meta(mem, "wecom")
+    assert mem["type"] == "channel" and mem["channel"] == "wecom"
+
+
 def test_connector_apply_config_disabled_is_noop():
     from ginno_runtime.connectors.builtin import WeComConnector
 
@@ -145,6 +207,11 @@ def test_decrypt_media_roundtrip():
     assert decrypt_media(data, key) == plain
     # 未加密内容兜底：不是合法填充时原样返回
     assert decrypt_media(b"\x01\x02\x03", key) == b"\x01\x02\x03"
+    # 真机 aeskey 形状（2026-10-28 实录 Incorrect padding）：无填充 43 字符、
+    # 以及 URL-safe 字母表——_b64decode_loose 归一化后照常解密。
+    assert decrypt_media(data, key.rstrip("=")) == plain
+    urlsafe = key.rstrip("=").replace("+", "-").replace("/", "_")
+    assert decrypt_media(data, urlsafe) == plain
 
 
 # ---------------------------------------------------------------- fakes
@@ -368,7 +435,8 @@ def test_adapter_routes_text_to_turn(tmp_path: Path, monkeypatch):
     ad = _make_adapter(tmp_path, {"session_policy": "per_user"})
     turns: list[dict] = []
 
-    async def fake_ensure(ginno_sid, *, default_agent_id=None, title=None):
+    async def fake_ensure(ginno_sid, *, default_agent_id=None, title=None,
+                          channel=None):
         return ({"session_id": "sess1", "project_slug": "default",
                  "graph": None}, None)
 
@@ -396,7 +464,8 @@ async def test_adapter_busy_lock_finishes_placeholder(tmp_path: Path, monkeypatc
         async with lock:
             await asyncio.sleep(0.2)
 
-    async def fake_ensure(ginno_sid, *, default_agent_id=None, title=None):
+    async def fake_ensure(ginno_sid, *, default_agent_id=None, title=None,
+                          channel=None):
         return ({"session_id": "sess1", "project_slug": "default"}, None)
 
     import ginno_runtime.channels.wecom.adapter as adapter_mod
@@ -410,6 +479,124 @@ async def test_adapter_busy_lock_finishes_placeholder(tmp_path: Path, monkeypatc
                 if b.get("stream", {}).get("finish")]
     assert finishes and "上一轮仍在进行中" in finishes[0]["stream"]["content"]
     await holder
+
+
+async def test_adapter_busy_running_turn_steers(tmp_path: Path, monkeypatch):
+    """在途（RUNNING_TURNS 有、未停车）时新消息 → steer 注入而非提示：
+    与桌面 composer 同一队列（steer_enqueue），IM 侧收「已追加」回执。"""
+    pytest.importorskip("langchain_core")
+    from ginno_runtime import server_shared as shared
+
+    ad = _make_adapter(tmp_path, {})
+    lock = asyncio.Lock()
+
+    async def locked():
+        async with lock:
+            await asyncio.sleep(0.2)
+
+    async def fake_ensure(ginno_sid, *, default_agent_id=None, title=None,
+                          channel=None):
+        return ({"session_id": "sess1", "project_slug": "default"}, None)
+
+    import ginno_runtime.channels.wecom.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "ensure_channel_session", fake_ensure)
+    # 活 turn：占用锁 + RUNNING_TURNS 登记（run_channel_turn 的早武装）
+    holder = asyncio.create_task(locked())
+    await asyncio.sleep(0.02)
+    ad._session_locks["sess1"] = lock
+    monkeypatch.setitem(shared._RUNNING_TURNS, "sess1", "turn-live")
+    await ad.handle_msg(_msg_body("@Ginno 顺便也看下Y"), _frame_of())
+    finishes = [b for _, b in ad.client.responds
+                if b.get("stream", {}).get("finish")]
+    assert finishes and "已追加到当前任务" in finishes[0]["stream"]["content"]
+    drained = shared.steer_drain("sess1")
+    assert len(drained) == 1
+    assert drained[0]["text"] == "顺便也看下Y"
+    assert drained[0]["turn_id"] == "turn-live"
+    assert drained[0]["origin"] == "channel"
+    assert drained[0]["steer_id"] and drained[0]["steer_id"] != "turn-live"
+    await holder
+
+
+async def test_adapter_salvage_redelivers_as_push_turn(tmp_path: Path, monkeypatch):
+    """run_channel_turn 返回未吸收追加 → 主动告知 + push_only tap 转新 turn
+    （结果走 send_markdown 主动推送，第二级不再递归）。"""
+    pytest.importorskip("langchain_core")
+    ad = _make_adapter(tmp_path, {})
+    calls: list[dict] = []
+
+    async def fake_run(session, text, tap, **kw):
+        calls.append({"text": text, "tap": tap,
+                      "usage_source": kw.get("usage_source")})
+        # 第一次（消息 turn）返回未吸收追加；补投 turn 返回空
+        return ["哦不 讲10个"] if kw.get("usage_source") == "wecom" else []
+
+    async def fake_ensure(ginno_sid, *, default_agent_id=None, title=None,
+                          channel=None):
+        return ({"session_id": "sess1", "project_slug": "default"}, None)
+
+    import ginno_runtime.channels.wecom.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "ensure_channel_session", fake_ensure)
+    monkeypatch.setattr(adapter_mod, "run_channel_turn", fake_run)
+    await ad.handle_msg(_msg_body("@Ginno 讲5个笑话"), _frame_of())
+    assert len(calls) == 2
+    assert calls[0]["usage_source"] == "wecom"
+    assert calls[1]["usage_source"] == "wecom_salvage"
+    assert calls[1]["text"] == "哦不 讲10个"
+    from ginno_runtime.channels.wecom.tap import WeComTap
+    assert isinstance(calls[1]["tap"], WeComTap)
+    assert calls[1]["tap"]._stream_done is True  # push_only：全程主动推送
+    pushes = [c for _, c in ad.client.pushes]
+    assert any("已自动转为新任务" in str(c) for c in pushes)
+
+
+async def test_adapter_media_image_injects_multimodal(tmp_path: Path, monkeypatch):
+    """入站图片：落盘 attached_files（工具路径）+ images 多模态载荷（composer
+    同款，模型直接看到像素）。非图片格式回落 None（纯附件行为）。"""
+    pytest.importorskip("langchain_core")
+    from ginno_runtime.channels.base import image_payload_from_bytes
+    from ginno_runtime.channels.wecom import media as media_mod
+
+    ad = _make_adapter(tmp_path, {})
+    got: list[dict] = []
+
+    async def fake_run(session, text, tap, **kw):
+        got.append({"text": text, "attached": kw.get("attached_files"),
+                    "images": kw.get("images")})
+        return []
+
+    async def fake_ensure(ginno_sid, *, default_agent_id=None, title=None,
+                          channel=None):
+        return ({"session_id": "sess1", "project_slug": "default"}, None)
+
+    async def fake_download(url, aeskey, http):
+        return b"\x89PNG-fake", "shot.png"
+
+    import ginno_runtime.channels.wecom.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "ensure_channel_session", fake_ensure)
+    monkeypatch.setattr(adapter_mod, "run_channel_turn", fake_run)
+    monkeypatch.setattr(media_mod, "download_media", fake_download)
+    monkeypatch.setattr(adapter_mod.paths, "session_files_dir",
+                        lambda slug, sid: tmp_path / "sf")
+    await ad._dispatch_media(
+        "req9", "ck1", "u1", {"msgid": "img1", "image": {"url": "https://x"}},
+        "image")
+    assert got and got[0]["attached"]
+    assert got[0]["attached"][0]["kind"] == "image"
+    assert got[0]["images"] and got[0]["images"][0]["media_type"] == "image/png"
+    assert got[0]["images"][0]["data"] == base64.b64encode(b"\x89PNG-fake").decode()
+    # helper：不可识别扩展名 / 超限 → None（回落纯 attached_files）
+    assert image_payload_from_bytes(b"x", "a.bin") is None
+    assert image_payload_from_bytes(b"x" * (8 * 1024 * 1024 + 1), "a.png") is None
+    # 魔数嗅探优先：.png 名下的 JPEG 字节按 image/jpeg 上报（vision API
+    # 会校验 mime 与字节一致）
+    assert image_payload_from_bytes(b"\xff\xd8\xff\xe0jpg", "a.png")[0][
+        "media_type"] == "image/jpeg"
+    assert image_payload_from_bytes(b"\x89PNG-rest", "noext")[0][
+        "media_type"] == "image/png"
 
 
 def test_adapter_pending_question_short_circuits(tmp_path: Path, monkeypatch):

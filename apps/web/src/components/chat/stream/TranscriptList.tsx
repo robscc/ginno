@@ -351,7 +351,11 @@ export function TranscriptList({
               // Deliberately not `running`: its questionPending term comes
               // from the card itself (circular — a stale pending card would
               // keep itself interactive forever).
-              questionLive={liveId !== null || serverRunning}
+              // 渠道会话（钉钉/企微）整体只读：提问在 IM 侧作答（tap 文本化），
+              // 桌面卡片只展示——不给答题入口，避免两边抢答同一停车。
+              questionLive={
+                (liveId !== null || serverRunning) && session?.type !== "channel"
+              }
             />
             )}
             </div>

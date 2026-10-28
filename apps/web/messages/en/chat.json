@@ -47,7 +47,10 @@
       "sendingAria": "Sending",
       "newSession": "+ New Session",
       "delegationReadonly": "Delegation replay · read-only",
-      "delegationRunning": "running"
+      "delegationRunning": "running",
+      "channelReadonly": "{channel} conversation — read-only here",
+      "channelHint": "replies happen in the chat app; agent, model and folder mounts changed here still apply",
+      "channelGeneric": "channel"
     },
     "mods": {
       "promptBlocked": "This prompt was blocked by a mod.",

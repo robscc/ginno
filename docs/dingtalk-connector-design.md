@@ -56,7 +56,7 @@
   "app_secret":     {"type": "string",  "title": "AppSecret","secret": true},
   "robot_code":     {"type": "string",  "title": "robotCode（默认=AppKey）", "secret": false},
   "allowed_staff_ids": {"type": "list", "title": "允许使用的钉钉用户 staffId 白名单（空=应用可见范围全部）"},
-  "default_agent_id":  {"type": "string", "title": "渠道默认 Agent（空=全局默认）"},
+  "default_agent_id":  {"type": "string", "enum": ["", "<agent_id>..."], "title": "渠道默认 Agent（下拉，实时取自 agent registry；空=全局默认）"},
   "session_policy":    {"type": "enum", "options": ["per_user", "per_conversation"],
                         "default": "per_user", "title": "会话策略（P0 固定 per_user）"},
   "menus": {"type": "list", "title": "菜单/命令", "item_schema": {
@@ -178,7 +178,9 @@ class StreamTap:                    # duck-typed 假 WS（cli.py:69 _StreamTap �
 3. **菜单匹配**（F8）：命中菜单则替换 user_text；
 4. **会话映射**：`sessions.py` 查映射表 `staffId → ginno session_id`；无映射或菜单 `new_session=true` → 调用会话创建（`POST /api/sessions` 的内部等价路径 `api/sessions.py:552`），写入映射，记录 `staffId/conversationId`；
 5. **附件落地**（若 msgtype ∈ picture/file/richText）：走 F6 下行流程，得到 `attached_files`；
-6. **排队闸**（F9）：该 session 有在途 turn → 入队（或回「正在处理上一条…」）；
+6. **排队闸**（F9）：在途 turn 在跑且未停车 → **steer 注入**（`base.steer_channel_turn`，
+   与桌面 composer 同一 steer 队列，回「已追加到当前任务」）；停车等作答/纯附件 →
+   回「正在处理上一条…」提示（不排队）；
 7. **驱动 turn**——headless 协议（复刻 `api/sessions.py:297-317`，**差异点：不调用 `_set_interactive_turn(False)`**，钉钉有人应答）：
 
 ```python
@@ -381,6 +383,16 @@ channels.base.resume_pending_question(session_id, resume)   # ★ 新提炼公�
 | `run.bind` / `workflow.emit` / `workflows.changed` / `todos.changed` / `skills.changed` / `preview.invalidate` / `keepalive` | — | 丢弃（keepalive 计入连接健康度） | — |
 
 ---
+
+## 5a. 渠道会话标记与桌面只读视图（2026-10-28）
+
+- 会话 meta 带 `type="channel"` + `channel="dingtalk"`（`ensure_channel_session`
+  创建时写入；adapter 启动扫 `mappings.json` 给存量会话补标，幂等）。
+- 桌面端据此渲染**只读视图**：composer 换成状态条（内嵌模型 chip）、
+  AskUserCard 无答题入口（提问在钉钉侧按钮/文本作答）。
+- 但 **agent / 模型 / 挂载目录仍可在桌面改**，且对渠道下一条消息生效：
+  `run_channel_turn` 每 turn 现读 `session.agent_id`；模型热切原地换
+  graph 的 model getter；挂载变更走 `apply_session_context` 重建 graph。
 
 ## 6. 特性兼容性报告
 

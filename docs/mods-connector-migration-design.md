@@ -87,6 +87,7 @@ class Connector:
 ```
 - schema 来源三级：`userConfigSchema`（mod 可选声明）→ 从 `userConfig` 默认值推断（bool/number/string/array/enum）→ 未知键进「高级 JSON」。
 - 推断规则：`bool→switch`、`number→number`、`string→text`、`string[]→tags`、单值枚举（默认值 + 常见值）→select。
+- `enum` 渲染为 select；可选 `x-ginno-enum-labels`（value→显示名 map，缺省显示 value 本身；当前值不在 enum 里时原样追加一项，不静默改值）。内置渠道连接器用它做 default_agent_id 下拉（enum 每次请求实时取自 agent registry）。
 - 后端需要在 `runner.loaded` 帧里携带 `userConfig`（以及可选的 `schema`），由 broker 暴露给 `ModChannel`，再进详情接口。**这是 L2 的必要改动**。
 
 ### 3.3 状态映射

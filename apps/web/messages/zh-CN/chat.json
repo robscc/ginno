@@ -47,7 +47,10 @@
       "sendingAria": "发送中",
       "newSession": "+ 新会话",
       "delegationReadonly": "委托回放 · 只读",
-      "delegationRunning": "运行中"
+      "delegationRunning": "运行中",
+      "channelReadonly": "{channel} 会话 · 此处只读",
+      "channelHint": "回复在聊天应用里进行；在此改的智能体/模型/挂载目录仍会生效",
+      "channelGeneric": "渠道"
     },
     "mods": {
       "promptBlocked": "本轮输入已被 mod 拦截。",
