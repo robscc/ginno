@@ -289,6 +289,25 @@ def test_bg_server_requires_healthy(tools, isolated_home: Path):
     assert out.startswith("[error]") and "healthy" in out
 
 
+def test_bg_run_warns_on_tail_pipe(tools, isolated_home: Path):
+    """`… | tail -60` 攥住全部输出到退出——bg_run 应回 [hint] 提醒（2026-10-29
+    实录：pytest 管道 tail 跑了半小时 log_bytes=0，任务中心无实时输出）。"""
+    bg_run = tools[0]
+    out = bg_run("echo hi | tail -5")
+    assert out.startswith("task=t_")  # 任务照常起（不硬拒），只加提示
+    assert "[hint]" in out and "tail/head" in out
+    task_id = out.split()[0].split("=", 1)[1]
+    reg = get_registry()
+    _reap_until(reg, task_id)
+    reg.remove(task_id)
+    # 无管道的正常命令不打扰
+    out2 = bg_run("echo plain")
+    assert "[hint]" not in out2
+    tid2 = out2.split()[0].split("=", 1)[1]
+    _reap_until(reg, tid2)
+    reg.remove(tid2)
+
+
 def test_bg_list_logs_stop_remove(tools, isolated_home: Path):
     bg_run, bg_list, bg_logs, bg_stop, bg_remove = tools
     out = bg_run("echo LOG-LINE; sleep 5")

@@ -10,6 +10,7 @@ bg_run 返回文本首行固定 ``task=<id> status=... pid=...``——前端 Too
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -19,6 +20,10 @@ from langchain_core.tools import tool
 from ..tasks import get_registry
 from ..tasks import store as task_store
 from .builtin import _deny_msg, _is_user_rc, _path_denied, resolve_mounts
+
+# 管道尾接 tail/head（`… | tail -60`）——上游全量攥到退出才放，实时日志
+# 整场为空；bg 场景永远不该这么写（spool 自带体积帽，bg_logs 可 tail）。
+_PIPE_HOLD_RE = re.compile(r"\|\s*(tail|head)\b")
 
 
 def build_task_tools(
@@ -92,7 +97,12 @@ def build_task_tools(
         process survive a Ginno restart (exit code is recorded by a wrapper;
         the task is re-adopted on startup). `timeout` seconds (<= 0 disables
         the timeout — you must then bg_stop it yourself); `notify=false` skips
-        the automatic result push (you'll have to bg_logs yourself)."""
+        the automatic result push (you'll have to bg_logs yourself).
+
+        Do NOT pipe through `tail`/`head` (e.g. `... | tail -60`): they buffer
+        everything until the process exits, so the live log stays empty the
+        whole run. The spool caps size itself and bg_logs can tail — just run
+        the raw command."""
         denied = _deny_scan(command)
         if denied:
             return denied
@@ -127,6 +137,16 @@ def build_task_tools(
             f"task={rec['id']} status=running pid={rec.get('pid')}",
             f"log={task_store.log_path(rec['id'])}",
         ]
+        # 管道尾部的 tail/head 会把输出攥到进程退出才放——实时日志整场为空
+        # （2026-10-29 实录：`pytest … | tail -60` 跑了半小时 log_bytes=0）。
+        # spool 自带体积帽、bg_logs 可 tail，模型不该把阻塞式 bash 的习惯带进来。
+        if _PIPE_HOLD_RE.search(command):
+            lines.append(
+                "[hint] your command pipes through tail/head, which buffers all "
+                "output until exit — the live log will stay empty. bg_stop this "
+                "task and rerun without the tail/head pipe (bg_logs can tail; "
+                "the spool caps size itself)."
+            )
         if notify:
             lines.append(
                 "The result (exit code + output tail) will be pushed into this "
