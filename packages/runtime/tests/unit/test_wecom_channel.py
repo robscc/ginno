@@ -103,6 +103,31 @@ def test_channel_mark_backfill():
     assert mem["type"] == "channel" and mem["channel"] == "wecom"
 
 
+def test_ensure_channel_session_deleted_id_falls_through(monkeypatch):
+    """桌面端删除渠道会话后映射表仍指向旧 id：meta 已不在时回落新建
+    （渠道「删了再聊」应自愈开新会话，而不是报「会话创建失败」）；
+    meta 还在但重建失败（模型/凭证问题）时维持报错，不静默换新会话。"""
+    import ginno_runtime.api.sessions as sessions_mod
+    import ginno_runtime.session_meta as session_meta
+    from ginno_runtime.channels.base import ensure_channel_session
+
+    async def fake_create(req):
+        return {"session_id": "new1"}
+
+    monkeypatch.setattr(sessions_mod, "create_session", fake_create)
+    # 已删除路径：_ensure_session 找不到、meta 也没有 → 新建
+    monkeypatch.setattr(sessions_mod, "_ensure_session",
+                        lambda sid: {"session_id": sid} if sid == "new1" else None)
+    monkeypatch.setattr(session_meta, "_find_meta", lambda sid: None)
+    session, sid = asyncio.run(ensure_channel_session("ghost", channel="wecom"))
+    assert sid == "new1" and session == {"session_id": "new1"}
+
+    # meta 还在但重建失败：维持报错，返回旧 id 便于日志定位
+    monkeypatch.setattr(session_meta, "_find_meta", lambda sid: ({"id": "ghost"}, "default"))
+    session, sid = asyncio.run(ensure_channel_session("ghost", channel="wecom"))
+    assert session is None and sid == "ghost"
+
+
 def test_connector_apply_config_disabled_is_noop():
     from ginno_runtime.connectors.builtin import WeComConnector
 

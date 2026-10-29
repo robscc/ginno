@@ -426,9 +426,21 @@ async def ensure_channel_session(
 
     if session_id:
         s = _ensure_session(session_id)
-        if s and channel:
-            mark_channel_meta(s, channel)
-        return (s, session_id if s else None)
+        if s:
+            if channel:
+                mark_channel_meta(s, channel)
+            return (s, session_id)
+        # 映射指向已删除的会话（桌面端删了渠道会话后映射表仍存留旧 id）：
+        # 确认 meta 已不在则落到下方新建路径重开会话，适配器随后 bind 新 id 自愈。
+        from ..session_meta import _find_meta
+
+        if not _find_meta(session_id):
+            shared._log.info(
+                "channel_session_gone session=%s → recreating", session_id)
+            session_id = None
+        else:
+            # meta 还在但重建失败（模型/凭证问题）：维持报错，别静默换新会话
+            return (None, session_id)
     # ``workspace`` is superseded by the server (session_files_dir(slug, sid)),
     # so an empty value is fine; the create path mirrors the desktop client's.
     resp = await create_session(

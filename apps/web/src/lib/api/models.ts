@@ -17,13 +17,6 @@ export async function getProviders() {
   return json<{ default_provider: string; providers: Providers }>(`${BASE}/providers`);
 }
 
-export async function putProviders(providers: Providers, default_provider?: string) {
-  return json<{ ok: boolean; providers: Providers; default_provider: string }>(
-    `${BASE}/providers`,
-    { method: "PUT", headers: H, body: JSON.stringify({ providers, default_provider }) },
-  );
-}
-
 export async function verifyProvider(id: string) {
   return json<VerifyResult>(`${BASE}/providers/${id}/verify`, { method: "POST" });
 }

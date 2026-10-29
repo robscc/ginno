@@ -11,10 +11,6 @@
     },
     "general": {
       "title": "常规",
-      "providerLabel": "默认模型提供商",
-      "providerDisabled": "（已禁用）",
-      "providerHelp": "新会话与未绑定提供商的 Agent 默认使用该提供商；可在「设置 → Agents」里为单个 Agent 绑定其他提供商覆盖。",
-      "providerToast": "默认提供商 → {name}",
       "themeLabel": "主题",
       "mermaidLabel": "在对话里渲染 Mermaid 图形",
       "mermaidHelp": "开启后，回答里的 mermaid 代码块（流程图 / 时序图 / 状态机 / ER 图等）直接渲染为图形，可复制为图片、下载 SVG、放大查看；关闭则始终显示源码。图形只影响显示，会话数据里保存的始终是原始源码。",

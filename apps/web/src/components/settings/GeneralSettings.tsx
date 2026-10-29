@@ -302,11 +302,6 @@ export function GeneralSettings() {
     setTheme(t);
     applyTheme(t);
   }
-  async function setDefault(p: string) {
-    await api.putProviders(g.providers, p);
-    g.reloadProviders();
-    setMsg(tSettings("general.providerToast", { name: p }));
-  }
   async function toggleBypass(v: boolean) {
     try {
       const s = (await api.getSettings()) as Record<string, unknown>;
@@ -351,18 +346,6 @@ export function GeneralSettings() {
     <div className="px-8 py-7">
       <h2 className="text-lg font-semibold text-txt">{tSettings("general.title")}</h2>
       <div className="mt-4 max-w-md space-y-4">
-        <div>
-          <label className="field-label">{tSettings("general.providerLabel")}</label>
-          <select className="field" value={g.defaultProvider} onChange={(e) => setDefault(e.target.value)}>
-            {Object.keys(g.providers).map((p) => (
-              <option key={p} value={p} disabled={!g.providers[p].enabled}>
-                {p}
-                {g.providers[p].enabled ? "" : tSettings("general.providerDisabled")}
-              </option>
-            ))}
-          </select>
-          <p className="mt-1 text-xs text-faint">{tSettings("general.providerHelp")}</p>
-        </div>
         <div>
           <label className="field-label">{tSettings("general.themeLabel")}</label>
           <div className="flex gap-2">
