@@ -149,6 +149,8 @@ class WeComChannelAdapter(ChannelAdapter):
             await self._dispatch_text(req_id, chat_key, userid, text)
         elif msgtype in ("image", "file"):
             await self._dispatch_media(req_id, chat_key, userid, body, msgtype)
+        elif msgtype == "voice":
+            await self._dispatch_voice(req_id, chat_key, userid, body)
         elif msgtype == "mixed":
             text, image = p.extract_mixed(body)
             await self._dispatch_media(req_id, chat_key, userid, body, "mixed",
@@ -244,6 +246,12 @@ class WeComChannelAdapter(ChannelAdapter):
         if session is None:
             await self._finish_stream(req_id, stream_id, "⚠️ 会话创建失败，请稍后重试")
             return
+        await self._run_text_turn(req_id, chat_key, session, stream_id, text)
+
+    async def _run_text_turn(self, req_id: str, chat_key: str, session: dict,
+                             stream_id: str, text: str,
+                             *, usage_source: str = "wecom") -> None:
+        """文本/语音共用的 turn 驱动：在途 steer → 串行锁 → turn → 补投。"""
         lock = self._session_locks.setdefault(session["session_id"], asyncio.Lock())
         if lock.locked():  # 在途/停车中 → steer 优先，其余不排队直接定格提示
             if steer_channel_turn(session, text):
@@ -255,9 +263,63 @@ class WeComChannelAdapter(ChannelAdapter):
             return
         async with lock:
             tap = WeComTap(self, req_id, chat_key, stream_id)
-            salvaged = await run_channel_turn(session, text, tap, usage_source="wecom")
+            salvaged = await run_channel_turn(session, text, tap,
+                                              usage_source=usage_source)
         if salvaged:
             await self._salvage_redeliver(session, chat_key, salvaged)
+
+    async def _dispatch_voice(self, req_id: str, chat_key: str, userid: str,
+                              body: dict) -> None:
+        """语音下行：下载解密 → 千问云 ASR 转写 → 按转写文本驱动 turn。
+
+        转写走录音文件转写（chat completions + input_audio data URL，见
+        asr.py；连接器 asr_* 配置）。未配置时定格提示而不是静默（用户至
+        少知道语音被收到了）。5s 首帧时限由 _begin_stream 的占位流保证，
+        转写耗时不受它约束。
+        """
+        from . import media as media_mod
+        from .asr import transcribe_audio
+
+        stream_id = await self._begin_stream(req_id)
+        info = body.get("voice") or {}
+        url = str(info.get("url") or "")
+        base_url = str(self.config.get("asr_base_url") or "").strip()
+        api_key = str(self.config.get("asr_api_key") or "").strip()
+        model = str(self.config.get("asr_model") or "").strip()
+        if not url:
+            await self._finish_stream(req_id, stream_id,
+                                      "⚠️ 语音消息缺少媒体地址，无法转写。")
+            return
+        if not (base_url and api_key and model):
+            await self._finish_stream(
+                req_id, stream_id,
+                "🎙️ 已收到语音；尚未配置语音转写（设置 → 连接器 → 企业微信 "
+                "→ ASR Base URL / API Key / Model），请改用文本。")
+            return
+        fmt = str(info.get("format") or "amr")
+        session = await self._resolve_session(chat_key, userid)
+        if session is None:
+            await self._finish_stream(req_id, stream_id, "⚠️ 会话创建失败，请稍后重试")
+            return
+        try:
+            data, _ = await media_mod.download_media(url, info.get("aeskey"),
+                                                     self._http)
+            text = await transcribe_audio(
+                data, fmt=fmt, base_url=base_url, api_key=api_key,
+                model=model, http=self._http)
+        except Exception as e:  # noqa: BLE001 — 下载/转写失败定格提示
+            shared._log.warning("wecom_voice_transcribe chat=%s err=%s", chat_key, e)
+            await self._finish_stream(req_id, stream_id,
+                                      "⚠️ 语音转写失败，请改用文本或重试。")
+            return
+        if not text:
+            await self._finish_stream(
+                req_id, stream_id, "🎙️ 语音转写结果为空，请重试或改用文本。")
+            return
+        shared._log.info("wecom_voice_ok chat=%s fmt=%s len=%d text=%r",
+                         chat_key, fmt, len(text), text[:80])
+        await self._run_text_turn(req_id, chat_key, session, stream_id, text,
+                                  usage_source="wecom_voice")
 
     async def _salvage_redeliver(self, session: dict, chat_key: str,
                                  texts: list[str]) -> None:
