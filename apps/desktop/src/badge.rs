@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use tauri::Manager;
 
-use crate::sidecar::{sidecar_listening, SIDECAR_PORT};
+use crate::sidecar::{sidecar_listening, sidecar_port};
 
 const POLL_S: u64 = 5;
 
@@ -38,7 +38,7 @@ pub(crate) fn spawn_badge_watcher(app: tauri::AppHandle) {
 /// Minimal HTTP/1.0 GET + robust `"needs":N` scrape (no JSON crate on this
 /// side; the payload is a tiny fixed-shape object).
 fn fetch_needs() -> Result<i64, ()> {
-    let mut stream = TcpStream::connect(("127.0.0.1", SIDECAR_PORT)).map_err(|_| ())?;
+    let mut stream = TcpStream::connect(("127.0.0.1", sidecar_port())).map_err(|_| ())?;
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .map_err(|_| ())?;

@@ -54,6 +54,9 @@
     },
     "askUser": {
       "chosen": "已选择：{answer}",
+      "answeredN": "已回答 {count} 题",
+      "skippedItem": "（跳过）",
+      "submitAll": "提交全部答案",
       "skipped": "已跳过 · 由代理自行判断继续",
       "defaultHeader": "需要你做出选择",
       "freeTextPlaceholder": "其他（回车发送）",

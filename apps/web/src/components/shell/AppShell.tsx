@@ -652,6 +652,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       onFinishEditing={() => setEditingId(null)}
       onRename={(id, title) => void g.renameSession(id, title)}
       onPin={(id, pinned) => void g.pinSession(id, pinned)}
+      onWorker={(id, worker) => void g.setSessionWorker(id, worker)}
       onRemoveSession={(id) => void g.removeSession(id)}
       onSetTreeCollapsed={g.setTreeCollapsed}
       // 存的是「新的折叠态」：当前展开 → 收起（true）。

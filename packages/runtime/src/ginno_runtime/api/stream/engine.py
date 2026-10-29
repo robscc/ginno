@@ -909,6 +909,10 @@ async def _stream_graph(
                                         "header": value.get("header", ""),
                                         "options": value.get("options") or [],
                                         "allow_free_text": value.get("allow_free_text", True),
+                                        # 多问题（契约 v2，ask_tools questions 参数）：
+                                        # 逐题字段原样透传，前端一张卡渲染全部子题。
+                                        "multi": bool(value.get("multi")),
+                                        "questions": value.get("questions") or [],
                                     })
                                 )
                     elif node_name == "tools":

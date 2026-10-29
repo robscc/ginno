@@ -643,8 +643,11 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "created": time.time(),
         "updated": time.time(),
     }
-    if req.type:
-        meta["type"] = req.type
+    # type 主动标注（2026-10-29 用户决策）：main 也是一等 worker 类型，创建
+    # 即写 "main"——不再靠「缺 type = main」反推（新会话类型漏写 type 会被
+    # 静默当成 main 放进 worker 派活白名单）。特殊类型（subagent/team-member/
+    # channel…）仍由各自分支显式覆盖。
+    meta["type"] = req.type or "main"
     if req.channel:
         meta["channel"] = req.channel
     if is_team_member:
@@ -697,7 +700,7 @@ async def create_session(req: CreateSessionRequest) -> dict:
         "primary_folder": primary_id,
         "primary_path": primary_path or "",
         "workflow_id": req.workflow_id,
-        "type": req.type,
+        "type": req.type or "main",
         # Type-registry tightening survives graph rebuilds via this entry
         # (turn.py's WorldState roster re-reads it too).
         "restrict_tools": [p for p in (req.restrict_tools or []) if isinstance(p, str) and p.strip()],
@@ -852,6 +855,10 @@ class PatchSessionRequest(BaseModel):
     # 侧栏置顶（sidebar pin）。False 是合法值——_session_meta_patch 只过滤
     # None，所以取消置顶也能落盘。
     pinned: bool | None = None
+    # 「接活」标注（worker 协议，扇形菜单入口）：main 会话是否接受派活。
+    # 缺省 = 接活（main 本身也是 worker）；False = 用户显式关闭。只对 main
+    # 生效，task-typed 天生 worker。
+    worker: bool | None = None
 
 
 @router.patch("/api/sessions/{session_id}")

@@ -153,6 +153,24 @@ if (content.trim() !== "(interrupted)") {
     const r = JSON.parse(content);
     if (r && typeof r === "object") {
       if (r.skipped || r.source === "skipped") return { ...q, status: "skipped" };
+      // 多问题回执（契约 v2）：results 逐题回填子题（skipped 挂子题上）。
+      if (r.multi && Array.isArray(r.results)) {
+        return {
+          ...q,
+          status: "answered",
+          questions: (q.questions ?? []).map((sq, i) => {
+            const rr = r.results[i];
+            if (!rr || typeof rr !== "object" || rr.source === "skipped" || !rr.answer) {
+              return { ...sq, skipped: true };
+            }
+            return {
+              ...sq,
+              answer: String(rr.answer),
+              optionIndex: typeof rr.option_index === "number" ? rr.option_index : null,
+            };
+          }),
+        };
+      }
       return {
         ...q,
         status: "answered",
@@ -309,14 +327,30 @@ switch (ev.event) {
     // answer, so it is kept as-is.
     const id = (ev.id as string | undefined) || undefined;
     if (id && blocks.some((b) => b.kind === "question" && b.id === id)) return blocks;
+    // 多问题（契约 v2）：questions 数组逐题进卡；单问题走旧字段。
+    const rawQs = ev.questions as
+      | Array<{ question?: string; header?: string; options?: string[]; allow_free_text?: boolean }>
+      | undefined;
+    const subs =
+      Array.isArray(rawQs) && rawQs.length >= 2
+        ? rawQs
+            .filter((q) => (q?.question ?? "").trim())
+            .map((q) => ({
+              question: q.question ?? "",
+              header: (q.header || "").trim() || undefined,
+              options: Array.isArray(q.options) ? q.options : [],
+              allowFreeText: q.allow_free_text !== false,
+            }))
+        : undefined;
     const card: QuestionBlock = {
       kind: "question",
       id,
       question: (ev.question as string) || "",
       header: (ev.header as string) || undefined,
-      options: (ev.options as string[]) || [],
-      allowFreeText: ev.allow_free_text !== false,
+      options: subs ? [] : (ev.options as string[]) || [],
+      allowFreeText: subs ? true : ev.allow_free_text !== false,
       status: "pending",
+      ...(subs ? { multi: true, questions: subs } : {}),
     };
     const ti = id ? blocks.findIndex((b) => b.kind === "tool" && b.id === id) : -1;
     if (ti >= 0) {

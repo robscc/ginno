@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { Check, ChevronDown, Square, Trash2 } from "lucide-react";
+import { BotOff, Check, ChevronDown, Square, Trash2 } from "lucide-react";
 import { RowFanMenu } from "@/components/shell/RowFanMenu";
 import * as api from "@/lib/runtime";
 import { agentHex } from "@/lib/theme";
@@ -46,6 +46,9 @@ export interface SidebarSessionRowProps {
   onFinishEditing: () => void;
   onRename: (id: string, title: string) => void;
   onPin: (id: string, pinned: boolean) => void;
+  /** Worker 协议「接活」标注（扇形菜单入口）：main 会话行传入，其余不传
+   *  （RowFanMenu 缺省不渲染该扇叶）。 */
+  onWorker?: (id: string, worker: boolean) => void;
   onRemoveSession: (id: string) => void;
   onSetTreeCollapsed: (id: string, collapsed: boolean) => void;
   /** 子会话分节折叠：显式传当前展开态（默认值由本组件决定）。 */
@@ -85,6 +88,7 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
     onFinishEditing,
     onRename,
     onPin,
+    onWorker,
     onRemoveSession,
     onSetTreeCollapsed,
     onToggleSubGroupFold,
@@ -217,6 +221,18 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                 </span>
               )}
               <span className="truncate">{s.title || t("session.untitled")}</span>
+              {/* Worker 协议「停止接活」角标（worker-protocol-design §2）：仅
+                  main 行且显式关掉时渲染——接活是缺省态不标（满屏角标是
+                  噪音），关掉是例外态要让状态在行内常驻可见（扇形菜单之外
+                  也能一眼看出这个会话不在员工花名册）。 */}
+              {s.worker === false && (!s.type || s.type === "main") && (
+                <span
+                  className="shrink-0 text-faint"
+                  title={t("session.workerOffBadge")}
+                >
+                  <BotOff className="h-3 w-3" />
+                </span>
+              )}
               {/* fork / 子代理类型徽标（P3 范围 3）：仅子会话行渲染 */}
               {isSub && <SubagentKindBadges sub={s.subagent} />}
               {/* 悬浮速聊窗创建的 quick 会话角标（floating-window-design.md §1.1） */}
@@ -333,6 +349,14 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                     onPin={(pinned) => onPin(s.id, pinned)}
                     onRename={() => onStartRename(s)}
                     onDelete={() => onDelete(s)}
+                    worker={s.worker !== false}
+                    onWorker={
+                      // 只给 main 会话行「接活」扇叶（task-typed 天生 worker、
+                      // channel 是 IM 实时对话面——都无需标注）
+                      onWorker && (!s.type || s.type === "main")
+                        ? (w) => onWorker(s.id, w)
+                        : undefined
+                    }
                   />
                 </>
               )}

@@ -749,6 +749,7 @@ def build_all_tools(
     from .tools.plan_tools import build_plan_tools
     from .tools.subagent import build_subagent_tools
     from .tools.team import build_team_tools
+    from .worker_bus.tools import build_worker_tools
     from .tools.web_tools import build_web_tools
 
     # Anthropic-protocol providers may search on the gateway itself (the
@@ -816,6 +817,11 @@ def build_all_tools(
         # （meta type == "team"），其余会话为空表。不进权限豁免集（同
         # spawn_subagent 先例：默认 ask，用户批准的是分派本身）。
         + build_team_tools(session_id)
+        # Worker 协议（worker-protocol-design.md）：跨 session 派活/订阅的
+        # 四工具——list_workers / assign_worker / watch_worker /
+        # worker_status。无 session（workflow/列举端点）为空表。同样不进
+        # 权限豁免集（用户批准的是派活本身）。
+        + build_worker_tools(session_id, project_slug)
         # 任务清单编排（plan-orchestration §5）：建单/改单/取消。无
         # session（workflow/列举端点）时为空，与 ask/subagent 同语义。
         + build_plan_tools(session_id, project_slug)

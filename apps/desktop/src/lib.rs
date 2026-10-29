@@ -68,7 +68,7 @@ use crate::pin::{
 use crate::sidecar::{restart_sidecar, start_mod_broker, ModBrokerState, RestartLock, RuntimeProcess};
 #[cfg(not(debug_assertions))]
 use crate::sidecar::{
-    kill_stale_sidecar, sidecar_listening, spawn_sidecar, wait_for_sidecar, SIDECAR_PORT,
+    kill_stale_sidecar, sidecar_listening, sidecar_port, spawn_sidecar, wait_for_sidecar,
 };
 #[cfg(not(debug_assertions))]
 use crate::shell_ui::{base64, localize_shell_html, shell_lang, ERROR_HTML, SPLASH_HTML};
@@ -162,7 +162,7 @@ pub fn run() {
                         #[cfg(not(debug_assertions))]
                         if sidecar_listening() {
                             if let Ok(url) =
-                                format!("http://127.0.0.1:{SIDECAR_PORT}/").parse()
+                                format!("http://127.0.0.1:{}/", sidecar_port()).parse()
                             {
                                 let _ = w.navigate(url);
                             }
@@ -252,6 +252,18 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // 双实例防呆：只改端口不换数据目录的话，两个 sidecar 会并发双写
+            // 同一份 sessions/checkpoint —— 比端口冲突更糟，启动时就点名。
+            if std::env::var_os("GINNO_RUNTIME_PORT").is_some()
+                && std::env::var_os("GINNO_HOME").is_none()
+            {
+                shell_log(
+                    app,
+                    "GINNO_RUNTIME_PORT is set but GINNO_HOME is not — this instance will \
+                     share ~/.ginno with the default instance; pair the two envs to run \
+                     side-by-side safely",
+                );
+            }
             app.manage(RuntimeProcess(Mutex::new(None)));
             app.manage(RestartLock(Mutex::new(())));
             app.manage(KeepAwake(Mutex::new(None)));
@@ -346,13 +358,13 @@ pub fn run() {
                     }
                 }
 
-                let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
+                let addr: SocketAddr = ([127, 0, 0, 1], sidecar_port()).into();
                 let ready_now = TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok();
 
                 if !ready_now {
                     if let Some(window) = app.get_webview_window("main") {
                         let html = localize_shell_html(SPLASH_HTML, shell_lang(app))
-                            .replace("__PORT__", &SIDECAR_PORT.to_string());
+                            .replace("__PORT__", &sidecar_port().to_string());
                         let url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
                         if let Ok(url) = url.parse() {
                             let _ = window.navigate(url);
@@ -369,7 +381,7 @@ pub fn run() {
                 // before the sidecar was up and got connection-refused.
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
+                    let addr: SocketAddr = ([127, 0, 0, 1], sidecar_port()).into();
                     let mut up = false;
                     for _ in 0..240 {
                         // ~60s budget; connect_timeout bounds each iteration.
@@ -385,7 +397,7 @@ pub fn run() {
                         // keep polling slowly — a late cold start or a manually
                         // started runtime recovers without user action.
                         let html = localize_shell_html(ERROR_HTML, shell_lang(&handle))
-                            .replace("__PORT__", &SIDECAR_PORT.to_string());
+                            .replace("__PORT__", &sidecar_port().to_string());
                         let err_url = format!("data:text/html;base64,{}", base64(html.as_bytes()));
                         let h = handle.clone();
                         let _ = handle.run_on_main_thread(move || {
@@ -405,7 +417,7 @@ pub fn run() {
                             }
                         }
                     }
-                    let url = tauri::Url::parse("http://127.0.0.1:8787/")
+                    let url = tauri::Url::parse(&format!("http://127.0.0.1:{}/", sidecar_port()))
                         .expect("sidecar url");
                     let h = handle.clone();
                     let _ = handle.run_on_main_thread(move || {

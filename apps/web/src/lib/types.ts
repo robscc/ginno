@@ -193,7 +193,12 @@ export interface SessionMeta {
   // linkage lives in parent_session_id/depth/subagent below.
   // "scheduled" = 定时任务影子会话（scheduled-tasks-design.md §4.3）；列表与
   // 搜索均整类隐藏（§10 决议 5），只能从 /scheduled 的执行记录/时间条进入回放。
-  type?: "quick" | "subagent" | "scheduled" | "delegation" | "team" | "team-member" | "channel";
+  type?: "quick" | "subagent" | "scheduled" | "delegation" | "team" | "team-member" | "channel" | "main";
+  /** Worker 协议「接活」标注（worker-protocol-design §2，扇形菜单入口）：
+   *  main 会话是否接受跨会话派活。缺省 = 接活（main 本身也是 worker）；
+   *  false = 用户显式关闭（不出现在 worker 花名册、assign 被拒）。
+   *  只对 main 生效，task-typed 天生 worker。 */
+  worker?: boolean;
   /** type="channel" 专用：来源渠道（"wecom" | "dingtalk"）。桌面端只读视图——
    *  对话在 IM 侧进行，agent/模型/挂载目录仍可在桌面改（下一条消息生效）。 */
   channel?: string;

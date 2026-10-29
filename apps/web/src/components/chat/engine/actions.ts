@@ -211,12 +211,33 @@ export function respondPropose(ctx: EngineCtx, decision: "allow" | "deny") {
 export function answerQuestion(ctx: EngineCtx, id: string, answer: string, optionIndex: number | null, skip: boolean) {
   const sid = ctx.curSessionIdRef.current;
   if (!sid) return;
+  // 多问题卡（AskUserCard 提交）把逐题答案序列化成 JSON 数组放在 answer 里
+  // ——这里解包走 multi 恢复通道（服务端 user_answer.multi/answers）。
+  let multiAnswers: Array<{ answer: string; option_index: number | null; skip: boolean }> | null = null;
+  if (!skip && optionIndex === null && answer.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(answer);
+      if (Array.isArray(parsed) && parsed.length >= 2 && parsed.every((a) => a && typeof a === "object")) {
+        multiAnswers = parsed.map((a) => ({
+          answer: String(a.answer ?? ""),
+          option_index: typeof a.option_index === "number" ? a.option_index : null,
+          skip: !!a.skip,
+        }));
+      }
+    } catch {
+      /* 纯文本回答恰好以 [ 开头——按单答原样发送 */
+    }
+  }
   // Same rule as the permission path: queued entries belong to this turn, so
   // re-send them as `steer` before the answer resumes it (design §3.4).
   requeueSteersOnResume(ctx, sid);
   try {
     ctx.socketsRef.current[sid]?.send(
-      JSON.stringify({ type: "user_answer", answer, option_index: optionIndex, skip }),
+      JSON.stringify(
+        multiAnswers
+          ? { type: "user_answer", multi: true, answers: multiAnswers }
+          : { type: "user_answer", answer, option_index: optionIndex, skip },
+      ),
     );
   } catch {
     /* socket gone — reconnect re-emits user.question if still parked */
@@ -225,13 +246,27 @@ export function answerQuestion(ctx: EngineCtx, id: string, answer: string, optio
     m.blocks.some((b) => b.kind === "question" && b.id === id && b.status === "pending")
       ? {
           ...m,
-          blocks: m.blocks.map((b) =>
-            b.kind === "question" && b.id === id && b.status === "pending"
-              ? skip
-                ? { ...b, status: "skipped" as const }
-                : { ...b, status: "answered" as const, answer, optionIndex }
-              : b,
-          ),
+          blocks: m.blocks.map((b) => {
+            if (b.kind !== "question" || b.id !== id || b.status !== "pending") return b;
+            if (skip) return { ...b, status: "skipped" as const };
+            if (multiAnswers && b.multi && b.questions) {
+              // 乐观回填逐题答案（receipt 由 tool.end 权威覆盖）
+              return {
+                ...b,
+                status: "answered" as const,
+                questions: b.questions.map((sq, i) => {
+                  const a = multiAnswers[i];
+                  if (!a || a.skip) return { ...sq, skipped: true };
+                  const label =
+                    a.option_index !== null && sq.options[a.option_index] !== undefined
+                      ? sq.options[a.option_index]
+                      : a.answer;
+                  return { ...sq, answer: label, optionIndex: a.option_index };
+                }),
+              };
+            }
+            return { ...b, status: "answered" as const, answer, optionIndex };
+          }),
         }
       : m,
   );

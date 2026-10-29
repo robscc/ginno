@@ -671,6 +671,38 @@ def _question_block(tid: str | None, args: dict, result: str) -> dict | None:
     header = str(args.get("header") or "").strip()
     if header:
         blk["header"] = header
+    # ---- 多问题（契约 v2，ask_tools questions 参数）：args 逐题重建，
+    # receipt.results 逐题回填答案（skipped 挂在子题上）。----
+    raw_qs = args.get("questions")
+    if isinstance(raw_qs, list) and len(raw_qs) >= 2:
+        blk["multi"] = True
+        blk["questions"] = [
+            {
+                "question": str(e.get("question") or ""),
+                "header": (str(e.get("header") or "").strip() or None),
+                "options": _ui_options(e.get("options")),
+                "allowFreeText": bool(e.get("allow_free_text", True)),
+            }
+            for e in raw_qs
+            if isinstance(e, dict)
+        ]
+        if not res:
+            return blk  # still parked
+        if receipt is None:
+            blk["status"] = "skipped"
+            return blk
+        blk["status"] = "answered"
+        results = receipt.get("results")
+        results = results if isinstance(results, list) else []
+        for i, sq in enumerate(blk["questions"]):
+            r = results[i] if i < len(results) and isinstance(results[i], dict) else {}
+            if r.get("source") == "skipped":
+                sq["skipped"] = True
+            else:
+                sq["answer"] = str(r.get("answer") or "")
+                ridx = r.get("option_index")
+                sq["optionIndex"] = ridx if isinstance(ridx, int) else None
+        return blk
     if not res:
         return blk  # still parked
     if receipt is None:

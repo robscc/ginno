@@ -397,6 +397,16 @@ def finalize_delegation(
                 "model": (getattr(result, "meta", None) or {}).get("model") or "",
             },
         )
+        # Worker 协议订阅者的终态通知（worker-protocol-design §6.2）：
+        # spawn_bg——通知可能开订阅者的 wake turn，不能阻塞回填路径。
+        try:
+            from .server_shared import spawn_bg
+
+            from .worker_bus import notify_settled
+
+            spawn_bg(notify_settled(sid))
+        except Exception:
+            pass
         raw = (getattr(result, "meta", None) or {}).get("_stdout_tail") or ""
         if raw:
             fdir = paths.session_files_dir(slug, sid)

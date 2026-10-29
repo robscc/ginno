@@ -11,7 +11,16 @@ use tauri::Manager;
 
 use crate::common::{ginno_home_path, shell_log};
 
-pub(crate) const SIDECAR_PORT: u16 = 8787;
+/// Runtime port: default 8787, overridable via $GINNO_RUNTIME_PORT — the
+/// same env the packaged runtime reads (server.py::main / write_port_file),
+/// so one variable steers both ends. Pair it with $GINNO_HOME to run a
+/// second app instance side-by-side (own port + own data dir).
+pub(crate) fn sidecar_port() -> u16 {
+    std::env::var("GINNO_RUNTIME_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(8787)
+}
 
 /// Handle to the spawned runtime process, so `RunEvent::Exit` / Debug → Restart
 /// can terminate it. Present in both release (bundled ginno-runtime) and dev
@@ -32,7 +41,7 @@ fn open_log_file_for<M: tauri::Manager<tauri::Wry>>(app: &M) -> Option<std::fs::
 }
 
 pub(crate) fn sidecar_listening() -> bool {
-    let addr: SocketAddr = ([127, 0, 0, 1], SIDECAR_PORT).into();
+    let addr: SocketAddr = ([127, 0, 0, 1], sidecar_port()).into();
     TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
 }
 
@@ -87,11 +96,12 @@ fn kill_ours(pid: &str, signal: &str) {
 /// (and only it — verified by process name / cmdline) so the fresh runtime can
 /// bind. Also used by Debug → Restart Runtime.
 pub(crate) fn kill_stale_sidecar() {
+    let port = sidecar_port();
     if !sidecar_listening() {
         return; // port already free
     }
     let Ok(list) = Command::new("lsof")
-        .args(["-t", &format!("-iTCP:{SIDECAR_PORT}"), "-sTCP:LISTEN"])
+        .args(["-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
         .output()
     else {
         return;
@@ -112,7 +122,7 @@ pub(crate) fn kill_stale_sidecar() {
         if !escalated {
             escalated = true;
             if let Ok(list) = Command::new("lsof")
-                .args(["-t", &format!("-iTCP:{SIDECAR_PORT}"), "-sTCP:LISTEN"])
+                .args(["-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
                 .output()
             {
                 for pid in String::from_utf8_lossy(&list.stdout).split_whitespace() {
@@ -161,10 +171,14 @@ pub(crate) fn start_mod_broker<M: tauri::Manager<tauri::Wry>>(app: &M) -> Option
         shell_log(app, &format!("mods broker: create {}: {e}", dir.display()));
         return None;
     }
-    let sock = dir.join("ginno-mod-broker.sock");
+    // Socket name carries the runtime port so two app instances (each on
+    // its own $GINNO_RUNTIME_PORT) each get their own broker; the runtime
+    // only ever finds it via GINNO_MOD_BROKER_SOCK, so the name is free.
+    let port = sidecar_port();
+    let sock = dir.join(format!("ginno-mod-broker-{port}.sock"));
     // Sibling token file, exactly the naming runtime.rs::token_path_of uses
     // (the CLI's `<socket>.token` convention, design §8.6).
-    let token = dir.join("ginno-mod-broker.sock.token");
+    let token = dir.join(format!("ginno-mod-broker-{port}.sock.token"));
     let spawned = sock.clone();
     tauri::async_runtime::spawn(async move {
         // The store path rides the config push from Python (the broker holds
@@ -215,6 +229,7 @@ fn runtime_src_dir() -> Option<std::path::PathBuf> {
 }
 
 pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Child, String> {
+    let port = sidecar_port();
     let mut cmd = if cfg!(debug_assertions) {
         let runtime = runtime_src_dir().ok_or_else(|| {
             "cannot find packages/runtime (run `tauri dev` from the ginno repo)".to_string()
@@ -225,7 +240,7 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
             "uvicorn",
             "ginno_runtime.server:app",
             "--port",
-            &SIDECAR_PORT.to_string(),
+            &port.to_string(),
         ]);
         cmd
     } else {
@@ -236,8 +251,13 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
             .join("resources")
             .join("runtime")
             .join("ginno-runtime");
-        Command::new(runtime_exe)
+        let cmd = Command::new(runtime_exe);
+        cmd
     };
+    // Both spawn paths must agree with the runtime's own env read: dev binds
+    // via `--port`, but server.py's write_port_file (browser relay) still
+    // reads GINNO_RUNTIME_PORT at startup — so set it in dev too.
+    cmd.env("GINNO_RUNTIME_PORT", port.to_string());
     cmd.stdin(Stdio::null());
     // Mods broker endpoint (design §2.1 step 2): socket + token-file env so
     // the runtime's ModChannel connects to the in-shell broker, plus the
@@ -272,15 +292,16 @@ pub(crate) fn wait_for_sidecar(timeout: Duration) -> bool {
     sidecar_listening()
 }
 
-/// Kill the tracked child (and any leftover listener on :8787), then spawn a
-/// fresh sidecar. Reloads the webview onto splash → app once the port accepts.
+/// Kill the tracked child (and any leftover listener on our port), then
+/// spawn a fresh sidecar. Reloads the webview onto splash → app once the
+/// port accepts.
 pub(crate) fn restart_sidecar(app: &tauri::AppHandle) {
     shell_log(app, "debug: restart runtime requested");
     // Splash first so the webview is not sitting on a dying origin.
     #[cfg(not(debug_assertions))]
     if let Some(window) = app.get_webview_window("main") {
         let html = crate::shell_ui::localize_shell_html(crate::shell_ui::SPLASH_HTML, crate::shell_ui::shell_lang(app))
-            .replace("__PORT__", &SIDECAR_PORT.to_string());
+            .replace("__PORT__", &sidecar_port().to_string());
         let url = format!("data:text/html;base64,{}", crate::shell_ui::base64(html.as_bytes()));
         if let Ok(url) = url.parse() {
             let _ = window.navigate(url);
@@ -319,7 +340,7 @@ pub(crate) fn restart_sidecar(app: &tauri::AppHandle) {
         #[cfg(not(debug_assertions))]
         {
             let html = crate::shell_ui::localize_shell_html(crate::shell_ui::ERROR_HTML, crate::shell_ui::shell_lang(app))
-                .replace("__PORT__", &SIDECAR_PORT.to_string());
+                .replace("__PORT__", &sidecar_port().to_string());
             let err_url = format!("data:text/html;base64,{}", crate::shell_ui::base64(html.as_bytes()));
             let h = app.clone();
             let _ = app.run_on_main_thread(move || {
@@ -332,12 +353,12 @@ pub(crate) fn restart_sidecar(app: &tauri::AppHandle) {
         }
         return;
     }
-    // Release: sidecar hosts the UI, so navigate back onto :8787.
+    // Release: sidecar hosts the UI, so navigate back onto the sidecar port.
     // Dev: the webview stays on :3000 (Next); just bring the window forward
     // and let ChatStream's existing reconnect loop pick the new sidecar up.
     #[cfg(not(debug_assertions))]
     {
-        let url = match tauri::Url::parse(&format!("http://127.0.0.1:{SIDECAR_PORT}/")) {
+        let url = match tauri::Url::parse(&format!("http://127.0.0.1:{}/", sidecar_port())) {
             Ok(u) => u,
             Err(_) => return,
         };

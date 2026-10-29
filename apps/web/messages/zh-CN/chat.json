@@ -556,6 +556,16 @@
       "steerHint": "{names} 正在工作中 → 本条将作为 steering 在下个工具边界注入，不打断当前 turn",
       "idCopied": "已复制 ✓",
       "leadInstanceNote": "领队实例 · 点开进入领队会话（与主会话分开）"
+    },
+    "worker": {
+      "resultTitle": "员工回传：{from}",
+      "digestTitle": "员工进度：{from}",
+      "assignTitle": "来自 {from} 的任务",
+      "assignGoal": "目标",
+      "assignConstraints": "约束",
+      "assignAcceptance": "验收标准",
+      "viewWorker": "查看员工对话",
+      "senderLabel": "派发方"
     }
   }
 }

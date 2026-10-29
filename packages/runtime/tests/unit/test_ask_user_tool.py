@@ -37,7 +37,7 @@ def test_schema_hides_the_injected_id():
     t = _tool()
     props = t.tool_call_schema.model_json_schema()["properties"]
     assert "tool_call_id" not in props
-    assert set(props) == {"question", "options", "header", "allow_free_text"}
+    assert set(props) == {"question", "options", "header", "allow_free_text", "questions"}
 
 
 def test_option_choice(isolated_home, monkeypatch):
@@ -92,6 +92,95 @@ def test_skip(isolated_home, monkeypatch):
 
 def test_missing_question(isolated_home):
     assert _invoke(_tool(), {"question": "   "}).startswith("[error]")
+
+
+# ---- 多问题（契约 v2，2026-10-29 e48be8a3 实测：3 问塞 1 题 + 组合套餐选项）---- #
+
+
+def test_multi_payload_and_receipt(isolated_home, monkeypatch):
+    """questions≥2：payload 带 multi/questions 逐题字段；回执逐题出结果。"""
+    seen = {}
+
+    def _fake(value):
+        seen.update(value)
+        return {
+            "kind": "user_answer",
+            "multi": True,
+            "answers": [
+                {"answer": "", "option_index": 1, "skip": False},  # 选项
+                {"answer": "逐题引导", "option_index": None, "skip": False},  # 自由文本
+                {"answer": "", "skip": True},  # 单题跳过
+            ],
+        }
+
+    monkeypatch.setattr(at, "interrupt", _fake)
+    out = json.loads(
+        _invoke(_tool(), {
+                "question": "确认三件事：",
+                "header": "Skill 设计确认",
+                "questions": [
+                    {"question": "产出形态？", "options": ["补全 prd.md", "只产清单"]},
+                    {"question": "交互方式？", "options": ["逐题引导", "批量清单"]},
+                    {"question": "覆盖范围？"},
+                ],
+            })
+    )
+    assert seen["multi"] is True and len(seen["questions"]) == 3
+    assert seen["questions"][0]["options"] == ["补全 prd.md", "只产清单"]
+    assert out["multi"] is True and len(out["results"]) == 3
+    assert out["results"][0]["source"] == "option" and out["results"][0]["answer"] == "只产清单"
+    assert out["results"][1]["source"] == "free_text" and out["results"][1]["answer"] == "逐题引导"
+    assert out["results"][2]["source"] == "skipped" and out["results"][2]["answer"] == ""
+
+
+def test_multi_whole_card_skip(isolated_home, monkeypatch):
+    monkeypatch.setattr(at, "interrupt", lambda v: {"skip": True})
+    out = json.loads(
+        _invoke(_tool(), {"questions": [{"question": "a?"}, {"question": "b?"}]})
+    )
+    assert out["multi"] and all(r["source"] == "skipped" for r in out["results"])
+
+
+def test_multi_legacy_single_answer_degrades_to_first(isolated_home, monkeypatch):
+    """外部渠道/旧客户端按单答形状回复：打在第一题，其余记 skipped。"""
+    monkeypatch.setattr(
+        at, "interrupt", lambda v: {"answer": "装到仓库", "option_index": None, "skip": False}
+    )
+    out = json.loads(
+        _invoke(_tool(), {
+                "questions": [
+                    {"question": "a?", "options": ["x", "y"]},
+                    {"question": "b?"},
+                ],
+            })
+    )
+    assert out["results"][0]["source"] == "free_text" and out["results"][0]["answer"] == "装到仓库"
+    assert out["results"][1]["source"] == "skipped"
+
+
+def test_multi_single_entry_folds_back_to_legacy(isolated_home, monkeypatch):
+    """questions 恰 1 条 → 折回单问题旧契约（payload/回执零变化）。"""
+    seen = {}
+
+    def _fake(value):
+        seen.update(value)
+        return {"answer": "y", "option_index": 1}
+
+    monkeypatch.setattr(at, "interrupt", _fake)
+    out = json.loads(
+        _invoke(_tool(), {
+                "questions": [{"question": "选哪个？", "options": ["x", "y"], "header": "h"}],
+            })
+    )
+    assert "multi" not in seen and "questions" not in seen
+    assert seen["question"] == "选哪个？" and seen["options"] == ["x", "y"]
+    assert out["source"] == "option" and out["answer"] == "y" and "multi" not in out
+
+
+def test_multi_caps_at_five(isolated_home, monkeypatch):
+    monkeypatch.setattr(at, "interrupt", lambda v: {})
+    out = _invoke(_tool(), {"questions": [{"question": f"q{i}?"} for i in range(6)]})
+    assert out.startswith("[error]") and "5" in out
 
 
 def test_headless_turn_refuses_without_interrupting(isolated_home, monkeypatch):
@@ -208,3 +297,68 @@ def test_normalize_options_accepts_lists_and_rejects_junk():
     # A non-array string is one bare label, JSON-looking or not.
     assert at.normalize_options('{"a": 1}') == ['{"a": 1}']
     assert at.normalize_options('["a", "b"') == []  # malformed array → nothing
+
+
+def test_normalize_options_unwraps_rich_option_objects():
+    """2026-10-29 live: the model sent options as ``[{key, label, description}]``
+    and the card's buttons rendered the whole dict literal."""
+    raw = [
+        {"description": "递归抽取整棵页面树", "key": "tree", "label": "整棵页面树"},
+        {"description": "只迁当前页", "key": "single", "label": "仅这一页"},
+        {"description": "no label key"},
+        {"key": "bark"},  # no label-like key at all → keep the repr
+    ]
+    assert at.normalize_options(raw) == [
+        "整棵页面树",
+        "仅这一页",
+        "no label key",
+        "{'key': 'bark'}",
+    ]
+
+
+def test_normalize_options_unwraps_json_encoded_object_arrays():
+    encoded = json.dumps([
+        {"description": "标准做法", "key": "tree", "label": "整棵页面树"},
+        {"description": "只迁当前页", "key": "single", "label": "仅这一页"},
+    ])
+    assert at.normalize_options(encoded) == ["整棵页面树", "仅这一页"]
+
+
+def test_normalize_options_unwraps_dict_shaped_string_entries():
+    """Sometimes each entry is itself a stringified object (Python repr or a
+    JS-style literal with unquoted keys)."""
+    assert at.normalize_options(
+        ["{'description': 'x', 'key': 'paste', 'label': '我直接粘贴'}"]
+    ) == ["我直接粘贴"]
+    assert at.normalize_options(
+        ["{description: 'x', key: 'paste', label: '我直接粘贴'}"]
+    ) == ["我直接粘贴"]
+    # A brace-led string with no label key stays verbatim.
+    assert at.normalize_options(["{}"]) == ["{}"]
+
+
+def test_multi_questions_unwrap_object_options_end_to_end(isolated_home, monkeypatch):
+    seen = {}
+
+    def _fake(value):
+        seen.update(value)
+        return {
+            "multi": True,
+            "answers": [
+                {"option_index": 0, "answer": "整棵页面树"},
+                {"option_index": None, "answer": "先摸规模", "skip": False},
+            ],
+        }
+
+    monkeypatch.setattr(at, "interrupt", _fake)
+    out = _invoke(_tool(), {
+        "questions": [
+            {"question": "范围？", "options": [
+                {"description": "递归", "key": "tree", "label": "整棵页面树"},
+                {"description": "单页", "key": "single", "label": "仅这一页"},
+            ]},
+            {"question": "怎么来？"},
+        ],
+    })
+    assert seen["questions"][0]["options"] == ["整棵页面树", "仅这一页"]
+    assert json.loads(out)["results"][0]["answer"] == "整棵页面树"

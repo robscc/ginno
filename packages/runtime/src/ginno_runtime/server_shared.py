@@ -195,9 +195,12 @@ def steer_keep_channel(session_id: str) -> None:
     （原 ``steer_clear`` 语义），保留渠道来源（``origin="channel"``）——
     turn 已结束、注入无下家，``run_channel_turn`` 尾部会排水交给 adapter
     补投为后续 turn（channels/base.py）。后台任务注入（origin="task"）
-    同待遇：tasks/inject 的补投 watcher 会在 turn 收尾后捞回重投。"""
+    同待遇：tasks/inject 的补投 watcher 会在 turn 收尾后捞回重投。worker
+    协议注入（origin="worker"，2026-10-29）同待遇：未吸收的派活/回传
+    留在 stash，等目标的下一个 turn（用户消息/另一次 wake）排水——
+    eventual delivery，不静默丢。"""
     for _e in steer_drain(session_id):
-        if _e.get("origin") in ("channel", "task"):
+        if _e.get("origin") in ("channel", "task", "worker"):
             steer_enqueue(session_id, _e)
 
 

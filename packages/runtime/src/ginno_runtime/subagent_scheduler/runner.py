@@ -142,11 +142,17 @@ async def _run_managed_turn_locked(
                 _NS._log.exception("subagent_settle_failed session=%s", session_id)
 
 
-async def _inject_result(parent_id: str, text: str, child_id: str) -> None:
+async def _inject_result(
+    parent_id: str, text: str, child_id: str, extra_kwargs: dict | None = None
+) -> None:
     """Channel pick (§5.5): running parent → steer stash; idle parent → new
     turn. Defense in depth for the terminal-parent rule above: a terminal
     parent is idle by definition, so without its own check the wake branch
-    would open a turn on a stopped/failed/done session."""
+    would open a turn on a stopped/failed/done session.
+
+    ``extra_kwargs``（可空）随信封合并进持久化 HumanMessage 的
+    additional_kwargs（ginno_subagent_result 戳之外再带溯源键——worker
+    协议的 ginno_worker_msg 走这里）；子代理既有调用方不传，行为不变。"""
     pfound = _NS._find_meta(parent_id)
     if pfound and _NS._is_subagent(pfound[0]) and _NS._subagent_status(pfound[0]) in _NS.TERMINAL_STATUSES:
         _NS._log.warning(
@@ -170,18 +176,20 @@ async def _inject_result(parent_id: str, text: str, child_id: str) -> None:
                 # Contract 3: the persisted HumanMessage carries
                 # additional_kwargs["ginno_subagent_result"] = child_id
                 # (merged by steer_messages alongside ginno_steer).
-                "extra_kwargs": {"ginno_subagent_result": child_id},
+                "extra_kwargs": {"ginno_subagent_result": child_id, **(extra_kwargs or {})},
             },
         )
         _NS._log.info("subagent_result_steer parent=%s child=%s", parent_id, child_id)
     else:
-        _queue_injection(parent_id, text, child_id)
+        _queue_injection(parent_id, text, child_id, extra_kwargs)
 
 
-def _queue_injection(parent_id: str, text: str, child_id: str) -> None:
+def _queue_injection(
+    parent_id: str, text: str, child_id: str, extra_kwargs: dict | None = None
+) -> None:
     """Idle-parent result: coalesce (see the merged-injection note above)."""
     _NS._PENDING_INJECTIONS.setdefault(parent_id, []).append(
-        {"text": text, "child_id": child_id}
+        {"text": text, "child_id": child_id, "extra": extra_kwargs or {}}
     )
     if parent_id in _NS._INJECTION_FLUSH_TASKS:
         return  # already scheduled — this entry rides the pending flush
@@ -248,7 +256,7 @@ async def _flush_injections(parent_id: str) -> None:
                     "turn_id": _NS._RUNNING_TURNS.get(parent_id) or "",
                     "text": e["text"],
                     "injected_at": _NS.time.time(),
-                    "extra_kwargs": {"ginno_subagent_result": e["child_id"]},
+                    "extra_kwargs": {"ginno_subagent_result": e["child_id"], **(e.get("extra") or {})},
                 },
             )
         _NS._log.info(
@@ -266,6 +274,11 @@ async def _flush_injections(parent_id: str) -> None:
         )
         + "\n\n".join(texts)
     )
+    # 合并注入时各条目的溯源键取并集（键冲突以靠后的条目为准——实践中
+    # 只有 worker 协议的 ginno_worker_msg 用到这里，冲突可忽略）。
+    merged_extra: dict = {"ginno_subagent_result": ids}
+    for e in entries:
+        merged_extra.update(e.get("extra") or {})
     _NS._log.info(
         "subagent_result_wake parent=%s children=%s merged=%d",
         parent_id, ids, len(entries),
@@ -274,7 +287,7 @@ async def _flush_injections(parent_id: str) -> None:
     try:
         # NB: not named ``t`` — that would shadow the lang selector above.
         _wake_task = _NS.spawn_bg(
-            _NS._wake_parent_turn(parent_id, merged, {"ginno_subagent_result": ids})
+            _NS._wake_parent_turn(parent_id, merged, merged_extra)
         )
 
         def _wake_done(_f: Any, pid: str = parent_id) -> None:
@@ -287,9 +300,16 @@ async def _flush_injections(parent_id: str) -> None:
 
 
 async def _wake_parent_turn(
-    parent_id: str, text: str, extra_kwargs: dict | None
-) -> None:
-    """Open a NEW turn on an idle parent carrying the injected message."""
+    parent_id: str,
+    text: str,
+    extra_kwargs: dict | None,
+    steer_origin: str = "",
+) -> str:
+    """Open a NEW turn on an idle parent carrying the injected message.
+
+    返回出口码（既有调用方忽略返回值；worker 协议的投递回执靠它）：
+    ``ran`` / ``steered``（锁内发现目标忙，降级 steer 排队）/
+    ``refused:<terminal|nonlive|stopped|no-session>``。"""
     from ..api.sessions import _ensure_session  # lazy: cycle
 
     # Never wake a terminal subagent (design §5.6): a stale wake racing a
@@ -297,11 +317,11 @@ async def _wake_parent_turn(
     _wfound = _NS._find_meta(parent_id)
     if _wfound and _NS._is_subagent(_wfound[0]) and _NS._subagent_status(_wfound[0]) in _NS.TERMINAL_STATUSES:
         _NS._log.warning("subagent_wake_refused_terminal_parent parent=%s", parent_id)
-        return
+        return "refused:terminal"
     parent = _NS._SESSIONS.get(parent_id) or _ensure_session(parent_id)
     if parent is None:
         _NS._log.warning("subagent_wake_no_parent parent=%s", parent_id)
-        return
+        return "refused:no-session"
     async with _turn_lock_of(parent_id):
         # major-A: the pre-lock check raced every other finalizer — two children
         # of one waiting parent each judge the parent idle before the other's
@@ -317,7 +337,7 @@ async def _wake_parent_turn(
                 "subagent_wake_refused_nonlive_parent parent=%s status=%s",
                 parent_id, _NS._subagent_status(_lfound[0]),
             )
-            return
+            return "refused:nonlive"
         # major-B (same check-then-act root): a user stop that landed while
         # this wake queued on the lock must never be answered with a fresh
         # turn — it would run ahead of the stopped finalize and swallow it.
@@ -325,12 +345,14 @@ async def _wake_parent_turn(
         if _preset is not None and _preset.is_set():
             _NS._log.info("subagent_wake_refused_stopped_parent parent=%s", parent_id)
             _NS._TURN_STOP.pop(parent_id, None)
-            return
+            return "refused:stopped"
         task = _NS._TURN_TASKS.get(parent_id)
         if parent_id in _NS._RUNNING_TURNS or parent_id in _NS._PENDING_RESUME or (
             task is not None and not task.done()
         ):
             # Raced busy: the steer channel still delivers it this turn.
+            # steer_origin（worker 协议传 "worker"）让段末清场保留未吸收
+            # 条目——与直接 steer 同一 eventual-delivery 待遇。
             _NS.steer_enqueue(
                 parent_id,
                 {
@@ -338,10 +360,11 @@ async def _wake_parent_turn(
                     "turn_id": _NS._RUNNING_TURNS.get(parent_id) or "",
                     "text": text,
                     "injected_at": _NS.time.time(),
+                    "origin": steer_origin or None,
                     "extra_kwargs": extra_kwargs,
                 },
             )
-            return
+            return "steered"
         # A waiting subagent waking up is running again (contract 6). Register a
         # provisional busy marker BEFORE the flip broadcast: between the checks
         # above and _run_managed_turn_locked's own registration sit the flip's
@@ -382,7 +405,7 @@ async def _wake_parent_turn(
                 _NS._TURN_STOP.pop(parent_id, None)
                 if flipped:
                     await _NS.on_turn_stopped(parent_id)
-                return
+                return "refused:stopped"
             try:
                 await _run_managed_turn_locked(parent_id, text, extra_kwargs, stop_evt)
             except Exception:
@@ -390,6 +413,7 @@ async def _wake_parent_turn(
         finally:
             if _NS._RUNNING_TURNS.get(parent_id) == _wake_tid:
                 _NS._RUNNING_TURNS.pop(parent_id, None)
+        return "ran"
 
 
 async def _reevaluate_waiting_parent(parent_id: str | None) -> None:

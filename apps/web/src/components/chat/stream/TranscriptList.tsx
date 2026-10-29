@@ -199,16 +199,33 @@ export function TranscriptList({
                     b.kind === "subagent_result",
                 )}
               />
+              {/* worker 协议信封卡（live 吸收路径 handle.ts 折出的 system 行） */}
+              <SubagentBlocks
+                blocks={m.blocks.filter(
+                  (
+                    b,
+                  ): b is Extract<
+                    Block,
+                    { kind: "worker_result" | "worker_assign" }
+                  > =>
+                    b.kind === "worker_result" || b.kind === "worker_assign",
+                )}
+              />
             </div>
           </div>
         ) : m.role === "user" &&
           m.blocks.some(
-            (b) => b.kind === "subagent_result" || b.kind === "subagent_brief",
+            (b) =>
+              b.kind === "subagent_result" ||
+              b.kind === "subagent_brief" ||
+              b.kind === "worker_result" ||
+              b.kind === "worker_assign",
           ) ? (
           // runtime 注入的子代理结果（契约 3）与子会话首条任务简报
           // （<ginno_subagent_brief>）在历史重放中是 HumanMessage，重载后以
           // user 角色回来：折成卡片系统行渲染，而不是落到 UserBlocks
-          // （它不认识这些块，会渲染成空气泡）。
+          // （它不认识这些块，会渲染成空气泡）。worker 协议信封
+          // （<ginno_worker_result>/<ginno_worker_assign>）同通道同处理。
           <div key={m.id} className="flex flex-col items-center gap-2">
             <div className="w-full max-w-[85%]">
               <SubagentBlocks
@@ -218,9 +235,15 @@ export function TranscriptList({
                     b,
                   ): b is Extract<
                     Block,
-                    { kind: "subagent_result" | "subagent_brief" }
+                    | { kind: "subagent_result" }
+                    | { kind: "subagent_brief" }
+                    | { kind: "worker_result" }
+                    | { kind: "worker_assign" }
                   > =>
-                    b.kind === "subagent_result" || b.kind === "subagent_brief",
+                    b.kind === "subagent_result" ||
+                    b.kind === "subagent_brief" ||
+                    b.kind === "worker_result" ||
+                    b.kind === "worker_assign",
                 )}
               />
             </div>

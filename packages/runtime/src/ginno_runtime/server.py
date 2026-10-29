@@ -71,6 +71,25 @@ async def lifespan(app: FastAPI):
         from .delegation_sessions import reconcile_running_delegations
 
         reconcile_running_delegations()
+        # type 主动标注的一次性迁移（2026-10-29）：历史 main 会话 type 缺省
+        # 补写 "main"——worker 协议的可派活白名单不再靠缺省反推。幂等，
+        # 收敛后每次启动零写入。
+        try:
+            from .session_meta import backfill_session_types
+
+            n = backfill_session_types()
+            if n:
+                _log.info("session_type_backfill stamped=%d", n)
+        except Exception:
+            _log.exception("session_type_backfill_failed (continuing)")
+        # Worker 协议订阅对账（worker-protocol-design §6.2）：崩溃在终态
+        # 翻转与回传之间错过的订阅，启动时补发 + 重建 _WATCHED 快查表。
+        try:
+            from .worker_bus import reconcile_subscriptions
+
+            reconcile_subscriptions()
+        except Exception:
+            _log.exception("worker_reconcile_failed (continuing)")
     except Exception:  # noqa: BLE001 — 启动绝不因对账失败而中断
         pass
     # 清单 watcher 恢复（subagent-plan-orchestration-design.md §6）：扫

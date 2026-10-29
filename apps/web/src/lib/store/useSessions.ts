@@ -311,6 +311,19 @@ export function useSessions({
     }
   }, []);
 
+  // Worker 协议「接活」标注（扇形菜单入口）：乐观写 worker，随后提交后端。
+  const setSessionWorker = useCallback(async (id: string, worker: boolean) => {
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, worker } : s)));
+    try {
+      const r = await api.patchSession(id, { worker });
+      if (r?.session) {
+        setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...r.session } : s)));
+      }
+    } catch {
+      /* ignore — reconcile on next reload */
+    }
+  }, []);
+
   const applySessionPatch = useCallback((id: string, patch: Partial<SessionMeta>) => {
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
@@ -331,6 +344,7 @@ export function useSessions({
     removeSession,
     renameSession,
     pinSession,
+    setSessionWorker,
     applySessionPatch,
   };
 }

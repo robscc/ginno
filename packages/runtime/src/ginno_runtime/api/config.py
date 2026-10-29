@@ -244,6 +244,14 @@ async def put_settings(data: dict) -> dict:
     except (OSError, json.JSONDecodeError):
         previous = {}
     data = prov_mod.unmask_settings(data, previous)
+    # 2026-10-29 review 定稿：残留掩码（草稿引用了存储里不存在的条目）=
+    # 「未修改」占位，置空忽略而非报错；绝不把 •••• 写进 settings.json
+    # ——掩码落盘后，聊天/分类器等真实流量会带着它出网，在 httpx ASCII
+    # 编码处炸 UnicodeEncodeError（2026-10-24 智谱 key 事故同型）。
+    cleared = prov_mod.clear_masked_leaves(data)
+    if cleared:
+        log.warning("settings_put_mask_placeholder_ignored fields=%s",
+                     ",".join(cleared[:10]))
     paths.settings_path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
     new_use_proxy = prov_mod.use_system_proxy(data)
     if new_use_proxy != prev_use_proxy:
@@ -349,12 +357,18 @@ def _guard_config_removal(stored_ids: set[str], new_ids: set[str], new_default: 
 async def put_model_configs(req: PutModelConfigsRequest):
     stored = {c["id"]: c for c in prov_mod.load_configs()}
     # SEC-01: the UI edits a masked config; restore masked api_keys from the
-    # stored copy before validation/save.
+    # stored copy before validation/save. 掩码 = 「未修改」占位（2026-10-29
+    # review 定稿）：能还原就还原；还原不了（id 不在存储里，如复制配置换
+    # 了 id）置空忽略，绝不把 •••• 落盘、不报错打断保存。
     raw_cfgs = []
     for c in req.configs:
         if isinstance(c, dict) and prov_mod.is_masked(c.get("api_key")):
             c = dict(c)
             prev = stored.get(c.get("id")) or {}
+            if not prev.get("api_key"):
+                log.warning(
+                    "model_configs_put_mask_placeholder_ignored id=%s", c.get("id")
+                )
             c["api_key"] = prev.get("api_key") or ""
         raw_cfgs.append(c)
     try:
@@ -438,7 +452,21 @@ def list_model_config_models(cfg: dict) -> dict:
     模型」). Nothing is saved — id not required. Sync so the network round-trip
     runs in the threadpool; HTTP 200 always, ok:false carries the error, same
     convention as the verify endpoint."""
-    return prov_mod.list_models_draft(prov_mod.unmask_config_draft(cfg))
+    # SEC-01 同 verify 端点：草稿带着掩码 key 且反掩码失败（新配置/复制配置
+    # 无存量 id 可解析）时必须拒绝——掩码 4 个 bullet 是非 ASCII，放进
+    # x-api-key header 会在 httpx ASCII 编码处炸 UnicodeEncodeError 天书
+    # （2026-10-29 真机：拉取模型列表报 'ascii' codec can't encode
+    # characters in position 0-3，正是 MASK_PREFIX 的 4 个 •）。
+    draft = prov_mod.unmask_config_draft(cfg)
+    if prov_mod.is_masked(draft.get("api_key")):
+        return {
+            "ok": False,
+            "error": t(
+                "The API key is still a mask placeholder — re-enter the real key",
+                "API Key 仍是掩码占位值，请重新填写真实 Key",
+            ),
+        }
+    return prov_mod.list_models_draft(draft)
 
 
 @router.delete("/api/model_configs/{config_id}")
@@ -594,7 +622,12 @@ async def put_providers(req: PutProvidersRequest) -> dict:
     for pid, cfg in (req.providers or {}).items():
         cfg = dict(cfg or {})
         if prov_mod.is_masked(cfg.get("api_key")):
-            cfg["api_key"] = (stored.get(pid) or {}).get("api_key") or ""
+            prev_key = (stored.get(pid) or {}).get("api_key")
+            if not prev_key:
+                # 同 PUT /api/model_configs：掩码=未修改占位，置空忽略
+                log.warning("providers_put_mask_placeholder_ignored id=%s", pid)
+                prev_key = ""
+            cfg["api_key"] = prev_key
         providers[pid] = cfg
     saved = prov_mod.save_providers(providers)
     default = req.default_provider

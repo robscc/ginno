@@ -457,6 +457,55 @@ def _write_settings(settings: dict[str, Any]) -> None:
 # ---- connectivity verify ----------------------------------------------------
 
 
+_WIRE_FIELD_LABELS: dict[str, str] = {
+    "api_key": "API Key",
+    "org_id": "Organization ID",
+    "base_url": "Base URL",
+}
+
+
+def _non_ascii_wire_fields(cfg: dict[str, Any]) -> list[str]:
+    """上线路径字段（api_key/org_id/base_url）中含非 ASCII 字符的字段名列表。
+
+    这些值最终进 HTTP header 或 URL；httpx 按 ASCII 编码 header，任何
+    codepoint > 127 的字符（中文/日韩文、emoji、全角符号、NBSP、BOM、
+    零宽字符……粘贴事故的常见载荷）都会炸出 UnicodeEncodeError 天书
+    （2026-10-29 真机：拉取模型列表报 'ascii' codec can't encode
+    characters）。请求前拦截，报错直接指认字段，而不是让用户看编码器
+    内部错误。
+    """
+    bad: list[str] = []
+    for field in _WIRE_FIELD_LABELS:
+        val = str(cfg.get(field) or "")
+        if val and not val.isascii():
+            bad.append(field)
+    return bad
+
+
+def _first_non_ascii_char(s: str) -> str:
+    """首个非 ASCII 字符的展示形式 ``'\\xa0' (U+00A0)``。
+
+    不可见字符（NBSP/BOM/零宽）肉眼查不出来，报码位才能定位；``!r``
+    让控制字符显示为转义序列而不是空白。
+    """
+    for ch in s:
+        if not ch.isascii():
+            return f"{ch!r} (U+{ord(ch):04X})"
+    return "?"
+
+
+def _non_ascii_wire_error(cfg: dict[str, Any], fields: list[str]) -> str:
+    labels = "、".join(_WIRE_FIELD_LABELS.get(f, f) for f in fields)
+    first = _first_non_ascii_char(str(cfg.get(fields[0]) or ""))
+    return t(
+        f"Non-ASCII characters found in {labels} (first: {first}). These "
+        "fields only accept ASCII — the pasted text may carry full-width "
+        "punctuation, emoji, or invisible characters.",
+        f"{labels} 含非 ASCII 字符（首个：{first}）。这些字段只接受 ASCII "
+        "字符——粘贴的内容可能带入了全角符号、emoji 或不可见字符。",
+    )
+
+
 def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
     """Probe one config (draft or saved) with the cheapest possible call.
 
@@ -474,6 +523,11 @@ def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
     def _latency() -> int:
         return int((time.time() - t0) * 1000)
+
+    bad = _non_ascii_wire_fields(cfg)
+    if bad:
+        return {"ok": False, "error": _non_ascii_wire_error(cfg, bad),
+                "latency_ms": _latency()}
 
     try:
         if proto == "anthropic":
@@ -572,6 +626,12 @@ def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
     key = str(cfg.get("api_key") or "").strip()
     if not key:
         return {"ok": False, "error": t("API key is empty", "API Key 为空"),
+                "latency_ms": _latency()}
+    bad = _non_ascii_wire_fields(cfg)
+    if bad:
+        # 同 _verify_config：非 ASCII 字符在 httpx header 编码处炸
+        # UnicodeEncodeError，这里提前指认字段。
+        return {"ok": False, "error": _non_ascii_wire_error(cfg, bad),
                 "latency_ms": _latency()}
     # trailing "/" would double up in the f-string below
     base = str(cfg.get("base_url") or "").strip().rstrip("/")
@@ -713,6 +773,13 @@ def search_probe(provider_id: str) -> dict[str, Any]:
 
 MASK_PREFIX = "••••"
 _SECRET_NAME = re.compile(r"(API_?KEY|TOKEN|SECRET|PASSWORD)", re.IGNORECASE)
+# 精确命中才算 secret 字段（不能用上面的正则扫任意 dict 键：max_tokens
+# 含 "TOKEN" 会被误掩）。settings 里除 env/model_configs/providers 外的
+# secret 段（classifier/web/channels/connectors）按这些字段名掩码。
+_SECRET_FIELD_NAMES = frozenset({
+    "api_key", "asr_api_key", "corp_secret", "secret", "secret_key",
+    "aes_key", "token", "password",
+})
 
 
 def mask_secret(value: Any) -> Any:
@@ -724,6 +791,49 @@ def mask_secret(value: Any) -> Any:
 
 def is_masked(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(MASK_PREFIX)
+
+
+def _mask_secret_leaves(node: Any) -> None:
+    """就地掩码 secret 字段名命中的叶子（递归 dict/list）。
+
+    掩码体系的原则（SEC-01 + 2026-10-29 review）：掩码只允许存在于
+    「GET 响应 → 表单显示」这一段；落盘与出网请求永远只见真实值。
+    真实消费方（classifier/laya、web/engines、channels）都从磁盘
+    load，掩码不进它们的路径。
+    """
+    if isinstance(node, dict):
+        for k, v in list(node.items()):
+            if isinstance(v, str) and v and k in _SECRET_FIELD_NAMES:
+                node[k] = mask_secret(v)
+            else:
+                _mask_secret_leaves(v)
+    elif isinstance(node, list):
+        for item in node:
+            _mask_secret_leaves(item)
+
+
+def clear_masked_leaves(node: Any, path: str = "") -> list[str]:
+    """写盘前把残留的掩码叶子置空，返回被清掉的路径（供日志）。
+
+    语义（2026-10-29 review 定稿）：入站 payload 里的掩码值 = 「未修改」
+    占位——unmask_* 能还原的已还原；还原不了的（存储里没有对应条目，
+    如复制配置换了 id）置空，绝不把 ``••••`` 写进 settings.json，否则
+    真实流量会带着掩码出网，在 httpx ASCII 编码处炸 UnicodeEncodeError
+    （2026-10-24 智谱 key 事故同型）。保存不因占位值报错。
+    """
+    cleared: list[str] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            p = f"{path}.{k}" if path else str(k)
+            if isinstance(v, str) and is_masked(v):
+                node[k] = ""
+                cleared.append(p)
+            else:
+                cleared.extend(clear_masked_leaves(v, p))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            cleared.extend(clear_masked_leaves(v, f"{path}[{i}]"))
+    return cleared
 
 
 def _mask_config_list(items: Any) -> None:
@@ -744,6 +854,13 @@ def mask_settings(settings: dict[str, Any]) -> dict[str, Any]:
     provs = out.get("providers")
     if isinstance(provs, dict):
         _mask_config_list(provs.values())
+    # 2026-10-29 review 补覆盖：这些段此前 GET 明文回传（classifier 的
+    # SF 网关 token、tavily key、连接器 secret 都真实存在过）。还原靠
+    # _restore_masked 的同路径回填，写盘残留由 find_masked_leaves 拦截。
+    for section in ("classifier", "web", "channels", "connectors"):
+        node = out.get(section)
+        if isinstance(node, (dict, list)):
+            _mask_secret_leaves(node)
     return out
 
 

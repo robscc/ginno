@@ -17,7 +17,9 @@ The server emits a ``user.question`` event and resumes with
 
 from __future__ import annotations
 
+import ast
 import contextvars
+import re
 from typing import Annotated
 
 from langchain_core.tools import InjectedToolCallId, tool
@@ -61,6 +63,54 @@ def reset_ask_budget(token: contextvars.Token) -> None:
     _BUDGET.reset(token)
 
 
+# 富选项对象里可能承载标签的键，按优先级。模型有时把 options 传成
+# ``[{label, description, key}, …]`` 这类对象数组（2026-10-29 实测：卡片按钮
+# 渲染出整段 dict 字面量，而不是 label）。
+_LABEL_KEYS = ("label", "text", "title", "name", "value", "option", "description")
+# JS 风格对象字面量（键不带引号）literal_eval/json 都解析不了时的兜底：
+# 直接抽 ``label: '…'`` 这类键值。
+_OBJ_LABEL_RE = re.compile(
+    r"""(?<![\w'"])(?:label|text|title|name|option)['"]?\s*:\s*(['"])(.*?)\1""", re.S
+)
+
+
+def _dict_label(d: dict) -> str:
+    for k in _LABEL_KEYS:
+        v = d.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _option_label(o: object) -> str:
+    """One option entry → its display label.
+
+    接受三种形状：普通字符串；富对象 ``{label, description}``（取 label）；
+    以及把对象字面量整个当字符串传进来的条目（反序列化后取 label）。
+    认不出 label 键时原样保留，绝不丢信息。
+    """
+    if isinstance(o, dict):
+        return _dict_label(o) or str(o).strip()
+    s = str(o).strip()
+    if not s.startswith("{"):
+        return s
+    parsed: object = None
+    try:
+        parsed = ast.literal_eval(s)
+    except (ValueError, SyntaxError, TypeError):
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            parsed = None
+    if isinstance(parsed, dict):
+        label = _dict_label(parsed)
+        if label:
+            return label
+        return s
+    m = _OBJ_LABEL_RE.search(s)
+    return m.group(2).strip() if m and m.group(2).strip() else s
+
+
 def normalize_options(raw: object) -> list[str]:
     """Coerce an ``options`` argument into a list of labels.
 
@@ -70,6 +120,10 @@ def normalize_options(raw: object) -> list[str]:
     validation burned the model's whole ask budget on two retries before it
     gave up and asked as free text; and anything that iterated the string
     rendered one card option PER CHARACTER.
+
+    Also unwraps rich option objects to their label — observed live
+    (2026-10-29): ``options`` as ``[{description, key, label}, …]`` rendered
+    the whole dict literal on the card's buttons.
 
     So: a list is taken as-is; a string is parsed as JSON when it looks like a
     list, taken as ONE bare option otherwise; anything else is empty.
@@ -93,10 +147,63 @@ def normalize_options(raw: object) -> list[str]:
         return []
     out: list[str] = []
     for o in raw:
-        label = str(o).strip()
+        label = _option_label(o)
         if label:
             out.append(label)
     return out
+
+
+def _multi_receipt(subs: list[dict], answer: object) -> str:
+    """多问题回执：逐题 {question, source, option_index, answer}。整卡跳过
+    （stop/非 dict 回复）时每题记 skipped——模型据此自行假定并声明。"""
+    results: list[dict] = []
+
+    def _label(s: dict) -> str:
+        return s["header"] or s["question"]
+
+    if not isinstance(answer, dict) or answer.get("skip"):
+        for s in subs:
+            results.append(
+                {"question": _label(s), "source": "skipped",
+                 "option_index": None, "answer": ""}
+            )
+    else:
+        answers = answer.get("answers")
+        if not isinstance(answers, list):
+            # 旧形单答（外部渠道/纯文本回复）打在第一题上，其余记 skipped
+            answers = [
+                {
+                    "answer": str(answer.get("answer") or ""),
+                    "option_index": None,
+                    "skip": bool(answer.get("skip")),
+                }
+            ]
+        for i, s in enumerate(subs):
+            a = answers[i] if i < len(answers) and isinstance(answers[i], dict) else {}
+            opts: list[str] = s["options"]
+            # 缺失/空条目（旧形短回复没覆盖到的题）= 该题 skipped
+            if a.get("skip") or (not str(a.get("answer") or "").strip() and a.get("option_index") is None):
+                results.append(
+                    {"question": _label(s), "source": "skipped",
+                     "option_index": None, "answer": ""}
+                )
+                continue
+            text = str(a.get("answer") or "").strip()
+            idx = a.get("option_index")
+            if isinstance(idx, int) and 0 <= idx < len(opts):
+                results.append(
+                    {"question": _label(s), "source": "option",
+                     "option_index": idx, "answer": opts[idx],
+                     "free_text": text if text and text != opts[idx] else ""}
+                )
+            else:
+                results.append(
+                    {"question": _label(s), "source": "free_text",
+                     "option_index": None, "answer": text, "free_text": ""}
+                )
+    return json.dumps(
+        {"ok": True, "multi": True, "results": results}, ensure_ascii=False
+    )
 
 
 def build_ask_tools(project_slug: str | None = None, session_id: str | None = None) -> list:
@@ -112,10 +219,11 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
 
     @tool
     def ask_user(
-        question: str,
+        question: str = "",
         options: list[str] | str | None = None,
         header: str = "",
         allow_free_text: bool = True,
+        questions: list[dict] | list[str] | None = None,
         tool_call_id: Annotated[str, InjectedToolCallId] = "",
     ) -> str:
         """Ask the user to choose, when their answer changes what you do next.
@@ -133,28 +241,82 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
 
         ``question``  — the body, markdown allowed. State the ambiguity
                         concretely, and name the candidates.
-        ``options``   — 2-5 user-facing choices, as a REAL JSON ARRAY. Omit
-                        entirely for a pure free-text question. Each entry must
-                        be a complete, self-explanatory label ("安装到
-                        <repo>/.claude/skills（Claude Code 读取）"), because that
-                        exact string is what the user clicks and what you get
-                        back. Do NOT pass a JSON-encoded string of an array
-                        (it is accepted, but a real array is clearer).
+        ``options``   — 2-5 user-facing choices, as a REAL JSON ARRAY OF PLAIN
+                        STRINGS (never objects — a {"label", "description"}
+                        entry has its label extracted, but the description is
+                        lost). Omit entirely for a pure free-text question.
+                        Each entry must be a complete, self-explanatory label
+                        ("安装到 <repo>/.claude/skills（Claude Code 读取）"),
+                        because that exact string is what the user clicks and
+                        what you get back. Do NOT pass a JSON-encoded string of
+                        an array (it is accepted, but a real array is clearer).
                         Never write the choices as "1 / 2 / 3" inside
                         ``question`` — put them here so they become buttons.
         ``header``    — 2-4 word card title, e.g. "选择安装位置".
         ``allow_free_text`` — also offer an "其他" field (default true).
+        ``questions`` — SEVERAL independent questions in ONE ask (2-5 entries,
+                        each {"question", "options", "header",
+                        "allow_free_text"}; a bare string entry is a pure
+                        free-text question; ``options`` follows the same
+                        plain-string rule above). Each question renders its own
+                        clickable options and the user answers all of them in
+                        one card. Whenever you have 2+ separate questions USE
+                        THIS — do NOT stuff them into one ``question`` body
+                        with lettered sub-options in prose, and do NOT
+                        synthesize combination options ("A+B", "A+C") from
+                        their cross-product: each question must be answerable
+                        on its own. ``question`` then serves as the card's
+                        overall lead-in (optional).
 
         Returns JSON: {ok, skipped, source, option_index, answer, free_text}
         where source is "option" | "free_text" | "skipped". When ``skipped``
         is true the user declined to choose — proceed with your best
         judgement and SAY WHICH ASSUMPTION YOU MADE in your reply, so it can
-        be corrected.
+        be corrected. Multi-question mode returns {ok, multi, results:
+        [{question, source, option_index, answer}, …]} instead — one entry
+        per question, same semantics, empty ``answer`` = that one skipped.
         """
-        q = (question or "").strip()
-        if not q:
+        # ---- 多问题规整（2026-10-29 e48be8a3 实测：3 个问题塞一个 question，
+        # 选项做成 2×2×2 组合套餐——第 2/3 题的选项只剩文字）。每个子问题
+        # 独立规整；恰 1 条时折回单问题契约（旧路径零改动）。----
+        subs: list[dict] = []
+        if isinstance(questions, list):
+            for ent in questions:
+                if isinstance(ent, str):
+                    ent = {"question": ent}
+                if not isinstance(ent, dict):
+                    continue
+                sq = str(ent.get("question") or "").strip()
+                if sq:
+                    subs.append(
+                        {
+                            "question": sq,
+                            "options": normalize_options(ent.get("options")),
+                            "header": str(ent.get("header") or "").strip(),
+                            "allow_free_text": bool(ent.get("allow_free_text", True)),
+                        }
+                    )
+            if len(subs) > 5:
+                return t(
+                    "[error] questions accepts at most 5 entries — split "
+                    "into separate ask_user calls.",
+                    "[error] questions 最多 5 条——请拆成多次 ask_user。",
+                )
+        if len(subs) == 1:
+            # 单条 → 折回单问题：语义等价，复用旧 payload/回执形状。
+            q = subs[0]["question"] if not (question or "").strip() else (question or "").strip()
+            opts = subs[0]["options"] or normalize_options(options)
+            header = (header or "").strip() or subs[0]["header"]
+            allow_free_text = allow_free_text and subs[0]["allow_free_text"]
+            subs = []
+        elif len(subs) >= 2:
+            q = (question or "").strip()  # 卡片引子（可空）
+            opts = []
+        else:
+            q = (question or "").strip()
+            opts = normalize_options(options)
+        if not q and not subs:
             return "[error] question is required"
-        opts = normalize_options(options)
 
         if not _INTERACTIVE.get():
             return t(
@@ -188,20 +350,27 @@ def build_ask_tools(project_slug: str | None = None, session_id: str | None = No
                     "请自行决定，并把你的假定写进回复。")
             budget["n"] += 1
 
-        answer = interrupt(
-            {
-                "kind": "user_question",
-                # The tool_call id rides the interrupt so the re-emit path can
-                # rebuild the same question from the checkpoint alone (the id
-                # is stable in the checkpoint, the live event, and replay —
-                # which is what makes the client's merge idempotent).
-                "id": tool_call_id or "",
-                "question": q,
-                "options": opts,
-                "header": (header or "").strip(),
-                "allow_free_text": bool(allow_free_text),
-            }
-        )
+        payload = {
+            "kind": "user_question",
+            # The tool_call id rides the interrupt so the re-emit path can
+            # rebuild the same question from the checkpoint alone (the id
+            # is stable in the checkpoint, the live event, and replay —
+            # which is what makes the client's merge idempotent).
+            "id": tool_call_id or "",
+            "question": q,
+            "options": opts,
+            "header": (header or "").strip(),
+            "allow_free_text": bool(allow_free_text),
+        }
+        if subs:
+            # 多问题（契约 v2）：questions 数组逐题携带 options；单问题保持
+            # 旧形状（旧前端/旧 checkpoint 的重放零感知）。
+            payload["multi"] = True
+            payload["questions"] = subs
+        answer = interrupt(payload)
+
+        if subs:
+            return _multi_receipt(subs, answer)
 
         if not isinstance(answer, dict) or answer.get("skip"):
             return json.dumps(

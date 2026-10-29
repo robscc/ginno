@@ -15,6 +15,8 @@ import {
   SubagentResultCard,
   SubagentBriefCard,
   PlanUpdateCard,
+  WorkerResultCard,
+  WorkerAssignCard,
 } from "./blocks/subagentCards";
 import {
   parseSources,
@@ -50,12 +52,15 @@ export type {
   SteerBandImage,
   SteerBandFile,
   QuestionBlock,
+  QuestionSub,
 } from "./blocks/types";
 export {
   parseSubagentResults,
   parseSubagentResult,
   parseSubagentBrief,
   foldSubagentResultBlocks,
+  parseWorkerResults,
+  parseWorkerAssign,
 } from "./blocks/subagentParse";
 export {
   SubagentKindBadges,
@@ -63,6 +68,8 @@ export {
   SubagentResultCard,
   SubagentBlocks,
   SubagentBriefCard,
+  WorkerResultCard,
+  WorkerAssignCard,
 } from "./blocks/subagentCards";
 export {
   parseSources,
@@ -221,6 +228,10 @@ export function InnerBlocks({
       out.push(<PlanUpdateCard key={`plan-upd-${b.planId}-${key++}`} block={b} />);
     } else if (b.kind === "subagent_brief") {
       out.push(<SubagentBriefCard key={`sa-brief-${key++}`} block={b} />);
+    } else if (b.kind === "worker_result") {
+      out.push(<WorkerResultCard key={`wr-${b.sessionId}-${key++}`} block={b} />);
+    } else if (b.kind === "worker_assign") {
+      out.push(<WorkerAssignCard key={`wa-${b.fromSessionId}-${key++}`} block={b} />);
     } else if (b.kind === "context") {
       // context 事件（如 microcompact 清理提示）live 时挂在**当前 assistant
       // 消息**上；这里不渲染就会让 hasInner 为真但卡片体为空——一条只有

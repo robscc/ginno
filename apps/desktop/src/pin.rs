@@ -338,11 +338,11 @@ fn ensure_pin_window(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
         return Ok(w);
     }
     let url = if cfg!(debug_assertions) {
-        "http://localhost:3000/pin"
+        "http://localhost:3000/pin".to_string()
     } else {
-        "http://127.0.0.1:8787/pin"
+        format!("http://127.0.0.1:{}/pin", crate::sidecar::sidecar_port())
     };
-    let url = tauri::Url::parse(url).map_err(|e| tauri::Error::InvalidUrl(e))?;
+    let url = tauri::Url::parse(&url).map_err(|e| tauri::Error::InvalidUrl(e))?;
     let w = WebviewWindowBuilder::new(app, PIN_LABEL, WebviewUrl::External(url))
         .title(pick(shell_lang(app), "Ginno Floating Window", "Ginno 悬浮窗"))
         .inner_size(MINI_W, MINI_H)

@@ -138,3 +138,65 @@ def test_question_block_returns_none_for_errors_directly():
     assert _question_block("t", {"question": "q"}, "[error] nope") is None
     blk = _question_block("t", {"question": "q", "options": ["a"]}, "")
     assert blk and blk["status"] == "pending"
+
+# --------------------------------------------------------------------------- #
+# 多问题（契约 v2，2026-10-29 e48be8a3）：questions 逐题重建、逐题回填
+# --------------------------------------------------------------------------- #
+MULTI_ARGS = {
+    "question": "确认三件事：",
+    "header": "Skill 设计确认",
+    "questions": [
+        {"question": "产出形态？", "options": ["补全 prd.md", "只产清单"], "header": "产出"},
+        {"question": "交互方式？", "options": ["逐题引导", "批量清单"]},
+        {"question": "覆盖范围？"},
+    ],
+}
+
+
+def test_multi_parked_replays_with_all_sub_questions():
+    q = _questions([_call(MULTI_ARGS)])[0]
+    assert q["multi"] is True and len(q["questions"]) == 3
+    assert q["questions"][0]["options"] == ["补全 prd.md", "只产清单"]
+    assert q["questions"][0]["header"] == "产出"
+    assert q["questions"][2]["options"] == []
+    assert q["status"] == "pending"
+
+
+def test_multi_answered_replays_per_question_results():
+    receipt = (
+        '{"ok": true, "multi": true, "results": ['
+        '{"question": "产出", "source": "option", "option_index": 0, "answer": "补全 prd.md"},'
+        '{"question": "交互方式？", "source": "free_text", "option_index": null, "answer": "混合"},'
+        '{"question": "覆盖范围？", "source": "skipped", "option_index": null, "answer": ""}'
+        "]}"
+    )
+    q = _questions([_call(MULTI_ARGS), _result(receipt)])[0]
+    assert q["status"] == "answered"
+    assert q["questions"][0]["answer"] == "补全 prd.md"
+    assert q["questions"][0]["optionIndex"] == 0
+    assert q["questions"][1]["answer"] == "混合"
+    assert q["questions"][2].get("skipped") is True and "answer" not in q["questions"][2]
+
+
+def test_multi_interrupted_replays_as_skipped():
+    q = _questions([_call(MULTI_ARGS), _result("(interrupted)")])[0]
+    assert q["status"] == "skipped" and q["multi"] is True
+
+
+def test_rich_option_objects_replay_as_labels():
+    """2026-10-29 live: options arrived as ``[{description, key, label}]`` and
+    the replayed card rendered the whole dict literal on each button."""
+    args = {
+        "questions": [
+            {
+                "question": "迁移范围？",
+                "options": [
+                    {"description": "递归抽取", "key": "tree", "label": "整棵页面树"},
+                    {"description": "只迁当前页", "key": "single", "label": "仅这一页"},
+                ],
+            },
+            {"question": "怎么来？"},
+        ],
+    }
+    q = _questions([_call(args)])[0]
+    assert q["questions"][0]["options"] == ["整棵页面树", "仅这一页"]

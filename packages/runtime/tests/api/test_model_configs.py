@@ -242,6 +242,33 @@ def test_verify_unresolvable_mask_is_refused(client, monkeypatch):
     assert "model_configs" not in _read_settings()
 
 
+def test_list_models_unresolvable_mask_is_refused(client, monkeypatch):
+    """Regression (2026-10-29): list_models 反掩码失败时掩码原样放行，4 个
+    bullet（MASK_PREFIX "••••"，非 ASCII）进了 x-api-key header，在 httpx
+    ASCII 编码处炸 UnicodeEncodeError: 'ascii' codec can't encode characters
+    in position 0-3。verify 端点早有这道闸（2026-10-24），list_models 补齐。"""
+    listed: list = []
+    monkeypatch.setattr(
+        prov_mod, "list_models_draft", lambda cfg: listed.append(cfg) or {"ok": True}
+    )
+    # 无 id 草稿（新建/复制配置）带掩码 key：无存量可解析 → 必须拒绝且不出网
+    r = client.post("/api/model_configs/list_models", json={**_DRAFT, "api_key": "••••wxyz"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False and "key" in body["error"].lower()
+    assert listed == []  # never reached the provider
+
+    # 存量配置的掩码 key 仍正常反解（不该被这道闸误伤）
+    stored = _relay("p1", api_key="sk-real-key-9999")
+    paths.settings_path().write_text(json.dumps({"model_configs": [stored]}))
+    r2 = client.post(
+        "/api/model_configs/list_models",
+        json={**stored, "api_key": "••••9999"},
+    )
+    assert r2.json()["ok"] is True
+    assert listed[-1]["api_key"] == "sk-real-key-9999"
+
+
 # ---------------------------- build_model dispatch ------------------------- #
 
 
@@ -724,6 +751,38 @@ def test_list_models_seam_connection_error(monkeypatch):
     assert "ConnectError" in r["error"]
 
 
+def test_list_models_seam_non_ascii_fields_rejected_before_request(monkeypatch):
+    # 粘贴事故带入中文/全角字符：httpx 按 ASCII 编码 header，请求会炸
+    # UnicodeEncodeError 天书（2026-10-29 真机）——guard 必须在发请求前
+    # 拦下并指认字段，httpx.get 根本不该被调用。
+    calls = _patch_httpx_get(monkeypatch, _FakeResp(payload={"data": [{"id": "m"}]}))
+    r = prov_mod._list_models(
+        {"protocol": "anthropic", "base_url": "https://gw/v1", "api_key": "密钥sk-1"}
+    )
+    assert r["ok"] is False
+    assert "API Key" in r["error"]
+    assert "ASCII" in r["error"]
+    assert calls == {}  # never reached the wire
+
+    # org_id 同理（OpenAI-Organization header）
+    r2 = prov_mod._list_models(
+        {"protocol": "openai-compatible", "base_url": "https://x/v1",
+         "api_key": "sk-1", "org_id": "组织id"}
+    )
+    assert r2["ok"] is False
+    assert "Organization ID" in r2["error"]
+
+
+def test_verify_draft_non_ascii_fields_rejected(monkeypatch):
+    # _verify_config 走 SDK（anthropic api_key → x-api-key header）同款炸法
+    r = prov_mod.verify_config_draft(
+        {"protocol": "anthropic", "base_url": "https://gw", "api_key": "密钥sk-1"}
+    )
+    assert r["ok"] is False
+    assert "API Key" in r["error"]
+    assert "ASCII" in r["error"]
+
+
 def test_list_models_seam_unparsable(monkeypatch):
     # no data list in the payload
     _patch_httpx_get(monkeypatch, _FakeResp(payload={"object": "list"}))
@@ -820,6 +879,80 @@ def test_settings_get_masks_keys_and_put_restores_them(client):
     stored = _read_settings()
     assert stored["env"]["OPENAI_API_KEY"] == "sk-plain-secret-1234"
     assert stored["model_configs"][0]["api_key"] == "sk-abcdefgh-5678"
+
+
+def test_settings_masks_classifier_web_connectors_secrets(client):
+    """2026-10-29 review：classifier/web/channels/connectors 段的 secret
+    字段此前 GET 明文回传（classifier 的网关 token、连接器 secret 都真实
+    存在过）。掩码后 PUT 同路径还原；max_tokens 这类名字不能被误伤。"""
+    paths.settings_path().write_text(
+        json.dumps(
+            {
+                "classifier": {"backend": "laya", "api_key": "jwt-token-9f3a"},
+                "web": {"engines": {"tavily": {"api_key": "tvly-aaaa"}}},
+                "connectors": {
+                    "wecom-bot": {"bot_id": "b1", "secret": "s3cretZzz",
+                                  "asr_api_key": "sk-asr-7777"},
+                },
+                "model_configs": [
+                    {"id": "p1", "api_key": "sk-abcdefgh-5678", "max_tokens": 8192,
+                     "models": ["m1"], "default_model": "m1"},
+                ],
+            }
+        )
+    )
+    got = client.get("/api/settings").json()
+    assert got["classifier"]["api_key"].startswith("••••")
+    assert got["web"]["engines"]["tavily"]["api_key"].startswith("••••")
+    assert got["connectors"]["wecom-bot"]["secret"].startswith("••••")
+    assert got["connectors"]["wecom-bot"]["asr_api_key"].startswith("••••")
+    assert got["connectors"]["wecom-bot"]["bot_id"] == "b1"  # 非 secret 不动
+    assert got["model_configs"][0]["max_tokens"] == 8192  # 名字含 TOKEN 不误伤
+
+    # 同路径 round-trip：掩码还原回真实值落盘
+    assert client.put("/api/settings", json=got).json()["ok"] is True
+    stored = _read_settings()
+    assert stored["classifier"]["api_key"] == "jwt-token-9f3a"
+    assert stored["web"]["engines"]["tavily"]["api_key"] == "tvly-aaaa"
+    assert stored["connectors"]["wecom-bot"]["secret"] == "s3cretZzz"
+    assert stored["connectors"]["wecom-bot"]["asr_api_key"] == "sk-asr-7777"
+
+
+def test_settings_put_ignores_unresolvable_mask(client):
+    """掩码 = 「未修改」占位（2026-10-29 定稿）：还原不了的置空忽略，保存
+    不报错，但 •••• 绝不能落盘（否则真实流量带掩码出网炸 ASCII 编码）。"""
+    _write_v2_settings()
+    doc = {
+        "model_configs": [
+            {"id": "p1", "api_key": "••••5678", "models": ["m1"]},  # 可还原
+            {"id": "ghost", "api_key": "••••abcd", "models": ["m2"]},  # 还原不了
+        ],
+    }
+    r = client.put("/api/settings", json=doc)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    stored = _read_settings()
+    by_id = {c["id"]: c for c in stored["model_configs"]}
+    assert by_id["p1"]["api_key"] == "sk-abcdefgh-5678"  # 还原回真实值
+    assert by_id["ghost"]["api_key"] == ""  # 置空，掩码没落盘
+    assert "••••" not in json.dumps(stored)
+
+
+def test_model_configs_put_ignores_unresolvable_mask(client):
+    """PUT 同语义：反解失败置空忽略（不报错、不落掩码）。"""
+    _write_v2_settings()
+    body = {
+        "configs": [
+            {"id": "ghost", "protocol": "openai-compatible",
+             "base_url": "https://x/v1", "api_key": "••••abcd",
+             "models": ["m1"], "default_model": "m1", "enabled": True},
+        ],
+    }
+    r = client.put("/api/model_configs", json=body)
+    assert r.status_code == 200, r.text
+    stored = _read_settings()["model_configs"]
+    (ghost,) = [c for c in stored if c["id"] == "ghost"]
+    assert ghost["api_key"] == ""
+    assert "••••" not in json.dumps(stored)
 
 
 def test_model_configs_get_masks_and_put_restores(client):

@@ -69,8 +69,13 @@
       "unpin": "Unpin session",
       "pinHint": "Pin to the top of the sidebar",
       "unpinHint": "Remove from the top of the sidebar",
+      "workerOn": "Accept work",
+      "workerOnHint": "Let other sessions assign tasks to this one (worker roster)",
+      "workerOff": "Stop accepting work",
+      "workerOffHint": "Remove from the worker roster — other sessions can no longer assign to this",
       "channelBadge": "Read-only — replies go through {channel}",
-      "rowActions": "Session actions (pin / rename / delete)"
+      "rowActions": "Session actions (pin / rename / delete)",
+      "workerOffBadge": "Not accepting assignments (off the worker roster)"
     },
     "run": {
       "fallbackName": "Workflow",

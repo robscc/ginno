@@ -85,6 +85,70 @@ export function parseSubagentBrief(
   };
 }
 
+/** Worker 协议（worker-protocol-design.md §7）：注入消息里的全部
+ *  <ginno_worker_result>（watch 终态回传 / digest）。属性 from=worker 标题、
+ *  status=协议状态、kind=digest 标识进度节选；正文是摘要/节选原文。 */
+export function parseWorkerResults(
+  text: string,
+): Array<{
+  sessionId: string;
+  from: string;
+  status: string;
+  goal: string;
+  summary: string;
+  digest: boolean;
+}> {
+  const doc = parseEnvelope(text);
+  if (!doc) return [];
+  const out: Array<{
+    sessionId: string;
+    from: string;
+    status: string;
+    goal: string;
+    summary: string;
+    digest: boolean;
+  }> = [];
+  for (const el of Array.from(doc.getElementsByTagName("ginno_worker_result"))) {
+    out.push({
+      sessionId: el.getAttribute("session") ?? "",
+      from: el.getAttribute("from") ?? "",
+      status: el.getAttribute("status") ?? "",
+      goal: el.getAttribute("goal") ?? "",
+      summary: (el.textContent ?? "").trim(),
+      digest: el.getAttribute("kind") === "digest",
+    });
+  }
+  return out;
+}
+
+/** assign_worker 注入的 <ginno_worker_assign>：worker 会话侧的任务简报
+ *  （from=派发方标题、session=派发方 id，段名与工具参数一一对应）。 */
+export function parseWorkerAssign(
+  text: string,
+): {
+  fromSessionId: string;
+  from: string;
+  goal: string;
+  constraints?: string;
+  acceptance?: string;
+} | null {
+  const doc = parseEnvelope(text);
+  if (!doc) return null;
+  const el = doc.getElementsByTagName("ginno_worker_assign")[0];
+  if (!el) return null;
+  const section = (tag: string) =>
+    (el.getElementsByTagName(tag)[0]?.textContent ?? "").trim();
+  const goal = section("goal");
+  if (!goal) return null;
+  return {
+    fromSessionId: el.getAttribute("session") ?? "",
+    from: el.getAttribute("from") ?? "",
+    goal,
+    constraints: section("constraints") || undefined,
+    acceptance: section("acceptance") || undefined,
+  };
+}
+
 /** 历史重放用：把持久化的注入消息（HumanMessage 原文）折成结果卡片块，避免原始
  *  XML 标签以用户气泡形式出现；子会话首条 <ginno_subagent_brief> 同样折成简报卡。
  *  合并注入（同一 wake turn 携带多个子代理回传）时一条消息里有多个结果标签——
@@ -117,6 +181,28 @@ export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
     const brief = parseSubagentBrief(b.text);
     if (brief) {
       out.push({ kind: "subagent_brief", ...brief });
+      continue;
+    }
+    // worker 协议信封（worker-protocol-design §7）：员工任务简报 / 回传
+    // 折专用卡——检查在 subagent 结果信封之前（两类信封互斥）。
+    const wAssign = parseWorkerAssign(b.text);
+    if (wAssign) {
+      out.push({ kind: "worker_assign", ...wAssign });
+      continue;
+    }
+    const wResults = parseWorkerResults(b.text);
+    if (wResults.length) {
+      for (const r of wResults) {
+        out.push({
+          kind: "worker_result",
+          sessionId: r.sessionId,
+          from: r.from || undefined,
+          status: r.status || undefined,
+          goal: r.goal || undefined,
+          summary: r.summary,
+          digest: r.digest,
+        });
+      }
       continue;
     }
     // 旧版委托注入（2026-10-05 信封化之前落库的）：裸机器头 + delegation=

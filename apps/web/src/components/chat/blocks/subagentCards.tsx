@@ -412,10 +412,112 @@ export function SubagentBlocks({
           <SubagentSpawnCard key={`${b.sessionId}-${i}`} block={b} />
         ) : b.kind === "subagent_result" ? (
           <SubagentResultCard key={`${b.sessionId}-${i}`} block={b} />
+        ) : b.kind === "worker_result" ? (
+          <WorkerResultCard key={`wr-row-${b.sessionId}-${i}`} block={b} />
+        ) : b.kind === "worker_assign" ? (
+          <WorkerAssignCard key={`wa-row-${b.fromSessionId}-${i}`} block={b} />
         ) : (
           <SubagentBriefCard key={`sa-brief-row-${i}`} block={b} session={session} />
         ),
       )}
+    </div>
+  );
+}
+
+// ---- worker 协议卡片（worker-protocol-design.md §7，P1）--------------------
+
+/** 员工回传卡：watch 终态 / digest 注入的 <ginno_worker_result> 折卡。
+ *  与子代理结果卡的区别：带 from（worker 标题）与 digest 标识；确认/纠偏
+ *  评审流程不适用（订阅方与 worker 无血缘评审关系），只留查看入口。 */
+export function WorkerResultCard({
+  block,
+}: {
+  block: Extract<Block, { kind: "worker_result" }>;
+}) {
+  const g = useGinno();
+  const router = useRouter();
+  const { tc } = useChatT();
+  const status = block.status || "done";
+  const meta = subagentStatusMeta(status);
+  const live = g.sessions.find((s) => s.id === block.sessionId);
+  const from = block.from || live?.title || block.sessionId.slice(0, 8);
+  const openWorker = () => {
+    g.setActiveSession(block.sessionId);
+    if (window.location.pathname !== "/") router.push("/");
+    window.dispatchEvent(new CustomEvent("ginno:focus-latest", { detail: block.sessionId }));
+  };
+  return (
+    <div className="rounded-lg border border-line bg-card/60 px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0">{block.digest ? "📡" : "📬"}</span>
+        <span
+          className="min-w-0 flex-1 truncate font-medium text-txt"
+          title={block.goal || from}
+        >
+          {block.digest
+            ? tc("worker.digestTitle", { from })
+            : tc("worker.resultTitle", { from })}
+        </span>
+        <span className="shrink-0" title={status}>
+          {meta.glyph} {status}
+        </span>
+      </div>
+      {block.goal && (
+        <div className="mt-0.5 truncate text-faint" title={block.goal}>
+          {block.goal}
+        </div>
+      )}
+      {block.summary && (
+        <div className="selectable mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-muted">
+          {block.summary}
+        </div>
+      )}
+      <div className="mt-2 flex items-center gap-1.5 border-t border-line/60 pt-1.5">
+        <button
+          onClick={openWorker}
+          className="rounded-md border border-line2 px-1.5 py-0.5 text-[10px] text-muted transition-colors hover:border-violet/50 hover:text-violet"
+        >
+          {tc("worker.viewWorker")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 员工任务卡：assign_worker 注入的 <ginno_worker_assign>（worker 会话
+ *  首屏折卡，收纳语义同 subagent brief 卡）。 */
+export function WorkerAssignCard({
+  block,
+}: {
+  block: Extract<Block, { kind: "worker_assign" }>;
+}) {
+  const { tc } = useChatT();
+  const sections: Array<[string, string | undefined, string]> = [
+    [tc("worker.assignGoal"), block.goal, "text-txt"],
+    [tc("worker.assignConstraints"), block.constraints, "text-muted"],
+    [tc("worker.assignAcceptance"), block.acceptance, "text-muted"],
+  ];
+  return (
+    <div className="rounded-lg border border-violet/30 bg-violet/[0.04] px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0">📮</span>
+        <span className="min-w-0 flex-1 truncate font-medium text-violet">
+          {tc("worker.assignTitle", { from: block.from || "?" })}
+        </span>
+      </div>
+      {sections.map(([label, value, cls]) =>
+        value ? (
+          <div key={label} className="mt-1.5">
+            <span className="text-[10px] font-medium text-muted">{label}</span>
+            <div className={`selectable whitespace-pre-wrap break-words leading-relaxed ${cls}`}>
+              {value}
+            </div>
+          </div>
+        ) : null,
+      )}
+      <div className="mt-1.5 text-[10px] text-faint">
+        {tc("worker.senderLabel")}: {block.from || block.fromSessionId.slice(0, 8)}
+      </div>
     </div>
   );
 }

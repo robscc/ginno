@@ -245,6 +245,32 @@ def build_stable_system(
                 "只有用户明确要求「等全部结果一次性回答」时才允许阻塞等待。",
             )
         )
+        # Worker 协议引导（2026-10-29 真机实测 c4d6f83f：用户说「在 AMS 那
+        # 个 session 上跑脚本收尾」，模型无提示层引导，直接本地 bash 代跑
+        # ——工具在但策略不可见。路由判据同上：必须上系统提示层）。
+        if "assign_worker" in allowed:
+            parts.append(
+                t(
+                    "Cross-session dispatch rule: when the user says work should "
+                    "happen in/on ANOTHER session (\"run it in the AMS session\", "
+                    "\"have the migration session finish it\"), that is an "
+                    "assignment, not something you run locally — resolve the "
+                    "session with list_workers (title substring), then "
+                    "assign_worker a self-contained brief; do NOT execute the "
+                    "work in this conversation instead. Ongoing conversations "
+                    "(main type) accept assignments but never settle: follow "
+                    "them with watch_worker(want=\"digest\"). If the target "
+                    "cannot be resolved uniquely, ask the user instead of "
+                    "guessing.",
+                    "跨会话派活判据：用户说活要「在另一个 session 上」做（比如「在 "
+                    "AMS 那个 session 上跑脚本收尾」「让迁移那个会话收尾」）时，"
+                    "这是派活，不是你本地代跑——先 list_workers 按标题定位会话，"
+                    "再 assign_worker 发自足简报；不要在本对话里替它执行。持续对"
+                    "话（main 型）可被派活但永不安定：用 "
+                    "watch_worker(want=\"digest\") 跟踪。目标定位不到唯一会话时"
+                    "问用户，不要猜。",
+                )
+            )
         # Subagent type registry (P3 contract 1): the stable layer names the
         # available types so the main agent can route spawn_subagent's
         # agent_type by description. Registry reads are dir-stat cached; the

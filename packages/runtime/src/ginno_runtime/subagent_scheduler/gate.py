@@ -38,6 +38,15 @@ async def on_turn_settled(
         _NS.reconcile_stash_injections(session_id)
     except Exception:
         _NS._log.exception("subagent_reconcile_failed session=%s", session_id)
+    # Worker 协议 digest 订阅（worker-protocol-design §6.2）：_WATCHED 快查
+    # 表先挡一层，无订阅的 settle 零成本；任何类型的会话都可能被订阅
+    # （scheduled 无 gate 终态，digest 只能挂在这里）。
+    try:
+        from ..worker_bus import on_turn_settled_hook
+
+        await on_turn_settled_hook(session_id)
+    except Exception:
+        _NS._log.exception("worker_settle_hook_failed session=%s", session_id)
     s = _NS._SESSIONS.get(session_id)
     # Cheap short-circuit for main conversations (no disk read). NOTE: the
     # in-memory entry carries ``type`` but not the ``subagent`` payload — the
@@ -241,6 +250,16 @@ async def _finalize_subagent_locked(
         "subagent_finalized session=%s status=%s parent=%s summary_len=%d",
         child_id, status, parent_id, len(summary),
     )
+    # Worker 协议订阅者（worker-protocol-design §6.2）：血缘回传之外，
+    # 树外订阅者的终态通知。spawn_bg——通知可能开订阅者的 wake turn，
+    # 不能阻塞 finalize 路径。lazy import：worker_bus 反向依赖本包。
+    try:
+        from ..worker_bus import notify_settled
+
+        _NS.spawn_bg(notify_settled(child_id))
+    except Exception:
+        _NS._log.exception("worker_notify_dispatch_failed session=%s", child_id)
+
     # LLM title (P2 contract 6): after the FIRST completed turn, one auxiliary
     # call with the session's own model replaces the goal[:40] placeholder with
     # a short verb-phrase title (≤16 chars), refreshed through the existing

@@ -83,6 +83,8 @@ export function ModelConfigForm({
     setFetching(true);
     try {
       const r = await api.listModelsForConfig({
+        id: draft.id, // 反掩码靠 id 找回存量 key（2026-10-29：不带 id 时
+        // 掩码 •••• 原样出网，header ASCII 编码处炸 UnicodeEncodeError）
         protocol: draft.protocol,
         base_url: draft.base_url,
         api_key: draft.api_key,

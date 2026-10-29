@@ -556,6 +556,16 @@
       "steerHint": "{names} is working → this delivery will be injected as steering at the next tool boundary, without interrupting the current turn",
       "idCopied": "copied ✓",
       "leadInstanceNote": "Lead instance · click to open the lead's own session (separate from main)"
+    },
+    "worker": {
+      "resultTitle": "Worker return: {from}",
+      "digestTitle": "Worker progress: {from}",
+      "assignTitle": "Task from {from}",
+      "assignGoal": "Goal",
+      "assignConstraints": "Constraints",
+      "assignAcceptance": "Acceptance criteria",
+      "viewWorker": "View worker conversation",
+      "senderLabel": "Assigned by"
     }
   }
 }

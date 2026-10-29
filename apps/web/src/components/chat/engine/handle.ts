@@ -10,7 +10,7 @@ import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToast
 import { pushModPane, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
 import type { ModAskState } from "@/components/chat/mod/ModAskCard";
-import { hasPendingTool, parseSubagentResult, type Block } from "@/components/chat/blocks";
+import { hasPendingTool, parseSubagentResult, parseWorkerResults, parseWorkerAssign, type Block } from "@/components/chat/blocks";
 import type {
   ContextChange,
   Goal,
@@ -543,6 +543,46 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         }
         ctx.syncDisplay(sid);
         break;
+      }
+      // worker 协议信封同通道（worker-protocol-design §7）：员工回传/进度
+      // 折回传卡，派活任务简报折任务卡——不让原始 XML 走注入带。
+      if (entry) {
+        const wResults = parseWorkerResults(entry.text);
+        if (wResults.length) {
+          const store = ctx.storeRef.current[sid] ?? [];
+          ctx.storeRef.current[sid] = [
+            ...store,
+            {
+              id: mid(),
+              role: "system" as const,
+              blocks: wResults.map((r) => ({
+                kind: "worker_result" as const,
+                sessionId: r.sessionId,
+                from: r.from || undefined,
+                status: r.status || undefined,
+                goal: r.goal || undefined,
+                summary: r.summary,
+                digest: r.digest,
+              })),
+            },
+          ];
+          ctx.syncDisplay(sid);
+          break;
+        }
+        const wAssign = parseWorkerAssign(entry.text);
+        if (wAssign) {
+          const store = ctx.storeRef.current[sid] ?? [];
+          ctx.storeRef.current[sid] = [
+            ...store,
+            {
+              id: mid(),
+              role: "system" as const,
+              blocks: [{ kind: "worker_assign" as const, ...wAssign }],
+            },
+          ];
+          ctx.syncDisplay(sid);
+          break;
+        }
       }
       const band: Block = {
         kind: "steer",

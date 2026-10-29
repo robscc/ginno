@@ -252,6 +252,9 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     "header": value.get("header", ""),
                     "options": value.get("options") or [],
                     "allow_free_text": value.get("allow_free_text", True),
+                    # 多问题（契约 v2）：中断值里的 questions 原样透传。
+                    "multi": bool(value.get("multi")),
+                    "questions": value.get("questions") or [],
                 }
                 event = "user.question"
             if payload is None:
@@ -984,14 +987,23 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                 # 不在此处预 discard(同上 permission_response 分支):
                 # resume_pending_interrupt 独占 check-and-pop,先清一次会让
                 # 里面的守卫必查必空,回答被静默丢弃(f5af1e9 事故根因)。
-                _spawn_resume(
-                    {
-                        "kind": "user_answer",
-                        "answer": str(msg.get("answer") or ""),
-                        "option_index": msg.get("option_index"),
-                        "skip": bool(msg.get("skip", False)),
-                    }
-                )
+                _ans = {"kind": "user_answer"}
+                if msg.get("multi"):
+                    # 多问题（契约 v2）：逐题答案数组原样透传；ask_tools 的
+                    # _multi_receipt 逐题出回执。
+                    _ans["multi"] = True
+                    _ans["answers"] = [
+                        a for a in (msg.get("answers") or []) if isinstance(a, dict)
+                    ] or [{"answer": "", "option_index": None, "skip": True}]
+                else:
+                    _ans.update(
+                        {
+                            "answer": str(msg.get("answer") or ""),
+                            "option_index": msg.get("option_index"),
+                            "skip": bool(msg.get("skip", False)),
+                        }
+                    )
+                _spawn_resume(_ans)
             elif kind == "subagent.plan.confirm":
                 # The user confirmed (possibly edited) the /subagent 拆分 plan
                 # card (P2 contract 2): spawn every subtask through the existing

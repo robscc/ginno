@@ -37,6 +37,25 @@ def _session_meta_rewrite_all(slug: str, metas: list[dict]) -> None:
         _write_index(slug, metas)
 
 
+def backfill_session_types() -> int:
+    """一次性迁移:历史会话的 ``type`` 缺省(main 当时没有标注)补写
+    ``"main"``。幂等——特殊类型行不动、已补写过的表零写入;返回补写数。
+    启动时调用(server lifespan),收敛后每次启动都只是读一遍。"""
+    total = 0
+    for p in paths.home().glob("projects/*/sessions/_index.json"):
+        slug = p.parent.parent.name
+        metas = _session_meta_list(slug)
+        changed = False
+        for m in metas:
+            if not str(m.get("type") or "").strip():
+                m["type"] = "main"
+                changed = True
+                total += 1
+        if changed:
+            _session_meta_rewrite_all(slug, metas)
+    return total
+
+
 def _session_meta_list(slug: str) -> list[dict]:
     p = paths.session_index_path(slug)
     if not p.exists():

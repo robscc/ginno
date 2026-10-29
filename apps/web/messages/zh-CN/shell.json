@@ -69,8 +69,13 @@
       "unpin": "取消置顶",
       "pinHint": "置顶到侧栏顶部",
       "unpinHint": "取消置顶",
+      "workerOn": "接活",
+      "workerOnHint": "允许其它会话给本会话派活（进入员工花名册）",
+      "workerOff": "停止接活",
+      "workerOffHint": "从员工花名册移除，其它会话不再能派活给本会话",
       "channelBadge": "只读 · 回复走 {channel}",
-      "rowActions": "会话操作（置顶 / 改名 / 删除）"
+      "rowActions": "会话操作（置顶 / 改名 / 删除）",
+      "workerOffBadge": "已停止接活（不在员工花名册）"
     },
     "run": {
       "fallbackName": "工作流",

@@ -54,6 +54,9 @@
     },
     "askUser": {
       "chosen": "Chosen: {answer}",
+      "answeredN": "Answered {count, plural, one {# question} other {# questions}}",
+      "skippedItem": "(skipped)",
+      "submitAll": "Submit answers",
       "skipped": "Skipped · the agent continues on its own judgment",
       "defaultHeader": "Your choice is needed",
       "freeTextPlaceholder": "Other (press Enter to send)",

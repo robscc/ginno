@@ -21,10 +21,13 @@ export type Block =
   // ask_user tool bubble (same tool-call id), and the tool's JSON result folds
   // back into status/answer on tool.end (a stop while parked → "skipped").
   // History replay rebuilds it from the checkpoint (api/messages_ui.py).
+  // multi（契约 v2，2026-10-29）：一次 ask 携带多个独立问题（questions[]），
+  // 每题自己的 options；answered 后每题的答案挂在子题上。
   | { kind: "question"; id?: string; question: string; header?: string;
       options: string[]; allowFreeText: boolean;
       status: "pending" | "answered" | "skipped";
-      answer?: string; optionIndex?: number | null }
+      answer?: string; optionIndex?: number | null;
+      multi?: boolean; questions?: QuestionSub[] }
   | { kind: "thinking"; text: string }
   | { kind: "workflow"; run: WorkflowRun }
   // WorldState change announcements (docs/design/world-state-plan.md §7):
@@ -66,6 +69,15 @@ export type Block =
   | { kind: "subagent_brief"; goal: string; constraints?: string;
       acceptance?: string; fork?: boolean; extra?: string; persona?: string;
       notes?: string }
+  // ---- worker 协议（worker-protocol-design.md §7，P1 web 侧）----
+  // 员工回传卡：watch 订阅的终态/ digest 注入 <ginno_worker_result> 信封
+  // 折成专用卡（区别于子代理结果卡：带派发来源 from 与 digest 标识）。
+  | { kind: "worker_result"; sessionId: string; from?: string; status?: string;
+      goal?: string; summary: string; digest?: boolean }
+  // 员工任务卡：assign_worker 注入的 <ginno_worker_assign> 信封（worker
+  // 会话侧首屏折卡，同 subagent brief 的收纳语义）。
+  | { kind: "worker_assign"; fromSessionId: string; from?: string; goal: string;
+      constraints?: string; acceptance?: string }
   // 后台任务事件注入（background-tasks-design §5/评审决策 4）：完成/healthy/
   // watch/停止的合成消息是模型侧输入，UI 只出这一行极薄标记——完整状态由
   // 同 transcript 里 bg_run 的常驻 TaskCard 承载（toolBlocks 特判渲染）。
@@ -142,7 +154,9 @@ export function useStatusLabel() {
 export type SubagentCardBlock =
   | Extract<Block, { kind: "subagent_spawn" }>
   | Extract<Block, { kind: "subagent_result" }>
-  | Extract<Block, { kind: "subagent_brief" }>;
+  | Extract<Block, { kind: "subagent_brief" }>
+  | Extract<Block, { kind: "worker_result" }>
+  | Extract<Block, { kind: "worker_assign" }>;
 
 /** One attachment chip shown inside a steer band. */
 export type SteerBandImage = {
@@ -155,3 +169,14 @@ export type SteerBandImage = {
 export type SteerBandFile = { id?: string; name: string; path?: string; kind?: string };
 
 export type QuestionBlock = Extract<Block, { kind: "question" }>;
+
+/** 多问题卡的单个子题：pending 时带 options；answered 后回填 answer。 */
+export type QuestionSub = {
+  question: string;
+  header?: string | null;
+  options: string[];
+  allowFreeText: boolean;
+  answer?: string;
+  optionIndex?: number | null;
+  skipped?: boolean;
+};
