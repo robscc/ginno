@@ -220,6 +220,10 @@ pub fn run() {
                                 persist_pin_geo(window.app_handle());
                             }
                             let _ = window.hide();
+                            // 关窗即「最小化到 topbar」：没有其他可见窗口时
+                            // 连 Dock 图标一起收起（Accessory），tray 菜单/
+                            // 通知点击恢复时再切回 Regular。
+                            common::sync_dock_policy(window.app_handle());
                         }
                     }
                     _ => {}
@@ -489,11 +493,13 @@ pub fn run() {
                 has_visible_windows, ..
             } => {
                 shell_log(app_handle, &format!("reopen has_visible_windows={has_visible_windows}"));
-                if !has_visible_windows {
-                    if let Some(w) = app_handle.get_webview_window("main") {
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
+                // 主窗无论什么都拉回来：悬浮窗可见不再代表「用户看得见
+                // Ginno 主界面」（Dock 图标只跟主窗，见 sync_dock_policy），
+                // 点 Dock 却什么都不弹最像「退出不了/卡死」的错觉来源。
+                if let Some(w) = app_handle.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                    common::sync_dock_policy(app_handle);
                 }
             }
             // Vibe Island 卡片点击 → macOS 按 manifest 的 jumpRule 打开
