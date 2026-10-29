@@ -640,6 +640,15 @@ class DingTalkConnector(Connector):
 _dingtalk_adapter = None  # singleton owned by DingTalkConnector.apply_config
 
 
+def channel_adapter(channel: str):
+    """渠道名 → 运行中的适配器单例（未启用/未知渠道返回 None）。
+
+    供 channels.base 的反向通知（删除会话告知 IM 侧等）按 meta 里的
+    channel 标记找到适配器，避免通知方依赖各渠道模块的私有全局。
+    """
+    return {"wecom": _wecom_adapter, "dingtalk": _dingtalk_adapter}.get(channel)
+
+
 __all__ = [
     "ChromeExtensionConnector",
     "BrowserProfileConnector",

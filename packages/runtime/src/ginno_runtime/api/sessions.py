@@ -1027,6 +1027,12 @@ async def delete_session(
             )
     s = _SESSIONS.pop(session_id, None)
     slug = s["project_slug"] if s else None
+    # 渠道会话（wecom/dingtalk）删除前先取 channel 标记：meta 马上要没了，
+    # 之后要靠它找到对应适配器解绑映射并通知 IM 侧。
+    chan = None
+    found = _find_meta(session_id)
+    if found and found[0].get("type") == "channel":
+        chan = str(found[0].get("channel") or "") or None
     # Settle a live subagent BEFORE its meta disappears (major-5): once the
     # index row is gone the completion gate's _find_meta finds nothing and no
     # one would re-evaluate a WAITING ancestor left behind by the removal.
@@ -1090,6 +1096,16 @@ async def delete_session(
         session_ended(session_id)
     except Exception:
         _log.exception("vibe_island_session_end_failed session=%s", session_id)
+    # 渠道会话删除 → 解绑 IM 映射并尽力推送提示（即使 removed=False，映射
+    # 也可能仍指向这个已不存在的 id，同样值得清）。
+    if chan:
+        try:
+            from ..channels.base import notify_channel_session_deleted
+
+            await notify_channel_session_deleted(chan, session_id)
+        except Exception:
+            _log.exception("channel_delete_notice_failed channel=%s session=%s",
+                           chan, session_id)
     return {"ok": True, "removed": removed, "files_dir": files_dir}
 
 

@@ -11,7 +11,11 @@ pytestmark = pytest.mark.e2e
 
 
 def test_agent_todo_create_reflects_in_api(create_session, ws_conv, client):
+    # todo_* is a lazy toolset family (graph_prompts._LAZY_TOOL_PREFIXES):
+    # it binds only after use_skill("todo") puts the sticky skill on the
+    # session — even a tools_allow=["*"] persona does not pre-bind it.
     model = [
+        script(tool_calls=[script_tool_call("use_skill", {"name": "todo"})]),
         script(tool_calls=[script_tool_call("todo_create", {"title": "Ship the thing", "priority": "high"})]),
         script(text="added it"),
     ]
@@ -30,6 +34,7 @@ def test_agent_todo_done(create_session, ws_conv, client):
     # seed one todo via the API, then have the agent mark it done
     todo = client.post("/api/todos", json={"title": "Finish report"}).json()["todo"]
     model = [
+        script(tool_calls=[script_tool_call("use_skill", {"name": "todo"})]),
         script(tool_calls=[script_tool_call("todo_done", {"todo_id": todo["id"]})]),
         script(text="marked done"),
     ]
@@ -62,6 +67,7 @@ def test_todo_autolinks_session_when_touched(create_session, ws_conv, client):
     """A TODO created/completed inside a session is associated with it, so the
     panel can offer 'jump back to the session where this happened'."""
     model = [
+        script(tool_calls=[script_tool_call("use_skill", {"name": "todo"})]),
         script(tool_calls=[script_tool_call("todo_create", {"title": "Linked item"})]),
         script(text="added"),
     ]
@@ -76,6 +82,7 @@ def test_todo_autolinks_session_when_touched(create_session, ws_conv, client):
 
 def test_todo_link_tool_attaches_artifact(create_session, ws_conv, client):
     model = [
+        script(tool_calls=[script_tool_call("use_skill", {"name": "todo"})]),
         script(tool_calls=[script_tool_call("todo_create", {"title": "With artifact"})]),
     ]
     sid = create_session(model, agent_id="dev")
@@ -85,6 +92,7 @@ def test_todo_link_tool_attaches_artifact(create_session, ws_conv, client):
     created = next(t for t in client.get("/api/todos").json() if t["title"] == "With artifact")
 
     model2 = [
+        script(tool_calls=[script_tool_call("use_skill", {"name": "todo"})]),
         script(tool_calls=[script_tool_call("todo_link", {"todo_id": created["id"], "artifact_id": "art123"})]),
         script(text="linked"),
     ]

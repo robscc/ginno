@@ -221,6 +221,22 @@ class WeComChannelAdapter(ChannelAdapter):
                           ginno_session=session["session_id"], nick=userid)
         return session
 
+    async def notify_session_deleted(self, session_id: str) -> None:
+        """桌面端删除渠道会话 → 解绑全部映射并尽力告知对应 chat。"""
+        assert self._mapper is not None
+        chats = self._mapper.chats_for(session_id)
+        if not chats:
+            return
+        self._mapper.unbind(session_id)
+        for c in chats:
+            try:
+                if self.client is not None:
+                    await self.client.send_markdown(
+                        c["chat_id"],
+                        "🗑️ 绑定的 Ginno 会话已在桌面端删除，下一条消息将开启新会话。")
+            except Exception:  # noqa: BLE001 — 通知失败不影响解绑
+                shared._log.warning("wecom_delete_notice chat=%s failed", c["chat_id"])
+
     async def _dispatch_text(self, req_id: str, chat_key: str, userid: str,
                              text: str) -> None:
         stream_id = await self._begin_stream(req_id)

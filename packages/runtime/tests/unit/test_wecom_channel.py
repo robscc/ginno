@@ -128,6 +128,42 @@ def test_ensure_channel_session_deleted_id_falls_through(monkeypatch):
     assert session is None and sid == "ghost"
 
 
+def test_notify_session_deleted_unbinds_and_pushes(tmp_path: Path):
+    """桌面端删除渠道会话 → 解绑该 session 的全部映射并逐 chat 推送提示；
+    client 断开时只解绑不发送；未绑定的 session 不发不报。"""
+    ad = _make_adapter(tmp_path, {})
+    ad._mapper.bind(user_id="zhang", chat_id="czhang", ginno_session="gone1")
+    ad._mapper.bind(user_id="lisi", chat_id="wrChat1", ginno_session="gone1")
+    ad._mapper.bind(user_id="wang", chat_id="wrChat2", ginno_session="keep1")
+    asyncio.run(ad.notify_session_deleted("gone1"))
+    # 只解绑目标 session，其余映射保留
+    assert ad._mapper.get(user_id="wang", chat_id="wrChat2") == "keep1"
+    assert ad._mapper.chats_for("gone1") == []
+    assert {cid for cid, _ in ad.client.pushes} == {"czhang", "wrChat1"}
+    assert all("已在桌面端删除" in c for _, c in ad.client.pushes)
+    # 未绑定 session：无映射即无动作
+    ad.client.pushes.clear()
+    asyncio.run(ad.notify_session_deleted("never-bound"))
+    assert ad.client.pushes == []
+    # client 断开：只解绑，不发送、不抛
+    ad2 = _make_adapter(tmp_path / "b", {})
+    ad2._mapper.bind(user_id="zhang", chat_id="czhang", ginno_session="gone1")
+    ad2.client = None
+    asyncio.run(ad2.notify_session_deleted("gone1"))
+    assert ad2._mapper.chats_for("gone1") == []
+
+
+def test_notify_channel_session_deleted_no_adapter(monkeypatch):
+    """渠道未启用/无适配器时 base 反向通知静默跳过，不抛。"""
+    import ginno_runtime.connectors.builtin as builtin_mod
+    from ginno_runtime.channels.base import notify_channel_session_deleted
+
+    monkeypatch.setattr(builtin_mod, "channel_adapter", lambda ch: None)
+    asyncio.run(notify_channel_session_deleted("wecom", "nosuch"))
+    asyncio.run(notify_channel_session_deleted(None, "x"))
+    asyncio.run(notify_channel_session_deleted("nosuch-channel", "x"))
+
+
 def test_connector_apply_config_disabled_is_noop():
     from ginno_runtime.connectors.builtin import WeComConnector
 

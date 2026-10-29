@@ -543,12 +543,14 @@ async def test_tick_recomputes_invalid_weekly_next_run(isolated_home, monkeypatc
     fired = []
     monkeypatch.setattr(scheduler, "trigger_task", lambda task, **k: fired.append(task["id"]))
     now = time.time()
-    # 找一个“now 之后最近的周日 06:00”——周日不在 Mon-Fri 集合内
-    sunday = now + 86400
-    while datetime.fromtimestamp(sunday).weekday() != 6 or datetime.fromtimestamp(sunday).hour < 7:
-        sunday += 86400
-    d = datetime.fromtimestamp(sunday).replace(hour=6, minute=0, second=0, microsecond=0)
+    # 找一个“now 之后最近的周日 06:00”——周日不在 Mon-Fri 集合内。
+    # 先构造今天的 06:00 再按天步进找周日：固定 +86400s 步长永远落在同一
+    # wall-clock hour，若从 now 直接起步且 now 在 0:00-6:59，hour<7 永真，
+    # 循环会一路加到 year 10000 溢出（2026-10-29 凌晨实测）。
+    d = datetime.fromtimestamp(now).replace(hour=6, minute=0, second=0, microsecond=0)
     sunday = d.timestamp()
+    while datetime.fromtimestamp(sunday).weekday() != 6 or sunday <= now:
+        sunday += 86400
     store.save_config({"enabled": True, "keep_awake": False, "tasks": [
         _task(schedule={"kind": "weekly", "weekdays": [1, 2, 3, 4, 5], "at": "06:00"},
               next_run_at=sunday),

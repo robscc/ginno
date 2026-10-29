@@ -147,6 +147,12 @@ class SessionMapper:
             self._mappings = [i for i in self._mappings if i["ginno_session"] != ginno_session]
             self._flush()
 
+    def chats_for(self, ginno_session: str) -> list[dict]:
+        """反向查询：绑定到该 session 的全部映射条目（删除通知用）。"""
+        with self._lock:
+            return [dict(i) for i in self._mappings
+                    if i["ginno_session"] == ginno_session]
+
     def all(self) -> list[dict]:
         """全部映射的浅拷贝列表（用于状态展示/排障）。"""
         with self._lock:

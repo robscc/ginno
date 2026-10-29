@@ -267,3 +267,33 @@ def test_tap_ignores_noise_frames():
         asyncio.get_event_loop_policy()
         asyncio.run(tap.send_text(_frame(ev, content="x", name="bash")))
     assert ad.cards.updates == [] and ad.markdowns == []
+
+
+# ---------------------------------------------------------------- 删除通知
+
+
+async def test_notify_session_deleted_unbinds_and_notifies(tmp_path: Path):
+    """桌面端删除渠道会话 → 解绑该 session 的全部映射并通知成员（去重）；
+    其余映射保留。"""
+    from ginno_runtime.channels.dingtalk.adapter import DingTalkChannelAdapter
+    from ginno_runtime.channels.dingtalk.sessions import SessionMapper
+
+    ad = DingTalkChannelAdapter()
+    ad.config = {}
+    mapper = SessionMapper(tmp_path / "m.json")
+    mapper.load()
+    ad._mapper = mapper
+    sent: list[str] = []
+
+    async def fake_send(staff_id, title, text):
+        sent.append(staff_id)
+
+    ad.send_markdown = fake_send  # type: ignore[method-assign]
+    mapper.bind(staff_id="s1", conversation_id="cid1", ginno_session="gone1")
+    mapper.bind(staff_id="s1", conversation_id="cid2", ginno_session="gone1")
+    mapper.bind(staff_id="s2", conversation_id="cid3", ginno_session="keep1")
+    await ad.notify_session_deleted("gone1")
+    assert mapper.chats_for("gone1") == []
+    assert mapper.get(staff_id="s2", conversation_id="cid3") == "keep1"
+    # 同一成员多条映射去重，只发一条
+    assert sent == ["s1"]

@@ -172,12 +172,14 @@ def test_mcp_drift_from_baseline_announced(create_session, ws_conv, client):
 def test_usage_events_accumulate(create_session, ws_conv):
     # langchain 1.x shape: `input_tokens` is already the WHOLE prompt
     # (cached portions included) and passes through extraction unchanged
-    # (usage-stats-design.md §3.5).
+    # (usage-stats-design.md §3.5). NOTE: scripted replies must stay ≥2 chars —
+    # the degenerate-final-reply nudge (graph.py) re-invokes the model in-turn
+    # for shorter replies, which would emit a second usage event per turn.
     usage1 = {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
               "input_token_details": {"cache_read": 40, "cache_creation": 0}}
     usage2 = {"input_tokens": 150, "output_tokens": 12, "total_tokens": 162,
               "input_token_details": {"cache_read": 90, "cache_creation": 5}}
-    sid = create_session([_ai("一", usage1), _ai("二", usage2)], agent_id="dev")
+    sid = create_session([_ai("first answer", usage1), _ai("second answer", usage2)], agent_id="dev")
     with ws_conv(sid) as conv:
         conv.invoke("t1")
         e1 = conv.recv_until("message.end", "error")

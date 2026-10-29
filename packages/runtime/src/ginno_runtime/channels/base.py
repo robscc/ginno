@@ -481,6 +481,29 @@ def mark_channel_sessions(channel: str, session_ids) -> int:
     return n
 
 
+async def notify_channel_session_deleted(channel: str | None, session_id: str) -> None:
+    """桌面端删除渠道会话后反向告知 IM 侧（尽力而为，绝不抛出）。
+
+    适配器按各自映射表解绑该会话的全部 chat，并在连接可用时推送一条
+    「会话已删除」提示——否则用户在 IM 里继续说话只会看到含糊的
+    「会话创建失败」。渠道未启用/适配器未运行时静默跳过（残留映射由
+    ensure_channel_session 的死链回落自愈）。
+    """
+    if not channel:
+        return
+    try:
+        from ..connectors import builtin as _conns
+
+        adapter = _conns.channel_adapter(channel)
+        notify = getattr(adapter, "notify_session_deleted", None) if adapter else None
+        if notify is None:
+            return
+        await notify(session_id)
+    except Exception:  # noqa: BLE001 — 通知失败不影响删除结果
+        shared._log.exception(
+            "channel_delete_notice channel=%s session=%s failed", channel, session_id)
+
+
 async def quiesce(session_id: str, slug: str, timeout_s: float = 8.0) -> dict:
     """Wait for subagents/background work to settle (cli.py 同名协议的轻封装)."""
     from ..cli import _await_quiescence
