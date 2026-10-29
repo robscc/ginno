@@ -237,3 +237,34 @@ async def test_engine_error_attributes_failing_node_in_chain():
     assert err.get("node_id") == "b"
     assert "boom-b" in (err.get("error") or "")
     assert "boom-b" in (err.get("traceback") or "")
+
+
+# --------------------------------------------------------------------------- #
+# Workflow run 的 provider 解析（2026-10-29 unknown provider: "" 修复）
+# --------------------------------------------------------------------------- #
+
+def test_wf_resolve_provider_falls_back_to_default(monkeypatch):
+    """Agent provider 为空/占位时回落到已启用的全局默认；全不可用时报
+    可行动的错误（此前 fork.provider="" 直喂 build_model 瞬炸）。"""
+    import ginno_runtime.api.workflows  # noqa: F401 — 建立正向导入序（既有环）
+    from types import SimpleNamespace as NS
+
+    from ginno_runtime.api import workflows_runs as wr
+
+    monkeypatch.setattr(wr.prov_mod, "load_providers",
+                        lambda: {"p1": {"enabled": True}, "p2": {"enabled": False}})
+    monkeypatch.setattr(wr.prov_mod, "get_default_provider", lambda: "p1")
+    empty = NS(provider="", model="", provider_explicit=True)
+    assert wr._wf_resolve_provider(empty) == "p1"
+    deliberate = NS(provider="p1", model="m", provider_explicit=True)
+    assert wr._wf_resolve_provider(deliberate) == "p1"
+    # 刻意绑定的 provider 被停用 → 回落默认
+    disabled_deliberate = NS(provider="p2", model="m", provider_explicit=True)
+    assert wr._wf_resolve_provider(disabled_deliberate) == "p1"
+    # 默认也被停用 → 明确报错而不是 "unknown provider: "
+    monkeypatch.setattr(wr.prov_mod, "get_default_provider", lambda: "p2")
+    import pytest
+
+    with pytest.raises(ValueError) as ei:
+        wr._wf_resolve_provider(empty)
+    assert "enable one in Settings" in str(ei.value)

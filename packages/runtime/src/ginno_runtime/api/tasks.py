@@ -20,7 +20,14 @@ router = APIRouter()
 
 
 def _task_or_404(task_id: str) -> dict:
+    """活任务（registry 内存）优先；终态/重启前历史任务回落 index。
+
+    回放聊天里的 TaskCard 会轮询此端点——任务在 sidecar 重启后不在内存
+    （startup 只加载 running），但 index 里有最终记录（interrupted/
+    finished），必须能查，否则整张卡 404（2026-10-29 实录）。"""
     rec = get_registry().try_get(task_id)
+    if rec is None:
+        rec = task_store.read_index().get(task_id)
     if rec is None:
         raise HTTPException(
             404, detail={"ok": False, "error": f"unknown task: {task_id}"}
@@ -61,8 +68,12 @@ async def task_logs_endpoint(
 
 @router.post("/api/tasks/{task_id}/stop")
 async def stop_task_endpoint(task_id: str) -> dict:
-    _task_or_404(task_id)
-    rec = get_registry().stop(task_id)
+    rec = _task_or_404(task_id)
+    try:
+        rec = get_registry().stop(task_id)
+    except KeyError:
+        # index-only（重启后历史任务）：本就没有活进程可停，原样返回。
+        pass
     return {"ok": True, "task": rec}
 
 

@@ -940,6 +940,15 @@ async def _stream_graph(
                                     )
                                     _wf_task = _WF_RUN_TASKS.get(run["id"])
                                     if (_wf_task is None or _wf_task.done()) and run.get("status") == "running":
+                                        # 2026-10-29 NameError 实录：此分支曾
+                                        # 裸引用两个未导入的名字（ae47b90 引入，
+                                        # 默认 ruff F821 抓不到）。这里懒加载，
+                                        # 顺便避免与 workflows_runs 的潜在环。
+                                        from ..workflows_runs import (
+                                            _run_workflow_bg,
+                                            _spawn_run_task,
+                                        )
+
                                         _spawn_run_task(
                                             run["id"],
                                             _run_workflow_bg(

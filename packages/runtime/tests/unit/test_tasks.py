@@ -424,3 +424,29 @@ async def test_busy_injection_steers_and_rescues(isolated_home: Path, monkeypatc
         shared._STEER_STASH.pop("sess-busy", None)
         shared._SESSIONS.pop("sess-busy", None)
         fut.cancel()
+
+
+# --------------------------------------------------------------------------- #
+# API 回落：重启后的历史任务必须可查（TaskCard 回放轮询路径）
+# --------------------------------------------------------------------------- #
+
+def test_task_or_404_falls_back_to_index(monkeypatch):
+    """registry 内存 miss（sidecar 重启后只加载 running）→ 回落 index；
+    仍无 → 404。2026-10-29 实录：回放会话的 TaskCard 全场 404 触发前端崩溃。"""
+    from fastapi import HTTPException
+
+    from ginno_runtime.api import tasks as tasks_api
+
+    class _Reg:
+        def try_get(self, task_id):
+            return None
+
+    monkeypatch.setattr(tasks_api, "get_registry", lambda: _Reg())
+    monkeypatch.setattr(
+        tasks_api.task_store, "read_index",
+        lambda: {"t_hist": {"id": "t_hist", "status": "interrupted"}})
+    rec = tasks_api._task_or_404("t_hist")
+    assert rec["status"] == "interrupted"
+    with pytest.raises(HTTPException) as ei:
+        tasks_api._task_or_404("t_gone")
+    assert ei.value.status_code == 404

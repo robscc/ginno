@@ -74,12 +74,19 @@ export function TaskCard({ taskId }: { taskId: string }) {
   const refresh = useCallback(async () => {
     try {
       const t = await getTask(taskId);
+      // json() 对 404 只解析不抛错——{ok:false} 形状必须显式识别：
+      // 任务已在别处删除（或旧 sidecar 无记录）→ 定格为 removed，
+      // 绝不能让 undefined 流进 setTail/setTask 崩掉整页。
+      if (!t || (t as { ok?: boolean }).ok === false) {
+        if (alive.current) setRemoved(true);
+        return;
+      }
       const logs = await taskLogs(taskId, { tail: 6 });
       if (!alive.current) return;
       setTask(t);
-      setTail(logs.lines);
+      setTail(Array.isArray(logs?.lines) ? logs.lines : []);
     } catch {
-      /* 404 = removed elsewhere; keep last known state */
+      /* 网络类失败：保留最后已知状态 */
     }
   }, [taskId]);
 

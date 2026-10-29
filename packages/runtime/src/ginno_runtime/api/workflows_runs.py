@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ginno_runtime import jsonx as json
 
+from .. import providers as prov_mod
 from ..lang import t
 from . import workflows as _base
 
@@ -57,6 +58,32 @@ def _wf_mcp_tools() -> list:
         return _base.shared._mcp.all_langchain_tools() if _base.shared._mcp else []
     except Exception:
         return []
+
+
+def _wf_resolve_provider(fork) -> str:
+    """Workflow run 的 provider 解析，镜像 api/sessions._resolve_provider_model。
+
+    Agent 的 provider 只有「刻意绑定」（provider_is_deliberate）才优先；
+    空/占位值回落到已启用的全局默认。此前 fork.provider 被原样喂给
+    build_model，agent 存了 provider="" 时 run 瞬炸
+    ``ValueError: unknown provider: ``（2026-10-29 每日新闻工作流实录）。
+    """
+    from ..agents.registry import provider_is_deliberate
+
+    providers = prov_mod.load_providers()
+
+    def _enabled(pid: str | None) -> bool:
+        return bool(pid) and bool((providers.get(pid) or {}).get("enabled"))
+
+    provider = fork.provider if provider_is_deliberate(fork) else None
+    if not _enabled(provider):
+        provider = prov_mod.get_default_provider()
+    if not _enabled(provider):
+        raise ValueError(
+            f"no enabled provider (agent provider={fork.provider!r}, "
+            f"default={prov_mod.get_default_provider()!r}) — enable one in Settings"
+        )
+    return provider
 
 
 def _wf_build_deps(run_id: str, workflow_id: str, pinned_version: int | None = None):
@@ -110,7 +137,8 @@ def _wf_build_deps(run_id: str, workflow_id: str, pinned_version: int | None = N
         _base._log.warning("workflow_run run=%s agent fallback: %s", run_id, agent_warn)
         _base.wf_events.append_event(run_id, "warning", message=agent_warn)
     fork = _base.agents_reg.fork_agent(resolved.id, f"wf-{run_id[:8]}-{resolved.id}")
-    model = _base.build_model(fork.provider, fork.model or None)
+    provider = _wf_resolve_provider(fork)
+    model = _base.build_model(provider, fork.model or None)
     # Bind the run's file tools to a REAL workspace. With no workspace the
     # builtin tools fall back to the process cwd — for a packaged app that is
     # "/" and an agent's glob_files then walked the ENTIRE filesystem
@@ -118,7 +146,7 @@ def _wf_build_deps(run_id: str, workflow_id: str, pinned_version: int | None = N
     # sensitive subdirs are hard-denied by the tool layer anyway.
     tools = _base.build_all_tools(_wf_mcp_tools(), workspace=str(_base.paths.home()))
     usage_attr = {
-        "provider": fork.provider or "",
+        "provider": provider,
         "model": fork.model or getattr(model, "model", None) or getattr(model, "model_name", "") or "",
         "agent_id": resolved.id,
         "run_id": run_id,
@@ -437,7 +465,6 @@ async def _run_workflow_bg(run_id: str, workflow_id: str, context_override: dict
     error persisted. CancelledError is re-raised: the cancel endpoint /
     shutdown path owns that status flip.
     """
-    from ..workflows import engine as wf_engine
 
     fork_id = None
     # 跨 run 全局并发闸(odw P1-③):调度触发的无人值守 run 并行时全局限流
