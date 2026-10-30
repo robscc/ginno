@@ -400,7 +400,9 @@ async def _prepare_report(report: str, meta: dict, slug: str) -> tuple[str, str]
 
         from ..models import build_model
 
-        model = build_model(meta.get("provider"), meta.get("model"))
+        model = build_model(
+            meta.get("provider"), meta.get("model"), session_id=meta.get("id")
+        )
         async with asyncio.timeout(60):
             resp = await model.ainvoke(
                 [
@@ -510,7 +512,7 @@ async def _gen_subagent_title(child_id: str, report: str) -> None:
         goal = str(sa.get("goal") or "").strip()
         if not goal:
             return
-        model = build_model(meta.get("provider"), meta.get("model"))
+        model = build_model(meta.get("provider"), meta.get("model"), session_id=child_id)
         resp = await model.ainvoke(
             [
                 SystemMessage(

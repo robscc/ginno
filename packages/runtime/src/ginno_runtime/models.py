@@ -460,7 +460,12 @@ def cfg_dump_fields(model) -> dict[str, Any]:
         return {}
 
 
-def build_model(provider_id: str, model_name: str | None = None, enable_search: bool | None = None):
+def build_model(
+    provider_id: str,
+    model_name: str | None = None,
+    enable_search: bool | None = None,
+    session_id: str | None = None,
+):
     """Return a LangChain chat model for the given provider id.
 
     `model_name` overrides the provider's configured default/model.
@@ -522,6 +527,12 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         # langchain-anthropic, so ours win here. bearer_auth's Authorization
         # rides on the same dict instead of replacing the UA.
         default_headers: dict[str, str] = {"User-Agent": f"ginno/{_GINNO_VERSION}"}
+        # Session affinity for external gateways (magpie etc.): magpie reads
+        # x-conversation-id ahead of its content-fingerprint fallback, giving
+        # exact per-session routing (incl. subagent isolation — each subagent
+        # is its own ginno session_id) instead of first-user-message hashing.
+        if session_id:
+            default_headers["x-conversation-id"] = session_id
         if cfg.get("bearer_auth"):
             default_headers["Authorization"] = f"Bearer {key}"
         chat_kwargs: dict[str, Any] = dict(
@@ -558,6 +569,8 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         )
         if cfg.get("org_id"):
             chat_kw["openai_organization"] = cfg["org_id"]
+        if session_id:
+            chat_kw["default_headers"] = {"x-conversation-id": session_id}
         return _responses_chat_openai()(**chat_kw)
 
     # openai / openai-compatible
@@ -590,6 +603,8 @@ def build_model(provider_id: str, model_name: str | None = None, enable_search: 
         extra_body["enable_thinking"] = True
     if extra_body:
         chat_kw["extra_body"] = extra_body
+    if session_id:
+        chat_kw["default_headers"] = {"x-conversation-id": session_id}
     # Reasoning round-trip (see _replay_reasoning_content): on for
     # openai-compatible gateways (DeepSeek thinking mode requires it, Qwen
     # ignores it), off for the official OpenAI endpoint. An explicit

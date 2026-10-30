@@ -938,7 +938,7 @@ async def _llm_summary(task: dict, row: dict, text: str) -> None:
     provider = provider or prov_mod.get_default_provider()
     model_name = model_name or prov_mod.model_for_provider(prov_mod.load_providers(), provider)
     try:
-        model = models_mod.build_model(provider, model_name)
+        model = models_mod.build_model(provider, model_name, session_id=session_id)
         from langchain_core.messages import HumanMessage, SystemMessage
 
         resp = await model.ainvoke(

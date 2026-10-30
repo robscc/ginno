@@ -138,7 +138,9 @@ def _resolve_provider_model(req: CreateSessionRequest) -> tuple[str, str, str | 
     return provider, model, (agent.id if agent else req.agent_id)
 
 
-def _build_model_with_fallback(provider: str, model_name: str | None):
+def _build_model_with_fallback(
+    provider: str, model_name: str | None, session_id: str | None = None
+):
     """Build the session model, falling back to the global default config.
 
     Decision Q3 runtime side: an agent may still carry a binding that no
@@ -148,7 +150,7 @@ def _build_model_with_fallback(provider: str, model_name: str | None):
     itself is broken (nothing to fall back to).
     """
     try:
-        return build_model(provider, model_name)
+        return build_model(provider, model_name, session_id=session_id)
     except ValueError as e:
         dflt = prov_mod.get_default_provider()
         dflt_model = prov_mod.model_for_provider(prov_mod.load_providers(), dflt)
@@ -163,7 +165,7 @@ def _build_model_with_fallback(provider: str, model_name: str | None):
             dflt,
             dflt_model,
         )
-        return build_model(dflt, dflt_model)
+        return build_model(dflt, dflt_model, session_id=session_id)
 
 
 def _default_title(agent_id: str | None) -> str:
@@ -554,13 +556,13 @@ async def clear_session_goal(session_id: str) -> dict:
 @router.post("/api/sessions")
 async def create_session(req: CreateSessionRequest) -> dict:
     provider, model_name, agent_id = _resolve_provider_model(req)
+    session_id = uuid.uuid4().hex
     try:
-        model = _build_model_with_fallback(provider, model_name)
+        model = _build_model_with_fallback(provider, model_name, session_id)
     except ValueError as e:
         return {"error": str(e), "ok": False}
 
     mcp_tools = shared._mcp.all_langchain_tools() if shared._mcp else []
-    session_id = uuid.uuid4().hex
     # Subagent depth (subagent-design.md §4.2): one above the parent's; the
     # depth caps the toolset STRUCTURALLY (a depth-2 child never gets
     # spawn_subagent) and is rejected outright beyond it.
@@ -891,7 +893,7 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
                 prov_mod.load_providers(), patch["provider"]
             )
         try:
-            new_model = build_model(provider, patch.get("model"))
+            new_model = build_model(provider, patch.get("model"), session_id=session_id)
         except ValueError as e:
             return {"ok": False, "error": str(e)}
 
@@ -1494,7 +1496,7 @@ def _ensure_session(session_id: str) -> dict[str, Any] | None:
         prov_mod.load_providers(), provider
     )
     try:
-        model = _build_model_with_fallback(provider, model_name)
+        model = _build_model_with_fallback(provider, model_name, session_id)
     except ValueError:
         return None
     # Derive the workspace from paths (not meta) so legacy sessions whose meta

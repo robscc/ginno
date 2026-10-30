@@ -163,7 +163,9 @@ async def decompose_task(session: dict, task: str) -> list[dict]:
     from .graph import text_of_content
     from .models import build_model
 
-    model = build_model(session.get("model_provider"), session.get("model_name"))
+    model = build_model(
+        session.get("model_provider"), session.get("model_name"), session_id=session.get("id")
+    )
     resp = await model.ainvoke(
         [
             SystemMessage(content=t(_DECOMPOSE_SYSTEM_EN, _DECOMPOSE_SYSTEM)),

@@ -155,7 +155,9 @@ async def maybe_llm_title(session_id: str, turn_id: str) -> None:
         # Fresh client from the session's persisted provider/model — never the
         # live session model object, so the auxiliary call cannot consume
         # scripted test models (and tests without a patched build_model skip).
-        model = build_model(meta.get("provider"), meta.get("model"))
+        model = build_model(
+            meta.get("provider"), meta.get("model"), session_id=session_id
+        )
     except Exception:
         _log.info("title_llm session=%s status=skipped reason=no_model", session_id)
         return
