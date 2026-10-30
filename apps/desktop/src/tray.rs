@@ -27,6 +27,8 @@ pub(crate) fn install_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = w.show();
                     let _ = w.unminimize();
                     let _ = w.set_focus();
+                    // Accessory → Regular：主窗回来了，Dock 图标也回来。
+                    crate::common::sync_dock_policy(app);
                 }
             }
             // app.exit runs ExitRequested (flips `quitting`) then Exit (kills

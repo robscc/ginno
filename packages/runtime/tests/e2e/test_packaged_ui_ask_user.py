@@ -24,6 +24,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import _sidecar as sc
 import pytest
 
 from ginno_runtime import jsonx as json
@@ -164,9 +165,7 @@ def app(tmp_path, request):
         GINNO_FAKE_LLM_SCRIPTS=str(scripts),
         GINNO_RUNTIME_PORT=str(port),
     )
-    proc = subprocess.Popen(
-        [str(RUNTIME_BIN)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
     try:
         _wait_health(port)
         with sync_playwright() as pw:
@@ -177,7 +176,7 @@ def app(tmp_path, request):
             yield page, home
             browser.close()
     finally:
-        proc.terminate()
+        sc.stop_sidecar(proc)
 
 
 def _send(page, text: str) -> None:
@@ -343,9 +342,7 @@ def app_inline(tmp_path, request):
         GINNO_FAKE_LLM_SCRIPTS=str(scripts),
         GINNO_RUNTIME_PORT=str(port),
     )
-    proc = subprocess.Popen(
-        [str(RUNTIME_BIN)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
     try:
         _wait_health(port)
         with sync_playwright() as pw:
@@ -356,7 +353,7 @@ def app_inline(tmp_path, request):
             yield page, home
             browser.close()
     finally:
-        proc.terminate()
+        sc.stop_sidecar(proc)
 
 
 @pytest.mark.parametrize("app_inline", [8895], indirect=True)

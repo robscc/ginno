@@ -382,6 +382,14 @@ async def put_model_configs(req: PutModelConfigsRequest):
             status_code=400,
             content={"ok": False, "error": f"default_config {default!r} is not in configs"},
         )
+    if default is not None and any(
+        c["id"] == default and c.get("kind") == "asr" for c in normalized
+    ):
+        # 语音识别配置不能当对话默认（不进 load_providers/默认链，绑了必坏）
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": f"default_config {default!r} is an asr config"},
+        )
     blocked = _guard_config_removal(
         {c["id"] for c in prov_mod.load_configs()}, new_ids, default
     )
@@ -493,8 +501,13 @@ async def delete_model_config(config_id: str):
     new_default = None
     if was_default:
         # design §2.5: default moves to the first enabled config (or clears to
-        # "" so the legacy default_provider fallback takes over)
-        new_default = next((c["id"] for c in remaining if c.get("enabled")), "")
+        # "" so the legacy default_provider fallback takes over); asr 卡不能
+        # 当对话默认（load_providers/默认链都跳过它，绑了必坏）
+        new_default = next(
+            (c["id"] for c in remaining
+             if c.get("enabled") and c.get("kind") != "asr"),
+            "",
+        )
     prov_mod.save_configs(remaining, new_default)
     _SESSIONS.clear()
     _refresh_session_metas()
@@ -518,7 +531,10 @@ def _config_to_legacy(cfg: dict) -> dict:
 async def get_providers() -> dict:
     settings = _read_settings_file()
     configs = prov_mod.load_configs(settings)
-    legacy = {cfg["id"]: _config_to_legacy(cfg) for cfg in configs}
+    # kind="asr" 卡不进 legacy providers 视图——聊天侧（模型选择、agents
+    # 下拉、会话绑定）全部经此读取；asr 卡按 id 供 ginno_runtime.asr 调用。
+    legacy = {cfg["id"]: _config_to_legacy(cfg) for cfg in configs
+              if cfg.get("kind") != "asr"}
     # SEC-01: same rule as GET /api/settings — keys never leave the process in
     # plaintext. PUT /api/providers restores masked ones from storage.
     for c in legacy.values():

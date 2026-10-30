@@ -18,6 +18,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import _sidecar as sc
 import pytest
 
 from ginno_runtime import jsonx as json
@@ -107,7 +108,7 @@ def test_packaged_ui_shows_lists_and_adds_session(tmp_path):
     (home / "settings.json").write_text(json.dumps(_settings()))
 
     env = dict(os.environ, GINNO_HOME=str(home), GINNO_FAKE_LLM="1", GINNO_RUNTIME_PORT=str(PORT))
-    proc = subprocess.Popen([str(RUNTIME_BIN)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
     try:
         _wait_health(PORT)
         with sync_playwright() as pw:
@@ -144,7 +145,7 @@ def test_packaged_ui_shows_lists_and_adds_session(tmp_path):
             assert page.get_by_text("还没有会话").count() == 0, "sidebar should list the new session"
             browser.close()
     finally:
-        proc.terminate()
+        sc.stop_sidecar(proc)
 
 
 def test_packaged_ui_context_chip_and_usage(tmp_path):
@@ -198,9 +199,7 @@ def test_packaged_ui_context_chip_and_usage(tmp_path):
         GINNO_FAKE_LLM_SCRIPTS=str(scripts),
         GINNO_RUNTIME_PORT=str(PORT2),
     )
-    proc = subprocess.Popen(
-        [str(RUNTIME_BIN)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
     try:
         _wait_health(PORT2)
         with sync_playwright() as pw:
@@ -247,7 +246,7 @@ def test_packaged_ui_context_chip_and_usage(tmp_path):
             )
             browser.close()
     finally:
-        proc.terminate()
+        sc.stop_sidecar(proc)
 
 
 PORT3 = 8897
@@ -313,9 +312,7 @@ def test_packaged_ui_code_generated_image_inline(tmp_path):
         GINNO_FAKE_LLM_SCRIPTS=str(scripts),
         GINNO_RUNTIME_PORT=str(PORT3),
     )
-    proc = subprocess.Popen(
-        [str(RUNTIME_BIN)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    proc = sc.spawn_sidecar(str(RUNTIME_BIN), env)
     try:
         _wait_health(PORT3)
         with sync_playwright() as pw:
@@ -353,4 +350,4 @@ def test_packaged_ui_code_generated_image_inline(tmp_path):
             img2.first.wait_for(timeout=15000)
             browser.close()
     finally:
-        proc.terminate()
+        sc.stop_sidecar(proc)

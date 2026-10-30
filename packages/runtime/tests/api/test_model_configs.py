@@ -995,3 +995,69 @@ def test_security_headers_present(client):
     assert r.headers["x-content-type-options"] == "nosniff"
     assert r.headers["referrer-policy"] == "no-referrer"
     assert r.headers["x-frame-options"] == "SAMEORIGIN"
+
+
+# ------------------------------ asr kind cards ----------------------------- #
+
+
+def _asr_cfg(cid: str = "asr_main", enabled: bool = True) -> dict:
+    return {
+        "id": cid, "name": "千问 ASR", "kind": "asr", "protocol": "openai-compatible",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-asr", "models": ["qwen3-asr-flash"],
+        "default_model": "qwen3-asr-flash", "enabled": enabled,
+    }
+
+
+def test_asr_kind_roundtrip_and_chat_surfaces_exclude(client):
+    """asr 卡可存取（normalize 补 kind），但 load_providers（会话/agents/
+    默认链全部经它）与 get_default_config 都跳过它。"""
+    base = client.get("/api/model_configs").json()["configs"]
+    r = client.put(
+        "/api/model_configs",
+        json={"configs": [*(_chat_cfg(c) for c in base), _asr_cfg()],
+              "default_config": client.get("/api/settings").json().get("default_config")},
+    )
+    assert r.status_code == 200, r.text
+    cfgs = r.json()["configs"]
+    asr = next(c for c in cfgs if c["id"] == "asr_main")
+    assert asr["kind"] == "asr"  # roundtrip 保留
+    assert all(c.get("kind", "chat") == "chat" for c in cfgs if c["id"] != "asr_main")
+    # chat 视图与默认链都看不到 asr 卡
+    assert "asr_main" not in prov_mod.load_providers()
+    assert prov_mod.get_default_config() != "asr_main"
+
+
+def _chat_cfg(c: dict) -> dict:
+    return c
+
+
+def test_asr_config_cannot_be_default(client):
+    base = client.get("/api/model_configs").json()["configs"]
+    r = client.put("/api/model_configs",
+                   json={"configs": [*(_chat_cfg(c) for c in base), _asr_cfg()],
+                         "default_config": "asr_main"})
+    assert r.status_code == 400
+    assert "asr" in r.json()["error"]
+
+
+def test_resolve_asr_config_by_id(client):
+    from ginno_runtime.asr import resolve_asr_config
+
+    base = client.get("/api/model_configs").json()["configs"]
+    r = client.put("/api/model_configs", json={
+        "configs": [*(_chat_cfg(c) for c in base), _asr_cfg()],
+        "default_config": None})
+    assert r.status_code == 200, r.text
+    got = resolve_asr_config("asr_main")
+    assert got and got["model"] == "qwen3-asr-flash"
+    assert got["base_url"].endswith("/compatible-mode/v1")
+    # 未启用 → None；chat 卡 id / 不存在 id → None
+    client.put("/api/model_configs", json={
+        "configs": [*(_chat_cfg(c) for c in base), _asr_cfg(enabled=False)],
+        "default_config": None})
+    assert resolve_asr_config("asr_main") is None
+    first_chat = next((c for c in base if c.get("enabled")), None)
+    if first_chat:
+        assert resolve_asr_config(first_chat["id"]) is None
+    assert resolve_asr_config("nosuch") is None

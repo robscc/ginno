@@ -1,12 +1,14 @@
-"""企微语音转写：千问云 ASR（录音文件转写，chat completions + input_audio）。
+"""语音转写（ASR）：模型配置里的 kind="asr" 卡片 + OpenAI 兼容云端点。
 
-对接 docs/developer-guides/speech/asr（qwen3-asr-flash 系，含
-qwen-audio-3.0-asr-flash）：OpenAI 兼容 ``POST {base}/chat/completions``，
-user 消息携带 ``input_audio``（base64 data URL，≤10MB），识别文本从
-``choices[0].message.content`` 取。配置在企微连接器（asr_base_url /
-asr_api_key / asr_model），典型 base：
+对接千问云「录音文件转写」（docs/developer-guides/speech/asr，qwen3-asr-flash
+系）：OpenAI 兼容 ``POST {base}/chat/completions``，user 消息携带
+``input_audio``（base64 data URL，≤10MB），识别文本从
+``choices[0].message.content`` 取。配置不再是渠道私有字段，而是「设置 →
+模型 API」里的 asr 卡片（providers.py CONFIG_DEFAULTS["kind"]）；典型 base：
 ``https://dashscope.aliyuncs.com/compatible-mode/v1``。
 
+消费方按 id 取配置（:func:`resolve_asr_config`），如后续钉钉语音轨；企微
+智能机器人的 voice 消息不带音频文件（服务端已转写），不走本模块。
 不新增 SDK 依赖，直接 httpx。
 """
 
@@ -29,9 +31,30 @@ _MIME_BY_FORMAT = {
 
 
 def mime_for_format(fmt: str) -> str:
-    """企微 voice.format → data URL 的 MIME；未知格式按 amr 兜底（企微
-    语音传统容器）。"""
+    """音频容器名 → data URL 的 MIME；未知格式按 amr 兜底（企微语音
+    传统容器）。"""
     return _MIME_BY_FORMAT.get(fmt.strip().lstrip(".").lower(), "audio/amr")
+
+
+def resolve_asr_config(config_id: str) -> dict | None:
+    """按 id 取一张启用的 asr 模型配置卡；不是 asr/未启用/不存在 → None。
+
+    返回 {id, base_url, api_key, model}（model 取 default_model → models[0]）。
+    """
+    from . import providers as prov_mod
+
+    for cfg in prov_mod.load_configs():
+        if cfg.get("id") == config_id and cfg.get("kind") == "asr":
+            if not cfg.get("enabled"):
+                return None
+            models = cfg.get("models") or []
+            return {
+                "id": cfg["id"],
+                "base_url": str(cfg.get("base_url") or ""),
+                "api_key": str(cfg.get("api_key") or ""),
+                "model": cfg.get("default_model") or (models[0] if models else ""),
+            }
+    return None
 
 
 async def transcribe_audio(data: bytes, *, fmt: str, base_url: str,

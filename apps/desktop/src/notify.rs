@@ -121,6 +121,7 @@ pub(crate) fn focus_and_open(app: &tauri::AppHandle, kind: &str, id: &str) {
             let _ = w.show();
             let _ = w.unminimize();
             let _ = w.set_focus();
+            crate::common::sync_dock_policy(&inner);
             let _ = w.eval(&script);
         }
     });
@@ -162,6 +163,7 @@ pub(crate) fn deep_link_open_session(app: &tauri::AppHandle, sid: &str) {
             let _ = w.show();
             let _ = w.unminimize();
             let _ = w.set_focus();
+            crate::common::sync_dock_policy(&h);
             let _ = w.eval(&s);
         }
     });

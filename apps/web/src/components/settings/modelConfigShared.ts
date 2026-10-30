@@ -11,11 +11,17 @@ export const PROTOCOL_LABEL: Record<ModelProtocol, string> = {
 
 // Migrated `openai` slots show as plain "OpenAI" when pointed at the official
 // host (design §3.2) — same wire protocol, friendlier badge.
-// 协议徽标均为品牌/协议名，不入 catalog。
-export function protocolBadge(cfg: { protocol: ModelProtocol; base_url?: string }): {
+// 协议徽标均为品牌/协议名，不入 catalog。asr 卡（kind="asr"）用青色
+// 「ASR」徽标 + AudioLines 图标（ModelConfigCard），与对话卡一眼可分。
+export function protocolBadge(cfg: {
+  protocol: ModelProtocol;
+  base_url?: string;
+  kind?: "chat" | "asr";
+}): {
   label: string;
   color: string;
 } {
+  if (cfg.kind === "asr") return { label: "ASR", color: "#14b8a6" };
   if (cfg.protocol === "anthropic") return { label: "Anthropic", color: "#f97316" };
   if (cfg.protocol === "openai-responses") return { label: "OpenAI Responses", color: "#3b82f6" };
   if (hostOf(cfg.base_url) === "api.openai.com") return { label: "OpenAI", color: "#22c55e" };
@@ -75,11 +81,12 @@ export function describeBlockedConfigs(
 }
 
 
-export function blankConfig(): ModelConfig {
+export function blankConfig(kind: "chat" | "asr" = "chat"): ModelConfig {
   return {
     id: "",
     name: "",
-    protocol: "openai-compatible",
+    protocol: "openai-compatible", // asr 也走 OpenAI 兼容端点（chat/completions + input_audio）
+    kind,
     base_url: "",
     api_key: "",
     models: [],

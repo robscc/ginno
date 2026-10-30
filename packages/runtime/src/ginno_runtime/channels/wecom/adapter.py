@@ -291,54 +291,27 @@ class WeComChannelAdapter(ChannelAdapter):
 
     async def _dispatch_voice(self, req_id: str, chat_key: str, userid: str,
                               body: dict) -> None:
-        """语音下行：下载解密 → 千问云 ASR 转写 → 按转写文本驱动 turn。
+        """语音下行：企微已在服务端把语音转成文本，直接取用驱动 turn。
 
-        转写走录音文件转写（chat completions + input_audio data URL，见
-        asr.py；连接器 asr_* 配置）。未配置时定格提示而不是静默（用户至
-        少知道语音被收到了）。5s 首帧时限由 _begin_stream 的占位流保证，
-        转写耗时不受它约束。
+        智能机器人协议的 voice 消息只有 ``{"content": "<转写文本>"}``——
+        不带音频文件（无 url/aeskey，也没有按 id 取音频的接口），所以
+        不存在自选 ASR 的空间（2026-10-30 实测纠正：曾按 {url, aeskey}
+        假设接云 ASR，实际永远报「缺少媒体地址」）。content 为空（静音/
+        不可识别）时定格提示。
         """
-        from . import media as media_mod
-        from .asr import transcribe_audio
-
         stream_id = await self._begin_stream(req_id)
-        info = body.get("voice") or {}
-        url = str(info.get("url") or "")
-        base_url = str(self.config.get("asr_base_url") or "").strip()
-        api_key = str(self.config.get("asr_api_key") or "").strip()
-        model = str(self.config.get("asr_model") or "").strip()
-        if not url:
-            await self._finish_stream(req_id, stream_id,
-                                      "⚠️ 语音消息缺少媒体地址，无法转写。")
-            return
-        if not (base_url and api_key and model):
+        text = str((body.get("voice") or {}).get("content") or "").strip()
+        if not text:
             await self._finish_stream(
                 req_id, stream_id,
-                "🎙️ 已收到语音；尚未配置语音转写（设置 → 连接器 → 企业微信 "
-                "→ ASR Base URL / API Key / Model），请改用文本。")
+                "🎙️ 已收到语音，但企微没有识别出内容，请重试或改用文本。")
             return
-        fmt = str(info.get("format") or "amr")
         session = await self._resolve_session(chat_key, userid)
         if session is None:
             await self._finish_stream(req_id, stream_id, "⚠️ 会话创建失败，请稍后重试")
             return
-        try:
-            data, _ = await media_mod.download_media(url, info.get("aeskey"),
-                                                     self._http)
-            text = await transcribe_audio(
-                data, fmt=fmt, base_url=base_url, api_key=api_key,
-                model=model, http=self._http)
-        except Exception as e:  # noqa: BLE001 — 下载/转写失败定格提示
-            shared._log.warning("wecom_voice_transcribe chat=%s err=%s", chat_key, e)
-            await self._finish_stream(req_id, stream_id,
-                                      "⚠️ 语音转写失败，请改用文本或重试。")
-            return
-        if not text:
-            await self._finish_stream(
-                req_id, stream_id, "🎙️ 语音转写结果为空，请重试或改用文本。")
-            return
-        shared._log.info("wecom_voice_ok chat=%s fmt=%s len=%d text=%r",
-                         chat_key, fmt, len(text), text[:80])
+        shared._log.info("wecom_voice_ok chat=%s len=%d text=%r",
+                         chat_key, len(text), text[:80])
         await self._run_text_turn(req_id, chat_key, session, stream_id, text,
                                   usage_source="wecom_voice")
 

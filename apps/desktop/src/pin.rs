@@ -393,6 +393,8 @@ fn hide_pin_now(app: &tauri::AppHandle, w: &WebviewWindow) {
     let _ = w.hide();
     persist_pin_geo(app);
     shell_log(app, "pin: hide");
+    // 悬浮窗是最后一个可见窗口时收起 Dock（主窗也隐藏 → 纯 topbar）。
+    crate::common::sync_dock_policy(app);
 }
 
 /// Show in the last-used shape (tray / show-at-launch / Settings test button).
@@ -423,6 +425,7 @@ pub(crate) fn toggle_pin_now(app: &tauri::AppHandle) {
             let _ = w.emit("pin:focus-input", ());
         }
         shell_log(app, &format!("pin: show mode={mode}"));
+        crate::common::sync_dock_policy(app);
     }
 }
 
@@ -461,6 +464,7 @@ fn summon_pin_now(app: &tauri::AppHandle) {
     let _ = w.set_focus();
     let _ = w.emit("pin:focus-input", ());
     shell_log(app, "pin: summon mode=mini");
+    crate::common::sync_dock_policy(app);
 }
 
 /// Run `now` on the main thread. Release builds serve /pin from the sidecar;
