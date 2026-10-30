@@ -269,6 +269,29 @@ class DingTalkChannelAdapter(ChannelAdapter):
             except Exception:  # noqa: BLE001 — 通知失败不影响解绑
                 shared._log.warning("dingtalk_delete_notice staff=%s failed", staff)
 
+    async def notify_turn_reply(self, session_id: str, text: str) -> None:
+        """无 tap 的 turn（子代理回传 / worker digest / 任务完成注入）收口
+        补推（channels.base.relay_channel_reply 的钉钉侧出口）。同删除通知
+        的投递口径：群聊绑定也投成员单聊，去重防轰炸。"""
+        assert self._mapper is not None
+        text = (text or "").strip()
+        if not text:
+            return
+        chats = self._mapper.chats_for(session_id)
+        if not chats:
+            return
+        body = f"📬 {text[:4000]}"
+        seen: set[str] = set()
+        for c in chats:
+            staff = c["staff_id"]
+            if staff in seen:
+                continue
+            seen.add(staff)
+            try:
+                await self.send_markdown(staff, "Ginno", body)
+            except Exception:  # noqa: BLE001 — 单成员失败不影响其余
+                shared._log.warning("dingtalk_reply_relay staff=%s failed", staff)
+
     async def _dispatch_turn(self, staff_id: str, conversation_id: str, nick: str,
                              text: str, attached: list[dict], usage_source: str,
                              *, force_new: bool,

@@ -528,11 +528,11 @@ def build_model(
         # rides on the same dict instead of replacing the UA.
         default_headers: dict[str, str] = {"User-Agent": f"ginno/{_GINNO_VERSION}"}
         # Session affinity for external gateways (magpie etc.): magpie reads
-        # x-conversation-id ahead of its content-fingerprint fallback, giving
+        # x-session-id ahead of its content-fingerprint fallback, giving
         # exact per-session routing (incl. subagent isolation — each subagent
         # is its own ginno session_id) instead of first-user-message hashing.
         if session_id:
-            default_headers["x-conversation-id"] = session_id
+            default_headers["x-session-id"] = session_id
         if cfg.get("bearer_auth"):
             default_headers["Authorization"] = f"Bearer {key}"
         chat_kwargs: dict[str, Any] = dict(
@@ -570,7 +570,7 @@ def build_model(
         if cfg.get("org_id"):
             chat_kw["openai_organization"] = cfg["org_id"]
         if session_id:
-            chat_kw["default_headers"] = {"x-conversation-id": session_id}
+            chat_kw["default_headers"] = {"x-session-id": session_id}
         return _responses_chat_openai()(**chat_kw)
 
     # openai / openai-compatible
@@ -604,7 +604,7 @@ def build_model(
     if extra_body:
         chat_kw["extra_body"] = extra_body
     if session_id:
-        chat_kw["default_headers"] = {"x-conversation-id": session_id}
+        chat_kw["default_headers"] = {"x-session-id": session_id}
     # Reasoning round-trip (see _replay_reasoning_content): on for
     # openai-compatible gateways (DeepSeek thinking mode requires it, Qwen
     # ignores it), off for the official OpenAI endpoint. An explicit

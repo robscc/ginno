@@ -170,6 +170,73 @@ def test_connector_apply_config_disabled_is_noop():
     asyncio.run(WeComConnector().apply_config({"enabled": False}))
 
 
+def test_notify_turn_reply_pushes_to_bound_chats(tmp_path: Path):
+    """无 tap 的 turn（子代理回传 / worker digest / 任务注入）收口补推：
+    绑定该 session 的全部 chat 各收一条 📬 markdown；空文本/未绑定不投；
+    超长截断；client 断开不发不抛。"""
+    ad = _make_adapter(tmp_path, {})
+    ad._mapper.bind(user_id="zhang", chat_id="czhang", ginno_session="sub1")
+    ad._mapper.bind(user_id="lisi", chat_id="wrChat1", ginno_session="sub1")
+    asyncio.run(ad.notify_turn_reply("sub1", "订阅的任务已完成：结论 A"))
+    assert {cid for cid, _ in ad.client.pushes} == {"czhang", "wrChat1"}
+    assert all(c.startswith("📬") for _, c in ad.client.pushes)
+    assert all("结论 A" in c for _, c in ad.client.pushes)
+    # 超长截断（📬 + 4000 字上限）
+    ad.client.pushes.clear()
+    asyncio.run(ad.notify_turn_reply("sub1", "x" * 9000))
+    assert 0 < max(len(c) for _, c in ad.client.pushes) <= 4100
+    # 空文本 / 未绑定 session：不投
+    ad.client.pushes.clear()
+    asyncio.run(ad.notify_turn_reply("sub1", "   "))
+    asyncio.run(ad.notify_turn_reply("never-bound", "hi"))
+    assert ad.client.pushes == []
+    # client 断开：不发不抛
+    ad.client = None
+    asyncio.run(ad.notify_turn_reply("sub1", "hi"))
+
+
+def test_relay_channel_reply_gates(monkeypatch):
+    """base.relay_channel_reply 的闸门：空文本不投；非 channel 会话不投；
+    流上有 ChannelTap（适配器驱动的正常轮）不重投；channel 会话无 tap 才
+    经适配器 notify_turn_reply 主动推送（keep_edc84fe53d 事故的回归）。"""
+    import ginno_runtime.connectors.builtin as builtin_mod
+    import ginno_runtime.server_shared as server_shared
+    import ginno_runtime.session_meta as session_meta
+    from ginno_runtime.channels.base import ChannelTap, relay_channel_reply
+
+    calls: list[tuple[str, str]] = []
+
+    class _Ad:
+        async def notify_turn_reply(self, sid: str, text: str) -> None:
+            calls.append((sid, text))
+
+    monkeypatch.setattr(builtin_mod, "channel_adapter", lambda ch: _Ad())
+    monkeypatch.setattr(
+        session_meta, "_find_meta",
+        lambda sid: ({"id": sid, "type": "channel", "channel": "wecom"}, "default"))
+
+    sid = "chsub1"
+    server_shared._SESSION_WS[sid] = []
+    try:
+        asyncio.run(relay_channel_reply(sid, "   "))  # 空文本
+        assert calls == []
+        asyncio.run(relay_channel_reply(sid, "结论 A"))  # channel 会话 + 无 tap → 投
+        assert calls == [(sid, "结论 A")]
+        calls.clear()
+        server_shared._SESSION_WS[sid] = [ChannelTap()]  # tap 在流上 → tap 已转送
+        asyncio.run(relay_channel_reply(sid, "结论 B"))
+        assert calls == []
+        calls.clear()
+        server_shared._SESSION_WS[sid] = []  # 非 channel 会话 → 不投
+        monkeypatch.setattr(
+            session_meta, "_find_meta",
+            lambda sid: ({"id": sid, "type": None}, "default"))
+        asyncio.run(relay_channel_reply(sid, "结论 C"))
+        assert calls == []
+    finally:
+        server_shared._SESSION_WS.pop(sid, None)
+
+
 # ---------------------------------------------------------------- protocol
 
 

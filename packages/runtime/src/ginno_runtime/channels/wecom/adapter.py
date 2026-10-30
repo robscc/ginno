@@ -239,6 +239,27 @@ class WeComChannelAdapter(ChannelAdapter):
             except Exception:  # noqa: BLE001 — 通知失败不影响解绑
                 shared._log.warning("wecom_delete_notice chat=%s failed", c["chat_id"])
 
+    async def notify_turn_reply(self, session_id: str, text: str) -> None:
+        """无 tap 的 turn（子代理回传 / worker digest / 任务完成注入）收口
+        补推：绑定该会话的全部 chat 各推一条 markdown（channels.base.
+        relay_channel_reply 的企微侧出口）。📬 前缀标识这是主动推送而非
+        对某条消息的应答。"""
+        assert self._mapper is not None
+        text = (text or "").strip()
+        if not text:
+            return
+        chats = self._mapper.chats_for(session_id)
+        if not chats:
+            return
+        body = f"📬 {text[:4000]}"
+        for c in chats:
+            try:
+                if self.client is not None:
+                    await self.client.send_markdown(c["chat_id"], body)
+            except Exception:  # noqa: BLE001 — 单 chat 失败不影响其余
+                shared._log.warning(
+                    "wecom_reply_relay chat=%s failed", c["chat_id"])
+
     async def _dispatch_text(self, req_id: str, chat_key: str, userid: str,
                              text: str) -> None:
         stream_id = await self._begin_stream(req_id)

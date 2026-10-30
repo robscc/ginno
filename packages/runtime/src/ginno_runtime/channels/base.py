@@ -504,6 +504,47 @@ async def notify_channel_session_deleted(channel: str | None, session_id: str) -
             "channel_delete_notice channel=%s session=%s failed", channel, session_id)
 
 
+async def relay_channel_reply(session_id: str, text: str) -> None:
+    """无 tap 的 turn 在渠道会话上收口 → 回复补推 IM 侧（尽力而为，不抛出）。
+
+    2026-10-30 keep_edc84fe53d 事故：调度器开的头 turn（子代理结果回传 /
+    worker digest·result / 任务完成注入）不走 run_channel_turn——没有
+    ChannelTap 挂 _SESSION_WS，回复只落会话与桌面端，IM 用户永远收不到
+    订阅的消息。engine 收口分支对本函数放行：channel 类型会话、流上没有
+    tap（有 tap = 适配器驱动的正常轮，回复已由 tap 翻译，重发即重复）、
+    正文非空 → 经适配器 notify_turn_reply 主动推送。
+    """
+    text = (text or "").strip()
+    if not text:
+        return
+    for s in shared._SESSION_WS.get(session_id) or []:
+        if isinstance(s, ChannelTap):
+            return  # 适配器驱动的轮次：tap 已在转送，不得重发
+    from ..session_meta import _find_meta
+
+    found = _find_meta(session_id)
+    meta = found[0] if found else None
+    if not meta or meta.get("type") != "channel":
+        return
+    channel = str(meta.get("channel") or "")
+    if not channel:
+        return
+    try:
+        from ..connectors import builtin as _conns
+
+        adapter = _conns.channel_adapter(channel)
+        notify = getattr(adapter, "notify_turn_reply", None) if adapter else None
+        if notify is None:
+            return
+        await notify(session_id, text)
+        shared._log.info(
+            "channel_reply_relay channel=%s session=%s len=%d",
+            channel, session_id, len(text))
+    except Exception:  # noqa: BLE001 — 补推失败不影响 turn 收口
+        shared._log.exception(
+            "channel_reply_relay channel=%s session=%s failed", channel, session_id)
+
+
 async def quiesce(session_id: str, slug: str, timeout_s: float = 8.0) -> dict:
     """Wait for subagents/background work to settle (cli.py 同名协议的轻封装)."""
     from ..cli import _await_quiescence

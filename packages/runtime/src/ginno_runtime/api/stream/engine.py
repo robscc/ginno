@@ -1112,6 +1112,16 @@ async def _stream_graph(
                 )
             except Exception:
                 _log.exception("mods_turn_complete_failed session=%s", session_id)
+            # 渠道会话的无 tap 收口补推（2026-10-30 keep_edc84fe53d 事故）：
+            # 调度器开的头 turn（子代理回传 / worker digest·result / 任务
+            # 完成注入）没有 ChannelTap 挂流，回复只落会话，IM 侧订阅的消息
+            # 永远收不到。channel 类型会话且流上无 tap 时经适配器主动推送
+            # （有 tap 的正常渠道轮由 tap 翻译，函数内部自行去重）。
+            # spawn_bg：企微/钉钉 HTTP 不能挡 message.end 帧。
+            if _clean_text.strip():
+                from ...channels.base import relay_channel_reply
+
+                spawn_bg(relay_channel_reply(session_id, _clean_text))
             await safe_send(emit("message.end", {"text": _clean_text.strip()[:200]}))
         else:
             _log.info(

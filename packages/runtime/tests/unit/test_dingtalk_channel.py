@@ -297,3 +297,29 @@ async def test_notify_session_deleted_unbinds_and_notifies(tmp_path: Path):
     assert mapper.get(staff_id="s2", conversation_id="cid3") == "keep1"
     # 同一成员多条映射去重，只发一条
     assert sent == ["s1"]
+
+
+async def test_notify_turn_reply_dedupes_members(tmp_path: Path):
+    """无 tap 的 turn 收口补推：绑定成员各一条（同成员去重）、带 📬 前缀；
+    未绑定不投。"""
+    from ginno_runtime.channels.dingtalk.adapter import DingTalkChannelAdapter
+    from ginno_runtime.channels.dingtalk.sessions import SessionMapper
+
+    ad = DingTalkChannelAdapter()
+    ad.config = {}
+    mapper = SessionMapper(tmp_path / "m.json")
+    mapper.load()
+    ad._mapper = mapper
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(staff_id, title, text):
+        sent.append((staff_id, text))
+
+    ad.send_markdown = fake_send  # type: ignore[method-assign]
+    mapper.bind(staff_id="s1", conversation_id="cid1", ginno_session="sub1")
+    mapper.bind(staff_id="s1", conversation_id="cid2", ginno_session="sub1")
+    await ad.notify_turn_reply("sub1", "订阅的任务已完成：结论 A")
+    assert sent == [("s1", "📬 订阅的任务已完成：结论 A")]
+    sent.clear()
+    await ad.notify_turn_reply("never-bound", "hi")
+    assert sent == []

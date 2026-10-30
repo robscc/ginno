@@ -136,6 +136,14 @@ watch(target):
   (want=terminal 的语义就是" notify once")。
 - **防回声**:subscribers 里若含目标自己/其祖先已有的注入对象,去重
   (parent 已有结构性回传,不重复注入)。
+- **渠道订阅者**(2026-10-30 keep_edc84fe53d 事故):订阅者是 IM 渠道会话
+  (type=channel)时,digest/result 的 wake turn 不经过适配器的
+  run_channel_turn——没有 ChannelTap 挂流,回复只落会话,IM 用户永远收
+  不到订阅的消息。修法在引擎收口分支:`channels.base.relay_channel_reply`
+  ——channel 会话、正文非空、流上无 tap(有 tap = 适配器驱动的正常轮,
+  回复已由 tap 翻译)→ 经适配器 `notify_turn_reply` 主动推送(企微/钉钉
+  markdown,📬 前缀,4000 字截断)。这同时覆盖子代理回传与任务完成注入
+  等一切无 tap 的调度 turn。
 - **重启对账**:订阅关系在 meta 里持久;settle 钩子在重启后对账
   (reconcile)路径里同样执行——错过的终态在下次启动时补发。
 
