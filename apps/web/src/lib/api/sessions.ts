@@ -263,6 +263,46 @@ export async function getSessionUsage(id: string) {
   );
 }
 
+// ---- linked sessions(topbar-unification.md §3) ----
+// 关联会话投影:派生(spawned/delegated/assigned/watching)+ 手动挂载
+// (mounted)+ incoming(谁在派我)。面板打开 2s 轮询、徽标 5s 轮询;
+// 404 = 旧 sidecar 无此端点,前端整个 chip 隐藏。
+export interface LinkedMember {
+  id: string;
+  title: string;
+  type: string;
+  rel: "spawned" | "delegated" | "assigned" | "watching" | "mounted";
+  live_status: "working" | "waiting" | "idle" | "done" | "failed" | "stopped" | "unknown" | "missing";
+  updated: number | null;
+  terminal: boolean;
+}
+
+export interface LinkedReport {
+  ok: boolean;
+  members: LinkedMember[];
+  incoming: Array<Omit<LinkedMember, "rel"> & { rel: LinkedMember["rel"] | "watching_me" | "assigned_me" }>;
+  live: number;
+  error?: string;
+}
+
+export async function getLinkedSessions(id: string) {
+  return json<LinkedReport>(`${BASE}/sessions/${id}/linked`);
+}
+
+export async function mountLinkedSession(id: string, target: string) {
+  return json<{ ok: boolean; error?: string }>(`${BASE}/sessions/${id}/linked`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ target }),
+  });
+}
+
+export async function detachLinkedSession(id: string, target: string) {
+  return json<{ ok: boolean; error?: string }>(`${BASE}/sessions/${id}/linked/${target}`, {
+    method: "DELETE",
+  });
+}
+
 // ---- session goal (goal-design.md §4.4) ----
 export async function getSessionGoal(id: string) {
   return json<{ ok: boolean; goal: Goal | null; error?: string }>(`${BASE}/sessions/${id}/goal`);

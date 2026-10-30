@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TopBar Unification + Session Links — Prototype</title>
+<style>
+  :root {
+    --bg: #101014; --panel: #17171d; --panel2: #1d1d24; --line: #2a2a33; --line2: #33333d;
+    --text: #e8e8ec; --faint: #8b8b96; --faint2: #5d5d68;
+    --running: #34d399; --waiting: #fbbf24; --done: #6ee7b7; --failed: #f87171;
+    --idle: #6b7280; --violet: #a78bfa; --blue: #60a5fa; --amber: #f59e0b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.5 -apple-system, "SF Pro Text", system-ui, sans-serif; padding: 28px; }
+  h1 { font-size: 16px; font-weight: 650; margin-bottom: 2px; }
+  .sub { color: var(--faint); font-size: 12px; margin-bottom: 22px; }
+  .note { color: var(--faint2); font-size: 11.5px; margin: 12px 2px 26px; max-width: 920px; line-height: 1.7; }
+  .note b { color: var(--faint); }
+
+  /* ---------- TopBar ---------- */
+  .topbar { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 18px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; max-width: 920px; }
+  .ident { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+  .agent-ic { width: 22px; height: 22px; border-radius: 7px; background: #23402f; color: #34d399;
+    display: flex; align-items: center; justify-content: center; font-size: 12px; flex: none; }
+  .title { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .idchip { font-family: ui-monospace, monospace; font-size: 9.5px; color: var(--faint);
+    border: 1px solid var(--line2); border-radius: 5px; padding: 1px 5px; flex: none; }
+  .funcs { display: flex; align-items: center; gap: 2px; flex: none; }
+  .sep { width: 1px; height: 20px; background: var(--line); margin: 0 6px; }
+
+  /* uniform function buttons */
+  .fb { position: relative; width: 32px; height: 32px; border-radius: 9px; display: flex;
+    align-items: center; justify-content: center; color: var(--faint2); cursor: pointer; font-size: 15px; }
+  .fb:hover { background: var(--panel2); color: var(--text); }
+  .fb.active { color: var(--text); }
+  .fb .badge { position: absolute; top: 2px; right: 2px; min-width: 13px; height: 13px; border-radius: 999px;
+    background: var(--running); color: #000; font-size: 9px; font-weight: 800; line-height: 13px;
+    text-align: center; padding: 0 3px; }
+  .fb .badge.violet { background: var(--violet); }
+  .fb .badge.plain { background: var(--faint); }
+  .fb .pulse { position: absolute; inset: 0; border-radius: 9px; border: 1px solid rgba(52,211,153,.4);
+    animation: br 1.8s infinite; }
+  @keyframes br { 50% { border-color: rgba(52,211,153,.05); } }
+
+  /* tooltips */
+  .tip { position: absolute; top: 40px; left: 50%; transform: translateX(-50%); white-space: nowrap;
+    background: #0b0b0e; border: 1px solid var(--line2); border-radius: 8px; padding: 5px 10px;
+    font-size: 11px; color: var(--text); opacity: 0; pointer-events: none; transition: .12s; z-index: 30; }
+  .tip .t2 { color: var(--faint); font-size: 10px; }
+  .fb:hover .tip { opacity: 1; }
+
+  /* right actions */
+  .act { color: var(--faint); cursor: pointer; padding: 6px; border-radius: 8px; font-size: 13px; }
+  .act:hover { background: var(--panel2); color: var(--text); }
+
+  /* ---------- Sessions popover ---------- */
+  .wrap { position: relative; max-width: 920px; }
+  .pop { position: absolute; top: 58px; right: 96px; width: 340px; background: var(--panel);
+    border: 1px solid var(--line2); border-radius: 14px; box-shadow: 0 18px 48px rgba(0,0,0,.5);
+    padding: 6px; z-index: 20; }
+  .pop-h { display: flex; align-items: baseline; padding: 8px 10px 6px; }
+  .pop-h b { font-size: 12.5px; font-weight: 650; }
+  .pop-h span { margin-left: auto; font-size: 10.5px; color: var(--running); }
+  .prow { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 10px; }
+  .prow:hover { background: var(--panel2); }
+  .prow.dim { opacity: .5; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.working { background: var(--running); box-shadow: 0 0 0 3px rgba(52,211,153,.14); }
+  .dot.waiting { background: var(--waiting); }
+  .dot.done { background: var(--done); }
+  .pt { flex: 1; min-width: 0; }
+  .pt .l1 { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pt .l2 { font-size: 10px; color: var(--faint); }
+  .pt .l2 .rel { color: var(--violet); }
+  .pacts { display: none; gap: 2px; flex: none; }
+  .prow:hover .pacts { display: flex; }
+  .prow:hover .ptime { display: none; }
+  .ptime { font-size: 10px; color: var(--faint2); flex: none; }
+  .pbtn { font-size: 10.5px; color: var(--faint); border: 1px solid var(--line2); border-radius: 7px;
+    padding: 2px 8px; cursor: pointer; }
+  .pbtn.stop { color: var(--failed); border-color: #5b2f2f; }
+  .pbtn:hover { color: var(--text); border-color: #4a4a58; }
+  .pop-f { border-top: 1px solid var(--line); margin-top: 4px; padding: 8px 10px 6px;
+    font-size: 11px; color: var(--faint); display: flex; align-items: center; gap: 6px; }
+  .pop-f .plus { color: var(--blue); }
+  .pop-f .p2 { margin-left: auto; font-size: 9.5px; color: var(--faint2); border: 1px solid var(--line);
+    border-radius: 5px; padding: 0 5px; }
+
+  /* compare strip */
+  .cmp { display: flex; gap: 10px; margin-top: 26px; align-items: center; max-width: 920px; }
+  .cmp .old { flex: 1; background: var(--panel); border: 1px dashed var(--line); border-radius: 10px;
+    padding: 9px 14px; color: var(--faint); font-size: 11px; overflow: hidden; white-space: nowrap; }
+  .cmp .arr { color: var(--faint2); font-size: 15px; }
+</style>
+</head>
+<body>
+  <h1>TopBar unification + Linked sessions — prototype</h1>
+  <div class="sub">docs/design/topbar-unification.md · mock data · hover the buttons (tooltips), Sessions panel is open</div>
+
+  <div class="wrap">
+    <div class="topbar">
+      <div class="ident">
+        <div class="agent-ic" title="DevAgent">◆</div>
+        <span class="title">AMS 迁移方案核对</span>
+        <span class="idchip">#a1b2c3</span>
+      </div>
+
+      <div class="funcs">
+        <!-- status -->
+        <div class="fb active">
+          <span style="width:9px;height:9px;border-radius:50%;background:var(--running);display:block"></span>
+          <span class="pulse"></span>
+          <div class="tip">Running · 3m<span class="t2"> · turn 21</span></div>
+        </div>
+        <!-- goal -->
+        <div class="fb active" style="color:var(--violet)">
+          ◎
+          <span class="badge violet" style="font-size:0;line-height:13px">·</span>
+          <div class="tip">Goal: finish AMS migration plan v2<span class="t2"> · 62%</span></div>
+        </div>
+        <!-- mount -->
+        <div class="fb active" style="color:var(--blue)">
+          ⬒
+          <span class="badge plain">2</span>
+          <div class="tip">~/work/ibu-ams-core ⭐ · ~/docs/ams<span class="t2"> · 2 mounted</span></div>
+        </div>
+        <!-- sessions (NEW) -->
+        <div class="fb active" style="color:var(--running)">
+          ⧉
+          <span class="badge">2</span>
+          <div class="tip">fix flaky e2e · working<br>Weekly digest · waiting<span class="t2"> · +2 more</span></div>
+        </div>
+        <!-- stats -->
+        <div class="fb">
+          ↕
+          <div class="tip">↑ 128.4k · ↓ 36.2k · ⚡ 91% · 54 calls</div>
+        </div>
+
+        <div class="sep"></div>
+        <div class="act">⬇</div>
+        <div class="act">⋮</div>
+      </div>
+    </div>
+
+    <!-- Sessions popover -->
+    <div class="pop">
+      <div class="pop-h"><b>Linked sessions</b><span>2 live</span></div>
+
+      <div class="prow">
+        <span class="dot working"></span>
+        <div class="pt">
+          <div class="l1">fix: flaky e2e reconnect case</div>
+          <div class="l2"><span class="rel">spawned</span> · subagent</div>
+        </div>
+        <span class="ptime">14m</span>
+        <span class="pacts">
+          <span class="pbtn stop">Stop</span><span class="pbtn">Open</span><span class="pbtn">Detach</span>
+        </span>
+      </div>
+
+      <div class="prow">
+        <span class="dot working"></span>
+        <div class="pt">
+          <div class="l1">AMS 迁移方案核对 — 副本</div>
+          <div class="l2"><span class="rel">assigned</span> · main</div>
+        </div>
+        <span class="ptime">2m</span>
+        <span class="pacts">
+          <span class="pbtn stop">Stop</span><span class="pbtn">Open</span><span class="pbtn">Detach</span>
+        </span>
+      </div>
+
+      <div class="prow">
+        <span class="dot waiting"></span>
+        <div class="pt">
+          <div class="l1">Weekly report digest</div>
+          <div class="l2"><span class="rel">watching</span> · subagent</div>
+        </div>
+        <span class="ptime">1h</span>
+        <span class="pacts">
+          <span class="pbtn stop">Stop</span><span class="pbtn">Open</span><span class="pbtn">Detach</span>
+        </span>
+      </div>
+
+      <div class="prow dim">
+        <span class="dot done"></span>
+        <div class="pt">
+          <div class="l1">delegation · pi / refactor-auth</div>
+          <div class="l2"><span class="rel">delegated</span> · done</div>
+        </div>
+        <span class="ptime">3h</span>
+        <span class="pacts">
+          <span class="pbtn">Open</span><span class="pbtn">Detach</span>
+        </span>
+      </div>
+
+      <div class="pop-f">
+        <span class="plus">＋</span> Mount a session…
+        <span class="p2">P2</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="cmp">
+    <div class="old">before&nbsp;&nbsp;[Title] [#id] [◆ DevAgent pill] [● Running] [🎯 目标 pill] [📂 目录 pill] … [↑12k ↓3k ⚡89%] [⬇][⋮]</div>
+    <div class="arr">→</div>
+    <div class="old" style="flex:1.2">after&nbsp;&nbsp;agent icon left of title · five uniform 32px buttons · badges only · data on hover</div>
+  </div>
+
+  <div class="note">
+    <b>What to check:</b> ① agent = icon-only (◆), left of the title, name in its tooltip ·
+    ② all five function buttons are the same 32×32, one glyph each, counts as corner badges —
+    <b>hover any of them</b> for the data tooltip (stats exposes ↑↓⚡·calls only on hover) ·
+    ③ <b>Sessions ⧉</b> is the new feature: linked sessions of <i>this</i> conversation — spawned /
+    assigned / watching / delegated relations, live dots, per-row Open / Stop(confirm, cascades) /
+    Detach (severs only the link — the session itself lives on; it is not a child, it can be detached) ·
+    manual “Mount a session…” lands in P2. Idle state: the status button shows a grey dot, no pulse,
+    tooltip “Idle”. No session (home): the whole button group hides, as today.
+  </div>
+</body>
+</html>

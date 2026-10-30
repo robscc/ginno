@@ -10,7 +10,7 @@ import { pushModToast, type ModToastLevel } from "@/components/chat/mod/ModToast
 import { pushModPane, type ModPaneSnapshot } from "@/components/chat/mod/paneBus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
 import type { ModAskState } from "@/components/chat/mod/ModAskCard";
-import { hasPendingTool, parseSubagentResult, parseWorkerResults, parseWorkerAssign, type Block } from "@/components/chat/blocks";
+import { hasPendingTool, foldSubagentResultBlocks, type Block } from "@/components/chat/blocks";
 import type {
   ContextChange,
   Goal,
@@ -231,13 +231,16 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           const echo: ChatMsg = {
             id: srvTurn,
             role: "user",
-            blocks: [
+            // 与 mapHistory 同折（foldSubagentResultBlocks）：调度器 wake turn
+            // 的注入信封（<ginno_worker_assign>/result）live 落卡而非裸 XML；
+            // 纯文本渠道回显原样透传（fold 是 no-op）。
+            blocks: foldSubagentResultBlocks([
               ...(echoText ? [{ kind: "text" as const, text: echoText }] : []),
               ...echoImgs.map((i) => ({
                 kind: "image" as const,
                 url: `data:${i.media_type || "image/png"};base64,${i.data}`,
               })),
-            ],
+            ]),
             turnId: srvTurn,
           };
           const at = (() => {
@@ -475,6 +478,10 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       // bubble (design §4.2/§4.3).
       const absorbedId = ev.steer_id as string | undefined;
       if (!absorbedId) break;
+      // 系统递归预警（engine 步数护栏，steer_id 前缀区分——_is_user_steer
+      // 同款判据）是模型侧指令：不以用户注入带外显，live 与重放（fold 的
+      // steer 分支）一致隐藏。
+      if (absorbedId.startsWith("recursion-warn-")) break;
       // 后台任务事件的 steer 注入（tasks/inject，origin="task"）：事件帧带
       // ginno_task_event 载荷——折成极薄 task_event 标记行，状态由 bg_run
       // 常驻 TaskCard 轮询呈现，绝不渲染 "[task finished]…" 原文带。
@@ -513,76 +520,39 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         break; // already dropped — a history reconcile got there first
       // Same timing/order as before: remove from the queue first, then render.
       if (entry) ctx.steerQ.handleEvent(ev, sid);
-      // runtime 注入的子代理结果走同一条 steer 通道（契约 3）：折成结果卡片，
-      // 而不是把 <ginno_subagent_result> 原始标签渲染成一条注入带。
-      const injectedResult = entry ? parseSubagentResult(entry.text) : null;
-      if (injectedResult) {
+      // 运行中注入的信封统一折卡（复用 mapHistory 的 foldSubagentResultBlocks，
+      // live/重放同一解析器天然对齐）：子代理结果 / worker 回传·digest·派活 /
+      // 清单状态 / 旧版委托，entry（本地队列）与 foreignText（服务端直接
+      // steer_enqueue：worker digest、子代理回传——本地无条目，原文只随
+      // absorbed 事件带回）同路径。折不出信封（用户/渠道/团队普通文本）
+      // 回落通用注入带。
+      const effText = entry ? entry.text : foreignText;
+      const foldedCards = foldSubagentResultBlocks([
+        { kind: "text" as const, text: effText },
+      ]).filter((b) => b.kind !== "text");
+      if (foldedCards.length) {
         const store = ctx.storeRef.current[sid] ?? [];
-        const already = store.some((m) =>
-          m.blocks.some(
-            (b) =>
-              b.kind === "subagent_result" && b.sessionId === injectedResult.sessionId,
-          ),
-        );
-        if (!already) {
+        // 幂等：同一 child 的回传卡已在 store（absorb 事件重放/重连补发）
+        // 不重复插；无 sessionId 的卡（plan/delegation）不做去重。
+        const fresh = foldedCards.filter((b) => {
+          const csid = (b as { sessionId?: string }).sessionId;
+          if (!csid) return true;
+          return !store.some((m) =>
+            m.blocks.some(
+              (ob) =>
+                (ob.kind === "subagent_result" || ob.kind === "worker_result") &&
+                (ob as { sessionId?: string }).sessionId === csid,
+            ),
+          );
+        });
+        if (fresh.length) {
           ctx.storeRef.current[sid] = [
             ...store,
-            {
-              id: mid(),
-              role: "system" as const,
-              blocks: [
-                {
-                  kind: "subagent_result",
-                  sessionId: injectedResult.sessionId,
-                  goal: injectedResult.goal,
-                  summary: injectedResult.summary,
-                },
-              ],
-            },
+            { id: mid(), role: "system" as const, blocks: fresh },
           ];
+          ctx.syncDisplay(sid);
         }
-        ctx.syncDisplay(sid);
         break;
-      }
-      // worker 协议信封同通道（worker-protocol-design §7）：员工回传/进度
-      // 折回传卡，派活任务简报折任务卡——不让原始 XML 走注入带。
-      if (entry) {
-        const wResults = parseWorkerResults(entry.text);
-        if (wResults.length) {
-          const store = ctx.storeRef.current[sid] ?? [];
-          ctx.storeRef.current[sid] = [
-            ...store,
-            {
-              id: mid(),
-              role: "system" as const,
-              blocks: wResults.map((r) => ({
-                kind: "worker_result" as const,
-                sessionId: r.sessionId,
-                from: r.from || undefined,
-                status: r.status || undefined,
-                goal: r.goal || undefined,
-                summary: r.summary,
-                digest: r.digest,
-              })),
-            },
-          ];
-          ctx.syncDisplay(sid);
-          break;
-        }
-        const wAssign = parseWorkerAssign(entry.text);
-        if (wAssign) {
-          const store = ctx.storeRef.current[sid] ?? [];
-          ctx.storeRef.current[sid] = [
-            ...store,
-            {
-              id: mid(),
-              role: "system" as const,
-              blocks: [{ kind: "worker_assign" as const, ...wAssign }],
-            },
-          ];
-          ctx.syncDisplay(sid);
-          break;
-        }
       }
       const band: Block = {
         kind: "steer",

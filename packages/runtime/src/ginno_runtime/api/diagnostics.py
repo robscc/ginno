@@ -17,3 +17,15 @@ async def get_diagnostics() -> dict:
     lighter startup subset lives in ``/api/health``.
     """
     return diagnostics.run_diagnostics()
+
+
+@router.get("/api/running")
+def get_running_work() -> dict:
+    """Quit-check aggregate for the desktop shell (⌘Q gate): live turns +
+    non-detached running background commands. Sync ``def`` on purpose — the
+    title lookups hit disk and belong on the threadpool, not the event loop.
+    Semantics/deliberate exclusions: running_work module docstring.
+    """
+    from ..running_work import running_work_report
+
+    return running_work_report()

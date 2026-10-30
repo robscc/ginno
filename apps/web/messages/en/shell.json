@@ -190,6 +190,40 @@
       "exportProjectHint": "A copy is also kept in ~/.ginno/index/exports/",
       "exportProjectDone": "Project export downloaded (also kept in ~/.ginno/index/exports/)",
       "exportFailed": "Export failed — check that the runtime is connected"
+    },
+    "links": {
+      "chipTitle": "Linked sessions",
+      "header": "Linked sessions",
+      "liveCount": "{n} live",
+      "more": "+{n} more",
+      "empty": "Sessions you assign, spawn or watch show up here. Mount one below.",
+      "rel": {
+        "spawned": "spawned",
+        "delegated": "delegated",
+        "assigned": "assigned",
+        "watching": "watching",
+        "mounted": "mounted",
+        "assignedMe": "assigned by",
+        "watchingMe": "watched by"
+      },
+      "status": {
+        "working": "working",
+        "waiting": "waiting",
+        "idle": "idle",
+        "done": "done",
+        "failed": "failed",
+        "stopped": "stopped",
+        "unknown": "unknown",
+        "missing": "missing"
+      },
+      "open": "Open",
+      "stopTitle": "Stop (cascades to its children)",
+      "stopConfirm": "Stop \"{title}\"? This also stops its running children.",
+      "detachTitle": "Detach — unlink from this view only, the session itself keeps running",
+      "incomingHeader": "Incoming",
+      "mountPlaceholder": "Mount a session… (search by title)",
+      "searching": "Searching…",
+      "clearSearch": "× clear results"
     }
   }
 }

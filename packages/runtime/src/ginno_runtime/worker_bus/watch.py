@@ -100,6 +100,12 @@ async def watch_worker(
     _session_meta_patch(slug, tid, {"subscribers": [*kept, entry]})
     _WATCHED.add(tid)
     _log.info("worker_watch sub=%s target=%s want=%s", subscriber_id, tid, want)
+    # 订阅方视角的关联戳(session_links):「我在 watch 谁」落在订阅者自己
+    # meta——subscribers 在目标方,反向派生要跨项目全量扫,设计禁止。
+    # 延迟导入破环(session_links → worker_bus.registry ← __init__)。
+    from ..session_links import stamp_link
+
+    stamp_link(subscriber_id, tid, "watching")
     return {"ok": True, "watched": True, "status": st, "want": want}
 
 

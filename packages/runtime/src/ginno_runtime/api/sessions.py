@@ -953,6 +953,46 @@ async def patch_session(session_id: str, req: PatchSessionRequest) -> dict:
     }
 
 
+@router.get("/api/sessions/{session_id}/linked")
+async def get_linked_sessions(session_id: str) -> dict:
+    """关联会话投影(topbar-unification.md §3):当前会话视野里的成员
+    (spawned/delegated/assigned/watching/mounted)+ incoming(谁在派我)。
+    面板打开 2s 轮询、徽标 5s 轮询——纯内存/索引读,无副作用。"""
+    from ..session_links import linked_report
+
+    rep = linked_report(session_id)
+    if not rep.get("ok"):
+        raise HTTPException(status_code=404, detail=rep)
+    return rep
+
+
+class MountLinkedRequest(BaseModel):
+    target: str
+
+
+@router.post("/api/sessions/{session_id}/linked")
+async def mount_linked_session(session_id: str, req: MountLinkedRequest) -> dict:
+    """手动挂载一个会话进当前对话视野(rel=mounted,P2)。"""
+    from ..session_links import mount_linked
+
+    out = mount_linked(session_id, req.target)
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out)
+    return out
+
+
+@router.delete("/api/sessions/{session_id}/linked/{target}")
+async def detach_linked_session(session_id: str, target: str) -> dict:
+    """解除关联(detach):user 成员移出 linked_user,auto 成员落 linked_hidden。
+    只断视野,不动会话本体。"""
+    from ..session_links import detach_linked
+
+    out = detach_linked(session_id, target)
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out)
+    return out
+
+
 @router.get("/api/external-agents")
 async def list_external_agents() -> list[dict]:
     """Backend detection for Settings → External Agents（安装状态 + 路径）。"""

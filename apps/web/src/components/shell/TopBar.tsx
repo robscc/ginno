@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Download, Loader2, MoreVertical } from "lucide-react";
+import { ArrowDownUp, Download, Loader2, MoreVertical } from "lucide-react";
 import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { pushNotice } from "@/lib/notice";
@@ -11,22 +11,8 @@ import { agentHex } from "@/lib/theme";
 import { AgentIcon } from "@/components/icons";
 import { GoalChip } from "./GoalChip";
 import { ContextFoldersChip } from "./ContextFoldersChip";
-
-/** Compact token counts, same ladder idea as usage/charts.tsx `fmt` (this one
- *  keeps one decimal at every tier and lowercase k). */
-const TOKEN_UNITS: [number, string][] = [
-  [1e12, "T"],
-  [1e9, "B"],
-  [1e6, "M"],
-  [1e3, "k"],
-];
-
-function fmtTokens(n: number): string {
-  for (const [scale, suffix] of TOKEN_UNITS) {
-    if (n >= scale) return `${(n / scale).toFixed(1)}${suffix}`;
-  }
-  return String(n);
-}
+import { LinkedSessionsChip } from "./LinkedSessionsChip";
+import { TopBarFuncButton } from "./TopBarFuncButton";
 
 /** Filename from `Content-Disposition` (RFC 5987 `filename*=` first, then the
  *  plain form). The project-export endpoint returns FileResponse, whose header
@@ -142,57 +128,63 @@ export function TopBar({
   return (
     <header className="flex min-h-14 min-w-0 shrink-0 select-none flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-5 py-1.5">
       <div className="flex min-w-[min(100%,12rem)] flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
+        {/* 身份区(topbar-unification.md §2.4):agent 纯图标、标题左侧,名称进
+            tooltip——侧栏行同款「图标+颜色」识别,让出的宽度全给标题。 */}
+        {agent && (
+          <span
+            className="flex h-[18px] w-[18px] shrink-0 items-center justify-center"
+            style={{ color: hex }}
+            title={agent.name}
+          >
+            <AgentIcon name={agent.icon} className="h-[18px] w-[18px]" />
+          </span>
+        )}
         <h1 className="min-w-[5rem] max-w-full truncate text-[15px] font-semibold tracking-tight text-txt" title={session?.title || tr("topbar.newSession")}>
           {session?.title || tr("topbar.newSession")}
         </h1>
         <SessionIdChip sessionId={session?.id} />
-
-        {agent && (
-          <span className="pill border border-line2 bg-card text-txt">
-            <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" style={{ color: hex }}>
-              <AgentIcon name={agent.icon} className="h-3.5 w-3.5" />
-            </span>
-            {agent.name}
-          </span>
-        )}
-
-        <span
-          className="pill"
-          style={{
-            background: running ? "#22c55e22" : "#52525b22",
-            color: running ? "#4ade80" : "#a1a1aa",
-          }}
-        >
-          <span
-            className="h-1.5 w-1.5 shrink-0 rounded-full"
-            style={{ background: running ? "#22c55e" : "#71717a" }}
-          />
-          {running ? tr("topbar.running") : tr("topbar.idle")}
-        </span>
-
-        <GoalChip sessionId={session?.id ?? null} />
-
-        <ContextFoldersChip session={session} />
       </div>
 
-      <div className="ml-auto flex shrink-0 items-center gap-2">
-        {usage && usage.calls > 0 && (
-          <span
-            className="pill font-mono text-[11px]"
-            style={{ background: "#3b82f61a", color: "#93c5fd" }}
-            title={tr("topbar.usageTitle", {
-              input: usage.input_tokens,
-              cache: usage.cache_read_tokens,
-              output: usage.output_tokens,
-              calls: usage.calls,
-            })}
+      {/* 功能按钮组(§2.3):五个同宽 32px,徽标 + hover 数据 + click 面板;
+          home(无 session)整组隐藏(维持现状)。 */}
+      {session && (
+        <div className="flex shrink-0 items-center gap-0.5">
+          {/* ⏺ 状态位:无面板,click 无行为(决策点 A)。语义色走 --st-*
+              (主题感知:暗色青/亮色深青,不用绿色——白底洗白)。 */}
+          <TopBarFuncButton
+            title={running ? tr("topbar.running") : tr("topbar.idle")}
+            live={running}
+            active={running ? "var(--st-running)" : undefined}
           >
-            ↑{fmtTokens(usage.input_tokens)} ↓{fmtTokens(usage.output_tokens)}
-            {usage.cache_read_tokens > 0 && (
-              <span style={{ color: "#4ade80" }}> ⚡{Math.round((usage.cache_read_tokens / Math.max(1, usage.input_tokens)) * 100)}%</span>
-            )}
-          </span>
-        )}
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ background: running ? "var(--st-running)" : "var(--st-skipped)" }}
+            />
+          </TopBarFuncButton>
+
+          <GoalChip sessionId={session.id} />
+
+          <ContextFoldersChip session={session} />
+
+          <LinkedSessionsChip session={session} />
+
+          {/* 📊 Stats:纯 hover 数据(决策点 D,会话累计口径)。 */}
+          {usage && usage.calls > 0 && (
+            <TopBarFuncButton
+              title={tr("topbar.usageTitle", {
+                input: usage.input_tokens,
+                cache: usage.cache_read_tokens,
+                output: usage.output_tokens,
+                calls: usage.calls,
+              })}
+            >
+              <ArrowDownUp className="h-4 w-4" />
+            </TopBarFuncButton>
+          )}
+        </div>
+      )}
+
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         <div className="relative">
           <button
             onClick={() => setExportMenu((m) => !m)}

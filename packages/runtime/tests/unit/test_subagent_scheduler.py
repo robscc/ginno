@@ -905,6 +905,39 @@ async def test_wake_turn_usage_source_follows_session_kind(monkeypatch, isolated
     assert seen == ["chat", "subagent"]
 
 
+async def test_wake_turn_echoes_injected_text_locally(monkeypatch, isolated_home):
+    """2026-10-30 e7336e02 观感问题：wake turn（worker assign / 子代理回传）
+    的注入信封必须随 turn.start 回显（echo_user）——开着会话页时输入实时
+    落气泡/折卡，不再等 history 重载补上。两个入口都要带标记。"""
+    seen: list[dict] = []
+
+    async def fake_run_stream(ws, graph, config, text, session, agent_id, user_extra_kwargs=None):
+        seen.append(dict(config["configurable"]))
+
+    async def fake_settled(session_id, stop_evt=None, turn_id=""):
+        return None
+
+    monkeypatch.setattr("ginno_runtime.api.stream._run_stream", fake_run_stream)
+    monkeypatch.setattr(sched, "on_turn_settled", fake_settled)
+    for sid in ("M8", "S8"):
+        server_shared._SESSIONS[sid] = {
+            "session_id": sid,
+            "project_slug": SLUG,
+            "workspace": "/tmp",
+            "agent_id": "dev",
+            "type": None,
+            "graph": object(),
+        }
+    # _run_managed_turn（子代理 brief 路径）
+    await sched._run_managed_turn("M8", "注入", None)
+    # _run_managed_turn_locked（wake 路径）
+    await sched._run_managed_turn_locked("S8", "注入", None, asyncio.Event())
+    assert len(seen) == 2
+    for cfg in seen:
+        assert cfg["echo_user"] is True
+        assert cfg["user_text"] == "注入"
+
+
 async def test_status_broadcast_reaches_all_ancestors(isolated_home, capture):
     """minor-8: subagent.* frames ride the whole parent chain, so a
     grandparent's sidebar never shows a stale nested status dot."""

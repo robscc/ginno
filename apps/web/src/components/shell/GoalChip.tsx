@@ -15,13 +15,16 @@ import { useTranslations } from "next-intl";
 import { useGinno } from "@/lib/store";
 import type { Goal } from "@/lib/types";
 import { ConfirmModal } from "@/components/ConfirmModal";
+import { TopBarFuncButton } from "./TopBarFuncButton";
 
+// 状态色(topbar 统一按钮后只剩 dot 在用;语义色走 --st-*,主题感知——
+// 白底不洗白,不引入绿色)。active 橙是既有品牌强调色,两主题都可读。
 const STATUS_COLOR: Record<string, { bg: string; fg: string; dot: string }> = {
   active: { bg: "#f9731622", fg: "#fdba74", dot: "#f97316" },
-  paused: { bg: "#71717a22", fg: "#a1a1aa", dot: "#71717a" },
-  blocked: { bg: "#ef444422", fg: "#fca5a5", dot: "#ef4444" },
-  usage_limited: { bg: "#ef444422", fg: "#fca5a5", dot: "#ef4444" },
-  complete: { bg: "#22c55e22", fg: "#86efac", dot: "#22c55e" },
+  paused: { bg: "#71717a22", fg: "#a1a1aa", dot: "var(--st-skipped)" },
+  blocked: { bg: "#ef444422", fg: "#fca5a5", dot: "var(--st-error)" },
+  usage_limited: { bg: "#ef444422", fg: "#fca5a5", dot: "var(--st-error)" },
+  complete: { bg: "#22c55e22", fg: "#86efac", dot: "var(--st-ok)" },
 };
 
 function fmtElapsed(seconds: number): string {
@@ -132,17 +135,13 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
         : 0)
     : 0;
 
-  // No goal yet → a subtle affordance to set one.
+  // No goal yet → a subtle affordance to set one (TopBar 统一按钮,topbar-unification.md §2.3)。
   if (!goal) {
     return (
       <>
-        <button
-          onClick={() => setEditing(true)}
-          title={tr("chip.setTitle")}
-          className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg border border-dashed border-line2 px-2 py-1 text-[11px] text-faint hover:border-violet/50 hover:text-violet"
-        >
-          <Target className="h-3 w-3 shrink-0" /> {tr("chip.set")}
-        </button>
+        <TopBarFuncButton onClick={() => setEditing(true)} title={tr("chip.setTitle")}>
+          <Target className="h-4 w-4" />
+        </TopBarFuncButton>
         {editing && (
           <GoalEditor
             initial=""
@@ -189,18 +188,15 @@ export function GoalChip({ sessionId }: { sessionId: string | null }) {
 
   return (
     <div className="relative shrink-0">
-      <button
+      <TopBarFuncButton
         onClick={() => setPop((p) => !p)}
-        title={tr("chip.goalTitle", { objective: goal.objective })}
-        className="flex max-w-[260px] items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px]"
-        style={{ background: sc.bg, color: sc.fg }}
+        open={pop}
+        title={`${label} · ${fmtElapsed(elapsed)} · ${goal.objective}`}
+        dot={sc.dot}
+        active={sc.dot}
       >
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: sc.dot }} />
-        <Target className="h-3 w-3 shrink-0" />
-        <span className="truncate">
-          {label} · {fmtElapsed(elapsed)}
-        </span>
-      </button>
+        <Target className="h-4 w-4" />
+      </TopBarFuncButton>
 
       {pop && (
         <>

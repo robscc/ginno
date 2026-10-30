@@ -391,10 +391,11 @@ async def _stream_graph(
                 "agent_id": _aid or "",
                 "name": _ag.name if _ag else "Agent",
             }
-            # 渠道轮次（echo_user，channels/base.py）：随 turn.start 回传用户
-            # 原文与入站图片——桌面端 composer 没有乐观气泡可依赖，没有这些
-            # 字段 IM 侧输入在实时流里永不显示（只在重启后由 history 补上）。
-            # 机器发起的 turn（子代理 brief/wake、goal 续跑）不带标记，不回显。
+            # 回显用户原文与入站图片（echo_user 标记）：渠道轮由 channels/
+            # base.py 置标记（桌面端 composer 没有乐观气泡可依赖，没有这些
+            # 字段 IM 侧输入在实时流里永不显示）；调度器 wake turn（子代理
+            # brief/wake、worker assign、goal 续跑）由 runner.py 置标记——
+            # 开着会话页时注入信封实时落输入气泡，不再等 history 补上。
             if (config.get("configurable") or {}).get("echo_user"):
                 _ts_payload["text"] = (config.get("configurable") or {}).get("user_text") or ""
                 _echo_imgs = (config.get("configurable") or {}).get("echo_images")

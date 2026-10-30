@@ -45,6 +45,7 @@ mod badge;
 mod menu;
 mod notify;
 mod pin;
+mod quit_check;
 mod shell_ui;
 mod sidecar;
 mod tray;
@@ -78,6 +79,10 @@ pub fn run() {
     // Set while a real quit is in flight (⌘Q / menu / ExitRequested) so the
     // CloseRequested handler below destroys the window instead of hiding it.
     let quitting = Arc::new(AtomicBool::new(false));
+    // Set while the quit gate (running-work confirmation, quit_check.rs) is
+    // deciding — guards against re-entrant ExitRequested while its dialog
+    // or sidecar probe is in flight.
+    let quit_checking = Arc::new(AtomicBool::new(false));
 
     let app = tauri::Builder::default()
         .plugin(
@@ -481,10 +486,50 @@ pub fn run() {
 
     app.run(move |app_handle, event| {
         match event {
-            // A real quit (⌘Q / menu / programmatic exit) is starting — let
-            // CloseRequested destroy the window instead of hiding it.
-            tauri::RunEvent::ExitRequested { .. } => {
-                quitting.store(true, Ordering::SeqCst);
+            // A real quit (⌘Q / menu / programmatic exit) is starting — gate
+            // it on running work: a live turn or a non-detached background
+            // command gets a native confirmation first (quit_check.rs). The
+            // window-close path is unaffected (it hides to the dock above).
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if quitting.load(Ordering::SeqCst) {
+                    // 已确认的退出:窗口销毁引发的后续 ExitRequested 直接放行。
+                    return;
+                }
+                if !quit_checking.swap(true, Ordering::SeqCst) {
+                    let app = app_handle.clone();
+                    let quitting = quitting.clone();
+                    let quit_checking = quit_checking.clone();
+                    std::thread::spawn(move || {
+                        // 回调要求 'static:标志各再 clone 一份 move 进去,
+                        // 外层留给 panic 兜底路径用。
+                        let quitting_cb = quitting.clone();
+                        let quit_checking_cb = quit_checking.clone();
+                        // 确认门自身崩了不能把「退出」永久锁死:兜底放行。
+                        let gated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            quit_check::confirm_quit_or_proceed(
+                                app.clone(),
+                                move |app, confirmed| {
+                                    if confirmed {
+                                        quitting_cb.store(true, Ordering::SeqCst);
+                                    }
+                                    quit_checking_cb.store(false, Ordering::SeqCst);
+                                    if confirmed {
+                                        app.exit(0);
+                                    }
+                                },
+                            )
+                        }));
+                        if gated.is_err() {
+                            shell_log(&app, "quit gate: check panicked — allowing exit");
+                            quitting.store(true, Ordering::SeqCst);
+                            quit_checking.store(false, Ordering::SeqCst);
+                            app.exit(0);
+                        }
+                    });
+                }
+                // 本轮(及确认期间的任何重入)一律拦下;结论由回调经
+                // app.exit(0) 重入退出流程(quitting=true 时上方直接放行)。
+                api.prevent_exit();
             }
             // Dock click while the window is hidden → bring it back
             // (macOS convention; notification clicks are handled explicitly

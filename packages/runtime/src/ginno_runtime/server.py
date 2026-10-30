@@ -90,6 +90,16 @@ async def lifespan(app: FastAPI):
             reconcile_subscriptions()
         except Exception:
             _log.exception("worker_reconcile_failed (continuing)")
+        # 关联会话戳对账（topbar-unification §3.2）：历史 watch 订阅在订阅方
+        # 没有 linked_auto 戳（戳只在新动作落）——补上,旧订阅才能进面板。
+        try:
+            from .session_links import backfill_linked_stamps
+
+            n = backfill_linked_stamps()
+            if n:
+                _log.info("linked_stamps_backfilled=%d", n)
+        except Exception:
+            _log.exception("linked_stamps_backfill_failed (continuing)")
     except Exception:  # noqa: BLE001 — 启动绝不因对账失败而中断
         pass
     # 清单 watcher 恢复（subagent-plan-orchestration-design.md §6）：扫

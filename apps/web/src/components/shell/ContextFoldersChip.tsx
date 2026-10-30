@@ -8,6 +8,7 @@ import * as api from "@/lib/runtime";
 import { isDesktop } from "@/lib/desktop";
 import { useGinno } from "@/lib/store";
 import type { FolderEntry, SessionMeta } from "@/lib/types";
+import { TopBarFuncButton } from "./TopBarFuncButton";
 
 /** Mount chip (context-folders-design.md §3.4). Answers the user's constant
  * question "what can the agent see right now?" and is the mount/unmount/
@@ -128,15 +129,39 @@ export function ContextFoldersChip({
 
   return (
     <div className="relative shrink-0">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        title={tr("folders.chipTitle")}
-        className="pill border border-line2 bg-card text-muted transition-colors hover:text-txt"
-        style={ids.length ? { color: "#34d399" } : undefined}
-      >
-        <FolderOpen className="h-3 w-3" />
-        {ids.length > 0 ? ids.length : tr("folders.mount")}
-      </button>
+      {live ? (
+        // TopBar 统一按钮(topbar-unification.md §2.3):挂载数徽标,tooltip 带
+        // 名称列表 + ⭐primary + ro/rw(数据 hover 展示)。
+        <TopBarFuncButton
+          onClick={() => setOpen((o) => !o)}
+          open={open}
+          title={
+            library.length && rows.length
+              ? rows
+                  .map(({ id, folder }) => {
+                    const star = primary === id ? "⭐" : "";
+                    const acc = folder?.access === "ro" ? " (ro)" : "";
+                    return `${star}${folder?.name ?? id}${acc}`;
+                  })
+                  .join(" · ")
+              : tr("folders.chipTitle")
+          }
+          count={ids.length}
+          active={ids.length ? "var(--st-planned)" : undefined}
+        >
+          <FolderOpen className="h-4 w-4" />
+        </TopBarFuncButton>
+      ) : (
+        <button
+          onClick={() => setOpen((o) => !o)}
+          title={tr("folders.chipTitle")}
+          className="pill border border-line2 bg-card text-muted transition-colors hover:text-txt"
+          style={ids.length ? { color: "var(--st-planned)" } : undefined}
+        >
+          <FolderOpen className="h-3 w-3" />
+          {ids.length > 0 ? ids.length : tr("folders.mount")}
+        </button>
+      )}
 
       {open && (
         <>

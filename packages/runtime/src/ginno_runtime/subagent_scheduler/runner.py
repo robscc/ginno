@@ -58,6 +58,10 @@ async def _run_managed_turn(
             "turn_id": turn_id,
             "user_text": text,
             "usage_source": usage_source,
+            # 本地 WS 回显（engine turn.start 带 text）：开着会话页时注入
+            # 信封（worker assign / 子代理回传）以输入气泡+折卡实时可见，
+            # 不再等刷新后 history 补上（2026-10-30 e7336e02 观感问题）。
+            "echo_user": True,
         }
     }
     _NS._RUNNING_TURNS[session_id] = turn_id
@@ -123,6 +127,8 @@ async def _run_managed_turn_locked(
             "turn_id": turn_id,
             "user_text": text,
             "usage_source": usage_source,
+            # 同 _run_managed_turn：注入信封随 turn.start 回显给本地会话页。
+            "echo_user": True,
         }
     }
     _NS._RUNNING_TURNS[session_id] = turn_id

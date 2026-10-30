@@ -156,6 +156,26 @@ export function parseWorkerAssign(
 export function foldSubagentResultBlocks(blocks: Block[]): Block[] {
   const out: Block[] = [];
   for (const b of blocks) {
+    if (b.kind === "steer") {
+      // 运行中注入（steer.absorbed 吸收落库）的重放对齐：注入带若携带协议
+      // 信封（服务端直接 steer_enqueue 的机器注入——worker digest/result/
+      // assign、子代理回传、清单状态），折成卡片与 wake/简报路径一致；
+      // 系统递归预警（steer_id 前缀，模型侧指令）整段隐藏，不以用户注入带
+      // 外显（与 live steer.absorbed 分支同判据）。普通用户/渠道/团队
+      // steer 原样保留（含附件）。
+      if (typeof b.steerId === "string" && b.steerId.startsWith("recursion-warn-")) {
+        continue;
+      }
+      const inner = foldSubagentResultBlocks([
+        { kind: "text", text: b.text || "" },
+      ]).filter((fb) => fb.kind !== "text");
+      if (inner.length) {
+        out.push(...inner);
+        continue;
+      }
+      out.push(b);
+      continue;
+    }
     if (b.kind !== "text") {
       out.push(b);
       continue;

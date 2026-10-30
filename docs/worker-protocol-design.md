@@ -144,6 +144,19 @@ watch(target):
   回复已由 tap 翻译)→ 经适配器 `notify_turn_reply` 主动推送(企微/钉钉
   markdown,📬 前缀,4000 字截断)。这同时覆盖子代理回传与任务完成注入
   等一切无 tap 的调度 turn。
+- **本地 WS 回显**(2026-10-30 e7336e02 观感问题):wake turn 的注入信封此前
+  不随 `turn.start` 回显——开着 worker 会话页时只见助手开跑、输入气泡不出现
+  (数据在 checkpoint/history 都在,纯 live 视图缺口)。修法:runner 两个入口
+  (`_run_managed_turn` / `_run_managed_turn_locked`)config 带 `echo_user=True`,
+  注入原文随 turn.start 广播到 `_SESSION_WS`(safe_send 本就广播);前端 echo
+  气泡过 `foldSubagentResultBlocks`,信封 live 落卡。去重靠 user 消息
+  id==turnId 不变式(messages_ui),history 回灌天然幂等。
+- **运行中注入的折卡**(同日补,后升级为全量 review):父会话忙时
+  digest/result/assign 走 steer 吸收。前端两处对齐:live `steer.absorbed` 与
+  重放(foldSubagentResultBlocks 的 steer 带分支)共用同一信封解析器——
+  worker/subagent/plan/delegation 信封折卡,`entry?.text ?? ev.text` 覆盖无
+  本地条目的服务端直入;系统递归预警(recursion-warn- 前缀)live/重放一致
+  隐藏。渲染矩阵见 steering-design.md §3.1。
 - **重启对账**:订阅关系在 meta 里持久;settle 钩子在重启后对账
   (reconcile)路径里同样执行——错过的终态在下次启动时补发。
 

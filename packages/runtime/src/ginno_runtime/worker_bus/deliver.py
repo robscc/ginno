@@ -34,6 +34,18 @@ def _sender_title(sender_id: str) -> str:
     return str(found[0].get("title") or sender_id[:8])
 
 
+def _stamp_assign_links(sender_id: str, tid: str) -> None:
+    """派活成功后落关联戳(session_links, topbar-unification.md §3.2):发送方
+    ``linked_auto``(assigned)+ 目标方 ``in_links``——incoming(谁在派我)
+    面板的数据源。延迟导入破环:session_links → worker_bus.registry 反向
+    依赖,而本模块被 worker_bus/__init__ 顶层加载。失败静默——戳是视野
+    增强,不阻塞投递主流程。"""
+    from ..session_links import stamp_link
+
+    stamp_link(sender_id, tid, "assigned")
+    stamp_link(tid, sender_id, "assigned-by", field="in_links")
+
+
 def build_assign_text(
     sender_id: str, sender_title: str, goal: str, constraints: str, acceptance: str
 ) -> str:
@@ -108,6 +120,7 @@ async def assign_to_worker(
             },
         )
         _log.info("worker_assign_steer from=%s to=%s", sender_id, tid)
+        _stamp_assign_links(sender_id, tid)
         return {"ok": True, "receipt": "queued", "msg_id": msg_id}
 
     # 闲 → wake turn。_wake_parent_turn 的目标检查面向 subagent 终态，
@@ -120,9 +133,11 @@ async def assign_to_worker(
     )
     if outcome == "ran":
         _log.info("worker_assign_wake from=%s to=%s", sender_id, tid)
+        _stamp_assign_links(sender_id, tid)
         return {"ok": True, "receipt": "absorbed", "msg_id": msg_id}
     if outcome == "steered":
         _log.info("worker_assign_wake_raced_busy from=%s to=%s", sender_id, tid)
+        _stamp_assign_links(sender_id, tid)
         return {"ok": True, "receipt": "queued", "msg_id": msg_id}
     _log.info("worker_assign_refused from=%s to=%s outcome=%s", sender_id, tid, outcome)
     return {"ok": False, "receipt": "refused", "reason": outcome,

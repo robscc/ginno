@@ -93,6 +93,18 @@
 
 `steer.accepted` 与 `steer.absorbed` 都可以多次到达（重连重放），前端按 `steer_id` 幂等。
 
+**absorbed 内容的渲染矩阵**（2026-10-30 全量 review，live 与重放同一解析器
+`foldSubagentResultBlocks` 对齐）：
+
+| 注入来源 | 文本形态 | 渲染 |
+|---|---|---|
+| 本地用户 steer（ws） | 纯文本 + 图片/文件附件 | 注入带（含附件），live 有本地 entry |
+| 渠道 steer（`origin="channel"`） | IM 纯文本 | 注入带（无本地 entry，靠事件 `text`） |
+| 团队投递（teams/deliver） | 队友纯文本 | 注入带（诚实呈现为消息注入） |
+| 后台任务（`ginno_task_event`） | "[task finished]…" | 极薄 task_event 标记行（事件 `task` 载荷驱动） |
+| 子代理回传 / worker digest·result·assign / 清单状态 / 旧版委托 | 协议信封 XML | 折卡（result/assign/plan/delegation 卡）；live 从 `entry?.text ?? ev.text` 解析，重放对 steer 带同样折 |
+| 系统递归预警（`steer_id` 前缀 `recursion-warn-`，engine 步数护栏） | 模型侧双语指令 | **不渲染**（live 与重放一致隐藏——它是给模型的内部指令，不是用户输入） |
+
 ### 3.2 轮中吸收 —— `agent_node` 入口
 
 注入点是 `agent_node` 入口，在重建 history **之前**（`graph.py:691` 起）：

@@ -190,6 +190,40 @@
       "exportProjectHint": "同时会在 ~/.ginno/index/exports/ 保留一份",
       "exportProjectDone": "项目导出已开始下载（同时保存在 ~/.ginno/index/exports/）",
       "exportFailed": "导出失败 — 请检查 runtime 是否已连接"
+    },
+    "links": {
+      "chipTitle": "关联会话",
+      "header": "关联会话",
+      "liveCount": "{n} 个在跑",
+      "more": "+{n} 更多",
+      "empty": "派活/孵化/订阅的会话会出现在这里,也可在下方手动挂载。",
+      "rel": {
+        "spawned": "孵化",
+        "delegated": "委托",
+        "assigned": "派活",
+        "watching": "订阅",
+        "mounted": "手动挂载",
+        "assignedMe": "被派活",
+        "watchingMe": "被订阅"
+      },
+      "status": {
+        "working": "运行中",
+        "waiting": "等待",
+        "idle": "空闲",
+        "done": "已完成",
+        "failed": "失败",
+        "stopped": "已停止",
+        "unknown": "未知",
+        "missing": "已丢失"
+      },
+      "open": "打开",
+      "stopTitle": "停止(级联其子会话)",
+      "stopConfirm": "停止「{title}」?会一并停止其运行中的子会话。",
+      "detachTitle": "解除关联 —— 只断本对话视野,会话本体继续存在",
+      "incomingHeader": "谁在派我",
+      "mountPlaceholder": "挂载会话…(按标题搜索)",
+      "searching": "搜索中…",
+      "clearSearch": "× 清除结果"
     }
   }
 }
