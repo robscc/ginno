@@ -250,9 +250,6 @@ class WeComConnector(Connector):
             "session_policy": "per_user",
             "ask_timeout_s": 600,
             "welcome_text": "你好，我是 Ginno，直接发消息即可开始。",
-            "asr_base_url": "",
-            "asr_api_key": "",
-            "asr_model": "",
         }
 
     def config_schema(self) -> dict:
@@ -289,20 +286,6 @@ class WeComConnector(Connector):
                     "type": "string", "title": "Welcome message",
                     "description": ("Sent when a user enters the chat "
                                     "(enter_chat event); empty = disabled"),
-                },
-                "asr_base_url": {
-                    "type": "string", "title": "ASR Base URL",
-                    "description": ("千问云录音文件转写的 OpenAI 兼容 base，如 "
-                                    "https://dashscope.aliyuncs.com/compatible-mode/v1"
-                                    "；为空则语音消息不消费（只回提示）"),
-                },
-                "asr_api_key": {
-                    "type": "string", "title": "ASR API Key",
-                    "format": "password",
-                },
-                "asr_model": {
-                    "type": "string", "title": "ASR Model",
-                    "description": "如 qwen-audio-3.0-asr-flash",
                 },
             },
         }

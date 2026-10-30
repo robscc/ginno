@@ -132,6 +132,7 @@ export interface ModelConfig {
   id: string; // stable key ("anthropic"/"openai"/"custom" for migrated slots, "prov_*" for new)
   name: string; // user-readable, required
   protocol: ModelProtocol;
+  kind?: "chat" | "asr"; // chat (default) drives turns; asr = speech-to-text card (ginno_runtime.asr), never a chat default
   base_url: string;
   api_key: string;
   org_id?: string; // openai-responses only

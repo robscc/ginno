@@ -840,9 +840,16 @@
         "vBaseUrl": "An OpenAI Compatible endpoint requires a Base URL.",
         "vApiKey": "This protocol requires an API key (only compatible endpoints may leave it empty).",
         "vModels": "Add at least one model id.",
-        "vDefaultModel": "The default model must be one of the models in the list."
+        "vDefaultModel": "The default model must be one of the models in the list.",
+        "kindLabel": "Type",
+        "kindChat": "Chat model",
+        "kindAsr": "Speech-to-text",
+        "asrHint": "Speech-to-text endpoint (OpenAI-compatible): base URL + API key + transcription model (e.g. qwen3-asr-flash). Never used for chat or as the default model.",
+        "asrProtocolNote": "Speech-to-text always uses the OpenAI-compatible endpoint (chat/completions + input_audio)."
       },
-      "collapseCard": "Collapse"
+      "collapseCard": "Collapse",
+      "asrChip": "ASR",
+      "asrChipTitle": "Speech-to-text config: not used for chat; channels address it by id"
     },
     "usage": {
       "title": "Usage",

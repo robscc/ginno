@@ -840,9 +840,16 @@
         "vBaseUrl": "OpenAI 兼容端点必须填写 Base URL。",
         "vApiKey": "此协议必须填写 API 密钥（仅兼容端点可留空）。",
         "vModels": "至少添加一个模型 id。",
-        "vDefaultModel": "默认模型必须是列表中的模型之一。"
+        "vDefaultModel": "默认模型必须是列表中的模型之一。",
+        "kindLabel": "类型",
+        "kindChat": "对话模型",
+        "kindAsr": "语音识别",
+        "asrHint": "语音转写端点（OpenAI 兼容）：base_url + API Key + 转写模型（如 qwen3-asr-flash）。不参与对话与默认模型。",
+        "asrProtocolNote": "语音识别固定走 OpenAI 兼容端点（chat/completions + input_audio）。"
       },
-      "collapseCard": "收起"
+      "collapseCard": "收起",
+      "asrChip": "语音识别",
+      "asrChipTitle": "语音转写配置：不参与对话，供语音渠道按 id 调用"
     },
     "usage": {
       "title": "用量统计",

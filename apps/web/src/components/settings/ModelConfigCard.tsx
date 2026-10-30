@@ -2,7 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
-import { ChevronUp, Layers, Plug, Sparkles, Star, Trash2 } from "lucide-react";
+import { ChevronUp, AudioLines, Layers, Plug, Sparkles, Star, Trash2 } from "lucide-react";
 import type { ModelConfig, ModelProtocol } from "@/lib/types";
 import { hostOf, PROTOCOL_LABEL, protocolBadge, relTimeParts } from "./modelConfigShared";
 
@@ -98,11 +98,12 @@ export function ModelConfigCard({
 }) {
   const t = useTranslations("settings.model");
   const [confirming, setConfirming] = useState(false);
+  const isAsr = cfg.kind === "asr";
   const badge = protocolBadge(cfg);
   const host = hostOf(cfg.base_url) || t("officialEndpoint");
   const models = cfg.models ?? [];
   const chips = models.slice(0, 4); // 收起卡更矮，预览前 4 个 + "+N"（原 6）
-  const Icon = PROTOCOL_ICON[cfg.protocol] ?? Plug;
+  const Icon = isAsr ? AudioLines : (PROTOCOL_ICON[cfg.protocol] ?? Plug);
 
   return (
     <div
@@ -122,13 +123,22 @@ export function ModelConfigCard({
         <span className="truncate font-medium text-txt" title={cfg.name}>
           {cfg.name || cfg.id}
         </span>
+        {isAsr && (
+          <span
+            className="rounded-full border px-1.5 py-px text-[10px]"
+            style={{ borderColor: "#14b8a655", background: "#14b8a614", color: "#14b8a6" }}
+            title={t("asrChipTitle")}
+          >
+            {t("asrChip")}
+          </span>
+        )}
         {isDefault && (
           <span className="rounded-full border border-violet/40 bg-violet/10 px-1.5 py-px text-[10px] text-violet" title={t("defaultTooltip")}>
             {t("defaultLabel")}
           </span>
         )}
         <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          {!isDefault && cfg.enabled && (
+          {!isDefault && !isAsr && cfg.enabled && (
             <button
               onClick={onSetDefault}
               disabled={busy}

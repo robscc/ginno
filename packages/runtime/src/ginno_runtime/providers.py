@@ -123,6 +123,12 @@ _SEARCH_PROBE = (
 CONFIG_DEFAULTS: dict[str, Any] = {
     "name": "",
     "protocol": "openai-compatible",
+    # Config kind: "chat" (default — a conversational LLM endpoint) or "asr"
+    # (speech-to-text, e.g. qwen3-asr-flash via the OpenAI-compatible
+    # chat/completions + input_audio shape; consumed by ginno_runtime.asr).
+    # ASR configs are excluded from every chat surface (legacy providers view,
+    # default chain) — they are only addressable by id from ASR callers.
+    "kind": "chat",
     "base_url": "",
     "api_key": "",
     "org_id": "",
@@ -167,6 +173,8 @@ def normalize_config(cfg: dict[str, Any] | None) -> dict[str, Any]:
     out.update(cfg or {})
     out["models"] = _coerce_models(out.get("models"))
     out["enabled"] = bool(out.get("enabled"))
+    # kind 只有两个合法值；未知值一律回 chat（旧配置无此字段也是 chat）。
+    out["kind"] = "asr" if str(out.get("kind") or "") == "asr" else "chat"
     return out
 
 
@@ -332,18 +340,23 @@ def get_default_config(settings: dict[str, Any] | None = None) -> str:
     """The global default config id.
 
     Explicit ``default_config`` (falling back to legacy ``default_provider``)
-    if it names an enabled config; otherwise the first enabled config —
-    scanning the WHOLE array, not just the three legacy slots; otherwise the
-    configured choice as-is (it will surface as an error later, same as before).
+    if it names an enabled CHAT config (asr kind can't drive chat); otherwise
+    the first enabled chat config — scanning the WHOLE array, not just the
+    three legacy slots; otherwise the configured choice as-is (it will surface
+    as an error later, same as before).
     """
     settings = settings if settings is not None else _read_settings()
     configs = load_configs(settings)
     by_id = {c["id"]: c for c in configs}
     chosen = settings.get("default_config") or settings.get("default_provider")
-    if chosen in by_id and by_id[chosen].get("enabled"):
+    if (
+        chosen in by_id
+        and by_id[chosen].get("enabled")
+        and by_id[chosen].get("kind") != "asr"
+    ):
         return chosen
     for cfg in configs:
-        if cfg.get("enabled"):
+        if cfg.get("enabled") and cfg.get("kind") != "asr":
             return cfg["id"]
     return chosen or "custom"
 
@@ -364,8 +377,12 @@ def load_providers(settings: dict[str, Any] | None = None) -> dict[str, dict[str
 
     Kept as a thin wrapper so every existing caller (sessions.py, config.py,
     models.py, …) and its monkeypatch-based tests keep working unchanged.
+    kind="asr" configs are EXCLUDED — every consumer of this view is a chat
+    surface (session binding, agents dropdown, default chain); ASR configs
+    are addressed by id through ginno_runtime.asr instead.
     """
-    return {cfg["id"]: cfg for cfg in load_configs(settings)}
+    return {cfg["id"]: cfg for cfg in load_configs(settings)
+            if cfg.get("kind") != "asr"}
 
 
 def save_providers(providers: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:

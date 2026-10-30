@@ -735,96 +735,19 @@ def test_adapter_enter_chat_welcome(tmp_path: Path):
 # ---------------------------------------------------------------- 语音转写
 
 
-class _Resp:
-    def __init__(self, payload):
-        self._p = payload
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return self._p
-
-
-class _FakeHttp:
-    def __init__(self, payload):
-        self.payload = payload
-        self.calls: list[tuple[str, dict, dict]] = []
-
-    async def post(self, url, headers=None, json=None):
-        self.calls.append((url, headers or {}, json or {}))
-        return _Resp(self.payload)
-
-
-def test_asr_mime_for_format():
-    from ginno_runtime.channels.wecom.asr import mime_for_format
-
-    assert mime_for_format("wav") == "audio/wav"
-    assert mime_for_format("AMR") == "audio/amr"
-    assert mime_for_format(".mp3") == "audio/mpeg"
-    assert mime_for_format("") == "audio/amr"  # 缺省兜底（企微语音传统容器）
-    assert mime_for_format("weird") == "audio/amr"
-
-
-def test_asr_transcribe_audio():
-    from ginno_runtime.channels.wecom.asr import transcribe_audio
-
-    payload = {"choices": [{"message": {"content": "你好世界"}}]}
-    http = _FakeHttp(payload)
-    text = asyncio.run(transcribe_audio(
-        b"AMRDATA", fmt="amr", base_url="https://asr.example/v1/",
-        api_key="sk-1", model="qwen-audio-3.0-asr-flash", http=http))
-    assert text == "你好世界"
-    url, headers, body = http.calls[0]
-    assert url == "https://asr.example/v1/chat/completions"
-    assert headers["Authorization"] == "Bearer sk-1"
-    assert body["model"] == "qwen-audio-3.0-asr-flash"
-    audio = body["messages"][0]["content"][0]["input_audio"]["data"]
-    assert audio.startswith("data:audio/amr;base64,")
-    import base64 as b64mod
-
-    assert b64mod.b64decode(audio.split(",", 1)[1]) == b"AMRDATA"
-
-
-def test_asr_transcribe_content_blocks_and_missing_choices():
-    from ginno_runtime.channels.wecom.asr import transcribe_audio
-
-    # content blocks 形状（多模态网关可能返回列表）
-    payload = {"choices": [{"message": {"content": [
-        {"type": "text", "text": "你好"}, {"type": "text", "text": "世界"}]}}]}
-    text = asyncio.run(transcribe_audio(
-        b"x", fmt="wav", base_url="https://a/v1", api_key="k", model="m",
-        http=_FakeHttp(payload)))
-    assert text == "你好世界"
-    # 缺 choices → 明确报错（转成 adapter 的失败提示）
-    with pytest.raises(RuntimeError):
-        asyncio.run(transcribe_audio(
-            b"x", fmt="amr", base_url="https://a/v1", api_key="k", model="m",
-            http=_FakeHttp({"choices": []})))
-
-
-def _voice_body(fmt: str = "amr") -> dict:
+def _voice_body(content: str | None = "帮我订个明天十点的会") -> dict:
+    """智能机器人协议的 voice 消息：只有企微服务端转写好的 content，
+    没有音频文件（无 url/aeskey）。"""
+    voice = {"content": content} if content is not None else {}
     return {"msgid": "v1", "msgtype": "voice", "chattype": "single",
-            "from": {"userid": "zhang"},
-            "voice": {"url": "https://media.example/v", "aeskey": "",
-                      "format": fmt}}
+            "from": {"userid": "zhang"}, "voice": voice}
 
 
-def test_voice_without_asr_config_hints(tmp_path: Path):
-    ad = _make_adapter(tmp_path, {})
-    asyncio.run(ad.handle_msg(_voice_body(), _frame_of()))
-    finishes = [b for _, b in ad.client.responds
-                if b.get("stream", {}).get("finish")]
-    assert finishes and "尚未配置语音转写" in finishes[0]["stream"]["content"]
-
-
-def test_voice_dispatch_transcribes_to_turn(tmp_path: Path, monkeypatch):
+def test_voice_dispatches_transcribed_content(tmp_path: Path, monkeypatch):
+    """voice.content（企微服务端转写文本）直接驱动文本 turn。"""
     pytest.importorskip("langchain_core")
-    ad = _make_adapter(tmp_path, {
-        "asr_base_url": "https://asr.example/v1", "asr_api_key": "k",
-        "asr_model": "qwen-audio-3.0-asr-flash"})
+    ad = _make_adapter(tmp_path, {})
     turns: list[dict] = []
-    seen: dict = {}
 
     async def fake_ensure(ginno_sid, **kw):
         return ({"session_id": "sess1", "project_slug": "default",
@@ -833,65 +756,19 @@ def test_voice_dispatch_transcribes_to_turn(tmp_path: Path, monkeypatch):
     async def fake_run(session, text, tap, **kw):
         turns.append({"text": text, **kw})
 
-    async def fake_dl(url, aeskey, http):
-        return b"AMRDATA", ""
-
-    async def fake_tr(data, *, fmt, base_url, api_key, model, http):
-        seen.update(data=data, fmt=fmt, base_url=base_url, model=model)
-        return "帮我订个明天十点的会"
-
     import ginno_runtime.channels.wecom.adapter as adapter_mod
-    import ginno_runtime.channels.wecom.asr as asr_mod
-    import ginno_runtime.channels.wecom.media as media_mod
 
     monkeypatch.setattr(adapter_mod, "ensure_channel_session", fake_ensure)
     monkeypatch.setattr(adapter_mod, "run_channel_turn", fake_run)
-    monkeypatch.setattr(media_mod, "download_media", fake_dl)
-    monkeypatch.setattr(asr_mod, "transcribe_audio", fake_tr)
     asyncio.run(ad.handle_msg(_voice_body(), _frame_of()))
-    # 转写文本直接驱动 turn（usage_source=wecom_voice），配置透传
-    assert seen["fmt"] == "amr" and seen["data"] == b"AMRDATA"
-    assert seen["base_url"] == "https://asr.example/v1"
-    assert seen["model"] == "qwen-audio-3.0-asr-flash"
     assert turns and turns[0]["text"] == "帮我订个明天十点的会"
     assert turns[0]["usage_source"] == "wecom_voice"
 
 
-def test_voice_transcribe_failure_and_empty(tmp_path: Path, monkeypatch):
-    pytest.importorskip("langchain_core")
-    ad = _make_adapter(tmp_path, {
-        "asr_base_url": "https://asr.example/v1", "asr_api_key": "k",
-        "asr_model": "m"})
-
-    async def fake_ensure(ginno_sid, **kw):
-        return ({"session_id": "sess1", "project_slug": "default",
-                 "graph": None}, None)
-
-    async def boom(*a, **kw):
-        raise RuntimeError("asr down")
-
-    async def empty(*a, **kw):
-        return ""
-
-    import ginno_runtime.channels.wecom.adapter as adapter_mod
-    import ginno_runtime.channels.wecom.asr as asr_mod
-    import ginno_runtime.channels.wecom.media as media_mod
-
-    async def fake_dl(url, aeskey, http):
-        return b"AMRDATA", ""
-
-    monkeypatch.setattr(adapter_mod, "ensure_channel_session", fake_ensure)
-    monkeypatch.setattr(media_mod, "download_media", fake_dl)
-    monkeypatch.setattr(asr_mod, "transcribe_audio", boom)
-    asyncio.run(ad.handle_msg(_voice_body(), _frame_of()))
+def test_voice_empty_content_hints(tmp_path: Path):
+    """content 为空（静音/识别失败）→ 定格提示而不是开空 turn。"""
+    ad = _make_adapter(tmp_path, {})
+    asyncio.run(ad.handle_msg(_voice_body(""), _frame_of()))
     finishes = [b for _, b in ad.client.responds
                 if b.get("stream", {}).get("finish")]
-    assert finishes and "语音转写失败" in finishes[0]["stream"]["content"]
-
-    # 转写为空（静音）→ 提示重试
-    ad2 = _make_adapter(tmp_path / "b", ad.config)
-    monkeypatch.setattr(asr_mod, "transcribe_audio", empty)
-    asyncio.run(ad2.handle_msg(_voice_body(), _frame_of()))
-    finishes2 = [b for _, b in ad2.client.responds
-                 if b.get("stream", {}).get("finish")]
-    assert finishes2 and "转写结果为空" in finishes2[0]["stream"]["content"]
+    assert finishes and "没有识别出内容" in finishes[0]["stream"]["content"]

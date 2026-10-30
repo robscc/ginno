@@ -62,6 +62,7 @@ export function ModelConfigForm({
   const set = <K extends keyof ModelConfig>(key: K, value: ModelConfig[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
+  const isAsr = draft.kind === "asr";
   const isAnthropic = draft.protocol === "anthropic";
   const isCompat = draft.protocol === "openai-compatible";
   const isResponses = draft.protocol === "openai-responses";
@@ -136,6 +137,7 @@ export function ModelConfigForm({
     if (!draft.name.trim()) return t("vName");
     if (isCompat && !draft.base_url.trim()) return t("vBaseUrl");
     if (!isCompat && !draft.api_key.trim()) return t("vApiKey");
+    if (isAsr && !draft.api_key.trim()) return t("vApiKey");
     if (!draft.models.length) return t("vModels");
     if (!draft.default_model || !draft.models.includes(draft.default_model))
       return t("vDefaultModel");
@@ -174,6 +176,31 @@ export function ModelConfigForm({
       </div>
 
       <div className="space-y-3">
+        {/* 类型：对话模型 vs 语音识别。asr 固定走 OpenAI 兼容端点
+            （chat/completions + input_audio），协议选择随之隐藏。 */}
+        <div>
+          <label className="field-label">{t("kindLabel")}</label>
+          <div className="flex max-w-sm rounded-lg border border-line p-0.5">
+            {(["chat", "asr"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => {
+                  set("kind", k);
+                  if (k === "asr") set("protocol", "openai-compatible");
+                }}
+                className={`flex-1 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                  (draft.kind ?? "chat") === k ? "bg-card2 text-txt" : "text-muted hover:text-txt"
+                }`}
+                style={(draft.kind ?? "chat") === k && k === "asr" ? { color: "#14b8a6" } : undefined}
+              >
+                {t(k === "chat" ? "kindChat" : "kindAsr")}
+              </button>
+            ))}
+          </div>
+          {isAsr && <p className="mt-1 text-[11px] text-faint">{t("asrHint")}</p>}
+        </div>
+
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label={t("nameLabel")}>
             <input
@@ -184,24 +211,31 @@ export function ModelConfigForm({
               autoFocus={isNew}
             />
           </Field>
-          <div className="sm:col-span-2">
-            <label className="field-label">{t("protocolLabel")}</label>
-            <div className="flex rounded-lg border border-line p-0.5">
-              {PROTOCOLS.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => set("protocol", p)}
-                  className={`flex-1 rounded-md px-2 py-1.5 text-xs transition-colors ${
-                    draft.protocol === p ? "bg-card2 text-txt" : "text-muted hover:text-txt"
-                  }`}
-                >
-                  {PROTOCOL_LABEL[p]}
-                </button>
-              ))}
+          {!isAsr && (
+            <div className="sm:col-span-2">
+              <label className="field-label">{t("protocolLabel")}</label>
+              <div className="flex rounded-lg border border-line p-0.5">
+                {PROTOCOLS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => set("protocol", p)}
+                    className={`flex-1 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                      draft.protocol === p ? "bg-card2 text-txt" : "text-muted hover:text-txt"
+                    }`}
+                  >
+                    {PROTOCOL_LABEL[p]}
+                  </button>
+                ))}
+              </div>
+              {isCompat && <p className="mt-1 text-[11px] text-faint">{t("compatHint")}</p>}
             </div>
-            {isCompat && <p className="mt-1 text-[11px] text-faint">{t("compatHint")}</p>}
-          </div>
+          )}
+          {isAsr && (
+            <div className="sm:col-span-2 self-end text-[11px] text-faint">
+              {t("asrProtocolNote")}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -292,7 +326,7 @@ export function ModelConfigForm({
           </Field>
         )}
 
-        {isCompat && (
+        {isCompat && !isAsr && (
           <div className="space-y-2 rounded-xl border border-line p-3">
             <div className="text-xs font-medium text-muted">{t("compatSwitchesTitle")}</div>
             <div className="flex flex-col gap-2">
@@ -422,7 +456,7 @@ export function ModelConfigForm({
             <textarea
               className="field font-mono text-xs"
               rows={4}
-              placeholder={"qwen-plus\ndeepseek-v3\nclaude-sonnet-4-5"}
+              placeholder={isAsr ? "qwen3-asr-flash" : "qwen-plus\ndeepseek-v3\nclaude-sonnet-4-5"}
               value={modelsText}
               onChange={(e) => onModelsText(e.target.value)}
             />
@@ -482,33 +516,7 @@ export function ModelConfigForm({
                 </div>
               )}
             </Field>
-            <div className="grid grid-cols-3 gap-3">
-              <Field label={t("maxTokens")}>
-                <input
-                  type="number"
-                  className="field"
-                  value={draft.max_tokens ?? ""}
-                  onChange={(e) => num("max_tokens", e.target.value)}
-                />
-              </Field>
-              <Field label={t("contextWindowLabel")} hint={t("contextWindowHint")}>
-                <input
-                  type="number"
-                  className="field"
-                  placeholder="200000"
-                  value={draft.context_window ?? ""}
-                  onChange={(e) => num("context_window", e.target.value)}
-                />
-              </Field>
-              <Field label={t("temperature")}>
-                <input
-                  type="number"
-                  step="0.1"
-                  className="field"
-                  value={draft.temperature ?? ""}
-                  onChange={(e) => num("temperature", e.target.value)}
-                />
-              </Field>
+            {isAsr ? (
               <Field label={t("timeoutS")}>
                 <input
                   type="number"
@@ -517,7 +525,44 @@ export function ModelConfigForm({
                   onChange={(e) => num("timeout_s", e.target.value)}
                 />
               </Field>
-            </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-3">
+                <Field label={t("maxTokens")}>
+                  <input
+                    type="number"
+                    className="field"
+                    value={draft.max_tokens ?? ""}
+                    onChange={(e) => num("max_tokens", e.target.value)}
+                  />
+                </Field>
+                <Field label={t("contextWindowLabel")} hint={t("contextWindowHint")}>
+                  <input
+                    type="number"
+                    className="field"
+                    placeholder="200000"
+                    value={draft.context_window ?? ""}
+                    onChange={(e) => num("context_window", e.target.value)}
+                  />
+                </Field>
+                <Field label={t("temperature")}>
+                  <input
+                    type="number"
+                    step="0.1"
+                    className="field"
+                    value={draft.temperature ?? ""}
+                    onChange={(e) => num("temperature", e.target.value)}
+                  />
+                </Field>
+                <Field label={t("timeoutS")}>
+                  <input
+                    type="number"
+                    className="field"
+                    value={draft.timeout_s ?? ""}
+                    onChange={(e) => num("timeout_s", e.target.value)}
+                  />
+                </Field>
+              </div>
+            )}
           </div>
         </div>
       </div>
