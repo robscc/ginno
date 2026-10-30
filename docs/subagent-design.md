@@ -136,10 +136,14 @@ interface SessionMeta {
 
 subagent 的 turn 自然结束后（`message.end` 且无后续 pending），runtime 侧 subagent 调度器：
 
-1. **生成摘要**：取最终报告（最后一条 assistant 消息），若过长（> 约 500 字）用当前模型压一版摘要（复用 session_title 的生成链路思路）；
+1. **准备报告**（2026-10-30 重构，用户定夺「报告不该压缩」）：取最终报告（最后一条 assistant 消息），注入正文与展示摘要分离——
+   - 默认**不压缩**：信封注入**全文**；`result_summary` 仅在展示侧截断（> `SUMMARY_MAX_CHARS` 5000 字）；
+   - 报告 > `subagent.report_inline_max`（默认 12000 字）：全文写入父会话 workspace `sessions/<parent>/reports/subagent-<id8>-report.md`，信封注入**文件路径 + 读文件指引 + 前 1500 字预览**，父 agent 用读文件工具取全文；
+   - `subagent.compress_report=true`（可选）：先向父会话广播瞬态 `subagent.status=summarizing`（🗜️「收到报告，压缩中」提示），再压摘要；ainvoke 带 `asyncio.timeout(60)` 硬顶——2026-10-30 曾因网关停顿无界挂 9 分钟（71b57ce），整个 finalize（写终态 + 上报父会话）被这一个 best-effort 调用串死；压缩失败回退全文注入，内容不丢；
+   - settings 每次调用都读，写设置即时生效（同 `max_concurrent`）；
 2. **回填 meta**：`result_summary` + `status` 写入子 session meta，发 `agents.changed` 类事件刷新 UI；
 3. **注入主对话**（与 steering 设计 §3.3 同构）：
-   - 父 session **running** → `steer_enqueue`，消息形如 `<ginno_subagent_result session="…" goal="…">摘要</ginno_subagent_result>`，主 agent 下个超步边界吸收并转述/整合；
+   - 父 session **running** → `steer_enqueue`，消息形如 `<ginno_subagent_result session="…" goal="…">报告正文</ginno_subagent_result>`（全文/文件指针，非摘要），主 agent 下个超步边界吸收并转述/整合；
    - 父 session **idle** → 直接开新 turn（invoke 一条 system 侧 user 消息），主 agent 收到后向用户汇报；
 4. **主对话卡片更新**：运行中卡片 → 结果卡片（摘要 + 「查看完整对话」+ 验收操作）。
 

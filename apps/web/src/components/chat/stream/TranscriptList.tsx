@@ -362,6 +362,7 @@ export function TranscriptList({
               statusOverride={compacting ? tc("stream.compacting") : null}
               turnId={m.turnId}
               failed={m.failed}
+              ts={m.ts}
               onAnswerQuestion={answerQuestion}
               // questionLive: is this session's turn actually alive? A
               // parked question keeps the server turn running WITHOUT a

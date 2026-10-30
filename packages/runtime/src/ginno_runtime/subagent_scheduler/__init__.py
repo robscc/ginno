@@ -106,7 +106,8 @@ from .gate import (
     _finalize_subagent_locked,
     _gen_subagent_title,
     _mark_waiting,
-    _maybe_compress_summary,
+    _prepare_report,
+    _write_report_file,
     on_stop_if_waiting,
     on_turn_settled,
     on_turn_stopped,
@@ -127,6 +128,7 @@ from .meta import (
     _warn_once,
     collect_subagent_rows,
     max_concurrent,
+    report_settings,
 )
 from .reconcile import (
     _is_subagent_injection,

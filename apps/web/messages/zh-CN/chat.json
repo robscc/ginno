@@ -3,6 +3,7 @@
     "status": {
       "running": "运行中",
       "waiting": "等待子任务",
+      "summarizing": "报告压缩中",
       "done": "已完成",
       "ok": "已完成",
       "failed": "失败",

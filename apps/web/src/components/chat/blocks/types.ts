@@ -99,6 +99,9 @@ export const SUBAGENT_STATUS_META: Record<
 > = {
   running: { glyph: "🟢", label: "Running", color: "#22c55e" },
   waiting: { glyph: "⏳", label: "Waiting on subtask", color: "#eab308" },
+  // 瞬态：finalize 收到报告、compress_report 开启时压缩中（终态事件很快覆盖，
+  // 不落 meta）。桶归 running（见 subagentStatusBucket）。
+  summarizing: { glyph: "🗜️", label: "Compressing report", color: "#eab308" },
   done: { glyph: "✅", label: "Completed", color: "#22c55e" },
   failed: { glyph: "⚠️", label: "Failed", color: "#ef4444" },
   stopped: { glyph: "⛔", label: "Stopped", color: "#71717a" },

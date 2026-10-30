@@ -303,6 +303,133 @@ async def test_gate_last_descendant_done_finalizes_the_whole_chain(
     assert '<ginno_subagent_result session="C"' in capture["wakes"][1][1]
 
 
+# --------------------------------------------------------------------------- #
+# report 回传策略（2026-10-30 重构）：默认不压缩；超大落文件；压缩可配置
+# --------------------------------------------------------------------------- #
+async def test_report_default_is_full_injection_no_compression(
+    isolated_home, capture, monkeypatch
+):
+    """6000 字报告（> SUMMARY_MAX_CHARS 5000、< inline_max 12000）：默认不
+    压缩——注入父会话的是全文（旧实现会走 LLM 压缩/截断），meta 展示摘要在
+    5000 字处截断（截的只是显示，不是注入）。"""
+    _put_meta(_sub_meta("P"))
+    _put_meta(_sub_meta("C", parent="P", depth=0, status="running"))
+    report = "证据与结论。" * 1000  # 6000 chars
+
+    async def fake_report(slug, session_id):
+        return report
+
+    monkeypatch.setattr(sched, "_final_report_text", fake_report)
+    await sched.on_turn_settled("C")
+    await _ticks()
+
+    assert len(capture["wakes"]) == 1
+    wake_text = capture["wakes"][0][1]
+    assert report in wake_text  # FULL report reaches the parent model
+    meta, _ = sched._find_meta("C")
+    summary = meta["subagent"]["result_summary"]
+    assert summary.startswith(report[: sched.SUMMARY_MAX_CHARS])
+    assert len(summary) < len(report)  # display-side truncation only
+    # default: no summarizing transient status was ever broadcast
+    assert not [
+        d for _, e, d in capture["sent"]
+        if e == "subagent.status" and d.get("status") == "summarizing"
+    ]
+
+
+async def test_oversize_report_saved_as_file_parent_reads_pointer(
+    isolated_home, capture, monkeypatch
+):
+    """> report_inline_max（默认 12000）→ 全文落文件到父会话 workspace 的
+    reports/ 下；注入的是路径 + 读文件指引 + 前 1500 字预览，绝不含全文。"""
+    _put_meta(_sub_meta("P"))
+    _put_meta(_sub_meta("C", parent="P", depth=0, status="running"))
+    report = "数据段落内容。\n" * 1800 + "唯一尾部哨兵SENTINEL-TAIL-9f3a。\n"
+
+    async def fake_report(slug, session_id):
+        return report
+
+    monkeypatch.setattr(sched, "_final_report_text", fake_report)
+    await sched.on_turn_settled("C")
+    await _ticks()
+
+    p = paths.project_sessions_dir(SLUG) / "P" / "reports" / "subagent-C-report.md"
+    assert p.exists()
+    assert p.read_text(encoding="utf-8") == report.strip()
+    assert "SENTINEL-TAIL-9f3a" in p.read_text(encoding="utf-8")  # full body on disk
+    wake_text = capture["wakes"][0][1]
+    assert str(p) in wake_text  # absolute path for the parent to read
+    assert report[:1500] in wake_text  # head preview rides along
+    assert "SENTINEL-TAIL-9f3a" not in wake_text  # …but never the full body
+    meta, _ = sched._find_meta("C")
+    assert "subagent-C-report.md" in meta["subagent"]["result_summary"]
+
+
+async def test_compress_enabled_broadcasts_summarizing_then_compresses(
+    isolated_home, capture, monkeypatch
+):
+    """settings subagent.compress_report=true：压缩前先向主会话广播瞬态
+    summarizing 状态（用户 2026-10-30 需求「收到报告，压缩中」），压缩结果
+    替换注入正文。"""
+    _put_meta(_sub_meta("P"))
+    _put_meta(_sub_meta("C", parent="P", depth=0, status="running"))
+    settings = paths.home() / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"subagent": {"compress_report": True}}), encoding="utf-8")
+    report = "证据与结论。" * 1000  # 6000 chars, under inline_max
+
+    async def fake_report(slug, session_id):
+        return report
+
+    class _FakeResp:
+        content = "压缩后的结论。"
+
+    class _FakeModel:
+        async def ainvoke(self, msgs):
+            return _FakeResp()
+
+    monkeypatch.setattr(sched, "_final_report_text", fake_report)
+    monkeypatch.setattr("ginno_runtime.models.build_model", lambda *a, **k: _FakeModel())
+    await sched.on_turn_settled("C")
+    await _ticks()
+
+    statuses = [
+        d for _, e, d in capture["sent"]
+        if e == "subagent.status" and d.get("session_id") == "C"
+    ]
+    assert any(d.get("status") == "summarizing" for d in statuses)
+    assert any(d.get("status") == "done" for d in statuses)
+    wake_text = capture["wakes"][0][1]
+    assert "压缩后的结论。" in wake_text
+    assert report[:100] not in wake_text  # raw report replaced by the digest
+
+
+async def test_compress_failure_falls_back_to_full_report(
+    isolated_home, capture, monkeypatch
+):
+    """压缩开启但 LLM 失败（GINNO_FAKE_LLM seam）→ 回退注入全文：内容不能
+    因网关抖动丢失（2026-10-30 71b57ce 事故后用户定夺）。"""
+    _put_meta(_sub_meta("P"))
+    _put_meta(_sub_meta("C", parent="P", depth=0, status="running"))
+    settings = paths.home() / "settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"subagent": {"compress_report": True}}), encoding="utf-8")
+    report = "证据与结论。" * 1000
+
+    async def fake_report(slug, session_id):
+        return report
+
+    monkeypatch.setattr(sched, "_final_report_text", fake_report)
+    monkeypatch.setenv("GINNO_FAKE_LLM", "1")
+    await sched.on_turn_settled("C")
+    await _ticks()
+
+    wake_text = capture["wakes"][0][1]
+    assert report in wake_text  # full report survives the compress failure
+    meta, _ = sched._find_meta("C")
+    assert meta["subagent"]["result_summary"].startswith(report[:100])
+
+
 async def test_result_injection_uses_steer_when_parent_running(isolated_home):
     _put_meta(_sub_meta("P"))
     _put_meta(_sub_meta("C", parent="P", depth=0, status="running"))
@@ -1304,15 +1431,15 @@ async def test_concurrent_settles_finalize_once(isolated_home, capture, monkeypa
     release = asyncio.Event()
 
     async def fake_report(slug, session_id):
-        return "证据与结论。" * 1000  # > SUMMARY_MAX_CHARS → compression path
+        return "证据与结论。" * 1000
 
-    async def slow_compress(report, meta):
+    async def slow_prepare(report, meta, slug):
         entered.set()
         await release.wait()  # hold finalize #1 mid-flight
-        return report[:10]
+        return report[:10], report[:10]
 
     monkeypatch.setattr(sched, "_final_report_text", fake_report)
-    monkeypatch.setattr(sched, "_maybe_compress_summary", slow_compress)
+    monkeypatch.setattr(sched, "_prepare_report", slow_prepare)
 
     first = asyncio.create_task(sched.on_turn_settled("DC"))
     await entered.wait()  # finalize #1 is now suspended inside compression

@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, ChevronDown, FileEdit, Loader2 } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { agentHex } from "@/lib/theme";
+import { relTime } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 import { InnerBlocks, RefBlocks, subagentStatusMeta, SubagentKindBadges, useStatusLabel, type Block } from "@/components/chat/blocks";
 import { copyText } from "./copyText";
@@ -253,6 +254,7 @@ streaming,
 statusOverride,
 turnId,
 failed,
+ts,
 onAnswerQuestion,
 questionLive,
 }: {
@@ -266,6 +268,9 @@ streaming?: boolean;
 statusOverride?: string | null;
 turnId?: string;
 failed?: boolean;
+// 完成态相对时间的源（unix 秒，message.end 时盖戳，见 handle.ts）：无 ts
+// （历史重放没有时间戳源）则不渲染时间标签，也不再说「刚刚」的谎。
+ts?: number;
 // ask_user resume channel (see InnerBlocks): a parked question card is
 // answered from inside the bubble, not from a bottom-docked prompt.
 onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
@@ -297,6 +302,18 @@ const statusText = useMemo(() => {
   if (elapsed < 10) return tc("stream.thinking");
   return tc("stream.stillThinking", { seconds: elapsed });
 }, [statusOverride, elapsed, tc]);
+// 完成态相对时间要跟着墙钟走（2026-10-29 用户反馈：1h 后气泡仍显示「刚刚」）：
+// relTime 只在重渲染时重算，闲置会话没有天然的重渲染源——60s 一跳强制刷新
+// （relTime 最细粒度是分钟，60s 足够）；无 ts 不起定时器。
+const [, setRelTick] = useState(0);
+useEffect(() => {
+  if (streaming || !ts) return;
+  const timer = setInterval(() => setRelTick((n) => n + 1), 60_000);
+  return () => clearInterval(timer);
+}, [streaming, ts]);
+// 流式 → 状态文案；完成 → 相对时间（收口时刻起算）；无 ts（历史重放）→
+// 不渲染。旧的硬编码「刚刚」会说一小时的谎，宁可空着。
+const timeLabel = streaming ? statusText : ts ? relTime(ts) : "";
 return (
   <div className="min-w-0">
     {/* C+ 方案②归属徽标：agent 色 dot + 名字 pill（原型风格），替代原先的
@@ -310,7 +327,7 @@ return (
         <span className="h-1.5 w-1.5 rounded-full" style={{ background: hex }} />
         {displayName}
       </span>
-      <span className="text-xs text-faint">{streaming ? statusText : tc("stream.justNow")}</span>
+      {timeLabel ? <span className="text-xs text-faint">{timeLabel}</span> : null}
       <span className="ml-auto flex items-center gap-1.5">
         {/* 每个气泡一个复制按钮（2026-10-26）：与 turnId chip 同层，常驻但低调 */}
         <CopyBubbleButton blocks={blocks} />

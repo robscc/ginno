@@ -358,6 +358,11 @@ export function AgentsSettings() {
         : [p.default_model || p.model || ""]
     ).filter(Boolean);
   };
+  // 提供商显示名（2026-10-30 用户反馈「对不上」）：模型连接页卡片标题是配置
+  // 名（cfg.name），本页下拉/摘要此前显示槽位 id（prov_main…），两处对不上。
+  // 与 chat 模型 chip / NewAgentModal / TaskEditor 统一为 name || id。
+  const providerName = (pid?: string | null): string =>
+    (pid && g.providers[pid]?.name) || pid || "";
 
   const subFor = (a: AgentConfig, typeName: string): string => {
     const d = subDraft[a.id]?.[typeName];
@@ -397,6 +402,9 @@ export function AgentsSettings() {
       // The backend always returns HTTP 200; failures are {ok:false, error}.
       const r = await api.updateAgent(a.id, data);
       if (r.ok) {
+        // 保存成功自动收起（2026-10-30 用户要求）：反馈 chip 移到折叠摘要行
+        // 显示，不会随表体一起消失；失败保持展开以便修改。
+        setOpenIds((m) => ({ ...m, [a.id]: false }));
         setMsg((m) => ({ ...m, [a.id]: { text: t("saved"), ok: true } }));
         g.reloadAgents();
       } else {
@@ -597,9 +605,13 @@ export function AgentsSettings() {
                     {cur.provider === "custom" &&
                     !(draft[a.id]?.provider_explicit ?? a.provider_explicit)
                       ? t("modelFollowDefault")
-                      : `${cur.provider} · ${curModel || "…"}`}
+                      : `${providerName(cur.provider) || cur.provider} · ${curModel || "…"}`}
                   </span>
                   <span>{tools.length === 1 && tools[0] === "*" ? t("toolsAll") : t("toolsCount", { n: tools.length })}</span>
+                  {/* 保存成功自动折叠后，反馈 chip 在摘要行继续可见（下次编辑草稿时清除） */}
+                  {fb && (
+                    <span className={fb.ok ? "text-violet" : "text-red"}>{fb.text}</span>
+                  )}
                 </div>
               </>
             )}
@@ -700,13 +712,14 @@ export function AgentsSettings() {
                     value={cur.provider}
                     onChange={(e) => set(a.id, "provider", e.target.value)}
                   >
-                    <option value="">{t("followDefault", { provider: g.defaultProvider || "custom" })}</option>
+                    <option value="">{t("followDefault", { provider: providerName(g.defaultProvider) || g.defaultProvider || "custom" })}</option>
                     {cur.provider && !(cur.provider in g.providers) && (
                       <option value={cur.provider}>{cur.provider}</option>
                     )}
                     {Object.entries(g.providers).map(([id, p]) => (
                       <option key={id} value={id}>
-                        {id}
+                        {/* 显示配置名（同模型连接页/模型 chip）；name 缺席回退 id */}
+                        {p.name || id}
                         {p.enabled ? "" : t("disabledSuffix")}
                       </option>
                     ))}

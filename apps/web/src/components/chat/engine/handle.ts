@@ -970,24 +970,41 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         ctx.busyBySessionRef.current[sid] ||
         ctx.orphanStreamRef.current[sid]
       ) {
-        reconcileTurnFromHistory(ctx, sid);
+        // 断线期间 turn 已收口：这里等价于 message.end 的 orphan 分支——
+        // reconcile 清掉已吸收条目后，剩余队列头提升为下一 turn（2026-10-30
+        // 之前这里不 flush，同样的卡队列换了一扇门而已）。
+        void reconcileTurnFromHistory(ctx, sid).then(() =>
+          flushSteerQueue(ctx, sid),
+        );
       }
       break;
     }
     case "message.end": {
       markDelivered(ctx, sid);
       const wasOrphan = !!ctx.orphanStreamRef.current[sid];
+      // turn 收口要盖时间戳的气泡：清理 liveId 之前先捕获（收口后按 id /
+      // turnId 在 store 里找它）。
+      const endedLiveId = ctx.liveBySessionRef.current[sid] ?? null;
+      const endTurn = (ev.turn_id as string) || null;
       ctx.orphanStreamRef.current[sid] = false;
       ctx.adoptedTurnRef.current[sid] = false;
       ctx.liveBySessionRef.current[sid] = null;
       ctx.streamAgentRef.current[sid] = null;
       ctx.busyBySessionRef.current[sid] = false;
       ctx.serverRunningRef.current[sid] = false;
-      // Orphaned continuation (remount mid-turn): the visible store holds a
-      // history-rendered partial bubble PLUS a second live section. The
-      // persisted history renders the whole turn as ONE merged bubble (with
-      // the right agent name) — rebuild from it to heal the split.
-      if (wasOrphan) reconcileTurnFromHistory(ctx, sid);
+      // Turn 收口盖时间戳（2026-10-29 用户反馈：1h 后气泡仍显示「刚刚」）：
+      // 完成态的相对时间以收口时刻计（不用气泡创建时刻——长 turn 一结束就会
+      // 显示"N分钟前"）。orphan 重建后的气泡 id 已变，靠 turnId 兜底命中。
+      // 历史重放（reload）没有时间戳源，标签侧干脆不渲染。
+      const stampTurnTs = () => {
+        ctx.storeRef.current[sid] = (ctx.storeRef.current[sid] ?? []).map((m) =>
+          m.role === "assistant" &&
+          m.ts === undefined &&
+          (m.id === endedLiveId || (!!endTurn && m.turnId === endTurn))
+            ? { ...m, ts: Date.now() / 1000 }
+            : m,
+        );
+      };
       // Turn done → desktop notification unless the user is watching this
       // exact session right now (visible ∧ workspace route ∧ active session).
       // Socket callbacks capture stale closures (sockets outlive session
@@ -1048,10 +1065,24 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
         }
       }
       // The turn ended with steer entries still unacknowledged: the oldest
-      // becomes the next turn (design §3.3). Skipped on the orphan path above
-      // — its history reconcile owns that decision, and flushing here could
-      // re-send an entry the reconcile is about to see as absorbed.
-      if (!wasOrphan) flushSteerQueue(ctx, sid);
+      // becomes the next turn (design §3.3). On the orphan path the history
+      // reconcile must run FIRST — it drops entries the server already
+      // absorbed (exactly-once, §3.3) and heals the split bubble — and THEN
+      // the queue head, if anything is left, is promoted into the next turn.
+      // Before 2026-10-30 the orphan branch skipped the flush entirely, so
+      // steers queued into an adopted stream stayed "queued" forever (the
+      // second-steer freeze report); the timestamp stamps ride the same
+      // callback because reconcile replaces the store the sync stamp would
+      // have landed in.
+      if (wasOrphan) {
+        void reconcileTurnFromHistory(ctx, sid).then(() => {
+          stampTurnTs();
+          flushSteerQueue(ctx, sid);
+        });
+      } else {
+        stampTurnTs();
+        flushSteerQueue(ctx, sid);
+      }
       break;
     }
     case "turn.stopped": {

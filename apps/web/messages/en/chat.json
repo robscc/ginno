@@ -3,6 +3,7 @@
     "status": {
       "running": "Running",
       "waiting": "Waiting on subtask",
+      "summarizing": "Compressing report",
       "done": "Completed",
       "ok": "Completed",
       "failed": "Failed",

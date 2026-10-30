@@ -229,9 +229,10 @@ async def _finalize_subagent_locked(
     parent_id = meta.get("parent_session_id")
     report = ""
     summary = ""
+    inject_body = ""
     if status == "done":
         report = await _NS._final_report_text(slug, child_id)
-        summary = await _NS._maybe_compress_summary(report, meta)
+        inject_body, summary = await _NS._prepare_report(report, meta, slug)
     sa["status"] = status
     sa["result_summary"] = summary
     _NS._session_meta_patch(slug, child_id, {"subagent": sa})
@@ -293,8 +294,9 @@ async def _finalize_subagent_locked(
             child_id, goal, error or _NS.t("unknown error", "未知错误")
         )
     else:
+        # 信封正文用 inject_body（可能是指针+预览或压缩稿），不是展示摘要。
         text = _NS.format_subagent_result(
-            child_id, goal, summary, str(sa.get("acceptance") or "")
+            child_id, goal, inject_body, str(sa.get("acceptance") or "")
         )
     await _NS._inject_result(parent_id, text, child_id)
 
@@ -326,12 +328,71 @@ async def _final_report_text(slug: str, session_id: str) -> str:
     return ""
 
 
-async def _maybe_compress_summary(report: str, meta: dict) -> str:
+async def _prepare_report(report: str, meta: dict, slug: str) -> tuple[str, str]:
+    """报告回传策略（2026-10-30 重构，用户定夺：报告不该压缩）。
+
+    返回 ``(inject_body, summary)``：inject_body 是注入父会话信封里的正文
+    （父模型读到的），summary 是写进 meta.result_summary 的展示摘要
+    （卡片/花名册 digest）。
+
+    - 空 → 占位符（两值同源）。
+    - 超过 ``subagent.report_inline_max``（默认 12000 字）→ 全文落文件到父
+      会话 workspace 的 ``reports/subagent-<id8>-report.md``，inject_body =
+      文件路径 + 读文件指引 + 头部预览。
+    - 未超限 + ``subagent.compress_report=False``（默认）→ 原文全量注入。
+    - 未超限 + compress_report=True → 先广播 ``subagent.status=summarizing``
+      （主会话提示「收到报告，压缩中」），再压缩；ainvoke 必须带超时——
+      2026-10-30 实测（71b57ce）无界调用在网关停顿上挂了 9 分钟，整个
+      finalize（写终态 + 上报父会话）被这一个 best-effort 调用串死。
+    """
     report = (report or "").strip()
     if not report:
-        return _NS.t("(subagent produced no text output)", "(subagent 未产生文本输出)")
-    if len(report) <= _NS.SUMMARY_MAX_CHARS:
-        return report
+        ph = _NS.t("(subagent produced no text output)", "(subagent 未产生文本输出)")
+        return ph, ph
+    compress, inline_max = _NS.report_settings()
+
+    def _display_summary(text: str) -> str:
+        # 展示侧截断（meta/卡片）：截的只是显示，注入侧永远全文。
+        if len(text) <= _NS.SUMMARY_MAX_CHARS:
+            return text
+        return text[: _NS.SUMMARY_MAX_CHARS] + _NS.t(
+            "…(display truncated)", "…（展示截断）"
+        )
+
+    if len(report) > inline_max:
+        p = _write_report_file(slug, meta, report)
+        inject = _NS.t(
+            f"The full report is {len(report)} characters — too long to inline. "
+            f"It has been saved as a file:\n{p}\n"
+            f"(relative to this session's workspace: reports/{p.name})\n"
+            "Read that file for the complete report before reporting to the user.\n"
+            f"\n--- first 1500 characters ---\n{report[:1500]}\n…",
+            f"完整报告共 {len(report)} 字，过长不宜内联，已保存为文件：\n{p}\n"
+            f"（相对本会话 workspace：reports/{p.name}）\n"
+            "请先用读文件工具读取全文，再向用户汇报。\n"
+            f"\n--- 前 1500 字 ---\n{report[:1500]}\n…",
+        )
+        summary = _NS.t(
+            f"(report too long: {len(report)} chars, saved to {p.name})",
+            f"（报告过长：{len(report)} 字，已存为 {p.name}）",
+        )
+        return inject, summary
+
+    if not compress:
+        return report, _display_summary(report)
+
+    # 压缩开启：主会话先见「收到报告，压缩中」瞬态提示（不落 meta，终态事件
+    # 覆盖）；调用带 60s 硬顶，网关停顿不再拖死 finalize。
+    await _NS._push_both(
+        str(meta.get("parent_session_id") or ""),
+        str(meta.get("id") or ""),
+        "subagent.status",
+        {
+            "session_id": meta.get("id"),
+            "parent_session_id": meta.get("parent_session_id"),
+            "status": "summarizing",
+        },
+    )
     try:
         if _NS.os.environ.get("GINNO_FAKE_LLM"):
             raise RuntimeError("GINNO_FAKE_LLM")  # deterministic-demo seam
@@ -340,23 +401,24 @@ async def _maybe_compress_summary(report: str, meta: dict) -> str:
         from ..models import build_model
 
         model = build_model(meta.get("provider"), meta.get("model"))
-        resp = await model.ainvoke(
-            [
-                SystemMessage(
-                    content=_NS.t(
-                        "Compress the subagent final report below into a "
-                        "summary of at most 500 characters: keep the "
-                        "conclusions, key artifact paths, and acceptance-check "
-                        "results; add nothing beyond the report, and no "
-                        "opening preamble.",
-                        "把下面这份 subagent 最终报告压缩为不超过 500 字的摘要："
-                        "保留结论、关键产出物路径、验收对照结果；"
-                        "不要添加报告之外的信息，不要写开场白。",
-                    )
-                ),
-                HumanMessage(content=report),
-            ]
-        )
+        async with asyncio.timeout(60):
+            resp = await model.ainvoke(
+                [
+                    SystemMessage(
+                        content=_NS.t(
+                            "Compress the subagent final report below into a "
+                            "summary of at most 500 characters: keep the "
+                            "conclusions, key artifact paths, and acceptance-check "
+                            "results; add nothing beyond the report, and no "
+                            "opening preamble.",
+                            "把下面这份 subagent 最终报告压缩为不超过 500 字的摘要："
+                            "保留结论、关键产出物路径、验收对照结果；"
+                            "不要添加报告之外的信息，不要写开场白。",
+                        )
+                    ),
+                    HumanMessage(content=report),
+                ]
+            )
         from ..graph import text_of_content
 
         # Usage telemetry (docs/dream-mode-design.md §8.1 #4).
@@ -371,15 +433,32 @@ async def _maybe_compress_summary(report: str, meta: dict) -> str:
         )
         text = text_of_content(getattr(resp, "content", "")).strip()
         if text:
-            return text
+            return text, text
     except Exception:
-        # Compression is best-effort; the truncated report is still truthful.
+        # Compression is best-effort; the FULL report is still injected (the
+        # user's 2026-10-30 call: content must not be lost to a flaky gateway).
         _NS._log.info(
             "subagent_summary_compress_skipped session=%s", meta.get("id")
         )
-    return report[: _NS.SUMMARY_MAX_CHARS] + _NS.t(
-        "…(report too long, truncated)", "…（原文过长，已截断）"
+    return report, _display_summary(report)
+
+
+def _write_report_file(slug: str, meta: dict, report: str):
+    """Oversize 报告落文件：父会话 workspace 的 ``reports/`` 下（root=session
+    代码面板可见、父的文件工具以会话 workspace 为根可直接读）。返回绝对路径。"""
+    from pathlib import Path
+
+    child_id = str(meta.get("id") or "")
+    parent_id = str(meta.get("parent_session_id") or child_id)
+    d = _NS.paths.project_sessions_dir(slug) / parent_id / "reports"
+    d.mkdir(parents=True, exist_ok=True)
+    p: Path = d / f"subagent-{child_id[:8]}-report.md"
+    p.write_text(report, encoding="utf-8")
+    _NS._log.info(
+        "subagent_report_saved_file session=%s parent=%s path=%s chars=%d",
+        child_id, parent_id, p, len(report),
     )
+    return p
 
 
 # --------------------------------------------------------------------------- #

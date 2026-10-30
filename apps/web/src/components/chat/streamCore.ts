@@ -19,6 +19,10 @@ agentName?: string;
 // 点「展开全文」跳成员工作台），而不是普通气泡。仅 team 主会话会出现。
 teamReply?: TeamReplyMeta | null;
 turnId?: string; // per-turn trace UUID (shown on the bubble, greppable in sidecar logs)
+// 气泡时间戳（unix 秒，客户端时钟）。turn 收口（message.end）时打——完成态
+// 的相对时间标签（"N分钟前"）以它为源；历史重放没有时间戳源则不渲染标签
+// （2026-10-29 用户反馈：1h 后气泡仍显示「刚刚」，旧实现是硬编码字面量）。
+ts?: number;
 // Delivery state — user bubbles only. "sending" = in flight to the sidecar;
 // "failed" = never delivered (red ❗, click to retry). Successful delivery
 // clears it back to undefined.

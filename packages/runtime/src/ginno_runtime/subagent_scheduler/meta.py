@@ -42,6 +42,45 @@ def _clamp_concurrent(value: int) -> int:
     )
 
 
+# 报告回传策略缺省值（2026-10-30 用户定夺：报告不该压缩——压缩曾在网关卡
+# 9 分钟阻塞 finalize/上报；超大报告落文件让父会话按文件读）。
+REPORT_COMPRESS_DEFAULT = False
+REPORT_INLINE_MAX_DEFAULT = 12000
+REPORT_INLINE_MAX_LIMIT = 1_000_000
+
+
+def report_settings() -> tuple[bool, int]:
+    """(compress_report, report_inline_max)：settings ``subagent.compress_report``
+    （默认 False——不压缩，注入原文）与 ``subagent.report_inline_max``（默认
+    12000 字，超过则全文落文件、注入指针+预览）。环境变量
+    ``GINNO_SUBAGENT_REPORT_INLINE_MAX`` 优先（测试用）。每次调用都读设置，
+    写设置即时生效（同 max_concurrent）。"""
+    inline_max = REPORT_INLINE_MAX_DEFAULT
+    raw: str | None = _NS.os.environ.get("GINNO_SUBAGENT_REPORT_INLINE_MAX")
+    if raw and raw.strip():
+        try:
+            inline_max = max(1, min(REPORT_INLINE_MAX_LIMIT, int(raw.strip())))
+        except ValueError:
+            _NS._log.warning("subagent_report_inline_max_env_invalid value=%r", raw)
+    compress = REPORT_COMPRESS_DEFAULT
+    try:
+        p = _NS.paths.settings_path()
+        if p.exists():
+            from ginno_runtime import jsonx as _json
+
+            settings = _json.loads(p.read_text() or "{}")
+            sub = (settings.get("subagent") or {}) if isinstance(settings, dict) else {}
+            if sub.get("compress_report") is not None:
+                compress = bool(sub.get("compress_report"))
+            if sub.get("report_inline_max") is not None:
+                inline_max = max(
+                    1, min(REPORT_INLINE_MAX_LIMIT, int(sub.get("report_inline_max")))
+                )
+    except (OSError, ValueError, TypeError):
+        _NS._log.info("subagent_report_settings_unreadable", exc_info=True)
+    return compress, inline_max
+
+
 def _is_subagent(meta: dict | None) -> bool:
     return bool(meta) and meta.get("type") == "subagent" and bool(meta.get("subagent"))
 

@@ -127,13 +127,17 @@ export function mapHistory(
 // a turn that FINISHED while we were disconnected is fully restored from
 // the checkpoint. A user bubble still "sending" that never reached the
 // graph survives as a failed bubble with its retry payload.
-export function reconcileTurnFromHistory(ctx: EngineCtx, sid: string) {
+export function reconcileTurnFromHistory(ctx: EngineCtx, sid: string): Promise<void> {
   // We believed a turn was in flight and the server says it's gone → it
   // finished while we were disconnected: no message.end ever reached us, so
   // light the sidebar unread dot here too (message.end's mark is the same
   // call — idempotent). Watching guard lives inside markSessionUnread.
   ctx.g.markSessionUnread(sid);
-  getSessionHistory(sid).then((res) => {
+  // 返回 promise（2026-10-30）：message.end 的 orphan 分支要等 reconcile
+  // 把 absorbed 条目清完、再把队列头提升为下一 turn——顺序错了会把已被
+  // 服务端吸收的 steer 原文重发一遍（§3.3 exactly-once 的另一半）。
+  return getSessionHistory(sid)
+    .then((res) => {
     // Skill blocks (history-replayed slash turns) normalize back to the
     // "/name request" text the live bubble carries, or the two never match
     // and a phantom "undelivered" duplicate appears.
@@ -170,5 +174,12 @@ export function reconcileTurnFromHistory(ctx: EngineCtx, sid: string) {
     ctx.streamAgentRef.current[sid] = null;
     ctx.busyBySessionRef.current[sid] = false;
     ctx.syncDisplay(sid);
-  });
+    })
+    .catch(() => {
+      // 历史拉取失败也要解除 busy——否则 reconcile 之后永远「运行中」。
+      ctx.liveBySessionRef.current[sid] = null;
+      ctx.streamAgentRef.current[sid] = null;
+      ctx.busyBySessionRef.current[sid] = false;
+      ctx.syncDisplay(sid);
+    });
 }
