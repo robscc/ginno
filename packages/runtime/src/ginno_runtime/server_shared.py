@@ -82,6 +82,62 @@ _SESSION_WS: dict[str, list[Any]] = {}
 # "stream will resume" from "turn is gone — reconcile from history".
 _RUNNING_TURNS: dict[str, str] = {}
 
+# When each _RUNNING_TURNS entry was (re)armed — stamped by engine._stream_graph,
+# the chokepoint every real turn execution passes through (WS/channel/goal/cli
+# all re-register there). Feeds turn_gate_busy's staleness self-heal: a turn
+# registered long ago with no live task is a leaked entry, not a busy session.
+_RUNNING_TURNS_AT: dict[str, float] = {}
+# A registered turn with no live task and no update for this long is treated as
+# stale and healed away. Generous on purpose: the longest legitimate turns are
+# hour-scale tool runs (bench/workflow); false healing re-arms on the next turn
+# anyway, while a leaked flag blocks /fork & /clear forever (2026-10-31 真机：
+# turn 16:41 完成、16:43 /fork 仍报「AI 正在回复」).
+RUNNING_TURN_STALE_S = 20 * 60.0
+
+
+def turn_gate_busy(session_id: str, *, _heal: bool = True) -> bool:
+    """Busy judgement for user commands (/fork /clear …): is a turn REALLY
+    live on this session?  Three signals, weakest to strongest:
+
+    1. ``_TURN_TASKS[sid]`` alive — desktop invoke/resume task (definitive);
+    2. ``sid in _PENDING_RESUME`` — parked at an interrupt awaiting an answer
+       (definitive: the resume hasn't happened);
+    3. ``_RUNNING_TURNS[sid]`` — armed at turn start; channel/goal turns carry
+       no task, so this is the only signal for them — BUT it can leak (an end
+       path that skipped its pop). Liveness is verified with
+       ``_RUNNING_TURNS_AT`` (stamped by engine._stream_graph, the chokepoint
+       every real execution passes): NO timestamp = freshly armed, still in
+       the preamble → conservatively busy; timestamped but silent past
+       RUNNING_TURN_STALE_S with no live task ⇒ leaked ⇒ heal (drop the flag)
+       and report not-busy, logging loudly so the leaking path can be traced.
+    """
+    import time as _time
+
+    task = _TURN_TASKS.get(session_id)
+    if task is not None and not task.done():
+        return True
+    if session_id in _PENDING_RESUME:
+        return True
+    if session_id in _RUNNING_TURNS:
+        since = _RUNNING_TURNS_AT.get(session_id)
+        if since is None:
+            return True  # armed but not yet in the engine — can't date it
+        age = _time.time() - since
+        if age > RUNNING_TURN_STALE_S:
+            if _heal:
+                import logging
+
+                logging.getLogger("ginno.turn").warning(
+                    "running_turn_stale_healed session=%s turn=%s age=%.0fs "
+                    "(no live task — leaked flag, /fork /clear unblocked)",
+                    session_id, _RUNNING_TURNS.get(session_id), age,
+                )
+                _RUNNING_TURNS.pop(session_id, None)
+                _RUNNING_TURNS_AT.pop(session_id, None)
+            return False
+        return True
+    return False
+
 # Sessions whose CURRENTLY streaming turn was started by the subagent scheduler
 # (_run_managed_turn: child brief / result-injection wake), not by a socket
 # invoke — they sit in _RUNNING_TURNS but have NO _TURN_TASKS entry. The invoke

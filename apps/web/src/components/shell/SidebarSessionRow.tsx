@@ -49,6 +49,8 @@ export interface SidebarSessionRowProps {
   /** Worker 协议「接活」标注（扇形菜单入口）：main 会话行传入，其余不传
    *  （RowFanMenu 缺省不渲染该扇叶）。 */
   onWorker?: (id: string, worker: boolean) => void;
+  /** Fork 扇叶：复制会话为新会话（POST /fork），成功后打开新会话。 */
+  onForkSession?: (id: string) => void;
   onRemoveSession: (id: string) => void;
   onSetTreeCollapsed: (id: string, collapsed: boolean) => void;
   /** 子会话分节折叠：显式传当前展开态（默认值由本组件决定）。 */
@@ -89,6 +91,7 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
     onRename,
     onPin,
     onWorker,
+    onForkSession,
     onRemoveSession,
     onSetTreeCollapsed,
     onToggleSubGroupFold,
@@ -356,6 +359,12 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                       onWorker && (!s.type || s.type === "main")
                         ? (w) => onWorker(s.id, w)
                         : undefined
+                    }
+                    forkSid={s.id}
+                    onFork={
+                      // Fork 扇叶：任何会话都可复制（渠道 /fork 同核心）；
+                      // 正在跑的会话端点会 busy 拒绝，提示不打断。
+                      onForkSession ? () => onForkSession(s.id) : undefined
                     }
                   />
                 </>

@@ -443,3 +443,34 @@ def test_diagnostics_reports_sections(client):
     assert data["ok"] is True
     assert set(data["sections"]) == {"data", "tasks", "runtime", "contracts"}
     assert data["sections"]["contracts"]["missing_routes"] == []
+
+
+def test_fork_endpoint_copies_session(client, patch_build_model):
+    """POST /api/sessions/{id}/fork（侧栏扇形菜单入口）：新建副本 + 双向
+    标记 + 返回 new_id；重复调用幂等返回既有副本（existing）。"""
+    patch_build_model(script(text="ok"))
+    sid = _post_session(client).json()["id"]
+
+    async def fake_seed(parent_id, child_id, slug, brief):
+        return 2
+
+    import ginno_runtime.subagent_scheduler as sched
+
+    orig = sched._seed_fork_history
+    sched._seed_fork_history = fake_seed
+    try:
+        r = client.post(f"/api/sessions/{sid}/fork").json()
+    finally:
+        sched._seed_fork_history = orig
+    assert r["ok"] is True and r["new_id"] and r["new_id"] != sid
+    assert r["copied"] == 2
+
+    # 幂等：再 fork 返回既有副本
+    try:
+        r2 = client.post(f"/api/sessions/{sid}/fork").json()
+    finally:
+        sched._seed_fork_history = orig
+    assert r2["ok"] is True and r2["new_id"] == r["new_id"] and r2.get("existing") is True
+
+    # 未知会话 → not_found
+    assert client.post("/api/sessions/nosuch/fork").json()["error"] == "not_found"

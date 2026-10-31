@@ -58,6 +58,31 @@ USAGE_FIELDS = (
 )
 
 
+def context_state(last_input_tokens: int, provider: str = "", model: str = "") -> dict:
+    """Context-window occupancy for the UI ring (TopBar 圆环).
+
+    ``last_input_tokens`` = the WHOLE prompt of the most recent LLM call
+    (already includes cache read/creation per the normalized shape) — the
+    best proxy for "current context size". Window resolution mirrors
+    mods/ops._op_usage: the config's explicit context_window → model-name
+    lookup → 200k fallback (token-weather's contract). Never raises.
+    """
+    try:
+        from .providers import context_window_for, get_config
+
+        window = context_window_for(
+            get_config(provider) if provider else None, model
+        ) or 200_000
+    except Exception:  # noqa: BLE001 — 显示辅助，解析失败走兜底窗口
+        window = 200_000
+    tokens = max(0, int(last_input_tokens or 0))
+    return {
+        "tokens": tokens,
+        "window": window,
+        "percent": round(tokens * 100 / window, 1) if window > 0 else 0.0,
+    }
+
+
 def empty_usage() -> dict[str, int]:
     return {k: 0 for k in USAGE_FIELDS} | {"calls": 0}
 

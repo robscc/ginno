@@ -27,6 +27,7 @@ import { registerModPanePressSender } from "@/components/chat/mod/paneBus";
 import type { ModBandGroup } from "@/components/chat/mod/ModBand";
 import type { ModAskState } from "@/components/chat/mod/ModAskCard";
 import type {
+  ContextState,
   SessionMeta,
   SessionUsage,
   WorkflowRun,
@@ -89,6 +90,7 @@ export interface EngineDeps {
   steerQ: ReturnType<typeof useSteerQueue>;
   session: SessionMeta | null;
   onUsageChange?: (u: SessionUsage) => void;
+  onContextChange?: (c: ContextState) => void;
   propose: VersionPropose | null;
   input: string;
   attachments: Attachment[];
@@ -150,7 +152,7 @@ export const HOME_SLOT = "__home__";
 
 export function useChatStreamEngine(deps: EngineDeps) {
   const {
-    g, steerQ, session, onUsageChange, propose,
+    g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,
@@ -281,7 +283,7 @@ export function useChatStreamEngine(deps: EngineDeps) {
 
   // 子模块共用的 ctx：每 render 组装一次，闭包语义与拆分前逐 render 重建一致。
   const ctx: EngineCtx = {
-    g, steerQ, session, onUsageChange, propose,
+    g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,

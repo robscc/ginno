@@ -176,6 +176,18 @@ export async function markSessionSeen(session_id: string) {
   );
 }
 
+/** Fork 会话（侧栏扇形菜单入口；/fork 命令的 REST 面）。返回新会话 id；
+ * busy（turn 在跑）/existing（已有副本）等语义由端点字段表达。 */
+export async function forkSession(session_id: string) {
+  return json<{
+    ok: boolean;
+    new_id?: string;
+    copied?: number;
+    existing?: boolean;
+    error?: string;
+  }>(`${BASE}/sessions/${encodeURIComponent(session_id)}/fork`, { method: "POST" });
+}
+
 export async function createSession(req: {
   project_slug?: string;
   workspace: string;

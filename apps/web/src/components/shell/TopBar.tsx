@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import * as api from "@/lib/runtime";
 import { pushNotice } from "@/lib/notice";
 import { useGinno } from "@/lib/store";
-import type { AgentConfig, SessionMeta, SessionUsage } from "@/lib/types";
+import type { AgentConfig, ContextState, SessionMeta, SessionUsage } from "@/lib/types";
 import { agentHex } from "@/lib/theme";
 import { fmtTokens } from "@/lib/format";
 import { AgentIcon } from "@/components/icons";
@@ -74,16 +74,69 @@ function SessionIdChip({ sessionId }: { sessionId?: string }) {
   );
 }
 
+/** Context-window occupancy ring (上下文占用圆环)。SVG 圆环 + 中心百分比：
+ * 占用 = 最近一次 LLM 调用的全量 prompt / 会话模型的上下文窗口。阈值变色
+ * —— 70% 转黄提醒快满，90% 转红（即将触发 compaction/截断风险）；
+ * tooltip 给出精确 token 数（compact 格式，同用量统计口径）。 */
+function ContextRing({ ctx }: { ctx: ContextState | null }) {
+  const tr = useTranslations("shell");
+  if (!ctx || !ctx.window) return null;
+  const pct = Math.min(100, Math.max(0, ctx.percent));
+  // stroke 几何：r=8, 周长 2πr≈50.27；dashOffset 按 pct 挖空。
+  const R = 8;
+  const C = 2 * Math.PI * R;
+  const color = pct >= 90 ? "var(--st-error, #ef4444)" : pct >= 70 ? "#d9a93e" : "#8b5cf6";
+  return (
+    <span
+      className="flex h-8 w-8 shrink-0 items-center justify-center"
+      title={tr("topbar.contextTitle", {
+        used: fmtTokens(ctx.tokens),
+        window: fmtTokens(ctx.window),
+        percent: ctx.percent.toFixed(0),
+      })}
+    >
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden>
+        <circle cx="10" cy="10" r={R} fill="none" stroke="var(--line2, #34343f)" strokeWidth="2.5" />
+        <circle
+          cx="10"
+          cy="10"
+          r={R}
+          fill="none"
+          stroke={color}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeDasharray={C}
+          strokeDashoffset={C * (1 - pct / 100)}
+          transform="rotate(-90 10 10)"
+        />
+        <text
+          x="10"
+          y="10"
+          textAnchor="middle"
+          dominantBaseline="central"
+          fontSize="7"
+          fill="currentColor"
+          className="text-muted"
+        >
+          {ctx.percent >= 100 ? "!" : Math.round(pct)}
+        </text>
+      </svg>
+    </span>
+  );
+}
+
 export function TopBar({
   session,
   agent,
   running,
   usage,
+  context,
 }: {
   session: SessionMeta | null;
   agent: AgentConfig | null;
   running: boolean;
   usage?: SessionUsage | null;
+  context?: ContextState | null;
 }) {
   const g = useGinno();
   const tr = useTranslations("shell");
@@ -168,6 +221,9 @@ export function TopBar({
           <ContextFoldersChip session={session} />
 
           <LinkedSessionsChip session={session} />
+
+          {/* ⭕ 上下文占用圆环：最近一次调用的 prompt / 模型窗口。 */}
+          <ContextRing ctx={context ?? null} />
 
           {/* 📊 Stats:纯 hover 数据(决策点 D,会话累计口径)。数字走紧凑
               k/M/B（lib/format）——原始值动辄数十万 token，全数字在

@@ -22,7 +22,7 @@ import {
   type Trigger,
 } from "@/components/chat/commandMenu";
 import type { WorkflowRun } from "@/lib/types";
-import type { SessionMeta, SessionUsage } from "@/lib/types";
+import type { ContextState, SessionMeta, SessionUsage } from "@/lib/types";
 import {
   mid,
   newTurnId,
@@ -65,11 +65,13 @@ export function ChatStream({
   session,
   onRunningChange,
   onUsageChange,
+  onContextChange,
   onOpenGoal,
 }: {
   session: SessionMeta | null;
   onRunningChange?: (b: boolean) => void;
   onUsageChange?: (u: SessionUsage) => void;
+  onContextChange?: (c: ContextState) => void;
   onOpenGoal?: () => void;
 }) {
   const g = useGinno();
@@ -168,7 +170,7 @@ export function ChatStream({
     retryFailed, editResend, dismissFailed, retryError, retryFromCheckpoint,
     sendModUiPress, sendModUiAnswer,
   } = useChatStreamEngine({
-    g, steerQ, session, onUsageChange, propose,
+    g, steerQ, session, onUsageChange, onContextChange, propose,
     input, attachments, fileAttachments,
     setMessages, setRuns, setLiveId, setWsStatus, setPermission, setPropose,
     setStreamAgent, setServerRunning, setCompacting, setInput, setAttachments, setTarget, setMenu,

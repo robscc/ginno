@@ -5,7 +5,7 @@
 // 点击后沿左上弧扇形展开（带 stagger 弹出动画）。置顶态本身由侧栏「置顶」
 // 分组表达，不需要常驻 pin 图标。
 
-import { Bot, BotOff, MoreHorizontal, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { Bot, BotOff, GitFork, MoreHorizontal, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 
@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from "react";
 const RADIUS = 42;
 const ANGLES_3 = [100, 140, 180];
 const ANGLES_4 = [60, 100, 140, 180];
+const ANGLES_5 = [40, 70, 100, 130, 160, 190].slice(0, 5);
 const fanOffset = (deg: number) => ({
   dx: Math.round(RADIUS * Math.cos((deg * Math.PI) / 180)),
   dy: -Math.round(RADIUS * Math.sin((deg * Math.PI) / 180)),
@@ -27,6 +28,8 @@ export function RowFanMenu({
   onDelete,
   worker,
   onWorker,
+  forkSid,
+  onFork,
 }: {
   pinned: boolean;
   onPin: (pinned: boolean) => void;
@@ -35,6 +38,10 @@ export function RowFanMenu({
   /** Worker 协议「接活」开关（仅 main 会话行传入；缺省不渲染该扇叶）。 */
   worker?: boolean;
   onWorker?: (worker: boolean) => void;
+  /** Fork：复制本会话为新会话（缺省不渲染该扇叶）。tooltip 带
+   * 「fork from <sid 前 8 位>」——扇叶伸在行外，明示复制源是哪一行。 */
+  forkSid?: string;
+  onFork?: () => void;
 }) {
   const t = useTranslations("shell");
   const [open, setOpen] = useState(false);
@@ -59,6 +66,18 @@ export function RowFanMenu({
   }, [open]);
 
   const items = [
+    ...(onFork && forkSid
+      ? [
+          {
+            key: "fork",
+            label: t("session.fork"),
+            title: t("session.forkHint", { sid: forkSid.slice(0, 8) }),
+            icon: <GitFork className="h-3.5 w-3.5" />,
+            cls: "text-muted hover:text-violet hover:border-violet/40",
+            run: onFork,
+          },
+        ]
+      : []),
     ...(onWorker
       ? [
           {
@@ -106,7 +125,7 @@ export function RowFanMenu({
       run: onDelete,
     },
   ];
-  const angles = items.length === 4 ? ANGLES_4 : ANGLES_3;
+  const angles = items.length >= 5 ? ANGLES_5 : items.length === 4 ? ANGLES_4 : ANGLES_3;
 
   return (
     <span ref={rootRef} className="relative inline-flex">

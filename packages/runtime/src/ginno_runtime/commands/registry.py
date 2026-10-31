@@ -782,27 +782,110 @@ def _fork_handler(project_slug: str | None = None, session=None, args=None) -> s
     )
 
 
+async def fork_session_core(sid: str, slug: str, meta: dict, session: dict) -> dict:
+    """/fork 与 POST /api/sessions/{id}/fork 共用的复制核心。
+
+    返回 ``{"ok": bool, "error"?: str, "new_id"?: str, "copied"?: int,
+    "existing"?: bool}``；调用方负责摊成自己的回复形态（IM 双语文本 /
+    REST JSON）。busy-gate（带泄漏自愈，server_shared.turn_gate_busy）与
+    一会话一副本幂等都在这里。
+    """
+    from .. import server_shared as shared
+
+    if shared.turn_gate_busy(sid):
+        return {"ok": False, "error": "busy"}
+
+    # 一会话一副本：已有存活副本 → 幂等返回（防双胞胎）；副本被删 →
+    # 稍后用新值覆盖死引用重新 fork（patch 丢 None，无需显式清键）。
+    existing = meta.get("forked_to_session")
+    if existing:
+        from ..session_meta import _find_meta
+
+        if _find_meta(str(existing)):
+            return {"ok": True, "new_id": str(existing), "existing": True}
+
+    from ..api.sessions import CreateSessionRequest, create_session
+
+    channel = str(meta.get("channel") or "")
+    is_channel = meta.get("type") == "channel"
+    src_title = str(meta.get("title") or "").strip() or (
+        {"dingtalk": "钉钉对话", "wecom": "企业微信对话"}.get(channel, "IM 对话")
+        if is_channel else "会话"
+    )
+    new_meta = await create_session(
+        CreateSessionRequest(
+            project_slug=slug,
+            workspace="",
+            agent_id=meta.get("agent_id") or session.get("agent_id") or None,
+            title=src_title,
+        )
+    )
+    if new_meta.get("ok") is False or not new_meta.get("id"):
+        return {"ok": False, "error": "create_failed"}
+    new_id = str(new_meta["id"])
+
+    import time as _time
+
+    stamp = _time.strftime("%m-%d %H:%M", _time.localtime())
+    label = {"dingtalk": "钉钉", "wecom": "企业微信"}.get(channel, "IM")
+    label_en = {"dingtalk": "DingTalk", "wecom": "WeCom"}.get(channel, "IM")
+    brief = t(
+        f"[turn context] Continued from a {label_en} conversation ({stamp}). "
+        "Its current transcript follows — keep discussing the results here.",
+        f"[turn context] 续自{label}对话（{stamp}）。以下为其当前记录，可就结果继续沟通。",
+    ) if is_channel else t(
+        f"[turn context] Continued from session {sid[:8]} ({stamp}). "
+        "Its current transcript follows — keep discussing the results here.",
+        f"[turn context] 续自会话 {sid[:8]}（{stamp}）。以下为其当前记录，可就结果继续沟通。",
+    )
+    try:
+        from ..subagent_scheduler import _seed_fork_history
+
+        copied = await _seed_fork_history(sid, new_id, slug, brief)
+    except Exception:  # noqa: BLE001 — 种子失败要显式报错（副本没历史不能用）
+        from ..server_shared import _log
+
+        _log.exception("channel_fork_seed_failed src=%s child=%s", sid, new_id)
+        return {"ok": False, "error": "seed_failed"}
+
+    from ..session_meta import _session_meta_patch
+
+    # 双向标记：新会话记来源（渠道名或源会话 id——溯源可辨）；源会话记
+    # 副本落点（幂等键）。源会话 touch=False——复制不该把源会话顶到侧栏
+    # 顶端。
+    _session_meta_patch(
+        slug, new_id,
+        {"forked_from_channel": channel} if channel
+        else {"forked_from_session": sid})
+    _session_meta_patch(slug, sid, {"forked_to_session": new_id}, touch=False)
+
+    from ..server_shared import _log
+
+    _log.info(
+        "channel_forked src=%s child=%s channel=%s messages=%d",
+        sid, new_id, channel or "-", copied,
+    )
+    return {"ok": True, "new_id": new_id, "copied": copied}
+
+
 async def _fork_async_handler(
     project_slug: str | None = None, session=None, args=None
 ) -> str:
-    """/fork — 把本渠道（钉钉/企微）对话复制为一个新的桌面普通会话。
+    """/fork — 把本会话复制为一个新的桌面普通会话（渠道或桌面均可）。
 
-    范式 = ``api/schedule.py: fork_run``（定时任务影子会话 → 普通会话）：
-    ``create_session`` + ``_seed_fork_history`` 复制 checkpoint 全量
-    messages（id 重铸，顶部一条 [turn context] 溯源行）。源渠道会话本体
-    不动——映射不动，IM 里继续聊照旧。
+    范式 = ``api/schedule.py: fork_run``：``create_session`` +
+    ``_seed_fork_history`` 复制 checkpoint 全量 messages（id 重铸，顶部
+    一条 [turn context] 溯源行）。源会话本体不动。2026-10-31 起桌面会话
+    也可 fork（侧栏扇形菜单入口）；渠道语义不变。
 
     语义要点（im-fork-to-desktop 设计 v0.4）：
-    - ``/clear`` 边界天然尊重：``/clear`` 是对 checkpoint messages 的真删
-      （RemoveMessage），而 checkpoint 正是唯一复制源——clear 前的内容已
-      不存在，副本天然只带 clear 后的「眼前所见」。brief 用「当前记录」
-      而非「完整记录」正是为此（源会话可能经历过 clear/compact）。
-    - 幂等（一会话一副本，fork_run 同款）：源 meta 记 ``forked_to_session``，
-      副本存活时重复 /fork 返回既有副本；副本被删则覆盖死引用重新 fork。
-    - busy-gate（与 /clear 同口径）：turn 在跑 / 停在确认步骤时拒绝，
-      防止复制到写了一半的 checkpoint。
-    - P0 仅渠道会话可用（桌面端 fork 入口另议）；``/fork <附带消息>``
-      的「带话过去」留给 P1——附带内容现在会被忽略并提示。
+    - ``/clear`` 边界天然尊重：clear 是对 checkpoint messages 的真删，
+      而 checkpoint 正是唯一复制源——副本天然只带 clear 后的「眼前所见」。
+    - 幂等（一会话一副本）：源 meta 记 ``forked_to_session``，副本存活时
+      重复 /fork 返回既有副本；副本被删则重新 fork。
+    - busy-gate（/clear 同口径，带泄漏自愈）：turn 在跑 / 停在确认步骤时
+      拒绝，防止复制到写了一半的 checkpoint。
+    - ``/fork <附带消息>`` 的「带话过去」留给 P1——附带内容暂被忽略并提示。
     """
     if not session or not (session.get("session_id") or ""):
         return t("(/fork must be used inside a session)", "（/fork 必须在会话内使用）")
@@ -812,44 +895,14 @@ async def _fork_async_handler(
 
     found = _find_meta(sid)
     meta, slug = found if found else (None, str(project_slug or "default"))
-    if not meta or meta.get("type") != "channel":
+    if not meta:
         return t(
-            "/fork copies an IM (DingTalk/WeCom) conversation into a desktop "
-            "session; this session is already a desktop session.",
-            "/fork 用于把 IM（钉钉/企微）对话复制为桌面普通对话；本会话已经是桌面会话，无需复制。",
+            "/fork must be used inside a session with an index entry.",
+            "/fork 需要在有索引记录的会话内使用。",
         )
+    is_channel = meta.get("type") == "channel"
     channel = str(meta.get("channel") or "")
     label = {"dingtalk": "钉钉", "wecom": "企业微信"}.get(channel, "IM")
-    label_en = {"dingtalk": "DingTalk", "wecom": "WeCom"}.get(channel, "IM")
-
-    # busy-gate（/clear 同款三查）：checkpoint 正被写 / 停在 interrupt 时，
-    # 复制会得到截断快照。
-    from .. import server_shared as shared
-
-    _task = shared._TURN_TASKS.get(sid)
-    if (
-        sid in shared._RUNNING_TURNS
-        or sid in shared._PENDING_RESUME
-        or (_task is not None and not _task.done())
-    ):
-        return t(
-            "⏳ The AI is still replying (or a confirmation is pending) — "
-            "send /fork again after it finishes.",
-            "⏳ AI 正在回复（或停在确认步骤），结束后再发 /fork。",
-        )
-
-    # 一会话一副本：已有存活副本 → 幂等返回（防双胞胎）；副本被删 →
-    # 稍后用新值覆盖死引用重新 fork（patch 丢 None，无需显式清键）。
-    existing = meta.get("forked_to_session")
-    if existing:
-        still = _find_meta(str(existing))
-        if still:
-            ex_title = str(still[0].get("title") or "")
-            return t(
-                f"✅ Already copied — desktop session \"{ex_title}\" "
-                "(no second copy is made).",
-                f"✅ 已复制过：桌面普通对话《{ex_title}》，不会产生第二份。",
-            )
 
     extra = str(args or "").strip()
     extra_note = (
@@ -861,64 +914,46 @@ async def _fork_async_handler(
         else ""
     )
 
-    from ..api.sessions import CreateSessionRequest, create_session
-
-    src_title = str(meta.get("title") or "").strip() or f"{label}对话"
-    new_meta = await create_session(
-        CreateSessionRequest(
-            project_slug=slug,
-            workspace="",
-            agent_id=meta.get("agent_id") or session.get("agent_id") or None,
-            title=src_title,
-        )
+    r = await fork_session_core(sid, slug, meta, session)
+    if not r.get("ok"):
+        err = r.get("error")
+        if err == "busy":
+            return t(
+                "⏳ The AI is still replying (or a confirmation is pending) — "
+                "send /fork again after it finishes.",
+                "⏳ AI 正在回复（或停在确认步骤），结束后再发 /fork。",
+            )
+        if err == "seed_failed":
+            return t(
+                "Fork failed while copying history — please try again later.",
+                "复制失败：历史搬运出错，请稍后再试。",
+            )
+        return t("Fork failed: could not create the desktop session.",
+                 "复制失败：桌面会话创建失败。")
+    new_id = str(r.get("new_id"))
+    src_title = str(meta.get("title") or "").strip() or (
+        f"{label}对话" if is_channel else "会话"
     )
-    if new_meta.get("ok") is False or not new_meta.get("id"):
+    if r.get("existing"):
         return t(
-            "Fork failed: could not create the desktop session.",
-            "复制失败：桌面会话创建失败。",
+            f'✅ Already copied — desktop session "{src_title}" '
+            "(no second copy is made).",
+            f"✅ 已复制过：桌面普通对话《{src_title}》，不会产生第二份。",
         )
-    new_id = str(new_meta["id"])
-
-    import time as _time
-
-    stamp = _time.strftime("%m-%d %H:%M", _time.localtime())
-    brief = t(
-        f"[turn context] Continued from a {label_en} conversation ({stamp}). "
-        "Its current transcript follows — keep discussing the results here.",
-        f"[turn context] 续自{label}对话（{stamp}）。以下为其当前记录，可就结果继续沟通。",
-    )
-    try:
-        from ..subagent_scheduler import _seed_fork_history
-
-        copied = await _seed_fork_history(sid, new_id, slug, brief)
-    except Exception:  # noqa: BLE001 — 种子失败要显式报错（副本没历史不能用）
-        from ..server_shared import _log
-
-        _log.exception("channel_fork_seed_failed src=%s child=%s", sid, new_id)
+    copied = int(r.get("copied") or 0)
+    if is_channel:
         return t(
-            "Fork failed while copying history — please try again later.",
-            "复制失败：历史搬运出错，请稍后再试。",
+            f'✅ Copied to desktop session "{src_title}" ({copied} messages). '
+            "Open Ginno on your desktop to continue — this conversation stays as is."
+            + extra_note,
+            f"✅ 已复制到桌面普通对话《{src_title}》（{copied} 条消息）。历史已带走，"
+            "回电脑打开 Ginno 即可继续；本对话保持不变，在这里聊仍然照旧。" + extra_note,
         )
-
-    from ..session_meta import _session_meta_patch
-
-    # 双向标记：新会话记来源渠道（侧栏徽标/溯源可辨）；源会话记副本落点
-    # （幂等键）。源会话 touch=False——复制不该把源会话顶到侧栏顶端。
-    _session_meta_patch(slug, new_id, {"forked_from_channel": channel})
-    _session_meta_patch(slug, sid, {"forked_to_session": new_id}, touch=False)
-
-    from ..server_shared import _log
-
-    _log.info(
-        "channel_forked src=%s child=%s channel=%s messages=%d",
-        sid, new_id, channel, copied,
-    )
     return t(
-        f"✅ Copied to desktop session \"{src_title}\" ({copied} messages). "
-        "Open Ginno on your desktop to continue — this conversation stays as is."
+        f'✅ Forked to new session "{src_title}" ({copied} messages); '
+        "open it from the sidebar." + extra_note,
+        f"✅ 已复制为新会话《{src_title}》（{copied} 条消息）；请在侧栏打开继续。"
         + extra_note,
-        f"✅ 已复制到桌面普通对话《{src_title}》（{copied} 条消息）。历史已带走，"
-        "回电脑打开 Ginno 即可继续；本对话保持不变，在这里聊仍然照旧。" + extra_note,
     )
 
 

@@ -40,6 +40,7 @@ from ...server_shared import (
     _PENDING_KIND,
     _PENDING_RESUME,
     _RUNNING_TURNS,
+    _RUNNING_TURNS_AT,
     _SESSION_WS,
     _SESSIONS,
     _TURN_STOP,
@@ -65,7 +66,7 @@ from ...tools.render_tools import (
     widget_event,
 )
 from ...tools.workflow_tools import RUN_CACHE, WORKFLOW_TOOL_NAMES
-from ...usage import add_usage, cache_hit_ratio, empty_usage, extract_usage
+from ...usage import add_usage, cache_hit_ratio, context_state, empty_usage, extract_usage
 from ...workflows import store as wf_storemod
 from .. import server_tools
 from ..files import _normalize_file_ref, _register_artifact_file, _session_workspace
@@ -180,6 +181,9 @@ async def _stream_graph(
         # everything else is user-driven "chat" (usage-stats-design.md §3.6).
         usage_source = (config.get("configurable") or {}).get("usage_source") or "chat"
         _RUNNING_TURNS[session_id] = ui_turn_id
+        # Heartbeat stamp for turn_gate_busy's staleness self-heal (see
+        # server_shared): every turn execution re-arms here.
+        _RUNNING_TURNS_AT[session_id] = time.time()
         # Cooperative stop signal: setdefault so an event pre-armed by the WS
         # loop (created before this task spawned) is never clobbered.
         stop_evt = _TURN_STOP.setdefault(session_id, asyncio.Event())
@@ -789,6 +793,17 @@ async def _stream_graph(
                                             "turn": u,
                                             "session": dict(acc),
                                             "cache_hit_ratio": cache_hit_ratio(acc),
+                                            # 上下文占用（TopBar 圆环）：本次调用的
+                                            # 全量 prompt 就是当前上下文大小
+                                            # （input_tokens 已含 cache 读/写），
+                                            # 窗口走 context_window_for 解析链。
+                                            # 占用是「当前状态」不是累计——前端
+                                            # 每轮直接替换（usage.stats-design）。
+                                            "context": context_state(
+                                                u["input_tokens"],
+                                                _sreg.get("model_provider") or "",
+                                                _sreg.get("model_name") or "",
+                                            ),
                                         },
                                     )
                                 )
@@ -1363,6 +1378,7 @@ async def _stream_graph(
         # resume hasn't happened yet.
         if not saw_interrupt:
             _RUNNING_TURNS.pop(session_id, None)
+            _RUNNING_TURNS_AT.pop(session_id, None)
             _PENDING_RESUME.discard(session_id)
             _PENDING_KIND.pop(session_id, None)
             # Steering entries live exactly one turn segment (steering-design

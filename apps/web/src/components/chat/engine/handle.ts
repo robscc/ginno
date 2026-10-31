@@ -13,6 +13,7 @@ import type { ModAskState } from "@/components/chat/mod/ModAskCard";
 import { hasPendingTool, foldSubagentResultBlocks, type Block } from "@/components/chat/blocks";
 import type {
   ContextChange,
+  ContextState,
   Goal,
   Plan,
   SessionUsage,
@@ -919,6 +920,9 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
           calls: 1,
         });
       }
+      // 上下文占用（TopBar 圆环）：当前状态，直接替换。
+      const c = ev.context as ContextState | undefined;
+      if (c && typeof c.percent === "number") ctx.onContextChange?.(c);
       break;
     }
     case "turn.state": {

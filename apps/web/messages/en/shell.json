@@ -75,7 +75,11 @@
       "workerOffHint": "Remove from the worker roster — other sessions can no longer assign to this",
       "channelBadge": "Read-only — replies go through {channel}",
       "rowActions": "Session actions (pin / rename / delete)",
-      "workerOffBadge": "Not accepting assignments (off the worker roster)"
+      "workerOffBadge": "Not accepting assignments (off the worker roster)",
+      "fork": "Fork",
+      "forkHint": "Copy this session into a new one (fork from {sid})",
+      "forkBusy": "The AI is still replying — fork again later",
+      "forkFailed": "Fork failed, please retry"
     },
     "run": {
       "fallbackName": "Workflow",
@@ -189,7 +193,8 @@
       "exporting": "Exporting…",
       "exportProjectHint": "A copy is also kept in ~/.ginno/index/exports/",
       "exportProjectDone": "Project export downloaded (also kept in ~/.ginno/index/exports/)",
-      "exportFailed": "Export failed — check that the runtime is connected"
+      "exportFailed": "Export failed — check that the runtime is connected",
+      "contextTitle": "Context {percent}%: {used} / {window} tokens (estimated from the last call)"
     },
     "links": {
       "chipTitle": "Linked sessions",

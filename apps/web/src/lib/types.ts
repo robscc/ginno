@@ -344,6 +344,16 @@ export interface SessionUsage {
   calls: number;
 }
 
+// Context-window occupancy for the TopBar ring: the WHOLE prompt of the most
+// recent LLM call (runtime usage.context_state — input already includes cache
+// read/creation) against the session model's resolved window. This is a
+// *current state*, replaced (not accumulated) on every turn.
+export interface ContextState {
+  tokens: number;
+  window: number;
+  percent: number;
+}
+
 // One WorldState change announced via the `context.updated` WS event (C3).
 export interface ContextChange {
   section: string; // environment | permissions | agent | skills | memory | mcp

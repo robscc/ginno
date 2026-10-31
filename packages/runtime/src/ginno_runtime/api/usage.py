@@ -8,7 +8,7 @@ from .. import usage_store
 from ..lang import t
 from ..server_shared import _SESSIONS, _USAGE_BY_SESSION
 from ..session_meta import _find_meta
-from ..usage import cache_hit_ratio
+from ..usage import cache_hit_ratio, context_state
 
 router = APIRouter()
 
@@ -54,13 +54,39 @@ async def get_session_usage(session_id: str) -> dict:
         if len(ids) > 1
         else usage_store.session_totals(session_id)
     )
+    ctx = _context_of_session(session_id)
     if tree:
         tree["descendant_sessions"] = len(desc)
-        return {"ok": True, "usage": tree}
+        return {"ok": True, "usage": tree, "context": ctx}
     acc = _USAGE_BY_SESSION.get(session_id)
     if not acc:
-        return {"ok": True, "usage": None}
-    return {"ok": True, "usage": {**acc, "cache_hit_ratio": cache_hit_ratio(acc)}}
+        return {"ok": True, "usage": None, "context": ctx}
+    return {"ok": True, "usage": {**acc, "cache_hit_ratio": cache_hit_ratio(acc)},
+            "context": ctx}
+
+
+def _context_of_session(session_id: str) -> dict | None:
+    """TopBar 圆环的初始值：最近一次调用的全量 prompt 占用（与 WS usage
+    事件的 context 字段同口径，见 usage.context_state）。无调用记录 → None
+    （前端不显示圆环）。"""
+    try:
+        s = _SESSIONS.get(session_id)
+        provider = (s or {}).get("model_provider") or ""
+        model = (s or {}).get("model_name") or ""
+        if not s:
+            found = _find_meta(session_id)
+            if found:
+                provider = found[0].get("provider") or ""
+                model = found[0].get("model") or ""
+        rows = usage_store.query_requests(
+            session_id=session_id, page=1, page_size=1).get("rows") or []
+        if not rows:
+            return None
+        last = rows[0]
+        # usage log 的 input_tokens 已是全量 prompt（含缓存读/写）
+        return context_state(int(last.get("input_tokens") or 0), provider, model)
+    except Exception:  # noqa: BLE001 — 显示辅助
+        return None
 
 
 def _usage_session_display(sid: str) -> dict:

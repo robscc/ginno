@@ -179,3 +179,29 @@ def test_turn_is_recorded_end_to_end(create_session, ws_conv, client):
     server._USAGE_BY_SESSION.clear()
     data = client.get(f"/api/sessions/{sid}/usage").json()
     assert data["usage"]["input_tokens"] == 100
+
+
+def test_context_field_in_event_and_endpoint(create_session, ws_conv, client):
+    """TopBar 圆环数据：usage WS 事件带 context{tokens,window,percent}（本次
+    调用的全量 prompt = 当前上下文），GET /usage 的 context 字段同口径
+    （最近一次 log 行），无记录时为 None。"""
+    usage = {"input_tokens": 50_000, "output_tokens": 10,
+             "total_tokens": 50_010, "input_token_details": {}}
+    sid = create_session([script(text="done", usage=usage)], agent_id="dev")
+    with ws_conv(sid) as conv:
+        conv.invoke("hello")
+        events = conv.recv_until("message.end", "error")
+    ev = events_of(events, "usage")[0]
+    ctx = ev["context"]
+    assert ctx["tokens"] == 50_000
+    assert ctx["window"] > 0
+    assert 0 < ctx["percent"] <= 100
+    assert abs(ctx["tokens"] * 100 / ctx["window"] - ctx["percent"]) < 0.2
+
+    data = client.get(f"/api/sessions/{sid}/usage").json()
+    assert data["context"]["tokens"] == 50_000 == ctx["tokens"]
+
+    # 无模型调用的会话 → context 为 None（前端不显示圆环）
+    sid2 = create_session([script(text="ok")], agent_id="dev")
+    data2 = client.get(f"/api/sessions/{sid2}/usage").json()
+    assert data2["context"] is None

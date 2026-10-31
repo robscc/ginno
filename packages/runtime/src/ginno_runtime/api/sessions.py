@@ -847,6 +847,33 @@ async def mark_session_seen_endpoint(session_id: str) -> dict:
     return {"ok": True}
 
 
+@router.post("/api/sessions/{session_id}/fork")
+async def fork_session_endpoint(session_id: str) -> dict:
+    """把会话复制为新会话（侧栏扇形菜单 Fork 按钮；/fork 命令的 REST 面）。
+
+    与 IM 的 /fork 同核心（commands.registry.fork_session_core）：busy-gate
+    带泄漏自愈、一会话一副本幂等、checkpoint 全量搬运。返回新会话 id，
+    前端直接落进去。
+    """
+    from ..commands.registry import fork_session_core
+
+    found = _find_meta(session_id)
+    if not found:
+        return {"ok": False, "error": "not_found"}
+    meta, slug = found
+    session = _SESSIONS.get(session_id) or {}
+    r = await fork_session_core(session_id, slug, meta, session)
+    if not r.get("ok"):
+        # busy/create_failed/seed_failed —— error 码直传，前端摊提示
+        return {"ok": False, "error": r.get("error") or "failed"}
+    out = {"ok": True, "new_id": r["new_id"]}
+    if r.get("copied") is not None:
+        out["copied"] = r["copied"]
+    if r.get("existing"):
+        out["existing"] = True
+    return out
+
+
 class PatchSessionRequest(BaseModel):
     title: str | None = None
     icon: str | None = None

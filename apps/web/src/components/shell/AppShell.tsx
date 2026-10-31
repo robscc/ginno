@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { GoalEditor } from "@/components/shell/GoalChip";
+import { pushNotice } from "@/lib/notice";
 import { useGinno, LAST_SESSION_KEY, notifyScheduleRunFinished } from "@/lib/store";
 import { openSocket, wsConnectorsUrl, wsScheduleUrl } from "@/lib/runtime";
 import { setKeepAwake } from "@/lib/desktop";
@@ -31,7 +32,14 @@ import { SidebarSessionList } from "@/components/shell/SidebarSessionList";
 import { SidebarSessionRow } from "@/components/shell/SidebarSessionRow";
 import { useSessionGrouping } from "@/components/shell/useSessionGrouping";
 import type { TimeGroup } from "@/components/shell/useSessionGrouping";
-import type { FolderEntry, ScheduleRun, SessionMeta, SessionUsage, WorkflowRun } from "@/lib/types";
+import type {
+  ContextState,
+  FolderEntry,
+  ScheduleRun,
+  SessionMeta,
+  SessionUsage,
+  WorkflowRun,
+} from "@/lib/types";
 
 // 侧栏偏好（均 localStorage 持久化；读写都吞异常，隐私模式/无 storage 时退回默认）。
 const ARCHIVED_OPEN_KEY = "ginno-sidebar-archived-open";
@@ -98,6 +106,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 双计：每次 turn 同时落持久 log，下次 GET 的 base 已含历史。
   const [usageBase, setUsageBase] = useState<SessionUsage | null>(null);
   const [usageDelta, setUsageDelta] = useState<SessionUsage | null>(null);
+  // 上下文占用（TopBar 圆环）：当前状态而非累计——切会话时 GET 拉初始值，
+  // 每轮 WS usage 事件的 context 字段直接替换。
+  const [contextState, setContextState] = useState<ContextState | null>(null);
   const usage = useMemo(() => {
     if (!usageBase && !usageDelta) return null;
     if (!usageBase) return usageDelta;
@@ -139,11 +150,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let alive = true;
     setUsageBase(null);
     setUsageDelta(null);
+    setContextState(null);
     if (g.activeSessionId) {
       api
         .getSessionUsage(g.activeSessionId)
         .then((r) => {
-          if (alive) setUsageBase(r?.usage ?? null);
+          if (alive) {
+            setUsageBase(r?.usage ?? null);
+            setContextState((r as { context?: ContextState })?.context ?? null);
+          }
         })
         .catch(() => {
           /* sidecar down — live events will populate later */
@@ -675,6 +690,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       onRename={(id, title) => void g.renameSession(id, title)}
       onPin={(id, pinned) => void g.pinSession(id, pinned)}
       onWorker={(id, worker) => void g.setSessionWorker(id, worker)}
+      onForkSession={(id) => void forkAndOpen(id)}
       onRemoveSession={(id) => void g.removeSession(id)}
       onSetTreeCollapsed={g.setTreeCollapsed}
       // 存的是「新的折叠态」：当前展开 → 收起（true）。
@@ -683,6 +699,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       renderRunRow={renderRunRow}
     />
   );
+
+  /** Fork 扇叶动作：复制会话 → 刷新侧栏 → 直接打开新会话。busy（turn 在
+   * 跑）等拒绝只提示，不打断当前视图。 */
+  async function forkAndOpen(id: string) {
+    try {
+      const r = await api.forkSession(id);
+      if (r?.ok && r.new_id) {
+        await g.reloadSessions();
+        openSessionFromSidebar(r.new_id);
+      } else if (r?.error === "busy") {
+        pushNotice("error", t("session.forkBusy"));
+      } else {
+        pushNotice("error", t("session.forkFailed"));
+      }
+    } catch {
+      pushNotice("error", t("session.forkFailed"));
+    }
+  }
 
   // 归档检索结果的打开语义：标题命中 = 普通打开；消息命中 = 记下锚点再打开
   // （目标就是当前会话时直接广播滚动事件，TranscriptList 自己定位）。
@@ -877,7 +911,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </div>
             )}
             {session && (
-              <TopBar session={session} agent={agent} running={running} usage={usage} />
+              <TopBar session={session} agent={agent} running={running} usage={usage} context={contextState} />
             )}
             {/* 全局通知中心（notice-center-design.md）：零高度定位锚紧跟 TopBar，
                 通知因此始终贴在顶栏正下方、不参与布局（不顶动内容）。absolute
@@ -897,6 +931,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   calls: (d?.calls ?? 0) + 1,
                 }))
               }
+              onContextChange={setContextState}
               onOpenGoal={() => setGoalSessionModal(true)}
             />
           </div>

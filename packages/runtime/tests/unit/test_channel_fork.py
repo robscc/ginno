@@ -60,11 +60,12 @@ def test_fork_listed_in_help(isolated_home):
 # --------------------------------------------------------------------------- #
 # gate：仅渠道会话可用
 # --------------------------------------------------------------------------- #
-async def test_fork_requires_channel_session(isolated_home):
-    """无 meta（桌面普通会话/野 id）→ 提示已是桌面会话，不建副本。"""
+async def test_fork_requires_index_entry(isolated_home):
+    """无 meta（野 id）→ 提示需要索引记录，不建副本。2026-10-31 起桌面
+    会话也可 fork（扇形菜单入口），不再拒「已是桌面会话」。"""
     n_before = len(_session_meta_list("default"))
     reply = await _fork_async_handler("default", {"session_id": "no-meta-id"})
-    assert "已经是桌面会话" in reply or "already a desktop session" in reply
+    assert "索引" in reply or "index entry" in reply
     assert len(_session_meta_list("default")) == n_before
 
 
@@ -257,3 +258,69 @@ async def test_fork_with_attached_message_notes_limit(
         "default", {"session_id": "ch-7"}, args="帮我总结上面的方案"
     )
     assert "暂不支持带走" in reply or "not carried over yet" in reply
+
+
+# --------------------------------------------------------------------------- #
+# turn_gate_busy 泄漏自愈 + 桌面会话 fork（2026-10-31）
+# --------------------------------------------------------------------------- #
+
+
+async def test_fork_desktop_session(isolated_home, patch_build_model, monkeypatch):
+    """桌面普通会话（无 type=channel）也能 fork：核心同渠道，meta 记
+    forked_from_session（渠道版记 forked_from_channel）。"""
+    from ginno_runtime import server_shared as shared
+    from ginno_runtime.testing.fake_model import ScriptedChatModel, script
+
+    patch_build_model(ScriptedChatModel(scripts=[script(text="ok")]))
+    _session_meta_upsert("default", {
+        "id": "desk-1", "title": "桌面会话", "created": 1.0, "updated": 1.0,
+    })
+
+    async def fake_seed(src, dst, slug, brief):
+        return 3
+
+    # registry 在函数内 lazy import——patch 源模块，调用时才解析
+    monkeypatch.setattr(
+        "ginno_runtime.subagent_scheduler._seed_fork_history", fake_seed)
+    reply = await _fork_async_handler(
+        "default", {"session_id": "desk-1"})
+    assert "✅" in reply
+    child = _find_meta(
+        str(_find_meta("desk-1")[0].get("forked_to_session") or ""))
+    assert child and child[0].get("forked_from_session") == "desk-1"
+
+
+def test_turn_gate_busy_stale_heal():
+    """泄漏的 _RUNNING_TURNS（有时间戳、无活 task、超 STALE 窗口）→ gate
+    自愈返回 False 并清掉标志；新鲜条目仍 busy。2026-10-31 真机：turn
+    完成后 /fork 仍报「AI 正在回复」。"""
+    import time
+
+    from ginno_runtime import server_shared as shared
+
+    sid = "stale-1"
+    shared._RUNNING_TURNS[sid] = "t-old"
+    shared._RUNNING_TURNS_AT[sid] = time.time() - shared.RUNNING_TURN_STALE_S - 5
+    try:
+        assert shared.turn_gate_busy(sid) is False  # healed
+        assert sid not in shared._RUNNING_TURNS
+        assert sid not in shared._RUNNING_TURNS_AT
+    finally:
+        shared._RUNNING_TURNS.pop(sid, None)
+        shared._RUNNING_TURNS_AT.pop(sid, None)
+
+    # 新鲜条目（刚 arm、无时间戳）→ busy（不能误 heal 正在起步的 turn）
+    shared._RUNNING_TURNS[sid] = "t-new"
+    try:
+        assert shared.turn_gate_busy(sid) is True
+    finally:
+        shared._RUNNING_TURNS.pop(sid, None)
+
+    # 有时间戳且在窗口内 → busy
+    shared._RUNNING_TURNS[sid] = "t-mid"
+    shared._RUNNING_TURNS_AT[sid] = time.time() - 60
+    try:
+        assert shared.turn_gate_busy(sid) is True
+    finally:
+        shared._RUNNING_TURNS.pop(sid, None)
+        shared._RUNNING_TURNS_AT.pop(sid, None)
