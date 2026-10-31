@@ -275,6 +275,15 @@ class WeComChannelAdapter(ChannelAdapter):
         """文本/语音共用的 turn 驱动：在途 steer → 串行锁 → turn → 补投。"""
         lock = self._session_locks.setdefault(session["session_id"], asyncio.Lock())
         if lock.locked():  # 在途/停车中 → steer 优先，其余不排队直接定格提示
+            # 命令（/fork /clear /help …）是控制操作，绝不 steer——注入给
+            # 模型只会被当成正文文本（2026-10-31 真机：turn 在跑时发 /fork
+            # 收到「已追加到当前任务」，命令被吞）。定格提示稍后重发。
+            if text.lstrip().startswith("/"):
+                await self._finish_stream(
+                    req_id, stream_id,
+                    "⏳ 上一轮仍在进行中，命令（" + text.strip()[:20]
+                    + "）未被注入，请结束后重发。")
+                return
             if steer_channel_turn(session, text):
                 await self._finish_stream(
                     req_id, stream_id, "↩️ 已追加到当前任务，本轮继续时生效。")

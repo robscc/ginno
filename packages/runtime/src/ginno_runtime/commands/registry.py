@@ -574,15 +574,11 @@ async def _compact_async_handler(
         # 没有任何东西会再跑），此时应当修复（heal 清掉 next、补齐悬空
         # tool_calls）后照常压缩，而不是永远拒绝（2026-10-12：重启杀掉进行
         # 中 turn 后 /compact 一直报「停在确认步骤」）。
-        from ..server_shared import _PENDING_RESUME, _RUNNING_TURNS, _TURN_TASKS
+        # turn_gate_busy（2026-10-31）：三查同义 + 泄漏自愈（armed 超
+        # RUNNING_TURN_STALE_S 且无活 task 的残留条目不再永久卡死命令）。
+        from .. import server_shared as _shared
 
-        _task = _TURN_TASKS.get(sid)
-        _live = (
-            sid in _RUNNING_TURNS
-            or sid in _PENDING_RESUME
-            or (_task is not None and not _task.done())
-        )
-        if _live:
+        if _shared.turn_gate_busy(sid):
             return t(
                 "The current turn is running or paused at a confirmation step (permission / question); finish or stop it before running /compact",
                 "当前回合仍在进行或停在确认步骤（权限 / 提问）上；请先完成或停止再运行 /compact",
@@ -722,15 +718,11 @@ async def _clear_async_handler(
         # 重启/崩溃留下的僵尸 checkpoint（内存注册表已随旧进程消失，UI 没有
         # 任何可确认的地方，也没有东西会再跑）→ heal 后照常清空，而不是永远
         # 拒绝（2026-10-15 用户报告：/clear 报「停在确认步骤」但无卡可确认）。
-        from ..server_shared import _PENDING_RESUME, _RUNNING_TURNS, _TURN_TASKS
+        # turn_gate_busy（2026-10-31）：三查同义 + 泄漏自愈（armed 超
+        # RUNNING_TURN_STALE_S 且无活 task 的残留条目不再永久卡死命令）。
+        from .. import server_shared as _shared
 
-        _task = _TURN_TASKS.get(sid)
-        _live = (
-            sid in _RUNNING_TURNS
-            or sid in _PENDING_RESUME
-            or (_task is not None and not _task.done())
-        )
-        if _live:
+        if _shared.turn_gate_busy(sid):
             return t(
                 "The current turn is paused at a confirmation step (permission / question); finish it before running /clear",
                 "当前回合停在确认步骤（权限 / 提问）上；请先完成再运行 /clear",
@@ -812,12 +804,15 @@ async def fork_session_core(sid: str, slug: str, meta: dict, session: dict) -> d
         {"dingtalk": "钉钉对话", "wecom": "企业微信对话"}.get(channel, "IM 对话")
         if is_channel else "会话"
     )
+    # 副本标题带溯源后缀（2026-10-31 用户要求）：fork 出来的会话一眼可辨
+    # 来源；侧栏超长自动截断，不担心占宽。
+    fork_title = f"{src_title} (fork from {sid[:8]})"
     new_meta = await create_session(
         CreateSessionRequest(
             project_slug=slug,
             workspace="",
             agent_id=meta.get("agent_id") or session.get("agent_id") or None,
-            title=src_title,
+            title=fork_title,
         )
     )
     if new_meta.get("ok") is False or not new_meta.get("id"):

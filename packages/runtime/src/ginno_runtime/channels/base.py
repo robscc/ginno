@@ -236,8 +236,6 @@ async def run_channel_turn(
         # 供 engine 的 turn.start 回显（桌面端实时预览 IM 侧发来的图片；
         # 与 history 的 multimodal 图片块同构，回灌天然去重）。
         config["configurable"]["echo_images"] = images
-    # Early-arm: a channel `stop` during the preamble must see a live turn.
-    shared._RUNNING_TURNS[session_id] = turn_id
     tap.session_id = session_id
     shared._SESSION_WS.setdefault(session_id, []).append(tap)
     salvaged: list[str] = []
@@ -246,6 +244,12 @@ async def run_channel_turn(
         # 渠道路径此前不过 resolve_turn，命令被当纯文本喂给模型（2026-10-28
         # 真机实录：企微发 /clear，模型回了一句解释，上下文没清）。回执走
         # tap 的真实翻译路径（企微流式/钉钉卡片），像一条微型 turn。
+        #
+        # 命令解析/执行必须在 _RUNNING_TURNS arm **之前**（2026-10-31 自锁
+        # 修复）：/fork /clear 的 busy-gate 读 _RUNNING_TURNS——先 arm 再跑
+        # 命令，gate 看到的是自己刚写的标志，渠道 /fork 从 10-28 起永远报
+        # 「AI 正在回复」。命令是即答短路，不进 _run_stream，无需 stop 可
+        # 见性；early-arm 语义只对真正的 turn（preamble 可被 stop）有意义。
         skill_name: str | None = None
         try:
             from ..commands.resolver import resolve_turn
@@ -272,6 +276,9 @@ async def run_channel_turn(
         except Exception:
             shared._log.exception(
                 "channel_cmd_resolve_failed session=%s", session_id)
+        # Early-arm（仅真 turn）：preamble 期间到达的 channel `stop` 必须
+        # 能看到活的 turn。
+        shared._RUNNING_TURNS[session_id] = turn_id
         await _stream_api._run_stream(
             None, session["graph"], config, text, session, agent,
             images=images, skill_name=skill_name)

@@ -8,14 +8,18 @@
 import { Bot, BotOff, GitFork, MoreHorizontal, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 /** 扇形几何：极坐标 → CSS 位移（y 向下为正）。角度从正右方逆时针量，
- * 100°≈正上、180°=正左——展开成左上弧，不遮行下方内容。
- * 4 叶（worker 开关时）：60-100-140-180 均布弧上。 */
-const RADIUS = 42;
+ * 90°=正上、180°=正左——展开成左上弧，不遮行下方内容。
+ * 扇叶通过 portal 渲染到 body（position:fixed），不受侧栏滚动容器
+ * overflow 裁剪——小角度扇叶可向右伸进对话区（2026-10-31 之前曾因
+ * 被裁被迫压在 96-180 窄弧上，5 叶挤成一坨），所以各叶数都可用
+ * ~37° 间距的宽弧，chord ≈ 2·52·sin(18.5°) ≈ 33px > 28px 叶宽不叠。 */
+const RADIUS = 52;
 const ANGLES_3 = [100, 140, 180];
-const ANGLES_4 = [60, 100, 140, 180];
-const ANGLES_5 = [40, 70, 100, 130, 160, 190].slice(0, 5);
+const ANGLES_4 = [45, 90, 135, 180];
+const ANGLES_5 = [30, 67, 104, 142, 180];
 const fanOffset = (deg: number) => ({
   dx: Math.round(RADIUS * Math.cos((deg * Math.PI) / 180)),
   dy: -Math.round(RADIUS * Math.sin((deg * Math.PI) / 180)),
@@ -46,14 +50,34 @@ export function RowFanMenu({
   const t = useTranslations("shell");
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const leafHostRef = useRef<HTMLDivElement>(null);
+  // 扇叶锚点：触发钮中心的视口坐标（扇叶 portal 到 body 用 fixed 定位，
+  // 展开期间侧栏滚动/窗口缩放时重算，扇叶跟着行走）。
+  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  const measure = () => {
+    const r = triggerRef.current?.getBoundingClientRect();
+    if (r) setAnchor({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+  };
 
   // 展开期间：点外部 / Esc 收起。行 mouseleave 不收——扇叶伸在行外，
-  // 移向扇叶必然先离开行。
+  // 移向扇叶必然先离开行。扇叶在 portal 里，外部判定要算上 leafHost。
   useEffect(() => {
     if (!open) return;
+    measure();
     const onDown = (e: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (
+        rootRef.current &&
+        !rootRef.current.contains(target) &&
+        !leafHostRef.current?.contains(target)
+      )
+        setOpen(false);
     };
+    // capture=true：侧栏滚动容器（overflow-y-auto 会裁掉行内绝对定位的
+    // 扇叶，这正是 portal 的原因）冒泡前拿到滚动事件重算锚点。
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
@@ -62,6 +86,8 @@ export function RowFanMenu({
     return () => {
       window.removeEventListener("pointerdown", onDown);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
     };
   }, [open]);
 
@@ -130,6 +156,7 @@ export function RowFanMenu({
   return (
     <span ref={rootRef} className="relative inline-flex">
       <button
+        ref={triggerRef}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
@@ -143,36 +170,43 @@ export function RowFanMenu({
       >
         <MoreHorizontal className="h-3.5 w-3.5" />
       </button>
-      {items.map((it, i) => {
-        const { dx, dy } = fanOffset(angles[i]);
-        return (
-          <button
-            key={it.key}
-            role="menuitem"
-            aria-label={it.label}
-            title={it.title}
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpen(false);
-              it.run();
-            }}
-            className={`absolute left-1/2 top-1/2 z-50 flex h-7 w-7 items-center justify-center rounded-full border border-line2 bg-card shadow-md transition-[transform,opacity,visibility] duration-200 [transition-timing-function:cubic-bezier(0.34,1.56,0.64,1)] ${it.cls} ${
-              open ? "visible" : "invisible pointer-events-none"
-            }`}
-            style={{
-              // 收起时所有扇叶叠在触发钮中心（scale 0.3）；展开沿弧位弹出，
-              // 逐片 30ms stagger；收拢不延迟。
-              transform: open
-                ? `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(1)`
-                : "translate(-50%, -50%) scale(0.3)",
-              opacity: open ? 1 : 0,
-              transitionDelay: open ? `${i * 30}ms` : "0ms",
-            }}
-          >
-            {it.icon}
-          </button>
-        );
-      })}
+      {createPortal(
+        <div ref={leafHostRef}>
+          {items.map((it, i) => {
+            const { dx, dy } = fanOffset(angles[i]);
+            return (
+              <button
+                key={it.key}
+                role="menuitem"
+                aria-label={it.label}
+                title={it.title}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOpen(false);
+                  it.run();
+                }}
+                className={`fixed z-50 flex h-7 w-7 items-center justify-center rounded-full border border-line2 bg-card shadow-md transition-[transform,opacity,visibility] duration-200 [transition-timing-function:cubic-bezier(0.34,1.56,0.64,1)] ${it.cls} ${
+                  open && anchor ? "visible" : "invisible pointer-events-none"
+                }`}
+                style={{
+                  left: anchor?.x ?? 0,
+                  top: anchor?.y ?? 0,
+                  // 收起时所有扇叶叠在触发钮中心（scale 0.3）；展开沿弧位弹出，
+                  // 逐片 30ms stagger；收拢不延迟。
+                  transform: open
+                    ? `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(1)`
+                    : "translate(-50%, -50%) scale(0.3)",
+                  opacity: open ? 1 : 0,
+                  transitionDelay: open ? `${i * 30}ms` : "0ms",
+                }}
+              >
+                {it.icon}
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )}
     </span>
   );
 }

@@ -62,6 +62,20 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return "429" in text or "rate limit" in text or "too many requests" in text
 
 
+def _is_stream_chunk_timeout(exc: Exception) -> bool:
+    """langchain_openai 内置 chunk 看门狗触发（流中途 ≥N 秒无增量即杀流）。
+
+    2026-10-31 wb-bench office（glm-5.3-flash@智谱 coding 端点）实录：
+    22/150 trial 死于「流已活跃产出 11k+ chunk 后中途 ≥120s 无增量」——
+    轻/免费档网关在长生成后段偶发长停顿，单次即判死过激。此类错误重发
+    请求（消息历史不变，服务端重新生成该轮输出）通常可恢复，故与限流
+    同走 in-turn 退避，但次数更少、间隔更短。"""
+    return (
+        type(exc).__name__ == "StreamChunkTimeoutError"
+        or "No streaming chunk received" in str(exc)
+    )
+
+
 def _is_anthropic_model(model) -> bool:
     """Detect ChatAnthropic without a hard import (works on bound models too)."""
     target = getattr(model, "bound", model)  # RunnableBinding from bind_tools

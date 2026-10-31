@@ -305,7 +305,15 @@ class DingTalkChannelAdapter(ChannelAdapter):
         lock = self._session_locks.setdefault(sid, asyncio.Lock())
         if lock.locked():  # F9：在途 turn/停车中 → steer 优先，其余不排队提示
             # 附件消息不 steer（桌面 v1 同口径，steering-design.md §3.1）：
-            # 文本会引用附件，只注入文字会误导模型。
+            # 文本会引用附件，只注入文字会误导模型。命令同理绝不 steer
+            # （控制操作注入给模型只会被当正文吞掉，2026-10-31 企微同款
+            # 修复）——定格提示稍后重发。
+            if not attached and text.lstrip().startswith("/"):
+                await self.send_markdown(
+                    staff_id, "Ginno",
+                    f"⏳ 上一轮仍在进行中，命令（{text.strip()[:20]}）未被注入，"
+                    "请结束后重发。")
+                return
             if not attached and steer_channel_turn(session, text):
                 await self.send_markdown(
                     staff_id, "Ginno", "↩️ 已追加到当前任务，本轮继续时生效。")

@@ -839,3 +839,46 @@ def test_voice_empty_content_hints(tmp_path: Path):
     finishes = [b for _, b in ad.client.responds
                 if b.get("stream", {}).get("finish")]
     assert finishes and "没有识别出内容" in finishes[0]["stream"]["content"]
+
+
+async def test_adapter_busy_command_not_steered(tmp_path: Path, monkeypatch):
+    """turn 在跑时发命令（/fork 等）：绝不 steer 注入模型，定格提示重发
+    （2026-10-31 真机：/fork 被当 steering 文本吞掉，命令系统没机会跑）。"""
+    pytest.importorskip("langchain_core")
+    ad = _make_adapter(tmp_path, {})
+    lock = asyncio.Lock()
+
+    async def locked():
+        async with lock:
+            await asyncio.sleep(0.2)
+
+    async def fake_ensure(ginno_sid, **kw):
+        return ({"session_id": "sess1", "project_slug": "default"}, None)
+
+    steered: list[str] = []
+
+    def fake_steer(session, text):
+        steered.append(text)
+        return True
+
+    import ginno_runtime.channels.wecom.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "ensure_channel_session", fake_ensure)
+    monkeypatch.setattr(adapter_mod, "steer_channel_turn", fake_steer)
+    holder = asyncio.create_task(locked())
+    await asyncio.sleep(0.02)
+    ad._session_locks["sess1"] = lock
+    # 普通文本 → 照旧 steer
+    await ad._run_text_turn("req2", "chat1",
+                            {"session_id": "sess1", "project_slug": "default"},
+                            "stream2", "帮我加查一下天气")
+    assert steered == ["帮我加查一下天气"]
+    # 命令 → 不 steer，回执提示
+    await ad._run_text_turn("req3", "chat1",
+                            {"session_id": "sess1", "project_slug": "default"},
+                            "stream3", "/fork")
+    assert len(steered) == 1  # /fork 没进 steer
+    finishes = [b for _, b in ad.client.responds
+                if b.get("stream", {}).get("finish")]
+    assert any("未被注入" in b["stream"]["content"] for b in finishes)
+    await holder

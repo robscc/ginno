@@ -45,6 +45,7 @@ from .graph_models import (
     CACHE_TAIL_MARKS,
     _is_anthropic_model,
     _is_rate_limit_error,
+    _is_stream_chunk_timeout,
     _mark_cache_tail,
     _system_message,
     _with_cache_mark,
@@ -140,14 +141,31 @@ _EMPTY_REPLY_MAX_NUDGES = 3
 # 退避,把「限流即失败」变成「限流即变慢」。
 _RATE_LIMIT_MAX_WAITS = 5
 _RATE_LIMIT_WAIT_S = 30.0  # 30/60/120/240/480s,共 ~15 分钟
+# 流中途停顿(chunk 看门狗)重试:历史不变重发,服务端重新生成该轮;≤2 次、
+# 30/60s——比限流更克制,避免对真死连接白等三轮长退避(见 graph_models.
+# _is_stream_chunk_timeout 的 2026-10-31 实录)。
+_STREAM_STALL_MAX_RETRIES = 2
+_STREAM_STALL_WAIT_S = 30.0
 
 
 async def _ainvoke_rate_limited(bound, msgs):
     waited = 0
+    stalled = 0
     while True:
         try:
             return await bound.ainvoke(msgs)
         except Exception as exc:  # noqa: BLE001 — 只吞限流,其余照抛
+            if _is_stream_chunk_timeout(exc):
+                if stalled >= _STREAM_STALL_MAX_RETRIES:
+                    raise
+                stalled += 1
+                delay = _STREAM_STALL_WAIT_S * stalled
+                _log.warning(
+                    "stream_stall_retry wait=%.0fs attempt=%d/%d err=%.200s",
+                    delay, stalled, _STREAM_STALL_MAX_RETRIES, exc,
+                )
+                await asyncio.sleep(delay)
+                continue
             if waited >= _RATE_LIMIT_MAX_WAITS or not _is_rate_limit_error(exc):
                 raise
             delay = _RATE_LIMIT_WAIT_S * (2 ** waited)
