@@ -176,7 +176,7 @@
       "newSession": "New Session",
       "running": "Running",
       "idle": "Idle",
-      "usageTitle": "This run: input {input} tokens ({cache} from cache), output {output} tokens, {calls} model calls",
+      "usageTitle": "Session total: input {input} tokens ({cache} cache hits), output {output} tokens · {calls} model calls",
       "actions": "Session actions",
       "renamePrompt": "Session title",
       "copyId": "Copy session ID",

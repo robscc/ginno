@@ -261,10 +261,9 @@ def test_wf_resolve_provider_falls_back_to_default(monkeypatch):
     # 刻意绑定的 provider 被停用 → 回落默认
     disabled_deliberate = NS(provider="p2", model="m", provider_explicit=True)
     assert wr._wf_resolve_provider(disabled_deliberate) == "p1"
-    # 默认也被停用 → 明确报错而不是 "unknown provider: "
+    # 默认也被停用 → 原样返回，启用性校验交给 build_model（同样抛
+    # "provider … is disabled (enable it in Settings)"，提示语等价；
+    # 2026-10-31 起 resolve 不再提前 raise——那会绕开 build_model 这个
+    # 测试注入缝，55 个 api workflow 用例被绕开 patch 后集体失败）。
     monkeypatch.setattr(wr.prov_mod, "get_default_provider", lambda: "p2")
-    import pytest
-
-    with pytest.raises(ValueError) as ei:
-        wr._wf_resolve_provider(empty)
-    assert "enable one in Settings" in str(ei.value)
+    assert wr._wf_resolve_provider(empty) == "p2"

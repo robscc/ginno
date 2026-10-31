@@ -7,6 +7,7 @@
 
 import { useCallback, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
+import { fmtTokens } from "@/lib/format";
 
 export const SERIES = {
   cache: "#059669", // 缓存读
@@ -23,22 +24,11 @@ export function providerColor(p: string): string {
   return PROVIDER_COLORS[p] || "#6366f1";
 }
 
-/** Compact-number suffix ladder (K→M→B→T→Q). Table-driven so a new tier is
- *  one line, never another branch chain. Precision keeps the old rule: one
- *  decimal below 10× the tier, integers from there up. */
-const FMT_UNITS: [number, string][] = [
-  [1e15, "Q"],
-  [1e12, "T"],
-  [1e9, "B"],
-  [1e6, "M"],
-  [1e3, "K"],
-];
-
+/** Compact token counts — delegated to lib/format (k/M/B) so every usage
+ * surface (settings panels + TopBar tooltip) renders identically. Kept as an
+ * export because the panels import `fmt` from here. */
 export function fmt(n: number): string {
-  for (const [scale, suffix] of FMT_UNITS) {
-    if (n >= scale) return `${(n / scale).toFixed(n >= scale * 10 ? 0 : 1)}${suffix}`;
-  }
-  return String(Math.round(n));
+  return fmtTokens(n);
 }
 
 /** Exact thousands-separated number — tooltips show billing-grade digits. */

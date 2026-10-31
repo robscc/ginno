@@ -176,7 +176,7 @@
       "newSession": "新会话",
       "running": "运行中",
       "idle": "空闲",
-      "usageTitle": "本轮：输入 {input} tokens（{cache} 来自缓存），输出 {output} tokens，{calls} 次模型调用",
+      "usageTitle": "会话累计：输入 {input} tokens（{cache} 命中缓存），输出 {output} tokens · {calls} 次模型调用",
       "actions": "会话操作",
       "renamePrompt": "会话标题",
       "copyId": "复制会话 ID",

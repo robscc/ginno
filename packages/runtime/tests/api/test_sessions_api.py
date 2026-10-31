@@ -139,7 +139,7 @@ def test_patch_model_switch_updates_meta_and_keeps_entry(client, patch_build_mod
 
 
 def test_patch_model_switch_rejects_invalid(client, monkeypatch):
-    def fake(provider, model=None):
+    def fake(provider, model=None, session_id=None):
         if model == "nope":
             raise ValueError("unknown model")
         return object()
@@ -262,13 +262,15 @@ def test_create_session_quick_type_persists(client, patch_build_model):
     assert _SESSIONS[data["id"]]["type"] == "quick"
 
 
-def test_create_session_regular_has_no_type(client, patch_build_model):
+def test_create_session_regular_defaults_main_type(client, patch_build_model):
+    """常规会话的 type 常驻为 "main"（2026-10-29 worker-bus 起的有意契约：
+    type 是订阅/筛选的稳定字段，session_meta 对旧索引也会回填 main）。"""
     patch_build_model(script(text="ok"))
     data = _post_session(client).json()
-    assert "type" not in data
+    assert data["type"] == "main"
     index = json.loads(paths.session_index_path("default").read_text())
     hit = next(m for m in index if m["id"] == data["id"])
-    assert "type" not in hit
+    assert hit["type"] == "main"
 
 
 def test_pin_session_persists_and_unpins(client, patch_build_model):

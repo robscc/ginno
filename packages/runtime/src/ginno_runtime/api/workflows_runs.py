@@ -78,11 +78,10 @@ def _wf_resolve_provider(fork) -> str:
     provider = fork.provider if provider_is_deliberate(fork) else None
     if not _enabled(provider):
         provider = prov_mod.get_default_provider()
-    if not _enabled(provider):
-        raise ValueError(
-            f"no enabled provider (agent provider={fork.provider!r}, "
-            f"default={prov_mod.get_default_provider()!r}) — enable one in Settings"
-        )
+    # 不在此处 raise：启用性校验交给 build_model（prod 同样抛
+    # "provider … is disabled (enable it in Settings)"，提示语等价）。
+    # 提前 raise 会绕开 build_model 这个测试注入缝——2026-10-31 修复
+    # 55 个 api 既有失败（workflow 全家 run 直接 failed）。
     return provider
 
 

@@ -511,9 +511,15 @@ async def test_trigger_advances_past_fired_point(isolated_home, monkeypatch):
     rid = next(iter(scheduler._RUNNING.values()))
     assert rid  # 触发了
 
-    # next_run_at 必须严格在未来（daily → 明天同一时刻），不是刚触发的点
+    # next_run_at 必须严格越过刚触发的点（now-2），且是锚点对齐的下一个
+    # 日历点。不能断言 "> now+3600"：daily 锚 09:30 在 08:30–09:30 之间跑
+    # 本测试时，正确的下一锚点（今天 09:30）距 now 不足 1h —— 时段依赖
+    # 的假失败（2026-10-31 09:07 实挂复核，实现行为正确）。
     t = store.get_task("st-t1")
-    assert t["next_run_at"] > now + 3600
+    assert t["next_run_at"] is not None
+    assert t["next_run_at"] > now
+    expected_next = scheduler.compute_next(t, now - 2 + 1e-6)
+    assert t["next_run_at"] == expected_next
 
     # 后续 tick（模拟 +30s 的 skipped_overlap 时点与 +61s/+120s 的 missed
     # 时点）：不再触发、不再记账。fake clock 只替换 scheduler 模块内的

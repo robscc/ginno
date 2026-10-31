@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { GoalEditor } from "@/components/shell/GoalChip";
 import { useGinno, LAST_SESSION_KEY, notifyScheduleRunFinished } from "@/lib/store";
@@ -87,14 +87,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // the workspace here and toggling visibility with `hidden`, ChatStream's refs
   // survive any route change.
   const [running, setRunning] = useState(false);
-  // Session-cumulative model usage (world-state-plan D2/D3), pushed up from
-  // the chat socket and rendered as a small counter in the TopBar.
-  const [usage, setUsage] = useState<SessionUsage | null>(null);
+  // Session-cumulative model usage (world-state-plan D2/D3), rendered as a
+  // small counter in the TopBar. 两段式（2026-10-31 飘数修复）：
+  //   base  = 切会话时 GET /usage 的全树口径（持久 log 聚合，含子孙会话、
+  //           跨重启存活）
+  //   delta = 本连接期间 WS `usage` 事件的 per-turn 增量累加
+  // 显示 base+delta。此前直接用 WS 事件的 `session` 字段（runtime 进程内存
+  // 累计、仅本会话）整段覆盖 → 一跑 turn 数字就回退（切会话 100k → 本会话
+  // acc 5k），重启后更是从 0 重新爬——「有点飘」的根因。turn 与 base 无
+  // 双计：每次 turn 同时落持久 log，下次 GET 的 base 已含历史。
+  const [usageBase, setUsageBase] = useState<SessionUsage | null>(null);
+  const [usageDelta, setUsageDelta] = useState<SessionUsage | null>(null);
+  const usage = useMemo(() => {
+    if (!usageBase && !usageDelta) return null;
+    if (!usageBase) return usageDelta;
+    if (!usageDelta) return usageBase;
+    return {
+      input_tokens: usageBase.input_tokens + usageDelta.input_tokens,
+      output_tokens: usageBase.output_tokens + usageDelta.output_tokens,
+      cache_read_tokens: (usageBase.cache_read_tokens ?? 0) + (usageDelta.cache_read_tokens ?? 0),
+      cache_creation_tokens:
+        (usageBase.cache_creation_tokens ?? 0) + (usageDelta.cache_creation_tokens ?? 0),
+      calls: usageBase.calls + usageDelta.calls,
+    };
+  }, [usageBase, usageDelta]);
   const didInit = useRef(false);
 
   // Usage counters are per session: pull the session's accumulated stats on
   // switch so the TopBar counter is correct immediately (live `usage` WS
-  // events keep updating it during turns).
+  // turn events keep updating it during turns).
 
   useEffect(() => {
     let alive = true;
@@ -116,12 +137,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let alive = true;
-    setUsage(null);
+    setUsageBase(null);
+    setUsageDelta(null);
     if (g.activeSessionId) {
       api
         .getSessionUsage(g.activeSessionId)
         .then((r) => {
-          if (alive) setUsage(r?.usage ?? null);
+          if (alive) setUsageBase(r?.usage ?? null);
         })
         .catch(() => {
           /* sidecar down — live events will populate later */
@@ -866,7 +888,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <ChatStream
               session={session}
               onRunningChange={setRunning}
-              onUsageChange={setUsage}
+              onUsageChange={(turn) =>
+                setUsageDelta((d) => ({
+                  input_tokens: (d?.input_tokens ?? 0) + turn.input_tokens,
+                  output_tokens: (d?.output_tokens ?? 0) + turn.output_tokens,
+                  cache_read_tokens: (d?.cache_read_tokens ?? 0) + turn.cache_read_tokens,
+                  cache_creation_tokens: (d?.cache_creation_tokens ?? 0) + turn.cache_creation_tokens,
+                  calls: (d?.calls ?? 0) + 1,
+                }))
+              }
               onOpenGoal={() => setGoalSessionModal(true)}
             />
           </div>

@@ -123,8 +123,12 @@ def test_delegate_async_end_to_end(client, create_session, ws_conv, monkeypatch)
         _time.sleep(0.3)
     assert injected and did in injected, "injected result missing"
     # 注入必须走 <ginno_subagent_result> 信封（前端折成结果卡的契约）；
-    # 机器头 [delegate …] 留在正文里——它是模型侧的溯源头（设计 §7）。
-    assert "ginno_subagent_result" in injected and "stop=success" in injected
+    # /history 已把信封折成专用块（messages_ui._subagent_result_blocks，
+    # 2026-10 起）——断言折后的 subagent_result 块 + 机器头 stop=success
+    # （机器头 [delegate …] 留在正文里，是模型侧的溯源头，设计 §7）。
+    hist = json.loads(injected)
+    kinds = [b.get("kind") for m in hist["messages"] for b in m.get("blocks", [])]
+    assert "subagent_result" in kinds and "stop=success" in injected
 
     # 子会话回放：转换后的 claude 事件以原生块渲染
     dhist = client.get(f"/api/sessions/{did}/history").json()

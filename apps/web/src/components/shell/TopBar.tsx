@@ -8,6 +8,7 @@ import { pushNotice } from "@/lib/notice";
 import { useGinno } from "@/lib/store";
 import type { AgentConfig, SessionMeta, SessionUsage } from "@/lib/types";
 import { agentHex } from "@/lib/theme";
+import { fmtTokens } from "@/lib/format";
 import { AgentIcon } from "@/components/icons";
 import { GoalChip } from "./GoalChip";
 import { ContextFoldersChip } from "./ContextFoldersChip";
@@ -168,13 +169,15 @@ export function TopBar({
 
           <LinkedSessionsChip session={session} />
 
-          {/* 📊 Stats:纯 hover 数据(决策点 D,会话累计口径)。 */}
+          {/* 📊 Stats:纯 hover 数据(决策点 D,会话累计口径)。数字走紧凑
+              k/M/B（lib/format）——原始值动辄数十万 token，全数字在
+              tooltip 里反而难读。 */}
           {usage && usage.calls > 0 && (
             <TopBarFuncButton
               title={tr("topbar.usageTitle", {
-                input: usage.input_tokens,
-                cache: usage.cache_read_tokens,
-                output: usage.output_tokens,
+                input: fmtTokens(usage.input_tokens),
+                cache: fmtTokens(usage.cache_read_tokens),
+                output: fmtTokens(usage.output_tokens),
                 calls: usage.calls,
               })}
             >

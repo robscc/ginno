@@ -590,7 +590,7 @@ def test_agent_model_binding_runtime_fallback(monkeypatch):
     monkeypatch.setattr(S.prov_mod, "get_default_provider", lambda: "alive")
     calls: list[tuple] = []
 
-    def fake_build(pid, model_name=None, enable_search=None):
+    def fake_build(pid, model_name=None, enable_search=None, session_id=None):
         if pid == "dead":
             raise ValueError("provider dead is disabled")
         calls.append((pid, model_name))
@@ -617,7 +617,7 @@ def test_agent_model_binding_runtime_fallback_no_loop(monkeypatch):
     monkeypatch.setattr(S.prov_mod, "load_providers", lambda: provs)
     monkeypatch.setattr(S.prov_mod, "get_default_provider", lambda: "alive")
 
-    def broken_build(pid, model_name=None, enable_search=None):
+    def broken_build(pid, model_name=None, enable_search=None, session_id=None):
         raise ValueError("everything broken")
 
     monkeypatch.setattr(S, "build_model", broken_build)

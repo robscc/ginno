@@ -902,9 +902,23 @@ export function handle(ctx: EngineCtx, sid: string, ev: { event: string; [k: str
       break;
     }
     case "usage": {
-      // Session-cumulative model usage (D2) → TopBar counter via callback.
-      const s = ev.session as SessionUsage | undefined;
-      if (s && typeof s.input_tokens === "number") ctx.onUsageChange?.(s);
+      // Per-call usage (D2) → TopBar via callback. We forward the TURN
+      // increment, not the event's `session` accumulator: that is the
+      // runtime's in-memory per-session counter (this session only, wiped on
+      // sidecar restart), while the TopBar seeds from GET /usage's
+      // persistent whole-tree total — applying the accumulator wholesale made
+      // the counter JUMP BACKWARD on every turn (2026-10-31 drift fix; the
+      // consumer in AppShell adds the turn onto the fetched base).
+      const t = ev.turn as Partial<SessionUsage> | undefined;
+      if (t && typeof t.input_tokens === "number") {
+        ctx.onUsageChange?.({
+          input_tokens: t.input_tokens ?? 0,
+          output_tokens: t.output_tokens ?? 0,
+          cache_read_tokens: t.cache_read_tokens ?? 0,
+          cache_creation_tokens: t.cache_creation_tokens ?? 0,
+          calls: 1,
+        });
+      }
       break;
     }
     case "turn.state": {

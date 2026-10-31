@@ -744,6 +744,22 @@ def _record_external_usage(
         add_usage(acc, usage)
     except Exception:  # noqa: BLE001
         pass
+    # 补发 WS usage 事件（仅 turn 增量）：前端 TopBar 自 2026-10-31 起按
+    # 「GET 全树基数 + turn 增量」显示——delegate 的 token 早已进 ledger，
+    # 但没有事件的话实时计数要等下次切会话才补上。best-effort，不抛。
+    try:
+        from ..server_shared import _push_session_event, spawn_bg
+
+        async def _emit() -> None:
+            await _push_session_event(
+                session_id, "usage",
+                {"turn": {k: int(usage.get(k, 0)) for k in
+                          ("input_tokens", "output_tokens",
+                           "cache_read_tokens", "cache_creation_tokens")}})
+
+        spawn_bg(_emit())
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def build_external_agent_tools(
