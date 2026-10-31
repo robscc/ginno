@@ -17,6 +17,11 @@ export interface SidebarConfirmModalsProps {
   selectedArchivedCount: number;
   onCancelArchivedDelete: () => void;
   onConfirmArchivedDelete: () => void;
+  /** 归档区「清理已归档」：删除当前列表里的全部已归档会话。 */
+  clearArchivedConfirm: boolean;
+  clearArchivedCount: number;
+  onCancelClearArchived: () => void;
+  onConfirmClearArchived: () => void;
   deleteTarget: SessionMeta | null;
   descendantCount: (id: string) => number;
   onCancelDelete: () => void;
@@ -24,8 +29,9 @@ export interface SidebarConfirmModalsProps {
 }
 
 /**
- * 侧栏的四个破坏性动作确认：一键归档、批量删除、归档区「删除所选」、
- * 单条删除（含级联后代提示）。状态与动作仍由 AppShell 持有。
+ * 侧栏的五个破坏性动作确认：一键归档、批量删除、归档区「删除所选」、
+ * 归档区「清理已归档」、单条删除（含级联后代提示）。状态与动作仍由
+ * AppShell 持有。
  */
 export function SidebarConfirmModals({
   archiveAllConfirm,
@@ -40,6 +46,10 @@ export function SidebarConfirmModals({
   selectedArchivedCount,
   onCancelArchivedDelete,
   onConfirmArchivedDelete,
+  clearArchivedConfirm,
+  clearArchivedCount,
+  onCancelClearArchived,
+  onConfirmClearArchived,
   deleteTarget,
   descendantCount,
   onCancelDelete,
@@ -78,6 +88,18 @@ export function SidebarConfirmModals({
           confirmLabel={t("bulk.confirmDeleteConfirm")}
           onConfirm={onConfirmArchivedDelete}
           onCancel={onCancelArchivedDelete}
+        />
+      )}
+
+      {/* 归档区「清理已归档」：一次删光当前列表的全部已归档会话（被引用的
+          由后端跳过并列在提示条），确认后清空检索。 */}
+      {clearArchivedConfirm && (
+        <ConfirmModal
+          title={t("bulk.confirmClearTitle")}
+          message={t("bulk.confirmClearMessage", { count: clearArchivedCount })}
+          confirmLabel={t("bulk.confirmClearConfirm")}
+          onConfirm={onConfirmClearArchived}
+          onCancel={onCancelClearArchived}
         />
       )}
 

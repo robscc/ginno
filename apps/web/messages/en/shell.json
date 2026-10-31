@@ -142,7 +142,12 @@
       "confirmDeleteConfirm": "Delete",
       "skipped": "{count} session(s) were not deleted because they are still referenced:",
       "restoreSelected": "Restore selected ({count})",
-      "deleteSelected": "Delete selected ({count})"
+      "deleteSelected": "Delete selected ({count})",
+      "clearArchived": "Clear archived",
+      "clearArchivedHint": "Delete all {count} archived sessions in this list",
+      "confirmClearTitle": "Delete all archived sessions",
+      "confirmClearMessage": "Permanently delete all {count} archived sessions shown in the sidebar? Their conversation history will be deleted and cannot be recovered. Sessions still referenced by teams or scheduled runs are skipped.",
+      "confirmClearConfirm": "Delete all"
     },
     "archive": {
       "searchPlaceholder": "Search archived sessions…",

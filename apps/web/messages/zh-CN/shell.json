@@ -142,7 +142,12 @@
       "confirmDeleteConfirm": "删除",
       "skipped": "有 {count} 个会话仍被引用，未删除：",
       "restoreSelected": "恢复所选 ({count})",
-      "deleteSelected": "删除所选 ({count})"
+      "deleteSelected": "删除所选 ({count})",
+      "clearArchived": "清理已归档",
+      "clearArchivedHint": "删除列表中全部 {count} 个已归档会话",
+      "confirmClearTitle": "删除全部已归档会话",
+      "confirmClearMessage": "永久删除侧栏展示的全部 {count} 个已归档会话？对话历史将一并删除且无法恢复。仍被团队/定时任务引用的会话会被跳过。",
+      "confirmClearConfirm": "全部删除"
     },
     "archive": {
       "searchPlaceholder": "搜索已归档会话…",

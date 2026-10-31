@@ -267,6 +267,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
   // 已归档选中项的「删除所选」确认（只作用于归档子集，不动普通选中行）。
   const [archivedDeleteConfirm, setArchivedDeleteConfirm] = useState(false);
+  // 归档区「清理已归档」确认：删光当前列表的全部已归档会话。
+  const [clearArchivedConfirm, setClearArchivedConfirm] = useState(false);
   const toggleSelect = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -849,6 +851,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               query={archivedQuery}
               onQueryChange={setArchivedQuery}
               onOpenFromSearch={openFromSearch}
+              onClearArchived={() => setClearArchivedConfirm(true)}
+              bulkBusy={bulkBusy}
               renderSessionRow={renderSessionRow}
             />
           </SidebarSessionList>
@@ -1011,6 +1015,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         onConfirmArchivedDelete={() => {
           const ids = selectedArchivedIds;
           setArchivedDeleteConfirm(false);
+          setArchivedQuery("");
+          void runBulk("delete", ids);
+        }}
+        clearArchivedConfirm={clearArchivedConfirm}
+        clearArchivedCount={archivedSessions.length}
+        onCancelClearArchived={() => setClearArchivedConfirm(false)}
+        onConfirmClearArchived={() => {
+          // 快照当前列表里的全部已归档 id（archivedSessions 已含 agent 筛选/
+          // 隐藏过滤，即「所见即所清」）；被引用的由后端跳过并列在提示条。
+          const ids = archivedSessions.map((s) => s.id);
+          setClearArchivedConfirm(false);
           setArchivedQuery("");
           void runBulk("delete", ids);
         }}

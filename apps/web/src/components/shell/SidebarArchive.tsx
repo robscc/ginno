@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { ChevronDown, Search } from "lucide-react";
+import { ChevronDown, Search, Trash2 } from "lucide-react";
 import * as api from "@/lib/runtime";
 import type { SearchMessageHit } from "@/lib/runtime";
 import type { SessionMeta } from "@/lib/types";
@@ -21,6 +21,10 @@ export interface SidebarArchiveProps {
   onQueryChange: (value: string) => void;
   /** 命中行打开语义：标题命中 = 普通打开；消息命中 = 记锚点再打开。 */
   onOpenFromSearch: (sid: string, messageId?: string) => void;
+  /** 清理已归档：删除当前列表里的全部已归档会话（确认弹窗在 AppShell）。 */
+  onClearArchived: () => void;
+  /** 批量动作进行中：清理按钮禁用。 */
+  bulkBusy: boolean;
   renderSessionRow: (
     s: SessionMeta,
     depth?: number,
@@ -40,6 +44,8 @@ interface ArchivedSearchResult {
  * 已归档（P1-1）：默认收起，标题带计数；行压暗但仍可点开/恢复。
  * 两种视图下都固定挂在侧栏最底部。P0-2：展开后带本地检索框（标题 + 消息
  * 片段），有搜索时用结果替代普通列表；无搜索时按 YYYY-MM 分月、最新在前。
+ * 展开时标题行右侧有「清理已归档」垃圾桶按钮（确认弹窗与执行在 AppShell，
+ * 走既有 bulk delete：被引用会话由后端跳过并列在提示条）。
  * 检索的 200ms 防抖与结果状态随 UI 一起收在这里；关键词本身仍由 AppShell
  * 持有（批量栏「恢复所选」和删除确认都会清空它）。
  */
@@ -52,6 +58,8 @@ export function SidebarArchive({
   query,
   onQueryChange,
   onOpenFromSearch,
+  onClearArchived,
+  bulkBusy,
   renderSessionRow,
 }: SidebarArchiveProps) {
   const t = useTranslations("shell");
@@ -107,18 +115,33 @@ export function SidebarArchive({
 
   return (
     <div className="mb-1">
-      <button
-        onClick={onToggle}
-        title={t("groups.archivedHint")}
-        className="flex w-full items-center gap-1 px-2.5 pb-1 pt-3 text-left text-[11px] font-medium text-faint transition-colors hover:text-muted"
-      >
-        <ChevronDown
-          className={`h-3 w-3 shrink-0 transition-transform ${
-            open ? "" : "-rotate-90"
-          }`}
-        />
-        {t("groups.archived", { count: archivedSessions.length })}
-      </button>
+      {/* 标题行：折叠开关占满整行，展开时右侧挂「清理已归档」——按钮不能嵌套
+          在 button 里，所以外层是 div、开关自己 flex-1。 */}
+      <div className="flex items-center gap-1 pb-1 pt-3">
+        <button
+          onClick={onToggle}
+          title={t("groups.archivedHint")}
+          className="flex flex-1 items-center gap-1 px-2.5 text-left text-[11px] font-medium text-faint transition-colors hover:text-muted"
+        >
+          <ChevronDown
+            className={`h-3 w-3 shrink-0 transition-transform ${
+              open ? "" : "-rotate-90"
+            }`}
+          />
+          {t("groups.archived", { count: archivedSessions.length })}
+        </button>
+        {open && (
+          <button
+            onClick={onClearArchived}
+            disabled={bulkBusy}
+            aria-label={t("bulk.clearArchived")}
+            title={t("bulk.clearArchivedHint", { count: archivedSessions.length })}
+            className="mr-1 rounded p-1 text-faint transition-colors hover:bg-card2 hover:text-red disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            <Trash2 className="h-3 w-3" />
+          </button>
+        )}
+      </div>
       {open && (
         <div className="space-y-0.5">
           <div className="px-1.5 pb-1">
