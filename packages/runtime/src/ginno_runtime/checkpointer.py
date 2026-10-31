@@ -485,20 +485,12 @@ class FileCheckpointer(BaseCheckpointSaver):
     ) -> RunnableConfig:  # type: ignore[override]
         session_id = config["configurable"]["thread_id"]
         cid = str(checkpoint.get("id") or uuid.uuid4().hex)
-        # langgraph >= 1.x passes the PARENT checkpoint id in ``config``
-        # itself and no longer embeds ``parent_config`` in the checkpoint dict
-        # (verified empirically: config["configurable"]["checkpoint_id"] of
-        # put N+1 == checkpoint id written by put N). Reading the parent only
-        # from parent_config silently disabled delta mode — every superstep
-        # stored a full snapshot and session files grew quadratically.
+        # langgraph（锁版 1.2.x）把 PARENT checkpoint id 放在 ``config`` 里，
+        # checkpoint dict 不再携带 ``parent_config``（实测：put N+1 的
+        # config["configurable"]["checkpoint_id"] == put N 写入的 checkpoint id）。
+        # 旧版（<1.x）的 parent_config 兼容读取已随锁版移除——从 parent_config
+        # 读父 id 曾静默关掉 delta 模式，每个 superstep 存全量、会话文件平方级膨胀。
         parent_id = (config.get("configurable") or {}).get("checkpoint_id")
-        if not parent_id:
-            parent_cfg = checkpoint.get("parent_config") or {}
-            # parent_config is a RunnableConfig ({"configurable": {...}});
-            # tolerate a flat shape too (older langgraph / direct puts).
-            parent_id = (parent_cfg.get("configurable") or {}).get(
-                "checkpoint_id"
-            ) or parent_cfg.get("checkpoint_id")
         with self._write_lock:
             record = self._read(session_id)
 

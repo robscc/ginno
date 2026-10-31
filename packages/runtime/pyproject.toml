@@ -7,10 +7,15 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "langgraph>=0.2.50",
-    "langchain-core>=0.3",
-    "langchain-anthropic>=0.2",
-    "langchain-openai>=0.2",
+    # langchain 系精确锁版（2026-10-31 评估定稿）：runtime 对 langgraph 的
+    # checkpoint 协议行为（parent-id-in-config、pending-writes 语义、mid-step
+    # resume）有深度耦合，见 checkpointer.py 的版本对冲注释——浮动下限
+    # （>=0.2）会在 lock 刷新时悄悄跳大版本，行为漂移只能靠现场排查。
+    # 升级 = 显式改这里 + 全量测试。
+    "langgraph==1.2.19",
+    "langchain-core==1.7.3",
+    "langchain-anthropic==1.7.7",
+    "langchain-openai==1.7.3",
     "mcp>=1.0",
     "orjson>=3.10",
     "pydantic>=2.7",
