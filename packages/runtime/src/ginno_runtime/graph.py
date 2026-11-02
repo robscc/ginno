@@ -1030,7 +1030,16 @@ def build_graph(
 
     g.add_edge(START, "agent")
     g.add_conditional_edges("agent", route_after_agent, {"permission": "permission", END: END})
-    g.add_edge("permission", "tools")
+    # NO static permission→tools edge: permission routes exclusively via its
+    # Command(goto=...) returns. langgraph 1.2.x fires a node's static edges
+    # IN ADDITION to a returned Command's goto — with the edge present, a
+    # block (goto="agent") ALSO scheduled tools, forking the graph into two
+    # concurrent task lanes: a shadow agent re-sampled before the tools
+    # superstep committed (orphaning the previous round's tool_calls →
+    # endless spinners) and tools ran twice per round (non-idempotent tools
+    # like bg_run spawned duplicate tasks — 2026-11-03 session 1a0c1d77,
+    # four pytest/cargo spawns from two calls). Verified by
+    # test_permission_block_does_not_fork_lanes.
     g.add_edge("tools", "agent")
 
     # NOTE: pending_writes intentionally stay hidden from langgraph here (the

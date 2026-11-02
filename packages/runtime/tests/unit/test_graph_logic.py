@@ -306,6 +306,95 @@ def test_stable_system_instructs_artifact_registration_when_attach_ref_allowed(i
     assert "Artifact registration" not in prompt2
 
 
+async def test_permission_block_does_not_fork_lanes(isolated_home):
+    """2026-11-03 regression (session 1a0c1d77): langgraph 1.2.x fires a
+    node's static edges IN ADDITION to a returned Command's goto. With a
+    static permission→tools edge, a hook block (Command goto="agent") also
+    scheduled tools, forking two concurrent task lanes — a shadow agent
+    re-sampled before tools committed (orphaning the previous round's
+    tool_calls → spinner bubbles) and tools ran twice per round (bg_run
+    spawned duplicate tasks). Permission must route via Command alone."""
+    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.tools import tool
+
+    from ginno_runtime.graph import build_graph
+    from ginno_runtime.hooks.dispatcher import HookResult
+    from ginno_runtime.testing.fake_model import script_tool_call
+
+    executions: list[str] = []
+
+    @tool
+    def counter(step: str) -> str:
+        """Non-idempotent side-effect detector: records each execution."""
+        executions.append(step)
+        return f"ok {step}"
+
+    class BlockFirstHook:
+        """PreToolUse hook that blocks exactly the first call, like the
+        rm -rf literal hook did at 05:50:06 in the incident session."""
+
+        def __init__(self):
+            self.fired = 0
+
+        async def dispatch(self, event, matcher=None, *, plugin_hooks=True):
+            self.fired += 1
+            if self.fired == 1:
+                return [HookResult(block=True, reason="literal denied")]
+            return []
+
+    model = ScriptedChatModel(
+        scripts=[
+            script(tool_calls=[script_tool_call("counter", {"step": "r1"})]),
+            script(tool_calls=[script_tool_call("counter", {"step": "r2"})]),
+            script(text="done"),
+        ]
+    )
+    graph = build_graph(
+        model=model,
+        project_slug="p",
+        workspace="/tmp",
+        mcp_tools=[],
+        all_tools=[counter],
+        hook_dispatcher=BlockFirstHook(),
+    )
+    cfg = {"configurable": {"thread_id": "t-block", "project_slug": "p", "agent_id": "dev"}}
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="go")],
+            "workspace": "/tmp",
+            "project_slug": "p",
+            "agent_id": "dev",
+            "active_skills": [],
+            "pending_tool_calls": [],
+        },
+        config=cfg,
+    )
+    msgs = result["messages"]
+    # turn completed on the scripted final text
+    assert msgs[-1].content == "done"
+    # the blocked round never executed; the re-issued round executed EXACTLY
+    # once — no shadow lane double-running tools
+    assert executions == ["r2"]
+    # every tool_call got its ToolMessage except the blocked r1 (answered by
+    # the block notice instead, pre-existing design) — nothing else dangles
+    answered = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
+    r1_ids = [
+        tc["id"]
+        for m in msgs
+        if isinstance(m, AIMessage)
+        for tc in (m.tool_calls or [])
+        if isinstance(tc, dict) and tc.get("args", {}).get("step") == "r1"
+    ]
+    all_ids = {
+        tc["id"]
+        for m in msgs
+        if isinstance(m, AIMessage)
+        for tc in (m.tool_calls or [])
+        if isinstance(tc, dict)
+    }
+    assert all_ids - answered == set(r1_ids)
+
+
 async def test_raising_tool_is_contained_not_fatal(isolated_home):
     """The 2026-08 incident shape: a tool raises OSError mid-call. The turn
     must survive — the exception becomes an error ToolMessage the agent reads,
