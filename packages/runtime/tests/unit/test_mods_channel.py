@@ -267,7 +267,12 @@ async def test_call_result_correlation(connected):
     assert not ch._pending  # nothing leaks in the pending map
 
 
-async def test_config_push_carries_broker_schema(connected):
+async def test_config_push_carries_broker_schema(connected, monkeypatch, tmp_path):
+    # runner-path resolution needs a real mod-runner.mjs on disk (env override
+    # wins over the repo-dist discovery ladder) — CI has no esbuild bundle.
+    runner = tmp_path / "mod-runner.mjs"
+    runner.write_text("// placeholder\n", encoding="utf-8")
+    monkeypatch.setenv("GINNO_MOD_RUNNER_PATH", str(runner))
     ch, broker = connected
     # push_config 必须把 broker 的应答交回调用方:新 broker 的 apply-config
     # 返回 {ok, reloaded, mods} ack,连接器层据此报「真的应用了没有」。

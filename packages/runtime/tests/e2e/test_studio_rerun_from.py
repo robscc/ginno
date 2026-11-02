@@ -175,7 +175,8 @@ def test_09_never_scheduled_node_forks_then_fails(client, monkeypatch):
     fork = L.await_run(client, r.json()["run"]["id"])
     assert fork["status"] == "failed", fork
     errs = [e for e in L.evs(client, fork["id"]) if e.get("kind") == "error"]
-    assert errs and "检查点" in errs[-1].get("error", "")
+    # error wording moved to the LangGraph-level ValueError (was 「检查点」)
+    assert errs and "no traceable checkpoint" in errs[-1].get("error", "")
 
 
 def test_10_no_checkpoint_is_409(client, monkeypatch):

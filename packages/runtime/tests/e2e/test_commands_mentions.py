@@ -173,7 +173,8 @@ def test_compact_forces_summary_regardless_of_threshold(
         conv.recv_until("message.end", "error")
         conv.invoke("/compact")
         events = conv.recv_until("message.end", "error")
-    assert event_names(events) == ["notice", "message.end"]
+    # 压缩开始先广播专用信号（前端 spinner 用），随后才是结果 notice
+    assert event_names(events) == ["context.compacting", "notice", "message.end"]
     notice = events_of(events, "notice")[0]["message"]
     assert "Context compacted" in notice
     assert "tokens" in notice  # before → after estimate reported

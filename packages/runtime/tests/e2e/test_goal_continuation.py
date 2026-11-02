@@ -99,9 +99,17 @@ def test_continuation_completes_goal(create_session, client):
     assert "Goal achieved" in texts
 
 
-def test_erroring_turn_stops_driver_usage_limited(create_session, client):
+def test_erroring_turn_stops_driver_usage_limited(
+    create_session, client, monkeypatch
+):
     # A provider rate-limit failure must stop the loop as usage_limited, not
-    # error-loop (P2-11).
+    # error-loop (P2-11). graph.py 退避新机制（rate_limited_backoff，30s 起
+    # 指数重试）会把「立即失败」拖过本测试的窗口——把退避压扁，专测
+    # 429 → usage_limited 的映射本身。
+    from ginno_runtime import graph as graph_mod
+
+    monkeypatch.setattr(graph_mod, "_RATE_LIMIT_WAIT_S", 0.01)
+    monkeypatch.setattr(graph_mod, "_STREAM_STALL_WAIT_S", 0.01)
     sid = create_session(RaisingModel(message="Error 429: rate limit exceeded"))
     client.put(f"/api/sessions/{sid}/goal", json={"objective": "will fail"})
     goal = _wait_goal(

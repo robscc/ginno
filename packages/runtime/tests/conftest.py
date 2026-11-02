@@ -42,16 +42,14 @@ if str(_E2E_DIR) not in sys.path:
 
 import _sidecar  # noqa: E402  (sys.path injected above)
 
-# e2e/_sidecar.py is a plain (non-package) module imported by name; expose its
-# directory before importing it below. Do NOT recreate tests/e2e/conftest.py —
-# a submodule conftest shadows the module name `conftest` on sys.path and
-# breaks every `from conftest import ...` in this suite (main CI went red on
-# 8d6cb13 for exactly that reason; shared fixtures live HERE, at the root).
-_E2E_DIR = Path(__file__).parent / "e2e"
-if str(_E2E_DIR) not in sys.path:
-    sys.path.insert(0, str(_E2E_DIR))
 
-import _sidecar  # noqa: E402  (sys.path injected above)
+@pytest.fixture(autouse=True)
+def _clean_running_turns():
+    """每测试前清空运行中 turn 全局（e2e 段残留会污染后跑的 unit/api 断言
+    ——test_running_work 曾因此整组 4≠0）。用 clear() 保持对象同一性：
+    tasks/inject.py 与 running_work.py 都持有同一 dict 的引用。"""
+    server_shared._RUNNING_TURNS.clear()
+    yield
 
 
 def as_fake_model(model_or_scripts: Any) -> ScriptedChatModel:

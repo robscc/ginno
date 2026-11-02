@@ -183,6 +183,23 @@ def _question_blocks(client, sid: str) -> list[dict]:
     ]
 
 
+def _wait_question_blocks(
+    client, sid: str, timeout: float = 10.0, status: str | None = None
+) -> list[dict]:
+    """history 由 checkpoint 落盘后重建——慢机器（CI 2 核）上查询可能跑在
+    checkpoint 落盘之前，轮询到出现（或超时返回空，交给断言给可读信息）。
+    status 给定时轮询到出现该状态的 question（answered 落盘同样有竞态）。"""
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        blocks = _question_blocks(client, sid)
+        if blocks and (status is None or any(b.get("status") == status for b in blocks)):
+            return blocks
+        time.sleep(0.2)
+    return _question_blocks(client, sid)
+
+
 def test_parked_question_is_already_in_history(client, create_session, ws_conv):
     """THE property that makes the card survive a reload: while the turn is
     parked there is no ToolMessage yet, so replay reconstructs the question
@@ -195,7 +212,7 @@ def test_parked_question_is_already_in_history(client, create_session, ws_conv):
         conv.invoke("导入 skill")
         conv.recv_until("user.question")
 
-        parked = _question_blocks(client, sid)
+        parked = _wait_question_blocks(client, sid, status="pending")
         assert parked, "a parked question must be reconstructible from history"
         assert parked[0]["id"] == "call_ask_1"
         assert parked[0]["status"] == "pending"
@@ -204,7 +221,7 @@ def test_parked_question_is_already_in_history(client, create_session, ws_conv):
         conv.respond_answer("Ginno 全局", option_index=0)
         conv.recv_until("message.end", "error")
 
-    done = _question_blocks(client, sid)
+    done = _wait_question_blocks(client, sid, status="answered")
     assert done[0]["status"] == "answered"
     assert done[0]["answer"] == "Ginno 全局"
     assert done[0]["optionIndex"] == 0
@@ -355,7 +372,7 @@ def test_stop_while_parked_heals_the_turn(client, create_session, ws_conv):
 
     # The dangling tool call is healed to "(interrupted)" → the history shows a
     # skipped question rather than one that waits forever.
-    parked = _question_blocks(client, sid)
+    parked = _wait_question_blocks(client, sid, status="pending")
     assert parked and parked[0]["status"] == "skipped"
 
 

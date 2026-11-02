@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import pytest
 
@@ -175,7 +176,11 @@ def test_reveal_monkeypatched(client, sid, monkeypatch):
         json={"project_slug": "default", "session_id": sid, "path": rel},
     ).json()
     assert r["ok"] is True
-    assert calls and calls[0][0] == "open" and calls[0][1] == "-R"
+    # darwin: `open -R` reveals in Finder; linux: xdg-open the directory
+    if sys.platform == "darwin":
+        assert calls and calls[0][0] == "open" and calls[0][1] == "-R"
+    else:
+        assert calls and calls[0][0] == "xdg-open"
 
 
 def test_cleanup_orphans_removes_only_orphan_dirs(client, sid):

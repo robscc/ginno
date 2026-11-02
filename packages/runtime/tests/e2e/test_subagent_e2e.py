@@ -74,12 +74,19 @@ def test_spawn_to_result_injection_full_loop(client, create_session, monkeypatch
     assert child_meta["subagent"]["result_summary"].startswith("证据")
     assert child_meta["subagent"]["goal"] == "独立小任务"
 
-    # contract 3: the parent transcript carries the tagged injection message
-    # (the bare quotes are json-escaped inside the dumped blob)
+    # contract 3: the parent transcript carries the structured injection
+    # (kind="subagent_result" block; the legacy "ginno_subagent_result
+    # session=" text prefix was folded into the block)
     hist = client.get(f"/api/sessions/{parent}/history").json()["messages"]
+    result_blocks = [
+        b
+        for m in hist
+        for b in (m.get("blocks") or [])
+        if isinstance(b, dict) and b.get("kind") == "subagent_result"
+    ]
+    assert result_blocks and result_blocks[0]["sessionId"] == child
     blob = json.dumps(hist, ensure_ascii=False)
-    assert "ginno_subagent_result session=" in blob
-    assert child in blob and "独立小任务" in blob
+    assert "独立小任务" in blob
     # ...and the parent's scripted reply landed after it (the wake turn ran)
     assert "子代理结论" in blob
 

@@ -64,7 +64,9 @@ def test_lazy_mapping_three_slots(client):
     # legacy default_provider is honoured as default_config fallback
     assert r["default_config"] == "custom"
     # empty custom name gets the doc §2.6 default display name
-    assert by_id["custom"]["name"] == "自定义端点"
+    # legacy empty custom name folds to the display name — locale-dependent
+    # (t() resolves en/zh from settings), so accept both spellings
+    assert by_id["custom"]["name"] in {"Custom endpoint", "自定义端点"}
 
 
 def test_lazy_mapping_never_writes_disk(client):

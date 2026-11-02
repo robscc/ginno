@@ -26,13 +26,16 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install dependencies (incl. test group)
-        run: uv sync --group test
+      - name: Install dependencies (test group + docs extras)
+        # docs extras (openpyxl/pandas/python-docx/pptx/pypdf/calamine) are
+        # needed by the extractors / preview / document-tools suites — the
+        # local .venv carries them, a bare --group test env does not.
+        run: uv sync --group test --extra docs
 
       # The suite is hermetic: no network, no API key, no MCP servers spawn
       # (empty mcp.json), so no extra services are required.
       - name: Run tests (with coverage)
-        run: uv run --group test pytest -q --cov=ginno_runtime --cov-report=term --cov-report=xml
+        run: uv run --group test --extra docs pytest -q --cov=ginno_runtime --cov-report=term --cov-report=xml
 
       - name: Upload coverage to Codecov
         if: always()

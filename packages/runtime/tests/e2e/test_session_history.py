@@ -16,8 +16,11 @@ def test_history_empty_for_brand_new_session(client, create_session):
     assert r["messages"] == []
 
 
-def test_history_unknown_session_returns_empty(client):
-    assert client.get("/api/sessions/does-not-exist/history").json() == {"ok": True, "messages": []}
+def test_history_unknown_session_errors(client):
+    # unknown session now errors explicitly (was: silent {"ok": True, []})
+    r = client.get("/api/sessions/does-not-exist/history").json()
+    assert r["ok"] is False
+    assert r["error"] == "unknown session"
 
 
 def test_history_after_text_turn(client, create_session, ws_conv):
