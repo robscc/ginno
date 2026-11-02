@@ -10,9 +10,27 @@ use crate::shell_ui::{pick, shell_lang};
 
 pub(crate) fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     let lang = shell_lang(app);
-    let toggle = MenuItem::with_id(app, "tray-pin-toggle", pick(lang, "Show/Hide Floating Window", "显示/隐藏悬浮窗"), true, None::<&str>)?;
-    let open_main = MenuItem::with_id(app, "tray-open-main", pick(lang, "Open Main Window", "打开主窗口"), true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "tray-quit", pick(lang, "Quit Ginno", "退出 Ginno"), true, None::<&str>)?;
+    let toggle = MenuItem::with_id(
+        app,
+        "tray-pin-toggle",
+        pick(lang, "Show/Hide Floating Window", "显示/隐藏悬浮窗"),
+        true,
+        None::<&str>,
+    )?;
+    let open_main = MenuItem::with_id(
+        app,
+        "tray-open-main",
+        pick(lang, "Open Main Window", "打开主窗口"),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(
+        app,
+        "tray-quit",
+        pick(lang, "Quit Ginno", "退出 Ginno"),
+        true,
+        None::<&str>,
+    )?;
     let sep = PredefinedMenuItem::separator(app)?;
     let items: &[&dyn IsMenuItem<tauri::Wry>] = &[&toggle, &open_main, &sep, &quit];
     let menu = Menu::with_items(app, items)?;

@@ -78,7 +78,10 @@ pub struct ModRuntimeInfo {
 
 impl Default for ModRuntimeInfo {
     fn default() -> Self {
-        Self { user_config: Value::Object(serde_json::Map::new()), config_schema: None }
+        Self {
+            user_config: Value::Object(serde_json::Map::new()),
+            config_schema: None,
+        }
     }
 }
 
@@ -184,7 +187,10 @@ pub fn parse_config(value: &Value) -> Result<Config, String> {
         runner_path,
         workspace,
         logs_dir,
-        store_path: value.get("storePath").and_then(Value::as_str).map(PathBuf::from),
+        store_path: value
+            .get("storePath")
+            .and_then(Value::as_str)
+            .map(PathBuf::from),
         hook_ms: get_u64(&budgets, "hookMs", 10_000),
         prompt_edit_ms: get_u64(&budgets, "promptEditMs", 50),
         catch_ms: get_u64(&budgets, "catchMs", 1_000),
@@ -193,7 +199,10 @@ pub fn parse_config(value: &Value) -> Result<Config, String> {
         process_max_timeout_ms: get_u64(&budgets, "processMaxTimeoutMs", 600_000),
         band_columns: get_u64(&band, "columns", 80) as u32,
         band_rows: get_u64(&band, "rows", 8) as u32,
-        host_mode: value.get("hostMode").and_then(Value::as_bool).unwrap_or(false),
+        host_mode: value
+            .get("hostMode")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         session_roots: value
             .get("sessionRoots")
             .and_then(Value::as_object)
@@ -328,8 +337,11 @@ impl Broker {
     ) -> Result<(Value, Vec<ModApplyOutcome>, bool), String> {
         let config = parse_config(value)?;
         let old_specs: HashMap<String, ModSpec> = std::mem::take(&mut *self.specs.lock().unwrap());
-        let new_specs: HashMap<String, ModSpec> =
-            config.mods.iter().map(|spec| (spec.name.clone(), spec.clone())).collect();
+        let new_specs: HashMap<String, ModSpec> = config
+            .mods
+            .iter()
+            .map(|spec| (spec.name.clone(), spec.clone()))
+            .collect();
 
         *self.config.write().unwrap() = config.clone();
         *self.grants.lock().unwrap() = config
@@ -376,7 +388,9 @@ impl Broker {
         let mut load_results: HashMap<String, Result<(), String>> = HashMap::new();
         for (index, load) in loads.into_iter().enumerate() {
             let name = to_load[index].name.clone();
-            let result = load.await.unwrap_or_else(|e| Err(format!("load task failed: {e}")));
+            let result = load
+                .await
+                .unwrap_or_else(|e| Err(format!("load task failed: {e}")));
             load_results.insert(name, result);
         }
 
@@ -445,15 +459,23 @@ impl Broker {
             .get("configSchema")
             .filter(|value| value.is_object())
             .cloned();
-        self.runtime_info
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), ModRuntimeInfo { user_config, config_schema });
+        self.runtime_info.lock().unwrap().insert(
+            name.to_string(),
+            ModRuntimeInfo {
+                user_config,
+                config_schema,
+            },
+        );
     }
 
     /// One mod's last `runner.loaded` report; unknown mods read as defaults.
     pub fn mod_runtime_info(&self, name: &str) -> ModRuntimeInfo {
-        self.runtime_info.lock().unwrap().get(name).cloned().unwrap_or_default()
+        self.runtime_info
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Forget a runner report (unload/reload): the next handshake re-populates it.
@@ -466,7 +488,12 @@ impl Broker {
     }
 
     pub fn grants_for(&self, name: &str) -> grants::Grants {
-        self.grants.lock().unwrap().get(name).cloned().unwrap_or_default()
+        self.grants
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn next_runner_gen(&self, name: &str) -> u64 {
@@ -522,9 +549,16 @@ impl Broker {
 
     /// Register the hooks a runner reported at handshake; warns once per
     /// engine event this host never raises (design §15.8).
-    pub async fn register_mod_hooks(self: &Arc<Self>, name: &str, args: &Value) -> Result<(), String> {
+    pub async fn register_mod_hooks(
+        self: &Arc<Self>,
+        name: &str,
+        args: &Value,
+    ) -> Result<(), String> {
         let hooks = registry::hooks_from_json(name, args)?;
-        let dir = self.mod_spec(name).map(|spec| spec.dir.clone()).unwrap_or_default();
+        let dir = self
+            .mod_spec(name)
+            .map(|spec| spec.dir.clone())
+            .unwrap_or_default();
         {
             let mut reg = self.registry.write().unwrap();
             reg.remove(name); // idempotent over a reload of the same mod
@@ -536,19 +570,33 @@ impl Broker {
             };
             reg.add(entry, hooks).map_err(|e| format!("{name}: {e}"))?;
             // Parallel loads handshake out of order; the config order is law.
-            let names: Vec<String> = self.config.read().unwrap().mods.iter().map(|spec| spec.name.clone()).collect();
+            let names: Vec<String> = self
+                .config
+                .read()
+                .unwrap()
+                .mods
+                .iter()
+                .map(|spec| spec.name.clone())
+                .collect();
             reg.sort_by(&names);
         }
         self.restarts.lock().unwrap().remove(name);
         let reg = self.registry.read().unwrap();
         for event in reg.unserved(name) {
-            self.report(&format!("{name}: registered, but this host never raises that event: {event}"));
+            self.report(&format!(
+                "{name}: registered, but this host never raises that event: {event}"
+            ));
         }
         Ok(())
     }
 
     pub fn notify_mod_status(&self, name: &str, status: &str) {
-        self.runtime_notify("mod.status", None, Some(name.to_string()), json!({ "name": name, "status": status }));
+        self.runtime_notify(
+            "mod.status",
+            None,
+            Some(name.to_string()),
+            json!({ "name": name, "status": status }),
+        );
     }
 
     /// The `broker.status` payload for the settings page.
@@ -623,29 +671,35 @@ impl Broker {
     /// `workspace_path` with the calling frame's session: a session with a
     /// known root resolves relative paths (and constrains absolute ones)
     /// against ITS workspace, not the global one.
-    pub fn workspace_path_for(&self, path: &str, session: Option<&str>) -> Result<PathBuf, RpcError> {
+    pub fn workspace_path_for(
+        &self,
+        path: &str,
+        session: Option<&str>,
+    ) -> Result<PathBuf, RpcError> {
         let guard = self.config.read().unwrap();
-        let root = match session
-            .and_then(|sid| guard.session_roots.get(sid))
-        {
+        let root = match session.and_then(|sid| guard.session_roots.get(sid)) {
             Some(per_session) => per_session.clone(),
             None => guard.workspace.clone(),
         };
         drop(guard);
-        let root_canonical = root
-            .canonicalize()
-            .map_err(|e| RpcError::new(CODE_ERROR, format!("workspace root is not accessible: {e}")))?;
-        let raw = if Path::new(path).is_absolute() { PathBuf::from(path) } else { root_canonical.join(path) };
+        let root_canonical = root.canonicalize().map_err(|e| {
+            RpcError::new(CODE_ERROR, format!("workspace root is not accessible: {e}"))
+        })?;
+        let raw = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            root_canonical.join(path)
+        };
         let target = match raw.canonicalize() {
             Ok(target) => target,
             Err(_) => {
                 // Not there yet (a write target): anchor on its existing parent.
-                let parent = raw
-                    .parent()
-                    .ok_or_else(|| RpcError::new(CODE_ERROR, format!("$.fs: invalid path {path}")))?;
-                let parent_canonical = parent
-                    .canonicalize()
-                    .map_err(|_| RpcError::new(CODE_ERROR, format!("$.fs: {path} is outside the workspace")))?;
+                let parent = raw.parent().ok_or_else(|| {
+                    RpcError::new(CODE_ERROR, format!("$.fs: invalid path {path}"))
+                })?;
+                let parent_canonical = parent.canonicalize().map_err(|_| {
+                    RpcError::new(CODE_ERROR, format!("$.fs: {path} is outside the workspace"))
+                })?;
                 match raw.file_name() {
                     Some(name) => parent_canonical.join(name),
                     None => parent_canonical,
@@ -653,7 +707,10 @@ impl Broker {
             }
         };
         if !target.starts_with(&root_canonical) {
-            return Err(RpcError::new(CODE_ERROR, format!("$.fs: {path} is outside the workspace")));
+            return Err(RpcError::new(
+                CODE_ERROR,
+                format!("$.fs: {path} is outside the workspace"),
+            ));
         }
         Ok(target)
     }
@@ -685,7 +742,8 @@ impl Broker {
         payload: Value,
         deadline_ms: Option<u64>,
     ) -> Result<Value, RpcError> {
-        self.raise_event_limited(event, session, invocation, payload, deadline_ms, None).await
+        self.raise_event_limited(event, session, invocation, payload, deadline_ms, None)
+            .await
     }
 
     /// [`Self::raise_event`] restricted to one mod's hooks: the SurfaceTable
@@ -706,12 +764,15 @@ impl Broker {
         let event = event.to_string();
         lane.send(Job {
             task: Box::pin(async move {
-                let result = this.do_raise(&event, session, invocation, payload, deadline_ms, limit_mod).await;
+                let result = this
+                    .do_raise(&event, session, invocation, payload, deadline_ms, limit_mod)
+                    .await;
                 let _ = tx.send(result);
             }),
         })
         .map_err(|_| RpcError::new(CODE_ERROR, "broker is shutting down"))?;
-        rx.await.map_err(|_| RpcError::new(CODE_ERROR, "event dispatch was dropped"))?
+        rx.await
+            .map_err(|_| RpcError::new(CODE_ERROR, "event dispatch was dropped"))?
     }
 
     fn lane_for(self: &Arc<Self>, session: &str) -> mpsc::UnboundedSender<Job> {
@@ -724,7 +785,10 @@ impl Broker {
                 job.task.await;
             }
         });
-        self.lanes.lock().unwrap().insert(session.to_string(), tx.clone());
+        self.lanes
+            .lock()
+            .unwrap()
+            .insert(session.to_string(), tx.clone());
         tx
     }
 
@@ -747,7 +811,11 @@ impl Broker {
         }
         let (hook_budget, catch_ms, session_end_ms) = {
             let config = self.config.read().unwrap();
-            (config.budget_for(event), config.catch_ms, config.session_end_ms)
+            (
+                config.budget_for(event),
+                config.catch_ms,
+                config.session_end_ms,
+            )
         };
         let shared = (event == "session.end").then(|| {
             let budget = Arc::new(Budget::new(deadline_ms.unwrap_or(session_end_ms)));
@@ -834,12 +902,25 @@ impl Broker {
         invocation: Option<String>,
         depth: usize,
     ) -> Result<Value, RpcError> {
-        ops::invoke_op(Arc::clone(self), caller, op, session, args, invocation, depth).await
+        ops::invoke_op(
+            Arc::clone(self),
+            caller,
+            op,
+            session,
+            args,
+            invocation,
+            depth,
+        )
+        .await
     }
 }
 
 fn registry_hooks_line(hooks: &[registry::HookDesc]) -> String {
-    hooks.iter().map(registry::HookDesc::describe).collect::<Vec<_>>().join(", ")
+    hooks
+        .iter()
+        .map(registry::HookDesc::describe)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A no-op config so a broker before its first `hello` still answers ops.

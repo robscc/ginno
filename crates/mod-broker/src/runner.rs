@@ -14,8 +14,10 @@ use serde_json::Value;
 use tokio::sync::{oneshot, Notify};
 use tokio::{io::AsyncBufReadExt, process};
 
-use crate::chain::{HubKey, HookMsg};
-use crate::protocol::{decode_line, Frame, FrameWriter, RpcError, CODE_RUNNER_DEAD, PROTOCOL_VERSION};
+use crate::chain::{HookMsg, HubKey};
+use crate::protocol::{
+    decode_line, Frame, FrameWriter, RpcError, CODE_RUNNER_DEAD, PROTOCOL_VERSION,
+};
 use crate::Broker;
 
 /// Silence longer than this after the last ping marks the runner dead.
@@ -105,7 +107,9 @@ impl RunnerConn {
     /// Fail every outstanding round-trip (runner died).
     fn fail_pending(&self, error: RpcError) {
         let pending: Vec<oneshot::Sender<Result<Value, RpcError>>> =
-            { std::mem::take(&mut *self.pending.lock().unwrap()) }.into_values().collect();
+            { std::mem::take(&mut *self.pending.lock().unwrap()) }
+                .into_values()
+                .collect();
         for tx in pending {
             let _ = tx.send(Err(error.clone()));
         }
@@ -137,7 +141,10 @@ impl RunnerConn {
         });
         match tokio::time::timeout(CALL_TIMEOUT, rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) | Err(_) => Err(RpcError::new(CODE_RUNNER_DEAD, format!("runner {} did not answer", self.name))),
+            Ok(Err(_)) | Err(_) => Err(RpcError::new(
+                CODE_RUNNER_DEAD,
+                format!("runner {} did not answer", self.name),
+            )),
         }
     }
 
@@ -179,7 +186,10 @@ impl RunnerConn {
         if self.hosted {
             // The worker dies on the host's terminate(); the exit notify then
             // drives the restart path exactly like a process exit.
-            self.send(&Frame::UnloadMod { v: PROTOCOL_VERSION, name: self.name.clone() });
+            self.send(&Frame::UnloadMod {
+                v: PROTOCOL_VERSION,
+                name: self.name.clone(),
+            });
             return;
         }
         if let Some(child) = self.child.lock().unwrap().as_mut() {
@@ -215,7 +225,12 @@ fn tail_runner_log(logs_dir: &std::path::Path, name: &str) -> String {
     }
 }
 
-pub async fn spawn(broker: &Arc<Broker>, name: &str, dir: &str, gen: u64) -> Result<Arc<RunnerConn>, String> {
+pub async fn spawn(
+    broker: &Arc<Broker>,
+    name: &str,
+    dir: &str,
+    gen: u64,
+) -> Result<Arc<RunnerConn>, String> {
     let config = broker.config.read().unwrap().clone();
     // An empty binary path spawns `node ""`, which idles silently and burns
     // the whole handshake timeout with zero output (seen live: the runtime
@@ -235,7 +250,10 @@ pub async fn spawn(broker: &Arc<Broker>, name: &str, dir: &str, gen: u64) -> Res
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
         .map_err(|e| format!("cannot open {}: {e}", log_path.display()))?;
 
     let mut command = process::Command::new(&config.node_path);
@@ -300,7 +318,11 @@ pub async fn spawn(broker: &Arc<Broker>, name: &str, dir: &str, gen: u64) -> Res
             tokio::time::sleep(HEARTBEAT_CHECK).await;
             let silent_for = beat_conn.last_seen.lock().unwrap().elapsed();
             if silent_for > HEARTBEAT_TIMEOUT {
-                beat_broker.report(&format!("{}: runner silent for {} ms; killing", beat_conn.name, silent_for.as_millis()));
+                beat_broker.report(&format!(
+                    "{}: runner silent for {} ms; killing",
+                    beat_conn.name,
+                    silent_for.as_millis()
+                ));
                 beat_conn.kill().await;
                 return;
             }
@@ -308,7 +330,11 @@ pub async fn spawn(broker: &Arc<Broker>, name: &str, dir: &str, gen: u64) -> Res
     });
 
     // Insert into the runners table so the handshake can be routed.
-    broker.runners.write().await.insert(name.to_string(), conn.clone());
+    broker
+        .runners
+        .write()
+        .await
+        .insert(name.to_string(), conn.clone());
     Ok(conn)
 }
 
@@ -316,11 +342,21 @@ pub async fn spawn(broker: &Arc<Broker>, name: &str, dir: &str, gen: u64) -> Res
 async fn handle_runner_frame(broker: &Arc<Broker>, conn: &Arc<RunnerConn>, frame: Frame) {
     conn.touch();
     match frame {
-        Frame::Result { id, ok, value, code, message, .. } => {
+        Frame::Result {
+            id,
+            ok,
+            value,
+            code,
+            message,
+            ..
+        } => {
             let res = if ok {
                 Ok(value.unwrap_or(Value::Null))
             } else {
-                Err(RpcError::new(code.unwrap_or_else(|| "error".into()), message.unwrap_or_default()))
+                Err(RpcError::new(
+                    code.unwrap_or_else(|| "error".into()),
+                    message.unwrap_or_default(),
+                ))
             };
             if let Some(tx) = conn.pending.lock().unwrap().remove(&id) {
                 let _ = tx.send(res);
@@ -328,29 +364,60 @@ async fn handle_runner_frame(broker: &Arc<Broker>, conn: &Arc<RunnerConn>, frame
             }
             // A reply to an `event`/`catch-call` frame → the active hook run.
             broker.hub.send(
-                &HubKey::Reply { mod_name: conn.name.clone(), frame_id: id },
+                &HubKey::Reply {
+                    mod_name: conn.name.clone(),
+                    frame_id: id,
+                },
                 HookMsg::Reply { res },
             );
         }
-        Frame::Next { id, invocation, e, .. } => {
+        Frame::Next {
+            id, invocation, e, ..
+        } => {
             // The runner's own frame id: the beneath result is replied to it.
             broker.hub.send(
-                &HubKey::Active { invocation, mod_name: conn.name.clone() },
+                &HubKey::Active {
+                    invocation,
+                    mod_name: conn.name.clone(),
+                },
                 HookMsg::Next { frame_id: id, e },
             );
         }
-        Frame::Call { id, ns, method, args, session, mod_name, invocation, .. } => {
+        Frame::Call {
+            id,
+            ns,
+            method,
+            args,
+            session,
+            mod_name,
+            invocation,
+            ..
+        } => {
             let broker = broker.clone();
             let conn = conn.clone();
             tokio::spawn(async move {
-                handle_runner_call(&broker, &conn, id, ns, method, args, session, mod_name, invocation).await;
+                handle_runner_call(
+                    &broker, &conn, id, ns, method, args, session, mod_name, invocation,
+                )
+                .await;
             });
         }
-        Frame::Notify { method, args, session, mod_name, .. } => match method.as_str() {
+        Frame::Notify {
+            method,
+            args,
+            session,
+            mod_name,
+            ..
+        } => match method.as_str() {
             "ping" => {}
             _ => {
                 // Unknown notifications are forwarded to Python with the mod named.
-                broker.runtime_notify(&method, session, mod_name.or_else(|| Some(conn.name.clone())), args);
+                broker.runtime_notify(
+                    &method,
+                    session,
+                    mod_name.or_else(|| Some(conn.name.clone())),
+                    args,
+                );
             }
         },
         _ => {}
@@ -411,7 +478,12 @@ async fn handle_runner_call(
     let pauses_clock = invocation.is_some() && op != "clock.sleep";
     let budget = if pauses_clock {
         let invocation = invocation.clone().unwrap_or_default();
-        broker.budgets.lock().unwrap().get(&(invocation, caller.clone())).cloned()
+        broker
+            .budgets
+            .lock()
+            .unwrap()
+            .get(&(invocation, caller.clone()))
+            .cloned()
     } else {
         None
     };
@@ -437,7 +509,10 @@ async fn handle_runner_call(
 /// had in flight (kind `throw`, "runner dead" — the chains continue), and
 /// restart with backoff unless the mod is going away.
 async fn on_runner_exit(broker: &Arc<Broker>, conn: &Arc<RunnerConn>) {
-    conn.fail_pending(RpcError::new(CODE_RUNNER_DEAD, format!("runner {} died", conn.name)));
+    conn.fail_pending(RpcError::new(
+        CODE_RUNNER_DEAD,
+        format!("runner {} died", conn.name),
+    ));
     conn.wake_handshake();
     broker.hub.send_to_mod(&conn.name, HookMsg::RunnerDead);
 
@@ -453,7 +528,10 @@ async fn on_runner_exit(broker: &Arc<Broker>, conn: &Arc<RunnerConn>) {
     let attempt = broker.bump_restart_count(&conn.name);
     match RESTART_BACKOFF_MS.get(attempt.saturating_sub(1) as usize) {
         Some(&ms) => {
-            broker.report(&format!("{}: runner exited; restarting in {ms} ms (attempt {attempt})", conn.name));
+            broker.report(&format!(
+                "{}: runner exited; restarting in {ms} ms (attempt {attempt})",
+                conn.name
+            ));
             tokio::time::sleep(Duration::from_millis(ms)).await;
             let current = broker.runners.read().await.get(&conn.name).map(|c| c.gen);
             if current != Some(conn.gen) || broker.mod_unloading(&conn.name) {
@@ -483,34 +561,36 @@ pub fn load(
     let broker = Arc::clone(broker);
     let name = name.to_string();
     Box::pin(async move {
-    let spec = broker.mod_spec(&name).ok_or_else(|| format!("{name}: no longer configured"))?;
-    // A restart/reload re-reports these during the handshake; until then the
-    // previous generation's values must not be reported as current.
-    broker.clear_mod_runtime_info(&name);
-    let conn = match load_conn(&broker, &name, &spec, gen).await {
-        Ok(conn) => conn,
-        Err(e) => {
+        let spec = broker
+            .mod_spec(&name)
+            .ok_or_else(|| format!("{name}: no longer configured"))?;
+        // A restart/reload re-reports these during the handshake; until then the
+        // previous generation's values must not be reported as current.
+        broker.clear_mod_runtime_info(&name);
+        let conn = match load_conn(&broker, &name, &spec, gen).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                broker.notify_mod_status(&name, "error");
+                return Err(e);
+            }
+        };
+        let outcome = conn.wait_handshake().await;
+        if let Err(e) = &outcome {
+            // Clean up so a later config apply can try again.
+            let current = broker.runners.read().await.get(&name).map(|c| c.gen);
+            if current == Some(gen) {
+                broker.runners.write().await.remove(&name);
+            }
+            conn.kill().await;
             broker.notify_mod_status(&name, "error");
-            return Err(e);
+            // The bare timeout wording hides the actual cause; the runner's stderr
+            // log holds it (e.g. 2026-10-21 next-steps: ".tsx hooks module" the
+            // loader rejects). Carry the last lines into the surfaced error.
+            let logs_dir = broker.config.read().unwrap().logs_dir.clone();
+            let detailed = format!("{e}{}", tail_runner_log(&logs_dir, &name));
+            return Err(detailed);
         }
-    };
-    let outcome = conn.wait_handshake().await;
-    if let Err(e) = &outcome {
-        // Clean up so a later config apply can try again.
-        let current = broker.runners.read().await.get(&name).map(|c| c.gen);
-        if current == Some(gen) {
-            broker.runners.write().await.remove(&name);
-        }
-        conn.kill().await;
-        broker.notify_mod_status(&name, "error");
-        // The bare timeout wording hides the actual cause; the runner's stderr
-        // log holds it (e.g. 2026-10-21 next-steps: ".tsx hooks module" the
-        // loader rejects). Carry the last lines into the surfaced error.
-        let logs_dir = broker.config.read().unwrap().logs_dir.clone();
-        let detailed = format!("{e}{}", tail_runner_log(&logs_dir, &name));
-        return Err(detailed);
-    }
-    outcome
+        outcome
     })
 }
 
@@ -559,7 +639,10 @@ async fn ensure_host(broker: &Arc<Broker>) -> Result<Arc<HostProc>, String> {
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
         .map_err(|e| format!("cannot open {}: {e}", log_path.display()))?;
     let mut command = process::Command::new(&config.node_path);
     command
@@ -576,7 +659,10 @@ async fn ensure_host(broker: &Arc<Broker>) -> Result<Arc<HostProc>, String> {
     let stdin = child.stdin.take().expect("host stdin piped");
     let stdout = child.stdout.take().expect("host stdout piped");
 
-    let host = Arc::new(HostProc { child: Mutex::new(Some(child)), tx: FrameWriter::new(stdin) });
+    let host = Arc::new(HostProc {
+        child: Mutex::new(Some(child)),
+        tx: FrameWriter::new(stdin),
+    });
     let read_broker = broker.clone();
     let read_host = host.clone();
     tokio::spawn(async move {
@@ -620,7 +706,13 @@ async fn ensure_host(broker: &Arc<Broker>) -> Result<Arc<HostProc>, String> {
 /// everything else resolves the virtual conn its `mod` field names and takes
 /// the same handling a per-process frame would.
 async fn host_frame(broker: &Arc<Broker>, _host: &Arc<HostProc>, frame: Frame) {
-    if let Frame::Notify { method, args, mod_name, .. } = &frame {
+    if let Frame::Notify {
+        method,
+        args,
+        mod_name,
+        ..
+    } = &frame
+    {
         if method == "mod.exited" {
             let name = args
                 .get("name")
@@ -700,7 +792,12 @@ async fn load_hosted(
             tokio::time::sleep(HEARTBEAT_CHECK).await;
             // A stale heartbeat (the worker died and a newer gen took the
             // name) must not unload the NEW worker.
-            let current = beat_broker.runners.read().await.get(&beat_conn.name).map(|c| c.gen);
+            let current = beat_broker
+                .runners
+                .read()
+                .await
+                .get(&beat_conn.name)
+                .map(|c| c.gen);
             if current != Some(beat_conn.gen) {
                 return;
             }
@@ -716,6 +813,10 @@ async fn load_hosted(
             }
         }
     });
-    broker.runners.write().await.insert(name.to_string(), conn.clone());
+    broker
+        .runners
+        .write()
+        .await
+        .insert(name.to_string(), conn.clone());
     Ok(conn)
 }

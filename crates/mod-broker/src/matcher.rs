@@ -11,24 +11,68 @@ use serde_json::Value;
 /// "registered, but this host never raises that event" unserved report — the
 /// broker routes whatever is registered regardless.
 pub const ENGINE_EVENTS: &[&str] = &[
-    "tool.call", "tool.check", "tool.describe",
-    "prompt.submit", "prompt.fill", "prompt.suggest", "prompt.edit", "prompt.compose", "prompt.section",
-    "prompt.context", "prompt.attachment", "skill.prompt", "attribution.text",
-    "command.run", "command.describe", "config.set", "config.describe",
-    "turn.start", "turn.step", "turn.complete",
-    "session.start", "session.end", "session.compact", "session.receive", "session.send", "session.append",
-    "session.attach", "session.detach", "session.measure",
-    "agent.offer", "agent.spawn",
-    "ui.render", "ui.resolve", "ui.press", "ui.input", "ui.select", "ui.focus", "ui.scroll", "ui.close", "ui.message",
-    "plugin.register", "engine.create",
-    "telemetry.log", "telemetry.mark",
+    "tool.call",
+    "tool.check",
+    "tool.describe",
+    "prompt.submit",
+    "prompt.fill",
+    "prompt.suggest",
+    "prompt.edit",
+    "prompt.compose",
+    "prompt.section",
+    "prompt.context",
+    "prompt.attachment",
+    "skill.prompt",
+    "attribution.text",
+    "command.run",
+    "command.describe",
+    "config.set",
+    "config.describe",
+    "turn.start",
+    "turn.step",
+    "turn.complete",
+    "session.start",
+    "session.end",
+    "session.compact",
+    "session.receive",
+    "session.send",
+    "session.append",
+    "session.attach",
+    "session.detach",
+    "session.measure",
+    "agent.offer",
+    "agent.spawn",
+    "ui.render",
+    "ui.resolve",
+    "ui.press",
+    "ui.input",
+    "ui.select",
+    "ui.focus",
+    "ui.scroll",
+    "ui.close",
+    "ui.message",
+    "plugin.register",
+    "engine.create",
+    "telemetry.log",
+    "telemetry.mark",
 ];
 
 /// The engine events this broker actually raises (design §5.3, P0/P1 rows).
 pub const SERVED_EVENTS: &[&str] = &[
-    "session.start", "session.end", "turn.start", "turn.complete", "prompt.submit",
-    "tool.call", "tool.check", "command.run", "agent.spawn", "session.compact",
-    "ui.render", "ui.press", "ui.input", "ui.ask",
+    "session.start",
+    "session.end",
+    "turn.start",
+    "turn.complete",
+    "prompt.submit",
+    "tool.call",
+    "tool.check",
+    "command.run",
+    "agent.spawn",
+    "session.compact",
+    "ui.render",
+    "ui.press",
+    "ui.input",
+    "ui.ask",
 ];
 
 /// Whether a name passed to `on` is an exact event name, `*`, or a `<ns>.*`
@@ -40,33 +84,77 @@ pub fn is_event_pattern(pattern: &str) -> bool {
     }
     if let Some(namespace) = pattern.strip_suffix(".*") {
         return !namespace.is_empty()
-            && ENGINE_EVENTS.iter().chain(KNOWN_OP_EVENTS).any(|event| event.starts_with(&format!("{namespace}.")));
+            && ENGINE_EVENTS
+                .iter()
+                .chain(KNOWN_OP_EVENTS)
+                .any(|event| event.starts_with(&format!("{namespace}.")));
     }
     ENGINE_EVENTS.contains(&pattern) || KNOWN_OP_EVENTS.contains(&pattern)
 }
 
 /// The `<ns>.<method>` op names every `$` call raises (DSH KNOWN_EVENTS tail).
 pub const KNOWN_OP_EVENTS: &[&str] = &[
-    "ui.log", "ui.toast", "ui.status", "ui.notice", "ui.invalidate", "ui.open", "ui.panes", "ui.blit", "ui.ask", "ui.copy",
-    "command.register", "command.list",
-    "tool.register", "tool.list",
-    "agent.register", "agent.list",
-    "model.complete", "model.fork", "model.classify",
+    "ui.log",
+    "ui.toast",
+    "ui.status",
+    "ui.notice",
+    "ui.invalidate",
+    "ui.open",
+    "ui.panes",
+    "ui.blit",
+    "ui.ask",
+    "ui.copy",
+    "command.register",
+    "command.list",
+    "tool.register",
+    "tool.list",
+    "agent.register",
+    "agent.list",
+    "model.complete",
+    "model.fork",
+    "model.classify",
     "prompt.read",
     "turn.abort",
-    "session.messages", "session.cwd", "session.root", "session.model", "session.turns", "session.id", "session.repo",
-    "session.surface", "session.surfaces", "session.usage", "session.version", "session.authorize",
+    "session.messages",
+    "session.cwd",
+    "session.root",
+    "session.model",
+    "session.turns",
+    "session.id",
+    "session.repo",
+    "session.surface",
+    "session.surfaces",
+    "session.usage",
+    "session.version",
+    "session.authorize",
     "config.list",
     "settings.read",
-    "env.get", "env.set",
-    "fs.read", "fs.write", "fs.list", "fs.exists", "fs.stat", "fs.ancestors",
-    "store.get", "store.set", "store.delete", "store.keys",
-    "state.get", "state.set",
-    "clock.now", "clock.sleep", "clock.after", "clock.every", "clock.cancel",
+    "env.get",
+    "env.set",
+    "fs.read",
+    "fs.write",
+    "fs.list",
+    "fs.exists",
+    "fs.stat",
+    "fs.ancestors",
+    "store.get",
+    "store.set",
+    "store.delete",
+    "store.keys",
+    "state.get",
+    "state.set",
+    "clock.now",
+    "clock.sleep",
+    "clock.after",
+    "clock.every",
+    "clock.cancel",
     "http.fetch",
-    "process.run", "process.spawn",
-    "mcp.call", "mcp.connect",
-    "audio.play", "audio.speak",
+    "process.run",
+    "process.spawn",
+    "mcp.call",
+    "mcp.connect",
+    "audio.play",
+    "audio.speak",
 ];
 
 /// Whether a registered pattern selects an event. `*` selects every event
@@ -78,7 +166,9 @@ pub fn event_matches(pattern: &str, event: &str) -> bool {
     if pattern == "*" {
         return !event.starts_with("telemetry.");
     }
-    pattern.strip_suffix('*').is_some_and(|prefix| prefix.ends_with('.') && event.starts_with(prefix))
+    pattern
+        .strip_suffix('*')
+        .is_some_and(|prefix| prefix.ends_with('.') && event.starts_with(prefix))
 }
 
 /// One matcher field's expected value, as serialized across the wire.
@@ -101,7 +191,9 @@ impl MatcherValue {
     pub fn parse(value: &Value) -> Option<MatcherValue> {
         match value {
             Value::String(s) => Some(MatcherValue::Scalar(Value::String(s.clone()))),
-            Value::Number(_) | Value::Bool(_) | Value::Null => Some(MatcherValue::Scalar(value.clone())),
+            Value::Number(_) | Value::Bool(_) | Value::Null => {
+                Some(MatcherValue::Scalar(value.clone()))
+            }
             Value::Array(items) => {
                 let mut parsed = Vec::with_capacity(items.len());
                 for item in items {
@@ -138,7 +230,11 @@ impl MatcherValue {
                 _ => return None,
             }
         }
-        let pattern = if rust_flags.is_empty() { source.to_string() } else { format!("(?{rust_flags}){source}") };
+        let pattern = if rust_flags.is_empty() {
+            source.to_string()
+        } else {
+            format!("(?{rust_flags}){source}")
+        };
         match Regex::new(&pattern) {
             Ok(re) => Some(MatcherValue::Regex(re)),
             Err(_) => Some(MatcherValue::NeverMatches {
@@ -155,7 +251,9 @@ impl MatcherValue {
                 (_, Some(actual)) => expected == actual,
                 (_, None) => false,
             },
-            MatcherValue::Array(candidates) => candidates.iter().any(|candidate| candidate.matches(actual)),
+            MatcherValue::Array(candidates) => {
+                candidates.iter().any(|candidate| candidate.matches(actual))
+            }
             MatcherValue::Regex(regex) => match actual {
                 Some(Value::String(text)) => regex.is_match(text),
                 Some(Value::Number(number)) => regex.is_match(&number.to_string()),
@@ -170,13 +268,19 @@ impl MatcherValue {
 /// Whether every matcher field accepts the event's top-level field of the same
 /// name: a scalar by equality, an array by membership, a regex by test.
 pub fn matcher_matches(matcher: &[(String, MatcherValue)], input: &Value) -> bool {
-    let Value::Object(fields) = input else { return false };
-    matcher.iter().all(|(field, expected)| expected.matches(fields.get(field)))
+    let Value::Object(fields) = input else {
+        return false;
+    };
+    matcher
+        .iter()
+        .all(|(field, expected)| expected.matches(fields.get(field)))
 }
 
 /// Parse a whole matcher object into ordered (field, value) pairs.
 pub fn parse_matcher(value: &Value) -> Option<Vec<(String, MatcherValue)>> {
-    let Value::Object(fields) = value else { return None };
+    let Value::Object(fields) = value else {
+        return None;
+    };
     let mut out = Vec::with_capacity(fields.len());
     for (field, value) in fields {
         out.push((field.clone(), MatcherValue::parse(value)?));
@@ -187,8 +291,12 @@ pub fn parse_matcher(value: &Value) -> Option<Vec<(String, MatcherValue)>> {
 /// Render a matcher the way `claude plugin validate` prints it: array
 /// members bare and pipe-joined, regexes as `/source/flags`.
 pub fn describe_matcher(matcher: Option<&Value>) -> String {
-    let Some(matcher) = matcher else { return String::new() };
-    let Value::Object(fields) = matcher else { return String::new() };
+    let Some(matcher) = matcher else {
+        return String::new();
+    };
+    let Value::Object(fields) = matcher else {
+        return String::new();
+    };
     let rendered = fields
         .iter()
         .map(|(field, value)| format!("{field}={}", describe_value(value)))
@@ -199,7 +307,11 @@ pub fn describe_matcher(matcher: Option<&Value>) -> String {
 
 fn describe_value(value: &Value) -> String {
     match value {
-        Value::Array(items) => items.iter().map(describe_value).collect::<Vec<_>>().join("|"),
+        Value::Array(items) => items
+            .iter()
+            .map(describe_value)
+            .collect::<Vec<_>>()
+            .join("|"),
         Value::String(text) => text.clone(),
         Value::Object(fields) => match (fields.get("regexp"), fields.get("flags")) {
             (Some(source), flags) => {
@@ -244,23 +356,49 @@ mod tests {
     fn compares_scalars_by_equality_arrays_by_membership_and_regexes_by_test() {
         let parse = |v: &Value| parse_matcher(v).unwrap();
         let input = json!({"tool": "mcp__github__issues", "count": 3, "flag": true});
-        assert!(matcher_matches(&parse(&json!({"tool": "mcp__github__issues"})), &input));
+        assert!(matcher_matches(
+            &parse(&json!({"tool": "mcp__github__issues"})),
+            &input
+        ));
         assert!(!matcher_matches(&parse(&json!({"tool": "Bash"})), &input));
-        assert!(matcher_matches(&parse(&json!({"tool": ["Edit", "mcp__github__issues"]})), &input));
-        assert!(matcher_matches(&parse(&json!({"tool": {"regexp": "^mcp__github__"}})), &input));
-        assert!(matcher_matches(&parse(&json!({"count": {"regexp": "^3$"}})), &input));
-        assert!(!matcher_matches(&parse(&json!({"flag": {"regexp": "true"}})), &input));
-        assert!(!matcher_matches(&parse(&json!({"tool": "x", "count": 3})), &input));
-        assert!(!matcher_matches(&parse(&json!({"tool": "x"})), &json!("not an object")));
+        assert!(matcher_matches(
+            &parse(&json!({"tool": ["Edit", "mcp__github__issues"]})),
+            &input
+        ));
+        assert!(matcher_matches(
+            &parse(&json!({"tool": {"regexp": "^mcp__github__"}})),
+            &input
+        ));
+        assert!(matcher_matches(
+            &parse(&json!({"count": {"regexp": "^3$"}})),
+            &input
+        ));
+        assert!(!matcher_matches(
+            &parse(&json!({"flag": {"regexp": "true"}})),
+            &input
+        ));
+        assert!(!matcher_matches(
+            &parse(&json!({"tool": "x", "count": 3})),
+            &input
+        ));
+        assert!(!matcher_matches(
+            &parse(&json!({"tool": "x"})),
+            &json!("not an object")
+        ));
         assert!(matcher_matches(&parse(&json!({})), &input));
     }
 
     #[test]
     fn describes_matchers_like_claude_plugin_validate() {
         assert_eq!(describe_matcher(None), "");
-        assert_eq!(describe_matcher(Some(&json!({"component": "Spinner"}))), "{component=Spinner}");
         assert_eq!(
-            describe_matcher(Some(&json!({"tool": ["Edit", "Write"], "id": {"regexp": "^T-", "flags": ""}}))),
+            describe_matcher(Some(&json!({"component": "Spinner"}))),
+            "{component=Spinner}"
+        );
+        assert_eq!(
+            describe_matcher(Some(
+                &json!({"tool": ["Edit", "Write"], "id": {"regexp": "^T-", "flags": ""}})
+            )),
             "{tool=Edit|Write,id=/^T-/}"
         );
     }
@@ -272,7 +410,10 @@ mod tests {
         // 永不选中。describe 仍要能报出形状(validate 报告可见)。
         let parse = |v: &Value| parse_matcher(v).unwrap();
         let m = parse(&json!({"tool": {"regexp": "(?<=prefix)Bash"}}));
-        assert!(!m.is_empty(), "lookbehind matcher must parse, not kill the mod");
+        assert!(
+            !m.is_empty(),
+            "lookbehind matcher must parse, not kill the mod"
+        );
         assert!(!matcher_matches(&m, &json!({"tool": "prefixBash"})));
         assert!(!matcher_matches(&m, &json!({"tool": "Bash"})));
         let backref = parse(&json!({"id": {"regexp": "(a)\\1"}}));

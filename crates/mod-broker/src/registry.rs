@@ -9,7 +9,9 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::matcher::{describe_matcher, event_matches, parse_matcher, MatcherValue, ENGINE_EVENTS, SERVED_EVENTS};
+use crate::matcher::{
+    describe_matcher, event_matches, parse_matcher, MatcherValue, ENGINE_EVENTS, SERVED_EVENTS,
+};
 
 /// One `on(...)` registration, as reported by the runner's handshake.
 #[derive(Debug, Clone)]
@@ -40,7 +42,11 @@ impl HookDesc {
 
     /// The validate-style description: `tool.call{tool=Bash}`.
     pub fn describe(&self) -> String {
-        format!("{}{}", self.event, describe_matcher(self.matcher_json.as_ref()))
+        format!(
+            "{}{}",
+            self.event,
+            describe_matcher(self.matcher_json.as_ref())
+        )
     }
 }
 
@@ -72,14 +78,20 @@ impl Registry {
     }
 
     pub fn order_of(&self, name: &str) -> Option<usize> {
-        self.mods.iter().find(|mod_entry| mod_entry.name == name).map(|mod_entry| mod_entry.order)
+        self.mods
+            .iter()
+            .find(|mod_entry| mod_entry.name == name)
+            .map(|mod_entry| mod_entry.order)
     }
 
     /// Add one mod and its registrations. A mod of the same name must be
     /// removed first (DSH wording: `another plugin of that name loads first`).
     pub fn add(&mut self, entry: ModEntry, hooks: Vec<HookDesc>) -> Result<(), String> {
         if self.order_of(&entry.name).is_some() {
-            return Err(format!("hooks module {} not loaded: another plugin of that name loads first", entry.name));
+            return Err(format!(
+                "hooks module {} not loaded: another plugin of that name loads first",
+                entry.name
+            ));
         }
         let mut hooks = hooks;
         self.mods.push(entry.clone());
@@ -115,7 +127,8 @@ impl Registry {
             .iter()
             .filter(|hook| {
                 let order = self.order_of(&hook.mod_name).unwrap_or(usize::MAX);
-                raised_by.is_none_or(|caller_order| order < caller_order) && event_matches(&hook.event, event)
+                raised_by.is_none_or(|caller_order| order < caller_order)
+                    && event_matches(&hook.event, event)
             })
             .cloned()
             .collect();
@@ -127,7 +140,12 @@ impl Registry {
     /// load in parallel): mods and their hooks are stable-sorted by the name
     /// order given.
     pub fn sort_by(&mut self, names: &[String]) {
-        let position = |name: &str| names.iter().position(|candidate| candidate == name).unwrap_or(usize::MAX);
+        let position = |name: &str| {
+            names
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or(usize::MAX)
+        };
         self.mods.sort_by_key(|mod_entry| position(&mod_entry.name));
         self.hooks.sort_by_key(|hook| position(&hook.mod_name));
         self.reindex();
@@ -135,7 +153,9 @@ impl Registry {
 
     /// Whether any hook would run for the event (without matcher evaluation).
     pub fn has_hook_for(&self, event: &str) -> bool {
-        self.hooks.iter().any(|hook| event_matches(&hook.event, event))
+        self.hooks
+            .iter()
+            .any(|hook| event_matches(&hook.event, event))
     }
 
     /// Engine events one mod hooks by exact name that this host never raises
@@ -184,7 +204,9 @@ pub fn hooks_from_json(mod_name: &str, args: &Value) -> Result<Vec<HookDesc>, St
         let matcher_json = hook.get("matcher").filter(|value| !value.is_null());
         let matcher = matcher_json.and_then(parse_matcher);
         if matcher_json.is_some() && matcher.is_none() {
-            return Err(format!("hooks[{index}]: matcher for {event} is not a shape this broker evaluates"));
+            return Err(format!(
+                "hooks[{index}]: matcher for {event} is not a shape this broker evaluates"
+            ));
         }
         out.push(HookDesc {
             mod_name: mod_name.to_string(),
@@ -219,17 +241,51 @@ mod tests {
     #[test]
     fn selects_in_load_order_and_respects_raised_by() {
         let mut registry = Registry::default();
-        registry.add(ModEntry { name: "a".into(), dir: "/a".into(), order: 0, hooks_line: String::new() },
-            vec![hook("a", "tool.call", None)]).unwrap();
-        registry.add(ModEntry { name: "b".into(), dir: "/b".into(), order: 1, hooks_line: String::new() },
-            vec![hook("b", "tool.call", None)]).unwrap();
-        registry.add(ModEntry { name: "c".into(), dir: "/c".into(), order: 2, hooks_line: String::new() },
-            vec![hook("c", "tool.call", None)]).unwrap();
+        registry
+            .add(
+                ModEntry {
+                    name: "a".into(),
+                    dir: "/a".into(),
+                    order: 0,
+                    hooks_line: String::new(),
+                },
+                vec![hook("a", "tool.call", None)],
+            )
+            .unwrap();
+        registry
+            .add(
+                ModEntry {
+                    name: "b".into(),
+                    dir: "/b".into(),
+                    order: 1,
+                    hooks_line: String::new(),
+                },
+                vec![hook("b", "tool.call", None)],
+            )
+            .unwrap();
+        registry
+            .add(
+                ModEntry {
+                    name: "c".into(),
+                    dir: "/c".into(),
+                    order: 2,
+                    hooks_line: String::new(),
+                },
+                vec![hook("c", "tool.call", None)],
+            )
+            .unwrap();
 
-        let names = |hooks: &[HookDesc]| hooks.iter().map(|h| h.mod_name.clone()).collect::<Vec<_>>();
-        assert_eq!(names(&registry.select("tool.call", None)), vec!["a", "b", "c"]);
+        let names =
+            |hooks: &[HookDesc]| hooks.iter().map(|h| h.mod_name.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            names(&registry.select("tool.call", None)),
+            vec!["a", "b", "c"]
+        );
         // A $ call raised by `c` is seen only by mods loaded before it.
-        assert_eq!(names(&registry.select("tool.call", Some(2))), vec!["a", "b"]);
+        assert_eq!(
+            names(&registry.select("tool.call", Some(2))),
+            vec!["a", "b"]
+        );
         assert!(registry.select("tool.call", Some(0)).is_empty());
     }
 
@@ -238,12 +294,20 @@ mod tests {
         let mut registry = Registry::default();
         for name in ["a", "b", "c"] {
             registry
-                .add(ModEntry { name: name.into(), dir: format!("/{name}"), order: 0, hooks_line: String::new() },
-                    vec![hook(name, "tool.call", None)])
+                .add(
+                    ModEntry {
+                        name: name.into(),
+                        dir: format!("/{name}"),
+                        order: 0,
+                        hooks_line: String::new(),
+                    },
+                    vec![hook(name, "tool.call", None)],
+                )
                 .unwrap();
         }
         assert!(registry.remove("b"));
-        let names = |hooks: &[HookDesc]| hooks.iter().map(|h| h.mod_name.clone()).collect::<Vec<_>>();
+        let names =
+            |hooks: &[HookDesc]| hooks.iter().map(|h| h.mod_name.clone()).collect::<Vec<_>>();
         assert_eq!(names(&registry.select("tool.call", None)), vec!["a", "c"]);
         assert_eq!(registry.order_of("c"), Some(1));
     }
@@ -251,11 +315,32 @@ mod tests {
     #[test]
     fn rejects_a_duplicate_name_with_dsh_wording() {
         let mut registry = Registry::default();
-        registry.add(ModEntry { name: "a".into(), dir: "/a".into(), order: 0, hooks_line: String::new() }, vec![]).unwrap();
+        registry
+            .add(
+                ModEntry {
+                    name: "a".into(),
+                    dir: "/a".into(),
+                    order: 0,
+                    hooks_line: String::new(),
+                },
+                vec![],
+            )
+            .unwrap();
         let error = registry
-            .add(ModEntry { name: "a".into(), dir: "/a2".into(), order: 1, hooks_line: String::new() }, vec![])
+            .add(
+                ModEntry {
+                    name: "a".into(),
+                    dir: "/a2".into(),
+                    order: 1,
+                    hooks_line: String::new(),
+                },
+                vec![],
+            )
             .unwrap_err();
-        assert_eq!(error, "hooks module a not loaded: another plugin of that name loads first");
+        assert_eq!(
+            error,
+            "hooks module a not loaded: another plugin of that name loads first"
+        );
     }
 
     #[test]
@@ -263,8 +348,18 @@ mod tests {
         let mut registry = Registry::default();
         registry
             .add(
-                ModEntry { name: "a".into(), dir: "/a".into(), order: 0, hooks_line: String::new() },
-                vec![hook("a", "tool.describe", None), hook("a", "tool.call", None), hook("a", "tool.describe", None), hook("a", "session.messages", None)],
+                ModEntry {
+                    name: "a".into(),
+                    dir: "/a".into(),
+                    order: 0,
+                    hooks_line: String::new(),
+                },
+                vec![
+                    hook("a", "tool.describe", None),
+                    hook("a", "tool.call", None),
+                    hook("a", "tool.describe", None),
+                    hook("a", "session.messages", None),
+                ],
             )
             .unwrap();
         assert_eq!(registry.unserved("a"), vec!["tool.describe".to_string()]);

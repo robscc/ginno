@@ -84,7 +84,11 @@ fn confirm_body(r: &RunningReport) -> String {
         .collect();
     lines.extend(r.tasks.iter().map(|t| {
         let label = if t.title.trim().is_empty() {
-            t.command.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
+            t.command
+                .split_whitespace()
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" ")
         } else {
             t.title.trim().to_string()
         };
@@ -108,7 +112,10 @@ pub(crate) fn confirm_quit_or_proceed(
     on_decided: impl FnOnce(&AppHandle, bool) + Send + 'static,
 ) {
     let Some(report) = fetch_running() else {
-        shell_log(&app, "quit gate: sidecar unreachable or idle — exiting silently");
+        shell_log(
+            &app,
+            "quit gate: sidecar unreachable or idle — exiting silently",
+        );
         on_decided(&app, true);
         return;
     };

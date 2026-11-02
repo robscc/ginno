@@ -60,16 +60,12 @@ pub(crate) fn set_keep_awake(app: tauri::AppHandle, enabled: bool) -> Result<(),
 pub(crate) fn get_keep_awake(app: tauri::AppHandle) -> bool {
     app.try_state::<KeepAwake>()
         .and_then(|state| {
-            state
-                .0
-                .lock()
-                .ok()
-                .map(|mut guard| {
-                    guard
-                        .as_mut()
-                        .map(|c| matches!(c.try_wait(), Ok(None)))
-                        .unwrap_or(false)
-                })
+            state.0.lock().ok().map(|mut guard| {
+                guard
+                    .as_mut()
+                    .map(|c| matches!(c.try_wait(), Ok(None)))
+                    .unwrap_or(false)
+            })
         })
         .unwrap_or(false)
 }

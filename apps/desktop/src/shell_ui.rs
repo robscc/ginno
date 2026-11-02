@@ -185,17 +185,57 @@ pub(crate) const ERROR_HTML: &str = r#"<!doctype html>
 #[cfg(not(debug_assertions))]
 pub(crate) fn localize_shell_html(html: &str, lang: &str) -> String {
     let pairs: &[(&str, &str)] = &[
-        ("__L_STARTING__", pick(lang, "Starting the runtime…", "正在启动运行时…")),
-        ("__L_STARTING_A__", pick(lang, "Starting the runtime… (", "正在启动运行时…（")),
+        (
+            "__L_STARTING__",
+            pick(lang, "Starting the runtime…", "正在启动运行时…"),
+        ),
+        (
+            "__L_STARTING_A__",
+            pick(lang, "Starting the runtime… (", "正在启动运行时…（"),
+        ),
         ("__L_STARTING_B__", pick(lang, "s)", "s）")),
-        ("__L_WARMUP_A__", pick(lang, "First launch takes a moment, loading dependencies… (", "首次启动需要加载依赖，请稍候…（")),
+        (
+            "__L_WARMUP_A__",
+            pick(
+                lang,
+                "First launch takes a moment, loading dependencies… (",
+                "首次启动需要加载依赖，请稍候…（",
+            ),
+        ),
         ("__L_WARMUP_B__", pick(lang, "s)", "s）")),
-        ("__L_SLOW_A__", pick(lang, "Startup is taking a while (", "启动耗时较久（")),
-        ("__L_SLOW_B__", pick(lang, "s), still waiting… If it keeps failing, restart the app", "s），仍在等待…若持续失败请重启应用")),
-        ("__L_ERR_TITLE__", pick(lang, "Runtime failed to start", "运行时启动失败")),
-        ("__L_ERR_BODY__", pick(lang, "Timed out waiting for the sidecar (60s). Session data is unaffected.", "等待后端启动超时（60s）。会话数据不受影响。")),
+        (
+            "__L_SLOW_A__",
+            pick(lang, "Startup is taking a while (", "启动耗时较久（"),
+        ),
+        (
+            "__L_SLOW_B__",
+            pick(
+                lang,
+                "s), still waiting… If it keeps failing, restart the app",
+                "s），仍在等待…若持续失败请重启应用",
+            ),
+        ),
+        (
+            "__L_ERR_TITLE__",
+            pick(lang, "Runtime failed to start", "运行时启动失败"),
+        ),
+        (
+            "__L_ERR_BODY__",
+            pick(
+                lang,
+                "Timed out waiting for the sidecar (60s). Session data is unaffected.",
+                "等待后端启动超时（60s）。会话数据不受影响。",
+            ),
+        ),
         ("__L_ERR_RETRY__", pick(lang, "Retry", "重试")),
-        ("__L_ERR_NOTE__", pick(lang, "The app will open automatically once the runtime is ready", "运行时就绪后应用会自动打开")),
+        (
+            "__L_ERR_NOTE__",
+            pick(
+                lang,
+                "The app will open automatically once the runtime is ready",
+                "运行时就绪后应用会自动打开",
+            ),
+        ),
     ];
     let mut out = html.to_string();
     for (token, text) in pairs {

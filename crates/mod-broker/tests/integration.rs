@@ -36,9 +36,7 @@ fn node_available() -> bool {
         return true;
     }
     std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(&node).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(&node).is_file()))
         .unwrap_or(false)
 }
 
@@ -76,7 +74,9 @@ struct RuntimeClient {
 
 impl RuntimeClient {
     async fn connect(socket: &Path) -> RuntimeClient {
-        let stream = UnixStream::connect(socket).await.expect("connect to broker socket");
+        let stream = UnixStream::connect(socket)
+            .await
+            .expect("connect to broker socket");
         let (reader, mut socket_writer) = stream.into_split();
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let inner = Arc::new(ClientInner {
@@ -117,7 +117,12 @@ impl RuntimeClient {
                     if frame["kind"] == "call" {
                         let ns = frame["ns"].as_str().unwrap_or_default().to_string();
                         let method = frame["method"].as_str().unwrap_or_default().to_string();
-                        let served = inner2.responder.lock().unwrap().as_ref().and_then(|serve| serve(&ns, &method));
+                        let served = inner2
+                            .responder
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .and_then(|serve| serve(&ns, &method));
                         let reply = match served {
                             Some(value) => json!({
                                 "v": 1, "kind": "result", "id": frame["id"], "ok": true, "value": value,
@@ -137,7 +142,11 @@ impl RuntimeClient {
                 }
             }
         });
-        RuntimeClient { inner, next_id: AtomicU64::new(100), token: String::new() }
+        RuntimeClient {
+            inner,
+            next_id: AtomicU64::new(100),
+            token: String::new(),
+        }
     }
 
     fn send(&self, frame: &Value) {
@@ -149,11 +158,21 @@ impl RuntimeClient {
     /// Take the first inbound frame matching `pred`, if any.
     fn take(&self, pred: impl Fn(&Value) -> bool) -> Option<Value> {
         let mut inbox = self.inner.inbox.lock().unwrap();
-        let position = inbox.iter().position(|frame| frame.get("kind").and_then(Value::as_str).is_some_and(|kind| kind != "result" && pred(frame)));
+        let position = inbox.iter().position(|frame| {
+            frame
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind != "result" && pred(frame))
+        });
         position.map(|position| inbox.remove(position))
     }
 
-    async fn wait_frame(&self, what: &str, pred: impl Fn(&Value) -> bool, timeout: Duration) -> Value {
+    async fn wait_frame(
+        &self,
+        what: &str,
+        pred: impl Fn(&Value) -> bool,
+        timeout: Duration,
+    ) -> Value {
         let start = Instant::now();
         loop {
             if let Some(frame) = self.take(&pred) {
@@ -173,7 +192,8 @@ impl RuntimeClient {
             {
                 let mut inbox = self.inner.inbox.lock().unwrap();
                 if let Some(position) = inbox.iter().position(|frame| {
-                    frame.get("kind").and_then(Value::as_str) == Some("result") && frame.get("id").and_then(Value::as_u64) == Some(id)
+                    frame.get("kind").and_then(Value::as_str) == Some("result")
+                        && frame.get("id").and_then(Value::as_u64) == Some(id)
                 }) {
                     let frame = inbox.remove(position);
                     if frame["ok"].as_bool() == Some(true) {
@@ -186,7 +206,10 @@ impl RuntimeClient {
                     ));
                 }
             }
-            assert!(start.elapsed() < timeout, "timed out waiting for result of {what}");
+            assert!(
+                start.elapsed() < timeout,
+                "timed out waiting for result of {what}"
+            );
             tokio::select! {
                 _ = self.inner.wake.notified() => {}
                 _ = tokio::time::sleep(Duration::from_millis(30)) => {}
@@ -197,7 +220,10 @@ impl RuntimeClient {
     /// Send the hello handshake and return the ready payload.
     async fn hello(&self, config: &Value) -> Value {
         self.send(&json!({"v": 1, "kind": "hello", "id": 1, "role": "runtime", "token": self.token.clone(), "config": config}));
-        let ready = self.wait_result(1, "hello/ready", Duration::from_secs(120)).await.expect("ready");
+        let ready = self
+            .wait_result(1, "hello/ready", Duration::from_secs(120))
+            .await
+            .expect("ready");
         eprintln!("ready payload: {ready}");
         ready
     }
@@ -236,7 +262,9 @@ impl RuntimeClient {
     async fn apply_config(&self, config: &Value) -> Value {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.send(&json!({"v": 1, "kind": "call", "id": id, "ns": "broker", "method": "apply-config", "args": config}));
-        self.wait_result(id, "apply-config", Duration::from_secs(120)).await.expect("apply-config reply")
+        self.wait_result(id, "apply-config", Duration::from_secs(120))
+            .await
+            .expect("apply-config reply")
     }
 
     /// Raise an engine event and return the chain's final value.
@@ -250,7 +278,9 @@ impl RuntimeClient {
             frame["session"] = json!(session);
         }
         self.send(&frame);
-        self.wait_result(id, event, Duration::from_secs(60)).await.expect("event result")
+        self.wait_result(id, event, Duration::from_secs(60))
+            .await
+            .expect("event result")
     }
 
     /// Register which forwarded ops the fake runtime serves.
@@ -280,11 +310,21 @@ impl RuntimeClient {
         loop {
             if let Some(frame) = self.take(|frame| {
                 frame.get("method").and_then(Value::as_str) == Some("mod.report")
-                    && frame.pointer("/args/line").and_then(Value::as_str).is_some_and(|line| line.contains(needle))
+                    && frame
+                        .pointer("/args/line")
+                        .and_then(Value::as_str)
+                        .is_some_and(|line| line.contains(needle))
             }) {
-                return frame.pointer("/args/line").and_then(Value::as_str).unwrap().to_string();
+                return frame
+                    .pointer("/args/line")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string();
             }
-            assert!(start.elapsed() < timeout, "timed out waiting for report containing {needle:?}");
+            assert!(
+                start.elapsed() < timeout,
+                "timed out waiting for report containing {needle:?}"
+            );
             tokio::select! {
                 _ = self.inner.wake.notified() => {}
                 _ = tokio::time::sleep(Duration::from_millis(30)) => {}
@@ -304,7 +344,8 @@ impl Env {
     /// via [`Env::hello_with`]; their fixture dirs live under `<dir>/mods`.
     async fn new(name: &str) -> Env {
         let seq = ENV_SEQ.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("mod-broker-it-{}-{seq}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mod-broker-it-{}-{seq}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("workspace")).unwrap();
         std::fs::create_dir_all(dir.join("mods")).unwrap();
@@ -319,13 +360,23 @@ impl Env {
         let token_path = dir.join("broker.sock.token");
         let start = Instant::now();
         while !token_path.exists() {
-            assert!(start.elapsed() < Duration::from_secs(10), "token file never appeared");
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "token file never appeared"
+            );
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
-        let token = std::fs::read_to_string(&token_path).unwrap().trim().to_string();
+        let token = std::fs::read_to_string(&token_path)
+            .unwrap()
+            .trim()
+            .to_string();
         let mut runtime = RuntimeClient::connect(&socket).await;
         runtime.token = token;
-        Env { dir, broker, runtime }
+        Env {
+            dir,
+            broker,
+            runtime,
+        }
     }
 
     fn mod_dir(&self, name: &str) -> PathBuf {
@@ -336,7 +387,11 @@ impl Env {
     fn scenario(&self, name: &str, hooks: Value) {
         let dir = self.mod_dir(name);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("scenario.json"), serde_json::to_string(&hooks).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("scenario.json"),
+            serde_json::to_string(&hooks).unwrap(),
+        )
+        .unwrap();
     }
 
     fn spec(&self, name: &str, grants: Value) -> Value {
@@ -404,7 +459,9 @@ impl Drop for Env {
     }
 }
 
-fn default_budgets() -> Value { json!({}) }
+fn default_budgets() -> Value {
+    json!({})
+}
 
 // ---------------------------------------------------------------------------
 // tests
@@ -415,12 +472,17 @@ async fn handshake_reports_loaded_mods_and_hooks() {
     needs_node!();
     let env = Env::new("handshake").await;
     env.scenario("a", json!({ "hooks": [{ "event": "tool.call" }, { "event": "turn.complete", "matcher": { "tool": "Write" } }] }));
-    let ready = env.hello_with(json!({ "a": env.spec("a", json!({})) }), default_budgets()).await;
+    let ready = env
+        .hello_with(json!({ "a": env.spec("a", json!({})) }), default_budgets())
+        .await;
     let first = &ready["mods"][0];
     assert_eq!(first["name"], "a");
     assert_eq!(first["status"], "loaded");
     assert!(first["hooks"].as_str().unwrap().contains("tool.call"));
-    assert!(first["hooks"].as_str().unwrap().contains("turn.complete{tool=Write}"));
+    assert!(first["hooks"]
+        .as_str()
+        .unwrap()
+        .contains("turn.complete{tool=Write}"));
     // A runner that reports no defaults still yields an object, and no schema.
     assert_eq!(first["userConfig"], json!({}));
     assert!(first.get("configSchema").is_none());
@@ -446,15 +508,29 @@ async fn ready_and_status_carry_user_config_and_schema() {
             "hooks": [{ "event": "tool.call" }],
         }),
     );
-    let ready = env.hello_with(json!({ "a": env.spec("a", json!({})) }), default_budgets()).await;
+    let ready = env
+        .hello_with(json!({ "a": env.spec("a", json!({})) }), default_budgets())
+        .await;
     let first = &ready["mods"][0];
-    assert_eq!(first["userConfig"], json!({ "units": "metric", "limit": 3 }));
-    assert_eq!(first["configSchema"]["properties"]["units"]["enum"], json!(["metric", "imperial"]));
-    assert_eq!(first["configSchema"]["properties"]["apiKey"]["x-ginno-secret"], true);
+    assert_eq!(
+        first["userConfig"],
+        json!({ "units": "metric", "limit": 3 })
+    );
+    assert_eq!(
+        first["configSchema"]["properties"]["units"]["enum"],
+        json!(["metric", "imperial"])
+    );
+    assert_eq!(
+        first["configSchema"]["properties"]["apiKey"]["x-ginno-secret"],
+        true
+    );
 
     let status = env.broker.status_payload().await;
     let entry = &status["mods"][0];
-    assert_eq!(entry["userConfig"], json!({ "units": "metric", "limit": 3 }));
+    assert_eq!(
+        entry["userConfig"],
+        json!({ "units": "metric", "limit": 3 })
+    );
     assert_eq!(entry["configSchema"]["type"], "object");
 }
 
@@ -473,13 +549,19 @@ async fn chain_order_and_matchers_reevaluate_per_hook() {
     let items = json!({ "a": env.spec("a", json!({})), "b": env.spec("b", json!({})), "c": env.spec("c", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("prompt.submit", Some("s1"), json!({ "text": "  raw  " })).await;
+    let settled = env
+        .runtime
+        .raise("prompt.submit", Some("s1"), json!({ "text": "  raw  " }))
+        .await;
     // a rewrote to "trimmed"; b's matcher no longer matches the input it
     // would receive; c's does. The chain settles with c's answer.
     assert_eq!(settled, json!({ "seen": "c" }));
     env.wait_trace("a", "a:prompt.submit:begin").await;
     assert!(env.trace("c").contains("c:prompt.submit:begin"));
-    assert!(!env.trace("b").contains("prompt.submit"), "b must be skipped once the input changed");
+    assert!(
+        !env.trace("b").contains("prompt.submit"),
+        "b must be skipped once the input changed"
+    );
 }
 
 // DSH chain.spec: "hands a second next call the first run" + eager answer.
@@ -487,7 +569,10 @@ async fn chain_order_and_matchers_reevaluate_per_hook() {
 async fn next_runs_once_and_eager_answer_still_waits_for_beneath() {
     needs_node!();
     let env = Env::new("next-once").await;
-    env.scenario("a", json!({ "hooks": [{ "event": "tool.call", "behavior": "next_twice" }] }));
+    env.scenario(
+        "a",
+        json!({ "hooks": [{ "event": "tool.call", "behavior": "next_twice" }] }),
+    );
     env.scenario("b", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "ran": "b" } }] }));
     let items = json!({ "a": env.spec("a", json!({})), "b": env.spec("b", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
@@ -504,9 +589,15 @@ async fn next_runs_once_and_eager_answer_still_waits_for_beneath() {
 async fn skip_rules_throw_after_next_and_no_result() {
     needs_node!();
     let env = Env::new("skip-rules").await;
-    env.scenario("throws", json!({ "hooks": [{ "event": "tool.call", "behavior": "throw", "message": "boom" }] }));
+    env.scenario(
+        "throws",
+        json!({ "hooks": [{ "event": "tool.call", "behavior": "throw", "message": "boom" }] }),
+    );
     env.scenario("late", json!({ "hooks": [{ "event": "tool.call", "behavior": "next_then_throw", "message": "after" }] }));
-    env.scenario("void", json!({ "hooks": [{ "event": "tool.call", "behavior": "no_result" }] }));
+    env.scenario(
+        "void",
+        json!({ "hooks": [{ "event": "tool.call", "behavior": "no_result" }] }),
+    );
     env.scenario("b", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "ran": "b" } }] }));
 
     // throw before next: the next hook runs in its place.
@@ -514,7 +605,12 @@ async fn skip_rules_throw_after_next_and_no_result() {
     let _ready = env.hello_with(items, default_budgets()).await;
     let settled = env.runtime.raise("tool.call", Some("s1"), json!({})).await;
     assert_eq!(settled, json!({ "ran": "b" }));
-    env.runtime.wait_report_containing("throws: tool.call hook skipped: threw boom", Duration::from_secs(10)).await;
+    env.runtime
+        .wait_report_containing(
+            "throws: tool.call hook skipped: threw boom",
+            Duration::from_secs(10),
+        )
+        .await;
 
     // Fail after next resolved: the result from beneath is kept, nothing reruns.
     let env2 = Env::new("skip-rules-late").await;
@@ -524,18 +620,28 @@ async fn skip_rules_throw_after_next_and_no_result() {
     let _ready = env2.hello_with(items, default_budgets()).await;
     let settled = env2.runtime.raise("tool.call", Some("s1"), json!({})).await;
     assert_eq!(settled, json!({ "ran": "b" }));
-    env2.runtime.wait_report_containing("late: tool.call hook skipped: threw after", Duration::from_secs(10)).await;
+    env2.runtime
+        .wait_report_containing(
+            "late: tool.call hook skipped: threw after",
+            Duration::from_secs(10),
+        )
+        .await;
     assert_eq!(env2.trace_count("b", "b:tool.call:begin"), 1);
 
     // A hook settling with no result is skipped the same way.
     let env3 = Env::new("skip-rules-noresult").await;
-    env3.scenario("void", json!({ "hooks": [{ "event": "tool.call", "behavior": "no_result" }] }));
+    env3.scenario(
+        "void",
+        json!({ "hooks": [{ "event": "tool.call", "behavior": "no_result" }] }),
+    );
     env3.scenario("b", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "ran": "b" } }] }));
     let items = json!({ "void": env3.spec("void", json!({})), "b": env3.spec("b", json!({})) });
     let _ready = env3.hello_with(items, default_budgets()).await;
     let settled = env3.runtime.raise("tool.call", Some("s1"), json!({})).await;
     assert_eq!(settled, json!({ "ran": "b" }));
-    env3.runtime.wait_report_containing("returned no result", Duration::from_secs(10)).await;
+    env3.runtime
+        .wait_report_containing("returned no result", Duration::from_secs(10))
+        .await;
 }
 
 // DSH chain.spec: "skips a hook whose own time runs past the budget".
@@ -543,18 +649,34 @@ async fn skip_rules_throw_after_next_and_no_result() {
 async fn timeout_skips_a_busy_hook() {
     needs_node!();
     let env = Env::new("timeout").await;
-    env.scenario("slow", json!({ "hooks": [{ "event": "tool.call", "behavior": "sleep_next", "sleepMs": 900 }] }));
+    env.scenario(
+        "slow",
+        json!({ "hooks": [{ "event": "tool.call", "behavior": "sleep_next", "sleepMs": 900 }] }),
+    );
     env.scenario("b", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "ran": "b" } }] }));
     let items = json!({ "slow": env.spec("slow", json!({})), "b": env.spec("b", json!({})) });
     let _ready = env.hello_with(items, json!({ "hookMs": 80 })).await;
 
     let start = Instant::now();
-    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "Bash" })).await;
+    let settled = env
+        .runtime
+        .raise("tool.call", Some("s1"), json!({ "tool": "Bash" }))
+        .await;
     assert_eq!(settled, json!({ "ran": "b" }));
     // The chain skipped the slow hook at ~80 ms instead of waiting 900 ms.
-    assert!(start.elapsed() < Duration::from_secs(3), "chain took {:?}", start.elapsed());
-    let line = env.runtime.wait_report_containing("ran past its 80 ms limit", Duration::from_secs(10)).await;
-    assert!(line.contains("slow: tool.call hook skipped"), "unexpected report: {line}");
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "chain took {:?}",
+        start.elapsed()
+    );
+    let line = env
+        .runtime
+        .wait_report_containing("ran past its 80 ms limit", Duration::from_secs(10))
+        .await;
+    assert!(
+        line.contains("slow: tool.call hook skipped"),
+        "unexpected report: {line}"
+    );
 }
 
 // Design §15.1: `prompt.edit` hooks get the 50 ms budget; sleep counts as
@@ -563,18 +685,30 @@ async fn timeout_skips_a_busy_hook() {
 async fn prompt_edit_budget_is_short_and_sleep_counts_as_busy() {
     needs_node!();
     let env = Env::new("prompt-edit").await;
-    env.scenario("slow", json!({ "hooks": [{ "event": "prompt.edit", "behavior": "sleep_next", "sleepMs": 900 }] }));
+    env.scenario(
+        "slow",
+        json!({ "hooks": [{ "event": "prompt.edit", "behavior": "sleep_next", "sleepMs": 900 }] }),
+    );
     let items = json!({ "slow": env.spec("slow", json!({})) });
     let _ready = env
         .hello_with(items, json!({ "hookMs": 60_000, "promptEditMs": 60 }))
         .await;
 
     let start = Instant::now();
-    let settled = env.runtime.raise("prompt.edit", Some("s1"), json!({ "text": "hi" })).await;
+    let settled = env
+        .runtime
+        .raise("prompt.edit", Some("s1"), json!({ "text": "hi" }))
+        .await;
     // The hook timed out; the event settles with the original input.
     assert_eq!(settled, json!({ "text": "hi" }));
-    assert!(start.elapsed() < Duration::from_secs(3), "prompt.edit took {:?}", start.elapsed());
-    env.runtime.wait_report_containing("ran past its 60 ms limit", Duration::from_secs(10)).await;
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "prompt.edit took {:?}",
+        start.elapsed()
+    );
+    env.runtime
+        .wait_report_containing("ran past its 60 ms limit", Duration::from_secs(10))
+        .await;
 }
 
 // DSH chain.spec: .catch answers in the failed hook's place.
@@ -610,7 +744,11 @@ async fn catch_handler_shares_the_beneath_run() {
     let settled = env.runtime.raise("tool.call", Some("s1"), json!({})).await;
     // The handler got the already-resolved result from beneath and patched it.
     assert_eq!(settled, json!({ "patched": true }));
-    assert_eq!(env.trace_count("b", "b:tool.call:begin"), 1, "beneath must run exactly once");
+    assert_eq!(
+        env.trace_count("b", "b:tool.call:begin"),
+        1,
+        "beneath must run exactly once"
+    );
 }
 
 // Design §15.5 (P0 rule, still true in P1): a tool.call reroute — swapping
@@ -623,14 +761,30 @@ async fn tool_call_reroutes_are_refused() {
     let items = json!({ "a": env.spec("a", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "bash", "args": { "command": "ls" } })).await;
+    let settled = env
+        .runtime
+        .raise(
+            "tool.call",
+            Some("s1"),
+            json!({ "tool": "bash", "args": { "command": "ls" } }),
+        )
+        .await;
     assert_eq!(
         settled,
         json!({ "tool": "bash", "args": { "command": "ls" } }),
         "the logged call runs as logged (host spelling)"
     );
-    let line = env.runtime.wait_report_containing("rerouted the call from Bash to Edit", Duration::from_secs(10)).await;
-    assert!(line.contains("a: tool.call hook skipped"), "unexpected report: {line}");
+    let line = env
+        .runtime
+        .wait_report_containing(
+            "rerouted the call from Bash to Edit",
+            Duration::from_secs(10),
+        )
+        .await;
+    assert!(
+        line.contains("a: tool.call hook skipped"),
+        "unexpected report: {line}"
+    );
 }
 
 // Design §15.5 (P1): an args rewrite now passes through — the rewritten args
@@ -644,14 +798,26 @@ async fn tool_call_args_rewrites_pass_through() {
     let items = json!({ "a": env.spec("a", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "bash", "args": { "command": "ls" } })).await;
-    assert_eq!(settled, json!({ "tool": "bash", "args": { "command": "ls -la" } }));
+    let settled = env
+        .runtime
+        .raise(
+            "tool.call",
+            Some("s1"),
+            json!({ "tool": "bash", "args": { "command": "ls" } }),
+        )
+        .await;
+    assert_eq!(
+        settled,
+        json!({ "tool": "bash", "args": { "command": "ls -la" } })
+    );
     assert!(env.trace("a").contains("a:tool.call:begin"));
     // No refusal report: the rewrite is served, not skipped.
     let start = Instant::now();
     while start.elapsed() < Duration::from_millis(500) {
         assert!(
-            env.runtime.take(|frame| frame.get("method").and_then(Value::as_str) == Some("mod.report")).is_none(),
+            env.runtime
+                .take(|frame| frame.get("method").and_then(Value::as_str) == Some("mod.report"))
+                .is_none(),
             "an args rewrite must not report a skip"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -671,8 +837,18 @@ async fn tool_call_result_takeover_reaches_the_runtime() {
     let items = json!({ "a": env.spec("a", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "bash", "args": {} })).await;
-    assert_eq!(settled, json!({ "result": { "value": "blocked by policy", "isError": true } }));
+    let settled = env
+        .runtime
+        .raise(
+            "tool.call",
+            Some("s1"),
+            json!({ "tool": "bash", "args": {} }),
+        )
+        .await;
+    assert_eq!(
+        settled,
+        json!({ "result": { "value": "blocked by policy", "isError": true } })
+    );
 }
 
 // Design §15.5 (P1): an invalid `{result}` shape is a chain error — the hook
@@ -694,13 +870,43 @@ async fn tool_call_invalid_answer_shapes_skip_the_hook() {
     });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "bash", "args": { "command": "ls" } })).await;
+    let settled = env
+        .runtime
+        .raise(
+            "tool.call",
+            Some("s1"),
+            json!({ "tool": "bash", "args": { "command": "ls" } }),
+        )
+        .await;
     // Every hook skipped: the event settles with the original input.
-    assert_eq!(settled, json!({ "tool": "bash", "args": { "command": "ls" } }));
-    env.runtime.wait_report_containing("badresult: tool.call hook skipped: answered with an invalid result takeover", Duration::from_secs(10)).await;
-    env.runtime.wait_report_containing("nullvalue: tool.call hook skipped: answered with an invalid result takeover", Duration::from_secs(10)).await;
-    env.runtime.wait_report_containing("badiserror: tool.call hook skipped: answered with an invalid result takeover", Duration::from_secs(10)).await;
-    env.runtime.wait_report_containing("badargs: tool.call hook skipped: answered with an invalid args rewrite", Duration::from_secs(10)).await;
+    assert_eq!(
+        settled,
+        json!({ "tool": "bash", "args": { "command": "ls" } })
+    );
+    env.runtime
+        .wait_report_containing(
+            "badresult: tool.call hook skipped: answered with an invalid result takeover",
+            Duration::from_secs(10),
+        )
+        .await;
+    env.runtime
+        .wait_report_containing(
+            "nullvalue: tool.call hook skipped: answered with an invalid result takeover",
+            Duration::from_secs(10),
+        )
+        .await;
+    env.runtime
+        .wait_report_containing(
+            "badiserror: tool.call hook skipped: answered with an invalid result takeover",
+            Duration::from_secs(10),
+        )
+        .await;
+    env.runtime
+        .wait_report_containing(
+            "badargs: tool.call hook skipped: answered with an invalid args rewrite",
+            Duration::from_secs(10),
+        )
+        .await;
 }
 
 // Design §5.3: tool.check passes its `{decision}` three-value answers through
@@ -713,17 +919,33 @@ async fn tool_check_decisions_pass_through() {
     let items = json!({ "gate": env.spec("gate", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("tool.check", Some("s1"), json!({ "tool": "bash" })).await;
+    let settled = env
+        .runtime
+        .raise("tool.check", Some("s1"), json!({ "tool": "bash" }))
+        .await;
     assert_eq!(settled, json!({ "decision": "ask", "reason": "confirm?" }));
 
     let env2 = Env::new("tool-check-bad").await;
     env2.scenario("gate", json!({ "hooks": [{ "event": "tool.check", "behavior": "answer", "answer": { "decision": "maybe" } }] }));
     let items = json!({ "gate": env2.spec("gate", json!({})) });
     let _ready = env2.hello_with(items, default_budgets()).await;
-    let settled = env2.runtime.raise("tool.check", Some("s1"), json!({ "tool": "bash" })).await;
-    assert_eq!(settled, json!({ "tool": "bash" }), "an invalid decision skips the hook");
-    let line = env2.runtime.wait_report_containing("answered with an invalid decision", Duration::from_secs(10)).await;
-    assert!(line.contains("gate: tool.check hook skipped"), "unexpected report: {line}");
+    let settled = env2
+        .runtime
+        .raise("tool.check", Some("s1"), json!({ "tool": "bash" }))
+        .await;
+    assert_eq!(
+        settled,
+        json!({ "tool": "bash" }),
+        "an invalid decision skips the hook"
+    );
+    let line = env2
+        .runtime
+        .wait_report_containing("answered with an invalid decision", Duration::from_secs(10))
+        .await;
+    assert!(
+        line.contains("gate: tool.check hook skipped"),
+        "unexpected report: {line}"
+    );
 }
 
 // Design §15.8: the broker maps Claude Code tool names both ways.
@@ -736,7 +958,14 @@ async fn tool_name_aliases_apply_on_tool_call() {
     let _ready = env.hello_with(items, default_budgets()).await;
 
     // Ginno's name reaches the chain as the mod-visible alias.
-    let settled = env.runtime.raise("tool.call", Some("s1"), json!({ "tool": "read_file", "args": {} })).await;
+    let settled = env
+        .runtime
+        .raise(
+            "tool.call",
+            Some("s1"),
+            json!({ "tool": "read_file", "args": {} }),
+        )
+        .await;
     assert_eq!(settled, json!({ "seen": "Read" }));
 }
 
@@ -745,19 +974,30 @@ async fn tool_name_aliases_apply_on_tool_call() {
 async fn op_calls_run_through_earlier_mods() {
     needs_node!();
     let env = Env::new("op-chain").await;
-    env.scenario("early", json!({ "hooks": [{ "event": "state.get", "behavior": "next" }] }));
+    env.scenario(
+        "early",
+        json!({ "hooks": [{ "event": "state.get", "behavior": "next" }] }),
+    );
     env.scenario(
         "late",
         json!({ "hooks": [{ "event": "turn.complete", "behavior": "single_call", "call": ["state", "get", { "plugin": "early", "key": "k" }] }] }),
     );
-    let items = json!({ "early": env.spec("early", json!({})), "late": env.spec("late", json!({})) });
+    let items =
+        json!({ "early": env.spec("early", json!({})), "late": env.spec("late", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("turn.complete", Some("s1"), json!({ "turnId": 1 })).await;
+    let settled = env
+        .runtime
+        .raise("turn.complete", Some("s1"), json!({ "turnId": 1 }))
+        .await;
     assert_eq!(settled["ok"], true, "the call succeeded: {settled}");
     // DSH opCore shape: `{ value: null }` for a missing slot (the runner's
     // shim turns the inner null into undefined for the mod).
-    assert_eq!(settled["value"], json!({ "value": null }), "the state slot is empty");
+    assert_eq!(
+        settled["value"],
+        json!({ "value": null }),
+        "the state slot is empty"
+    );
     env.wait_trace("early", "early:state.get:begin").await;
 
     // `tool.call` as an op never re-enters the chain (§15.2).
@@ -771,9 +1011,15 @@ async fn op_calls_run_through_earlier_mods() {
     let _ready = env2.hello_with(items, default_budgets()).await;
     // The op is forwarded to the runtime (which refuses here) — but crucially
     // the watcher mod was NOT consulted: tool.call never re-enters the chain.
-    let settled = env2.runtime.raise("turn.complete", Some("s1"), json!({})).await;
+    let settled = env2
+        .runtime
+        .raise("turn.complete", Some("s1"), json!({}))
+        .await;
     assert_eq!(settled["ok"], false, "{settled}");
-    assert!(env2.trace("watcher").is_empty(), "tool.call op must not re-enter the chain");
+    assert!(
+        env2.trace("watcher").is_empty(),
+        "tool.call op must not re-enter the chain"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -791,9 +1037,15 @@ async fn store_roundtrip_and_machine_wide_cap() {
     let items = json!({ "m": env.spec("m", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("turn.complete", Some("s1"), json!({})).await;
+    let settled = env
+        .runtime
+        .raise("turn.complete", Some("s1"), json!({}))
+        .await;
     assert_eq!(settled["ok"], true, "{settled}");
-    let settled = env.runtime.raise("session.start", Some("s1"), json!({})).await;
+    let settled = env
+        .runtime
+        .raise("session.start", Some("s1"), json!({}))
+        .await;
     assert_eq!(settled["value"], json!(42), "{settled}");
 
     let settled = env.runtime.raise("tool.call", Some("s1"), json!({})).await;
@@ -820,15 +1072,27 @@ async fn fs_is_root_limited_to_the_workspace() {
     let items = json!({ "m": env.spec("m", json!({ "fs.write": true })) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("turn.complete", Some("s1"), json!({})).await;
+    let settled = env
+        .runtime
+        .raise("turn.complete", Some("s1"), json!({}))
+        .await;
     let results = settled.as_array().expect("collect results");
     assert_eq!(results[0]["value"], json!("hello"));
     assert_eq!(results[1]["ok"], false);
-    assert!(results[1]["message"].as_str().unwrap().contains("outside the workspace"));
+    assert!(results[1]["message"]
+        .as_str()
+        .unwrap()
+        .contains("outside the workspace"));
     assert_eq!(results[2]["ok"], false);
-    assert!(results[2]["message"].as_str().unwrap().contains("outside the workspace"));
+    assert!(results[2]["message"]
+        .as_str()
+        .unwrap()
+        .contains("outside the workspace"));
     assert_eq!(results[3]["ok"], true);
-    assert_eq!(std::fs::read_to_string(env.dir.join("workspace/note.txt")).unwrap(), "written");
+    assert_eq!(
+        std::fs::read_to_string(env.dir.join("workspace/note.txt")).unwrap(),
+        "written"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -849,20 +1113,33 @@ async fn grants_deny_unauthorized_calls() {
     let items = json!({ "gated": env.spec("gated", json!({ "env.get": ["PATH"] })) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let settled = env.runtime.raise("turn.complete", Some("s1"), json!({})).await;
+    let settled = env
+        .runtime
+        .raise("turn.complete", Some("s1"), json!({}))
+        .await;
     let results = settled.as_array().expect("collect results");
     assert_eq!(results[0]["code"], "denied", "process.run without a grant");
     assert_eq!(results[1]["code"], "denied", "env.get outside the grant");
     assert_eq!(results[2]["code"], "denied", "http.fetch without a grant");
-    assert_eq!(results[3]["ok"], true, "PATH is in the env grant: {}", results[3]);
+    assert_eq!(
+        results[3]["ok"], true,
+        "PATH is in the env grant: {}",
+        results[3]
+    );
     // Every denial points at the fix: grants on the Mods settings page (§8).
     assert!(
-        results[0]["message"].as_str().unwrap().contains("Mods settings page"),
+        results[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Mods settings page"),
         "{}",
         results[0]["message"]
     );
     assert!(
-        results[2]["message"].as_str().unwrap().contains("Mods settings page"),
+        results[2]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Mods settings page"),
         "{}",
         results[2]["message"]
     );
@@ -886,21 +1163,43 @@ async fn state_writes_redraw_subscribed_bands() {
     let _ready = env.hello_with(items, default_budgets()).await;
 
     // session.start triggers the first drawing.
-    let _ = env.runtime.raise("session.start", Some("s1"), json!({})).await;
-    let first = env.runtime.wait_notify("bands.update", Duration::from_secs(30)).await;
+    let _ = env
+        .runtime
+        .raise("session.start", Some("s1"), json!({}))
+        .await;
+    let first = env
+        .runtime
+        .wait_notify("bands.update", Duration::from_secs(30))
+        .await;
     assert_eq!(first["args"]["generation"], 1);
-    assert!(first["args"]["tree"].to_string().contains("count null"), "got {}", first);
+    assert!(
+        first["args"]["tree"].to_string().contains("count null"),
+        "got {}",
+        first
+    );
 
     // One turn writes a subscribed slot AND an unrelated one: exactly one
     // redraw, with the new value (burst coalesced, unrelated write ignored).
-    let _ = env.runtime.raise("turn.complete", Some("s1"), json!({})).await;
-    let second = env.runtime.wait_notify("bands.update", Duration::from_secs(30)).await;
+    let _ = env
+        .runtime
+        .raise("turn.complete", Some("s1"), json!({}))
+        .await;
+    let second = env
+        .runtime
+        .wait_notify("bands.update", Duration::from_secs(30))
+        .await;
     assert_eq!(second["args"]["generation"], 2);
-    assert!(second["args"]["tree"].to_string().contains("count 2"), "got {}", second);
+    assert!(
+        second["args"]["tree"].to_string().contains("count 2"),
+        "got {}",
+        second
+    );
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(2) {
         assert!(
-            env.runtime.take(|frame| frame.get("method").and_then(Value::as_str) == Some("bands.update")).is_none(),
+            env.runtime
+                .take(|frame| frame.get("method").and_then(Value::as_str) == Some("bands.update"))
+                .is_none(),
             "an unrelated state write must not redraw"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -911,28 +1210,55 @@ async fn state_writes_redraw_subscribed_bands() {
 async fn press_routes_to_the_runner_and_stale_generations_are_ignored() {
     needs_node!();
     let env = Env::new("press").await;
-    env.scenario("a", json!({ "hooks": [{ "event": "ui.render", "behavior": "render_button" }] }));
+    env.scenario(
+        "a",
+        json!({ "hooks": [{ "event": "ui.render", "behavior": "render_button" }] }),
+    );
     let items = json!({ "a": env.spec("a", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let _ = env.runtime.raise("session.start", Some("s1"), json!({})).await;
-    let drawn = env.runtime.wait_notify("bands.update", Duration::from_secs(30)).await;
+    let _ = env
+        .runtime
+        .raise("session.start", Some("s1"), json!({}))
+        .await;
+    let drawn = env
+        .runtime
+        .wait_notify("bands.update", Duration::from_secs(30))
+        .await;
     assert_eq!(drawn["args"]["generation"], 1);
-    assert!(drawn["args"]["tree"].to_string().contains("a:a0"), "got {}", drawn);
+    assert!(
+        drawn["args"]["tree"].to_string().contains("a:a0"),
+        "got {}",
+        drawn
+    );
 
     // A current-generation press reaches the runner.
-    env.runtime.notify("ui.press", json!({ "generation": 1, "actionId": "a:a0" }), Some("s1"));
+    env.runtime.notify(
+        "ui.press",
+        json!({ "generation": 1, "actionId": "a:a0" }),
+        Some("s1"),
+    );
     env.wait_trace("a", "a:press:a:a0").await;
 
     // A pane Input/Select submission rides the press frame as `value`; the
     // runner call carries it through (observable in the mock's trace).
-    env.runtime
-        .notify("ui.press", json!({ "generation": 1, "actionId": "a:a0", "value": "cm" }), Some("s1"));
+    env.runtime.notify(
+        "ui.press",
+        json!({ "generation": 1, "actionId": "a:a0", "value": "cm" }),
+        Some("s1"),
+    );
     env.wait_trace("a", r#"a:press:a:a0:"cm""#).await;
 
     // A stale-generation press is ignored with a report.
-    env.runtime.notify("ui.press", json!({ "generation": 0, "actionId": "a:a0" }), Some("s1"));
-    let line = env.runtime.wait_report_containing("band press ignored", Duration::from_secs(10)).await;
+    env.runtime.notify(
+        "ui.press",
+        json!({ "generation": 0, "actionId": "a:a0" }),
+        Some("s1"),
+    );
+    let line = env
+        .runtime
+        .wait_report_containing("band press ignored", Duration::from_secs(10))
+        .await;
     assert!(line.contains("generation 0"), "unexpected report: {line}");
 }
 
@@ -944,14 +1270,28 @@ async fn press_routes_to_the_runner_and_stale_generations_are_ignored() {
 async fn each_mod_draws_its_own_band_segment() {
     needs_node!();
     let env = Env::new("per-mod").await;
-    env.scenario("a", json!({ "hooks": [{ "event": "ui.render", "behavior": "render_button" }] }));
-    env.scenario("b", json!({ "hooks": [{ "event": "ui.render", "behavior": "render_button" }] }));
+    env.scenario(
+        "a",
+        json!({ "hooks": [{ "event": "ui.render", "behavior": "render_button" }] }),
+    );
+    env.scenario(
+        "b",
+        json!({ "hooks": [{ "event": "ui.render", "behavior": "render_button" }] }),
+    );
     let items = json!({ "a": env.spec("a", json!({})), "b": env.spec("b", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let _ = env.runtime.raise("session.start", Some("s1"), json!({})).await;
-    let drawn = env.runtime.wait_notify("bands.update", Duration::from_secs(30)).await;
-    let mods = drawn["args"]["mods"].as_array().expect("a per-mod mods array");
+    let _ = env
+        .runtime
+        .raise("session.start", Some("s1"), json!({}))
+        .await;
+    let drawn = env
+        .runtime
+        .wait_notify("bands.update", Duration::from_secs(30))
+        .await;
+    let mods = drawn["args"]["mods"]
+        .as_array()
+        .expect("a per-mod mods array");
     assert_eq!(mods.len(), 2, "both mods draw: {drawn}");
     assert_eq!(mods[0]["mod"], "a");
     assert_eq!(mods[1]["mod"], "b");
@@ -961,16 +1301,30 @@ async fn each_mod_draws_its_own_band_segment() {
     assert!(mods[1]["tree"].to_string().contains("b:a0"), "got {drawn}");
     // Legacy fields mirror the first non-empty mod (a, in load order).
     assert_eq!(drawn["args"]["generation"], 1);
-    assert!(drawn["args"]["tree"].to_string().contains("a:a0"), "got {drawn}");
+    assert!(
+        drawn["args"]["tree"].to_string().contains("a:a0"),
+        "got {drawn}"
+    );
 
     // A press names its mod by the action id prefix; b's own generation 1 is
     // valid even though a's tree came first.
-    env.runtime.notify("ui.press", json!({ "generation": 1, "actionId": "b:a0" }), Some("s1"));
+    env.runtime.notify(
+        "ui.press",
+        json!({ "generation": 1, "actionId": "b:a0" }),
+        Some("s1"),
+    );
     env.wait_trace("b", "b:press:b:a0").await;
 
     // A generation from the other mod's drawing does not validate for a.
-    env.runtime.notify("ui.press", json!({ "generation": 99, "actionId": "a:a0" }), Some("s1"));
-    let line = env.runtime.wait_report_containing("band press ignored", Duration::from_secs(10)).await;
+    env.runtime.notify(
+        "ui.press",
+        json!({ "generation": 99, "actionId": "a:a0" }),
+        Some("s1"),
+    );
+    let line = env
+        .runtime
+        .wait_report_containing("band press ignored", Duration::from_secs(10))
+        .await;
     assert!(line.contains("a:a0"), "unexpected report: {line}");
 }
 
@@ -1003,24 +1357,42 @@ async fn panes_open_render_close_and_clear_on_session_end() {
 
     // Four panes open; the fifth is refused by the cap. Each open reports
     // isPlaced and reaches Python as `mod.pane.open`.
-    let settled = env.runtime.raise("turn.complete", Some("s1"), json!({ "turnId": 1 })).await;
+    let settled = env
+        .runtime
+        .raise("turn.complete", Some("s1"), json!({ "turnId": 1 }))
+        .await;
     let results = settled.as_array().expect("collect results");
     assert_eq!(results[0]["value"]["isPlaced"], true, "{settled}");
     assert_eq!(results[0]["value"]["id"], "w1");
-    assert_eq!(results[4]["ok"], false, "the fifth pane is over the cap: {settled}");
-    assert!(results[4]["message"].as_str().unwrap().contains("at most 4 panes"));
+    assert_eq!(
+        results[4]["ok"], false,
+        "the fifth pane is over the cap: {settled}"
+    );
+    assert!(results[4]["message"]
+        .as_str()
+        .unwrap()
+        .contains("at most 4 panes"));
     for id in ["w1", "w2", "w3", "w4"] {
-        let opened = env.runtime.wait_notify("mod.pane.open", Duration::from_secs(30)).await;
+        let opened = env
+            .runtime
+            .wait_notify("mod.pane.open", Duration::from_secs(30))
+            .await;
         assert_eq!(opened["args"]["id"], id, "got {opened}");
         assert_eq!(opened["mod_name"], "p");
     }
 
     // The render pass draws each pane through the owner's ui.render chain.
     for id in ["w1", "w2", "w3", "w4"] {
-        let updated = env.runtime.wait_notify("mod.pane.update", Duration::from_secs(30)).await;
+        let updated = env
+            .runtime
+            .wait_notify("mod.pane.update", Duration::from_secs(30))
+            .await;
         assert_eq!(updated["args"]["id"], id, "got {updated}");
         assert_eq!(updated["args"]["generation"], 1);
-        assert!(updated["args"]["tree"].to_string().contains("p:a0"), "got {updated}");
+        assert!(
+            updated["args"]["tree"].to_string().contains("p:a0"),
+            "got {updated}"
+        );
         assert_eq!(updated["mod_name"], "p");
     }
 
@@ -1034,11 +1406,18 @@ async fn panes_open_render_close_and_clear_on_session_end() {
     // The session.end chain settles, then forget_session closes every pane.
     let mut closed = Vec::new();
     for _ in 0..4 {
-        let frame = env.runtime.wait_notify("mod.pane.close", Duration::from_secs(30)).await;
+        let frame = env
+            .runtime
+            .wait_notify("mod.pane.close", Duration::from_secs(30))
+            .await;
         closed.push(frame["args"]["id"].as_str().unwrap().to_string());
     }
     closed.sort();
-    assert_eq!(closed, vec!["w1", "w2", "w3", "w4"], "every open pane closes");
+    assert_eq!(
+        closed,
+        vec!["w1", "w2", "w3", "w4"],
+        "every open pane closes"
+    );
 
     // The band table is gone too: a further draw would re-open, so a fresh
     // session's pane cap starts clean.
@@ -1049,16 +1428,23 @@ async fn panes_open_render_close_and_clear_on_session_end() {
 // Design §15.2 v2 addition: a runner crash fails its own hook; the chain
 // continues.
 #[tokio::test(flavor = "multi_thread")]
-async fn runner_crash_fails_its_hook_and_the_chain_continues() {    needs_node!();
+async fn runner_crash_fails_its_hook_and_the_chain_continues() {
+    needs_node!();
     let env = Env::new("crash").await;
-    env.scenario("doomed", json!({ "hooks": [{ "event": "tool.call", "behavior": "crash" }] }));
+    env.scenario(
+        "doomed",
+        json!({ "hooks": [{ "event": "tool.call", "behavior": "crash" }] }),
+    );
     env.scenario("b", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "ran": "b" } }] }));
     let items = json!({ "doomed": env.spec("doomed", json!({})), "b": env.spec("b", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
     let settled = env.runtime.raise("tool.call", Some("s1"), json!({})).await;
     assert_eq!(settled, json!({ "ran": "b" }));
-    let line = env.runtime.wait_report_containing("hook skipped", Duration::from_secs(10)).await;
+    let line = env
+        .runtime
+        .wait_report_containing("hook skipped", Duration::from_secs(10))
+        .await;
     assert!(line.contains("doomed"), "unexpected report: {line}");
 }
 
@@ -1069,7 +1455,10 @@ async fn config_reload_unloads_disabled_mods() {
     env.scenario("a", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "from": "a" } }] }));
     env.scenario("b", json!({ "hooks": [{ "event": "tool.call", "behavior": "answer", "answer": { "from": "b" } }] }));
     let _ready = env
-        .hello_with(json!({ "a": env.spec("a", json!({})), "b": env.spec("b", json!({})) }), default_budgets())
+        .hello_with(
+            json!({ "a": env.spec("a", json!({})), "b": env.spec("b", json!({})) }),
+            default_budgets(),
+        )
         .await;
 
     // b goes away: its hooks stop, a's keep working. The apply is awaitable:
@@ -1097,7 +1486,9 @@ async fn apply_config_ack_reports_failures_and_noop_reloads() {
     let env = Env::new("apply-ack").await;
     env.scenario("a", json!({ "hooks": [{ "event": "tool.call" }] }));
     let config = env.config(json!({ "a": env.spec("a", json!({})) }), default_budgets());
-    let _ready = env.hello_with(json!({ "a": env.spec("a", json!({})) }), default_budgets()).await;
+    let _ready = env
+        .hello_with(json!({ "a": env.spec("a", json!({})) }), default_budgets())
+        .await;
 
     // An identical push reloads nothing but still reports the loaded status.
     let ack = env.runtime.apply_config(&config).await;
@@ -1107,9 +1498,10 @@ async fn apply_config_ack_reports_failures_and_noop_reloads() {
 
     // Python's push_config wraps the config as {role, config}; the same ack
     // must come back from the envelope shape.
-    let id = env
-        .runtime
-        .call_broker("apply-config", json!({ "role": "runtime", "config": config }));
+    let id = env.runtime.call_broker(
+        "apply-config",
+        json!({ "role": "runtime", "config": config }),
+    );
     let envelope_ack = env
         .runtime
         .wait_result(id, "envelope apply-config", Duration::from_secs(120))
@@ -1141,7 +1533,9 @@ async fn apply_config_ack_reports_failures_and_noop_reloads() {
         .expect("broken mod in ack");
     assert_eq!(broken_entry["status"], "error");
     assert!(
-        broken_entry["error"].as_str().is_some_and(|e| e.contains("cannot spawn node")),
+        broken_entry["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("cannot spawn node")),
         "ack: {ack}"
     );
 }
@@ -1164,8 +1558,13 @@ async fn ui_ask_round_trips_through_the_runtime() {
     let _ready = env.hello_with(items, default_budgets()).await;
 
     // The event only settles once the test (as the runtime) answers.
-    let event_id = env.runtime.send_event("turn.complete", Some("s1"), json!({ "turnId": 1 }));
-    let ask = env.runtime.wait_notify("mod.ask", Duration::from_secs(30)).await;
+    let event_id = env
+        .runtime
+        .send_event("turn.complete", Some("s1"), json!({ "turnId": 1 }));
+    let ask = env
+        .runtime
+        .wait_notify("mod.ask", Duration::from_secs(30))
+        .await;
     assert_eq!(ask["args"]["message"], "Proceed?");
     assert_eq!(ask["args"]["choices"], json!(["yes", "no"]));
     assert_eq!(ask["mod_name"], "asking");
@@ -1174,17 +1573,37 @@ async fn ui_ask_round_trips_through_the_runtime() {
 
     // The runtime's answer resolves the pending ask; the runner's `$` call
     // settles with the op's `{value}` shape.
-    let answer_id = env.runtime.call_broker("answer", json!({ "id": ask_id, "value": "yes" }));
-    let ack = env.runtime.wait_result(answer_id, "broker.answer", Duration::from_secs(10)).await.expect("answer ack");
+    let answer_id = env
+        .runtime
+        .call_broker("answer", json!({ "id": ask_id, "value": "yes" }));
+    let ack = env
+        .runtime
+        .wait_result(answer_id, "broker.answer", Duration::from_secs(10))
+        .await
+        .expect("answer ack");
     assert_eq!(ack, json!({ "resolved": true }));
 
-    let settled = env.runtime.wait_result(event_id, "turn.complete", Duration::from_secs(30)).await.expect("event settles");
+    let settled = env
+        .runtime
+        .wait_result(event_id, "turn.complete", Duration::from_secs(30))
+        .await
+        .expect("event settles");
     assert_eq!(settled, json!({ "ok": true, "value": { "value": "yes" } }));
-    env.wait_trace("asking", r#"asking:call:ui.ask:{"ok":true,"value":{"value":"yes"}}"#).await;
+    env.wait_trace(
+        "asking",
+        r#"asking:call:ui.ask:{"ok":true,"value":{"value":"yes"}}"#,
+    )
+    .await;
 
     // Answering an id that names no ask is a not-found, not a silent ok.
-    let bogus = env.runtime.call_broker("answer", json!({ "id": "ask-gone", "value": "x" }));
-    let err = env.runtime.wait_result(bogus, "bogus answer", Duration::from_secs(10)).await.unwrap_err();
+    let bogus = env
+        .runtime
+        .call_broker("answer", json!({ "id": "ask-gone", "value": "x" }));
+    let err = env
+        .runtime
+        .wait_result(bogus, "bogus answer", Duration::from_secs(10))
+        .await
+        .unwrap_err();
     assert!(err.contains("no pending ask"), "{err}");
 }
 
@@ -1197,15 +1616,25 @@ async fn ui_ask_fails_when_the_runtime_disconnects() {
     let items = json!({ "asking": env.spec("asking", json!({})) });
     let _ready = env.hello_with(items, default_budgets()).await;
 
-    let _event_id = env.runtime.send_event("turn.complete", Some("s1"), json!({}));
-    let ask = env.runtime.wait_notify("mod.ask", Duration::from_secs(30)).await;
-    assert_eq!(ask["args"]["choices"], Value::Null, "no choices field when the mod sent none");
+    let _event_id = env
+        .runtime
+        .send_event("turn.complete", Some("s1"), json!({}));
+    let ask = env
+        .runtime
+        .wait_notify("mod.ask", Duration::from_secs(30))
+        .await;
+    assert_eq!(
+        ask["args"]["choices"],
+        Value::Null,
+        "no choices field when the mod sent none"
+    );
 
     // The runtime goes away mid-question: the ask aborts, the runner's call
     // errors, and its trace keeps the proof (the event result itself has no
     // runtime left to reach).
     env.runtime.disconnect().await;
-    env.wait_trace("asking", r#"asking:call:ui.ask:{"ok":false"#).await;
+    env.wait_trace("asking", r#"asking:call:ui.ask:{"ok":false"#)
+        .await;
     let trace = env.trace("asking");
     assert!(trace.contains("runtime disconnected"), "{trace}");
 }
@@ -1216,7 +1645,12 @@ async fn ui_ask_fails_when_the_runtime_disconnects() {
 // ---------------------------------------------------------------------------
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1250,7 +1684,8 @@ async fn real_runner_draws_the_token_weather_band() {
 
     // Answer forwarded ops like the runtime would: session.usage feeds the
     // mod's readings; anything else is refused.
-    let session_usage = json!({ "context": { "tokens": 32_000, "window": 200_000, "percent": 16 } });
+    let session_usage =
+        json!({ "context": { "tokens": 32_000, "window": 200_000, "percent": 16 } });
     env.runtime.push_responder(move |ns, method| {
         if ns == "session" && method == "usage" {
             Some(session_usage.clone())
@@ -1263,12 +1698,21 @@ async fn real_runner_draws_the_token_weather_band() {
     let first = &ready["mods"][0];
     assert_eq!(first["name"], "token-weather", "{ready}");
     assert_eq!(first["status"], "loaded", "{ready}");
-    assert!(first["hooks"].as_str().unwrap().contains("session.start"), "{ready}");
+    assert!(
+        first["hooks"].as_str().unwrap().contains("session.start"),
+        "{ready}"
+    );
 
     // session.start: the hook takes a reading through the runtime, then the
     // band draws with one data point.
-    let _ = env.runtime.raise("session.start", Some("s1"), json!({})).await;
-    let drawn = env.runtime.wait_notify("bands.update", Duration::from_secs(30)).await;
+    let _ = env
+        .runtime
+        .raise("session.start", Some("s1"), json!({}))
+        .await;
+    let drawn = env
+        .runtime
+        .wait_notify("bands.update", Duration::from_secs(30))
+        .await;
     assert_eq!(drawn["args"]["generation"], 1);
     assert!(
         drawn["args"]["tree"].to_string().contains("of context"),
@@ -1277,8 +1721,14 @@ async fn real_runner_draws_the_token_weather_band() {
     );
 
     // turn.complete: a second reading lands, the band redraws with a trend.
-    let _ = env.runtime.raise("turn.complete", Some("s1"), json!({ "turnId": 1 })).await;
-    let redrawn = env.runtime.wait_notify("bands.update", Duration::from_secs(30)).await;
+    let _ = env
+        .runtime
+        .raise("turn.complete", Some("s1"), json!({ "turnId": 1 }))
+        .await;
+    let redrawn = env
+        .runtime
+        .wait_notify("bands.update", Duration::from_secs(30))
+        .await;
     assert_eq!(redrawn["args"]["generation"], 2);
     assert!(
         redrawn["args"]["tree"].to_string().contains("last turns"),

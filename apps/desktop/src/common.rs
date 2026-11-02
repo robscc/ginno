@@ -24,7 +24,10 @@ pub(crate) fn shell_log<M: tauri::Manager<tauri::Wry>>(app: &M, line: &str) {
     };
     let logs = home.join("logs");
     let _ = std::fs::create_dir_all(&logs);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(logs.join("shell.log"))
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(logs.join("shell.log"))
     {
         use std::io::Write;
         let _ = writeln!(f, "{line}");

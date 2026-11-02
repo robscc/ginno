@@ -91,7 +91,10 @@ impl Broker {
             return band.clone();
         }
         let band = Band::new();
-        self.bands.lock().unwrap().insert(session.to_string(), band.clone());
+        self.bands
+            .lock()
+            .unwrap()
+            .insert(session.to_string(), band.clone());
         band
     }
 
@@ -100,7 +103,10 @@ impl Broker {
     /// rule). Sessions with neither a `ui.render` hook nor an open pane are
     /// not drawn at all. Boxed: the throttle path spawns a refresh from
     /// inside a render pass, so the future type must not be recursive.
-    pub fn surfaces_refresh(self: &Arc<Self>, session: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+    pub fn surfaces_refresh(
+        self: &Arc<Self>,
+        session: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         let broker = Arc::clone(self);
         let session = session.to_string();
         Box::pin(async move { broker.surfaces_refresh_inner(&session).await })
@@ -167,7 +173,12 @@ impl Broker {
         let throttled = {
             let mut core = band.core.lock().unwrap();
             let now = Instant::now();
-            while core.times.front().map(|t| now.duration_since(*t) > Duration::from_secs(1)).unwrap_or(false) {
+            while core
+                .times
+                .front()
+                .map(|t| now.duration_since(*t) > Duration::from_secs(1))
+                .unwrap_or(false)
+            {
                 core.times.pop_front();
             }
             if core.times.len() >= MAX_RENDERS_PER_SECOND {
@@ -216,9 +227,22 @@ impl Broker {
         for mod_name in &render_mods {
             *band.collecting.lock().unwrap() = Some((mod_name.clone(), HashSet::new()));
             let result = self
-                .raise_event_limited("ui.render", Some(session.to_string()), None, band_input(&config), None, Some(mod_name.clone()))
+                .raise_event_limited(
+                    "ui.render",
+                    Some(session.to_string()),
+                    None,
+                    band_input(&config),
+                    None,
+                    Some(mod_name.clone()),
+                )
                 .await;
-            let subscribed = band.collecting.lock().unwrap().take().map(|(_, slots)| slots).unwrap_or_default();
+            let subscribed = band
+                .collecting
+                .lock()
+                .unwrap()
+                .take()
+                .map(|(_, slots)| slots)
+                .unwrap_or_default();
 
             let tree = match result {
                 Ok(value) => normalize_tree(&value),
@@ -255,7 +279,8 @@ impl Broker {
                     first_generation = state.generation;
                     first_tree = Some(tree.clone());
                 }
-                entries.push(json!({ "mod": mod_name, "generation": state.generation, "tree": tree }));
+                entries
+                    .push(json!({ "mod": mod_name, "generation": state.generation, "tree": tree }));
             }
         }
         if any_changed {
@@ -273,16 +298,32 @@ impl Broker {
         // ---- panes: one chain per open pane, its owner's hooks ----
         let open_panes: Vec<(String, String)> = {
             let core = band.core.lock().unwrap();
-            core.panes.iter().map(|(id, pane)| (id.clone(), pane.owner.clone())).collect()
+            core.panes
+                .iter()
+                .map(|(id, pane)| (id.clone(), pane.owner.clone()))
+                .collect()
         };
         for (id, owner) in open_panes {
             let (raised, subscribed) = if render_mods.contains(&owner) {
                 *band.collecting.lock().unwrap() = Some((owner.clone(), HashSet::new()));
                 let input = pane_input(&config, &id);
                 let raised = self
-                    .raise_event_limited("ui.render", Some(session.to_string()), None, input, None, Some(owner.clone()))
+                    .raise_event_limited(
+                        "ui.render",
+                        Some(session.to_string()),
+                        None,
+                        input,
+                        None,
+                        Some(owner.clone()),
+                    )
                     .await;
-                let subscribed = band.collecting.lock().unwrap().take().map(|(_, slots)| slots).unwrap_or_default();
+                let subscribed = band
+                    .collecting
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .map(|(_, slots)| slots)
+                    .unwrap_or_default();
                 (raised, subscribed)
             } else {
                 // The owner lost its `ui.render` hook (unloaded/reconfigured):
@@ -317,7 +358,12 @@ impl Broker {
                 }
             };
             if let Some(payload) = update {
-                self.runtime_notify("mod.pane.update", Some(session.to_string()), Some(owner.clone()), payload);
+                self.runtime_notify(
+                    "mod.pane.update",
+                    Some(session.to_string()),
+                    Some(owner.clone()),
+                    payload,
+                );
             }
         }
     }
@@ -346,9 +392,15 @@ impl Broker {
                 .map(|state| state.generation == generation && state.actions.contains(action_id))
                 .unwrap_or(false);
             let in_pane = core.panes.iter().any(|(_, pane)| {
-                pane.owner == mod_name && pane.generation == generation && pane.actions.contains(action_id)
+                pane.owner == mod_name
+                    && pane.generation == generation
+                    && pane.actions.contains(action_id)
             });
-            let top = core.mods.get(&mod_name).map(|state| state.generation).unwrap_or(0);
+            let top = core
+                .mods
+                .get(&mod_name)
+                .map(|state| state.generation)
+                .unwrap_or(0);
             if in_band || in_pane {
                 None
             } else {
@@ -362,7 +414,9 @@ impl Broker {
             return;
         }
         let Some(conn) = self.runner(&mod_name).await else {
-            self.report(&format!("band press ignored: {action_id} names mod {mod_name}, which has no runner"));
+            self.report(&format!(
+                "band press ignored: {action_id} names mod {mod_name}, which has no runner"
+            ));
             return;
         };
         let mut call_args = json!({ "actionId": action_id, "generation": generation });
@@ -401,11 +455,18 @@ impl Broker {
     /// later (spawned), so a burst of writes coalesces into one pass.
     pub fn surfaces_state_written(self: &Arc<Self>, session: &str, slot: &str) {
         let bands = self.bands.lock().unwrap();
-        let Some(band) = bands.get(session) else { return };
+        let Some(band) = bands.get(session) else {
+            return;
+        };
         let subscribed = {
             let core = band.core.lock().unwrap();
-            core.mods.values().any(|state| state.subscribed.contains(slot))
-                || core.panes.iter().any(|(_, pane)| pane.subscribed.contains(slot))
+            core.mods
+                .values()
+                .any(|state| state.subscribed.contains(slot))
+                || core
+                    .panes
+                    .iter()
+                    .any(|(_, pane)| pane.subscribed.contains(slot))
         };
         drop(bands);
         if subscribed {
@@ -419,7 +480,13 @@ impl Broker {
 
     /// Record a `$.ui.open`: upsert the pane (an open id re-titles in place),
     /// capped at [`MAX_PANES_PER_SESSION`] per session.
-    pub fn surfaces_pane_open(&self, session: &str, owner: &str, id: &str, title: &str) -> Result<(), String> {
+    pub fn surfaces_pane_open(
+        &self,
+        session: &str,
+        owner: &str,
+        id: &str,
+        title: &str,
+    ) -> Result<(), String> {
         let band = self.band_of(session);
         let mut core = band.core.lock().unwrap();
         if let Some((_, pane)) = core.panes.iter_mut().find(|(pid, _)| pid == id) {
@@ -428,11 +495,17 @@ impl Broker {
             return Ok(());
         }
         if core.panes.len() >= MAX_PANES_PER_SESSION {
-            return Err(format!("$.ui.open: at most {MAX_PANES_PER_SESSION} panes per session"));
+            return Err(format!(
+                "$.ui.open: at most {MAX_PANES_PER_SESSION} panes per session"
+            ));
         }
         core.panes.push((
             id.to_string(),
-            PaneState { title: title.to_string(), owner: owner.to_string(), ..PaneState::default() },
+            PaneState {
+                title: title.to_string(),
+                owner: owner.to_string(),
+                ..PaneState::default()
+            },
         ));
         Ok(())
     }
@@ -449,7 +522,9 @@ impl Broker {
     /// The session's open panes, oldest first (`$.ui.panes`).
     pub fn surfaces_panes(&self, session: &str) -> Vec<Value> {
         let bands = self.bands.lock().unwrap();
-        let Some(band) = bands.get(session) else { return Vec::new() };
+        let Some(band) = bands.get(session) else {
+            return Vec::new();
+        };
         let core = band.core.lock().unwrap();
         core.panes
             .iter()

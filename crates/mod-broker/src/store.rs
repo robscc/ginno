@@ -23,7 +23,10 @@ pub struct Store {
 impl Store {
     /// Opens (or defers opening) the store at `path`; `None` disables it.
     pub fn new(path: Option<PathBuf>) -> Store {
-        Store { path, data: Mutex::new(HashMap::new()) }
+        Store {
+            path,
+            data: Mutex::new(HashMap::new()),
+        }
     }
 
     fn load(&self) -> HashMap<String, Map<String, Value>> {
@@ -55,7 +58,9 @@ impl Store {
             return Err("$.store needs a configured store path".to_string());
         };
         let whole: Value = Value::Object(
-            data.iter().map(|(plugin, keys)| (plugin.clone(), Value::Object(keys.clone()))).collect(),
+            data.iter()
+                .map(|(plugin, keys)| (plugin.clone(), Value::Object(keys.clone())))
+                .collect(),
         );
         let encoded = serde_json::to_vec(&whole).map_err(|e| format!("$.store.set: {e}"))?;
         if encoded.len() > STORE_MAX_BYTES {
@@ -72,12 +77,16 @@ impl Store {
 
     pub fn get(&self, plugin: &str, key: &str) -> Value {
         let data = self.load();
-        data.get(plugin).and_then(|keys| keys.get(key).cloned()).unwrap_or(Value::Null)
+        data.get(plugin)
+            .and_then(|keys| keys.get(key).cloned())
+            .unwrap_or(Value::Null)
     }
 
     pub fn set(&self, plugin: &str, key: &str, value: Value) -> Result<(), String> {
         let mut data = self.load();
-        data.entry(plugin.to_string()).or_default().insert(key.to_string(), value);
+        data.entry(plugin.to_string())
+            .or_default()
+            .insert(key.to_string(), value);
         self.save(&data)
     }
 
@@ -91,7 +100,9 @@ impl Store {
 
     pub fn keys(&self, plugin: &str) -> Vec<String> {
         let data = self.load();
-        data.get(plugin).map(|keys| keys.keys().cloned().collect()).unwrap_or_default()
+        data.get(plugin)
+            .map(|keys| keys.keys().cloned().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -117,7 +128,10 @@ mod tests {
     use super::*;
 
     fn tmp_store(name: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!("ginno-mod-broker-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "ginno-mod-broker-test-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Store::new(Some(dir.join("store.json")))

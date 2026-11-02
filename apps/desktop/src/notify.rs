@@ -33,8 +33,20 @@ pub(crate) struct NotifyPayload {
 /// webview, so anything unknown is dropped rather than handed to the OS.
 /// Keep in sync with SOUND_NAMES in apps/web/src/lib/notifyPrefs.ts.
 const SYSTEM_SOUNDS: &[&str] = &[
-    "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Sosumi",
-    "Submarine", "Purr", "Pop", "Tink",
+    "Basso",
+    "Blow",
+    "Bottle",
+    "Frog",
+    "Funk",
+    "Glass",
+    "Hero",
+    "Morse",
+    "Ping",
+    "Sosumi",
+    "Submarine",
+    "Purr",
+    "Pop",
+    "Tink",
 ];
 
 /// Fire a native macOS notification and wait for the user's reaction.
@@ -78,7 +90,10 @@ pub(crate) fn show_notification_and_wait(app: tauri::AppHandle, payload: NotifyP
         // "__closed" = dismissed without clicking; anything else = clicked.
         shell_log(
             &app,
-            &format!("wait_for_action resolved action={action} kind={} id={}", payload.kind, payload.id),
+            &format!(
+                "wait_for_action resolved action={action} kind={} id={}",
+                payload.kind, payload.id
+            ),
         );
         if action != "__closed" {
             focus_and_open(&app, &payload.kind, &payload.id);
@@ -150,7 +165,10 @@ pub(crate) fn deep_link_open_session(app: &tauri::AppHandle, sid: &str) {
     use std::sync::atomic::Ordering;
 
     let token = DEEP_LINK_TOKEN.fetch_add(1, Ordering::SeqCst) + 1;
-    shell_log(app, &format!("deep_link_open_session sid={sid} token={token}"));
+    shell_log(
+        app,
+        &format!("deep_link_open_session sid={sid} token={token}"),
+    );
     let id_js = serde_json::to_string(sid).unwrap_or_else(|_| "\"\"".to_string());
     let script = format!(
         "if (window.__ginnoOpenSession && window.__ginnoDeepLinkDone !== {token}) {{ \

@@ -18,9 +18,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Notify};
 
 use crate::budget::Budget;
-use crate::protocol::{
-    result_err, Frame, HookFailure, RpcError, PROTOCOL_VERSION,
-};
+use crate::protocol::{result_err, Frame, HookFailure, RpcError, PROTOCOL_VERSION};
 use crate::registry::HookDesc;
 
 /// A refused `tool.call` reroute (`next` that swaps the tool; since P1 an
@@ -41,7 +39,10 @@ pub enum HubKey {
     /// Replies to an `event`/`catch-call` frame this broker sent.
     Reply { mod_name: String, frame_id: u64 },
     /// `next` frames (and synthetic notices) for the active hook run.
-    Active { invocation: String, mod_name: String },
+    Active {
+        invocation: String,
+        mod_name: String,
+    },
 }
 
 /// Messages the chain loop selects over.
@@ -80,7 +81,10 @@ impl Hub {
     pub fn send_to_mod(&self, mod_name: &str, msg: HookMsg) {
         let entries = self.entries.lock().unwrap();
         for (key, tx) in entries.iter() {
-            if let HubKey::Active { mod_name: owner, .. } = key {
+            if let HubKey::Active {
+                mod_name: owner, ..
+            } = key
+            {
                 if owner == mod_name {
                     let _ = tx.send(msg.clone());
                 }
@@ -188,7 +192,11 @@ pub struct Failure {
 impl Failure {
     fn throw(message: String) -> Failure {
         let line = format!("threw {message}");
-        Failure { kind: "throw".to_string(), message, line }
+        Failure {
+            kind: "throw".to_string(),
+            message,
+            line,
+        }
     }
 
     fn no_result() -> Failure {
@@ -202,7 +210,11 @@ impl Failure {
     /// The hook answered in a shape this event never accepts (§15.5): skipped
     /// like a throw, but the report names the answer, not a throw.
     fn bad_answer(line: String) -> Failure {
-        Failure { kind: "throw".to_string(), message: line.clone(), line }
+        Failure {
+            kind: "throw".to_string(),
+            message: line.clone(),
+            line,
+        }
     }
 
     fn timeout(limit_ms: u64) -> Failure {
@@ -257,7 +269,11 @@ fn validate_tool_call(next_e: &Value, original: &Value) -> Option<String> {
     let original_tool = original.get("tool");
     let next_tool = next_e.get("tool");
     if original_tool != next_tool {
-        return Some(format!("rerouted the call from {} to {}", name_of(original_tool), name_of(next_tool)));
+        return Some(format!(
+            "rerouted the call from {} to {}",
+            name_of(original_tool),
+            name_of(next_tool)
+        ));
     }
     None
 }
@@ -306,7 +322,10 @@ fn validate_takeover_result(result: &Value) -> Option<Failure> {
         return bad("the result must be an object".to_string());
     };
     match fields.get("value") {
-        Some(Value::String(_)) | Some(Value::Number(_)) | Some(Value::Bool(_)) | Some(Value::Object(_)) => {}
+        Some(Value::String(_))
+        | Some(Value::Number(_))
+        | Some(Value::Bool(_))
+        | Some(Value::Object(_)) => {}
         _ => return bad("value is required and must be a string or an object".to_string()),
     }
     if let Some(is_error) = fields.get("isError") {
@@ -329,7 +348,12 @@ pub fn run_from<'a>(
     Box::pin(run_from_inner(ctx, hooks, index, input))
 }
 
-async fn run_from_inner(ctx: &Arc<ChainCtx>, hooks: &[HookDesc], index: usize, input: Value) -> Result<Value, RpcError> {
+async fn run_from_inner(
+    ctx: &Arc<ChainCtx>,
+    hooks: &[HookDesc],
+    index: usize,
+    input: Value,
+) -> Result<Value, RpcError> {
     for i in index..hooks.len() {
         if hooks[i].matcher_matches(&input) {
             return run_hook(ctx, hooks, i, input).await;
@@ -368,11 +392,19 @@ fn report_hook_failure(ctx: &ChainCtx, hook: &HookDesc, failure: &Failure) {
     }
     reported.insert(failure.kind.clone());
     drop(reported);
-    let line = format!("{}: {} hook skipped: {}", hook.mod_name, ctx.event, failure.line);
+    let line = format!(
+        "{}: {} hook skipped: {}",
+        hook.mod_name, ctx.event, failure.line
+    );
     ctx.broker.report(&line);
 }
 
-async fn run_hook(ctx: &Arc<ChainCtx>, hooks: &[HookDesc], index: usize, input: Value) -> Result<Value, RpcError> {
+async fn run_hook(
+    ctx: &Arc<ChainCtx>,
+    hooks: &[HookDesc],
+    index: usize,
+    input: Value,
+) -> Result<Value, RpcError> {
     let hook = hooks[index].clone();
     let mod_name = hook.mod_name.clone();
     let broker = &ctx.broker;
@@ -391,7 +423,11 @@ async fn run_hook(ctx: &Arc<ChainCtx>, hooks: &[HookDesc], index: usize, input: 
     }
     let budget = Arc::new(Budget::new(limit_ms));
     let budget_key = (ctx.invocation.clone(), mod_name.clone());
-    broker.budgets.lock().unwrap().insert(budget_key.clone(), budget.clone());
+    broker
+        .budgets
+        .lock()
+        .unwrap()
+        .insert(budget_key.clone(), budget.clone());
 
     let run = Arc::new(HookRun {
         ctx: ctx.clone(),
@@ -406,8 +442,14 @@ async fn run_hook(ctx: &Arc<ChainCtx>, hooks: &[HookDesc], index: usize, input: 
 
     let (tx, mut rx) = mpsc::unbounded_channel::<HookMsg>();
     let event_frame_id = conn.next_id();
-    let reply_key = HubKey::Reply { mod_name: mod_name.clone(), frame_id: event_frame_id };
-    let active_key = HubKey::Active { invocation: ctx.invocation.clone(), mod_name: mod_name.clone() };
+    let reply_key = HubKey::Reply {
+        mod_name: mod_name.clone(),
+        frame_id: event_frame_id,
+    };
+    let active_key = HubKey::Active {
+        invocation: ctx.invocation.clone(),
+        mod_name: mod_name.clone(),
+    };
     broker.hub.insert(reply_key.clone(), tx.clone());
     broker.hub.insert(active_key.clone(), tx.clone());
 
@@ -468,7 +510,8 @@ async fn run_hook(ctx: &Arc<ChainCtx>, hooks: &[HookDesc], index: usize, input: 
                     return Err(beneath);
                 }
             }
-            let catch_answered = finish_failure(ctx, hooks, index, &run.input, failure, run.clone()).await;
+            let catch_answered =
+                finish_failure(ctx, hooks, index, &run.input, failure, run.clone()).await;
             broker.hub.remove(&reply_key);
             broker.hub.remove(&active_key);
             if let Some(value) = catch_answered {
@@ -504,15 +547,25 @@ async fn finish_failure(
     let conn = run.conn.clone();
     let catch_budget = Arc::new(Budget::new(ctx.catch_budget_ms));
     let budget_key = (ctx.invocation.clone(), mod_name.clone());
-    broker.budgets.lock().unwrap().insert(budget_key.clone(), catch_budget.clone());
+    broker
+        .budgets
+        .lock()
+        .unwrap()
+        .insert(budget_key.clone(), catch_budget.clone());
 
     let (tx, mut rx) = mpsc::unbounded_channel::<HookMsg>();
     let catch_frame_id = conn.next_id();
-    let catch_reply_key = HubKey::Reply { mod_name: mod_name.clone(), frame_id: catch_frame_id };
+    let catch_reply_key = HubKey::Reply {
+        mod_name: mod_name.clone(),
+        frame_id: catch_frame_id,
+    };
     broker.hub.insert(catch_reply_key.clone(), tx.clone());
     // Re-point the active-hook routing at the catch channel: the handler's
     // `next` shares the hook's beneath state through it.
-    let catch_active_key = HubKey::Active { invocation: ctx.invocation.clone(), mod_name: mod_name.clone() };
+    let catch_active_key = HubKey::Active {
+        invocation: ctx.invocation.clone(),
+        mod_name: mod_name.clone(),
+    };
     broker.hub.insert(catch_active_key, tx.clone());
     conn.send(&Frame::CatchCall {
         v: PROTOCOL_VERSION,
@@ -520,7 +573,10 @@ async fn finish_failure(
         invocation: ctx.invocation.clone(),
         event: ctx.event.clone(),
         payload: input.clone(),
-        failure: HookFailure { kind: failure.kind.clone(), message: failure.message.clone() },
+        failure: HookFailure {
+            kind: failure.kind.clone(),
+            message: failure.message.clone(),
+        },
         deadline_ms: Some(catch_budget.limit_ms()),
         mod_name: None,
     });
@@ -665,7 +721,11 @@ fn classify_reply(res: Result<Value, RpcError>, phase: Phase) -> Verdict {
         Err(e) => {
             if phase == Phase::Catch && e.code == CODE_NO_CATCH {
                 // The runner has no handler: fall through without a report.
-                return Verdict::Failed(Failure { kind: "skipped-silent".to_string(), message: e.message, line: String::new() });
+                return Verdict::Failed(Failure {
+                    kind: "skipped-silent".to_string(),
+                    message: e.message,
+                    line: String::new(),
+                });
             }
             if e.code == CODE_NO_RESULT {
                 return Verdict::Failed(Failure::no_result());

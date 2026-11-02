@@ -32,7 +32,11 @@ pub struct TimerSet {
 }
 
 impl TimerSet {
-    pub fn new(broker: std::sync::Weak<Broker>, session: Option<String>, owner: String) -> Arc<TimerSet> {
+    pub fn new(
+        broker: std::sync::Weak<Broker>,
+        session: Option<String>,
+        owner: String,
+    ) -> Arc<TimerSet> {
         Arc::new(TimerSet {
             owner,
             session,
@@ -55,7 +59,10 @@ impl TimerSet {
         let this = self.clone();
         let id2 = id.clone();
         let (cancel_tx, mut cancel_rx) = mpsc::channel::<()>(1);
-        self.entries.lock().unwrap().insert(id2.clone(), TimerEntry { cancel: cancel_tx });
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(id2.clone(), TimerEntry { cancel: cancel_tx });
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(ms.min(u64::MAX / 2))) => {
@@ -78,7 +85,10 @@ impl TimerSet {
         let this = self.clone();
         let id2 = id.clone();
         let (cancel_tx, mut cancel_rx) = mpsc::channel::<()>(1);
-        self.entries.lock().unwrap().insert(id2.clone(), TimerEntry { cancel: cancel_tx });
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(id2.clone(), TimerEntry { cancel: cancel_tx });
         let period = Duration::from_millis(ms.clamp(1, u64::MAX / 2));
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(period);
@@ -146,11 +156,21 @@ impl TimerSet {
             };
             if let Some(conn) = broker.runner(&self.owner).await {
                 if let Err(e) = conn
-                    .call("clock", "fire", serde_json::json!({"timer": id}), self.session.clone(), Some(self.owner.clone()), None)
+                    .call(
+                        "clock",
+                        "fire",
+                        serde_json::json!({"timer": id}),
+                        self.session.clone(),
+                        Some(self.owner.clone()),
+                        None,
+                    )
                     .await
                 {
                     if e.code != crate::chain::CODE_NO_CATCH {
-                        broker.report(&format!("{}: timer callback failed: {}", self.owner, e.message));
+                        broker.report(&format!(
+                            "{}: timer callback failed: {}",
+                            self.owner, e.message
+                        ));
                     }
                 }
             }

@@ -31,21 +31,31 @@ pub struct ToolNameAliases {
 
 impl ToolNameAliases {
     pub fn new() -> Self {
-        let forward: HashMap<String, String> =
-            default_aliases().into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let reverse: HashMap<String, String> =
-            forward.iter().map(|(mod_name, host)| (host.clone(), mod_name.clone())).collect();
+        let forward: HashMap<String, String> = default_aliases()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let reverse: HashMap<String, String> = forward
+            .iter()
+            .map(|(mod_name, host)| (host.clone(), mod_name.clone()))
+            .collect();
         Self { forward, reverse }
     }
 
     /// The name a mod sees for a Ginno tool: its Claude Code alias, or the name itself.
     pub fn to_mod(&self, host_name: &str) -> String {
-        self.reverse.get(host_name).cloned().unwrap_or_else(|| host_name.to_string())
+        self.reverse
+            .get(host_name)
+            .cloned()
+            .unwrap_or_else(|| host_name.to_string())
     }
 
     /// The Ginno tool a mod named: the alias target, or the name itself.
     pub fn to_host(&self, mod_name: &str) -> String {
-        self.forward.get(mod_name).cloned().unwrap_or_else(|| mod_name.to_string())
+        self.forward
+            .get(mod_name)
+            .cloned()
+            .unwrap_or_else(|| mod_name.to_string())
     }
 }
 

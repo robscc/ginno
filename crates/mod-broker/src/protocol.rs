@@ -118,7 +118,11 @@ pub enum Frame {
         invocation: String,
         #[serde(default)]
         payload: Value,
-        #[serde(rename = "deadlineMs", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "deadlineMs",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         deadline_ms: Option<u64>,
         /// Registry entry the dispatch belongs to, so a runner with several
         /// hooks on one event can tell them apart. Runners may ignore it.
@@ -151,7 +155,11 @@ pub enum Frame {
         #[serde(default)]
         payload: Value,
         failure: HookFailure,
-        #[serde(rename = "deadlineMs", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "deadlineMs",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         deadline_ms: Option<u64>,
         /// Host mode: target mod's worker (stamped by the sending virtual conn).
         #[serde(rename = "mod", default, skip_serializing_if = "Option::is_none")]
@@ -206,10 +214,16 @@ pub struct HookFailure {
 
 impl HookFailure {
     pub fn throw(message: impl Into<String>) -> Self {
-        Self { kind: "throw".into(), message: message.into() }
+        Self {
+            kind: "throw".into(),
+            message: message.into(),
+        }
     }
     pub fn timeout(limit_ms: u64) -> Self {
-        Self { kind: "timeout".into(), message: format!("ran past its {limit_ms} ms limit") }
+        Self {
+            kind: "timeout".into(),
+            message: format!("ran past its {limit_ms} ms limit"),
+        }
     }
 }
 
@@ -227,10 +241,16 @@ impl RpcError {
     }
 
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into() }
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
     }
     pub fn no_implementation(op: &str) -> Self {
-        Self::new(CODE_NO_IMPLEMENTATION, format!("no implementation for {op}"))
+        Self::new(
+            CODE_NO_IMPLEMENTATION,
+            format!("no implementation for {op}"),
+        )
     }
 }
 
@@ -309,7 +329,15 @@ fn truncate(s: &str, n: usize) -> &str {
 
 /// Build a successful `result` frame.
 pub fn result_ok(id: u64, value: Value) -> Frame {
-    Frame::Result { v: PROTOCOL_VERSION, id, ok: true, value: Some(value), code: None, message: None, mod_name: None }
+    Frame::Result {
+        v: PROTOCOL_VERSION,
+        id,
+        ok: true,
+        value: Some(value),
+        code: None,
+        message: None,
+        mod_name: None,
+    }
 }
 
 /// Build a failed `result` frame.
@@ -385,7 +413,18 @@ mod tests {
         ];
         for expected in frames {
             let mut line = String::new();
-            Frame::Event { v: 1, id: 0, event: String::new(), session: None, invocation: String::new(), payload: Value::Null, deadline_ms: None, hook: None, mod_name: None }.encode_into(&mut line); // warm path check only
+            Frame::Event {
+                v: 1,
+                id: 0,
+                event: String::new(),
+                session: None,
+                invocation: String::new(),
+                payload: Value::Null,
+                deadline_ms: None,
+                hook: None,
+                mod_name: None,
+            }
+            .encode_into(&mut line); // warm path check only
             let text = serde_json::to_string(&expected).unwrap();
             let frame = decode_line(&text).unwrap_or_else(|e| panic!("{e}"));
             let mut out = String::new();
@@ -399,11 +438,16 @@ mod tests {
     fn decodes_design_examples_verbatim() {
         // The exact frames printed in design §6.1 must decode.
         assert!(decode_line(r#"{"v":1,"id":42,"kind":"call","ns":"fs","method":"read","args":{"path":"./x.py"},"session":"s1","mod":"token-weather"}"#).is_ok());
-        assert!(decode_line(r#"{"v":1,"id":42,"kind":"result","ok":true,"value":"<content>"}"#).is_ok());
+        assert!(
+            decode_line(r#"{"v":1,"id":42,"kind":"result","ok":true,"value":"<content>"}"#).is_ok()
+        );
         assert!(decode_line(r#"{"v":1,"kind":"event","event":"tool.call","session":"s1","invocation":"i-17","payload":{},"deadlineMs":10000,"id":1}"#).is_ok());
         assert!(decode_line(r#"{"v":1,"kind":"next","invocation":"i-17","e":{},"id":2}"#).is_ok());
         assert!(decode_line(r#"{"v":1,"kind":"catch-call","invocation":"i-17","id":3,"event":"e","payload":{},"failure":{"kind":"throw","message":"m"}}"#).is_ok());
-        assert!(decode_line(r#"{"v":1,"kind":"notify","method":"bands.update","session":"s1","args":{},"mod":"m"}"#).is_ok());
+        assert!(decode_line(
+            r#"{"v":1,"kind":"notify","method":"bands.update","session":"s1","args":{},"mod":"m"}"#
+        )
+        .is_ok());
     }
 
     #[test]

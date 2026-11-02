@@ -37,7 +37,9 @@ pub struct Grants {
 impl Grants {
     pub fn from_json(value: &Value) -> Grants {
         let mut grants = Grants::default();
-        let Some(fields) = value.as_object() else { return grants };
+        let Some(fields) = value.as_object() else {
+            return grants;
+        };
         if fields.get("fs.write").and_then(Value::as_bool) == Some(true) {
             grants.fs_write = true;
         }
@@ -66,7 +68,14 @@ impl Grants {
             "http.fetch" => {
                 let url = args.get("url").and_then(Value::as_str).unwrap_or_default();
                 match host_of(url) {
-                    Some(host) if self.http_hosts.iter().any(|allowed| host_allowed(allowed, &host)) => None,
+                    Some(host)
+                        if self
+                            .http_hosts
+                            .iter()
+                            .any(|allowed| host_allowed(allowed, &host)) =>
+                    {
+                        None
+                    }
                     Some(host) => Some(format!("http.fetch to {host} is not granted to this mod")),
                     None => Some("http.fetch needs an http(s) URL".to_string()),
                 }
@@ -75,17 +84,26 @@ impl Grants {
                 let argv = args.get("argv").and_then(Value::as_array);
                 let argv0 = argv.and_then(|argv| argv.first()).and_then(Value::as_str);
                 match (argv0, argv) {
-                    (Some(argv0), Some(argv)) if self.process_argv0.iter().any(|allowed| argv0_allowed(allowed, argv0, argv)) => {
+                    (Some(argv0), Some(argv))
+                        if self
+                            .process_argv0
+                            .iter()
+                            .any(|allowed| argv0_allowed(allowed, argv0, argv)) =>
+                    {
                         None
                     }
-                    (Some(argv0), Some(_)) => Some(format!("process.run of {argv0} is not granted to this mod")),
+                    (Some(argv0), Some(_)) => {
+                        Some(format!("process.run of {argv0} is not granted to this mod"))
+                    }
                     _ => Some("process.run needs a non-empty argv list of strings".to_string()),
                 }
             }
             "env.get" => {
                 let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
                 let allowed: Box<dyn Fn(&str) -> bool> = match &self.env_names {
-                    Some(names) => Box::new(move |candidate: &str| names.iter().any(|allowed| allowed == candidate)),
+                    Some(names) => Box::new(move |candidate: &str| {
+                        names.iter().any(|allowed| allowed == candidate)
+                    }),
                     None => Box::new(|candidate: &str| {
                         ENV_BASE_WHITELIST.contains(&candidate) || candidate.starts_with("GINNO_")
                     }),
@@ -104,15 +122,25 @@ impl Grants {
 fn string_list(value: Option<&Value>) -> Vec<String> {
     value
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 /// The hostname of an http(s) URL, lowercase.
 fn host_of(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
     let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     let host = host.split_once(':').map_or(host, |(host, _)| host);
     if host.is_empty() {
         None
@@ -126,7 +154,10 @@ fn host_of(url: &str) -> Option<String> {
 /// for any host. (See the module docs for the reasoning.)
 fn host_allowed(entry: &str, host: &str) -> bool {
     if let Some(suffix) = entry.strip_prefix("*.") {
-        host == suffix || host.strip_suffix(suffix).is_some_and(|prefix| prefix.ends_with('.'))
+        host == suffix
+            || host
+                .strip_suffix(suffix)
+                .is_some_and(|prefix| prefix.ends_with('.'))
     } else {
         entry == "*" || entry == host
     }
@@ -137,7 +168,12 @@ fn host_allowed(entry: &str, host: &str) -> bool {
 fn argv0_allowed(entry: &str, argv0: &str, argv: &[Value]) -> bool {
     if let Some(prefix) = entry.strip_suffix('*') {
         let command_line = std::iter::once(argv0.to_string())
-            .chain(argv.iter().skip(1).filter_map(Value::as_str).map(str::to_string))
+            .chain(
+                argv.iter()
+                    .skip(1)
+                    .filter_map(Value::as_str)
+                    .map(str::to_string),
+            )
             .collect::<Vec<_>>()
             .join(" ");
         command_line.starts_with(prefix)
@@ -162,30 +198,58 @@ mod tests {
     #[test]
     fn http_fetch_matches_hostnames() {
         let grants = Grants::from_json(&json!({"http.fetch": ["api.github.com"]}));
-        assert!(grants.check("http.fetch", &json!({"url": "https://api.github.com/x?q=1"})).is_none());
-        assert!(grants.check("http.fetch", &json!({"url": "https://evil.com/x"})).is_some());
-        assert!(grants.check("http.fetch", &json!({"url": "file:///etc/passwd"})).is_some());
-        assert!(Grants::default().check("http.fetch", &json!({"url": "https://api.github.com"})).is_some());
+        assert!(grants
+            .check(
+                "http.fetch",
+                &json!({"url": "https://api.github.com/x?q=1"})
+            )
+            .is_none());
+        assert!(grants
+            .check("http.fetch", &json!({"url": "https://evil.com/x"}))
+            .is_some());
+        assert!(grants
+            .check("http.fetch", &json!({"url": "file:///etc/passwd"}))
+            .is_some());
+        assert!(Grants::default()
+            .check("http.fetch", &json!({"url": "https://api.github.com"}))
+            .is_some());
     }
 
     #[test]
     fn http_fetch_wildcards_cover_a_domain_and_its_subdomains() {
         let grants = Grants::from_json(&json!({"http.fetch": ["*.example.com"]}));
-        assert!(grants.check("http.fetch", &json!({"url": "https://api.example.com/v1"})).is_none());
-        assert!(grants.check("http.fetch", &json!({"url": "https://example.com"})).is_none(), "the apex too");
+        assert!(grants
+            .check("http.fetch", &json!({"url": "https://api.example.com/v1"}))
+            .is_none());
+        assert!(
+            grants
+                .check("http.fetch", &json!({"url": "https://example.com"}))
+                .is_none(),
+            "the apex too"
+        );
         // Only at label boundaries: a lookalike host is not covered.
-        assert!(grants.check("http.fetch", &json!({"url": "https://evilexample.com"})).is_some());
-        assert!(grants.check("http.fetch", &json!({"url": "https://notexample.com"})).is_some());
+        assert!(grants
+            .check("http.fetch", &json!({"url": "https://evilexample.com"}))
+            .is_some());
+        assert!(grants
+            .check("http.fetch", &json!({"url": "https://notexample.com"}))
+            .is_some());
         // A bare `*` allows every host.
         let any = Grants::from_json(&json!({"http.fetch": ["*"]}));
-        assert!(any.check("http.fetch", &json!({"url": "https://anything.dev"})).is_none());
+        assert!(any
+            .check("http.fetch", &json!({"url": "https://anything.dev"}))
+            .is_none());
     }
 
     #[test]
     fn process_run_matches_argv0() {
         let grants = Grants::from_json(&json!({"process.run": ["git"]}));
-        assert!(grants.check("process.run", &json!({"argv": ["git", "status"]})).is_none());
-        assert!(grants.check("process.run", &json!({"argv": ["rm", "-rf"]})).is_some());
+        assert!(grants
+            .check("process.run", &json!({"argv": ["git", "status"]}))
+            .is_none());
+        assert!(grants
+            .check("process.run", &json!({"argv": ["rm", "-rf"]}))
+            .is_some());
         assert!(grants.check("process.run", &json!({})).is_some());
     }
 
@@ -194,28 +258,52 @@ mod tests {
         // `"brew *"`: a prefix of the whole command line, so subcommands and
         // their arguments ride along — but a different binary does not.
         let grants = Grants::from_json(&json!({"process.run": ["brew *"]}));
-        assert!(grants.check("process.run", &json!({"argv": ["brew", "install", "gcc"]})).is_none());
-        assert!(grants.check("process.run", &json!({"argv": ["brewy", "x"]})).is_some(), "prefix stops at the binary name");
+        assert!(grants
+            .check("process.run", &json!({"argv": ["brew", "install", "gcc"]}))
+            .is_none());
+        assert!(
+            grants
+                .check("process.run", &json!({"argv": ["brewy", "x"]}))
+                .is_some(),
+            "prefix stops at the binary name"
+        );
         // `"git*"` reaches past the binary name too (documented sharp edge).
         let loose = Grants::from_json(&json!({"process.run": ["git*"]}));
-        assert!(loose.check("process.run", &json!({"argv": ["github-cli", "auth"]})).is_none());
+        assert!(loose
+            .check("process.run", &json!({"argv": ["github-cli", "auth"]}))
+            .is_none());
         // An exact entry matches argv0 only — any subcommand rides along
         // (pre-existing semantics, kept).
         let exact = Grants::from_json(&json!({"process.run": ["git"]}));
-        assert!(exact.check("process.run", &json!({"argv": ["git", "push", "--force"]})).is_none());
-        assert!(exact.check("process.run", &json!({"argv": ["gitk"]})).is_some(), "no implicit prefix");
+        assert!(exact
+            .check("process.run", &json!({"argv": ["git", "push", "--force"]}))
+            .is_none());
+        assert!(
+            exact
+                .check("process.run", &json!({"argv": ["gitk"]}))
+                .is_some(),
+            "no implicit prefix"
+        );
         // No grant at all: denied (default-deny is the whole point).
-        assert!(Grants::default().check("process.run", &json!({"argv": ["git", "status"]})).is_some());
+        assert!(Grants::default()
+            .check("process.run", &json!({"argv": ["git", "status"]}))
+            .is_some());
     }
 
     #[test]
     fn env_get_uses_the_base_whitelist_unless_a_grant_narrows_it() {
         let base = Grants::from_json(&json!({}));
         assert!(base.check("env.get", &json!({"name": "PATH"})).is_none());
-        assert!(base.check("env.get", &json!({"name": "GINNO_HOME"})).is_none());
-        assert!(base.check("env.get", &json!({"name": "AWS_SECRET"})).is_some());
+        assert!(base
+            .check("env.get", &json!({"name": "GINNO_HOME"}))
+            .is_none());
+        assert!(base
+            .check("env.get", &json!({"name": "AWS_SECRET"}))
+            .is_some());
         let narrow = Grants::from_json(&json!({"env.get": ["AWS_ROLE"]}));
-        assert!(narrow.check("env.get", &json!({"name": "AWS_ROLE"})).is_none());
+        assert!(narrow
+            .check("env.get", &json!({"name": "AWS_ROLE"}))
+            .is_none());
         assert!(narrow.check("env.get", &json!({"name": "PATH"})).is_some());
     }
 

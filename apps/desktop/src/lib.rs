@@ -38,10 +38,10 @@
 //! In dev (`tauri dev`), the user runs `pnpm dev:runtime` in a separate
 //! terminal; this file only spawns the runtime in release builds.
 
+mod badge;
 mod code_cmds;
 mod common;
 mod keep_awake;
-mod badge;
 mod menu;
 mod notify;
 mod pin;
@@ -66,13 +66,15 @@ use crate::pin::{
     capture_pin_geo, floating_setting_bool, load_floating_geo, load_pin_prefs, persist_pin_geo,
     register_pin_hotkey, summon_pin, toggle_pin_now, PinState, PIN_LABEL,
 };
-use crate::sidecar::{restart_sidecar, start_mod_broker, ModBrokerState, RestartLock, RuntimeProcess};
+#[cfg(not(debug_assertions))]
+use crate::shell_ui::{base64, localize_shell_html, shell_lang, ERROR_HTML, SPLASH_HTML};
 #[cfg(not(debug_assertions))]
 use crate::sidecar::{
     kill_stale_sidecar, sidecar_listening, sidecar_port, spawn_sidecar, wait_for_sidecar,
 };
-#[cfg(not(debug_assertions))]
-use crate::shell_ui::{base64, localize_shell_html, shell_lang, ERROR_HTML, SPLASH_HTML};
+use crate::sidecar::{
+    restart_sidecar, start_mod_broker, ModBrokerState, RestartLock, RuntimeProcess,
+};
 use crate::tray::install_tray;
 
 pub fn run() {
@@ -166,8 +168,7 @@ pub fn run() {
                     if let Some(w) = app.get_webview_window("main") {
                         #[cfg(not(debug_assertions))]
                         if sidecar_listening() {
-                            if let Ok(url) =
-                                format!("http://127.0.0.1:{}/", sidecar_port()).parse()
+                            if let Ok(url) = format!("http://127.0.0.1:{}/", sidecar_port()).parse()
                             {
                                 let _ = w.navigate(url);
                             }
@@ -198,8 +199,8 @@ pub fn run() {
                             return;
                         }
                         if let Some(webview) = window.get_webview_window("main") {
-                            let paths_json = serde_json::to_string(paths)
-                                .unwrap_or_else(|_| "[]".to_string());
+                            let paths_json =
+                                serde_json::to_string(paths).unwrap_or_else(|_| "[]".to_string());
                             let _ = webview.eval(&format!(
                                 "window.__ginnoFileDrop && window.__ginnoFileDrop({paths_json});"
                             ));
@@ -283,7 +284,10 @@ pub fn run() {
             let (broker_sock, broker_token) = match start_mod_broker(app) {
                 Some((sock, token)) => (Some(sock), Some(token)),
                 None => {
-                    shell_log(app, "mods broker did not come up — runtime falls back to dev-spawn/discovery");
+                    shell_log(
+                        app,
+                        "mods broker did not come up — runtime falls back to dev-spawn/discovery",
+                    );
                     (None, None)
                 }
             };
@@ -368,7 +372,8 @@ pub fn run() {
                 }
 
                 let addr: SocketAddr = ([127, 0, 0, 1], sidecar_port()).into();
-                let ready_now = TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok();
+                let ready_now =
+                    TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok();
 
                 if !ready_now {
                     if let Some(window) = app.get_webview_window("main") {
@@ -475,7 +480,10 @@ pub fn run() {
                     return;
                 };
                 let h = notify_handle.clone();
-                shell_log(&h, &format!("ginno:notify kind={} id={}", payload.kind, payload.id));
+                shell_log(
+                    &h,
+                    &format!("ginno:notify kind={} id={}", payload.kind, payload.id),
+                );
                 std::thread::spawn(move || show_notification_and_wait(h, payload));
             });
 
@@ -535,9 +543,13 @@ pub fn run() {
             // (macOS convention; notification clicks are handled explicitly
             // in focus_and_open).
             tauri::RunEvent::Reopen {
-                has_visible_windows, ..
+                has_visible_windows,
+                ..
             } => {
-                shell_log(app_handle, &format!("reopen has_visible_windows={has_visible_windows}"));
+                shell_log(
+                    app_handle,
+                    &format!("reopen has_visible_windows={has_visible_windows}"),
+                );
                 // 主窗无论什么都拉回来：悬浮窗可见不再代表「用户看得见
                 // Ginno 主界面」（Dock 图标只跟主窗，见 sync_dock_policy），
                 // 点 Dock 却什么都不弹最像「退出不了/卡死」的错觉来源。

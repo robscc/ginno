@@ -17,8 +17,8 @@ use tokio::net::UnixStream;
 use tokio::sync::oneshot;
 
 use crate::protocol::{
-    decode_line, result_ok, Frame, FrameWriter, RpcError, CODE_ERROR, CODE_NO_IMPLEMENTATION, CODE_NOT_FOUND,
-    PROTOCOL_VERSION,
+    decode_line, result_ok, Frame, FrameWriter, RpcError, CODE_ERROR, CODE_NOT_FOUND,
+    CODE_NO_IMPLEMENTATION, PROTOCOL_VERSION,
 };
 use crate::Broker;
 
@@ -42,7 +42,9 @@ impl RuntimeConn {
 
     fn fail_pending(&self, error: RpcError) {
         let pending: Vec<oneshot::Sender<Result<Value, RpcError>>> =
-            { std::mem::take(&mut *self.pending.lock().unwrap()) }.into_values().collect();
+            { std::mem::take(&mut *self.pending.lock().unwrap()) }
+                .into_values()
+                .collect();
         for tx in pending {
             let _ = tx.send(Err(error.clone()));
         }
@@ -91,7 +93,6 @@ pub async fn serve(broker: Arc<Broker>, socket_path: PathBuf) -> std::io::Result
     }
 }
 
-
 fn token_path_of(socket_path: &Path) -> PathBuf {
     let mut name = socket_path.file_name().unwrap_or_default().to_os_string();
     name.push(".token");
@@ -106,7 +107,13 @@ fn restrict_permissions(path: &Path) {
 fn write_token(path: &Path, token: &str) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+    {
         let _ = writeln!(file, "{token}");
     }
 }
@@ -114,14 +121,25 @@ fn write_token(path: &Path, token: &str) {
 /// A locally unguessable token; the 0600 file keeps it that way.
 fn new_token() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let pid = std::process::id() as u128;
-    format!("{:x}-{:x}", nanos, pid.rotate_left(32) ^ (&nanos as *const _ as u128))
+    format!(
+        "{:x}-{:x}",
+        nanos,
+        pid.rotate_left(32) ^ (&nanos as *const _ as u128)
+    )
 }
 
 /// Read frames from a fresh connection until it authenticates as the runtime;
 /// then serve it as the one runtime channel until it disconnects.
-async fn handle_connection(broker: Arc<Broker>, stream: UnixStream, token: &str) -> Result<(), String> {
+async fn handle_connection(
+    broker: Arc<Broker>,
+    stream: UnixStream,
+    token: &str,
+) -> Result<(), String> {
     let (reader, writer) = stream.into_split();
     let mut lines = tokio::io::BufReader::new(reader).lines();
 
@@ -134,9 +152,18 @@ async fn handle_connection(broker: Arc<Broker>, stream: UnixStream, token: &str)
     // Accepted either as `kind:"hello"` or as call{ns:"broker",method:"hello"}
     // (see protocol.rs); token and config ride in the same places either way.
     let (hello_id, got_token, config): (Option<u64>, Option<String>, Value) = match &hello {
-        Frame::Hello { id, role, token, config, .. } if role == "runtime" => (*id, token.clone(), config.clone()),
+        Frame::Hello {
+            id,
+            role,
+            token,
+            config,
+            ..
+        } if role == "runtime" => (*id, token.clone(), config.clone()),
         Frame::Call { id, args, .. } => {
-            let token = args.get("token").and_then(Value::as_str).map(str::to_string);
+            let token = args
+                .get("token")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let config = args.get("config").cloned().unwrap_or(Value::Null);
             (Some(*id), token, config)
         }
@@ -190,7 +217,13 @@ async fn handle_connection(broker: Arc<Broker>, stream: UnixStream, token: &str)
     // (design §5.2).
     conn.fail_pending(RpcError::new(CODE_ERROR, "runtime disconnected"));
     crate::ops::fail_all_asks("runtime disconnected");
-    if broker.runtime.read().unwrap().as_ref().is_some_and(|current| Arc::ptr_eq(current, &conn)) {
+    if broker
+        .runtime
+        .read()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, &conn))
+    {
         // Only clear if no newer connection already replaced us.
         *broker.runtime.write().unwrap() = None;
     }
@@ -211,7 +244,15 @@ fn config_payload(args: &Value) -> &Value {
 
 async fn handle_runtime_frame(broker: &Arc<Broker>, conn: &Arc<RuntimeConn>, frame: Frame) {
     match frame {
-        Frame::Event { id, event, session, invocation, payload, deadline_ms, .. } => {
+        Frame::Event {
+            id,
+            event,
+            session,
+            invocation,
+            payload,
+            deadline_ms,
+            ..
+        } => {
             let broker = broker.clone();
             let conn = conn.clone();
             tokio::spawn(async move {
@@ -221,28 +262,53 @@ async fn handle_runtime_frame(broker: &Arc<Broker>, conn: &Arc<RuntimeConn>, fra
                 conn.tx.send_result(id, &result);
             });
         }
-        Frame::Result { id, ok, value, code, message, .. } => {
+        Frame::Result {
+            id,
+            ok,
+            value,
+            code,
+            message,
+            ..
+        } => {
             let res = if ok {
                 Ok(value.unwrap_or(Value::Null))
             } else {
-                Err(RpcError::new(code.unwrap_or_else(|| "error".into()), message.unwrap_or_default()))
+                Err(RpcError::new(
+                    code.unwrap_or_else(|| "error".into()),
+                    message.unwrap_or_default(),
+                ))
             };
             if let Some(tx) = conn.pending.lock().unwrap().remove(&id) {
                 let _ = tx.send(res);
             }
         }
-        Frame::Notify { method, args, session, .. } => match method.as_str() {
+        Frame::Notify {
+            method,
+            args,
+            session,
+            ..
+        } => match method.as_str() {
             "ui.press" => {
                 let generation = args.get("generation").and_then(Value::as_u64).unwrap_or(0);
-                let action_id = args.get("actionId").and_then(Value::as_str).unwrap_or_default().to_string();
+                let action_id = args
+                    .get("actionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
                 // Pane Input/Select submissions ride an optional `value`; a
                 // plain Button press (or an explicit null) omits it.
                 let value = args.get("value").cloned().filter(|v| !v.is_null());
-                let session = session.or_else(|| args.get("session").and_then(Value::as_str).map(str::to_string));
+                let session = session.or_else(|| {
+                    args.get("session")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
                 let Some(session) = session else { return };
                 let broker = broker.clone();
                 tokio::spawn(async move {
-                    broker.surfaces_press(&session, generation, &action_id, value).await;
+                    broker
+                        .surfaces_press(&session, generation, &action_id, value)
+                        .await;
                 });
             }
             "mod.answer" => {
@@ -254,25 +320,43 @@ async fn handle_runtime_frame(broker: &Arc<Broker>, conn: &Arc<RuntimeConn>, fra
                 broker.report(&format!("runtime notify ignored: {other}"));
             }
         },
-        Frame::Call { id, ns, method, args, .. } => {
+        Frame::Call {
+            id,
+            ns,
+            method,
+            args,
+            ..
+        } => {
             let result = match (ns.as_str(), method.as_str()) {
                 ("broker", "status") => Ok(broker.status_payload().await),
                 // Awaitable: the reply carries the post-reload status of every
                 // desired mod. Python's `push_config` wraps the config as
                 // `{role, config}`; hello-style callers send it bare.
-                ("broker", "apply-config") => Ok(broker.apply_config_ack(config_payload(&args)).await),
+                ("broker", "apply-config") => {
+                    Ok(broker.apply_config_ack(config_payload(&args)).await)
+                }
                 // `$.ui.ask`'s answer (§7.3): { id, value } resolves the ask
                 // the mod's op parked with the broker.
                 ("broker", "answer") => {
-                    let ask_id = args.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                    let ask_id = args
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
                     let value = args.get("value").cloned().unwrap_or(Value::Null);
                     if crate::ops::resolve_ask(&ask_id, value) {
                         Ok(json!({ "resolved": true }))
                     } else {
-                        Err(RpcError::new(CODE_NOT_FOUND, format!("no pending ask named {ask_id}")))
+                        Err(RpcError::new(
+                            CODE_NOT_FOUND,
+                            format!("no pending ask named {ask_id}"),
+                        ))
                     }
                 }
-                _ => Err(RpcError::new(CODE_NO_IMPLEMENTATION, format!("no implementation for {ns}.{method}"))),
+                _ => Err(RpcError::new(
+                    CODE_NO_IMPLEMENTATION,
+                    format!("no implementation for {ns}.{method}"),
+                )),
             };
             conn.tx.send_result(id, &result);
         }
@@ -288,7 +372,13 @@ impl Broker {
     }
 
     /// Fire-and-forget notify to Python (bands, toasts, status, reports).
-    pub fn runtime_notify(&self, method: &str, session: Option<String>, mod_name: Option<String>, args: Value) {
+    pub fn runtime_notify(
+        &self,
+        method: &str,
+        session: Option<String>,
+        mod_name: Option<String>,
+        args: Value,
+    ) {
         let frame = Frame::Notify {
             v: PROTOCOL_VERSION,
             method: method.to_string(),

@@ -3,18 +3,22 @@
 //! temporary runner and prints the validate report (registered events ×
 //! matchers, `$` calls, unserved warnings).
 
-use std::path::PathBuf;
 use ginno_mod_broker::Broker;
+use std::path::PathBuf;
 
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("--socket") => {
-            let socket = args.next().unwrap_or_else(|| die("usage: ginno-mod-broker --socket <path>"));
+            let socket = args
+                .next()
+                .unwrap_or_else(|| die("usage: ginno-mod-broker --socket <path>"));
             serve(socket);
         }
         Some("validate") => {
-            let dir = args.next().unwrap_or_else(|| die("usage: ginno-mod-broker validate <dir>"));
+            let dir = args
+                .next()
+                .unwrap_or_else(|| die("usage: ginno-mod-broker validate <dir>"));
             std::process::exit(validate(&dir));
         }
         _ => die("usage: ginno-mod-broker (--socket <path> | validate <dir>)"),
@@ -27,7 +31,10 @@ fn die(message: &str) -> ! {
 }
 
 fn serve(socket: String) {
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
     runtime.block_on(async move {
         let broker = Broker::new(None);
         if let Err(e) = ginno_mod_broker::runtime::serve(broker, PathBuf::from(&socket)).await {
@@ -42,11 +49,18 @@ fn serve(socket: String) {
 /// environment (`NODE_BIN`, `GINNO_MOD_RUNNER`); without them the command
 /// explains what is missing instead of pretending to validate.
 fn validate(dir: &str) -> i32 {
-    let manifest = std::path::Path::new(dir).join(".claude-plugin").join("plugin.json");
+    let manifest = std::path::Path::new(dir)
+        .join(".claude-plugin")
+        .join("plugin.json");
     let name = std::fs::read_to_string(&manifest)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|value| value.get("name").and_then(|name| name.as_str()).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("name")
+                .and_then(|name| name.as_str())
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| {
             std::path::Path::new(dir)
                 .file_name()
@@ -54,7 +68,10 @@ fn validate(dir: &str) -> i32 {
                 .unwrap_or_else(|| "mod".to_string())
         });
 
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
     let report = runtime.block_on(validate_mod(dir, &name));
     print!("{report}");
     if report.contains("error:") {
@@ -76,7 +93,9 @@ async fn validate_mod(dir: &str, name: &str) -> String {
     };
     let mut command = tokio::process::Command::new(&node);
     command.arg(&runner).arg("--mod").arg(dir);
-    command.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => return format!("error: cannot spawn node for {name}: {e}\n"),
@@ -100,16 +119,32 @@ async fn validate_mod(dir: &str, name: &str) -> String {
                 }
                 match ginno_mod_broker::protocol::decode_line(line) {
                     Ok(frame) => {
-                        if let ginno_mod_broker::WireFrame::Call { id, ns, method, args, .. } = frame {
+                        if let ginno_mod_broker::WireFrame::Call {
+                            id,
+                            ns,
+                            method,
+                            args,
+                            ..
+                        } = frame
+                        {
                             if ns == "runner" && method == "hooks-registered" {
-                                for hook in args.get("hooks").and_then(|hooks| hooks.as_array()).into_iter().flatten() {
-                                    let event = hook.get("event").and_then(|e| e.as_str()).unwrap_or("?");
-                                    let matcher = ginno_mod_broker::matcher::describe_matcher(hook.get("matcher"));
+                                for hook in args
+                                    .get("hooks")
+                                    .and_then(|hooks| hooks.as_array())
+                                    .into_iter()
+                                    .flatten()
+                                {
+                                    let event =
+                                        hook.get("event").and_then(|e| e.as_str()).unwrap_or("?");
+                                    let matcher = ginno_mod_broker::matcher::describe_matcher(
+                                        hook.get("matcher"),
+                                    );
                                     report.push_str(&format!("  {event}{matcher}\n"));
                                     if !ginno_mod_broker::matcher::SERVED_EVENTS.contains(&event)
                                         && !event.ends_with('*')
                                         && event != "*"
-                                        && !ginno_mod_broker::matcher::KNOWN_OP_EVENTS.contains(&event)
+                                        && !ginno_mod_broker::matcher::KNOWN_OP_EVENTS
+                                            .contains(&event)
                                     {
                                         report.push_str(&format!("  warning: \"{event}\" is not an event this host knows\n"));
                                     }

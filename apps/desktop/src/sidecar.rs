@@ -165,7 +165,9 @@ pub(crate) struct ModBrokerState {
 /// Start the broker on Tauri's async runtime and wait (bounded) for its
 /// socket + token to appear. Failure is non-fatal: mods simply run on the
 /// runtime's fallback ladder (see [`ModBrokerState`]).
-pub(crate) fn start_mod_broker<M: tauri::Manager<tauri::Wry>>(app: &M) -> Option<(PathBuf, PathBuf)> {
+pub(crate) fn start_mod_broker<M: tauri::Manager<tauri::Wry>>(
+    app: &M,
+) -> Option<(PathBuf, PathBuf)> {
     let dir = app.path().app_local_data_dir().ok()?;
     if let Err(e) = std::fs::create_dir_all(&dir) {
         shell_log(app, &format!("mods broker: create {}: {e}", dir.display()));
@@ -300,9 +302,15 @@ pub(crate) fn restart_sidecar(app: &tauri::AppHandle) {
     // Splash first so the webview is not sitting on a dying origin.
     #[cfg(not(debug_assertions))]
     if let Some(window) = app.get_webview_window("main") {
-        let html = crate::shell_ui::localize_shell_html(crate::shell_ui::SPLASH_HTML, crate::shell_ui::shell_lang(app))
-            .replace("__PORT__", &sidecar_port().to_string());
-        let url = format!("data:text/html;base64,{}", crate::shell_ui::base64(html.as_bytes()));
+        let html = crate::shell_ui::localize_shell_html(
+            crate::shell_ui::SPLASH_HTML,
+            crate::shell_ui::shell_lang(app),
+        )
+        .replace("__PORT__", &sidecar_port().to_string());
+        let url = format!(
+            "data:text/html;base64,{}",
+            crate::shell_ui::base64(html.as_bytes())
+        );
         if let Ok(url) = url.parse() {
             let _ = window.navigate(url);
         }
@@ -339,9 +347,15 @@ pub(crate) fn restart_sidecar(app: &tauri::AppHandle) {
         shell_log(app, "debug: sidecar did not come up within 60s");
         #[cfg(not(debug_assertions))]
         {
-            let html = crate::shell_ui::localize_shell_html(crate::shell_ui::ERROR_HTML, crate::shell_ui::shell_lang(app))
-                .replace("__PORT__", &sidecar_port().to_string());
-            let err_url = format!("data:text/html;base64,{}", crate::shell_ui::base64(html.as_bytes()));
+            let html = crate::shell_ui::localize_shell_html(
+                crate::shell_ui::ERROR_HTML,
+                crate::shell_ui::shell_lang(app),
+            )
+            .replace("__PORT__", &sidecar_port().to_string());
+            let err_url = format!(
+                "data:text/html;base64,{}",
+                crate::shell_ui::base64(html.as_bytes())
+            );
             let h = app.clone();
             let _ = app.run_on_main_thread(move || {
                 if let Some(w) = h.get_webview_window("main") {

@@ -27,19 +27,26 @@ use crate::Broker;
 pub const MAX_OP_DEPTH: usize = 16;
 
 /// The namespaces forwarded to the Python runtime (design §3.3 table).
-pub const FORWARD_NAMESPACES: &[&str] =
-    &["session", "prompt", "tool", "command", "mcp", "model", "agent", "turn"];
+pub const FORWARD_NAMESPACES: &[&str] = &[
+    "session", "prompt", "tool", "command", "mcp", "model", "agent", "turn",
+];
 
 /// Ops registered as known events that this host deliberately does not serve;
 /// every unlisted op lands here too (design §3.3, non-goals §1).
 const UNSERVED_OPS: &[&str] = &[
-    "audio.play", "audio.speak",
-    "telemetry.log", "telemetry.mark",
+    "audio.play",
+    "audio.speak",
+    "telemetry.log",
+    "telemetry.mark",
     "settings.read",
     "env.set",
     "fs.ancestors",
-    "ui.blit", "ui.focus", "ui.scroll", "ui.message",
-    "config.list", "config.set",
+    "ui.blit",
+    "ui.focus",
+    "ui.scroll",
+    "ui.message",
+    "config.list",
+    "config.set",
     // model.fork 已实装（2026-10-20，runtime ops.py `_op_model_fork`）——
     // next-steps 这类「fork 会话上下文问下一步」的 mod 依赖它。
 ];
@@ -64,7 +71,10 @@ pub async fn invoke_op(
         ));
     }
     if depth > MAX_OP_DEPTH {
-        return Err(RpcError::new(CODE_ERROR, format!("{op}: mods call depth exceeded")));
+        return Err(RpcError::new(
+            CODE_ERROR,
+            format!("{op}: mods call depth exceeded"),
+        ));
     }
     let raised_by = broker.registry.read().unwrap().order_of(caller);
     // `tool.call` reaches the earlier mods once the host raises it from the
@@ -82,7 +92,10 @@ pub async fn invoke_op(
         event: op.to_string(),
         session,
         raised_by,
-        core: ChainCore::Op { op: op.to_string(), caller: caller.to_string() },
+        core: ChainCore::Op {
+            op: op.to_string(),
+            caller: caller.to_string(),
+        },
         validate_tool_call: false,
         original: Value::Null,
         shared: None,
@@ -99,13 +112,19 @@ pub async fn invoke_op(
 /// carrying `value` or `deny`; a string `deny` refuses the call.
 fn unwrap_op_answer(op: &str, result: &Value) -> Result<Value, RpcError> {
     let neither = || {
-        RpcError::new(CODE_ERROR, format!("{op}: a hook returned neither {{ value }} nor {{ deny }}"))
+        RpcError::new(
+            CODE_ERROR,
+            format!("{op}: a hook returned neither {{ value }} nor {{ deny }}"),
+        )
     };
     match result {
         Value::Object(fields) => {
             if let Some(deny) = fields.get("deny") {
                 if let Some(reason) = deny.as_str() {
-                    return Err(RpcError::new(CODE_DENIED, format!("{op} refused: {reason}")));
+                    return Err(RpcError::new(
+                        CODE_DENIED,
+                        format!("{op} refused: {reason}"),
+                    ));
                 }
                 // A non-string deny is not a refusal: DSH returns answer.value
                 // (undefined when absent), which surfaces as null.
@@ -125,13 +144,19 @@ fn no_implementation(op: &str) -> RpcError {
 }
 
 fn need_string<'a>(input: &'a Value, field: &str, what: &str) -> Result<&'a str, RpcError> {
-    input.get(field).and_then(Value::as_str).ok_or_else(|| {
-        RpcError::new(CODE_ERROR, format!("{what} must be a string"))
-    })
+    input
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::new(CODE_ERROR, format!("{what} must be a string")))
 }
 
 /// The engine behavior for one mods API call (the bottom of the chain).
-pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) -> Result<Value, RpcError> {
+pub async fn op_core(
+    ctx: &Arc<ChainCtx>,
+    op: &str,
+    caller: &str,
+    input: Value,
+) -> Result<Value, RpcError> {
     let broker = &ctx.broker;
     match op {
         // ---- per-session state (design §15.4) ----
@@ -162,12 +187,18 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         "store.set" => {
             let key = need_string(&input, "key", "$.store.set key")?;
             let value = input.get("value").cloned().unwrap_or(Value::Null);
-            broker.store.set(caller, key, value).map_err(RpcError::new_error)?;
+            broker
+                .store
+                .set(caller, key, value)
+                .map_err(RpcError::new_error)?;
             Ok(Value::Null)
         }
         "store.delete" => {
             let key = need_string(&input, "key", "$.store.delete key")?;
-            broker.store.delete(caller, key).map_err(RpcError::new_error)?;
+            broker
+                .store
+                .delete(caller, key)
+                .map_err(RpcError::new_error)?;
             Ok(Value::Null)
         }
         "store.keys" => Ok(json!(broker.store.keys(caller))),
@@ -176,7 +207,10 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         "clock.now" => Ok(json!(now_ms())),
         "clock.sleep" => {
             let ms = input.get("ms").and_then(Value::as_u64).ok_or_else(|| {
-                RpcError::new(CODE_ERROR, "$.clock.sleep needs a non-negative number of milliseconds".to_string())
+                RpcError::new(
+                    CODE_ERROR,
+                    "$.clock.sleep needs a non-negative number of milliseconds".to_string(),
+                )
             })?;
             tokio::time::sleep(std::time::Duration::from_millis(ms.min(60_000))).await;
             Ok(Value::Null)
@@ -204,7 +238,10 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
             let metadata = std::fs::metadata(&target)
                 .map_err(|e| RpcError::new(CODE_ERROR, format!("$.fs.read: {path}: {e}")))?;
             if metadata.len() > FS_MAX_BYTES as u64 {
-                return Err(RpcError::new(CODE_ERROR, format!("$.fs.read: {path} is larger than {FS_MAX_BYTES} bytes")));
+                return Err(RpcError::new(
+                    CODE_ERROR,
+                    format!("$.fs.read: {path} is larger than {FS_MAX_BYTES} bytes"),
+                ));
             }
             let bytes = std::fs::read(&target)
                 .map_err(|e| RpcError::new(CODE_ERROR, format!("$.fs.read: {path}: {e}")))?;
@@ -214,7 +251,10 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
             let path = need_string(&input, "path", "$.fs.write path")?;
             let text = need_string(&input, "text", "$.fs.write text")?;
             if text.len() > FS_MAX_BYTES {
-                return Err(RpcError::new(CODE_ERROR, format!("$.fs.write: content is larger than {FS_MAX_BYTES} bytes")));
+                return Err(RpcError::new(
+                    CODE_ERROR,
+                    format!("$.fs.write: content is larger than {FS_MAX_BYTES} bytes"),
+                ));
             }
             let target = broker.workspace_path_for(path, ctx.session.as_deref())?;
             std::fs::write(&target, text)
@@ -255,8 +295,12 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         "fs.stat" => {
             let path = need_string(&input, "path", "$.fs.stat path")?;
             let target = broker.workspace_path_for(path, ctx.session.as_deref())?;
-            let link = std::fs::symlink_metadata(&target)
-                .map_err(|e| RpcError::new(CODE_ERROR, format!("$.fs.stat: {path} does not exist ({e})")))?;
+            let link = std::fs::symlink_metadata(&target).map_err(|e| {
+                RpcError::new(
+                    CODE_ERROR,
+                    format!("$.fs.stat: {path} does not exist ({e})"),
+                )
+            })?;
             // A link reports what it points at (`resolve: true`); a dangling
             // one is `other`.
             let followed = std::fs::metadata(&target).ok();
@@ -279,12 +323,18 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         // ---- environment (read-only whitelist; `env.set` is never served) ----
         "env.get" => {
             let name = need_string(&input, "name", "$.env.get name")?;
-            Ok(std::env::var(name).map(Value::String).unwrap_or(Value::Null))
+            Ok(std::env::var(name)
+                .map(Value::String)
+                .unwrap_or(Value::Null))
         }
 
         // ---- ui: toasts and friends go to Python ----
         "ui.log" | "ui.toast" | "ui.status" | "ui.notice" | "ui.copy" => {
-            let method = if op == "ui.toast" { "mod.toast" } else { "mod.ui" };
+            let method = if op == "ui.toast" {
+                "mod.toast"
+            } else {
+                "mod.ui"
+            };
             let mut args = input.clone();
             if op != "ui.toast" {
                 args["kind"] = json!(op.trim_start_matches("ui."));
@@ -298,9 +348,15 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
         // it through the owning mod's `ui.render` chain ----
         "ui.open" => {
             let id = need_string(&input, "id", "$.ui.open id")?.to_string();
-            let title = input.get("title").and_then(Value::as_str).unwrap_or_default().to_string();
+            let title = input
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             let session = ctx.session.clone().unwrap_or_default();
-            broker.surfaces_pane_open(&session, caller, &id, &title).map_err(|e| RpcError::new(CODE_ERROR, e))?;
+            broker
+                .surfaces_pane_open(&session, caller, &id, &title)
+                .map_err(|e| RpcError::new(CODE_ERROR, e))?;
             broker.runtime_notify(
                 "mod.pane.open",
                 ctx.session.clone(),
@@ -315,7 +371,12 @@ pub async fn op_core(ctx: &Arc<ChainCtx>, op: &str, caller: &str, input: Value) 
             let id = need_string(&input, "id", "$.ui.close id")?;
             let session = ctx.session.clone().unwrap_or_default();
             if let Some(owner) = broker.surfaces_pane_close(&session, id) {
-                broker.runtime_notify("mod.pane.close", ctx.session.clone(), Some(owner), json!({ "id": id }));
+                broker.runtime_notify(
+                    "mod.pane.close",
+                    ctx.session.clone(),
+                    Some(owner),
+                    json!({ "id": id }),
+                );
             }
             let broker2 = broker.clone();
             tokio::spawn(async move { broker2.surfaces_refresh(&session).await });
@@ -372,7 +433,10 @@ fn next_ask_id() -> String {
 /// Park a pending ask and return the channel its answer arrives on.
 fn register_ask(id: &str) -> oneshot::Receiver<Result<Value, RpcError>> {
     let (tx, rx) = oneshot::channel();
-    pending_asks().lock().unwrap().insert(id.to_string(), PendingAsk { tx });
+    pending_asks()
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), PendingAsk { tx });
     rx
 }
 
@@ -390,21 +454,34 @@ pub fn resolve_ask(id: &str, value: Value) -> bool {
 
 /// Fail every pending ask — the runtime went away mid-question (§7.3).
 pub fn fail_all_asks(reason: &str) {
-    let pending: Vec<PendingAsk> =
-        { std::mem::take(&mut *pending_asks().lock().unwrap()) }.into_values().collect();
+    let pending: Vec<PendingAsk> = { std::mem::take(&mut *pending_asks().lock().unwrap()) }
+        .into_values()
+        .collect();
     for ask in pending {
-        let _ = ask.tx.send(Err(RpcError::new(CODE_ERROR, format!("$.ui.ask aborted: {reason}"))));
+        let _ = ask.tx.send(Err(RpcError::new(
+            CODE_ERROR,
+            format!("$.ui.ask aborted: {reason}"),
+        )));
     }
 }
 
 /// Wait for a pending ask's answer, bounded by its timeout. On a timeout the
 /// caller (which knows the id) sweeps the entry so a late `broker.answer`
 /// names no ask.
-async fn wait_ask_answer(rx: oneshot::Receiver<Result<Value, RpcError>>, timeout_ms: u64) -> Result<Value, RpcError> {
+async fn wait_ask_answer(
+    rx: oneshot::Receiver<Result<Value, RpcError>>,
+    timeout_ms: u64,
+) -> Result<Value, RpcError> {
     match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
         Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err(RpcError::new(CODE_ERROR, "$.ui.ask was dropped".to_string())),
-        Err(_) => Err(RpcError::new(CODE_ERROR, format!("$.ui.ask ran past its {timeout_ms} ms limit"))),
+        Ok(Err(_)) => Err(RpcError::new(
+            CODE_ERROR,
+            "$.ui.ask was dropped".to_string(),
+        )),
+        Err(_) => Err(RpcError::new(
+            CODE_ERROR,
+            format!("$.ui.ask ran past its {timeout_ms} ms limit"),
+        )),
     }
 }
 
@@ -417,7 +494,10 @@ async fn op_ui_ask(ctx: &Arc<ChainCtx>, caller: &str, input: Value) -> Result<Va
         None | Some(Value::Null) => None,
         Some(Value::Array(items)) if items.iter().all(Value::is_string) => Some(items.clone()),
         Some(_) => {
-            return Err(RpcError::new(CODE_ERROR, "$.ui.ask choices must be an array of strings".to_string()))
+            return Err(RpcError::new(
+                CODE_ERROR,
+                "$.ui.ask choices must be an array of strings".to_string(),
+            ))
         }
     };
     let id = next_ask_id();
@@ -426,7 +506,12 @@ async fn op_ui_ask(ctx: &Arc<ChainCtx>, caller: &str, input: Value) -> Result<Va
     if let Some(choices) = &choices {
         payload["choices"] = json!(choices);
     }
-    ctx.broker.runtime_notify("mod.ask", ctx.session.clone(), Some(caller.to_string()), payload);
+    ctx.broker.runtime_notify(
+        "mod.ask",
+        ctx.session.clone(),
+        Some(caller.to_string()),
+        payload,
+    );
     let answer = wait_ask_answer(rx, ASK_TIMEOUT_MS).await;
     if answer.is_err() {
         pending_asks().lock().unwrap().remove(&id);
@@ -439,15 +524,20 @@ fn state_slot(input: &Value) -> Result<String, RpcError> {
     let key = input.get("key").and_then(Value::as_str);
     match (plugin, key) {
         (Some(plugin), Some(key)) => Ok(format!("{plugin}\u{0}{key}")),
-        _ => Err(RpcError::new(CODE_ERROR, "$.state needs { plugin, key } strings".to_string())),
+        _ => Err(RpcError::new(
+            CODE_ERROR,
+            "$.state needs { plugin, key } strings".to_string(),
+        )),
     }
 }
 
 fn ms_field(input: &Value, what: &str) -> Result<u64, RpcError> {
-    input
-        .get("ms")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| RpcError::new(CODE_ERROR, format!("{what} needs a non-negative number of milliseconds")))
+    input.get("ms").and_then(Value::as_u64).ok_or_else(|| {
+        RpcError::new(
+            CODE_ERROR,
+            format!("{what} needs a non-negative number of milliseconds"),
+        )
+    })
 }
 
 fn now_ms() -> u64 {
@@ -461,15 +551,17 @@ fn now_ms() -> u64 {
 async fn op_http_fetch(ctx: &Arc<ChainCtx>, input: &Value) -> Result<Value, RpcError> {
     let url = need_string(input, "url", "$.http.fetch url")?;
     let init = input.get("init").cloned().unwrap_or(Value::Null);
-    let timeout_ms = init.get("timeoutMs").and_then(Value::as_u64).unwrap_or_else(|| {
-        ctx.broker.config.read().unwrap().process_timeout_ms
-    });
+    let timeout_ms = init
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| ctx.broker.config.read().unwrap().process_timeout_ms);
     let client = http_client();
     let method = init.get("method").and_then(Value::as_str).unwrap_or("GET");
     let mut request = client
         .request(
-            reqwest::Method::from_bytes(method.as_bytes())
-                .map_err(|_| RpcError::new(CODE_ERROR, format!("$.http.fetch: unknown method {method}")))?,
+            reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| {
+                RpcError::new(CODE_ERROR, format!("$.http.fetch: unknown method {method}"))
+            })?,
             url,
         )
         .timeout(std::time::Duration::from_millis(timeout_ms.min(300_000)));
@@ -503,7 +595,9 @@ async fn op_http_fetch(ctx: &Arc<ChainCtx>, input: &Value) -> Result<Value, RpcE
                 if body.len() + chunk.len() > HTTP_MAX_BYTES as usize {
                     return Err(RpcError::new(
                         CODE_ERROR,
-                        format!("$.http.fetch: the response body is larger than {HTTP_MAX_BYTES} bytes"),
+                        format!(
+                            "$.http.fetch: the response body is larger than {HTTP_MAX_BYTES} bytes"
+                        ),
                     ));
                 }
                 body.extend_from_slice(&chunk);
@@ -533,9 +627,10 @@ async fn op_process_run(ctx: &Arc<ChainCtx>, input: &Value) -> Result<Value, Rpc
 
     let config = ctx.broker.config.read().unwrap().clone();
     let argv: Vec<String> = match input.get("argv").and_then(Value::as_array) {
-        Some(items) if !items.is_empty() && items.iter().all(Value::is_string) => {
-            items.iter().map(|item| item.as_str().unwrap().to_string()).collect()
-        }
+        Some(items) if !items.is_empty() && items.iter().all(Value::is_string) => items
+            .iter()
+            .map(|item| item.as_str().unwrap().to_string())
+            .collect(),
         _ => {
             return Err(RpcError::new(
                 CODE_ERROR,
@@ -544,11 +639,18 @@ async fn op_process_run(ctx: &Arc<ChainCtx>, input: &Value) -> Result<Value, Rpc
         }
     };
     let init = input.get("init").cloned().unwrap_or(Value::Null);
-    let timeout_ms = init.get("timeoutMs").and_then(Value::as_u64).unwrap_or(config.process_timeout_ms);
+    let timeout_ms = init
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(config.process_timeout_ms);
     let timeout_ms = timeout_ms.clamp(1, config.process_max_timeout_ms);
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null()).kill_on_drop(true);
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
     // Its own process group, so a timeout can kill the whole tree.
     unsafe {
         command.pre_exec(|| {
@@ -598,7 +700,11 @@ async fn op_process_run(ctx: &Arc<ChainCtx>, input: &Value) -> Result<Value, Rpc
         Some(code) => Ok(json!({ "exitCode": code, "stdout": stdout_text, "stderr": stderr_text })),
         None => Err(RpcError::new(
             CODE_ERROR,
-            format!("$.process.run: {} was terminated by signal {}", argv[0], signal_of(&status)),
+            format!(
+                "$.process.run: {} was terminated by signal {}",
+                argv[0],
+                signal_of(&status)
+            ),
         )),
     }
 }
@@ -613,7 +719,9 @@ fn signal_of(status: &std::process::ExitStatus) -> i32 {
 async fn read_capped(reader: &mut Option<impl tokio::io::AsyncRead + Unpin>) -> (String, usize) {
     let mut kept: Vec<u8> = Vec::new();
     let mut buffer = [0u8; 65_536];
-    let Some(reader) = reader else { return (String::new(), 0) };
+    let Some(reader) = reader else {
+        return (String::new(), 0);
+    };
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) | Err(_) => break,
@@ -629,7 +737,12 @@ async fn read_capped(reader: &mut Option<impl tokio::io::AsyncRead + Unpin>) -> 
 }
 
 /// Forward a runtime-backed op to Python (design §3.3 right column).
-async fn forward_to_runtime(ctx: &Arc<ChainCtx>, caller: &str, op: &str, mut input: Value) -> Result<Value, RpcError> {
+async fn forward_to_runtime(
+    ctx: &Arc<ChainCtx>,
+    caller: &str,
+    op: &str,
+    mut input: Value,
+) -> Result<Value, RpcError> {
     let (ns, method) = op.split_once('.').unwrap_or((op, ""));
     // Mods speak Claude Code tool names; Ginno speaks its own (§15.8).
     if op == "tool.call" {
@@ -646,7 +759,14 @@ async fn forward_to_runtime(ctx: &Arc<ChainCtx>, caller: &str, op: &str, mut inp
     };
     let result = ctx
         .broker
-        .runtime_call(ns, method, input, ctx.session.clone(), Some(caller.to_string()), extra)
+        .runtime_call(
+            ns,
+            method,
+            input,
+            ctx.session.clone(),
+            Some(caller.to_string()),
+            extra,
+        )
         .await?;
     if op == "tool.call" {
         if let Some(tool) = result.get("tool").and_then(Value::as_str) {
@@ -664,8 +784,14 @@ mod tests {
 
     #[test]
     fn unwraps_value_and_deny_answers() {
-        assert_eq!(unwrap_op_answer("x.y", &json!({"value": 3})).unwrap(), json!(3));
-        assert_eq!(unwrap_op_answer("x.y", &json!({"value": null})).unwrap(), Value::Null);
+        assert_eq!(
+            unwrap_op_answer("x.y", &json!({"value": 3})).unwrap(),
+            json!(3)
+        );
+        assert_eq!(
+            unwrap_op_answer("x.y", &json!({"value": null})).unwrap(),
+            Value::Null
+        );
         let denied = unwrap_op_answer("x.y", &json!({"deny": "no"})).unwrap_err();
         assert_eq!(denied.code, "denied");
         assert_eq!(denied.message, "x.y refused: no");
@@ -701,7 +827,11 @@ mod tests {
         rt.block_on(async {
             let rx = register_ask("ask-timeout");
             let error = wait_ask_answer(rx, 20).await.unwrap_err();
-            assert!(error.message.contains("ran past its 20 ms limit"), "{}", error.message);
+            assert!(
+                error.message.contains("ran past its 20 ms limit"),
+                "{}",
+                error.message
+            );
         });
         pending_asks().lock().unwrap().remove("ask-timeout");
         assert!(!resolve_ask("ask-timeout", json!("late")));

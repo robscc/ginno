@@ -33,7 +33,12 @@ impl Budget {
         let (expired_tx, _) = watch::channel(false);
         Budget {
             limit: Duration::from_millis(limit_ms),
-            state: Arc::new(Mutex::new(State { spent: Duration::ZERO, busy_since: None, stopped: false, expired: false })),
+            state: Arc::new(Mutex::new(State {
+                spent: Duration::ZERO,
+                busy_since: None,
+                stopped: false,
+                expired: false,
+            })),
             changes: Arc::new(Notify::new()),
             expired_tx: Arc::new(expired_tx),
             pause_depth: Arc::new(AtomicUsize::new(0)),
@@ -48,7 +53,10 @@ impl Budget {
     /// Milliseconds left before the deadline fires, computed at read time.
     pub fn remaining_ms(&self) -> u64 {
         let state = self.state.lock().unwrap();
-        let busy = state.busy_since.map(|since| since.elapsed()).unwrap_or(Duration::ZERO);
+        let busy = state
+            .busy_since
+            .map(|since| since.elapsed())
+            .unwrap_or(Duration::ZERO);
         self.limit.saturating_sub(state.spent + busy).as_millis() as u64
     }
 
@@ -152,7 +160,9 @@ impl Budget {
                 }
                 match busy_until {
                     Some(since) => {
-                        let remaining = this.limit.saturating_sub(state_spent(&this) + since.elapsed());
+                        let remaining = this
+                            .limit
+                            .saturating_sub(state_spent(&this) + since.elapsed());
                         tokio::select! {
                             _ = tokio::time::sleep(remaining) => {
                                 let still_busy = this.state.lock().unwrap().busy_since.is_some();
@@ -193,7 +203,11 @@ mod tests {
             _ = tokio::time::sleep(Duration::from_millis(30)) => {}
         }
         // Remaining time barely moved while paused.
-        assert!(clock.remaining_ms() > 60, "pause must freeze the clock: {}", clock.remaining_ms());
+        assert!(
+            clock.remaining_ms() > 60,
+            "pause must freeze the clock: {}",
+            clock.remaining_ms()
+        );
         clock.resume();
         clock.resume();
         clock.stop();

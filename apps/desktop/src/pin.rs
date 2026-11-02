@@ -148,7 +148,11 @@ pub(crate) fn floating_setting_bool(home: &Path, key: &str, default: bool) -> bo
     };
     serde_json::from_str::<serde_json::Value>(&text)
         .ok()
-        .and_then(|v| v.get("floating").and_then(|f| f.get(key)).and_then(|x| x.as_bool()))
+        .and_then(|v| {
+            v.get("floating")
+                .and_then(|f| f.get(key))
+                .and_then(|x| x.as_bool())
+        })
         .unwrap_or(default)
 }
 
@@ -344,7 +348,11 @@ fn ensure_pin_window(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
     };
     let url = tauri::Url::parse(&url).map_err(|e| tauri::Error::InvalidUrl(e))?;
     let w = WebviewWindowBuilder::new(app, PIN_LABEL, WebviewUrl::External(url))
-        .title(pick(shell_lang(app), "Ginno Floating Window", "Ginno 悬浮窗"))
+        .title(pick(
+            shell_lang(app),
+            "Ginno Floating Window",
+            "Ginno 悬浮窗",
+        ))
         .inner_size(MINI_W, MINI_H)
         .min_inner_size(280.0, 320.0)
         .max_inner_size(480.0, 900.0)
@@ -587,8 +595,7 @@ pub(crate) fn pin_apply_prefs(app: tauri::AppHandle, prefs: PinPrefs) -> bool {
         }
         register_pin_hotkey(&app, &prefs.hotkey)
     } else {
-        st.hotkey_active.load(Ordering::Relaxed)
-            || register_pin_hotkey(&app, &prefs.hotkey)
+        st.hotkey_active.load(Ordering::Relaxed) || register_pin_hotkey(&app, &prefs.hotkey)
     };
     if let Some(w) = app.get_webview_window(PIN_LABEL) {
         apply_pin_window_prefs(&app, &w);

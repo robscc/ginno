@@ -53,11 +53,45 @@ pub(crate) fn install_debug_menu(app: &tauri::App) -> tauri::Result<()> {
         true,
         Some("CmdOrCtrl+Alt+R"),
     )?;
-    let sidecar_log = MenuItem::with_id(app, "debug-open-sidecar-log", pick(lang, "Open Sidecar Log", "打开 Sidecar 日志"), true, None::<&str>)?;
-    let shell_log_item = MenuItem::with_id(app, "debug-open-shell-log", pick(lang, "Open Shell Log", "打开 Shell 日志"), true, None::<&str>)?;
-    let logs_dir = MenuItem::with_id(app, "debug-reveal-logs", pick(lang, "Reveal Logs in Finder", "在 Finder 中打开日志目录"), true, None::<&str>)?;
-    let home_dir = MenuItem::with_id(app, "debug-reveal-home", pick(lang, "Reveal ~/.ginno in Finder", "在 Finder 中打开 ~/.ginno"), true, None::<&str>)?;
-    let reload = MenuItem::with_id(app, "debug-reload-ui", pick(lang, "Reload UI", "重新加载界面"), true, Some("CmdOrCtrl+R"))?;
+    let sidecar_log = MenuItem::with_id(
+        app,
+        "debug-open-sidecar-log",
+        pick(lang, "Open Sidecar Log", "打开 Sidecar 日志"),
+        true,
+        None::<&str>,
+    )?;
+    let shell_log_item = MenuItem::with_id(
+        app,
+        "debug-open-shell-log",
+        pick(lang, "Open Shell Log", "打开 Shell 日志"),
+        true,
+        None::<&str>,
+    )?;
+    let logs_dir = MenuItem::with_id(
+        app,
+        "debug-reveal-logs",
+        pick(lang, "Reveal Logs in Finder", "在 Finder 中打开日志目录"),
+        true,
+        None::<&str>,
+    )?;
+    let home_dir = MenuItem::with_id(
+        app,
+        "debug-reveal-home",
+        pick(
+            lang,
+            "Reveal ~/.ginno in Finder",
+            "在 Finder 中打开 ~/.ginno",
+        ),
+        true,
+        None::<&str>,
+    )?;
+    let reload = MenuItem::with_id(
+        app,
+        "debug-reload-ui",
+        pick(lang, "Reload UI", "重新加载界面"),
+        true,
+        Some("CmdOrCtrl+R"),
+    )?;
 
     let debug = Submenu::with_id_and_items(
         app,
