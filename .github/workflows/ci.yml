@@ -49,8 +49,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -98,6 +96,15 @@ jobs:
         run: |
           cargo fmt --manifest-path crates/mod-broker/Cargo.toml --all --check
           cargo fmt --manifest-path apps/desktop/Cargo.toml --all --check
+
+      # tauri-build validates bundle.resources at build-script time; the real
+      # PyInstaller bundle / mod-runner are materialized by `make app` locally,
+      # which a bare checkout doesn't run. Placeholders only need to exist.
+      - name: Materialize Tauri bundle resource placeholders
+        run: |
+          mkdir -p apps/desktop/resources/runtime
+          printf 'placeholder — real bundle is materialized by make app\n' > apps/desktop/resources/runtime/.placeholder
+          printf '// placeholder — real bundle is materialized by make app\n' > apps/desktop/resources/mod-runner.mjs
 
       - name: cargo check (mod-broker)
         run: cargo check --manifest-path crates/mod-broker/Cargo.toml
