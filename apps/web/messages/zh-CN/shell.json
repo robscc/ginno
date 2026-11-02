@@ -131,6 +131,7 @@
       "cancel": "取消",
       "dismiss": "关闭提示",
       "failed": "批量操作失败，请重试。",
+      "deleteFailed": "删除失败，会话未删除，请重试。",
       "archiveAll": "一键归档",
       "archiveAllHint": "归档 {count} 个超过 14 天无活动的非置顶会话",
       "archiveAllEmpty": "没有可归档的会话",

@@ -222,12 +222,16 @@ export async function deleteSession(id: string, cascade = false) {
   // cascade=1（subagent-design.md §5.8）：删除父会话时由后端沿 parent_session_id
   // 级联删除全部后代（先协作式停止运行中的，再删 checkpoint）。前端只负责传参，
   // 后代清点仅用于确认文案与乐观移除。
-  return json<{ ok: boolean; removed: boolean }>(
-    `${BASE}/sessions/${id}${cascade ? "?cascade=1" : ""}`,
-    {
-      method: "DELETE",
-    },
-  );
+  // 409 不抛错（core.json 不看 HTTP status）：被引用拒绝时 body 带
+  // ok:false + references，由调用方回报给用户。
+  return json<{
+    ok: boolean;
+    removed?: boolean;
+    error?: string;
+    references?: string[];
+  }>(`${BASE}/sessions/${id}${cascade ? "?cascade=1" : ""}`, {
+    method: "DELETE",
+  });
 }
 
 export async function getSessionHistory(id: string) {

@@ -245,9 +245,12 @@ def test_dangling_team_and_run_refs_are_healed(isolated_home, monkeypatch):
 
 def test_archive_marks_old_near_empty_sessions(isolated_home, monkeypatch):
     """P1-1: inactivity + almost no messages → archived; a real conversation,
-    a pinned session or a referenced one stays visible."""
+    a pinned session or a team-referenced one stays visible. Run-history rows
+    no longer exempt (session_reference_map(include_run_history=False)) —
+    scheduler forks ride the same quiet → archive → cleanup pipeline."""
     from ginno_runtime import jsonx as _json
     from ginno_runtime import paths as paths_mod
+    from ginno_runtime.teams import store as team_store
 
     old = time.time() - 20 * DAY
     _write_index(
@@ -255,24 +258,32 @@ def test_archive_marks_old_near_empty_sessions(isolated_home, monkeypatch):
         [
             _row("qa_old", created=old, updated=old),
             _row("qa_archived", created=old, updated=old),
+            _row("qa_team", created=old, updated=old),
             _row("chat_old", created=old, updated=old),
             _row("pinned_old", created=old, updated=old, pinned=True),
             _row("recent", created=time.time()),
         ],
     )
-    # a scheduled run references qa_old → must NOT be archived
+    # a scheduled run references qa_old → no longer an archive exemption
     runs_dir = paths_mod.schedule_runs_dir()
     runs_dir.mkdir(parents=True, exist_ok=True)
     (runs_dir / "runs-2026-10-01.jsonl").write_text(
         _json.dumps({"run_id": "sr-1", "session_id": "qa_old"}) + "\n", encoding="utf-8"
     )
-    counts = {"qa_old": 1, "qa_archived": 1, "chat_old": 9, "pinned_old": 1, "recent": 1}
+    # a TEAM references qa_team → live reference, still exempt
+    team_store.create_team("default", "Live", "qa_team")
+    counts = {
+        "qa_old": 1, "qa_archived": 1, "qa_team": 1,
+        "chat_old": 9, "pinned_old": 1, "recent": 1,
+    }
     monkeypatch.setattr(maintenance, "_message_count", lambda slug, sid: counts.get(sid, 0))
     monkeypatch.setattr(maintenance, "_has_messages", lambda slug, sid: True)
 
     maintenance.run_startup_maintenance()
     rows = {m["id"]: m for m in _session_meta_list("default")}
-    assert rows["qa_old"].get("archived") is not True   # referenced by a run
+    assert rows["qa_old"].get("archived") is True    # run history: just history now
+    assert rows["qa_old"].get("archived_auto") is True
+    assert rows["qa_team"].get("archived") is not True  # team-referenced: stays
     assert rows["qa_archived"].get("archived") is True  # one-shot Q&A, long idle
     assert rows["qa_archived"].get("archived_auto") is True
     assert rows["chat_old"].get("archived") is False    # real conversation

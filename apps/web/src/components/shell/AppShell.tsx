@@ -58,9 +58,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [deleteTarget, setDeleteTarget] = useState<SessionMeta | null>(null);
   const confirmDelete = () => {
     // 有后代时级联删除（subagent-design.md §5.8）：后端沿 parent_session_id
-    // 一并停止/删除；store 的乐观移除同步清掉后代行。
+    // 一并停止/删除；store 的乐观移除同步清掉后代行。失败（如仍被团队引用）
+    // 由 reportRemoveFailure 落侧栏提示，会话行 reload 回来。
     if (deleteTarget) {
-      g.removeSession(deleteTarget.id, { cascade: descendantCount(deleteTarget.id) > 0 });
+      const target = deleteTarget;
+      void g
+        .removeSession(target.id, { cascade: descendantCount(target.id) > 0 })
+        .then((r) => reportRemoveFailure(target.id, target.title || t("session.untitled"), r));
     }
     setDeleteTarget(null);
   };
@@ -263,6 +267,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 删除被引用拒绝的会话（后端 skipped）：批量动作结束后仍留在侧栏提示。
   const [bulkNotice, setBulkNotice] = useState<BulkSkippedItem[]>([]);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  // 单条删除失败回报（removeSession 不再静默吞错）：被引用 → 复用批量删除
+  // 的侧栏提示条（bulk.skipped 文案同样适用 count=1）；其他失败（网络等）
+  // → 红色错误条。定义晚于 confirmDelete 但点击时才执行，无 TDZ 问题。
+  const reportRemoveFailure = (
+    id: string,
+    title: string,
+    r?: { ok: boolean; references?: string[] },
+  ) => {
+    if (r?.ok) return;
+    if (r?.references?.length) {
+      setBulkNotice([{ id, title, references: r.references }]);
+    } else {
+      setBulkError(t("bulk.deleteFailed"));
+    }
+  };
   const [archiveAllConfirm, setArchiveAllConfirm] = useState(false);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
   // 已归档选中项的「删除所选」确认（只作用于归档子集，不动普通选中行）。
@@ -693,7 +712,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       onPin={(id, pinned) => void g.pinSession(id, pinned)}
       onWorker={(id, worker) => void g.setSessionWorker(id, worker)}
       onForkSession={(id) => void forkAndOpen(id)}
-      onRemoveSession={(id) => void g.removeSession(id)}
+      onRemoveSession={(id) => {
+        // 行内删除同样要回报失败：先快照标题（乐观移除后行就没了）。
+        const title =
+          g.sessions.find((s) => s.id === id)?.title || t("session.untitled");
+        void g.removeSession(id).then((r) => reportRemoveFailure(id, title, r));
+      }}
       onSetTreeCollapsed={g.setTreeCollapsed}
       // 存的是「新的折叠态」：当前展开 → 收起（true）。
       onToggleSubGroupFold={(key, open) => setSubGroupFold((m) => ({ ...m, [key]: !open }))}

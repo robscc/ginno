@@ -174,7 +174,11 @@ interface GinnoState {
     },
   ) => Promise<SessionMeta | null>;
   setSessionAgent: (id: string, agentId: string) => void;
-  removeSession: (id: string, opts?: { cascade?: boolean }) => Promise<void>;
+  // 失败不再静默：返回结果交调用方落侧栏提示（被引用 → references）。
+  removeSession: (
+    id: string,
+    opts?: { cascade?: boolean },
+  ) => Promise<{ ok: boolean; references?: string[] }>;
   renameSession: (id: string, title: string) => Promise<void>;
   // 侧栏置顶（sidebar pin）：乐观写 pinned，随后提交到后端。
   pinSession: (id: string, pinned: boolean) => Promise<void>;

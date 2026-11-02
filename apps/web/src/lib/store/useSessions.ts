@@ -276,12 +276,21 @@ export function useSessions({
     });
     if (activeDoomed) runViewHandlesRef.current.setActiveRunId(null);
     if (activeDoomed) runViewHandlesRef.current.setScheduleRun(null);
+    // 失败必须回报：core.json 不看 HTTP status，409（被团队引用）以
+    // ok:false + references 的 body 正常 resolve。此前一律静默，会话行已经
+    // 乐观移除 → 看起来“删成功”，实际服务端什么都没删，刷新又回来。
+    // 失败时立即 reload 拉回真实列表 + 未读权威态（折叠覆盖的剪除不恢复，
+    // 可接受的次要损失）。返回结果交调用方落侧栏提示条。
     try {
-      await api.deleteSession(id, opts?.cascade);
+      const r = await api.deleteSession(id, opts?.cascade);
+      if (r && r.ok !== false) return { ok: true };
+      await reloadSessions();
+      return { ok: false, references: r?.references };
     } catch {
-      /* ignore — reconcile on next reload */
+      await reloadSessions();
+      return { ok: false };
     }
-  }, []);
+  }, [reloadSessions]);
 
   const renameSession = useCallback(async (id: string, title: string) => {
     const trimmed = title.trim();

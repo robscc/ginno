@@ -131,6 +131,7 @@
       "cancel": "Cancel",
       "dismiss": "Dismiss",
       "failed": "Batch action failed. Please try again.",
+      "deleteFailed": "Delete failed — the session was not removed. Try again.",
       "archiveAll": "Archive older sessions",
       "archiveAllHint": "Archive {count} unpinned sessions idle for over 14 days",
       "archiveAllEmpty": "Nothing to archive",

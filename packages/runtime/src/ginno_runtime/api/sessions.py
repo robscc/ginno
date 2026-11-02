@@ -1064,6 +1064,23 @@ async def stop_delegation(delegation_id: str) -> dict:
     return {"ok": True, "killed": True}
 
 
+async def _heal_run_history_refs() -> None:
+    """Delete 收尾：立即清掉 runs 日志里指向已删会话的引用。
+
+    Run-history 引用不再阻止删除（见 delete_session 的 guard 注释）后，原本
+    每日 hygiene 兜底的 heal_dead_session_refs 改为删除后立即跑一次，让运行
+    历史的「查看会话」当场显示「已删除」而不是等到第二天。best-effort：
+    失败只记日志，日线志的兜底仍在。
+    """
+    try:
+        from .. import schedule_store
+        from ..diagnostics import _valid_session_ids
+
+        schedule_store.heal_dead_session_refs(_valid_session_ids())
+    except Exception:  # noqa: BLE001
+        _log.exception("run_refs_heal_after_delete_failed")
+
+
 @router.delete("/api/sessions/{session_id}")
 async def delete_session(
     session_id: str, cascade: bool = False, force: bool = False
@@ -1082,14 +1099,17 @@ async def delete_session(
     is the *file* `sessions/<session_id>.json`; the preserved dir is
     `sessions/<session_id>/` — never glob `<session_id>*` here.
     """
-    # P2-1 reference guard: deleting a session a team or a scheduled run
-    # points at silently breaks those features. Refuse unless the caller
-    # explicitly forces it (bulk delete reports the skipped ids instead).
+    # P2-1 reference guard: deleting a session a TEAM points at silently
+    # breaks team chat — refuse unless the caller forces it (bulk delete
+    # reports the skipped ids instead). Run-history rows deliberately don't
+    # block: they're append-only logs that self-heal via
+    # heal_dead_session_refs (see _heal_run_history_refs below), not live
+    # pointers — counting them made every scheduler-run session undeletable.
     if not force:
         try:
             from ..maintenance import session_reference_map
 
-            refs = session_reference_map().get(session_id) or []
+            refs = session_reference_map(include_run_history=False).get(session_id) or []
         except Exception:  # noqa: BLE001 — a broken store must not block deletion
             refs = []
         if refs:
@@ -1182,6 +1202,8 @@ async def delete_session(
         except Exception:
             _log.exception("channel_delete_notice_failed channel=%s session=%s",
                            chan, session_id)
+    if removed:
+        await _heal_run_history_refs()
     return {"ok": True, "removed": removed, "files_dir": files_dir}
 
 
@@ -1209,7 +1231,7 @@ async def bulk_sessions(req: BulkSessionsRequest) -> dict:
         try:
             from ..maintenance import session_reference_map
 
-            refs_map = session_reference_map()
+            refs_map = session_reference_map(include_run_history=False)
         except Exception:  # noqa: BLE001
             refs_map = {}
     done: list[str] = []

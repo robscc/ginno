@@ -345,11 +345,20 @@ def _remove_session_files(slug: str, session_id: str) -> None:
         _log.exception("maintenance_empty_session_dir_failed sid=%s", session_id)
 
 
-def session_reference_map() -> dict[str, list[str]]:
+def session_reference_map(*, include_run_history: bool = True) -> dict[str, list[str]]:
     """session_id → human-readable list of records that point at it.
 
-    Used by the purge (skip), the delete guard (refuse) and diagnostics
-    (report). Teams and scheduled run logs are the only across-store refs.
+    Two kinds of pointers live here and behave very differently:
+
+    * **teams** are *live* references — deleting the session breaks team chat
+      and the roster. These always block (purge skips, delete refuses).
+    * **scheduled run logs** (``runs-*.jsonl``) are append-only *history*:
+      every scheduler-triggered run (incl. daily forks) leaves a permanent
+      ``session_id``/``forked_session_id`` row. Counting them as blockers
+      made every scheduler-run session undeletable forever, so deletion
+      guards pass ``include_run_history=False`` — the logs self-heal via
+      ``schedule_store.heal_dead_session_refs`` instead. Diagnostics keeps
+      the default ``True`` (detect-then-heal needs the full map).
     """
     refs: dict[str, list[str]] = {}
 
@@ -369,6 +378,8 @@ def session_reference_map() -> dict[str, list[str]]:
                     _add(str(sid or ""), f"team {name} ({m.get('display_name') or 'member'})")
     except Exception:  # noqa: BLE001 — a broken teams store must not skip hygiene
         _log.exception("maintenance_team_refs_failed")
+    if not include_run_history:
+        return refs
     try:
         from ginno_runtime import jsonx as json
 
@@ -393,13 +404,14 @@ def session_reference_map() -> dict[str, list[str]]:
 
 
 def _referenced_session_ids() -> set[str]:
-    """Sessions some other record points at — teams and scheduled run logs.
+    """Sessions a *live* record points at — teams only.
 
     The empty-session purge must never delete one of these: the reference is
-    left dangling and every consumer (team chat, “view session” in run
-    history) breaks silently (DATA-06).
+    left dangling and team chat breaks silently (DATA-06). Run-history rows
+    don't count (see session_reference_map) — heal_dead_session_refs scrubs
+    them after the purge in this same pass.
     """
-    return set(session_reference_map())
+    return set(session_reference_map(include_run_history=False))
 
 
 def _message_count(slug: str, session_id: str) -> int | None:
@@ -470,7 +482,9 @@ def _mark_archived_sessions() -> None:
         _write_state(state)
     if now - float(state.get("archived_checked_at") or 0) < 86400:
         return
-    referenced = set(session_reference_map())
+    # 引用计数只算 teams 等活引用：run 历史不再豁免自动归档（定时 fork 出的
+    # 会话也走「安静 → 归档 → 清理」流水线，删掉后 runs 日志由 healer 清）。
+    referenced = set(session_reference_map(include_run_history=False))
     changed_projects = 0
     for slug in _project_slugs():
         rows = _session_meta_list(slug)

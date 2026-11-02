@@ -438,6 +438,35 @@ def test_bulk_delete_skips_referenced_sessions(client, patch_build_model):
     assert client.delete(f"/api/sessions/{referenced}?force=1").json()["ok"] is True
 
 
+def test_delete_ignores_run_history_refs(client, patch_build_model):
+    """runs-*.jsonl 是追加式历史，不再阻止删除：删掉后 heal 当场清引用并标
+    session_missing。回归：定时任务每日 fork 的会话曾在「清理已归档」里永远
+    删不掉（bulk 按 referenced 跳过），而单删又因前端吞 409 假装成功。"""
+    patch_build_model(script(text="ok"))
+    import time
+
+    from ginno_runtime import schedule_store
+
+    sid = _post_session(client).json()["id"]
+    sid2 = _post_session(client).json()["id"]
+    day = time.strftime("%Y-%m-%d")
+    runs_dir = paths.schedule_runs_dir()
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / f"runs-{day}.jsonl").write_text(
+        json.dumps({"run_id": "sr-1", "session_id": sid}) + "\n"
+        + json.dumps({"run_id": "sr-2", "session_id": sid2}) + "\n",
+        encoding="utf-8",
+    )
+
+    # 单删不再 409；bulk（清理已归档走它）同样放行 run-history 引用的会话。
+    assert client.delete(f"/api/sessions/{sid}").json()["ok"] is True
+    r = client.post("/api/sessions/bulk", json={"action": "delete", "ids": [sid2]}).json()
+    assert r["skipped"] == [] and r["done"] == [sid2]
+    # 删除收尾：run 日志引用被 heal_dead_session_refs 立即清掉（单删与 bulk 都触发）。
+    rows = schedule_store.load_day(day)
+    assert all(r["session_id"] is None and r.get("session_missing") for r in rows)
+
+
 def test_diagnostics_reports_sections(client):
     data = client.get("/api/diagnostics").json()
     assert data["ok"] is True
