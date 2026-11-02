@@ -567,6 +567,7 @@
       "assignAcceptance": "验收标准",
       "viewWorker": "查看员工对话",
       "senderLabel": "派发方"
-    }
+    },
+    "jumpLatest": "跳到最新一条信息"
   }
 }

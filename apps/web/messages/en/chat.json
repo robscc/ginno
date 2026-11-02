@@ -567,6 +567,7 @@
       "assignAcceptance": "Acceptance criteria",
       "viewWorker": "View worker conversation",
       "senderLabel": "Assigned by"
-    }
+    },
+    "jumpLatest": "Jump to latest message"
   }
 }

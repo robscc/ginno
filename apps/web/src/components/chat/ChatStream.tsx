@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { X, Check } from "lucide-react";
+import { X, Check, ArrowDown } from "lucide-react";
 import { useGinno } from "@/lib/store";
 import { useSteerQueue } from "@/lib/steerQueue";
 import { loadToolLabels } from "@/lib/toolLabels";
@@ -291,6 +291,18 @@ export function ChatStream({
     if (stickRef.current) pinToBottom();
   }, [messages]);
 
+  // 「跳到最新一条信息」:离开底部足够远时在对话区底部浮出。240px(约两条
+  // 消息)以下不亮——停留区(80px)之上轻微上翻不应被打扰;按钮本身不占
+  // 布局(绝对定位悬浮),出现/消失不会顶动输入框。
+  const [showJumpLatest, setShowJumpLatest] = useState(false);
+  const JUMP_AWAY_PX = 240;
+
+  function jumpToLatest() {
+    stickRef.current = true;
+    setShowJumpLatest(false);
+    pinToBottom();
+  }
+
   // Pin the transcript to the bottom across a few frames instead of once.
   //
   // A transcript lays out progressively — markdown tables, collapsible thinking
@@ -338,6 +350,10 @@ export function ChatStream({
     const inner = innerRef.current;
     if (!el || !inner || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => {
+      // 距底距离顺带刷新「跳到最新」的显隐:流式内容缩水(microcompact/
+      // 思考块收起)时 dist 无声变小,只有滚动事件才会更新它。
+      const away = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowJumpLatest(away >= JUMP_AWAY_PX);
       if (!stickRef.current) return; // 用户主动上翻时不打扰
       const max = el.scrollHeight - el.clientHeight;
       if (max >= 0 && el.scrollTop > max) el.scrollTop = max;
@@ -758,11 +774,14 @@ export function ChatStream({
           </button>
         </div>
       )}
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
         onScroll={(e) => {
           const el = e.currentTarget;
-          stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          const away = el.scrollHeight - el.scrollTop - el.clientHeight;
+          stickRef.current = away < 80;
+          setShowJumpLatest(away >= JUMP_AWAY_PX);
         }}
         className="flex-1 overflow-y-auto overscroll-contain px-6 py-6"
       >
@@ -803,6 +822,16 @@ export function ChatStream({
           ))}
 
         </div>
+      </div>
+      {showJumpLatest && (
+        <button
+          onClick={jumpToLatest}
+          className="anim-slide-in absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line2 bg-card px-3 py-1.5 text-xs text-muted shadow-lg hover:text-txt"
+        >
+          <ArrowDown className="h-3.5 w-3.5" />
+          {tc("jumpLatest")}
+        </button>
+      )}
       </div>
 
       {confirmDelRun && (
