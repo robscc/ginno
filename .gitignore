@@ -64,3 +64,6 @@ apps/desktop/release-override.conf.json
 .coverage
 coverage.xml
 htmlcov/
+
+# vitest coverage (@vitest/coverage-v8 → cobertura-coverage.xml 等)
+coverage/

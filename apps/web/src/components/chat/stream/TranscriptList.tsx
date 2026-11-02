@@ -40,6 +40,8 @@ export function TranscriptList({
   running,
   compacting,
   serverRunning,
+  wsStatus,
+  parked,
   decideSubagentPlan,
   answerQuestion,
   editResend,
@@ -54,6 +56,12 @@ export function TranscriptList({
   running: boolean;
   compacting: boolean;
   serverRunning: boolean;
+  /** 本会话 WS 连接状态（ChatStream）：传给 live 气泡的等待行——断线期间
+   *  改报连接中断，而不是让「等待下一轮」秒表空转。 */
+  wsStatus?: "connecting" | "live" | "reconnecting" | "offline";
+  /** turn 停车中（权限/提案/pending 问题）：抑制 live 气泡的「等待下一轮」
+   *  行——停车由停靠卡/问题卡当信号，等待行空转会误导。 */
+  parked?: boolean;
   decideSubagentPlan: (
     planId: string,
     decision: "confirm" | "cancel",
@@ -360,6 +368,8 @@ export function TranscriptList({
               blocks={m.blocks}
               streaming={m.id === liveId}
               statusOverride={compacting ? tc("stream.compacting") : null}
+              connState={wsStatus ?? null}
+              parkedTurn={parked}
               turnId={m.turnId}
               failed={m.failed}
               ts={m.ts}

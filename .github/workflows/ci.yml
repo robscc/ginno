@@ -69,9 +69,19 @@ jobs:
         working-directory: apps/web
         run: pnpm typecheck
 
-      - name: Unit tests (vitest)
+      - name: Unit tests (vitest, with coverage)
         working-directory: apps/web
-        run: pnpm test
+        run: pnpm test:coverage
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: apps/web/coverage/cobertura-coverage.xml
+          flags: web
+          token: ${{ secrets.CODECOV_TOKEN }}   # optional for public repos; tokenless if unset
+          fail_ci_if_error: false
+
 
       - name: Build (Next.js static export)
         working-directory: apps/web

@@ -799,6 +799,8 @@ export function ChatStream({
             running={running}
             compacting={compacting}
             serverRunning={serverRunning}
+            wsStatus={wsStatus}
+            parked={parked}
             decideSubagentPlan={decideSubagentPlan}
             answerQuestion={answerQuestion}
             editResend={editResend}

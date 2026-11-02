@@ -11,6 +11,7 @@ import { agentHex } from "@/lib/theme";
 import { relTime } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 import { InnerBlocks, RefBlocks, subagentStatusMeta, SubagentKindBadges, useStatusLabel, type Block } from "@/components/chat/blocks";
+import { innerTail, isWaitingNextRound } from "./waitState";
 import { copyText } from "./copyText";
 import { CopyBubbleButton } from "./stream/CopyBubbleButton";
 import { DiffView } from "@/components/workflow/DiffView";
@@ -257,6 +258,8 @@ failed,
 ts,
 onAnswerQuestion,
 questionLive,
+connState,
+parkedTurn,
 }: {
 agent: AgentConfig | null;
 agentName?: string;
@@ -264,7 +267,8 @@ agentName?: string;
 subagentTypeName?: string;
 blocks: Block[];
 streaming?: boolean;
-/** 瞬态状态行文案（如「压缩中…」）：非空时优先于 connecting/thinking 计时文案 */
+/** 瞬态状态行文案（如「压缩中…」）：非空时优先于 connecting/thinking 计时文案；
+ *  有内容（hasInner）的流式气泡上头部状态行不渲染，此文案由尾部等待行承接 */
 statusOverride?: string | null;
 turnId?: string;
 failed?: boolean;
@@ -275,6 +279,14 @@ ts?: number;
 // answered from inside the bubble, not from a bottom-docked prompt.
 onAnswerQuestion?: (id: string, answer: string, optionIndex: number | null, skip: boolean) => void;
 questionLive?: boolean;
+/** 本会话 WS 连接状态（ChatStream 的 wsStatus）：live 气泡等待行的兜底信号——
+ *  reconnecting/offline 期间流事件根本到不了，等待行改报连接中断，而不是
+ *  让「等待下一轮」的秒表空转骗人（用户反馈 2026-11-03：看着像卡死）。 */
+connState?: "connecting" | "live" | "reconnecting" | "offline" | null;
+/** turn 停车中（权限/提案等停靠卡在等用户决定，ChatStream 的 parked）：此时
+ *  尾块往往也是已结束的工具，但「等待下一轮」会空转误导——停车由停靠卡
+ *  自身当信号，等待行让位。pending 问题块已在 tail 判据里排除。 */
+parkedTurn?: boolean;
 }) {
 const { tc } = useChatT();
 const hex = agentHex(agent?.color);
@@ -282,6 +294,36 @@ const hex = agentHex(agent?.color);
 // 才是它的身份，与侧栏行/子会话顶栏/主对话卡片保持一致（用户反馈 2026-10-01）。
 const displayName = subagentTypeName || agent?.name || agentName || tc("stream.fallbackAgent");
 const hasInner = blocks.some((b) => b.kind !== "ref");
+
+// ── 轮次边界等待行（2026-11-03 用户反馈）─────────────────────────────────────
+// 多步 turn 里「上一个块已收尾 → 下一轮首个 delta」之间是模型调用静默窗（慢
+// 网关可达十几秒）：气泡已有内容时没有任何活性指示，看着像卡死。判据是纯
+// 函数（waitState.ts，供 node 测试）：尾块已收尾且未停车时，在气泡尾部给
+// 一条带秒表的活性行。
+const waitingNextRound = isWaitingNextRound(blocks, streaming, parkedTurn);
+const connLost = connState === "reconnecting" || connState === "offline";
+const tail = innerTail(blocks);
+// 秒表计「尾部静默了多久」：任何流事件改动尾部（tail 引用变化）即归零，静默
+// 期每秒 +1——数字在走本身就是「没卡住」的信号。
+const [waitElapsed, setWaitElapsed] = useState(0);
+useEffect(() => {
+  setWaitElapsed(0);
+}, [tail]);
+useEffect(() => {
+  if (!waitingNextRound) return;
+  const timer = setInterval(() => setWaitElapsed((e) => e + 1), 1000);
+  return () => clearInterval(timer);
+}, [waitingNextRound]);
+const waitText = useMemo(() => {
+  // 优先级：连接中断 > 瞬态覆盖（压缩中）> 泛化等待。断线时事件根本到不了，
+  // 秒表空转会让人误以为在等下一轮。
+  if (connLost)
+    return connState === "offline"
+      ? tc("stream.connLostOffline")
+      : tc("stream.connLostReconnecting");
+  if (statusOverride) return statusOverride;
+  return tc("stream.waitNextRound", { seconds: waitElapsed });
+}, [connLost, connState, statusOverride, waitElapsed, tc]);
 
 // Track elapsed time for dynamic status text during TTFT wait
 const [elapsed, setElapsed] = useState(0);
@@ -313,7 +355,9 @@ useEffect(() => {
 }, [streaming, ts]);
 // 流式 → 状态文案；完成 → 相对时间（收口时刻起算）；无 ts（历史重放）→
 // 不渲染。旧的硬编码「刚刚」会说一小时的谎，宁可空着。
-const timeLabel = streaming ? statusText : ts ? relTime(ts) : "";
+// 已有内容的流式气泡头部不再显示状态行：elapsed 只在空气泡时计时，旧行为
+// 会把「正在连接模型……」冻在整个流式期；活性信号改由尾部等待行承担。
+const timeLabel = streaming ? (hasInner ? "" : statusText) : ts ? relTime(ts) : "";
 return (
   <div className="min-w-0">
     {/* C+ 方案②归属徽标：agent 色 dot + 名字 pill（原型风格），替代原先的
@@ -346,12 +390,29 @@ return (
           </div>
         )}
         {hasInner ? (
-          <InnerBlocks
-            blocks={blocks}
-            streaming={streaming}
-            onAnswerQuestion={onAnswerQuestion}
-            questionLive={questionLive}
-          />
+          <>
+            <InnerBlocks
+              blocks={blocks}
+              streaming={streaming}
+              onAnswerQuestion={onAnswerQuestion}
+              questionLive={questionLive}
+            />
+            {/* 尾部等待行：紧跟最后一个块（典型是刚结束的工具块）——见组件头
+                注释。视觉语言与 pending 工具行/TTFT 状态行一致（wave dots +
+                小字），不另起体系。 */}
+            {streaming && (connLost || waitingNextRound || !!statusOverride) && (
+              <div className="mt-1.5 flex items-center gap-2 rounded-md border border-line bg-base/40 px-2.5 py-1.5">
+                <div className="flex items-center gap-0.5">
+                  <WaveDot delay={0} color={connLost ? "#eab308" : hex} />
+                  <WaveDot delay={150} color={connLost ? "#eab308" : hex} />
+                  <WaveDot delay={300} color={connLost ? "#eab308" : hex} />
+                </div>
+                <span key={waitText} className="animate-fade-in text-xs text-muted">
+                  {waitText}
+                </span>
+              </div>
+            )}
+          </>
         ) : streaming ? (
           <div className="my-1.5 rounded-md border border-line bg-base/40 px-2.5 py-1.5">
             <div className="flex items-center gap-2">
