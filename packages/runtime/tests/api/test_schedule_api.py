@@ -300,8 +300,9 @@ def test_timeline_runs_and_planned(client):
     r = client.get("/api/schedule/timeline", params={"date": today}).json()
     assert r["date"] == today and r["runs"] == []
     # 时间炸弹修复（2026-10-04）：23:30 后当天 30 分钟网格的剩余点可能为 0
-    # （下一点落到明天）——当天为空时改查明天，验证语义不变：网格步进+全在未来。
-    if not r["planned"]:
+    # （下一点落到明天）；姊妹案例（2026-11-03，CI UTC 23:35 实测）：剩余恰好
+    # 1 个点会让 gaps 空集——两者一并处理：当天不足 2 个计划点就改查明天。
+    if len(r["planned"]) < 2:
         tomorrow = time.strftime("%Y-%m-%d", time.localtime(time.time() + 86400))
         r = client.get("/api/schedule/timeline", params={"date": tomorrow}).json()
         assert r["date"] == tomorrow and r["runs"] == []
