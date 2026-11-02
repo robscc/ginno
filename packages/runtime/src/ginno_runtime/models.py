@@ -569,8 +569,13 @@ def build_model(
         )
         if cfg.get("org_id"):
             chat_kw["openai_organization"] = cfg["org_id"]
+        # Same gateway-identity override as the anthropic branch above: the
+        # openai SDK stamps AsyncOpenAI/Python, which magpie attributes to
+        # "AsyncOpenAI". SDK default_headers merge over its own UA, so ours wins.
+        default_headers = {"User-Agent": f"ginno/{_GINNO_VERSION}"}
         if session_id:
-            chat_kw["default_headers"] = {"x-session-id": session_id}
+            default_headers["x-session-id"] = session_id
+        chat_kw["default_headers"] = default_headers
         return _responses_chat_openai()(**chat_kw)
 
     # openai / openai-compatible
@@ -603,8 +608,13 @@ def build_model(
         extra_body["enable_thinking"] = True
     if extra_body:
         chat_kw["extra_body"] = extra_body
+    # Same gateway-identity override as the anthropic branch above: the
+    # openai SDK stamps AsyncOpenAI/Python, which magpie attributes to
+    # "AsyncOpenAI". SDK default_headers merge over its own UA, so ours wins.
+    default_headers = {"User-Agent": f"ginno/{_GINNO_VERSION}"}
     if session_id:
-        chat_kw["default_headers"] = {"x-session-id": session_id}
+        default_headers["x-session-id"] = session_id
+    chat_kw["default_headers"] = default_headers
     # Reasoning round-trip (see _replay_reasoning_content): on for
     # openai-compatible gateways (DeepSeek thinking mode requires it, Qwen
     # ignores it), off for the official OpenAI endpoint. An explicit

@@ -78,3 +78,28 @@ def test_anthropic_bearer_auth_keeps_ginno_ua(isolated_home, monkeypatch):
     m = models.build_model("p")
     assert m.default_headers["User-Agent"].startswith("ginno/")
     assert m.default_headers["Authorization"] == "Bearer sk-test"
+
+
+# ---- openai-protocol User-Agent identity ------------------------------------
+# Same story as the anthropic branch above, but the culprit is the openai
+# SDK's ``User-Agent: AsyncOpenAI/Python`` — magpie attributes Ginno's
+# openai/openai-compatible/openai-responses traffic to "AsyncOpenAI".
+
+
+@pytest.mark.parametrize("protocol", ["openai", "openai-compatible", "openai-responses"])
+def test_openai_protocols_ua_is_ginno(isolated_home, monkeypatch, protocol):
+    monkeypatch.delenv("GINNO_FAKE_LLM", raising=False)
+    cfg = {
+        "enabled": True,
+        "protocol": protocol,
+        "api_key": "sk-test",
+        "base_url": "http://127.0.0.1:3425/v1",
+        "model": "test-model",
+        "temperature": 0.5,
+        "timeout_s": 30,
+    }
+    monkeypatch.setattr(models.prov_mod, "load_providers", lambda: {"p": cfg})
+    m = models.build_model("p", session_id="sess-1")
+    assert m.default_headers["User-Agent"].startswith("ginno/")
+    # x-session-id must survive in the same dict as the UA override.
+    assert m.default_headers["x-session-id"] == "sess-1"
