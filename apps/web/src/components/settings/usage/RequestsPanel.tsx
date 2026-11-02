@@ -10,6 +10,7 @@ import * as api from "@/lib/runtime";
 import type { UsageRequests } from "@/lib/types";
 import { fmt } from "./charts";
 import { USAGE_SOURCES, sourceBg, sourceFg } from "@/lib/sourceColor";
+import { useGinno } from "@/lib/store";
 
 function SrcChip({ src }: { src: string }) {
   // 来源名是协议值（chat/goal/…），保持原样不翻译；配色统一走
@@ -30,6 +31,7 @@ function fmtClock(ts: number): string {
 export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter?: string; onClearSession?: () => void }) {
   const t = useTranslations("settings.usage.requests");
   const tOverview = useTranslations("settings.usage.overview");
+  const g = useGinno();
   const [date, setDate] = useState(""); // empty = today (server default)
   const [provider, setProvider] = useState("");
   const [source, setSource] = useState("");
@@ -79,9 +81,11 @@ export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter
           {t("providerLabel")}
           <select value={provider} onChange={(e) => setProvider(e.target.value)} className={sel}>
             <option value="">{t("all")}</option>
-            <option value="anthropic">anthropic</option>
-            <option value="openai">openai</option>
-            <option value="custom">custom</option>
+            {/* 实配 provider(名称展示,id 过滤)。旧的 anthropic/openai/custom
+                硬编码项早已对不上 v2 配置 id,只作为历史值留在数据里。 */}
+            {Object.entries(g.providers).map(([pid, cfg]) => (
+              <option key={pid} value={pid}>{cfg.name || pid}</option>
+            ))}
           </select>
         </label>
         <label className="flex items-center gap-1.5 text-[11.5px] text-faint">
@@ -133,7 +137,7 @@ export function RequestsPanel({ sessionFilter, onClearSession }: { sessionFilter
                   {r.session_id ? <code className="text-[11px]" title={r.session_id}>{r.session_id.slice(0, 8)}…</code> : <span className="text-faint">{t("bg")}</span>}
                 </td>
                 <td className="px-3 py-2"><SrcChip src={r.source} /></td>
-                <td className="px-3 py-2 text-[12.5px] text-muted">{r.provider || "—"}</td>
+                <td className="px-3 py-2 text-[12.5px] text-muted" title={r.provider}>{r.provider_name || r.provider || "—"}</td>
                 <td className="px-3 py-2 text-[12.5px] text-muted">{r.model || "—"}</td>
                 <td className="px-3 py-2 text-right text-[12.5px] tabular-nums text-muted">{r.input_tokens ? fmt(r.input_tokens) : "—"}</td>
                 <td className="px-3 py-2 text-right text-[12.5px] tabular-nums text-muted">{r.output_tokens ? fmt(r.output_tokens) : "—"}</td>

@@ -783,10 +783,13 @@ export interface UsageDailyPoint extends UsageCounters {
 }
 export interface UsageProviderAgg extends UsageCounters {
   provider: string;
+  /** 展示名（API 层由 settings 的 provider 配置解析；未知 id 回退 provider 原值）。 */
+  provider_name?: string;
 }
 export interface UsageModelAgg extends UsageCounters {
   provider: string;
   model: string;
+  provider_name?: string;
 }
 export interface UsageSourceAgg extends UsageCounters {
   source: string; // usage-stats-design §3.6: chat / goal / workflow / …
@@ -836,6 +839,7 @@ export interface UsageRequest {
   source: string;
   provider: string;
   model: string;
+  provider_name?: string;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;

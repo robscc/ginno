@@ -205,3 +205,20 @@ def test_context_field_in_event_and_endpoint(create_session, ws_conv, client):
     sid2 = create_session([script(text="ok")], agent_id="dev")
     data2 = client.get(f"/api/sessions/{sid2}/usage").json()
     assert data2["context"] is None
+
+
+def test_provider_name_decorated(client):
+    """提供商分布/模型分布/请求日志都附带 provider_name(人读名,未知 id 回退原值)
+    ——2026-11-03 用户反馈:展示层直接画 prov_xxx id 没法认。"""
+    _seed(provider="prov_abc123", model="glm-5")
+    _seed(provider="custom", model="glm-4", session_id="sess-b")
+    ov = client.get("/api/usage/overview?days=30").json()
+    by_id = {p["provider"]: p for p in ov["providers"]}
+    # isolated home 里 custom 槽位有缺省名(「自定义端点」/Custom endpoint);
+    # prov_abc123 未配置 → 回退 id 本身
+    assert by_id["custom"]["provider_name"]
+    assert by_id["prov_abc123"]["provider_name"] == "prov_abc123"
+    for m in ov["models"]:
+        assert m["provider_name"] == (m["provider"] if m["provider"] == "prov_abc123" else m["provider_name"])
+    rows = client.get("/api/usage/requests").json()["rows"]
+    assert rows and all(r.get("provider_name") for r in rows)

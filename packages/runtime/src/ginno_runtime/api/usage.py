@@ -123,6 +123,30 @@ def _usage_session_display(sid: str) -> dict:
     }
 
 
+def _provider_display_names() -> dict[str, str]:
+    """provider id → 人读名（settings 里配置的名称,含 legacy 槽位的缺省名）。
+
+    统计/日志按 id 分桶（键稳定、可过滤）,但展示层直接画 ``prov_2a60a2a4``
+    这种 id 没法认（2026-11-03 用户反馈）——API 层统一附 ``provider_name``,
+    前端拿名字展示、拿 id 兜底。读取失败/未知 id 一律回退原值。"""
+    try:
+        from .. import providers as prov_mod
+
+        return {
+            pid: str(cfg.get("name") or "").strip() or pid
+            for pid, cfg in prov_mod.load_providers().items()
+        }
+    except Exception:  # noqa: BLE001 — 展示性装饰,绝不让统计接口报错
+        return {}
+
+
+def _decorate_provider_name(rows: list[dict], names: dict[str, str]) -> None:
+    for r in rows:
+        pid = str(r.get("provider") or "")
+        if pid:
+            r["provider_name"] = names.get(pid, pid)
+
+
 @router.get("/api/usage/overview")
 async def usage_overview(days: int = 30) -> dict:
     """KPI + daily series + provider/model breakdown for the trailing window
@@ -130,9 +154,15 @@ async def usage_overview(days: int = 30) -> dict:
     days = max(1, min(int(days), usage_store.RETENTION_DAYS))
     from .. import pricing
 
+    agg = usage_store.aggregate_overview(days)
+    names = _provider_display_names()
+    _decorate_provider_name(agg.get("providers") or [], names)
+    _decorate_provider_name(agg.get("models") or [], names)
+    for day in agg.get("daily") or []:
+        _decorate_provider_name(day.get("models") or [], names)
     return {
         "ok": True,
-        **usage_store.aggregate_overview(days),
+        **agg,
         "pricing_configured": pricing.configured(),
         "currency": "CNY",
     }
@@ -196,4 +226,5 @@ async def usage_requests(
         date_str=date, provider=provider, model=model, source=source,
         session_id=session_id, page=page, page_size=page_size,
     )
+    _decorate_provider_name(res.get("rows") or [], _provider_display_names())
     return {"ok": True, **res}

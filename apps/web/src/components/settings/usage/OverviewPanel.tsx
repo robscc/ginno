@@ -310,6 +310,8 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
       {ov.providers.length === 0 && <div className="py-6 text-center text-xs text-faint">{t("noData")}</div>}
       {ov.providers.map((p) => {
         const v = p.input_tokens + p.output_tokens;
+        // 名称优先（API 附带,未知 id 回退原值）;颜色/键仍用 id 保持稳定
+        const label = p.provider_name || p.provider;
         return (
           <div
             key={p.provider}
@@ -317,7 +319,7 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
             onMouseEnter={(e) =>
               show(
                 <>
-                  <b className="text-txt">{p.provider}</b> · {t("tipInWindow")}
+                  <b className="text-txt">{label}</b> · {t("tipInWindow")}
                   <TipRow label={t("labelTokens")} value={fmt(v)} />
                   <TipRow label={t("labelInput")} value={fmt(p.input_tokens)} />
                   <TipRow label={t("labelOutput")} value={fmt(p.output_tokens)} />
@@ -332,9 +334,9 @@ function ProviderDist({ ov }: { ov: UsageOverview }) {
             onMouseLeave={hide}
           >
             <div className="flex items-center gap-2">
-              <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted" title={p.provider}>
+              <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted" title={label}>
                 <i className="h-2 w-2 flex-none rounded-[2.5px]" style={{ background: providerColor(p.provider) }} />
-                <span className="truncate">{p.provider}</span>
+                <span className="truncate">{label}</span>
               </span>
               <span className="ml-auto flex-none whitespace-nowrap text-xs tabular-nums text-muted">
                 <b className="text-txt">{pct(v / total)}</b> · {fmt(v)}
@@ -436,7 +438,7 @@ function ModelCost({ ov }: { ov: UsageOverview }) {
                     <span className="break-words">{m.model}</span>
                   </span>
                 </td>
-                <td className="px-2 py-1.5 text-[12px] text-muted">{m.provider}</td>
+                <td className="px-2 py-1.5 text-[12px] text-muted" title={m.provider}>{m.provider_name || m.provider}</td>
                 <td className="px-2 py-1.5 text-right text-[12px] tabular-nums text-muted">{m.calls}</td>
                 <td className="px-2 py-1.5 text-right text-[12px] tabular-nums text-muted">
                   {fmt(m.input_tokens + m.output_tokens)}
@@ -515,7 +517,7 @@ function ModelRank({ ov }: { ov: UsageOverview }) {
           <div key={`${m.provider}/${m.model}`} className="selectable flex items-start gap-2 border-b border-white/5 py-2 text-[12.5px] last:border-b-0">
             <i className="mt-1.5 h-2 w-2 flex-none rounded-[2.5px]" style={{ background: providerColor(m.provider) }} />
             <span className="min-w-0 flex-1 break-words text-txt">
-              {m.model} <span className="text-[11.5px] text-faint">· {m.provider}</span>
+              {m.model} <span className="text-[11.5px] text-faint" title={m.provider}>· {m.provider_name || m.provider}</span>
             </span>
             <span className="flex-none whitespace-nowrap text-right tabular-nums text-muted">
               <b className="text-txt">{fmt(v)}</b> · {pct(v / total)} ·{" "}
