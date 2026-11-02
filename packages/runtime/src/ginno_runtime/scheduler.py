@@ -1110,6 +1110,14 @@ async def _tick() -> None:
     # Deliberately not a user schedule: it never appears in schedules.json and
     # keeps working when scheduled tasks as a whole are switched off.
     await _maybe_nightly_dream()
+    # 日志保留期清理(maintenance.cleanup_old_logs):内部每日自限流,startup
+    # 之外长驻进程也按天清一次。放 dream 旁边同为内置动作,不占用户任务表。
+    try:
+        from .maintenance import maybe_cleanup_logs_daily
+
+        maybe_cleanup_logs_daily()
+    except Exception:  # noqa: BLE001 — 清理失败不影响调度
+        _log.exception("log_cleanup_tick_failed")
     cfg = store.load_config()
     if not cfg.get("enabled", True):
         return

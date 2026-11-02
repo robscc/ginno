@@ -480,15 +480,32 @@ async def _run_workflow_bg_inner(run_id: str, workflow_id: str, context_override
     fork_id = None
     try:
         run0 = _base.wf_store.get_run(run_id) or {}
+        # 终态守卫(2026-11-02 双跑事故):agent 在定时影子会话里 workflow_run
+        # 失败后调 workflow_run_status,收养路径曾拿 RUN_CACHE 里创建时的过期
+        # "running" 快照把同一 failed run 二次 spawn。盘上已是终态的 run 拒绝
+        # 再驱动——重试走 retry / retry_from_checkpoint 专用驱动器。
+        if run0.get("status") in _base.wf_store.TERMINAL_STATUSES:
+            _base._log.warning(
+                "workflow_run_rejected_terminal run=%s status=%s",
+                run_id, run0.get("status"),
+            )
+            return
         wf, dsl, model, tools, fork_id, usage_attr = _wf_build_deps(run_id, workflow_id, pinned_version=run0.get("dsl_version"))
         if not wf:
             raise ValueError(f"workflow '{workflow_id}' not found")
         dsl = _apply_supervisor_override(run0, dsl)
         # Replayable transcript session (transcript.py): every run gets one so
         # its agent steps read like scheduled agent tasks in the sessions list.
+        # The id is pinned on the run row — a re-drive (retry/adoption race)
+        # must reuse it, never fork a second transcript session.
         from ..workflows import transcript as wf_transcript
 
-        transcript_sid = await wf_transcript.begin_run_session(wf, {"id": run_id})
+        transcript_sid = run0.get("transcript_session") or await wf_transcript.begin_run_session(
+            wf, run0, present_in=present_in
+        )
+        if transcript_sid and transcript_sid != run0.get("transcript_session"):
+            run0["transcript_session"] = transcript_sid
+            _base.wf_storemod._write_json(_base.wf_storemod._run_path(run_id), run0)
         if present_in:
             await _base._push_session_event(present_in, "run.bind", {"run_id": run_id, "workflow_id": workflow_id, "present_in_session_id": present_in})
         else:
@@ -557,6 +574,7 @@ async def _resume_workflow_bg(run_id: str, workflow_id: str, resume_value: dict,
             dsl, run_id=run_id, model=model, tools=tools, resume_value=resume_value,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
             resume_nature="manual" if _nature == "manual" else None,
+            transcript_session=run0.get("transcript_session"),
         )
         await _drive_run_events(run_id, present_in, wf, agen)
     except asyncio.CancelledError:
@@ -725,6 +743,7 @@ async def _continue_run_bg(run_id: str, workflow_id: str, present_in: str | None
         agen = wf_engine.continue_workflow(
             dsl, run_id=run_id, model=model, tools=tools,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
+            transcript_session=run0.get("transcript_session"),
         )
         await _drive_run_events(run_id, present_in, wf, agen)
         _base.sync_ledger.set_status(run_id, "ok")
@@ -814,6 +833,7 @@ async def _rerun_from_bg(
             pinned_dsl, run_id=run_id, model=model, tools=tools,
             usage_attr={**(usage_attr or {}), "session_id": present_in},
             result_cache=rc,
+            transcript_session=(_base.wf_store.get_run(run_id) or {}).get("transcript_session"),
         )
         await _drive_run_events(run_id, present_in, wf, agen)
         _base.sync_ledger.set_status(run_id, "ok")

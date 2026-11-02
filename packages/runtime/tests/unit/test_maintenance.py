@@ -311,3 +311,57 @@ def test_last_success_backfill(isolated_home, monkeypatch):
     tasks = {t["id"]: t for t in schedule_store.list_tasks()}
     assert tasks["t1"]["last_success"] == {"run_id": "r-new", "finished": 400}
     assert "last_success" not in tasks["t2"]  # only failures: still unseeded
+
+
+# ---- log retention (2026-11-02: sidecar 日志只有大小轮转,补天数维度) ------ #
+
+
+def _set_retention(days: int) -> None:
+    sp = paths.home() / "settings.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({"context": {"log_retention_days": days}}))
+
+
+def _touch_log(name: str, age_days: float) -> None:
+    d = paths.home() / "logs"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text("x", encoding="utf-8")
+    at = time.time() - age_days * DAY
+    os.utime(p, (at, at))
+
+
+def test_cleanup_old_logs_deletes_only_expired(isolated_home):
+    _set_retention(7)
+    _touch_log("sidecar.log", 0)          # 活跃日志:恒为新,不删
+    _touch_log("sidecar.log.1", 3)        # 窗口内的轮转件
+    _touch_log("sidecar.log.2", 10)       # 过期
+    _touch_log("shell.log", 30)           # 过期
+    _touch_log("mod-x.log", 9)            # 过期
+
+    removed = maintenance.cleanup_old_logs()
+
+    assert removed == 3  # sidecar.log.2 + shell.log + mod-x.log(9 天 > 7 天)
+    logs = paths.home() / "logs"
+    assert sorted(p.name for p in logs.iterdir()) == ["sidecar.log", "sidecar.log.1"]
+
+
+def test_cleanup_old_logs_zero_disables(isolated_home):
+    _set_retention(0)
+    _touch_log("sidecar.log.2", 30)
+    assert maintenance.cleanup_old_logs() == 0
+    assert (paths.home() / "logs" / "sidecar.log.2").exists()
+
+
+def test_maybe_cleanup_logs_daily_gates(isolated_home):
+    _set_retention(7)
+    _touch_log("shell.log", 30)
+    maintenance.maybe_cleanup_logs_daily()
+    assert not (paths.home() / "logs" / "shell.log").exists()
+    state = json.loads((paths.home() / "maintenance.json").read_text())
+    assert state["logs_cleaned_at"] > 0
+
+    # 窗口内不重复清:再放一个过期文件,24h 内的第二次调用不删
+    _touch_log("mod-y.log", 30)
+    maintenance.maybe_cleanup_logs_daily()
+    assert (paths.home() / "logs" / "mod-y.log").exists()

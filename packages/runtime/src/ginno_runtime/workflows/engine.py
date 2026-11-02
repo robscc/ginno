@@ -312,6 +312,7 @@ async def resume_workflow(
     project_slug: str = "default",
     usage_attr: dict | None = None,
     resume_nature: str | None = None,
+    transcript_session: str | None = None,
 ) -> AsyncIterator[dict]:
     """Continue a paused run by resuming the persisted interrupt on its thread.
 
@@ -322,7 +323,15 @@ async def resume_workflow(
     the engine emits it here instead (``nature`` marks it so the API layer does
     not flip the re-executing step to "done")."""
     d = wf_dsl.normalize_dsl(dsl)
-    run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {})}
+    run_ctx: dict[str, Any] = {
+        "run_id": run_id,
+        "events": [],
+        "usage_attr": dict(usage_attr or {}),
+        # Transcript mirroring continues on the SAME session pinned on the run
+        # row (drivers read run.transcript_session) — without it every step
+        # after a resume silently stopped appearing in the replay session.
+        "transcript_session": transcript_session,
+    }
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))
@@ -381,6 +390,7 @@ async def continue_workflow(
     project_slug: str = "default",
     usage_attr: dict | None = None,
     result_cache: Any = None,
+    transcript_session: str | None = None,
 ) -> AsyncIterator[dict]:
     """Retry-from-failure (workflow-ux-redesign P2): stream the graph with
     input=None on the run's thread so LangGraph re-executes the pending node
@@ -391,7 +401,9 @@ async def continue_workflow(
     to continue and this yields an error event."""
     d = wf_dsl.normalize_dsl(dsl)
     run_ctx: dict[str, Any] = {"run_id": run_id, "events": [], "usage_attr": dict(usage_attr or {}),
-                               "result_cache": result_cache}
+                               "result_cache": result_cache,
+                               # same-session transcript continuation as resume_workflow
+                               "transcript_session": transcript_session}
     ctr = {"i": 0}
     with _run_control(run_id, run_ctx):
         graph = wf_compiler.compile_workflow(d, model, tools, run_ctx, checkpointer=FileCheckpointer(project_slug, surface_pending_writes=True))

@@ -940,8 +940,13 @@ async def _stream_graph(
                             if nm in WORKFLOW_TOOL_NAMES:
                                 mm = re.search(r"run_id=([0-9a-f]{6,})", raw)
                                 rid = mm.group(1) if mm else None
-                                run = (RUN_CACHE.get(rid) if rid else None) or (
-                                    wf_store.get_run(rid) if rid else None
+                                # 盘上 run 行优先(2026-11-02 双跑事故):RUN_CACHE
+                                # 只在工具创建时写一次,run 失败后快照仍是创建时
+                                # 的 "running"——workflow_run_status 的输出同样
+                                # 命中本正则,拿过期快照过状态守卫会把终态 run
+                                # 再 spawn 一遍(转录会话因此翻倍落进侧栏)。
+                                run = (wf_store.get_run(rid) if rid else None) or (
+                                    RUN_CACHE.get(rid) if rid else None
                                 )
                                 if run:
                                     # 唤起 in-session (design A): bind the chat-triggered

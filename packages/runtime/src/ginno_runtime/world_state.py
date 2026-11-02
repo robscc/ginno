@@ -141,6 +141,10 @@ _CONTEXT_DEFAULTS = {
     "memory_max_chars": DEFAULT_MEMORY_MAX_CHARS,
     # Anti-abuse cap on ask_user per turn segment (see tools/ask_tools.py).
     "ask_user_max_per_turn": DEFAULT_ASK_MAX_PER_TURN,
+    # 日志保留天数(maintenance.cleanup_old_logs):logs/ 下 mtime 早于该天数
+    # 的文件启动时 + 每日清理;0 = 不清理。RotatingFileHandler 只按 5MB×3
+    # 轮转,长驻进程的旧轮转件/各 mod 日志没有天数维度的退出机制。
+    "log_retention_days": 7,
 }
 
 
@@ -212,6 +216,15 @@ def plan_resume_on_restart() -> bool:
     """plan-orchestration §6：重启恢复时孤儿 pending 是否继续调度。
     False = 恢复期把 active 清单改为取消（不无人值守地跑）。"""
     return bool(context_settings().get("plan_resume_on_restart", True))
+
+
+def log_retention_days() -> int:
+    """logs/ 保留天数（settings.context.log_retention_days，默认 7；
+    0 = 不清理）。非法值回落默认。"""
+    try:
+        return int(context_settings().get("log_retention_days") or 0)
+    except (TypeError, ValueError):
+        return 7
 
 
 def _browser_tools_enabled() -> bool:

@@ -619,11 +619,58 @@ def _heal_dangling_refs(valid_sessions: set[str]) -> None:
         _log.exception("maintenance_schedule_heal_failed")
 
 
+# ---- sidecar log retention ------------------------------------------------- #
+
+
+def cleanup_old_logs() -> int:
+    """按 ``settings.context.log_retention_days`` 删除 logs/ 下过期日志。
+
+    覆盖 sidecar 轮转件（.log.1/.2/.3）、shell.log、mod-*.log——RotatingFileHandler
+    只按大小轮转，没有天数维度的退出机制。活跃 sidecar.log 的 mtime 恒为新，
+    天数过滤天然不会碰它。返回删除数（0 = 无事发生/清理关闭）。"""
+    from .world_state import log_retention_days
+
+    days = log_retention_days()
+    if days <= 0:
+        return 0
+    cutoff = time.time() - days * 86400
+    logs_dir = paths.home() / "logs"
+    removed = 0
+    try:
+        candidates = sorted(logs_dir.glob("*.log*"))
+    except OSError:
+        return 0
+    for p in candidates:
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+                removed += 1
+        except OSError:
+            continue  # 活跃句柄/竞态:跳过,下一轮再试
+    return removed
+
+
+def maybe_cleanup_logs_daily() -> None:
+    """每天至多清一次（startup 可能一天多次;长驻进程靠 scheduler tick 调）。"""
+    state = _read_state()
+    if time.time() - float(state.get("logs_cleaned_at") or 0) < 86400:
+        return
+    removed = cleanup_old_logs()
+    state["logs_cleaned_at"] = time.time()
+    _write_state(state)
+    if removed:
+        _log.info("maintenance_logs_cleaned removed=%d", removed)
+
+
 # ---- entry point ---------------------------------------------------------- #
 
 
 def run_startup_maintenance() -> None:
     """Synchronous sweep (usable before the event loop serves requests)."""
+    try:
+        maybe_cleanup_logs_daily()
+    except Exception:  # noqa: BLE001 — 日志清理绝不阻塞启动
+        _log.exception("maintenance_logs_failed")
     slugs = _project_slugs()
     if not slugs:
         return

@@ -26,7 +26,13 @@
       "subSaved": "Subagent concurrency cap saved: {n}",
       "saveFailed": "Failed to save",
       "workingDirLabel": "Working directory",
-      "workingDirValue": "~/workspace/‹project› (agent metadata in ~/.ginno/projects/)"
+      "workingDirValue": "~/workspace/‹project› (agent metadata in ~/.ginno/projects/)",
+      "logLabel": "Log retention (days)",
+      "logAria": "Log retention in days (0-90)",
+      "logHint": "0-90 allowed, 0 = never clean, default 7",
+      "logHelp": "Runtime logs (~/.ginno/logs/) older than this are deleted automatically; swept at startup and once a day.",
+      "logClamped": "Out of range, clamped to {n} (0-90 allowed)",
+      "logSaved": "Log retention saved: {n} days"
     },
     "diagnostics": {
       "title": "Diagnostics",

@@ -269,6 +269,9 @@ export function GeneralSettings() {
   // subagent 并发上限（P3 共享契约 3）：settings 键 subagent.max_concurrent，
   // 默认 5、范围 1-16；runtime 调度器动态读取，保存后即生效。
   const [subMax, setSubMax] = useState("5");
+  // 日志保留天数：settings.context.log_retention_days（默认 7，0 = 不清理）。
+  // runtime 启动 + 每日清一次 logs/ 下过期文件（maintenance.cleanup_old_logs）。
+  const [logDays, setLogDays] = useState("7");
   // 界面语言：settings.language（auto/en/zh-CN，i18n-design.md §2）。
   // 值由根部的 I18nProvider 加载/校正，这里只读 context + setLocale 写回。
   const { languageSetting } = useLocaleCtx();
@@ -294,6 +297,11 @@ export function GeneralSettings() {
           | { max_concurrent?: unknown }
           | undefined;
         if (typeof sub?.max_concurrent === "number") setSubMax(String(sub.max_concurrent));
+        const ctx = (s as Record<string, unknown>).context as
+          | { log_retention_days?: unknown }
+          | undefined;
+        if (typeof ctx?.log_retention_days === "number")
+          setLogDays(String(ctx.log_retention_days));
       })
       .catch(() => {});
   }, []);
@@ -337,6 +345,26 @@ export function GeneralSettings() {
       s.subagent = sub;
       await api.putSettings(s);
       setMsg(tSettings("general.subSaved", { n: clamped }));
+    } catch {
+      setMsg(tSettings("general.saveFailed"));
+    }
+  }
+
+  // 保存日志保留天数：同 get→改→put 链路，键为 settings.context.
+  // log_retention_days（与 memory_max_chars 同一块）；0 = 不清理。
+  async function saveLogDays(raw: string) {
+    const n = Math.round(Number(raw));
+    const clamped = Number.isFinite(n) ? Math.min(90, Math.max(0, n)) : 7;
+    setLogDays(String(clamped));
+    if (Number.isFinite(n) && n !== clamped)
+      setMsg(tSettings("general.logClamped", { n: clamped }));
+    try {
+      const s = (await api.getSettings()) as Record<string, unknown>;
+      const ctx = (s.context as Record<string, unknown> | undefined) ?? {};
+      ctx.log_retention_days = clamped;
+      s.context = ctx;
+      await api.putSettings(s);
+      setMsg(tSettings("general.logSaved", { n: clamped }));
     } catch {
       setMsg(tSettings("general.saveFailed"));
     }
@@ -421,6 +449,29 @@ export function GeneralSettings() {
             <span className="text-xs text-faint">{tSettings("general.subHint")}</span>
           </div>
           <p className="mt-1 text-xs text-faint">{tSettings("general.subHelp")}</p>
+        </div>
+        <div>
+          <label className="field-label">{tSettings("general.logLabel")}</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              max={90}
+              value={logDays}
+              onChange={(e) => setLogDays(e.target.value)}
+              onBlur={(e) => void saveLogDays(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void saveLogDays((e.target as HTMLInputElement).value);
+                }
+              }}
+              className="field w-24"
+              aria-label={tSettings("general.logAria")}
+            />
+            <span className="text-xs text-faint">{tSettings("general.logHint")}</span>
+          </div>
+          <p className="mt-1 text-xs text-faint">{tSettings("general.logHelp")}</p>
         </div>
         <div>
           <label className="field-label">{tSettings("general.workingDirLabel")}</label>
