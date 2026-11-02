@@ -64,7 +64,11 @@ app: check guard-app-not-running
 	@#   "Warn skipping app notarization, no APPLE_ID & …"
 	@# 这是本机自签（"Ginno Local Code Signing"）构建的**预期**输出，不是
 	@# 配置错误——没有 Apple 公证凭据就不公证，.app 仍正常可用。
-	cd $(ROOT)/apps/desktop && node node_modules/@tauri-apps/cli/tauri.js build
+# TAURI_ARGS: extra args passed through to `tauri build` (default empty).
+# Release CI uses it to override bundle.macOS.signingIdentity with ad-hoc
+# ("--config release-override.conf.json") — runners have no local signing
+# identities; see .github/workflows/release.yml.
+	cd $(ROOT)/apps/desktop && node node_modules/@tauri-apps/cli/tauri.js build $(TAURI_ARGS)
 	@# Regression guard: an only-linker-signed .app makes WKWebView's
 	@# Networking helper reject every request -> the webview white-screens
 	@# while the sidecar looks perfectly healthy. bundle.macOS.signingIdentity

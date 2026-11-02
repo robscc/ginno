@@ -7,6 +7,8 @@
 *Claude Code 的形态 × 全文件存档（无数据库 · 无账号 · 无云同步）× 可视化 Workflow Studio。*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/robscc/ginno/actions/workflows/ci.yml/badge.svg)](https://github.com/robscc/ginno/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/robscc/ginno/graph/badge.svg)](https://codecov.io/gh/robscc/ginno)
 ![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-black.svg)
 ![No cloud](https://img.shields.io/badge/cloud-none-brightgreen.svg)
 
@@ -91,11 +93,24 @@ pnpm dev                           # 一键起 web + runtime + 桌面壳
 
 ---
 
+## 文档
+
+| | |
+|---|---|
+| [产品使用说明](docs/user-guide.md) | 全功能走查 |
+| [常见问题](docs/faq.md) · [故障排查](docs/troubleshooting.md) | 高频问答 · 已知故障与修复 |
+| [升级指南](docs/upgrade-guide.md) | 版本间升级——`~/.ginno` 数据不受影响 |
+| [同类产品对比](docs/comparison.md) | vs Claude Code / Cline / Open WebUI / LangGraph Studio |
+| [ROADMAP](ROADMAP.md) · [CHANGELOG](CHANGELOG.md) | 路线图 · 变更日志 |
+| [贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) | 开发环境、测试、发版流程 · 漏洞披露 |
+
+---
+
 ## 状态
 
 - 一个**个人项目**，日常使用中（dogfooding），高频迭代 —— 约 2.5 个月、220+ commits。
 - 尚早、不成熟，API 与界面仍在变动。
-- 欢迎 Issue / PR / 想法，中英文都可以。
+- 欢迎 Issue / PR / 想法，中英文都可以（见[贡献指南](CONTRIBUTING.md)）。
 
 ## License
 

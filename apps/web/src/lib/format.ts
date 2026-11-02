@@ -2,8 +2,8 @@
 // usage settings panels.
 
 /** Compact human token counts: 950 → "950", 12_400 → "12.4k",
- * 1_250_000 → "1.25M", 3_000_000_000 → "3B". One decimal, trailing ".0"
- * trimmed; never scientific. Locale-independent (en-US digits) so logs and
+ * 1_250_000 → "1.25M", 3_000_000_000 → "3B". Up to two decimals, trailing
+ * zeros trimmed; never scientific. Locale-independent (en-US digits) so logs and
  * screenshots stay greppable. */
 export function fmtTokens(n: number | undefined | null): string {
   if (n == null || !Number.isFinite(n)) return "0";
@@ -17,7 +17,7 @@ export function fmtTokens(n: number | undefined | null): string {
   for (const [scale, suffix] of units) {
     if (abs >= scale) {
       const v = n / scale;
-      const s = v >= 100 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, "");
+      const s = v >= 100 ? v.toFixed(0) : v.toFixed(2).replace(/\.?0+$/, "");
       return `${s}${suffix}`;
     }
   }

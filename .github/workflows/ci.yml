@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   runtime-tests:
     runs-on: ubuntu-latest
@@ -27,5 +31,76 @@ jobs:
 
       # The suite is hermetic: no network, no API key, no MCP servers spawn
       # (empty mcp.json), so no extra services are required.
-      - name: Run tests
-        run: uv run --group test pytest -q
+      - name: Run tests (with coverage)
+        run: uv run --group test pytest -q --cov=ginno_runtime --cov-report=term --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: packages/runtime/coverage.xml
+          flags: runtime
+          token: ${{ secrets.CODECOV_TOKEN }}   # optional for public repos; tokenless if unset
+          fail_ci_if_error: false
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        working-directory: apps/web
+        run: pnpm lint
+
+      - name: Typecheck (includes *.test.ts)
+        working-directory: apps/web
+        run: pnpm typecheck
+
+      - name: Unit tests (vitest)
+        working-directory: apps/web
+        run: pnpm test
+
+      - name: Build (Next.js static export)
+        working-directory: apps/web
+        run: pnpm build
+
+  rust:
+    # macOS runner: the desktop crate pulls Tauri, whose Linux build needs
+    # webkit2gtk/gtk system packages — not worth installing per-run while a
+    # public repo gets macOS minutes free. mod-broker rides along.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/desktop
+            crates/mod-broker
+
+      - name: rustfmt
+        run: |
+          cargo fmt --manifest-path crates/mod-broker/Cargo.toml --all --check
+          cargo fmt --manifest-path apps/desktop/Cargo.toml --all --check
+
+      - name: cargo check (mod-broker)
+        run: cargo check --manifest-path crates/mod-broker/Cargo.toml
+
+      - name: cargo check (desktop shell)
+        run: cargo check --manifest-path apps/desktop/Cargo.toml

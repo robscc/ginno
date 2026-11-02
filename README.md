@@ -7,6 +7,8 @@
 *The shape of Claude Code, all-file storage (no DB · no account · no cloud), and a visual Workflow Studio.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/robscc/ginno/actions/workflows/ci.yml/badge.svg)](https://github.com/robscc/ginno/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/robscc/ginno/graph/badge.svg)](https://codecov.io/gh/robscc/ginno)
 ![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-black.svg)
 ![No cloud](https://img.shields.io/badge/cloud-none-brightgreen.svg)
 
@@ -93,11 +95,24 @@ Requires: Node ≥ 20 · pnpm ≥ 9 · Python ≥ 3.11 (via `uv`) · Rust (Tauri
 
 ---
 
+## Documentation
+
+| | |
+|---|---|
+| [User guide](docs/user-guide.md) | full walkthrough of every feature |
+| [FAQ](docs/faq.md) · [Troubleshooting](docs/troubleshooting.md) | common questions · known failure modes & fixes |
+| [Upgrade guide](docs/upgrade-guide.md) | moving between versions — your `~/.ginno` data survives |
+| [How it compares](docs/comparison.md) | vs Claude Code / Cline / Open WebUI / LangGraph Studio |
+| [ROADMAP](ROADMAP.md) · [CHANGELOG](CHANGELOG.md) | where it's heading · what shipped |
+| [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) | dev setup, testing, release runbook · vulnerability disclosure |
+
+---
+
 ## Status
 
 - A **personal project**, used daily (dogfooding) and iterated fast — ~2.5 months, 220+ commits.
 - Early and unpolished; APIs and UI still move.
-- Issues, PRs, and ideas are welcome — in English or Chinese.
+- Issues, PRs, and ideas are welcome — in English or Chinese (see [CONTRIBUTING](CONTRIBUTING.md)).
 
 ## License
 

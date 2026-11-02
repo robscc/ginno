@@ -19,6 +19,7 @@ Two client styles
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,6 +30,28 @@ from langchain_core.messages import AIMessage
 from ginno_runtime import jsonx as json
 from ginno_runtime import paths, server, server_shared
 from ginno_runtime.testing.fake_model import ScriptedChatModel, script, script_tool_call
+
+# e2e/_sidecar.py is a plain (non-package) module imported by name; expose its
+# directory before importing it below. Do NOT recreate tests/e2e/conftest.py —
+# a submodule conftest shadows the module name `conftest` on sys.path and
+# breaks every `from conftest import ...` in this suite (main CI went red on
+# 8d6cb13 for exactly that reason; shared fixtures live HERE, at the root).
+_E2E_DIR = Path(__file__).parent / "e2e"
+if str(_E2E_DIR) not in sys.path:
+    sys.path.insert(0, str(_E2E_DIR))
+
+import _sidecar  # noqa: E402  (sys.path injected above)
+
+# e2e/_sidecar.py is a plain (non-package) module imported by name; expose its
+# directory before importing it below. Do NOT recreate tests/e2e/conftest.py —
+# a submodule conftest shadows the module name `conftest` on sys.path and
+# breaks every `from conftest import ...` in this suite (main CI went red on
+# 8d6cb13 for exactly that reason; shared fixtures live HERE, at the root).
+_E2E_DIR = Path(__file__).parent / "e2e"
+if str(_E2E_DIR) not in sys.path:
+    sys.path.insert(0, str(_E2E_DIR))
+
+import _sidecar  # noqa: E402  (sys.path injected above)
 
 
 def as_fake_model(model_or_scripts: Any) -> ScriptedChatModel:
@@ -319,3 +342,43 @@ __all__ = [
     "events_of",
     "WSConversation",
 ]
+
+
+# ---------------------------------------------------------------------------
+# e2e sidecar guard（原 tests/e2e/conftest.py，8d6cb13 引入；因 conftest 遮蔽
+# 问题上移到根 conftest，见文件头部注释）。
+#
+# e2e 会话级兜底：收割本测试会话泄漏的 dist sidecar。测试内的
+# ``finally: stop_sidecar(...)`` 是第一道防线（见 e2e/_sidecar.py）；这里兜
+# 第二道——测试函数崩溃/超时/pytest 中断时 finally 可能不执行。
+# 做法是快照 diff：会话开始前记一份 dist/ginno-runtime 的 pid，会话结束时
+# 只杀**新出现**的 pid。用户自己跑着的 sidecar（桌面 app / ginno exec）
+# 在快照里已存在，永远不会被碰。
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session", autouse=True)
+def harvest_leaked_sidecars():
+    before = set(_sidecar.dist_sidecar_pids())
+    yield
+    leaked = [pid for pid in _sidecar.dist_sidecar_pids() if pid not in before]
+    if leaked:
+        _sidecar.harvest(leaked)
+
+
+# ---------------------------------------------------------------------------
+# e2e sidecar guard（原 tests/e2e/conftest.py，8d6cb13 引入；因 conftest 遮蔽
+# 问题上移到根 conftest，见文件头部注释）。
+#
+# e2e 会话级兜底：收割本测试会话泄漏的 dist sidecar。测试内的
+# ``finally: stop_sidecar(...)`` 是第一道防线（见 e2e/_sidecar.py）；这里兜
+# 第二道——测试函数崩溃/超时/pytest 中断时 finally 可能不执行。
+# 做法是快照 diff：会话开始前记一份 dist/ginno-runtime 的 pid，会话结束时
+# 只杀**新出现**的 pid。用户自己跑着的 sidecar（桌面 app / ginno exec）
+# 在快照里已存在，永远不会被碰。
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session", autouse=True)
+def harvest_leaked_sidecars():
+    before = set(_sidecar.dist_sidecar_pids())
+    yield
+    leaked = [pid for pid in _sidecar.dist_sidecar_pids() if pid not in before]
+    if leaked:
+        _sidecar.harvest(leaked)

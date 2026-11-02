@@ -1,0 +1,60 @@
+name: Release
+
+# Tag-driven release: push a v* tag → build the dmg on a macOS runner (same
+# pipeline as `make app`) → attach it to the GitHub Release. See the release
+# runbook in CONTRIBUTING.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14 # arm64 — matches the supported platform (Apple Silicon)
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # CI has none of the local self-signed identities, so override
+      # bundle.macOS.signingIdentity with ad-hoc ("-"). The Makefile's
+      # post-build regression guard accepts ad-hoc (it only rejects
+      # *linker-signed* artifacts, which white-screen the webview).
+      - name: Build app (web → runtime → Tauri, ad-hoc signed)
+        run: |
+          cat > apps/desktop/release-override.conf.json <<'EOF'
+          { "bundle": { "macOS": { "signingIdentity": "-" } } }
+          EOF
+          make app TAURI_ARGS="--config release-override.conf.json"
+
+      - name: Smoke test the runtime suite
+        run: make smoke
+
+      - name: Attach dmg to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: apps/desktop/target/release/bundle/dmg/*.dmg
+          generate_release_notes: true
