@@ -116,6 +116,51 @@ def test_resolve_public_accepts_all_public(monkeypatch):
     assert infos and infos[0][4][0] == "93.184.216.34"
 
 
+# ---------------------- open-external (browser handoff) ---------------------- #
+def test_openable_host_never_dns_probes(monkeypatch):
+    """fake-ip proxies (Clash/Surge, 198.18.0.0/15 = is_reserved) answer every
+    lookup with a reserved address — the old resolve-based guard rejected ALL
+    external links (2026-11-03: github.com -> 198.18.0.21 点了没反应). The
+    browser handoff must not resolve at all; any getaddrinfo call fails the
+    test."""
+    def _no_dns(*a, **k):  # pragma: no cover — must never be reached
+        raise AssertionError("open-external must not resolve DNS")
+
+    monkeypatch.setattr(fetch.socket, "getaddrinfo", _no_dns)
+    assert fetch._assert_openable_host("https://github.com/robscc/sopflow")
+    assert fetch._assert_openable_host("http://198.18.0.21.example.org/x")  # 域名不是 IP
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "ftp://x/",
+        "http://127.0.0.1/",
+        "http://localhost/x",
+        "http://app.localhost/",
+        "http://10.0.0.5/",
+        "http://[::1]/",
+        "http://169.254.169.254/latest/meta-data",
+        "http://198.18.0.21/",  # fake-ip range as a LITERAL ip: still refused
+    ],
+)
+def test_openable_host_refuses_nonpublic(url):
+    with pytest.raises(fetch.FetchError):
+        fetch._assert_openable_host(url)
+
+
+def test_web_fetch_guard_unchanged(monkeypatch):
+    """web_fetch still connects itself — its resolve-then-pin guard keeps
+    refusing fake-ip answers (that path IS our SSRF surface)."""
+    monkeypatch.setattr(
+        fetch.socket, "getaddrinfo",
+        lambda h, p, proto=0: [(2, 1, 6, "", ("198.18.0.21", p))],
+    )
+    with pytest.raises(fetch.FetchError):
+        fetch._resolve_public("github.com", 443)
+
+
 # ----------------------------- web tools ----------------------------- #
 def test_build_web_tools_disabled(isolated_home):
     (isolated_home / "settings.json").write_text(json.dumps({"web": {"enabled": False}}))

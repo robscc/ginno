@@ -601,11 +601,13 @@ def open_external(body: dict) -> dict:
     """Open a URL in the system browser (citations-design.md §5.7).
 
     WKWebView won't hand external links to the OS browser on its own, so the
-    desktop SourcesBlock routes web-citation clicks through the sidecar. The
-    same guard as web_fetch applies: http/https + public hosts only, so a
-    crafted citation can't launch an internal address.
+    desktop SourcesBlock routes web-citation clicks through the sidecar.
+    Guard = ``_assert_openable_host``: scheme + literal-IP/localhost checks,
+    NO DNS probe — the browser resolves under its own proxy rules, and a
+    local fake-IP resolver (Clash/Surge 198.18.0.0/15) must not make every
+    external link read as reserved (2026-11-03: all link clicks dead).
 
-    Sync (not ``async def``): the DNS guard + browser launch are blocking, so
+    Sync (not ``async def``): the guard + browser launch are blocking, so
     FastAPI runs this in the threadpool instead of stalling the event loop
     (and every live WS stream) on a slow/unresolvable host.
     """
@@ -615,9 +617,9 @@ def open_external(body: dict) -> dict:
     try:
         import webbrowser
 
-        from .web.fetch import _assert_public_host
+        from .web.fetch import _assert_openable_host
 
-        _assert_public_host(url.strip())
+        _assert_openable_host(url.strip())
         webbrowser.open(url.strip())
         return {"ok": True}
     except Exception as e:

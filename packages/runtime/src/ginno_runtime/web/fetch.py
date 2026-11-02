@@ -112,11 +112,35 @@ def _resolve_public(host: str, port: int) -> list:
     return infos
 
 
-def _assert_public_host(url: str) -> str:
-    """Scheme/host/DNS guard only (used by /api/open-external). Returns *url*."""
+def _assert_openable_host(url: str) -> str:
+    """Guard for handing a URL to the OS BROWSER (/api/open-external).
+
+    No DNS probe. The browser resolves and connects under ITS own network
+    stack — our getaddrinfo answering fake-IP (Clash/Surge fake-ip mode,
+    198.18.0.0/15 = ipaddress ``is_reserved``) made every external link read
+    as「内网/本机」and click-dead (2026-11-03: github.com -> 198.18.0.21).
+    Syntax-level checks stay: http/https only; literal IPs and localhost
+    names still get the intranet/loopback refusal. Symbolic hostnames pass —
+    an internal hostname opened IN THE BROWSER is the browser's origin model
+    to police, not our SSRF surface (that is web_fetch's resolve-then-pin).
+    """
     parts = _split_url(url)
-    port = parts.port or (443 if parts.scheme == "https" else 80)
-    _resolve_public(parts.hostname, port)
+    host = (parts.hostname or "").strip().lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise FetchError(t("Refusing to access intranet/loopback address: localhost", "拒绝访问内网/本机地址: localhost"))
+    try:
+        ip = ipaddress.ip_address(parts.hostname or "")
+    except ValueError:
+        return url  # symbolic hostname — the browser resolves it
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_reserved
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+    ):
+        raise FetchError(t(f"Refusing to access intranet/loopback address: {host} -> {ip}", f"拒绝访问内网/本机地址: {host} -> {ip}"))
     return url
 
 
