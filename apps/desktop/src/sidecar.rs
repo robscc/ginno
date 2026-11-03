@@ -262,14 +262,30 @@ pub(crate) fn spawn_sidecar<M: tauri::Manager<tauri::Wry>>(app: &M) -> Result<Ch
         ]);
         cmd
     } else {
-        let runtime_exe = app
-            .path()
-            .resource_dir()
-            .map_err(|e| format!("resource dir: {e}"))?
-            .join("resources")
-            .join("runtime")
+        // Dev hot-swap ladder (docs/runtime-hot-swap-design.md §3.2): prefer a
+        // dev-override bundle under the Ginno home (atomically swapped by
+        // `make dev-swap`), else the app-bundled runtime. The override is
+        // absent on end-user machines — no behavior change there.
+        let override_exe = crate::common::ginno_home_path(app)
+            .join("dev-override")
+            .join("ginno-runtime")
             .join("ginno-runtime");
-        let cmd = Command::new(runtime_exe);
+        let cmd = if override_exe.is_file() {
+            shell_log(
+                app,
+                &format!("runtime: dev-override bundle ({})", override_exe.display()),
+            );
+            Command::new(override_exe)
+        } else {
+            let runtime_exe = app
+                .path()
+                .resource_dir()
+                .map_err(|e| format!("resource dir: {e}"))?
+                .join("resources")
+                .join("runtime")
+                .join("ginno-runtime");
+            Command::new(runtime_exe)
+        };
         cmd
     };
     // Both spawn paths must agree with the runtime's own env read: dev binds

@@ -41,6 +41,7 @@
 mod badge;
 mod code_cmds;
 mod common;
+mod dev_swap;
 mod keep_awake;
 mod menu;
 mod notify;
@@ -55,7 +56,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{DragDropEvent, Listener, Manager, WindowEvent};
+use tauri::{DragDropEvent, Emitter, Listener, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
 
 use crate::common::{ginno_home_path, shell_log};
@@ -134,7 +135,8 @@ pub fn run() {
             code_cmds::code_open_external,
             code_cmds::code_trash,
             keep_awake::set_keep_awake,
-            keep_awake::get_keep_awake
+            keep_awake::get_keep_awake,
+            dev_swap::finish_dev_swap
         ])
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
@@ -150,6 +152,27 @@ pub fn run() {
                             return;
                         };
                         restart_sidecar(&app);
+                    });
+                }
+                "debug-finish-dev-swap" => {
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let Some(lock) = app.try_state::<RestartLock>() else {
+                            return;
+                        };
+                        let Ok(_guard) = lock.0.try_lock() else {
+                            crate::common::shell_log(&app, "dev-swap: restart already in flight");
+                            return;
+                        };
+                        let result = dev_swap::run_finish(&app);
+                        crate::common::shell_log(
+                            &app,
+                            &format!(
+                                "dev-swap: ok={} rolled_back={} {}",
+                                result.ok, result.rolled_back, result.detail
+                            ),
+                        );
+                        let _ = app.emit("dev-swap:result", result);
                     });
                 }
                 "debug-open-sidecar-log" => {
@@ -370,6 +393,45 @@ pub fn run() {
                             if let Ok(mut guard) = state.0.lock() {
                                 *guard = Some(child);
                             }
+                        }
+                        // Child-exit watcher (runtime-hot-swap-design.md P1): an
+                        // *unexpected* backend death (crash) respawns it so the
+                        // app never sits on a dead port. Guarded by:
+                        //   - "seen online first" — a slow cold start is not a
+                        //     crash (the port simply hasn't come up yet);
+                        //   - RestartLock — restart/dev-swap flows hold it over
+                        //     their kill+spawn window, and a real quit is on
+                        //     its way out anyway.
+                        {
+                            let h = app.handle().clone();
+                            std::thread::spawn(move || {
+                                let mut seen_up = false;
+                                loop {
+                                    std::thread::sleep(Duration::from_secs(3));
+                                    if sidecar_listening() {
+                                        seen_up = true;
+                                        continue;
+                                    }
+                                    if !seen_up {
+                                        continue; // cold start, not a crash
+                                    }
+                                    let Some(lock) = h.try_state::<RestartLock>() else {
+                                        return;
+                                    };
+                                    let Ok(_guard) = lock.0.try_lock() else {
+                                        continue; // restart/swap in flight
+                                    };
+                                    if sidecar_listening() {
+                                        continue; // raced back up
+                                    }
+                                    crate::common::shell_log(
+                                        &h,
+                                        "sidecar watcher: backend died — respawning",
+                                    );
+                                    restart_sidecar(&h);
+                                    seen_up = false;
+                                }
+                            });
                         }
                     }
                     Err(e) => {

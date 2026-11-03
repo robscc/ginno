@@ -53,6 +53,17 @@ pub(crate) fn install_debug_menu(app: &tauri::App) -> tauri::Result<()> {
         true,
         Some("CmdOrCtrl+Alt+R"),
     )?;
+    let finish_swap = MenuItem::with_id(
+        app,
+        "debug-finish-dev-swap",
+        pick(
+            lang,
+            "Finish Dev Swap (verify + rollback)",
+            "完成热切换（验证 + 回滚）",
+        ),
+        true,
+        None::<&str>,
+    )?;
     let sidecar_log = MenuItem::with_id(
         app,
         "debug-open-sidecar-log",
@@ -100,6 +111,7 @@ pub(crate) fn install_debug_menu(app: &tauri::App) -> tauri::Result<()> {
         true,
         &[
             &restart,
+            &finish_swap,
             &PredefinedMenuItem::separator(app)?,
             &sidecar_log,
             &shell_log_item,
