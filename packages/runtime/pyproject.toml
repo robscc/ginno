@@ -19,7 +19,8 @@ dependencies = [
     "mcp>=1.0",
     "orjson>=3.10",
     "pydantic>=2.7",
-    "websockets>=12",
+    # 14+：wecom WS 握手用 additional_headers 带统一 UA（12/13 是 extra_headers）
+    "websockets>=14",
     "anyio>=4",
     "tomli; python_version < '3.11'",
     "typer>=0.27.0",

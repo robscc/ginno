@@ -16,6 +16,7 @@ import httpx
 
 from ... import paths
 from ... import server_shared as shared
+from ..._version import ginno_user_agent
 from ...connectors.registry import STATUS_CONNECTED, STATUS_DISCONNECTED, STATUS_ERROR
 from ..base import (
     ChannelAdapter,
@@ -70,7 +71,10 @@ class WeComChannelAdapter(ChannelAdapter):
         # 存量迁移：标记引入前绑定的会话补 type/channel（幂等，见 base.py）
         mark_channel_sessions(
             "wecom", [m["ginno_session"] for m in self._mapper.all()])
-        self._http = httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=60.0))
+        self._http = httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, read=60.0),
+            headers={"User-Agent": ginno_user_agent()},
+        )
         self.client = self._make_client()
         self._stopped = False
         self._supervise_task = asyncio.create_task(self._supervise())

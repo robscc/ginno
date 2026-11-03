@@ -18,6 +18,8 @@ import base64
 
 import httpx
 
+from ._version import ginno_user_agent
+
 _MIME_BY_FORMAT = {
     "wav": "audio/wav",
     "amr": "audio/amr",
@@ -68,7 +70,8 @@ async def transcribe_audio(data: bytes, *, fmt: str, base_url: str,
                 + base64.b64encode(data).decode("ascii"))
     resp = await http.post(
         base_url.rstrip("/") + "/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers={"Authorization": f"Bearer {api_key}",
+                 "User-Agent": ginno_user_agent()},
         json={
             "model": model,
             "messages": [{

@@ -38,6 +38,7 @@ import asyncio
 import logging
 import time
 
+from .._version import ginno_user_agent
 from .base import ClassifierModelBase, ClassifierUnavailable
 from .questions import (
     Answer,
@@ -227,6 +228,7 @@ class LayaSystemOneModel(ClassifierModelBase):
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
+                    "User-Agent": ginno_user_agent(),
                 },
             )
         if r.status_code != 200:

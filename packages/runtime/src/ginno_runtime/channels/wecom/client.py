@@ -20,6 +20,7 @@ from typing import Any
 
 from ginno_runtime import jsonx as json
 
+from ..._version import ginno_user_agent
 from . import protocol as p
 
 log = logging.getLogger("ginno.wecom")
@@ -81,8 +82,11 @@ class WecomClient:
         import websockets  # 延迟 import：与 PyInstaller 懒加载约定一致
 
         self._closed = False
-        self._ws = await websockets.connect(self.url, ping_interval=None,
-                                            ping_timeout=None)
+        # websockets 15：握手头走 additional_headers（UA 与其余出网请求统一）
+        self._ws = await websockets.connect(
+            self.url, ping_interval=None, ping_timeout=None,
+            additional_headers={"User-Agent": ginno_user_agent()},
+        )
         self._missed_pong = 0
         # recv 循环必须先于订阅 ack 的等待启动——否则没人读 socket，
         # ack 永远到不了（request 死锁超时）。

@@ -37,6 +37,7 @@ from typing import Any
 from ginno_runtime import jsonx as json
 
 from . import paths
+from ._version import ginno_user_agent
 from .lang import t
 
 PROVIDER_IDS = ("anthropic", "openai", "custom")
@@ -146,6 +147,13 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "context_window": 0,
     "enable_search": False,
     "enable_thinking": False,
+    # 思考档位能力声明(thinking-effort-design §7):auto = 按协议 + 模型名
+    # 启发式(models.py thinking_dialect);none = 显式声明不支持(UI 置灰 +
+    # 服务端把档位按 auto 处理)。
+    "thinking_mode": "auto",
+    # 档位 → token 预算覆盖(low/medium/high;anthropic 与 qwen 方言用),
+    # 缺省/非正整数用 models.py 内置默认(4k/16k/32k)。
+    "thinking_budgets": {},
     # Anthropic protocol only: bind the provider-side `web_search` server tool
     # (web_search_20250305) so the model searches on the gateway instead of
     # through Gin's own DDG/Tavily web_search tool. See models.py
@@ -556,6 +564,8 @@ def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
             client_kw: dict[str, Any] = {
                 "base_url": cfg.get("base_url") or None,
                 "timeout": timeout,
+                # 探测流量也要能被网关识别为 Ginno（与 build_model 同一 UA）
+                "default_headers": {"User-Agent": ginno_user_agent()},
             }
             if cfg.get("bearer_auth"):
                 client_kw["auth_token"] = cfg["api_key"]  # Authorization: Bearer
@@ -577,6 +587,7 @@ def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
                 api_key=cfg.get("api_key") or "not-needed",
                 base_url=base,
                 timeout=timeout,
+                default_headers={"User-Agent": ginno_user_agent()},
                 **({"organization": cfg["org_id"]} if cfg.get("org_id") else {}),
             )
             # Responses API has no /models listing — one minimal generation
@@ -598,6 +609,7 @@ def _verify_config(cfg: dict[str, Any]) -> dict[str, Any]:
             api_key=cfg.get("api_key") or "not-needed",
             base_url=base,
             timeout=timeout,
+            default_headers={"User-Agent": ginno_user_agent()},
         )
         try:
             client.models.list()
@@ -652,7 +664,7 @@ def _list_models(cfg: dict[str, Any]) -> dict[str, Any]:
                 "latency_ms": _latency()}
     # trailing "/" would double up in the f-string below
     base = str(cfg.get("base_url") or "").strip().rstrip("/")
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": ginno_user_agent()}
     if proto == "anthropic":
         base = base or "https://api.anthropic.com"
         # gateways may or may not include /v1 in base_url — never double-append

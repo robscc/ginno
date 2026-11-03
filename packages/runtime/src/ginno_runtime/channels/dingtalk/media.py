@@ -28,6 +28,8 @@ import httpx
 
 from ginno_runtime import jsonx as json
 
+from ..._version import ginno_user_agent
+
 API_BASE = "https://api.dingtalk.com"
 """新版 OpenAPI 域名（REST，鉴权走 x-acs-dingtalk-access-token header）。"""
 
@@ -108,7 +110,10 @@ class DingTalkClient:
         self.app_secret = app_secret
         # robotCode 缺省 = appKey（钉钉企业内部应用二者一致；§2.2 config 同款约定）
         self.robot_code = robot_code or app_key
-        self._http = httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=120.0))
+        self._http = httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, read=120.0),
+            headers={"User-Agent": ginno_user_agent()},
+        )
         self._token = ""
         self._token_expire_at = 0.0  # monotonic 时间戳
         self._token_lock = asyncio.Lock()
