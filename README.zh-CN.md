@@ -58,7 +58,8 @@ Ginno 把"AI Agent 该有的能力"做成一个**完整的桌面应用**，而�
 ## 安装
 
 **方式 A —— 下载安装包（macOS，Apple Silicon）：** 到 [Releases](https://github.com/robscc/ginno/releases)
-下载最新 `.dmg`。目前**未签名**，首次打开请用 **右键 → 打开** 绕过 Gatekeeper。
+下载最新 `.dmg`（由发布流水线自动构建）。当前 **ad-hoc 签名、未公证**，首次打开请用
+**右键 → 打开** 放行 Gatekeeper；跨版本升级见[升级指南](docs/upgrade-guide.md)。
 
 **方式 B —— 从源码构建：**
 
@@ -108,7 +109,8 @@ pnpm dev                           # 一键起 web + runtime + 桌面壳
 
 ## 状态
 
-- 一个**个人项目**，日常使用中（dogfooding），高频迭代 —— 约 2.5 个月、220+ commits。
+- 每次 push 跑**三栈 CI**——web（lint/typecheck/vitest/build）、Rust（fmt/check）、runtime（2900+ 测试带覆盖率）——[全绿](https://github.com/robscc/ginno/actions)。
+- 一个**个人项目**，日常使用中（dogfooding），高频迭代 —— 约 3.5 个月、490+ commits。
 - 尚早、不成熟，API 与界面仍在变动。
 - 欢迎 Issue / PR / 想法，中英文都可以（见[贡献指南](CONTRIBUTING.md)）。
 

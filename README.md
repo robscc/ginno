@@ -59,8 +59,10 @@ You bring your own model key (OpenAI / Anthropic / DeepSeek, or any compatible e
 ## Install
 
 **Option A — download (macOS, Apple Silicon):** grab the latest `.dmg` from
-[Releases](https://github.com/robscc/ginno/releases).
-It is **not code-signed** yet, so on first launch use **right-click → Open** to get past Gatekeeper.
+[Releases](https://github.com/robscc/ginno/releases) (built automatically by the
+release pipeline). The build is **ad-hoc signed, not notarized** — on first launch
+use **right-click → Open** to get past Gatekeeper. See the
+[upgrade guide](docs/upgrade-guide.md) when moving between versions.
 
 **Option B — build from source:**
 
@@ -110,7 +112,8 @@ Requires: Node ≥ 20 · pnpm ≥ 9 · Python ≥ 3.11 (via `uv`) · Rust (Tauri
 
 ## Status
 
-- A **personal project**, used daily (dogfooding) and iterated fast — ~2.5 months, 220+ commits.
+- Every push runs a **full-stack CI** — web (lint/typecheck/vitest/build), Rust (fmt/check), runtime (2900+ tests with coverage) — [all green](https://github.com/robscc/ginno/actions).
+- A **personal project**, used daily (dogfooding) and iterated fast — ~3.5 months, 490+ commits.
 - Early and unpolished; APIs and UI still move.
 - Issues, PRs, and ideas are welcome — in English or Chinese (see [CONTRIBUTING](CONTRIBUTING.md)).
 

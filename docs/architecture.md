@@ -1,6 +1,7 @@
 # Ginno Architecture
 
-> 本文描述 **当前主干代码的真实架构**（2026-08 重写并持续同步；最近一次全量核对 2026-09-25，含 Studio 方案B 阶段1+2）。
+> 本文描述 **当前主干代码的真实架构**（2026-08 重写并持续同步；最近一次全量核对 2026-09-25；
+> 2026-11-03 增量核对：图拓扑（权限边删除/限流退避）、CI 与发布流水线、测试基建、仓库布局、浏览器双轨落地状态）。
 > Ginno 已从"单轮 ReAct 骨架"演进为：多 Agent 对话 + 工具/权限/技能/MCP/记忆/知识库
 > + Workflow DSL 引擎 + Goal 长程自主推进 + TODO 外部平台同步 + 内置 Web 搜索与引用溯源
 > 的个人 AI Agent 桌面应用。
@@ -113,16 +114,21 @@
 ginno/
 ├── apps/
 │   ├── desktop/        # Tauri 壳（Rust + tauri.conf.json + entitlements.plist）
-│   └── web/            # Next.js UI（静态导出）
+│   └── web/            # Next.js UI（静态导出；src/lib/*.test.ts 为 vitest 单测）
+├── crates/mod-broker/  # mods 兼容层 broker CLI（Rust；桌面版以 path dependency 编译进 Tauri）
 ├── packages/
+│   ├── extension/      # Ginno Chrome 扩展（浏览器伴随轨道）
+│   ├── mod-runner/     # mods 兼容层 node 侧 runner（esbuild 单文件产物）
 │   └── runtime/        # Python：FastAPI + LangGraph（uv 管理，非 pnpm 成员）
 │       └── src/ginno_runtime/
 │           ├── server.py        # FastAPI 壳：app/lifespan/CORS/静态托管/main + facade
 │           ├── server_shared.py # 进程级可变状态（_SESSIONS/_SESSION_WS/…）+ 事件推送
 │           ├── session_meta.py  # sessions/_index.json 存取助手
-│           ├── api/             # 按域拆分的 APIRouter：sessions/stream/workflows/
-│           │                    #   files/folders/knowledge/config/todos/usage/memory/messages_ui
-│           ├── graph.py         # 聊天主图（agent/permission/tools）+ 系统提示分层
+│           ├── api/             # 按域拆分的 router（25+ 文件）：sessions/ stream/(包)
+│           │                    #   workflows(+runs/synthesis)/ files/ folders/ knowledge/
+│           │                    #   config/ todos/ usage/ memory/ messages_ui/ teams/
+│           │                    #   tasks/ plans/ schedule/ connectors/ code/ search/ …
+│           ├── graph.py         # 聊天主图（agent/permission/tools）+ 系统提示分层 + 限流退避
 │           ├── state.py         # 图状态 TypedDict
 │           ├── world_state.py   # WorldState 上下文工程（分节 + diff）
 │           ├── checkpointer.py  # FileCheckpointer（full/delta）
@@ -138,14 +144,19 @@ ginno/
 │           ├── knowledge/       # LLMWiki：indexer/retriever/semantic/injection/compiler/
 │           │                    #   association + citations/usage/web_usage（引用台账）
 │           ├── web/             # 内置网络搜索：config/engines/fetch（§6.13）
+│           ├── browser/         # 内嵌浏览器双轨（§6.14）：executor/relay/scripts/native_host
+│           ├── channels/        # IM 渠道：dingtalk/（Stream 模式）+ wecom/，共用 base.py
+│           ├── connectors/      # 连接器模块：registry + 内置连接器（connector-module-design）
 │           ├── workflows/       # dsl/compiler/engine/nodes/supervisor/store/events/
 │           │                    #   synthesis/dryrun/doctor/expr/contracts/scripts
 │           ├── goals/           # goal store / 模板 / 事件桥
 │           ├── todos/           # TODO store / providers / sync_ledger
 │           ├── artifacts/ files/ tools/ testing/
-├── docs/               # 本文 + 各子系统设计与使用文档
+├── docs/               # 本文 + 各子系统设计与使用文档（user-guide/faq/troubleshooting/upgrade/comparison）
+├── .github/workflows/  # ci.yml（三栈 CI）+ release.yml（tag → dmg → Release）
 ├── scripts/dev.sh      # 一键起三进程
 ├── Makefile            # 打包流水线（web→runtime→sidecar→app）+ e2e-ui
+├── CONTRIBUTING.md / SECURITY.md / CHANGELOG.md / ROADMAP.md   # 治理与发版记账
 └── package.json / pnpm-workspace.yaml
 ```
 
@@ -178,9 +189,13 @@ START ──► agent ──(conditional: 有 pending_tool_calls?)──┬─�
                                                           └─► END
 ```
 
-- `permission → tools` 是**无条件边**；分叉不靠边而靠 **`Command(goto=…)`**：
-  tools_allow 拦截 / hook block / 用户 deny / policy deny 都返回携带 `[blocked:<tool>] …`
-  AIMessage 的 `Command(goto="agent")`；全部通过才 `Command(goto="tools")`。
+- **纯 `Command(goto=…)` 路由，无 permission→tools 静态边**（2026-11-03 起）：
+  langgraph ≥1.2 在节点返回 `Command(goto=…)` 时**仍会触发其静态出边**——曾经的
+  permission→tools 无条件边与 block 时的 `goto("agent")` 叠加，把图分叉成两条并发车道
+  （影子 agent 重采样 + tools 双跑 + 前端无尽 spinner；非幂等工具每轮执行两次）。
+  现在权限分叉完全靠 Command：tools_allow 拦截 / hook block / 用户 deny / policy deny
+  都返回携带 `[blocked:<tool>] …` AIMessage 的 `Command(goto="agent")`；全部通过才
+  `Command(goto="tools")`。
 - **`agent` 节点**：每 turn 用 `build_stable_system` **重建** system prompt（不入 checkpoint →
   会话中途换 Agent 下一 turn 即生效）；按 `tools_allow`（fnmatch）过滤子集后 `bind_tools`；
   对历史副本 `strip_old_images`（只留最近 2 个用户轮，send-only 不落盘）；Anthropic 模型加
@@ -391,7 +406,14 @@ write 之间写入，A 再用旧快照写回），并走 `_atomic_write_text`（
   `ensure_web_permissions` 迁移把两工具补进**升级安装**的 `permissions.allow`
   （默认种子只对全新安装生效，不迁移的话 bypass 关闭时会落到 `ask`，goal 无头续轮会卡死在权限弹窗）。
 
-### 6.14 Browser — 内嵌浏览器（`browser/`，设计稿）
+### 6.14 Browser — 内嵌浏览器（`browser/`）
+
+> **落地状态（2026-11-03）**：已按「**扩展轨 + CDP 双轨**」路线实现——`executor.py`
+> B 轨（专用 profile Chrome + CDP）、`relay.py` 扩展轨（Chrome 扩展 WS 端点）、
+> `scripts.py` 双轨共用注入脚本（单一来源）、`native_host.py` 扩展物化与端口发现；
+> 扩展源码在 `packages/extension/`。双轨契约见
+> `docs/browser-companion-extension-design.md`。以下为原设计稿（CEF 嵌入等 M2 内容
+> 尚未实装），架构意图仍有效，实现细节以双轨设计文档为准。
 
 > 详细设计见 `docs/browser-embed-design.md`。本节为架构级摘要。
 
@@ -665,15 +687,23 @@ KnowledgeSettings 顶部说明段落因此不再产生色块。
 
 ```
 web（next build → apps/web/out）
-  → runtime（uv run --extra docs pyinstaller --onedir --add-data "out:web_out" bin/ginno-runtime.py
+  → runtime（uv run --locked --extra docs pyinstaller --onedir --add-data "out:web_out" bin/ginno-runtime.py
              --collect-all langchain/langgraph/mcp/pandas/docx/pptx/pypdf …）
   → sidecar（拷贝 dist/ginno-runtime/ 到 apps/desktop/resources/runtime/）
-  → app（解锁签名 keychain + tauri build + linker-signed 回归守卫）→ .app / .dmg
+  → app（解锁签名 keychain + tauri build（可透传 TAURI_ARGS）+ linker-signed 回归守卫）→ .app / .dmg
 ```
 
 - **onedir 而非 onefile**：onefile 每次启动重解 ~3000 文件被 EDR 扫描，冷启动 15–25s；onedir 在
   稳定签名路径只扫一次，重复启动 ~1–2s。
 - `make e2e-ui`：打包 UI 的 Playwright 真浏览器 e2e。
+
+### 15.1 发布流水线（`release.yml`，2026-11-03 起）
+
+推 `v*` tag → GitHub **macOS runner** 全自动：`make app TAURI_ARGS="--config …"`（本地自签
+identity 覆盖为 ad-hoc `"-"`）→ `make smoke` 闸门 → dmg 附到 GitHub Release（实测首跑
+~12 分钟）。发版 runbook（版本三处 bump + `uv lock` 同步 + CHANGELOG）见 `CONTRIBUTING.md`。
+**版本 bump 后必须 `uv lock`**：runtime 构建走 `uv run --locked`，lock 记录的 workspace
+版本不同步会直接挂。
 
 ---
 
@@ -691,7 +721,20 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 - **`testing/fake_model.py` 的 `ScriptedChatModel`**：确定性脚本化假 ChatModel，回放固定 AIMessage
   序列（文本 + tool calls），驱动**真实编译的 LangGraph**（工具执行、permission interrupt、checkpointer
   全走）——零网络、无 API key。经环境变量 `GINNO_FAKE_LLM` 接入 `build_model`。
-- CI（`.github/workflows/ci.yml`）：hermetic 跑 `pytest -q`（无网络、无 key、空 mcp.json）。
+- **前端 vitest**（`apps/web`，2026-11-03 起）：`src/lib/*.test.ts`，node 环境纯逻辑单测
+  （token 格式化 / 会话可见性 / classname 合并 / chat 等待态）；`pnpm test` 跑，进 CI。
+- **CI 三栈**（`.github/workflows/ci.yml`，2026-11-03 全绿）：
+  `runtime-tests`（pytest + coverage → Codecov）· `web`（lint + typecheck + vitest + build）·
+  `rust`（fmt --check + cargo check，macos runner）。release 另有 tag 触发的发布流水线（§15.1）。
+
+**测试基建红线**（都踩过坑）：
+
+- runtime 全量**必须带 `--extra docs`**——extractors/preview/document-tools 等 50+ 用例依赖
+  openpyxl/pandas/docx/pptx/pypdf（CI 曾因裸 `--group test` 48 红）。
+- **禁止在 `tests/e2e/`（或任何子目录）建 `conftest.py`**：会遮蔽模块名 `conftest`，全仓库的
+  `from conftest import …` 解析到空壳（26 文件收集错误）。共享 fixture 放根 `tests/conftest.py`。
+- `server_shared._RUNNING_TURNS` 由根 conftest 的 autouse fixture 每测试前 `clear()`——
+  e2e 段残留会污染后跑的 unit/api 断言；用 `clear()` 保对象同一性（多模块持有同一 dict 引用）。
 
 ---
 
@@ -721,6 +764,11 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
     互相踩踏——整段替换丢失 + 错位插入成"缝合怪"（`import` 直接语法炸），而**每个调用都返回 `ok`**，
     工具层零冲突信号，模型只能事后靠 `py_compile` 发现。内置文件工具现已用进程级锁 + 原子写兜底（§6.3）；
     新增有副作用的工具必须自己处理并发。
+16. **provider 429/限流错误不立即失败**：graph 层 `rate_limited_backoff` 先退避重试（30s 起指数 ×5，
+    最长 ~15 分钟）才把错误冒给 goal driver / 上层语义——「马上 usage_limited」的直觉已过时；
+    测这类语义要 monkeypatch `graph._RATE_LIMIT_WAIT_S`。
+17. 时间敏感测试先想 **UTC**：CI runner 是 UTC + 2 核慢机。「当天剩余网格点」类断言在 UTC 23:30 后
+    会翻车（已修：不足 2 点切明天）；「查 history 断言 checkpoint 产物」有落盘竞态，要轮询等待。
 
 ---
 
@@ -738,7 +786,9 @@ pnpm test[:unit|:e2e]   # 委托 packages/runtime/scripts/test.sh [-m unit|api|e
 | + | 聊天内联图表 widget（render_widget chart） | ✅ |
 | + | 上下文治理梯度（E2 截断 / E2.5 microcompact / E3 压缩 / E4 重申）+ 持久用量统计 | ✅ |
 | + | 引用与来源体系（Wiki + WebSearch：契约/台账/SourcesBlock）+ 内置 web 搜索 | ✅ P0/P1（见 citations-design） |
-| 🔮 | **内嵌浏览器**（Chat|Browser 分栏 + Space + 三态所有权 + workflow browser 节点） | 设计稿（见 browser-embed-design） |
+| + | 内嵌浏览器（Chat\|Browser 分栏 + Space + 所有权三态） | ✅ **双轨落地**（扩展轨 + CDP，见 browser-companion-extension-design）；CEF 级嵌入未做 |
+| + | IM 渠道（钉钉 Stream / 企微）+ 连接器模块（connector-module-design） | ✅ 已合并 main |
+| + | **开源工程化**：三栈 CI 全绿 + Codecov 覆盖率 + tag→dmg 发布流水线 + 治理文件（CONTRIBUTING/SECURITY/CHANGELOG/ROADMAP）+ 前端测试 0→1 | ✅ 2026-11-03（v0.1.1 首个 CI 绿版本） |
 | 🔮 | 引用检索加权生效、provider 原生搜索适配、web→Raw 沉淀、经验循环、多项目、真实桌面通知、账号体系 | 路线中 |
 
 > 界面/功能的逐项完成度与已知限制，见 `docs/user-guide.md` 的图例标注。
