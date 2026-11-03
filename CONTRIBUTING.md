@@ -75,6 +75,14 @@ bundle under a live process corrupts lazy imports (`zlib error: incorrect
 header check`) and **only a full app restart recovers**. Quit Ginno (⌘Q, not
 just closing the window) before building. See `docs/troubleshooting.md`.
 
+### Iterating on the runtime without restarting the app
+
+`make dev-swap` (or `/dev-swap` in a session) rebuilds **only the Python
+runtime bundle**, swaps it in atomically and hot-restarts the sidecar onto it
+(preflight on a spare port, health-checked by build fingerprint, rolled back
+automatically on failure) — the app stays open. `make dev-swap-clean` returns
+to the factory bundle. Design: `docs/runtime-hot-swap-design.md`.
+
 ## Release runbook (maintainer)
 
 1. Quit the running Ginno app.

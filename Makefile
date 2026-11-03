@@ -216,12 +216,16 @@ runtime: web
 	if [ "$(FORCE_RUNTIME)" != "1" ] && [ -f $(CACHE)/runtime.stamp ] && [ "$$(cat $(CACHE)/runtime.stamp)" = "$$h" ] && [ -x $(RUNTIME)/dist/ginno-runtime/ginno-runtime ]; then \
 	  echo "⏭️  runtime 输入未变，跳过 PyInstaller"; \
 	else \
+	  printf '{"fingerprint": "%s", "channel": "app", "built_at": "%s", "repo": "%s"}\n' \
+	    "$$(git rev-parse --short HEAD 2>/dev/null || echo nogit)$$(git diff --quiet 2>/dev/null || printf -- -dirty)" \
+	    "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$(cd $(ROOT) && pwd)" > $(RUNTIME)/build-info.json; \
 	  cd $(RUNTIME) && set -o pipefail && uv run --locked --extra docs pyinstaller --noconfirm --onedir --paths src --name ginno-runtime \
 	  --collect-all langchain_openai --collect-all langchain_anthropic \
 	  --collect-all langgraph --collect-all mcp --collect-all pydantic \
 	  --collect-all pandas --collect-all python_calamine --collect-all openpyxl \
 	  --collect-all docx --collect-all pptx --collect-all pypdf \
 	  --add-data "$(WEB_OUT):web_out" \
+	  --add-data "$(RUNTIME)/build-info.json:." \
 	  --add-data "$(ROOT)/packages/extension/src:extension_src" \
 	  --add-data "$(ROOT)/packages/extension/native-host:extension_src_native_host" \
 	  --add-data "$(RUNTIME)/src/ginno_runtime/i18n:ginno_runtime/i18n" \
@@ -314,3 +318,13 @@ loc:
 ## help: list targets
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## /  /'
+
+## dev-swap: 开发热切换 build 段（docs/runtime-hot-swap-design.md）。
+## 完成切换需壳 finish_dev_swap（前端事件自动触发 / Debug 菜单手动）。
+dev-swap:
+	@FORCE=$${FORCE:-0} SKIP_TESTS=$${SKIP_TESTS:-0} \
+	  DEV_SWAP_REQUESTED_BY=$${DEV_SWAP_REQUESTED_BY:-cli} bash scripts/dev_swap.sh
+
+## dev-swap-clean: 删除 dev-override，回到 app 内置 bundle（下次重启生效）。
+dev-swap-clean:
+	@rm -rf "$${GINNO_HOME:-$$HOME/.ginno}/dev-override" && echo "✅ dev-override 已清除（重启 runtime 后回到 app 内置 bundle）"

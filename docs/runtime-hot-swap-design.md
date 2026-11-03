@@ -1,6 +1,6 @@
 # Runtime 热切换设计（开发自闭环：改代码 → 重建 → 换 bundle → 重启 → 验证 → 回滚）
 
-> 状态：**方案待评审**。本文设计「只换 runtime sidecar」的开发热更新；整 app（壳+web+runtime 一起换）的自更新见 `self-update-design.md`（两方案共享回滚骨架，§9 讨论合流）。
+> 状态：**P0+P1 已实施**（2026-11-04，见 CHANGELOG Unreleased）；P2（与 self-update 合流）未做。本文设计「只换 runtime sidecar」的开发热更新；整 app（壳+web+runtime 一起换）的自更新见 `self-update-design.md`（两方案共享回滚骨架，§9 讨论合流）。
 > 相关：`CLAUDE.md`（zlib 已知故障 = 本方案要根治的头号约束）、`apps/desktop/src/sidecar.rs`、`docs/p3-packaging-notes.md`。
 
 ---

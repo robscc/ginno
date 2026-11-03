@@ -5,6 +5,23 @@ All notable changes to Ginno are documented here. The format follows
 [SemVer](https://semver.org/) — pre-1.0, expect breaking changes in minor
 versions.
 
+## [Unreleased]
+
+### Added
+
+- **Runtime 热切换（开发自闭环）**：`make dev-swap`（或会话内 `/dev-swap`）一条命令
+  完成「单测 → PyInstaller 重建 → blue-green 预检 → symlink 原子切换 → 壳热重启
+  → 构建指纹验证 → 失败自动回滚」——改 runtime 代码不再需要退出重开应用
+  （`docs/runtime-hot-swap-design.md`，P0+P1）。TopBar 琥珀 `dev·{指纹}` 黄条标识
+  开发 bundle；`make dev-swap-clean` 一键回出厂。
+- `/api/health` 现返回 `build`（git 指纹 + channel + repo），壳据此验证热切换。
+- 壳新增 sidecar 崩溃自动拉起（watcher：曾在线后掉线且无 restart 在飞 → respawn）。
+
+### Fixed
+
+- goal continuation 两个 flaky：`status` 与 `turns_used` 记账存在写序窗口，
+  慢机（CI）上断言读到中间态——等待条件改为两者齐备。
+
 ## [0.1.1] - 2026-11-03
 
 ### Added
