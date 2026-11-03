@@ -196,6 +196,8 @@ export async function createSession(req: {
   icon?: string;
   provider?: string;
   model?: string;
+  /** 思考档位（thinking-effort-design §2）："auto"/缺省走 agent 默认链。 */
+  thinking_effort?: string;
   workflow_id?: string;
   // 出生即挂载(home-mount-picker-design.md §3)——后端 CreateSessionRequest 原生支持
   context_folders?: string[];
@@ -582,4 +584,19 @@ export async function deleteTeamMemberSession(
     `${BASE}/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(instanceId)}/sessions/${encodeURIComponent(sessionId)}`,
     { method: "DELETE" },
   );
+}
+
+// ---- running work (running-indicator-design §1) ----
+
+/** `/api/running` 响应：运行中 turn 的会话 + 非 detached 后台命令。侧栏
+ *  运行提示只吃 sessions 部分（后台任务归 /tasks 页自己的徽标）。 */
+export interface RunningWork {
+  ok: boolean;
+  sessions: Array<{ id: string; title: string }>;
+  tasks: Array<{ id: string; title: string; command: string }>;
+  count: number;
+}
+
+export async function listRunning(): Promise<RunningWork> {
+  return json<RunningWork>(`${BASE}/running`);
 }

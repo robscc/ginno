@@ -407,6 +407,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // 运行中 turn 会话集(running-indicator-design §1):/api/running 5s 轮询,
+  // 侧栏行据此渲染边缘条+脉冲点。与连接器状态点同一模式;tasks 部分不进
+  // 本特性(/tasks 页徽标已有归属)。轮询粒度 5s:turn 起收不是亚秒级事件。
+  const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const r = await api.listRunning();
+        if (alive) {
+          setRunningIds((prev) => {
+            const next = new Set((r.sessions ?? []).map((x) => x.id));
+            if (prev.size === next.size && [...next].every((id) => prev.has(id))) {
+              return prev; // 集合不变时保引用,避免全行无谓重渲染
+            }
+            return next;
+          });
+        }
+      } catch { /* sidecar 未起时静默 */ }
+    };
+    tick();
+    const iv = setInterval(tick, 5000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, []);
+
   // 定时回放不跟随路由(ScheduleRunView 挂在 main 顶层)——切到 Connectors/KB
   // 等其他页面时自动收起,否则回放挡住新页面、看起来像「跳转失灵」。打开回放
   // 本身不换路由,此 effect 不会误伤;workflow 分流的 push("/") 在 openRunView
@@ -692,6 +720,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       selectMode={selectMode}
       selected={selected}
       unreadSessions={g.unreadSessions}
+      runningIds={runningIds}
       treeCollapsed={g.treeCollapsed}
       editingId={editingId}
       editTitle={editTitle}

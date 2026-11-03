@@ -29,6 +29,9 @@ export interface SidebarSessionRowProps {
   selectMode: boolean;
   selected: Set<string>;
   unreadSessions: Record<string, number>;
+  /** 运行中 turn 的会话 id 集（running-indicator-design §1，/api/running
+   *  5s 轮询，AppShell 持有）。子会话行不叠加（已有状态 emoji 强标识）。 */
+  runningIds?: ReadonlySet<string>;
   treeCollapsed: Record<string, boolean>;
   editingId: string | null;
   editTitle: string;
@@ -75,6 +78,7 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
     selectMode,
     selected,
     unreadSessions,
+    runningIds,
     treeCollapsed,
     editingId,
     editTitle,
@@ -102,6 +106,8 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
   // 状态枚举的 key 渲染（chat.status.* 命中即译）：子会话行的状态标签经
   // hook 翻译后拼进既有 statusPrefix title 模板。
   const subStatusLabel = useStatusLabel();
+  // 运行提示 tooltip 直接用 chat.status 的现有词（设计 §2）。
+  const statusT = useTranslations("chat.status");
 
   const sel = onWorkspace && s.id === activeSessionId;
   const checked = selectMode && selected.has(s.id);
@@ -109,6 +115,9 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
   const hex = agentHex(rowAgent?.color);
   const editing = editingId === s.id;
   const isSub = s.type === "subagent";
+  // 主会话行的运行中强提示（§2 A 强视觉）：边缘条 + 脉冲点。归档区行照常
+  // 显示（运行中被手动归档是合法态，§4）；子会话行不叠加。
+  const running = !!runningIds?.has(s.id) && !isSub;
   const subStatus = s.subagent?.status;
   const subMeta = subStatus ? SUBAGENT_STATUS_META[subStatus] : null;
   const subActive = subStatus === "running" || subStatus === "waiting";
@@ -148,12 +157,22 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
       <div
         className={`nav-item group ${sel ? "text-txt" : ""} ${
           isSub && !subActive && !sel ? "opacity-60" : ""
-        } ${dimmed ? "opacity-60" : ""}`}
+        } ${dimmed ? "opacity-60" : ""} ${running ? "relative" : ""}`}
         style={{
           ...(sel ? { background: "rgba(99,102,241,0.14)" } : undefined),
           ...(depth > 0 ? { paddingLeft: `${10 + depth * 16}px` } : undefined),
         }}
       >
+        {/* 运行中左边缘强调条（§2）：余光可辨、不抢标题空间；呼吸透明度
+            与脉冲点同一节奏。语义色走 --st-running（禁绿色）。 */}
+        {running && (
+          <span
+            aria-hidden
+            title={statusT("running")}
+            className="absolute left-0 top-1/2 h-[60%] w-[3px] -translate-y-1/2 animate-pulse rounded-full"
+            style={{ background: "var(--st-running)" }}
+          />
+        )}
         {editing ? (
           <input
             autoFocus
@@ -269,6 +288,13 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                   打开该会话即清除（会话行选中态本身意味着已读）。内存乐观层
                   或服务端装饰（s.unread，session_unread 单一事实源）任一命中。 */}
               <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                {running && (
+                  <span
+                    className="h-1.5 w-1.5 animate-pulse rounded-full"
+                    style={{ background: "var(--st-running)" }}
+                    title={statusT("running")}
+                  />
+                )}
                 {(unreadSessions[s.id] !== undefined || s.unread) && !sel && (
                   <span
                     className="h-1.5 w-1.5 rounded-full bg-violet"
@@ -286,7 +312,10 @@ export function SidebarSessionRow(props: SidebarSessionRowProps) {
                 className="flex shrink-0 items-center gap-1 rounded-full border border-line2 px-1.5 text-[10px] leading-4 text-muted"
                 title={t("session.activeKids", { count: activeKids })}
               >
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green" />
+                <span
+                  className="h-1.5 w-1.5 animate-pulse rounded-full"
+                  style={{ background: "var(--st-running)" }}
+                />
                 {activeKids}
               </span>
             )}
