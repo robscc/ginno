@@ -356,6 +356,38 @@ def test_widget_event_ignores_model_data_id():
     assert ev3["kind"] == "stat_list"
 
 
+def test_widget_event_reclassifies_unknown_kind_by_shape():
+    """模型自造 kind（实测 GLM 传过泛型 "widget"，2026-11-03 AgentPlatform
+    监控 run：UI 无该 kind 专属渲染，整卡退化成 JSON dump）——未知 kind 按
+    data 形状嗅探重判。live 与回放共用此构造点，旧数据回放同样修好。"""
+    from ginno_runtime.tools.render_tools import widget_event
+
+    # stat_list 形状（items 列表）→ 归 stat_list，并跑 items 归一
+    ev = widget_event(
+        {"kind": "widget", "data": {"title": "t", "items": [{"label": "a"}]}}, "tc-1"
+    )
+    assert ev["kind"] == "stat_list"
+    assert ev["data"]["items"] == [{"label": "a"}]
+
+    # chart 形状（type/x/y/data）→ 归 chart
+    ev2 = widget_event(
+        {
+            "kind": "widget",
+            "data": {"type": "bar", "x": "d", "y": "n", "data": [{"d": "a", "n": 1}]},
+        },
+        "tc-2",
+    )
+    assert ev2["kind"] == "chart"
+
+    # 已知 kind 不受影响
+    ev3 = widget_event({"kind": "chart", "data": {"type": "pie"}}, "tc-3")
+    assert ev3["kind"] == "chart"
+
+    # 形状也嗅探不出（真泛型数据）→ 保留原 kind，前端走 JSON dump 兜底
+    ev4 = widget_event({"kind": "widget", "data": {"anything": 1}}, "tc-4")
+    assert ev4["kind"] == "widget"
+
+
 def test_widget_event_normalizes_wrapped_stat_list_items():
     """The model wraps ``items`` in an XML-style envelope (observed live,
     2026-10-08: ``{"items": {"item": [...]}}``) — a truthy non-array that

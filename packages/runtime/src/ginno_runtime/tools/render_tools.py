@@ -175,19 +175,45 @@ def _normalize_stat_list(data) -> None:
     data["items"] = []
 
 
+def _guess_widget_kind(data: Any) -> str | None:
+    """形状嗅探：data 是 stat_list/chart 的形状时返回对应 kind，否则 None。
+
+    模型偶尔自造 kind（实测 GLM 传过泛型 ``"widget"``——UI 没有该 kind 的
+    专属渲染，整卡退化成 JSON dump，用户侧即「widget 没渲染」）。
+    """
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("items"), list) and not isinstance(data.get("data"), list):
+        return "stat_list"
+    if (
+        data.get("type") in ("bar", "line", "area", "pie")
+        and isinstance(data.get("data"), list)
+        and data.get("x")
+        and data.get("y")
+    ):
+        return "chart"
+    return None
+
+
 def widget_event(args: dict, tc_id: str | None = None) -> dict:
     """Build the `widget.emit` / history-replay payload.
 
     `render_id` is stamped here from the tool-call id (unique per invocation).
     The model sometimes echoes a reused `data.id` hoping the UI will refresh;
     we ignore that and never let two calls share a render_id.
+
+    kind 归一：未知 kind 按 data 形状嗅探重判——widget_event 是 live 广播与
+    history 回放的同一构造点，这里归一后已落盘的旧调用回放也一并修好。
     """
     rid = (tc_id or "").strip() or str(uuid.uuid4())
     data = args.get("data")
-    if args.get("kind") == "stat_list":
+    kind = args.get("kind") or "widget"
+    if kind not in ("stat_list", "chart"):
+        kind = _guess_widget_kind(data) or kind
+    if kind == "stat_list":
         _normalize_stat_list(data)
     return {
-        "kind": args.get("kind", "widget"),
+        "kind": kind,
         "data": data,
         "render_id": rid,
     }
@@ -198,7 +224,9 @@ def render_widget(kind: str, data: dict, summary: str = "") -> str:
     """Render a rich widget card in the chat instead of plain text.
 
     Use this when a structured view is clearer than prose (status lists,
-    metrics, breakdowns, trends). Supported kinds:
+    metrics, breakdowns, trends). `kind` must be EXACTLY one of the values
+    below — never "widget", never invented names (unknown kinds render as
+    raw JSON). Supported kinds:
       - "stat_list": data = {"title": str, "items": [{"label": str,
         "value"?: str, "status"?: "done"|"running"|"pending"|"ok"|"error"}]}
       - "chart": data = {"type": "bar"|"line"|"area"|"pie", "title": str,
